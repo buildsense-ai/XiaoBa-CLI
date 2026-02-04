@@ -1,0 +1,39 @@
+# 依赖
+node_modules/
+
+# 构建输出
+dist/
+
+# 日志
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# 环境变量（包含敏感信息）
+.env
+.env.local
+.env.*.local
+
+# 用户配置（包含 API 密钥）
+.xiaoba/
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 测试覆盖率
+coverage/
+.nyc_output/
+
+# 临时文件
+*.tmp
+.cache/

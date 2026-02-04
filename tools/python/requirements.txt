@@ -1,0 +1,27 @@
+# 学术论文搜索与获取
+arxiv>=1.4.0
+scholarly>=1.7.0
+semanticscholar>=0.3.0
+
+# 文档处理与转换
+pypandoc>=1.11
+python-docx>=0.8.11
+PyPDF2>=3.0.0
+
+# 引用管理
+pybtex>=0.24.0
+citeproc-py>=0.6.0
+
+# 文本分析
+nltk>=3.8
+textstat>=0.7.3
+spacy>=3.5.0
+
+# 网络请求与解析
+requests>=2.28.0
+beautifulsoup4>=4.11.0
+lxml>=4.9.0
+
+# 工具库
+python-dateutil>=2.8.0
+pyyaml>=6.0

@@ -1,0 +1,160 @@
+{
+  "tools": [
+    {
+      "name": "echo_test",
+      "description": "测试工具 - 回显输入消息",
+      "script": "tools/python/echo_tool.py",
+      "timeout": 5000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "要回显的消息"
+          }
+        },
+        "required": ["message"]
+      }
+    },
+    {
+      "name": "search_papers",
+      "description": "搜索学术论文，支持 arXiv、Google Scholar、Semantic Scholar 等数据源",
+      "script": "tools/python/search_tool.py",
+      "timeout": 30000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "搜索关键词"
+          },
+          "source": {
+            "type": "string",
+            "description": "数据源",
+            "enum": ["arxiv", "scholar", "semantic_scholar"],
+            "default": "arxiv"
+          },
+          "limit": {
+            "type": "number",
+            "description": "返回结果数量",
+            "default": 10
+          },
+          "year_from": {
+            "type": "number",
+            "description": "起始年份（可选）"
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "fetch_paper",
+      "description": "获取论文的详细内容和元数据",
+      "script": "tools/python/fetch_tool.py",
+      "timeout": 60000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "论文URL或标识符"
+          },
+          "type": {
+            "type": "string",
+            "description": "获取类型",
+            "enum": ["fulltext", "abstract", "metadata"],
+            "default": "metadata"
+          }
+        },
+        "required": ["url"]
+      }
+    },
+    {
+      "name": "citation_tool",
+      "description": "管理参考文献，生成标准引用格式",
+      "script": "tools/python/citation_tool.py",
+      "timeout": 10000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "操作类型",
+            "enum": ["format", "parse", "validate"]
+          },
+          "bibtex": {
+            "type": "string",
+            "description": "BibTeX格式的引用信息"
+          },
+          "style": {
+            "type": "string",
+            "description": "引用格式",
+            "enum": ["apa", "mla", "ieee", "chicago"],
+            "default": "apa"
+          },
+          "cite_key": {
+            "type": "string",
+            "description": "引用键（可选）"
+          }
+        },
+        "required": ["action", "bibtex"]
+      }
+    },
+    {
+      "name": "analysis_tool",
+      "description": "分析论文质量，提供改进建议",
+      "script": "tools/python/analysis_tool.py",
+      "timeout": 30000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "文件路径"
+          },
+          "metrics": {
+            "type": "array",
+            "description": "分析指标",
+            "items": {
+              "type": "string",
+              "enum": ["readability", "academic_tone", "structure", "citations"]
+            },
+            "default": ["readability", "academic_tone", "structure", "citations"]
+          }
+        },
+        "required": ["file_path"]
+      }
+    },
+    {
+      "name": "convert_tool",
+      "description": "转换文档格式，支持多种学术格式",
+      "script": "tools/python/convert_tool.py",
+      "timeout": 60000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input_file": {
+            "type": "string",
+            "description": "输入文件路径"
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出格式",
+            "enum": ["docx", "pdf", "latex", "markdown"]
+          },
+          "template": {
+            "type": "string",
+            "description": "模板名称（可选）"
+          }
+        },
+        "required": ["input_file", "output_format"]
+      }
+    }
+  ],
+  "settings": {
+    "python_executable": "python",
+    "max_buffer_size": 10485760,
+    "default_timeout": 30000,
+    "encoding": "utf-8"
+  }
+}

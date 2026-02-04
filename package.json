@@ -1,0 +1,55 @@
+{
+  "name": "xiaoba-cli",
+  "version": "0.1.0",
+  "description": "XiaoBa - 一个智能的AI对话助手CLI工具",
+  "main": "dist/index.js",
+  "bin": {
+    "xiaoba": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "watch": "tsc --watch"
+  },
+  "keywords": [
+    "cli",
+    "ai",
+    "assistant",
+    "xiaoba",
+    "chatbot",
+    "command-line",
+    "typescript"
+  ],
+  "author": "Your Name <your-email@example.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/XiaoBa.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/XiaoBa/issues"
+  },
+  "homepage": "https://github.com/your-username/XiaoBa#readme",
+  "dependencies": {
+    "axios": "^1.6.2",
+    "chalk": "^4.1.2",
+    "commander": "^11.1.0",
+    "deasync": "^0.1.31",
+    "dotenv": "^17.2.3",
+    "gray-matter": "^4.0.3",
+    "inquirer": "^8.2.7",
+    "ora": "^5.4.1",
+    "terminal-image": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/deasync": "^0.1.5",
+    "@types/inquirer": "^9.0.9",
+    "@types/node": "^20.10.5",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

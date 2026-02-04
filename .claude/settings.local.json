@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install)",
+      "Bash(npm run build:*)",
+      "Bash(npm install:*)",
+      "Bash(npm link)",
+      "Bash(npm run dev:*)",
+      "Bash(python convert_to_block_ascii.py:*)",
+      "Bash(python analyze_pixel.py:*)",
+      "Bash(gh repo view:*)",
+      "Bash(tree:*)"
+    ]
+  }
+}
