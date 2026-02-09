@@ -37,3 +37,7 @@ coverage/
 # 临时文件
 *.tmp
 .cache/
+
+# 论文分析结果
+docs/analysis/
+extracted/

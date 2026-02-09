@@ -1,0 +1,32 @@
+# Introduction
+
+## Move 1: Problem Establishment
+
+Large language models (LLMs) have demonstrated impressive capabilities in natural language understanding and generation, enabling the development of sophisticated AI agents for complex tasks such as personal assistance, knowledge management, and multi-turn dialogue systems. However, these agents face inherent limitations in long-term memory management due to the fixed-length context window design. As interactions accumulate over extended periods, agents struggle to preserve continuity across sessions, leading to disjointed memory retrieval, factual inconsistencies, and degraded reasoning performance. This challenge is particularly acute in scenarios requiring multi-hop logical reasoning, where agents must traverse complex causal chains and synthesize information from temporally distant contexts—constituting a significant open challenge in the field of LLM-based agents.
+
+The core difficulty lies in the fundamental tension between two competing objectives: **semantic relevance** and **logical coherence**. Traditional retrieval-augmented generation (RAG) systems prioritize semantic similarity through vector-based retrieval, which excels at finding contextually related information but often fails to capture the logical dependencies and causal relationships essential for System 2 reasoning. When faced with queries like "What caused the event that led to the outcome mentioned three sessions ago?", vector-based approaches suffer from semantic drift—retrieving superficially similar but logically irrelevant contexts—resulting in hallucinations and reasoning failures.
+
+## Move 2: Current Approaches and Limitations
+
+To address this challenge, current memory management approaches for LLM agents can be broadly categorized into three methodological types. **(1) Vector-based RAG systems** [REF_TODO] employ dense embeddings and approximate nearest neighbor search to retrieve semantically similar contexts, offering efficient retrieval but lacking explicit modeling of logical relationships and temporal causality. **(2) Knowledge graph-based methods** [REF_TODO] construct structured representations of entities and relations, enabling logical traversal and multi-hop reasoning, but suffer from high construction costs, brittleness to entity extraction errors, and difficulty in capturing nuanced semantic contexts. **(3) Hybrid approaches** [REF_TODO] attempt to combine both paradigms, yet typically operate through simple concatenation or sequential processing, failing to establish a unified theoretical framework that reconciles the semantic and logical dimensions.
+
+Although these diverse strategies have demonstrated effectiveness in specific scenarios, they share a fundamental limitation: **the absence of a principled theoretical foundation** that unifies semantic retrieval and logical reasoning within a coherent mathematical framework. Existing methods treat these two dimensions as separate modules rather than intrinsic properties of a unified memory space. Furthermore, no systematic approach has been proposed to address the computational complexity challenge—most graph-based methods incur O(N²) traversal costs for N entities, making them impractical for large-scale, long-term memory management. This gap motivates the need for a new paradigm that integrates semantic, temporal, logical, and scale dimensions into a unified memory architecture with provable complexity guarantees.
+
+## Move 3: Our Approach
+
+Inspired by the manifold hypothesis in representation learning and memory management principles in operating systems, we propose **Context on Manifolds**, a deterministic reasoning memory architecture that models the agent's memory space as a **Hybrid Context Manifold**—a high-dimensional geometric structure with four orthogonal dimensions: semantic (S), temporal (T), logical (L), and scale (Z). This theoretical framework provides a principled foundation for unifying vector-based retrieval and graph-based reasoning: semantic similarity corresponds to geodesic distance on the manifold, while logical relationships define the manifold's intrinsic curvature and connectivity.
+
+To operationalize this theory, we design the **Key Fact Logic Graph (KFLG)** as a discrete approximation operator of the manifold. As illustrated in Figure 1, KFLG employs a three-layer recursive architecture: L1 (Entity layer) serves as a sparse associative bus connecting atomic concepts, L2 (Key Fact layer) captures compressed logical propositions extracted via top-down recursive compression, and L3 (Narrative layer) preserves high-level contextual coherence. The L1 entity bus acts as a shortcut system, reducing graph traversal complexity from O(N²) to O(k) where k is the average entity degree. This design enables **complexity shifting**—transferring runtime reasoning costs to indexing-time construction, thereby providing deterministic System 2 reasoning capabilities without incurring prohibitive query latency.
+
+## Move 4: Main Contributions
+
+The main contributions of this paper are summarized as follows:
+
+- **Theoretical Framework**: We propose the Hybrid Context Manifold theory that unifies semantic retrieval and logical reasoning by modeling memory as a high-dimensional manifold with four orthogonal dimensions (semantic, temporal, logical, scale). This framework provides a principled mathematical foundation grounded in manifold hypothesis, Minimum Description Length (MDL) principle, and Bayesian inference.
+
+- **System Architecture**: We design the Key Fact Logic Graph (KFLG) as a discrete approximation operator of the manifold, featuring a three-layer recursive structure (L1 Entity, L2 Key Fact, L3 Narrative) with top-down extraction and an L1 entity associative bus that reduces traversal complexity from O(N²) to O(k).
+
+- **Complexity Shifting Mechanism**: We demonstrate how to transfer runtime reasoning computation to indexing-time construction cost, enabling deterministic System 2 reasoning for LLM agents without sacrificing query latency—a critical requirement for real-time interactive systems.
+
+- **Empirical Validation**: We conduct comprehensive experiments on multi-hop reasoning benchmarks [TODO: dataset names], demonstrating KFLG's advantages over Vector RAG and graph-based baselines in logical reasoning precision, context signal-to-noise ratio, and complexity shifting efficiency [TODO: specific metrics and improvements].
+

@@ -82,15 +82,22 @@ XiaoBa: 你好！我是 XiaoBa，很高兴为你服务...
 
 ```
 XiaoBa/
-├── src/                    # 源代码
-│   ├── commands/          # 命令处理（chat, config）
-│   ├── theme/            # 黑金配色主题
-│   ├── types/            # TypeScript 类型定义
-│   ├── utils/            # 工具函数
-│   └── index.ts          # CLI 入口
-├── skills/               # Skill 技能（规划中）
-├── prompts/              # 提示词库（规划中）
-├── tools/                # 工具集（规划中）
+├── src/                    # 核心源代码
+│   ├── agents/            # Agent 系统
+│   ├── commands/          # 命令处理（chat, config, skill）
+│   ├── skills/            # Skill 系统管理器
+│   ├── theme/             # 黑金配色主题
+│   ├── tools/             # 工具系统管理器
+│   ├── types/             # TypeScript 类型定义
+│   └── utils/             # 工具函数
+├── skills/                # Skill 定义（所有 Skills 统一存放）
+│   ├── academic-writing/
+│   ├── paper-analysis/
+│   └── brainstorming/
+├── tools/                 # 工具实现
+│   └── python/           # Python 扩展工具
+├── prompts/              # 系统提示词
+├── templates/            # 模板
 └── dist/                 # 构建输出
 ```
 
@@ -116,11 +123,14 @@ npm run watch     # 监听模式
 - [x] 基础对话功能
 - [x] 配置管理
 - [x] 黑金配色主题
-- [ ] Skill 系统集成
-- [ ] 工具调用能力
-- [ ] 文件系统操作
+- [x] Skill 系统集成
+- [x] 工具调用能力（28+ 工具）
+- [x] 文件系统操作
+- [x] Agent 系统
+- [x] Python 工具扩展
 - [ ] 记忆系统完善
 - [ ] 插件系统
+- [ ] 更多 Skills
 
 ## 贡献
 

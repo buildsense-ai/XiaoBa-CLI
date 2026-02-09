@@ -3,9 +3,16 @@
  */
 export interface ToolParameter {
   type: string;
-  description: string;
+  description?: string;
   required?: boolean;
   enum?: string[];
+  items?: ToolParameter | {
+    type: string;
+    properties?: Record<string, ToolParameter>;
+    required?: string[];
+  };
+  properties?: Record<string, ToolParameter>;
+  default?: any;
 }
 
 /**

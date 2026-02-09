@@ -8,63 +8,29 @@ import { Logger } from '../utils/logger';
  */
 export class SkillManager {
   private skills: Map<string, Skill>;
-  private communitySkillsPath: string;
-  private projectSkillsPath: string;
-  private userSkillsPath: string;
+  private skillsPath: string;
 
   constructor() {
     this.skills = new Map();
-    this.communitySkillsPath = PathResolver.getCommunitySkillsPath();
-    this.projectSkillsPath = PathResolver.getProjectSkillsPath();
-    this.userSkillsPath = PathResolver.getUserSkillsPath();
+    this.skillsPath = PathResolver.getSkillsPath();
   }
 
   /**
-   * 加载所有 skills（npm包 + 用户级 + 社区级 + 项目级）
+   * 加载所有 skills（只从统一目录加载）
    */
   async loadSkills(): Promise<void> {
     this.skills.clear();
 
-    // 1. 先加载 npm 包 skills（优先级最低）
-    await this.loadNpmSkills();
-
-    // 2. 加载用户级 skills（会覆盖同名的 npm skills）
-    await this.loadSkillsFromPath(this.userSkillsPath, 'user');
-
-    // 3. 加载社区级 skills（会覆盖同名的用户级和 npm skills）
-    await this.loadSkillsFromPath(this.communitySkillsPath, 'community');
-
-    // 4. 加载项目级 skills（会覆盖同名的社区级、用户级和 npm skills）
-    await this.loadSkillsFromPath(this.projectSkillsPath, 'project');
-  }
-
-  /**
-   * 从 npm 包中加载 skills
-   */
-  private async loadNpmSkills(): Promise<void> {
-    try {
-      const npmSkillFiles = PathResolver.findNpmSkills();
-
-      for (const filePath of npmSkillFiles) {
-        try {
-          const skill = SkillParser.parse(filePath);
-          // npm 包的 skill 优先级最低，不覆盖已有的
-          if (!this.skills.has(skill.metadata.name)) {
-            this.skills.set(skill.metadata.name, skill);
-          }
-        } catch (error: any) {
-          Logger.warning(`Failed to load npm skill from ${filePath}: ${error.message}`);
-        }
-      }
-    } catch (error: any) {
-      // 静默处理
-    }
+    const skillsPath = PathResolver.getSkillsPath();
+    
+    // 从统一的 skills 目录加载
+    await this.loadSkillsFromPath(skillsPath);
   }
 
   /**
    * 从指定路径加载 skills
    */
-  private async loadSkillsFromPath(basePath: string, level: 'user' | 'project'): Promise<void> {
+  private async loadSkillsFromPath(basePath: string): Promise<void> {
     try {
       const skillFiles = PathResolver.findSkillFiles(basePath);
 

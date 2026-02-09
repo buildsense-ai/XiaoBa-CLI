@@ -1,22 +1,6 @@
 {
   "tools": [
     {
-      "name": "echo_test",
-      "description": "测试工具 - 回显输入消息",
-      "script": "tools/python/echo_tool.py",
-      "timeout": 5000,
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string",
-            "description": "要回显的消息"
-          }
-        },
-        "required": ["message"]
-      }
-    },
-    {
       "name": "search_papers",
       "description": "搜索学术论文，支持 arXiv、Google Scholar、Semantic Scholar 等数据源",
       "script": "tools/python/search_tool.py",
@@ -48,106 +32,181 @@
       }
     },
     {
-      "name": "fetch_paper",
-      "description": "获取论文的详细内容和元数据",
-      "script": "tools/python/fetch_tool.py",
+      "name": "paper_parser",
+      "description": "解析 SCI 论文 PDF，提取章节内容和元数据",
+      "script": "tools/python/paper_parser_tool.py",
       "timeout": 60000,
       "parameters": {
         "type": "object",
         "properties": {
-          "url": {
+          "pdf_path": {
             "type": "string",
-            "description": "论文URL或标识符"
+            "description": "PDF 文件路径"
           },
-          "type": {
-            "type": "string",
-            "description": "获取类型",
-            "enum": ["fulltext", "abstract", "metadata"],
-            "default": "metadata"
+          "extract_sections": {
+            "type": "boolean",
+            "description": "是否提取章节内容",
+            "default": true
+          },
+          "extract_metadata": {
+            "type": "boolean",
+            "description": "是否提取元数据（标题、作者）",
+            "default": true
           }
         },
-        "required": ["url"]
+        "required": ["pdf_path"]
       }
     },
     {
-      "name": "citation_tool",
-      "description": "管理参考文献，生成标准引用格式",
-      "script": "tools/python/citation_tool.py",
-      "timeout": 10000,
+      "name": "markdown_chunker",
+      "description": "将 MinerU 输出的 full.md 解析为按章节聚合的顺序块（文本/图片/表格/小节标题），用于“像人一样”顺序精读",
+      "script": "tools/python/markdown_chunker_tool.py",
+      "timeout": 30000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "full_md_path": {
+            "type": "string",
+            "description": "MinerU 输出 full.md 的路径（绝对或相对路径）"
+          },
+          "chapter_level": {
+            "type": "number",
+            "description": "章节层级（默认 1 表示按 1./2./3. 这种一级编号聚合）",
+            "default": 1
+          },
+          "include_heading_blocks": {
+            "type": "boolean",
+            "description": "是否把章节内的 2.1/2.2 等小节标题作为 heading 块输出",
+            "default": true
+          },
+          "resolve_images": {
+            "type": "boolean",
+            "description": "是否输出图片的 resolved_path（可直接用于 read_media）",
+            "default": true
+          },
+          "max_text_block_chars": {
+            "type": "number",
+            "description": "文本块最大字符数（用于切分超长段落，避免一次输入过长）",
+            "default": 1200
+          },
+          "skip_first_heading": {
+            "type": "boolean",
+            "description": "是否跳过第一个一级标题作为论文标题（通常是论文标题，不算章节）",
+            "default": true
+          },
+          "keep_empty_chapters": {
+            "type": "boolean",
+            "description": "是否保留空章节（通常不需要；默认保留以便调试）",
+            "default": true
+          },
+          "outline_only": {
+            "type": "boolean",
+            "description": "是否只返回章节大纲与统计信息（不返回 blocks），用于先获取目录再按章拉取 blocks",
+            "default": false
+          },
+          "chapter_selector": {
+            "type": "string",
+            "description": "可选：只返回某一章（支持 '2' / '2.' / 'Study Area' 等）"
+          }
+        },
+        "required": ["full_md_path"]
+      }
+    },
+    {
+      "name": "pdf_splitter",
+      "description": "将 PDF 按章节分割成多个 Markdown 文件",
+      "script": "tools/python/pdf_splitter_tool.py",
+      "timeout": 60000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "pdf_path": {
+            "type": "string",
+            "description": "PDF 文件路径"
+          },
+          "output_dir": {
+            "type": "string",
+            "description": "输出目录路径（可选，默认为 output_<pdf文件名>）"
+          }
+        },
+        "required": ["pdf_path"]
+      }
+    },
+    {
+      "name": "analyze_image",
+      "description": "读取图片并调用多模态模型分析，只返回文字结果（base64 不进入对话历史，节省上下文空间）",
+      "script": "tools/python/analyze_image_tool.py",
+      "timeout": 90000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "图片文件路径（绝对或相对路径）"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "基于上下文的具体分析问题"
+          },
+          "detail": {
+            "type": "string",
+            "enum": ["auto", "low", "high"],
+            "description": "图像细节级别（可选）",
+            "default": "auto"
+          },
+          "max_tokens": {
+            "type": "number",
+            "description": "最大输出 token 数（可选）",
+            "default": 2048
+          },
+          "system": {
+            "type": "string",
+            "description": "系统提示词（可选）"
+          }
+        },
+        "required": ["file_path", "prompt"]
+      }
+    },
+    {
+      "name": "self_evolution",
+      "description": "自我进化工具 - 允许 XiaoBa 创建新的工具和技能来扩展自己的能力",
+      "script": "tools/python/self_evolution_tool.py",
+      "timeout": 30000,
       "parameters": {
         "type": "object",
         "properties": {
           "action": {
             "type": "string",
             "description": "操作类型",
-            "enum": ["format", "parse", "validate"]
+            "enum": ["create_tool", "create_skill"]
           },
-          "bibtex": {
+          "name": {
             "type": "string",
-            "description": "BibTeX格式的引用信息"
+            "description": "工具或技能的名称（只允许字母、数字、下划线、连字符）"
           },
-          "style": {
+          "description": {
             "type": "string",
-            "description": "引用格式",
-            "enum": ["apa", "mla", "ieee", "chicago"],
-            "default": "apa"
+            "description": "工具或技能的描述"
           },
-          "cite_key": {
+          "code": {
             "type": "string",
-            "description": "引用键（可选）"
+            "description": "Python代码（仅用于create_tool）"
+          },
+          "parameters": {
+            "type": "object",
+            "description": "参数定义（仅用于create_tool）"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Skill的prompt内容（仅用于create_skill）"
+          },
+          "timeout": {
+            "type": "number",
+            "description": "超时时间（可选，默认30000ms）",
+            "default": 30000
           }
         },
-        "required": ["action", "bibtex"]
-      }
-    },
-    {
-      "name": "analysis_tool",
-      "description": "分析论文质量，提供改进建议",
-      "script": "tools/python/analysis_tool.py",
-      "timeout": 30000,
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "file_path": {
-            "type": "string",
-            "description": "文件路径"
-          },
-          "metrics": {
-            "type": "array",
-            "description": "分析指标",
-            "items": {
-              "type": "string",
-              "enum": ["readability", "academic_tone", "structure", "citations"]
-            },
-            "default": ["readability", "academic_tone", "structure", "citations"]
-          }
-        },
-        "required": ["file_path"]
-      }
-    },
-    {
-      "name": "convert_tool",
-      "description": "转换文档格式，支持多种学术格式",
-      "script": "tools/python/convert_tool.py",
-      "timeout": 60000,
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "input_file": {
-            "type": "string",
-            "description": "输入文件路径"
-          },
-          "output_format": {
-            "type": "string",
-            "description": "输出格式",
-            "enum": ["docx", "pdf", "latex", "markdown"]
-          },
-          "template": {
-            "type": "string",
-            "description": "模板名称（可选）"
-          }
-        },
-        "required": ["input_file", "output_format"]
+        "required": ["action", "name", "description"]
       }
     }
   ],

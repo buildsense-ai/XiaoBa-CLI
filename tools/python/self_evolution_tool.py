@@ -1,0 +1,204 @@
+"""
+Self Evolution Tool - 自我进化工具
+允许 XiaoBa 创建新的工具和技能来扩展自己的能力
+"""
+
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from utils.base_tool import BaseTool
+from typing import Dict, Any
+import json
+import re
+
+
+class SelfEvolutionTool(BaseTool):
+    """自我进化工具 - 创建新的工具和技能"""
+
+    def __init__(self):
+        super().__init__()
+        self.tools_dir = os.path.join(os.path.dirname(__file__))
+        self.skills_dir = os.path.abspath(os.path.join(self.tools_dir, '..', '..', 'skills'))
+        self.config_file = os.path.join(self.tools_dir, 'tool-config.json')
+
+    def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        执行自我进化操作
+
+        Args:
+            params: {
+                'action': str,  # 'create_tool' 或 'create_skill'
+                'name': str,    # 工具或技能名称
+                'description': str,  # 描述
+                'code': str,    # Python代码（仅用于create_tool）
+                'parameters': dict,  # 参数定义（仅用于create_tool）
+                'prompt': str,  # Skill prompt（仅用于create_skill）
+                'timeout': int  # 超时时间（可选，默认30000）
+            }
+
+        Returns:
+            {
+                'success': bool,
+                'message': str,
+                'created_file': str
+            }
+        """
+        # 验证必需参数
+        self.validate_params(params, ['action', 'name', 'description'])
+
+        action = params['action']
+        name = params['name']
+        description = params['description']
+
+        # 验证名称安全性
+        if not self._is_safe_name(name):
+            return {
+                'success': False,
+                'message': f'名称不安全: {name}。只允许字母、数字、下划线和连字符。',
+                'status': 'error'
+            }
+
+        try:
+            if action == 'create_tool':
+                return self._create_tool(params)
+            elif action == 'create_skill':
+                return self._create_skill(params)
+            else:
+                return {
+                    'success': False,
+                    'message': f'未知操作: {action}',
+                    'status': 'error'
+                }
+        except Exception as e:
+            return {
+                'success': False,
+                'message': f'执行失败: {str(e)}',
+                'status': 'error'
+            }
+
+    def _is_safe_name(self, name: str) -> bool:
+        """验证名称是否安全（只包含字母、数字、下划线、连字符）"""
+        return bool(re.match(r'^[a-zA-Z0-9_-]+$', name))
+
+    def _create_tool(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """创建新的Python工具"""
+        name = params['name']
+        description = params['description']
+        code = params.get('code', '')
+        parameters = params.get('parameters', {})
+        timeout = params.get('timeout', 30000)
+
+        # 验证必需参数
+        if not code:
+            return {
+                'success': False,
+                'message': '缺少必需参数: code',
+                'status': 'error'
+            }
+
+        # 生成文件名
+        tool_file = os.path.join(self.tools_dir, f'{name}_tool.py')
+
+        # 检查文件是否已存在
+        if os.path.exists(tool_file):
+            return {
+                'success': False,
+                'message': f'工具已存在: {name}',
+                'status': 'error'
+            }
+
+        # 写入Python文件
+        with open(tool_file, 'w', encoding='utf-8') as f:
+            f.write(code)
+
+        # 更新tool-config.json
+        self._update_tool_config(name, description, f'tools/python/{name}_tool.py', timeout, parameters)
+
+        return {
+            'success': True,
+            'message': f'成功创建工具: {name}',
+            'created_file': tool_file,
+            'status': 'success'
+        }
+
+    def _update_tool_config(self, name: str, description: str, script: str, timeout: int, parameters: dict):
+        """更新tool-config.json，添加新工具"""
+        # 读取现有配置
+        with open(self.config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+
+        # 添加新工具
+        new_tool = {
+            'name': name,
+            'description': description,
+            'script': script,
+            'timeout': timeout,
+            'parameters': parameters
+        }
+
+        config['tools'].append(new_tool)
+
+        # 写回配置文件
+        with open(self.config_file, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+
+    def _create_skill(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """创建新的Skill"""
+        name = params['name']
+        description = params['description']
+        prompt = params.get('prompt', '')
+
+        # 验证必需参数
+        if not prompt:
+            return {
+                'success': False,
+                'message': '缺少必需参数: prompt',
+                'status': 'error'
+            }
+
+        # 创建skill目录
+        skill_dir = os.path.join(self.skills_dir, name)
+        if os.path.exists(skill_dir):
+            return {
+                'success': False,
+                'message': f'Skill已存在: {name}',
+                'status': 'error'
+            }
+
+        os.makedirs(skill_dir, exist_ok=True)
+
+        # 创建SKILL.md文件
+        skill_file = os.path.join(skill_dir, 'SKILL.md')
+        skill_content = f"""# {name}
+
+{description}
+
+## Prompt
+
+{prompt}
+
+## 使用方法
+
+在对话中输入 `/{name}` 来使用这个技能。
+
+---
+
+*此技能由 XiaoBa 自我进化功能创建*
+"""
+
+        with open(skill_file, 'w', encoding='utf-8') as f:
+            f.write(skill_content)
+
+        return {
+            'success': True,
+            'message': f'成功创建Skill: {name}',
+            'created_file': skill_file,
+            'status': 'success'
+        }
+
+
+if __name__ == '__main__':
+    tool = SelfEvolutionTool()
+    tool.run()
+

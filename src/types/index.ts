@@ -18,6 +18,7 @@ export interface ChatConfig {
   apiUrl?: string;
   model?: string;
   temperature?: number;
+  provider?: 'openai' | 'anthropic';
   memory?: {
     enabled?: boolean;
     baseUrl?: string;
@@ -44,3 +45,8 @@ export interface CommandOptions {
   message?: string;
   config?: string;
 }
+
+// 导出 Agent 相关类型
+export * from './agent';
+export * from './tool';
+export * from './skill';

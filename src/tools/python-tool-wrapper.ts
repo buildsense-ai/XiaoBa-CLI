@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { isToolAllowed } from '../utils/safety';
 
 /**
  * Python 工具配置接口
@@ -38,6 +39,13 @@ export class PythonToolWrapper implements Tool {
 
   async execute(args: any, context: ToolExecutionContext): Promise<string> {
     try {
+      if (this.definition.name === 'self_evolution') {
+        const toolPermission = isToolAllowed(this.definition.name);
+        if (!toolPermission.allowed) {
+          return `执行被阻止: ${toolPermission.reason}`;
+        }
+      }
+
       const result = await this.executePythonScript(args);
       return this.formatResult(result);
     } catch (error: any) {
@@ -54,8 +62,13 @@ export class PythonToolWrapper implements Tool {
       const inputData = JSON.stringify(args);
 
       // 启动 Python 进程
-      const pythonProcess = spawn(pythonExecutable, [this.scriptPath], {
-        stdio: ['pipe', 'pipe', 'pipe']
+      const pythonProcess = spawn(pythonExecutable, [this.scriptPath, inputData], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          PYTHONUTF8: process.env.PYTHONUTF8 || '1',
+          PYTHONIOENCODING: process.env.PYTHONIOENCODING || 'utf-8'
+        }
       });
 
       let stdout = '';
@@ -66,9 +79,12 @@ export class PythonToolWrapper implements Tool {
         stdout += data.toString();
       });
 
-      // 收集错误输出
+      // 收集错误输出并实时显示（用于进度反馈）
       pythonProcess.stderr.on('data', (data) => {
-        stderr += data.toString();
+        const text = data.toString();
+        stderr += text;
+        // 实时输出到控制台，让用户看到进度
+        process.stderr.write(text);
       });
 
       // 设置超时
@@ -114,11 +130,15 @@ export class PythonToolWrapper implements Tool {
       return `错误: ${result.error || '未知错误'}`;
     }
 
-    // 将结果转换为可读的字符串
-    if (typeof result.data === 'string') {
-      return result.data;
+    // 兼容两种 Python 输出格式：
+    // 1) BaseTool: { success: true, data: {...}, error: null }
+    // 2) Legacy:   { success: true, ... }  (没有 data 字段)
+    const payload = result.data !== undefined ? result.data : result;
+
+    if (typeof payload === 'string') {
+      return payload;
     }
 
-    return JSON.stringify(result.data, null, 2);
+    return JSON.stringify(payload, null, 2);
   }
 }

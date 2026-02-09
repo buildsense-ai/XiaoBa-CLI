@@ -2,6 +2,19 @@ import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext } from
 import { ReadTool } from './read-tool';
 import { WriteTool } from './write-tool';
 import { BashTool } from './bash-tool';
+import { EditTool } from './edit-tool';
+import { GlobTool } from './glob-tool';
+import { GrepTool } from './grep-tool';
+import { TaskPlannerTool } from './task-planner-tool';
+import { TodoWriteTool } from './todo-write-tool';
+import { EnterPlanModeTool } from './enter-plan-mode-tool';
+import { ExitPlanModeTool } from './exit-plan-mode-tool';
+import { AskUserQuestionTool } from './ask-user-question-tool';
+import { TaskTool } from './task-tool';
+import { TaskOutputTool } from './task-output-tool';
+import { TaskStopTool } from './task-stop-tool';
+import { SkillTool } from './skill-tool';
+import { CreateSkillTool } from './create-skill-tool';
 import { PythonToolLoader } from './python-tool-loader';
 
 /**
@@ -20,10 +33,31 @@ export class ToolManager {
    * 注册默认工具
    */
   private registerDefaultTools(): void {
-    // 注册 TypeScript 工具
+    // 注册基础工具
     this.registerTool(new ReadTool());
     this.registerTool(new WriteTool());
+    this.registerTool(new EditTool());
+    this.registerTool(new GlobTool());
+    this.registerTool(new GrepTool());
     this.registerTool(new BashTool());
+
+    // 注册任务管理工具
+    this.registerTool(new TaskPlannerTool());
+    this.registerTool(new TodoWriteTool());
+
+    // 注册工作流工具
+    this.registerTool(new EnterPlanModeTool());
+    this.registerTool(new ExitPlanModeTool());
+    this.registerTool(new AskUserQuestionTool());
+
+    // 注册 Skill 工具
+    this.registerTool(new SkillTool());
+    this.registerTool(new CreateSkillTool());
+
+    // 注册多智能体系统工具
+    this.registerTool(new TaskTool());
+    this.registerTool(new TaskOutputTool());
+    this.registerTool(new TaskStopTool());
 
     // 加载并注册 Python 工具
     this.loadPythonTools();
@@ -129,5 +163,12 @@ export class ToolManager {
    */
   hasTool(name: string): boolean {
     return this.tools.has(name);
+  }
+
+  /**
+   * 获取所有工具实例
+   */
+  getAllTools(): Tool[] {
+    return Array.from(this.tools.values());
   }
 }

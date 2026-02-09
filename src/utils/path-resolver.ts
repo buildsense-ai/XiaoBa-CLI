@@ -7,24 +7,31 @@ import * as fs from 'fs';
  */
 export class PathResolver {
   /**
-   * 获取社区 skills 目录（从 GitHub 等安装的 skills）
+   * 获取统一的 skills 目录（项目根目录的 skills 文件夹）
    */
-  static getCommunitySkillsPath(): string {
+  static getSkillsPath(): string {
     return path.join(process.cwd(), 'skills');
   }
 
   /**
-   * 获取项目级 skills 目录（项目自定义的 skills）
+   * @deprecated 已废弃，使用 getSkillsPath() 代替
    */
-  static getProjectSkillsPath(): string {
-    return path.join(process.cwd(), '.xiaoba', 'skills');
+  static getCommunitySkillsPath(): string {
+    return this.getSkillsPath();
   }
 
   /**
-   * 获取用户级 skills 目录
+   * @deprecated 已废弃，使用 getSkillsPath() 代替
+   */
+  static getProjectSkillsPath(): string {
+    return this.getSkillsPath();
+  }
+
+  /**
+   * @deprecated 已废弃，使用 getSkillsPath() 代替
    */
   static getUserSkillsPath(): string {
-    return path.join(os.homedir(), '.xiaoba', 'skills');
+    return this.getSkillsPath();
   }
 
   /**

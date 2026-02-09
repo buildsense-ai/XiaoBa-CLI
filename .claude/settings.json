@@ -1,9 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(echo:*)",
-      "Bash(Select-String \"XiaoBa\")"
+      "Bash",
+      "Write",
+      "Edit",
+      "Write"
     ]
   },
-  "enabledPlugins": {}
+  "model": "claude-opus-4-6"
 }

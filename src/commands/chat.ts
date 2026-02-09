@@ -128,7 +128,25 @@ async function sendSingleMessage(
 
         // 执行每个工具调用
         for (const toolCall of response.toolCalls) {
+          // 显示正在执行的工具
+          spinner.stop();
+          Logger.info(`执行工具: ${toolCall.function.name}`);
+
           const result = await toolManager.executeTool(toolCall);
+
+          // 如果是 task_planner，根据操作类型决定是否显示
+          if (toolCall.function.name === 'task_planner') {
+            try {
+              const args = JSON.parse(toolCall.function.arguments);
+              // 只在 create 和 update 操作时显示任务列表
+              if (args.action === 'create' || args.action === 'update') {
+                console.log(result.content);
+              }
+            } catch (e) {
+              // 解析失败时默认显示
+              console.log(result.content);
+            }
+          }
 
           // 添加工具结果消息
           messages.push({
@@ -137,6 +155,9 @@ async function sendSingleMessage(
             tool_call_id: result.tool_call_id,
             name: result.name
           });
+
+          // 重新启动 spinner
+          spinner.start();
         }
 
         spinner.text = styles.text('思考中...');
@@ -386,7 +407,25 @@ async function interactiveChat(
 
           // 执行每个工具调用
           for (const toolCall of response.toolCalls) {
+            // 显示正在执行的工具
+            spinner.stop();
+            Logger.info(`执行工具: ${toolCall.function.name}`);
+
             const result = await toolManager.executeTool(toolCall);
+
+            // 如果是 task_planner，根据操作类型决定是否显示
+            if (toolCall.function.name === 'task_planner') {
+              try {
+                const args = JSON.parse(toolCall.function.arguments);
+                // 只在 create 和 update 操作时显示任务列表
+                if (args.action === 'create' || args.action === 'update') {
+                  console.log(result.content);
+                }
+              } catch (e) {
+                // 解析失败时默认显示
+                console.log(result.content);
+              }
+            }
 
             // 添加工具结果消息
             contextMessages.push({
@@ -395,6 +434,9 @@ async function interactiveChat(
               tool_call_id: result.tool_call_id,
               name: result.name
             });
+
+            // 重新启动 spinner
+            spinner.start();
           }
 
           spinner.text = styles.text('思考中...');
@@ -577,7 +619,25 @@ async function handleSlashCommand(
 
           // 执行每个工具调用
           for (const toolCall of response.toolCalls) {
+            // 显示正在执行的工具
+            spinner.stop();
+            Logger.info(`执行工具: ${toolCall.function.name}`);
+
             const result = await toolManager.executeTool(toolCall);
+
+            // 如果是 task_planner，根据操作类型决定是否显示
+            if (toolCall.function.name === 'task_planner') {
+              try {
+                const args = JSON.parse(toolCall.function.arguments);
+                // 只在 create 和 update 操作时显示任务列表
+                if (args.action === 'create' || args.action === 'update') {
+                  console.log(result.content);
+                }
+              } catch (e) {
+                // 解析失败时默认显示
+                console.log(result.content);
+              }
+            }
 
             // 添加工具结果消息
             contextMessages.push({
@@ -586,6 +646,9 @@ async function handleSlashCommand(
               tool_call_id: result.tool_call_id,
               name: result.name
             });
+
+            // 重新启动 spinner
+            spinner.start();
           }
 
           spinner.text = styles.text('思考中...');

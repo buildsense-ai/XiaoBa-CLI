@@ -49,22 +49,16 @@ ${skillsSection}`;
     section += `你当前可以使用以下 ${skills.length} 个skills：\n\n`;
 
     for (const skill of skills) {
-      section += `### ${skill.metadata.name}\n\n`;
-      section += `**描述：** ${skill.metadata.description}\n\n`;
+      section += `- **${skill.metadata.name}**: ${skill.metadata.description}`;
 
       if (skill.metadata.argumentHint) {
-        section += `**参数：** ${skill.metadata.argumentHint}\n\n`;
+        section += ` (参数: ${skill.metadata.argumentHint})`;
       }
 
-      section += `**调用方式：**\n`;
-      const invocable = [];
-      if (skill.metadata.userInvocable) invocable.push('用户可调用');
-      if (skill.metadata.autoInvocable) invocable.push('自动调用');
-      section += `- ${invocable.join('、')}\n\n`;
-
-      section += `**提示词内容：**\n\`\`\`\n${skill.content}\n\`\`\`\n\n`;
-      section += '---\n\n';
+      section += '\n';
     }
+
+    section += '\n**使用方式：** 当用户请求匹配某个 skill 的描述时，使用 `skill` 工具调用该 skill。\n';
 
     return section;
   }

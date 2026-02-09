@@ -1,6 +1,8 @@
 import { styles } from '../theme/colors';
+import ora, { Ora } from 'ora';
 
 export class Logger {
+  private static spinner: Ora | null = null;
   static success(message: string): void {
     console.log(styles.success(message));
   }
@@ -27,6 +29,83 @@ export class Logger {
 
   static highlight(message: string): void {
     console.log(styles.highlight(message));
+  }
+
+  /**
+   * 启动进度指示器
+   * @param message 进度消息
+   */
+  static startProgress(message: string): void {
+    if (this.spinner) {
+      this.spinner.stop();
+    }
+    this.spinner = ora(styles.text(message)).start();
+  }
+
+  /**
+   * 更新进度消息
+   * @param message 新的进度消息
+   */
+  static updateProgress(message: string): void {
+    if (this.spinner) {
+      this.spinner.text = styles.text(message);
+    }
+  }
+
+  /**
+   * 停止进度指示器
+   * @param success 是否成功（true=成功, false=失败, undefined=仅停止）
+   * @param message 最终消息（可选）
+   */
+  static stopProgress(success?: boolean, message?: string): void {
+    if (!this.spinner) {
+      return;
+    }
+
+    if (success === true) {
+      this.spinner.succeed(message ? styles.success(message) : undefined);
+    } else if (success === false) {
+      this.spinner.fail(message ? styles.error(message) : undefined);
+    } else {
+      this.spinner.stop();
+      if (message) {
+        console.log(message);
+      }
+    }
+
+    this.spinner = null;
+  }
+
+  /**
+   * 显示百分比进度条
+   * @param current 当前进度
+   * @param total 总数
+   * @param message 进度消息（可选）
+   */
+  static progressBar(current: number, total: number, message?: string): void {
+    const percentage = Math.round((current / total) * 100);
+    const barLength = 30;
+    const filledLength = Math.round((barLength * current) / total);
+    const bar = '█'.repeat(filledLength) + '░'.repeat(barLength - filledLength);
+
+    const progressText = `[${bar}] ${percentage}% (${current}/${total})`;
+    const fullMessage = message ? `${message} ${progressText}` : progressText;
+
+    if (this.spinner) {
+      this.spinner.text = styles.text(fullMessage);
+    } else {
+      // 使用 \r 实现同行更新
+      process.stdout.write('\r' + styles.text(fullMessage));
+    }
+  }
+
+  /**
+   * 清除进度条（换行）
+   */
+  static clearProgress(): void {
+    if (!this.spinner) {
+      process.stdout.write('\n');
+    }
   }
 
   static brand(): void {
