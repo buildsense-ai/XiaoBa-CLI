@@ -12,6 +12,7 @@ import { AgentSession, AgentServices, SessionCallbacks } from '../core/agent-ses
 
 export async function chatCommand(options: CommandOptions): Promise<void> {
   const aiService = new AIService();
+  Logger.openLogFile('cli');
 
   // 初始化 ToolManager
   const toolManager = new ToolManager();
@@ -57,6 +58,7 @@ export async function chatCommand(options: CommandOptions): Promise<void> {
   // 单条消息模式
   if (options.message) {
     await sendSingleMessage(session, options.message);
+    Logger.closeLogFile();
     return;
   }
 
@@ -147,6 +149,7 @@ async function interactiveChat(session: AgentSession): Promise<void> {
         }
         console.log(styles.text('再见！期待下次与你对话。\n'));
       } finally {
+        Logger.closeLogFile();
         clearInterval(keepAliveTimer);
         originalExit(code);
       }
@@ -197,6 +200,7 @@ async function interactiveChat(session: AgentSession): Promise<void> {
         }
         isExiting = true;
         rl.close();
+        Logger.closeLogFile();
         originalExit(0);
         return;
       }
@@ -235,6 +239,7 @@ async function interactiveChat(session: AgentSession): Promise<void> {
       console.log('\n' + styles.text('再见！期待下次与你对话。') + '\n');
       isExiting = true;
       rl.close();
+      Logger.closeLogFile();
       originalExit(0);
       return;
     }

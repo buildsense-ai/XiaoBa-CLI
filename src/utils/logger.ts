@@ -1,33 +1,79 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { styles } from '../theme/colors';
 import ora, { Ora } from 'ora';
 
 export class Logger {
   private static spinner: Ora | null = null;
+  private static logStream: fs.WriteStream | null = null;
+
+  private static stripAnsi(str: string): string {
+    // eslint-disable-next-line no-control-regex
+    return str.replace(/\x1B\[[0-9;]*m/g, '');
+  }
+
+  private static writeToFile(level: string, message: string): void {
+    if (!this.logStream) return;
+    const now = new Date();
+    const ts = now.toISOString().replace('T', ' ').replace('Z', '');
+    const clean = this.stripAnsi(message);
+    this.logStream.write(`[${ts}] [${level}] ${clean}\n`);
+  }
+
+  static openLogFile(sessionType: string, sessionKey?: string): void {
+    const now = new Date();
+    const dateDir = now.toISOString().slice(0, 10);
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const ss = String(now.getSeconds()).padStart(2, '0');
+    const suffix = sessionKey ? `${sessionType}_${sessionKey}` : sessionType;
+    const fileName = `${hh}-${mm}-${ss}_${suffix}.log`;
+
+    const dir = path.resolve('logs', dateDir);
+    fs.mkdirSync(dir, { recursive: true });
+
+    this.logStream = fs.createWriteStream(path.join(dir, fileName), { flags: 'a' });
+  }
+
+  static closeLogFile(): void {
+    if (this.logStream) {
+      this.logStream.end();
+      this.logStream = null;
+    }
+  }
+
   static success(message: string): void {
+    this.writeToFile('SUCCESS', message);
     console.log(styles.success(message));
   }
 
   static error(message: string): void {
+    this.writeToFile('ERROR', message);
     console.error(styles.error(message));
   }
 
   static warning(message: string): void {
+    this.writeToFile('WARN', message);
     console.warn(styles.warning(message));
   }
 
   static info(message: string): void {
+    this.writeToFile('INFO', message);
     console.log(styles.info(message));
   }
 
   static title(message: string): void {
+    this.writeToFile('INFO', message);
     console.log('\n' + styles.title(message) + '\n');
   }
 
   static text(message: string): void {
+    this.writeToFile('TEXT', message);
     console.log(styles.text(message));
   }
 
   static highlight(message: string): void {
+    this.writeToFile('TEXT', message);
     console.log(styles.highlight(message));
   }
 

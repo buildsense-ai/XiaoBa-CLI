@@ -310,6 +310,125 @@
         },
         "required": ["output_path", "slides"]
       }
+    },
+    {
+      "name": "get_cad_metadata",
+      "description": "获取 CAD 文件的全局概览信息：全图缩略图、边界范围、图层列表、实体统计。分析 CAD 文件的第一步。",
+      "script": "tools/python/get_cad_metadata_tool.py",
+      "timeout": 120000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "CAD 文件路径（DXF 格式）"
+          }
+        },
+        "required": ["file_path"]
+      }
+    },
+    {
+      "name": "inspect_region",
+      "description": "检查 CAD 指定区域的详细信息。返回高清放大图（2048px）、区域内实体统计、图层分布、文字内容。用于查看局部细节。",
+      "script": "tools/python/inspect_region_tool.py",
+      "timeout": 120000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "CAD 文件路径"
+          },
+          "x": {
+            "type": "number",
+            "description": "区域左下角 X 坐标（mm）"
+          },
+          "y": {
+            "type": "number",
+            "description": "区域左下角 Y 坐标（mm）"
+          },
+          "width": {
+            "type": "number",
+            "description": "区域宽度（mm）"
+          },
+          "height": {
+            "type": "number",
+            "description": "区域高度（mm）"
+          },
+          "output_size": {
+            "type": "integer",
+            "description": "输出图片尺寸（像素），默认 2048",
+            "default": 2048
+          },
+          "include_image_base64": {
+            "type": "boolean",
+            "description": "是否返回压缩 base64 预览图（默认 false）",
+            "default": false
+          }
+        },
+        "required": ["file_path", "x", "y", "width", "height"]
+      }
+    },
+    {
+      "name": "extract_cad_entities",
+      "description": "提取 CAD 实体的结构化数据（线条、圆、文字等）。可按类型、图层、区域过滤。用于获取几何信息和文字标注。",
+      "script": "tools/python/extract_cad_entities_tool.py",
+      "timeout": 120000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "CAD 文件路径"
+          },
+          "entity_types": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "实体类型列表，如 ['LINE', 'CIRCLE', 'TEXT']"
+          },
+          "layers": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "图层列表"
+          },
+          "bbox": {
+            "type": "object",
+            "description": "边界框过滤 {x, y, width, height}",
+            "properties": {
+              "x": { "type": "number" },
+              "y": { "type": "number" },
+              "width": { "type": "number" },
+              "height": { "type": "number" }
+            }
+          }
+        },
+        "required": ["file_path"]
+      }
+    },
+    {
+      "name": "convert_dwg_to_dxf",
+      "description": "将 DWG 文件转换为 DXF 格式。DWG 无法直接读取，必须先转为 DXF。需要安装 ODA File Converter。",
+      "script": "tools/python/convert_dwg_to_dxf_tool.py",
+      "timeout": 300000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "dwg_path": {
+            "type": "string",
+            "description": "DWG 文件路径"
+          },
+          "output_path": {
+            "type": "string",
+            "description": "输出 DXF 文件路径（可选，默认同名同目录）"
+          },
+          "delete_original": {
+            "type": "boolean",
+            "description": "转换成功后是否删除原始 DWG 文件（默认 true）",
+            "default": true
+          }
+        },
+        "required": ["dwg_path"]
+      }
     }
   ],
   "settings": {

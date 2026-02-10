@@ -92,6 +92,7 @@ export class FeishuBot {
    * 启动 WebSocket 长连接，开始监听消息
    */
   async start(): Promise<void> {
+    Logger.openLogFile('feishu');
     Logger.info('正在启动飞书机器人...');
 
     // 加载 skills
