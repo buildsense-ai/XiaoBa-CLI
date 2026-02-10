@@ -57,6 +57,7 @@ export interface CommandOptions {
   interactive?: boolean;
   message?: string;
   config?: string;
+  skill?: string;
 }
 
 // 导出 Agent 相关类型

@@ -16,7 +16,8 @@ function main() {
   program
     .name('xiaoba')
     .description('XiaoBa - 您的智能AI命令行助手')
-    .version('0.1.0');
+    .version('0.1.0')
+    .option('-s, --skill <name>', '启动时绑定指定 skill');
 
   // 聊天命令
   program
@@ -24,6 +25,7 @@ function main() {
     .description('开始与XiaoBa对话')
     .option('-i, --interactive', '进入交互式对话模式')
     .option('-m, --message <message>', '发送单条消息')
+    .option('-s, --skill <name>', '启动时绑定指定 skill')
     .action(chatCommand);
 
   // 配置命令
@@ -44,7 +46,8 @@ function main() {
   // 默认命令 - 进入交互模式
   program
     .action(() => {
-      chatCommand({ interactive: true });
+      const opts = program.opts();
+      chatCommand({ interactive: true, skill: opts.skill });
     });
 
   program.parse();

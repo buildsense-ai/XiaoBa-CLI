@@ -55,6 +55,17 @@ export async function chatCommand(options: CommandOptions): Promise<void> {
   };
   const session = new AgentSession('cli', services);
 
+  // 启动时激活指定 skill
+  if (options.skill) {
+    const activated = await session.activateSkill(options.skill);
+    if (!activated) {
+      Logger.error(`Skill "${options.skill}" 未找到，请通过 xiaoba skill list 查看可用 skills`);
+      Logger.closeLogFile();
+      return;
+    }
+    Logger.info(`已绑定 skill: ${options.skill}`);
+  }
+
   // 单条消息模式
   if (options.message) {
     await sendSingleMessage(session, options.message);

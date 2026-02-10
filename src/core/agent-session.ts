@@ -67,6 +67,37 @@ export class AgentSession {
     this.messages.push({ role: 'system', content: systemPrompt });
   }
 
+  /**
+   * 启动时激活指定 skill，将其 prompt 注入系统消息。
+   * 用于 --skill 参数，在会话开始前绑定 skill 上下文。
+   */
+  async activateSkill(skillName: string): Promise<boolean> {
+    const skill = this.services.skillManager.getSkill(skillName);
+    if (!skill) {
+      Logger.warning(`Skill "${skillName}" 未找到`);
+      return false;
+    }
+
+    await this.init();
+
+    const context: SkillInvocationContext = {
+      skillName,
+      arguments: [],
+      rawArguments: '',
+      userMessage: '',
+    };
+
+    const prompt = SkillExecutor.execute(skill, context);
+    const skillMarker = `[skill:${skillName}]`;
+    const taggedPrompt = `${skillMarker}\n${prompt}`;
+
+    this.messages.push({ role: 'system', content: taggedPrompt });
+    this.activeSkillMaxTurns = skill.metadata.maxTurns;
+
+    Logger.info(`[${this.key}] 启动时激活 skill: ${skill.metadata.name}${skill.metadata.maxTurns ? ` (maxTurns=${skill.metadata.maxTurns})` : ''}`);
+    return true;
+  }
+
   // ─── 消息处理 ───────────────────────────────────────
 
   /** 完整消息处理管线：记忆搜索 → AI 推理 → 工具循环 → 同步历史 */
