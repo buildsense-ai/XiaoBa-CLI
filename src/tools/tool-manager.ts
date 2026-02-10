@@ -1,4 +1,4 @@
-import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext } from '../types/tool';
+import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor } from '../types/tool';
 import { ReadTool } from './read-tool';
 import { WriteTool } from './write-tool';
 import { BashTool } from './bash-tool';
@@ -20,7 +20,7 @@ import { PythonToolLoader } from './python-tool-loader';
 /**
  * 工具管理器 - 管理所有可用的工具
  */
-export class ToolManager {
+export class ToolManager implements ToolExecutor {
   private tools: Map<string, Tool> = new Map();
   private workingDirectory: string;
 
@@ -93,14 +93,21 @@ export class ToolManager {
   /**
    * 获取所有工具定义（用于传递给 AI）
    */
-  getToolDefinitions(): ToolDefinition[] {
-    return Array.from(this.tools.values()).map(tool => tool.definition);
+  getToolDefinitions(allowedNames?: string[]): ToolDefinition[] {
+    const all = Array.from(this.tools.values());
+    if (!allowedNames || allowedNames.length === 0) {
+      return all.map(tool => tool.definition);
+    }
+    const allowed = new Set(allowedNames);
+    return all.filter(t => allowed.has(t.definition.name)).map(t => t.definition);
   }
 
   /**
    * 执行工具调用
+   * @param toolCall 工具调用请求
+   * @param conversationHistory 可选的对话历史，传递给工具作为上下文
    */
-  async executeTool(toolCall: ToolCall): Promise<ToolResult> {
+  async executeTool(toolCall: ToolCall, conversationHistory?: any[]): Promise<ToolResult> {
     const tool = this.tools.get(toolCall.function.name);
 
     if (!tool) {
@@ -115,7 +122,7 @@ export class ToolManager {
     try {
       const context: ToolExecutionContext = {
         workingDirectory: this.workingDirectory,
-        conversationHistory: []
+        conversationHistory: conversationHistory || []
       };
 
       const args = JSON.parse(toolCall.function.arguments);
@@ -156,6 +163,13 @@ export class ToolManager {
    */
   getToolCount(): number {
     return this.tools.size;
+  }
+
+  /**
+   * 获取工具实例
+   */
+  getTool<T extends Tool = Tool>(name: string): T | undefined {
+    return this.tools.get(name) as T | undefined;
   }
 
   /**

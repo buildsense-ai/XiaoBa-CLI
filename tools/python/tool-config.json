@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "search_papers",
-      "description": "搜索学术论文，支持 arXiv、Google Scholar、Semantic Scholar 等数据源",
+      "description": "搜索学术论文。默认使用 Semantic Scholar（覆盖 2 亿+ 论文），也支持 arXiv 预印本搜索",
       "script": "tools/python/search_tool.py",
       "timeout": 30000,
       "parameters": {
@@ -15,12 +15,12 @@
           "source": {
             "type": "string",
             "description": "数据源",
-            "enum": ["arxiv", "scholar", "semantic_scholar"],
-            "default": "arxiv"
+            "enum": ["semantic_scholar", "arxiv"],
+            "default": "semantic_scholar"
           },
           "limit": {
             "type": "number",
-            "description": "返回结果数量",
+            "description": "返回结果数量（最大100）",
             "default": 10
           },
           "year_from": {
@@ -29,6 +29,32 @@
           }
         },
         "required": ["query"]
+      }
+    },
+    {
+      "name": "paper_detail",
+      "description": "获取论文详情、引用关系和推荐。支持四种操作：detail（论文详情）、citations（谁引用了它）、references（它引用了谁）、recommend（相似论文推荐）",
+      "script": "tools/python/paper_detail_tool.py",
+      "timeout": 30000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "操作类型",
+            "enum": ["detail", "citations", "references", "recommend"]
+          },
+          "paper_id": {
+            "type": "string",
+            "description": "Semantic Scholar 论文 ID（也支持 DOI、arXiv ID、URL 等格式，如 'DOI:10.xxx' 或 'ARXIV:2301.xxx'）"
+          },
+          "limit": {
+            "type": "number",
+            "description": "返回结果数量（用于 citations/references/recommend，最大100）",
+            "default": 20
+          }
+        },
+        "required": ["action", "paper_id"]
       }
     },
     {
@@ -207,6 +233,82 @@
           }
         },
         "required": ["action", "name", "description"]
+      }
+    },
+    {
+      "name": "pptx_generator",
+      "description": "PPT 生成工具 - 接收结构化 JSON 描述（标题、要点、图片等），生成 .pptx 文件。支持 5 种布局：title（封面）、content（要点列表）、section_header（章节分隔）、two_column（双栏）、image_text（图文）。支持 3 种配色主题：academic / dark / minimal",
+      "script": "tools/python/pptx_generator_tool.py",
+      "timeout": 30000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "output_path": {
+            "type": "string",
+            "description": "输出 .pptx 文件路径"
+          },
+          "slides": {
+            "type": "array",
+            "description": "幻灯片数组，每个元素描述一页",
+            "items": {
+              "type": "object",
+              "properties": {
+                "layout": {
+                  "type": "string",
+                  "description": "布局类型",
+                  "enum": ["title", "content", "section_header", "two_column", "image_text"]
+                },
+                "title": {
+                  "type": "string",
+                  "description": "页面标题"
+                },
+                "subtitle": {
+                  "type": "string",
+                  "description": "副标题（用于 title / section_header 布局）"
+                },
+                "bullets": {
+                  "type": "array",
+                  "description": "要点列表（用于 content / image_text 布局）",
+                  "items": { "type": "string" }
+                },
+                "image_path": {
+                  "type": "string",
+                  "description": "图片路径（用于 image_text 布局）"
+                },
+                "text": {
+                  "type": "string",
+                  "description": "正文文本（用于 image_text 布局）"
+                },
+                "left_title": {
+                  "type": "string",
+                  "description": "左栏标题（用于 two_column 布局）"
+                },
+                "left_bullets": {
+                  "type": "array",
+                  "description": "左栏要点（用于 two_column 布局）",
+                  "items": { "type": "string" }
+                },
+                "right_title": {
+                  "type": "string",
+                  "description": "右栏标题（用于 two_column 布局）"
+                },
+                "right_bullets": {
+                  "type": "array",
+                  "description": "右栏要点（用于 two_column 布局）",
+                  "items": { "type": "string" }
+                }
+              },
+              "required": ["layout"]
+            }
+          },
+          "theme": {
+            "type": "string",
+            "description": "配色主题",
+            "enum": ["academic", "dark", "minimal"],
+            "default": "academic"
+          }
+        },
+        "required": ["output_path", "slides"]
       }
     }
   ],

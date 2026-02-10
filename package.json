@@ -33,6 +33,7 @@
   "homepage": "https://github.com/your-username/XiaoBa#readme",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.0",
+    "@larksuiteoapi/node-sdk": "^1.58.0",
     "axios": "^1.6.2",
     "chalk": "^4.1.2",
     "commander": "^11.1.0",

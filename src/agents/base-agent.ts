@@ -2,8 +2,10 @@ import { Agent, AgentConfig, AgentContext, AgentResult, AgentStatus, AgentType }
 import { Logger } from '../utils/logger';
 import { AIService } from '../utils/ai-service';
 import { ConfigManager } from '../utils/config';
-import { ChatConfig } from '../types';
-import { ToolDefinition } from '../types/tool';
+import { ChatConfig, Message } from '../types';
+import { ToolExecutor } from '../types/tool';
+import { ConversationRunner, RunResult, RunnerOptions } from '../core/conversation-runner';
+import { AgentToolExecutor } from './agent-tool-executor';
 
 /**
  * Agent 基类
@@ -109,17 +111,13 @@ export abstract class BaseAgent implements Agent {
   }
 
   /**
-   * 构建工具定义列表
+   * 创建 AgentToolExecutor（从 context.tools 中按 allowedNames 过滤）
    */
-  protected buildToolDefinitions(context: AgentContext, allowedToolNames?: string[]): ToolDefinition[] {
-    if (!allowedToolNames || allowedToolNames.length === 0) {
-      return context.tools.map(tool => tool.definition);
-    }
-
-    const allowedSet = new Set(allowedToolNames);
-    return context.tools
-      .filter(tool => allowedSet.has(tool.definition.name))
-      .map(tool => tool.definition);
+  protected createToolExecutor(context: AgentContext, allowedToolNames?: string[]): ToolExecutor {
+    const tools = allowedToolNames && allowedToolNames.length > 0
+      ? context.tools.filter(t => allowedToolNames.includes(t.definition.name))
+      : context.tools;
+    return new AgentToolExecutor(tools, context.workingDirectory);
   }
 
   /**
@@ -130,48 +128,25 @@ export abstract class BaseAgent implements Agent {
   }
 
   /**
-   * 执行工具调用
-   * 从 AgentContext 中查找并执行对应的工具
+   * 通过 ConversationRunner 执行对话循环（子类不再需要自己写 while 循环）
    */
-  protected async executeToolCall(toolCall: any, context: AgentContext): Promise<string> {
-    const name = toolCall?.function?.name || toolCall?.name;
-    let input: any = {};
-    if (toolCall?.function?.arguments) {
-      try {
-        input = JSON.parse(toolCall.function.arguments);
-      } catch {
-        input = {};
-      }
-    } else if (toolCall?.input) {
-      input = toolCall.input;
+  protected async runConversation(
+    messages: Message[],
+    toolExecutor: ToolExecutor,
+    options?: Partial<RunnerOptions>,
+  ): Promise<RunResult> {
+    if (!this.aiService) {
+      throw new Error('AIService 未初始化');
     }
 
-    try {
-      if (!name) {
-        return '错误：无效的工具调用（缺少工具名称）';
-      }
+    const runner = new ConversationRunner(this.aiService, toolExecutor, {
+      maxTurns: this.config.maxTurns ?? options?.maxTurns ?? 30,
+      stream: false,
+      enableCompression: false,
+      shouldContinue: () => this.status === 'running',
+      ...options,
+    });
 
-      // 从 context.tools 中找到对应的工具
-      const tool = context.tools.find(t => t.definition.name === name);
-
-      if (!tool) {
-        Logger.error(`Agent ${this.id}: 未找到工具 ${name}`);
-        return `错误：未找到工具 "${name}"`;
-      }
-
-      Logger.info(`Agent ${this.id}: 执行工具 ${name}`);
-
-      // 执行工具
-      const result = await tool.execute(input, {
-        workingDirectory: context.workingDirectory,
-        conversationHistory: context.conversationHistory
-      });
-
-      return result;
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      Logger.error(`Agent ${this.id}: 工具 ${name} 执行失败: ${errorMessage}`);
-      return `工具执行失败: ${errorMessage}`;
-    }
+    return runner.run(messages);
   }
 }

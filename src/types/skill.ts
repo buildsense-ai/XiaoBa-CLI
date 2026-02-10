@@ -7,6 +7,7 @@ export interface SkillMetadata {
   argumentHint?: string;           // 参数提示
   userInvocable?: boolean;         // 是否允许用户调用（默认 true）
   autoInvocable?: boolean;         // 是否允许自动调用（默认 true）
+  maxTurns?: number;               // 最大工具调用轮次（覆盖默认值）
 }
 
 /**

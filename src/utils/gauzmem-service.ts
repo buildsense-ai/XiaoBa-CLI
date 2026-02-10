@@ -106,11 +106,17 @@ export class GauzMemService {
   private client: AxiosInstance;
   private config: GauzMemConfig;
 
+  /** 熔断器状态 */
+  private consecutiveFailures = 0;
+  private circuitOpenUntil = 0;  // timestamp，熔断恢复时间
+  private static readonly FAILURE_THRESHOLD = 3;   // 连续失败 N 次后熔断
+  private static readonly COOLDOWN_MS = 60_000;     // 熔断冷却 60 秒
+
   constructor(config: GauzMemConfig) {
     this.config = config;
     this.client = axios.create({
       baseURL: config.baseUrl,
-      timeout: 10000,
+      timeout: 5000,  // 从 10s 降到 5s，减少阻塞
       headers: {
         'Content-Type': 'application/json',
       },
@@ -118,10 +124,49 @@ export class GauzMemService {
   }
 
   /**
+   * 检查熔断器是否打开（应跳过调用）
+   */
+  private isCircuitOpen(): boolean {
+    if (this.consecutiveFailures < GauzMemService.FAILURE_THRESHOLD) {
+      return false;
+    }
+    if (Date.now() > this.circuitOpenUntil) {
+      // 冷却期结束，允许一次探测
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * 记录成功，重置熔断器
+   */
+  private recordSuccess(): void {
+    this.consecutiveFailures = 0;
+  }
+
+  /**
+   * 记录失败，可能触发熔断
+   */
+  private recordFailure(): void {
+    this.consecutiveFailures++;
+    if (this.consecutiveFailures >= GauzMemService.FAILURE_THRESHOLD) {
+      this.circuitOpenUntil = Date.now() + GauzMemService.COOLDOWN_MS;
+      Logger.warning(
+        `GauzMem 连续失败 ${this.consecutiveFailures} 次，熔断 ${GauzMemService.COOLDOWN_MS / 1000}s`
+      );
+    }
+  }
+
+  /**
    * 写入记忆
    */
   async writeMemory(text: string, speaker: 'user' | 'agent'): Promise<boolean> {
     if (!this.config.enabled) {
+      return false;
+    }
+
+    if (this.isCircuitOpen()) {
+      Logger.warning('GauzMem 熔断中，跳过写入');
       return false;
     }
 
@@ -137,9 +182,11 @@ export class GauzMemService {
       };
 
       await this.client.post('/api/v1/memories/messages', request);
+      this.recordSuccess();
       Logger.info(`记忆已写入: ${speaker} - ${text.substring(0, 50)}...`);
       return true;
     } catch (error) {
+      this.recordFailure();
       Logger.error('写入记忆失败: ' + String(error));
       return false;
     }
@@ -153,6 +200,11 @@ export class GauzMemService {
     topK: number = 5
   ): Promise<SearchResultItem[]> {
     if (!this.config.enabled) {
+      return [];
+    }
+
+    if (this.isCircuitOpen()) {
+      Logger.warning('GauzMem 熔断中，跳过搜索');
       return [];
     }
 
@@ -202,9 +254,11 @@ export class GauzMemService {
         }
       }
 
+      this.recordSuccess();
       Logger.info(`搜索到 ${results.length} 条相关记忆`);
       return results;
     } catch (error) {
+      this.recordFailure();
       Logger.error('搜索记忆失败: ' + String(error));
       return [];
     }

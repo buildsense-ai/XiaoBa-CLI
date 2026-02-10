@@ -5,6 +5,7 @@ import { Logger } from './utils/logger';
 import { chatCommand } from './commands/chat';
 import { configCommand } from './commands/config';
 import { registerSkillCommand } from './commands/skill';
+import { feishuCommand } from './commands/feishu';
 
 function main() {
   const program = new Command();
@@ -30,6 +31,12 @@ function main() {
     .command('config')
     .description('配置XiaoBa的API设置')
     .action(configCommand);
+
+  // 飞书机器人命令
+  program
+    .command('feishu')
+    .description('启动飞书机器人（WebSocket 长连接模式）')
+    .action(feishuCommand);
 
   // Skill 管理命令
   registerSkillCommand(program);

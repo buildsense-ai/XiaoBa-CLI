@@ -1,7 +1,10 @@
-import { execSync } from 'child_process';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
 import { Logger } from '../utils/logger';
 import { isBashCommandAllowed, isToolAllowed } from '../utils/safety';
+
+const execAsync = promisify(exec);
 
 /**
  * Bash 工具 - 执行 shell 命令
@@ -53,13 +56,17 @@ export class BashTool implements Tool {
     const startTime = Date.now();
 
     try {
-      const output = execSync(command, {
+      const { stdout, stderr } = await execAsync(command, {
         cwd: context.workingDirectory,
         encoding: 'utf-8',
         timeout: timeout,
         maxBuffer: 10 * 1024 * 1024, // 10MB
-        stdio: ['pipe', 'pipe', 'pipe']
       });
+
+      const output = stdout || '';
+      if (stderr) {
+        Logger.warning(`stderr: ${stderr.substring(0, 200)}`);
+      }
 
       const executionTime = Date.now() - startTime;
       const outputLines = output.split('\n').length;

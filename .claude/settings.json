@@ -3,8 +3,7 @@
     "allow": [
       "Bash",
       "Write",
-      "Edit",
-      "Write"
+      "Edit"
     ]
   },
   "model": "claude-opus-4-6"

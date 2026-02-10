@@ -62,6 +62,10 @@ export class ConfigManager {
         userId: process.env.GAUZ_MEM_USER_ID || 'guowei',
         agentId: process.env.GAUZ_MEM_AGENT_ID || 'XiaoBa',
       },
+      feishu: {
+        appId: process.env.FEISHU_APP_ID,
+        appSecret: process.env.FEISHU_APP_SECRET,
+      },
     };
   }
 }

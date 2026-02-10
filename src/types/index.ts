@@ -18,6 +18,7 @@ export interface ChatConfig {
   apiUrl?: string;
   model?: string;
   temperature?: number;
+  maxTokens?: number;
   provider?: 'openai' | 'anthropic';
   memory?: {
     enabled?: boolean;
@@ -26,6 +27,17 @@ export interface ChatConfig {
     userId?: string;
     agentId?: string;
   };
+  feishu?: {
+    appId?: string;
+    appSecret?: string;
+    sessionTTL?: number;
+  };
+}
+
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
 }
 
 export interface ChatResponse {
@@ -38,6 +50,7 @@ export interface ChatResponse {
       arguments: string;
     };
   }>;
+  usage?: TokenUsage;
 }
 
 export interface CommandOptions {

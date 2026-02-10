@@ -50,6 +50,7 @@ export class SkillParser {
       argumentHint: data['argument-hint'] || data.argumentHint,
       userInvocable: data.invocable === 'user' || data.invocable === 'both',
       autoInvocable: data.autoInvocable !== false && data.invocable !== 'user',
+      maxTurns: data['max-turns'] ? Number(data['max-turns']) : undefined,
     };
 
     if (!this.validate(metadata)) {
@@ -77,6 +78,7 @@ export class SkillParser {
       argumentHint: data['argument-hint'],
       userInvocable: data['user-invocable'] !== false,
       autoInvocable: data['auto-invocable'] !== false,
+      maxTurns: data['max-turns'] ? Number(data['max-turns']) : undefined,
     };
 
     if (!this.validate(metadata)) {

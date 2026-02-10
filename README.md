@@ -91,9 +91,9 @@ XiaoBa/
 │   ├── types/             # TypeScript 类型定义
 │   └── utils/             # 工具函数
 ├── skills/                # Skill 定义（所有 Skills 统一存放）
-│   ├── academic-writing/
 │   ├── paper-analysis/
-│   └── brainstorming/
+│   ├── sci-paper-writing/
+│   └── xhs-vibe-write/
 ├── tools/                 # 工具实现
 │   └── python/           # Python 扩展工具
 ├── prompts/              # 系统提示词

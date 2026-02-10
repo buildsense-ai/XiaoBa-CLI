@@ -8,11 +8,11 @@
 
 ```
 skills/
-├── academic-writing/
-│   └── SKILL.md
 ├── paper-analysis/
 │   └── SKILL.md
-├── brainstorming/
+├── sci-paper-writing/
+│   └── SKILL.md
+├── xhs-vibe-write/
 │   └── SKILL.md
 └── your-custom-skill/
     └── SKILL.md

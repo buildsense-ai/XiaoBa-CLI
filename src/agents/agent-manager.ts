@@ -52,7 +52,14 @@ export class AgentManager {
     }
 
     Logger.info(`执行 Agent: ${agentId}`);
-    return await agent.execute(context);
+    try {
+      const result = await agent.execute(context);
+      return result;
+    } finally {
+      // 执行完毕后自动清理，避免内存泄漏
+      this.agents.delete(agentId);
+      Logger.info(`Agent ${agentId} 已清理`);
+    }
   }
 
   /**

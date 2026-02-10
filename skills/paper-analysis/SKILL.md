@@ -3,6 +3,7 @@ name: paper-analysis
 description: 论文精读（Agent-native）：像人一样逐章顺序阅读，基于累积的阅读理解自主判断图表是否需要多模态分析。
 invocable: user
 argument-hint: "<pdf_path> [--resume <已有分析目录>]"
+max-turns: 150
 ---
 
 # 论文精读（Agent-native 版）

@@ -65,3 +65,12 @@ export interface Tool {
   definition: ToolDefinition;
   execute(args: any, context: ToolExecutionContext): Promise<string>;
 }
+
+/**
+ * 工具执行器接口 — ConversationRunner 依赖此抽象
+ * ToolManager 和 AgentToolExecutor 均实现此接口
+ */
+export interface ToolExecutor {
+  getToolDefinitions(allowedNames?: string[]): ToolDefinition[];
+  executeTool(toolCall: ToolCall, conversationHistory?: any[]): Promise<ToolResult>;
+}

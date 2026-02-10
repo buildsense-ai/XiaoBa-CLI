@@ -12,6 +12,11 @@ import { ToolManager } from './tool-manager';
 export class TaskTool implements Tool {
   private agentManager: AgentManager;
 
+  /** 当前嵌套深度（静态，所有 TaskTool 实例共享） */
+  private static currentDepth = 0;
+  /** 最大允许嵌套深度 */
+  private static readonly MAX_DEPTH = 3;
+
   constructor() {
     this.agentManager = AgentManager.getInstance();
   }
@@ -76,7 +81,15 @@ export class TaskTool implements Tool {
       run_in_background = false
     } = args;
 
+    // 递归深度检查
+    if (TaskTool.currentDepth >= TaskTool.MAX_DEPTH) {
+      Logger.warning(`子智能体嵌套深度已达上限 (${TaskTool.MAX_DEPTH})，拒绝创建新的子智能体`);
+      return `错误：子智能体嵌套深度已达上限 (${TaskTool.MAX_DEPTH})。请直接完成任务，不要再创建子智能体。`;
+    }
+
     try {
+      TaskTool.currentDepth++;
+
       // 创建 Agent 配置
       const config: AgentConfig = {
         type: subagent_type as AgentType,
@@ -119,6 +132,8 @@ export class TaskTool implements Tool {
       const errorMessage = error instanceof Error ? error.message : String(error);
       Logger.error(`Task Tool 执行失败: ${errorMessage}`);
       return `错误: ${errorMessage}`;
+    } finally {
+      TaskTool.currentDepth--;
     }
   }
 

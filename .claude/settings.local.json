@@ -28,7 +28,15 @@
       "Bash(npx tsx:*)",
       "Bash(python test_regex_fix.py:*)",
       "Bash(python test_vision_fix.py:*)",
-      "Bash(python -X utf8:*)"
+      "Bash(python -X utf8:*)",
+      "WebSearch",
+      "WebFetch(domain:www.semanticscholar.org)",
+      "WebFetch(domain:api.semanticscholar.org)",
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "mcp__plugin_context7_context7__query-docs",
+      "Bash",
+      "Write",
+      "Edit"
     ]
   }
 }
