@@ -115,7 +115,12 @@ export class TaskTool implements Tool {
       } else {
         // 前台执行
         // 创建 ToolManager 并获取所有工具
-        const toolManager = new ToolManager(context.workingDirectory);
+        const toolManager = new ToolManager(context.workingDirectory, {
+          sessionId: context.sessionId ? `${context.sessionId}:${agentId}` : agentId,
+          surface: 'agent',
+          permissionProfile: 'strict',
+          runId: context.runId,
+        });
         const tools = toolManager.getAllTools();
 
         const result = await this.agentManager.executeAgent(agentId, {
@@ -143,7 +148,12 @@ export class TaskTool implements Tool {
   private async executeInBackground(agentId: string, context: ToolExecutionContext): Promise<void> {
     try {
       // 创建 ToolManager 并获取所有工具
-      const toolManager = new ToolManager(context.workingDirectory);
+      const toolManager = new ToolManager(context.workingDirectory, {
+        sessionId: context.sessionId ? `${context.sessionId}:${agentId}` : agentId,
+        surface: 'agent',
+        permissionProfile: 'strict',
+        runId: context.runId,
+      });
       const tools = toolManager.getAllTools();
 
       const result = await this.agentManager.executeAgent(agentId, {

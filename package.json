@@ -10,7 +10,8 @@
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "watch": "tsc --watch"
+    "watch": "tsc --watch",
+    "test": "tsx --test tests/**/*.test.ts"
   },
   "keywords": [
     "cli",
@@ -43,7 +44,6 @@
     "gray-matter": "^4.0.3",
     "inquirer": "^8.2.7",
     "ora": "^5.4.1",
-    "pdf-parse": "^1.1.1",
     "terminal-image": "^4.2.0"
   },
   "devDependencies": {

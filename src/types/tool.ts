@@ -48,7 +48,13 @@ export interface ToolResult {
   role: 'tool';
   name: string;
   content: string;
+  ok?: boolean;
+  errorCode?: string;
+  retryable?: boolean;
 }
+
+export type ToolSurface = 'cli' | 'feishu' | 'agent' | 'research' | 'unknown';
+export type ToolPermissionProfile = 'strict' | 'default' | 'relaxed';
 
 /**
  * 工具执行上下文
@@ -56,6 +62,14 @@ export interface ToolResult {
 export interface ToolExecutionContext {
   workingDirectory: string;
   conversationHistory: any[];
+  sessionId?: string;
+  surface?: ToolSurface;
+  permissionProfile?: ToolPermissionProfile;
+  runId?: string;
+  abortSignal?: AbortSignal;
+  activeSkillName?: string;
+  allowedToolNames?: string[];
+  blockedToolNames?: string[];
 }
 
 /**
@@ -72,5 +86,9 @@ export interface Tool {
  */
 export interface ToolExecutor {
   getToolDefinitions(allowedNames?: string[]): ToolDefinition[];
-  executeTool(toolCall: ToolCall, conversationHistory?: any[]): Promise<ToolResult>;
+  executeTool(
+    toolCall: ToolCall,
+    conversationHistory?: any[],
+    contextOverrides?: Partial<ToolExecutionContext>
+  ): Promise<ToolResult>;
 }

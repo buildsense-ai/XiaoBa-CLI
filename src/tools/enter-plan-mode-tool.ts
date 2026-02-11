@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
 import { styles } from '../theme/colors';
+import { PlanModeStore } from './plan-mode-store';
 
 /**
  * EnterPlanMode 工具 - 进入规划模式
@@ -15,9 +16,6 @@ import { styles } from '../theme/colors';
  * 规划完成后，使用 ExitPlanMode 工具请求用户批准。
  */
 export class EnterPlanModeTool implements Tool {
-  private static planFilePath: string = '';
-  private static inPlanMode: boolean = false;
-
   definition: ToolDefinition = {
     name: 'enter_plan_mode',
     description: '进入规划模式。用于复杂任务的规划阶段，在执行前制定详细的实施计划。规划完成后使用 exit_plan_mode 请求用户批准。',
@@ -39,6 +37,7 @@ export class EnterPlanModeTool implements Tool {
 
   async execute(args: any, context: ToolExecutionContext): Promise<string> {
     const { task_description, plan_file = '.xiaoba/plan.md' } = args;
+    const sessionId = context.sessionId || 'default';
 
     try {
       // 解析文件路径
@@ -57,8 +56,7 @@ export class EnterPlanModeTool implements Tool {
       fs.writeFileSync(absolutePath, planTemplate, 'utf-8');
 
       // 更新状态
-      EnterPlanModeTool.planFilePath = absolutePath;
-      EnterPlanModeTool.inPlanMode = true;
+      PlanModeStore.enter(sessionId, absolutePath);
 
       console.log('\n' + styles.title('📋 已进入规划模式') + '\n');
       console.log(styles.text(`任务: ${task_description}`));
@@ -159,21 +157,32 @@ export class EnterPlanModeTool implements Tool {
    * 获取当前规划文件路径
    */
   static getPlanFilePath(): string {
-    return EnterPlanModeTool.planFilePath;
+    return this.getPlanFilePathBySession('default');
   }
 
   /**
    * 检查是否处于规划模式
    */
   static isInPlanMode(): boolean {
-    return EnterPlanModeTool.inPlanMode;
+    return this.isInPlanModeBySession('default');
   }
 
   /**
    * 退出规划模式（由 ExitPlanMode 调用）
    */
   static exitPlanMode(): void {
-    EnterPlanModeTool.inPlanMode = false;
-    EnterPlanModeTool.planFilePath = '';
+    this.exitPlanModeBySession('default');
+  }
+
+  static getPlanFilePathBySession(sessionId: string): string {
+    return PlanModeStore.get(sessionId).planFilePath;
+  }
+
+  static isInPlanModeBySession(sessionId: string): boolean {
+    return PlanModeStore.get(sessionId).inPlanMode;
+  }
+
+  static exitPlanModeBySession(sessionId: string): void {
+    PlanModeStore.exit(sessionId);
   }
 }

@@ -1,0 +1,87 @@
+{
+  "topic": "CLEC早季作物分类框架改进实验",
+  "generated_at": "2025-07-18T00:00:00Z",
+  "evidence": [
+    {
+      "hypothesis_id": "H1",
+      "query": "crop mapping temporal prediction Transformer Mamba state space model",
+      "paper_id": "9426b2c1b3faa80949d6e41dbd9a90fafe76292f",
+      "title": "AgriFM: A Multi-source Temporal Remote Sensing Foundation Model for Crop Mapping",
+      "year": 2025,
+      "evidence_type": "baseline",
+      "note": "多源时序遥感基础模型用于作物制图，可作为预测模块替换的参考架构和baseline对比对象"
+    },
+    {
+      "hypothesis_id": "H1",
+      "query": "crop mapping temporal prediction Transformer",
+      "paper_id": "4eca54b7b08eb81416eb0f26b5abd0a0071b0a44",
+      "title": "TABS-Net: A Temporal Spectral Attentive Block with Space-Time Fusion Network for Robust Cross-Year Crop Mapping",
+      "year": 2026,
+      "evidence_type": "support",
+      "note": "提出时间-光谱注意力块处理跨年物候偏移问题，其temporal attention设计可借鉴用于改进预测模块对周期性模式的捕获"
+    },
+    {
+      "hypothesis_id": "H1",
+      "query": "early season crop classification time series",
+      "paper_id": "37c0df691b1267f0f0e99acf221ceb57eb896da3",
+      "title": "Early-Season Crop Classification Based on Local Window Attention Transformer with Time-Series RCM and Sentinel-1",
+      "year": 2024,
+      "evidence_type": "baseline",
+      "note": "使用Local Window Attention Transformer做早季SAR时序分类，12篇引用，可作为Transformer-based分类baseline"
+    },
+    {
+      "hypothesis_id": "H1",
+      "query": "Informer Autoformer time series forecasting",
+      "paper_id": "58808fd5a4d66dde665283da6077e1ee360e0a7a",
+      "title": "Quantum-Optimized Selective State Space Model for Efficient Time Series Prediction",
+      "year": 2025,
+      "evidence_type": "support",
+      "note": "对比了Autoformer、Informer和S-Mamba在长序列预测上的表现，指出SSM在线性复杂度下可匹配Transformer，为预测模块替换提供架构选型依据"
+    },
+    {
+      "hypothesis_id": "H2",
+      "query": "multi-task learning loss balancing uncertainty weighting",
+      "paper_id": "4a5b1a6791d0c83201ced4cd412d5af279235676",
+      "title": "Analytical Uncertainty-Based Loss Weighting in Multi-Task Learning",
+      "year": 2024,
+      "evidence_type": "support",
+      "note": "提出解析最优的uncertainty-based权重，比GradNorm更高效，10篇引用。可直接作为GradNorm的替代方案"
+    },
+    {
+      "hypothesis_id": "H2",
+      "query": "multi-task learning loss balancing efficient",
+      "paper_id": "5a948c68a634c92a29b67ee9f6a861e2fd31970b",
+      "title": "Improvable Gap Balancing for Multi-Task Learning",
+      "year": 2023,
+      "evidence_type": "support",
+      "note": "提出基于损失的Improvable Gap Balancing，比梯度方法更高效，9篇引用（UAI 2023）。明确指出loss balancing比gradient balancing更高效"
+    },
+    {
+      "hypothesis_id": "H2",
+      "query": "dynamic task weighting gradient-free",
+      "paper_id": "b8ced2468d64f8dcec9ea1797ca593dea52ec69f",
+      "title": "DeepChest: Dynamic Gradient-Free Task Weighting for Effective Multi-Task Learning",
+      "year": 2025,
+      "evidence_type": "support",
+      "note": "提出无梯度的动态任务权重方法，计算效率高，可作为GradNorm替代方案的候选"
+    },
+    {
+      "hypothesis_id": "H3",
+      "query": "early season crop classification soybean maize",
+      "paper_id": "21c47e1de93c049f4f2d2c4aa6796bad021b8404",
+      "title": "Enhancing early-season soybean identification through optical and SAR time-series integration",
+      "year": 2025,
+      "evidence_type": "baseline",
+      "note": "针对大豆-玉米光谱高度相似的早季识别挑战，使用光学+SAR融合，可作为鲁棒性实验的baseline参考"
+    },
+    {
+      "hypothesis_id": "H3",
+      "query": "early season crop classification deep learning",
+      "paper_id": "7538896b2506ddff7ca8f061da13f9b768bfdb20",
+      "title": "Early-Season Crop Classification Utilizing Time Series Based Deep Learning with Multi-Sensor Remote Sensing Data",
+      "year": 2024,
+      "evidence_type": "baseline",
+      "note": "多传感器时序深度学习做早季分类，提供了数据增强和多源融合的实践参考"
+    }
+  ]
+}

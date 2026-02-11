@@ -2,13 +2,18 @@ import { Message } from '../types';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
-import { SkillExecutor } from '../skills/skill-executor';
-import { SkillInvocationContext } from '../types/skill';
+import { SkillActivationSignal, SkillInvocationContext, SkillToolPolicy } from '../types/skill';
+import {
+  buildSkillActivationSignal,
+  upsertSkillSystemMessage,
+} from '../skills/skill-activation-protocol';
 import { GauzMemService } from '../utils/gauzmem-service';
 import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
+
+const TRANSIENT_MEMORY_CONTEXT_PREFIX = '[transient_memory_context]';
 
 // ─── 接口定义 ───────────────────────────────────────────
 
@@ -50,6 +55,8 @@ export interface CommandResult {
 export class AgentSession {
   private messages: Message[] = [];
   private busy = false;
+  private activeSkillName?: string;
+  private activeSkillToolPolicy?: SkillToolPolicy;
   private activeSkillMaxTurns?: number;
   lastActiveAt: number = Date.now();
 
@@ -65,6 +72,12 @@ export class AgentSession {
     if (this.messages.length > 0) return;
     const systemPrompt = await PromptManager.buildSystemPrompt();
     this.messages.push({ role: 'system', content: systemPrompt });
+    if (this.isFeishuSession()) {
+      this.messages.push({
+        role: 'system',
+        content: '[surface:feishu]\n当前是飞书会话。你发给老师的可见文本必须通过 feishu_reply 工具发送；发送文件必须通过 feishu_send_file 工具发送。',
+      });
+    }
   }
 
   /**
@@ -86,13 +99,8 @@ export class AgentSession {
       rawArguments: '',
       userMessage: '',
     };
-
-    const prompt = SkillExecutor.execute(skill, context);
-    const skillMarker = `[skill:${skillName}]`;
-    const taggedPrompt = `${skillMarker}\n${prompt}`;
-
-    this.messages.push({ role: 'system', content: taggedPrompt });
-    this.activeSkillMaxTurns = skill.metadata.maxTurns;
+    const activation = buildSkillActivationSignal(skill, context);
+    this.applySkillActivation(activation);
 
     Logger.info(`[${this.key}] 启动时激活 skill: ${skill.metadata.name}${skill.metadata.maxTurns ? ` (maxTurns=${skill.metadata.maxTurns})` : ''}`);
     return true;
@@ -111,29 +119,56 @@ export class AgentSession {
 
     try {
       await this.init();
+      this.tryAutoActivateSkill(text);
       this.messages.push({ role: 'user', content: text });
 
       // 搜索相关记忆，作为临时上下文注入
       let contextMessages: Message[] = [...this.messages];
+      let memoryInjected = false;
       const memoryService = this.services.memoryService;
       if (memoryService) {
         const memories = await memoryService.searchMemory(text);
         if (memories.length > 0) {
           const memoryContext = memoryService.formatMemoriesAsContext(memories);
+          const memorySystemMessage: Message = {
+            role: 'system',
+            content: `${TRANSIENT_MEMORY_CONTEXT_PREFIX}\n${memoryContext}`,
+          };
+          memoryInjected = true;
           contextMessages = [
             ...this.messages.slice(0, -1),
-            { role: 'system', content: memoryContext },
+            memorySystemMessage,
             this.messages[this.messages.length - 1],
           ];
         }
       }
 
       // 运行对话循环（优先用显式设置的 maxTurns，否则从 messages 中检测已激活 skill）
+      const detectedSkillName = this.activeSkillName ?? this.detectActiveSkillName();
+      if (detectedSkillName) {
+        const detectedSkill = this.services.skillManager.getSkill(detectedSkillName);
+        this.activeSkillName = detectedSkillName;
+        this.activeSkillToolPolicy = detectedSkill?.metadata.toolPolicy;
+        this.activeSkillMaxTurns = detectedSkill?.metadata.maxTurns;
+      }
+
       const effectiveMaxTurns = this.activeSkillMaxTurns ?? this.detectSkillMaxTurns();
+      const surface = this.key.startsWith('user:') || this.key.startsWith('group:')
+        ? 'feishu'
+        : 'cli';
       const runner = new ConversationRunner(
         this.services.aiService,
         this.services.toolManager,
-        effectiveMaxTurns ? { maxTurns: effectiveMaxTurns } : undefined,
+        {
+          ...(effectiveMaxTurns ? { maxTurns: effectiveMaxTurns } : {}),
+          initialSkillName: this.activeSkillName,
+          initialSkillToolPolicy: this.activeSkillToolPolicy,
+          toolExecutionContext: {
+            sessionId: this.key,
+            surface,
+            permissionProfile: 'strict',
+          },
+        },
       );
       const runnerCallbacks: RunnerCallbacks = {
         onText: callbacks?.onText,
@@ -144,11 +179,29 @@ export class AgentSession {
 
       const result = await runner.run(contextMessages, runnerCallbacks);
 
-      // 将工具调用中间消息同步回 messages（通过 RunResult.newMessages，不受上下文压缩影响）
+      // 优先采用 runner 返回的完整消息（含压缩结果），修复历史持续膨胀问题
+      const persistedMessages = memoryInjected
+        ? this.removeTransientMemoryMessages(result.messages)
+        : result.messages;
+      this.messages = [...persistedMessages];
+
+      // 同步 skill 激活状态
       for (const msg of result.newMessages) {
-        this.messages.push(msg);
+        const activation = this.parseActivationFromSystemMessage(msg);
+        if (activation) {
+          this.applySkillActivation(activation);
+        }
       }
-      this.messages.push({ role: 'assistant', content: result.response });
+
+      // runner 在“最终无工具调用”时不会自动附加 assistant 消息，这里补齐
+      const lastMessage = this.messages[this.messages.length - 1];
+      if (
+        !lastMessage ||
+        lastMessage.role !== 'assistant' ||
+        (lastMessage.content || '') !== (result.response || '')
+      ) {
+        this.messages.push({ role: 'assistant', content: result.response });
+      }
 
       // 输出本次请求的 metrics 摘要
       const metrics = Metrics.getSummary();
@@ -217,6 +270,9 @@ export class AgentSession {
   /** 清空历史 */
   clear(): void {
     this.messages = [];
+    this.activeSkillName = undefined;
+    this.activeSkillToolPolicy = undefined;
+    this.activeSkillMaxTurns = undefined;
     this.lastActiveAt = Date.now();
   }
 
@@ -294,6 +350,79 @@ ${conversationText}
     return undefined;
   }
 
+  private detectActiveSkillName(): string | undefined {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const msg = this.messages[i];
+      if (msg.role !== 'system' || !msg.content) continue;
+      const match = msg.content.match(/^\[skill:([^\]]+)\]/);
+      if (match) {
+        return match[1];
+      }
+    }
+    return undefined;
+  }
+
+  private tryAutoActivateSkill(userText: string): void {
+    const input = userText.trim();
+    if (!input) return;
+
+    // 斜杠命令路径由 handleCommand 处理，这里不重复自动激活
+    if (input.startsWith('/')) return;
+    if (this.isAttachmentOnlyInput(input)) return;
+
+    // 已有激活 skill 时不自动切换，避免任务中途漂移
+    if (this.activeSkillName) return;
+
+    const matched = this.services.skillManager.findAutoInvocableSkillByText(input);
+    if (!matched) return;
+
+    const context: SkillInvocationContext = {
+      skillName: matched.metadata.name,
+      arguments: [],
+      rawArguments: '',
+      userMessage: input,
+    };
+    const activation = buildSkillActivationSignal(matched, context);
+    this.applySkillActivation(activation);
+
+    Logger.info(`[${this.key}] 自动激活 skill: ${matched.metadata.name}`);
+  }
+
+  private isAttachmentOnlyInput(input: string): boolean {
+    if (input.startsWith('[文件]') || input.startsWith('[图片]')) {
+      return true;
+    }
+
+    if (input.startsWith('[用户仅上传了附件，暂未给出明确任务]')) {
+      return true;
+    }
+
+    const attachmentMarker = '[用户已上传附件]';
+    const markerIndex = input.indexOf(attachmentMarker);
+    if (markerIndex >= 0) {
+      const prefix = input.slice(0, markerIndex).trim();
+      if (!prefix) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private isFeishuSession(): boolean {
+    return this.key.startsWith('user:') || this.key.startsWith('group:');
+  }
+
+  private removeTransientMemoryMessages(messages: Message[]): Message[] {
+    return messages.filter(msg =>
+      !(
+        msg.role === 'system' &&
+        typeof msg.content === 'string' &&
+        msg.content.startsWith(TRANSIENT_MEMORY_CONTEXT_PREFIX)
+      )
+    );
+  }
+
   /** /skills 命令 */
   private handleSkillsCommand(): CommandResult {
     const skills = this.services.skillManager.getUserInvocableSkills();
@@ -327,25 +456,10 @@ ${conversationText}
       rawArguments: args.join(' '),
       userMessage: `/${commandName} ${args.join(' ')}`.trim(),
     };
-
-    const prompt = SkillExecutor.execute(skill, context);
-    const skillMarker = `[skill:${commandName}]`;
-    const taggedPrompt = `${skillMarker}\n${prompt}`;
+    const activation = buildSkillActivationSignal(skill, context);
 
     await this.init();
-
-    // 移除同名 skill 的旧注入，防止累积
-    for (let i = this.messages.length - 1; i >= 0; i--) {
-      if (
-        this.messages[i].role === 'system' &&
-        this.messages[i].content?.startsWith(skillMarker)
-      ) {
-        this.messages.splice(i, 1);
-      }
-    }
-
-    this.messages.push({ role: 'system', content: taggedPrompt });
-    this.activeSkillMaxTurns = skill.metadata.maxTurns;
+    this.applySkillActivation(activation);
     Logger.info(`[${this.key}] 已激活 skill: ${skill.metadata.name}${skill.metadata.maxTurns ? ` (maxTurns=${skill.metadata.maxTurns})` : ''}`);
 
     // 如果有参数，自动作为用户消息发送给 AI
@@ -355,5 +469,35 @@ ${conversationText}
     }
 
     return { handled: true, reply: `已激活 skill: ${skill.metadata.name}` };
+  }
+
+  private applySkillActivation(activation: SkillActivationSignal): void {
+    upsertSkillSystemMessage(this.messages, activation);
+    this.activeSkillName = activation.skillName;
+    this.activeSkillToolPolicy = activation.toolPolicy;
+    this.activeSkillMaxTurns = activation.maxTurns;
+  }
+
+  private parseActivationFromSystemMessage(msg: Message): SkillActivationSignal | null {
+    if (msg.role !== 'system' || !msg.content) {
+      return null;
+    }
+
+    const markerMatch = msg.content.match(/^\[skill:([^\]]+)\]/);
+    if (!markerMatch) {
+      return null;
+    }
+
+    const skillName = markerMatch[1];
+    const prompt = msg.content.slice(markerMatch[0].length).replace(/^\n/, '');
+    const skill = this.services.skillManager.getSkill(skillName);
+
+    return {
+      __type__: 'skill_activation',
+      skillName,
+      prompt,
+      maxTurns: skill?.metadata.maxTurns,
+      toolPolicy: skill?.metadata.toolPolicy,
+    };
   }
 }

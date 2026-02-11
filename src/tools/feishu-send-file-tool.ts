@@ -27,29 +27,49 @@ export class FeishuSendFileTool implements Tool {
     },
   };
 
-  private chatId: string | null = null;
-  private sendFileFn: ((chatId: string, filePath: string, fileName: string) => Promise<void>) | null = null;
+  private sessions = new Map<string, {
+    chatId: string;
+    sendFileFn: (chatId: string, filePath: string, fileName: string) => Promise<void>;
+  }>();
 
   /**
    * 绑定当前会话的 chatId 和文件发送函数
    */
+  bindSession(
+    sessionId: string,
+    chatId: string,
+    sendFileFn: (chatId: string, filePath: string, fileName: string) => Promise<void>
+  ): void {
+    this.sessions.set(sessionId, { chatId, sendFileFn });
+  }
+
+  /**
+   * 兼容旧调用
+   */
   bind(chatId: string, sendFileFn: (chatId: string, filePath: string, fileName: string) => Promise<void>): void {
-    this.chatId = chatId;
-    this.sendFileFn = sendFileFn;
+    this.bindSession('default', chatId, sendFileFn);
   }
 
   /**
    * 解绑（消息处理完毕后调用）
    */
+  unbindSession(sessionId: string): void {
+    this.sessions.delete(sessionId);
+  }
+
+  /**
+   * 兼容旧调用
+   */
   unbind(): void {
-    this.chatId = null;
-    this.sendFileFn = null;
+    this.unbindSession('default');
   }
 
   async execute(args: any, _context: ToolExecutionContext): Promise<string> {
     const { file_path, file_name } = args;
+    const sessionId = _context.sessionId || 'default';
+    const session = this.sessions.get(sessionId);
 
-    if (!this.chatId || !this.sendFileFn) {
+    if (!session) {
       return '当前不在飞书会话中，无法发送文件';
     }
 
@@ -62,7 +82,7 @@ export class FeishuSendFileTool implements Tool {
     }
 
     try {
-      await this.sendFileFn(this.chatId, file_path, file_name);
+      await session.sendFileFn(session.chatId, file_path, file_name);
       Logger.info(`[feishu_send_file] 已发送: ${file_name}`);
       return `文件 "${file_name}" 已发送`;
     } catch (err: any) {

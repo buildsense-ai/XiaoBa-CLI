@@ -3,6 +3,12 @@ name: cad-supervision
 description: 工程监理审核助手：分析建筑 CAD 图纸，提供合规性检查和合理化建议。支持 DXF/DWG 格式，基于视觉分析识别尺寸标注和规范问题。
 invocable: user
 argument-hint: "<CAD文件路径>"
+allowed-tools:
+  - get_cad_metadata
+  - inspect_region
+  - extract_cad_entities
+  - convert_dwg_to_dxf
+  - analyze_image
 ---
 
 # 工程监理审核助手

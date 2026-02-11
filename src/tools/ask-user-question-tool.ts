@@ -9,28 +9,41 @@ import { styles } from '../theme/colors';
  * 支持 CLI（readline）和飞书（消息收发）两种输入通道。
  */
 export class AskUserQuestionTool implements Tool {
-  /** 飞书模式：发送问题给用户 */
-  private feishuSendFn: ((text: string) => Promise<void>) | null = null;
-  /** 飞书模式：等待用户回复 */
-  private feishuWaitFn: (() => Promise<string>) | null = null;
+  /** 飞书模式会话通道（按 sessionId 隔离） */
+  private feishuChannels = new Map<string, {
+    sendFn: (text: string) => Promise<void>;
+    waitFn: () => Promise<string>;
+  }>();
 
   /** 绑定飞书通道 */
+  bindFeishuSession(
+    sessionId: string,
+    sendFn: (text: string) => Promise<void>,
+    waitFn: () => Promise<string>,
+  ): void {
+    this.feishuChannels.set(sessionId, { sendFn, waitFn });
+  }
+
+  /** 兼容旧调用 */
   bindFeishu(
     sendFn: (text: string) => Promise<void>,
     waitFn: () => Promise<string>,
   ): void {
-    this.feishuSendFn = sendFn;
-    this.feishuWaitFn = waitFn;
+    this.bindFeishuSession('default', sendFn, waitFn);
   }
 
   /** 解绑飞书通道 */
-  unbindFeishu(): void {
-    this.feishuSendFn = null;
-    this.feishuWaitFn = null;
+  unbindFeishuSession(sessionId: string): void {
+    this.feishuChannels.delete(sessionId);
   }
 
-  private get isFeishuMode(): boolean {
-    return this.feishuSendFn !== null && this.feishuWaitFn !== null;
+  /** 兼容旧调用 */
+  unbindFeishu(): void {
+    this.unbindFeishuSession('default');
+  }
+
+  private isFeishuMode(sessionId: string): boolean {
+    return this.feishuChannels.has(sessionId);
   }
 
   definition: ToolDefinition = {
@@ -50,13 +63,14 @@ export class AskUserQuestionTool implements Tool {
 
   async execute(args: any, _context: ToolExecutionContext): Promise<string> {
     const { question } = args;
+    const sessionId = _context.sessionId || 'default';
 
     if (!question || typeof question !== 'string') {
       return '错误：question 必须是非空字符串';
     }
 
     try {
-      const answer = await this.getAnswer(question);
+      const answer = await this.getAnswer(question, sessionId);
       return `用户回复: ${answer}`;
     } catch (error: any) {
       return `提问失败: ${error.message}`;
@@ -66,10 +80,11 @@ export class AskUserQuestionTool implements Tool {
   /**
    * 获取用户回复（自动选择通道）
    */
-  private async getAnswer(question: string): Promise<string> {
-    if (this.isFeishuMode) {
-      await this.feishuSendFn!(question);
-      return await this.feishuWaitFn!();
+  private async getAnswer(question: string, sessionId: string): Promise<string> {
+    if (this.isFeishuMode(sessionId)) {
+      const channel = this.feishuChannels.get(sessionId)!;
+      await channel.sendFn(question);
+      return await channel.waitFn();
     }
 
     // CLI 模式：打印问题，readline 等待输入

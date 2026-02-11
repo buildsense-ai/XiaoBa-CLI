@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { ToolPolicyGateway } from '../utils/tool-policy-gateway';
 
 /**
  * Read 工具 - 读取文件内容
@@ -41,6 +42,11 @@ export class ReadTool implements Tool {
       const absolutePath = path.isAbsolute(file_path)
         ? file_path
         : path.join(context.workingDirectory, file_path);
+
+      const pathPermission = ToolPolicyGateway.checkReadPath(absolutePath, context);
+      if (!pathPermission.allowed) {
+        return `执行被阻止: ${pathPermission.reason}`;
+      }
 
       // 检查文件是否存在
       if (!fs.existsSync(absolutePath)) {
@@ -85,29 +91,21 @@ export class ReadTool implements Tool {
   }
 
   private async readPDF(absolutePath: string, file_path: string, pages?: string): Promise<string> {
-    try {
-      // 尝试导入 pdf-parse
-      const pdfParse = require('pdf-parse');
-      const dataBuffer = fs.readFileSync(absolutePath);
-      const data = await pdfParse(dataBuffer);
+    const stats = fs.statSync(absolutePath);
+    const sizeMB = (stats.size / 1024 / 1024).toFixed(2);
 
-      let result = `文件: ${file_path}\nPDF 总页数: ${data.numpages}\n\n`;
+    let result = `文件: ${file_path}\n类型: PDF\n大小: ${sizeMB} MB\n\n`;
+    result += '当前 read_file 不再做 PDF 全文解析。\n';
+    result += '建议使用以下流程获取高质量解析结果：\n';
+    result += '1. 调用 paper_parser 提取结构化内容（MinerU）\n';
+    result += '2. 调用 markdown_chunker 进行分章切块\n';
+    result += '3. 或直接使用 /paper-analysis 技能执行完整精读流程';
 
-      if (pages) {
-        // 解析页码范围
-        const pageRange = this.parsePageRange(pages, data.numpages);
-        result += `显示页码: ${pages}\n\n`;
-        result += `注意：完整的 PDF 文本提取需要更复杂的处理。当前显示全部文本内容。\n\n`;
-      }
-
-      result += `文本内容:\n${data.text}`;
-      return result;
-    } catch (error: any) {
-      if (error.code === 'MODULE_NOT_FOUND') {
-        return `错误：需要安装 pdf-parse 包才能读取 PDF 文件。\n运行: npm install pdf-parse`;
-      }
-      throw error;
+    if (pages) {
+      result += `\n\n已忽略 pages 参数: ${pages}`;
     }
+
+    return result;
   }
 
   private async readImage(absolutePath: string, file_path: string): Promise<string> {
@@ -153,13 +151,4 @@ export class ReadTool implements Tool {
     return result;
   }
 
-  private parsePageRange(pages: string, totalPages: number): number[] {
-    // 简单的页码范围解析，如 "1-5" 或 "3"
-    if (pages.includes('-')) {
-      const [start, end] = pages.split('-').map(p => parseInt(p.trim()));
-      return Array.from({ length: end - start + 1 }, (_, i) => start + i);
-    } else {
-      return [parseInt(pages.trim())];
-    }
-  }
 }

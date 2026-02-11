@@ -13,6 +13,14 @@ export async function feishuCommand(): Promise<void> {
   // 从环境变量或配置文件读取飞书凭据
   const appId = process.env.FEISHU_APP_ID || config.feishu?.appId;
   const appSecret = process.env.FEISHU_APP_SECRET || config.feishu?.appSecret;
+  const botOpenId = process.env.FEISHU_BOT_OPEN_ID || config.feishu?.botOpenId;
+  const botAliases = (
+    process.env.FEISHU_BOT_ALIASES
+    || (config.feishu?.botAliases ? config.feishu.botAliases.join(',') : '小八,xiaoba')
+  )
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean);
 
   if (!appId || !appSecret) {
     Logger.error('飞书配置缺失。请设置环境变量 FEISHU_APP_ID 和 FEISHU_APP_SECRET，');
@@ -24,6 +32,8 @@ export async function feishuCommand(): Promise<void> {
     appId,
     appSecret,
     sessionTTL: config.feishu?.sessionTTL,
+    botOpenId,
+    botAliases,
   };
 
   const bot = new FeishuBot(feishuConfig);

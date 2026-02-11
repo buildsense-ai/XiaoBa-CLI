@@ -14,6 +14,13 @@ import { FeishuReplyTool } from '../tools/feishu-reply-tool';
 import { FeishuSendFileTool } from '../tools/feishu-send-file-tool';
 import { AskUserQuestionTool } from '../tools/ask-user-question-tool';
 
+interface PendingAttachment {
+  fileName: string;
+  localPath: string;
+  type: 'file' | 'image';
+  receivedAt: number;
+}
+
 /**
  * FeishuBot 主类
  * 初始化 SDK，注册事件，编排消息处理流程
@@ -32,6 +39,8 @@ export class FeishuBot {
   private processedMsgIds = new Set<string>();
   /** 等待用户回答的 pending Promise，key 为 chatId */
   private pendingAnswers = new Map<string, { resolve: (text: string) => void }>();
+  /** 等待用户后续指令的附件队列，key 为 sessionKey */
+  private pendingAttachments = new Map<string, PendingAttachment[]>();
 
   constructor(config: FeishuConfig) {
     const baseConfig = {
@@ -46,6 +55,16 @@ export class FeishuBot {
     });
 
     this.handler = new MessageHandler();
+    if (config.botOpenId) {
+      this.handler.setBotOpenId(config.botOpenId);
+      Logger.info(`飞书 @匹配已启用 open_id 精确模式: ${config.botOpenId}`);
+    } else {
+      const aliases = (config.botAliases && config.botAliases.length > 0)
+        ? config.botAliases
+        : ['小八', 'xiaoba'];
+      this.handler.setMentionAliases(aliases);
+      Logger.warning(`未配置 FEISHU_BOT_OPEN_ID，群聊 @ 将使用别名匹配: ${aliases.join(', ')}`);
+    }
     this.sender = new MessageSender(this.client);
 
     const aiService = new AIService();
@@ -159,35 +178,58 @@ export class FeishuBot {
       const result = await session.handleCommand(command, args);
       if (result.handled && result.reply) {
         await this.sender.reply(msg.chatId, result.reply);
+        Logger.info(`[feishu_command_reply] 已发送: ${result.reply.slice(0, 80)}...`);
+      }
+      if (result.handled && command.toLowerCase() === 'clear') {
+        this.pendingAttachments.delete(key);
       }
       if (result.handled) return;
     }
 
     Logger.info(`[${key}] 收到消息: ${msg.text.slice(0, 50)}...`);
 
-    // 如果是文件/图片消息，先下载到本地
     let userText = msg.text;
+    // 文件/图片消息：交给 Agent 自主判断下一步，不在平台层强制回复
     if (msg.file) {
       const localPath = await this.sender.downloadFile(
         msg.messageId,
         msg.file.fileKey,
         msg.file.fileName,
       );
-      if (localPath) {
-        userText = `${msg.text}\n[文件已下载到: ${localPath}]`;
-      } else {
-        userText = `${msg.text}\n[文件下载失败]`;
+      if (!localPath) {
+        await this.sender.reply(msg.chatId, `文件下载失败：${msg.file.fileName}\n请重试上传。`);
+        return;
+      }
+
+      this.enqueuePendingAttachment(key, {
+        fileName: msg.file.fileName,
+        localPath,
+        type: msg.file.type,
+        receivedAt: Date.now(),
+      });
+      const queuedAttachments = this.consumePendingAttachments(key);
+      userText = this.buildAttachmentOnlyPrompt(queuedAttachments);
+      Logger.info(`[${key}] 附件消息已交给 Agent 自主判断（attachments=${queuedAttachments.length})`);
+    } else {
+      // 普通文本消息：若有待处理附件，拼接上下文后一并交给 Agent
+      const queuedAttachments = this.consumePendingAttachments(key);
+      if (queuedAttachments.length > 0) {
+        userText = `${msg.text}\n${this.formatAttachmentContext(queuedAttachments)}`;
+        Logger.info(`[${key}] 追加 ${queuedAttachments.length} 个待处理附件到用户指令`);
       }
     }
 
-    // 绑定飞书工具到当前会话
-    this.feishuReplyTool.bind(msg.chatId, (chatId, text) => this.sender.reply(chatId, text));
-    this.feishuSendFileTool.bind(msg.chatId, (chatId, filePath, fileName) => this.sender.sendFile(chatId, filePath, fileName));
+    // 绑定飞书工具到当前会话（按 sessionKey 隔离，避免并发串话）
+    this.feishuReplyTool.bindSession(key, msg.chatId, async (chatId, text) => {
+      await this.sender.reply(chatId, text);
+    });
+    this.feishuSendFileTool.bindSession(key, msg.chatId, (chatId, filePath, fileName) => this.sender.sendFile(chatId, filePath, fileName));
 
     // 绑定 AskUserQuestion 飞书模式
     if (this.askUserQuestionTool) {
       const chatId = msg.chatId;
-      this.askUserQuestionTool.bindFeishu(
+      this.askUserQuestionTool.bindFeishuSession(
+        key,
         // sendFn: 把问题发送给飞书用户
         async (text: string) => {
           await this.sender.reply(chatId, text);
@@ -202,16 +244,13 @@ export class FeishuBot {
     }
 
     try {
-      // AI 处理（静默，不传进度回调）
-      const reply = await session.handleMessage(userText);
-
-      // 发送最终文本回复
-      await this.sender.reply(msg.chatId, reply);
+      // 严格 tool-only：平台层不再自动发送最终文本，所有可见消息必须由 feishu_reply/feishu_send_file 工具发出
+      await session.handleMessage(userText);
     } finally {
-      this.feishuReplyTool.unbind();
-      this.feishuSendFileTool.unbind();
+      this.feishuReplyTool.unbindSession(key);
+      this.feishuSendFileTool.unbindSession(key);
       if (this.askUserQuestionTool) {
-        this.askUserQuestionTool.unbindFeishu();
+        this.askUserQuestionTool.unbindFeishuSession(key);
       }
       // 清理可能残留的 pending（如超时或异常中断）
       this.pendingAnswers.delete(msg.chatId);
@@ -223,6 +262,39 @@ export class FeishuBot {
    */
   destroy(): void {
     this.sessionManager.destroy();
+    this.pendingAttachments.clear();
     Logger.info('飞书机器人已停止');
+  }
+
+  private enqueuePendingAttachment(sessionKey: string, attachment: PendingAttachment): number {
+    const queue = this.pendingAttachments.get(sessionKey) ?? [];
+    queue.push(attachment);
+    const trimmed = queue.slice(-5);
+    this.pendingAttachments.set(sessionKey, trimmed);
+    return trimmed.length;
+  }
+
+  private consumePendingAttachments(sessionKey: string): PendingAttachment[] {
+    const queue = this.pendingAttachments.get(sessionKey) ?? [];
+    this.pendingAttachments.delete(sessionKey);
+    return queue;
+  }
+
+  private formatAttachmentContext(attachments: PendingAttachment[]): string {
+    const lines = attachments.map((attachment, index) => {
+      return `[附件${index + 1}] ${attachment.fileName} (${attachment.type})\n[附件路径] ${attachment.localPath}`;
+    });
+
+    return `[用户已上传附件]\n${lines.join('\n')}`;
+  }
+
+  private buildAttachmentOnlyPrompt(attachments: PendingAttachment[]): string {
+    return [
+      '[用户仅上传了附件，暂未给出明确任务]',
+      '[当前会话是飞书聊天：给老师可见的文本请通过 feishu_reply 工具发送；发送文件请用 feishu_send_file 工具]',
+      '请你先判断最合理的下一步，不要默认进入任何特定 skill（例如 paper-analysis）。',
+      '如果任务不明确，先提出一个最小澄清问题；如果任务足够明确，再自行执行。',
+      this.formatAttachmentContext(attachments),
+    ].join('\n');
   }
 }

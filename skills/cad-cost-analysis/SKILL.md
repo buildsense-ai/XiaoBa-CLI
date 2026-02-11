@@ -3,6 +3,12 @@ name: cad-cost-analysis
 description: 工程造价 CAD 分析助手：分析建筑 CAD 图纸，提取几何数据和标注信息，生成工程量清单（BOQ）和造价估算。支持 DXF/DWG 格式，采用双模态分析（结构化数据 + 视觉 AI）。
 invocable: user
 argument-hint: "<CAD文件路径> [--output <输出目录>]"
+allowed-tools:
+  - get_cad_metadata
+  - inspect_region
+  - extract_cad_entities
+  - convert_dwg_to_dxf
+  - analyze_image
 ---
 
 # 工程造价 CAD 分析助手
@@ -20,15 +26,14 @@ argument-hint: "<CAD文件路径> [--output <输出目录>]"
 ### 2. 双模态分析方法
 
 **结构化数据提取（30%）**：
-- 使用 ezdxf 提取几何坐标
-- 获取实体类型和图层信息
-- 计算基础测量数据
+- 调用 `extract_cad_entities` 工具提取几何坐标和实体数据
+- 调用 `get_cad_metadata` 工具获取图层信息和实体统计
+- 基于提取的结构化数据计算测量值
 
 **视觉 AI 分析（70%）**：
-- 将 CAD 转换为高清图片
-- 使用视觉模型识别尺寸标注
-- 提取文字注释和材料说明
-- 识别规格参数
+- 调用 `inspect_region` 工具将 CAD 区域渲染为高清图片
+- 调用 `analyze_image` 工具对渲染图进行视觉分析
+- 识别尺寸标注、文字注释和材料说明
 
 ### 3. 智能渲染系统
 - 自动识别图纸中的高密度区域

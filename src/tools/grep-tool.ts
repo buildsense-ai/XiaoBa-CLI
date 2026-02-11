@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
 
@@ -67,9 +67,8 @@ export class GrepTool implements Tool {
 
     try {
       // 检查是否安装了 ripgrep
-      try {
-        execSync('rg --version', { stdio: 'pipe' });
-      } catch {
+      const rgVersion = spawnSync('rg', ['--version'], { stdio: 'pipe' });
+      if (rgVersion.status !== 0) {
         return '错误：未找到 ripgrep (rg)。请先安装: https://github.com/BurntSushi/ripgrep#installation';
       }
 
@@ -112,6 +111,7 @@ export class GrepTool implements Tool {
       rgArgs.push(`--max-count=${limit}`);
 
       // 模式和路径
+      rgArgs.push('--');
       rgArgs.push(pattern);
       if (searchPath) {
         const absolutePath = path.isAbsolute(searchPath)
@@ -120,23 +120,23 @@ export class GrepTool implements Tool {
         rgArgs.push(absolutePath);
       }
 
-      // 执行命令
-      const command = `rg ${rgArgs.join(' ')}`;
+      // 执行命令（使用参数化调用防止命令注入）
       let output: string;
 
       try {
-        output = execSync(command, {
+        output = execFileSync('rg', rgArgs, {
           cwd: context.workingDirectory,
           encoding: 'utf-8',
           maxBuffer: 10 * 1024 * 1024,
           stdio: ['pipe', 'pipe', 'pipe']
-        });
+        }) as string;
       } catch (error: any) {
         // rg 返回非零退出码表示未找到匹配
         if (error.status === 1) {
           return `未找到匹配项。\n模式: ${pattern}\n路径: ${searchPath || '.'}\n${globPattern ? `Glob: ${globPattern}\n` : ''}${fileType ? `类型: ${fileType}\n` : ''}`;
         }
-        throw error;
+        const stderrText = (error?.stderr?.toString?.() || '').trim();
+        throw new Error(stderrText || error.message);
       }
 
       // 处理输出

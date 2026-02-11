@@ -139,26 +139,6 @@
       }
     },
     {
-      "name": "pdf_splitter",
-      "description": "将 PDF 按章节分割成多个 Markdown 文件",
-      "script": "tools/python/pdf_splitter_tool.py",
-      "timeout": 60000,
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "pdf_path": {
-            "type": "string",
-            "description": "PDF 文件路径"
-          },
-          "output_dir": {
-            "type": "string",
-            "description": "输出目录路径（可选，默认为 output_<pdf文件名>）"
-          }
-        },
-        "required": ["pdf_path"]
-      }
-    },
-    {
       "name": "analyze_image",
       "description": "读取图片并调用多模态模型分析，只返回文字结果（base64 不进入对话历史，节省上下文空间）",
       "script": "tools/python/analyze_image_tool.py",

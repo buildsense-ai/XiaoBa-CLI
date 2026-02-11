@@ -10,6 +10,14 @@ const MAX_MSG_LENGTH = 4000;
 /** 飞书文件上传 API 支持的 file_type */
 const SUPPORTED_FILE_TYPES = new Set(['opus', 'mp4', 'pdf', 'doc', 'xls', 'ppt', 'stream']);
 
+export interface ResearchProgressCardPayload {
+  runId: string;
+  phase: string;
+  status: string;
+  summary?: string;
+  coverageRate?: number;
+}
+
 /**
  * 飞书消息发送器
  * 支持回复消息和长文本自动分段
@@ -43,6 +51,61 @@ export class MessageSender {
     } catch (err: any) {
       Logger.error(`飞书消息发送失败: ${err.message || err}`);
     }
+  }
+
+  /**
+   * 发送飞书卡片消息（interactive）
+   */
+  async sendCard(chatId: string, card: Record<string, unknown>): Promise<void> {
+    try {
+      await this.client.im.v1.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: chatId,
+          content: JSON.stringify(card),
+          msg_type: 'interactive',
+        },
+      });
+    } catch (err: any) {
+      Logger.error(`飞书卡片发送失败: ${err.message || err}`);
+    }
+  }
+
+  /**
+   * 发送 research 阶段进度卡片
+   */
+  async sendResearchProgressCard(chatId: string, payload: ResearchProgressCardPayload): Promise<void> {
+    const coverageText = typeof payload.coverageRate === 'number'
+      ? `${(payload.coverageRate * 100).toFixed(1)}%`
+      : 'N/A';
+
+    const card = {
+      config: { wide_screen_mode: true },
+      header: {
+        title: {
+          tag: 'plain_text',
+          content: `Research Run ${payload.runId}`,
+        },
+      },
+      elements: [
+        {
+          tag: 'div',
+          text: {
+            tag: 'lark_md',
+            content: `**Phase**: ${payload.phase}\n**Status**: ${payload.status}\n**Evidence Coverage**: ${coverageText}`,
+          },
+        },
+        {
+          tag: 'div',
+          text: {
+            tag: 'lark_md',
+            content: payload.summary || 'No summary',
+          },
+        },
+      ],
+    } as Record<string, unknown>;
+ 
+    await this.sendCard(chatId, card);
   }
 
   /**

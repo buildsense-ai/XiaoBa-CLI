@@ -6,9 +6,16 @@ import { ParsedFeishuMessage, FeishuFileInfo } from './types';
  */
 export class MessageHandler {
   private botOpenId: string | null = null;
+  private mentionAliases: string[] = [];
 
   setBotOpenId(openId: string): void {
     this.botOpenId = openId;
+  }
+
+  setMentionAliases(aliases: string[]): void {
+    this.mentionAliases = aliases
+      .map(alias => this.normalizeMentionText(alias))
+      .filter(Boolean);
   }
 
   private static SUPPORTED_TYPES = new Set(['text', 'file', 'image']);
@@ -42,7 +49,10 @@ export class MessageHandler {
     let mentionBot = false;
     const mentions: any[] = message.mentions || [];
     for (const m of mentions) {
-      if (m.id?.open_id === this.botOpenId) {
+      const mentionOpenId = m?.id?.open_id;
+      const matchedByOpenId = Boolean(this.botOpenId && mentionOpenId === this.botOpenId);
+      const matchedByAlias = !this.botOpenId && this.matchesBotAlias(m);
+      if (matchedByOpenId || matchedByAlias) {
         mentionBot = true;
       }
       if (m.key) {
@@ -99,5 +109,31 @@ export class MessageHandler {
       default:
         return { text: '' };
     }
+  }
+
+  private matchesBotAlias(mention: any): boolean {
+    if (this.mentionAliases.length === 0) {
+      return false;
+    }
+
+    const candidates = [
+      mention?.name,
+      mention?.id?.name,
+      mention?.key,
+    ]
+      .filter((item: unknown) => typeof item === 'string')
+      .map((item: string) => this.normalizeMentionText(item));
+
+    return candidates.some(candidate =>
+      this.mentionAliases.some(alias => candidate === alias || candidate.includes(alias))
+    );
+  }
+
+  private normalizeMentionText(input: string): string {
+    return input
+      .trim()
+      .toLowerCase()
+      .replace(/^@+/, '')
+      .replace(/[\s\p{P}\p{S}]+/gu, '');
   }
 }

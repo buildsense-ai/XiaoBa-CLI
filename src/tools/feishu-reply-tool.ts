@@ -23,29 +23,45 @@ export class FeishuReplyTool implements Tool {
     },
   };
 
-  private chatId: string | null = null;
-  private sendFn: ((chatId: string, text: string) => Promise<void>) | null = null;
+  private sessions = new Map<string, {
+    chatId: string;
+    sendFn: (chatId: string, text: string) => Promise<void>;
+  }>();
 
   /**
    * 绑定当前会话的 chatId 和发送函数
    */
+  bindSession(sessionId: string, chatId: string, sendFn: (chatId: string, text: string) => Promise<void>): void {
+    this.sessions.set(sessionId, { chatId, sendFn });
+  }
+
+  /**
+   * 兼容旧调用
+   */
   bind(chatId: string, sendFn: (chatId: string, text: string) => Promise<void>): void {
-    this.chatId = chatId;
-    this.sendFn = sendFn;
+    this.bindSession('default', chatId, sendFn);
   }
 
   /**
    * 解绑（消息处理完毕后调用）
    */
+  unbindSession(sessionId: string): void {
+    this.sessions.delete(sessionId);
+  }
+
+  /**
+   * 兼容旧调用
+   */
   unbind(): void {
-    this.chatId = null;
-    this.sendFn = null;
+    this.unbindSession('default');
   }
 
   async execute(args: any, _context: ToolExecutionContext): Promise<string> {
     const { message } = args;
+    const sessionId = _context.sessionId || 'default';
+    const session = this.sessions.get(sessionId);
 
-    if (!this.chatId || !this.sendFn) {
+    if (!session) {
       return '当前不在飞书会话中，无法发送消息';
     }
 
@@ -54,7 +70,7 @@ export class FeishuReplyTool implements Tool {
     }
 
     try {
-      await this.sendFn(this.chatId, message);
+      await session.sendFn(session.chatId, message);
       Logger.info(`[feishu_reply] 已发送: ${message.slice(0, 50)}...`);
       return '消息已发送';
     } catch (err: any) {

@@ -3,6 +3,7 @@ import * as path from 'path';
 const DANGEROUS_TOOL_ALLOW_ENV = 'GAUZ_TOOL_ALLOW';
 const BASH_ALLOW_DANGEROUS_ENV = 'GAUZ_BASH_ALLOW_DANGEROUS';
 const FS_ALLOW_OUTSIDE_ENV = 'GAUZ_FS_ALLOW_OUTSIDE';
+const FS_ALLOW_OUTSIDE_READ_ENV = 'GAUZ_FS_ALLOW_OUTSIDE_READ';
 const FS_ALLOW_DOTENV_ENV = 'GAUZ_FS_ALLOW_DOTENV';
 
 const DEFAULT_DANGEROUS_TOOLS = new Set([
@@ -65,12 +66,34 @@ export function isBashCommandAllowed(command: string): { allowed: boolean; reaso
   return { allowed: true };
 }
 
-export function isPathAllowed(targetPath: string, workingDirectory: string): { allowed: boolean; reason?: string } {
+function isOutsideWorkingDirectory(targetPath: string, workingDirectory: string): boolean {
   const resolvedTarget = path.resolve(targetPath);
   const resolvedCwd = path.resolve(workingDirectory);
-  const relative = path.relative(resolvedCwd, resolvedTarget);
 
-  const isOutside = relative.startsWith('..') || path.isAbsolute(relative);
+  if (resolvedTarget === resolvedCwd) {
+    return false;
+  }
+
+  const normalizedTarget = resolvedTarget.toLowerCase();
+  const normalizedCwd = resolvedCwd.toLowerCase();
+  const cwdWithSep = normalizedCwd.endsWith(path.sep) ? normalizedCwd : normalizedCwd + path.sep;
+  return !normalizedTarget.startsWith(cwdWithSep);
+}
+
+export function isReadPathAllowed(targetPath: string, workingDirectory: string): { allowed: boolean; reason?: string } {
+  const isOutside = isOutsideWorkingDirectory(targetPath, workingDirectory);
+  if (isOutside && process.env[FS_ALLOW_OUTSIDE_READ_ENV] !== 'true') {
+    return {
+      allowed: false,
+      reason: `读取路径超出工作目录。设置 ${FS_ALLOW_OUTSIDE_READ_ENV}=true 可解除限制`
+    };
+  }
+  return { allowed: true };
+}
+
+export function isPathAllowed(targetPath: string, workingDirectory: string): { allowed: boolean; reason?: string } {
+  const resolvedTarget = path.resolve(targetPath);
+  const isOutside = isOutsideWorkingDirectory(targetPath, workingDirectory);
   if (isOutside && process.env[FS_ALLOW_OUTSIDE_ENV] !== 'true') {
     return {
       allowed: false,

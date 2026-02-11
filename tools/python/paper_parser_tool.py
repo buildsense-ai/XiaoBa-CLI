@@ -11,7 +11,6 @@ import os
 import time
 import zipfile
 import requests
-import urllib3
 from typing import Dict, List
 from urllib.parse import quote
 
@@ -30,24 +29,31 @@ except ImportError:
     sys.stderr.write(f"[MinerU] 警告: 未安装 python-dotenv，跳过 .env 加载\n")
     sys.stderr.flush()
 
-# 禁用 SSL 警告
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-
 class MinerUPDFParser:
     """使用 MinerU 解析 PDF 论文"""
 
     def __init__(self):
-        # 从环境变量读取配置
-        self.minio_endpoint = os.getenv("MINIO_ENDPOINT", "127.0.0.1:9000")
-        self.minio_access_key = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-        self.minio_secret_key = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-        self.minio_bucket = os.getenv("MINIO_BUCKET", "pdfs")
+        # 从环境变量读取配置（安全默认：不提供弱默认值）
+        self.minio_endpoint = os.getenv("MINIO_ENDPOINT")
+        self.minio_access_key = os.getenv("MINIO_ACCESS_KEY")
+        self.minio_secret_key = os.getenv("MINIO_SECRET_KEY")
+        self.minio_bucket = os.getenv("MINIO_BUCKET")
         self.mineru_token = os.getenv("MINERU_TOKEN")
         self.mineru_base_url = "https://mineru.net/api/v4/extract/task"
 
+        missing = []
+        if not self.minio_endpoint:
+            missing.append("MINIO_ENDPOINT")
+        if not self.minio_access_key:
+            missing.append("MINIO_ACCESS_KEY")
+        if not self.minio_secret_key:
+            missing.append("MINIO_SECRET_KEY")
+        if not self.minio_bucket:
+            missing.append("MINIO_BUCKET")
         if not self.mineru_token:
-            raise ValueError("缺少 MINERU_TOKEN 环境变量")
+            missing.append("MINERU_TOKEN")
+        if missing:
+            raise ValueError(f"缺少环境变量: {', '.join(missing)}")
 
     def upload_to_minio(self, pdf_path: str) -> str:
         """上传 PDF 到 MinIO"""
@@ -111,8 +117,7 @@ class MinerUPDFParser:
                     self.mineru_base_url,
                     headers=headers,
                     json=data,
-                    timeout=(10, 30),
-                    verify=False
+                    timeout=(10, 30)
                 )
                 response.raise_for_status()
                 break
@@ -152,7 +157,7 @@ class MinerUPDFParser:
             elapsed = int(time.time() - start_time)
 
             try:
-                response = requests.get(url, headers=headers, timeout=30, verify=False)
+                response = requests.get(url, headers=headers, timeout=30)
                 response.raise_for_status()
             except Exception as e:
                 sys.stderr.write(f"[MinerU] 检查 #{check_count} 失败: {str(e)} (已等待 {elapsed}秒)\n")
@@ -203,7 +208,7 @@ class MinerUPDFParser:
             sys.stderr.flush()
 
         # 下载 ZIP
-        response = requests.get(zip_url, timeout=60, verify=False)
+        response = requests.get(zip_url, timeout=60)
         response.raise_for_status()
 
         zip_filename = os.path.join(base_dir, f"temp_{int(time.time())}.zip")

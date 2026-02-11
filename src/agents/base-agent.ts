@@ -117,7 +117,11 @@ export abstract class BaseAgent implements Agent {
     const tools = allowedToolNames && allowedToolNames.length > 0
       ? context.tools.filter(t => allowedToolNames.includes(t.definition.name))
       : context.tools;
-    return new AgentToolExecutor(tools, context.workingDirectory);
+    return new AgentToolExecutor(tools, context.workingDirectory, {
+      sessionId: this.id,
+      surface: 'agent',
+      permissionProfile: 'strict',
+    });
   }
 
   /**
@@ -144,6 +148,11 @@ export abstract class BaseAgent implements Agent {
       stream: false,
       enableCompression: false,
       shouldContinue: () => this.status === 'running',
+      toolExecutionContext: {
+        sessionId: this.id,
+        surface: 'agent',
+        permissionProfile: 'strict',
+      },
       ...options,
     });
 

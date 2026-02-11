@@ -1,4 +1,5 @@
 import { Message } from '../types';
+import { ToolDefinition } from '../types/tool';
 
 /**
  * Token 估算器
@@ -17,6 +18,7 @@ const CJK_REGEX = /[\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f\uff00-\uffef]/g;
 
 const ENGLISH_CHARS_PER_TOKEN = 4;
 const CJK_CHARS_PER_TOKEN = 1.5;
+const JSON_CHARS_PER_TOKEN = 3.5;
 
 /**
  * 估算单段文本的 token 数
@@ -64,4 +66,37 @@ export function estimateMessageTokens(message: Message): number {
  */
 export function estimateMessagesTokens(messages: Message[]): number {
   return messages.reduce((sum, msg) => sum + estimateMessageTokens(msg), 0);
+}
+
+/**
+ * 估算 JSON 结构的 token 数
+ */
+export function estimateJsonTokens(value: unknown): number {
+  try {
+    const json = JSON.stringify(value ?? {});
+    if (!json) return 0;
+    return Math.ceil(json.length / JSON_CHARS_PER_TOKEN);
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 估算单个工具定义的 token 数
+ */
+export function estimateToolTokens(tool: ToolDefinition): number {
+  const nameTokens = estimateTokens(tool.name || '');
+  const descriptionTokens = estimateTokens(tool.description || '');
+  const schemaTokens = estimateJsonTokens(tool.parameters);
+
+  // 工具定义在不同 provider 有额外结构化开销，留 10% 安全余量
+  const raw = nameTokens + descriptionTokens + schemaTokens + 12;
+  return Math.ceil(raw * 1.1);
+}
+
+/**
+ * 估算所有工具定义的 token 数
+ */
+export function estimateToolsTokens(tools: ToolDefinition[]): number {
+  return tools.reduce((sum, tool) => sum + estimateToolTokens(tool), 0);
 }

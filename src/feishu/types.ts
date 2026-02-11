@@ -6,6 +6,10 @@ export interface FeishuConfig {
   appSecret: string;
   /** 会话过期时间（毫秒），默认 30 分钟 */
   sessionTTL?: number;
+  /** 机器人 open_id（推荐配置，群聊 @ 精确匹配） */
+  botOpenId?: string;
+  /** 机器人别名（当未配置 botOpenId 时用于兜底匹配） */
+  botAliases?: string[];
 }
 
 /**

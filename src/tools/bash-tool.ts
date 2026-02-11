@@ -2,7 +2,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
 import { Logger } from '../utils/logger';
-import { isBashCommandAllowed, isToolAllowed } from '../utils/safety';
+import { ToolPolicyGateway } from '../utils/tool-policy-gateway';
 
 const execAsync = promisify(exec);
 
@@ -36,12 +36,12 @@ export class BashTool implements Tool {
   async execute(args: any, context: ToolExecutionContext): Promise<string> {
     const { command, description, timeout = 30000 } = args;
 
-    const toolPermission = isToolAllowed(this.definition.name);
+    const toolPermission = ToolPolicyGateway.checkTool(this.definition.name, context);
     if (!toolPermission.allowed) {
       return `执行被阻止: ${toolPermission.reason}`;
     }
 
-    const commandPermission = isBashCommandAllowed(command);
+    const commandPermission = ToolPolicyGateway.checkBashCommand(command);
     if (!commandPermission.allowed) {
       return `执行被阻止: ${commandPermission.reason}`;
     }

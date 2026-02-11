@@ -21,8 +21,7 @@ interface Task {
  * 任务规划工具 - 管理任务列表，实现 agentic 工作流
  */
 export class TaskPlannerTool implements Tool {
-  private static tasks: Task[] = [];
-  private static taskIdCounter = 1;
+  private sessionStates: Map<string, { tasks: Task[]; taskIdCounter: number }> = new Map();
 
   definition: ToolDefinition = {
     name: 'task_planner',
@@ -74,48 +73,57 @@ export class TaskPlannerTool implements Tool {
 
   async execute(args: any, context: ToolExecutionContext): Promise<string> {
     const { action, tasks, task_id, status } = args;
+    const state = this.getSessionState(context.sessionId);
 
     switch (action) {
       case 'create':
-        return this.createTasks(tasks);
+        return this.createTasks(state, tasks);
       case 'update':
-        return this.updateTask(task_id, status);
+        return this.updateTask(state, task_id, status);
       case 'list':
-        return this.listTasks();
+        return this.listTasks(state);
       case 'clear':
-        return this.clearTasks();
+        return this.clearTasks(state);
       default:
         return `未知操作: ${action}`;
     }
   }
 
+  private getSessionState(sessionId?: string): { tasks: Task[]; taskIdCounter: number } {
+    const key = sessionId || 'default';
+    if (!this.sessionStates.has(key)) {
+      this.sessionStates.set(key, { tasks: [], taskIdCounter: 1 });
+    }
+    return this.sessionStates.get(key)!;
+  }
+
   /**
    * 创建任务列表
    */
-  private createTasks(tasks: any[]): string {
+  private createTasks(state: { tasks: Task[]; taskIdCounter: number }, tasks: any[]): string {
     if (!tasks || tasks.length === 0) {
       return '错误：任务列表不能为空';
     }
 
     // 清空现有任务
-    TaskPlannerTool.tasks = [];
-    TaskPlannerTool.taskIdCounter = 1;
+    state.tasks = [];
+    state.taskIdCounter = 1;
 
     // 创建新任务
     const taskIds: string[] = [];
     for (const task of tasks) {
       const newTask: Task = {
-        id: `task-${TaskPlannerTool.taskIdCounter++}`,
+        id: `task-${state.taskIdCounter++}`,
         content: task.content,
         activeForm: task.activeForm,
         status: task.status || 'pending'
       };
-      TaskPlannerTool.tasks.push(newTask);
+      state.tasks.push(newTask);
       taskIds.push(newTask.id);
     }
 
     // 展示任务列表
-    this.displayTasks();
+    this.displayTasks(state);
 
     // 返回任务ID列表，让AI知道如何引用任务
     return `已创建 ${tasks.length} 个任务。任务ID: ${taskIds.join(', ')}`;
@@ -124,8 +132,8 @@ export class TaskPlannerTool implements Tool {
   /**
    * 更新任务状态
    */
-  private updateTask(taskId: string, newStatus: TaskStatus): string {
-    const task = TaskPlannerTool.tasks.find(t => t.id === taskId);
+  private updateTask(state: { tasks: Task[]; taskIdCounter: number }, taskId: string, newStatus: TaskStatus): string {
+    const task = state.tasks.find(t => t.id === taskId);
 
     if (!task) {
       return `错误：未找到任务 ${taskId}`;
@@ -143,16 +151,16 @@ export class TaskPlannerTool implements Tool {
   /**
    * 列出所有任务
    */
-  private listTasks(): string {
-    if (TaskPlannerTool.tasks.length === 0) {
+  private listTasks(state: { tasks: Task[]; taskIdCounter: number }): string {
+    if (state.tasks.length === 0) {
       return '当前没有任务';
     }
 
-    this.displayTasks();
+    this.displayTasks(state);
 
-    const pending = TaskPlannerTool.tasks.filter(t => t.status === 'pending').length;
-    const inProgress = TaskPlannerTool.tasks.filter(t => t.status === 'in_progress').length;
-    const completed = TaskPlannerTool.tasks.filter(t => t.status === 'completed').length;
+    const pending = state.tasks.filter(t => t.status === 'pending').length;
+    const inProgress = state.tasks.filter(t => t.status === 'in_progress').length;
+    const completed = state.tasks.filter(t => t.status === 'completed').length;
 
     return `任务统计: 待处理 ${pending}, 进行中 ${inProgress}, 已完成 ${completed}`;
   }
@@ -160,20 +168,20 @@ export class TaskPlannerTool implements Tool {
   /**
    * 清空任务列表
    */
-  private clearTasks(): string {
-    const count = TaskPlannerTool.tasks.length;
-    TaskPlannerTool.tasks = [];
-    TaskPlannerTool.taskIdCounter = 1;
+  private clearTasks(state: { tasks: Task[]; taskIdCounter: number }): string {
+    const count = state.tasks.length;
+    state.tasks = [];
+    state.taskIdCounter = 1;
     return `已清空 ${count} 个任务`;
   }
 
   /**
    * 展示任务列表
    */
-  private displayTasks(): void {
+  private displayTasks(state: { tasks: Task[]; taskIdCounter: number }): void {
     console.log('\n' + styles.title('📋 任务列表:') + '\n');
 
-    for (const task of TaskPlannerTool.tasks) {
+    for (const task of state.tasks) {
       const statusIcon = this.getStatusIcon(task.status);
       const statusText = this.getStatusText(task.status);
       const displayText = task.status === 'in_progress' ? task.activeForm : task.content;

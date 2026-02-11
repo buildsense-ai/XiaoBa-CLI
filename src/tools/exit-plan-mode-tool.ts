@@ -26,15 +26,16 @@ export class ExitPlanModeTool implements Tool {
 
   async execute(args: any, context: ToolExecutionContext): Promise<string> {
     const { summary } = args;
+    const sessionId = context.sessionId || 'default';
 
     try {
       // 检查是否处于规划模式
-      if (!EnterPlanModeTool.isInPlanMode()) {
+      if (!EnterPlanModeTool.isInPlanModeBySession(sessionId)) {
         return '错误：当前不在规划模式中。请先使用 enter_plan_mode 工具进入规划模式。';
       }
 
       // 获取规划文件路径
-      const planFilePath = EnterPlanModeTool.getPlanFilePath();
+      const planFilePath = EnterPlanModeTool.getPlanFilePathBySession(sessionId);
 
       // 检查规划文件是否存在
       if (!fs.existsSync(planFilePath)) {
@@ -45,7 +46,7 @@ export class ExitPlanModeTool implements Tool {
       const planContent = fs.readFileSync(planFilePath, 'utf-8');
 
       // 退出规划模式
-      EnterPlanModeTool.exitPlanMode();
+      EnterPlanModeTool.exitPlanModeBySession(sessionId);
 
       // 显示规划摘要
       console.log('\n' + styles.title('📋 规划完成，请求用户批准') + '\n');

@@ -31,6 +31,8 @@ export interface ChatConfig {
     appId?: string;
     appSecret?: string;
     sessionTTL?: number;
+    botOpenId?: string;
+    botAliases?: string[];
   };
 }
 

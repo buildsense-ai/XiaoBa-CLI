@@ -65,6 +65,11 @@ export class ConfigManager {
       feishu: {
         appId: process.env.FEISHU_APP_ID,
         appSecret: process.env.FEISHU_APP_SECRET,
+        botOpenId: process.env.FEISHU_BOT_OPEN_ID,
+        botAliases: (process.env.FEISHU_BOT_ALIASES || '小八,xiaoba')
+          .split(',')
+          .map(item => item.trim())
+          .filter(Boolean),
       },
     };
   }

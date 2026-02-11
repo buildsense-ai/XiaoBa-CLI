@@ -1,7 +1,7 @@
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
 import { SkillManager } from '../skills/skill-manager';
-import { SkillExecutor } from '../skills/skill-executor';
 import { SkillInvocationContext } from '../types/skill';
+import { buildSkillActivationSignal } from '../skills/skill-activation-protocol';
 import { Logger } from '../utils/logger';
 
 /**
@@ -72,20 +72,10 @@ export class SkillTool implements Tool {
         userMessage: skillArgs
       };
 
-      // 使用 SkillExecutor 处理 skill 内容（替换参数占位符）
-      const processedContent = SkillExecutor.execute(skill, invocationContext);
+      // 返回结构化激活信号，由 ConversationRunner 统一处理
+      const signal = buildSkillActivationSignal(skill, invocationContext);
 
-      // 返回处理后的 skill 内容
-      // 这会将 skill 的指令注入到对话中，指导 AI 执行任务
-      let result = `<skill-invocation>\n`;
-      result += `<skill-name>${skillName}</skill-name>\n`;
-      if (skillArgs) {
-        result += `<skill-args>${skillArgs}</skill-args>\n`;
-      }
-      result += `\n${processedContent}\n`;
-      result += `</skill-invocation>`;
-
-      return result;
+      return JSON.stringify(signal);
     } catch (error: any) {
       Logger.error(`Skill 执行失败: ${error.message}`);
       return `Skill 执行失败: ${error.message}`;

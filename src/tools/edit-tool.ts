@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
-import { isPathAllowed, isToolAllowed } from '../utils/safety';
+import { ToolPolicyGateway } from '../utils/tool-policy-gateway';
 
 /**
  * Edit 工具 - 精确字符串替换
@@ -39,7 +39,7 @@ export class EditTool implements Tool {
     const { file_path, old_string, new_string, replace_all = false } = args;
 
     try {
-      const toolPermission = isToolAllowed(this.definition.name);
+      const toolPermission = ToolPolicyGateway.checkTool(this.definition.name, context);
       if (!toolPermission.allowed) {
         return `执行被阻止: ${toolPermission.reason}`;
       }
@@ -49,7 +49,7 @@ export class EditTool implements Tool {
         ? file_path
         : path.join(context.workingDirectory, file_path);
 
-      const pathPermission = isPathAllowed(absolutePath, context.workingDirectory);
+      const pathPermission = ToolPolicyGateway.checkWritePath(absolutePath, context);
       if (!pathPermission.allowed) {
         return `执行被阻止: ${pathPermission.reason}`;
       }

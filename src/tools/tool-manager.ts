@@ -23,9 +23,14 @@ import { PythonToolLoader } from './python-tool-loader';
 export class ToolManager implements ToolExecutor {
   private tools: Map<string, Tool> = new Map();
   private workingDirectory: string;
+  private contextDefaults: Partial<ToolExecutionContext>;
 
-  constructor(workingDirectory: string = process.cwd()) {
+  constructor(
+    workingDirectory: string = process.cwd(),
+    contextDefaults: Partial<ToolExecutionContext> = {},
+  ) {
     this.workingDirectory = workingDirectory;
+    this.contextDefaults = contextDefaults;
     this.registerDefaultTools();
   }
 
@@ -91,6 +96,16 @@ export class ToolManager implements ToolExecutor {
   }
 
   /**
+   * 更新默认执行上下文（session/surface/run 等）
+   */
+  setContextDefaults(contextDefaults: Partial<ToolExecutionContext>): void {
+    this.contextDefaults = {
+      ...this.contextDefaults,
+      ...contextDefaults,
+    };
+  }
+
+  /**
    * 获取所有工具定义（用于传递给 AI）
    */
   getToolDefinitions(allowedNames?: string[]): ToolDefinition[] {
@@ -107,39 +122,100 @@ export class ToolManager implements ToolExecutor {
    * @param toolCall 工具调用请求
    * @param conversationHistory 可选的对话历史，传递给工具作为上下文
    */
-  async executeTool(toolCall: ToolCall, conversationHistory?: any[]): Promise<ToolResult> {
-    const tool = this.tools.get(toolCall.function.name);
+  async executeTool(
+    toolCall: ToolCall,
+    conversationHistory?: any[],
+    contextOverrides?: Partial<ToolExecutionContext>,
+  ): Promise<ToolResult> {
+    const toolName = toolCall.function.name;
+
+    // 先做 skill 策略层的强制校验，避免仅靠提示词约束
+    const allowedSet = contextOverrides?.allowedToolNames
+      ? new Set(contextOverrides.allowedToolNames)
+      : null;
+    const blockedSet = contextOverrides?.blockedToolNames
+      ? new Set(contextOverrides.blockedToolNames)
+      : null;
+
+    if (allowedSet && !allowedSet.has(toolName)) {
+      return {
+        tool_call_id: toolCall.id,
+        role: 'tool',
+        name: toolName,
+        content: `执行被阻止：工具 "${toolName}" 不在当前 skill 允许列表中`,
+        ok: false,
+        errorCode: 'TOOL_NOT_ALLOWED_BY_SKILL_POLICY',
+        retryable: false,
+      };
+    }
+
+    if (blockedSet && blockedSet.has(toolName)) {
+      return {
+        tool_call_id: toolCall.id,
+        role: 'tool',
+        name: toolName,
+        content: `执行被阻止：工具 "${toolName}" 被当前 skill 明确禁止`,
+        ok: false,
+        errorCode: 'TOOL_BLOCKED_BY_SKILL_POLICY',
+        retryable: false,
+      };
+    }
+
+    const tool = this.tools.get(toolName);
 
     if (!tool) {
       return {
         tool_call_id: toolCall.id,
         role: 'tool',
-        name: toolCall.function.name,
-        content: `错误：未找到工具 "${toolCall.function.name}"`
+        name: toolName,
+        content: `错误：未找到工具 "${toolName}"`,
+        ok: false,
+        errorCode: 'TOOL_NOT_FOUND',
+        retryable: false,
       };
     }
 
     try {
       const context: ToolExecutionContext = {
         workingDirectory: this.workingDirectory,
-        conversationHistory: conversationHistory || []
+        conversationHistory: conversationHistory || [],
+        ...this.contextDefaults,
+        ...contextOverrides,
       };
 
-      const args = JSON.parse(toolCall.function.arguments);
+      let args: unknown;
+      try {
+        args = JSON.parse(toolCall.function.arguments);
+      } catch (error: any) {
+        return {
+          tool_call_id: toolCall.id,
+          role: 'tool',
+          name: toolCall.function.name,
+          content: `工具参数解析错误: ${error.message}`,
+          ok: false,
+          errorCode: 'INVALID_TOOL_ARGUMENTS',
+          retryable: false,
+        };
+      }
+
       const output = await tool.execute(args, context);
 
       return {
         tool_call_id: toolCall.id,
         role: 'tool',
         name: toolCall.function.name,
-        content: output
+        content: output,
+        ok: true,
       };
     } catch (error: any) {
       return {
         tool_call_id: toolCall.id,
         role: 'tool',
         name: toolCall.function.name,
-        content: `工具执行错误: ${error.message}`
+        content: `工具执行错误: ${error.message}`,
+        ok: false,
+        errorCode: 'TOOL_EXECUTION_ERROR',
+        retryable: false,
       };
     }
   }

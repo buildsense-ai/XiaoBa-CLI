@@ -30,7 +30,7 @@ interface Todo {
  * - 开始新任务前必须先完成当前任务
  */
 export class TodoWriteTool implements Tool {
-  private static todos: Todo[] = [];
+  private sessionTodos: Map<string, Todo[]> = new Map();
 
   definition: ToolDefinition = {
     name: 'todo_write',
@@ -68,6 +68,8 @@ export class TodoWriteTool implements Tool {
 
   async execute(args: any, context: ToolExecutionContext): Promise<string> {
     const { todos } = args;
+    const sessionId = context.sessionId || 'default';
+    const currentTodos = this.getTodos(sessionId);
 
     if (!todos || !Array.isArray(todos)) {
       return '错误：todos 必须是一个数组';
@@ -80,13 +82,13 @@ export class TodoWriteTool implements Tool {
     }
 
     // 检测状态变化
-    const changes = this.detectChanges(TodoWriteTool.todos, todos);
+    const changes = this.detectChanges(currentTodos, todos);
 
     // 更新任务列表
-    TodoWriteTool.todos = todos;
+    this.sessionTodos.set(sessionId, todos);
 
     // 显示任务列表
-    this.displayTodos();
+    this.displayTodos(todos);
 
     // 返回变化摘要
     return this.formatChangeSummary(todos, changes);
@@ -155,15 +157,15 @@ export class TodoWriteTool implements Tool {
   /**
    * 显示任务列表
    */
-  private displayTodos(): void {
-    if (TodoWriteTool.todos.length === 0) {
+  private displayTodos(todos: Todo[]): void {
+    if (todos.length === 0) {
       console.log('\n' + styles.text('📋 任务列表为空') + '\n');
       return;
     }
 
     console.log('\n' + styles.title('📋 任务列表:') + '\n');
 
-    TodoWriteTool.todos.forEach((todo, index) => {
+    todos.forEach((todo, index) => {
       const statusIcon = this.getStatusIcon(todo.status);
       const displayText = todo.status === 'in_progress' ? todo.activeForm : todo.content;
       const number = `${index + 1}.`.padEnd(4, ' ');
@@ -199,14 +201,14 @@ export class TodoWriteTool implements Tool {
   /**
    * 获取当前任务列表（用于测试或调试）
    */
-  static getTodos(): Todo[] {
-    return TodoWriteTool.todos;
+  getTodos(sessionId: string = 'default'): Todo[] {
+    return this.sessionTodos.get(sessionId) || [];
   }
 
   /**
    * 清空任务列表（用于测试或重置）
    */
-  static clearTodos(): void {
-    TodoWriteTool.todos = [];
+  clearTodos(sessionId: string = 'default'): void {
+    this.sessionTodos.set(sessionId, []);
   }
 }

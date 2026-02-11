@@ -50,14 +50,23 @@ export class AIService {
   }
 
   /**
-   * 流式调用，带自动重试
+   * 流式调用
+   * 默认不重试，避免部分 token 已输出后出现重复文本。
+   * 如需强制开启重试，可设置 GAUZ_STREAM_RETRY=true（需自行保证幂等）。
    */
   async chatStream(messages: Message[], tools?: ToolDefinition[], callbacks?: StreamCallbacks): Promise<ChatResponse> {
     if (!this.config.apiKey) {
       throw new Error('API密钥未配置。请先运行: xiaoba config');
     }
 
-    return this.withRetry(() => this.provider.chatStream(messages, tools, callbacks));
+    try {
+      if (process.env.GAUZ_STREAM_RETRY === 'true') {
+        return this.withRetry(() => this.provider.chatStream(messages, tools, callbacks));
+      }
+      return await this.provider.chatStream(messages, tools, callbacks);
+    } catch (error: any) {
+      throw this.wrapError(error);
+    }
   }
 
   /**
