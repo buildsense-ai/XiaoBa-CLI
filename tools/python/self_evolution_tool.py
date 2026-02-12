@@ -144,10 +144,13 @@ class SelfEvolutionTool(BaseTool):
             json.dump(config, f, indent=2, ensure_ascii=False)
 
     def _create_skill(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """创建新的Skill"""
+        """创建新的Skill（生成符合 SkillParser 的 YAML frontmatter 格式）"""
         name = params['name']
         description = params['description']
         prompt = params.get('prompt', '')
+        invocable = params.get('invocable', 'user')
+        argument_hint = params.get('argument_hint', '')
+        max_turns = params.get('max_turns', 30)
 
         # 验证必需参数
         if not prompt:
@@ -156,6 +159,10 @@ class SelfEvolutionTool(BaseTool):
                 'message': '缺少必需参数: prompt',
                 'status': 'error'
             }
+
+        # 验证 invocable 值
+        if invocable not in ('user', 'auto', 'both'):
+            invocable = 'user'
 
         # 创建skill目录
         skill_dir = os.path.join(self.skills_dir, name)
@@ -168,24 +175,17 @@ class SelfEvolutionTool(BaseTool):
 
         os.makedirs(skill_dir, exist_ok=True)
 
+        # 生成 YAML frontmatter
+        frontmatter = f"---\nname: {name}\ndescription: {description}\ninvocable: {invocable}\n"
+        if argument_hint:
+            frontmatter += f"argument-hint: \"{argument_hint}\"\n"
+        if max_turns:
+            frontmatter += f"max-turns: {max_turns}\n"
+        frontmatter += "---\n\n"
+
         # 创建SKILL.md文件
         skill_file = os.path.join(skill_dir, 'SKILL.md')
-        skill_content = f"""# {name}
-
-{description}
-
-## Prompt
-
-{prompt}
-
-## 使用方法
-
-在对话中输入 `/{name}` 来使用这个技能。
-
----
-
-*此技能由 XiaoBa 自我进化功能创建*
-"""
+        skill_content = frontmatter + prompt
 
         with open(skill_file, 'w', encoding='utf-8') as f:
             f.write(skill_content)

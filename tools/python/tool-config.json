@@ -206,6 +206,21 @@
             "type": "string",
             "description": "Skill的prompt内容（仅用于create_skill）"
           },
+          "invocable": {
+            "type": "string",
+            "description": "Skill调用方式（仅用于create_skill）：user=仅用户调用, auto=仅自动调用, both=两者都可",
+            "enum": ["user", "auto", "both"],
+            "default": "user"
+          },
+          "argument_hint": {
+            "type": "string",
+            "description": "Skill参数提示（仅用于create_skill，可选）"
+          },
+          "max_turns": {
+            "type": "number",
+            "description": "Skill最大对话轮数（仅用于create_skill，可选）",
+            "default": 30
+          },
           "timeout": {
             "type": "number",
             "description": "超时时间（可选，默认30000ms）",

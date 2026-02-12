@@ -14,7 +14,7 @@ import { TaskTool } from './task-tool';
 import { TaskOutputTool } from './task-output-tool';
 import { TaskStopTool } from './task-stop-tool';
 import { SkillTool } from './skill-tool';
-import { CreateSkillTool } from './create-skill-tool';
+
 import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
 import { StopSubagentTool } from './stop-subagent-tool';
@@ -78,7 +78,7 @@ export class ToolManager implements ToolExecutor {
 
     // 注册 Skill 工具
     this.registerTool(new SkillTool());
-    this.registerTool(new CreateSkillTool());
+
 
     // 注册子智能体工具
     this.registerTool(new SpawnSubagentTool());

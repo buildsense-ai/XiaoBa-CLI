@@ -10,7 +10,7 @@ const DEFAULT_DANGEROUS_TOOLS = new Set([
   'execute_bash',
   'write_file',
   'edit_file',
-  'create_skill',
+
   'self_evolution'
 ]);
 
