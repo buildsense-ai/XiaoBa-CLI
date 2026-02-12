@@ -1,0 +1,43 @@
+# VCS
+.git
+.gitignore
+
+# Node
+node_modules
+dist
+coverage
+.nyc_output
+*.tsbuildinfo
+
+# Python
+__pycache__
+*.py[cod]
+.venv
+venv
+env
+ENV
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Runtime outputs
+logs
+workspace
+extracted
+files/feishu
+docs/analysis
+docs/runs
+audit
+docs/ppt/*.pptx
+
+# Local config / secrets
+.env
+.env.local
+.env.*.local
+.xiaoba
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea
+.vscode

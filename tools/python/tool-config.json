@@ -59,15 +59,15 @@
     },
     {
       "name": "paper_parser",
-      "description": "解析 SCI 论文 PDF，提取章节内容和元数据",
+      "description": "解析 SCI 论文 PDF，提取章节内容和元数据。支持本地文件路径和远程 URL（如 arXiv 链接），传入 URL 时会跳过上传直接提交 MinerU 解析",
       "script": "tools/python/paper_parser_tool.py",
-      "timeout": 60000,
+      "timeout": 300000,
       "parameters": {
         "type": "object",
         "properties": {
           "pdf_path": {
             "type": "string",
-            "description": "PDF 文件路径"
+            "description": "PDF 文件路径或远程 URL（如 https://arxiv.org/pdf/xxxx.xxxxx）"
           },
           "extract_sections": {
             "type": "boolean",

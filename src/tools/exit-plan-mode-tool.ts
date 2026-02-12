@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
 import { EnterPlanModeTool } from './enter-plan-mode-tool';
 import { styles } from '../theme/colors';
+import { ToolPolicyGateway } from '../utils/tool-policy-gateway';
 
 /**
  * ExitPlanMode 工具 - 退出规划模式并请求用户批准
@@ -36,6 +37,11 @@ export class ExitPlanModeTool implements Tool {
 
       // 获取规划文件路径
       const planFilePath = EnterPlanModeTool.getPlanFilePathBySession(sessionId);
+
+      const pathPermission = ToolPolicyGateway.checkReadPath(planFilePath, context);
+      if (!pathPermission.allowed) {
+        return `执行被阻止: ${pathPermission.reason}`;
+      }
 
       // 检查规划文件是否存在
       if (!fs.existsSync(planFilePath)) {

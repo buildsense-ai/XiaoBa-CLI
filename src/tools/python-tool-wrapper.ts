@@ -98,7 +98,22 @@ export class PythonToolWrapper implements Tool {
         clearTimeout(timeoutId);
 
         if (code !== 0) {
-          reject(new Error(`Python 脚本退出码: ${code}\n错误信息: ${stderr}`));
+          // BaseTool 把错误 JSON 写到 stdout，stderr 可能为空
+          // 优先从 stdout 提取结构化错误，兜底用 stderr
+          let errorDetail = stderr;
+          if (stdout) {
+            try {
+              const parsed = JSON.parse(stdout);
+              if (parsed.error) {
+                errorDetail = parsed.error;
+              }
+            } catch {
+              if (!stderr) {
+                errorDetail = stdout.slice(0, 500);
+              }
+            }
+          }
+          reject(new Error(`Python 脚本退出码: ${code}\n错误信息: ${errorDetail}`));
           return;
         }
 

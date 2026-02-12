@@ -6,13 +6,15 @@ import { SessionManager } from './session-manager';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
-import { AgentServices } from '../core/agent-session';
+import { AgentServices, BUSY_MESSAGE } from '../core/agent-session';
 import { GauzMemService, GauzMemConfig } from '../utils/gauzmem-service';
 import { ConfigManager } from '../utils/config';
 import { Logger } from '../utils/logger';
 import { FeishuReplyTool } from '../tools/feishu-reply-tool';
 import { FeishuSendFileTool } from '../tools/feishu-send-file-tool';
 import { AskUserQuestionTool } from '../tools/ask-user-question-tool';
+import { SubAgentManager } from '../core/sub-agent-manager';
+import { randomUUID } from 'crypto';
 
 interface PendingAttachment {
   fileName: string;
@@ -20,6 +22,17 @@ interface PendingAttachment {
   type: 'file' | 'image';
   receivedAt: number;
 }
+
+interface PendingAnswer {
+  id: string;
+  sessionKey: string;
+  chatId: string;
+  expectedSenderId: string;
+  resolve: (text: string) => void;
+  timeoutHandle: ReturnType<typeof setTimeout>;
+}
+
+const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 
 /**
  * FeishuBot 主类
@@ -37,8 +50,10 @@ export class FeishuBot {
   private askUserQuestionTool: AskUserQuestionTool | null = null;
   /** 已处理的消息 ID，用于去重 */
   private processedMsgIds = new Set<string>();
-  /** 等待用户回答的 pending Promise，key 为 chatId */
-  private pendingAnswers = new Map<string, { resolve: (text: string) => void }>();
+  /** key = pendingAnswerId */
+  private pendingAnswers = new Map<string, PendingAnswer>();
+  /** key = sessionKey, value = pendingAnswerId */
+  private pendingAnswerBySession = new Map<string, string>();
   /** 等待用户后续指令的附件队列，key 为 sessionKey */
   private pendingAttachments = new Map<string, PendingAttachment[]>();
 
@@ -153,21 +168,45 @@ export class FeishuBot {
       this.processedMsgIds = new Set(ids.slice(-500));
     }
 
+    const key = this.sessionManager.getSessionKey(msg);
+
+    // ── 拦截：如果当前 session 正在等待回答，按 sender 精确匹配 ──
+    const pendingId = this.pendingAnswerBySession.get(key);
+    if (pendingId) {
+      const pending = this.pendingAnswers.get(pendingId);
+      if (!pending) {
+        this.pendingAnswerBySession.delete(key);
+      } else if (msg.senderId === pending.expectedSenderId) {
+        this.clearPendingAnswerById(pending.id);
+        Logger.info(`[${key}] 收到用户对提问的回复: ${msg.text.slice(0, 50)}...`);
+        pending.resolve(msg.text);
+        return;
+      } else {
+        Logger.info(`[${key}] 忽略非提问发起人的回复: ${msg.senderId}`);
+        return;
+      }
+    }
+
     // 群聊需要 @机器人 才响应
     if (msg.chatType === 'group' && !msg.mentionBot) return;
 
-    // ── 拦截：如果当前 chatId 有等待回答的问题，直接 resolve 并返回 ──
-    const pending = this.pendingAnswers.get(msg.chatId);
-    if (pending) {
-      this.pendingAnswers.delete(msg.chatId);
-      Logger.info(`[${msg.chatId}] 收到用户对提问的回复: ${msg.text.slice(0, 50)}...`);
-      pending.resolve(msg.text);
-      return;
-    }
-
     // 获取或创建会话
-    const key = this.sessionManager.getSessionKey(msg);
     const session = this.sessionManager.getOrCreate(key);
+
+    // 注册持久化飞书回调到 SubAgentManager（不随 handleMessage 结束而注销）
+    // 这样后台子智能体可以在主会话空闲时继续给用户发消息
+    const subAgentManager = SubAgentManager.getInstance();
+    subAgentManager.registerFeishuCallbacks(key, {
+      reply: async (text: string) => {
+        await this.sender.reply(msg.chatId, text);
+      },
+      sendFile: async (filePath: string, fileName: string) => {
+        await this.sender.sendFile(msg.chatId, filePath, fileName);
+      },
+      injectMessage: async (text: string) => {
+        await this.handleSubAgentFeedback(key, msg.chatId, msg.senderId, text);
+      },
+    });
 
     // 处理斜杠命令
     if (msg.text.startsWith('/')) {
@@ -219,6 +258,13 @@ export class FeishuBot {
       }
     }
 
+    // 并发保护：如果会话正忙，直接回复 BUSY_MESSAGE，不碰工具绑定
+    // 避免重复消息的 onMessage 覆盖并解绑正在使用的工具
+    if (session.isBusy()) {
+      await this.sender.reply(msg.chatId, BUSY_MESSAGE);
+      return;
+    }
+
     // 绑定飞书工具到当前会话（按 sessionKey 隔离，避免并发串话）
     this.feishuReplyTool.bindSession(key, msg.chatId, async (chatId, text) => {
       await this.sender.reply(chatId, text);
@@ -237,7 +283,7 @@ export class FeishuBot {
         // waitFn: 等待飞书用户的下一条回复
         () => {
           return new Promise<string>((resolve) => {
-            this.pendingAnswers.set(chatId, { resolve });
+            this.registerPendingAnswer(key, chatId, msg.senderId, resolve);
           });
         },
       );
@@ -245,7 +291,10 @@ export class FeishuBot {
 
     try {
       // 严格 tool-only：平台层不再自动发送最终文本，所有可见消息必须由 feishu_reply/feishu_send_file 工具发出
-      await session.handleMessage(userText);
+      const reply = await session.handleMessage(userText);
+      if (reply === BUSY_MESSAGE || reply.startsWith('处理消息时出错:')) {
+        await this.sender.reply(msg.chatId, reply);
+      }
     } finally {
       this.feishuReplyTool.unbindSession(key);
       this.feishuSendFileTool.unbindSession(key);
@@ -253,8 +302,77 @@ export class FeishuBot {
         this.askUserQuestionTool.unbindFeishuSession(key);
       }
       // 清理可能残留的 pending（如超时或异常中断）
-      this.pendingAnswers.delete(msg.chatId);
+      this.clearPendingAnswerBySession(key);
     }
+  }
+
+  /**
+   * 处理子智能体反馈注入：绑定飞书工具，触发主 agent 新一轮推理。
+   * 等待主会话空闲后再注入，避免覆盖正在使用的工具绑定。
+   */
+  private async handleSubAgentFeedback(
+    sessionKey: string,
+    chatId: string,
+    senderId: string,
+    text: string,
+  ): Promise<void> {
+    const MAX_RETRIES = 10;
+    const RETRY_DELAY_MS = 5000;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+      }
+
+      const session = this.sessionManager.getOrCreate(sessionKey);
+
+      // 等待主会话空闲，避免覆盖正在使用的工具绑定
+      if (session.isBusy()) {
+        Logger.info(`[${sessionKey}] 主会话忙，等待重试注入子智能体反馈 (${attempt + 1}/${MAX_RETRIES + 1})`);
+        continue;
+      }
+
+      // 主会话空闲，绑定飞书工具
+      this.feishuReplyTool.bindSession(sessionKey, chatId, async (_chatId, replyText) => {
+        await this.sender.reply(chatId, replyText);
+      });
+      this.feishuSendFileTool.bindSession(sessionKey, chatId, (_chatId, filePath, fileName) =>
+        this.sender.sendFile(chatId, filePath, fileName)
+      );
+      if (this.askUserQuestionTool) {
+        this.askUserQuestionTool.bindFeishuSession(
+          sessionKey,
+          async (question: string) => {
+            await this.sender.reply(chatId, question);
+          },
+          () => new Promise<string>((resolve) => {
+            this.registerPendingAnswer(sessionKey, chatId, senderId, resolve);
+          }),
+        );
+      }
+
+      try {
+        const reply = await session.handleMessage(text);
+        if (reply === BUSY_MESSAGE) {
+          // isBusy() 与 handleMessage() 之间无 await，此分支理论上不会触发
+          Logger.info(`[${sessionKey}] 主会话竞态忙碌，将重试`);
+          continue;
+        }
+        if (reply.startsWith('处理消息时出错:')) {
+          await this.sender.reply(chatId, reply);
+        }
+        return;
+      } finally {
+        this.feishuReplyTool.unbindSession(sessionKey);
+        this.feishuSendFileTool.unbindSession(sessionKey);
+        if (this.askUserQuestionTool) {
+          this.askUserQuestionTool.unbindFeishuSession(sessionKey);
+        }
+        this.clearPendingAnswerBySession(sessionKey);
+      }
+    }
+
+    Logger.warning(`[${sessionKey}] 子智能体反馈注入失败：主会话持续忙碌`);
   }
 
   /**
@@ -262,6 +380,10 @@ export class FeishuBot {
    */
   destroy(): void {
     this.sessionManager.destroy();
+    for (const pendingId of Array.from(this.pendingAnswers.keys())) {
+      this.clearPendingAnswerById(pendingId);
+    }
+    this.pendingAnswerBySession.clear();
     this.pendingAttachments.clear();
     Logger.info('飞书机器人已停止');
   }
@@ -296,5 +418,56 @@ export class FeishuBot {
       '如果任务不明确，先提出一个最小澄清问题；如果任务足够明确，再自行执行。',
       this.formatAttachmentContext(attachments),
     ].join('\n');
+  }
+
+  private registerPendingAnswer(
+    sessionKey: string,
+    chatId: string,
+    expectedSenderId: string,
+    resolve: (text: string) => void,
+  ): void {
+    const existingId = this.pendingAnswerBySession.get(sessionKey);
+    if (existingId) {
+      const existing = this.pendingAnswers.get(existingId);
+      this.clearPendingAnswerById(existingId);
+      existing?.resolve('（提问已更新，请回答最新问题）');
+    }
+
+    const id = randomUUID();
+    const timeoutHandle = setTimeout(() => {
+      const pending = this.pendingAnswers.get(id);
+      if (!pending) return;
+      this.clearPendingAnswerById(id);
+      pending.resolve('（用户未在120秒内回复）');
+    }, PENDING_ANSWER_TIMEOUT_MS);
+
+    this.pendingAnswers.set(id, {
+      id,
+      sessionKey,
+      chatId,
+      expectedSenderId,
+      resolve,
+      timeoutHandle,
+    });
+    this.pendingAnswerBySession.set(sessionKey, id);
+  }
+
+  private clearPendingAnswerBySession(sessionKey: string): void {
+    const pendingId = this.pendingAnswerBySession.get(sessionKey);
+    if (!pendingId) return;
+    this.clearPendingAnswerById(pendingId);
+  }
+
+  private clearPendingAnswerById(pendingId: string): void {
+    const pending = this.pendingAnswers.get(pendingId);
+    if (!pending) return;
+
+    clearTimeout(pending.timeoutHandle);
+    this.pendingAnswers.delete(pendingId);
+
+    const mappedId = this.pendingAnswerBySession.get(pending.sessionKey);
+    if (mappedId === pendingId) {
+      this.pendingAnswerBySession.delete(pending.sessionKey);
+    }
   }
 }

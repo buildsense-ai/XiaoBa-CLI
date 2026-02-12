@@ -1,0 +1,51 @@
+x-xiaoba-base: &xiaoba-base
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  image: xiaoba:latest
+  pull_policy: never
+  restart: unless-stopped
+  command: ["node", "dist/index.js", "feishu"]
+  read_only: true
+  tmpfs:
+    - /tmp:size=256m,mode=1777
+    - /home/xiaoba/.xiaoba:size=16m,uid=10001,gid=10001
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  environment:
+    NODE_ENV: production
+    PYTHON_EXECUTABLE: /usr/bin/python3
+    PYTHONUTF8: "1"
+  networks:
+    - xiaoba-net
+
+services:
+  # One tenant per compose project.
+  # Start multiple tenants by running this file multiple times with different:
+  # - TENANT value
+  # - compose project name (-p)
+  xiaoba:
+    <<: *xiaoba-base
+    container_name: xiaoba-${TENANT}
+    env_file:
+      - ../tenants/${TENANT}/.env
+    volumes:
+      - ../tenants/${TENANT}/data/files:/app/files
+      - ../tenants/${TENANT}/data/logs:/app/logs
+      - ../tenants/${TENANT}/data/workspace:/app/workspace
+      - ../tenants/${TENANT}/data/extracted:/app/extracted
+      - ../tenants/${TENANT}/data/docs_analysis:/app/docs/analysis
+      - ../tenants/${TENANT}/data/docs_runs:/app/docs/runs
+      - ../tenants/${TENANT}/data/docs_ppt:/app/docs/ppt
+      - ../tenants/${TENANT}/data/audit:/app/audit
+      # Optional: provide ODA converter binary from host for DWG support
+      # - /opt/oda/ODAFileConverter.AppImage:/usr/local/bin/ODAFileConverter:ro
+    cpus: ${TENANT_CPUS:-0.4}
+    mem_limit: ${TENANT_MEM_LIMIT:-1g}
+    pids_limit: ${TENANT_PIDS_LIMIT:-512}
+
+networks:
+  xiaoba-net:
+    driver: bridge

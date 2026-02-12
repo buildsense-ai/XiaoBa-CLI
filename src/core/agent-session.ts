@@ -9,11 +9,14 @@ import {
 } from '../skills/skill-activation-protocol';
 import { GauzMemService } from '../utils/gauzmem-service';
 import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
+import { SubAgentManager } from './sub-agent-manager';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 
 const TRANSIENT_MEMORY_CONTEXT_PREFIX = '[transient_memory_context]';
+const TRANSIENT_SUBAGENT_STATUS_PREFIX = '[transient_subagent_status]';
+export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
 
 // ─── 接口定义 ───────────────────────────────────────────
 
@@ -111,8 +114,11 @@ export class AgentSession {
   /** 完整消息处理管线：记忆搜索 → AI 推理 → 工具循环 → 同步历史 */
   async handleMessage(text: string, callbacks?: SessionCallbacks): Promise<string> {
     if (this.busy) {
-      return '正在处理上一条消息，请稍候...';
+      return BUSY_MESSAGE;
     }
+
+    // 按“单次消息”统计 metrics，避免跨轮次累积导致定位困难
+    Metrics.reset();
 
     this.busy = true;
     this.lastActiveAt = Date.now();
@@ -141,6 +147,26 @@ export class AgentSession {
             this.messages[this.messages.length - 1],
           ];
         }
+      }
+
+      // 注入后台子智能体状态（临时上下文，不持久化）
+      const subAgentManager = SubAgentManager.getInstance();
+      const runningSubAgents = subAgentManager.listByParent(this.key);
+      if (runningSubAgents.length > 0) {
+        const statusLines = runningSubAgents.map(s => {
+          const statusLabel = s.status === 'running' ? '运行中' : s.status === 'completed' ? '已完成' : s.status === 'failed' ? '失败' : '已停止';
+          const latest = s.progressLog[s.progressLog.length - 1] ?? '';
+          const summary = s.status === 'completed' && s.resultSummary ? `\n  结果: ${s.resultSummary.slice(0, 200)}` : '';
+          return `- [${s.id}] ${s.taskDescription} (${statusLabel}) ${latest}${summary}`;
+        }).join('\n');
+
+        const subagentStatusMsg: Message = {
+          role: 'system',
+          content: `${TRANSIENT_SUBAGENT_STATUS_PREFIX}\n当前有 ${runningSubAgents.length} 个后台子任务：\n${statusLines}\n\n用户如果询问任务进度，请基于以上信息回答。如果用户要求停止任务，使用 stop_subagent 工具。`,
+        };
+        // 插入到最后一条用户消息之前
+        const lastUserIdx = contextMessages.length - 1;
+        contextMessages.splice(lastUserIdx, 0, subagentStatusMsg);
       }
 
       // 运行对话循环（优先用显式设置的 maxTurns，否则从 messages 中检测已激活 skill）
@@ -180,9 +206,8 @@ export class AgentSession {
       const result = await runner.run(contextMessages, runnerCallbacks);
 
       // 优先采用 runner 返回的完整消息（含压缩结果），修复历史持续膨胀问题
-      const persistedMessages = memoryInjected
-        ? this.removeTransientMemoryMessages(result.messages)
-        : result.messages;
+      // 始终清理临时上下文（记忆 + 子智能体状态），避免持久化到历史
+      const persistedMessages = this.removeTransientMessages(result.messages);
       this.messages = [...persistedMessages];
 
       // 同步 skill 激活状态
@@ -413,14 +438,13 @@ ${conversationText}
     return this.key.startsWith('user:') || this.key.startsWith('group:');
   }
 
-  private removeTransientMemoryMessages(messages: Message[]): Message[] {
-    return messages.filter(msg =>
-      !(
-        msg.role === 'system' &&
-        typeof msg.content === 'string' &&
-        msg.content.startsWith(TRANSIENT_MEMORY_CONTEXT_PREFIX)
-      )
-    );
+  private removeTransientMessages(messages: Message[]): Message[] {
+    return messages.filter(msg => {
+      if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
+      if (msg.content.startsWith(TRANSIENT_MEMORY_CONTEXT_PREFIX)) return false;
+      if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
+      return true;
+    });
   }
 
   /** /skills 命令 */

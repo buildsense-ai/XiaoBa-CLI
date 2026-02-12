@@ -58,6 +58,16 @@ class PptxGeneratorTool(BaseTool):
         slides_data = params['slides']
         theme_name = params.get('theme', 'academic')
 
+        # 兜底：AI 有时会把 slides 当 JSON 字符串传入，自动反序列化
+        if isinstance(slides_data, str):
+            import json
+            try:
+                slides_data = json.loads(slides_data)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"slides 参数不是合法的 JSON 数组: {e}")
+        if not isinstance(slides_data, list):
+            raise ValueError(f"slides 参数必须是数组，收到了 {type(slides_data).__name__}")
+
         self.theme = THEMES.get(theme_name, THEMES['academic'])
 
         # 确保输出目录存在

@@ -3,6 +3,7 @@ import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
 import { styles } from '../theme/colors';
 import { PlanModeStore } from './plan-mode-store';
+import { ToolPolicyGateway } from '../utils/tool-policy-gateway';
 
 /**
  * EnterPlanMode 工具 - 进入规划模式
@@ -44,6 +45,11 @@ export class EnterPlanModeTool implements Tool {
       const absolutePath = path.isAbsolute(plan_file)
         ? plan_file
         : path.join(context.workingDirectory, plan_file);
+
+      const pathPermission = ToolPolicyGateway.checkWritePath(absolutePath, context);
+      if (!pathPermission.allowed) {
+        return `执行被阻止: ${pathPermission.reason}`;
+      }
 
       // 确保目录存在
       const dir = path.dirname(absolutePath);

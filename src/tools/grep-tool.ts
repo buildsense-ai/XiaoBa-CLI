@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from 'child_process';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { ToolPolicyGateway } from '../utils/tool-policy-gateway';
 
 /**
  * Grep 工具 - 代码内容搜索（基于 ripgrep）
@@ -66,6 +67,14 @@ export class GrepTool implements Tool {
     } = args;
 
     try {
+      const resolvedSearchPath = searchPath
+        ? (path.isAbsolute(searchPath) ? searchPath : path.join(context.workingDirectory, searchPath))
+        : context.workingDirectory;
+      const pathPermission = ToolPolicyGateway.checkReadPath(resolvedSearchPath, context);
+      if (!pathPermission.allowed) {
+        return `执行被阻止: ${pathPermission.reason}`;
+      }
+
       // 检查是否安装了 ripgrep
       const rgVersion = spawnSync('rg', ['--version'], { stdio: 'pipe' });
       if (rgVersion.status !== 0) {
@@ -114,10 +123,7 @@ export class GrepTool implements Tool {
       rgArgs.push('--');
       rgArgs.push(pattern);
       if (searchPath) {
-        const absolutePath = path.isAbsolute(searchPath)
-          ? searchPath
-          : path.join(context.workingDirectory, searchPath);
-        rgArgs.push(absolutePath);
+        rgArgs.push(resolvedSearchPath);
       }
 
       // 执行命令（使用参数化调用防止命令注入）

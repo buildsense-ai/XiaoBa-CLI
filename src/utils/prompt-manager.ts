@@ -26,8 +26,13 @@ export class PromptManager {
   static async buildSystemPrompt(): Promise<string> {
     const basePrompt = this.getBaseSystemPrompt();
     const skillsSection = await this.buildSkillsSection();
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
     return `${basePrompt}
+
+## 环境信息
+
+当前日期: ${today}
 
 ${skillsSection}`;
   }

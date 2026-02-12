@@ -1,43 +1,74 @@
-# 依赖
+# ------------------------------
+# Node / TypeScript
+# ------------------------------
 node_modules/
-
-# 构建输出
 dist/
+coverage/
+.nyc_output/
+*.tsbuildinfo
 
-# 日志
+# ------------------------------
+# Python
+# ------------------------------
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# ------------------------------
+# Runtime artifacts
+# ------------------------------
+logs/
+workspace/
+extracted/
+files/feishu/
+docs/analysis/
+docs/runs/
+audit/
+tenants/*/data/
+tenants/*/.env
+tenants/*/runtime.json
+*.tmp
+*.temp
+*.bak
+.cache/
+
+# ------------------------------
+# Generated outputs
+# ------------------------------
+docs/ppt/*.pptx
+
+# ------------------------------
+# Secrets / local config
+# ------------------------------
+.env
+.env.local
+.env.*.local
+.xiaoba/
+
+# ------------------------------
+# Logs
+# ------------------------------
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 
-# 环境变量（包含敏感信息）
-.env
-.env.local
-.env.*.local
-
-# 用户配置（包含 API 密钥）
-.xiaoba/
-
-# 操作系统
+# ------------------------------
+# OS / Editor
+# ------------------------------
 .DS_Store
 Thumbs.db
-
-# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# 测试覆盖率
-coverage/
-.nyc_output/
-
-# 临时文件
-*.tmp
-.cache/
-
-# 论文分析结果
-docs/analysis/
-extracted/

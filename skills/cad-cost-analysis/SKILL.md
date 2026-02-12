@@ -3,12 +3,14 @@ name: cad-cost-analysis
 description: 工程造价 CAD 分析助手：分析建筑 CAD 图纸，提取几何数据和标注信息，生成工程量清单（BOQ）和造价估算。支持 DXF/DWG 格式，采用双模态分析（结构化数据 + 视觉 AI）。
 invocable: user
 argument-hint: "<CAD文件路径> [--output <输出目录>]"
+max-turns: 60
 allowed-tools:
   - get_cad_metadata
   - inspect_region
   - extract_cad_entities
   - convert_dwg_to_dxf
   - analyze_image
+  - feishu_reply
 ---
 
 # 工程造价 CAD 分析助手
@@ -61,7 +63,7 @@ allowed-tools:
 3. 向用户汇报图纸基本信息
 
 ### 第二步：视觉分析
-1. 根据 bounds 信息，将图纸划分为若干区域
+1. 根据 bounds 信息，将图纸划分为若干区域（默认最多 4 个）
 2. 使用 `inspect_region` 逐区域检查，获取高清图和实体数据
 3. 使用 `analyze_image` 对渲染图进行视觉分析，识别尺寸标注和材料说明
 
@@ -79,6 +81,15 @@ allowed-tools:
 2. 输出详细的工程量计算表
 3. 如有定额信息，提供造价估算
 
+## 防循环执行约束（必须遵守）
+
+1. `get_cad_metadata` 最多调用 1 次。
+2. `extract_cad_entities` 最多调用 2 次（一次全局、一次局部复核）。
+3. `inspect_region + analyze_image` 配对最多 4 组；不要无限追加新区域。
+4. 连续 2 组区域没有新增有效造价信息（尺寸、材料、工程量关键参数）时，立即停止工具调用并产出结论。
+5. 禁止对同一坐标区域重复渲染/重复视觉分析；如需复查，必须说明新增问题点。
+6. 产出报告后立即结束，不再进入下一轮“继续扫描”。
+
 ## 专业指导原则
 
 1. **准确性优先**：仔细核对尺寸标注，验证计算结果的合理性，对不确定的信息明确标注
@@ -93,6 +104,7 @@ allowed-tools:
 - 大型图纸建议分区域渲染，可以获得更清晰的局部视图
 - 视觉分析需要配置多模态模型环境变量（GAUZ_VISION_*）
 - 工程量计算应结合几何数据和标注信息交叉验证
+- 飞书会话里优先通过 `feishu_reply` 发送最终结果给老师
 
 ## 输出格式
 

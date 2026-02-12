@@ -3,12 +3,14 @@ name: cad-supervision
 description: 工程监理审核助手：分析建筑 CAD 图纸，提供合规性检查和合理化建议。支持 DXF/DWG 格式，基于视觉分析识别尺寸标注和规范问题。
 invocable: user
 argument-hint: "<CAD文件路径>"
+max-turns: 50
 allowed-tools:
   - get_cad_metadata
   - inspect_region
   - extract_cad_entities
   - convert_dwg_to_dxf
   - analyze_image
+  - feishu_reply
 ---
 
 # 工程监理审核助手
@@ -58,7 +60,15 @@ allowed-tools:
 
 1. 调用 `get_cad_metadata` 获取边界和全图缩略图
 2. 使用返回的边界坐标检查全图或局部区域
-3. 根据需要逐步检查更多局部区域
+3. 根据需要逐步检查更多局部区域（默认最多 4 个区域）
+
+## 防循环执行约束（必须遵守）
+
+1. `get_cad_metadata` 最多调用 1 次。
+2. `inspect_region + analyze_image` 配对最多 4 组。
+3. 连续 2 组区域没有新增审核证据（规范风险点、尺寸冲突、标注缺失）时，立即停止继续扫描。
+4. 禁止重复分析同一坐标区域；复查必须有明确新问题。
+5. 形成审核结论后立即结束本轮，不要继续工具循环。
 
 ## 审核要点
 
@@ -89,3 +99,4 @@ allowed-tools:
 - 视觉分析需要配置多模态模型环境变量（GAUZ_VISION_*）
 - 审核意见应基于现行国家规范和行业标准
 - 对不确定的问题应标注为"建议复核"而非直接判定
+- 飞书会话里优先通过 `feishu_reply` 发送最终审核结论

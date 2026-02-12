@@ -30,9 +30,10 @@ export class TaskStopTool implements Tool {
 
   async execute(args: any, context: ToolExecutionContext): Promise<string> {
     const { task_id } = args;
+    const ownerSessionId = context.sessionId || 'unknown';
 
     try {
-      const agent = this.agentManager.getAgent(task_id);
+      const agent = this.agentManager.getAgentForOwner(task_id, ownerSessionId);
 
       if (!agent) {
         return `错误: 未找到任务 ${task_id}`;

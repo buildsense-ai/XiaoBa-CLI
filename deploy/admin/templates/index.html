@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XiaoBa 控制台</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b0f1a;
+      --surface: #111827;
+      --card: #1a2234;
+      --card-hover: #1e2940;
+      --border: #253049;
+      --border-light: #2d3a54;
+      --text: #e2e8f0;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent: #00d4aa;
+      --accent-dim: rgba(0, 212, 170, 0.12);
+      --accent-glow: rgba(0, 212, 170, 0.25);
+      --blue: #3b82f6;
+      --blue-dim: rgba(59, 130, 246, 0.12);
+      --amber: #f59e0b;
+      --amber-dim: rgba(245, 158, 11, 0.12);
+      --red: #ef4444;
+      --red-dim: rgba(239, 68, 68, 0.12);
+      --radius: 12px;
+      --radius-sm: 8px;
+      --font: 'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      --mono: 'JetBrains Mono', 'Cascadia Mono', 'Consolas', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* ── Top bar ── */
+    .topbar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 28px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(12px);
+    }
+    .topbar-logo {
+      width: 28px; height: 28px;
+      background: linear-gradient(135deg, var(--accent), #00b894);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 14px; color: #0b0f1a;
+      flex-shrink: 0;
+    }
+    .topbar-title {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .topbar-badge {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--accent);
+      background: var(--accent-dim);
+      border: 1px solid rgba(0,212,170,0.2);
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+    .topbar-spacer { flex: 1; }
+    .topbar-status {
+      font-size: 12px;
+      color: var(--text-muted);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .topbar-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 6px var(--accent-glow);
+    }
+    .topbar-dot.off {
+      background: var(--red);
+      box-shadow: 0 0 6px rgba(239,68,68,0.3);
+    }
+
+    /* ── Layout ── */
+    .layout {
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      min-height: calc(100vh - 56px);
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      padding: 20px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      overflow-y: auto;
+    }
+    .sidebar-section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      padding: 0 8px;
+      margin-bottom: 4px;
+    }
+
+    /* Tenant list */
+    .tenant-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 340px;
+      overflow-y: auto;
+    }
+    .tenant-list::-webkit-scrollbar { width: 4px; }
+    .tenant-list::-webkit-scrollbar-track { background: transparent; }
+    .tenant-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    .tenant-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      text-decoration: none;
+      color: var(--text);
+      transition: background 0.15s;
+      cursor: pointer;
+    }
+    .tenant-item:hover { background: var(--card); }
+    .tenant-item.active {
+      background: var(--accent-dim);
+      border: 1px solid rgba(0,212,170,0.18);
+    }
+    .tenant-item .led {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .led.running { background: var(--accent); box-shadow: 0 0 8px var(--accent-glow); }
+    .led.exited, .led.not_created { background: var(--amber); box-shadow: 0 0 6px rgba(245,158,11,0.25); }
+    .led.dead, .led.error { background: var(--red); box-shadow: 0 0 6px rgba(239,68,68,0.25); }
+    .led.unknown { background: var(--text-muted); }
+    .tenant-item .name {
+      font-size: 13px;
+      font-weight: 500;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tenant-item .tag {
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+    .tag.running { color: var(--accent); background: var(--accent-dim); }
+    .tag.exited, .tag.not_created { color: var(--amber); background: var(--amber-dim); }
+    .tag.dead, .tag.error { color: var(--red); background: var(--red-dim); }
+    .tag.unknown { color: var(--text-muted); background: rgba(100,116,139,0.12); }
+
+    .empty-hint {
+      font-size: 13px;
+      color: var(--text-muted);
+      padding: 12px;
+      text-align: center;
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-sm);
+    }
+
+    /* ── Create form (sidebar) ── */
+    .create-form { display: flex; flex-direction: column; gap: 10px; }
+    .form-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      margin-bottom: 2px;
+    }
+    .form-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+      font-size: 13px;
+      font-family: var(--font);
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+    .input::placeholder { color: var(--text-muted); }
+    .input-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 6px;
+    }
+    .input-group { display: flex; flex-direction: column; gap: 2px; }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 500;
+      font-family: var(--font);
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+    .btn:hover { background: var(--card-hover); border-color: var(--border-light); }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), #00b894);
+      color: #0b0f1a;
+      border-color: transparent;
+      font-weight: 600;
+    }
+    .btn-primary:hover { opacity: 0.9; box-shadow: 0 0 16px var(--accent-glow); }
+    .btn-danger {
+      color: var(--red);
+      border-color: rgba(239,68,68,0.25);
+      background: var(--red-dim);
+    }
+    .btn-danger:hover { background: rgba(239,68,68,0.18); }
+    .btn-block { width: 100%; }
+
+    /* ── Main content ── */
+    .main {
+      padding: 24px 28px;
+      overflow-y: auto;
+    }
+
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .panel-title {
+      font-size: 15px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .panel-icon {
+      width: 20px; height: 20px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px;
+    }
+
+    /* ── Status bar ── */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 12px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: 16px;
+    }
+    .status-bar .led-lg {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+    }
+    .status-bar .tenant-name {
+      font-size: 16px;
+      font-weight: 600;
+      font-family: var(--mono);
+    }
+    .status-bar .status-text {
+      font-size: 12px;
+      font-family: var(--mono);
+      padding: 3px 10px;
+      border-radius: 999px;
+    }
+    .status-text.running { color: var(--accent); background: var(--accent-dim); }
+    .status-text.exited, .status-text.not_created { color: var(--amber); background: var(--amber-dim); }
+    .status-text.dead, .status-text.error { color: var(--red); background: var(--red-dim); }
+    .status-text.unknown { color: var(--text-muted); background: rgba(100,116,139,0.12); }
+    .status-bar .path {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-family: var(--mono);
+      margin-left: auto;
+    }
+
+    /* ── Action buttons row ── */
+    .actions-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    /* ── Resource inputs ── */
+    .resource-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    /* ── Env editor ── */
+    .env-editor {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--text);
+      resize: vertical;
+      min-height: 320px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .env-editor:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+
+    /* ── Log viewer ── */
+    .log-viewer {
+      background: #050810;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 14px;
+      min-height: 200px;
+      max-height: 420px;
+      overflow: auto;
+      font-family: var(--mono);
+      font-size: 11.5px;
+      line-height: 1.55;
+      color: #a8c7fa;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .log-viewer::-webkit-scrollbar { width: 6px; }
+    .log-viewer::-webkit-scrollbar-track { background: transparent; }
+    .log-viewer::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    /* ── Empty state ── */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 400px;
+      gap: 12px;
+      color: var(--text-muted);
+    }
+    .empty-state-icon {
+      width: 56px; height: 56px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 24px;
+      margin-bottom: 4px;
+    }
+    .empty-state-title {
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+    .empty-state-desc {
+      font-size: 13px;
+    }
+
+    /* ── Alert ── */
+    .alert {
+      padding: 10px 14px;
+      border-radius: var(--radius-sm);
+      margin-bottom: 16px;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .alert.ok {
+      background: var(--accent-dim);
+      border: 1px solid rgba(0,212,170,0.2);
+      color: var(--accent);
+    }
+    .alert.error {
+      background: var(--red-dim);
+      border: 1px solid rgba(239,68,68,0.2);
+      color: var(--red);
+    }
+    .alert.info {
+      background: var(--blue-dim);
+      border: 1px solid rgba(59,130,246,0.2);
+      color: var(--blue);
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar {
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+        max-height: 50vh;
+      }
+      .status-bar { flex-wrap: wrap; }
+      .status-bar .path { margin-left: 0; width: 100%; }
+      .resource-row { grid-template-columns: 1fr; }
+      .actions-row { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top bar -->
+  <div class="topbar">
+    <div class="topbar-logo">X</div>
+    <span class="topbar-title">XiaoBa</span>
+    <span class="topbar-badge">多租户控制台</span>
+    <div class="topbar-spacer"></div>
+    <div class="topbar-status">
+      <span class="topbar-dot {% if not docker_ready %}off{% endif %}"></span>
+      {% if docker_ready %}Docker 已就绪{% else %}Docker 不可用{% endif %}
+    </div>
+  </div>
+
+  <div class="layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div>
+        <div class="sidebar-section-title">实例列表</div>
+        <div class="tenant-list">
+          {% for item in tenants %}
+            <a class="tenant-item {% if selected and selected.name == item.name %}active{% endif %}"
+               href="/?tenant={{ item.name }}">
+              <span class="led {{ item.status|lower|replace(' ', '_') }}"></span>
+              <span class="name">{{ item.name }}</span>
+              <span class="tag {{ item.status|lower|replace(' ', '_') }}">{{ item.status }}</span>
+            </a>
+          {% endfor %}
+          {% if not tenants %}
+            <div class="empty-hint">暂无实例，在下方创建</div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div>
+        <div class="sidebar-section-title">创建实例</div>
+        <form class="create-form" method="post" action="/tenants/create">
+          <div class="input-group">
+            <span class="form-label">实例名称</span>
+            <input class="input" name="tenant_name" placeholder="如 demo、team-a" required>
+            <span class="form-hint">小写字母/数字/-/_，2-32 字符</span>
+          </div>
+          <div class="input-row">
+            <div class="input-group">
+              <span class="form-label">CPU</span>
+              <input class="input" name="cpus" value="0.4">
+            </div>
+            <div class="input-group">
+              <span class="form-label">内存</span>
+              <input class="input" name="mem_limit" value="1g">
+            </div>
+            <div class="input-group">
+              <span class="form-label">PIDs</span>
+              <input class="input" name="pids_limit" value="512">
+            </div>
+          </div>
+          <button class="btn btn-primary btn-block" type="submit">创建实例</button>
+        </form>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="main">
+      {% if not docker_ready %}
+        <div class="alert error">当前环境未检测到 Docker，启停和日志功能不可用。</div>
+      {% endif %}
+      {% if message %}
+        <div class="alert {{ level }}">{{ message }}</div>
+      {% endif %}
+
+      {% if selected %}
+        <!-- Status bar -->
+        <div class="status-bar">
+          <span class="led-lg led {{ selected.status|lower|replace(' ', '_') }}"></span>
+          <span class="tenant-name">{{ selected.name }}</span>
+          <span class="status-text {{ selected.status|lower|replace(' ', '_') }}">{{ selected.status }}</span>
+          <span class="path">{{ selected.path }}</span>
+        </div>
+
+        <!-- Actions panel -->
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">
+              <span class="panel-icon">&#9654;</span>
+              容器控制
+            </span>
+          </div>
+          <div class="actions-row">
+            <form method="post" action="/tenants/{{ selected.name }}/action" style="display:contents;">
+              <button class="btn btn-primary" name="action" value="up" type="submit">启动</button>
+              <button class="btn" name="action" value="restart" type="submit">重启</button>
+              <button class="btn" name="action" value="stop" type="submit">停止</button>
+              <button class="btn btn-danger" name="action" value="down" type="submit">销毁容器</button>
+            </form>
+            <form method="post" action="/tenants/{{ selected.name }}/action" style="display:contents;">
+              <input type="hidden" name="action" value="up">
+              <input type="hidden" name="build" value="true">
+              <button class="btn" type="submit">重新构建并启动</button>
+            </form>
+          </div>
+        </div>
+
+        <!-- Config panel -->
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">
+              <span class="panel-icon">&#9881;</span>
+              实例配置
+            </span>
+          </div>
+          <form method="post" action="/tenants/{{ selected.name }}/config">
+            <div class="resource-row">
+              <div class="input-group">
+                <span class="form-label">CPU 限制</span>
+                <input class="input" name="cpus" value="{{ selected.runtime.cpus }}">
+              </div>
+              <div class="input-group">
+                <span class="form-label">内存限制</span>
+                <input class="input" name="mem_limit" value="{{ selected.runtime.mem_limit }}">
+              </div>
+              <div class="input-group">
+                <span class="form-label">PIDs 限制</span>
+                <input class="input" name="pids_limit" value="{{ selected.runtime.pids_limit }}">
+              </div>
+            </div>
+            <div class="input-group" style="margin-bottom: 14px;">
+              <span class="form-label">.env 配置</span>
+              <textarea class="env-editor" name="env_content">{{ selected.env_content }}</textarea>
+            </div>
+            <button class="btn btn-primary" type="submit">保存配置</button>
+          </form>
+        </div>
+
+        <!-- Logs panel -->
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">
+              <span class="panel-icon">&#9776;</span>
+              运行日志
+            </span>
+            <button class="btn" type="button" onclick="loadLogs('{{ selected.name }}')">刷新日志</button>
+          </div>
+          <div id="logs" class="log-viewer">点击「刷新日志」加载最近 200 行</div>
+        </div>
+
+      {% else %}
+        <div class="empty-state">
+          <div class="empty-state-icon">X</div>
+          <div class="empty-state-title">选择或创建一个实例</div>
+          <div class="empty-state-desc">在左侧选择已有实例，或创建新的 XiaoBa 实例开始管理</div>
+        </div>
+      {% endif %}
+    </main>
+  </div>
+
+  <script>
+    async function loadLogs(tenant) {
+      const box = document.getElementById("logs");
+      if (!box) return;
+      box.textContent = "加载中...";
+      try {
+        const res = await fetch(`/api/tenants/${encodeURIComponent(tenant)}/logs?tail=200`);
+        if (!res.ok) {
+          const txt = await res.text();
+          box.textContent = `读取失败 (${res.status})\n${txt}`;
+          return;
+        }
+        box.textContent = await res.text();
+        box.scrollTop = box.scrollHeight;
+      } catch (err) {
+        box.textContent = `读取失败: ${err}`;
+      }
+    }
+
+    // Auto-dismiss alerts after 5s
+    document.querySelectorAll('.alert.ok').forEach(el => {
+      setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.4s'; setTimeout(() => el.remove(), 400); }, 5000);
+    });
+  </script>
+</body>
+</html>

@@ -101,7 +101,8 @@ export class TaskTool implements Tool {
       };
 
       // 创建 Agent
-      const agentId = await this.agentManager.createAgent(config);
+      const ownerSessionId = context.sessionId || 'unknown';
+      const agentId = await this.agentManager.createAgent(config, ownerSessionId);
 
       console.log('\n' + styles.highlight(`🤖 启动子智能体: ${description}`));
       console.log(styles.text(`   类型: ${subagent_type}`));

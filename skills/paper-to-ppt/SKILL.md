@@ -44,7 +44,11 @@ argument-hint: "<paper_analysis_dir> [--theme academic|dark|minimal]"
 - 读取 `summary.md` — 获取论文全局概览
 - 读取 `chapters/` 下各章 `analysis.md` — 获取逐章分析
 - 提取论文标题、作者、核心贡献、方法、实验结果、结论
-- 识别产出目录中的图片文件（论文图表），记录可用图片路径
+- **读取 `progress.json`** — 获取 `full_md_path`，从中推导出论文图片目录（通常为 `extracted/<pdf_id>/images/`）
+- **读取 `decision_log.md`** — 找到所有被 analyzed 的图片及其文件路径，这些是精读时确认有价值的核心图表
+- 用 `glob` 或 `read_file` 验证图片文件是否存在，建立可用图片清单（路径 → Figure 编号 + caption 的映射）
+
+> **关键**：论文原图在 `extracted/<pdf_id>/images/` 目录下，不在精读产出目录中。必须通过 progress.json 的 full_md_path 定位到 extracted 目录。
 
 #### Step 2 — 设计 PPT 大纲
 
@@ -87,7 +91,8 @@ argument-hint: "<paper_analysis_dir> [--theme academic|dark|minimal]"
 - 对每页：
   - 选择合适的 layout（title / content / section_header / two_column / image_text）
   - 从精读产出中提炼该页的标题和要点（精简、不照搬原文）
-  - 如需插入图片，验证图片路径存在
+  - **优先使用 `image_text` 布局展示核心图表**：方法架构图、实验结果图、性能对比图等在 decision_log 中标记为 analyzed 的图片，必须以 `image_text` 布局嵌入 PPT，配上精读中的解读文字
+  - 插入图片时使用 Step 1 中验证过的绝对路径或相对于工作目录的路径
 - 构造完整的 JSON 参数对象
 
 #### Step 5 — 调用 pptx_generator 生成

@@ -302,20 +302,31 @@ class MinerUPDFParser:
         }
 
 
+def is_remote_url(path: str) -> bool:
+    """判断是否为远程 URL"""
+    return path.startswith("http://") or path.startswith("https://")
+
+
 def parse_pdf_with_mineru(pdf_path: str) -> Dict:
-    """使用 MinerU 解析 PDF"""
+    """使用 MinerU 解析 PDF，支持本地文件路径或远程 URL"""
+    display_name = pdf_path if is_remote_url(pdf_path) else os.path.basename(pdf_path)
     sys.stderr.write(f"\n{'='*60}\n")
-    sys.stderr.write(f"[MinerU] 开始解析 PDF: {os.path.basename(pdf_path)}\n")
+    sys.stderr.write(f"[MinerU] 开始解析 PDF: {display_name}\n")
     sys.stderr.write(f"{'='*60}\n\n")
     sys.stderr.flush()
 
     parser = MinerUPDFParser()
 
-    # 1. 上传到 MinIO
-    minio_url = parser.upload_to_minio(pdf_path)
+    # 1. 如果是远程 URL 则直接使用，否则上传到 MinIO
+    if is_remote_url(pdf_path):
+        sys.stderr.write(f"[MinerU] 检测到远程 URL，跳过 MinIO 上传，直接提交解析\n")
+        sys.stderr.flush()
+        file_url = pdf_path
+    else:
+        file_url = parser.upload_to_minio(pdf_path)
 
     # 2. 提交任务
-    task_id = parser.submit_task(minio_url)
+    task_id = parser.submit_task(file_url)
 
     # 3. 等待结果
     sys.stderr.write(f"[MinerU] 步骤3: 等待 MinerU API 解析...\n")
@@ -555,7 +566,14 @@ def main():
         args = json.loads(sys.argv[1])
         pdf_path = args.get("pdf_path")
 
-        if not pdf_path or not os.path.exists(pdf_path):
+        if not pdf_path:
+            print(json.dumps({
+                "success": False,
+                "error": "缺少参数: pdf_path"
+            }))
+            sys.exit(1)
+
+        if not is_remote_url(pdf_path) and not os.path.exists(pdf_path):
             print(json.dumps({
                 "success": False,
                 "error": f"文件不存在: {pdf_path}"

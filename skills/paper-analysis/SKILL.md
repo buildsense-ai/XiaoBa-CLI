@@ -2,7 +2,7 @@
 name: paper-analysis
 description: 论文精读（Agent-native）：像人一样逐章顺序阅读，基于累积的阅读理解自主判断图表是否需要多模态分析。
 invocable: user
-argument-hint: "<pdf_path> [--resume <已有分析目录>]"
+argument-hint: "<pdf_path_or_url> [--resume <已有分析目录>]"
 max-turns: 150
 ---
 
@@ -22,7 +22,7 @@ max-turns: 150
 
 ## 硬规则（Non-Negotiables）
 
-1. **进度文件必须维护**：每章开始前写入 `progress.json`，每章完成后更新。这是断点续跑的唯一依据。
+1. **进度文件只写一次**：在 Step 2 初始化 `progress.json`（含 pdf_path、full_md_path、章节列表）。之后**不再更新** progress.json——每章完成的标志是对应的 `chapters/<NN>_<slug>/analysis.md` 文件存在。断点续跑时通过检查文件系统判断进度，不依赖 progress.json 中的 status 字段。
 2. **图表决策必须记录**：每遇到一个 image block，必须在 `decision_log.md` 追加一条记录（看了/没看/理由）。不记录 = 违规。
 3. **先写日志再写分析**：处理完一个 image block 后，先追加 decision_log，再继续阅读下一个 block。不要攒到章节末尾批量补写。
 
@@ -41,22 +41,24 @@ max-turns: 150
 
 如果用户提供了 `--resume <已有分析目录>`：
 
-1. 读取 `<path>/progress.json`
-2. 找到第一个 status 不为 `"done"` 的章节
-3. 如果该章 status 为 `"in_progress"`：该章可能写了一半，重新从 3a 开始处理该章（覆盖已有的 analysis.md）
-4. 如果该章 status 为 `"pending"`：正常从 3a 开始
-5. 跳过所有 status 为 `"done"` 的章节
-6. `decision_log.md` 保持追加，不清空已有记录
+1. 读取 `<path>/progress.json` 获取 `full_md_path` 和章节列表
+2. 扫描 `<path>/chapters/` 目录，检查哪些章节已有 `analysis.md` 文件
+3. 跳过已有 `analysis.md` 的章节，从第一个缺失的章节开始
+4. `decision_log.md` 保持追加，不清空已有记录
 
 不需要重新执行 Step 1 和 Step 2（PDF 已解析，大纲已获取），直接进入 Step 3。
 
 ### Step 1：解析 PDF
 
+`pdf_path` 支持两种输入：
+- **本地文件路径**：如 `extracted/pdf_xxx/xxx.pdf`，会先上传 MinIO 再提交 MinerU 解析
+- **远程 URL**：如 `https://arxiv.org/pdf/2511.16518`，直接提交 MinerU 解析，无需下载
+
 调用 `paper_parser`：
 
 ```json
 {
-  "pdf_path": "<pdf_path>",
+  "pdf_path": "<pdf_path_or_url>",
   "extract_sections": true,
   "extract_metadata": true
 }
@@ -89,7 +91,7 @@ max-turns: 150
 
 这一步让你和用户都对论文有全局认知，再开始逐章精读。
 
-**初始化进度文件**：用 `write_file` 创建 `progress.json`：
+**初始化进度文件**：用 `write_file` 创建 `progress.json`（仅此一次，后续不再更新）：
 
 ```json
 {
@@ -97,10 +99,9 @@ max-turns: 150
   "full_md_path": "<full_md_path>",
   "total_chapters": <N>,
   "chapters": [
-    {"index": 1, "title": "<章节标题>", "status": "pending"},
-    {"index": 2, "title": "<章节标题>", "status": "pending"}
-  ],
-  "current_chapter": null
+    {"index": 1, "title": "<章节标题>", "chunk_indices": [<对应的 chunk index>]},
+    {"index": 2, "title": "<章节标题>", "chunk_indices": [<对应的 chunk index>]}
+  ]
 }
 ```
 
@@ -120,8 +121,6 @@ max-turns: 150
 ### Step 3：逐章精读（核心）
 
 对大纲中的每一章，按顺序执行：
-
-**更新进度**：每章开始前，用 `write_file` 更新 `progress.json`，将 `current_chapter` 设为当前章节索引，该章 status 改为 `"in_progress"`。
 
 #### 3a. 获取本章的 blocks
 
@@ -251,8 +250,6 @@ max-turns: 150
 ```
 
 写完后，向用户简要汇报本章的核心发现。
-
-**更新进度**：用 `write_file` 更新 `progress.json`，将当前章节 status 改为 `"done"`，`current_chapter` 设为下一章索引（或 `null` 如果是最后一章）。
 
 然后继续下一章。
 

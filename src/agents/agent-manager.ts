@@ -1,6 +1,7 @@
 import { Agent, AgentConfig, AgentContext, AgentResult, AgentType } from '../types/agent';
 import { Logger } from '../utils/logger';
 import { Tool } from '../types/tool';
+import { randomUUID } from 'crypto';
 
 /**
  * Agent 管理器
@@ -9,7 +10,7 @@ import { Tool } from '../types/tool';
 export class AgentManager {
   private static instance: AgentManager;
   private agents: Map<string, Agent> = new Map();
-  private agentIdCounter = 1;
+  private ownerByAgentId: Map<string, string> = new Map();
 
   private constructor() {}
 
@@ -26,13 +27,14 @@ export class AgentManager {
   /**
    * 创建新的 Agent
    */
-  async createAgent(config: AgentConfig): Promise<string> {
-    const agentId = `agent-${this.agentIdCounter++}`;
+  async createAgent(config: AgentConfig, ownerSessionId: string = 'unknown'): Promise<string> {
+    const agentId = `agent-${randomUUID()}`;
 
     // 根据类型创建对应的 Agent 实例
     const agent = await this.instantiateAgent(agentId, config);
 
     this.agents.set(agentId, agent);
+    this.ownerByAgentId.set(agentId, ownerSessionId);
     Logger.info(`创建 Agent: ${agentId} (类型: ${config.type})`);
 
     return agentId;
@@ -58,6 +60,7 @@ export class AgentManager {
     } finally {
       // 执行完毕后自动清理，避免内存泄漏
       this.agents.delete(agentId);
+      this.ownerByAgentId.delete(agentId);
       Logger.info(`Agent ${agentId} 已清理`);
     }
   }
@@ -97,6 +100,17 @@ export class AgentManager {
   }
 
   /**
+   * 按会话隔离查询 Agent（防止跨会话越权）
+   */
+  getAgentForOwner(agentId: string, ownerSessionId: string): Agent | undefined {
+    const owner = this.ownerByAgentId.get(agentId);
+    if (!owner || owner !== ownerSessionId) {
+      return undefined;
+    }
+    return this.agents.get(agentId);
+  }
+
+  /**
    * 列出所有 Agent
    */
   listAgents(): Agent[] {
@@ -107,6 +121,7 @@ export class AgentManager {
    * 删除 Agent
    */
   removeAgent(agentId: string): boolean {
+    this.ownerByAgentId.delete(agentId);
     return this.agents.delete(agentId);
   }
 

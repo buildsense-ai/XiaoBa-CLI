@@ -78,6 +78,123 @@ xiaoba --version
 
 如果显示版本号，说明安装成功！
 
+## Docker 多租户隔离部署（推荐云上）
+
+目标：一台服务器跑多个 XiaoBa 实例，每个实例独立容器、独立 `.env`、独立数据目录、独立资源限额。
+
+### 1. 准备 Docker
+
+```bash
+docker --version
+docker compose version
+```
+
+### 2. 初始化一个租户目录
+
+```bash
+chmod +x deploy/docker/init-tenant.sh
+./deploy/docker/init-tenant.sh demo
+```
+
+会生成：
+
+- `tenants/demo/.env`
+- `tenants/demo/data/{files,logs,workspace,extracted,docs_analysis,docs_runs,docs_ppt,audit}`
+
+### 3. 配置租户环境变量
+
+编辑 `tenants/demo/.env`，填入该租户自己的密钥。
+
+强烈建议：**每个租户使用独立的 Feishu App/Bot 凭据**，避免消息冲突。
+
+### 4. 启动容器
+
+```bash
+TENANT=demo docker compose -p xiaoba-demo -f deploy/docker-compose.multitenant.yml up -d --build
+```
+
+查看日志：
+
+```bash
+docker logs -f xiaoba-demo
+```
+
+### 5. 新增更多租户
+
+1. 初始化租户目录：`./deploy/docker/init-tenant.sh <tenant>`
+2. 启动该租户（示例 `alice`）：
+
+```bash
+TENANT=alice docker compose -p xiaoba-alice -f deploy/docker-compose.multitenant.yml up -d --build
+```
+
+3. 停止该租户：
+
+```bash
+TENANT=alice docker compose -p xiaoba-alice -f deploy/docker-compose.multitenant.yml down
+```
+
+4. 每个租户可独立限额（启动前导出变量）：
+
+```bash
+TENANT=alice TENANT_CPUS=1.0 TENANT_MEM_LIMIT=2g TENANT_PIDS_LIMIT=256 \
+docker compose -p xiaoba-alice -f deploy/docker-compose.multitenant.yml up -d
+```
+
+### 6. CAD 的 DWG 支持（可选）
+
+如果需要 DWG 转 DXF（ODA）：
+
+1. 宿主机先安装 ODA AppImage（如 `/opt/oda/ODAFileConverter.AppImage`）
+2. 在对应租户服务里取消注释挂载：
+
+```yaml
+- /opt/oda/ODAFileConverter.AppImage:/usr/local/bin/ODAFileConverter:ro
+```
+
+### 7. 停止与重启
+
+```bash
+TENANT=demo docker compose -p xiaoba-demo -f deploy/docker-compose.multitenant.yml down
+TENANT=demo docker compose -p xiaoba-demo -f deploy/docker-compose.multitenant.yml up -d
+```
+
+## FastAPI 多租户管理页面（简易版）
+
+用于在浏览器里管理租户：创建租户、编辑租户 `.env`、配置资源限额、启动/停止/重启容器、查看日志。
+
+### 1. 安装依赖
+
+```bash
+cd /path/to/XiaoBa
+python3 -m venv .venv-admin
+source .venv-admin/bin/activate
+pip install -r deploy/admin/requirements.txt
+```
+
+### 2. 启动管理后台
+
+```bash
+cd /path/to/XiaoBa
+export XIAOBA_ADMIN_USER=admin
+export XIAOBA_ADMIN_PASSWORD='change-this-password'
+uvicorn deploy.admin.main:app --host 0.0.0.0 --port 18080
+```
+
+打开：`http://<服务器IP>:18080`
+
+说明：
+- 若不设置 `XIAOBA_ADMIN_USER/XIAOBA_ADMIN_PASSWORD`，则不启用鉴权（不建议公网使用）。
+- 管理后台依赖宿主机 Docker CLI，请确保运行用户有 Docker 权限。
+
+### 3. 页面支持的操作
+
+- 创建租户（自动初始化 `tenants/<tenant>/` 目录结构）
+- 编辑并保存租户 `.env`
+- 设置租户资源限额（CPU/内存/PIDS，写入 `tenants/<tenant>/runtime.json`）
+- 容器 `up/restart/stop/down`
+- 查看实例日志（尾部 200 行）
+
 ## 使用方法
 
 ### 首次配置

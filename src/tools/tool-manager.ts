@@ -15,7 +15,28 @@ import { TaskOutputTool } from './task-output-tool';
 import { TaskStopTool } from './task-stop-tool';
 import { SkillTool } from './skill-tool';
 import { CreateSkillTool } from './create-skill-tool';
+import { SpawnSubagentTool } from './spawn-subagent-tool';
+import { CheckSubagentTool } from './check-subagent-tool';
+import { StopSubagentTool } from './stop-subagent-tool';
+import { ResumeSubagentTool } from './resume-subagent-tool';
 import { PythonToolLoader } from './python-tool-loader';
+
+/**
+ * Claude Code → XiaoBa 工具名映射
+ * 让引用 Claude Code 工具名的 skill 能在 XiaoBa 中正常运行
+ */
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  'Bash': 'execute_bash',
+  'Read': 'read_file',
+  'Write': 'write_file',
+  'Edit': 'edit_file',
+  'Glob': 'glob',
+  'Grep': 'grep',
+  'TodoWrite': 'todo_write',
+  'Task': 'task',
+  'WebFetch': 'web_fetch',
+  'WebSearch': 'web_search',
+};
 
 /**
  * 工具管理器 - 管理所有可用的工具
@@ -58,6 +79,12 @@ export class ToolManager implements ToolExecutor {
     // 注册 Skill 工具
     this.registerTool(new SkillTool());
     this.registerTool(new CreateSkillTool());
+
+    // 注册子智能体工具
+    this.registerTool(new SpawnSubagentTool());
+    this.registerTool(new CheckSubagentTool());
+    this.registerTool(new StopSubagentTool());
+    this.registerTool(new ResumeSubagentTool());
 
     // 注册多智能体系统工具
     this.registerTool(new TaskTool());
@@ -106,6 +133,20 @@ export class ToolManager implements ToolExecutor {
   }
 
   /**
+   * 将工具名解析为 XiaoBa 内部注册名（兼容 Claude Code 别名）
+   */
+  static resolveToolName(name: string): string {
+    return TOOL_NAME_ALIASES[name] ?? name;
+  }
+
+  /**
+   * 批量解析工具名列表
+   */
+  private static resolveToolNames(names: string[]): string[] {
+    return names.map(n => ToolManager.resolveToolName(n));
+  }
+
+  /**
    * 获取所有工具定义（用于传递给 AI）
    */
   getToolDefinitions(allowedNames?: string[]): ToolDefinition[] {
@@ -113,7 +154,7 @@ export class ToolManager implements ToolExecutor {
     if (!allowedNames || allowedNames.length === 0) {
       return all.map(tool => tool.definition);
     }
-    const allowed = new Set(allowedNames);
+    const allowed = new Set(ToolManager.resolveToolNames(allowedNames));
     return all.filter(t => allowed.has(t.definition.name)).map(t => t.definition);
   }
 
@@ -127,14 +168,16 @@ export class ToolManager implements ToolExecutor {
     conversationHistory?: any[],
     contextOverrides?: Partial<ToolExecutionContext>,
   ): Promise<ToolResult> {
-    const toolName = toolCall.function.name;
+    // 解析别名：Claude Code 工具名 → XiaoBa 内部名
+    const toolName = ToolManager.resolveToolName(toolCall.function.name);
 
     // 先做 skill 策略层的强制校验，避免仅靠提示词约束
+    // 策略列表也做别名解析，兼容 Claude Code 格式的 allowed-tools / disallowed-tools
     const allowedSet = contextOverrides?.allowedToolNames
-      ? new Set(contextOverrides.allowedToolNames)
+      ? new Set(ToolManager.resolveToolNames(contextOverrides.allowedToolNames))
       : null;
     const blockedSet = contextOverrides?.blockedToolNames
-      ? new Set(contextOverrides.blockedToolNames)
+      ? new Set(ToolManager.resolveToolNames(contextOverrides.blockedToolNames))
       : null;
 
     if (allowedSet && !allowedSet.has(toolName)) {
