@@ -15,14 +15,21 @@ export class Logger {
   private static writeToFile(level: string, message: string): void {
     if (!this.logStream) return;
     const now = new Date();
-    const ts = now.toISOString().replace('T', ' ').replace('Z', '');
+    const Y = now.getFullYear();
+    const M = String(now.getMonth() + 1).padStart(2, '0');
+    const D = String(now.getDate()).padStart(2, '0');
+    const h = String(now.getHours()).padStart(2, '0');
+    const m = String(now.getMinutes()).padStart(2, '0');
+    const s = String(now.getSeconds()).padStart(2, '0');
+    const ms = String(now.getMilliseconds()).padStart(3, '0');
+    const ts = `${Y}-${M}-${D} ${h}:${m}:${s}.${ms}`;
     const clean = this.stripAnsi(message);
     this.logStream.write(`[${ts}] [${level}] ${clean}\n`);
   }
 
   static openLogFile(sessionType: string, sessionKey?: string): void {
     const now = new Date();
-    const dateDir = now.toISOString().slice(0, 10);
+    const dateDir = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const hh = String(now.getHours()).padStart(2, '0');
     const mm = String(now.getMinutes()).padStart(2, '0');
     const ss = String(now.getSeconds()).padStart(2, '0');
