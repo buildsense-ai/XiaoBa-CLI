@@ -16,7 +16,7 @@ export class CodeReviewerAgent extends BaseAgent {
     Logger.info(`Code Reviewer Agent ${this.id} 开始执行任务`);
 
     const systemPrompt = this.buildSystemPrompt(context);
-    const toolExecutor = this.createToolExecutor(context, ['glob', 'grep', 'read_file', 'execute_bash']);
+    const toolExecutor = this.createToolExecutor(context, ['glob', 'grep', 'read_file', 'execute_shell']);
 
     const messages: Message[] = [
       { role: 'system', content: systemPrompt },
@@ -44,7 +44,7 @@ export class CodeReviewerAgent extends BaseAgent {
 - Glob: 搜索需要审查的文件
 - Grep: 搜索特定的代码模式
 - Read: 读取代码文件
-- Bash: 运行测试和检查工具
+- Shell: 运行测试和检查工具
 
 审查重点：
 1. 代码质量和可读性

@@ -1,7 +1,7 @@
 import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor } from '../types/tool';
 import { ReadTool } from './read-tool';
 import { WriteTool } from './write-tool';
-import { BashTool } from './bash-tool';
+import { ShellTool } from './bash-tool';
 import { EditTool } from './edit-tool';
 import { GlobTool } from './glob-tool';
 import { GrepTool } from './grep-tool';
@@ -26,7 +26,11 @@ import { PythonToolLoader } from './python-tool-loader';
  * 让引用 Claude Code 工具名的 skill 能在 XiaoBa 中正常运行
  */
 const TOOL_NAME_ALIASES: Record<string, string> = {
-  'Bash': 'execute_bash',
+  'Bash': 'execute_shell',
+  'bash': 'execute_shell',
+  'Shell': 'execute_shell',
+  'shell': 'execute_shell',
+  'execute_bash': 'execute_shell',
   'Read': 'read_file',
   'Write': 'write_file',
   'Edit': 'edit_file',
@@ -65,7 +69,7 @@ export class ToolManager implements ToolExecutor {
     this.registerTool(new EditTool());
     this.registerTool(new GlobTool());
     this.registerTool(new GrepTool());
-    this.registerTool(new BashTool());
+    this.registerTool(new ShellTool());
 
     // 注册任务管理工具
     this.registerTool(new TaskPlannerTool());

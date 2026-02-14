@@ -17,7 +17,7 @@ export class GeneralPurposeAgent extends BaseAgent {
 
     const systemPrompt = this.buildSystemPrompt(context);
     const toolExecutor = this.createToolExecutor(context, [
-      'glob', 'grep', 'read_file', 'edit_file', 'write_file', 'execute_bash'
+      'glob', 'grep', 'read_file', 'edit_file', 'write_file', 'execute_shell'
     ]);
 
     const messages: Message[] = [
@@ -48,7 +48,7 @@ export class GeneralPurposeAgent extends BaseAgent {
 - Read: 读取文件
 - Edit: 编辑文件
 - Write: 写入文件
-- Bash: 执行命令
+- Shell: 执行命令
 
 工作原则：
 1. 充分理解任务需求

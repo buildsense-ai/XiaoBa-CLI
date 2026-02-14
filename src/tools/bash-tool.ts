@@ -7,12 +7,12 @@ import { ToolPolicyGateway } from '../utils/tool-policy-gateway';
 const execAsync = promisify(exec);
 
 /**
- * Bash 工具 - 执行 shell 命令
+ * Shell 工具 - 执行 shell 命令
  */
-export class BashTool implements Tool {
+export class ShellTool implements Tool {
   definition: ToolDefinition = {
-    name: 'execute_bash',
-    description: '执行 shell 命令。可以运行任何命令行工具，如 git、npm、ls 等。',
+    name: 'execute_shell',
+    description: '使用系统默认 shell 执行命令。可以运行 git、npm、ls 等命令行工具。',
     parameters: {
       type: 'object',
       properties: {

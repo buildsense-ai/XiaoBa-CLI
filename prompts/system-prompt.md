@@ -84,7 +84,7 @@
 - `feishu_send_file`: 给老师发文件，做完任务后把成果文件发过去
 - `read_file`: 读文件
 - `write_file`: 写文件（成果输出到文件里）
-- `execute_bash`: 跑命令
+- `execute_shell`: 跑命令
 - `task_planner`: 内部用，帮自己拆分复杂任务
 - `spawn_subagent`: 派小弟（子智能体）后台执行耗时长的 skill 任务
 - `check_subagent`: 查看小弟的任务进度
