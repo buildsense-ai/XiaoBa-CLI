@@ -18,7 +18,7 @@ export class MessageHandler {
       .filter(Boolean);
   }
 
-  private static SUPPORTED_TYPES = new Set(['text', 'file', 'image']);
+  private static SUPPORTED_TYPES = new Set(['text', 'file', 'image', 'merge_forward']);
 
   /**
    * 解析飞书事件数据，提取结构化消息
@@ -39,10 +39,10 @@ export class MessageHandler {
     }
 
     // 提取文本和文件信息
-    const { text, file } = this.extractContent(msgType, content);
+    const { text, file, mergeForwardIds } = this.extractContent(msgType, content);
 
-    // 文本和文件都为空则忽略
-    if (!text && !file) return null;
+    // 文本和文件都为空则忽略（合并转发有 mergeForwardIds 也算有内容）
+    if (!text && !file && (!mergeForwardIds || mergeForwardIds.length === 0)) return null;
 
     // 检测 @mention 并清理文本中的 @标记
     let cleanText = text;
@@ -72,6 +72,7 @@ export class MessageHandler {
       mentionBot,
       msgType,
       file,
+      mergeForwardIds,
     };
   }
 
@@ -81,7 +82,7 @@ export class MessageHandler {
   private extractContent(
     msgType: string,
     content: any,
-  ): { text: string; file?: FeishuFileInfo } {
+  ): { text: string; file?: FeishuFileInfo; mergeForwardIds?: string[] } {
     switch (msgType) {
       case 'text':
         return { text: (content.text || '').trim() };
@@ -104,6 +105,12 @@ export class MessageHandler {
             fileName: 'image.png',
             type: 'image',
           },
+        };
+
+      case 'merge_forward':
+        return {
+          text: '[合并转发消息]',
+          mergeForwardIds: content.message_id_list || [],
         };
 
       default:

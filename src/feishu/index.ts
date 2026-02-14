@@ -228,8 +228,14 @@ export class FeishuBot {
     Logger.info(`[${key}] 收到消息: ${msg.text.slice(0, 50)}...`);
 
     let userText = msg.text;
+    // 合并转发消息：拉取子消息内容拼接为文本
+    if (msg.mergeForwardIds && msg.mergeForwardIds.length > 0) {
+      Logger.info(`[${key}] 合并转发消息，拉取 ${msg.mergeForwardIds.length} 条子消息...`);
+      const mergedText = await this.sender.fetchMergeForwardTexts(msg.mergeForwardIds);
+      userText = `[以下是用户转发的合并消息，共${msg.mergeForwardIds.length}条]\n${mergedText}`;
+      Logger.info(`[${key}] 合并转发内容已拼接（${mergedText.length}字符）`);
+    } else if (msg.file) {
     // 文件/图片消息：交给 Agent 自主判断下一步，不在平台层强制回复
-    if (msg.file) {
       const localPath = await this.sender.downloadFile(
         msg.messageId,
         msg.file.fileKey,
