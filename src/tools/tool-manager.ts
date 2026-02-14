@@ -19,7 +19,6 @@ import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
 import { StopSubagentTool } from './stop-subagent-tool';
 import { ResumeSubagentTool } from './resume-subagent-tool';
-import { PythonToolLoader } from './python-tool-loader';
 
 /**
  * Claude Code → XiaoBa 工具名映射
@@ -90,29 +89,6 @@ export class ToolManager implements ToolExecutor {
     this.registerTool(new TaskTool());
     this.registerTool(new TaskOutputTool());
     this.registerTool(new TaskStopTool());
-
-    // 加载并注册 Python 工具
-    this.loadPythonTools();
-  }
-
-  /**
-   * 加载 Python 工具
-   */
-  private loadPythonTools(): void {
-    try {
-      const loader = new PythonToolLoader(this.workingDirectory);
-      const pythonTools = loader.loadTools();
-
-      for (const tool of pythonTools) {
-        this.registerTool(tool);
-      }
-
-      if (pythonTools.length > 0) {
-        console.log(`已加载 ${pythonTools.length} 个 Python 工具`);
-      }
-    } catch (error: any) {
-      console.warn(`加载 Python 工具失败: ${error.message}`);
-    }
   }
 
   /**

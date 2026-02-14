@@ -42,6 +42,15 @@ paper-analysis 已经帮你完成了精读理解。现在你要站在更高的�
 | `glob` | 列出分析目录文件 | Step 1 扫描目录结构 |
 | `analyze_image` | 审视关键图表 | 需要验证图表是否支撑结论时 |
 
+## 脚本调用方式
+
+**analyze_image**（多模态图片分析）：
+```bash
+python tools/shared/analyze_image_tool.py '{"file_path": "<image_path>", "prompt": "<具体问题>"}'
+```
+
+脚本接收 JSON 字符串作为参数，返回 JSON 结果到 stdout。
+
 ## 执行流程
 
 ### 断点续跑
