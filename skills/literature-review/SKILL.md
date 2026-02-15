@@ -39,6 +39,25 @@ argument-hint: "<研究主题> [--resume] [--phase2]"
 | `write_file` | 写入输出文件 | 每个步骤完成后写入产出 |
 | `read_file` | 读取已有文件 | `--resume` 时加载 progress.json |
 
+## 脚本调用方式
+
+本 skill 的 Python 脚本位于 `skills/literature-review/` 目录下，通过 `execute_shell` 调用。
+
+**search_papers**（搜索论文）：
+```bash
+python skills/literature-review/search_tool.py '{"query": "<关键词>", "source": "semantic_scholar", "limit": 30}'
+```
+
+**paper_detail**（论文详情/引用/推荐）：
+```bash
+python skills/literature-review/paper_detail_tool.py '{"action": "detail", "paper_id": "<paper_id>"}'
+python skills/literature-review/paper_detail_tool.py '{"action": "citations", "paper_id": "<paper_id>", "limit": 20}'
+python skills/literature-review/paper_detail_tool.py '{"action": "references", "paper_id": "<paper_id>", "limit": 20}'
+python skills/literature-review/paper_detail_tool.py '{"action": "recommend", "paper_id": "<paper_id>", "limit": 10}'
+```
+
+所有脚本接收 JSON 字符串作为参数，返回 JSON 结果到 stdout。
+
 ## 执行流程
 
 ### Phase 1：文献地图（Literature Map）

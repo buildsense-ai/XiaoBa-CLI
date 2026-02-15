@@ -16,6 +16,18 @@ const ESSENTIAL_TOOLS = new Set([
   'skill',
 ]);
 
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  Bash: 'execute_shell',
+  bash: 'execute_shell',
+  Shell: 'execute_shell',
+  shell: 'execute_shell',
+  execute_bash: 'execute_shell',
+};
+
+function normalizeToolName(name: string): string {
+  return TOOL_NAME_ALIASES[name] ?? name;
+}
+
 const DEFAULT_PROMPT_BUDGET = 120000;
 const ANTHROPIC_PROMPT_BUDGET = 180000;
 const MIN_MESSAGE_BUDGET = 2000;
@@ -316,7 +328,11 @@ export class ConversationRunner {
     }
 
     if (policy.allowedTools && policy.allowedTools.length > 0) {
-      const allowed = new Set(policy.allowedTools.map(name => String(name).trim()).filter(Boolean));
+      const allowed = new Set(
+        policy.allowedTools
+          .map(name => normalizeToolName(String(name).trim()))
+          .filter(Boolean),
+      );
       for (const essential of ESSENTIAL_TOOLS) {
         allowed.add(essential);
       }
@@ -326,7 +342,7 @@ export class ConversationRunner {
     if (policy.disallowedTools && policy.disallowedTools.length > 0) {
       const blocked = new Set(
         policy.disallowedTools
-          .map(name => String(name).trim())
+          .map(name => normalizeToolName(String(name).trim()))
           .filter(name => Boolean(name) && !ESSENTIAL_TOOLS.has(name)),
       );
       return allTools.filter(tool => !blocked.has(tool.name));

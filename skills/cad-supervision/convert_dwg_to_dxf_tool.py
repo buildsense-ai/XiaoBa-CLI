@@ -6,7 +6,7 @@ DWG 转 DXF 格式转换工具
 import os
 from typing import Any, Dict
 
-from utils.base_tool import BaseTool
+import sys; sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools', 'shared')); from base_tool import BaseTool
 
 
 class ConvertDwgToDxfTool(BaseTool):

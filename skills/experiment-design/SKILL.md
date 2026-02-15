@@ -4,20 +4,13 @@ description: Design high-quality research experiments from XiaoBa paper-reading 
 invocable: user
 argument-hint: "<analysis_dir_or_topic> [--scope quick|deep] [--max-ideas N]"
 max-turns: 120
-allowed-tools:
-  - read_file
-  - write_file
-  - glob
-  - grep
-  - search_papers
-  - paper_detail
 ---
 
 # 实验设计（Design-to-Execution Contract）
 
 ## 目标
 
-把精读结果转成可执行实验规格，而不是停留在“想法”层面。
+把精读结果转成可执行实验规格，而不是停留在"想法"层面。
 
 你负责：
 

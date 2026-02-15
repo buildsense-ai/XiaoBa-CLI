@@ -4,13 +4,6 @@ description: 工程造价 CAD 分析助手：分析建筑 CAD 图纸，提取几
 invocable: user
 argument-hint: "<CAD文件路径> [--output <输出目录>]"
 max-turns: 60
-allowed-tools:
-  - get_cad_metadata
-  - inspect_region
-  - extract_cad_entities
-  - convert_dwg_to_dxf
-  - analyze_image
-  - feishu_reply
 ---
 
 # 工程造价 CAD 分析助手
@@ -52,6 +45,37 @@ allowed-tools:
 | `extract_cad_entities` | 提取实体结构化数据 | 获取几何信息和文字标注 |
 | `convert_dwg_to_dxf` | DWG 转 DXF 格式 | 遇到 DWG 文件时先转换 |
 | `analyze_image` | 视觉 AI 分析图片 | 识别渲染图中的标注和文字 |
+
+## 脚本调用方式
+
+本 skill 的 Python 脚本与 cad-supervision 共用，位于 `skills/cad-supervision/` 和 `tools/shared/` 目录下，通过 `execute_shell` 调用。
+
+**get_cad_metadata**：
+```bash
+python skills/cad-supervision/get_cad_metadata_tool.py '{"file_path": "<dxf_path>"}'
+```
+
+**inspect_region**：
+```bash
+python skills/cad-supervision/inspect_region_tool.py '{"file_path": "<dxf_path>", "x": 0, "y": 0, "width": 1000, "height": 1000}'
+```
+
+**extract_cad_entities**：
+```bash
+python skills/cad-supervision/extract_cad_entities_tool.py '{"file_path": "<dxf_path>"}'
+```
+
+**convert_dwg_to_dxf**：
+```bash
+python skills/cad-supervision/convert_dwg_to_dxf_tool.py '{"dwg_path": "<dwg_path>"}'
+```
+
+**analyze_image**：
+```bash
+python tools/shared/analyze_image_tool.py '{"file_path": "<image_path>", "prompt": "<具体问题>"}'
+```
+
+所有脚本接收 JSON 字符串作为参数，返回 JSON 结果到 stdout。
 
 ## 工作流程
 
@@ -102,7 +126,7 @@ allowed-tools:
 
 - DWG 文件必须先转换为 DXF 格式才能解析
 - 大型图纸建议分区域渲染，可以获得更清晰的局部视图
-- 视觉分析需要配置多模态模型环境变量（GAUZ_VISION_*）
+- 视觉分析模型由环境变量提供（`GAUZ_VISION_*` / `GAUZ_VISION_BACKUP_*`），skill 只定义工具流程，不绑定具体模型
 - 工程量计算应结合几何数据和标注信息交叉验证
 - 飞书会话里优先通过 `feishu_reply` 发送最终结果给老师
 

@@ -13,10 +13,11 @@ max-turns: 30
 ## 硬规则
 
 1. **Skill 产出位置**：`skills/<name>/SKILL.md`
-2. **Tool 产出位置**：`tools/python/<name>_tool.py`，同时注册到 `tools/python/tool-config.json`
+2. **Tool 脚本产出位置**：`skills/<name>/<name>_tool.py`（放在对应 skill 目录下），共享脚本放 `tools/shared/`
 3. **所有创建操作必须通过 `self_evolution` 工具执行**，不要手动写文件
 4. **命名规范**：只允许小写字母、数字、下划线、连字符（`^[a-zA-Z0-9_-]+$`）
 5. **不要创建与已有 skill/tool 同名的内容**
+6. **脚本通过 shell 调用**：所有 Python 脚本通过 `execute_shell` 调用，不再注册为全局工具
 
 ## 执行流程
 
@@ -65,9 +66,9 @@ Tool 代码模板：
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools', 'shared'))
 
-from utils.base_tool import BaseTool
+from base_tool import BaseTool
 from typing import Dict, Any
 
 
@@ -134,7 +135,7 @@ if __name__ == '__main__':
 
 创建完成后：
 - 确认文件已生成在正确位置
-- 如果是 tool，确认 `tool-config.json` 已更新
+- 如果是 tool，确认脚本可通过 `python skills/<name>/<name>_tool.py '<json>'` 独立运行
 - 向用户报告结果，说明如何使用新创建的 skill/tool
 
 ## 注意事项
