@@ -14,6 +14,8 @@ import { TaskTool } from './task-tool';
 import { TaskOutputTool } from './task-output-tool';
 import { TaskStopTool } from './task-stop-tool';
 import { SkillTool } from './skill-tool';
+import { WebSearchTool } from './web-search-tool';
+import { WebFetchTool } from './web-fetch-tool';
 
 import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
@@ -75,6 +77,10 @@ export class ToolManager implements ToolExecutor {
     this.registerTool(new EnterPlanModeTool());
     this.registerTool(new ExitPlanModeTool());
     this.registerTool(new AskUserQuestionTool());
+
+    // 注册网络工具
+    this.registerTool(new WebSearchTool());
+    this.registerTool(new WebFetchTool());
 
     // 注册 Skill 工具
     this.registerTool(new SkillTool());
