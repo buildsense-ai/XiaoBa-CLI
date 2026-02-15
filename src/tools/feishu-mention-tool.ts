@@ -1,4 +1,5 @@
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { BridgeClient } from '../bridge/bridge-client';
 import { Logger } from '../utils/logger';
 
 /**
@@ -50,8 +51,19 @@ export class FeishuMentionTool implements Tool {
     sendFn: (chatId: string, text: string) => Promise<void>;
   }>();
 
+  private bridgeClient: BridgeClient | null = null;
+  private bridgeSelfName: string = '';
+
   bindSession(sessionId: string, chatId: string, sendFn: (chatId: string, text: string) => Promise<void>): void {
     this.sessions.set(sessionId, { chatId, sendFn });
+  }
+
+  /**
+   * 绑定 Bot Bridge，@bot peer 时自动通过 Bridge 派任务
+   */
+  bindBridge(client: BridgeClient, selfName: string): void {
+    this.bridgeClient = client;
+    this.bridgeSelfName = selfName;
   }
 
   unbindSession(sessionId: string): void {
@@ -89,7 +101,27 @@ export class FeishuMentionTool implements Tool {
       const names = mentions.map((m: { name: string }) => m.name).join(', ');
       const dest = chat_id ? ` -> ${chat_id}` : '';
       Logger.info(`[feishu_mention${dest}] 已发送 @${names}: ${message.slice(0, 50)}...`);
-      return `消息已发送，已 @${names}`;
+
+      // 自动通过 Bridge 派任务给 bot peer
+      const bridgeResults: string[] = [];
+      if (this.bridgeClient) {
+        const peerNames = this.bridgeClient.getPeerNames();
+        for (const m of mentions as { open_id: string; name: string }[]) {
+          if (peerNames.includes(m.name)) {
+            const result = await this.bridgeClient.send(m.name, { chat_id: targetChatId, message }, this.bridgeSelfName);
+            if (result.ok) {
+              bridgeResults.push(`已通过 Bridge 派任务给 ${m.name}`);
+              Logger.info(`[feishu_mention] 自动派任务给 ${m.name} via Bridge`);
+            } else {
+              bridgeResults.push(`Bridge 派任务给 ${m.name} 失败: ${result.error}`);
+              Logger.error(`[feishu_mention] Bridge 派任务给 ${m.name} 失败: ${result.error}`);
+            }
+          }
+        }
+      }
+
+      const base = `消息已发送，已 @${names}`;
+      return bridgeResults.length > 0 ? `${base}\n${bridgeResults.join('\n')}` : base;
     } catch (err: any) {
       Logger.error(`[feishu_mention] 发送失败: ${err.message}`);
       return `发送失败: ${err.message}`;

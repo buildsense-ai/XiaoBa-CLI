@@ -124,7 +124,7 @@ export class ConversationRunner {
     this.activeSkillName = options?.initialSkillName;
     this.activeSkillToolPolicy = options?.initialSkillToolPolicy;
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
-    this.compressor = new ContextCompressor({
+    this.compressor = new ContextCompressor(this.aiService, {
       maxContextTokens: options?.maxContextTokens,
     });
     // 预先禁用已知被阻断的工具
@@ -159,7 +159,7 @@ export class ConversationRunner {
       if (this.enableCompression && this.compressor.needsCompaction(messages)) {
         const usage = this.compressor.getUsageInfo(messages);
         Logger.info(`上下文使用率 ${usage.usagePercent}%，触发压缩...`);
-        const compacted = this.compressor.compact(messages);
+        const compacted = await this.compressor.compact(messages);
         // 原地替换 messages 内容（保持外部引用有效）
         messages.length = 0;
         messages.push(...compacted);
@@ -396,15 +396,8 @@ export class ConversationRunner {
       `[上下文守门] 估算超预算: messages=${messageTokens}, tools=${toolTokens}, budget=${this.maxPromptTokens}`
     );
 
-    for (let pass = 0; pass < 4 && messageTokens > messageBudget; pass++) {
-      const compacted = this.compressor.compact(messages);
-      this.replaceMessages(messages, compacted);
-      messageTokens = estimateMessagesTokens(messages);
-
-      if (messageTokens <= messageBudget) {
-        break;
-      }
-
+    // 纯机械裁剪（同步，不调用 AI）
+    for (let pass = 0; pass < 3 && messageTokens > messageBudget; pass++) {
       const trimmed = this.hardTrimMessages(messages, messageBudget);
       this.replaceMessages(messages, trimmed);
       messageTokens = estimateMessagesTokens(messages);
@@ -534,7 +527,8 @@ export class ConversationRunner {
       text.includes('prompt is too long') ||
       text.includes('maximum context length') ||
       text.includes('context_length_exceeded') ||
-      text.includes('input is too long')
+      text.includes('input is too long') ||
+      text.includes('premature close')
     );
   }
 
