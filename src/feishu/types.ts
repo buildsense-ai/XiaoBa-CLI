@@ -10,6 +10,12 @@ export interface FeishuConfig {
   botOpenId?: string;
   /** 机器人别名（当未配置 botOpenId 时用于兜底匹配） */
   botAliases?: string[];
+  /** Bot Bridge 配置 */
+  bridge?: {
+    port: number;
+    name: string;
+    peers: { name: string; url: string }[];
+  };
 }
 
 /**

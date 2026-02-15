@@ -401,6 +401,32 @@
       }
     },
     {
+      "name": "excalidraw_render",
+      "description": "将 Excalidraw JSON 渲染为 SVG/PNG 图片文件。传入完整的 Excalidraw JSON，调用 Kroki 渲染服务生成手绘风格图片并保存到本地。",
+      "script": "tools/python/excalidraw_render_tool.py",
+      "timeout": 30000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "json_content": {
+            "type": "string",
+            "description": "完整的 Excalidraw JSON 字符串（包含 elements、appState 等）"
+          },
+          "output_path": {
+            "type": "string",
+            "description": "输出文件路径（含文件名），如 diagrams/arch.svg"
+          },
+          "format": {
+            "type": "string",
+            "enum": ["svg", "png"],
+            "description": "输出格式",
+            "default": "svg"
+          }
+        },
+        "required": ["json_content", "output_path"]
+      }
+    },
+    {
       "name": "convert_dwg_to_dxf",
       "description": "将 DWG 文件转换为 DXF 格式。DWG 无法直接读取，必须先转为 DXF。需要安装 ODA File Converter。",
       "script": "tools/python/convert_dwg_to_dxf_tool.py",

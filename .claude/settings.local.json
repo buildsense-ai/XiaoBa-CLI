@@ -37,7 +37,9 @@
       "Bash",
       "Write",
       "Edit",
-      "Skill(frontend-design)"
+      "Skill(frontend-design)",
+      "mcp__ide__getDiagnostics",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

@@ -12,8 +12,12 @@ import { ConfigManager } from '../utils/config';
 import { Logger } from '../utils/logger';
 import { FeishuReplyTool } from '../tools/feishu-reply-tool';
 import { FeishuSendFileTool } from '../tools/feishu-send-file-tool';
+import { FeishuMentionTool } from '../tools/feishu-mention-tool';
 import { AskUserQuestionTool } from '../tools/ask-user-question-tool';
 import { SubAgentManager } from '../core/sub-agent-manager';
+import { BridgeServer, BridgeMessage } from '../bridge/bridge-server';
+import { BridgeClient } from '../bridge/bridge-client';
+import { SendToBotTool } from '../tools/send-to-bot-tool';
 import { randomUUID } from 'crypto';
 
 interface PendingAttachment {
@@ -47,7 +51,11 @@ export class FeishuBot {
   private agentServices: AgentServices;
   private feishuReplyTool: FeishuReplyTool;
   private feishuSendFileTool: FeishuSendFileTool;
+  private feishuMentionTool: FeishuMentionTool;
   private askUserQuestionTool: AskUserQuestionTool | null = null;
+  private bridgeServer: BridgeServer | null = null;
+  private bridgeClient: BridgeClient | null = null;
+  private bridgeConfig: FeishuConfig['bridge'] | undefined;
   /** 已处理的消息 ID，用于去重 */
   private processedMsgIds = new Set<string>();
   /** key = pendingAnswerId */
@@ -86,9 +94,21 @@ export class FeishuBot {
     const toolManager = new ToolManager();
     this.feishuReplyTool = new FeishuReplyTool();
     this.feishuSendFileTool = new FeishuSendFileTool();
+    this.feishuMentionTool = new FeishuMentionTool();
     toolManager.registerTool(this.feishuReplyTool);
     toolManager.registerTool(this.feishuSendFileTool);
+    toolManager.registerTool(this.feishuMentionTool);
     this.askUserQuestionTool = toolManager.getTool<AskUserQuestionTool>('ask_user_question') ?? null;
+
+    // 初始化 Bot Bridge
+    if (config.bridge) {
+      this.bridgeConfig = config.bridge;
+      this.bridgeClient = new BridgeClient(config.bridge.peers);
+      const sendToBotTool = new SendToBotTool(this.bridgeClient, config.bridge.name);
+      toolManager.registerTool(sendToBotTool);
+      Logger.info(`Bot Bridge 已配置: peers=${this.bridgeClient.getPeerNames().join(', ')}`);
+    }
+
     Logger.info(`已加载 ${toolManager.getToolCount()} 个工具`);
 
     const skillManager = new SkillManager();
@@ -138,6 +158,15 @@ export class FeishuBot {
       }
     } catch (error: any) {
       Logger.warning(`Skills 加载失败: ${error.message}`);
+    }
+
+    // 启动 Bridge Server
+    if (this.bridgeConfig) {
+      this.bridgeServer = new BridgeServer(this.bridgeConfig.port);
+      this.bridgeServer.onMessage(async (msg) => {
+        await this.onBridgeMessage(msg);
+      });
+      await this.bridgeServer.start();
     }
 
     this.wsClient.start({
@@ -270,6 +299,9 @@ export class FeishuBot {
       await this.sender.reply(chatId, text);
     });
     this.feishuSendFileTool.bindSession(key, msg.chatId, (chatId, filePath, fileName) => this.sender.sendFile(chatId, filePath, fileName));
+    this.feishuMentionTool.bindSession(key, msg.chatId, async (chatId, text) => {
+      await this.sender.reply(chatId, text);
+    });
 
     // 绑定 AskUserQuestion 飞书模式
     if (this.askUserQuestionTool) {
@@ -298,6 +330,7 @@ export class FeishuBot {
     } finally {
       this.feishuReplyTool.unbindSession(key);
       this.feishuSendFileTool.unbindSession(key);
+      this.feishuMentionTool.unbindSession(key);
       if (this.askUserQuestionTool) {
         this.askUserQuestionTool.unbindFeishuSession(key);
       }
@@ -339,6 +372,9 @@ export class FeishuBot {
       this.feishuSendFileTool.bindSession(sessionKey, chatId, (_chatId, filePath, fileName) =>
         this.sender.sendFile(chatId, filePath, fileName)
       );
+      this.feishuMentionTool.bindSession(sessionKey, chatId, async (_chatId, replyText) => {
+        await this.sender.reply(chatId, replyText);
+      });
       if (this.askUserQuestionTool) {
         this.askUserQuestionTool.bindFeishuSession(
           sessionKey,
@@ -365,6 +401,7 @@ export class FeishuBot {
       } finally {
         this.feishuReplyTool.unbindSession(sessionKey);
         this.feishuSendFileTool.unbindSession(sessionKey);
+        this.feishuMentionTool.unbindSession(sessionKey);
         if (this.askUserQuestionTool) {
           this.askUserQuestionTool.unbindFeishuSession(sessionKey);
         }
@@ -376,9 +413,47 @@ export class FeishuBot {
   }
 
   /**
+   * 处理来自其他 bot 的 Bridge 消息
+   */
+  private async onBridgeMessage(msg: BridgeMessage): Promise<void> {
+    const sessionKey = `bridge:${msg.chat_id}`;
+    const session = this.sessionManager.getOrCreate(sessionKey);
+
+    if (session.isBusy()) {
+      Logger.warning(`[Bridge] 会话 ${sessionKey} 忙碌，跳过来自 ${msg.from} 的任务`);
+      return;
+    }
+
+    this.feishuReplyTool.bindSession(sessionKey, msg.chat_id, async (chatId, text) => {
+      await this.sender.reply(chatId, text);
+    });
+    this.feishuSendFileTool.bindSession(sessionKey, msg.chat_id, (chatId, filePath, fileName) =>
+      this.sender.sendFile(chatId, filePath, fileName)
+    );
+    this.feishuMentionTool.bindSession(sessionKey, msg.chat_id, async (chatId, text) => {
+      await this.sender.reply(chatId, text);
+    });
+
+    try {
+      const userText = `[来自 ${msg.from} 的任务]\n${msg.message}`;
+      const reply = await session.handleMessage(userText);
+      if (reply.startsWith('处理消息时出错:')) {
+        await this.sender.reply(msg.chat_id, reply);
+      }
+    } finally {
+      this.feishuReplyTool.unbindSession(sessionKey);
+      this.feishuSendFileTool.unbindSession(sessionKey);
+      this.feishuMentionTool.unbindSession(sessionKey);
+    }
+  }
+
+  /**
    * 停止机器人
    */
   destroy(): void {
+    if (this.bridgeServer) {
+      this.bridgeServer.stop();
+    }
     this.sessionManager.destroy();
     for (const pendingId of Array.from(this.pendingAnswers.keys())) {
       this.clearPendingAnswerById(pendingId);

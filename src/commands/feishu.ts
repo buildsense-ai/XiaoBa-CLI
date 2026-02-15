@@ -36,6 +36,23 @@ export async function feishuCommand(): Promise<void> {
     botAliases,
   };
 
+  // Bot Bridge 配置
+  const bridgePort = parseInt(process.env.BOT_BRIDGE_PORT || '0', 10);
+  const bridgeName = process.env.BOT_BRIDGE_NAME || '';
+  const peersRaw = process.env.BOT_PEERS || '';
+  if (bridgePort && bridgeName) {
+    const peers = peersRaw
+      .split(',')
+      .map(p => p.trim())
+      .filter(Boolean)
+      .map(p => {
+        const [name, url] = p.split(':http');
+        return { name, url: `http${url}` };
+      });
+    feishuConfig.bridge = { port: bridgePort, name: bridgeName, peers };
+    Logger.info(`Bot Bridge 配置: ${bridgeName} :${bridgePort}, peers: ${peers.map(p => p.name).join(', ')}`);
+  }
+
   const bot = new FeishuBot(feishuConfig);
 
   // 优雅退出
