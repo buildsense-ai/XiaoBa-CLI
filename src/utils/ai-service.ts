@@ -65,6 +65,11 @@ export class AIService {
       }
       return await this.provider.chatStream(messages, tools, callbacks);
     } catch (error: any) {
+      // 连接级别错误（Premature close 等）对流式调用也安全重试
+      if (this.isConnectionError(error)) {
+        Logger.warning('流式调用遇到连接错误，自动重试...');
+        return this.withRetry(() => this.provider.chatStream(messages, tools, callbacks));
+      }
       throw this.wrapError(error);
     }
   }
@@ -104,11 +109,29 @@ export class AIService {
     if (code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'ECONNABORTED') {
       return true;
     }
+    // 连接提前关闭（代理超时、网络中断等）
+    const msg = error?.message || error?.cause?.message || '';
+    if (/premature close|socket hang up|ECONNREFUSED|network/i.test(msg)) {
+      return true;
+    }
     // Anthropic SDK overloaded_error
     if (error?.error?.type === 'overloaded_error') {
       return true;
     }
     return false;
+  }
+
+  /**
+   * 判断是否为连接级别错误（Premature close、socket hang up 等）
+   * 这类错误在流式调用中也可以安全重试，因为连接断开意味着没有完整输出
+   */
+  private isConnectionError(error: any): boolean {
+    const msg = error?.message || error?.cause?.message || '';
+    const code = error?.code;
+    return (
+      code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'ECONNABORTED' ||
+      /premature close|socket hang up/i.test(msg)
+    );
   }
 
   /**
