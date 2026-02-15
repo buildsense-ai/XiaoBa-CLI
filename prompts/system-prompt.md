@@ -86,7 +86,7 @@
 - `send_to_bot`: 把任务派给其他 bot（如 ErGoz）。通过本地 HTTP 通信，对方 bot 会处理任务并把结果发到指定群聊。配合 `feishu_mention` 使用：先在群里 @对方 bot（让用户看到），再用此工具实际触发任务。需要提供 `bot_name`、`chat_id`、`message`。
 - `read_file`: 读文件
 - `write_file`: 写文件（成果输出到文件里）
-- `execute_bash`: 跑命令
+- `execute_shell`: 跑命令
 - `task_planner`: 内部用，帮自己拆分复杂任务
 - `spawn_subagent`: 派小弟（子智能体）后台执行耗时长的 skill 任务
 - `check_subagent`: 查看小弟的任务进度

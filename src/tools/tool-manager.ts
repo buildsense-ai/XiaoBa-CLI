@@ -1,7 +1,7 @@
 import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor } from '../types/tool';
 import { ReadTool } from './read-tool';
 import { WriteTool } from './write-tool';
-import { BashTool } from './bash-tool';
+import { ShellTool } from './bash-tool';
 import { EditTool } from './edit-tool';
 import { GlobTool } from './glob-tool';
 import { GrepTool } from './grep-tool';
@@ -21,7 +21,6 @@ import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
 import { StopSubagentTool } from './stop-subagent-tool';
 import { ResumeSubagentTool } from './resume-subagent-tool';
-import { PythonToolLoader } from './python-tool-loader';
 
 /**
  * Claude Code → XiaoBa 工具名映射
@@ -67,7 +66,7 @@ export class ToolManager implements ToolExecutor {
     this.registerTool(new EditTool());
     this.registerTool(new GlobTool());
     this.registerTool(new GrepTool());
-    this.registerTool(new BashTool());
+    this.registerTool(new ShellTool());
 
     // 注册任务管理工具
     this.registerTool(new TaskPlannerTool());
@@ -106,6 +105,7 @@ export class ToolManager implements ToolExecutor {
    */
   private loadPythonTools(): void {
     try {
+      const { PythonToolLoader } = require('./python-tool-loader');
       const loader = new PythonToolLoader(this.workingDirectory);
       const pythonTools = loader.loadTools();
 

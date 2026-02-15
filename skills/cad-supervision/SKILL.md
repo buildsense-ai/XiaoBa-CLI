@@ -4,13 +4,6 @@ description: 工程监理审核助手：分析建筑 CAD 图纸，提供合规�
 invocable: user
 argument-hint: "<CAD文件路径>"
 max-turns: 50
-allowed-tools:
-  - get_cad_metadata
-  - inspect_region
-  - extract_cad_entities
-  - convert_dwg_to_dxf
-  - analyze_image
-  - feishu_reply
 ---
 
 # 工程监理审核助手
@@ -32,6 +25,37 @@ allowed-tools:
 | `extract_cad_entities` | 提取实体结构化数据 | 获取几何信息和文字标注 |
 | `convert_dwg_to_dxf` | DWG 转 DXF 格式 | 遇到 DWG 文件时先转换 |
 | `analyze_image` | 视觉 AI 分析图片 | 识别渲染图中的标注和文字 |
+
+## 脚本调用方式
+
+本 skill 的 Python 脚本位于 `skills/cad-supervision/` 和 `tools/shared/` 目录下，通过 `execute_shell` 调用。
+
+**get_cad_metadata**（获取 CAD 概览）：
+```bash
+python skills/cad-supervision/get_cad_metadata_tool.py '{"file_path": "<dxf_path>"}'
+```
+
+**inspect_region**（检查指定区域）：
+```bash
+python skills/cad-supervision/inspect_region_tool.py '{"file_path": "<dxf_path>", "x": 0, "y": 0, "width": 1000, "height": 1000}'
+```
+
+**extract_cad_entities**（提取实体数据）：
+```bash
+python skills/cad-supervision/extract_cad_entities_tool.py '{"file_path": "<dxf_path>"}'
+```
+
+**convert_dwg_to_dxf**（DWG 转 DXF）：
+```bash
+python skills/cad-supervision/convert_dwg_to_dxf_tool.py '{"dwg_path": "<dwg_path>"}'
+```
+
+**analyze_image**（视觉 AI 分析）：
+```bash
+python tools/shared/analyze_image_tool.py '{"file_path": "<image_path>", "prompt": "<具体问题>"}'
+```
+
+所有脚本接收 JSON 字符串作为参数，返回 JSON 结果到 stdout。
 
 ## 工具使用流程（重要）
 
@@ -96,7 +120,7 @@ allowed-tools:
 
 - DWG 文件需先用 `convert_dwg_to_dxf` 转换为 DXF
 - 渲染前必须先获取图纸边界，使用实际坐标
-- 视觉分析需要配置多模态模型环境变量（GAUZ_VISION_*）
+- 视觉分析模型由环境变量提供（`GAUZ_VISION_*` / `GAUZ_VISION_BACKUP_*`），skill 只定义工具流程，不绑定具体模型
 - 审核意见应基于现行国家规范和行业标准
 - 对不确定的问题应标注为"建议复核"而非直接判定
 - 飞书会话里优先通过 `feishu_reply` 发送最终审核结论

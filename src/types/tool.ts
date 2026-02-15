@@ -53,7 +53,7 @@ export interface ToolResult {
   retryable?: boolean;
 }
 
-export type ToolSurface = 'cli' | 'feishu' | 'agent' | 'research' | 'unknown';
+export type ToolSurface = 'cli' | 'feishu' | 'catscompany' | 'agent' | 'research' | 'unknown';
 export type ToolPermissionProfile = 'strict' | 'default' | 'relaxed';
 
 /**

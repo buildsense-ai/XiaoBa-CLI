@@ -174,6 +174,89 @@ export class MessageSender {
   }
 
   /**
+   * 拉取单条消息的详情（用于合并转发子消息）
+   */
+  async getMessage(messageId: string): Promise<{ msgType: string; content: string; body?: string } | null> {
+    try {
+      const resp = await this.client.im.v1.message.get({
+        path: { message_id: messageId },
+      });
+      const items = (resp as any)?.data?.items;
+      if (!items || items.length === 0) return null;
+      const msg = items[0];
+      return {
+        msgType: msg.msg_type || '',
+        content: msg.body?.content || msg.content || '',
+        body: msg.body?.content || '',
+      };
+    } catch (err: any) {
+      Logger.error(`拉取消息详情失败 [${messageId}]: ${err.message || err}`);
+      return null;
+    }
+  }
+
+  /**
+   * 拉取合并转发的所有子消息，拼接为纯文本
+   */
+  async fetchMergeForwardTexts(messageIds: string[]): Promise<string> {
+    const texts: string[] = [];
+    for (const msgId of messageIds) {
+      const detail = await this.getMessage(msgId);
+      if (!detail) {
+        texts.push(`[消息拉取失败: ${msgId}]`);
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(detail.content);
+        if (detail.msgType === 'text') {
+          texts.push(parsed.text || '');
+        } else if (detail.msgType === 'image') {
+          texts.push('[图片]');
+        } else if (detail.msgType === 'file') {
+          texts.push(`[文件] ${parsed.file_name || '未知文件'}`);
+        } else if (detail.msgType === 'post') {
+          // 富文本消息，提取纯文本
+          const postText = this.extractPostText(parsed);
+          texts.push(postText || '[富文本消息]');
+        } else {
+          texts.push(`[${detail.msgType}消息]`);
+        }
+      } catch {
+        texts.push(detail.content || `[无法解析: ${detail.msgType}]`);
+      }
+    }
+    return texts.filter(Boolean).join('\n');
+  }
+
+  /**
+   * 从飞书 post（富文本）消息中提取纯文本
+   */
+  private extractPostText(parsed: any): string {
+    const lines: string[] = [];
+    // post 的 title
+    const title = parsed.title;
+    if (title) lines.push(title);
+    // post 的 content 是二维数组 [[{tag, text}, ...], ...]
+    const content = parsed.content;
+    if (Array.isArray(content)) {
+      for (const line of content) {
+        if (!Array.isArray(line)) continue;
+        const lineText = line
+          .map((el: any) => {
+            if (el.tag === 'text') return el.text || '';
+            if (el.tag === 'a') return el.text || el.href || '';
+            if (el.tag === 'at') return el.user_name ? `@${el.user_name}` : '';
+            if (el.tag === 'img') return '[图片]';
+            return '';
+          })
+          .join('');
+        lines.push(lineText);
+      }
+    }
+    return lines.join('\n');
+  }
+
+  /**
    * 将长文本按最大长度拆分，尽量在换行处断开
    */
   private splitText(text: string, maxLen: number): string[] {

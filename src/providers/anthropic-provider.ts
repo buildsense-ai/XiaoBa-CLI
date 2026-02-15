@@ -20,6 +20,12 @@ export class AnthropicProvider implements AIProvider {
       timeout: 10 * 60 * 1000, // 10 分钟，Opus 长输出需要足够时间
       defaultHeaders: {
         'User-Agent': 'XiaoBa/0.1.0',
+        'x-stainless-lang': undefined as any,
+        'x-stainless-package-version': undefined as any,
+        'x-stainless-os': undefined as any,
+        'x-stainless-arch': undefined as any,
+        'x-stainless-runtime': undefined as any,
+        'x-stainless-runtime-version': undefined as any,
       },
     });
     this.model = config.model || 'claude-sonnet-4-20250514';
