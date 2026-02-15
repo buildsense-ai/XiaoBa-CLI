@@ -13,7 +13,7 @@ max-turns: 30
 ## 硬规则
 
 1. **Skill 产出位置**：`skills/<name>/SKILL.md`
-2. **Tool 产出位置**：`tools/python/<name>_tool.py`，同时注册到 `tools/python/tool-config.json`
+2. **Tool 产出位置**：放在对应 skill 目录下 `skills/<skill-name>/<name>_tool.py`，保持 skill 自包含
 3. **所有创建操作必须通过 `self_evolution` 工具执行**，不要手动写文件
 4. **命名规范**：只允许小写字母、数字、下划线、连字符（`^[a-zA-Z0-9_-]+$`）
 5. **不要创建与已有 skill/tool 同名的内容**
