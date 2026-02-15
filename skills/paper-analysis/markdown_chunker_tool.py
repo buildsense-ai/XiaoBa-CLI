@@ -9,7 +9,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
-from utils.base_tool import BaseTool
+import sys; sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools', 'shared')); from base_tool import BaseTool
 
 
 HEADING_RE = re.compile(r"^\s*(#{1,6})\s+(.+?)\s*$")

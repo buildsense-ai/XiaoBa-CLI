@@ -1,5 +1,17 @@
 import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor } from '../types/tool';
 
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  Bash: 'execute_shell',
+  bash: 'execute_shell',
+  Shell: 'execute_shell',
+  shell: 'execute_shell',
+  execute_bash: 'execute_shell',
+};
+
+function normalizeToolName(name: string): string {
+  return TOOL_NAME_ALIASES[name] ?? name;
+}
+
 /**
  * AgentToolExecutor - 轻量适配器
  * 将 AgentContext.tools (Tool[]) 包装为 ToolExecutor 接口
@@ -16,7 +28,7 @@ export class AgentToolExecutor implements ToolExecutor {
     if (!allowedNames || allowedNames.length === 0) {
       return this.tools.map(t => t.definition);
     }
-    const allowed = new Set(allowedNames);
+    const allowed = new Set(allowedNames.map(name => normalizeToolName(name)));
     return this.tools
       .filter(t => allowed.has(t.definition.name))
       .map(t => t.definition);
@@ -27,21 +39,22 @@ export class AgentToolExecutor implements ToolExecutor {
     conversationHistory?: any[],
     contextOverrides?: Partial<ToolExecutionContext>,
   ): Promise<ToolResult> {
-    const name = toolCall.function.name;
+    const requestedName = toolCall.function.name;
+    const name = normalizeToolName(requestedName);
 
     const allowedSet = contextOverrides?.allowedToolNames
-      ? new Set(contextOverrides.allowedToolNames)
+      ? new Set(contextOverrides.allowedToolNames.map(toolName => normalizeToolName(toolName)))
       : null;
     const blockedSet = contextOverrides?.blockedToolNames
-      ? new Set(contextOverrides.blockedToolNames)
+      ? new Set(contextOverrides.blockedToolNames.map(toolName => normalizeToolName(toolName)))
       : null;
 
     if (allowedSet && !allowedSet.has(name)) {
       return {
         tool_call_id: toolCall.id,
         role: 'tool',
-        name,
-        content: `执行被阻止：工具 "${name}" 不在当前 skill 允许列表中`,
+        name: requestedName,
+        content: `执行被阻止：工具 "${requestedName}" 不在当前 skill 允许列表中`,
         ok: false,
         errorCode: 'TOOL_NOT_ALLOWED_BY_SKILL_POLICY',
         retryable: false,
@@ -52,8 +65,8 @@ export class AgentToolExecutor implements ToolExecutor {
       return {
         tool_call_id: toolCall.id,
         role: 'tool',
-        name,
-        content: `执行被阻止：工具 "${name}" 被当前 skill 明确禁止`,
+        name: requestedName,
+        content: `执行被阻止：工具 "${requestedName}" 被当前 skill 明确禁止`,
         ok: false,
         errorCode: 'TOOL_BLOCKED_BY_SKILL_POLICY',
         retryable: false,
@@ -66,8 +79,8 @@ export class AgentToolExecutor implements ToolExecutor {
       return {
         tool_call_id: toolCall.id,
         role: 'tool',
-        name,
-        content: `错误：未找到工具 "${name}"`,
+        name: requestedName,
+        content: `错误：未找到工具 "${requestedName}"`,
         ok: false,
         errorCode: 'TOOL_NOT_FOUND',
         retryable: false,
@@ -89,7 +102,7 @@ export class AgentToolExecutor implements ToolExecutor {
         return {
           tool_call_id: toolCall.id,
           role: 'tool',
-          name,
+          name: requestedName,
           content: `工具参数解析错误: ${error.message}`,
           ok: false,
           errorCode: 'INVALID_TOOL_ARGUMENTS',
@@ -102,7 +115,7 @@ export class AgentToolExecutor implements ToolExecutor {
       return {
         tool_call_id: toolCall.id,
         role: 'tool',
-        name,
+        name: requestedName,
         content: output,
         ok: true,
       };
@@ -110,7 +123,7 @@ export class AgentToolExecutor implements ToolExecutor {
       return {
         tool_call_id: toolCall.id,
         role: 'tool',
-        name,
+        name: requestedName,
         content: `工具执行错误: ${error.message}`,
         ok: false,
         errorCode: 'TOOL_EXECUTION_ERROR',

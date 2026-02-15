@@ -80,6 +80,11 @@ export class AgentSession {
         role: 'system',
         content: '[surface:feishu]\n当前是飞书会话。你发给老师的可见文本必须通过 feishu_reply 工具发送；发送文件必须通过 feishu_send_file 工具发送。',
       });
+    } else if (this.isCatsCompanySession()) {
+      this.messages.push({
+        role: 'system',
+        content: '[surface:catscompany]\n当前是 Cats Company 聊天会话。你发给用户的可见文本必须通过 feishu_reply 工具发送；发送文件必须通过 feishu_send_file 工具发送。',
+      });
     }
   }
 
@@ -179,9 +184,11 @@ export class AgentSession {
       }
 
       const effectiveMaxTurns = this.activeSkillMaxTurns ?? this.detectSkillMaxTurns();
-      const surface = this.key.startsWith('user:') || this.key.startsWith('group:')
-        ? 'feishu'
-        : 'cli';
+      const surface = this.isCatsCompanySession()
+        ? 'catscompany'
+        : this.isFeishuSession()
+          ? 'feishu'
+          : 'cli';
       const runner = new ConversationRunner(
         this.services.aiService,
         this.services.toolManager,
@@ -436,6 +443,14 @@ ${conversationText}
 
   private isFeishuSession(): boolean {
     return this.key.startsWith('user:') || this.key.startsWith('group:');
+  }
+
+  private isCatsCompanySession(): boolean {
+    return this.key.startsWith('cc_user:') || this.key.startsWith('cc_group:');
+  }
+
+  private isChatSession(): boolean {
+    return this.isFeishuSession() || this.isCatsCompanySession();
   }
 
   private removeTransientMessages(messages: Message[]): Message[] {

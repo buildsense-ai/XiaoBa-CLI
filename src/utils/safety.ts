@@ -7,6 +7,7 @@ const FS_ALLOW_OUTSIDE_READ_ENV = 'GAUZ_FS_ALLOW_OUTSIDE_READ';
 const FS_ALLOW_DOTENV_ENV = 'GAUZ_FS_ALLOW_DOTENV';
 
 const DEFAULT_DANGEROUS_TOOLS = new Set([
+  'execute_shell',
   'execute_bash',
   'write_file',
   'edit_file',
@@ -30,7 +31,16 @@ function parseAllowedTools(): Set<string> {
   const raw = (process.env[DANGEROUS_TOOL_ALLOW_ENV] || '').trim();
   if (!raw) return new Set();
   const parts = raw.split(',').map(p => p.trim()).filter(Boolean);
-  return new Set(parts);
+  const allowed = new Set(parts);
+
+  // execute_shell 和 execute_bash 视为等价，避免迁移期配置失效
+  if (allowed.has('execute_bash')) {
+    allowed.add('execute_shell');
+  }
+  if (allowed.has('execute_shell')) {
+    allowed.add('execute_bash');
+  }
+  return allowed;
 }
 
 export function isToolAllowed(toolName: string): { allowed: boolean; reason?: string } {
@@ -45,7 +55,7 @@ export function isToolAllowed(toolName: string): { allowed: boolean; reason?: st
 
   return {
     allowed: false,
-    reason: `工具 "${toolName}" 默认被阻断。设置 ${DANGEROUS_TOOL_ALLOW_ENV} 以显式允许，例如: ${DANGEROUS_TOOL_ALLOW_ENV}=execute_bash,write_file`
+    reason: `工具 "${toolName}" 默认被阻断。设置 ${DANGEROUS_TOOL_ALLOW_ENV} 以显式允许，例如: ${DANGEROUS_TOOL_ALLOW_ENV}=execute_shell,write_file`
   };
 }
 

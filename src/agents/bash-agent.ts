@@ -16,7 +16,7 @@ export class BashAgent extends BaseAgent {
     Logger.info(`Bash Agent ${this.id} 开始执行任务`);
 
     const systemPrompt = this.buildSystemPrompt(context);
-    const toolExecutor = this.createToolExecutor(context, ['execute_bash']);
+    const toolExecutor = this.createToolExecutor(context, ['execute_shell']);
 
     const messages: Message[] = [
       { role: 'system', content: systemPrompt },
@@ -41,7 +41,7 @@ export class BashAgent extends BaseAgent {
 工作目录: ${context.workingDirectory}
 
 你可以使用以下工具：
-- Bash: 执行 bash 命令
+- Shell: 执行 shell 命令
 
 工作原则：
 1. 仔细验证命令的安全性

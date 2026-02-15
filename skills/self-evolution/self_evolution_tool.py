@@ -5,9 +5,9 @@ Self Evolution Tool - 自我进化工具
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools', 'shared'))
 
-from utils.base_tool import BaseTool
+from base_tool import BaseTool
 from typing import Dict, Any
 import json
 import re
@@ -18,9 +18,7 @@ class SelfEvolutionTool(BaseTool):
 
     def __init__(self):
         super().__init__()
-        self.tools_dir = os.path.join(os.path.dirname(__file__))
-        self.skills_dir = os.path.abspath(os.path.join(self.tools_dir, '..', '..', 'skills'))
-        self.config_file = os.path.join(self.tools_dir, 'tool-config.json')
+        self.skills_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'skills'))
 
     def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -82,12 +80,11 @@ class SelfEvolutionTool(BaseTool):
         return bool(re.match(r'^[a-zA-Z0-9_-]+$', name))
 
     def _create_tool(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """创建新的Python工具"""
+        """创建新的Python工具（放在对应 skill 目录下）"""
         name = params['name']
         description = params['description']
         code = params.get('code', '')
         parameters = params.get('parameters', {})
-        timeout = params.get('timeout', 30000)
 
         # 验证必需参数
         if not code:
@@ -97,8 +94,10 @@ class SelfEvolutionTool(BaseTool):
                 'status': 'error'
             }
 
-        # 生成文件名
-        tool_file = os.path.join(self.tools_dir, f'{name}_tool.py')
+        # 工具脚本放在 skills/<name>/ 目录下
+        tool_dir = os.path.join(self.skills_dir, name)
+        os.makedirs(tool_dir, exist_ok=True)
+        tool_file = os.path.join(tool_dir, f'{name}_tool.py')
 
         # 检查文件是否已存在
         if os.path.exists(tool_file):
@@ -112,36 +111,12 @@ class SelfEvolutionTool(BaseTool):
         with open(tool_file, 'w', encoding='utf-8') as f:
             f.write(code)
 
-        # 更新tool-config.json
-        self._update_tool_config(name, description, f'tools/python/{name}_tool.py', timeout, parameters)
-
         return {
             'success': True,
-            'message': f'成功创建工具: {name}',
+            'message': f'成功创建工具: {name}，脚本位于 skills/{name}/{name}_tool.py',
             'created_file': tool_file,
             'status': 'success'
         }
-
-    def _update_tool_config(self, name: str, description: str, script: str, timeout: int, parameters: dict):
-        """更新tool-config.json，添加新工具"""
-        # 读取现有配置
-        with open(self.config_file, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-
-        # 添加新工具
-        new_tool = {
-            'name': name,
-            'description': description,
-            'script': script,
-            'timeout': timeout,
-            'parameters': parameters
-        }
-
-        config['tools'].append(new_tool)
-
-        # 写回配置文件
-        with open(self.config_file, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
 
     def _create_skill(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """创建新的Skill（生成符合 SkillParser 的 YAML frontmatter 格式）"""

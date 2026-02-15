@@ -34,6 +34,12 @@ export interface ChatConfig {
     botOpenId?: string;
     botAliases?: string[];
   };
+  catscompany?: {
+    serverUrl?: string;
+    apiKey?: string;
+    httpBaseUrl?: string;
+    sessionTTL?: number;
+  };
 }
 
 export interface TokenUsage {

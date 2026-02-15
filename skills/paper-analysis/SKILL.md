@@ -35,6 +35,27 @@ max-turns: 150
 | `analyze_image` | 读取图片 + 多模态分析（一步完成） | 当你决定要深度分析某张图时 |
 | `write_file` | 写入分析文件 | 每章分析完后写入 |
 
+## 脚本调用方式
+
+本 skill 的 Python 脚本位于 `skills/paper-analysis/` 和 `tools/shared/` 目录下，通过 `execute_shell` 调用。
+
+**paper_parser**（解析 PDF）：
+```bash
+python skills/paper-analysis/paper_parser_tool.py '{"pdf_path": "<path_or_url>", "extract_sections": true, "extract_metadata": true}'
+```
+
+**markdown_chunker**（切分章节）：
+```bash
+python skills/paper-analysis/markdown_chunker_tool.py '{"full_md_path": "<path>", "outline_only": true, "chapter_level": 1}'
+```
+
+**analyze_image**（多模态图片分析）：
+```bash
+python tools/shared/analyze_image_tool.py '{"file_path": "<image_path>", "prompt": "<具体问题>"}'
+```
+
+所有脚本接收 JSON 字符串作为参数，返回 JSON 结果到 stdout。
+
 ## 执行流程
 
 ### 断点续跑（--resume）

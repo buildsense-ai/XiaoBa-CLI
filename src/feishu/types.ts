@@ -38,6 +38,8 @@ export interface ParsedFeishuMessage {
   msgType: string;
   /** 文件附件信息（file/image 消息时存在） */
   file?: FeishuFileInfo;
+  /** 合并转发子消息 ID 列表（merge_forward 消息时存在） */
+  mergeForwardIds?: string[];
 }
 
 /**

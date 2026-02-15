@@ -34,6 +34,22 @@ argument-hint: "<paper_analysis_dir> [--theme academic|dark|minimal]"
 | `analyze_image` | 分析论文图表内容 | 需要为图表生成解读文字时 |
 | `write_file` | 写入大纲文件 | 保存 PPT 大纲供用户审阅 |
 
+## 脚本调用方式
+
+本 skill 的 Python 脚本位于 `skills/paper-to-ppt/` 和 `tools/shared/` 目录下，通过 `execute_shell` 调用。
+
+**pptx_generator**（生成 PPT）：
+```bash
+python skills/paper-to-ppt/pptx_generator_tool.py '{"output_path": "docs/ppt/xxx.pptx", "theme": "academic", "slides": [...]}'
+```
+
+**analyze_image**（多模态图片分析）：
+```bash
+python tools/shared/analyze_image_tool.py '{"file_path": "<image_path>", "prompt": "<具体问题>"}'
+```
+
+所有脚本接收 JSON 字符串作为参数，返回 JSON 结果到 stdout。
+
 ## 执行流程
 
 ### Phase 1：大纲规划
