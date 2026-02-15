@@ -106,6 +106,8 @@ export class FeishuBot {
       this.bridgeClient = new BridgeClient(config.bridge.peers);
       const sendToBotTool = new SendToBotTool(this.bridgeClient, config.bridge.name);
       toolManager.registerTool(sendToBotTool);
+      // 绑定 Bridge 到 feishu_mention，@bot peer 时自动派任务
+      this.feishuMentionTool.bindBridge(this.bridgeClient, config.bridge.name);
       Logger.info(`Bot Bridge 已配置: peers=${this.bridgeClient.getPeerNames().join(', ')}`);
     }
 
