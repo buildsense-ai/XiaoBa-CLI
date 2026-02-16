@@ -6,7 +6,6 @@ import { chatCommand } from './commands/chat';
 import { configCommand } from './commands/config';
 import { registerSkillCommand } from './commands/skill';
 import { feishuCommand } from './commands/feishu';
-import { catscompanyCommand } from './commands/catscompany';
 
 function main() {
   const program = new Command();
@@ -41,11 +40,22 @@ function main() {
     .description('启动飞书机器人（WebSocket 长连接模式）')
     .action(feishuCommand);
 
-  // Cats Company 机器人命令
+  // Cats Company 机器人命令（懒加载，避免 SDK 缺失时影响其他命令）
   program
     .command('catscompany')
     .description('启动 Cats Company 机器人（WebSocket 长连接模式）')
-    .action(catscompanyCommand);
+    .action(async () => {
+      try {
+        const { catscompanyCommand } = await import('./commands/catscompany');
+        await catscompanyCommand();
+      } catch (err: any) {
+        if (err?.code === 'MODULE_NOT_FOUND' || err?.code === 'ERR_MODULE_NOT_FOUND') {
+          Logger.error('CatsCompany SDK 未安装或路径不正确，请检查 @catscompany/bot-sdk 依赖。');
+        } else {
+          throw err;
+        }
+      }
+    });
 
   // Skill 管理命令
   registerSkillCommand(program);
