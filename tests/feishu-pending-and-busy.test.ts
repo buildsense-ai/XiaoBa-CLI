@@ -81,15 +81,16 @@ test('feishu forwards busy message to user in tool-only mode', async () => {
   bot.sessionManager = {
     getSessionKey: () => 'user:user-c',
     getOrCreate: () => ({
+      isBusy: () => false,
       handleCommand: async () => ({ handled: false }),
       handleMessage: async () => BUSY_MESSAGE,
     }),
   };
-  bot.feishuReplyTool = {
+  bot.sendMessageTool = {
     bindSession: () => {},
     unbindSession: () => {},
   };
-  bot.feishuSendFileTool = {
+  bot.sendFileTool = {
     bindSession: () => {},
     unbindSession: () => {},
   };

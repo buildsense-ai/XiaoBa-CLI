@@ -57,7 +57,7 @@ test('agent session auto-activates mentioned skill and applies tool policy', asy
   // allowed-tools 生效：只保留 read_file + essential skill
   assert.equal(firstCallToolNames.includes('read_file'), true);
   assert.equal(firstCallToolNames.includes('skill'), true);
-  assert.equal(firstCallToolNames.includes('execute_bash'), false);
+  assert.equal(firstCallToolNames.includes('execute_shell'), false);
 
   const hasSkillSystem = session.getMessages().some(
     (msg) => msg.role === 'system' && typeof msg.content === 'string' && msg.content.startsWith('[skill:paper-analysis]')
@@ -102,7 +102,7 @@ test('agent session slash skill command uses same activation protocol and tool p
   const firstCallToolNames = usedToolSets[0];
   assert.equal(firstCallToolNames.includes('read_file'), true);
   assert.equal(firstCallToolNames.includes('skill'), true);
-  assert.equal(firstCallToolNames.includes('execute_bash'), false);
+  assert.equal(firstCallToolNames.includes('execute_shell'), false);
 
   const expectedSignal = buildSkillActivationSignal(skill, {
     skillName: 'paper-analysis',
@@ -157,8 +157,8 @@ test('agent session does not auto-activate skill for attachment-only event promp
   assert.equal(usedToolSets.length > 0, true);
   const firstCallToolNames = usedToolSets[0];
 
-  // 未自动激活 skill 时，工具集保持完整（包含 execute_bash）
-  assert.equal(firstCallToolNames.includes('execute_bash'), true);
+  // 未自动激活 skill 时，工具集保持完整（包含 execute_shell）
+  assert.equal(firstCallToolNames.includes('execute_shell'), true);
 
   const hasSkillSystem = session.getMessages().some(
     (msg) => msg.role === 'system' && typeof msg.content === 'string' && msg.content.startsWith('[skill:')
