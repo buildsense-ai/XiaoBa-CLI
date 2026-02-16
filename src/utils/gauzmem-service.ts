@@ -123,15 +123,13 @@ export class GauzMemService {
     try {
       await this.client!.post('/api/v1/memories/messages', {
         project_id: this.config.projectId,
-        messages: [
-          {
-            text,
-            user_id: userId || this.config.userId,
-            platform_id: platformId,
-            speaker,
-            run_id: runId,
-          },
-        ],
+        message: {
+          text,
+          user_id: userId || this.config.userId,
+          platform_id: platformId,
+          speaker,
+          run_id: runId,
+        },
       });
       this.cb.recordSuccess();
     } catch (err: any) {
