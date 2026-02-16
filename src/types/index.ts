@@ -20,13 +20,6 @@ export interface ChatConfig {
   temperature?: number;
   maxTokens?: number;
   provider?: 'openai' | 'anthropic';
-  memory?: {
-    enabled?: boolean;
-    baseUrl?: string;
-    projectId?: string;
-    userId?: string;
-    agentId?: string;
-  };
   feishu?: {
     appId?: string;
     appSecret?: string;

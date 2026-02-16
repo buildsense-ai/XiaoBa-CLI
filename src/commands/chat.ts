@@ -5,8 +5,6 @@ import { AIService } from '../utils/ai-service';
 import { CommandOptions } from '../types';
 import { styles } from '../theme/colors';
 import { SkillManager } from '../skills/skill-manager';
-import { GauzMemService, GauzMemConfig } from '../utils/gauzmem-service';
-import { ConfigManager } from '../utils/config';
 import { ToolManager } from '../tools/tool-manager';
 import { AgentSession, AgentServices, SessionCallbacks } from '../core/agent-session';
 
@@ -30,28 +28,11 @@ export async function chatCommand(options: CommandOptions): Promise<void> {
     Logger.warning(`Skills 加载失败: ${error.message}`);
   }
 
-  // 初始化 GauzMemService
-  const config = ConfigManager.getConfig();
-  let memoryService: GauzMemService | null = null;
-
-  if (config.memory?.enabled) {
-    const memConfig: GauzMemConfig = {
-      baseUrl: config.memory.baseUrl || 'http://43.139.19.144:1235',
-      projectId: config.memory.projectId || 'XiaoBa',
-      userId: config.memory.userId || 'guowei',
-      agentId: config.memory.agentId || 'XiaoBa',
-      enabled: true,
-    };
-    memoryService = new GauzMemService(memConfig);
-    Logger.info('记忆系统已启用');
-  }
-
   // 组装 AgentServices + 创建 AgentSession
   const services: AgentServices = {
     aiService,
     toolManager,
     skillManager,
-    memoryService,
   };
   const session = new AgentSession('cli', services);
 
@@ -154,10 +135,7 @@ async function interactiveChat(session: AgentSession): Promise<void> {
     const keepAliveTimer = setInterval(() => {}, 100);
     const cleanup = async () => {
       try {
-        const success = await session.summarizeAndDestroy();
-        if (success) {
-          Logger.info('已保存对话历史到记忆系统');
-        }
+        await session.summarizeAndDestroy();
         console.log(styles.text('再见！期待下次与你对话。\n'));
       } finally {
         Logger.closeLogFile();
@@ -168,7 +146,7 @@ async function interactiveChat(session: AgentSession): Promise<void> {
     cleanup();
   };
 
-  // 覆盖 process.exit，确保在任何退出情况下都能保存记忆
+  // 覆盖 process.exit，确保在任何退出情况下都能执行清理
   (process.exit as any) = (code?: number) => gracefulExit(code ?? 0);
 
   // 使用 prependListener 确保我们的处理器优先执行

@@ -210,7 +210,7 @@ export class SubAgentSession {
     this.completedAt = Date.now();
     this.resultSummary = runResult.response;
 
-    // 自动发送产出文件（兜底：即使 AI 忘了调 feishu_send_file，关键文件也能送达）
+    // 自动发送产出文件（兜底：即使 AI 忘了调 send_file，关键文件也能送达）
     await this.autoSendDeliverables();
 
     Logger.success(`[SubAgent ${this.id}] 完成: ${this.taskDescription}`);

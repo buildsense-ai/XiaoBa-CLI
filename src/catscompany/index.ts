@@ -6,11 +6,9 @@ import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { AgentServices, BUSY_MESSAGE } from '../core/agent-session';
-import { GauzMemService, GauzMemConfig } from '../utils/gauzmem-service';
-import { ConfigManager } from '../utils/config';
 import { Logger } from '../utils/logger';
-import { FeishuReplyTool } from '../tools/feishu-reply-tool';
-import { FeishuSendFileTool } from '../tools/feishu-send-file-tool';
+import { SendMessageTool } from '../tools/send-message-tool';
+import { SendFileTool } from '../tools/send-file-tool';
 import { AskUserQuestionTool } from '../tools/ask-user-question-tool';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { randomUUID } from 'crypto';
@@ -43,8 +41,8 @@ export class CatsCompanyBot {
   private sender: MessageSender;
   private sessionManager: SessionManager;
   private agentServices: AgentServices;
-  private replyTool: FeishuReplyTool;
-  private sendFileTool: FeishuSendFileTool;
+  private sendMessageTool: SendMessageTool;
+  private sendFileTool: SendFileTool;
   private askUserQuestionTool: AskUserQuestionTool | null = null;
   /** key = pendingAnswerId */
   private pendingAnswers = new Map<string, PendingAnswer>();
@@ -64,35 +62,17 @@ export class CatsCompanyBot {
 
     const aiService = new AIService();
     const toolManager = new ToolManager();
-    this.replyTool = new FeishuReplyTool();
-    this.sendFileTool = new FeishuSendFileTool();
-    toolManager.registerTool(this.replyTool);
-    toolManager.registerTool(this.sendFileTool);
+    this.sendMessageTool = toolManager.getTool<SendMessageTool>('send_message')!;
+    this.sendFileTool = toolManager.getTool<SendFileTool>('send_file')!;
     this.askUserQuestionTool = toolManager.getTool<AskUserQuestionTool>('ask_user_question') ?? null;
     Logger.info(`已加载 ${toolManager.getToolCount()} 个工具`);
 
     const skillManager = new SkillManager();
 
-    // 初始化 GauzMemService
-    const appConfig = ConfigManager.getConfig();
-    let memoryService: GauzMemService | null = null;
-    if (appConfig.memory?.enabled) {
-      const memConfig: GauzMemConfig = {
-        baseUrl: appConfig.memory.baseUrl || 'http://43.139.19.144:1235',
-        projectId: appConfig.memory.projectId || 'XiaoBa',
-        userId: appConfig.memory.userId || 'guowei',
-        agentId: appConfig.memory.agentId || 'XiaoBa',
-        enabled: true,
-      };
-      memoryService = new GauzMemService(memConfig);
-      Logger.info('CatsCompany 记忆系统已启用');
-    }
-
     this.agentServices = {
       aiService,
       toolManager,
       skillManager,
-      memoryService,
     };
 
     this.sessionManager = new SessionManager(
@@ -236,7 +216,7 @@ export class CatsCompanyBot {
     }
 
     // 绑定工具到当前会话
-    this.replyTool.bindSession(key, msg.topic, async (_topic, text) => {
+    this.sendMessageTool.bindSession(key, msg.topic, async (_topic, text) => {
       await this.sender.reply(msg.topic, text);
     });
     this.sendFileTool.bindSession(key, msg.topic, (_topic, filePath, fileName) =>
@@ -265,7 +245,7 @@ export class CatsCompanyBot {
         await this.sender.reply(msg.topic, reply);
       }
     } finally {
-      this.replyTool.unbindSession(key);
+      this.sendMessageTool.unbindSession(key);
       this.sendFileTool.unbindSession(key);
       if (this.askUserQuestionTool) {
         this.askUserQuestionTool.unbindFeishuSession(key);
@@ -338,7 +318,7 @@ export class CatsCompanyBot {
         continue;
       }
 
-      this.replyTool.bindSession(sessionKey, topic, async (_topic, replyText) => {
+      this.sendMessageTool.bindSession(sessionKey, topic, async (_topic, replyText) => {
         await this.sender.reply(topic, replyText);
       });
       this.sendFileTool.bindSession(sessionKey, topic, (_topic, filePath, fileName) =>
@@ -367,7 +347,7 @@ export class CatsCompanyBot {
         }
         return;
       } finally {
-        this.replyTool.unbindSession(sessionKey);
+        this.sendMessageTool.unbindSession(sessionKey);
         this.sendFileTool.unbindSession(sessionKey);
         if (this.askUserQuestionTool) {
           this.askUserQuestionTool.unbindFeishuSession(sessionKey);
@@ -417,7 +397,7 @@ export class CatsCompanyBot {
   private buildAttachmentOnlyPrompt(attachments: PendingAttachment[]): string {
     return [
       '[用户仅上传了附件，暂未给出明确任务]',
-      '[当前会话是 CatsCompany 聊天：给用户可见的文本请通过 feishu_reply 工具发送；发送文件请用 feishu_send_file 工具]',
+      '[当前会话是 CatsCompany 聊天：给用户可见的文本请通过 send_message 工具发送；发送文件请用 send_file 工具]',
       '请你先判断最合理的下一步，不要默认进入任何特定 skill（例如 paper-analysis）。',
       '如果任务不明确，先提出一个最小澄清问题；如果任务足够明确，再自行执行。',
       this.formatAttachmentContext(attachments),

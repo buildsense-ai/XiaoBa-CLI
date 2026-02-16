@@ -2,15 +2,15 @@ import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
 import { Logger } from '../utils/logger';
 
 /**
- * 飞书回复工具
+ * 消息发送工具
  * 允许 AI 在处理过程中主动给用户发消息（如确认、进度、结果）
  *
- * chatId 和 sender 由 FeishuBot 在每次消息处理前动态注入
+ * chatId 和 sender 由适配层在每次消息处理前动态注入
  */
-export class FeishuReplyTool implements Tool {
+export class SendMessageTool implements Tool {
   definition: ToolDefinition = {
-    name: 'feishu_reply',
-    description: '给老师发一条飞书消息。用于回复确认、发送中间结果等。',
+    name: 'send_message',
+    description: '给用户发一条消息。用于回复确认、发送中间结果等。',
     parameters: {
       type: 'object',
       properties: {
@@ -62,7 +62,7 @@ export class FeishuReplyTool implements Tool {
     const session = this.sessions.get(sessionId);
 
     if (!session) {
-      return '当前不在飞书会话中，无法发送消息';
+      return '当前不在聊天会话中，无法发送消息';
     }
 
     if (!message || typeof message !== 'string') {
@@ -71,10 +71,10 @@ export class FeishuReplyTool implements Tool {
 
     try {
       await session.sendFn(session.chatId, message);
-      Logger.info(`[feishu_reply] 已发送: ${message.slice(0, 50)}...`);
+      Logger.info(`[send_message] 已发送: ${message.slice(0, 50)}...`);
       return '消息已发送';
     } catch (err: any) {
-      Logger.error(`[feishu_reply] 发送失败: ${err.message}`);
+      Logger.error(`[send_message] 发送失败: ${err.message}`);
       return `发送失败: ${err.message}`;
     }
   }

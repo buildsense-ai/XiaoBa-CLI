@@ -55,13 +55,6 @@ export class ConfigManager {
       model,
       temperature: 0.7,
       provider,
-      memory: {
-        enabled: process.env.GAUZ_MEM_ENABLED === 'true' || false,
-        baseUrl: process.env.GAUZ_MEM_BASE_URL || 'http://43.139.19.144:1235',
-        projectId: process.env.GAUZ_MEM_PROJECT_ID || 'XiaoBa',
-        userId: process.env.GAUZ_MEM_USER_ID || 'guowei',
-        agentId: process.env.GAUZ_MEM_AGENT_ID || 'XiaoBa',
-      },
       feishu: {
         appId: process.env.FEISHU_APP_ID,
         appSecret: process.env.FEISHU_APP_SECRET,

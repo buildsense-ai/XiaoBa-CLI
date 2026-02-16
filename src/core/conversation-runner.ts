@@ -299,16 +299,7 @@ export class ConversationRunner {
    * 处理需要显示输出的工具
    */
   private handleToolDisplay(toolCall: ToolCall, content: string, callbacks?: RunnerCallbacks): void {
-    if (toolCall.function.name === 'task_planner' && callbacks?.onToolDisplay) {
-      try {
-        const args = JSON.parse(toolCall.function.arguments);
-        if (args.action === 'create' || args.action === 'update') {
-          callbacks.onToolDisplay(toolCall.function.name, content);
-        }
-      } catch {
-        callbacks.onToolDisplay(toolCall.function.name, content);
-      }
-    }
+    // 预留扩展点：未来如有工具需要在 CLI 直接展示输出，在此添加
   }
 
   private tryParseSkillActivation(

@@ -5,10 +5,7 @@ import { ShellTool } from './bash-tool';
 import { EditTool } from './edit-tool';
 import { GlobTool } from './glob-tool';
 import { GrepTool } from './grep-tool';
-import { TaskPlannerTool } from './task-planner-tool';
 import { TodoWriteTool } from './todo-write-tool';
-import { EnterPlanModeTool } from './enter-plan-mode-tool';
-import { ExitPlanModeTool } from './exit-plan-mode-tool';
 import { AskUserQuestionTool } from './ask-user-question-tool';
 import { TaskTool } from './task-tool';
 import { TaskOutputTool } from './task-output-tool';
@@ -16,6 +13,8 @@ import { TaskStopTool } from './task-stop-tool';
 import { SkillTool } from './skill-tool';
 import { WebSearchTool } from './web-search-tool';
 import { WebFetchTool } from './web-fetch-tool';
+import { SendMessageTool } from './send-message-tool';
+import { SendFileTool } from './send-file-tool';
 
 import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
@@ -37,6 +36,9 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
   'Task': 'task',
   'WebFetch': 'web_fetch',
   'WebSearch': 'web_search',
+  // 向后兼容：旧 tool 名 → 新 tool 名
+  'feishu_reply': 'send_message',
+  'feishu_send_file': 'send_file',
 };
 
 /**
@@ -69,12 +71,7 @@ export class ToolManager implements ToolExecutor {
     this.registerTool(new ShellTool());
 
     // 注册任务管理工具
-    this.registerTool(new TaskPlannerTool());
     this.registerTool(new TodoWriteTool());
-
-    // 注册工作流工具
-    this.registerTool(new EnterPlanModeTool());
-    this.registerTool(new ExitPlanModeTool());
     this.registerTool(new AskUserQuestionTool());
 
     // 注册网络工具
@@ -84,6 +81,9 @@ export class ToolManager implements ToolExecutor {
     // 注册 Skill 工具
     this.registerTool(new SkillTool());
 
+    // 注册通信工具
+    this.registerTool(new SendMessageTool());
+    this.registerTool(new SendFileTool());
 
     // 注册子智能体工具
     this.registerTool(new SpawnSubagentTool());
@@ -95,30 +95,6 @@ export class ToolManager implements ToolExecutor {
     this.registerTool(new TaskTool());
     this.registerTool(new TaskOutputTool());
     this.registerTool(new TaskStopTool());
-
-    // 加载并注册 Python 工具
-    this.loadPythonTools();
-  }
-
-  /**
-   * 加载 Python 工具
-   */
-  private loadPythonTools(): void {
-    try {
-      const { PythonToolLoader } = require('./python-tool-loader');
-      const loader = new PythonToolLoader(this.workingDirectory);
-      const pythonTools = loader.loadTools();
-
-      for (const tool of pythonTools) {
-        this.registerTool(tool);
-      }
-
-      if (pythonTools.length > 0) {
-        console.log(`已加载 ${pythonTools.length} 个 Python 工具`);
-      }
-    } catch (error: any) {
-      console.warn(`加载 Python 工具失败: ${error.message}`);
-    }
   }
 
   /**

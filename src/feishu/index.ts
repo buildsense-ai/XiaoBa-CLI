@@ -7,17 +7,13 @@ import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { AgentServices, BUSY_MESSAGE } from '../core/agent-session';
-import { GauzMemService, GauzMemConfig } from '../utils/gauzmem-service';
-import { ConfigManager } from '../utils/config';
 import { Logger } from '../utils/logger';
-import { FeishuReplyTool } from '../tools/feishu-reply-tool';
-import { FeishuSendFileTool } from '../tools/feishu-send-file-tool';
-import { FeishuMentionTool } from '../tools/feishu-mention-tool';
+import { SendMessageTool } from '../tools/send-message-tool';
+import { SendFileTool } from '../tools/send-file-tool';
 import { AskUserQuestionTool } from '../tools/ask-user-question-tool';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { BridgeServer, BridgeMessage } from '../bridge/bridge-server';
 import { BridgeClient } from '../bridge/bridge-client';
-import { SendToBotTool } from '../tools/send-to-bot-tool';
 import { randomUUID } from 'crypto';
 
 interface PendingAttachment {
@@ -49,9 +45,8 @@ export class FeishuBot {
   private sender: MessageSender;
   private sessionManager: SessionManager;
   private agentServices: AgentServices;
-  private feishuReplyTool: FeishuReplyTool;
-  private feishuSendFileTool: FeishuSendFileTool;
-  private feishuMentionTool: FeishuMentionTool;
+  private sendMessageTool: SendMessageTool;
+  private sendFileTool: SendFileTool;
   private askUserQuestionTool: AskUserQuestionTool | null = null;
   private bridgeServer: BridgeServer | null = null;
   private bridgeClient: BridgeClient | null = null;
@@ -92,22 +87,14 @@ export class FeishuBot {
 
     const aiService = new AIService();
     const toolManager = new ToolManager();
-    this.feishuReplyTool = new FeishuReplyTool();
-    this.feishuSendFileTool = new FeishuSendFileTool();
-    this.feishuMentionTool = new FeishuMentionTool();
-    toolManager.registerTool(this.feishuReplyTool);
-    toolManager.registerTool(this.feishuSendFileTool);
-    toolManager.registerTool(this.feishuMentionTool);
+    this.sendMessageTool = toolManager.getTool<SendMessageTool>('send_message')!;
+    this.sendFileTool = toolManager.getTool<SendFileTool>('send_file')!;
     this.askUserQuestionTool = toolManager.getTool<AskUserQuestionTool>('ask_user_question') ?? null;
 
     // 初始化 Bot Bridge
     if (config.bridge) {
       this.bridgeConfig = config.bridge;
       this.bridgeClient = new BridgeClient(config.bridge.peers);
-      const sendToBotTool = new SendToBotTool(this.bridgeClient, config.bridge.name);
-      toolManager.registerTool(sendToBotTool);
-      // 绑定 Bridge 到 feishu_mention，@bot peer 时自动派任务
-      this.feishuMentionTool.bindBridge(this.bridgeClient, config.bridge.name);
       Logger.info(`Bot Bridge 已配置: peers=${this.bridgeClient.getPeerNames().join(', ')}`);
     }
 
@@ -115,27 +102,11 @@ export class FeishuBot {
 
     const skillManager = new SkillManager();
 
-    // 初始化 GauzMemService
-    const appConfig = ConfigManager.getConfig();
-    let memoryService: GauzMemService | null = null;
-    if (appConfig.memory?.enabled) {
-      const memConfig: GauzMemConfig = {
-        baseUrl: appConfig.memory.baseUrl || 'http://43.139.19.144:1235',
-        projectId: appConfig.memory.projectId || 'XiaoBa',
-        userId: appConfig.memory.userId || 'guowei',
-        agentId: appConfig.memory.agentId || 'XiaoBa',
-        enabled: true,
-      };
-      memoryService = new GauzMemService(memConfig);
-      Logger.info('飞书记忆系统已启用');
-    }
-
     // 组装 AgentServices
     this.agentServices = {
       aiService,
       toolManager,
       skillManager,
-      memoryService,
     };
 
     this.sessionManager = new SessionManager(
@@ -225,7 +196,6 @@ export class FeishuBot {
     const session = this.sessionManager.getOrCreate(key);
 
     // 注册持久化飞书回调到 SubAgentManager（不随 handleMessage 结束而注销）
-    // 这样后台子智能体可以在主会话空闲时继续给用户发消息
     const subAgentManager = SubAgentManager.getInstance();
     subAgentManager.registerFeishuCallbacks(key, {
       reply: async (text: string) => {
@@ -266,7 +236,7 @@ export class FeishuBot {
       userText = `[以下是用户转发的合并消息，共${msg.mergeForwardIds.length}条]\n${mergedText}`;
       Logger.info(`[${key}] 合并转发内容已拼接（${mergedText.length}字符）`);
     } else if (msg.file) {
-    // 文件/图片消息：交给 Agent 自主判断下一步，不在平台层强制回复
+    // 文件/图片消息：交给 Agent 自主判断下一步
       const localPath = await this.sender.downloadFile(
         msg.messageId,
         msg.file.fileKey,
@@ -295,32 +265,26 @@ export class FeishuBot {
       }
     }
 
-    // 并发保护：如果会话正忙，直接回复 BUSY_MESSAGE，不碰工具绑定
-    // 避免重复消息的 onMessage 覆盖并解绑正在使用的工具
+    // 并发保护
     if (session.isBusy()) {
       await this.sender.reply(msg.chatId, BUSY_MESSAGE);
       return;
     }
 
-    // 绑定飞书工具到当前会话（按 sessionKey 隔离，避免并发串话）
-    this.feishuReplyTool.bindSession(key, msg.chatId, async (chatId, text) => {
+    // 绑定通信工具到当前会话（按 sessionKey 隔离，避免并发串话）
+    this.sendMessageTool.bindSession(key, msg.chatId, async (chatId, text) => {
       await this.sender.reply(chatId, text);
     });
-    this.feishuSendFileTool.bindSession(key, msg.chatId, (chatId, filePath, fileName) => this.sender.sendFile(chatId, filePath, fileName));
-    this.feishuMentionTool.bindSession(key, msg.chatId, async (chatId, text) => {
-      await this.sender.reply(chatId, text);
-    });
+    this.sendFileTool.bindSession(key, msg.chatId, (chatId, filePath, fileName) => this.sender.sendFile(chatId, filePath, fileName));
 
     // 绑定 AskUserQuestion 飞书模式
     if (this.askUserQuestionTool) {
       const chatId = msg.chatId;
       this.askUserQuestionTool.bindFeishuSession(
         key,
-        // sendFn: 把问题发送给飞书用户
         async (text: string) => {
           await this.sender.reply(chatId, text);
         },
-        // waitFn: 等待飞书用户的下一条回复
         () => {
           return new Promise<string>((resolve) => {
             this.registerPendingAnswer(key, chatId, msg.senderId, resolve);
@@ -330,26 +294,22 @@ export class FeishuBot {
     }
 
     try {
-      // 严格 tool-only：平台层不再自动发送最终文本，所有可见消息必须由 feishu_reply/feishu_send_file 工具发出
       const reply = await session.handleMessage(userText);
       if (reply === BUSY_MESSAGE || reply.startsWith('处理消息时出错:')) {
         await this.sender.reply(msg.chatId, reply);
       }
     } finally {
-      this.feishuReplyTool.unbindSession(key);
-      this.feishuSendFileTool.unbindSession(key);
-      this.feishuMentionTool.unbindSession(key);
+      this.sendMessageTool.unbindSession(key);
+      this.sendFileTool.unbindSession(key);
       if (this.askUserQuestionTool) {
         this.askUserQuestionTool.unbindFeishuSession(key);
       }
-      // 清理可能残留的 pending（如超时或异常中断）
       this.clearPendingAnswerBySession(key);
     }
   }
 
   /**
-   * 处理子智能体反馈注入：绑定飞书工具，触发主 agent 新一轮推理。
-   * 等待主会话空闲后再注入，避免覆盖正在使用的工具绑定。
+   * 处理子智能体反馈注入
    */
   private async handleSubAgentFeedback(
     sessionKey: string,
@@ -367,22 +327,17 @@ export class FeishuBot {
 
       const session = this.sessionManager.getOrCreate(sessionKey);
 
-      // 等待主会话空闲，避免覆盖正在使用的工具绑定
       if (session.isBusy()) {
         Logger.info(`[${sessionKey}] 主会话忙，等待重试注入子智能体反馈 (${attempt + 1}/${MAX_RETRIES + 1})`);
         continue;
       }
 
-      // 主会话空闲，绑定飞书工具
-      this.feishuReplyTool.bindSession(sessionKey, chatId, async (_chatId, replyText) => {
+      this.sendMessageTool.bindSession(sessionKey, chatId, async (_chatId, replyText) => {
         await this.sender.reply(chatId, replyText);
       });
-      this.feishuSendFileTool.bindSession(sessionKey, chatId, (_chatId, filePath, fileName) =>
+      this.sendFileTool.bindSession(sessionKey, chatId, (_chatId, filePath, fileName) =>
         this.sender.sendFile(chatId, filePath, fileName)
       );
-      this.feishuMentionTool.bindSession(sessionKey, chatId, async (_chatId, replyText) => {
-        await this.sender.reply(chatId, replyText);
-      });
       if (this.askUserQuestionTool) {
         this.askUserQuestionTool.bindFeishuSession(
           sessionKey,
@@ -398,7 +353,6 @@ export class FeishuBot {
       try {
         const reply = await session.handleMessage(text);
         if (reply === BUSY_MESSAGE) {
-          // isBusy() 与 handleMessage() 之间无 await，此分支理论上不会触发
           Logger.info(`[${sessionKey}] 主会话竞态忙碌，将重试`);
           continue;
         }
@@ -407,9 +361,8 @@ export class FeishuBot {
         }
         return;
       } finally {
-        this.feishuReplyTool.unbindSession(sessionKey);
-        this.feishuSendFileTool.unbindSession(sessionKey);
-        this.feishuMentionTool.unbindSession(sessionKey);
+        this.sendMessageTool.unbindSession(sessionKey);
+        this.sendFileTool.unbindSession(sessionKey);
         if (this.askUserQuestionTool) {
           this.askUserQuestionTool.unbindFeishuSession(sessionKey);
         }
@@ -432,15 +385,12 @@ export class FeishuBot {
       return;
     }
 
-    this.feishuReplyTool.bindSession(sessionKey, msg.chat_id, async (chatId, text) => {
+    this.sendMessageTool.bindSession(sessionKey, msg.chat_id, async (chatId, text) => {
       await this.sender.reply(chatId, text);
     });
-    this.feishuSendFileTool.bindSession(sessionKey, msg.chat_id, (chatId, filePath, fileName) =>
+    this.sendFileTool.bindSession(sessionKey, msg.chat_id, (chatId, filePath, fileName) =>
       this.sender.sendFile(chatId, filePath, fileName)
     );
-    this.feishuMentionTool.bindSession(sessionKey, msg.chat_id, async (chatId, text) => {
-      await this.sender.reply(chatId, text);
-    });
 
     try {
       const userText = `[来自 ${msg.from} 的任务]\n${msg.message}`;
@@ -449,9 +399,8 @@ export class FeishuBot {
         await this.sender.reply(msg.chat_id, reply);
       }
     } finally {
-      this.feishuReplyTool.unbindSession(sessionKey);
-      this.feishuSendFileTool.unbindSession(sessionKey);
-      this.feishuMentionTool.unbindSession(sessionKey);
+      this.sendMessageTool.unbindSession(sessionKey);
+      this.sendFileTool.unbindSession(sessionKey);
     }
   }
 
@@ -496,7 +445,7 @@ export class FeishuBot {
   private buildAttachmentOnlyPrompt(attachments: PendingAttachment[]): string {
     return [
       '[用户仅上传了附件，暂未给出明确任务]',
-      '[当前会话是飞书聊天：给老师可见的文本请通过 feishu_reply 工具发送；发送文件请用 feishu_send_file 工具]',
+      '[当前会话是飞书聊天：给老师可见的文本请通过 send_message 工具发送；发送文件请用 send_file 工具]',
       '请你先判断最合理的下一步，不要默认进入任何特定 skill（例如 paper-analysis）。',
       '如果任务不明确，先提出一个最小澄清问题；如果任务足够明确，再自行执行。',
       this.formatAttachmentContext(attachments),
