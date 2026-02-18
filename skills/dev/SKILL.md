@@ -13,7 +13,7 @@ allowed-tools:
   - grep
   - execute_shell
   - todo_write
-  - ask_user_question
+
   - skill
   - web_search
   - web_fetch

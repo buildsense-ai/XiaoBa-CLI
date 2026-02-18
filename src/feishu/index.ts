@@ -10,11 +10,9 @@ import { AgentServices, BUSY_MESSAGE } from '../core/agent-session';
 import { Logger } from '../utils/logger';
 import { SendMessageTool } from '../tools/send-message-tool';
 import { SendFileTool } from '../tools/send-file-tool';
-import { AskUserQuestionTool } from '../tools/ask-user-question-tool';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { BridgeServer, BridgeMessage } from '../bridge/bridge-server';
 import { BridgeClient } from '../bridge/bridge-client';
-import { randomUUID } from 'crypto';
 
 interface PendingAttachment {
   fileName: string;
@@ -23,16 +21,6 @@ interface PendingAttachment {
   receivedAt: number;
 }
 
-interface PendingAnswer {
-  id: string;
-  sessionKey: string;
-  chatId: string;
-  expectedSenderId: string;
-  resolve: (text: string) => void;
-  timeoutHandle: ReturnType<typeof setTimeout>;
-}
-
-const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 
 /**
  * FeishuBot 主类
@@ -47,18 +35,16 @@ export class FeishuBot {
   private agentServices: AgentServices;
   private sendMessageTool: SendMessageTool;
   private sendFileTool: SendFileTool;
-  private askUserQuestionTool: AskUserQuestionTool | null = null;
   private bridgeServer: BridgeServer | null = null;
   private bridgeClient: BridgeClient | null = null;
   private bridgeConfig: FeishuConfig['bridge'] | undefined;
   /** 已处理的消息 ID，用于去重 */
   private processedMsgIds = new Set<string>();
-  /** key = pendingAnswerId */
-  private pendingAnswers = new Map<string, PendingAnswer>();
-  /** key = sessionKey, value = pendingAnswerId */
-  private pendingAnswerBySession = new Map<string, string>();
   /** 等待用户后续指令的附件队列，key 为 sessionKey */
   private pendingAttachments = new Map<string, PendingAttachment[]>();
+  /** 消息合并队列：session 忙时暂存后续消息，处理完后合并为一条 */
+  private pendingMessages = new Map<string, { texts: string[]; chatId: string }>();
+  private static readonly MAX_PENDING_MESSAGES = 5;
 
   constructor(config: FeishuConfig) {
     const baseConfig = {
@@ -89,7 +75,6 @@ export class FeishuBot {
     const toolManager = new ToolManager();
     this.sendMessageTool = toolManager.getTool<SendMessageTool>('send_message')!;
     this.sendFileTool = toolManager.getTool<SendFileTool>('send_file')!;
-    this.askUserQuestionTool = toolManager.getTool<AskUserQuestionTool>('ask_user_question') ?? null;
 
     // 初始化 Bot Bridge
     if (config.bridge) {
@@ -172,23 +157,6 @@ export class FeishuBot {
 
     const key = this.sessionManager.getSessionKey(msg);
 
-    // ── 拦截：如果当前 session 正在等待回答，按 sender 精确匹配 ──
-    const pendingId = this.pendingAnswerBySession.get(key);
-    if (pendingId) {
-      const pending = this.pendingAnswers.get(pendingId);
-      if (!pending) {
-        this.pendingAnswerBySession.delete(key);
-      } else if (msg.senderId === pending.expectedSenderId) {
-        this.clearPendingAnswerById(pending.id);
-        Logger.info(`[${key}] 收到用户对提问的回复: ${msg.text.slice(0, 50)}...`);
-        pending.resolve(msg.text);
-        return;
-      } else {
-        Logger.info(`[${key}] 忽略非提问发起人的回复: ${msg.senderId}`);
-        return;
-      }
-    }
-
     // 群聊需要 @机器人 才响应
     if (msg.chatType === 'group' && !msg.mentionBot) return;
 
@@ -265,46 +233,57 @@ export class FeishuBot {
       }
     }
 
-    // 并发保护
+    // 并发保护：忙时入队，处理完后合并
     if (session.isBusy()) {
-      await this.sender.reply(msg.chatId, BUSY_MESSAGE);
+      const pending = this.pendingMessages.get(key);
+      if (pending && pending.texts.length >= FeishuBot.MAX_PENDING_MESSAGES) {
+        await this.sender.reply(msg.chatId, BUSY_MESSAGE);
+      } else {
+        if (!pending) {
+          this.pendingMessages.set(key, { texts: [userText], chatId: msg.chatId });
+        } else {
+          pending.texts.push(userText);
+        }
+        await this.sender.reply(msg.chatId, '收到，处理完当前任务后一起回复你。');
+        Logger.info(`[${key}] 消息入队 (队列长度: ${this.pendingMessages.get(key)!.texts.length})`);
+      }
       return;
     }
 
-    // 绑定通信工具到当前会话（按 sessionKey 隔离，避免并发串话）
-    this.sendMessageTool.bindSession(key, msg.chatId, async (chatId, text) => {
+    await this.processMessage(key, msg.chatId, userText, session);
+  }
+
+  /**
+   * 实际处理消息：绑定工具 → 调用 session → 处理队列中的后续消息
+   */
+  private async processMessage(
+    key: string,
+    chatId: string,
+    userText: string,
+    session: ReturnType<SessionManager['getOrCreate']>,
+  ): Promise<void> {
+    this.sendMessageTool.bindSession(key, chatId, async (_chatId, text) => {
       await this.sender.reply(chatId, text);
     });
-    this.sendFileTool.bindSession(key, msg.chatId, (chatId, filePath, fileName) => this.sender.sendFile(chatId, filePath, fileName));
-
-    // 绑定 AskUserQuestion 飞书模式
-    if (this.askUserQuestionTool) {
-      const chatId = msg.chatId;
-      this.askUserQuestionTool.bindFeishuSession(
-        key,
-        async (text: string) => {
-          await this.sender.reply(chatId, text);
-        },
-        () => {
-          return new Promise<string>((resolve) => {
-            this.registerPendingAnswer(key, chatId, msg.senderId, resolve);
-          });
-        },
-      );
-    }
+    this.sendFileTool.bindSession(key, chatId, (_chatId, filePath, fileName) => this.sender.sendFile(chatId, filePath, fileName));
 
     try {
       const reply = await session.handleMessage(userText);
-      if (reply === BUSY_MESSAGE || reply.startsWith('处理消息时出错:')) {
-        await this.sender.reply(msg.chatId, reply);
+      if (reply === BUSY_MESSAGE || reply.startsWith('处理消息时出错:') || reply.startsWith('API 暂时限流')) {
+        await this.sender.reply(chatId, reply);
       }
     } finally {
       this.sendMessageTool.unbindSession(key);
       this.sendFileTool.unbindSession(key);
-      if (this.askUserQuestionTool) {
-        this.askUserQuestionTool.unbindFeishuSession(key);
-      }
-      this.clearPendingAnswerBySession(key);
+    }
+
+    // 处理合并队列中的后续消息
+    const pending = this.pendingMessages.get(key);
+    if (pending && pending.texts.length > 0) {
+      this.pendingMessages.delete(key);
+      const merged = pending.texts.join('\n');
+      Logger.info(`[${key}] 合并 ${pending.texts.length} 条等待消息，开始处理`);
+      await this.processMessage(key, pending.chatId, merged, session);
     }
   }
 
@@ -338,17 +317,6 @@ export class FeishuBot {
       this.sendFileTool.bindSession(sessionKey, chatId, (_chatId, filePath, fileName) =>
         this.sender.sendFile(chatId, filePath, fileName)
       );
-      if (this.askUserQuestionTool) {
-        this.askUserQuestionTool.bindFeishuSession(
-          sessionKey,
-          async (question: string) => {
-            await this.sender.reply(chatId, question);
-          },
-          () => new Promise<string>((resolve) => {
-            this.registerPendingAnswer(sessionKey, chatId, senderId, resolve);
-          }),
-        );
-      }
 
       try {
         const reply = await session.handleMessage(text);
@@ -363,10 +331,6 @@ export class FeishuBot {
       } finally {
         this.sendMessageTool.unbindSession(sessionKey);
         this.sendFileTool.unbindSession(sessionKey);
-        if (this.askUserQuestionTool) {
-          this.askUserQuestionTool.unbindFeishuSession(sessionKey);
-        }
-        this.clearPendingAnswerBySession(sessionKey);
       }
     }
 
@@ -412,11 +376,8 @@ export class FeishuBot {
       this.bridgeServer.stop();
     }
     this.sessionManager.destroy();
-    for (const pendingId of Array.from(this.pendingAnswers.keys())) {
-      this.clearPendingAnswerById(pendingId);
-    }
-    this.pendingAnswerBySession.clear();
     this.pendingAttachments.clear();
+    this.pendingMessages.clear();
     Logger.info('飞书机器人已停止');
   }
 
@@ -452,54 +413,4 @@ export class FeishuBot {
     ].join('\n');
   }
 
-  private registerPendingAnswer(
-    sessionKey: string,
-    chatId: string,
-    expectedSenderId: string,
-    resolve: (text: string) => void,
-  ): void {
-    const existingId = this.pendingAnswerBySession.get(sessionKey);
-    if (existingId) {
-      const existing = this.pendingAnswers.get(existingId);
-      this.clearPendingAnswerById(existingId);
-      existing?.resolve('（提问已更新，请回答最新问题）');
-    }
-
-    const id = randomUUID();
-    const timeoutHandle = setTimeout(() => {
-      const pending = this.pendingAnswers.get(id);
-      if (!pending) return;
-      this.clearPendingAnswerById(id);
-      pending.resolve('（用户未在120秒内回复）');
-    }, PENDING_ANSWER_TIMEOUT_MS);
-
-    this.pendingAnswers.set(id, {
-      id,
-      sessionKey,
-      chatId,
-      expectedSenderId,
-      resolve,
-      timeoutHandle,
-    });
-    this.pendingAnswerBySession.set(sessionKey, id);
-  }
-
-  private clearPendingAnswerBySession(sessionKey: string): void {
-    const pendingId = this.pendingAnswerBySession.get(sessionKey);
-    if (!pendingId) return;
-    this.clearPendingAnswerById(pendingId);
-  }
-
-  private clearPendingAnswerById(pendingId: string): void {
-    const pending = this.pendingAnswers.get(pendingId);
-    if (!pending) return;
-
-    clearTimeout(pending.timeoutHandle);
-    this.pendingAnswers.delete(pendingId);
-
-    const mappedId = this.pendingAnswerBySession.get(pending.sessionKey);
-    if (mappedId === pendingId) {
-      this.pendingAnswerBySession.delete(pending.sessionKey);
-    }
-  }
 }

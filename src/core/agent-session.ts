@@ -7,12 +7,18 @@ import {
   buildSkillActivationSignal,
   upsertSkillSystemMessage,
 } from '../skills/skill-activation-protocol';
-import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
+import { ConversationRunner, RunnerCallbacks, RateLimitBreakError } from './conversation-runner';
 import { SubAgentManager } from './sub-agent-manager';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { GauzMemService } from '../utils/gauzmem-service';
+import {
+  loadPreferences,
+  savePreferences,
+  getPreferencesFilePath,
+  UserPreferences,
+} from '../utils/preferences';
 
 const TRANSIENT_SUBAGENT_STATUS_PREFIX = '[transient_subagent_status]';
 const TRANSIENT_LONG_TERM_MEMORY_PREFIX = '[long_term_memory]';
@@ -92,7 +98,8 @@ export class AgentSession {
   /** 构建系统提示词（幂等，仅首次生效） */
   async init(): Promise<void> {
     if (this.messages.length > 0) return;
-    const systemPrompt = await PromptManager.buildSystemPrompt();
+    const toolNames = this.services.toolManager.getToolDefinitions().map(t => t.name);
+    const systemPrompt = await PromptManager.buildSystemPrompt(toolNames);
     this.messages.push({ role: 'system', content: systemPrompt });
 
     // 注入会话上下文（platform / session / user）
@@ -104,12 +111,28 @@ export class AgentSession {
     if (this.isFeishuSession()) {
       this.messages.push({
         role: 'system',
-        content: '[surface:feishu]\n当前是飞书会话。你发给老师的可见文本必须通过 send_message 工具发送；发送文件必须通过 send_file 工具发送。',
+        content: [
+          '[surface:feishu]',
+          '当前是飞书会话。重要的输出规则：',
+          '',
+          '1. 用户只能看到 send_message / send_file 发出的内容。你的普通文本回复（final answer）用户看不到，会被丢弃。',
+          '2. 所以：想让用户看到的话，必须用 send_message 发。',
+          '3. 每轮对话只需要调用一次 send_message 把完整回复发出去。不要把同一段话拆成多次 send_message，也不要重复发送相似内容。',
+          '4. 调完 send_message 后，直接结束本轮（不要再输出文本），或者只输出一个极短的内部标记（如 "ok"）。不要在 send_message 之后再用文本重复一遍刚发过的内容。',
+        ].join('\n'),
       });
     } else if (this.isCatsCompanySession()) {
       this.messages.push({
         role: 'system',
-        content: '[surface:catscompany]\n当前是 Cats Company 聊天会话。你发给用户的可见文本必须通过 send_message 工具发送；发送文件必须通过 send_file 工具发送。',
+        content: [
+          '[surface:catscompany]',
+          '当前是 CatsCompany 聊天会话。重要的输出规则：',
+          '',
+          '1. 用户只能看到 send_message / send_file 发出的内容。你的普通文本回复（final answer）用户看不到，会被丢弃。',
+          '2. 所以：想让用户看到的话，必须用 send_message 发。',
+          '3. 每轮对话只需要调用一次 send_message 把完整回复发出去。不要把同一段话拆成多次 send_message，也不要重复发送相似内容。',
+          '4. 调完 send_message 后，直接结束本轮（不要再输出文本），或者只输出一个极短的内部标记（如 "ok"）。不要在 send_message 之后再用文本重复一遍刚发过的内容。',
+        ].join('\n'),
       });
     }
   }
@@ -168,13 +191,21 @@ export class AgentSession {
       let contextMessages: Message[] = [...this.messages];
 
       // ── GauzMem: 被动记忆召回 → 注入 transient system message ──
+      // 生成 request_id 用于贯穿 client/server 日志
+      const requestId = crypto.randomUUID();
+      let recallResult: import('../utils/gauzmem-service').RecallResult | null = null;
+
       if (this.gauzMem.isAvailable()) {
         try {
-          const recallText = await this.gauzMem.recall(text);
-          if (recallText) {
+          recallResult = await this.gauzMem.recallWithMetadata(
+            text,
+            { maxSeeds: 15, minRelevance: 0.6 },
+            requestId,
+          );
+          if (recallResult?.recall) {
             const memoryMsg: Message = {
               role: 'system',
-              content: `${TRANSIENT_LONG_TERM_MEMORY_PREFIX}\n以下是与当前对话相关的长期记忆，供你参考：\n\n${recallText}`,
+              content: `${TRANSIENT_LONG_TERM_MEMORY_PREFIX}\n以下是与当前对话相关的长期记忆，供你参考：\n\n${recallResult.recall}`,
             };
             // 插入到最后一条用户消息之前
             const lastUserIdx = contextMessages.length - 1;
@@ -267,8 +298,15 @@ export class AgentSession {
       }
 
       // ── GauzMem: fire-and-forget 写入 agent 回复 ──
-      if (this.gauzMem.isAvailable() && result.response) {
-        this.gauzMem.writeMessage(result.response, 'agent', this.platformId, this.runId).catch(() => {});
+      // 优先提取 send_message 实际发出的内容（用户可见），而非 final answer（可能是 "ok"）
+      if (this.gauzMem.isAvailable()) {
+        const sentMessages = this.extractSentMessages(result.messages);
+        const agentContent = sentMessages.length > 0
+          ? sentMessages.join('\n')
+          : result.response;
+        if (agentContent) {
+          this.gauzMem.writeMessage(agentContent, 'agent', this.platformId, this.runId).catch(() => {});
+        }
       }
 
       // ── GauzMem 可用时裁剪本地历史，只保留最近 N 轮 ──
@@ -286,11 +324,26 @@ export class AgentSession {
         );
       }
 
+      // ── 完整 turn 日志（用于数据分析）──
+      Logger.info(
+        `[Turn Log] request_id=${requestId} ` +
+        `query="${text.slice(0, 50)}${text.length > 50 ? '...' : ''}" ` +
+        `recall_facts=${recallResult?.factsCount ?? 0} ` +
+        `recall_ids=[${(recallResult?.factIds ?? []).slice(0, 10).join(',')}] ` +
+        `recall_latency=${recallResult?.latencyMs ?? 'N/A'}ms ` +
+        `tokens=${metrics.totalPromptTokens}+${metrics.totalCompletionTokens} ` +
+        `tools=${metrics.toolCalls}`
+      );
+
       return result.response || '[无回复]';
     } catch (err: any) {
       // 清理孤立的 user 消息，避免污染后续对话
       if (this.messages.length > 0 && this.messages[this.messages.length - 1].role === 'user') {
         this.messages.pop();
+      }
+      if (err instanceof RateLimitBreakError) {
+        Logger.error(`[会话 ${this.key}] 429 跳闸: ${err.message}`);
+        return 'API 暂时限流，本轮处理已中止，请稍后再试。';
       }
       Logger.error(`[会话 ${this.key}] 处理失败: ${err.message}`);
       return `处理消息时出错: ${err.message}`;
@@ -332,6 +385,11 @@ export class AgentSession {
     if (commandName === 'exit') {
       await this.summarizeAndDestroy();
       return { handled: true, reply: '再见！期待下次与你对话。' };
+    }
+
+    // /settings 或 /pref
+    if (commandName === 'settings' || commandName === 'pref') {
+      return this.handleSettingsCommand(args);
     }
 
     // skill 斜杠命令
@@ -474,6 +532,24 @@ export class AgentSession {
    * 裁剪本地历史：保留 system 消息 + 最近 MAX_LOCAL_TURNS 轮对话。
    * GauzMem 可用时调用，因为长期记忆已持久化到服务端。
    */
+  /**
+   * 从 messages 中提取 send_message 工具实际发出的内容
+   */
+  private extractSentMessages(messages: Message[]): string[] {
+    const sent: string[] = [];
+    for (const msg of messages) {
+      if (msg.role !== 'assistant' || !msg.tool_calls) continue;
+      for (const tc of msg.tool_calls) {
+        if (tc.function.name !== 'send_message') continue;
+        try {
+          const args = JSON.parse(tc.function.arguments);
+          if (args.message) sent.push(args.message);
+        } catch { /* ignore */ }
+      }
+    }
+    return sent;
+  }
+
   private trimLocalHistory(): void {
     // 分离 system 消息和对话消息
     const systemMessages: Message[] = [];
@@ -505,6 +581,77 @@ export class AgentSession {
       return `/${s.metadata.name}${hint}\n  ${s.metadata.description}`;
     });
     return { handled: true, reply: '可用的 Skills:\n\n' + lines.join('\n\n') };
+  }
+
+  /** /settings 命令 - 查看或修改偏好 */
+  private handleSettingsCommand(args: string[]): CommandResult {
+    const prefs = loadPreferences();
+    const prefPath = getPreferencesFilePath();
+
+    // 无参数：显示当前偏好
+    if (args.length === 0) {
+      return {
+        handled: true,
+        reply: `当前偏好设置：
+
+- AI 名字: ${prefs.agent_name}
+- 对你的称呼: ${prefs.user_name}
+- 已初始化: ${prefs.initialized ? '是' : '否'}
+- 偏好文件: ${prefPath}
+
+修改方式：
+- /settings agent_name <新名字>
+- /settings user_name <新称呼>
+- /settings reset（重置为默认值）`,
+      };
+    }
+
+    const subCommand = args[0].toLowerCase();
+    const value = args.slice(1).join(' ').trim();
+
+    // /settings reset
+    if (subCommand === 'reset') {
+      const defaultPrefs: UserPreferences = {
+        agent_name: '小八',
+        user_name: '主人',
+        initialized: true,
+        created_at: prefs.created_at,
+        updated_at: new Date().toISOString().slice(0, 10),
+      };
+      savePreferences(defaultPrefs);
+      return { handled: true, reply: '偏好已重置为默认值。下一轮对话生效。' };
+    }
+
+    // /settings agent_name <名字>
+    if (subCommand === 'agent_name' && value) {
+      const updated = { ...prefs, agent_name: value };
+      savePreferences(updated);
+      return { handled: true, reply: `好的，以后我叫"${value}"了。下一轮对话生效。` };
+    }
+
+    // /settings user_name <称呼>
+    if (subCommand === 'user_name' && value) {
+      const updated = { ...prefs, user_name: value };
+      savePreferences(updated);
+      return { handled: true, reply: `好的，以后叫你"${value}"。下一轮对话生效。` };
+    }
+
+    // /settings initialized true/false（调试用）
+    if (subCommand === 'initialized') {
+      const initialized = value === 'true';
+      const updated = { ...prefs, initialized };
+      savePreferences(updated);
+      return { handled: true, reply: `initialized 已设为 ${initialized}。` };
+    }
+
+    return {
+      handled: true,
+      reply: `未识别的设置命令。用法：
+- /settings（查看当前偏好）
+- /settings agent_name <名字>
+- /settings user_name <称呼>
+- /settings reset`,
+    };
   }
 
   /** skill 斜杠命令处理 */

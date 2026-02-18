@@ -39,7 +39,17 @@
       "Edit",
       "Skill(frontend-design)",
       "mcp__ide__getDiagnostics",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(npx ts-node:*)",
+      "Bash(python:*)",
+      "Bash(npm test:*)",
+      "Bash(npx tsx --test:*)",
+      "Bash(tsx:*)",
+      "Bash(curl:*)",
+      "Bash(node:*)",
+      "Bash(npx tsx -e \"\nimport { PromptManager } from ''./src/utils/prompt-manager'';\n\nasync function test\\(\\) {\n  const prompt = await PromptManager.buildSystemPrompt\\([''memory_search'']\\);\n  console.log\\(''Prompt length:'', prompt.length\\);\n  console.log\\(''Includes agent_name:'', prompt.includes\\(''agent_name''\\)\\);\n  console.log\\(''Includes 小八:'', prompt.includes\\(''小八''\\)\\);\n  console.log\\(''First 300 chars:'', prompt.substring\\(0, 300\\)\\);\n}\n\ntest\\(\\);\n\")",
+      "Bash(npx tsc:*)",
+      "Bash(git add:*)"
     ]
   }
 }

@@ -38,6 +38,20 @@ function loadConfig(): GauzMemConfig {
 const CB_THRESHOLD = 3;
 const CB_COOLDOWN_MS = 60_000;
 
+// ─── Types ──────────────────────────────────────────────
+
+/** Recall 结果的完整元数据 */
+export interface RecallResult {
+  recall: string;
+  factsCount: number;
+  subgraphCount: number;
+  factIds: number[];
+  scores: number[];
+  latencyMs: number | null;
+  embeddingTokens: number | null;
+  requestId: string;
+}
+
 class CircuitBreaker {
   private failures = 0;
   private openUntil = 0;
@@ -141,33 +155,87 @@ export class GauzMemService {
   // ─── 被动记忆召回 ─────────────────────────────────
 
   /**
-   * 被动记忆召回：返回自然语言格式的回忆片段，直接注入 prompt。
-   * 失败时返回空字符串。
+   * 被动记忆召回：返回自然语言格式的回忆片段 + 元数据。
+   * @param query 用户输入
+   * @param options 召回参数
+   * @param requestId 请求 ID（用于贯穿 client/server 日志）
+   * @returns RecallResult 或 null（失败时）
    */
-  async recall(query: string): Promise<string> {
-    if (!this.isAvailable() || !query.trim()) return '';
+  async recallWithMetadata(
+    query: string,
+    options?: {
+      maxSeeds?: number;
+      maxFactsPerSubgraph?: number;
+      minRelevance?: number;
+      maxHops?: number;
+    },
+    requestId?: string,
+  ): Promise<RecallResult | null> {
+    if (!this.isAvailable() || !query.trim()) return null;
+
+    const rid = requestId || crypto.randomUUID();
 
     try {
-      const resp = await this.client!.post('/api/v1/memories/recall', {
-        project_id: this.config.projectId,
-        query,
-      });
+      const resp = await this.client!.post(
+        '/api/v1/memories/recall',
+        {
+          project_id: this.config.projectId,
+          query,
+          max_seeds: options?.maxSeeds,
+          max_facts_per_subgraph: options?.maxFactsPerSubgraph,
+          min_relevance: options?.minRelevance,
+          max_hops: options?.maxHops,
+        },
+        {
+          headers: {
+            'X-Request-ID': rid,
+          },
+        },
+      );
       this.cb.recordSuccess();
 
       const data = resp.data;
-      const recallText = data?.recall || '';
       const factsCount = data?.facts_count || 0;
 
       if (factsCount > 0) {
-        Logger.info(`[GauzMem] recall: ${factsCount} facts, ${data?.subgraph_count || 0} subgraphs`);
+        Logger.info(`[GauzMem] recall: ${factsCount} facts, ${data?.subgraph_count || 0} subgraphs (request_id=${rid})`);
       }
 
-      return recallText;
+      return {
+        recall: data?.recall || '',
+        factsCount,
+        subgraphCount: data?.subgraph_count || 0,
+        factIds: data?.fact_ids || [],
+        scores: data?.scores || [],
+        latencyMs: data?.latency_ms ?? null,
+        embeddingTokens: data?.embedding_tokens ?? null,
+        requestId: rid,
+      };
     } catch (err: any) {
       this.cb.recordFailure();
       Logger.warning(`[GauzMem] recall 失败: ${err.message}`);
-      return '';
+      return null;
     }
+  }
+
+  /**
+   * 被动记忆召回：返回自然语言格式的回忆片段，直接注入 prompt。
+   * 失败时返回空字符串。
+   */
+  async recall(
+    query: string,
+    options?: { topK?: number; maxSubgraphs?: number },
+    requestId?: string,
+  ): Promise<string> {
+    const result = await this.recallWithMetadata(
+      query,
+      {
+        maxSeeds: options?.topK,
+        maxFactsPerSubgraph: options?.maxSubgraphs,
+      },
+      requestId,
+    );
+    return result?.recall || '';
   }
 
   // ─── Getters ──────────────────────────────────────

@@ -18,6 +18,7 @@ type MockOverrides = {
   isAvailable?: () => boolean;
   writeMessage?: (...args: any[]) => Promise<void>;
   recall?: (query: string) => Promise<string>;
+  recallWithMetadata?: (query: string, options?: any, requestId?: string) => Promise<any>;
 };
 
 function mockGauzMem(overrides: MockOverrides) {
@@ -26,16 +27,19 @@ function mockGauzMem(overrides: MockOverrides) {
     isAvailable: gauzMem.isAvailable.bind(gauzMem),
     writeMessage: gauzMem.writeMessage.bind(gauzMem),
     recall: gauzMem.recall.bind(gauzMem),
+    recallWithMetadata: gauzMem.recallWithMetadata?.bind(gauzMem),
   };
 
   if (overrides.isAvailable) (gauzMem as any).isAvailable = overrides.isAvailable;
   if (overrides.writeMessage) (gauzMem as any).writeMessage = overrides.writeMessage;
   if (overrides.recall) (gauzMem as any).recall = overrides.recall;
+  if (overrides.recallWithMetadata) (gauzMem as any).recallWithMetadata = overrides.recallWithMetadata;
 
   return () => {
     (gauzMem as any).isAvailable = originals.isAvailable;
     (gauzMem as any).writeMessage = originals.writeMessage;
     (gauzMem as any).recall = originals.recall;
+    (gauzMem as any).recallWithMetadata = originals.recallWithMetadata;
   };
 }
 
@@ -240,7 +244,7 @@ test('session writes user and agent messages to gauzmem', async () => {
     writeMessage: async (text: string, speaker: string, platformId: string, runId?: string) => {
       writtenMessages.push({ text, speaker, platformId, runId });
     },
-    recall: async () => '',
+    recallWithMetadata: async () => null,
   });
 
   try {
@@ -267,7 +271,16 @@ test('session injects recall result as transient system message before user mess
   const restore = mockGauzMem({
     isAvailable: () => true,
     writeMessage: async () => {},
-    recall: async () => '用户之前提到喜欢 TypeScript',
+    recallWithMetadata: async () => ({
+      recall: '用户之前提到喜欢 TypeScript',
+      factsCount: 1,
+      subgraphCount: 1,
+      factIds: [1],
+      scores: [0.8],
+      latencyMs: 100,
+      embeddingTokens: 10,
+      requestId: 'test-request-id',
+    }),
   });
 
   try {
@@ -301,7 +314,7 @@ test('session does not inject memory when recall returns empty', async () => {
   const restore = mockGauzMem({
     isAvailable: () => true,
     writeMessage: async () => {},
-    recall: async () => '',
+    recallWithMetadata: async () => null,  // null 表示没有召回结果
   });
 
   try {
@@ -325,7 +338,16 @@ test('session removes transient memory from persisted history', async () => {
   const restore = mockGauzMem({
     isAvailable: () => true,
     writeMessage: async () => {},
-    recall: async () => '这是一段长期记忆',
+    recallWithMetadata: async () => ({
+      recall: '这是一段长期记忆',
+      factsCount: 1,
+      subgraphCount: 1,
+      factIds: [1],
+      scores: [0.8],
+      latencyMs: 100,
+      embeddingTokens: 10,
+      requestId: 'test-request-id',
+    }),
   });
 
   try {
@@ -346,7 +368,7 @@ test('session gracefully degrades when recall fails', async () => {
   const restore = mockGauzMem({
     isAvailable: () => true,
     writeMessage: async () => {},
-    recall: async () => { throw new Error('network timeout'); },
+    recallWithMetadata: async () => { throw new Error('network timeout'); },
   });
 
   try {
@@ -365,7 +387,7 @@ test('session gracefully degrades when gauzmem is unavailable', async () => {
   const restore = mockGauzMem({
     isAvailable: () => false,
     writeMessage: async () => { writeCalls.push('called'); },
-    recall: async () => 'should not be called',
+    recallWithMetadata: async () => ({ recall: 'should not be called' }),
   });
 
   try {
@@ -397,7 +419,7 @@ test('session trims local history to 10 turns when gauzmem is available', async 
   const restore = mockGauzMem({
     isAvailable: () => true,
     writeMessage: async () => {},
-    recall: async () => '',
+    recallWithMetadata: async () => null,
   });
 
   try {
@@ -431,7 +453,7 @@ test('session does not trim history when gauzmem is unavailable', async () => {
   const restore = mockGauzMem({
     isAvailable: () => false,
     writeMessage: async () => {},
-    recall: async () => '',
+    recallWithMetadata: async () => null,
   });
 
   try {
@@ -465,12 +487,21 @@ test('end-to-end: write → recall → inject → respond → clean → trim', a
     writeMessage: async (text: string, speaker: string, platformId: string, runId?: string) => {
       writtenMessages.push({ text, speaker, platformId, runId });
     },
-    recall: async (query: string) => {
+    recallWithMetadata: async (query: string) => {
       recallCount++;
       if (query.includes('第二轮')) {
-        return '第一轮用户说了你好';
+        return {
+          recall: '第一轮用户说了你好',
+          factsCount: 1,
+          subgraphCount: 1,
+          factIds: [1],
+          scores: [0.8],
+          latencyMs: 100,
+          embeddingTokens: 10,
+          requestId: 'test-request-id',
+        };
       }
-      return '';
+      return null;
     },
   });
 
@@ -532,7 +563,16 @@ test('end-to-end: memory recall content is visible to AI but not persisted', asy
   const restore = mockGauzMem({
     isAvailable: () => true,
     writeMessage: async () => {},
-    recall: async () => '用户偏好：暗色主题，TypeScript，Vim 键位',
+    recallWithMetadata: async () => ({
+      recall: '用户偏好：暗色主题，TypeScript，Vim 键位',
+      factsCount: 1,
+      subgraphCount: 1,
+      factIds: [1],
+      scores: [0.8],
+      latencyMs: 100,
+      embeddingTokens: 10,
+      requestId: 'test-request-id',
+    }),
   });
 
   try {
@@ -580,7 +620,7 @@ test('feishu session writes with correct platformId', async () => {
     writeMessage: async (text: string, speaker: string, platformId: string, runId?: string) => {
       writtenMessages.push({ text, speaker, platformId, runId });
     },
-    recall: async () => '',
+    recallWithMetadata: async () => null,
   });
 
   try {
@@ -603,7 +643,7 @@ test('catscompany session writes with correct platformId', async () => {
     writeMessage: async (text: string, speaker: string, platformId: string, runId?: string) => {
       writtenMessages.push({ text, speaker, platformId, runId });
     },
-    recall: async () => '',
+    recallWithMetadata: async () => null,
   });
 
   try {

@@ -101,7 +101,7 @@ export class ConversationRunner {
   /** 已被熔断禁用的工具 */
   private disabledTools = new Set<string>();
 
-  private static readonly FAILURE_THRESHOLD = 3;
+  private static readonly FAILURE_THRESHOLD = 10;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: string, maxLen = 200): string {
@@ -235,6 +235,7 @@ export class ConversationRunner {
         let toolContent = result.content;
         const isBlocked = toolContent.includes('执行被阻止');
         const isFailed = toolContent.startsWith('Python 工具执行失败') || toolContent.startsWith('错误:');
+        const isRateLimit = ConversationRunner.isRateLimitError(toolContent);
 
         if (isBlocked) {
           // 策略阻断：立即禁用，不浪费更多 turn
@@ -242,14 +243,18 @@ export class ConversationRunner {
           this.toolFailureCount.delete(toolName);
           toolContent += `\n\n[系统] 工具 "${toolName}" 已被自动禁用（策略阻断），请换用其他工具完成任务。`;
           Logger.warning(`[Turn ${turns}] 熔断: ${toolName} 被策略阻断，已从可用列表移除`);
+        } else if (isRateLimit) {
+          // 429 限流：不计入工具失败，终止本轮处理
+          Logger.error(`[Turn ${turns}] 429 限流: ${toolName} 重试耗尽，终止本轮会话`);
+          throw new RateLimitBreakError(toolName, turns);
         } else if (isFailed) {
           const count = (this.toolFailureCount.get(toolName) || 0) + 1;
           this.toolFailureCount.set(toolName, count);
           if (count >= ConversationRunner.FAILURE_THRESHOLD) {
-            this.disabledTools.add(toolName);
+            // 工具自身连续失败过多，终止本轮处理（不禁用工具）
+            Logger.error(`[Turn ${turns}] 工具 ${toolName} 连续失败 ${count} 次，终止本轮会话`);
             this.toolFailureCount.delete(toolName);
-            toolContent += `\n\n[系统] 工具 "${toolName}" 连续失败 ${count} 次，已被自动禁用，请换用其他工具完成任务。`;
-            Logger.warning(`[Turn ${turns}] 熔断: ${toolName} 连续失败 ${count} 次，已从可用列表移除`);
+            throw new ToolBreakError(toolName, count, turns);
           }
         } else {
           // 成功调用，重置计数
@@ -554,5 +559,25 @@ export class ConversationRunner {
     }
 
     return lastResult;
+  }
+}
+
+/**
+ * 429 限流跳闸错误：重试耗尽后终止本轮会话
+ */
+export class RateLimitBreakError extends Error {
+  constructor(public toolName: string, public turn: number) {
+    super(`[429_CIRCUIT_BREAK] API 限流，工具 "${toolName}" 在 Turn ${turn} 重试耗尽，本轮处理已中止`);
+    this.name = 'RateLimitBreakError';
+  }
+}
+
+/**
+ * 工具连续失败跳闸错误：终止本轮会话
+ */
+export class ToolBreakError extends Error {
+  constructor(public toolName: string, public failCount: number, public turn: number) {
+    super(`[TOOL_CIRCUIT_BREAK] 工具 "${toolName}" 连续失败 ${failCount} 次 (Turn ${turn})，本轮处理已中止`);
+    this.name = 'ToolBreakError';
   }
 }

@@ -31,7 +31,7 @@ Date: 2026-02-10
   - `src/feishu/index.ts`
   - `src/tools/feishu-reply-tool.ts`
   - `src/tools/feishu-send-file-tool.ts`
-  - `src/tools/ask-user-question-tool.ts`
+
 - Change: replaced global bind/unbind with session-scoped binding map.
 
 6. Shared static state cleanup

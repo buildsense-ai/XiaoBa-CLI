@@ -72,7 +72,7 @@ export class SendMessageTool implements Tool {
     try {
       await session.sendFn(session.chatId, message);
       Logger.info(`[send_message] 已发送: ${message.slice(0, 50)}...`);
-      return '消息已发送';
+      return '消息已发送给用户。如果你的消息包含提问或需要用户确认，应该停止执行，等待用户回复。';
     } catch (err: any) {
       Logger.error(`[send_message] 发送失败: ${err.message}`);
       return `发送失败: ${err.message}`;

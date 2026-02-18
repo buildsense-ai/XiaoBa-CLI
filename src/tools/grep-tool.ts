@@ -77,72 +77,144 @@ export class GrepTool implements Tool {
 
       // 检查是否安装了 ripgrep
       const rgVersion = spawnSync('rg', ['--version'], { stdio: 'pipe' });
-      if (rgVersion.status !== 0) {
-        return '错误：未找到 ripgrep (rg)。请先安装: https://github.com/BurntSushi/ripgrep#installation';
-      }
+      const useRg = rgVersion.status === 0;
 
-      // 构建 rg 命令
-      const rgArgs: string[] = [];
-
-      // 基础参数
-      rgArgs.push('--color=never');
-      rgArgs.push('--no-heading');
-
-      // 输出模式
-      if (output_mode === 'files') {
-        rgArgs.push('--files-with-matches');
-      } else if (output_mode === 'count') {
-        rgArgs.push('--count');
-      } else {
-        // content 模式
-        rgArgs.push('--line-number');
-        if (contextLines !== undefined) {
-          rgArgs.push(`--context=${contextLines}`);
-        }
-      }
-
-      // 大小写
-      if (case_insensitive) {
-        rgArgs.push('--ignore-case');
-      }
-
-      // 文件类型过滤
-      if (fileType) {
-        rgArgs.push(`--type=${fileType}`);
-      }
-
-      // Glob 过滤
-      if (globPattern) {
-        rgArgs.push(`--glob=${globPattern}`);
-      }
-
-      // 限制结果数量
-      rgArgs.push(`--max-count=${limit}`);
-
-      // 模式和路径
-      rgArgs.push('--');
-      rgArgs.push(pattern);
-      if (searchPath) {
-        rgArgs.push(resolvedSearchPath);
-      }
-
-      // 执行命令（使用参数化调用防止命令注入）
       let output: string;
 
-      try {
-        output = execFileSync('rg', rgArgs, {
-          cwd: context.workingDirectory,
-          encoding: 'utf-8',
-          maxBuffer: 10 * 1024 * 1024,
-          stdio: ['pipe', 'pipe', 'pipe']
-        }) as string;
-      } catch (error: any) {
-        // rg 返回非零退出码表示未找到匹配
-        if (error.status === 1) {
-          return `未找到匹配项。\n模式: ${pattern}\n路径: ${searchPath || '.'}\n${globPattern ? `Glob: ${globPattern}\n` : ''}${fileType ? `类型: ${fileType}\n` : ''}`;
+      if (useRg) {
+        // ---- ripgrep 路径 ----
+        const rgArgs: string[] = [];
+
+        rgArgs.push('--color=never');
+        rgArgs.push('--no-heading');
+
+        if (output_mode === 'files') {
+          rgArgs.push('--files-with-matches');
+        } else if (output_mode === 'count') {
+          rgArgs.push('--count');
+        } else {
+          rgArgs.push('--line-number');
+          if (contextLines !== undefined) {
+            rgArgs.push(`--context=${contextLines}`);
+          }
         }
-        const stderrText = (error?.stderr?.toString?.() || '').trim();
-        throw new Error(stderrText || error.message);
+
+        if (case_insensitive) {
+          rgArgs.push('--ignore-case');
+        }
+
+        if (fileType) {
+          rgArgs.push(`--type=${fileType}`);
+        }
+
+        if (globPattern) {
+          rgArgs.push(`--glob=${globPattern}`);
+        }
+
+        rgArgs.push(`--max-count=${limit}`);
+
+        rgArgs.push('--');
+        rgArgs.push(pattern);
+        if (searchPath) {
+          rgArgs.push(resolvedSearchPath);
+        }
+
+        try {
+          output = execFileSync('rg', rgArgs, {
+            cwd: context.workingDirectory,
+            encoding: 'utf-8',
+            maxBuffer: 10 * 1024 * 1024,
+            stdio: ['pipe', 'pipe', 'pipe']
+          }) as string;
+        } catch (error: any) {
+          if (error.status === 1) {
+            return `未找到匹配项。\n模式: ${pattern}\n路径: ${searchPath || '.'}\n${globPattern ? `Glob: ${globPattern}\n` : ''}${fileType ? `类型: ${fileType}\n` : ''}`;
+          }
+          const stderrText = (error?.stderr?.toString?.() || '').trim();
+          throw new Error(stderrText || error.message);
+        }
+      } else {
+        // ---- 系统 grep 回退路径 ----
+        const grepArgs: string[] = [];
+
+        grepArgs.push('--color=never');
+        grepArgs.push('-r'); // 递归搜索
+
+        if (output_mode === 'files') {
+          grepArgs.push('-l');
+        } else if (output_mode === 'count') {
+          grepArgs.push('-c');
+        } else {
+          // content 模式
+          grepArgs.push('-n');
+          if (contextLines !== undefined) {
+            grepArgs.push(`-C${contextLines}`);
+          }
+        }
+
+        if (case_insensitive) {
+          grepArgs.push('-i');
+        }
+
+        // grep 没有 --type，用 --include 模拟 glob 过滤
+        // 优先使用 glob 参数；如果只有 fileType 则映射为 --include
+        if (globPattern) {
+          grepArgs.push(`--include=${globPattern}`);
+        } else if (fileType) {
+          // 常见文件类型到扩展名的映射
+          const typeToGlob: Record<string, string[]> = {
+            js: ['*.js', '*.jsx', '*.mjs', '*.cjs'],
+            ts: ['*.ts', '*.tsx', '*.mts', '*.cts'],
+            py: ['*.py', '*.pyi'],
+            rust: ['*.rs'],
+            go: ['*.go'],
+            java: ['*.java'],
+            c: ['*.c', '*.h'],
+            cpp: ['*.cpp', '*.cc', '*.cxx', '*.hpp', '*.hxx', '*.h'],
+            css: ['*.css'],
+            html: ['*.html', '*.htm'],
+            json: ['*.json'],
+            yaml: ['*.yml', '*.yaml'],
+            md: ['*.md', '*.markdown'],
+            sh: ['*.sh', '*.bash'],
+            rb: ['*.rb'],
+            php: ['*.php'],
+          };
+          const exts = typeToGlob[fileType];
+          if (exts) {
+            for (const ext of exts) {
+              grepArgs.push(`--include=${ext}`);
+            }
+          } else {
+            // 未知类型，尝试直接作为扩展名
+            grepArgs.push(`--include=*.${fileType}`);
+          }
+        }
+
+        // grep 没有 --max-count 的全局等价，-m 是按文件的
+        // 对 content/count 模式用 -m 做近似限制
+        if (output_mode !== 'files') {
+          grepArgs.push(`-m${limit}`);
+        }
+
+        grepArgs.push('--');
+        grepArgs.push(pattern);
+        grepArgs.push(resolvedSearchPath);
+
+        try {
+          output = execFileSync('grep', grepArgs, {
+            cwd: context.workingDirectory,
+            encoding: 'utf-8',
+            maxBuffer: 10 * 1024 * 1024,
+            stdio: ['pipe', 'pipe', 'pipe']
+          }) as string;
+        } catch (error: any) {
+          if (error.status === 1) {
+            return `未找到匹配项。\n模式: ${pattern}\n路径: ${searchPath || '.'}\n${globPattern ? `Glob: ${globPattern}\n` : ''}${fileType ? `类型: ${fileType}\n` : ''}`;
+          }
+          const stderrText = (error?.stderr?.toString?.() || '').trim();
+          throw new Error(stderrText || error.message);
+        }
       }
 
       // 处理输出

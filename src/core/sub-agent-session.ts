@@ -11,7 +11,7 @@ import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { isToolAllowed } from '../utils/safety';
-import { AskUserQuestionTool } from '../tools/ask-user-question-tool';
+
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -144,7 +144,12 @@ export class SubAgentSession {
    */
   private async _executeOnce(): Promise<void> {
     // 1. 构建独立的 system prompt
-    const systemPrompt = await PromptManager.buildSystemPrompt();
+    // 获取 sub-agent 使用的工具名称
+    const toolManagerForPrompt = new ToolManager(this.options.workingDirectory, {
+      sessionId: this.skillName,
+    });
+    const toolNames = toolManagerForPrompt.getToolDefinitions().map(t => t.name);
+    const systemPrompt = await PromptManager.buildSystemPrompt(toolNames);
     this.messages.push({ role: 'system', content: systemPrompt });
 
     // 2. 注入 skill
@@ -286,28 +291,6 @@ export class SubAgentSession {
       );
     }
 
-    // 绑定 ask_user_question：子智能体挂起，反馈给主 agent 决策
-    const askTool = toolManager.getTool<AskUserQuestionTool>('ask_user_question');
-    if (askTool && 'bindFeishuSession' in askTool) {
-      askTool.bindFeishuSession(
-        `subagent:${this.id}`,
-        // sendFn: 设置挂起状态，通知主 agent
-        async (question: string) => {
-          this.pendingQuestion = question;
-          this.status = 'waiting_for_input';
-          this.reportProgress(`等待主 agent 指示：${question}`);
-          // 先创建 Promise 再通知主 agent，避免 resume() 先于 waitFn 到达
-          this.pendingWaitPromise = new Promise<string>((resolve) => {
-            this.pendingResolve = resolve;
-          });
-          if (this.options.notifyParent) {
-            await this.options.notifyParent(this.id, this.taskDescription, question);
-          }
-        },
-        // waitFn: 返回已创建的 Promise（可能已被 resume 解决）
-        () => this.pendingWaitPromise!,
-      );
-    }
   }
 
   private reportProgress(message: string): void {

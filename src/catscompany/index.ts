@@ -9,9 +9,8 @@ import { AgentServices, BUSY_MESSAGE } from '../core/agent-session';
 import { Logger } from '../utils/logger';
 import { SendMessageTool } from '../tools/send-message-tool';
 import { SendFileTool } from '../tools/send-file-tool';
-import { AskUserQuestionTool } from '../tools/ask-user-question-tool';
+
 import { SubAgentManager } from '../core/sub-agent-manager';
-import { randomUUID } from 'crypto';
 
 interface PendingAttachment {
   fileName: string;
@@ -20,16 +19,6 @@ interface PendingAttachment {
   receivedAt: number;
 }
 
-interface PendingAnswer {
-  id: string;
-  sessionKey: string;
-  topic: string;
-  expectedSenderId: string;
-  resolve: (text: string) => void;
-  timeoutHandle: ReturnType<typeof setTimeout>;
-}
-
-const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 
 /**
  * CatsCompanyBot 主类
@@ -43,13 +32,11 @@ export class CatsCompanyBot {
   private agentServices: AgentServices;
   private sendMessageTool: SendMessageTool;
   private sendFileTool: SendFileTool;
-  private askUserQuestionTool: AskUserQuestionTool | null = null;
-  /** key = pendingAnswerId */
-  private pendingAnswers = new Map<string, PendingAnswer>();
-  /** key = sessionKey, value = pendingAnswerId */
-  private pendingAnswerBySession = new Map<string, string>();
   /** 等待用户后续指令的附件队列，key 为 sessionKey */
   private pendingAttachments = new Map<string, PendingAttachment[]>();
+  /** 消息合并队列：session 忙时暂存后续消息，处理完后合并为一条 */
+  private pendingMessages = new Map<string, { texts: string[]; topic: string }>();
+  private static readonly MAX_PENDING_MESSAGES = 5;
 
   constructor(config: CatsCompanyConfig) {
     this.bot = new CatsBot({
@@ -64,7 +51,6 @@ export class CatsCompanyBot {
     const toolManager = new ToolManager();
     this.sendMessageTool = toolManager.getTool<SendMessageTool>('send_message')!;
     this.sendFileTool = toolManager.getTool<SendFileTool>('send_file')!;
-    this.askUserQuestionTool = toolManager.getTool<AskUserQuestionTool>('ask_user_question') ?? null;
     Logger.info(`已加载 ${toolManager.getToolCount()} 个工具`);
 
     const skillManager = new SkillManager();
@@ -129,23 +115,6 @@ export class CatsCompanyBot {
 
     const key = this.sessionManager.getSessionKey(msg);
 
-    // ── 拦截：如果当前 session 正在等待回答，按 sender 精确匹配 ──
-    const pendingId = this.pendingAnswerBySession.get(key);
-    if (pendingId) {
-      const pending = this.pendingAnswers.get(pendingId);
-      if (!pending) {
-        this.pendingAnswerBySession.delete(key);
-      } else if (msg.senderId === pending.expectedSenderId) {
-        this.clearPendingAnswerById(pending.id);
-        Logger.info(`[${key}] 收到用户对提问的回复: ${msg.text.slice(0, 50)}...`);
-        pending.resolve(msg.text);
-        return;
-      } else {
-        Logger.info(`[${key}] 忽略非提问发起人的回复: ${msg.senderId}`);
-        return;
-      }
-    }
-
     // 获取或创建会话
     const session = this.sessionManager.getOrCreate(key);
 
@@ -209,48 +178,59 @@ export class CatsCompanyBot {
       }
     }
 
-    // 并发保护
+    // 并发保护：忙时入队，处理完后合并
     if (session.isBusy()) {
-      await this.sender.reply(msg.topic, BUSY_MESSAGE);
+      const pending = this.pendingMessages.get(key);
+      if (pending && pending.texts.length >= CatsCompanyBot.MAX_PENDING_MESSAGES) {
+        await this.sender.reply(msg.topic, BUSY_MESSAGE);
+      } else {
+        if (!pending) {
+          this.pendingMessages.set(key, { texts: [userText], topic: msg.topic });
+        } else {
+          pending.texts.push(userText);
+        }
+        await this.sender.reply(msg.topic, '收到，处理完当前任务后一起回复你。');
+        Logger.info(`[${key}] 消息入队 (队列长度: ${this.pendingMessages.get(key)!.texts.length})`);
+      }
       return;
     }
 
-    // 绑定工具到当前会话
-    this.sendMessageTool.bindSession(key, msg.topic, async (_topic, text) => {
-      await this.sender.reply(msg.topic, text);
-    });
-    this.sendFileTool.bindSession(key, msg.topic, (_topic, filePath, fileName) =>
-      this.sender.sendFile(msg.topic, filePath, fileName)
-    );
+    await this.processMessage(key, msg.topic, userText, session);
+  }
 
-    // 绑定 AskUserQuestion
-    if (this.askUserQuestionTool) {
-      const topic = msg.topic;
-      this.askUserQuestionTool.bindFeishuSession(
-        key,
-        async (text: string) => {
-          await this.sender.reply(topic, text);
-        },
-        () => {
-          return new Promise<string>((resolve) => {
-            this.registerPendingAnswer(key, topic, msg.senderId, resolve);
-          });
-        },
-      );
-    }
+  /**
+   * 实际处理消息：绑定工具 → 调用 session → 处理队列中的后续消息
+   */
+  private async processMessage(
+    key: string,
+    topic: string,
+    userText: string,
+    session: ReturnType<SessionManager['getOrCreate']>,
+  ): Promise<void> {
+    this.sendMessageTool.bindSession(key, topic, async (_topic, text) => {
+      await this.sender.reply(topic, text);
+    });
+    this.sendFileTool.bindSession(key, topic, (_topic, filePath, fileName) =>
+      this.sender.sendFile(topic, filePath, fileName)
+    );
 
     try {
       const reply = await session.handleMessage(userText);
-      if (reply === BUSY_MESSAGE || reply.startsWith('处理消息时出错:')) {
-        await this.sender.reply(msg.topic, reply);
+      if (reply === BUSY_MESSAGE || reply.startsWith('处理消息时出错:') || reply.startsWith('API 暂时限流')) {
+        await this.sender.reply(topic, reply);
       }
     } finally {
       this.sendMessageTool.unbindSession(key);
       this.sendFileTool.unbindSession(key);
-      if (this.askUserQuestionTool) {
-        this.askUserQuestionTool.unbindFeishuSession(key);
-      }
-      this.clearPendingAnswerBySession(key);
+    }
+
+    // 处理合并队列中的后续消息
+    const pending = this.pendingMessages.get(key);
+    if (pending && pending.texts.length > 0) {
+      this.pendingMessages.delete(key);
+      const merged = pending.texts.join('\n');
+      Logger.info(`[${key}] 合并 ${pending.texts.length} 条等待消息，开始处理`);
+      await this.processMessage(key, pending.topic, merged, session);
     }
   }
 
@@ -324,17 +304,6 @@ export class CatsCompanyBot {
       this.sendFileTool.bindSession(sessionKey, topic, (_topic, filePath, fileName) =>
         this.sender.sendFile(topic, filePath, fileName)
       );
-      if (this.askUserQuestionTool) {
-        this.askUserQuestionTool.bindFeishuSession(
-          sessionKey,
-          async (question: string) => {
-            await this.sender.reply(topic, question);
-          },
-          () => new Promise<string>((resolve) => {
-            this.registerPendingAnswer(sessionKey, topic, senderId, resolve);
-          }),
-        );
-      }
 
       try {
         const reply = await session.handleMessage(text);
@@ -349,10 +318,6 @@ export class CatsCompanyBot {
       } finally {
         this.sendMessageTool.unbindSession(sessionKey);
         this.sendFileTool.unbindSession(sessionKey);
-        if (this.askUserQuestionTool) {
-          this.askUserQuestionTool.unbindFeishuSession(sessionKey);
-        }
-        this.clearPendingAnswerBySession(sessionKey);
       }
     }
 
@@ -365,11 +330,8 @@ export class CatsCompanyBot {
   destroy(): void {
     this.bot.disconnect();
     this.sessionManager.destroy();
-    for (const pendingId of Array.from(this.pendingAnswers.keys())) {
-      this.clearPendingAnswerById(pendingId);
-    }
-    this.pendingAnswerBySession.clear();
     this.pendingAttachments.clear();
+    this.pendingMessages.clear();
     Logger.info('CatsCompany 机器人已停止');
   }
 
@@ -404,54 +366,4 @@ export class CatsCompanyBot {
     ].join('\n');
   }
 
-  private registerPendingAnswer(
-    sessionKey: string,
-    topic: string,
-    expectedSenderId: string,
-    resolve: (text: string) => void,
-  ): void {
-    const existingId = this.pendingAnswerBySession.get(sessionKey);
-    if (existingId) {
-      const existing = this.pendingAnswers.get(existingId);
-      this.clearPendingAnswerById(existingId);
-      existing?.resolve('（提问已更新，请回答最新问题）');
-    }
-
-    const id = randomUUID();
-    const timeoutHandle = setTimeout(() => {
-      const pending = this.pendingAnswers.get(id);
-      if (!pending) return;
-      this.clearPendingAnswerById(id);
-      pending.resolve('（用户未在120秒内回复）');
-    }, PENDING_ANSWER_TIMEOUT_MS);
-
-    this.pendingAnswers.set(id, {
-      id,
-      sessionKey,
-      topic,
-      expectedSenderId,
-      resolve,
-      timeoutHandle,
-    });
-    this.pendingAnswerBySession.set(sessionKey, id);
-  }
-
-  private clearPendingAnswerBySession(sessionKey: string): void {
-    const pendingId = this.pendingAnswerBySession.get(sessionKey);
-    if (!pendingId) return;
-    this.clearPendingAnswerById(pendingId);
-  }
-
-  private clearPendingAnswerById(pendingId: string): void {
-    const pending = this.pendingAnswers.get(pendingId);
-    if (!pending) return;
-
-    clearTimeout(pending.timeoutHandle);
-    this.pendingAnswers.delete(pendingId);
-
-    const mappedId = this.pendingAnswerBySession.get(pending.sessionKey);
-    if (mappedId === pendingId) {
-      this.pendingAnswerBySession.delete(pending.sessionKey);
-    }
-  }
 }

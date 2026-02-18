@@ -6,7 +6,7 @@ import { EditTool } from './edit-tool';
 import { GlobTool } from './glob-tool';
 import { GrepTool } from './grep-tool';
 import { TodoWriteTool } from './todo-write-tool';
-import { AskUserQuestionTool } from './ask-user-question-tool';
+
 import { TaskTool } from './task-tool';
 import { TaskOutputTool } from './task-output-tool';
 import { TaskStopTool } from './task-stop-tool';
@@ -15,6 +15,7 @@ import { WebSearchTool } from './web-search-tool';
 import { WebFetchTool } from './web-fetch-tool';
 import { SendMessageTool } from './send-message-tool';
 import { SendFileTool } from './send-file-tool';
+import { MemorySearchTool } from './memory-search-tool';
 
 import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
@@ -72,8 +73,6 @@ export class ToolManager implements ToolExecutor {
 
     // 注册任务管理工具
     this.registerTool(new TodoWriteTool());
-    this.registerTool(new AskUserQuestionTool());
-
     // 注册网络工具
     this.registerTool(new WebSearchTool());
     this.registerTool(new WebFetchTool());
@@ -84,6 +83,9 @@ export class ToolManager implements ToolExecutor {
     // 注册通信工具
     this.registerTool(new SendMessageTool());
     this.registerTool(new SendFileTool());
+
+    // 注册记忆工具
+    this.registerTool(new MemorySearchTool());
 
     // 注册子智能体工具
     this.registerTool(new SpawnSubagentTool());
