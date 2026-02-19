@@ -12,6 +12,7 @@ import { SubAgentManager } from './sub-agent-manager';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
+import { ContextDebugLogger } from '../utils/context-debug-logger';
 import { GauzMemService } from '../utils/gauzmem-service';
 import {
   loadPreferences,
@@ -111,28 +112,12 @@ export class AgentSession {
     if (this.isFeishuSession()) {
       this.messages.push({
         role: 'system',
-        content: [
-          '[surface:feishu]',
-          '当前是飞书会话。重要的输出规则：',
-          '',
-          '1. 用户只能看到 send_message / send_file 发出的内容。你的普通文本回复（final answer）用户看不到，会被丢弃。',
-          '2. 所以：想让用户看到的话，必须用 send_message 发。',
-          '3. 每轮对话只需要调用一次 send_message 把完整回复发出去。不要把同一段话拆成多次 send_message，也不要重复发送相似内容。',
-          '4. 调完 send_message 后，直接结束本轮（不要再输出文本），或者只输出一个极短的内部标记（如 "ok"）。不要在 send_message 之后再用文本重复一遍刚发过的内容。',
-        ].join('\n'),
+        content: '[surface:feishu]\n当前是飞书会话。用户只能看到 send_message / send_file 发出的内容，你的普通文本回复用户看不到。',
       });
     } else if (this.isCatsCompanySession()) {
       this.messages.push({
         role: 'system',
-        content: [
-          '[surface:catscompany]',
-          '当前是 CatsCompany 聊天会话。重要的输出规则：',
-          '',
-          '1. 用户只能看到 send_message / send_file 发出的内容。你的普通文本回复（final answer）用户看不到，会被丢弃。',
-          '2. 所以：想让用户看到的话，必须用 send_message 发。',
-          '3. 每轮对话只需要调用一次 send_message 把完整回复发出去。不要把同一段话拆成多次 send_message，也不要重复发送相似内容。',
-          '4. 调完 send_message 后，直接结束本轮（不要再输出文本），或者只输出一个极短的内部标记（如 "ok"）。不要在 send_message 之后再用文本重复一遍刚发过的内容。',
-        ].join('\n'),
+        content: '[surface:catscompany]\n当前是 CatsCompany 聊天会话。用户只能看到 send_message / send_file 发出的内容，你的普通文本回复用户看不到。',
       });
     }
   }
@@ -199,7 +184,7 @@ export class AgentSession {
         try {
           recallResult = await this.gauzMem.recallWithMetadata(
             text,
-            { maxSeeds: 15, minRelevance: 0.6 },
+            { maxSeeds: 5, minRelevance: 0.6, maxHops: 1, maxFactsPerSubgraph: 15 },
             requestId,
           );
           if (recallResult?.recall) {
@@ -251,6 +236,12 @@ export class AgentSession {
         : this.isFeishuSession()
           ? 'feishu'
           : 'cli';
+
+      // Context debug logger
+      const debugLogger = new ContextDebugLogger(requestId, this.key, text);
+      const allToolDefs = this.services.toolManager.getToolDefinitions();
+      debugLogger.recordContextModules(contextMessages, allToolDefs, recallResult);
+
       const runner = new ConversationRunner(
         this.services.aiService,
         this.services.toolManager,
@@ -258,6 +249,7 @@ export class AgentSession {
           ...(effectiveMaxTurns ? { maxTurns: effectiveMaxTurns } : {}),
           initialSkillName: this.activeSkillName,
           initialSkillToolPolicy: this.activeSkillToolPolicy,
+          debugLogger,
           toolExecutionContext: {
             sessionId: this.key,
             surface,
@@ -334,6 +326,11 @@ export class AgentSession {
         `tokens=${metrics.totalPromptTokens}+${metrics.totalCompletionTokens} ` +
         `tools=${metrics.toolCalls}`
       );
+
+      // Context debug: 记录最终结果并写入文件
+      const sentMessages = this.extractSentMessages(result.messages);
+      debugLogger.recordFinal(sentMessages, metrics.totalPromptTokens, metrics.totalCompletionTokens, metrics.toolCalls);
+      debugLogger.flush();
 
       return result.response || '[无回复]';
     } catch (err: any) {

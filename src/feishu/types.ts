@@ -40,6 +40,8 @@ export interface ParsedFeishuMessage {
   file?: FeishuFileInfo;
   /** 合并转发子消息 ID 列表（merge_forward 消息时存在） */
   mergeForwardIds?: string[];
+  /** 消息创建时间（毫秒时间戳） */
+  createTime?: number;
 }
 
 /**

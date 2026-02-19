@@ -73,6 +73,7 @@ export class MessageHandler {
       msgType,
       file,
       mergeForwardIds,
+      createTime: message.create_time ? Number(message.create_time) : undefined,
     };
   }
 

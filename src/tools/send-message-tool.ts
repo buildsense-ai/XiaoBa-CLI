@@ -10,7 +10,7 @@ import { Logger } from '../utils/logger';
 export class SendMessageTool implements Tool {
   definition: ToolDefinition = {
     name: 'send_message',
-    description: '给用户发一条消息。用于回复确认、发送中间结果等。',
+    description: '给用户发一条消息。这是聊天会话中用户唯一能看到的文本通道。每轮对话最多调用一次，发完后直接结束本轮推理。',
     parameters: {
       type: 'object',
       properties: {

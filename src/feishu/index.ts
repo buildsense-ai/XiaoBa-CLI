@@ -40,6 +40,8 @@ export class FeishuBot {
   private bridgeConfig: FeishuConfig['bridge'] | undefined;
   /** 已处理的消息 ID，用于去重 */
   private processedMsgIds = new Set<string>();
+  /** bot 启动时间戳（毫秒），早于此时间的消息丢弃 */
+  private readonly startedAt = Date.now();
   /** 等待用户后续指令的附件队列，key 为 sessionKey */
   private pendingAttachments = new Map<string, PendingAttachment[]>();
   /** 消息合并队列：session 忙时暂存后续消息，处理完后合并为一条 */
@@ -148,6 +150,12 @@ export class FeishuBot {
     // 消息去重：跳过已处理的 messageId
     if (this.processedMsgIds.has(msg.messageId)) return;
     this.processedMsgIds.add(msg.messageId);
+
+    // 丢弃 bot 启动前的历史消息（重连重投 / 加入新群历史消息）
+    if (msg.createTime && msg.createTime < this.startedAt) {
+      Logger.info(`[feishu] 丢弃历史消息 (${new Date(msg.createTime).toISOString()}): ${msg.text.slice(0, 30)}`);
+      return;
+    }
 
     // 防止 Set 无限增长，超过 1000 条时清理旧记录
     if (this.processedMsgIds.size > 1000) {

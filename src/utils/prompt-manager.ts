@@ -104,9 +104,8 @@ ${skillsSection}`;
     return `## 首次启动
 
 这是首次对话。你需要：
-1. 读取操作手册：\`skills/coo/SKILL.md\`
-2. 读取数据文件：\`skills/coo/data/task_pool.json\`、\`members.json\`、\`reminders.json\`
-3. 建立全局认知后，向 CEO 简要汇报当前状态
+1. 读取数据文件：\`skills/coo/data/task_pool.json\`、\`members.json\`、\`reminders.json\`
+2. 建立全局认知后，向 CEO 简要汇报当前状态
 
 如果数据文件为空，主动询问 CEO 当前在做什么、有哪些事项需要跟踪。`;
   }
