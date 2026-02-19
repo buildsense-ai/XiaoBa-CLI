@@ -24,7 +24,7 @@ allowed-tools:
 
 # Dev 模式
 
-你现在进入开发模式，帮老师写代码、改项目、调试问题。
+你现在进入开发模式，负责写代码、改项目、调试问题。
 
 ## 工作原则
 
@@ -47,6 +47,6 @@ allowed-tools:
 
 ## Git 操作
 
-- 只在老师明确要求时才 commit/push
+- 只在明确要求时才 commit/push
 - commit message 简洁说明改了什么、为什么改
 - 不要 force push、不要 amend 别人的 commit

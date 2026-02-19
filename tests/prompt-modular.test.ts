@@ -65,8 +65,8 @@ test('PromptManager.buildSystemPrompt includes tool guidances', async () => {
 
   const prompt = await PromptManager.buildSystemPrompt(['memory_search', 'todo_write']);
 
-  // 应包含基础 system prompt（agent_name 会被替换为偏好值）
-  assert.ok(prompt.includes('你是谁'), 'Should include base prompt identity section');
+  // 应包含基础 system prompt（COO 身份）
+  assert.ok(prompt.includes('COO'), 'Should include base prompt COO identity');
 
   // 应包含工具 guidance
   assert.ok(prompt.includes('记忆搜索'), 'Should include memory guidance');

@@ -1,5 +1,19 @@
 {
-  "reminders": [],
-  "next_id": 1,
-  "updated": "2026-02-17"
+  "reminders": [
+    {
+      "id": "R-001",
+      "type": "task_check",
+      "description": "检查 T-001 AI代码审查方案是否完成",
+      "target_task": "T-001",
+      "trigger_at": "2026-02-19T20:00:00",
+      "repeat": "once",
+      "repeat_interval_hours": null,
+      "action": "检查 T-001 方案设计进度，如果还没完成就问一下老朱情况",
+      "created": "2026-02-18",
+      "last_triggered": null,
+      "active": true
+    }
+  ],
+  "next_id": 2,
+  "updated": "2026-02-18"
 }

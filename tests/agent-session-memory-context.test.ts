@@ -29,11 +29,17 @@ test('agent session should not persist transient memory context into history', a
   // Mock GauzMem 单例：recall 返回记忆文本，writeMessage 静默成功
   const gauzMem = GauzMemService.getInstance();
   const origIsAvailable = gauzMem.isAvailable.bind(gauzMem);
-  const origRecall = gauzMem.recall.bind(gauzMem);
+  const origRecall = gauzMem.recallWithMetadata.bind(gauzMem);
   const origWrite = gauzMem.writeMessage.bind(gauzMem);
 
   (gauzMem as any).isAvailable = () => true;
-  (gauzMem as any).recall = async () => '之前讨论过 Engram 的核心贡献';
+  (gauzMem as any).recallWithMetadata = async () => ({
+    recall: '之前讨论过 Engram 的核心贡献',
+    factsCount: 1,
+    subgraphCount: 0,
+    factIds: [],
+    latencyMs: 10,
+  });
   (gauzMem as any).writeMessage = async () => {};
 
   const services: AgentServices = {
@@ -62,7 +68,7 @@ test('agent session should not persist transient memory context into history', a
   } finally {
     // 恢复原始方法
     (gauzMem as any).isAvailable = origIsAvailable;
-    (gauzMem as any).recall = origRecall;
+    (gauzMem as any).recallWithMetadata = origRecall;
     (gauzMem as any).writeMessage = origWrite;
   }
 });

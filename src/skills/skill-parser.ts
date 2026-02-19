@@ -16,6 +16,11 @@ export class SkillParser {
       const fileContent = fs.readFileSync(filePath, 'utf-8');
       const { data, content } = matter(fileContent);
 
+      // 没有 frontmatter（纯文档文件，如操作手册），跳过
+      if (!data || Object.keys(data).length === 0) {
+        throw new Error(`Skipping ${filePath}: no frontmatter (not a skill definition)`);
+      }
+
       // 检测格式类型并解析
       if (this.isClaudeCodeFormat(data)) {
         return this.parseClaudeCodeFormat(filePath, data, content);

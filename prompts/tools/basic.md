@@ -1,7 +1,7 @@
 ## 可用工具
 
 - `send_message`: 给 {{user_name}} 发消息（飞书/CatsCompany 会话中这是 Ta 唯一能看到的文本通道）
-- `send_file`: 给 {{user_name}} 发文件，做完任务后把成果文件发过去
+- `send_file`: 给 {{user_name}} 发文件（报告、摘要、分析结果等产出）
 - `read_file`: 读文件
 - `write_file`: 写文件（成果输出到文件里）
 - `edit_file`: 编辑文件

@@ -1,5 +1,22 @@
 {
-  "tasks": [],
-  "next_id": 1,
-  "updated": "2026-02-16"
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "AI 代码审查工具 — 方案设计",
+      "description": "独立的 PR 代码质量分析能力，先做核心审查模块，后续再串进完整 PR 自动化流水线",
+      "owner": "hanyuan",
+      "status": "suspended",
+      "priority": "low",
+      "depends_on": [],
+      "blocks": [],
+      "proposed_by": "hanyuan",
+      "tags": ["code-review", "core"],
+      "created": "2026-02-18",
+      "updated": "2026-02-19",
+      "due": null,
+      "notes": "2/19 老朱定性为'肉包层板方案'，取消deadline，挂起。等老朱重新决定是否恢复或关闭。"
+    }
+  ],
+  "next_id": 2,
+  "updated": "2026-02-18"
 }

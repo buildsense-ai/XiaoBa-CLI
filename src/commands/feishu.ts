@@ -1,7 +1,36 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import { Logger } from '../utils/logger';
 import { ConfigManager } from '../utils/config';
 import { FeishuBot } from '../feishu';
 import { FeishuConfig } from '../feishu/types';
+
+function lockFilePath(appId: string): string {
+  return path.join(os.tmpdir(), `xiaoba-feishu-${appId}.lock`);
+}
+
+function isProcessAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function acquireLock(appId: string): string {
+  const lockFile = lockFilePath(appId);
+  if (fs.existsSync(lockFile)) {
+    const oldPid = parseInt(fs.readFileSync(lockFile, 'utf-8').trim(), 10);
+    if (oldPid && isProcessAlive(oldPid)) {
+      Logger.error(`飞书应用 ${appId} 已在运行 (PID: ${oldPid})，请先停止旧进程再启动。`);
+      process.exit(1);
+    }
+    Logger.warning(`发现残留 lock 文件 (PID: ${oldPid} 已不存在)，清理后继续启动。`);
+  }
+  fs.writeFileSync(lockFile, String(process.pid));
+  return lockFile;
+}
+
+function releaseLock(lockFile: string): void {
+  try { fs.unlinkSync(lockFile); } catch {}
+}
 
 /**
  * CLI 命令：xiaoba feishu
@@ -53,11 +82,14 @@ export async function feishuCommand(): Promise<void> {
     Logger.info(`Bot Bridge 配置: ${bridgeName} :${bridgePort}, peers: ${peers.map(p => p.name).join(', ')}`);
   }
 
+  const lockFile = acquireLock(appId);
+
   const bot = new FeishuBot(feishuConfig);
 
   // 优雅退出
   const shutdown = () => {
     bot.destroy();
+    releaseLock(lockFile);
     process.exit(0);
   };
   process.on('SIGINT', shutdown);

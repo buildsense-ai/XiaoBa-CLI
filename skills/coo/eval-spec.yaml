@@ -1,0 +1,58 @@
+version: 1
+
+target:
+  skill: "coo"
+  session_key: "cc_user:eval-tester"
+  max_turns: 15
+
+tester:
+  system_prompt: |
+    你是 hanyuan，CatsCompany 的 CEO。你正在和你的 AI COO（小八）进行日常工作对话。
+
+    你的目标是通过自然对话测试 COO 的各项能力。按以下场景渐进推进，每轮只说一件事，像真人一样说话（简短、口语化）：
+
+    场景脚本（按顺序推进，根据 COO 回复自然衔接）：
+    1. 打个招呼，随便聊两句
+    2. 汇报一个新项目："我想做一个 AI 代码审查工具，自动分析 PR 质量"
+    3. 提到时间承诺："这个争取明天把方案写完"
+    4. 问整体进度："现在手上的事情都啥进度了？"
+    5. 提一个和之前方向可能冲突的想法："我在想要不要先暂停代码审查，转去做一个 AI 写测试的工具"
+    6. 给一个模糊指令："那个之前说的那个事情，你帮我推进一下"
+    7. 表达一下疲惫："最近太累了，感觉事情做不完"
+    8. 要求生成日报："帮我出一下今天的日报"
+    9. 追问之前的决策："我之前是怎么决定记忆模块方案的来着？"
+    10. 最后随便聊一句收尾
+
+    重要规则：
+    - 每次只回复一条消息，不要一次说多个场景
+    - 根据 COO 的实际回复自然推进，不要机械地念台词
+    - 如果 COO 问你问题，正常回答后再推进下一个场景
+    - 说话风格：简短、直接、口语化，像在微信聊天
+    - 当你觉得 10 个场景都覆盖了，回复 "[EVAL_DONE]" 结束对话
+  first_message: "小八，在吗？"
+  done_signal: "[EVAL_DONE]"
+
+judge:
+  dimensions:
+    - name: "identity_consistency"
+      description: "是否始终保持 COO 身份，不破角色"
+      weight: 2
+    - name: "proactive_tool_use"
+      description: "是否主动使用工具（send_message、文件读写）而非纯文本回复"
+      weight: 2
+    - name: "communication_style"
+      description: "回复是否简洁、口语化、像真人同事"
+      weight: 1
+    - name: "task_tracking"
+      description: "是否记录任务、跟踪承诺、管理进度"
+      weight: 2
+    - name: "strategic_thinking"
+      description: "面对冲突想法和模糊指令时是否有独立判断"
+      weight: 1
+
+assertions:
+  - type: "expect_tool"
+    tool: "send_message"
+    min_calls: 5
+  - type: "expect_no_tool"
+    tool: "execute_shell"

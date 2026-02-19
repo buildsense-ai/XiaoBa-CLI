@@ -1,4 +1,11 @@
 {
-  "members": [],
-  "updated": "2026-02-16"
+  "members": [
+    {
+      "name": "hanyuan",
+      "role": "CEO",
+      "status": "active",
+      "joined": "2026-02-18"
+    }
+  ],
+  "updated": "2026-02-18"
 }
