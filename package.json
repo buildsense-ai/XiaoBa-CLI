@@ -26,12 +26,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-username/XiaoBa.git"
+    "url": "https://github.com/buildsense-ai/XiaoBa-CLI.git"
   },
   "bugs": {
-    "url": "https://github.com/your-username/XiaoBa/issues"
+    "url": "https://github.com/buildsense-ai/XiaoBa-CLI/issues"
   },
-  "homepage": "https://github.com/your-username/XiaoBa#readme",
+  "homepage": "https://github.com/buildsense-ai/XiaoBa-CLI#readme",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.0",
     "@catscompany/bot-sdk": "file:../openchat/bot-sdk/typescript",

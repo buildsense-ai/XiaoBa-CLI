@@ -28,10 +28,11 @@ __pycache__/
 pylibs/
 
 # ------------------------------
-# Test files
+# Test / examples
 # ------------------------------
-test-*.js
+test-*
 tests/
+examples/
 
 # ------------------------------
 # Deploy artifacts
