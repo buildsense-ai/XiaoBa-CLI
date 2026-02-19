@@ -36,19 +36,20 @@ argument-hint: "<paper_analysis_dir> [--theme academic|dark|minimal]"
 
 ## 脚本调用方式
 
-本 skill 的 Python 脚本位于 `skills/paper-to-ppt/` 和 `tools/shared/` 目录下，通过 `execute_shell` 调用。
+本 skill 的 Python 脚本位于 `skills/paper-to-ppt/` 目录下，通过 `execute_shell` 调用。
+`analyze_image` 已注册为全局工具，AI 可直接调用，无需通过 `execute_shell`。
 
 **pptx_generator**（生成 PPT）：
 ```bash
 python skills/paper-to-ppt/pptx_generator_tool.py '{"output_path": "docs/ppt/xxx.pptx", "theme": "academic", "slides": [...]}'
 ```
 
-**analyze_image**（多模态图片分析）：
-```bash
-python tools/shared/analyze_image_tool.py '{"file_path": "<image_path>", "prompt": "<具体问题>"}'
+**analyze_image**（多模态图片分析）：直接调用 `analyze_image` 工具，参数示例：
+```json
+{"file_path": "<image_path>", "prompt": "<具体问题>"}
 ```
 
-所有脚本接收 JSON 字符串作为参数，返回 JSON 结果到 stdout。
+pptx_generator 脚本接收 JSON 字符串作为参数，返回 JSON 结果到 stdout。
 
 ## 执行流程
 

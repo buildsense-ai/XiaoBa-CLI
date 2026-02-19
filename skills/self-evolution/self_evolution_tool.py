@@ -5,7 +5,7 @@ Self Evolution Tool - 自我进化工具
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools', 'shared'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools', 'global'))
 
 from base_tool import BaseTool
 from typing import Dict, Any

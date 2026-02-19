@@ -28,7 +28,8 @@ max-turns: 50
 
 ## 脚本调用方式
 
-本 skill 的 Python 脚本位于 `skills/cad-supervision/` 和 `tools/shared/` 目录下，通过 `execute_shell` 调用。
+本 skill 的 Python 脚本位于 `skills/cad-supervision/` 目录下，通过 `execute_shell` 调用。
+`analyze_image` 已注册为全局工具，AI 可直接调用，无需通过 `execute_shell`。
 
 **get_cad_metadata**（获取 CAD 概览）：
 ```bash
@@ -50,12 +51,12 @@ python skills/cad-supervision/extract_cad_entities_tool.py '{"file_path": "<dxf_
 python skills/cad-supervision/convert_dwg_to_dxf_tool.py '{"dwg_path": "<dwg_path>"}'
 ```
 
-**analyze_image**（视觉 AI 分析）：
-```bash
-python tools/shared/analyze_image_tool.py '{"file_path": "<image_path>", "prompt": "<具体问题>"}'
+**analyze_image**（视觉 AI 分析）：直接调用 `analyze_image` 工具，参数示例：
+```json
+{"file_path": "<image_path>", "prompt": "<具体问题>"}
 ```
 
-所有脚本接收 JSON 字符串作为参数，返回 JSON 结果到 stdout。
+CAD 脚本接收 JSON 字符串作为参数，返回 JSON 结果到 stdout。
 
 ## 工具使用流程（重要）
 

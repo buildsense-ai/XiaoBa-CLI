@@ -5,7 +5,7 @@ import { Logger } from '../utils/logger';
  * 飞书回复工具
  * 允许 AI 在处理过程中主动给用户发消息（如确认、进度、结果）
  *
- * chatId 和 sender 由 FeishuBot 在每次消息处理前动态注入
+ * 发送能力通过 ToolExecutionContext.feishuChannel 注入，无需 bind/unbind。
  */
 export class FeishuReplyTool implements Tool {
   definition: ToolDefinition = {
@@ -23,45 +23,11 @@ export class FeishuReplyTool implements Tool {
     },
   };
 
-  private sessions = new Map<string, {
-    chatId: string;
-    sendFn: (chatId: string, text: string) => Promise<void>;
-  }>();
-
-  /**
-   * 绑定当前会话的 chatId 和发送函数
-   */
-  bindSession(sessionId: string, chatId: string, sendFn: (chatId: string, text: string) => Promise<void>): void {
-    this.sessions.set(sessionId, { chatId, sendFn });
-  }
-
-  /**
-   * 兼容旧调用
-   */
-  bind(chatId: string, sendFn: (chatId: string, text: string) => Promise<void>): void {
-    this.bindSession('default', chatId, sendFn);
-  }
-
-  /**
-   * 解绑（消息处理完毕后调用）
-   */
-  unbindSession(sessionId: string): void {
-    this.sessions.delete(sessionId);
-  }
-
-  /**
-   * 兼容旧调用
-   */
-  unbind(): void {
-    this.unbindSession('default');
-  }
-
-  async execute(args: any, _context: ToolExecutionContext): Promise<string> {
+  async execute(args: any, context: ToolExecutionContext): Promise<string> {
     const { message } = args;
-    const sessionId = _context.sessionId || 'default';
-    const session = this.sessions.get(sessionId);
+    const channel = context.feishuChannel;
 
-    if (!session) {
+    if (!channel) {
       return '当前不在飞书会话中，无法发送消息';
     }
 
@@ -70,7 +36,7 @@ export class FeishuReplyTool implements Tool {
     }
 
     try {
-      await session.sendFn(session.chatId, message);
+      await channel.reply(channel.chatId, message);
       Logger.info(`[feishu_reply] 已发送: ${message.slice(0, 50)}...`);
       return '消息已发送';
     } catch (err: any) {

@@ -6,16 +6,30 @@ import { SkillManager } from '../skills/skill-manager';
  * System Prompt 管理器
  */
 export class PromptManager {
-  private static systemPromptPath = path.join(__dirname, '../../prompts/system-prompt.md');
+  private static promptsDir = path.join(__dirname, '../../prompts');
 
   /**
    * 获取基础 system prompt
+   * 优先加载 system-prompt-{botName}.md，找不到则回退到 system-prompt.md
    */
   static getBaseSystemPrompt(): string {
+    const botName = (process.env.BOT_BRIDGE_NAME || '').trim().toLowerCase();
+
+    // 尝试加载 bot 专属 prompt
+    if (botName) {
+      const botPromptPath = path.join(this.promptsDir, `system-prompt-${botName}.md`);
+      try {
+        const content = fs.readFileSync(botPromptPath, 'utf-8');
+        return content;
+      } catch {
+        // bot 专属文件不存在，回退到默认
+      }
+    }
+
+    // 回退到通用 system-prompt.md
     try {
-      return fs.readFileSync(this.systemPromptPath, 'utf-8');
+      return fs.readFileSync(path.join(this.promptsDir, 'system-prompt.md'), 'utf-8');
     } catch (error) {
-      // 如果文件不存在，返回默认prompt
       return this.getDefaultSystemPrompt();
     }
   }

@@ -7,9 +7,9 @@ import os
 import json
 import requests
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools', 'global'))
 
-from utils.base_tool import BaseTool
+from base_tool import BaseTool
 from typing import Dict, Any
 
 
