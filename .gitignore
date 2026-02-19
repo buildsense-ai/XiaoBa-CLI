@@ -28,9 +28,14 @@ __pycache__/
 pylibs/
 
 # ------------------------------
+# Internal docs (keep only README.md)
+# ------------------------------
+/*.md
+!README.md
+
+# ------------------------------
 # Test / examples
 # ------------------------------
-test-*
 tests/
 examples/
 
@@ -69,6 +74,25 @@ Group/
 # ------------------------------
 docs/ppt/**/*.pptx
 *.pptx
+
+# ------------------------------
+# Misc generated / internal
+# ------------------------------
+test-*
+s.status
+gen-arch.py
+run_api.py
+start_analysis.sh
+setup-path.ps1
+xiaoba-arch.*
+.claude/
+workspace/
+docs/experiments/
+docs/xhs/
+docs/ppt/
+docs/writing/
+docs/research-plan/
+docs/*.md
 
 # ------------------------------
 # Secrets / local config
