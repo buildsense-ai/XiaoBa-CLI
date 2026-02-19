@@ -16,6 +16,7 @@ import { FeishuMentionTool } from '../tools/feishu-mention-tool';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { BridgeServer, GroupMessage } from '../bridge/bridge-server';
 import { BridgeClient } from '../bridge/bridge-client';
+import { ChimeInJudge } from '../bridge/chime-in-judge';
 import { FeishuChannelCallbacks } from '../types/tool';
 import { randomUUID } from 'crypto';
 
@@ -57,6 +58,7 @@ export class FeishuBot {
   private bridgeServer: BridgeServer | null = null;
   private bridgeClient: BridgeClient | null = null;
   private bridgeConfig: FeishuConfig['bridge'] | undefined;
+  private chimeInJudge: ChimeInJudge | null = null;
   /** 已处理的消息 ID，用于去重 */
   private processedMsgIds = new Set<string>();
   /** key = pendingAnswerId */
@@ -107,6 +109,10 @@ export class FeishuBot {
     if (config.bridge) {
       this.bridgeConfig = config.bridge;
       this.bridgeClient = new BridgeClient(config.bridge.peers);
+      this.chimeInJudge = new ChimeInJudge(aiService, {
+        botName: config.bridge.name,
+        botExpertise: process.env.BOT_EXPERTISE || '论文阅读、代码编写、任务执行',
+      });
       Logger.info(`Bot Bridge 已配置: peers=${this.bridgeClient.getPeerNames().join(', ')}`);
     }
 
@@ -119,9 +125,9 @@ export class FeishuBot {
     let memoryService: GauzMemService | null = null;
     if (appConfig.memory?.enabled) {
       const memConfig: GauzMemConfig = {
-        baseUrl: appConfig.memory.baseUrl || 'http://43.139.19.144:1235',
+        baseUrl: appConfig.memory.baseUrl || '',
         projectId: appConfig.memory.projectId || 'XiaoBa',
-        userId: appConfig.memory.userId || 'guowei',
+        userId: appConfig.memory.userId || '',
         agentId: appConfig.memory.agentId || 'XiaoBa',
         enabled: true,
       };
@@ -453,6 +459,7 @@ export class FeishuBot {
 
   /**
    * 处理来自其他 bot 的群聊广播消息
+   * P0 优化：被@直接触发推理；未被@时用轻量 LLM 判断"该不该插嘴"
    */
   private async onGroupBroadcast(msg: GroupMessage): Promise<void> {
     if (this.bridgeConfig && msg.from === this.bridgeConfig.name) return;
@@ -461,15 +468,34 @@ export class FeishuBot {
     const session = this.sessionManager.getOrCreate(sessionKey);
     const text = `${msg.from}: ${msg.content}`;
 
-    // 广播里@了我 → 触发推理；否则只注入上下文
+    // 记录到 chime-in judge 的上下文（无论是否触发推理）
+    this.chimeInJudge?.recordMessage(text);
+
+    // 被@了 → 直接触发推理
     const mentionsMe = this.bridgeConfig && msg.content.includes(this.bridgeConfig.name);
+
+    // 没被@ → 用轻量 LLM 判断该不该主动插嘴
     if (!mentionsMe) {
       session.injectContext(text);
-      Logger.info(`[Bridge] 广播上下文已注入: session=${sessionKey}, from=${msg.from}`);
-      return;
+
+      if (this.chimeInJudge) {
+        const shouldChimeIn = await this.chimeInJudge.shouldChimeIn(text);
+        if (!shouldChimeIn) {
+          Logger.info(`[Bridge] 广播上下文已注入(不插嘴): session=${sessionKey}, from=${msg.from}`);
+          return;
+        }
+        // 判断为"该插嘴"：加随机延迟（1-3秒），降低两个 bot 同时说话的概率
+        const delay = 1000 + Math.random() * 2000;
+        Logger.info(`[Bridge] 判断应插嘴，延迟 ${Math.round(delay)}ms: session=${sessionKey}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        Logger.info(`[Bridge] 广播上下文已注入: session=${sessionKey}, from=${msg.from}`);
+        return;
+      }
+    } else {
+      Logger.info(`[Bridge] 广播中被@，触发推理: session=${sessionKey}, from=${msg.from}`);
     }
 
-    Logger.info(`[Bridge] 广播中被@，触发推理: session=${sessionKey}, from=${msg.from}`);
     if (session.isBusy()) {
       const queue = this.messageQueue.get(sessionKey) ?? [];
       queue.push({ userText: text, chatId: msg.chat_id, senderId: '' });
