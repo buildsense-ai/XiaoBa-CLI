@@ -3,6 +3,7 @@ import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { SkillInvocationContext } from '../types/skill';
+import { FeishuChannelCallbacks } from '../types/tool';
 import {
   buildSkillActivationSignal,
   upsertSkillSystemMessage,
@@ -11,7 +12,6 @@ import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { isToolAllowed } from '../utils/safety';
-import { AskUserQuestionTool } from '../tools/ask-user-question-tool';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -172,13 +172,17 @@ export class SubAgentSession {
       permissionProfile: 'strict',
     });
 
-    // 5. 绑定飞书工具（如果有回调）
-    this.bindFeishuTools(toolManager);
+    // 5. 构建飞书通道回调（通过 context 传递，替代 bindSession）
+    const feishuChannel = this.buildFeishuChannel();
 
     // 6. 预检测被策略阻断的工具，避免子智能体浪费 turn
     const preDisabledTools = toolManager.getToolDefinitions()
       .map(t => t.name)
       .filter(name => !isToolAllowed(name).allowed);
+
+    // 子智能体不允许再派遣子智能体（防止无限递归）
+    const subagentTools = ['spawn_subagent', 'check_subagent', 'stop_subagent', 'resume_subagent'];
+    preDisabledTools.push(...subagentTools);
 
     // 7. 创建独立的 ConversationRunner
     const runner = new ConversationRunner(this.aiService, toolManager, {
@@ -192,6 +196,7 @@ export class SubAgentSession {
         sessionId: `subagent:${this.id}`,
         surface: 'agent',
         permissionProfile: 'strict',
+        feishuChannel,
       },
     });
 
@@ -262,37 +267,34 @@ export class SubAgentSession {
 
   // ─── 私有方法 ──────────────────────────────────────
 
-  private bindFeishuTools(toolManager: ToolManager): void {
-    const replyTool = toolManager.getTool('feishu_reply');
-    const sendFileTool = toolManager.getTool('feishu_send_file');
-
-    if (this.options.feishuReply && replyTool && 'bindSession' in replyTool) {
-      (replyTool as any).bindSession(
-        `subagent:${this.id}`,
-        '', // chatId 由回调内部处理
-        async (_chatId: string, text: string) => {
-          await this.options.feishuReply!(text);
-        },
-      );
+  /**
+   * 构建飞书通道回调，注入到 toolExecutionContext。
+   * 子智能体的 feishuReply/feishuSendFile 回调已经封装了 chatId，
+   * 所以这里用空 chatId，回调内部忽略 chatId 参数。
+   */
+  private buildFeishuChannel(): FeishuChannelCallbacks | undefined {
+    if (!this.options.feishuReply && !this.options.feishuSendFile) {
+      return undefined;
     }
 
-    if (this.options.feishuSendFile && sendFileTool && 'bindSession' in sendFileTool) {
-      (sendFileTool as any).bindSession(
-        `subagent:${this.id}`,
-        '',
-        async (_chatId: string, filePath: string, fileName: string) => {
-          await this.options.feishuSendFile!(filePath, fileName);
-        },
-      );
-    }
+    const channel: FeishuChannelCallbacks = {
+      chatId: '', // 子智能体的回调已封装目标 chatId
+      reply: async (_chatId: string, text: string) => {
+        if (this.options.feishuReply) {
+          await this.options.feishuReply(text);
+        }
+      },
+      sendFile: async (_chatId: string, filePath: string, fileName: string) => {
+        if (this.options.feishuSendFile) {
+          await this.options.feishuSendFile(filePath, fileName);
+        }
+      },
+    };
 
-    // 绑定 ask_user_question：子智能体挂起，反馈给主 agent 决策
-    const askTool = toolManager.getTool<AskUserQuestionTool>('ask_user_question');
-    if (askTool && 'bindFeishuSession' in askTool) {
-      askTool.bindFeishuSession(
-        `subagent:${this.id}`,
-        // sendFn: 设置挂起状态，通知主 agent
-        async (question: string) => {
+    // ask_user_question：子智能体挂起，反馈给主 agent 决策
+    if (this.options.notifyParent) {
+      channel.askUser = {
+        send: async (question: string) => {
           this.pendingQuestion = question;
           this.status = 'waiting_for_input';
           this.reportProgress(`等待主 agent 指示：${question}`);
@@ -304,10 +306,11 @@ export class SubAgentSession {
             await this.options.notifyParent(this.id, this.taskDescription, question);
           }
         },
-        // waitFn: 返回已创建的 Promise（可能已被 resume 解决）
-        () => this.pendingWaitPromise!,
-      );
+        wait: () => this.pendingWaitPromise!,
+      };
     }
+
+    return channel;
   }
 
   private reportProgress(message: string): void {

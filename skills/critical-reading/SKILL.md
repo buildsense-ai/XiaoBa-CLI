@@ -44,12 +44,12 @@ paper-analysis 已经帮你完成了精读理解。现在你要站在更高的�
 
 ## 脚本调用方式
 
-**analyze_image**（多模态图片分析）：
-```bash
-python tools/shared/analyze_image_tool.py '{"file_path": "<image_path>", "prompt": "<具体问题>"}'
-```
+`analyze_image` 已注册为全局工具，AI 可直接调用，无需通过 `execute_shell`。
 
-脚本接收 JSON 字符串作为参数，返回 JSON 结果到 stdout。
+**analyze_image**（多模态图片分析）：直接调用 `analyze_image` 工具，参数示例：
+```json
+{"file_path": "<image_path>", "prompt": "<具体问题>"}
+```
 
 ## 执行流程
 

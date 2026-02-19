@@ -1,4 +1,5 @@
 import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor } from '../types/tool';
+import { Logger } from '../utils/logger';
 import { ReadTool } from './read-tool';
 import { WriteTool } from './write-tool';
 import { ShellTool } from './bash-tool';
@@ -21,6 +22,9 @@ import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
 import { StopSubagentTool } from './stop-subagent-tool';
 import { ResumeSubagentTool } from './resume-subagent-tool';
+
+import * as path from 'path';
+import { loadGlobalPythonTools } from './python-tool-loader';
 
 /**
  * Claude Code → XiaoBa 工具名映射
@@ -96,28 +100,24 @@ export class ToolManager implements ToolExecutor {
     this.registerTool(new TaskOutputTool());
     this.registerTool(new TaskStopTool());
 
-    // 加载并注册 Python 工具
-    this.loadPythonTools();
+    // 注册全局 Python 工具（tools/global/*_tool.py）
+    this.registerGlobalPythonTools();
   }
 
   /**
-   * 加载 Python 工具
+   * 扫描 tools/global/ 并注册所有 Python 工具
    */
-  private loadPythonTools(): void {
+  private registerGlobalPythonTools(): void {
     try {
-      const { PythonToolLoader } = require('./python-tool-loader');
-      const loader = new PythonToolLoader(this.workingDirectory);
-      const pythonTools = loader.loadTools();
-
+      // 项目根目录：从 src/tools/ 向上两级
+      const projectRoot = path.resolve(__dirname, '..', '..');
+      const pythonTools = loadGlobalPythonTools(projectRoot);
       for (const tool of pythonTools) {
         this.registerTool(tool);
       }
-
-      if (pythonTools.length > 0) {
-        console.log(`已加载 ${pythonTools.length} 个 Python 工具`);
-      }
-    } catch (error: any) {
-      console.warn(`加载 Python 工具失败: ${error.message}`);
+    } catch (err: any) {
+      // 加载失败不阻塞启动
+      Logger.warning(`[ToolManager] 全局 Python 工具加载失败: ${err.message}`);
     }
   }
 

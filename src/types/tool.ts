@@ -57,6 +57,23 @@ export type ToolSurface = 'cli' | 'feishu' | 'catscompany' | 'agent' | 'research
 export type ToolPermissionProfile = 'strict' | 'default' | 'relaxed';
 
 /**
+ * 飞书通道回调（通过 ToolExecutionContext 传递给工具，替代 bind/unbind 模式）
+ */
+export interface FeishuChannelCallbacks {
+  /** 当前会话的 chatId */
+  chatId: string;
+  /** 发送文本消息 */
+  reply: (chatId: string, text: string) => Promise<void>;
+  /** 发送文件 */
+  sendFile: (chatId: string, filePath: string, fileName: string) => Promise<void>;
+  /** 向用户提问并等待回复（ask_user_question 用） */
+  askUser?: {
+    send: (text: string) => Promise<void>;
+    wait: () => Promise<string>;
+  };
+}
+
+/**
  * 工具执行上下文
  */
 export interface ToolExecutionContext {
@@ -70,6 +87,8 @@ export interface ToolExecutionContext {
   activeSkillName?: string;
   allowedToolNames?: string[];
   blockedToolNames?: string[];
+  /** 飞书通道回调（飞书/CatsCompany 会话时由平台层注入） */
+  feishuChannel?: FeishuChannelCallbacks;
 }
 
 /**

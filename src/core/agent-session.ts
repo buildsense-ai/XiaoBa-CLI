@@ -3,6 +3,7 @@ import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { SkillActivationSignal, SkillInvocationContext, SkillToolPolicy } from '../types/skill';
+import { FeishuChannelCallbacks } from '../types/tool';
 import {
   buildSkillActivationSignal,
   upsertSkillSystemMessage,
@@ -12,6 +13,7 @@ import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
 import { SubAgentManager } from './sub-agent-manager';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
+import { saveSessionSummary, loadSessionSummary, removeSessionSummary } from '../utils/local-session-store';
 import { Metrics } from '../utils/metrics';
 
 const TRANSIENT_MEMORY_CONTEXT_PREFIX = '[transient_memory_context]';
@@ -34,6 +36,13 @@ export interface SessionCallbacks {
   onToolStart?: (name: string) => void;
   onToolEnd?: (name: string, result: string) => void;
   onToolDisplay?: (name: string, content: string) => void;
+}
+
+/** 消息处理选项（由平台适配层传入） */
+export interface HandleMessageOptions {
+  callbacks?: SessionCallbacks;
+  /** 飞书通道回调，注入到 ToolExecutionContext 供工具使用 */
+  feishuChannel?: FeishuChannelCallbacks;
 }
 
 /** 命令处理结果 */
@@ -78,13 +87,26 @@ export class AgentSession {
     if (this.isFeishuSession()) {
       this.messages.push({
         role: 'system',
-        content: '[surface:feishu]\n当前是飞书会话。你发给老师的可见文本必须通过 feishu_reply 工具发送；发送文件必须通过 feishu_send_file 工具发送。',
+        content: '[surface:feishu]\n当前是飞书会话。老师只能看到你通过 feishu_reply / feishu_send_file 发送的内容，你的普通文本输出老师完全看不到。所以：所有要给老师看的话，必须通过工具发送；通过工具发完消息后直接停止，不要再输出任何收尾文本。',
       });
     } else if (this.isCatsCompanySession()) {
       this.messages.push({
         role: 'system',
-        content: '[surface:catscompany]\n当前是 Cats Company 聊天会话。你发给用户的可见文本必须通过 feishu_reply 工具发送；发送文件必须通过 feishu_send_file 工具发送。',
+        content: '[surface:catscompany]\n当前是 Cats Company 聊天会话。用户只能看到你通过 feishu_reply / feishu_send_file 发送的内容，你的普通文本输出用户完全看不到。所以：所有要给用户看的话，必须通过工具发送；通过工具发完消息后直接停止，不要再输出任何收尾文本。',
       });
+    }
+
+    // 加载上次会话摘要（本地文件兜底）
+    if (this.isChatSession()) {
+      const previousSummary = loadSessionSummary(this.key);
+      if (previousSummary) {
+        this.messages.push({
+          role: 'system',
+          content: `[previous_session_summary]\n以下是你与该用户上次对话的摘要，请参考以保持上下文连贯：\n\n${previousSummary}`,
+        });
+        removeSessionSummary(this.key);
+        Logger.info(`已加载上次会话摘要: ${this.key}`);
+      }
     }
   }
 
@@ -116,13 +138,43 @@ export class AgentSession {
 
   // ─── 消息处理 ───────────────────────────────────────
 
-  /** 完整消息处理管线：记忆搜索 → AI 推理 → 工具循环 → 同步历史 */
-  async handleMessage(text: string, callbacks?: SessionCallbacks): Promise<string> {
+  /** 静默注入上下文消息，不触发 AI 推理 */
+  injectContext(text: string): void {
+    this.messages.push({ role: 'user', content: text });
+    this.lastActiveAt = Date.now();
+  }
+
+  /**
+   * 完整消息处理管线：记忆搜索 → AI 推理 → 工具循环 → 同步历史
+   *
+   * @param text 用户消息文本
+   * @param callbacksOrOptions 旧签名兼容 SessionCallbacks，新签名用 HandleMessageOptions
+   */
+  async handleMessage(
+    text: string,
+    callbacksOrOptions?: SessionCallbacks | HandleMessageOptions,
+  ): Promise<string> {
+    // 兼容旧签名：如果传入的对象有 onText/onToolStart 等字段，视为 SessionCallbacks
+    let callbacks: SessionCallbacks | undefined;
+    let feishuChannel: FeishuChannelCallbacks | undefined;
+
+    if (callbacksOrOptions) {
+      if ('feishuChannel' in callbacksOrOptions || 'callbacks' in callbacksOrOptions) {
+        // 新签名 HandleMessageOptions
+        const opts = callbacksOrOptions as HandleMessageOptions;
+        callbacks = opts.callbacks;
+        feishuChannel = opts.feishuChannel;
+      } else {
+        // 旧签名 SessionCallbacks
+        callbacks = callbacksOrOptions as SessionCallbacks;
+      }
+    }
+
     if (this.busy) {
       return BUSY_MESSAGE;
     }
 
-    // 按“单次消息”统计 metrics，避免跨轮次累积导致定位困难
+    // 按"单次消息"统计 metrics，避免跨轮次累积导致定位困难
     Metrics.reset();
 
     this.busy = true;
@@ -200,6 +252,7 @@ export class AgentSession {
             sessionId: this.key,
             surface,
             permissionProfile: 'strict',
+            feishuChannel,
           },
         },
       );
@@ -225,7 +278,7 @@ export class AgentSession {
         }
       }
 
-      // runner 在“最终无工具调用”时不会自动附加 assistant 消息，这里补齐
+      // runner 在"最终无工具调用"时不会自动附加 assistant 消息，这里补齐
       const lastMessage = this.messages[this.messages.length - 1];
       if (
         !lastMessage ||
@@ -308,11 +361,10 @@ export class AgentSession {
     this.lastActiveAt = Date.now();
   }
 
-  /** 压缩历史写入记忆，然后清空 */
+  /** 压缩历史写入记忆（本地文件兜底 + GauzMem），然后清空 */
   async summarizeAndDestroy(): Promise<boolean> {
-    const memoryService = this.services.memoryService;
     const hasUserMessages = this.messages.some(m => m.role === 'user');
-    if (this.messages.length === 0 || !memoryService || !hasUserMessages) {
+    if (this.messages.length === 0 || !hasUserMessages) {
       return false;
     }
 
@@ -334,16 +386,25 @@ ${conversationText}
       ]);
 
       const summaryText = `[对话摘要 - ${new Date().toISOString()}]\n${summary.content || ''}`;
-      const writeSuccess = await memoryService.writeMemory(summaryText, 'agent');
 
-      if (writeSuccess) {
-        Logger.info(`已压缩 ${this.messages.length} 条消息并写入记忆系统`);
-      } else {
-        Logger.warning('已生成摘要但写入记忆系统失败');
+      // 本地文件兜底：始终写入本地
+      const localSuccess = saveSessionSummary(this.key, summaryText);
+
+      // GauzMem：如果可用也写入
+      const memoryService = this.services.memoryService;
+      if (memoryService) {
+        const remoteSuccess = await memoryService.writeMemory(summaryText, 'agent');
+        if (remoteSuccess) {
+          Logger.info(`已压缩 ${this.messages.length} 条消息并写入记忆系统`);
+        }
+      }
+
+      if (localSuccess) {
+        Logger.info(`已压缩 ${this.messages.length} 条消息并写入本地文件`);
       }
 
       this.messages = [];
-      return writeSuccess;
+      return localSuccess;
     } catch (error) {
       Logger.error('压缩历史失败: ' + String(error));
       return false;

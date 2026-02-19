@@ -5,7 +5,7 @@ PPTX Generator Tool - PPT 生成工具
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools', 'shared'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools', 'global'))
 
 from base_tool import BaseTool
 from typing import Dict, Any, List, Optional

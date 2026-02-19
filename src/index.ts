@@ -6,7 +6,6 @@ import { chatCommand } from './commands/chat';
 import { configCommand } from './commands/config';
 import { registerSkillCommand } from './commands/skill';
 import { feishuCommand } from './commands/feishu';
-import { catscompanyCommand } from './commands/catscompany';
 
 function main() {
   const program = new Command();
@@ -45,7 +44,10 @@ function main() {
   program
     .command('catscompany')
     .description('启动 Cats Company 机器人（WebSocket 长连接模式）')
-    .action(catscompanyCommand);
+    .action(async () => {
+      const { catscompanyCommand } = await import('./commands/catscompany');
+      await catscompanyCommand();
+    });
 
   // Skill 管理命令
   registerSkillCommand(program);

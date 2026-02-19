@@ -233,7 +233,8 @@ export class ConversationRunner {
 
         // ===== 工具熔断检查 =====
         let toolContent = result.content;
-        const isBlocked = toolContent.includes('执行被阻止');
+        const isBlocked = result.errorCode === 'TOOL_NOT_ALLOWED_BY_SKILL_POLICY'
+          || result.errorCode === 'TOOL_BLOCKED_BY_SKILL_POLICY';
         const isFailed = toolContent.startsWith('Python 工具执行失败') || toolContent.startsWith('错误:');
 
         if (isBlocked) {
@@ -549,7 +550,7 @@ export class ConversationRunner {
     messages: Message[],
     context: Partial<ToolExecutionContext>,
     turn: number,
-  ): Promise<{ content: string; tool_call_id: string; name: string }> {
+  ): Promise<{ content: string; tool_call_id: string; name: string; errorCode?: string }> {
     let lastResult = await this.toolExecutor.executeTool(toolCall, messages, context);
 
     for (let attempt = 1; attempt <= ConversationRunner.MAX_RETRIES; attempt++) {

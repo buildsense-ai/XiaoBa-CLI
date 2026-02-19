@@ -13,11 +13,10 @@ import { Logger } from '../utils/logger';
 import { FeishuReplyTool } from '../tools/feishu-reply-tool';
 import { FeishuSendFileTool } from '../tools/feishu-send-file-tool';
 import { FeishuMentionTool } from '../tools/feishu-mention-tool';
-import { AskUserQuestionTool } from '../tools/ask-user-question-tool';
 import { SubAgentManager } from '../core/sub-agent-manager';
-import { BridgeServer, BridgeMessage } from '../bridge/bridge-server';
+import { BridgeServer, GroupMessage } from '../bridge/bridge-server';
 import { BridgeClient } from '../bridge/bridge-client';
-import { SendToBotTool } from '../tools/send-to-bot-tool';
+import { FeishuChannelCallbacks } from '../types/tool';
 import { randomUUID } from 'crypto';
 
 interface PendingAttachment {
@@ -36,6 +35,12 @@ interface PendingAnswer {
   timeoutHandle: ReturnType<typeof setTimeout>;
 }
 
+interface QueuedMessage {
+  userText: string;
+  chatId: string;
+  senderId: string;
+}
+
 const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 
 /**
@@ -49,10 +54,6 @@ export class FeishuBot {
   private sender: MessageSender;
   private sessionManager: SessionManager;
   private agentServices: AgentServices;
-  private feishuReplyTool: FeishuReplyTool;
-  private feishuSendFileTool: FeishuSendFileTool;
-  private feishuMentionTool: FeishuMentionTool;
-  private askUserQuestionTool: AskUserQuestionTool | null = null;
   private bridgeServer: BridgeServer | null = null;
   private bridgeClient: BridgeClient | null = null;
   private bridgeConfig: FeishuConfig['bridge'] | undefined;
@@ -64,6 +65,8 @@ export class FeishuBot {
   private pendingAnswerBySession = new Map<string, string>();
   /** 等待用户后续指令的附件队列，key 为 sessionKey */
   private pendingAttachments = new Map<string, PendingAttachment[]>();
+  /** 主会话忙时的消息队列，key = sessionKey */
+  private messageQueue = new Map<string, QueuedMessage[]>();
 
   constructor(config: FeishuConfig) {
     const baseConfig = {
@@ -92,22 +95,18 @@ export class FeishuBot {
 
     const aiService = new AIService();
     const toolManager = new ToolManager();
-    this.feishuReplyTool = new FeishuReplyTool();
-    this.feishuSendFileTool = new FeishuSendFileTool();
-    this.feishuMentionTool = new FeishuMentionTool();
-    toolManager.registerTool(this.feishuReplyTool);
-    toolManager.registerTool(this.feishuSendFileTool);
-    toolManager.registerTool(this.feishuMentionTool);
-    this.askUserQuestionTool = toolManager.getTool<AskUserQuestionTool>('ask_user_question') ?? null;
 
-    // 初始化 Bot Bridge
+    // 注册飞书专用工具（新模式下不再需要持有实例引用做 bind/unbind）
+    toolManager.registerTool(new FeishuReplyTool());
+    toolManager.registerTool(new FeishuSendFileTool());
+
+    const mentionTool = new FeishuMentionTool();
+    toolManager.registerTool(mentionTool);
+
+    // 初始化 Bot Bridge（群聊广播模式）
     if (config.bridge) {
       this.bridgeConfig = config.bridge;
       this.bridgeClient = new BridgeClient(config.bridge.peers);
-      const sendToBotTool = new SendToBotTool(this.bridgeClient, config.bridge.name);
-      toolManager.registerTool(sendToBotTool);
-      // 绑定 Bridge 到 feishu_mention，@bot peer 时自动派任务
-      this.feishuMentionTool.bindBridge(this.bridgeClient, config.bridge.name);
       Logger.info(`Bot Bridge 已配置: peers=${this.bridgeClient.getPeerNames().join(', ')}`);
     }
 
@@ -162,11 +161,11 @@ export class FeishuBot {
       Logger.warning(`Skills 加载失败: ${error.message}`);
     }
 
-    // 启动 Bridge Server
+    // 启动 Bridge Server（群聊广播模式）
     if (this.bridgeConfig) {
       this.bridgeServer = new BridgeServer(this.bridgeConfig.port);
-      this.bridgeServer.onMessage(async (msg) => {
-        await this.onBridgeMessage(msg);
+      this.bridgeServer.onGroupMessage(async (msg) => {
+        await this.onGroupBroadcast(msg);
       });
       await this.bridgeServer.start();
     }
@@ -181,6 +180,60 @@ export class FeishuBot {
 
     Logger.success('飞书机器人已启动，等待消息...');
   }
+
+  // ─── 构建 FeishuChannelCallbacks ──────────────────────
+
+  /**
+   * 为指定 chatId 构建飞书通道回调对象。
+   * 传入 handleMessage 的 options.feishuChannel，工具从 context 中读取。
+   */
+  private buildFeishuChannel(
+    chatId: string,
+    opts?: {
+      /** 提供 senderId 以启用 ask_user_question 的等待回复能力 */
+      sessionKey?: string;
+      senderId?: string;
+      /** 可选的 reply 拦截器（如 bridge 场景需要收集回复文本） */
+      replyInterceptor?: (text: string) => void;
+    },
+  ): FeishuChannelCallbacks {
+    const channel: FeishuChannelCallbacks = {
+      chatId,
+      reply: async (targetChatId: string, text: string) => {
+        opts?.replyInterceptor?.(text);
+        await this.sender.reply(targetChatId, text);
+        // 广播给所有 bridge peer
+        if (this.bridgeClient && this.bridgeConfig) {
+          this.bridgeClient.broadcast({
+            from: this.bridgeConfig.name,
+            chat_id: targetChatId,
+            content: text,
+          });
+        }
+      },
+      sendFile: async (targetChatId: string, filePath: string, fileName: string) => {
+        await this.sender.sendFile(targetChatId, filePath, fileName);
+      },
+    };
+
+    // 如果提供了 sessionKey + senderId，启用 ask_user_question
+    if (opts?.sessionKey && opts?.senderId) {
+      channel.askUser = {
+        send: async (text: string) => {
+          await this.sender.reply(chatId, text);
+        },
+        wait: () => {
+          return new Promise<string>((resolve) => {
+            this.registerPendingAnswer(opts.sessionKey!, chatId, opts.senderId!, resolve);
+          });
+        },
+      };
+    }
+
+    return channel;
+  }
+
+  // ─── 消息处理 ─────────────────────────────────────────
 
   /**
    * 处理收到的消息事件
@@ -217,9 +270,6 @@ export class FeishuBot {
         return;
       }
     }
-
-    // 群聊需要 @机器人 才响应
-    if (msg.chatType === 'group' && !msg.mentionBot) return;
 
     // 获取或创建会话
     const session = this.sessionManager.getOrCreate(key);
@@ -295,61 +345,37 @@ export class FeishuBot {
       }
     }
 
-    // 并发保护：如果会话正忙，直接回复 BUSY_MESSAGE，不碰工具绑定
-    // 避免重复消息的 onMessage 覆盖并解绑正在使用的工具
+    // 并发保护：忙时消息静默入队，空闲后自动处理
     if (session.isBusy()) {
-      await this.sender.reply(msg.chatId, BUSY_MESSAGE);
+      const queue = this.messageQueue.get(key) ?? [];
+      queue.push({ userText, chatId: msg.chatId, senderId: msg.senderId });
+      this.messageQueue.set(key, queue);
+      Logger.info(`[${key}] 主会话忙，消息已入队 (队列长度: ${queue.length})`);
       return;
     }
 
-    // 绑定飞书工具到当前会话（按 sessionKey 隔离，避免并发串话）
-    this.feishuReplyTool.bindSession(key, msg.chatId, async (chatId, text) => {
-      await this.sender.reply(chatId, text);
+    // 构建飞书通道回调，通过 context 传递给工具（替代 bind/unbind）
+    const feishuChannel = this.buildFeishuChannel(msg.chatId, {
+      sessionKey: key,
+      senderId: msg.senderId,
     });
-    this.feishuSendFileTool.bindSession(key, msg.chatId, (chatId, filePath, fileName) => this.sender.sendFile(chatId, filePath, fileName));
-    this.feishuMentionTool.bindSession(key, msg.chatId, async (chatId, text) => {
-      await this.sender.reply(chatId, text);
-    });
-
-    // 绑定 AskUserQuestion 飞书模式
-    if (this.askUserQuestionTool) {
-      const chatId = msg.chatId;
-      this.askUserQuestionTool.bindFeishuSession(
-        key,
-        // sendFn: 把问题发送给飞书用户
-        async (text: string) => {
-          await this.sender.reply(chatId, text);
-        },
-        // waitFn: 等待飞书用户的下一条回复
-        () => {
-          return new Promise<string>((resolve) => {
-            this.registerPendingAnswer(key, chatId, msg.senderId, resolve);
-          });
-        },
-      );
-    }
 
     try {
-      // 严格 tool-only：平台层不再自动发送最终文本，所有可见消息必须由 feishu_reply/feishu_send_file 工具发出
-      const reply = await session.handleMessage(userText);
+      const reply = await session.handleMessage(userText, { feishuChannel });
       if (reply === BUSY_MESSAGE || reply.startsWith('处理消息时出错:')) {
         await this.sender.reply(msg.chatId, reply);
       }
     } finally {
-      this.feishuReplyTool.unbindSession(key);
-      this.feishuSendFileTool.unbindSession(key);
-      this.feishuMentionTool.unbindSession(key);
-      if (this.askUserQuestionTool) {
-        this.askUserQuestionTool.unbindFeishuSession(key);
-      }
-      // 清理可能残留的 pending（如超时或异常中断）
       this.clearPendingAnswerBySession(key);
     }
+
+    // 处理忙时排队的消息
+    await this.drainMessageQueue(key);
   }
 
   /**
-   * 处理子智能体反馈注入：绑定飞书工具，触发主 agent 新一轮推理。
-   * 等待主会话空闲后再注入，避免覆盖正在使用的工具绑定。
+   * 处理子智能体反馈注入：触发主 agent 新一轮推理。
+   * 等待主会话空闲后再注入，避免并发冲突。
    */
   private async handleSubAgentFeedback(
     sessionKey: string,
@@ -367,52 +393,29 @@ export class FeishuBot {
 
       const session = this.sessionManager.getOrCreate(sessionKey);
 
-      // 等待主会话空闲，避免覆盖正在使用的工具绑定
+      // 等待主会话空闲
       if (session.isBusy()) {
         Logger.info(`[${sessionKey}] 主会话忙，等待重试注入子智能体反馈 (${attempt + 1}/${MAX_RETRIES + 1})`);
         continue;
       }
 
-      // 主会话空闲，绑定飞书工具
-      this.feishuReplyTool.bindSession(sessionKey, chatId, async (_chatId, replyText) => {
-        await this.sender.reply(chatId, replyText);
+      const feishuChannel = this.buildFeishuChannel(chatId, {
+        sessionKey,
+        senderId,
       });
-      this.feishuSendFileTool.bindSession(sessionKey, chatId, (_chatId, filePath, fileName) =>
-        this.sender.sendFile(chatId, filePath, fileName)
-      );
-      this.feishuMentionTool.bindSession(sessionKey, chatId, async (_chatId, replyText) => {
-        await this.sender.reply(chatId, replyText);
-      });
-      if (this.askUserQuestionTool) {
-        this.askUserQuestionTool.bindFeishuSession(
-          sessionKey,
-          async (question: string) => {
-            await this.sender.reply(chatId, question);
-          },
-          () => new Promise<string>((resolve) => {
-            this.registerPendingAnswer(sessionKey, chatId, senderId, resolve);
-          }),
-        );
-      }
 
       try {
-        const reply = await session.handleMessage(text);
+        const reply = await session.handleMessage(text, { feishuChannel });
         if (reply === BUSY_MESSAGE) {
-          // isBusy() 与 handleMessage() 之间无 await，此分支理论上不会触发
           Logger.info(`[${sessionKey}] 主会话竞态忙碌，将重试`);
           continue;
         }
         if (reply.startsWith('处理消息时出错:')) {
           await this.sender.reply(chatId, reply);
         }
+        await this.drainMessageQueue(sessionKey);
         return;
       } finally {
-        this.feishuReplyTool.unbindSession(sessionKey);
-        this.feishuSendFileTool.unbindSession(sessionKey);
-        this.feishuMentionTool.unbindSession(sessionKey);
-        if (this.askUserQuestionTool) {
-          this.askUserQuestionTool.unbindFeishuSession(sessionKey);
-        }
         this.clearPendingAnswerBySession(sessionKey);
       }
     }
@@ -421,38 +424,65 @@ export class FeishuBot {
   }
 
   /**
-   * 处理来自其他 bot 的 Bridge 消息
+   * 排空消息队列：依次处理忙时积压的用户消息
    */
-  private async onBridgeMessage(msg: BridgeMessage): Promise<void> {
-    const sessionKey = `bridge:${msg.chat_id}`;
-    const session = this.sessionManager.getOrCreate(sessionKey);
+  private async drainMessageQueue(sessionKey: string): Promise<void> {
+    while (true) {
+      const queue = this.messageQueue.get(sessionKey);
+      if (!queue || queue.length === 0) return;
 
-    if (session.isBusy()) {
-      Logger.warning(`[Bridge] 会话 ${sessionKey} 忙碌，跳过来自 ${msg.from} 的任务`);
+      const next = queue.shift()!;
+      if (queue.length === 0) this.messageQueue.delete(sessionKey);
+
+      const session = this.sessionManager.getOrCreate(sessionKey);
+      const feishuChannel = this.buildFeishuChannel(next.chatId, {
+        sessionKey,
+        senderId: next.senderId,
+      });
+
+      try {
+        const reply = await session.handleMessage(next.userText, { feishuChannel });
+        if (reply.startsWith('处理消息时出错:')) {
+          await this.sender.reply(next.chatId, reply);
+        }
+      } finally {
+        this.clearPendingAnswerBySession(sessionKey);
+      }
+    }
+  }
+
+  /**
+   * 处理来自其他 bot 的群聊广播消息
+   */
+  private async onGroupBroadcast(msg: GroupMessage): Promise<void> {
+    if (this.bridgeConfig && msg.from === this.bridgeConfig.name) return;
+
+    const sessionKey = `group:${msg.chat_id}`;
+    const session = this.sessionManager.getOrCreate(sessionKey);
+    const text = `${msg.from}: ${msg.content}`;
+
+    // 广播里@了我 → 触发推理；否则只注入上下文
+    const mentionsMe = this.bridgeConfig && msg.content.includes(this.bridgeConfig.name);
+    if (!mentionsMe) {
+      session.injectContext(text);
+      Logger.info(`[Bridge] 广播上下文已注入: session=${sessionKey}, from=${msg.from}`);
       return;
     }
 
-    this.feishuReplyTool.bindSession(sessionKey, msg.chat_id, async (chatId, text) => {
-      await this.sender.reply(chatId, text);
-    });
-    this.feishuSendFileTool.bindSession(sessionKey, msg.chat_id, (chatId, filePath, fileName) =>
-      this.sender.sendFile(chatId, filePath, fileName)
-    );
-    this.feishuMentionTool.bindSession(sessionKey, msg.chat_id, async (chatId, text) => {
-      await this.sender.reply(chatId, text);
-    });
-
-    try {
-      const userText = `[来自 ${msg.from} 的任务]\n${msg.message}`;
-      const reply = await session.handleMessage(userText);
-      if (reply.startsWith('处理消息时出错:')) {
-        await this.sender.reply(msg.chat_id, reply);
-      }
-    } finally {
-      this.feishuReplyTool.unbindSession(sessionKey);
-      this.feishuSendFileTool.unbindSession(sessionKey);
-      this.feishuMentionTool.unbindSession(sessionKey);
+    Logger.info(`[Bridge] 广播中被@，触发推理: session=${sessionKey}, from=${msg.from}`);
+    if (session.isBusy()) {
+      const queue = this.messageQueue.get(sessionKey) ?? [];
+      queue.push({ userText: text, chatId: msg.chat_id, senderId: '' });
+      this.messageQueue.set(sessionKey, queue);
+      return;
     }
+    const feishuChannel = this.buildFeishuChannel(msg.chat_id);
+    try {
+      await session.handleMessage(text, { feishuChannel });
+    } finally {
+      this.clearPendingAnswerBySession(sessionKey);
+    }
+    await this.drainMessageQueue(sessionKey);
   }
 
   /**
@@ -468,6 +498,7 @@ export class FeishuBot {
     }
     this.pendingAnswerBySession.clear();
     this.pendingAttachments.clear();
+    this.messageQueue.clear();
     Logger.info('飞书机器人已停止');
   }
 

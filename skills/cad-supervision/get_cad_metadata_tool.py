@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
-import sys; sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools', 'shared')); from base_tool import BaseTool
+import sys; sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools', 'global')); from base_tool import BaseTool
 
 
 class GetCadMetadataTool(BaseTool):

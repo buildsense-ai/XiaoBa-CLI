@@ -34,6 +34,7 @@
   "homepage": "https://github.com/your-username/XiaoBa#readme",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.0",
+    "@catscompany/bot-sdk": "file:../openchat/bot-sdk/typescript",
     "@larksuiteoapi/node-sdk": "^1.58.0",
     "axios": "^1.6.2",
     "chalk": "^4.1.2",
@@ -45,13 +46,14 @@
     "inquirer": "^8.2.7",
     "ora": "^5.4.1",
     "terminal-image": "^4.2.0",
-    "@catscompany/bot-sdk": "file:../openchat/bot-sdk/typescript"
+    "turndown": "^7.2.2"
   },
   "devDependencies": {
     "@types/deasync": "^0.1.5",
     "@types/glob": "^8.1.0",
     "@types/inquirer": "^9.0.9",
     "@types/node": "^20.10.5",
+    "@types/turndown": "^5.0.6",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
   },

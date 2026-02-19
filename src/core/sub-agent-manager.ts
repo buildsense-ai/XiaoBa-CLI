@@ -112,6 +112,16 @@ export class SubAgentManager {
 
     // fire-and-forget
     session.run().finally(() => {
+      // 通知主 agent 子智能体已完成（stopped 不通知）
+      if (feishu?.injectMessage && session.status !== 'stopped') {
+        const info = session.getInfo();
+        const statusLabel = info.status === 'completed' ? '已完成' : '失败';
+        const msg = `[子智能体 ${id} ${statusLabel}]\n任务：${taskDescription}\n结果：${info.resultSummary || '（无结果）'}`;
+        feishu.injectMessage(msg).catch(err => {
+          Logger.warning(`[SubAgentManager] 通知主 agent 失败: ${err.message}`);
+        });
+      }
+
       // 完成后保留一段时间供查询，然后清理
       setTimeout(() => {
         this.subAgents.delete(id);
