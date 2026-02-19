@@ -48,6 +48,7 @@ files/feishu/
 docs/analysis/
 docs/runs/
 audit/
+data/
 tenants/*/data/
 tenants/*/.env
 tenants/*/runtime.json
@@ -57,9 +58,16 @@ tenants/*/runtime.json
 .cache/
 
 # ------------------------------
+# Local files / uploads
+# ------------------------------
+pdfs/
+Group/
+
+# ------------------------------
 # Generated outputs
 # ------------------------------
-docs/ppt/*.pptx
+docs/ppt/**/*.pptx
+*.pptx
 
 # ------------------------------
 # Secrets / local config
@@ -68,6 +76,7 @@ docs/ppt/*.pptx
 .env.local
 .env.*.local
 .xiaoba/
+.claude/settings.local.json
 
 # ------------------------------
 # Logs
