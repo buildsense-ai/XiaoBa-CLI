@@ -138,10 +138,23 @@ export class AgentSession {
 
   // ─── 消息处理 ───────────────────────────────────────
 
-  /** 静默注入上下文消息，不触发 AI 推理 */
+  private static readonly MAX_INJECTED_CONTEXT = 30;
+  /** 通过 injectContext 注入的消息索引，用于滑动窗口清理 */
+  private injectedIndices: number[] = [];
+
+  /** 静默注入上下文消息，不触发 AI 推理。超过上限自动丢弃最早的注入消息。 */
   injectContext(text: string): void {
     this.messages.push({ role: 'user', content: text });
+    this.injectedIndices.push(this.messages.length - 1);
     this.lastActiveAt = Date.now();
+
+    // 滑动窗口：超过上限时丢弃最早的注入消息
+    if (this.injectedIndices.length > AgentSession.MAX_INJECTED_CONTEXT) {
+      const oldIdx = this.injectedIndices.shift()!;
+      this.messages.splice(oldIdx, 1);
+      // splice 后所有记录的索引需要 -1
+      this.injectedIndices = this.injectedIndices.map(i => i - 1);
+    }
   }
 
   /**

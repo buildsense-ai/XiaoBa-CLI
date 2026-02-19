@@ -15,6 +15,7 @@ export class SessionManager {
   private sessions = new Map<string, AgentSession>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private ttl: number;
+  private teammateContext: string | null = null;
 
   constructor(
     private agentServices: AgentServices,
@@ -22,6 +23,11 @@ export class SessionManager {
   ) {
     this.ttl = ttl ?? DEFAULT_SESSION_TTL;
     this.startCleanup();
+  }
+
+  /** 设置同事档案上下文，新建 session 时自动注入 */
+  setTeammateContext(context: string): void {
+    this.teammateContext = context;
   }
 
   /**
@@ -40,6 +46,9 @@ export class SessionManager {
     let session = this.sessions.get(key);
     if (!session) {
       session = new AgentSession(key, this.agentServices);
+      if (this.teammateContext) {
+        session.injectContext(this.teammateContext);
+      }
       this.sessions.set(key, session);
       Logger.info(`新建飞书会话: ${key}`);
     }

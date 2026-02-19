@@ -7,19 +7,29 @@ const JUDGE_MAX_TOKENS = 20;
 const JUDGE_SYSTEM_PROMPT = `你是一个群聊参与判断器。你的任务是判断 bot 是否应该主动回应当前消息。
 只回答 yes 或 no，不要解释。`;
 
-function buildJudgeUserPrompt(botName: string, botExpertise: string, recentMessages: string[], latestMessage: string): string {
+function buildJudgeUserPrompt(
+  botName: string,
+  botExpertise: string,
+  recentMessages: string[],
+  latestMessage: string,
+  teammates?: { name: string; expertise: string }[],
+): string {
   const context = recentMessages.length > 0
     ? `最近的群聊记录:\n${recentMessages.join('\n')}\n\n`
     : '';
+  const teammateInfo = teammates && teammates.length > 0
+    ? `\n群里还有其他同事：${teammates.map(t => `${t.name}擅长${t.expertise}`).join('；')}。如果这事他们更合适回答，你就不要插嘴。`
+    : '';
   return `${context}最新消息: ${latestMessage}
 
-你是 ${botName}，擅长${botExpertise}。
+你是 ${botName}，擅长${botExpertise}。${teammateInfo}
 这条最新消息没有直接@你，但你觉得你应该主动回应吗？只回答 yes 或 no。`;
 }
 
 export interface ChimeInConfig {
   botName: string;
   botExpertise: string;
+  teammates?: { name: string; expertise: string }[];
 }
 
 /**
@@ -34,9 +44,7 @@ export class ChimeInJudge {
   /** 最后一条广播消息的时间戳，用于延迟后判断是否有新消息 */
   private lastMessageTs = 0;
 
-  constructor(aiService: AIService, config: ChimeInConfig) {
-    // 独立实例，限制 maxTokens 控制成本
-    void aiService;
+  constructor(config: ChimeInConfig) {
     this.judgeAI = new AIService({ maxTokens: JUDGE_MAX_TOKENS });
     this.config = config;
   }
@@ -67,6 +75,7 @@ export class ChimeInJudge {
             this.config.botExpertise,
             this.recentMessages.slice(-MAX_CONTEXT_MESSAGES),
             latestMessage,
+            this.config.teammates,
           ),
         },
       ]);

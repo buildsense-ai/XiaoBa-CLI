@@ -1,4 +1,6 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
+import * as fs from 'fs';
+import * as path from 'path';
 import { FeishuConfig } from './types';
 import { MessageHandler } from './message-handler';
 import { MessageSender } from './message-sender';
@@ -44,6 +46,29 @@ interface QueuedMessage {
 
 const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 
+/** 从 Group/*.md 解析同事档案 */
+interface TeammateInfo { name: string; role: string; expertise: string }
+
+function loadTeammateProfiles(): TeammateInfo[] {
+  const groupDir = path.join(process.cwd(), 'Group');
+  if (!fs.existsSync(groupDir)) return [];
+  const teammates: TeammateInfo[] = [];
+  for (const file of fs.readdirSync(groupDir).filter(f => f.endsWith('.md'))) {
+    const content = fs.readFileSync(path.join(groupDir, file), 'utf-8');
+    // 匹配表格行: | 名字 | open_id | 角色 | 擅长 |
+    for (const match of content.matchAll(/^\|\s*(.+?)\s*\|\s*ou_\S+\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|$/gm)) {
+      teammates.push({ name: match[1].trim(), role: match[2].trim(), expertise: match[3].trim() });
+    }
+  }
+  return teammates;
+}
+
+function buildTeammateContext(teammates: TeammateInfo[]): string | null {
+  if (teammates.length === 0) return null;
+  const lines = teammates.map(t => `- ${t.name}（${t.role}）：擅长${t.expertise}`);
+  return `[群聊同事档案]\n${lines.join('\n')}`;
+}
+
 /**
  * FeishuBot 主类
  * 初始化 SDK，注册事件，编排消息处理流程
@@ -59,6 +84,8 @@ export class FeishuBot {
   private bridgeClient: BridgeClient | null = null;
   private bridgeConfig: FeishuConfig['bridge'] | undefined;
   private chimeInJudge: ChimeInJudge | null = null;
+  /** 已知的群聊 chat_id（从 Group/*.md 读取），用于校验广播来源 */
+  private knownChatIds = new Set<string>();
   /** 已处理的消息 ID，用于去重 */
   private processedMsgIds = new Set<string>();
   /** key = pendingAnswerId */
@@ -105,13 +132,20 @@ export class FeishuBot {
     const mentionTool = new FeishuMentionTool();
     toolManager.registerTool(mentionTool);
 
+    // 加载同事档案 + 已知 chat_id（供 bridge 和 session 使用）
+    const teammates = loadTeammateProfiles();
+    this.loadKnownChatIds();
+
     // 初始化 Bot Bridge（群聊广播模式）
     if (config.bridge) {
       this.bridgeConfig = config.bridge;
       this.bridgeClient = new BridgeClient(config.bridge.peers);
-      this.chimeInJudge = new ChimeInJudge(aiService, {
+      this.chimeInJudge = new ChimeInJudge({
         botName: config.bridge.name,
         botExpertise: process.env.BOT_EXPERTISE || '论文阅读、代码编写、任务执行',
+        teammates: teammates
+          .filter(t => t.name !== config.bridge!.name)
+          .map(t => ({ name: t.name, expertise: t.expertise })),
       });
       Logger.info(`Bot Bridge 已配置: peers=${this.bridgeClient.getPeerNames().join(', ')}`);
     }
@@ -147,6 +181,13 @@ export class FeishuBot {
       this.agentServices,
       config.sessionTTL,
     );
+
+    // H1: 注入同事档案到 session
+    const teammateCtx = buildTeammateContext(teammates);
+    if (teammateCtx) {
+      this.sessionManager.setTeammateContext(teammateCtx);
+      Logger.info(`已加载同事档案: ${teammates.map(t => t.name).join(', ')}`);
+    }
   }
 
   /**
@@ -457,12 +498,32 @@ export class FeishuBot {
     }
   }
 
+  /** 从 Group/*.md 读取已知 chat_id */
+  private loadKnownChatIds(): void {
+    const groupDir = path.join(process.cwd(), 'Group');
+    if (!fs.existsSync(groupDir)) return;
+    for (const file of fs.readdirSync(groupDir).filter(f => f.endsWith('.md'))) {
+      const content = fs.readFileSync(path.join(groupDir, file), 'utf-8');
+      const match = content.match(/chat_id:\s*(oc_\w+)/);
+      if (match) this.knownChatIds.add(match[1]);
+    }
+    if (this.knownChatIds.size > 0) {
+      Logger.info(`[Bridge] 已加载 ${this.knownChatIds.size} 个已知 chat_id`);
+    }
+  }
+
   /**
    * 处理来自其他 bot 的群聊广播消息
    * P0 优化：被@直接触发推理；未被@时用轻量 LLM 判断"该不该插嘴"
    */
   private async onGroupBroadcast(msg: GroupMessage): Promise<void> {
     if (this.bridgeConfig && msg.from === this.bridgeConfig.name) return;
+
+    // C3: 校验 chat_id 是否属于已知群聊
+    if (this.knownChatIds.size > 0 && !this.knownChatIds.has(msg.chat_id)) {
+      Logger.warning(`[Bridge] 忽略未知 chat_id 的广播: ${msg.chat_id}, from=${msg.from}`);
+      return;
+    }
 
     const sessionKey = `group:${msg.chat_id}`;
     const session = this.sessionManager.getOrCreate(sessionKey);
@@ -502,15 +563,20 @@ export class FeishuBot {
       Logger.info(`[Bridge] 广播中被@，触发推理: session=${sessionKey}, from=${msg.from}`);
     }
 
+    // H3: 插嘴时注入语感提示，让回复更简短自然
+    const messageText = mentionsMe
+      ? text
+      : `[你是主动插嘴参与讨论，不是被直接提问，请保持简短自然]\n${text}`;
+
     if (session.isBusy()) {
       const queue = this.messageQueue.get(sessionKey) ?? [];
-      queue.push({ userText: text, chatId: msg.chat_id, senderId: '' });
+      queue.push({ userText: messageText, chatId: msg.chat_id, senderId: '' });
       this.messageQueue.set(sessionKey, queue);
       return;
     }
     const feishuChannel = this.buildFeishuChannel(msg.chat_id);
     try {
-      await session.handleMessage(text, { feishuChannel });
+      await session.handleMessage(messageText, { feishuChannel });
     } finally {
       this.clearPendingAnswerBySession(sessionKey);
     }
