@@ -27,13 +27,17 @@ export interface ChimeInConfig {
  * 收到广播消息时，用一次低成本 LLM 调用判断是否需要触发完整推理
  */
 export class ChimeInJudge {
-  private aiService: AIService;
+  private judgeAI: AIService;
   private config: ChimeInConfig;
   /** 最近的广播消息记录，用于提供上下文 */
   private recentMessages: string[] = [];
+  /** 最后一条广播消息的时间戳，用于延迟后判断是否有新消息 */
+  private lastMessageTs = 0;
 
   constructor(aiService: AIService, config: ChimeInConfig) {
-    this.aiService = aiService;
+    // 独立实例，限制 maxTokens 控制成本
+    void aiService;
+    this.judgeAI = new AIService({ maxTokens: JUDGE_MAX_TOKENS });
     this.config = config;
   }
 
@@ -43,12 +47,18 @@ export class ChimeInJudge {
     if (this.recentMessages.length > MAX_CONTEXT_MESSAGES) {
       this.recentMessages = this.recentMessages.slice(-MAX_CONTEXT_MESSAGES);
     }
+    this.lastMessageTs = Date.now();
+  }
+
+  /** 延迟期间是否有新广播消息进来（说明别的 bot 已经回复了） */
+  hasNewMessageSince(ts: number): boolean {
+    return this.lastMessageTs > ts;
   }
 
   /** 判断是否应该主动回应 */
   async shouldChimeIn(latestMessage: string): Promise<boolean> {
     try {
-      const response = await this.aiService.chat([
+      const response = await this.judgeAI.chat([
         { role: 'system', content: JUDGE_SYSTEM_PROMPT },
         {
           role: 'user',

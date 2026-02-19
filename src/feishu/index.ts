@@ -485,9 +485,15 @@ export class FeishuBot {
           return;
         }
         // 判断为"该插嘴"：加随机延迟（1-3秒），降低两个 bot 同时说话的概率
+        const beforeDelay = Date.now();
         const delay = 1000 + Math.random() * 2000;
         Logger.info(`[Bridge] 判断应插嘴，延迟 ${Math.round(delay)}ms: session=${sessionKey}`);
         await new Promise(resolve => setTimeout(resolve, delay));
+        // 延迟后检查：如果期间有新广播消息（别的 bot 已经回复了），放弃插嘴
+        if (this.chimeInJudge.hasNewMessageSince(beforeDelay)) {
+          Logger.info(`[Bridge] 延迟期间已有其他 bot 回复，放弃插嘴: session=${sessionKey}`);
+          return;
+        }
       } else {
         Logger.info(`[Bridge] 广播上下文已注入: session=${sessionKey}, from=${msg.from}`);
         return;
