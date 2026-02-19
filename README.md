@@ -27,7 +27,7 @@ connects to your IM platforms, and bends to your will.
 
 **6 Agents** · **13 Skills** · **28+ Tools** · **Multi-LLM Failover** · **Feishu Bot**
 
-[Quick Start](#-quick-start) · [Features](#-features) · [Skills](#-skills) · [Configuration](#%EF%B8%8F-configuration) · [Contributing](#-contributing)
+[Quick Start](#-quick-start) · [Features](#-features) · [Scenarios](#-usage-scenarios) · [Human-likeness](#-human-likeness-engineering) · [Skills](#-skills) · [Configuration](#%EF%B8%8F-configuration) · [Contributing](#-contributing)
 
 </div>
 
@@ -112,6 +112,67 @@ Web 搜索 · Python 扩展 · 子 Agent 管理<br/>
 
 <br/>
 
+## 💬 Usage Scenarios
+
+### Private Chat — Your Personal Research Assistant
+
+In a 1-on-1 conversation, XiaoBa acts like a dedicated graduate student. Give it a task, it gets to work.
+
+```
+You:    帮我精读一下这篇论文
+XiaoBa: 好的老师，我先看看。
+        ... (silently reads, analyzes figures, extracts key insights) ...
+        [sends structured analysis report as file]
+        读完了老师，8章12张图都分析了，核心贡献在第4章，要我展开讲讲吗？
+```
+
+What makes it different from a generic chatbot:
+- **Talks like a human, not a bot** — no markdown tables in chat, no "As an AI assistant", no emoji progress bars
+- **Matches your rhythm** — short urgent messages get quick replies; casual chat gets a relaxed tone
+- **Knows when to shut up** — you say "ok" or "thanks", it doesn't reply with "Is there anything else I can help with?"
+- **Errors are human too** — instead of `TypeError: Cannot read property 'x' of undefined`, you get "Sorry, something went wrong, try again?"
+- **Long tasks run in background** — delegates to sub-agents, keeps chatting with you while work happens
+
+### Group Chat — Multi-Bot Collaboration
+
+Deploy multiple XiaoBa instances (or mix with other bots like ErGoz) in a group chat. They collaborate like real teammates.
+
+```
+You:       @小八 把认证的bug修一下  @二狗子 改完帮忙review
+XiaoBa:    好的老师，我看看。
+           ... (writes code, commits to branch) ...
+XiaoBa:    @ErGoz 二狗子，改好了，你看看 diff
+ErGoz:     两个问题——第42行少了空值检查，错误信息泄露了内部状态。
+XiaoBa:    都修了，再看看？
+ErGoz:     没问题了，APPROVE。
+```
+
+The magic is in the social dynamics:
+- **Chime-in judgment** — bots don't just respond when @'d. A lightweight LLM call decides "should I speak up?" based on recent context. If the topic is in their expertise, they join naturally
+- **Anti-collision** — random delay (1-3s) before chiming in + check if someone else already replied. No two bots talking over each other
+- **Teammate awareness** — each bot knows who else is in the group and what they're good at. "This is a code review question, ErGoz is better suited — I'll stay quiet"
+- **Contextual replies** — when chiming in, bots see what was discussed recently and continue the thread naturally, not start from scratch
+- **Authenticated bridge** — bot-to-bot communication via HTTP with shared secret, safe for public deployment
+
+<br/>
+
+## 🎭 Human-likeness Engineering
+
+Most AI agents focus on capability. XiaoBa also focuses on **not feeling like a bot**.
+
+| Dimension | What we do | What others do |
+|-----------|-----------|----------------|
+| **Conversation style** | Prompt-engineered to chat like a real person on IM — short, casual, no formatting abuse | Default LLM output with markdown headers and bullet points |
+| **Emotional rhythm** | Mirrors user's pace — urgent gets concise, relaxed gets chatty | Same tone regardless of context |
+| **Error handling** | Friendly message to user, technical details in logs only | Raw stack traces or generic "An error occurred" |
+| **Group social norms** | Knows when NOT to speak — doesn't reply to every message | Responds to everything or nothing |
+| **Multi-bot dynamics** | Chime-in judgment, anti-collision, teammate profiles | No multi-bot awareness |
+| **Session continuity** | Summarizes conversations on expiry, resumes context next time | Starts fresh every session |
+
+This isn't about adding emoji or personality quirks. It's about removing the things that make you *feel* like you're talking to a machine.
+
+<br/>
+
 ## 🎯 Skills
 
 可插拔的专业能力模块。Markdown 定义，零代码扩展。
@@ -171,6 +232,7 @@ tools:
 | `GAUZ_TOOL_ALLOW` | 工具白名单 |
 | `GAUZ_MEM_*` | 记忆系统 |
 | `FEISHU_*` | 飞书 Bot 凭证 |
+| `BRIDGE_SECRET` | Bot Bridge 认证密钥（多 bot 协作） |
 | `MINIO_*` | 对象存储 |
 
 <br/>

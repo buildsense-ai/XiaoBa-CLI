@@ -56,10 +56,6 @@ export class SubAgentManager {
     this.feishuCallbacks.set(sessionKey, callbacks);
   }
 
-  unregisterFeishuCallbacks(sessionKey: string): void {
-    this.feishuCallbacks.delete(sessionKey);
-  }
-
   // ─── 子智能体生命周期 ─────────────────────────────────
 
   /**
@@ -216,26 +212,5 @@ export class SubAgentManager {
       }
     }
     return result;
-  }
-
-  /**
-   * 列出某个父会话下正在运行的子智能体
-   */
-  listRunningByParent(parentSessionKey: string): SubAgentInfo[] {
-    return this.listByParent(parentSessionKey).filter(s => s.status === 'running');
-  }
-
-  /**
-   * 清理某个父会话下的所有子智能体（会话销毁时调用）
-   */
-  cleanupByParent(parentSessionKey: string): void {
-    for (const [id] of this.subAgents) {
-      if (this.parentMap.get(id) === parentSessionKey) {
-        this.stop(id);
-        this.subAgents.delete(id);
-        this.parentMap.delete(id);
-      }
-    }
-    this.feishuCallbacks.delete(parentSessionKey);
   }
 }

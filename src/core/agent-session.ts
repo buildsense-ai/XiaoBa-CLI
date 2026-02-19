@@ -19,6 +19,7 @@ import { Metrics } from '../utils/metrics';
 const TRANSIENT_MEMORY_CONTEXT_PREFIX = '[transient_memory_context]';
 const TRANSIENT_SUBAGENT_STATUS_PREFIX = '[transient_subagent_status]';
 export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
+export const ERROR_MESSAGE = '不好意思，刚才处理出了点问题，你再试一次？';
 
 // ─── 接口定义 ───────────────────────────────────────────
 
@@ -139,21 +140,17 @@ export class AgentSession {
   // ─── 消息处理 ───────────────────────────────────────
 
   private static readonly MAX_INJECTED_CONTEXT = 30;
-  /** 通过 injectContext 注入的消息索引，用于滑动窗口清理 */
-  private injectedIndices: number[] = [];
 
   /** 静默注入上下文消息，不触发 AI 推理。超过上限自动丢弃最早的注入消息。 */
   injectContext(text: string): void {
-    this.messages.push({ role: 'user', content: text });
-    this.injectedIndices.push(this.messages.length - 1);
+    this.messages.push({ role: 'user', content: text, __injected: true });
     this.lastActiveAt = Date.now();
 
     // 滑动窗口：超过上限时丢弃最早的注入消息
-    if (this.injectedIndices.length > AgentSession.MAX_INJECTED_CONTEXT) {
-      const oldIdx = this.injectedIndices.shift()!;
-      this.messages.splice(oldIdx, 1);
-      // splice 后所有记录的索引需要 -1
-      this.injectedIndices = this.injectedIndices.map(i => i - 1);
+    const injectedCount = this.messages.filter(m => m.__injected).length;
+    if (injectedCount > AgentSession.MAX_INJECTED_CONTEXT) {
+      const idx = this.messages.findIndex(m => m.__injected);
+      if (idx >= 0) this.messages.splice(idx, 1);
     }
   }
 
@@ -318,7 +315,7 @@ export class AgentSession {
         this.messages.pop();
       }
       Logger.error(`[会话 ${this.key}] 处理失败: ${err.message}`);
-      return `处理消息时出错: ${err.message}`;
+      return ERROR_MESSAGE;
     } finally {
       this.busy = false;
     }
@@ -428,14 +425,6 @@ ${conversationText}
 
   isBusy(): boolean {
     return this.busy;
-  }
-
-  getHistoryLength(): number {
-    return this.messages.length;
-  }
-
-  getMessages(): Message[] {
-    return this.messages;
   }
 
   // ─── 私有方法 ──────────────────────────────────────

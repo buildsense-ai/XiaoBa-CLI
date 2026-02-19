@@ -57,9 +57,9 @@ export class ConfigManager {
       provider,
       memory: {
         enabled: process.env.GAUZ_MEM_ENABLED === 'true' || false,
-        baseUrl: process.env.GAUZ_MEM_BASE_URL || 'http://43.139.19.144:1235',
+        baseUrl: process.env.GAUZ_MEM_BASE_URL || '',
         projectId: process.env.GAUZ_MEM_PROJECT_ID || 'XiaoBa',
-        userId: process.env.GAUZ_MEM_USER_ID || 'guowei',
+        userId: process.env.GAUZ_MEM_USER_ID || '',
         agentId: process.env.GAUZ_MEM_AGENT_ID || 'XiaoBa',
       },
       feishu: {

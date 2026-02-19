@@ -204,11 +204,4 @@ export class TodoWriteTool implements Tool {
   getTodos(sessionId: string = 'default'): Todo[] {
     return this.sessionTodos.get(sessionId) || [];
   }
-
-  /**
-   * 清空任务列表（用于测试或重置）
-   */
-  clearTodos(sessionId: string = 'default'): void {
-    this.sessionTodos.set(sessionId, []);
-  }
 }

@@ -13,6 +13,7 @@ const DEFAULT_SESSION_TTL = 30 * 60 * 1000;
  */
 export class SessionManager {
   private sessions = new Map<string, AgentSession>();
+  private destroying = new Set<string>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private ttl: number;
   private teammateContext: string | null = null;
@@ -63,13 +64,14 @@ export class SessionManager {
     this.cleanupTimer = setInterval(() => {
       const now = Date.now();
       for (const [key, session] of this.sessions) {
+        if (this.destroying.has(key)) continue;
         if (now - session.lastActiveAt > this.ttl) {
-          // 过期前尝试保存摘要到记忆系统
-          session.summarizeAndDestroy().catch(err => {
-            Logger.warning(`会话 ${key} 摘要保存失败: ${err}`);
-          });
+          this.destroying.add(key);
           this.sessions.delete(key);
           Logger.info(`飞书会话已过期清理: ${key}`);
+          session.summarizeAndDestroy()
+            .catch(err => Logger.warning(`会话 ${key} 摘要保存失败: ${err}`))
+            .finally(() => this.destroying.delete(key));
         }
       }
     }, 60_000);

@@ -13,12 +13,20 @@ export interface BotPeer {
  */
 export class BridgeClient {
   private peers: Map<string, string>;
+  private secret: string | undefined;
 
   /**
    * @param peers 已知的 bot 列表，如 [{ name: 'ErGoz', url: 'http://localhost:9200' }]
    */
   constructor(peers: BotPeer[]) {
     this.peers = new Map(peers.map(p => [p.name, p.url]));
+    this.secret = process.env.BRIDGE_SECRET;
+  }
+
+  private buildHeaders(): Record<string, string> {
+    const h: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.secret) h['x-bridge-secret'] = this.secret;
+    return h;
   }
 
   /** 获取所有已知 bot 名称 */
@@ -37,7 +45,7 @@ export class BridgeClient {
     const url = new URL('/bot-message', baseUrl);
 
     return new Promise((resolve) => {
-      const req = http.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, (res) => {
+      const req = http.request(url, { method: 'POST', headers: this.buildHeaders() }, (res) => {
         let body = '';
         res.on('data', (chunk) => { body += chunk; });
         res.on('end', () => {
@@ -71,7 +79,7 @@ export class BridgeClient {
     for (const [name, baseUrl] of this.peers) {
       const url = new URL('/group-message', baseUrl);
       const payload = JSON.stringify(msg);
-      const req = http.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, (res) => {
+      const req = http.request(url, { method: 'POST', headers: this.buildHeaders() }, (res) => {
         res.resume();
       });
       req.on('error', (err) => {
@@ -89,7 +97,7 @@ export class BridgeClient {
     const url = new URL(callbackUrl);
 
     return new Promise((resolve) => {
-      const req = http.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, (res) => {
+      const req = http.request(url, { method: 'POST', headers: this.buildHeaders() }, (res) => {
         res.resume(); // drain response
         res.on('end', () => {
           Logger.info(`[Bridge] 已回传结果: task_id=${result.task_id}`);

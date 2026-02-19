@@ -58,6 +58,11 @@ export class ChimeInJudge {
     this.lastMessageTs = Date.now();
   }
 
+  /** 获取最近的广播消息记录（供插嘴 hint 拼接上下文） */
+  getRecentMessages(): string[] {
+    return this.recentMessages.slice(-5);
+  }
+
   /** 延迟期间是否有新广播消息进来（说明别的 bot 已经回复了） */
   hasNewMessageSince(ts: number): boolean {
     return this.lastMessageTs > ts;

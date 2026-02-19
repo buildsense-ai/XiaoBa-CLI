@@ -83,9 +83,9 @@ export class CatsCompanyBot {
     let memoryService: GauzMemService | null = null;
     if (appConfig.memory?.enabled) {
       const memConfig: GauzMemConfig = {
-        baseUrl: appConfig.memory.baseUrl || 'http://43.139.19.144:1235',
+        baseUrl: appConfig.memory.baseUrl || '',
         projectId: appConfig.memory.projectId || 'XiaoBa',
-        userId: appConfig.memory.userId || 'guowei',
+        userId: appConfig.memory.userId || '',
         agentId: appConfig.memory.agentId || 'XiaoBa',
         enabled: true,
       };

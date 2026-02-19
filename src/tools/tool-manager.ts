@@ -270,20 +270,6 @@ export class ToolManager implements ToolExecutor {
   }
 
   /**
-   * 批量执行工具调用
-   */
-  async executeTools(toolCalls: ToolCall[]): Promise<ToolResult[]> {
-    const results: ToolResult[] = [];
-
-    for (const toolCall of toolCalls) {
-      const result = await this.executeTool(toolCall);
-      results.push(result);
-    }
-
-    return results;
-  }
-
-  /**
    * 获取工具数量
    */
   getToolCount(): number {
@@ -295,13 +281,6 @@ export class ToolManager implements ToolExecutor {
    */
   getTool<T extends Tool = Tool>(name: string): T | undefined {
     return this.tools.get(name) as T | undefined;
-  }
-
-  /**
-   * 检查工具是否存在
-   */
-  hasTool(name: string): boolean {
-    return this.tools.has(name);
   }
 
   /**

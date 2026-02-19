@@ -8,7 +8,7 @@ import { SessionManager } from './session-manager';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
-import { AgentServices, BUSY_MESSAGE } from '../core/agent-session';
+import { AgentServices, BUSY_MESSAGE, ERROR_MESSAGE } from '../core/agent-session';
 import { GauzMemService, GauzMemConfig } from '../utils/gauzmem-service';
 import { ConfigManager } from '../utils/config';
 import { Logger } from '../utils/logger';
@@ -409,7 +409,7 @@ export class FeishuBot {
 
     try {
       const reply = await session.handleMessage(userText, { feishuChannel });
-      if (reply === BUSY_MESSAGE || reply.startsWith('处理消息时出错:')) {
+      if (reply === BUSY_MESSAGE || reply === ERROR_MESSAGE) {
         await this.sender.reply(msg.chatId, reply);
       }
     } finally {
@@ -457,7 +457,7 @@ export class FeishuBot {
           Logger.info(`[${sessionKey}] 主会话竞态忙碌，将重试`);
           continue;
         }
-        if (reply.startsWith('处理消息时出错:')) {
+        if (reply === ERROR_MESSAGE) {
           await this.sender.reply(chatId, reply);
         }
         await this.drainMessageQueue(sessionKey);
@@ -489,7 +489,7 @@ export class FeishuBot {
 
       try {
         const reply = await session.handleMessage(next.userText, { feishuChannel });
-        if (reply.startsWith('处理消息时出错:')) {
+        if (reply === ERROR_MESSAGE) {
           await this.sender.reply(next.chatId, reply);
         }
       } finally {
@@ -564,9 +564,16 @@ export class FeishuBot {
     }
 
     // H3: 插嘴时注入语感提示，让回复更简短自然
-    const messageText = mentionsMe
-      ? text
-      : `[你是主动插嘴参与讨论，不是被直接提问，请保持简短自然]\n${text}`;
+    let messageText: string;
+    if (mentionsMe) {
+      messageText = text;
+    } else {
+      const recent = this.chimeInJudge?.getRecentMessages() ?? [];
+      const contextHint = recent.length > 0
+        ? `[你刚才旁听了以下讨论:\n${recent.join('\n')}\n你现在主动加入讨论，请自然地接着说，不要重复已有观点，保持简短]`
+        : `[你是主动插嘴参与讨论，不是被直接提问，请保持简短自然]`;
+      messageText = `${contextHint}\n${text}`;
+    }
 
     if (session.isBusy()) {
       const queue = this.messageQueue.get(sessionKey) ?? [];

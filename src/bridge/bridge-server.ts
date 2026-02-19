@@ -54,8 +54,14 @@ export class BridgeServer {
   private pendingTasks = new Map<string, { resolve: (result: string) => void; timer: ReturnType<typeof setTimeout> }>();
   /** 异步模式：task 元数据，结果到达时触发 resultHandler */
   private asyncTasks = new Map<string, AsyncTaskMeta>();
+  private secret: string | undefined;
 
-  constructor(private port: number) {}
+  constructor(private port: number) {
+    this.secret = process.env.BRIDGE_SECRET;
+    if (!this.secret) {
+      Logger.warning('[Bridge] 未配置 BRIDGE_SECRET，任何人都能发送消息。建议设置环境变量 BRIDGE_SECRET');
+    }
+  }
 
   /** 注册消息处理回调 */
   onMessage(handler: BridgeMessageHandler): void {
@@ -81,6 +87,12 @@ export class BridgeServer {
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.server = http.createServer(async (req, res) => {
+        // 认证校验：配置了 BRIDGE_SECRET 时，要求请求带 x-bridge-secret header
+        if (this.secret && req.headers['x-bridge-secret'] !== this.secret) {
+          res.writeHead(401);
+          res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+          return;
+        }
         if (req.method === 'POST' && req.url === '/bot-message') {
           await this.handleRequest(req, res);
         } else if (req.method === 'POST' && req.url === '/bot-result') {

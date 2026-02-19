@@ -56,7 +56,7 @@ export class MessageHandler {
         mentionBot = true;
       }
       if (m.key) {
-        cleanText = cleanText.replace(m.key, '').trim();
+        cleanText = cleanText.replace(m.key, `@${m.name || ''}`).trim();
       }
     }
 

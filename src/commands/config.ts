@@ -54,7 +54,7 @@ export async function configCommand(): Promise<void> {
         type: 'input',
         name: 'baseUrl',
         message: styles.text('记忆系统地址:'),
-        default: currentConfig.memory?.baseUrl || 'http://43.139.19.144:1235',
+        default: currentConfig.memory?.baseUrl || 'http://localhost:1235',
         prefix: styles.highlight('?'),
       },
       {
@@ -68,7 +68,7 @@ export async function configCommand(): Promise<void> {
         type: 'input',
         name: 'userId',
         message: styles.text('用户ID:'),
-        default: currentConfig.memory?.userId || 'guowei',
+        default: currentConfig.memory?.userId || '',
         prefix: styles.highlight('?'),
       },
       {

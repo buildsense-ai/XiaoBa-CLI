@@ -36,9 +36,9 @@ export async function chatCommand(options: CommandOptions): Promise<void> {
 
   if (config.memory?.enabled) {
     const memConfig: GauzMemConfig = {
-      baseUrl: config.memory.baseUrl || 'http://43.139.19.144:1235',
+      baseUrl: config.memory.baseUrl || '',
       projectId: config.memory.projectId || 'XiaoBa',
-      userId: config.memory.userId || 'guowei',
+      userId: config.memory.userId || '',
       agentId: config.memory.agentId || 'XiaoBa',
       enabled: true,
     };
