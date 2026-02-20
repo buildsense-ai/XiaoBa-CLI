@@ -45,6 +45,7 @@
     "inquirer": "^8.2.7",
     "ora": "^5.4.1",
     "terminal-image": "^4.2.0",
+    "turndown": "^7.2.0",
     "@catscompany/bot-sdk": "file:../openchat/bot-sdk/typescript"
   },
   "devDependencies": {
