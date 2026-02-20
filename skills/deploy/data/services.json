@@ -1,0 +1,49 @@
+{
+  "xiaoba": {
+    "name": "XiaoBa-CLI",
+    "repo": "https://github.com/buildsense-ai/XiaoBa-CLI.git",
+    "branch": "deploy",
+    "local_path": "/Users/zhuhanyuan/Documents/XiaoBa-Deploy",
+    "tech_stack": "node",
+    "test_cmd": "npm test",
+    "build_cmd": "npm run build",
+    "deploy_ready": true,
+    "server_path": "/opt/services/xiaoba",
+    "health_check": null,
+    "compose_file": "deploy/docker-compose.multitenant.yml",
+    "multi_instance": true,
+    "notes": "Dockerfile 在 deploy/Dockerfile；多租户架构，每个租户需要 tenants/<TENANT>/.env 和数据目录"
+  },
+  "gauzmem": {
+    "name": "GauzMem",
+    "repo": "https://github.com/GauzMem/GauzMem.git",
+    "branch": "hanyuan",
+    "local_path": "/Users/zhuhanyuan/Documents/GauzMem",
+    "tech_stack": "python",
+    "test_cmd": "pytest",
+    "build_cmd": "",
+    "deploy_ready": true,
+    "server_path": "/opt/services/gauzmem",
+    "health_check": "/api/v1/admin/health",
+    "health_port": 1235,
+    "compose_file": "docker-compose.yml",
+    "multi_instance": false,
+    "notes": "compose 只有基础设施（MySQL/Neo4j/Qdrant/Redis/MinIO），API 服务被注释掉且缺少 Dockerfile，需要先创建 Dockerfile"
+  },
+  "catscompany": {
+    "name": "CatsCompany",
+    "repo": "",
+    "branch": "main",
+    "local_path": "",
+    "tech_stack": "",
+    "test_cmd": "",
+    "build_cmd": "",
+    "deploy_ready": false,
+    "server_path": "/opt/services/catscompany",
+    "health_check": "/health",
+    "health_port": 8081,
+    "compose_file": "docker-compose.yml",
+    "multi_instance": false,
+    "notes": ""
+  }
+}

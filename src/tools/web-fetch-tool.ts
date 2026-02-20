@@ -49,7 +49,7 @@ export class WebFetchTool implements Tool {
     // 忽略图片（减少噪音）
     this.turndown.addRule('removeImages', {
       filter: 'img',
-      replacement: (_content, node) => {
+      replacement: (_content: string, node: unknown) => {
         const alt = (node as any).getAttribute?.('alt') || '';
         return alt ? `[图片: ${alt}]` : '';
       },

@@ -20,6 +20,7 @@ x-xiaoba-base: &xiaoba-base
     PYTHONUTF8: "1"
   networks:
     - xiaoba-net
+    - gauzmem-net
 
 services:
   # One tenant per compose project.
@@ -49,3 +50,6 @@ services:
 networks:
   xiaoba-net:
     driver: bridge
+  gauzmem-net:
+    external: true
+    name: gauzmem_gauzrag-network

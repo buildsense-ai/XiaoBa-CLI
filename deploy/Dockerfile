@@ -1,7 +1,6 @@
 FROM node:20-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV NODE_ENV=production
 
 # Use China mirror for apt packages
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources \
@@ -38,18 +37,14 @@ WORKDIR /app
 
 # Install Node.js dependencies first for layer cache
 COPY package*.json ./
-RUN npm ci
-
-# Install Python dependencies
-COPY requirements.txt ./requirements.txt
-COPY tools/python/requirements.txt ./tools/python/requirements.txt
-RUN pip3 install --no-cache-dir --break-system-packages --upgrade pip setuptools wheel \
-  && pip3 install --no-cache-dir --break-system-packages -r tools/python/requirements.txt
+RUN NODE_ENV=development npm ci
 
 # Copy source and build
 COPY . .
 RUN npm run build \
   && npm prune --omit=dev
+
+ENV NODE_ENV=production
 
 # Runtime directories (will typically be bind-mounted per tenant)
 RUN mkdir -p \

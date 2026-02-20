@@ -1,0 +1,18 @@
+{
+  "deployments": [
+    {
+      "service": "gauzmem",
+      "time": "2026-02-19T12:12:00Z",
+      "action": "deploy",
+      "result": "success",
+      "notes": "首次部署。安装 Docker，启动 MySQL/Neo4j/Qdrant/Redis/MinIO + API。修复了 .env 端口和主机名问题。"
+    },
+    {
+      "service": "xiaoba",
+      "time": "2026-02-19T12:45:00Z",
+      "action": "deploy",
+      "result": "success",
+      "notes": "首次部署 default 租户。修复 Dockerfile（NODE_ENV/tsc、缺失的 requirements.txt）、TS 类型错误、目录权限。飞书 WebSocket 长连接已建立。"
+    }
+  ]
+}

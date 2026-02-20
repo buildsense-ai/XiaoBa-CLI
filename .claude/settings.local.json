@@ -49,7 +49,16 @@
       "Bash(node:*)",
       "Bash(npx tsx -e \"\nimport { PromptManager } from ''./src/utils/prompt-manager'';\n\nasync function test\\(\\) {\n  const prompt = await PromptManager.buildSystemPrompt\\([''memory_search'']\\);\n  console.log\\(''Prompt length:'', prompt.length\\);\n  console.log\\(''Includes agent_name:'', prompt.includes\\(''agent_name''\\)\\);\n  console.log\\(''Includes 小八:'', prompt.includes\\(''小八''\\)\\);\n  console.log\\(''First 300 chars:'', prompt.substring\\(0, 300\\)\\);\n}\n\ntest\\(\\);\n\")",
       "Bash(npx tsc:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git branch:*)",
+      "Bash(git worktree prune:*)",
+      "Bash(git push:*)",
+      "Bash(git stash show:*)",
+      "Bash(chmod:*)",
+      "Bash(sips:*)",
+      "Bash(python3:*)",
+      "Bash(git merge:*)",
+      "Bash(git commit:*)"
     ]
   }
 }

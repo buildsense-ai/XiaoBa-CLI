@@ -1,0 +1,6 @@
+{
+  "host": "118.145.116.152",
+  "user": "root",
+  "ssh_key_path": "~/.ssh/xiaoba-key.pem",
+  "ssh_port": 22
+}

@@ -83,7 +83,7 @@ export class CatsCompanyBot {
     }
 
     // 注册事件
-    this.bot.on('ready', (uid) => {
+    this.bot.on('ready', (uid: string) => {
       Logger.success(`CatsCompany 机器人已连接，uid=${uid}`);
     });
 
@@ -91,11 +91,11 @@ export class CatsCompanyBot {
       await this.onMessage(ctx);
     });
 
-    this.bot.on('reconnecting', (attempt) => {
+    this.bot.on('reconnecting', (attempt: number) => {
       Logger.warning(`CatsCompany 正在重连 (第 ${attempt} 次)...`);
     });
 
-    this.bot.on('error', (err) => {
+    this.bot.on('error', (err: Error) => {
       Logger.error(`CatsCompany 连接错误: ${err.message}`);
     });
 
