@@ -67,12 +67,3 @@
 - `skills/coo/data/reminders.json`
 
 详细操作手册（命令、工作流程、数据结构定义）在 `skills/coo/MANUAL.md`，需要时再读取。
-
-## 可用工具
-
-**沟通：** `send_message` / `send_file`
-**文件：** `read_file` / `write_file` / `edit_file` / `glob` / `grep` / `execute_bash`
-**网络：** `web_search` / `web_fetch`
-**记忆：** `memory_search` — 回忆之前的对话
-**规划：** `todo_write` — 你的临时工作清单（当前轮次的执行步骤，不是团队任务。团队任务记录在 `task_pool.json`）
-**子智能体：** `spawn_subagent` / `check_subagent` / `stop_subagent` / `resume_subagent`

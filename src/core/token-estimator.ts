@@ -91,7 +91,7 @@ export function estimateToolTokens(tool: ToolDefinition): number {
 
   // 工具定义在不同 provider 有额外结构化开销，留 10% 安全余量
   const raw = nameTokens + descriptionTokens + schemaTokens + 12;
-  return Math.ceil(raw * 1.1);
+  return Math.ceil(raw * 2.0);
 }
 
 /**

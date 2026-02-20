@@ -1,0 +1,98 @@
+{
+  "last_review": "2026-02-20T01:30:00Z",
+  "analyzed_logs": [
+    "07937246-6cdb-4d10-b9f9-6f6249ce7522",
+    "0e006a44-c2c4-470d-9df3-82460b23da52",
+    "314fc3a8-1dcd-49f6-a7cf-bc3b26726170",
+    "31ea4dda-d383-4b0c-a3d8-78ab3e6849a9",
+    "3d809016-8c01-43a7-9735-0c90bf0dded1",
+    "481979f2-b996-424d-8554-7f8911501f12",
+    "58d8a03a-3f6c-43d2-a3a0-955cba047bfc",
+    "646206e9-1701-4ec6-a9f8-eaa784e4ddeb",
+    "64dd6f7c-e052-4b19-964e-4c533051274d",
+    "6d72e79b-b2a8-4999-89eb-ebd38479923d",
+    "6de3579f-a412-4e36-b5f2-873e27cf33bb",
+    "7090e27d-adfa-4233-8a11-50934bb49e00",
+    "72d12a58-6a07-4a1b-8dcc-c85257250fd7",
+    "8537f121-c704-49db-bcad-567006cbf256",
+    "b0a36e56-3343-469d-aeac-203f4ea7d21c",
+    "b6595b8e-eec5-4dbc-b76e-553bd17f21e5",
+    "b87d3c60-5bed-46a6-98ab-93f619b25d4a",
+    "e5e03540-8e9e-42ca-bacc-0e033862dd28",
+    "f46e3fa8-1ffb-46dc-9f42-9389fdc9f24e"
+  ],
+  "issues": [
+    {
+      "id": "ISS-001",
+      "title": "system_prompt 中"可用工具"列表重复",
+      "severity": "medium",
+      "category": "prompt",
+      "description": "system-prompt.md 末尾有一份工具列表，prompts/tools/*.md 又各自描述工具用法，两层重叠。'可用工具'出现2次，send_message出现5次。",
+      "evidence": ["all 19 requests"],
+      "suggestion": "删除 system-prompt.md 中的"可用工具"段落（约200 tokens），工具存在由 tool_definitions 声明，用法由 prompts/tools/*.md 提供。",
+      "status": "open",
+      "created": "2026-02-20",
+      "updated": "2026-02-20"
+    },
+    {
+      "id": "ISS-002",
+      "title": "tool_definitions 实际 token 消耗远超估算（1.9倍）",
+      "severity": "high",
+      "category": "code",
+      "description": "估算 3111 tokens，实际约 5900 tokens。20个工具的 JSON schema 展开后 tokenize 更碎。",
+      "evidence": ["f46e3fa8"],
+      "suggestion": "短期：estimateToolTokens 系数从1.1提到2.0。长期：低频工具（task/task_output/task_stop/resume_subagent）按需注入。",
+      "status": "open",
+      "created": "2026-02-20",
+      "updated": "2026-02-20"
+    },
+    {
+      "id": "ISS-003",
+      "title": "recall 内容噪音明显（agent 'ok' 回复被召回）",
+      "severity": "high",
+      "category": "recall",
+      "description": "GauzMem 把 agent 的纯确认回复（ok/好的/收到）存为 fact，BFS 图扩展把相关 ok 链都拉出来。23 facts 中有大量无关噪音。",
+      "evidence": ["481979f2-b996-424d-8554-7f8911501f12"],
+      "suggestion": "GauzMem 写入时过滤 <5 字的 agent 确认回复，或 recall 侧做相关性二次过滤。",
+      "status": "open",
+      "created": "2026-02-20",
+      "updated": "2026-02-20"
+    },
+    {
+      "id": "ISS-004",
+      "title": "简单问候触发完整初始化（3文件读取）",
+      "severity": "low",
+      "category": "code",
+      "description": "每次新 session 的首条消息都触发读取 task_pool/members/reminders 三个文件，简单问候也不例外。",
+      "evidence": ["f46e3fa8-1ffb-46dc-9f42-9389fdc9f24e"],
+      "suggestion": "飞书长会话中影响不大（仅首次），低优先级。如 session 频繁重建可考虑缓存。",
+      "status": "open",
+      "created": "2026-02-20",
+      "updated": "2026-02-20"
+    },
+    {
+      "id": "ISS-005",
+      "title": "token 估算器严重低估，context budget 守门可能失效",
+      "severity": "high",
+      "category": "code",
+      "description": "估算值 vs 实际值差距 5~21 倍。b0a36e56 估算14532实际96169，58d8a03a 估算11281实际237944。估算只覆盖初始context，不含工具结果累积。",
+      "evidence": ["b0a36e56-3343-469d-aeac-203f4ea7d21c", "58d8a03a-3f6c-43d2-a3a0-955cba047bfc"],
+      "suggestion": "estimateToolTokens 安全系数提到2.0。debug logger 的 total_estimated_tokens 标注为初始估算。",
+      "status": "open",
+      "created": "2026-02-20",
+      "updated": "2026-02-20"
+    },
+    {
+      "id": "ISS-006",
+      "title": "send_message 后仍有1轮多余 turn",
+      "severity": "low",
+      "category": "prompt",
+      "description": "多个请求中 send_message 后还有1轮（输出 ok 或重复内容），每多一轮多付一次完整 prompt tokens。",
+      "evidence": ["58d8a03a-3f6c-43d2-a3a0-955cba047bfc", "314fc3a8-1dcd-49f6-a7cf-bc3b26726170"],
+      "suggestion": "不做 hard code 控制。可在 send_message tool result 中加更强提示。低优先级。",
+      "status": "open",
+      "created": "2026-02-20",
+      "updated": "2026-02-20"
+    }
+  ]
+}
