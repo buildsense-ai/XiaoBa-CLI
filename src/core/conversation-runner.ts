@@ -80,6 +80,8 @@ export interface RunnerOptions {
   initialSkillToolPolicy?: SkillToolPolicy;
   /** Context debug logger（可选，由 AgentSession 传入） */
   debugLogger?: ContextDebugLogger;
+  /** 从外部消息队列中取出待处理消息（工具执行间隙注入） */
+  drainQueue?: () => string[];
 }
 
 /**
@@ -99,6 +101,7 @@ export class ConversationRunner {
   private activeSkillToolPolicy?: SkillToolPolicy;
   private maxPromptTokens: number;
   private debugLogger?: ContextDebugLogger;
+  private drainQueue?: () => string[];
 
   /** 工具连续失败计数（用于熔断） */
   private toolFailureCount = new Map<string, number>();
@@ -129,6 +132,7 @@ export class ConversationRunner {
     this.activeSkillToolPolicy = options?.initialSkillToolPolicy;
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.debugLogger = options?.debugLogger;
+    this.drainQueue = options?.drainQueue;
     this.compressor = new ContextCompressor(this.aiService, {
       maxContextTokens: options?.maxContextTokens,
     });
@@ -294,6 +298,18 @@ export class ConversationRunner {
         newMessages.push(toolMsg);
 
         callbacks?.onToolEnd?.(toolCall.function.name, toolContent);
+      }
+
+      // 工具执行完毕，检查外部消息队列，注入新消息
+      if (this.drainQueue) {
+        const queued = this.drainQueue();
+        if (queued.length > 0) {
+          const merged = queued.join('\n');
+          const queuedMsg: Message = { role: 'user', content: merged };
+          messages.push(queuedMsg);
+          newMessages.push(queuedMsg);
+          Logger.info(`[Turn ${turns}] 注入 ${queued.length} 条队列消息`);
+        }
       }
     }
 

@@ -65,6 +65,7 @@ export interface CommandResult {
 export class AgentSession {
   private messages: Message[] = [];
   private busy = false;
+  private messageQueue: string[] = [];
   private activeSkillName?: string;
   private activeSkillToolPolicy?: SkillToolPolicy;
   private activeSkillMaxTurns?: number;
@@ -250,6 +251,7 @@ export class AgentSession {
           initialSkillName: this.activeSkillName,
           initialSkillToolPolicy: this.activeSkillToolPolicy,
           debugLogger,
+          drainQueue: () => this.drainQueue(),
           toolExecutionContext: {
             sessionId: this.key,
             surface,
@@ -394,6 +396,7 @@ export class AgentSession {
   /** 清空历史 */
   clear(): void {
     this.messages = [];
+    this.messageQueue = [];
     this.activeSkillName = undefined;
     this.activeSkillToolPolicy = undefined;
     this.activeSkillMaxTurns = undefined;
@@ -406,6 +409,7 @@ export class AgentSession {
       return false;
     }
     this.messages = [];
+    this.messageQueue = [];
     return true;
   }
 
@@ -413,6 +417,23 @@ export class AgentSession {
 
   isBusy(): boolean {
     return this.busy;
+  }
+
+  enqueue(text: string): void {
+    this.messageQueue.push(text);
+    if (this.gauzMem.isAvailable()) {
+      this.gauzMem.writeMessage(text, 'user', this.platformId, this.runId).catch(() => {});
+    }
+  }
+
+  getQueueLength(): number {
+    return this.messageQueue.length;
+  }
+
+  private drainQueue(): string[] {
+    const msgs = [...this.messageQueue];
+    this.messageQueue = [];
+    return msgs;
   }
 
   getHistoryLength(): number {

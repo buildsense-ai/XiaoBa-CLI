@@ -332,3 +332,130 @@ test('conversation runner returns immediately when no tool calls', async () => {
   assert.equal(result.response, '直接回复');
   assert.equal(result.newMessages.length, 0, '无工具调用时不应有新中间消息');
 });
+
+// ═══════════════════════════════════════════════════════
+// 6. drainQueue 消息注入测试
+// ═══════════════════════════════════════════════════════
+
+test('drainQueue injects queued messages after tool execution', async () => {
+  let turn = 0;
+  const receivedMessages: Message[][] = [];
+
+  const aiService = {
+    async chatStream(messages: Message[]) {
+      turn++;
+      receivedMessages.push([...messages]);
+      if (turn === 1) {
+        return {
+          content: '',
+          toolCalls: [makeToolCall('some_tool', '{}', 'call_1')],
+        };
+      }
+      return { content: '已收到所有消息' };
+    },
+  } as any;
+
+  const executor = buildToolExecutor({
+    tools: [makeTool('some_tool')],
+    executeResult: () => 'ok',
+  });
+
+  const queue = ['第二条消息', '第三条消息'];
+  let drained = false;
+
+  const messages: Message[] = [
+    { role: 'system', content: 'test' },
+    { role: 'user', content: '第一条消息' },
+  ];
+
+  const runner = new ConversationRunner(aiService, executor, {
+    maxTurns: 5,
+    drainQueue: () => {
+      if (!drained) {
+        drained = true;
+        return queue;
+      }
+      return [];
+    },
+  });
+
+  const result = await runner.run(messages);
+
+  assert.equal(result.response, '已收到所有消息');
+  // 第二轮 AI 推理时，messages 中应包含注入的 user 消息
+  const lastAIInput = receivedMessages[1];
+  const injected = lastAIInput.filter(
+    m => m.role === 'user' && m.content?.includes('第二条消息')
+  );
+  assert.equal(injected.length, 1, '应注入合并的队列消息');
+  assert.ok(injected[0].content!.includes('第三条消息'), '合并消息应包含所有队列内容');
+});
+
+test('drainQueue does nothing when queue is empty', async () => {
+  let drainCalls = 0;
+  const aiService = buildAIService({ responses: [
+    { content: '', toolCalls: [makeToolCall('t', '{}', 'c1')] },
+    { content: 'done' },
+  ]});
+  const executor = buildToolExecutor({
+    tools: [makeTool('t')],
+    executeResult: () => 'ok',
+  });
+
+  const messages: Message[] = [
+    { role: 'system', content: 'test' },
+    { role: 'user', content: 'go' },
+  ];
+
+  const runner = new ConversationRunner(aiService, executor, {
+    maxTurns: 5,
+    drainQueue: () => { drainCalls++; return []; },
+  });
+
+  const result = await runner.run(messages);
+
+  assert.equal(result.response, 'done');
+  assert.ok(drainCalls >= 1, 'drainQueue 应被调用');
+  // messages 中不应有额外的 user 消息
+  const userMsgs = messages.filter(m => m.role === 'user');
+  assert.equal(userMsgs.length, 1, '空队列不应注入额外 user 消息');
+});
+
+test('drainQueue injected messages appear in newMessages', async () => {
+  let turn = 0;
+  const aiService = {
+    async chatStream() {
+      turn++;
+      if (turn === 1) {
+        return { content: '', toolCalls: [makeToolCall('t', '{}', 'c1')] };
+      }
+      return { content: 'final' };
+    },
+  } as any;
+
+  const executor = buildToolExecutor({
+    tools: [makeTool('t')],
+    executeResult: () => 'ok',
+  });
+
+  let drained = false;
+  const messages: Message[] = [
+    { role: 'system', content: 'test' },
+    { role: 'user', content: 'first' },
+  ];
+
+  const runner = new ConversationRunner(aiService, executor, {
+    maxTurns: 5,
+    drainQueue: () => {
+      if (!drained) { drained = true; return ['queued msg']; }
+      return [];
+    },
+  });
+
+  const result = await runner.run(messages);
+
+  const injectedNew = result.newMessages.filter(
+    m => m.role === 'user' && m.content === 'queued msg'
+  );
+  assert.equal(injectedNew.length, 1, '注入的消息应出现在 newMessages 中');
+});

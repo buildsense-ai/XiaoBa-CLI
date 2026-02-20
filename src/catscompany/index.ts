@@ -34,9 +34,6 @@ export class CatsCompanyBot {
   private sendFileTool: SendFileTool;
   /** 等待用户后续指令的附件队列，key 为 sessionKey */
   private pendingAttachments = new Map<string, PendingAttachment[]>();
-  /** 消息合并队列：session 忙时暂存后续消息，处理完后合并为一条 */
-  private pendingMessages = new Map<string, { texts: string[]; topic: string }>();
-  private static readonly MAX_PENDING_MESSAGES = 5;
 
   constructor(config: CatsCompanyConfig) {
     this.bot = new CatsBot({
@@ -178,20 +175,10 @@ export class CatsCompanyBot {
       }
     }
 
-    // 并发保护：忙时入队，处理完后合并
+    // 并发保护：忙时静默入队，由 ConversationRunner 在工具间隙注入
     if (session.isBusy()) {
-      const pending = this.pendingMessages.get(key);
-      if (pending && pending.texts.length >= CatsCompanyBot.MAX_PENDING_MESSAGES) {
-        await this.sender.reply(msg.topic, BUSY_MESSAGE);
-      } else {
-        if (!pending) {
-          this.pendingMessages.set(key, { texts: [userText], topic: msg.topic });
-        } else {
-          pending.texts.push(userText);
-        }
-        await this.sender.reply(msg.topic, '收到，处理完当前任务后一起回复你。');
-        Logger.info(`[${key}] 消息入队 (队列长度: ${this.pendingMessages.get(key)!.texts.length})`);
-      }
+      session.enqueue(userText);
+      Logger.info(`[${key}] 消息入队 (队列长度: ${session.getQueueLength()})`);
       return;
     }
 
@@ -222,15 +209,6 @@ export class CatsCompanyBot {
     } finally {
       this.sendMessageTool.unbindSession(key);
       this.sendFileTool.unbindSession(key);
-    }
-
-    // 处理合并队列中的后续消息
-    const pending = this.pendingMessages.get(key);
-    if (pending && pending.texts.length > 0) {
-      this.pendingMessages.delete(key);
-      const merged = pending.texts.join('\n');
-      Logger.info(`[${key}] 合并 ${pending.texts.length} 条等待消息，开始处理`);
-      await this.processMessage(key, pending.topic, merged, session);
     }
   }
 
@@ -331,7 +309,6 @@ export class CatsCompanyBot {
     this.bot.disconnect();
     this.sessionManager.destroy();
     this.pendingAttachments.clear();
-    this.pendingMessages.clear();
     Logger.info('CatsCompany 机器人已停止');
   }
 

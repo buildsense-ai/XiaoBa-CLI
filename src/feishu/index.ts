@@ -44,9 +44,6 @@ export class FeishuBot {
   private readonly startedAt = Date.now();
   /** 等待用户后续指令的附件队列，key 为 sessionKey */
   private pendingAttachments = new Map<string, PendingAttachment[]>();
-  /** 消息合并队列：session 忙时暂存后续消息，处理完后合并为一条 */
-  private pendingMessages = new Map<string, { texts: string[]; chatId: string }>();
-  private static readonly MAX_PENDING_MESSAGES = 5;
 
   constructor(config: FeishuConfig) {
     const baseConfig = {
@@ -241,20 +238,10 @@ export class FeishuBot {
       }
     }
 
-    // 并发保护：忙时入队，处理完后合并
+    // 并发保护：忙时静默入队，由 ConversationRunner 在工具间隙注入
     if (session.isBusy()) {
-      const pending = this.pendingMessages.get(key);
-      if (pending && pending.texts.length >= FeishuBot.MAX_PENDING_MESSAGES) {
-        await this.sender.reply(msg.chatId, BUSY_MESSAGE);
-      } else {
-        if (!pending) {
-          this.pendingMessages.set(key, { texts: [userText], chatId: msg.chatId });
-        } else {
-          pending.texts.push(userText);
-        }
-        await this.sender.reply(msg.chatId, '收到，处理完当前任务后一起回复你。');
-        Logger.info(`[${key}] 消息入队 (队列长度: ${this.pendingMessages.get(key)!.texts.length})`);
-      }
+      session.enqueue(userText);
+      Logger.info(`[${key}] 消息入队 (队列长度: ${session.getQueueLength()})`);
       return;
     }
 
@@ -283,15 +270,6 @@ export class FeishuBot {
     } finally {
       this.sendMessageTool.unbindSession(key);
       this.sendFileTool.unbindSession(key);
-    }
-
-    // 处理合并队列中的后续消息
-    const pending = this.pendingMessages.get(key);
-    if (pending && pending.texts.length > 0) {
-      this.pendingMessages.delete(key);
-      const merged = pending.texts.join('\n');
-      Logger.info(`[${key}] 合并 ${pending.texts.length} 条等待消息，开始处理`);
-      await this.processMessage(key, pending.chatId, merged, session);
     }
   }
 
@@ -385,7 +363,6 @@ export class FeishuBot {
     }
     this.sessionManager.destroy();
     this.pendingAttachments.clear();
-    this.pendingMessages.clear();
     Logger.info('飞书机器人已停止');
   }
 
