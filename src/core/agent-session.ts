@@ -14,6 +14,7 @@ import { SubAgentManager } from './sub-agent-manager';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { saveSessionSummary, loadSessionSummary, removeSessionSummary } from '../utils/local-session-store';
+import { SessionStore } from '../utils/session-store';
 import { Metrics } from '../utils/metrics';
 
 const TRANSIENT_MEMORY_CONTEXT_PREFIX = '[transient_memory_context]';
@@ -67,10 +68,12 @@ export interface CommandResult {
  */
 export class AgentSession {
   private messages: Message[] = [];
+  private initialized = false;
   private busy = false;
   private activeSkillName?: string;
   private activeSkillToolPolicy?: SkillToolPolicy;
   private activeSkillMaxTurns?: number;
+  private pendingRestore?: Message[];
   lastActiveAt: number = Date.now();
 
   constructor(
@@ -82,13 +85,16 @@ export class AgentSession {
 
   /** 构建系统提示词（幂等，仅首次生效） */
   async init(): Promise<void> {
-    if (this.messages.length > 0) return;
+    if (this.initialized) return;
+    this.initialized = true;
     const systemPrompt = await PromptManager.buildSystemPrompt();
     this.messages.push({ role: 'system', content: systemPrompt });
     if (this.isFeishuSession()) {
+      const isGroup = this.key.startsWith('group:');
+      const chatType = isGroup ? '群聊' : '私聊';
       this.messages.push({
         role: 'system',
-        content: '[surface:feishu]\n当前是飞书会话。老师只能看到你通过 feishu_reply / feishu_send_file 发送的内容，你的普通文本输出老师完全看不到。所以：所有要给老师看的话，必须通过工具发送；通过工具发完消息后直接停止，不要再输出任何收尾文本。',
+        content: `[surface:feishu:${isGroup ? 'group' : 'private'}]\n当前是飞书${chatType}会话。你的普通文本输出老师完全看不到，必须调用 feishu_reply 工具才能让老师收到消息。无论多简单的回复（包括打招呼、闲聊），都必须通过 feishu_reply 发送。发完后直接停止，不要再输出收尾文本。`,
       });
     } else if (this.isCatsCompanySession()) {
       this.messages.push({
@@ -108,6 +114,14 @@ export class AgentSession {
         removeSessionSummary(this.key);
         Logger.info(`已加载上次会话摘要: ${this.key}`);
       }
+
+    }
+
+    // 从 DB 恢复未归档的消息
+    if (this.pendingRestore) {
+      this.messages.push(...this.pendingRestore);
+      Logger.info(`[会话 ${this.key}] 已恢复 ${this.pendingRestore.length} 条消息`);
+      this.pendingRestore = undefined;
     }
   }
 
@@ -194,6 +208,7 @@ export class AgentSession {
       await this.init();
       this.tryAutoActivateSkill(text);
       this.messages.push({ role: 'user', content: text });
+
 
       // 搜索相关记忆，作为临时上下文注入
       let contextMessages: Message[] = [...this.messages];
@@ -308,6 +323,14 @@ export class AgentSession {
         );
       }
 
+      // 持久化本轮所有消息（用户 + assistant/tool）
+      if (this.isChatSession()) {
+        const newMsgs = [{ role: 'user' as const, content: text }, ...result.newMessages.filter(m => m.role !== 'system' && !(m as any).__injected)];
+        if (newMsgs.length > 0) {
+          SessionStore.getInstance().appendMessages(this.key, newMsgs);
+        }
+      }
+
       return result.response || '[无回复]';
     } catch (err: any) {
       // 清理孤立的 user 消息，避免污染后续对话
@@ -364,7 +387,9 @@ export class AgentSession {
 
   /** 清空历史 */
   clear(): void {
+    SessionStore.getInstance().archiveSession(this.key);
     this.messages = [];
+    this.initialized = false;
     this.activeSkillName = undefined;
     this.activeSkillToolPolicy = undefined;
     this.activeSkillMaxTurns = undefined;
@@ -398,7 +423,7 @@ ${conversationText}
       const summaryText = `[对话摘要 - ${new Date().toISOString()}]\n${summary.content || ''}`;
 
       // 本地文件兜底：始终写入本地
-      const localSuccess = saveSessionSummary(this.key, summaryText);
+      const localSuccess = saveSessionSummary(this.key, summaryText, Logger.getLogFilePath() || undefined);
 
       // GauzMem：如果可用也写入
       const memoryService = this.services.memoryService;
@@ -413,6 +438,9 @@ ${conversationText}
         Logger.info(`已压缩 ${this.messages.length} 条消息并写入本地文件`);
       }
 
+      // 归档持久化文件
+      SessionStore.getInstance().archiveSession(this.key);
+
       this.messages = [];
       return localSuccess;
     } catch (error) {
@@ -425,6 +453,17 @@ ${conversationText}
 
   isBusy(): boolean {
     return this.busy;
+  }
+
+  /** 从 DB 恢复消息（进程重启后调用） */
+  restoreFromStore(): boolean {
+    const store = SessionStore.getInstance();
+    if (!store.hasActiveSession(this.key)) return false;
+    const msgs = store.loadMessages(this.key);
+    if (msgs.length === 0) return false;
+    this.pendingRestore = msgs;
+    Logger.info(`[会话 ${this.key}] 标记从 DB 恢复 ${msgs.length} 条消息`);
+    return true;
   }
 
   // ─── 私有方法 ──────────────────────────────────────

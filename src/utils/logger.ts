@@ -6,6 +6,7 @@ import ora, { Ora } from 'ora';
 export class Logger {
   private static spinner: Ora | null = null;
   private static logStream: fs.WriteStream | null = null;
+  private static logFilePath: string | null = null;
 
   private static stripAnsi(str: string): string {
     // eslint-disable-next-line no-control-regex
@@ -39,6 +40,7 @@ export class Logger {
     const dir = path.resolve('logs', dateDir);
     fs.mkdirSync(dir, { recursive: true });
 
+    this.logFilePath = path.join(dir, fileName);
     this.logStream = fs.createWriteStream(path.join(dir, fileName), { flags: 'a' });
   }
 
@@ -46,7 +48,12 @@ export class Logger {
     if (this.logStream) {
       this.logStream.end();
       this.logStream = null;
+      this.logFilePath = null;
     }
+  }
+
+  static getLogFilePath(): string | null {
+    return this.logFilePath;
   }
 
   static success(message: string): void {

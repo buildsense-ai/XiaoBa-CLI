@@ -40,6 +40,7 @@ export class SessionManager {
     let session = this.sessions.get(key);
     if (!session) {
       session = new AgentSession(key, this.agentServices);
+      session.restoreFromStore();
       this.sessions.set(key, session);
       Logger.info(`新建 CatsCompany 会话: ${key}`);
     }
