@@ -2,18 +2,31 @@
   "reminders": [
     {
       "id": "R-001",
-      "type": "task_check",
-      "description": "检查 T-001 AI代码审查方案是否完成",
-      "target_task": "T-001",
-      "trigger_at": "2026-02-19T20:00:00",
-      "repeat": "once",
+      "type": "daily_summary",
+      "description": "晨间巡视：扫描任务池状态，识别需要关注的事项，生成判断发给CEO",
+      "target_task": null,
+      "trigger_at": "2026-02-21T09:00:00",
+      "repeat": "daily",
       "repeat_interval_hours": null,
-      "action": "检查 T-001 方案设计进度，如果还没完成就问一下老朱情况",
-      "created": "2026-02-18",
+      "action": "执行晨间巡视：1) 读取 task_pool.json，检查所有 in_progress 任务是否有超过2天未更新的；2) 检查是否有 blocked 或 overdue 任务；3) 检查 member_logs/ 下最近的汇报情况；4) 不要机械列清单，带判断地总结'今天需要关注这几件事'，通过 send_message 发给CEO",
+      "created": "2026-02-20",
+      "last_triggered": null,
+      "active": true
+    },
+    {
+      "id": "R-002",
+      "type": "task_check",
+      "description": "午后巡视：检查当日进展，发现卡点及时上浮",
+      "target_task": null,
+      "trigger_at": "2026-02-21T15:00:00",
+      "repeat": "daily",
+      "repeat_interval_hours": null,
+      "action": "执行午后巡视：1) 对比晨间巡视时的状态，看今天有没有新的进展或新的卡点；2) 如果有任务状态变化，简短总结；3) 如果没有变化且有 in_progress 任务，判断是否需要主动询问进度；4) 通过 send_message 发给CEO，只在有值得说的事时才发，没事不要打扰",
+      "created": "2026-02-20",
       "last_triggered": null,
       "active": true
     }
   ],
-  "next_id": 2,
-  "updated": "2026-02-18"
+  "next_id": 3,
+  "updated": "2026-02-20"
 }

@@ -225,7 +225,7 @@ export class ConversationRunner {
           .map(tool => tool.name);
 
         const toolStart = Date.now();
-        const result = await this.executeToolWithRetry(
+        const result = await this.toolExecutor.executeTool(
           toolCall,
           messages,
           {
@@ -236,7 +236,6 @@ export class ConversationRunner {
               ? undefined
               : this.activeSkillToolPolicy?.disallowedTools,
           },
-          turns,
         );
         const toolDuration = Date.now() - toolStart;
         Metrics.recordToolCall(toolName, toolDuration);
@@ -246,18 +245,13 @@ export class ConversationRunner {
         let toolContent = result.content;
         const isBlocked = toolContent.includes('执行被阻止');
         const isFailed = toolContent.startsWith('Python 工具执行失败') || toolContent.startsWith('错误:');
-        const isRateLimit = ConversationRunner.isRateLimitError(toolContent);
 
         if (isBlocked) {
           // 策略阻断：立即禁用，不浪费更多 turn
           this.disabledTools.add(toolName);
           this.toolFailureCount.delete(toolName);
-          toolContent += `\n\n[系统] 工具 "${toolName}" 已被自动禁用（策略阻断），请换用其他工具完成任务。`;
+          toolContent += `\n\n[系统] 工具 "${toolName}" 已被自动禁用（策略阻断）。`;
           Logger.warning(`[Turn ${turns}] 熔断: ${toolName} 被策略阻断，已从可用列表移除`);
-        } else if (isRateLimit) {
-          // 429 限流：不计入工具失败，终止本轮处理
-          Logger.error(`[Turn ${turns}] 429 限流: ${toolName} 重试耗尽，终止本轮会话`);
-          throw new RateLimitBreakError(toolName, turns);
         } else if (isFailed) {
           const count = (this.toolFailureCount.get(toolName) || 0) + 1;
           this.toolFailureCount.set(toolName, count);
@@ -537,49 +531,6 @@ export class ConversationRunner {
       text.includes('input is too long') ||
       text.includes('premature close')
     );
-  }
-
-  // ─── 429 重试逻辑 ──────────────────────────────────
-
-  private static readonly MAX_RETRIES = 2;
-  private static readonly RETRY_BASE_DELAY_MS = 5000;
-
-  /** 检测工具结果是否为 429 限流错误 */
-  private static isRateLimitError(content: string): boolean {
-    const lower = content.toLowerCase();
-    return lower.includes('429') || lower.includes('rate limit') || lower.includes('too many requests') || lower.includes('频率受限');
-  }
-
-  /** 带 429 重试的工具执行 */
-  private async executeToolWithRetry(
-    toolCall: ToolCall,
-    messages: Message[],
-    context: Partial<ToolExecutionContext>,
-    turn: number,
-  ): Promise<{ content: string; tool_call_id: string; name: string }> {
-    let lastResult = await this.toolExecutor.executeTool(toolCall, messages, context);
-
-    for (let attempt = 1; attempt <= ConversationRunner.MAX_RETRIES; attempt++) {
-      if (!ConversationRunner.isRateLimitError(lastResult.content)) {
-        return lastResult;
-      }
-      const delay = ConversationRunner.RETRY_BASE_DELAY_MS * attempt;
-      Logger.warning(`[Turn ${turn}] ${toolCall.function.name} 触发限流 (429)，${delay}ms 后重试 (${attempt}/${ConversationRunner.MAX_RETRIES})`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-      lastResult = await this.toolExecutor.executeTool(toolCall, messages, context);
-    }
-
-    return lastResult;
-  }
-}
-
-/**
- * 429 限流跳闸错误：重试耗尽后终止本轮会话
- */
-export class RateLimitBreakError extends Error {
-  constructor(public toolName: string, public turn: number) {
-    super(`[429_CIRCUIT_BREAK] API 限流，工具 "${toolName}" 在 Turn ${turn} 重试耗尽，本轮处理已中止`);
-    this.name = 'RateLimitBreakError';
   }
 }
 

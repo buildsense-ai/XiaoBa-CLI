@@ -7,7 +7,7 @@ import {
   buildSkillActivationSignal,
   upsertSkillSystemMessage,
 } from '../skills/skill-activation-protocol';
-import { ConversationRunner, RunnerCallbacks, RateLimitBreakError } from './conversation-runner';
+import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
 import { SubAgentManager } from './sub-agent-manager';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
@@ -337,10 +337,6 @@ export class AgentSession {
       // 清理孤立的 user 消息，避免污染后续对话
       if (this.messages.length > 0 && this.messages[this.messages.length - 1].role === 'user') {
         this.messages.pop();
-      }
-      if (err instanceof RateLimitBreakError) {
-        Logger.error(`[会话 ${this.key}] 429 跳闸: ${err.message}`);
-        return 'API 暂时限流，本轮处理已中止，请稍后再试。';
       }
       Logger.error(`[会话 ${this.key}] 处理失败: ${err.message}`);
       return `处理消息时出错: ${err.message}`;

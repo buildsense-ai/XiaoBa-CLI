@@ -10,8 +10,9 @@
 | 文件 | 用途 |
 |------|------|
 | `task_pool.json` | 任务/事项记录 |
-| `members.json` | 成员信息（当前阶段主要是 CEO 自己） |
+| `members.json` | 成员信息（人类 + agent） |
 | `reminders.json` | 提醒/定时触发调度表 |
+| `member_logs/` | 按 member 分文件的进度日志 |
 | `daily_log/YYYY-MM-DD.md` | 每日摘要 |
 
 ## 激活方式
@@ -55,6 +56,65 @@ reminder 数据结构：
 - 方向冲突/优先级矛盾/模糊决策点 → 创建晨会前触发的 reminder，上浮给人决策
 
 **注意：定时扫描器是框架层能力。COO skill 只负责读写 reminders.json，不负责调度本身。**
+
+## 成员数据结构（members.json）
+
+成员分为 human 和 agent 两类，通过 `type` 字段区分。
+
+### 人类成员字段
+
+```json
+{
+  "name": "hanyuan",
+  "type": "human",
+  "role": "CEO",
+  "status": "active",
+  "joined": "2026-02-18",
+  "channel": "feishu",
+  "strengths": ["架构设计", "产品方向"],
+  "work_rhythm": "晚上效率高",
+  "notes": "COO的观察笔记，持续积累"
+}
+```
+
+### Agent 成员字段
+
+```json
+{
+  "name": "deploy-agent",
+  "type": "agent",
+  "role": "云端部署Agent",
+  "status": "active | building | deploying | offline",
+  "joined": "2026-02-19",
+  "related_task": "T-005",
+  "invoke_method": "调用方式描述",
+  "has_memory": false,
+  "capabilities": ["能力1", "能力2"],
+  "reliability": "未评估 | 低 | 中 | 高",
+  "notes": "COO的观察笔记，持续积累"
+}
+```
+
+**reliability 评估标准**：基于历史交互，考察任务完成率、是否需要人工干预、输出质量稳定性。COO 在每次与 agent 相关的交互后更新。
+
+## member_logs 日志格式
+
+存储位置：`skills/coo/data/member_logs/{member_name}.md`
+
+每条日志追加写入，格式：
+
+```markdown
+## YYYY-MM-DD HH:MM
+
+- **来源**：自主汇报 | COO巡视 | CEO转述
+- **关联任务**：T-XXX
+- **内容**：具体进展或状态描述
+```
+
+COO 在以下时机写入 member_logs：
+- 收到成员的进度汇报时
+- 巡视中发现状态变化时
+- CEO 转述某成员情况时
 
 ## 任务数据结构（初始模板，可演化）
 
@@ -119,3 +179,25 @@ reminder 数据结构：
 | `remind <描述> at <时间>` | 手动创建一个提醒 |
 | `reminders` | 查看所有活跃的提醒 |
 | `remind cancel <R-id>` | 取消某个提醒 |
+
+## 心跳巡视机制
+
+COO 通过 `reminders.json` 中的定时 reminder 实现自主工作节奏，不再完全依赖被动触发。
+
+### 巡视节奏
+
+| 时间 | Reminder | 行为 |
+|------|----------|------|
+| 每日 09:00 | R-001 晨间巡视 | 扫描全局状态，生成"今天需要关注的事"发给CEO |
+| 每日 15:00 | R-002 午后巡视 | 对比晨间状态，发现新进展或新卡点，有事才发 |
+
+### 巡视行为规范
+
+1. **带判断，不列清单**：不是把 task_pool 原样输出，而是筛选出真正需要关注的事项，说明为什么需要关注
+2. **检查维度**：
+   - in_progress 任务是否超过 2 天未更新
+   - 是否有 blocked 或 overdue 任务
+   - member_logs/ 下最近是否有新汇报
+   - 任务间是否有冲突或可复用的机会
+3. **午后巡视的克制**：如果没有值得说的事，不发消息打扰 CEO
+4. **自动创建跟进 reminder**：巡视中发现需要后续跟进的事项，主动创建对应的 reminder

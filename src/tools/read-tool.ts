@@ -3,13 +3,17 @@ import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
 import { ToolPolicyGateway } from '../utils/tool-policy-gateway';
 
+/** 文本文件默认返回行数上限 */
+const DEFAULT_LINE_LIMIT = 200;
+
 /**
  * Read 工具 - 读取文件内容
  */
 export class ReadTool implements Tool {
   definition: ToolDefinition = {
     name: 'read_file',
-    description: '读取文件内容。支持文本文件、代码文件、PDF、图片、Jupyter notebook 等多种格式。',
+    description: '读取文件内容。支持文本文件、代码文件、PDF、图片、Jupyter notebook 等多种格式。' +
+      '文本文件默认返回前 200 行，如需更多内容请使用 offset/limit 参数分段读取。',
     parameters: {
       type: 'object',
       properties: {
@@ -23,7 +27,7 @@ export class ReadTool implements Tool {
         },
         limit: {
           type: 'number',
-          description: '读取多少行（可选，默认读取全部，仅适用于文本文件）'
+          description: '读取多少行（可选，默认 200 行，仅适用于文本文件）'
         },
         pages: {
           type: 'string',
@@ -76,10 +80,14 @@ export class ReadTool implements Tool {
     const content = fs.readFileSync(absolutePath, 'utf-8');
     const lines = content.split('\n');
 
+    // 如果用户未指定 limit，使用默认值
+    const effectiveLimit = limit ?? DEFAULT_LINE_LIMIT;
+
     // 应用offset和limit
     const startLine = offset;
-    const endLine = limit ? startLine + limit : lines.length;
+    const endLine = Math.min(startLine + effectiveLimit, lines.length);
     const selectedLines = lines.slice(startLine, endLine);
+    const isTruncated = endLine < lines.length;
 
     // 格式化输出（带行号）
     const formattedLines = selectedLines.map((line, index) => {
@@ -87,7 +95,14 @@ export class ReadTool implements Tool {
       return `${lineNumber.toString().padStart(5, ' ')}→${line}`;
     });
 
-    return `文件: ${file_path}\n总行数: ${lines.length}\n显示: ${startLine + 1}-${Math.min(endLine, lines.length)}\n\n${formattedLines.join('\n')}`;
+    let result = `文件: ${file_path}\n总行数: ${lines.length}\n显示: ${startLine + 1}-${endLine}\n\n${formattedLines.join('\n')}`;
+
+    // 如果被截断，添加提示
+    if (isTruncated) {
+      result += `\n\n[已截断] 文件共 ${lines.length} 行，当前显示 ${startLine + 1}-${endLine} 行。继续阅读: offset=${endLine}`;
+    }
+
+    return result;
   }
 
   private async readPDF(absolutePath: string, file_path: string, pages?: string): Promise<string> {
