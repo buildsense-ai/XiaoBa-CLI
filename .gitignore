@@ -62,6 +62,18 @@ tenants/*/runtime.json
 docs/ppt/*.pptx
 
 # ------------------------------
+# Skill runtime data (keep .example templates)
+# ------------------------------
+skills/coo/data/*.json
+skills/coo/data/*.md
+skills/coo/data/daily_log/
+skills/coo/data/member_logs/
+skills/coo/data/proposals/
+!skills/coo/data/*.example.json
+skills/context-reviewer/data/*.json
+!skills/context-reviewer/data/*.example.json
+
+# ------------------------------
 # Secrets / local config
 # ------------------------------
 .env
