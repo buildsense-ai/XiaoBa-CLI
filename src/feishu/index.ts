@@ -249,8 +249,9 @@ export class FeishuBot {
       reply: async (targetChatId: string, text: string) => {
         opts?.replyInterceptor?.(text);
         await this.sender.reply(targetChatId, text);
-        // 广播给所有 bridge peer
-        if (this.bridgeClient && this.bridgeConfig) {
+        // 广播给所有 bridge peer（仅群聊）
+        const isGroupChat = !opts?.sessionKey || opts.sessionKey.startsWith('group:');
+        if (isGroupChat && this.bridgeClient && this.bridgeConfig) {
           this.bridgeClient.broadcast({
             from: this.bridgeConfig.name,
             chat_id: targetChatId,
@@ -298,6 +299,7 @@ export class FeishuBot {
       const ids = Array.from(this.processedMsgIds);
       this.processedMsgIds = new Set(ids.slice(-500));
     }
+
 
     const key = this.sessionManager.getSessionKey(msg);
 

@@ -47,6 +47,7 @@ export class SessionManager {
     let session = this.sessions.get(key);
     if (!session) {
       session = new AgentSession(key, this.agentServices);
+      session.restoreFromStore();
       if (this.teammateContext) {
         session.injectContext(this.teammateContext);
       }
