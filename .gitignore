@@ -98,8 +98,7 @@ docs/*.md
 # Secrets / local config
 # ------------------------------
 .env
-.env.local
-.env.*.local
+.env.*
 .xiaoba/
 .claude/settings.local.json
 
