@@ -58,10 +58,7 @@ export class WriteTool implements Tool {
 
       // 确保目录存在
       const dir = path.dirname(absolutePath);
-      if (!fs.existsSync(dir)) {
-        Logger.info(`创建目录: ${path.relative(context.workingDirectory, dir)}`);
-        fs.mkdirSync(dir, { recursive: true });
-      }
+      fs.mkdirSync(dir, { recursive: true });
 
       // 计算文件信息
       const lines = content.split('\n').length;

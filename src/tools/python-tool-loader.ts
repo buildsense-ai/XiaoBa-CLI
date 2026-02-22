@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { PythonToolWrapper, PythonToolSchema } from './python-tool-wrapper';
@@ -30,7 +30,7 @@ export function loadGlobalPythonTools(projectRoot: string): PythonToolWrapper[] 
   for (const file of files) {
     const scriptPath = path.join(globalDir, file);
     try {
-      const raw = execSync(`python "${scriptPath}" --schema`, {
+      const raw = execFileSync('python', [scriptPath, '--schema'], {
         encoding: 'utf-8',
         timeout: 10_000,
         env: {

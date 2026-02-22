@@ -25,23 +25,7 @@ import { ResumeSubagentTool } from './resume-subagent-tool';
 
 import * as path from 'path';
 import { loadGlobalPythonTools } from './python-tool-loader';
-
-/**
- * Claude Code → XiaoBa 工具名映射
- * 让引用 Claude Code 工具名的 skill 能在 XiaoBa 中正常运行
- */
-const TOOL_NAME_ALIASES: Record<string, string> = {
-  'Bash': 'execute_bash',
-  'Read': 'read_file',
-  'Write': 'write_file',
-  'Edit': 'edit_file',
-  'Glob': 'glob',
-  'Grep': 'grep',
-  'TodoWrite': 'todo_write',
-  'Task': 'task',
-  'WebFetch': 'web_fetch',
-  'WebSearch': 'web_search',
-};
+import { normalizeToolName } from '../utils/tool-aliases';
 
 /**
  * 工具管理器 - 管理所有可用的工具
@@ -142,7 +126,7 @@ export class ToolManager implements ToolExecutor {
    * 将工具名解析为 XiaoBa 内部注册名（兼容 Claude Code 别名）
    */
   static resolveToolName(name: string): string {
-    return TOOL_NAME_ALIASES[name] ?? name;
+    return normalizeToolName(name);
   }
 
   /**

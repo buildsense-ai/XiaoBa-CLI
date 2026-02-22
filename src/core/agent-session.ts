@@ -70,10 +70,12 @@ export class AgentSession {
   private messages: Message[] = [];
   private initialized = false;
   private busy = false;
+  private _pending: Promise<void> = Promise.resolve();
   private activeSkillName?: string;
   private activeSkillToolPolicy?: SkillToolPolicy;
   private activeSkillMaxTurns?: number;
   private pendingRestore?: Message[];
+  private circuitBreakerDisabledTools: string[] = [];
   lastActiveAt: number = Date.now();
 
   constructor(
@@ -161,10 +163,12 @@ export class AgentSession {
     this.lastActiveAt = Date.now();
 
     // 滑动窗口：超过上限时丢弃最早的注入消息
-    const injectedCount = this.messages.filter(m => m.__injected).length;
-    if (injectedCount > AgentSession.MAX_INJECTED_CONTEXT) {
+    let injectedCount = this.messages.filter(m => m.__injected).length;
+    while (injectedCount > AgentSession.MAX_INJECTED_CONTEXT) {
       const idx = this.messages.findIndex(m => m.__injected);
-      if (idx >= 0) this.messages.splice(idx, 1);
+      if (idx < 0) break;
+      this.messages.splice(idx, 1);
+      injectedCount--;
     }
   }
 
@@ -203,6 +207,9 @@ export class AgentSession {
 
     this.busy = true;
     this.lastActiveAt = Date.now();
+    let resolvePending: () => void;
+    const done = new Promise<void>(r => { resolvePending = r; });
+    this._pending = this._pending.then(() => done);
 
     try {
       await this.init();
@@ -273,6 +280,9 @@ export class AgentSession {
           ...(effectiveMaxTurns ? { maxTurns: effectiveMaxTurns } : {}),
           initialSkillName: this.activeSkillName,
           initialSkillToolPolicy: this.activeSkillToolPolicy,
+          preDisabledTools: this.circuitBreakerDisabledTools.length > 0
+            ? this.circuitBreakerDisabledTools
+            : undefined,
           toolExecutionContext: {
             sessionId: this.key,
             surface,
@@ -289,6 +299,9 @@ export class AgentSession {
       };
 
       const result = await runner.run(contextMessages, runnerCallbacks);
+
+      // 回收熔断状态，跨消息持久化
+      this.circuitBreakerDisabledTools = result.disabledTools;
 
       // 优先采用 runner 返回的完整消息（含压缩结果），修复历史持续膨胀问题
       // 始终清理临时上下文（记忆 + 子智能体状态），避免持久化到历史
@@ -341,6 +354,7 @@ export class AgentSession {
       return ERROR_MESSAGE;
     } finally {
       this.busy = false;
+      resolvePending!();
     }
   }
 
@@ -393,6 +407,7 @@ export class AgentSession {
     this.activeSkillName = undefined;
     this.activeSkillToolPolicy = undefined;
     this.activeSkillMaxTurns = undefined;
+    this.circuitBreakerDisabledTools = [];
     this.lastActiveAt = Date.now();
   }
 

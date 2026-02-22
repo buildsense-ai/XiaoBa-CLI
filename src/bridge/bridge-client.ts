@@ -93,8 +93,12 @@ export class BridgeClient {
 
   /** 向回调地址发送任务结果 */
   async sendResult(callbackUrl: string, result: BridgeResult): Promise<void> {
-    const payload = JSON.stringify(result);
     const url = new URL(callbackUrl);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      Logger.error(`[Bridge] 回调 URL scheme 不合法: ${url.protocol}`);
+      return;
+    }
+    const payload = JSON.stringify(result);
 
     return new Promise((resolve) => {
       const req = http.request(url, { method: 'POST', headers: this.buildHeaders() }, (res) => {

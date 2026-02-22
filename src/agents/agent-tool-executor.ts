@@ -1,16 +1,5 @@
 import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor } from '../types/tool';
-
-const TOOL_NAME_ALIASES: Record<string, string> = {
-  Bash: 'execute_shell',
-  bash: 'execute_shell',
-  Shell: 'execute_shell',
-  shell: 'execute_shell',
-  execute_bash: 'execute_shell',
-};
-
-function normalizeToolName(name: string): string {
-  return TOOL_NAME_ALIASES[name] ?? name;
-}
+import { normalizeToolName } from '../utils/tool-aliases';
 
 /**
  * AgentToolExecutor - 轻量适配器

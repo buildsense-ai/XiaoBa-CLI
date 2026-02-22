@@ -7,6 +7,7 @@ import { SkillManager } from '../skills/skill-manager';
  */
 export class PromptManager {
   private static promptsDir = path.join(__dirname, '../../prompts');
+  private static cachedSkillManager: SkillManager | null = null;
 
   /**
    * 获取基础 system prompt
@@ -55,8 +56,11 @@ ${skillsSection}`;
    * 构建skills部分
    */
   private static async buildSkillsSection(): Promise<string> {
-    const manager = new SkillManager();
-    await manager.loadSkills();
+    if (!this.cachedSkillManager) {
+      this.cachedSkillManager = new SkillManager();
+      await this.cachedSkillManager.loadSkills();
+    }
+    const manager = this.cachedSkillManager;
 
     const skills = manager.getAllSkills();
 

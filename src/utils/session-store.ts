@@ -10,6 +10,7 @@ function ensureDir(): void {
 }
 
 function keyToFilename(key: string): string {
+  if (!key) throw new Error('session key 不能为空');
   return key.replace(/[^a-zA-Z0-9_-]/g, '_') + '.jsonl';
 }
 

@@ -20,7 +20,7 @@ function buildJudgeUserPrompt(
   const teammateInfo = teammates && teammates.length > 0
     ? `\n群里还有其他同事：${teammates.map(t => `${t.name}擅长${t.expertise}`).join('；')}。如果这事他们更合适回答，你就不要插嘴。`
     : '';
-  return `${context}最新消息: ${latestMessage}
+  return `${context}最新消息: <user_message>${latestMessage}</user_message>
 
 你是 ${botName}，擅长${botExpertise}。${teammateInfo}
 这条最新消息没有直接@你，但你觉得你应该主动回应吗？只回答 yes 或 no。`;

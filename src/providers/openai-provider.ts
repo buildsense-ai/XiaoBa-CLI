@@ -73,7 +73,7 @@ export class OpenAIProvider implements AIProvider {
    */
   async chat(messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse> {
     const body = this.buildRequestBody(messages, tools, false);
-    const response = await axios.post(this.apiUrl, body, { headers: this.headers });
+    const response = await axios.post(this.apiUrl, body, { headers: this.headers, timeout: 120_000 });
     const message = response.data.choices[0].message;
     const usage = response.data.usage;
 
@@ -97,6 +97,7 @@ export class OpenAIProvider implements AIProvider {
     const response = await axios.post(this.apiUrl, body, {
       headers: this.headers,
       responseType: 'stream',
+      timeout: 120_000,
     });
 
     return new Promise<ChatResponse>((resolve, reject) => {

@@ -11,22 +11,11 @@ import {
   parseSkillActivationSignal,
   upsertSkillSystemMessage,
 } from '../skills/skill-activation-protocol';
+import { normalizeToolName } from '../utils/tool-aliases';
 
 const ESSENTIAL_TOOLS = new Set([
   'skill',
 ]);
-
-const TOOL_NAME_ALIASES: Record<string, string> = {
-  Bash: 'execute_shell',
-  bash: 'execute_shell',
-  Shell: 'execute_shell',
-  shell: 'execute_shell',
-  execute_bash: 'execute_shell',
-};
-
-function normalizeToolName(name: string): string {
-  return TOOL_NAME_ALIASES[name] ?? name;
-}
 
 const DEFAULT_PROMPT_BUDGET = 120000;
 const ANTHROPIC_PROMPT_BUDGET = 180000;
@@ -57,12 +46,18 @@ export interface RunResult {
   messages: Message[];
   /** 本次 run() 期间新增的 assistant/tool 消息（不含最终纯文本回复） */
   newMessages: Message[];
+  /** 本次 run 结束时被熔断禁用的工具列表，供跨消息持久化 */
+  disabledTools: string[];
 }
 
 /** ConversationRunner 构造选项 */
 export interface RunnerOptions {
   maxTurns?: number;
   maxContextTokens?: number;
+  /** 提示词 token 预算（默认 120000，Anthropic 模型 180000） */
+  promptBudget?: number;
+  /** 工具连续失败多少次后熔断（默认 3） */
+  failureThreshold?: number;
   /** false 时用 aiService.chat() 代替 chatStream()（默认 true） */
   stream?: boolean;
   /** 供 agent 检查 stop 状态，返回 false 时提前退出循环 */
@@ -101,7 +96,7 @@ export class ConversationRunner {
   /** 已被熔断禁用的工具 */
   private disabledTools = new Set<string>();
 
-  private static readonly FAILURE_THRESHOLD = 3;
+  private failureThreshold: number;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: string, maxLen = 200): string {
@@ -117,13 +112,14 @@ export class ConversationRunner {
     options?: RunnerOptions,
   ) {
     this.maxTurns = options?.maxTurns ?? 150;
+    this.failureThreshold = options?.failureThreshold ?? 3;
     this.stream = options?.stream ?? true;
     this.shouldContinue = options?.shouldContinue;
     this.enableCompression = options?.enableCompression ?? true;
     this.toolExecutionContext = options?.toolExecutionContext;
     this.activeSkillName = options?.initialSkillName;
     this.activeSkillToolPolicy = options?.initialSkillToolPolicy;
-    this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
+    this.maxPromptTokens = this.resolvePromptBudget(options?.promptBudget ?? options?.maxContextTokens);
     this.compressor = new ContextCompressor(this.aiService, {
       maxContextTokens: options?.maxContextTokens,
     });
@@ -181,10 +177,12 @@ export class ConversationRunner {
       // 没有工具调用，返回最终回复
       if (!response.toolCalls || response.toolCalls.length === 0) {
         Logger.info(`[Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(response.content || '', 300)}`);
+        this.toolFailureCount.clear();
         return {
           response: response.content || '',
           messages,
-          newMessages
+          newMessages,
+          disabledTools: [...this.disabledTools],
         };
       }
 
@@ -246,7 +244,7 @@ export class ConversationRunner {
         } else if (isFailed) {
           const count = (this.toolFailureCount.get(toolName) || 0) + 1;
           this.toolFailureCount.set(toolName, count);
-          if (count >= ConversationRunner.FAILURE_THRESHOLD) {
+          if (count >= this.failureThreshold) {
             this.disabledTools.add(toolName);
             this.toolFailureCount.delete(toolName);
             toolContent += `\n\n[系统] 工具 "${toolName}" 连续失败 ${count} 次，已被自动禁用，请换用其他工具完成任务。`;
@@ -288,11 +286,13 @@ export class ConversationRunner {
       }
     }
 
+    this.toolFailureCount.clear();
     Logger.warning(`达到最大工具调用轮次 (${this.maxTurns})`);
     return {
       response: '[达到最大工具调用轮次，请继续对话]',
       messages,
-      newMessages
+      newMessages,
+      disabledTools: [...this.disabledTools],
     };
   }
 
@@ -476,7 +476,7 @@ export class ConversationRunner {
       nextContent = content.slice(0, maxChars) + `\n...[已截断，原始 ${content.length} 字符]`;
     }
 
-    if (message.role === 'tool') {
+    if (aggressive && message.role === 'tool') {
       const toolName = message.name || 'unknown';
       nextContent = `[tool:${toolName}] 历史输出已省略`;
     }

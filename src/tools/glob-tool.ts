@@ -64,15 +64,17 @@ export class GlobTool implements Tool {
         return `未找到匹配的文件。\n模式: ${pattern}\n目录: ${cwd}`;
       }
 
-      // 获取文件的修改时间并排序
-      const filesWithStats = files.map(file => {
-        const fullPath = path.join(cwd, file);
-        const stats = fs.statSync(fullPath);
-        return {
-          path: file,
-          mtime: stats.mtime.getTime()
-        };
-      });
+      // 获取文件的修改时间并排序（文件可能在 glob 和 stat 之间被删除）
+      const filesWithStats: { path: string; mtime: number }[] = [];
+      for (const file of files) {
+        try {
+          const fullPath = path.join(cwd, file);
+          const stats = fs.statSync(fullPath);
+          filesWithStats.push({ path: file, mtime: stats.mtime.getTime() });
+        } catch {
+          // 文件已被删除，跳过
+        }
+      }
 
       // 按修改时间降序排序（最新的在前）
       filesWithStats.sort((a, b) => b.mtime - a.mtime);

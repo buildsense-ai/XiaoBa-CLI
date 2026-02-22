@@ -15,6 +15,7 @@ const DEFAULT_DANGEROUS_TOOLS = new Set([
   'self_evolution'
 ]);
 
+// 尽力而为的危险命令检测，非沙箱替代方案。仅作为最后一道防线拦截明显危险操作。
 const DANGEROUS_BASH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\brm\s+-rf\s+\/(\s|$)/i, reason: '检测到可能破坏系统的 rm -rf /' },
   { pattern: /\bdel\s+\/s\s+\/q\s+[a-z]:\\/i, reason: '检测到可能清空磁盘的 del /s /q' },
@@ -24,7 +25,16 @@ const DANGEROUS_BASH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\bshutdown\b/i, reason: '检测到关机/重启命令' },
   { pattern: /\breboot\b/i, reason: '检测到重启命令' },
   { pattern: /\bpoweroff\b/i, reason: '检测到关机命令' },
-  { pattern: /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\};\s*:/, reason: '检测到 Fork Bomb' }
+  { pattern: /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\};\s*:/, reason: '检测到 Fork Bomb' },
+  { pattern: /\brm\s+-rf\s+\/\*/i, reason: '检测到 rm -rf /* 危险命令' },
+  { pattern: /\bcurl\b.*\|\s*\bbash\b/i, reason: '检测到 curl|bash 远程代码执行' },
+  { pattern: /\bwget\b.*\|\s*\bsh\b/i, reason: '检测到 wget|sh 远程代码执行' },
+  { pattern: /\bchmod\s+777\b/i, reason: '检测到 chmod 777 不安全权限设置' },
+  { pattern: /\bdd\b.*\bof\s*=\s*\/dev\//i, reason: '检测到 dd of=/dev/ 危险写入' },
+  { pattern: /\beval\s+/i, reason: '检测到 eval 命令' },
+  { pattern: /`[^`]+`/, reason: '检测到反引号命令替换' },
+  { pattern: /\bsource\s+/i, reason: '检测到 source 命令' },
+  { pattern: /--no-preserve-root/i, reason: '检测到 --no-preserve-root 危险标志' },
 ];
 
 function parseAllowedTools(): Set<string> {

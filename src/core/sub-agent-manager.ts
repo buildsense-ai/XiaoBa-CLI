@@ -118,10 +118,12 @@ export class SubAgentManager {
         });
       }
 
-      // 完成后保留一段时间供查询，然后清理
+      // 立即释放不再需要的映射，减少内存尖峰
+      this.parentMap.delete(id);
+
+      // subAgents 保留一段时间供查询，然后清理
       setTimeout(() => {
         this.subAgents.delete(id);
-        this.parentMap.delete(id);
       }, SubAgentManager.RETENTION_MS);
     });
 

@@ -110,8 +110,9 @@ export class BridgeServer {
         reject(err);
       });
 
-      this.server.listen(this.port, () => {
-        Logger.info(`[Bridge] 已启动，监听端口 ${this.port}`);
+      const host = this.secret ? '0.0.0.0' : '127.0.0.1';
+      this.server.listen(this.port, host, () => {
+        Logger.info(`[Bridge] 已启动，监听 ${host}:${this.port}`);
         resolve();
       });
     });
@@ -126,86 +127,96 @@ export class BridgeServer {
     }
   }
 
-  private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', async () => {
-      try {
-        const msg: BridgeMessage = JSON.parse(body);
+  private static readonly MAX_BODY_SIZE = 1 * 1024 * 1024; // 1MB
 
-        if (!msg.from || !msg.chat_id || !msg.message) {
-          res.writeHead(400);
-          res.end(JSON.stringify({ ok: false, error: '缺少必填字段: from, chat_id, message' }));
+  private readBody(req: http.IncomingMessage): Promise<string> {
+    return new Promise((resolve, reject) => {
+      let body = '';
+      let size = 0;
+      req.on('data', (chunk: Buffer | string) => {
+        size += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+        if (size > BridgeServer.MAX_BODY_SIZE) {
+          req.destroy();
+          reject(new Error('请求体超过 1MB 限制'));
           return;
         }
-
-        Logger.info(`[Bridge] 收到来自 ${msg.from} 的任务: ${msg.message.slice(0, 80)}...`);
-
-        res.writeHead(200);
-        res.end(JSON.stringify({ ok: true, message: '任务已接收' }));
-
-        // 异步处理，不阻塞响应
-        if (this.handler) {
-          this.handler(msg).catch((err) => {
-            Logger.error(`[Bridge] 处理任务失败: ${err.message}`);
-          });
-        }
-      } catch {
-        res.writeHead(400);
-        res.end(JSON.stringify({ ok: false, error: '无效的 JSON' }));
-      }
+        body += chunk;
+      });
+      req.on('end', () => resolve(body));
+      req.on('error', reject);
     });
+  }
+
+  private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    try {
+      const body = await this.readBody(req);
+      const msg: BridgeMessage = JSON.parse(body);
+
+      if (!msg.from || !msg.chat_id || !msg.message) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ ok: false, error: '缺少必填字段: from, chat_id, message' }));
+        return;
+      }
+
+      Logger.info(`[Bridge] 收到来自 ${msg.from} 的任务: ${msg.message.slice(0, 80)}...`);
+
+      res.writeHead(200);
+      res.end(JSON.stringify({ ok: true, message: '任务已接收' }));
+
+      if (this.handler) {
+        this.handler(msg).catch((err) => {
+          Logger.error(`[Bridge] 处理任务失败: ${err.message}`);
+        });
+      }
+    } catch {
+      res.writeHead(400);
+      res.end(JSON.stringify({ ok: false, error: '无效的 JSON' }));
+    }
   }
 
   private async handleResultRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', () => {
-      try {
-        const result: BridgeResult = JSON.parse(body);
+    try {
+      const body = await this.readBody(req);
+      const result: BridgeResult = JSON.parse(body);
 
-        if (!result.task_id || !result.result) {
-          res.writeHead(400);
-          res.end(JSON.stringify({ ok: false, error: '缺少必填字段: task_id, result' }));
-          return;
-        }
-
-        Logger.info(`[Bridge] 收到任务结果: task_id=${result.task_id}, from=${result.from}`);
-        this.resolvePendingTask(result.task_id, result);
-
-        res.writeHead(200);
-        res.end(JSON.stringify({ ok: true }));
-      } catch {
+      if (!result.task_id || !result.result) {
         res.writeHead(400);
-        res.end(JSON.stringify({ ok: false, error: '无效的 JSON' }));
+        res.end(JSON.stringify({ ok: false, error: '缺少必填字段: task_id, result' }));
+        return;
       }
-    });
+
+      Logger.info(`[Bridge] 收到任务结果: task_id=${result.task_id}, from=${result.from}`);
+      this.resolvePendingTask(result.task_id, result);
+
+      res.writeHead(200);
+      res.end(JSON.stringify({ ok: true }));
+    } catch {
+      res.writeHead(400);
+      res.end(JSON.stringify({ ok: false, error: '无效的 JSON' }));
+    }
   }
 
   private async handleGroupMessage(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', async () => {
-      try {
-        const msg: GroupMessage = JSON.parse(body);
-        if (!msg.from || !msg.chat_id || !msg.content) {
-          res.writeHead(400);
-          res.end(JSON.stringify({ ok: false, error: '缺少必填字段: from, chat_id, content' }));
-          return;
-        }
-        Logger.info(`[Bridge] 收到群聊广播: from=${msg.from}, chat_id=${msg.chat_id}`);
-        res.writeHead(200);
-        res.end(JSON.stringify({ ok: true }));
-        if (this.groupMessageHandler) {
-          this.groupMessageHandler(msg).catch((err) => {
-            Logger.error(`[Bridge] 处理群聊广播失败: ${err.message}`);
-          });
-        }
-      } catch {
+    try {
+      const body = await this.readBody(req);
+      const msg: GroupMessage = JSON.parse(body);
+      if (!msg.from || !msg.chat_id || !msg.content) {
         res.writeHead(400);
-        res.end(JSON.stringify({ ok: false, error: '无效的 JSON' }));
+        res.end(JSON.stringify({ ok: false, error: '缺少必填字段: from, chat_id, content' }));
+        return;
       }
-    });
+      Logger.info(`[Bridge] 收到群聊广播: from=${msg.from}, chat_id=${msg.chat_id}`);
+      res.writeHead(200);
+      res.end(JSON.stringify({ ok: true }));
+      if (this.groupMessageHandler) {
+        this.groupMessageHandler(msg).catch((err) => {
+          Logger.error(`[Bridge] 处理群聊广播失败: ${err.message}`);
+        });
+      }
+    } catch {
+      res.writeHead(400);
+      res.end(JSON.stringify({ ok: false, error: '无效的 JSON' }));
+    }
   }
 
   /** 注册 pending task，等待结果回传 */
