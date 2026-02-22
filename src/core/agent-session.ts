@@ -169,7 +169,7 @@ export class AgentSession {
 
       // ── GauzMem: fire-and-forget 写入用户消息 ──
       if (this.gauzMem.isAvailable()) {
-        this.gauzMem.writeMessage(text, 'user', this.platformId, this.runId).catch(() => {});
+        this.gauzMem.writeMessage(text, this.gauzMem.getOwnerName() || 'user', false, this.platformId, this.runId).catch(() => {});
       }
 
       this.messages.push({ role: 'user', content: text });
@@ -299,7 +299,7 @@ export class AgentSession {
           ? sentMessages.join('\n')
           : result.response;
         if (agentContent) {
-          this.gauzMem.writeMessage(agentContent, 'agent', this.platformId, this.runId).catch(() => {});
+          this.gauzMem.writeMessage(agentContent, this.gauzMem.getAgentName(), true, this.platformId, this.runId).catch(() => {});
         }
       }
 
@@ -422,7 +422,7 @@ export class AgentSession {
   enqueue(text: string): void {
     this.messageQueue.push(text);
     if (this.gauzMem.isAvailable()) {
-      this.gauzMem.writeMessage(text, 'user', this.platformId, this.runId).catch(() => {});
+      this.gauzMem.writeMessage(text, this.gauzMem.getOwnerName() || 'user', false, this.platformId, this.runId).catch(() => {});
     }
   }
 

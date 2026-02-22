@@ -5,7 +5,7 @@ import { Logger } from '../utils/logger';
 /**
  * Memory Search 工具 - 主动搜索 GauzMem 长期记忆
  *
- * 让 AI 可以主动查询历史记忆。
+ * 使用 ActiveSearchService（结构化 JSON），而非 passive recall（自然语言片段）。
  */
 export class MemorySearchTool implements Tool {
   definition: ToolDefinition = {
@@ -22,7 +22,15 @@ export class MemorySearchTool implements Tool {
         },
         top_k: {
           type: 'number',
-          description: '返回的最大种子数（1-50，默认 15）',
+          description: '返回的最大结果数（1-50，默认 5）',
+        },
+        graph_hops: {
+          type: 'number',
+          description: '图扩展跳数（0-3，默认 0 不扩展）。需要深挖关联时设为 1-2',
+        },
+        temporal_expand: {
+          type: 'number',
+          description: '前后扩展轮数（0-10，默认 0）。需要看上下文对话时设为 1-3',
         },
       },
       required: ['query'],
@@ -30,7 +38,7 @@ export class MemorySearchTool implements Tool {
   };
 
   async execute(args: any, _context: ToolExecutionContext): Promise<string> {
-    const { query, top_k = 15 } = args;
+    const { query, top_k = 5, graph_hops = 0, temporal_expand = 0 } = args;
 
     const normalizedQuery = (query || '').trim();
     if (!normalizedQuery) {
@@ -43,30 +51,49 @@ export class MemorySearchTool implements Tool {
       return '记忆服务当前不可用（未配置或暂时不可达）';
     }
 
-    const topK = Math.max(1, Math.min(Number(top_k) || 15, 50));
+    const topK = Math.max(1, Math.min(Number(top_k) || 5, 50));
 
-    Logger.info(`[MemorySearch] 查询: ${normalizedQuery} (top_k=${topK})`);
+    Logger.info(`[MemorySearch] 查询: ${normalizedQuery} (top_k=${topK}, graph_hops=${graph_hops}, temporal=${temporal_expand})`);
 
     try {
-      const result = await gauzMem.recallWithMetadata(normalizedQuery, {
-        maxSeeds: topK,
+      const result = await gauzMem.activeSearch(normalizedQuery, {
+        topK,
+        graphHops: Number(graph_hops) || 0,
+        temporalExpand: Number(temporal_expand) || 0,
       });
 
-      if (!result || !result.recall || result.factsCount === 0) {
+      if (!result || result.totalResults === 0) {
         return `未找到与「${normalizedQuery}」相关的记忆`;
       }
 
-      // 格式化输出
       const lines: string[] = [
-        `查询: ${normalizedQuery}`,
-        `找到 ${result.factsCount} 条相关记忆，${result.subgraphCount} 个关联子图：`,
+        `找到 ${result.totalResults} 条相关记忆：`,
         '',
-        result.recall,
       ];
 
-      // 添加元信息
-      if (result.latencyMs !== null) {
-        lines.push(`\n(搜索耗时: ${result.latencyMs.toFixed(1)}ms)`);
+      for (const item of result.results) {
+        lines.push(`- [fact#${item.fact_id}] ${item.content}`);
+
+        if (item.source_chunk?.text) {
+          lines.push(`  原文: ${item.source_chunk.text.slice(0, 200)}`);
+        }
+
+        if (item.related_facts?.length) {
+          for (const rf of item.related_facts) {
+            lines.push(`  → [${rf.relation_type}] ${rf.content}`);
+          }
+        }
+
+        if (item.expanded_context?.length) {
+          lines.push(`  上下文:`);
+          for (const ctx of item.expanded_context) {
+            lines.push(`    [${ctx.speaker} T${ctx.turn}] ${ctx.text.slice(0, 150)}`);
+          }
+        }
+      }
+
+      if (result.searchTimeMs !== null) {
+        lines.push(`\n(搜索耗时: ${result.searchTimeMs.toFixed(1)}ms)`);
       }
 
       return lines.join('\n');

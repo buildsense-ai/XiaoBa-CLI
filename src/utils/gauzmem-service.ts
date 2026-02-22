@@ -21,6 +21,8 @@ interface GauzMemConfig {
   projectId: string;
   userId: string;
   apiKey?: string;
+  agentName: string;
+  ownerName: string;
 }
 
 function loadConfig(): GauzMemConfig {
@@ -30,6 +32,8 @@ function loadConfig(): GauzMemConfig {
     projectId: process.env.GAUZ_MEM_PROJECT_ID || 'XiaoBa',
     userId: process.env.GAUZ_MEM_USER_ID || '',
     apiKey: process.env.GAUZ_MEM_API_KEY,
+    agentName: process.env.GAUZ_MEM_AGENT_NAME || 'xiaoba',
+    ownerName: process.env.GAUZ_MEM_OWNER_NAME || '',
   };
 }
 
@@ -39,6 +43,19 @@ const CB_THRESHOLD = 3;
 const CB_COOLDOWN_MS = 60_000;
 
 // ─── Types ──────────────────────────────────────────────
+
+/** Active Search 结果 */
+export interface ActiveSearchResult {
+  results: Array<{
+    fact_id: number;
+    content: string;
+    source_chunk?: { text: string; turn?: number; speaker?: string } | null;
+    related_facts?: Array<{ fact_id: number; content: string; relation_type: string }> | null;
+    expanded_context?: Array<{ turn: number; speaker: string; text: string }> | null;
+  }>;
+  totalResults: number;
+  searchTimeMs: number | null;
+}
 
 /** Recall 结果的完整元数据 */
 export interface RecallResult {
@@ -127,7 +144,8 @@ export class GauzMemService {
    */
   async writeMessage(
     text: string,
-    speaker: 'user' | 'agent',
+    speaker: string,
+    isSelf: boolean,
     platformId: string,
     runId?: string,
     userId?: string,
@@ -142,6 +160,7 @@ export class GauzMemService {
           user_id: userId || this.config.userId,
           platform_id: platformId,
           speaker,
+          is_self: isSelf,
           run_id: runId,
         },
       });
@@ -238,9 +257,58 @@ export class GauzMemService {
     return result?.recall || '';
   }
 
+  // ─── 主动记忆搜索 ─────────────────────────────────
+
+  /**
+   * 主动记忆搜索：返回结构化 JSON，Agent 自行处理。
+   * 与 recall 的区别：recall 返回自然语言片段，search 返回 raw facts + 图扩展 + 时序上下文。
+   */
+  async activeSearch(
+    query: string,
+    options?: {
+      topK?: number;
+      graphHops?: number;
+      temporalExpand?: number;
+      minRelevance?: number;
+    },
+  ): Promise<ActiveSearchResult | null> {
+    if (!this.isAvailable() || !query.trim()) return null;
+
+    try {
+      const resp = await this.client!.post('/api/v1/memories/search', {
+        project_id: this.config.projectId,
+        query,
+        top_k: options?.topK ?? 5,
+        graph_hops: options?.graphHops ?? 0,
+        temporal_expand: options?.temporalExpand ?? 0,
+        min_relevance: options?.minRelevance ?? 0.35,
+      });
+      this.cb.recordSuccess();
+
+      const data = resp.data;
+      return {
+        results: data?.results || [],
+        totalResults: data?.total_results || 0,
+        searchTimeMs: data?.search_time_ms ?? null,
+      };
+    } catch (err: any) {
+      this.cb.recordFailure();
+      Logger.warning(`[GauzMem] activeSearch 失败: ${err.message}`);
+      return null;
+    }
+  }
+
   // ─── Getters ──────────────────────────────────────
 
   getProjectId(): string {
     return this.config.projectId;
+  }
+
+  getAgentName(): string {
+    return this.config.agentName;
+  }
+
+  getOwnerName(): string {
+    return this.config.ownerName;
   }
 }

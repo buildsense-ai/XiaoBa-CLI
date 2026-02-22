@@ -49,7 +49,31 @@
       "Bash(node:*)",
       "Bash(npx tsx -e \"\nimport { PromptManager } from ''./src/utils/prompt-manager'';\n\nasync function test\\(\\) {\n  const prompt = await PromptManager.buildSystemPrompt\\([''memory_search'']\\);\n  console.log\\(''Prompt length:'', prompt.length\\);\n  console.log\\(''Includes agent_name:'', prompt.includes\\(''agent_name''\\)\\);\n  console.log\\(''Includes 小八:'', prompt.includes\\(''小八''\\)\\);\n  console.log\\(''First 300 chars:'', prompt.substring\\(0, 300\\)\\);\n}\n\ntest\\(\\);\n\")",
       "Bash(npx tsc:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git rm:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(find:*)",
+      "Bash(rsync:*)",
+      "WebFetch(domain:help.aliyun.com)",
+      "Bash(git checkout:*)",
+      "Bash(kill:*)",
+      "Bash(FEISHU_APP_ID=cli_a905efedeab85bcd FEISHU_APP_SECRET=nYH5djt9wnomu8NCt87gmdK5sZp283Hy npx tsx src/index.ts feishu)",
+      "Bash(python3 -c:*)",
+      "Bash(npx jest:*)",
+      "Bash(CONTEXT_DEBUG=true GAUZ_LLM_PROVIDER=anthropic npx tsx:*)",
+      "Bash(CONTEXT_DEBUG=true npx tsx:*)",
+      "Bash(git -C /Users/zhuhanyuan/Documents/XiaoBa-CLI branch:*)",
+      "Bash(git status:*)",
+      "Bash(ls:*)",
+      "Bash(xargs:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(du -sh:*)",
+      "Bash(lsof:*)"
     ]
   }
 }
