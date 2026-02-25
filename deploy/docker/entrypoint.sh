@@ -11,4 +11,12 @@ mkdir -p \
   /app/docs/ppt \
   /app/audit
 
+# Run skill setup scripts (if any)
+for f in /app/skills/*/setup.sh; do
+  [ -f "$f" ] && [ -x "$f" ] && {
+    echo "Running skill setup: $f"
+    "$f" || echo "Warning: $f exited with code $?"
+  }
+done
+
 exec "$@"
