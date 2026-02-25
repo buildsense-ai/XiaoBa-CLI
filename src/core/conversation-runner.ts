@@ -12,6 +12,7 @@ import {
   upsertSkillSystemMessage,
 } from '../skills/skill-activation-protocol';
 import { normalizeToolName } from '../utils/tool-aliases';
+import { ContextDebugLogger } from '../utils/context-debug-logger';
 
 const ESSENTIAL_TOOLS = new Set([
   'skill',
@@ -72,6 +73,8 @@ export interface RunnerOptions {
   initialSkillName?: string;
   /** 会话初始 skill 工具策略（可选） */
   initialSkillToolPolicy?: SkillToolPolicy;
+  /** Context debug logger */
+  debugLogger?: ContextDebugLogger;
 }
 
 /**
@@ -90,6 +93,7 @@ export class ConversationRunner {
   private activeSkillName?: string;
   private activeSkillToolPolicy?: SkillToolPolicy;
   private maxPromptTokens: number;
+  private debugLogger?: ContextDebugLogger;
 
   /** 工具连续失败计数（用于熔断） */
   private toolFailureCount = new Map<string, number>();
@@ -120,6 +124,7 @@ export class ConversationRunner {
     this.activeSkillName = options?.initialSkillName;
     this.activeSkillToolPolicy = options?.initialSkillToolPolicy;
     this.maxPromptTokens = this.resolvePromptBudget(options?.promptBudget ?? options?.maxContextTokens);
+    this.debugLogger = options?.debugLogger;
     this.compressor = new ContextCompressor(this.aiService, {
       maxContextTokens: options?.maxContextTokens,
     });
@@ -172,6 +177,12 @@ export class ConversationRunner {
       if (response.usage) {
         Metrics.recordAICall(this.stream ? 'stream' : 'chat', response.usage);
         Logger.info(`[Turn ${turns}] AI返回 tokens: ${response.usage.promptTokens}+${response.usage.completionTokens}=${response.usage.totalTokens}`);
+      }
+
+      // debug logger: 记录每轮 AI 响应
+      if (this.debugLogger?.enabled) {
+        const tc = (response.toolCalls || []).map(c => ({ name: c.function.name, arguments: c.function.arguments }));
+        this.debugLogger.recordTurn(turns, response.usage?.promptTokens ?? 0, response.usage?.completionTokens ?? 0, tc, response.content || '');
       }
 
       // 没有工具调用，返回最终回复

@@ -1,284 +1,355 @@
+/**
+ * GauzMem Service — 长期记忆读写客户端
+ *
+ * 职责：
+ * - writeMessage(): 写入对话消息（fire-and-forget）
+ * - recall() / recallWithMetadata(): 被动记忆召回
+ * - activeSearch(): 主动记忆搜索（结构化 JSON）
+ * - searchMemory() / writeMemory(): 兼容旧 API
+ *
+ * 设计：
+ * - 单例模式，通过 getInstance() 获取
+ * - Circuit breaker: 连续 3 次失败 → 60s 冷却期 → 半开状态自动恢复
+ * - 所有方法在 GauzMem 未配置或不可用时静默降级，不影响主流程
+ */
+
 import axios, { AxiosInstance } from 'axios';
 import { Logger } from './logger';
 
-/**
- * GauzMem 记忆消息接口
- */
-export interface GauzMemMessage {
-  text: string;
-  user_id: string;
-  agent_id: string;
-  speaker: 'user' | 'agent';
+// ─── 配置 ──────────────────────────────────────────────
+
+interface GauzMemConfig {
+  enabled: boolean;
+  baseUrl: string;
+  projectId: string;
+  userId: string;
+  apiKey?: string;
+  agentName: string;
+  ownerName: string;
 }
 
-/**
- * 写入记忆请求
- */
-export interface WriteMemoryRequest {
-  project_id: string;
-  message: GauzMemMessage;
-}
-
-/**
- * 搜索记忆请求
- */
-export interface SearchMemoryRequest {
-  project_id: string;
-  query: string;
-  top_k?: number;
-  expansions?: {
-    graph?: {
-      enabled: boolean;
-      max_hops: number;
-    };
+function loadConfig(): GauzMemConfig {
+  return {
+    enabled: process.env.GAUZ_MEM_ENABLED === 'true',
+    baseUrl: (process.env.GAUZ_MEM_BASE_URL || '').replace(/\/+$/, ''),
+    projectId: process.env.GAUZ_MEM_PROJECT_ID || 'XiaoBa',
+    userId: process.env.GAUZ_MEM_USER_ID || '',
+    apiKey: process.env.GAUZ_MEM_API_KEY,
+    agentName: process.env.GAUZ_MEM_AGENT_NAME || 'xiaoba',
+    ownerName: process.env.GAUZ_MEM_OWNER_NAME || '',
   };
 }
 
-/**
- * 搜索结果项
- */
+// ─── Circuit Breaker ───────────────────────────────────
+
+const CB_THRESHOLD = 3;
+const CB_COOLDOWN_MS = 60_000;
+
+class CircuitBreaker {
+  private failures = 0;
+  private openUntil = 0;
+
+  isOpen(): boolean {
+    if (this.failures < CB_THRESHOLD) return false;
+    if (Date.now() >= this.openUntil) {
+      // 冷却期结束，半开状态：允许一次尝试
+      this.failures = CB_THRESHOLD - 1;
+      return false;
+    }
+    return true;
+  }
+
+  recordSuccess(): void {
+    this.failures = 0;
+    this.openUntil = 0;
+  }
+
+  recordFailure(): void {
+    this.failures++;
+    if (this.failures >= CB_THRESHOLD) {
+      this.openUntil = Date.now() + CB_COOLDOWN_MS;
+      Logger.warning(`[GauzMem] circuit breaker open，${CB_COOLDOWN_MS / 1000}s 后重试`);
+    }
+  }
+}
+
+// ─── Types ──────────────────────────────────────────────
+
+/** Active Search 结果 */
+export interface ActiveSearchResult {
+  results: Array<{
+    fact_id: number;
+    content: string;
+    source_chunk?: { text: string; turn?: number; speaker?: string } | null;
+    related_facts?: Array<{ fact_id: number; content: string; relation_type: string }> | null;
+    expanded_context?: Array<{ turn: number; speaker: string; text: string }> | null;
+  }>;
+  totalResults: number;
+  searchTimeMs: number | null;
+}
+
+/** Recall 结果的完整元数据 */
+export interface RecallResult {
+  recall: string;
+  factsCount: number;
+  subgraphCount: number;
+  factIds: number[];
+  scores: number[];
+  latencyMs: number | null;
+  embeddingTokens: number | null;
+  requestId: string;
+}
+
+/** 兼容旧 API 的搜索结果项 */
 export interface SearchResultItem {
   text: string;
   score?: number;
   metadata?: any;
 }
 
-/**
- * 记忆事实
- */
-export interface MemoryFact {
-  content: string;
-}
+// ─── Service ───────────────────────────────────────────
 
-/**
- * 记忆块
- */
-export interface MemoryChunk {
-  content: string;
-}
-
-/**
- * 记忆主题
- */
-export interface MemoryTopic {
-  content: string;
-  title: string;
-}
-
-/**
- * 记忆束
- */
-export interface MemoryBundle {
-  bundle_id: number;
-  facts: MemoryFact[];
-  chunks: MemoryChunk[];
-  topics: MemoryTopic[];
-}
-
-/**
- * 搜索记忆响应
- */
-export interface SearchMemoryResponse {
-  success: boolean;
-  query: string;
-  project_id: string;
-  short_term_memory: any;
-  bundles: MemoryBundle[];
-  total_bundles: number;
-  search_time_ms: number;
-}
-
-/**
- * GauzMem 配置
- */
-export interface GauzMemConfig {
-  baseUrl: string;
-  projectId: string;
-  userId: string;
-  agentId: string;
-  enabled: boolean;
-}
-
-/**
- * GauzMem 记忆服务
- */
 export class GauzMemService {
-  private client: AxiosInstance;
+  private static instance: GauzMemService | null = null;
+
   private config: GauzMemConfig;
+  private client: AxiosInstance | null = null;
+  private cb = new CircuitBreaker();
 
-  /** 熔断器状态 */
-  private consecutiveFailures = 0;
-  private circuitOpenUntil = 0;  // timestamp，熔断恢复时间
-  private static readonly FAILURE_THRESHOLD = 3;   // 连续失败 N 次后熔断
-  private static readonly COOLDOWN_MS = 60_000;     // 熔断冷却 60 秒
-
-  constructor(config: GauzMemConfig) {
-    this.config = config;
-    this.client = axios.create({
-      baseURL: config.baseUrl,
-      timeout: 5000,  // 从 10s 降到 5s，减少阻塞
-      headers: {
+  private constructor() {
+    this.config = loadConfig();
+    if (this.config.enabled && this.config.baseUrl) {
+      const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-      },
-    });
-  }
-
-  /**
-   * 检查熔断器是否打开（应跳过调用）
-   */
-  private isCircuitOpen(): boolean {
-    if (this.consecutiveFailures < GauzMemService.FAILURE_THRESHOLD) {
-      return false;
-    }
-    if (Date.now() > this.circuitOpenUntil) {
-      // 冷却期结束，允许一次探测
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * 记录成功，重置熔断器
-   */
-  private recordSuccess(): void {
-    this.consecutiveFailures = 0;
-  }
-
-  /**
-   * 记录失败，可能触发熔断
-   */
-  private recordFailure(): void {
-    this.consecutiveFailures++;
-    if (this.consecutiveFailures >= GauzMemService.FAILURE_THRESHOLD) {
-      this.circuitOpenUntil = Date.now() + GauzMemService.COOLDOWN_MS;
-      Logger.warning(
-        `GauzMem 连续失败 ${this.consecutiveFailures} 次，熔断 ${GauzMemService.COOLDOWN_MS / 1000}s`
-      );
+      };
+      if (this.config.apiKey) {
+        headers['X-API-Key'] = this.config.apiKey;
+      }
+      this.client = axios.create({
+        baseURL: this.config.baseUrl,
+        timeout: 10_000,
+        headers,
+      });
+      Logger.info(`[GauzMem] 已启用 → ${this.config.baseUrl} (project=${this.config.projectId})`);
     }
   }
 
-  /**
-   * 写入记忆
-   */
-  async writeMemory(text: string, speaker: 'user' | 'agent'): Promise<boolean> {
-    if (!this.config.enabled) {
-      return false;
+  static getInstance(): GauzMemService {
+    if (!this.instance) {
+      this.instance = new GauzMemService();
     }
+    return this.instance;
+  }
 
-    if (this.isCircuitOpen()) {
-      Logger.warning('GauzMem 熔断中，跳过写入');
-      return false;
-    }
+  /** GauzMem 是否可用（已配置 + circuit breaker 未打开） */
+  isAvailable(): boolean {
+    return !!(this.client && !this.cb.isOpen());
+  }
+
+  // ─── 写入消息 ─────────────────────────────────────
+
+  /**
+   * 写入一条对话消息到 GauzMem。
+   * Fire-and-forget：调用方不需要 await，失败静默。
+   */
+  async writeMessage(
+    text: string,
+    speaker: string,
+    isSelf: boolean,
+    platformId: string,
+    runId?: string,
+    userId?: string,
+  ): Promise<void> {
+    if (!this.isAvailable()) return;
 
     try {
-      const request: WriteMemoryRequest = {
+      await this.client!.post('/api/v1/memories/messages', {
         project_id: this.config.projectId,
         message: {
           text,
-          user_id: this.config.userId,
-          agent_id: this.config.agentId,
+          user_id: userId || this.config.userId,
+          platform_id: platformId,
           speaker,
+          is_self: isSelf,
+          run_id: runId,
         },
-      };
+      });
+      this.cb.recordSuccess();
+    } catch (err: any) {
+      this.cb.recordFailure();
+      Logger.warning(`[GauzMem] writeMessage 失败: ${err.message}`);
+    }
+  }
 
-      await this.client.post('/api/v1/memories/messages', request);
-      this.recordSuccess();
-      Logger.info(`记忆已写入: ${speaker} - ${text.substring(0, 50)}...`);
+  // ─── 被动记忆召回 ─────────────────────────────────
+
+  /**
+   * 被动记忆召回：返回自然语言格式的回忆片段 + 元数据。
+   */
+  async recallWithMetadata(
+    query: string,
+    options?: {
+      maxSeeds?: number;
+      maxFactsPerSubgraph?: number;
+      minRelevance?: number;
+      maxHops?: number;
+    },
+    requestId?: string,
+  ): Promise<RecallResult | null> {
+    if (!this.isAvailable() || !query.trim()) return null;
+
+    const rid = requestId || crypto.randomUUID();
+
+    try {
+      const resp = await this.client!.post(
+        '/api/v1/memories/recall',
+        {
+          project_id: this.config.projectId,
+          query,
+          max_seeds: options?.maxSeeds,
+          max_facts_per_subgraph: options?.maxFactsPerSubgraph,
+          min_relevance: options?.minRelevance,
+          max_hops: options?.maxHops,
+        },
+        { headers: { 'X-Request-ID': rid } },
+      );
+      this.cb.recordSuccess();
+
+      const data = resp.data;
+      const factsCount = data?.facts_count || 0;
+
+      if (factsCount > 0) {
+        Logger.info(`[GauzMem] recall: ${factsCount} facts, ${data?.subgraph_count || 0} subgraphs (request_id=${rid})`);
+      }
+
+      return {
+        recall: data?.recall || '',
+        factsCount,
+        subgraphCount: data?.subgraph_count || 0,
+        factIds: data?.fact_ids || [],
+        scores: data?.scores || [],
+        latencyMs: data?.latency_ms ?? null,
+        embeddingTokens: data?.embedding_tokens ?? null,
+        requestId: rid,
+      };
+    } catch (err: any) {
+      this.cb.recordFailure();
+      Logger.warning(`[GauzMem] recall 失败: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * 被动记忆召回：返回自然语言格式的回忆片段，直接注入 prompt。
+   * 失败时返回空字符串。
+   */
+  async recall(
+    query: string,
+    options?: { topK?: number; maxSubgraphs?: number },
+    requestId?: string,
+  ): Promise<string> {
+    const result = await this.recallWithMetadata(
+      query,
+      {
+        maxSeeds: options?.topK,
+        maxFactsPerSubgraph: options?.maxSubgraphs,
+      },
+      requestId,
+    );
+    return result?.recall || '';
+  }
+
+  // ─── 主动记忆搜索 ─────────────────────────────────
+
+  /**
+   * 主动记忆搜索：返回结构化 JSON，Agent 自行处理。
+   * 与 recall 的区别：recall 返回自然语言片段，search 返回 raw facts + 图扩展 + 时序上下文。
+   */
+  async activeSearch(
+    query: string,
+    options?: {
+      topK?: number;
+      graphHops?: number;
+      temporalExpand?: number;
+      minRelevance?: number;
+    },
+  ): Promise<ActiveSearchResult | null> {
+    if (!this.isAvailable() || !query.trim()) return null;
+
+    try {
+      const resp = await this.client!.post('/api/v1/memories/search', {
+        project_id: this.config.projectId,
+        query,
+        top_k: options?.topK ?? 5,
+        graph_hops: options?.graphHops ?? 0,
+        temporal_expand: options?.temporalExpand ?? 0,
+        min_relevance: options?.minRelevance ?? 0.35,
+      });
+      this.cb.recordSuccess();
+
+      const data = resp.data;
+      return {
+        results: data?.results || [],
+        totalResults: data?.total_results || 0,
+        searchTimeMs: data?.search_time_ms ?? null,
+      };
+    } catch (err: any) {
+      this.cb.recordFailure();
+      Logger.warning(`[GauzMem] activeSearch 失败: ${err.message}`);
+      return null;
+    }
+  }
+
+  // ─── 兼容旧 API ──────────────────────────────────
+
+  /**
+   * 兼容旧 API：写入记忆（映射到 writeMessage）
+   */
+  async writeMemory(text: string, speaker: 'user' | 'agent'): Promise<boolean> {
+    if (!this.isAvailable()) return false;
+    try {
+      await this.writeMessage(text, speaker, speaker === 'agent', 'unknown');
       return true;
-    } catch (error) {
-      this.recordFailure();
-      Logger.error('写入记忆失败: ' + String(error));
+    } catch {
       return false;
     }
   }
 
   /**
-   * 搜索记忆
+   * 兼容旧 API：搜索记忆（映射到 activeSearch）
    */
-  async searchMemory(
-    query: string,
-    topK: number = 5
-  ): Promise<SearchResultItem[]> {
-    if (!this.config.enabled) {
-      return [];
-    }
-
-    if (this.isCircuitOpen()) {
-      Logger.warning('GauzMem 熔断中，跳过搜索');
-      return [];
-    }
-
-    try {
-      const request: SearchMemoryRequest = {
-        project_id: this.config.projectId,
-        query,
-        top_k: topK,
-        expansions: {
-          graph: {
-            enabled: true,
-            max_hops: 1,
-          },
-        },
-      };
-
-      const response = await this.client.post<SearchMemoryResponse>(
-        '/api/v1/memories/search/bundle',
-        request
-      );
-
-      // 解析 bundles 数据结构
-      const results: SearchResultItem[] = [];
-      const bundles = response.data.bundles || [];
-
-      for (const bundle of bundles) {
-        // 添加 facts
-        if (bundle.facts) {
-          for (const fact of bundle.facts) {
-            results.push({ text: fact.content });
-          }
-        }
-        // 添加 chunks
-        if (bundle.chunks) {
-          for (const chunk of bundle.chunks) {
-            results.push({ text: chunk.content });
-          }
-        }
-        // 添加 topics
-        if (bundle.topics) {
-          for (const topic of bundle.topics) {
-            results.push({
-              text: `[主题: ${topic.title}] ${topic.content}`,
-              metadata: { title: topic.title }
-            });
-          }
-        }
-      }
-
-      this.recordSuccess();
-      Logger.info(`搜索到 ${results.length} 条相关记忆`);
-      return results;
-    } catch (error) {
-      this.recordFailure();
-      Logger.error('搜索记忆失败: ' + String(error));
-      return [];
-    }
+  async searchMemory(query: string, topK: number = 5): Promise<SearchResultItem[]> {
+    if (!this.isAvailable()) return [];
+    const result = await this.activeSearch(query, { topK });
+    if (!result) return [];
+    return result.results.map(r => ({ text: r.content, score: undefined }));
   }
 
   /**
-   * 格式化搜索结果为上下文文本
+   * 兼容旧 API：格式化搜索结果为上下文文本
    */
   formatMemoriesAsContext(memories: SearchResultItem[]): string {
-    if (memories.length === 0) {
-      return '';
-    }
-
-    const contextLines = [
+    if (memories.length === 0) return '';
+    const lines = [
       '=== 相关历史记忆 ===',
       ...memories.map((m, i) => `${i + 1}. ${m.text}`),
       '=== 记忆结束 ===',
       '',
     ];
+    return lines.join('\n');
+  }
 
-    return contextLines.join('\n');
+  // ─── Getters ──────────────────────────────────────
+
+  getProjectId(): string {
+    return this.config.projectId;
+  }
+
+  getAgentName(): string {
+    return this.config.agentName;
+  }
+
+  getOwnerName(): string {
+    return this.config.ownerName;
   }
 }

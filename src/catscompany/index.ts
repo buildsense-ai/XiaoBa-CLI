@@ -6,7 +6,7 @@ import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { AgentServices, BUSY_MESSAGE } from '../core/agent-session';
-import { GauzMemService, GauzMemConfig } from '../utils/gauzmem-service';
+import { GauzMemService } from '../utils/gauzmem-service';
 import { ConfigManager } from '../utils/config';
 import { Logger } from '../utils/logger';
 import { FeishuReplyTool } from '../tools/feishu-reply-tool';
@@ -78,20 +78,8 @@ export class CatsCompanyBot {
 
     const skillManager = new SkillManager();
 
-    // 初始化 GauzMemService
-    const appConfig = ConfigManager.getConfig();
-    let memoryService: GauzMemService | null = null;
-    if (appConfig.memory?.enabled) {
-      const memConfig: GauzMemConfig = {
-        baseUrl: appConfig.memory.baseUrl || '',
-        projectId: appConfig.memory.projectId || 'XiaoBa',
-        userId: appConfig.memory.userId || '',
-        agentId: appConfig.memory.agentId || 'XiaoBa',
-        enabled: true,
-      };
-      memoryService = new GauzMemService(memConfig);
-      Logger.info('CatsCompany 记忆系统已启用');
-    }
+    // 初始化 GauzMemService（单例，从环境变量读取配置）
+    const memoryService = GauzMemService.getInstance();
 
     this.agentServices = {
       aiService,

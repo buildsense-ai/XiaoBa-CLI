@@ -16,8 +16,12 @@ import { Logger } from '../utils/logger';
 import { saveSessionSummary, loadSessionSummary, removeSessionSummary } from '../utils/local-session-store';
 import { SessionStore } from '../utils/session-store';
 import { Metrics } from '../utils/metrics';
+import { ContextDebugLogger } from '../utils/context-debug-logger';
+import { RecallResult } from '../utils/gauzmem-service';
 
 const TRANSIENT_MEMORY_CONTEXT_PREFIX = '[transient_memory_context]';
+const TRANSIENT_LONG_TERM_MEMORY_PREFIX = '[long_term_memory]';
+const MAX_LOCAL_TURNS = 10;
 const TRANSIENT_SUBAGENT_STATUS_PREFIX = '[transient_subagent_status]';
 export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
 export const ERROR_MESSAGE = '不好意思，刚才处理出了点问题，你再试一次？';
@@ -78,10 +82,24 @@ export class AgentSession {
   private circuitBreakerDisabledTools: string[] = [];
   lastActiveAt: number = Date.now();
 
+  /** 从 session key 前缀推断的平台标识 */
+  readonly platformId: string;
+
   constructor(
     public readonly key: string,
     private services: AgentServices,
-  ) {}
+  ) {
+    this.platformId = this.derivePlatformId();
+  }
+
+  /** 从 session key 前缀推断平台 */
+  private derivePlatformId(): string {
+    if (this.key.startsWith('user:') || this.key.startsWith('group:')) return 'feishu';
+    if (this.key.startsWith('cc_user:') || this.key.startsWith('cc_group:')) return 'catscompany';
+    if (this.key === 'cli') return 'cli';
+    if (this.key.startsWith('bridge:')) return 'bridge';
+    return 'unknown';
+  }
 
   // ─── 初始化 ─────────────────────────────────────────
 
@@ -217,24 +235,50 @@ export class AgentSession {
       this.messages.push({ role: 'user', content: text });
 
 
-      // 搜索相关记忆，作为临时上下文注入
+      // ── GauzMem: fire-and-forget 写入用户消息 ──
+      const gauzMem = GauzMemService.getInstance();
+      if (gauzMem.isAvailable()) {
+        gauzMem.writeMessage(text, gauzMem.getOwnerName() || 'user', false, this.platformId, this.key).catch(() => {});
+      }
+
       let contextMessages: Message[] = [...this.messages];
-      let memoryInjected = false;
-      const memoryService = this.services.memoryService;
-      if (memoryService) {
-        const memories = await memoryService.searchMemory(text);
-        if (memories.length > 0) {
-          const memoryContext = memoryService.formatMemoriesAsContext(memories);
-          const memorySystemMessage: Message = {
-            role: 'system',
-            content: `${TRANSIENT_MEMORY_CONTEXT_PREFIX}\n${memoryContext}`,
-          };
-          memoryInjected = true;
-          contextMessages = [
-            ...this.messages.slice(0, -1),
-            memorySystemMessage,
-            this.messages[this.messages.length - 1],
-          ];
+
+      // ── GauzMem: 被动记忆召回 → 注入 transient system message ──
+      const requestId = crypto.randomUUID();
+      let recallResult: RecallResult | null = null;
+
+      if (gauzMem.isAvailable()) {
+        try {
+          recallResult = await gauzMem.recallWithMetadata(
+            text,
+            { maxSeeds: 5, minRelevance: 0.6, maxHops: 1, maxFactsPerSubgraph: 15 },
+            requestId,
+          );
+          if (recallResult?.recall) {
+            const memoryMsg: Message = {
+              role: 'system',
+              content: `${TRANSIENT_LONG_TERM_MEMORY_PREFIX}\n以下是与当前对话相关的长期记忆，供你参考：\n\n${recallResult.recall}`,
+            };
+            const lastUserIdx = contextMessages.length - 1;
+            contextMessages.splice(lastUserIdx, 0, memoryMsg);
+          }
+        } catch {
+          // recall 失败不影响主流程
+        }
+      } else {
+        // 兼容旧 API：通过 services.memoryService 搜索
+        const memoryService = this.services.memoryService;
+        if (memoryService) {
+          const memories = await memoryService.searchMemory(text);
+          if (memories.length > 0) {
+            const memoryContext = memoryService.formatMemoriesAsContext(memories);
+            const memorySystemMessage: Message = {
+              role: 'system',
+              content: `${TRANSIENT_MEMORY_CONTEXT_PREFIX}\n${memoryContext}`,
+            };
+            const lastUserIdx = contextMessages.length - 1;
+            contextMessages.splice(lastUserIdx, 0, memorySystemMessage);
+          }
         }
       }
 
@@ -273,6 +317,12 @@ export class AgentSession {
         : this.isFeishuSession()
           ? 'feishu'
           : 'cli';
+
+      // Context debug logger
+      const debugLogger = new ContextDebugLogger(requestId, this.key, text);
+      const allToolDefs = this.services.toolManager.getToolDefinitions();
+      debugLogger.recordContextModules(contextMessages, allToolDefs, recallResult);
+
       const runner = new ConversationRunner(
         this.services.aiService,
         this.services.toolManager,
@@ -283,6 +333,7 @@ export class AgentSession {
           preDisabledTools: this.circuitBreakerDisabledTools.length > 0
             ? this.circuitBreakerDisabledTools
             : undefined,
+          debugLogger,
           toolExecutionContext: {
             sessionId: this.key,
             surface,
@@ -335,6 +386,38 @@ export class AgentSession {
           `工具调用: ${metrics.toolCalls}次, 工具耗时: ${metrics.toolDurationMs}ms`
         );
       }
+
+      // ── GauzMem: fire-and-forget 写入 agent 回复 ──
+      if (gauzMem.isAvailable()) {
+        const sentMessages = this.extractSentMessages(result.messages);
+        const agentContent = sentMessages.length > 0
+          ? sentMessages.join('\n')
+          : result.response;
+        if (agentContent) {
+          gauzMem.writeMessage(agentContent, gauzMem.getAgentName(), true, this.platformId, this.key).catch(() => {});
+        }
+      }
+
+      // ── GauzMem 可用时裁剪本地历史，只保留最近 N 轮 ──
+      if (gauzMem.isAvailable()) {
+        this.trimLocalHistory();
+      }
+
+      // ── 完整 turn 日志（用于数据分析）──
+      Logger.info(
+        `[Turn Log] request_id=${requestId} ` +
+        `query="${text.slice(0, 50)}${text.length > 50 ? '...' : ''}" ` +
+        `recall_facts=${recallResult?.factsCount ?? 0} ` +
+        `recall_ids=[${(recallResult?.factIds ?? []).slice(0, 10).join(',')}] ` +
+        `recall_latency=${recallResult?.latencyMs ?? 'N/A'}ms ` +
+        `tokens=${metrics.totalPromptTokens}+${metrics.totalCompletionTokens} ` +
+        `tools=${metrics.toolCalls}`
+      );
+
+      // Context debug: 记录最终结果并写入文件
+      const sentMessagesForDebug = this.extractSentMessages(result.messages);
+      debugLogger.recordFinal(sentMessagesForDebug, metrics.totalPromptTokens, metrics.totalCompletionTokens, metrics.toolCalls);
+      debugLogger.flush();
 
       // 持久化本轮所有消息（用户 + assistant/tool）
       if (this.isChatSession()) {
@@ -574,9 +657,50 @@ ${conversationText}
     return messages.filter(msg => {
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_MEMORY_CONTEXT_PREFIX)) return false;
+      if (msg.content.startsWith(TRANSIENT_LONG_TERM_MEMORY_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
       return true;
     });
+  }
+
+  /**
+   * 从 messages 中提取 send_message / feishu_reply 工具实际发出的内容
+   */
+  private extractSentMessages(messages: Message[]): string[] {
+    const sent: string[] = [];
+    for (const msg of messages) {
+      if (msg.role !== 'assistant' || !msg.tool_calls) continue;
+      for (const tc of msg.tool_calls) {
+        if (tc.function.name !== 'send_message' && tc.function.name !== 'feishu_reply') continue;
+        try {
+          const args = JSON.parse(tc.function.arguments);
+          if (args.message) sent.push(args.message);
+        } catch { /* ignore */ }
+      }
+    }
+    return sent;
+  }
+
+  /**
+   * 裁剪本地历史：保留 system 消息 + 最近 MAX_LOCAL_TURNS 轮对话。
+   * GauzMem 可用时调用，因为长期记忆已持久化到服务端。
+   */
+  private trimLocalHistory(): void {
+    const systemMessages: Message[] = [];
+    const conversationMessages: Message[] = [];
+    for (const msg of this.messages) {
+      if (msg.role === 'system') {
+        systemMessages.push(msg);
+      } else {
+        conversationMessages.push(msg);
+      }
+    }
+
+    const maxConversationMessages = MAX_LOCAL_TURNS * 2;
+    if (conversationMessages.length <= maxConversationMessages) return;
+
+    const trimmed = conversationMessages.slice(-maxConversationMessages);
+    this.messages = [...systemMessages, ...trimmed];
   }
 
   /** /skills 命令 */
