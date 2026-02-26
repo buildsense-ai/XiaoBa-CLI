@@ -34,15 +34,28 @@ pylibs/
 !README.md
 
 # ------------------------------
-# Test / examples
+# Test / examples / eval
 # ------------------------------
 tests/
 examples/
+eval/
+eval/benchmarks/
+eval/reports/
 
 # ------------------------------
 # Deploy artifacts
 # ------------------------------
 deploy/tenants/
+deploy/admin/
+deploy/docker-compose.multitenant.yml
+deploy/Dockerfile
+deploy/docker/
+
+# ------------------------------
+# Templates / diagrams
+# ------------------------------
+diagrams/
+templates/
 
 # ------------------------------
 # Runtime artifacts
@@ -93,6 +106,40 @@ docs/ppt/
 docs/writing/
 docs/research-plan/
 docs/*.md
+
+# ------------------------------
+# User-specific startup scripts
+# ------------------------------
+start-*.bat
+
+# ------------------------------
+# User-specific prompts
+# ------------------------------
+prompts/system-prompt-*.md
+
+# ------------------------------
+# Artifacts / junk
+# ------------------------------
+返回结果
+-p/
+
+# ------------------------------
+# Large binaries
+# ------------------------------
+xiaoba.png
+
+# ------------------------------
+# Skills (only keep agent-browser)
+# ------------------------------
+skills/*
+!skills/README.md
+!skills/agent-browser/
+
+# ------------------------------
+# Global tools (only keep analyze_image_tool)
+# ------------------------------
+tools/global/*
+!tools/global/analyze_image_tool.py
 
 # ------------------------------
 # Secrets / local config
