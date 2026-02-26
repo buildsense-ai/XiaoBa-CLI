@@ -47,10 +47,10 @@ export class FeishuMentionTool implements Tool {
 
   async execute(args: any, context: ToolExecutionContext): Promise<string> {
     const { mentions, message, chat_id } = args;
-    const channel = context.feishuChannel;
+    const channel = context.channel;
 
     if (!channel) {
-      return '当前不在飞书会话中，无法发送消息';
+      return '当前不在聊天会话中，无法发送消息';
     }
 
     if (!mentions || !Array.isArray(mentions) || mentions.length === 0) {

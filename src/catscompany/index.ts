@@ -9,10 +9,8 @@ import { AgentServices, BUSY_MESSAGE } from '../core/agent-session';
 import { GauzMemService, GauzMemConfig } from '../utils/gauzmem-service';
 import { ConfigManager } from '../utils/config';
 import { Logger } from '../utils/logger';
-import { FeishuReplyTool } from '../tools/feishu-reply-tool';
-import { FeishuSendFileTool } from '../tools/feishu-send-file-tool';
 import { SubAgentManager } from '../core/sub-agent-manager';
-import { FeishuChannelCallbacks } from '../types/tool';
+import { ChannelCallbacks } from '../types/tool';
 import { randomUUID } from 'crypto';
 
 interface PendingAttachment {
@@ -70,9 +68,7 @@ export class CatsCompanyBot {
     const aiService = new AIService();
     const toolManager = new ToolManager();
 
-    // 注册飞书专用工具（新模式下不再需要持有实例引用做 bind/unbind）
-    toolManager.registerTool(new FeishuReplyTool());
-    toolManager.registerTool(new FeishuSendFileTool());
+    // reply / send_file 已由 ToolManager 默认注册，无需手动注册
 
     Logger.info(`已加载 ${toolManager.getToolCount()} 个工具`);
 
@@ -145,21 +141,21 @@ export class CatsCompanyBot {
     Logger.success('CatsCompany 机器人已启动，等待消息...');
   }
 
-  // ─── 构建 FeishuChannelCallbacks ──────────────────────
+  // ─── 构建 ChannelCallbacks ──────────────────────
 
   /**
    * 为指定 topic 构建通道回调对象。
-   * CatsCompany 复用 FeishuChannelCallbacks 接口，chatId 对应 topic。
+   * CatsCompany 复用 ChannelCallbacks 接口，chatId 对应 topic。
    */
-  private buildFeishuChannel(
+  private buildChannel(
     topic: string,
     opts?: {
       sessionKey?: string;
       senderId?: string;
     },
-  ): FeishuChannelCallbacks & { hasOutbound: boolean } {
+  ): ChannelCallbacks & { hasOutbound: boolean } {
     let _hasOutbound = false;
-    const channel: FeishuChannelCallbacks & { hasOutbound: boolean } = {
+    const channel: ChannelCallbacks & { hasOutbound: boolean } = {
       chatId: topic,
       get hasOutbound() { return _hasOutbound; },
       reply: async (_targetTopic: string, text: string) => {
@@ -291,18 +287,18 @@ export class CatsCompanyBot {
     }
 
     // 构建通道回调，通过 context 传递给工具（替代 bind/unbind）
-    const feishuChannel = this.buildFeishuChannel(msg.topic, {
+    const channel = this.buildChannel(msg.topic, {
       sessionKey: key,
       senderId: msg.senderId,
     });
 
     try {
-      const reply = await session.handleMessage(userText, { feishuChannel });
+      const reply = await session.handleMessage(userText, { channel });
       if (reply === BUSY_MESSAGE || reply.startsWith('处理消息时出错:')) {
         await this.sender.reply(msg.topic, reply);
-      } else if (!feishuChannel.hasOutbound && reply && reply !== '[无回复]') {
+      } else if (!channel.hasOutbound && reply && reply !== '[无回复]') {
         // 兜底：AI 整轮对话都没有主动发过消息，把最终文本发出去
-        Logger.warning(`[${key}] AI未调用feishu_reply，兜底发送回复`);
+        Logger.warning(`[${key}] AI未调用reply，兜底发送回复`);
         await this.sender.reply(msg.topic, reply);
       }
     } finally {
@@ -377,21 +373,21 @@ export class CatsCompanyBot {
         continue;
       }
 
-      const feishuChannel = this.buildFeishuChannel(topic, {
+      const channel = this.buildChannel(topic, {
         sessionKey,
         senderId,
       });
 
       try {
-        const reply = await session.handleMessage(text, { feishuChannel });
+        const reply = await session.handleMessage(text, { channel });
         if (reply === BUSY_MESSAGE) {
           Logger.info(`[${sessionKey}] 主会话竞态忙碌，将重试`);
           continue;
         }
         if (reply.startsWith('处理消息时出错:')) {
           await this.sender.reply(topic, reply);
-        } else if (!feishuChannel.hasOutbound && reply && reply !== '[无回复]') {
-          Logger.warning(`[${sessionKey}] 子智能体反馈: AI未调用feishu_reply，兜底发送回复`);
+        } else if (!channel.hasOutbound && reply && reply !== '[无回复]') {
+          Logger.warning(`[${sessionKey}] 子智能体反馈: AI未调用reply，兜底发送回复`);
           await this.sender.reply(topic, reply);
         }
         await this.drainMessageQueue(sessionKey);
@@ -405,34 +401,42 @@ export class CatsCompanyBot {
   }
 
   /**
-   * 排空消息队列：依次处理忙时积压的用户消息
+   * 排空消息队列：将忙时积压的消息合并为一条，一次性处理
    */
   private async drainMessageQueue(sessionKey: string): Promise<void> {
-    while (true) {
-      const queue = this.messageQueue.get(sessionKey);
-      if (!queue || queue.length === 0) return;
+    const queue = this.messageQueue.get(sessionKey);
+    if (!queue || queue.length === 0) return;
 
-      const next = queue.shift()!;
-      if (queue.length === 0) this.messageQueue.delete(sessionKey);
+    // 一次性取出所有积压消息
+    const messages = queue.splice(0);
+    this.messageQueue.delete(sessionKey);
 
-      const session = this.sessionManager.getOrCreate(sessionKey);
-      const feishuChannel = this.buildFeishuChannel(next.topic, {
-        sessionKey,
-        senderId: next.senderId,
-      });
+    // 合并为单条文本
+    const mergedText = messages.length === 1
+      ? messages[0].userText
+      : messages.map((m, i) => `[队列消息 ${i + 1}] ${m.userText}`).join('\n');
 
-      try {
-        const reply = await session.handleMessage(next.userText, { feishuChannel });
-        if (reply.startsWith('处理消息时出错:')) {
-          await this.sender.reply(next.topic, reply);
-        } else if (!feishuChannel.hasOutbound && reply && reply !== '[无回复]') {
-          Logger.warning(`[${sessionKey}] 队列消息: AI未调用feishu_reply，兜底发送回复`);
-          await this.sender.reply(next.topic, reply);
-        }
-      } finally {
-        this.clearPendingAnswerBySession(sessionKey);
+    const last = messages[messages.length - 1];
+    const session = this.sessionManager.getOrCreate(sessionKey);
+    const channel = this.buildChannel(last.topic, {
+      sessionKey,
+      senderId: last.senderId,
+    });
+
+    try {
+      const reply = await session.handleMessage(mergedText, { channel });
+      if (reply.startsWith('处理消息时出错:')) {
+        await this.sender.reply(last.topic, reply);
+      } else if (!channel.hasOutbound && reply && reply !== '[无回复]') {
+        Logger.warning(`[${sessionKey}] 队列消息: AI未调用reply，兜底发送回复`);
+        await this.sender.reply(last.topic, reply);
       }
+    } finally {
+      this.clearPendingAnswerBySession(sessionKey);
     }
+
+    // 处理期间可能又有新消息入队，递归排空
+    await this.drainMessageQueue(sessionKey);
   }
 
   /**
@@ -474,7 +478,7 @@ export class CatsCompanyBot {
   private buildAttachmentOnlyPrompt(attachments: PendingAttachment[]): string {
     return [
       '[用户仅上传了附件，暂未给出明确任务]',
-      '[当前会话是 CatsCompany 聊天：给用户可见的文本请通过 feishu_reply 工具发送；发送文件请用 feishu_send_file 工具]',
+      '[当前会话是 CatsCompany 聊天：给用户可见的文本请通过 reply 工具发送；发送文件请用 send_file 工具]',
       '请你先判断最合理的下一步，不要默认进入任何特定 skill（例如 paper-analysis）。',
       '如果任务不明确，先提出一个最小澄清问题；如果任务足够明确，再自行执行。',
       this.formatAttachmentContext(attachments),

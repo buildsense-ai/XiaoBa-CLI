@@ -12,14 +12,12 @@ import { AgentServices, BUSY_MESSAGE, ERROR_MESSAGE } from '../core/agent-sessio
 import { GauzMemService, GauzMemConfig } from '../utils/gauzmem-service';
 import { ConfigManager } from '../utils/config';
 import { Logger } from '../utils/logger';
-import { FeishuReplyTool } from '../tools/feishu-reply-tool';
-import { FeishuSendFileTool } from '../tools/feishu-send-file-tool';
 import { FeishuMentionTool } from '../tools/feishu-mention-tool';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { BridgeServer, GroupMessage } from '../bridge/bridge-server';
 import { BridgeClient } from '../bridge/bridge-client';
 import { ChimeInJudge } from '../bridge/chime-in-judge';
-import { FeishuChannelCallbacks } from '../types/tool';
+import { ChannelCallbacks } from '../types/tool';
 import { randomUUID } from 'crypto';
 
 interface PendingAttachment {
@@ -125,10 +123,7 @@ export class FeishuBot {
     const aiService = new AIService();
     const toolManager = new ToolManager();
 
-    // 注册飞书专用工具（新模式下不再需要持有实例引用做 bind/unbind）
-    toolManager.registerTool(new FeishuReplyTool());
-    toolManager.registerTool(new FeishuSendFileTool());
-
+    // 注册飞书专用工具（feishu_mention 是飞书特有的，reply/send_file 已由 ToolManager 默认注册）
     const mentionTool = new FeishuMentionTool();
     toolManager.registerTool(mentionTool);
 
@@ -228,13 +223,13 @@ export class FeishuBot {
     Logger.success('飞书机器人已启动，等待消息...');
   }
 
-  // ─── 构建 FeishuChannelCallbacks ──────────────────────
+  // ─── 构建 ChannelCallbacks ──────────────────────
 
   /**
-   * 为指定 chatId 构建飞书通道回调对象。
-   * 传入 handleMessage 的 options.feishuChannel，工具从 context 中读取。
+   * 为指定 chatId 构建平台通道回调对象。
+   * 传入 handleMessage 的 options.channel，工具从 context 中读取。
    */
-  private buildFeishuChannel(
+  private buildChannel(
     chatId: string,
     opts?: {
       /** 提供 senderId 以启用 ask_user_question 的等待回复能力 */
@@ -243,8 +238,8 @@ export class FeishuBot {
       /** 可选的 reply 拦截器（如 bridge 场景需要收集回复文本） */
       replyInterceptor?: (text: string) => void;
     },
-  ): FeishuChannelCallbacks {
-    const channel: FeishuChannelCallbacks = {
+  ): ChannelCallbacks {
+    const channel: ChannelCallbacks = {
       chatId,
       reply: async (targetChatId: string, text: string) => {
         opts?.replyInterceptor?.(text);
@@ -403,14 +398,14 @@ export class FeishuBot {
       return;
     }
 
-    // 构建飞书通道回调，通过 context 传递给工具（替代 bind/unbind）
-    const feishuChannel = this.buildFeishuChannel(msg.chatId, {
+    // 构建平台通道回调，通过 context 传递给工具（替代 bind/unbind）
+    const channel = this.buildChannel(msg.chatId, {
       sessionKey: key,
       senderId: msg.senderId,
     });
 
     try {
-      const reply = await session.handleMessage(userText, { feishuChannel });
+      const reply = await session.handleMessage(userText, { channel });
       if (reply === BUSY_MESSAGE || reply === ERROR_MESSAGE) {
         await this.sender.reply(msg.chatId, reply);
       }
@@ -448,13 +443,13 @@ export class FeishuBot {
         continue;
       }
 
-      const feishuChannel = this.buildFeishuChannel(chatId, {
+      const channel = this.buildChannel(chatId, {
         sessionKey,
         senderId,
       });
 
       try {
-        const reply = await session.handleMessage(text, { feishuChannel });
+        const reply = await session.handleMessage(text, { channel });
         if (reply === BUSY_MESSAGE) {
           Logger.info(`[${sessionKey}] 主会话竞态忙碌，将重试`);
           continue;
@@ -473,31 +468,39 @@ export class FeishuBot {
   }
 
   /**
-   * 排空消息队列：依次处理忙时积压的用户消息
+   * 排空消息队列：将忙时积压的消息合并为一条，一次性处理
    */
   private async drainMessageQueue(sessionKey: string): Promise<void> {
-    while (true) {
-      const queue = this.messageQueue.get(sessionKey);
-      if (!queue || queue.length === 0) return;
+    const queue = this.messageQueue.get(sessionKey);
+    if (!queue || queue.length === 0) return;
 
-      const next = queue.shift()!;
-      if (queue.length === 0) this.messageQueue.delete(sessionKey);
+    // 一次性取出所有积压消息
+    const messages = queue.splice(0);
+    this.messageQueue.delete(sessionKey);
 
-      const session = this.sessionManager.getOrCreate(sessionKey);
-      const feishuChannel = this.buildFeishuChannel(next.chatId, {
-        sessionKey,
-        senderId: next.senderId,
-      });
+    // 合并为单条文本
+    const mergedText = messages.length === 1
+      ? messages[0].userText
+      : messages.map((m, i) => `[队列消息 ${i + 1}] ${m.userText}`).join('\n');
 
-      try {
-        const reply = await session.handleMessage(next.userText, { feishuChannel });
-        if (reply === ERROR_MESSAGE) {
-          await this.sender.reply(next.chatId, reply);
-        }
-      } finally {
-        this.clearPendingAnswerBySession(sessionKey);
+    const last = messages[messages.length - 1];
+    const session = this.sessionManager.getOrCreate(sessionKey);
+    const channel = this.buildChannel(last.chatId, {
+      sessionKey,
+      senderId: last.senderId,
+    });
+
+    try {
+      const reply = await session.handleMessage(mergedText, { channel });
+      if (reply === ERROR_MESSAGE) {
+        await this.sender.reply(last.chatId, reply);
       }
+    } finally {
+      this.clearPendingAnswerBySession(sessionKey);
     }
+
+    // 处理期间可能又有新消息入队，递归排空
+    await this.drainMessageQueue(sessionKey);
   }
 
   /** 从 Group/*.md 读取已知 chat_id */
@@ -583,9 +586,9 @@ export class FeishuBot {
       this.messageQueue.set(sessionKey, queue);
       return;
     }
-    const feishuChannel = this.buildFeishuChannel(msg.chat_id);
+    const channel = this.buildChannel(msg.chat_id);
     try {
-      await session.handleMessage(messageText, { feishuChannel });
+      await session.handleMessage(messageText, { channel });
     } finally {
       this.clearPendingAnswerBySession(sessionKey);
     }
@@ -634,7 +637,7 @@ export class FeishuBot {
   private buildAttachmentOnlyPrompt(attachments: PendingAttachment[]): string {
     return [
       '[用户仅上传了附件，暂未给出明确任务]',
-      '[当前会话是飞书聊天：给老师可见的文本请通过 feishu_reply 工具发送；发送文件请用 feishu_send_file 工具]',
+      '[当前会话是飞书聊天：给老师可见的文本请通过 reply 工具发送；发送文件请用 send_file 工具]',
       '请你先判断最合理的下一步，不要默认进入任何特定 skill（例如 paper-analysis）。',
       '如果任务不明确，先提出一个最小澄清问题；如果任务足够明确，再自行执行。',
       this.formatAttachmentContext(attachments),

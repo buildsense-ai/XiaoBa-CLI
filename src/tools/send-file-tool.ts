@@ -2,15 +2,15 @@ import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
 import { Logger } from '../utils/logger';
 
 /**
- * 飞书文件发送工具
+ * 文件发送工具（平台通用）
  * 允许 AI 在处理过程中主动给用户发送文件
  *
- * 发送能力通过 ToolExecutionContext.feishuChannel 注入，无需 bind/unbind。
+ * 发送能力通过 ToolExecutionContext.channel 注入，无需 bind/unbind。
  */
-export class FeishuSendFileTool implements Tool {
+export class SendFileTool implements Tool {
   definition: ToolDefinition = {
-    name: 'feishu_send_file',
-    description: '给老师发送一个文件。用于发送产出的文档、PPT等成果文件。',
+    name: 'send_file',
+    description: '给用户发送一个文件。用于发送产出的文档、PPT等成果文件。',
     parameters: {
       type: 'object',
       properties: {
@@ -29,10 +29,10 @@ export class FeishuSendFileTool implements Tool {
 
   async execute(args: any, context: ToolExecutionContext): Promise<string> {
     const { file_path, file_name } = args;
-    const channel = context.feishuChannel;
+    const channel = context.channel;
 
     if (!channel) {
-      return '当前不在飞书会话中，无法发送文件';
+      return '当前不在聊天会话中，无法发送文件';
     }
 
     if (!file_path || typeof file_path !== 'string') {
@@ -45,10 +45,10 @@ export class FeishuSendFileTool implements Tool {
 
     try {
       await channel.sendFile(channel.chatId, file_path, file_name);
-      Logger.info(`[feishu_send_file] 已发送: ${file_name}`);
+      Logger.info(`[send_file] 已发送: ${file_name}`);
       return `文件 "${file_name}" 已发送`;
     } catch (err: any) {
-      Logger.error(`[feishu_send_file] 发送失败: ${err.message}`);
+      Logger.error(`[send_file] 发送失败: ${err.message}`);
       return `文件发送失败: ${err.message}`;
     }
   }

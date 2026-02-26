@@ -3,7 +3,7 @@ import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { SkillInvocationContext } from '../types/skill';
-import { FeishuChannelCallbacks } from '../types/tool';
+import { ChannelCallbacks } from '../types/tool';
 import {
   buildSkillActivationSignal,
   upsertSkillSystemMessage,
@@ -172,8 +172,8 @@ export class SubAgentSession {
       permissionProfile: 'strict',
     });
 
-    // 5. 构建飞书通道回调（通过 context 传递，替代 bindSession）
-    const feishuChannel = this.buildFeishuChannel();
+    // 5. 构建平台通道回调（通过 context 传递，替代 bindSession）
+    const channel = this.buildChannel();
 
     // 6. 预检测被策略阻断的工具，避免子智能体浪费 turn
     const preDisabledTools = toolManager.getToolDefinitions()
@@ -196,7 +196,7 @@ export class SubAgentSession {
         sessionId: `subagent:${this.id}`,
         surface: 'agent',
         permissionProfile: 'strict',
-        feishuChannel,
+        channel,
       },
     });
 
@@ -215,7 +215,7 @@ export class SubAgentSession {
     this.completedAt = Date.now();
     this.resultSummary = runResult.response;
 
-    // 自动发送产出文件（兜底：即使 AI 忘了调 feishu_send_file，关键文件也能送达）
+    // 自动发送产出文件（兜底：即使 AI 忘了调 send_file，关键文件也能送达）
     await this.autoSendDeliverables();
 
     Logger.success(`[SubAgent ${this.id}] 完成: ${this.taskDescription}`);
@@ -268,16 +268,16 @@ export class SubAgentSession {
   // ─── 私有方法 ──────────────────────────────────────
 
   /**
-   * 构建飞书通道回调，注入到 toolExecutionContext。
+   * 构建平台通道回调，注入到 toolExecutionContext。
    * 子智能体的 feishuReply/feishuSendFile 回调已经封装了 chatId，
    * 所以这里用空 chatId，回调内部忽略 chatId 参数。
    */
-  private buildFeishuChannel(): FeishuChannelCallbacks | undefined {
+  private buildChannel(): ChannelCallbacks | undefined {
     if (!this.options.feishuReply && !this.options.feishuSendFile) {
       return undefined;
     }
 
-    const channel: FeishuChannelCallbacks = {
+    const channel: ChannelCallbacks = {
       chatId: '', // 子智能体的回调已封装目标 chatId
       reply: async (_chatId: string, text: string) => {
         if (this.options.feishuReply) {

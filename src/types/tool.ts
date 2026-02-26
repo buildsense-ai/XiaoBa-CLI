@@ -57,10 +57,11 @@ export type ToolSurface = 'cli' | 'feishu' | 'catscompany' | 'agent' | 'research
 export type ToolPermissionProfile = 'strict' | 'default' | 'relaxed';
 
 /**
- * 飞书通道回调（通过 ToolExecutionContext 传递给工具，替代 bind/unbind 模式）
+ * 平台通道回调（通过 ToolExecutionContext 传递给工具，替代 bind/unbind 模式）
+ * 飞书、CatsCompany 等平台共用此接口，chatId 对应各平台的会话标识。
  */
-export interface FeishuChannelCallbacks {
-  /** 当前会话的 chatId */
+export interface ChannelCallbacks {
+  /** 当前会话的 chatId（飞书 chatId / CatsCompany topic） */
   chatId: string;
   /** 发送文本消息 */
   reply: (chatId: string, text: string) => Promise<void>;
@@ -72,6 +73,9 @@ export interface FeishuChannelCallbacks {
     wait: () => Promise<string>;
   };
 }
+
+/** @deprecated Use ChannelCallbacks instead */
+export type FeishuChannelCallbacks = ChannelCallbacks;
 
 /**
  * 工具执行上下文
@@ -87,8 +91,8 @@ export interface ToolExecutionContext {
   activeSkillName?: string;
   allowedToolNames?: string[];
   blockedToolNames?: string[];
-  /** 飞书通道回调（飞书/CatsCompany 会话时由平台层注入） */
-  feishuChannel?: FeishuChannelCallbacks;
+  /** 平台通道回调（飞书/CatsCompany 等聊天会话时由平台层注入） */
+  channel?: ChannelCallbacks;
 }
 
 /**

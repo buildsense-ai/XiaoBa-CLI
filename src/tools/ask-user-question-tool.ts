@@ -43,7 +43,7 @@ export class AskUserQuestionTool implements Tool {
    * 获取用户回复（自动选择通道）
    */
   private async getAnswer(question: string, context: ToolExecutionContext): Promise<string> {
-    const askUser = context.feishuChannel?.askUser;
+    const askUser = context.channel?.askUser;
     if (askUser) {
       await askUser.send(question);
       return await askUser.wait();

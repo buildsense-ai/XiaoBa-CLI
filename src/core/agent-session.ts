@@ -3,7 +3,7 @@ import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { SkillActivationSignal, SkillInvocationContext, SkillToolPolicy } from '../types/skill';
-import { FeishuChannelCallbacks } from '../types/tool';
+import { ChannelCallbacks } from '../types/tool';
 import {
   buildSkillActivationSignal,
   upsertSkillSystemMessage,
@@ -43,8 +43,8 @@ export interface SessionCallbacks {
 /** 消息处理选项（由平台适配层传入） */
 export interface HandleMessageOptions {
   callbacks?: SessionCallbacks;
-  /** 飞书通道回调，注入到 ToolExecutionContext 供工具使用 */
-  feishuChannel?: FeishuChannelCallbacks;
+  /** 平台通道回调，注入到 ToolExecutionContext 供工具使用 */
+  channel?: ChannelCallbacks;
 }
 
 /** 命令处理结果 */
@@ -94,12 +94,12 @@ export class AgentSession {
       const chatType = isGroup ? '群聊' : '私聊';
       this.messages.push({
         role: 'system',
-        content: `[surface:feishu:${isGroup ? 'group' : 'private'}]\n当前是飞书${chatType}会话。你的普通文本输出老师完全看不到，必须调用 feishu_reply 工具才能让老师收到消息。无论多简单的回复（包括打招呼、闲聊），都必须通过 feishu_reply 发送。发完后直接停止，不要再输出收尾文本。`,
+        content: `[surface:feishu:${isGroup ? 'group' : 'private'}]\n当前是飞书${chatType}会话。你的普通文本输出老师完全看不到，必须调用 reply 工具才能让老师收到消息。无论多简单的回复（包括打招呼、闲聊），都必须通过 reply 发送。发完后直接停止，不要再输出收尾文本。`,
       });
     } else if (this.isCatsCompanySession()) {
       this.messages.push({
         role: 'system',
-        content: '[surface:catscompany]\n当前是 Cats Company 聊天会话。用户只能看到你通过 feishu_reply / feishu_send_file 发送的内容，你的普通文本输出用户完全看不到。所以：所有要给用户看的话，必须通过工具发送；通过工具发完消息后直接停止，不要再输出任何收尾文本。',
+        content: '[surface:catscompany]\n当前是 Cats Company 聊天会话。用户只能看到你通过 reply / send_file 发送的内容，你的普通文本输出用户完全看不到。所以：所有要给用户看的话，必须通过工具发送；通过工具发完消息后直接停止，不要再输出任何收尾文本。',
       });
     }
 
@@ -180,14 +180,14 @@ export class AgentSession {
   ): Promise<string> {
     // 兼容旧签名：如果传入的对象有 onText/onToolStart 等字段，视为 SessionCallbacks
     let callbacks: SessionCallbacks | undefined;
-    let feishuChannel: FeishuChannelCallbacks | undefined;
+    let channel: ChannelCallbacks | undefined;
 
     if (callbacksOrOptions) {
-      if ('feishuChannel' in callbacksOrOptions || 'callbacks' in callbacksOrOptions) {
+      if ('channel' in callbacksOrOptions || 'callbacks' in callbacksOrOptions) {
         // 新签名 HandleMessageOptions
         const opts = callbacksOrOptions as HandleMessageOptions;
         callbacks = opts.callbacks;
-        feishuChannel = opts.feishuChannel;
+        channel = opts.channel;
       } else {
         // 旧签名 SessionCallbacks
         callbacks = callbacksOrOptions as SessionCallbacks;
@@ -277,7 +277,7 @@ export class AgentSession {
             sessionId: this.key,
             surface,
             permissionProfile: 'strict',
-            feishuChannel,
+            channel,
           },
         },
       );
