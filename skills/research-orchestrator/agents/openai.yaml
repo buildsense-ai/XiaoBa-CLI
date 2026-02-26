@@ -1,4 +1,0 @@
-interface:
-  display_name: "Research Orchestrator"
-  short_description: "Humanlike copilot for end-to-end paper research loops"
-  default_prompt: "Help me run a full research loop from search to writing and presentation"
