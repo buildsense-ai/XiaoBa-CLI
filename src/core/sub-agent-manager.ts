@@ -4,9 +4,9 @@ import { Logger } from '../utils/logger';
 import { SubAgentSession, SubAgentInfo, SubAgentSpawnOptions } from './sub-agent-session';
 import { randomUUID } from 'crypto';
 
-// ─── 飞书回调注册 ───────────────────────────────────────
+// ─── 平台回调注册 ───────────────────────────────────────
 
-export interface FeishuCallbacks {
+export interface PlatformCallbacks {
   reply: (text: string) => Promise<void>;
   sendFile: (filePath: string, fileName: string) => Promise<void>;
   /** 向主会话投递消息，触发主 agent 新一轮推理 */
@@ -30,8 +30,8 @@ export class SubAgentManager {
   private subAgents = new Map<string, SubAgentSession>();
   /** 子智能体 → 父会话 key 的映射 */
   private parentMap = new Map<string, string>();
-  /** 持久化的飞书回调，key = 父会话 sessionKey */
-  private feishuCallbacks = new Map<string, FeishuCallbacks>();
+  /** 持久化的平台回调，key = 父会话 sessionKey */
+  private platformCallbacks = new Map<string, PlatformCallbacks>();
 
   private static readonly MAX_CONCURRENT_PER_SESSION = 3;
   /** 完成后保留信息的时间（ms） */
@@ -46,14 +46,14 @@ export class SubAgentManager {
     return SubAgentManager.instance;
   }
 
-  // ─── 飞书回调注册（由 FeishuBot 调用，持久化） ─────────
+  // ─── 平台回调注册（由 FeishuBot / CatsCompanyBot 调用，持久化） ─
 
   /**
-   * 注册飞书回调。FeishuBot 在创建/获取 session 时调用一次，
+   * 注册平台回调。FeishuBot / CatsCompanyBot 在创建/获取 session 时调用一次，
    * 不随 handleMessage 结束而注销，保证子智能体能持续发消息。
    */
-  registerFeishuCallbacks(sessionKey: string, callbacks: FeishuCallbacks): void {
-    this.feishuCallbacks.set(sessionKey, callbacks);
+  registerPlatformCallbacks(sessionKey: string, callbacks: PlatformCallbacks): void {
+    this.platformCallbacks.set(sessionKey, callbacks);
   }
 
   // ─── 子智能体生命周期 ─────────────────────────────────
@@ -84,20 +84,20 @@ export class SubAgentManager {
 
     const id = `sub-${randomUUID()}`;
 
-    // 获取飞书回调
-    const feishu = this.feishuCallbacks.get(parentSessionKey);
+    // 获取平台回调
+    const platform = this.platformCallbacks.get(parentSessionKey);
 
     const options: SubAgentSpawnOptions = {
       skillName,
       taskDescription,
       userMessage,
       workingDirectory,
-      feishuReply: feishu?.reply,
-      feishuSendFile: feishu?.sendFile,
-      notifyParent: feishu?.injectMessage
+      channelReply: platform?.reply,
+      channelSendFile: platform?.sendFile,
+      notifyParent: platform?.injectMessage
         ? async (subAgentId, taskDesc, question) => {
             const msg = `[子智能体 ${subAgentId} 反馈]\n任务：${taskDesc}\n需要你的指示：${question}`;
-            await feishu!.injectMessage!(msg);
+            await platform!.injectMessage!(msg);
           }
         : undefined,
     };
@@ -109,11 +109,11 @@ export class SubAgentManager {
     // fire-and-forget
     session.run().finally(() => {
       // 通知主 agent 子智能体已完成（stopped 不通知）
-      if (feishu?.injectMessage && session.status !== 'stopped') {
+      if (platform?.injectMessage && session.status !== 'stopped') {
         const info = session.getInfo();
         const statusLabel = info.status === 'completed' ? '已完成' : '失败';
         const msg = `[子智能体 ${id} ${statusLabel}]\n任务：${taskDescription}\n结果：${info.resultSummary || '（无结果）'}`;
-        feishu.injectMessage(msg).catch(err => {
+        platform.injectMessage(msg).catch(err => {
           Logger.warning(`[SubAgentManager] 通知主 agent 失败: ${err.message}`);
         });
       }

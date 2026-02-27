@@ -219,7 +219,7 @@ export class CatsCompanyBot {
 
     // 注册持久化回调到 SubAgentManager
     const subAgentManager = SubAgentManager.getInstance();
-    subAgentManager.registerFeishuCallbacks(key, {
+    subAgentManager.registerPlatformCallbacks(key, {
       reply: async (text: string) => {
         await this.sender.reply(msg.topic, text);
       },

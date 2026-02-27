@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { Skill, SkillInvocationContext } from '../types/skill';
 
 /**
@@ -12,6 +13,10 @@ export class SkillExecutor {
    */
   static execute(skill: Skill, context: SkillInvocationContext): string {
     let content = skill.content;
+
+    // 替换 <SKILL_DIR> 为 skill 文件所在目录的绝对路径
+    const skillDir = path.dirname(skill.filePath);
+    content = content.replace(/<SKILL_DIR>/g, skillDir);
 
     // 替换 $ARGUMENTS
     content = content.replace(/\$ARGUMENTS/g, context.rawArguments);

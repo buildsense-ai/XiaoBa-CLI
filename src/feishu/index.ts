@@ -318,10 +318,10 @@ export class FeishuBot {
     // 获取或创建会话
     const session = this.sessionManager.getOrCreate(key);
 
-    // 注册持久化飞书回调到 SubAgentManager（不随 handleMessage 结束而注销）
+    // 注册持久化平台回调到 SubAgentManager（不随 handleMessage 结束而注销）
     // 这样后台子智能体可以在主会话空闲时继续给用户发消息
     const subAgentManager = SubAgentManager.getInstance();
-    subAgentManager.registerFeishuCallbacks(key, {
+    subAgentManager.registerPlatformCallbacks(key, {
       reply: async (text: string) => {
         await this.sender.reply(msg.chatId, text);
       },
