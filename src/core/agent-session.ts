@@ -8,7 +8,6 @@ import {
   buildSkillActivationSignal,
   upsertSkillSystemMessage,
 } from '../skills/skill-activation-protocol';
-import { GauzMemService } from '../utils/gauzmem-service';
 import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
 import { SubAgentManager } from './sub-agent-manager';
 import { PromptManager } from '../utils/prompt-manager';
@@ -17,7 +16,6 @@ import { saveSessionSummary, loadSessionSummary, removeSessionSummary } from '..
 import { SessionStore } from '../utils/session-store';
 import { Metrics } from '../utils/metrics';
 
-const TRANSIENT_MEMORY_CONTEXT_PREFIX = '[transient_memory_context]';
 const TRANSIENT_SUBAGENT_STATUS_PREFIX = '[transient_subagent_status]';
 export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
 export const ERROR_MESSAGE = '不好意思，刚才处理出了点问题，你再试一次？';
@@ -29,7 +27,7 @@ export interface AgentServices {
   aiService: AIService;
   toolManager: ToolManager;
   skillManager: SkillManager;
-  memoryService?: GauzMemService | null;
+
 }
 
 /** 会话回调（由适配层提供） */
@@ -210,26 +208,8 @@ export class AgentSession {
       this.messages.push({ role: 'user', content: text });
 
 
-      // 搜索相关记忆，作为临时上下文注入
+      // 构建上下文消息
       let contextMessages: Message[] = [...this.messages];
-      let memoryInjected = false;
-      const memoryService = this.services.memoryService;
-      if (memoryService) {
-        const memories = await memoryService.searchMemory(text);
-        if (memories.length > 0) {
-          const memoryContext = memoryService.formatMemoriesAsContext(memories);
-          const memorySystemMessage: Message = {
-            role: 'system',
-            content: `${TRANSIENT_MEMORY_CONTEXT_PREFIX}\n${memoryContext}`,
-          };
-          memoryInjected = true;
-          contextMessages = [
-            ...this.messages.slice(0, -1),
-            memorySystemMessage,
-            this.messages[this.messages.length - 1],
-          ];
-        }
-      }
 
       // 注入后台子智能体状态（临时上下文，不持久化）
       const subAgentManager = SubAgentManager.getInstance();
@@ -396,7 +376,7 @@ export class AgentSession {
     this.lastActiveAt = Date.now();
   }
 
-  /** 压缩历史写入记忆（本地文件兜底 + GauzMem），然后清空 */
+  /** 压缩历史写入本地文件，然后清空 */
   async summarizeAndDestroy(): Promise<boolean> {
     const hasUserMessages = this.messages.some(m => m.role === 'user');
     if (this.messages.length === 0 || !hasUserMessages) {
@@ -424,15 +404,6 @@ ${conversationText}
 
       // 本地文件兜底：始终写入本地
       const localSuccess = saveSessionSummary(this.key, summaryText, Logger.getLogFilePath() || undefined);
-
-      // GauzMem：如果可用也写入
-      const memoryService = this.services.memoryService;
-      if (memoryService) {
-        const remoteSuccess = await memoryService.writeMemory(summaryText, 'agent');
-        if (remoteSuccess) {
-          Logger.info(`已压缩 ${this.messages.length} 条消息并写入记忆系统`);
-        }
-      }
 
       if (localSuccess) {
         Logger.info(`已压缩 ${this.messages.length} 条消息并写入本地文件`);
@@ -558,7 +529,6 @@ ${conversationText}
   private removeTransientMessages(messages: Message[]): Message[] {
     return messages.filter(msg => {
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
-      if (msg.content.startsWith(TRANSIENT_MEMORY_CONTEXT_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
       return true;
     });
