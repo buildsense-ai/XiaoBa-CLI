@@ -5,8 +5,6 @@ import { AIService } from '../utils/ai-service';
 import { CommandOptions } from '../types';
 import { styles } from '../theme/colors';
 import { SkillManager } from '../skills/skill-manager';
-import { GauzMemService, GauzMemConfig } from '../utils/gauzmem-service';
-import { ConfigManager } from '../utils/config';
 import { ToolManager } from '../tools/tool-manager';
 import { AgentSession, AgentServices, SessionCallbacks } from '../core/agent-session';
 
@@ -30,28 +28,12 @@ export async function chatCommand(options: CommandOptions): Promise<void> {
     Logger.warning(`Skills 加载失败: ${error.message}`);
   }
 
-  // 初始化 GauzMemService
-  const config = ConfigManager.getConfig();
-  let memoryService: GauzMemService | null = null;
-
-  if (config.memory?.enabled) {
-    const memConfig: GauzMemConfig = {
-      baseUrl: config.memory.baseUrl || '',
-      projectId: config.memory.projectId || 'XiaoBa',
-      userId: config.memory.userId || '',
-      agentId: config.memory.agentId || 'XiaoBa',
-      enabled: true,
-    };
-    memoryService = new GauzMemService(memConfig);
-    Logger.info('记忆系统已启用');
-  }
-
   // 组装 AgentServices + 创建 AgentSession
   const services: AgentServices = {
     aiService,
     toolManager,
     skillManager,
-    memoryService,
+
   };
   const session = new AgentSession('cli', services);
 
