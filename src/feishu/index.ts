@@ -9,8 +9,6 @@ import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { AgentServices, BUSY_MESSAGE, ERROR_MESSAGE } from '../core/agent-session';
-import { GauzMemService, GauzMemConfig } from '../utils/gauzmem-service';
-import { ConfigManager } from '../utils/config';
 import { Logger } from '../utils/logger';
 import { FeishuMentionTool } from '../tools/feishu-mention-tool';
 import { SubAgentManager } from '../core/sub-agent-manager';
@@ -149,27 +147,12 @@ export class FeishuBot {
 
     const skillManager = new SkillManager();
 
-    // 初始化 GauzMemService
-    const appConfig = ConfigManager.getConfig();
-    let memoryService: GauzMemService | null = null;
-    if (appConfig.memory?.enabled) {
-      const memConfig: GauzMemConfig = {
-        baseUrl: appConfig.memory.baseUrl || '',
-        projectId: appConfig.memory.projectId || 'XiaoBa',
-        userId: appConfig.memory.userId || '',
-        agentId: appConfig.memory.agentId || 'XiaoBa',
-        enabled: true,
-      };
-      memoryService = new GauzMemService(memConfig);
-      Logger.info('飞书记忆系统已启用');
-    }
-
     // 组装 AgentServices
     this.agentServices = {
       aiService,
       toolManager,
       skillManager,
-      memoryService,
+
     };
 
     this.sessionManager = new SessionManager(
