@@ -23,6 +23,7 @@ interface SummaryEntry {
 interface SummaryFile {
   key: string;
   entries: SummaryEntry[];
+  masterSummary?: string;
 }
 
 function ensureDir(): void {
@@ -81,24 +82,50 @@ export function saveSessionSummary(key: string, summary: string, logFile?: strin
 }
 
 /**
- * 加载最近 N 条摘要，拼接为字符串
+ * 加载会话摘要：优先返回主摘要，无主摘要时回退到最近一条
  */
 export function loadSessionSummary(key: string): string | null {
   try {
     const data = readFile(key);
+    if (data.masterSummary) {
+      Logger.info(`已加载主摘要: ${key}`);
+      return data.masterSummary;
+    }
     if (data.entries.length === 0) return null;
-
-    const recent = data.entries.slice(-MAX_LOAD_COUNT);
-    const parts = recent.map((e, i) => {
-      const header = `[会话 ${i + 1}/${recent.length} - ${e.savedAt}]${e.logFile ? ` (log: ${e.logFile})` : ''}`;
-      return `${header}\n${e.summary}`;
-    });
-
-    Logger.info(`已加载 ${recent.length}/${data.entries.length} 条历史摘要: ${key}`);
-    return parts.join('\n\n---\n\n');
+    const last = data.entries[data.entries.length - 1];
+    Logger.info(`无主摘要，回退到最近一条: ${key}`);
+    return last.summary;
   } catch (err) {
     Logger.error(`加载本地会话摘要失败: ${err}`);
     return null;
+  }
+}
+
+/**
+ * 获取当前主摘要
+ */
+export function getMasterSummary(key: string): string | null {
+  try {
+    const data = readFile(key);
+    return data.masterSummary ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 更新主摘要（滚动压缩后的合并摘要）
+ */
+export function updateMasterSummary(key: string, masterSummary: string): boolean {
+  try {
+    const data = readFile(key);
+    data.masterSummary = masterSummary;
+    writeFile(data);
+    Logger.info(`主摘要已更新: ${key}`);
+    return true;
+  } catch (err) {
+    Logger.error(`更新主摘要失败: ${err}`);
+    return false;
   }
 }
 

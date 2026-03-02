@@ -12,7 +12,7 @@ import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
 import { SubAgentManager } from './sub-agent-manager';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
-import { saveSessionSummary, loadSessionSummary, removeSessionSummary } from '../utils/local-session-store';
+import { saveSessionSummary, loadSessionSummary, removeSessionSummary, getMasterSummary, updateMasterSummary } from '../utils/local-session-store';
 import { SessionStore } from '../utils/session-store';
 import { Metrics } from '../utils/metrics';
 
@@ -402,8 +402,25 @@ ${conversationText}
 
       const summaryText = `[对话摘要 - ${new Date().toISOString()}]\n${summary.content || ''}`;
 
-      // 本地文件兜底：始终写入本地
+      // 本地文件兜底：始终写入本地（原始摘要归档）
       const localSuccess = saveSessionSummary(this.key, summaryText, Logger.getLogFilePath() || undefined);
+
+      // 滚动压缩：将新摘要与现有主摘要合并
+      const oldMaster = getMasterSummary(this.key);
+      if (oldMaster) {
+        try {
+          const mergeResult = await this.services.aiService.chat([{
+            role: 'user',
+            content: `请将以下两段对话摘要合并为一段精炼的主摘要。保留关键信息，去除重复和过时内容，控制在合理长度内。\n\n--- 已有主摘要 ---\n${oldMaster}\n\n--- 最新对话摘要 ---\n${summaryText}\n\n请输出合并后的主摘要：`,
+          }]);
+          updateMasterSummary(this.key, mergeResult.content || summaryText);
+        } catch (err) {
+          Logger.error(`合并主摘要失败，使用新摘要覆盖: ${err}`);
+          updateMasterSummary(this.key, summaryText);
+        }
+      } else {
+        updateMasterSummary(this.key, summaryText);
+      }
 
       if (localSuccess) {
         Logger.info(`已压缩 ${this.messages.length} 条消息并写入本地文件`);

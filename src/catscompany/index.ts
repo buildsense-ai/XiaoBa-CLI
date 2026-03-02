@@ -53,6 +53,8 @@ export class CatsCompanyBot {
   private pendingAttachments = new Map<string, PendingAttachment[]>();
   /** 主会话忙时的消息队列，key = sessionKey */
   private messageQueue = new Map<string, QueuedMessage[]>();
+  /** Bot 自身的 uid，用于过滤自己发出的消息 */
+  private botUid: string | null = null;
 
   constructor(config: CatsCompanyConfig) {
     this.bot = new CatsBot({
@@ -104,6 +106,7 @@ export class CatsCompanyBot {
 
     // 注册事件
     this.bot.on('ready', (uid, name) => {
+      this.botUid = uid;
       Logger.success(`CatsCompany 机器人已连接，uid=${uid}, name=${name || '(未设置)'}`);
     });
 
@@ -176,6 +179,9 @@ export class CatsCompanyBot {
   private async onMessage(ctx: MessageContext): Promise<void> {
     const msg = this.parseMessage(ctx);
     if (!msg) return;
+
+    // 过滤 bot 自己发出的消息，防止循环
+    if (this.botUid && msg.senderId === this.botUid) return;
 
     const key = this.sessionManager.getSessionKey(msg);
 
@@ -280,10 +286,6 @@ export class CatsCompanyBot {
     try {
       const reply = await session.handleMessage(userText, { channel });
       if (reply === BUSY_MESSAGE || reply.startsWith('处理消息时出错:')) {
-        await this.sender.reply(msg.topic, reply);
-      } else if (!channel.hasOutbound && reply && reply !== '[无回复]') {
-        // 兜底：AI 整轮对话都没有主动发过消息，把最终文本发出去
-        Logger.warning(`[${key}] AI未调用reply，兜底发送回复`);
         await this.sender.reply(msg.topic, reply);
       }
     } finally {
