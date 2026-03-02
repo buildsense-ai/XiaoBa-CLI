@@ -16,7 +16,8 @@ declare module '@catscompany/bot-sdk' {
 
   export class CatsBot {
     constructor(options: CatsBotOptions);
-    on(event: 'ready', listener: (uid: string) => void): void;
+    name: string;
+    on(event: 'ready', listener: (uid: string, name: string) => void): void;
     on(event: 'message', listener: (ctx: MessageContext) => void): void;
     on(event: 'reconnecting', listener: (attempt: number) => void): void;
     on(event: 'error', listener: (err: Error) => void): void;
