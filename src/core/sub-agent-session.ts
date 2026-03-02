@@ -39,9 +39,9 @@ export interface SubAgentSpawnOptions {
   taskDescription: string;
   userMessage: string;
   workingDirectory: string;
-  /** 飞书回调：让 SubAgent 能主动给用户发消息 */
-  feishuReply?: (text: string) => Promise<void>;
-  feishuSendFile?: (filePath: string, fileName: string) => Promise<void>;
+  /** 平台回调：让 SubAgent 能主动给用户发消息 */
+  channelReply?: (text: string) => Promise<void>;
+  channelSendFile?: (filePath: string, fileName: string) => Promise<void>;
   /** 向主 agent 投递消息（子智能体挂起时触发主 agent 推理） */
   notifyParent?: (subAgentId: string, taskDescription: string, question: string) => Promise<void>;
 }
@@ -52,7 +52,7 @@ export interface SubAgentSpawnOptions {
  * SubAgentSession - 独立运行的后台子智能体
  *
  * 拥有自己的 messages[]、ConversationRunner、skill 上下文。
- * 通过 feishuReply 回调主动向用户推送进度。
+ * 通过 channelReply 回调主动向用户推送进度。
  * 主会话不 await 它，fire-and-forget。
  */
 export class SubAgentSession {
@@ -269,24 +269,24 @@ export class SubAgentSession {
 
   /**
    * 构建平台通道回调，注入到 toolExecutionContext。
-   * 子智能体的 feishuReply/feishuSendFile 回调已经封装了 chatId，
+   * 子智能体的 channelReply/channelSendFile 回调已经封装了 chatId，
    * 所以这里用空 chatId，回调内部忽略 chatId 参数。
    */
   private buildChannel(): ChannelCallbacks | undefined {
-    if (!this.options.feishuReply && !this.options.feishuSendFile) {
+    if (!this.options.channelReply && !this.options.channelSendFile) {
       return undefined;
     }
 
     const channel: ChannelCallbacks = {
       chatId: '', // 子智能体的回调已封装目标 chatId
       reply: async (_chatId: string, text: string) => {
-        if (this.options.feishuReply) {
-          await this.options.feishuReply(text);
+        if (this.options.channelReply) {
+          await this.options.channelReply(text);
         }
       },
       sendFile: async (_chatId: string, filePath: string, fileName: string) => {
-        if (this.options.feishuSendFile) {
-          await this.options.feishuSendFile(filePath, fileName);
+        if (this.options.channelSendFile) {
+          await this.options.channelSendFile(filePath, fileName);
         }
       },
     };
@@ -357,11 +357,11 @@ export class SubAgentSession {
   }
 
   /** 可交付文件扩展名 */
-  private static readonly DELIVERABLE_EXTS = new Set(['.pptx', '.pdf', '.docx', '.xlsx', '.zip']);
+  private static readonly DELIVERABLE_EXTS = new Set(['.pptx', '.pdf', '.docx', '.xlsx', '.zip', '.md']);
 
   /** 完成后自动发送产出文件（兜底机制） */
   private async autoSendDeliverables(): Promise<void> {
-    if (!this.options.feishuSendFile) return;
+    if (!this.options.channelSendFile) return;
 
     const deliverables = this.outputFiles.filter(f => {
       const ext = path.extname(f).toLowerCase();
@@ -377,7 +377,7 @@ export class SubAgentSession {
           continue;
         }
         const fileName = path.basename(absPath);
-        await this.options.feishuSendFile(absPath, fileName);
+        await this.options.channelSendFile(absPath, fileName);
         Logger.info(`[SubAgent ${this.id}] 自动发送产出文件: ${fileName}`);
       } catch (err: any) {
         Logger.warning(`[SubAgent ${this.id}] 发送产出文件失败: ${filePath} - ${err.message}`);

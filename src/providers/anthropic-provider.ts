@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { Message, ChatConfig, ChatResponse } from '../types';
 import { ToolDefinition } from '../types/tool';
 import { AIProvider, StreamCallbacks } from './provider';
+import { ContextDebugLogger } from '../utils/context-debug-logger';
 
 /**
  * Anthropic Provider
@@ -192,8 +193,12 @@ export class AnthropicProvider implements AIProvider {
     if (tools && tools.length > 0) params.tools = this.transformTools(tools);
 
     try {
-      // [DEBUG] 临时日志：确认请求中是否包含 tools
-      console.log('[DEBUG] 请求参数: model=', params.model, '| tools数量:', params.tools?.length ?? 0, '| tool名称:', params.tools?.map(t => t.name).join(', '));
+      // [CONTEXT_DEBUG] SDK 调用前：记录完整的请求参数
+      ContextDebugLogger.dumpSdkBoundary('before', undefined, {
+        baseURL: this.client.baseURL,
+        params
+      });
+
       const stream = this.client.messages.stream(params);
 
       // 逐 token 回调文本
@@ -203,8 +208,10 @@ export class AnthropicProvider implements AIProvider {
 
       // 等待完整响应
       const finalMessage = await stream.finalMessage();
-      // [DEBUG] 临时日志：排查工具调用丢失问题
-      console.log('[DEBUG] stop_reason:', finalMessage.stop_reason, '| content blocks:', JSON.stringify(finalMessage.content.map(b => ({ type: b.type, ...(b.type === 'tool_use' ? { name: (b as any).name } : {}) }))));
+
+      // [CONTEXT_DEBUG] SDK 调用后：记录完整的响应
+      ContextDebugLogger.dumpSdkBoundary('after', undefined, { response: finalMessage });
+
       const result = this.parseResponse(finalMessage);
       callbacks?.onComplete?.(result);
       return result;
