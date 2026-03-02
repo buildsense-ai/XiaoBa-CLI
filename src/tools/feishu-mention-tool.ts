@@ -11,6 +11,7 @@ export class FeishuMentionTool implements Tool {
   definition: ToolDefinition = {
     name: 'feishu_mention',
     description: '在飞书群聊中 @指定用户 发送消息。需要提供用户的 open_id。可同时 @多个用户。支持跨群发送：指定 chat_id 可往其他群聊发消息（chat_id 可从 Group/*.md 文件中查找）。',
+    transcriptMode: 'outbound_message',
     parameters: {
       type: 'object',
       properties: {

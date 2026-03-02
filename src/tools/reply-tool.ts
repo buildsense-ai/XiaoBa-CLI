@@ -11,6 +11,7 @@ export class ReplyTool implements Tool {
   definition: ToolDefinition = {
     name: 'reply',
     description: '给用户发一条消息。用于回复确认、发送中间结果等。',
+    transcriptMode: 'outbound_message',
     parameters: {
       type: 'object',
       properties: {
