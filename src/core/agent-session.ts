@@ -240,7 +240,9 @@ export class AgentSession {
         this.activeSkillMaxTurns = detectedSkill?.metadata.maxTurns;
       }
 
-      const effectiveMaxTurns = this.activeSkillMaxTurns ?? this.detectSkillMaxTurns();
+      // 不再将 skill 的 maxTurns 传给 ConversationRunner 构造函数，
+      // 避免 skill 的低 maxTurns（如 15）污染后续不相关的对话。
+      // conversation-runner 内部激活 skill 时已有 Math.max(default, turns + skillMax) 保护。
       const surface = this.isCatsCompanySession()
         ? 'catscompany'
         : this.isFeishuSession()
@@ -250,7 +252,6 @@ export class AgentSession {
         this.services.aiService,
         this.services.toolManager,
         {
-          ...(effectiveMaxTurns ? { maxTurns: effectiveMaxTurns } : {}),
           initialSkillName: this.activeSkillName,
           initialSkillToolPolicy: this.activeSkillToolPolicy,
           toolExecutionContext: {
