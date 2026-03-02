@@ -9,8 +9,6 @@ import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { AgentServices, BUSY_MESSAGE, ERROR_MESSAGE } from '../core/agent-session';
-import { GauzMemService, GauzMemConfig } from '../utils/gauzmem-service';
-import { ConfigManager } from '../utils/config';
 import { Logger } from '../utils/logger';
 import { FeishuMentionTool } from '../tools/feishu-mention-tool';
 import { SubAgentManager } from '../core/sub-agent-manager';
@@ -149,27 +147,11 @@ export class FeishuBot {
 
     const skillManager = new SkillManager();
 
-    // 初始化 GauzMemService
-    const appConfig = ConfigManager.getConfig();
-    let memoryService: GauzMemService | null = null;
-    if (appConfig.memory?.enabled) {
-      const memConfig: GauzMemConfig = {
-        baseUrl: appConfig.memory.baseUrl || '',
-        projectId: appConfig.memory.projectId || 'XiaoBa',
-        userId: appConfig.memory.userId || '',
-        agentId: appConfig.memory.agentId || 'XiaoBa',
-        enabled: true,
-      };
-      memoryService = new GauzMemService(memConfig);
-      Logger.info('飞书记忆系统已启用');
-    }
-
     // 组装 AgentServices
     this.agentServices = {
       aiService,
       toolManager,
       skillManager,
-      memoryService,
     };
 
     this.sessionManager = new SessionManager(
@@ -318,10 +300,10 @@ export class FeishuBot {
     // 获取或创建会话
     const session = this.sessionManager.getOrCreate(key);
 
-    // 注册持久化飞书回调到 SubAgentManager（不随 handleMessage 结束而注销）
+    // 注册持久化平台回调到 SubAgentManager（不随 handleMessage 结束而注销）
     // 这样后台子智能体可以在主会话空闲时继续给用户发消息
     const subAgentManager = SubAgentManager.getInstance();
-    subAgentManager.registerFeishuCallbacks(key, {
+    subAgentManager.registerPlatformCallbacks(key, {
       reply: async (text: string) => {
         await this.sender.reply(msg.chatId, text);
       },

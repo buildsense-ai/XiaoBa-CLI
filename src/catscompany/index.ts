@@ -6,8 +6,6 @@ import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { AgentServices, BUSY_MESSAGE } from '../core/agent-session';
-import { GauzMemService, GauzMemConfig } from '../utils/gauzmem-service';
-import { ConfigManager } from '../utils/config';
 import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { ChannelCallbacks } from '../types/tool';
@@ -74,26 +72,10 @@ export class CatsCompanyBot {
 
     const skillManager = new SkillManager();
 
-    // 初始化 GauzMemService
-    const appConfig = ConfigManager.getConfig();
-    let memoryService: GauzMemService | null = null;
-    if (appConfig.memory?.enabled) {
-      const memConfig: GauzMemConfig = {
-        baseUrl: appConfig.memory.baseUrl || '',
-        projectId: appConfig.memory.projectId || 'XiaoBa',
-        userId: appConfig.memory.userId || '',
-        agentId: appConfig.memory.agentId || 'XiaoBa',
-        enabled: true,
-      };
-      memoryService = new GauzMemService(memConfig);
-      Logger.info('CatsCompany 记忆系统已启用');
-    }
-
     this.agentServices = {
       aiService,
       toolManager,
       skillManager,
-      memoryService,
     };
 
     this.sessionManager = new SessionManager(
@@ -219,7 +201,7 @@ export class CatsCompanyBot {
 
     // 注册持久化回调到 SubAgentManager
     const subAgentManager = SubAgentManager.getInstance();
-    subAgentManager.registerFeishuCallbacks(key, {
+    subAgentManager.registerPlatformCallbacks(key, {
       reply: async (text: string) => {
         await this.sender.reply(msg.topic, text);
       },
@@ -291,6 +273,9 @@ export class CatsCompanyBot {
       sessionKey: key,
       senderId: msg.senderId,
     });
+
+    // 发送 typing 指示，让用户知道 bot 正在处理
+    this.sender.sendTyping(msg.topic);
 
     try {
       const reply = await session.handleMessage(userText, { channel });
