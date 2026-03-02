@@ -153,21 +153,6 @@ export class CatsCompanyBot {
       },
     };
 
-    // 如果提供了 sessionKey + senderId，启用 ask_user_question
-    if (opts?.sessionKey && opts?.senderId) {
-      channel.askUser = {
-        send: async (text: string) => {
-          _hasOutbound = true;
-          await this.sender.reply(topic, text);
-        },
-        wait: () => {
-          return new Promise<string>((resolve) => {
-            this.registerPendingAnswer(opts.sessionKey!, topic, opts.senderId!, resolve);
-          });
-        },
-      };
-    }
-
     return channel;
   }
 

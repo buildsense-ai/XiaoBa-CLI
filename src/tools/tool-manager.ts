@@ -10,7 +10,6 @@ import { TaskPlannerTool } from './task-planner-tool';
 import { TodoWriteTool } from './todo-write-tool';
 import { EnterPlanModeTool } from './enter-plan-mode-tool';
 import { ExitPlanModeTool } from './exit-plan-mode-tool';
-import { AskUserQuestionTool } from './ask-user-question-tool';
 import { TaskTool } from './task-tool';
 import { TaskOutputTool } from './task-output-tool';
 import { TaskStopTool } from './task-stop-tool';
@@ -25,6 +24,7 @@ import { ResumeSubagentTool } from './resume-subagent-tool';
 
 import { ReplyTool } from './reply-tool';
 import { SendFileTool } from './send-file-tool';
+import { PauseTurnTool } from './pause-turn-tool';
 import * as path from 'path';
 import { loadGlobalPythonTools } from './python-tool-loader';
 import { normalizeToolName } from '../utils/tool-aliases';
@@ -65,7 +65,6 @@ export class ToolManager implements ToolExecutor {
     // 注册工作流工具
     this.registerTool(new EnterPlanModeTool());
     this.registerTool(new ExitPlanModeTool());
-    this.registerTool(new AskUserQuestionTool());
 
     // 注册网络工具
     this.registerTool(new WebSearchTool());
@@ -77,6 +76,7 @@ export class ToolManager implements ToolExecutor {
     // 注册平台通信工具（reply / send_file）
     this.registerTool(new ReplyTool());
     this.registerTool(new SendFileTool());
+    this.registerTool(new PauseTurnTool());
 
     // 注册子智能体工具
     this.registerTool(new SpawnSubagentTool());
@@ -244,6 +244,7 @@ export class ToolManager implements ToolExecutor {
         name: toolCall.function.name,
         content: output,
         ok: true,
+        controlSignal: tool.definition.controlMode,
       };
     } catch (error: any) {
       return {
