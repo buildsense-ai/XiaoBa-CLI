@@ -121,8 +121,8 @@ export class CatsCompanyBot {
     }
 
     // 注册事件
-    this.bot.on('ready', (uid) => {
-      Logger.success(`CatsCompany 机器人已连接，uid=${uid}`);
+    this.bot.on('ready', (uid, name) => {
+      Logger.success(`CatsCompany 机器人已连接，uid=${uid}, name=${name || '(未设置)'}`);
     });
 
     this.bot.on('message', async (ctx: MessageContext) => {

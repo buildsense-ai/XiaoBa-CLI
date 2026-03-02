@@ -16,6 +16,7 @@ class CatsBot extends EventEmitter {
     this._ws = null;
     this._msgId = 0;
     this._uid = null;
+    this.name = '';
     this._connected = false;
     this._shouldReconnect = true;
     this._reconnectAttempt = 0;
@@ -72,7 +73,8 @@ class CatsBot extends EventEmitter {
         this._pendingCtrl.delete(id);
         if (ctrl.code === 200) {
           this._uid = ctrl.params?.uid;
-          this.emit('ready', this._uid);
+          this.name = String(ctrl.params?.name || '');
+          this.emit('ready', this._uid, this.name);
           resolve();
         } else {
           reject(new Error(`Handshake failed: ${ctrl.text || ctrl.code}`));
