@@ -1,7 +1,7 @@
 import { Message } from '../types';
 import { AIService } from '../utils/ai-service';
 import { SkillActivationSignal, SkillToolPolicy } from '../types/skill';
-import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor } from '../types/tool';
+import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { StreamCallbacks } from '../providers/provider';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
@@ -32,6 +32,7 @@ const DEFAULT_PROMPT_BUDGET = 120000;
 const ANTHROPIC_PROMPT_BUDGET = 180000;
 const MIN_MESSAGE_BUDGET = 2000;
 const OVERFLOW_REDUCTION_RATIO = 0.6;
+export const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 
 /**
  * 对话运行回调
@@ -57,6 +58,13 @@ export interface RunResult {
   messages: Message[];
   /** 本次 run() 期间新增的 assistant/tool 消息（不含最终纯文本回复） */
   newMessages: Message[];
+}
+
+interface ToolExecutionRecord {
+  toolCall: ToolCall;
+  toolName: string;
+  toolContent: string;
+  result: ToolResult;
 }
 
 /** ConversationRunner 构造选项 */
@@ -148,7 +156,10 @@ export class ConversationRunner {
    */
   async run(messages: Message[], callbacks?: RunnerCallbacks): Promise<RunResult> {
     const allTools = this.toolExecutor.getToolDefinitions();
+    const toolDefinitions = new Map(allTools.map(tool => [tool.name, tool]));
     const newMessages: Message[] = [];
+    let lastDeliveredOutboundSignature: string | null = null;
+    let hasNewObservationSinceLastOutbound = false;
     let turns = 0;
     let replyCount = 0;
 
@@ -199,14 +210,15 @@ export class ConversationRunner {
       const toolNames = response.toolCalls.map(tc => tc.function.name).join(', ');
       Logger.info(`[Turn ${turns}] AI选择工具: [${toolNames}]`);
 
-      // 有工具调用 → 追加 assistant 消息
+      // 有工具调用 → 先构建 assistant 消息，执行后再决定如何写回 transcript
       const assistantMsg: Message = {
         role: 'assistant',
         content: response.content,
         tool_calls: response.toolCalls
       };
-      messages.push(assistantMsg);
-      newMessages.push(assistantMsg);
+      const executionRecords: ToolExecutionRecord[] = [];
+      const transientTurnHints: Message[] = [];
+      let shouldPauseTurn = false;
 
       // 执行每个工具调用
       for (const toolCall of response.toolCalls) {
@@ -217,7 +229,13 @@ export class ConversationRunner {
           .filter(tool => !this.disabledTools.has(tool.name))
           .map(tool => tool.name);
 
+        const outboundSignature = this.buildOutboundSignature(toolCall, toolName, toolDefinitions);
         const toolStart = Date.now();
+        const wasConsecutiveDuplicateOutbound = Boolean(
+          outboundSignature
+          && outboundSignature === lastDeliveredOutboundSignature
+          && !hasNewObservationSinceLastOutbound
+        );
         const result = await this.executeToolWithRetry(
           toolCall,
           messages,
@@ -234,6 +252,26 @@ export class ConversationRunner {
         const toolDuration = Date.now() - toolStart;
         Metrics.recordToolCall(toolName, toolDuration);
         Logger.info(`[Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
+
+        const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
+
+        if (outboundSignature && result.ok && !result.errorCode) {
+          lastDeliveredOutboundSignature = outboundSignature;
+          hasNewObservationSinceLastOutbound = false;
+          if (wasConsecutiveDuplicateOutbound) {
+            Logger.warning(`[Runner] 检测到连续重复外发: ${toolName}`);
+            transientTurnHints.push({
+              role: 'system',
+              content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n你刚刚连续发送了与上一条相同的内容。除非有新的信息或你确实在刻意重复强调，否则下一步尽量不要再发送完全相同的话；如果这轮已经说完了，可以考虑调用 pause_turn。`,
+            });
+          }
+        } else if (
+          transcriptMode === 'default'
+          && result.ok
+          && !result.errorCode
+        ) {
+          hasNewObservationSinceLastOutbound = true;
+        }
 
         // ===== 工具熔断检查 =====
         let toolContent = result.content;
@@ -265,7 +303,10 @@ export class ConversationRunner {
         if (ConversationRunner.REPLY_TOOLS.has(toolName)) {
           replyCount++;
           if (replyCount >= 2) {
-            toolContent += '\n\n[系统] 不要发送和之前重复或相似的消息。有新内容可以继续发，没有就结束。';
+            transientTurnHints.push({
+              role: 'system',
+              content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n不要发送和之前重复或相似的消息。有新内容可以继续发，没有就调用 pause_turn 结束。`,
+            });
             Logger.info(`[Turn ${turns}] reply 防刷: ${toolName} 已连续调用 ${replyCount} 次`);
           }
         } else {
@@ -294,17 +335,37 @@ export class ConversationRunner {
         }
 
         this.handleToolDisplay(toolCall, toolContent, callbacks);
+        executionRecords.push({
+          toolCall,
+          toolName,
+          toolContent,
+          result,
+        });
 
-        const toolMsg: Message = {
-          role: 'tool',
-          content: toolContent,
-          tool_call_id: result.tool_call_id,
-          name: result.name
-        };
-        messages.push(toolMsg);
-        newMessages.push(toolMsg);
-
+        if (result.controlSignal === 'pause_turn' && !result.errorCode) {
+          shouldPauseTurn = true;
+        }
         callbacks?.onToolEnd?.(toolCall.function.name, toolContent);
+      }
+
+      const transcriptMessages = this.buildTurnTranscriptMessages(
+        assistantMsg,
+        executionRecords,
+        toolDefinitions,
+      );
+      messages.push(...transcriptMessages);
+      newMessages.push(...transcriptMessages);
+      if (!shouldPauseTurn && transientTurnHints.length > 0) {
+        messages.push(...transientTurnHints);
+      }
+
+      if (shouldPauseTurn) {
+        Logger.info(`[Turn ${turns}] pause_turn 已触发，本轮收束`);
+        return {
+          response: '',
+          messages,
+          newMessages,
+        };
       }
     }
 
@@ -341,6 +402,168 @@ export class ConversationRunner {
     }
 
     return parseSkillActivationSignal(content);
+  }
+
+  private buildTurnTranscriptMessages(
+    assistantMsg: Message,
+    executionRecords: ToolExecutionRecord[],
+    toolDefinitions: Map<string, ToolDefinition>,
+  ): Message[] {
+    const retainedToolCalls: ToolCall[] = [];
+    const retainedToolMessages: Message[] = [];
+    const normalizedMessages: Message[] = [];
+
+    for (const record of executionRecords) {
+      const transcriptMode = this.getToolTranscriptMode(record.toolName, toolDefinitions);
+      const normalized = this.shouldNormalizeOutboundRecord(record, transcriptMode)
+        ? this.buildOutboundAssistantMessage(record, toolDefinitions)
+        : null;
+
+      if (normalized) {
+        normalizedMessages.push(normalized);
+        continue;
+      }
+
+      if (transcriptMode === 'suppress' && !record.result.errorCode) {
+        continue;
+      }
+
+      retainedToolCalls.push(record.toolCall);
+      retainedToolMessages.push({
+        role: 'tool',
+        content: record.toolContent,
+        tool_call_id: record.result.tool_call_id,
+        name: record.result.name,
+      });
+    }
+
+    const transcriptMessages: Message[] = [];
+    const normalizedContent = normalizedMessages.map(m => m.content).filter(Boolean).join('\n');
+
+    if (assistantMsg.content || retainedToolCalls.length > 0 || normalizedContent) {
+      const mergedContent = [assistantMsg.content, normalizedContent].filter(Boolean).join('\n');
+      transcriptMessages.push({
+        role: 'assistant',
+        content: mergedContent || null,
+        ...(retainedToolCalls.length > 0 ? { tool_calls: retainedToolCalls } : {}),
+      });
+    }
+
+    transcriptMessages.push(...retainedToolMessages);
+    return transcriptMessages;
+  }
+
+  private getToolTranscriptMode(
+    toolName: string,
+    toolDefinitions: Map<string, ToolDefinition>,
+  ): ToolTranscriptMode {
+    return toolDefinitions.get(toolName)?.transcriptMode ?? 'default';
+  }
+
+  private shouldNormalizeOutboundRecord(
+    record: ToolExecutionRecord,
+    transcriptMode: ToolTranscriptMode,
+  ): boolean {
+    if (record.result.errorCode || record.result.ok === false) {
+      return false;
+    }
+
+    return transcriptMode === 'outbound_message' || transcriptMode === 'outbound_file';
+  }
+
+  private buildOutboundAssistantMessage(
+    record: ToolExecutionRecord,
+    toolDefinitions: Map<string, ToolDefinition>,
+  ): Message | null {
+    const transcriptMode = this.getToolTranscriptMode(record.toolName, toolDefinitions);
+    let args: Record<string, unknown> = {};
+
+    try {
+      args = JSON.parse(record.toolCall.function.arguments || '{}');
+    } catch {
+      return null;
+    }
+
+    if (transcriptMode === 'outbound_message') {
+      const text = this.extractOutboundMessage(record.toolName, args);
+      if (!text) {
+        return null;
+      }
+      return {
+        role: 'assistant',
+        content: text,
+      };
+    }
+
+    if (transcriptMode === 'outbound_file') {
+      const fileName = typeof args.file_name === 'string' ? args.file_name.trim() : '';
+      if (!fileName) {
+        return null;
+      }
+      return {
+        role: 'assistant',
+        content: `[已发送文件] ${fileName}`,
+      };
+    }
+
+    return null;
+  }
+
+  private buildOutboundSignature(
+    toolCall: ToolCall,
+    toolName: string,
+    toolDefinitions: Map<string, ToolDefinition>,
+  ): string | null {
+    const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
+    let args: Record<string, unknown> = {};
+
+    try {
+      args = JSON.parse(toolCall.function.arguments || '{}');
+    } catch {
+      return null;
+    }
+
+    if (transcriptMode === 'outbound_message') {
+      const text = this.extractOutboundMessage(toolName, args);
+      return text ? `message:${toolName}:${text}` : null;
+    }
+
+    if (transcriptMode === 'outbound_file') {
+      const filePath = typeof args.file_path === 'string' ? args.file_path.trim() : '';
+      const fileName = typeof args.file_name === 'string' ? args.file_name.trim() : '';
+      if (!filePath && !fileName) {
+        return null;
+      }
+      return `file:${toolName}:${filePath}:${fileName}`;
+    }
+
+    return null;
+  }
+
+  private extractOutboundMessage(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): string | null {
+    if (toolName === 'reply') {
+      const text = typeof args.message === 'string' ? args.message.trim() : '';
+      return text || null;
+    }
+
+    if (toolName === 'feishu_mention') {
+      const message = typeof args.message === 'string' ? args.message.trim() : '';
+      const mentions = Array.isArray(args.mentions)
+        ? args.mentions
+            .map(item => typeof item === 'object' && item && typeof (item as { name?: unknown }).name === 'string'
+              ? `@${String((item as { name: string }).name).trim()}`
+              : '')
+            .filter(Boolean)
+        : [];
+      const prefix = mentions.join(' ').trim();
+      const combined = [prefix, message].filter(Boolean).join(' ').trim();
+      return combined || null;
+    }
+
+    return null;
   }
 
   private applyToolPolicy(allTools: ToolDefinition[], policy?: SkillToolPolicy): ToolDefinition[] {
@@ -570,7 +793,7 @@ export class ConversationRunner {
     messages: Message[],
     context: Partial<ToolExecutionContext>,
     turn: number,
-  ): Promise<{ content: string; tool_call_id: string; name: string; errorCode?: string }> {
+  ): Promise<ToolResult> {
     let lastResult = await this.toolExecutor.executeTool(toolCall, messages, context);
 
     for (let attempt = 1; attempt <= ConversationRunner.MAX_RETRIES; attempt++) {

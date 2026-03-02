@@ -291,25 +291,6 @@ export class SubAgentSession {
       },
     };
 
-    // ask_user_question：子智能体挂起，反馈给主 agent 决策
-    if (this.options.notifyParent) {
-      channel.askUser = {
-        send: async (question: string) => {
-          this.pendingQuestion = question;
-          this.status = 'waiting_for_input';
-          this.reportProgress(`等待主 agent 指示：${question}`);
-          // 先创建 Promise 再通知主 agent，避免 resume() 先于 waitFn 到达
-          this.pendingWaitPromise = new Promise<string>((resolve) => {
-            this.pendingResolve = resolve;
-          });
-          if (this.options.notifyParent) {
-            await this.options.notifyParent(this.id, this.taskDescription, question);
-          }
-        },
-        wait: () => this.pendingWaitPromise!,
-      };
-    }
-
     return channel;
   }
 

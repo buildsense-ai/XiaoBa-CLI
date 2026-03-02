@@ -11,6 +11,7 @@ export class SendFileTool implements Tool {
   definition: ToolDefinition = {
     name: 'send_file',
     description: '给用户发送一个文件。用于发送产出的文档、PPT等成果文件。',
+    transcriptMode: 'outbound_file',
     parameters: {
       type: 'object',
       properties: {
