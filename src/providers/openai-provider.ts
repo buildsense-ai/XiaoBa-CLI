@@ -2,6 +2,7 @@ import axios from 'axios';
 import { Message, ChatConfig, ChatResponse } from '../types';
 import { ToolDefinition } from '../types/tool';
 import { AIProvider, StreamCallbacks } from './provider';
+import { ContextDebugLogger } from '../utils/context-debug-logger';
 
 /**
  * OpenAI Provider
@@ -73,9 +74,17 @@ export class OpenAIProvider implements AIProvider {
    */
   async chat(messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse> {
     const body = this.buildRequestBody(messages, tools, false);
+    ContextDebugLogger.dumpSdkBoundary('before', undefined, {
+      apiUrl: this.apiUrl,
+      body,
+    });
     const response = await axios.post(this.apiUrl, body, { headers: this.headers });
     const message = response.data.choices[0].message;
     const usage = response.data.usage;
+
+    ContextDebugLogger.dumpSdkBoundary('after', undefined, {
+      response: response.data,
+    });
 
     return {
       content: message.content || null,
@@ -93,6 +102,11 @@ export class OpenAIProvider implements AIProvider {
    */
   async chatStream(messages: Message[], tools?: ToolDefinition[], callbacks?: StreamCallbacks): Promise<ChatResponse> {
     const body = this.buildRequestBody(messages, tools, true);
+
+    ContextDebugLogger.dumpSdkBoundary('before', undefined, {
+      apiUrl: this.apiUrl,
+      body,
+    });
 
     const response = await axios.post(this.apiUrl, body, {
       headers: this.headers,
@@ -173,6 +187,10 @@ export class OpenAIProvider implements AIProvider {
           toolCalls,
           usage: streamUsage,
         };
+
+        ContextDebugLogger.dumpSdkBoundary('after', undefined, {
+          response: result,
+        });
 
         callbacks?.onComplete?.(result);
         resolve(result);

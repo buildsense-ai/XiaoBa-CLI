@@ -18,6 +18,9 @@ export interface ToolParameter {
 /**
  * 工具定义
  */
+export type ToolTranscriptMode = 'default' | 'outbound_message' | 'outbound_file' | 'suppress';
+export type ToolControlMode = 'pause_turn';
+
 export interface ToolDefinition {
   name: string;
   description: string;
@@ -26,6 +29,18 @@ export interface ToolDefinition {
     properties: Record<string, ToolParameter>;
     required?: string[];
   };
+  /**
+   * 控制工具结果如何进入后续 transcript。
+   * default: 保留 tool_result；
+   * outbound_message/outbound_file: 成功后折叠为用户已看到的外发结果。
+   * suppress: 成功后不进入后续 transcript（适合控制类工具）。
+   */
+  transcriptMode?: ToolTranscriptMode;
+  /**
+   * 控制工具对当前 run 的控制语义。
+   * 例如 pause_turn 会显式结束当前这一轮推理，等待新的外部事件。
+   */
+  controlMode?: ToolControlMode;
 }
 
 /**
@@ -51,6 +66,7 @@ export interface ToolResult {
   ok?: boolean;
   errorCode?: string;
   retryable?: boolean;
+  controlSignal?: ToolControlMode;
 }
 
 export type ToolSurface = 'cli' | 'feishu' | 'catscompany' | 'agent' | 'research' | 'unknown';
@@ -67,11 +83,6 @@ export interface ChannelCallbacks {
   reply: (chatId: string, text: string) => Promise<void>;
   /** 发送文件 */
   sendFile: (chatId: string, filePath: string, fileName: string) => Promise<void>;
-  /** 向用户提问并等待回复（ask_user_question 用） */
-  askUser?: {
-    send: (text: string) => Promise<void>;
-    wait: () => Promise<string>;
-  };
 }
 
 /** @deprecated Use ChannelCallbacks instead */

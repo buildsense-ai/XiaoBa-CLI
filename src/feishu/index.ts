@@ -214,7 +214,6 @@ export class FeishuBot {
   private buildChannel(
     chatId: string,
     opts?: {
-      /** 提供 senderId 以启用 ask_user_question 的等待回复能力 */
       sessionKey?: string;
       senderId?: string;
       /** 可选的 reply 拦截器（如 bridge 场景需要收集回复文本） */
@@ -240,20 +239,6 @@ export class FeishuBot {
         await this.sender.sendFile(targetChatId, filePath, fileName);
       },
     };
-
-    // 如果提供了 sessionKey + senderId，启用 ask_user_question
-    if (opts?.sessionKey && opts?.senderId) {
-      channel.askUser = {
-        send: async (text: string) => {
-          await this.sender.reply(chatId, text);
-        },
-        wait: () => {
-          return new Promise<string>((resolve) => {
-            this.registerPendingAnswer(opts.sessionKey!, chatId, opts.senderId!, resolve);
-          });
-        },
-      };
-    }
 
     return channel;
   }

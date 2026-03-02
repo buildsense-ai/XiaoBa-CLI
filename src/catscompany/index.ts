@@ -104,7 +104,8 @@ export class CatsCompanyBot {
 
     // 注册事件
     this.bot.on('ready', (uid) => {
-      Logger.success(`CatsCompany 机器人已连接，uid=${uid}`);
+      const botName = (this.bot as { name?: string }).name || '(未设置)';
+      Logger.success(`CatsCompany 机器人已连接，uid=${uid}, name=${botName}`);
     });
 
     this.bot.on('message', async (ctx: MessageContext) => {
@@ -149,21 +150,6 @@ export class CatsCompanyBot {
         await this.sender.sendFile(topic, filePath, fileName);
       },
     };
-
-    // 如果提供了 sessionKey + senderId，启用 ask_user_question
-    if (opts?.sessionKey && opts?.senderId) {
-      channel.askUser = {
-        send: async (text: string) => {
-          _hasOutbound = true;
-          await this.sender.reply(topic, text);
-        },
-        wait: () => {
-          return new Promise<string>((resolve) => {
-            this.registerPendingAnswer(opts.sessionKey!, topic, opts.senderId!, resolve);
-          });
-        },
-      };
-    }
 
     return channel;
   }

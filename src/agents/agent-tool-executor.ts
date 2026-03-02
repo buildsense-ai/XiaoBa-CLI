@@ -118,6 +118,7 @@ export class AgentToolExecutor implements ToolExecutor {
         name: requestedName,
         content: output,
         ok: true,
+        controlSignal: tool.definition.controlMode,
       };
     } catch (error: any) {
       return {

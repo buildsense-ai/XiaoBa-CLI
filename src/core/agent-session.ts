@@ -17,6 +17,7 @@ import { SessionStore } from '../utils/session-store';
 import { Metrics } from '../utils/metrics';
 
 const TRANSIENT_SUBAGENT_STATUS_PREFIX = '[transient_subagent_status]';
+const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
 export const ERROR_MESSAGE = '不好意思，刚才处理出了点问题，你再试一次？';
 
@@ -92,12 +93,12 @@ export class AgentSession {
       const chatType = isGroup ? '群聊' : '私聊';
       this.messages.push({
         role: 'system',
-        content: `[surface:feishu:${isGroup ? 'group' : 'private'}]\n当前是飞书${chatType}会话。你的普通文本输出老师完全看不到，必须调用 reply 工具才能让老师收到消息。无论多简单的回复（包括打招呼、闲聊），都必须通过 reply 发送。发完后直接停止，不要再输出收尾文本。`,
+        content: `[surface:feishu:${isGroup ? 'group' : 'private'}]\n当前是飞书${chatType}会话。你的普通文本输出老师完全看不到，必须调用 reply 工具才能让老师收到消息。无论多简单的回复（包括打招呼、闲聊），都必须通过 reply 发送。如果当前这一轮你已经把该发的话发完了，调用 pause_turn 收束；如果还要继续查资料、看子任务进度或补充新的内容，就继续调用工具，不要机械停下。`,
       });
     } else if (this.isCatsCompanySession()) {
       this.messages.push({
         role: 'system',
-        content: '[surface:catscompany]\n当前是 Cats Company 聊天会话。用户只能看到你通过 reply / send_file 发送的内容，你的普通文本输出用户完全看不到。所以：所有要给用户看的话，必须通过工具发送；通过工具发完消息后直接停止，不要再输出任何收尾文本。',
+        content: '[surface:catscompany]\n当前是 Cats Company 聊天会话。用户只能看到你通过 reply / send_file 发送的内容，你的普通文本输出用户完全看不到。所以：所有要给用户看的话，必须通过工具发送。如果当前这一轮你已经把该发的话发完了，调用 pause_turn 收束；如果还要继续查文件、看子任务进度、补充新的信息，就继续调用工具，不要因为刚发过消息就机械停下。',
       });
     }
 
@@ -286,9 +287,12 @@ export class AgentSession {
       // runner 在"最终无工具调用"时不会自动附加 assistant 消息，这里补齐
       const lastMessage = this.messages[this.messages.length - 1];
       if (
-        !lastMessage ||
-        lastMessage.role !== 'assistant' ||
-        (lastMessage.content || '') !== (result.response || '')
+        result.response &&
+        (
+          !lastMessage ||
+          lastMessage.role !== 'assistant' ||
+          (lastMessage.content || '') !== result.response
+        )
       ) {
         this.messages.push({ role: 'assistant', content: result.response });
       }
@@ -530,6 +534,7 @@ ${conversationText}
     return messages.filter(msg => {
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
+      if (msg.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)) return false;
       return true;
     });
   }
