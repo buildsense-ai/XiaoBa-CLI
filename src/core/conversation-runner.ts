@@ -102,6 +102,8 @@ export class ConversationRunner {
   private disabledTools = new Set<string>();
 
   private static readonly FAILURE_THRESHOLD = 3;
+  /** reply 类工具名集合（用于防重复回复） */
+  private static readonly REPLY_TOOLS = new Set(['reply', 'send_file']);
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: string, maxLen = 200): string {
@@ -148,10 +150,12 @@ export class ConversationRunner {
     const allTools = this.toolExecutor.getToolDefinitions();
     const newMessages: Message[] = [];
     let turns = 0;
+    let replyCount = 0;
 
     while (turns++ < this.maxTurns) {
       // shouldContinue 回调检查（供 agent 检查 stop 状态）
       if (this.shouldContinue && !this.shouldContinue()) {
+        Logger.info(`[Turn ${turns}] shouldContinue 返回 false，提前退出对话循环`);
         break;
       }
 
@@ -257,6 +261,17 @@ export class ConversationRunner {
           this.toolFailureCount.delete(toolName);
         }
 
+        // ===== reply 防重复回复（仅提醒，不禁用） =====
+        if (ConversationRunner.REPLY_TOOLS.has(toolName)) {
+          replyCount++;
+          if (replyCount >= 2) {
+            toolContent += '\n\n[系统] 不要发送和之前重复或相似的消息。有新内容可以继续发，没有就结束。';
+            Logger.info(`[Turn ${turns}] reply 防刷: ${toolName} 已连续调用 ${replyCount} 次`);
+          }
+        } else {
+          replyCount = 0;
+        }
+
         // skill 工具的结构化激活信号：统一 skill 激活行为
         const activation = this.tryParseSkillActivation(toolCall, result.content);
         if (activation) {
@@ -271,6 +286,11 @@ export class ConversationRunner {
           newMessages.push(systemMsg);
 
           toolContent = `Skill "${activation.skillName}" 已激活`;
+          Logger.info(`[Turn ${turns}] Skill 激活: ${activation.skillName}${activation.maxTurns ? ` | maxTurns 扩展至 ${this.maxTurns}` : ''}`);
+        }
+
+        if (toolContent !== result.content) {
+          Logger.info(`[Turn ${turns}] 工具结果已修改: ${toolName} | 最终内容: ${ConversationRunner.truncateForLog(toolContent, 300)}`);
         }
 
         this.handleToolDisplay(toolCall, toolContent, callbacks);
