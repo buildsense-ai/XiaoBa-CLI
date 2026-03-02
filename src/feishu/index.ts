@@ -152,7 +152,6 @@ export class FeishuBot {
       aiService,
       toolManager,
       skillManager,
-
     };
 
     this.sessionManager = new SessionManager(

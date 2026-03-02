@@ -22,9 +22,7 @@ class MessageContext {
     get text() {
         if (typeof this.content === 'string')
             return this.content;
-        if (this.content == null)
-            return '';
-        return JSON.stringify(this.content);
+        return '';
     }
     /** Whether this is a P2P (direct message) topic. */
     get isP2P() {

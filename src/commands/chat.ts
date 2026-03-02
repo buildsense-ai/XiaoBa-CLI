@@ -33,7 +33,6 @@ export async function chatCommand(options: CommandOptions): Promise<void> {
     aiService,
     toolManager,
     skillManager,
-
   };
   const session = new AgentSession('cli', services);
 

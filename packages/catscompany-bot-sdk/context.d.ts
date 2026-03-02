@@ -9,7 +9,7 @@ export declare class MessageContext {
     readonly content: unknown;
     readonly replyTo: number | undefined;
     constructor(bot: CatsBot, data: MsgServerData);
-    /** Extract plain text from content (returns stringified JSON for rich content). */
+    /** Extract plain text from content (returns empty string for non-string content). */
     get text(): string;
     /** Whether this is a P2P (direct message) topic. */
     get isP2P(): boolean;

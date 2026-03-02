@@ -76,7 +76,6 @@ export class CatsCompanyBot {
       aiService,
       toolManager,
       skillManager,
-
     };
 
     this.sessionManager = new SessionManager(

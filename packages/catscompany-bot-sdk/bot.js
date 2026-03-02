@@ -245,10 +245,12 @@ class CatsBot {
     }
     doConnect() {
         return new Promise((resolve, reject) => {
-            const url = `${this.config.serverUrl}?api_key=${this.config.apiKey}`;
+            const url = this.config.serverUrl;
             let handshakeDone = false;
             try {
-                this.ws = new ws_1.default(url);
+                this.ws = new ws_1.default(url, {
+                    headers: { 'X-API-Key': this.config.apiKey },
+                });
             }
             catch (err) {
                 reject(new errors_1.ConnectionError(`Failed to create WebSocket: ${err.message}`));
