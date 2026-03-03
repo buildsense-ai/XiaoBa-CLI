@@ -156,6 +156,7 @@ export class ConversationRunner {
     const allTools = this.toolExecutor.getToolDefinitions();
     const toolDefinitions = new Map(allTools.map(tool => [tool.name, tool]));
     const newMessages: Message[] = [];
+    let nextTurnTransientHints: Message[] = [];
     let lastDeliveredOutboundSignature: string | null = null;
     let hasNewObservationSinceLastOutbound = false;
     let turns = 0;
@@ -179,9 +180,11 @@ export class ConversationRunner {
       // 根据 stream 选项选择调用方式
       const activeTools = this.applyToolPolicy(allTools, this.activeSkillToolPolicy)
         .filter(t => !this.disabledTools.has(t.name));
-      this.ensurePromptBudget(messages, activeTools);
+      const requestMessages = this.buildProviderInputMessages(messages, nextTurnTransientHints);
+      nextTurnTransientHints = [];
+      this.ensurePromptBudget(requestMessages, activeTools);
       Logger.info(`[Turn ${turns}] 调用AI推理 (可用工具: ${activeTools.length}个)`);
-      const response = await this.requestModelResponse(messages, activeTools, callbacks);
+      const response = await this.requestModelResponse(requestMessages, activeTools, callbacks);
 
       // 记录 AI 调用 metrics
       if (response.usage) {
@@ -333,7 +336,7 @@ export class ConversationRunner {
       messages.push(...transcriptMessages);
       newMessages.push(...transcriptMessages);
       if (!shouldPauseTurn && transientTurnHints.length > 0) {
-        messages.push(...transientTurnHints);
+        nextTurnTransientHints = transientTurnHints;
       }
 
       if (shouldPauseTurn) {
@@ -432,6 +435,40 @@ export class ConversationRunner {
     transcriptMessages.push(...retainedToolMessages);
     transcriptMessages.push(...normalizedMessages);
     return transcriptMessages;
+  }
+
+  private buildProviderInputMessages(messages: Message[], transientHints: Message[]): Message[] {
+    const sanitizedBase = messages.filter(message => {
+      if (message.role !== 'system' || typeof message.content !== 'string') {
+        return true;
+      }
+      return !message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX);
+    });
+
+    const collapsed: Message[] = [];
+    for (const message of sanitizedBase) {
+      const previous = collapsed[collapsed.length - 1];
+      if (
+        previous
+        && previous.role === 'assistant'
+        && message.role === 'assistant'
+        && !previous.tool_calls?.length
+        && !message.tool_calls?.length
+        && typeof previous.content === 'string'
+        && typeof message.content === 'string'
+        && previous.content.trim()
+        && previous.content === message.content
+      ) {
+        continue;
+      }
+      collapsed.push(message);
+    }
+
+    if (transientHints.length === 0) {
+      return collapsed;
+    }
+
+    return [...collapsed, ...transientHints];
   }
 
   private getToolTranscriptMode(
