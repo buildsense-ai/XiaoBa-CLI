@@ -17,7 +17,8 @@ export class SpawnSubagentTool implements Tool {
     name: 'spawn_subagent',
     description: `派遣一个子智能体在后台独立执行某个 skill 任务。
 
-调用后立即返回，不会阻塞当前对话。子智能体会独立运行，完成后通过飞书主动通知用户。
+调用后立即返回，不会阻塞当前对话。子智能体完成后会通知你（主 agent），并附上产出文件列表。
+由你决定是否将结果和文件转发给用户。
 
 使用场景：
 - 用户要求执行耗时较长的 skill（如论文精读、文献综述等）
@@ -26,8 +27,10 @@ export class SpawnSubagentTool implements Tool {
 
 注意：
 - 每个会话最多同时运行 3 个子任务
-- 子智能体会自动使用对应 skill 的工具策略
-- 你可以用 check_subagent 查看进度，用 stop_subagent 停止任务`,
+- 子智能体不会直接给用户发消息或文件
+- 任务完成后你会收到包含结果摘要和产出文件路径的通知
+- 你可以用 check_subagent 查看进度，用 stop_subagent 停止任务
+- 收到完成通知后，请用 reply 告知用户结果，用 send_file 发送相关文件`,
     parameters: {
       type: 'object',
       properties: {
@@ -87,7 +90,7 @@ export class SpawnSubagentTool implements Tool {
       `Skill: ${skill_name}`,
       `状态: running`,
       ``,
-      `子智能体会独立运行并通过飞书通知用户进度和结果。`,
+      `子智能体完成后会通知你结果和产出文件列表。届时请用 reply 和 send_file 转发给用户。`,
       `你可以用 check_subagent 查看进度，用 stop_subagent 停止任务。`,
     ].join('\n');
   }

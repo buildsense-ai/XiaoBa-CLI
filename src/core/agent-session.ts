@@ -13,6 +13,7 @@ import { SubAgentManager } from './sub-agent-manager';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { saveSessionSummary, loadSessionSummary, removeSessionSummary, getMasterSummary, updateMasterSummary } from '../utils/local-session-store';
+import { saveTurnLog, getLastTurnIndex, ToolCallSummary } from '../utils/turn-log-store';
 import { SessionStore } from '../utils/session-store';
 import { Metrics } from '../utils/metrics';
 
@@ -72,12 +73,24 @@ export class AgentSession {
   private activeSkillToolPolicy?: SkillToolPolicy;
   private activeSkillMaxTurns?: number;
   private pendingRestore?: Message[];
+  private turnCounter = 0;
+  /** 过期时主动唤醒用户的回调（由平台 SessionManager 注入） */
+  private wakeupReply?: (text: string) => Promise<void>;
+  /** 外部请求中断当前 run（例如用户在 busy 时发送“停止”） */
+  private interruptRequested = false;
   lastActiveAt: number = Date.now();
 
   constructor(
     public readonly key: string,
     private services: AgentServices,
-  ) {}
+  ) {
+    this.turnCounter = getLastTurnIndex(key);
+  }
+
+  /** 注入主动唤醒回调（由平台 SessionManager 在创建/获取 session 时调用） */
+  setWakeupReply(callback: (text: string) => Promise<void>): void {
+    this.wakeupReply = callback;
+  }
 
   // ─── 初始化 ─────────────────────────────────────────
 
@@ -92,7 +105,7 @@ export class AgentSession {
       const chatType = isGroup ? '群聊' : '私聊';
       this.messages.push({
         role: 'system',
-        content: `[surface:feishu:${isGroup ? 'group' : 'private'}]\n当前是飞书${chatType}会话。你的普通文本输出老师完全看不到，必须调用 reply 工具才能让老师收到消息。无论多简单的回复（包括打招呼、闲聊），都必须通过 reply 发送。如果当前这一轮你已经把该发的话发完了，调用 pause_turn 收束；如果还要继续查资料、看子任务进度或补充新的内容，就继续调用工具，不要机械停下。`,
+        content: `[surface:feishu:${isGroup ? 'group' : 'private'}]\n当前是飞书${chatType}会话。记住：你的普通文本输出老师完全看不到，必须调用 reply 才能让老师收到。`,
       });
     } else if (this.isCatsCompanySession()) {
       this.messages.push({
@@ -200,6 +213,7 @@ export class AgentSession {
     Metrics.reset();
 
     this.busy = true;
+    this.interruptRequested = false;
     this.lastActiveAt = Date.now();
 
     try {
@@ -254,6 +268,7 @@ export class AgentSession {
         {
           initialSkillName: this.activeSkillName,
           initialSkillToolPolicy: this.activeSkillToolPolicy,
+          shouldContinue: () => !this.interruptRequested,
           toolExecutionContext: {
             sessionId: this.key,
             surface,
@@ -271,10 +286,38 @@ export class AgentSession {
 
       const result = await runner.run(contextMessages, runnerCallbacks);
 
-      // 优先采用 runner 返回的完整消息（含压缩结果），修复历史持续膨胀问题
-      // 始终清理临时上下文（记忆 + 子智能体状态），避免持久化到历史
-      const persistedMessages = this.removeTransientMessages(result.messages);
-      this.messages = [...persistedMessages];
+      // ═══ 上下文拉取模型：将工具过程写入外部日志，只保留聊天可见消息 ═══
+
+      // 1. 将本轮工具过程写入 TurnLogStore（供 recall_log 回查）
+      const toolSummaries = this.extractToolSummaries(result.newMessages);
+      const outputFiles = this.extractOutputFiles(result.newMessages);
+      if (toolSummaries.length > 0) {
+        this.turnCounter++;
+        saveTurnLog(this.key, {
+          turnIndex: this.turnCounter,
+          timestamp: new Date().toISOString(),
+          userMessage: text.slice(0, 200),
+          assistantReply: (result.response || '').slice(0, 500),
+          toolCalls: toolSummaries,
+          outputFiles,
+        });
+      }
+
+      // 2. 只保留"对话可见"消息（system + user + assistant 纯文本回复）
+      //    工具过程不进入下一轮上下文，避免跨任务污染
+      const cleanMessages = this.removeTransientMessages(result.messages);
+      this.messages = this.filterToChatVisible(cleanMessages);
+
+      // 3. 如果有工具调用，在最后一条 assistant 回复上标注（提示模型可用 recall_log）
+      if (toolSummaries.length > 0) {
+        for (let i = this.messages.length - 1; i >= 0; i--) {
+          const msg = this.messages[i];
+          if (msg.role === 'assistant' && msg.content) {
+            msg.content += `\n[本轮执行了 ${toolSummaries.length} 次工具调用，详情可用 recall_log 查询]`;
+            break;
+          }
+        }
+      }
 
       // 同步 skill 激活状态
       for (const msg of result.newMessages) {
@@ -377,10 +420,10 @@ export class AgentSession {
     this.activeSkillName = undefined;
     this.activeSkillToolPolicy = undefined;
     this.activeSkillMaxTurns = undefined;
+    this.turnCounter = 0;
     this.lastActiveAt = Date.now();
   }
 
-  /** 压缩历史写入本地文件，然后清空 */
   async summarizeAndDestroy(): Promise<boolean> {
     const hasUserMessages = this.messages.some(m => m.role === 'user');
     if (this.messages.length === 0 || !hasUserMessages) {
@@ -390,36 +433,85 @@ export class AgentSession {
     try {
       const conversationText = this.messages
         .filter(m => m.role === 'user' || m.role === 'assistant')
-        .map(m => `${m.role === 'user' ? '用户' : 'AI'}: ${m.content}`)
+        .map(m => `${m.role === 'user' ? '\u7528\u6237' : 'AI'}: ${m.content}`)
         .join('\n');
 
-      const summaryPrompt = `请对以下对话进行简洁的摘要，保留关键信息、重要事实和上下文。摘要应该简洁但完整，以便未来回忆时能理解对话的主要内容。
+      // \u540c\u65f6\u751f\u6210\u6458\u8981 + \u5224\u65ad\u662f\u5426\u9700\u8981\u4e3b\u52a8\u5524\u9192\uff08\u4e0d\u589e\u52a0\u989d\u5916 AI \u8c03\u7528\uff09
+      const summaryPrompt = this.wakeupReply
+        ? `\u8bf7\u5bf9\u4ee5\u4e0b\u5bf9\u8bdd\u8fdb\u884c\u5206\u6790\uff0c\u8fd4\u56de JSON \u683c\u5f0f\u7684\u7ed3\u679c\u3002
 
-对话内容：
+\u5bf9\u8bdd\u5185\u5bb9\uff1a
 ${conversationText}
 
-请生成摘要：`;
+\u8bf7\u8fd4\u56de\u4ee5\u4e0b JSON \u683c\u5f0f\uff08\u4e0d\u8981\u5305\u542b markdown \u4ee3\u7801\u5757\u6807\u8bb0\uff09\uff1a
+{
+  "summary": "\u7b80\u6d01\u7684\u5bf9\u8bdd\u6458\u8981\uff0c\u4fdd\u7559\u5173\u952e\u4fe1\u606f\u3001\u91cd\u8981\u4e8b\u5b9e\u548c\u4e0a\u4e0b\u6587",
+  "wakeup": null \u6216 "\u4e00\u6761\u81ea\u7136\u7684\u6d88\u606f"
+}
 
-      const summary = await this.services.aiService.chat([
+\u5173\u4e8e wakeup \u5b57\u6bb5\u7684\u5224\u65ad\u89c4\u5219\uff1a
+- \u5982\u679c\u6709\u672a\u5b8c\u6210\u7684\u4efb\u52a1\u6216\u627f\u8bfa\uff08\u5982 AI \u8bf4\u201c\u7a0d\u540e\u5e2e\u4f60\u67e5\u201d\u4f46\u6ca1\u505a\uff09\u2192 \u9700\u8981\u5524\u9192
+- \u5982\u679c\u6709\u540e\u53f0\u4efb\u52a1\u5df2\u5b8c\u6210\u4f46\u7ed3\u679c\u8fd8\u6ca1\u544a\u8bc9\u7528\u6237 \u2192 \u9700\u8981\u5524\u9192
+- \u5982\u679c\u7528\u6237\u6700\u540e\u7684\u95ee\u9898\u6ca1\u6709\u5f97\u5230\u5b8c\u6574\u56de\u7b54 \u2192 \u9700\u8981\u5524\u9192
+- \u5982\u679c\u5bf9\u8bdd\u81ea\u7136\u7ed3\u675f\u3001\u7528\u6237\u4e3b\u52a8\u544a\u522b\u3001\u6216\u53ea\u662f\u95f2\u804a \u2192 \u4e0d\u9700\u8981\u5524\u9192\uff08\u8fd4\u56de null\uff09
+- \u5524\u9192\u6d88\u606f\u8981\u81ea\u7136\uff0c\u50cf\u52a9\u7406\u4e3b\u52a8\u8ddf\u8fdb\uff0c\u4e0d\u8981\u751f\u786c`
+        : `\u8bf7\u5bf9\u4ee5\u4e0b\u5bf9\u8bdd\u8fdb\u884c\u7b80\u6d01\u7684\u6458\u8981\uff0c\u4fdd\u7559\u5173\u952e\u4fe1\u606f\u3001\u91cd\u8981\u4e8b\u5b9e\u548c\u4e0a\u4e0b\u6587\u3002\u6458\u8981\u5e94\u8be5\u7b80\u6d01\u4f46\u5b8c\u6574\uff0c\u4ee5\u4fbf\u672a\u6765\u56de\u5fc6\u65f6\u80fd\u7406\u89e3\u5bf9\u8bdd\u7684\u4e3b\u8981\u5185\u5bb9\u3002
+
+\u5bf9\u8bdd\u5185\u5bb9\uff1a
+${conversationText}
+
+\u8bf7\u751f\u6210\u6458\u8981\uff1a`;
+
+      const result = await this.services.aiService.chat([
         { role: 'user', content: summaryPrompt },
       ]);
 
-      const summaryText = `[对话摘要 - ${new Date().toISOString()}]\n${summary.content || ''}`;
+      // \u89e3\u6790 AI \u8fd4\u56de\u7684\u7ed3\u679c
+      let summaryText: string;
+      let wakeupMessage: string | null = null;
 
-      // 本地文件兜底：始终写入本地（原始摘要归档）
+      if (this.wakeupReply) {
+        // \u5c1d\u8bd5\u89e3\u6790 JSON \u683c\u5f0f
+        try {
+          const raw = result.content || '{}';
+          // \u5904\u7406 AI \u53ef\u80fd\u8fd4\u56de\u7684 markdown \u4ee3\u7801\u5757\u5305\u88f9
+          const jsonStr = raw.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?\s*```$/i, '').trim();
+          const parsed = JSON.parse(jsonStr);
+          summaryText = `[\u5bf9\u8bdd\u6458\u8981 - ${new Date().toISOString()}]\n${parsed.summary || result.content || ''}`;
+          wakeupMessage = parsed.wakeup || null;
+        } catch {
+          // JSON \u89e3\u6790\u5931\u8d25\uff0c\u964d\u7ea7\u4e3a\u7eaf\u6458\u8981\uff0c\u4e0d\u5524\u9192
+          summaryText = `[\u5bf9\u8bdd\u6458\u8981 - ${new Date().toISOString()}]\n${result.content || ''}`;
+          Logger.warning(`[\u4f1a\u8bdd ${this.key}] \u6458\u8981+\u5524\u9192 JSON \u89e3\u6790\u5931\u8d25\uff0c\u964d\u7ea7\u4e3a\u7eaf\u6458\u8981`);
+        }
+      } else {
+        summaryText = `[\u5bf9\u8bdd\u6458\u8981 - ${new Date().toISOString()}]\n${result.content || ''}`;
+      }
+
+      // \u4e3b\u52a8\u5524\u9192\uff1a\u5982\u679c AI \u5224\u65ad\u9700\u8981\u901a\u77e5\u7528\u6237\uff0c\u4e14\u6709\u56de\u8c03\u53ef\u7528
+      if (wakeupMessage && this.wakeupReply) {
+        try {
+          await this.wakeupReply(wakeupMessage);
+          Logger.info(`[\u4f1a\u8bdd ${this.key}] \u4e3b\u52a8\u5524\u9192\u7528\u6237: ${wakeupMessage.slice(0, 100)}`);
+        } catch (err: any) {
+          Logger.warning(`[\u4f1a\u8bdd ${this.key}] \u4e3b\u52a8\u5524\u9192\u5931\u8d25: ${err.message}`);
+        }
+      }
+
+      // \u672c\u5730\u6587\u4ef6\u515c\u5e95\uff1a\u59cb\u7ec8\u5199\u5165\u672c\u5730\uff08\u539f\u59cb\u6458\u8981\u5f52\u6863\uff09
       const localSuccess = saveSessionSummary(this.key, summaryText, Logger.getLogFilePath() || undefined);
 
-      // 滚动压缩：将新摘要与现有主摘要合并
+      // \u6eda\u52a8\u538b\u7f29\uff1a\u5c06\u65b0\u6458\u8981\u4e0e\u73b0\u6709\u4e3b\u6458\u8981\u5408\u5e76
       const oldMaster = getMasterSummary(this.key);
       if (oldMaster) {
         try {
           const mergeResult = await this.services.aiService.chat([{
             role: 'user',
-            content: `请将以下两段对话摘要合并为一段精炼的主摘要。保留关键信息，去除重复和过时内容，控制在合理长度内。\n\n--- 已有主摘要 ---\n${oldMaster}\n\n--- 最新对话摘要 ---\n${summaryText}\n\n请输出合并后的主摘要：`,
+            content: `\u8bf7\u5c06\u4ee5\u4e0b\u4e24\u6bb5\u5bf9\u8bdd\u6458\u8981\u5408\u5e76\u4e3a\u4e00\u6bb5\u7cbe\u70bc\u7684\u4e3b\u6458\u8981\u3002\u4fdd\u7559\u5173\u952e\u4fe1\u606f\uff0c\u53bb\u9664\u91cd\u590d\u548c\u8fc7\u65f6\u5185\u5bb9\uff0c\u63a7\u5236\u5728\u5408\u7406\u957f\u5ea6\u5185\u3002\n\n--- \u5df2\u6709\u4e3b\u6458\u8981 ---\n${oldMaster}\n\n--- \u6700\u65b0\u5bf9\u8bdd\u6458\u8981 ---\n${summaryText}\n\n\u8bf7\u8f93\u51fa\u5408\u5e76\u540e\u7684\u4e3b\u6458\u8981\uff1a`,
           }]);
           updateMasterSummary(this.key, mergeResult.content || summaryText);
         } catch (err) {
-          Logger.error(`合并主摘要失败，使用新摘要覆盖: ${err}`);
+          Logger.error(`\u5408\u5e76\u4e3b\u6458\u8981\u5931\u8d25\uff0c\u4f7f\u7528\u65b0\u6458\u8981\u8986\u76d6: ${err}`);
           updateMasterSummary(this.key, summaryText);
         }
       } else {
@@ -427,16 +519,16 @@ ${conversationText}
       }
 
       if (localSuccess) {
-        Logger.info(`已压缩 ${this.messages.length} 条消息并写入本地文件`);
+        Logger.info(`\u5df2\u538b\u7f29 ${this.messages.length} \u6761\u6d88\u606f\u5e76\u5199\u5165\u672c\u5730\u6587\u4ef6`);
       }
 
-      // 归档持久化文件
+      // \u5f52\u6863\u6301\u4e45\u5316\u6587\u4ef6
       SessionStore.getInstance().archiveSession(this.key);
 
       this.messages = [];
       return localSuccess;
     } catch (error) {
-      Logger.error('压缩历史失败: ' + String(error));
+      Logger.error('\u538b\u7f29\u5386\u53f2\u5931\u8d25: ' + String(error));
       return false;
     }
   }
@@ -445,6 +537,12 @@ ${conversationText}
 
   isBusy(): boolean {
     return this.busy;
+  }
+
+  /** 请求中断当前运行中的对话回合 */
+  requestInterrupt(): void {
+    if (!this.busy) return;
+    this.interruptRequested = true;
   }
 
   /** 从 DB 恢复消息（进程重启后调用） */
@@ -554,6 +652,74 @@ ${conversationText}
       if (msg.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)) return false;
       return true;
     });
+  }
+
+  /**
+   * 过滤消息：只保留"对话可见"的内容。
+   * system + user + assistant 纯文本回复（不含 tool_calls 的 assistant 消息）。
+   * tool 消息和含 tool_calls 的 assistant 消息被过滤掉。
+   */
+  private filterToChatVisible(messages: Message[]): Message[] {
+    return messages.filter(m =>
+      m.role === 'system' ||
+      m.role === 'user' ||
+      (m.role === 'assistant' && !m.tool_calls),
+    );
+  }
+
+  /** 从 newMessages 中提取工具调用摘要 */
+  private extractToolSummaries(newMessages: Message[]): ToolCallSummary[] {
+    const summaries: ToolCallSummary[] = [];
+
+    // 收集 assistant 的 tool_calls
+    const toolCallMap = new Map<string, { name: string; args: string }>();
+    for (const msg of newMessages) {
+      if (msg.role === 'assistant' && msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          toolCallMap.set(tc.id, {
+            name: tc.function.name,
+            args: tc.function.arguments,
+          });
+        }
+      }
+    }
+
+    // 匹配 tool 结果
+    for (const msg of newMessages) {
+      if (msg.role === 'tool' && msg.tool_call_id) {
+        const call = toolCallMap.get(msg.tool_call_id);
+        if (call) {
+          summaries.push({
+            name: call.name,
+            argsSummary: this.truncate(call.args, 200),
+            resultSummary: this.truncate(msg.content || '', 300),
+          });
+        }
+      }
+    }
+
+    return summaries;
+  }
+
+  /** 从 newMessages 的工具结果中提取产出文件路径 */
+  private extractOutputFiles(newMessages: Message[]): string[] {
+    const files: string[] = [];
+    const filePattern = /成功(?:创建|覆盖)文件[：:]\s*(.+?)(?:\n|$)/g;
+
+    for (const msg of newMessages) {
+      if (msg.role !== 'tool' || !msg.content) continue;
+      let match;
+      while ((match = filePattern.exec(msg.content)) !== null) {
+        files.push(match[1].trim());
+      }
+    }
+
+    return [...new Set(files)];
+  }
+
+  private truncate(text: string, maxLen: number): string {
+    if (!text || text.length <= maxLen) return text || '';
+    return text.slice(0, maxLen) + '...';
   }
 
   /** /skills 命令 */

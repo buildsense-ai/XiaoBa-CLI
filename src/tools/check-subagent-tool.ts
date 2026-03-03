@@ -78,6 +78,10 @@ export class CheckSubagentTool implements Tool {
       lines.push(`结果摘要: ${info.resultSummary.slice(0, 500)}`);
     }
 
+    if (info.outputFiles && info.outputFiles.length > 0) {
+      lines.push(`产出文件:\n${info.outputFiles.map((f: string) => `  - ${f}`).join('\n')}`);
+    }
+
     return lines.join('\n');
   }
 }

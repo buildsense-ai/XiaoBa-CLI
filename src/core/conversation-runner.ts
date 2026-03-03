@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { Message } from '../types';
 import { AIService } from '../utils/ai-service';
 import { SkillActivationSignal, SkillToolPolicy } from '../types/skill';
@@ -112,6 +113,17 @@ export class ConversationRunner {
   private static readonly FAILURE_THRESHOLD = 3;
   /** reply 类工具名集合（用于防重复回复） */
   private static readonly REPLY_TOOLS = new Set(['reply', 'send_file']);
+  /**
+   * 同一外发签名在“无新观察”窗口内允许成功发送的次数上限。
+   * - send_file: 1 次（再次发送通常是刷屏）
+   * - 其他外发消息: 2 次（保留一点“拟人重复强调”的空间）
+   */
+  private static readonly OUTBOUND_ALLOWANCE = {
+    file: 1,
+    message: 1,
+  } as const;
+  /** 连续重复外发被抑制达到阈值后，自动收束本轮，避免失控循环 */
+  private static readonly SUPPRESSED_OUTBOUND_PAUSE_THRESHOLD = 2;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: string, maxLen = 200): string {
@@ -160,14 +172,20 @@ export class ConversationRunner {
     const newMessages: Message[] = [];
     let lastDeliveredOutboundSignature: string | null = null;
     let hasNewObservationSinceLastOutbound = false;
+    const outboundSuccessCountBySignature = new Map<string, number>();
     let turns = 0;
     let replyCount = 0;
+    let suppressedOutboundStreak = 0;
 
     while (turns++ < this.maxTurns) {
       // shouldContinue 回调检查（供 agent 检查 stop 状态）
       if (this.shouldContinue && !this.shouldContinue()) {
         Logger.info(`[Turn ${turns}] shouldContinue 返回 false，提前退出对话循环`);
-        break;
+        return {
+          response: '',
+          messages,
+          newMessages,
+        };
       }
 
       // ===== 上下文压缩检查（可选） =====
@@ -222,6 +240,11 @@ export class ConversationRunner {
 
       // 执行每个工具调用
       for (const toolCall of response.toolCalls) {
+        // 工具级中断检查：在同一轮的多个工具之间也能响应中断
+        if (this.shouldContinue && !this.shouldContinue()) {
+          Logger.info(`[Turn ${turns}] 中断请求，跳过剩余工具`);
+          break;
+        }
         const toolName = toolCall.function.name;
         callbacks?.onToolStart?.(toolName);
         Logger.info(`[Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
@@ -230,34 +253,48 @@ export class ConversationRunner {
           .map(tool => tool.name);
 
         const outboundSignature = this.buildOutboundSignature(toolCall, toolName, toolDefinitions);
+        const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
         const toolStart = Date.now();
         const wasConsecutiveDuplicateOutbound = Boolean(
           outboundSignature
           && outboundSignature === lastDeliveredOutboundSignature
           && !hasNewObservationSinceLastOutbound
         );
-        const result = await this.executeToolWithRetry(
-          toolCall,
-          messages,
-          {
-            ...this.toolExecutionContext,
-            activeSkillName: this.activeSkillName,
-            allowedToolNames: activeToolNames,
-            blockedToolNames: this.activeSkillToolPolicy?.allowedTools
-              ? undefined
-              : this.activeSkillToolPolicy?.disallowedTools,
-          },
-          turns,
+        const shouldSuppressDuplicateOutbound = this.shouldSuppressDuplicateOutbound(
+          toolName,
+          transcriptMode,
+          outboundSignature,
+          hasNewObservationSinceLastOutbound,
+          outboundSuccessCountBySignature,
         );
+
+        const result = shouldSuppressDuplicateOutbound
+          ? this.buildSuppressedOutboundResult(toolCall, toolName)
+          : await this.executeToolWithRetry(
+            toolCall,
+            messages,
+            {
+              ...this.toolExecutionContext,
+              activeSkillName: this.activeSkillName,
+              allowedToolNames: activeToolNames,
+              blockedToolNames: this.activeSkillToolPolicy?.allowedTools
+                ? undefined
+                : this.activeSkillToolPolicy?.disallowedTools,
+            },
+            turns,
+          );
         const toolDuration = Date.now() - toolStart;
         Metrics.recordToolCall(toolName, toolDuration);
         Logger.info(`[Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
 
-        const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
-
         if (outboundSignature && result.ok && !result.errorCode) {
           lastDeliveredOutboundSignature = outboundSignature;
           hasNewObservationSinceLastOutbound = false;
+          outboundSuccessCountBySignature.set(
+            outboundSignature,
+            (outboundSuccessCountBySignature.get(outboundSignature) || 0) + 1,
+          );
+          suppressedOutboundStreak = 0;
           if (wasConsecutiveDuplicateOutbound) {
             Logger.warning(`[Runner] 检测到连续重复外发: ${toolName}`);
             transientTurnHints.push({
@@ -271,6 +308,20 @@ export class ConversationRunner {
           && !result.errorCode
         ) {
           hasNewObservationSinceLastOutbound = true;
+          suppressedOutboundStreak = 0;
+        } else if (result.errorCode === 'OUTBOUND_DUPLICATE_SUPPRESSED') {
+          suppressedOutboundStreak++;
+          transientTurnHints.push({
+            role: 'system',
+            content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n重复外发已被抑制。若已交付完成，请调用 pause_turn；若需补充信息，请改用 reply 说明。`,
+          });
+          if (suppressedOutboundStreak >= ConversationRunner.SUPPRESSED_OUTBOUND_PAUSE_THRESHOLD) {
+            shouldPauseTurn = true;
+            Logger.warning(`[Turn ${turns}] 重复外发抑制达到阈值，自动收束本轮`);
+            break;
+          }
+        } else {
+          suppressedOutboundStreak = 0;
         }
 
         // ===== 工具熔断检查 =====
@@ -344,6 +395,7 @@ export class ConversationRunner {
 
         if (result.controlSignal === 'pause_turn' && !result.errorCode) {
           shouldPauseTurn = true;
+          break;
         }
         callbacks?.onToolEnd?.(toolCall.function.name, toolContent);
       }
@@ -491,7 +543,7 @@ export class ConversationRunner {
       }
       return {
         role: 'assistant',
-        content: text,
+        content: `[已发送] ${text}`,
       };
     }
 
@@ -529,12 +581,16 @@ export class ConversationRunner {
     }
 
     if (transcriptMode === 'outbound_file') {
-      const filePath = typeof args.file_path === 'string' ? args.file_path.trim() : '';
+      const rawPath = typeof args.file_path === 'string' ? args.file_path.trim() : '';
       const fileName = typeof args.file_name === 'string' ? args.file_name.trim() : '';
-      if (!filePath && !fileName) {
+      if (!rawPath && !fileName) {
         return null;
       }
-      return `file:${toolName}:${filePath}:${fileName}`;
+      // 规范化路径：resolve + normalize + Windows 下 lowercase，防止大小写 / 相对路径差异绕过去重
+      const normalizedPath = rawPath
+        ? path.normalize(path.resolve(rawPath)).toLowerCase()
+        : '';
+      return `file:${toolName}:${normalizedPath}:${fileName.toLowerCase()}`;
     }
 
     return null;
@@ -545,7 +601,7 @@ export class ConversationRunner {
     args: Record<string, unknown>,
   ): string | null {
     if (toolName === 'reply') {
-      const text = typeof args.message === 'string' ? args.message.trim() : '';
+      const text = typeof args.message === 'string' ? args.message.trim().replace(/\s+/g, ' ') : '';
       return text || null;
     }
 
@@ -553,10 +609,10 @@ export class ConversationRunner {
       const message = typeof args.message === 'string' ? args.message.trim() : '';
       const mentions = Array.isArray(args.mentions)
         ? args.mentions
-            .map(item => typeof item === 'object' && item && typeof (item as { name?: unknown }).name === 'string'
-              ? `@${String((item as { name: string }).name).trim()}`
-              : '')
-            .filter(Boolean)
+          .map(item => typeof item === 'object' && item && typeof (item as { name?: unknown }).name === 'string'
+            ? `@${String((item as { name: string }).name).trim()}`
+            : '')
+          .filter(Boolean)
         : [];
       const prefix = mentions.join(' ').trim();
       const combined = [prefix, message].filter(Boolean).join(' ').trim();
@@ -564,6 +620,40 @@ export class ConversationRunner {
     }
 
     return null;
+  }
+
+  private shouldSuppressDuplicateOutbound(
+    toolName: string,
+    transcriptMode: ToolTranscriptMode,
+    outboundSignature: string | null,
+    hasNewObservationSinceLastOutbound: boolean,
+    outboundSuccessCountBySignature: Map<string, number>,
+  ): boolean {
+    if (!outboundSignature || hasNewObservationSinceLastOutbound) {
+      return false;
+    }
+    if (transcriptMode !== 'outbound_message' && transcriptMode !== 'outbound_file') {
+      return false;
+    }
+
+    const delivered = outboundSuccessCountBySignature.get(outboundSignature) || 0;
+    const allowance = transcriptMode === 'outbound_file'
+      ? ConversationRunner.OUTBOUND_ALLOWANCE.file
+      : ConversationRunner.OUTBOUND_ALLOWANCE.message;
+
+    return delivered >= allowance;
+  }
+
+  private buildSuppressedOutboundResult(toolCall: ToolCall, toolName: string): ToolResult {
+    return {
+      tool_call_id: toolCall.id,
+      role: 'tool',
+      name: toolName,
+      content: `已抑制重复外发：${toolName} 与本轮已发送内容重复。请勿重复发送；如已完成请 pause_turn。`,
+      ok: false,
+      errorCode: 'OUTBOUND_DUPLICATE_SUPPRESSED',
+      retryable: false,
+    };
   }
 
   private applyToolPolicy(allTools: ToolDefinition[], policy?: SkillToolPolicy): ToolDefinition[] {
@@ -781,10 +871,32 @@ export class ConversationRunner {
   private static readonly MAX_RETRIES = 2;
   private static readonly RETRY_BASE_DELAY_MS = 5000;
 
-  /** 检测工具结果是否为 429 限流错误 */
-  private static isRateLimitError(content: string): boolean {
-    const lower = content.toLowerCase();
-    return lower.includes('429') || lower.includes('rate limit') || lower.includes('too many requests') || lower.includes('频率受限');
+  /** 检测工具结果是否为 429 限流错误（避免把正文里的数字 429 误判为限流） */
+  private static isRateLimitError(result: ToolResult): boolean {
+    const content = String(result.content || '');
+    const trimmed = content.trim();
+    const lower = trimmed.toLowerCase();
+
+    // 先判断这条工具结果是否“看起来是失败”
+    const looksFailed = result.ok === false
+      || Boolean(result.errorCode)
+      || /^(错误[:：]|读取文件失败[:：]|发送失败[:：]|文件发送失败[:：]|命令执行失败[:：]|工具执行错误[:：]|Python 工具执行失败)/.test(trimmed);
+
+    if (!looksFailed) {
+      return false;
+    }
+
+    // 必须出现“限流上下文”，不能仅仅因为正文里出现了数字 429
+    const hasRateLimitKeyword = lower.includes('rate limit')
+      || lower.includes('too many requests')
+      || lower.includes('频率受限')
+      || lower.includes('限流');
+
+    const has429WithErrorContext = /(status\s*code|http|错误码|code)\s*[:=]?\s*429/i.test(trimmed)
+      || /(失败|error|exception|retry|重试).{0,24}\b429\b/i.test(trimmed)
+      || /\b429\b.{0,24}(失败|error|exception|retry|重试)/i.test(trimmed);
+
+    return hasRateLimitKeyword || has429WithErrorContext;
   }
 
   /** 带 429 重试的工具执行 */
@@ -797,7 +909,7 @@ export class ConversationRunner {
     let lastResult = await this.toolExecutor.executeTool(toolCall, messages, context);
 
     for (let attempt = 1; attempt <= ConversationRunner.MAX_RETRIES; attempt++) {
-      if (!ConversationRunner.isRateLimitError(lastResult.content)) {
+      if (!ConversationRunner.isRateLimitError(lastResult)) {
         return lastResult;
       }
       const delay = ConversationRunner.RETRY_BASE_DELAY_MS * attempt;

@@ -25,6 +25,7 @@ import { ResumeSubagentTool } from './resume-subagent-tool';
 import { ReplyTool } from './reply-tool';
 import { SendFileTool } from './send-file-tool';
 import { PauseTurnTool } from './pause-turn-tool';
+import { RecallLogTool } from './recall-log-tool';
 import * as path from 'path';
 import { loadGlobalPythonTools } from './python-tool-loader';
 import { normalizeToolName } from '../utils/tool-aliases';
@@ -88,6 +89,9 @@ export class ToolManager implements ToolExecutor {
     this.registerTool(new TaskTool());
     this.registerTool(new TaskOutputTool());
     this.registerTool(new TaskStopTool());
+
+    // 注册上下文回忆工具
+    this.registerTool(new RecallLogTool());
 
     // 注册全局 Python 工具（tools/global/*_tool.py）
     this.registerGlobalPythonTools();

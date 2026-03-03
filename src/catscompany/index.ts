@@ -84,6 +84,7 @@ export class CatsCompanyBot {
       this.agentServices,
       config.sessionTTL,
     );
+    this.sessionManager.setSender(this.sender);
   }
 
   /**
@@ -188,17 +189,11 @@ export class CatsCompanyBot {
     }
 
     // 获取或创建会话
-    const session = this.sessionManager.getOrCreate(key);
+    const session = this.sessionManager.getOrCreate(key, msg.topic);
 
     // 注册持久化回调到 SubAgentManager
     const subAgentManager = SubAgentManager.getInstance();
     subAgentManager.registerPlatformCallbacks(key, {
-      reply: async (text: string) => {
-        await this.sender.reply(msg.topic, text);
-      },
-      sendFile: async (filePath: string, fileName: string) => {
-        await this.sender.sendFile(msg.topic, filePath, fileName);
-      },
       injectMessage: async (text: string) => {
         await this.handleSubAgentFeedback(key, msg.topic, msg.senderId, text);
       },

@@ -7,10 +7,8 @@ import { randomUUID } from 'crypto';
 // ─── 平台回调注册 ───────────────────────────────────────
 
 export interface PlatformCallbacks {
-  reply: (text: string) => Promise<void>;
-  sendFile: (filePath: string, fileName: string) => Promise<void>;
   /** 向主会话投递消息，触发主 agent 新一轮推理 */
-  injectMessage?: (text: string) => Promise<void>;
+  injectMessage: (text: string) => Promise<void>;
 }
 
 export type StopSubAgentResult = 'stopped' | 'not_found' | 'forbidden' | 'not_running';
@@ -37,7 +35,7 @@ export class SubAgentManager {
   /** 完成后保留信息的时间（ms） */
   private static readonly RETENTION_MS = 30 * 60 * 1000;
 
-  private constructor() {}
+  private constructor() { }
 
   static getInstance(): SubAgentManager {
     if (!SubAgentManager.instance) {
@@ -50,7 +48,7 @@ export class SubAgentManager {
 
   /**
    * 注册平台回调。FeishuBot / CatsCompanyBot 在创建/获取 session 时调用一次，
-   * 不随 handleMessage 结束而注销，保证子智能体能持续发消息。
+   * 不随 handleMessage 结束而注销，保证子智能体完成后能通知主 Agent。
    */
   registerPlatformCallbacks(sessionKey: string, callbacks: PlatformCallbacks): void {
     this.platformCallbacks.set(sessionKey, callbacks);
@@ -84,22 +82,21 @@ export class SubAgentManager {
 
     const id = `sub-${randomUUID()}`;
 
-    // 获取平台回调
+    // 获取平台回调（子智能体需要 injectMessage 向主 Agent 报告）
     const platform = this.platformCallbacks.get(parentSessionKey);
+    if (!platform) {
+      return { error: '平台回调未注册，无法派遣子智能体' };
+    }
 
     const options: SubAgentSpawnOptions = {
       skillName,
       taskDescription,
       userMessage,
       workingDirectory,
-      channelReply: platform?.reply,
-      channelSendFile: platform?.sendFile,
-      notifyParent: platform?.injectMessage
-        ? async (subAgentId, taskDesc, question) => {
-            const msg = `[子智能体 ${subAgentId} 反馈]\n任务：${taskDesc}\n需要你的指示：${question}`;
-            await platform!.injectMessage!(msg);
-          }
-        : undefined,
+      notifyParent: async (subAgentId, taskDesc, question) => {
+        const msg = `[子智能体 ${subAgentId} 反馈]\n任务：${taskDesc}\n需要你的指示：${question}`;
+        await platform.injectMessage(msg);
+      },
     };
 
     const session = new SubAgentSession(id, aiService, skillManager, options);
@@ -109,10 +106,13 @@ export class SubAgentManager {
     // fire-and-forget
     session.run().finally(() => {
       // 通知主 agent 子智能体已完成（stopped 不通知）
-      if (platform?.injectMessage && session.status !== 'stopped') {
+      if (session.status !== 'stopped') {
         const info = session.getInfo();
         const statusLabel = info.status === 'completed' ? '已完成' : '失败';
-        const msg = `[子智能体 ${id} ${statusLabel}]\n任务：${taskDescription}\n结果：${info.resultSummary || '（无结果）'}`;
+        const fileList = info.outputFiles.length > 0
+          ? `\n产出文件：\n${info.outputFiles.map(f => `- ${f}`).join('\n')}`
+          : '';
+        const msg = `[子智能体 ${id} ${statusLabel}]\n任务：${taskDescription}\n结果：${info.resultSummary || '（无结果）'}${fileList}`;
         platform.injectMessage(msg).catch(err => {
           Logger.warning(`[SubAgentManager] 通知主 agent 失败: ${err.message}`);
         });

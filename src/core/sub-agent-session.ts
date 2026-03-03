@@ -3,7 +3,6 @@ import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { SkillInvocationContext } from '../types/skill';
-import { ChannelCallbacks } from '../types/tool';
 import {
   buildSkillActivationSignal,
   upsertSkillSystemMessage,
@@ -12,8 +11,6 @@ import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { isToolAllowed } from '../utils/safety';
-import * as path from 'path';
-import * as fs from 'fs';
 
 // ─── 类型定义 ───────────────────────────────────────────
 
@@ -32,6 +29,8 @@ export interface SubAgentInfo {
   resultSummary?: string;
   /** 子智能体挂起时的待确认问题 */
   pendingQuestion?: string;
+  /** 子智能体执行期间创建的产出文件路径 */
+  outputFiles: string[];
 }
 
 export interface SubAgentSpawnOptions {
@@ -39,9 +38,6 @@ export interface SubAgentSpawnOptions {
   taskDescription: string;
   userMessage: string;
   workingDirectory: string;
-  /** 平台回调：让 SubAgent 能主动给用户发消息 */
-  channelReply?: (text: string) => Promise<void>;
-  channelSendFile?: (filePath: string, fileName: string) => Promise<void>;
   /** 向主 agent 投递消息（子智能体挂起时触发主 agent 推理） */
   notifyParent?: (subAgentId: string, taskDescription: string, question: string) => Promise<void>;
 }
@@ -52,7 +48,7 @@ export interface SubAgentSpawnOptions {
  * SubAgentSession - 独立运行的后台子智能体
  *
  * 拥有自己的 messages[]、ConversationRunner、skill 上下文。
- * 通过 channelReply 回调主动向用户推送进度。
+ * 不直接和用户通信，仅通过 injectMessage 向主 Agent 报告状态。
  * 主会话不 await 它，fire-and-forget。
  */
 export class SubAgentSession {
@@ -172,10 +168,7 @@ export class SubAgentSession {
       permissionProfile: 'strict',
     });
 
-    // 5. 构建平台通道回调（通过 context 传递，替代 bindSession）
-    const channel = this.buildChannel();
-
-    // 6. 预检测被策略阻断的工具，避免子智能体浪费 turn
+    // 5. 预检测被策略阻断的工具，避免子智能体浪费 turn
     const preDisabledTools = toolManager.getToolDefinitions()
       .map(t => t.name)
       .filter(name => !isToolAllowed(name).allowed);
@@ -184,7 +177,10 @@ export class SubAgentSession {
     const subagentTools = ['spawn_subagent', 'check_subagent', 'stop_subagent', 'resume_subagent'];
     preDisabledTools.push(...subagentTools);
 
-    // 7. 创建独立的 ConversationRunner
+    // 子智能体不直接和用户通信，禁用 reply / send_file
+    preDisabledTools.push('reply', 'send_file');
+
+    // 6. 创建独立的 ConversationRunner（不注入 channel，子智能体不直接和用户通信）
     const runner = new ConversationRunner(this.aiService, toolManager, {
       maxTurns: skill.metadata.maxTurns ?? 100,
       initialSkillName: this.skillName,
@@ -196,11 +192,10 @@ export class SubAgentSession {
         sessionId: `subagent:${this.id}`,
         surface: 'agent',
         permissionProfile: 'strict',
-        channel,
       },
     });
 
-    // 8. 用 callbacks 捕获进度
+    // 7. 用 callbacks 捕获进度
     const callbacks: RunnerCallbacks = {
       onToolEnd: (name, result) => {
         this.detectAndReportProgress(name, result);
@@ -210,13 +205,10 @@ export class SubAgentSession {
     this.reportProgress(`开始执行：${this.taskDescription}`);
     const runResult = await runner.run(this.messages, callbacks);
 
-    // 9. 完成
+    // 8. 完成（不直接发文件，由主 Agent 根据 outputFiles 决定）
     this.status = 'completed';
     this.completedAt = Date.now();
     this.resultSummary = runResult.response;
-
-    // 自动发送产出文件（兜底：即使 AI 忘了调 send_file，关键文件也能送达）
-    await this.autoSendDeliverables();
 
     Logger.success(`[SubAgent ${this.id}] 完成: ${this.taskDescription}`);
   }
@@ -262,37 +254,11 @@ export class SubAgentSession {
       progressLog: [...this.progressLog],
       resultSummary: this.resultSummary,
       pendingQuestion: this.pendingQuestion ?? undefined,
+      outputFiles: [...this.outputFiles],
     };
   }
 
   // ─── 私有方法 ──────────────────────────────────────
-
-  /**
-   * 构建平台通道回调，注入到 toolExecutionContext。
-   * 子智能体的 channelReply/channelSendFile 回调已经封装了 chatId，
-   * 所以这里用空 chatId，回调内部忽略 chatId 参数。
-   */
-  private buildChannel(): ChannelCallbacks | undefined {
-    if (!this.options.channelReply && !this.options.channelSendFile) {
-      return undefined;
-    }
-
-    const channel: ChannelCallbacks = {
-      chatId: '', // 子智能体的回调已封装目标 chatId
-      reply: async (_chatId: string, text: string) => {
-        if (this.options.channelReply) {
-          await this.options.channelReply(text);
-        }
-      },
-      sendFile: async (_chatId: string, filePath: string, fileName: string) => {
-        if (this.options.channelSendFile) {
-          await this.options.channelSendFile(filePath, fileName);
-        }
-      },
-    };
-
-    return channel;
-  }
 
   private reportProgress(message: string): void {
     this.progressLog.push(message);
@@ -335,34 +301,5 @@ export class SubAgentSession {
     // write_file 返回格式: "成功创建文件: <path>\n..."
     const match = result.match(/成功(?:创建|覆盖)文件:\s*(.+?)(?:\n|$)/);
     return match ? match[1].trim() : null;
-  }
-
-  /** 可交付文件扩展名 */
-  private static readonly DELIVERABLE_EXTS = new Set(['.pptx', '.pdf', '.docx', '.xlsx', '.zip', '.md']);
-
-  /** 完成后自动发送产出文件（兜底机制） */
-  private async autoSendDeliverables(): Promise<void> {
-    if (!this.options.channelSendFile) return;
-
-    const deliverables = this.outputFiles.filter(f => {
-      const ext = path.extname(f).toLowerCase();
-      return SubAgentSession.DELIVERABLE_EXTS.has(ext);
-    });
-
-    for (const filePath of deliverables) {
-      try {
-        // 解析绝对路径
-        const absPath = path.isAbsolute(filePath) ? filePath : path.resolve(this.options.workingDirectory, filePath);
-        if (!fs.existsSync(absPath)) {
-          Logger.warning(`[SubAgent ${this.id}] 产出文件不存在，跳过发送: ${absPath}`);
-          continue;
-        }
-        const fileName = path.basename(absPath);
-        await this.options.channelSendFile(absPath, fileName);
-        Logger.info(`[SubAgent ${this.id}] 自动发送产出文件: ${fileName}`);
-      } catch (err: any) {
-        Logger.warning(`[SubAgent ${this.id}] 发送产出文件失败: ${filePath} - ${err.message}`);
-      }
-    }
   }
 }

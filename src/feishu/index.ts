@@ -158,6 +158,7 @@ export class FeishuBot {
       this.agentServices,
       config.sessionTTL,
     );
+    this.sessionManager.setSender(this.sender);
 
     // H1: 注入同事档案到 session
     const teammateCtx = buildTeammateContext(teammates);
@@ -282,19 +283,13 @@ export class FeishuBot {
       }
     }
 
-    // 获取或创建会话
-    const session = this.sessionManager.getOrCreate(key);
+    // 获取或创建会话（传入 chatId 用于过期时主动唤醒）
+    const session = this.sessionManager.getOrCreate(key, msg.chatId);
 
-    // 注册持久化平台回调到 SubAgentManager（不随 handleMessage 结束而注销）
-    // 这样后台子智能体可以在主会话空闲时继续给用户发消息
+    // 注册持久化平台回调到 SubAgentManager
+    // 子智能体完成后通过 injectMessage 通知主 Agent
     const subAgentManager = SubAgentManager.getInstance();
     subAgentManager.registerPlatformCallbacks(key, {
-      reply: async (text: string) => {
-        await this.sender.reply(msg.chatId, text);
-      },
-      sendFile: async (filePath: string, fileName: string) => {
-        await this.sender.sendFile(msg.chatId, filePath, fileName);
-      },
       injectMessage: async (text: string) => {
         await this.handleSubAgentFeedback(key, msg.chatId, msg.senderId, text);
       },
@@ -327,7 +322,7 @@ export class FeishuBot {
       userText = `[以下是用户转发的合并消息，共${msg.mergeForwardIds.length}条]\n${mergedText}`;
       Logger.info(`[${key}] 合并转发内容已拼接（${mergedText.length}字符）`);
     } else if (msg.file) {
-    // 文件/图片消息：交给 Agent 自主判断下一步，不在平台层强制回复
+      // 文件/图片消息：交给 Agent 自主判断下一步，不在平台层强制回复
       const localPath = await this.sender.downloadFile(
         msg.messageId,
         msg.file.fileKey,
@@ -358,6 +353,10 @@ export class FeishuBot {
 
     // 并发保护：忙时消息静默入队，空闲后自动处理
     if (session.isBusy()) {
+      if (this.isInterruptMessage(userText)) {
+        session.requestInterrupt();
+        Logger.warning(`[${key}] 检测到用户中断请求，已请求中止当前回合`);
+      }
       const queue = this.messageQueue.get(key) ?? [];
       queue.push({ userText, chatId: msg.chatId, senderId: msg.senderId });
       this.messageQueue.set(key, queue);
@@ -660,5 +659,17 @@ export class FeishuBot {
     if (mappedId === pendingId) {
       this.pendingAnswerBySession.delete(pending.sessionKey);
     }
+  }
+
+  /** 判断消息是否在请求“立即停下当前行为” */
+  private isInterruptMessage(text: string): boolean {
+    const normalized = (text || '').trim().toLowerCase();
+    if (!normalized) return false;
+
+    const patterns = [
+      /^(stop|halt|cancel)\b/i,
+      /停止|停下|别发|别刷|别刷屏|住手|够了|打住/,
+    ];
+    return patterns.some(p => p.test(normalized));
   }
 }
