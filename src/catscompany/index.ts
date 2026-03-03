@@ -39,7 +39,8 @@ const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 
 /**
  * CatsCompanyBot 主类
- * 初始化 SDK，注册事件，编排消息处理流程
+ * 初始化官方 SDK，注册事件，编排消息处理流程
+ * 连接、握手、重连与连接层错误处理都归 SDK 负责，runtime 不在这里兜底。
  * 结构与 FeishuBot 对齐
  */
 export class CatsCompanyBot {

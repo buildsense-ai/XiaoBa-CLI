@@ -1,9 +1,0 @@
-{
-  "name": "@catscompany/bot-sdk",
-  "version": "0.1.0",
-  "description": "CatsCompany Bot SDK for Node.js",
-  "main": "index.js",
-  "dependencies": {
-    "ws": "^8.18.0"
-  }
-}

@@ -1,0 +1,3 @@
+[submodule "cats-company"]
+	path = vendor/cats-company
+	url = https://github.com/buildsense-ai/cats-company.git
