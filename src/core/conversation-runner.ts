@@ -415,10 +415,16 @@ export class ConversationRunner {
     }
 
     const transcriptMessages: Message[] = [];
-    if (assistantMsg.content || retainedToolCalls.length > 0) {
+    const hasNormalizedOutbound = normalizedMessages.length > 0;
+    const assistantContent =
+      hasNormalizedOutbound && assistantMsg.content
+        ? null
+        : assistantMsg.content;
+
+    if (assistantContent || retainedToolCalls.length > 0) {
       transcriptMessages.push({
         role: 'assistant',
-        content: assistantMsg.content,
+        content: assistantContent,
         ...(retainedToolCalls.length > 0 ? { tool_calls: retainedToolCalls } : {}),
       });
     }
