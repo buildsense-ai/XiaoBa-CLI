@@ -226,11 +226,7 @@ export class ConversationRunner {
       if (!response.toolCalls || response.toolCalls.length === 0) {
         Logger.info(`[Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(response.content || '', 300)}`);
         if (this.isMessageSurface()) {
-          let finalText = response.content || '';
-          // 过滤AI回复中的系统标记前缀
-          finalText = finalText.replace(/^\[已发送信息\]\s*/, '');
-          finalText = finalText.replace(/^\[已发送文件\]\s*/, '');
-
+          const finalText = response.content || '';
           if (!hasDeliveredMessageOutThisRun && finalText && !softCheckedNoMessageOut) {
             workingMessages.push({ role: 'assistant', content: finalText });
             nextTurnTransientHints = [this.buildNoMessageOutSoftCheckHint(latestUserQuery)];
@@ -248,13 +244,8 @@ export class ConversationRunner {
           };
         }
 
-        // 过滤AI回复中的系统标记前缀
-        let cleanedResponse = response.content || '';
-        cleanedResponse = cleanedResponse.replace(/^\[已发送信息\]\s*/, '');
-        cleanedResponse = cleanedResponse.replace(/^\[已发送文件\]\s*/, '');
-
         return {
-          response: cleanedResponse,
+          response: response.content || '',
           finalResponseVisible: true,
           messages: durableMessages,
           newMessages,
@@ -625,7 +616,7 @@ export class ConversationRunner {
       }
       return {
         role: 'assistant',
-        content: `[已发送信息] ${text}`,
+        content: text,
       };
     }
 

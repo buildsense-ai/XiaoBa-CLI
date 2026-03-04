@@ -22,8 +22,10 @@ Example:
 
 ```text
 user: 来这里
-assistant: [已发送信息] 好的老师，我来了！
+assistant: 好的老师，我来了！
 ```
+
+Durable session should mirror the actual visible chat record, not runtime metadata.
 
 ### 2. Working Trace
 
