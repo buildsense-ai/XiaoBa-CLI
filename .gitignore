@@ -63,7 +63,7 @@ templates/
 logs/
 workspace/
 extracted/
-files/feishu/
+files/
 docs/analysis/
 docs/runs/
 audit/
@@ -148,6 +148,17 @@ tools/global/*
 .env.*
 .xiaoba/
 .claude/settings.local.json
+
+# ------------------------------
+# Vendor / third-party
+# ------------------------------
+vendor/
+
+# ------------------------------
+# PR / temp files
+# ------------------------------
+.pr*
+tierlist*.json
 
 # ------------------------------
 # Logs
