@@ -226,7 +226,11 @@ export class ConversationRunner {
       if (!response.toolCalls || response.toolCalls.length === 0) {
         Logger.info(`[Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(response.content || '', 300)}`);
         if (this.isMessageSurface()) {
-          const finalText = response.content || '';
+          let finalText = response.content || '';
+          // 过滤AI回复中的系统标记前缀
+          finalText = finalText.replace(/^\[已发送信息\]\s*/, '');
+          finalText = finalText.replace(/^\[已发送文件\]\s*/, '');
+
           if (!hasDeliveredMessageOutThisRun && finalText && !softCheckedNoMessageOut) {
             workingMessages.push({ role: 'assistant', content: finalText });
             nextTurnTransientHints = [this.buildNoMessageOutSoftCheckHint(latestUserQuery)];
