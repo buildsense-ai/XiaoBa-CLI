@@ -636,7 +636,7 @@ export class ConversationRunner {
       }
       return {
         role: 'assistant',
-        content: `[已发送文件] ${fileName}`,
+        content: fileName,
       };
     }
 
