@@ -8,16 +8,17 @@ import {
   buildSkillActivationSignal,
   upsertSkillSystemMessage,
 } from '../skills/skill-activation-protocol';
-import { ConversationRunner, RunnerCallbacks, TRANSIENT_RUNNER_HINT_PREFIX } from './conversation-runner';
+import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
 import { SubAgentManager } from './sub-agent-manager';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { saveSessionSummary, loadSessionSummary, removeSessionSummary, getMasterSummary, updateMasterSummary } from '../utils/local-session-store';
-import { saveTurnLog, getLastTurnIndex, ToolCallSummary } from '../utils/turn-log-store';
 import { SessionStore } from '../utils/session-store';
 import { Metrics } from '../utils/metrics';
 
 const TRANSIENT_SUBAGENT_STATUS_PREFIX = '[transient_subagent_status]';
+const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
+const TRANSIENT_SOFT_CHECK_PREFIX = '[transient_soft_check]';
 export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
 export const ERROR_MESSAGE = '不好意思，刚才处理出了点问题，你再试一次？';
 
@@ -52,6 +53,11 @@ export interface CommandResult {
   reply?: string;
 }
 
+export interface HandleMessageResult {
+  text: string;
+  visibleToUser: boolean;
+}
+
 // ─── AgentSession 核心类 ────────────────────────────────
 
 /**
@@ -73,7 +79,6 @@ export class AgentSession {
   private activeSkillToolPolicy?: SkillToolPolicy;
   private activeSkillMaxTurns?: number;
   private pendingRestore?: Message[];
-  private turnCounter = 0;
   /** 过期时主动唤醒用户的回调（由平台 SessionManager 注入） */
   private wakeupReply?: (text: string) => Promise<void>;
   /** 外部请求中断当前 run（例如用户在 busy 时发送“停止”） */
@@ -83,9 +88,7 @@ export class AgentSession {
   constructor(
     public readonly key: string,
     private services: AgentServices,
-  ) {
-    this.turnCounter = getLastTurnIndex(key);
-  }
+  ) {}
 
   /** 注入主动唤醒回调（由平台 SessionManager 在创建/获取 session 时调用） */
   setWakeupReply(callback: (text: string) => Promise<void>): void {
@@ -99,18 +102,24 @@ export class AgentSession {
     if (this.initialized) return;
     this.initialized = true;
     const systemPrompt = await PromptManager.buildSystemPrompt();
-    this.messages.push({ role: 'system', content: systemPrompt });
+    if (systemPrompt.trim()) {
+      this.messages.push({ role: 'system', content: systemPrompt });
+    }
+    const identityPrompt = PromptManager.buildRuntimeIdentityPrompt();
+    if (identityPrompt.trim()) {
+      this.messages.push({ role: 'system', content: identityPrompt });
+    }
     if (this.isFeishuSession()) {
       const isGroup = this.key.startsWith('group:');
       const chatType = isGroup ? '群聊' : '私聊';
       this.messages.push({
         role: 'system',
-        content: `[surface:feishu:${isGroup ? 'group' : 'private'}]\n当前是飞书${chatType}会话。记住：你的普通文本输出老师完全看不到，必须调用 reply 才能让老师收到。`,
+        content: `[surface:feishu:${isGroup ? 'group' : 'private'}]\n当前是飞书${chatType}会话。\n用户只能看到你通过消息工具发送的内容。\n你的普通文本输出用户看不到。\n如果这一轮不需要发送任何用户可见内容，可以调用 pause_turn 结束。`,
       });
     } else if (this.isCatsCompanySession()) {
       this.messages.push({
         role: 'system',
-        content: '[surface:catscompany]\n当前是 Cats Company 聊天会话。用户只能看到你通过 reply / send_file 发送的内容，你的普通文本输出用户完全看不到。所以：所有要给用户看的话，必须通过工具发送。如果当前这一轮你已经把该发的话发完了，调用 pause_turn 收束；如果还要继续查文件、看子任务进度、补充新的信息，就继续调用工具，不要因为刚发过消息就机械停下。',
+        content: '[surface:catscompany]\n当前是 Cats Company 聊天会话。\n用户只能看到你通过消息工具发送的内容。\n你的普通文本输出用户看不到。\n如果这一轮不需要发送任何用户可见内容，可以调用 pause_turn 结束。',
       });
     }
 
@@ -188,7 +197,7 @@ export class AgentSession {
   async handleMessage(
     text: string,
     callbacksOrOptions?: SessionCallbacks | HandleMessageOptions,
-  ): Promise<string> {
+  ): Promise<HandleMessageResult> {
     // 兼容旧签名：如果传入的对象有 onText/onToolStart 等字段，视为 SessionCallbacks
     let callbacks: SessionCallbacks | undefined;
     let channel: ChannelCallbacks | undefined;
@@ -206,7 +215,7 @@ export class AgentSession {
     }
 
     if (this.busy) {
-      return BUSY_MESSAGE;
+      return { text: BUSY_MESSAGE, visibleToUser: true };
     }
 
     // 按"单次消息"统计 metrics，避免跨轮次累积导致定位困难
@@ -254,9 +263,7 @@ export class AgentSession {
         this.activeSkillMaxTurns = detectedSkill?.metadata.maxTurns;
       }
 
-      // 不再将 skill 的 maxTurns 传给 ConversationRunner 构造函数，
-      // 避免 skill 的低 maxTurns（如 15）污染后续不相关的对话。
-      // conversation-runner 内部激活 skill 时已有 Math.max(default, turns + skillMax) 保护。
+      const effectiveMaxTurns = this.activeSkillMaxTurns ?? this.detectSkillMaxTurns();
       const surface = this.isCatsCompanySession()
         ? 'catscompany'
         : this.isFeishuSession()
@@ -266,6 +273,7 @@ export class AgentSession {
         this.services.aiService,
         this.services.toolManager,
         {
+          ...(effectiveMaxTurns ? { maxTurns: effectiveMaxTurns } : {}),
           initialSkillName: this.activeSkillName,
           initialSkillToolPolicy: this.activeSkillToolPolicy,
           shouldContinue: () => !this.interruptRequested,
@@ -285,39 +293,8 @@ export class AgentSession {
       };
 
       const result = await runner.run(contextMessages, runnerCallbacks);
-
-      // ═══ 上下文拉取模型：将工具过程写入外部日志，只保留聊天可见消息 ═══
-
-      // 1. 将本轮工具过程写入 TurnLogStore（供 recall_log 回查）
-      const toolSummaries = this.extractToolSummaries(result.newMessages);
-      const outputFiles = this.extractOutputFiles(result.newMessages);
-      if (toolSummaries.length > 0) {
-        this.turnCounter++;
-        saveTurnLog(this.key, {
-          turnIndex: this.turnCounter,
-          timestamp: new Date().toISOString(),
-          userMessage: text.slice(0, 200),
-          assistantReply: (result.response || '').slice(0, 500),
-          toolCalls: toolSummaries,
-          outputFiles,
-        });
-      }
-
-      // 2. 只保留"对话可见"消息（system + user + assistant 纯文本回复）
-      //    工具过程不进入下一轮上下文，避免跨任务污染
-      const cleanMessages = this.removeTransientMessages(result.messages);
-      this.messages = this.filterToChatVisible(cleanMessages);
-
-      // 3. 如果有工具调用，在最后一条 assistant 回复上标注（提示模型可用 recall_log）
-      if (toolSummaries.length > 0) {
-        for (let i = this.messages.length - 1; i >= 0; i--) {
-          const msg = this.messages[i];
-          if (msg.role === 'assistant' && msg.content) {
-            msg.content += `\n[本轮执行了 ${toolSummaries.length} 次工具调用，详情可用 recall_log 查询]`;
-            break;
-          }
-        }
-      }
+      const persistedMessages = this.removeTransientMessages(result.messages);
+      this.messages = [...persistedMessages];
 
       // 同步 skill 激活状态
       for (const msg of result.newMessages) {
@@ -330,6 +307,7 @@ export class AgentSession {
       // runner 在"最终无工具调用"时不会自动附加 assistant 消息，这里补齐
       const lastMessage = this.messages[this.messages.length - 1];
       if (
+        result.finalResponseVisible &&
         result.response &&
         (
           !lastMessage ||
@@ -358,14 +336,17 @@ export class AgentSession {
         }
       }
 
-      return result.response || '[无回复]';
+      return {
+        text: result.finalResponseVisible ? (result.response || '[无回复]') : '',
+        visibleToUser: result.finalResponseVisible,
+      };
     } catch (err: any) {
       // 清理孤立的 user 消息，避免污染后续对话
       if (this.messages.length > 0 && this.messages[this.messages.length - 1].role === 'user') {
         this.messages.pop();
       }
       Logger.error(`[会话 ${this.key}] 处理失败: ${err.message}`);
-      return ERROR_MESSAGE;
+      return { text: ERROR_MESSAGE, visibleToUser: true };
     } finally {
       this.busy = false;
     }
@@ -420,7 +401,6 @@ export class AgentSession {
     this.activeSkillName = undefined;
     this.activeSkillToolPolicy = undefined;
     this.activeSkillMaxTurns = undefined;
-    this.turnCounter = 0;
     this.lastActiveAt = Date.now();
   }
 
@@ -650,76 +630,9 @@ ${conversationText}
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)) return false;
+      if (msg.content.startsWith(TRANSIENT_SOFT_CHECK_PREFIX)) return false;
       return true;
     });
-  }
-
-  /**
-   * 过滤消息：只保留"对话可见"的内容。
-   * system + user + assistant 纯文本回复（不含 tool_calls 的 assistant 消息）。
-   * tool 消息和含 tool_calls 的 assistant 消息被过滤掉。
-   */
-  private filterToChatVisible(messages: Message[]): Message[] {
-    return messages.filter(m =>
-      m.role === 'system' ||
-      m.role === 'user' ||
-      (m.role === 'assistant' && !m.tool_calls),
-    );
-  }
-
-  /** 从 newMessages 中提取工具调用摘要 */
-  private extractToolSummaries(newMessages: Message[]): ToolCallSummary[] {
-    const summaries: ToolCallSummary[] = [];
-
-    // 收集 assistant 的 tool_calls
-    const toolCallMap = new Map<string, { name: string; args: string }>();
-    for (const msg of newMessages) {
-      if (msg.role === 'assistant' && msg.tool_calls) {
-        for (const tc of msg.tool_calls) {
-          toolCallMap.set(tc.id, {
-            name: tc.function.name,
-            args: tc.function.arguments,
-          });
-        }
-      }
-    }
-
-    // 匹配 tool 结果
-    for (const msg of newMessages) {
-      if (msg.role === 'tool' && msg.tool_call_id) {
-        const call = toolCallMap.get(msg.tool_call_id);
-        if (call) {
-          summaries.push({
-            name: call.name,
-            argsSummary: this.truncate(call.args, 200),
-            resultSummary: this.truncate(msg.content || '', 300),
-          });
-        }
-      }
-    }
-
-    return summaries;
-  }
-
-  /** 从 newMessages 的工具结果中提取产出文件路径 */
-  private extractOutputFiles(newMessages: Message[]): string[] {
-    const files: string[] = [];
-    const filePattern = /成功(?:创建|覆盖)文件[：:]\s*(.+?)(?:\n|$)/g;
-
-    for (const msg of newMessages) {
-      if (msg.role !== 'tool' || !msg.content) continue;
-      let match;
-      while ((match = filePattern.exec(msg.content)) !== null) {
-        files.push(match[1].trim());
-      }
-    }
-
-    return [...new Set(files)];
-  }
-
-  private truncate(text: string, maxLen: number): string {
-    if (!text || text.length <= maxLen) return text || '';
-    return text.slice(0, maxLen) + '...';
   }
 
   /** /skills 命令 */
@@ -764,7 +677,7 @@ ${conversationText}
     // 如果有参数，自动作为用户消息发送给 AI
     if (args.length > 0) {
       const reply = await this.handleMessage(args.join(' '), callbacks);
-      return { handled: true, reply };
+      return { handled: true, reply: reply.text };
     }
 
     return { handled: true, reply: `已激活 skill: ${skill.metadata.name}` };

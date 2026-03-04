@@ -108,7 +108,9 @@ export class CatsCompanyBot {
     // 注册事件
     this.bot.on('ready', (uid, name) => {
       this.botUid = uid;
-      Logger.success(`CatsCompany 机器人已连接，uid=${uid}, name=${name || '(未设置)'}`);
+      const botName = (name || (this.bot as { name?: string }).name || '').trim() || '(未设置)';
+      process.env.CURRENT_AGENT_DISPLAY_NAME = botName;
+      Logger.success(`CatsCompany 机器人已连接，uid=${uid}, name=${botName}`);
     });
 
     this.bot.on('message', async (ctx: MessageContext) => {
@@ -264,9 +266,9 @@ export class CatsCompanyBot {
     this.sender.sendTyping(msg.topic);
 
     try {
-      const reply = await session.handleMessage(userText, { channel });
-      if (reply === BUSY_MESSAGE || reply.startsWith('处理消息时出错:')) {
-        await this.sender.reply(msg.topic, reply);
+      const result = await session.handleMessage(userText, { channel });
+      if (result.text === BUSY_MESSAGE || result.text.startsWith('处理消息时出错:')) {
+        await this.sender.reply(msg.topic, result.text);
       }
     } finally {
       this.clearPendingAnswerBySession(key);
@@ -346,16 +348,13 @@ export class CatsCompanyBot {
       });
 
       try {
-        const reply = await session.handleMessage(text, { channel });
-        if (reply === BUSY_MESSAGE) {
+        const result = await session.handleMessage(text, { channel });
+        if (result.text === BUSY_MESSAGE) {
           Logger.info(`[${sessionKey}] 主会话竞态忙碌，将重试`);
           continue;
         }
-        if (reply.startsWith('处理消息时出错:')) {
-          await this.sender.reply(topic, reply);
-        } else if (!channel.hasOutbound && reply && reply !== '[无回复]') {
-          Logger.warning(`[${sessionKey}] 子智能体反馈: AI未调用reply，兜底发送回复`);
-          await this.sender.reply(topic, reply);
+        if (result.text.startsWith('处理消息时出错:')) {
+          await this.sender.reply(topic, result.text);
         }
         await this.drainMessageQueue(sessionKey);
         return;
@@ -391,12 +390,9 @@ export class CatsCompanyBot {
     });
 
     try {
-      const reply = await session.handleMessage(mergedText, { channel });
-      if (reply.startsWith('处理消息时出错:')) {
-        await this.sender.reply(last.topic, reply);
-      } else if (!channel.hasOutbound && reply && reply !== '[无回复]') {
-        Logger.warning(`[${sessionKey}] 队列消息: AI未调用reply，兜底发送回复`);
-        await this.sender.reply(last.topic, reply);
+      const result = await session.handleMessage(mergedText, { channel });
+      if (result.text.startsWith('处理消息时出错:')) {
+        await this.sender.reply(last.topic, result.text);
       }
     } finally {
       this.clearPendingAnswerBySession(sessionKey);
