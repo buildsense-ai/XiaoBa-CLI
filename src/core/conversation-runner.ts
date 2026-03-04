@@ -1,4 +1,3 @@
-import * as path from 'path';
 import { Message } from '../types';
 import { AIService } from '../utils/ai-service';
 import { SkillActivationSignal, SkillToolPolicy } from '../types/skill';
@@ -33,7 +32,8 @@ const DEFAULT_PROMPT_BUDGET = 120000;
 const ANTHROPIC_PROMPT_BUDGET = 180000;
 const MIN_MESSAGE_BUDGET = 2000;
 const OVERFLOW_REDUCTION_RATIO = 0.6;
-export const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
+const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
+const TRANSIENT_SOFT_CHECK_PREFIX = '[transient_soft_check]';
 
 /**
  * 对话运行回调
@@ -55,10 +55,14 @@ export interface RunnerCallbacks {
 export interface RunResult {
   /** 最终文本回复 */
   response: string;
-  /** 完整的消息列表（包含工具调用中间过程） */
+  /** 最终文本是否代表用户可见输出 */
+  finalResponseVisible: boolean;
+  /** durable session 消息列表（适合长期保存） */
   messages: Message[];
-  /** 本次 run() 期间新增的 assistant/tool 消息（不含最终纯文本回复） */
+  /** 本次 run() 期间新增的 durable 消息（不含最终纯文本回复） */
   newMessages: Message[];
+  /** 当前 run 的 working trace（provider-native） */
+  workingMessages?: Message[];
 }
 
 interface ToolExecutionRecord {
@@ -111,19 +115,6 @@ export class ConversationRunner {
   private disabledTools = new Set<string>();
 
   private static readonly FAILURE_THRESHOLD = 3;
-  /** reply 类工具名集合（用于防重复回复） */
-  private static readonly REPLY_TOOLS = new Set(['reply', 'send_file']);
-  /**
-   * 同一外发签名在“无新观察”窗口内允许成功发送的次数上限。
-   * - send_file: 1 次（再次发送通常是刷屏）
-   * - 其他外发消息: 2 次（保留一点“拟人重复强调”的空间）
-   */
-  private static readonly OUTBOUND_ALLOWANCE = {
-    file: 1,
-    message: 1,
-  } as const;
-  /** 连续重复外发被抑制达到阈值后，自动收束本轮，避免失控循环 */
-  private static readonly SUPPRESSED_OUTBOUND_PAUSE_THRESHOLD = 2;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: string, maxLen = 200): string {
@@ -169,169 +160,151 @@ export class ConversationRunner {
   async run(messages: Message[], callbacks?: RunnerCallbacks): Promise<RunResult> {
     const allTools = this.toolExecutor.getToolDefinitions();
     const toolDefinitions = new Map(allTools.map(tool => [tool.name, tool]));
+    const durableMessages = messages;
+    const workingMessages = [...messages];
     const newMessages: Message[] = [];
-    let lastDeliveredOutboundSignature: string | null = null;
-    let hasNewObservationSinceLastOutbound = false;
-    const outboundSuccessCountBySignature = new Map<string, number>();
+    let nextTurnTransientHints: Message[] = [];
+    let hasDeliveredMessageOutThisRun = false;
+    let softCheckedNoMessageOut = false;
+    const latestUserQuery = this.extractLatestUserQuery(workingMessages);
     let turns = 0;
-    let replyCount = 0;
-    let suppressedOutboundStreak = 0;
 
     while (turns++ < this.maxTurns) {
-      // shouldContinue 回调检查（供 agent 检查 stop 状态）
       if (this.shouldContinue && !this.shouldContinue()) {
-        Logger.info(`[Turn ${turns}] shouldContinue 返回 false，提前退出对话循环`);
-        return {
-          response: '',
-          messages,
-          newMessages,
-        };
+        break;
       }
 
-      // ===== 上下文压缩检查（可选） =====
-      if (this.enableCompression && this.compressor.needsCompaction(messages)) {
-        const usage = this.compressor.getUsageInfo(messages);
+      if (this.enableCompression && this.compressor.needsCompaction(workingMessages)) {
+        const usage = this.compressor.getUsageInfo(workingMessages);
         Logger.info(`上下文使用率 ${usage.usagePercent}%，触发压缩...`);
-        const compacted = await this.compressor.compact(messages);
-        // 原地替换 messages 内容（保持外部引用有效）
-        messages.length = 0;
-        messages.push(...compacted);
+        const compactedWorking = await this.compressor.compact(workingMessages);
+        workingMessages.length = 0;
+        workingMessages.push(...compactedWorking);
+
+        const compactedDurable = await this.compressor.compact(durableMessages);
+        durableMessages.length = 0;
+        durableMessages.push(...compactedDurable);
       }
 
-      // 根据 stream 选项选择调用方式
       const activeTools = this.applyToolPolicy(allTools, this.activeSkillToolPolicy)
-        .filter(t => !this.disabledTools.has(t.name));
-      this.ensurePromptBudget(messages, activeTools);
+        .filter(tool => !this.disabledTools.has(tool.name));
+      const requestMessages = this.buildProviderInputMessages(workingMessages, nextTurnTransientHints);
+      nextTurnTransientHints = [];
+      this.ensurePromptBudget(requestMessages, activeTools);
       Logger.info(`[Turn ${turns}] 调用AI推理 (可用工具: ${activeTools.length}个)`);
-      const response = await this.requestModelResponse(messages, activeTools, callbacks);
 
-      // 记录 AI 调用 metrics
+      let response;
+      try {
+        response = await this.requestModelResponse(requestMessages, activeTools, callbacks);
+      } catch (error: any) {
+        if (hasDeliveredMessageOutThisRun && this.isMessageSurface()) {
+          Logger.warning(`[Turn ${turns}] 已有外发消息送达，后续推理失败后直接收束: ${error.message}`);
+          return {
+            response: '',
+            finalResponseVisible: false,
+            messages: durableMessages,
+            newMessages,
+            workingMessages,
+          };
+        }
+        throw error;
+      }
+
       if (response.usage) {
         Metrics.recordAICall(this.stream ? 'stream' : 'chat', response.usage);
         Logger.info(`[Turn ${turns}] AI返回 tokens: ${response.usage.promptTokens}+${response.usage.completionTokens}=${response.usage.totalTokens}`);
       }
 
-      // 没有工具调用，返回最终回复
       if (!response.toolCalls || response.toolCalls.length === 0) {
         Logger.info(`[Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(response.content || '', 300)}`);
+        if (this.isMessageSurface()) {
+          const finalText = response.content || '';
+          if (!hasDeliveredMessageOutThisRun && finalText && !softCheckedNoMessageOut) {
+            workingMessages.push({ role: 'assistant', content: finalText });
+            nextTurnTransientHints = [this.buildNoMessageOutSoftCheckHint(latestUserQuery)];
+            softCheckedNoMessageOut = true;
+            Logger.warning(`[Turn ${turns}] 本轮尚未产生用户可见消息，注入一次 soft check 后继续`);
+            continue;
+          }
+
+          return {
+            response: '',
+            finalResponseVisible: false,
+            messages: durableMessages,
+            newMessages,
+            workingMessages,
+          };
+        }
+
         return {
           response: response.content || '',
-          messages,
-          newMessages
+          finalResponseVisible: true,
+          messages: durableMessages,
+          newMessages,
+          workingMessages,
         };
       }
 
-      // 记录AI回复文本（如果有）和工具调用选择
       if (response.content) {
         Logger.info(`[Turn ${turns}] AI文本: ${ConversationRunner.truncateForLog(response.content, 300)}`);
       }
       const toolNames = response.toolCalls.map(tc => tc.function.name).join(', ');
       Logger.info(`[Turn ${turns}] AI选择工具: [${toolNames}]`);
 
-      // 有工具调用 → 先构建 assistant 消息，执行后再决定如何写回 transcript
       const assistantMsg: Message = {
         role: 'assistant',
         content: response.content,
-        tool_calls: response.toolCalls
+        tool_calls: response.toolCalls,
       };
       const executionRecords: ToolExecutionRecord[] = [];
-      const transientTurnHints: Message[] = [];
       let shouldPauseTurn = false;
 
-      // 执行每个工具调用
       for (const toolCall of response.toolCalls) {
-        // 工具级中断检查：在同一轮的多个工具之间也能响应中断
         if (this.shouldContinue && !this.shouldContinue()) {
-          Logger.info(`[Turn ${turns}] 中断请求，跳过剩余工具`);
           break;
         }
+
         const toolName = toolCall.function.name;
         callbacks?.onToolStart?.(toolName);
         Logger.info(`[Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
         const activeToolNames = this.applyToolPolicy(allTools, this.activeSkillToolPolicy)
           .filter(tool => !this.disabledTools.has(tool.name))
           .map(tool => tool.name);
-
-        const outboundSignature = this.buildOutboundSignature(toolCall, toolName, toolDefinitions);
-        const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
         const toolStart = Date.now();
-        const wasConsecutiveDuplicateOutbound = Boolean(
-          outboundSignature
-          && outboundSignature === lastDeliveredOutboundSignature
-          && !hasNewObservationSinceLastOutbound
+        const result = await this.executeToolWithRetry(
+          toolCall,
+          workingMessages,
+          {
+            ...this.toolExecutionContext,
+            activeSkillName: this.activeSkillName,
+            allowedToolNames: activeToolNames,
+            blockedToolNames: this.activeSkillToolPolicy?.allowedTools
+              ? undefined
+              : this.activeSkillToolPolicy?.disallowedTools,
+          },
+          turns,
         );
-        const shouldSuppressDuplicateOutbound = this.shouldSuppressDuplicateOutbound(
-          toolName,
-          transcriptMode,
-          outboundSignature,
-          hasNewObservationSinceLastOutbound,
-          outboundSuccessCountBySignature,
-        );
-
-        const result = shouldSuppressDuplicateOutbound
-          ? this.buildSuppressedOutboundResult(toolCall, toolName)
-          : await this.executeToolWithRetry(
-            toolCall,
-            messages,
-            {
-              ...this.toolExecutionContext,
-              activeSkillName: this.activeSkillName,
-              allowedToolNames: activeToolNames,
-              blockedToolNames: this.activeSkillToolPolicy?.allowedTools
-                ? undefined
-                : this.activeSkillToolPolicy?.disallowedTools,
-            },
-            turns,
-          );
         const toolDuration = Date.now() - toolStart;
         Metrics.recordToolCall(toolName, toolDuration);
         Logger.info(`[Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
 
-        if (outboundSignature && result.ok && !result.errorCode) {
-          lastDeliveredOutboundSignature = outboundSignature;
-          hasNewObservationSinceLastOutbound = false;
-          outboundSuccessCountBySignature.set(
-            outboundSignature,
-            (outboundSuccessCountBySignature.get(outboundSignature) || 0) + 1,
-          );
-          suppressedOutboundStreak = 0;
-          if (wasConsecutiveDuplicateOutbound) {
-            Logger.warning(`[Runner] 检测到连续重复外发: ${toolName}`);
-            transientTurnHints.push({
-              role: 'system',
-              content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n你刚刚连续发送了与上一条相同的内容。除非有新的信息或你确实在刻意重复强调，否则下一步尽量不要再发送完全相同的话；如果这轮已经说完了，可以考虑调用 pause_turn。`,
-            });
-          }
-        } else if (
-          transcriptMode === 'default'
+        const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
+        if (
+          (transcriptMode === 'outbound_message' || transcriptMode === 'outbound_file')
           && result.ok
           && !result.errorCode
         ) {
-          hasNewObservationSinceLastOutbound = true;
-          suppressedOutboundStreak = 0;
-        } else if (result.errorCode === 'OUTBOUND_DUPLICATE_SUPPRESSED') {
-          suppressedOutboundStreak++;
-          transientTurnHints.push({
-            role: 'system',
-            content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n重复外发已被抑制。若已交付完成，请调用 pause_turn；若需补充信息，请改用 reply 说明。`,
-          });
-          if (suppressedOutboundStreak >= ConversationRunner.SUPPRESSED_OUTBOUND_PAUSE_THRESHOLD) {
-            shouldPauseTurn = true;
-            Logger.warning(`[Turn ${turns}] 重复外发抑制达到阈值，自动收束本轮`);
-            break;
-          }
-        } else {
-          suppressedOutboundStreak = 0;
+          hasDeliveredMessageOutThisRun = true;
+          softCheckedNoMessageOut = false;
         }
 
-        // ===== 工具熔断检查 =====
         let toolContent = result.content;
         const isBlocked = result.errorCode === 'TOOL_NOT_ALLOWED_BY_SKILL_POLICY'
-          || result.errorCode === 'TOOL_BLOCKED_BY_SKILL_POLICY';
+          || result.errorCode === 'TOOL_BLOCKED_BY_SKILL_POLICY'
+          || result.errorCode === 'TOOL_NOT_REGISTERED';
         const isFailed = toolContent.startsWith('Python 工具执行失败') || toolContent.startsWith('错误:');
 
         if (isBlocked) {
-          // 策略阻断：立即禁用，不浪费更多 turn
           this.disabledTools.add(toolName);
           this.toolFailureCount.delete(toolName);
           toolContent += `\n\n[系统] 工具 "${toolName}" 已被自动禁用（策略阻断），请换用其他工具完成任务。`;
@@ -346,25 +319,9 @@ export class ConversationRunner {
             Logger.warning(`[Turn ${turns}] 熔断: ${toolName} 连续失败 ${count} 次，已从可用列表移除`);
           }
         } else {
-          // 成功调用，重置计数
           this.toolFailureCount.delete(toolName);
         }
 
-        // ===== reply 防重复回复（仅提醒，不禁用） =====
-        if (ConversationRunner.REPLY_TOOLS.has(toolName)) {
-          replyCount++;
-          if (replyCount >= 2) {
-            transientTurnHints.push({
-              role: 'system',
-              content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n不要发送和之前重复或相似的消息。有新内容可以继续发，没有就调用 pause_turn 结束。`,
-            });
-            Logger.info(`[Turn ${turns}] reply 防刷: ${toolName} 已连续调用 ${replyCount} 次`);
-          }
-        } else {
-          replyCount = 0;
-        }
-
-        // skill 工具的结构化激活信号：统一 skill 激活行为
         const activation = this.tryParseSkillActivation(toolCall, result.content);
         if (activation) {
           this.activeSkillName = activation.skillName;
@@ -374,15 +331,13 @@ export class ConversationRunner {
             this.maxTurns = Math.max(this.maxTurns, turns + activation.maxTurns);
           }
 
-          const systemMsg = upsertSkillSystemMessage(messages, activation);
-          newMessages.push(systemMsg);
+          upsertSkillSystemMessage(workingMessages, activation);
+          const durableSystemMsg = upsertSkillSystemMessage(durableMessages, activation);
+          if (durableSystemMsg) {
+            newMessages.push(durableSystemMsg);
+          }
 
           toolContent = `Skill "${activation.skillName}" 已激活`;
-          Logger.info(`[Turn ${turns}] Skill 激活: ${activation.skillName}${activation.maxTurns ? ` | maxTurns 扩展至 ${this.maxTurns}` : ''}`);
-        }
-
-        if (toolContent !== result.content) {
-          Logger.info(`[Turn ${turns}] 工具结果已修改: ${toolName} | 最终内容: ${ConversationRunner.truncateForLog(toolContent, 300)}`);
         }
 
         this.handleToolDisplay(toolCall, toolContent, callbacks);
@@ -400,32 +355,39 @@ export class ConversationRunner {
         callbacks?.onToolEnd?.(toolCall.function.name, toolContent);
       }
 
-      const transcriptMessages = this.buildTurnTranscriptMessages(
+      const durableTurnMessages = this.buildTurnTranscriptMessages(
         assistantMsg,
         executionRecords,
         toolDefinitions,
       );
-      messages.push(...transcriptMessages);
-      newMessages.push(...transcriptMessages);
-      if (!shouldPauseTurn && transientTurnHints.length > 0) {
-        messages.push(...transientTurnHints);
-      }
+      const workingTurnMessages = this.buildTurnWorkingMessages(
+        assistantMsg,
+        executionRecords,
+        toolDefinitions,
+      );
+      durableMessages.push(...durableTurnMessages);
+      workingMessages.push(...workingTurnMessages);
+      newMessages.push(...durableTurnMessages);
 
       if (shouldPauseTurn) {
         Logger.info(`[Turn ${turns}] pause_turn 已触发，本轮收束`);
         return {
           response: '',
-          messages,
+          finalResponseVisible: false,
+          messages: durableMessages,
           newMessages,
+          workingMessages,
         };
       }
     }
 
     Logger.warning(`达到最大工具调用轮次 (${this.maxTurns})`);
     return {
-      response: '[达到最大工具调用轮次，请继续对话]',
-      messages,
-      newMessages
+      response: this.isMessageSurface() ? '' : '[达到最大工具调用轮次，请继续对话]',
+      finalResponseVisible: !this.isMessageSurface(),
+      messages: durableMessages,
+      newMessages,
+      workingMessages,
     };
   }
 
@@ -490,19 +452,122 @@ export class ConversationRunner {
     }
 
     const transcriptMessages: Message[] = [];
-    const normalizedContent = normalizedMessages.map(m => m.content).filter(Boolean).join('\n');
+    const hasNormalizedOutbound = normalizedMessages.length > 0;
+    const assistantContent =
+      hasNormalizedOutbound && assistantMsg.content
+        ? null
+        : assistantMsg.content;
 
-    if (assistantMsg.content || retainedToolCalls.length > 0 || normalizedContent) {
-      const mergedContent = [assistantMsg.content, normalizedContent].filter(Boolean).join('\n');
+    if (assistantContent || retainedToolCalls.length > 0) {
       transcriptMessages.push({
         role: 'assistant',
-        content: mergedContent || null,
+        content: assistantContent,
         ...(retainedToolCalls.length > 0 ? { tool_calls: retainedToolCalls } : {}),
       });
     }
 
     transcriptMessages.push(...retainedToolMessages);
+    transcriptMessages.push(...normalizedMessages);
     return transcriptMessages;
+  }
+
+  private buildTurnWorkingMessages(
+    assistantMsg: Message,
+    executionRecords: ToolExecutionRecord[],
+    toolDefinitions: Map<string, ToolDefinition>,
+  ): Message[] {
+    const workingMessages: Message[] = [];
+
+    const workingAssistant: Message = {
+      role: 'assistant',
+      content: assistantMsg.content,
+      ...(assistantMsg.tool_calls?.length ? { tool_calls: assistantMsg.tool_calls } : {}),
+    };
+
+    if (workingAssistant.content || workingAssistant.tool_calls?.length) {
+      workingMessages.push(workingAssistant);
+    }
+
+    for (const record of executionRecords) {
+      const transcriptMode = this.getToolTranscriptMode(record.toolName, toolDefinitions);
+      if (transcriptMode === 'suppress' && !record.result.errorCode) {
+        continue;
+      }
+
+      workingMessages.push({
+        role: 'tool',
+        content: record.toolContent,
+        tool_call_id: record.result.tool_call_id,
+        name: record.result.name,
+      });
+    }
+
+    return workingMessages;
+  }
+
+  private buildProviderInputMessages(messages: Message[], transientHints: Message[]): Message[] {
+    const sanitizedBase = messages.filter(message => {
+      if (message.role !== 'system' || typeof message.content !== 'string') {
+        return true;
+      }
+      return !message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)
+        && !message.content.startsWith(TRANSIENT_SOFT_CHECK_PREFIX);
+    });
+
+    const collapsed: Message[] = [];
+    for (const message of sanitizedBase) {
+      const previous = collapsed[collapsed.length - 1];
+      if (
+        previous
+        && previous.role === 'assistant'
+        && message.role === 'assistant'
+        && !previous.tool_calls?.length
+        && !message.tool_calls?.length
+        && typeof previous.content === 'string'
+        && typeof message.content === 'string'
+        && previous.content.trim()
+        && previous.content === message.content
+      ) {
+        continue;
+      }
+      collapsed.push(message);
+    }
+
+    if (transientHints.length === 0) {
+      return collapsed;
+    }
+
+    return [...collapsed, ...transientHints];
+  }
+
+  private isMessageSurface(): boolean {
+    const surface = this.toolExecutionContext?.surface;
+    return surface === 'catscompany' || surface === 'feishu';
+  }
+
+  private extractLatestUserQuery(messages: Message[]): string {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (message.role === 'user' && message.content?.trim()) {
+        return message.content.trim();
+      }
+    }
+    return '';
+  }
+
+  private buildNoMessageOutSoftCheckHint(latestUserQuery: string): Message {
+    const lines = [
+      TRANSIENT_SOFT_CHECK_PREFIX,
+      `当前用户 query 是：${latestUserQuery || '(空)'}`,
+      '本轮你还没有发送任何用户可见消息。',
+      '如果需要回复用户，请使用消息工具发送。',
+      '如果本轮可以结束且不需要发送消息，可以调用 pause_turn。',
+      '否则你也可以继续本轮推理。',
+    ];
+    return {
+      role: 'system',
+      content: lines.join('\n'),
+    };
   }
 
   private getToolTranscriptMode(
@@ -543,7 +608,7 @@ export class ConversationRunner {
       }
       return {
         role: 'assistant',
-        content: `[已发送] ${text}`,
+        content: `[已发送信息] ${text}`,
       };
     }
 
@@ -561,47 +626,12 @@ export class ConversationRunner {
     return null;
   }
 
-  private buildOutboundSignature(
-    toolCall: ToolCall,
-    toolName: string,
-    toolDefinitions: Map<string, ToolDefinition>,
-  ): string | null {
-    const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
-    let args: Record<string, unknown> = {};
-
-    try {
-      args = JSON.parse(toolCall.function.arguments || '{}');
-    } catch {
-      return null;
-    }
-
-    if (transcriptMode === 'outbound_message') {
-      const text = this.extractOutboundMessage(toolName, args);
-      return text ? `message:${toolName}:${text}` : null;
-    }
-
-    if (transcriptMode === 'outbound_file') {
-      const rawPath = typeof args.file_path === 'string' ? args.file_path.trim() : '';
-      const fileName = typeof args.file_name === 'string' ? args.file_name.trim() : '';
-      if (!rawPath && !fileName) {
-        return null;
-      }
-      // 规范化路径：resolve + normalize + Windows 下 lowercase，防止大小写 / 相对路径差异绕过去重
-      const normalizedPath = rawPath
-        ? path.normalize(path.resolve(rawPath)).toLowerCase()
-        : '';
-      return `file:${toolName}:${normalizedPath}:${fileName.toLowerCase()}`;
-    }
-
-    return null;
-  }
-
   private extractOutboundMessage(
     toolName: string,
     args: Record<string, unknown>,
   ): string | null {
     if (toolName === 'reply') {
-      const text = typeof args.message === 'string' ? args.message.trim().replace(/\s+/g, ' ') : '';
+      const text = typeof args.message === 'string' ? args.message.trim() : '';
       return text || null;
     }
 
@@ -620,40 +650,6 @@ export class ConversationRunner {
     }
 
     return null;
-  }
-
-  private shouldSuppressDuplicateOutbound(
-    toolName: string,
-    transcriptMode: ToolTranscriptMode,
-    outboundSignature: string | null,
-    hasNewObservationSinceLastOutbound: boolean,
-    outboundSuccessCountBySignature: Map<string, number>,
-  ): boolean {
-    if (!outboundSignature || hasNewObservationSinceLastOutbound) {
-      return false;
-    }
-    if (transcriptMode !== 'outbound_message' && transcriptMode !== 'outbound_file') {
-      return false;
-    }
-
-    const delivered = outboundSuccessCountBySignature.get(outboundSignature) || 0;
-    const allowance = transcriptMode === 'outbound_file'
-      ? ConversationRunner.OUTBOUND_ALLOWANCE.file
-      : ConversationRunner.OUTBOUND_ALLOWANCE.message;
-
-    return delivered >= allowance;
-  }
-
-  private buildSuppressedOutboundResult(toolCall: ToolCall, toolName: string): ToolResult {
-    return {
-      tool_call_id: toolCall.id,
-      role: 'tool',
-      name: toolName,
-      content: `已抑制重复外发：${toolName} 与本轮已发送内容重复。请勿重复发送；如已完成请 pause_turn。`,
-      ok: false,
-      errorCode: 'OUTBOUND_DUPLICATE_SUPPRESSED',
-      retryable: false,
-    };
   }
 
   private applyToolPolicy(allTools: ToolDefinition[], policy?: SkillToolPolicy): ToolDefinition[] {
