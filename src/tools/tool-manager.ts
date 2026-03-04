@@ -27,8 +27,6 @@ import { SendFileTool } from './send-file-tool';
 import { PauseTurnTool } from './pause-turn-tool';
 import { RecallLogTool } from './recall-log-tool';
 import { FeishuMentionTool } from './feishu-mention-tool';
-import * as path from 'path';
-import { loadGlobalPythonTools } from './python-tool-loader';
 import { normalizeToolName } from '../utils/tool-aliases';
 
 /**
@@ -97,26 +95,9 @@ export class ToolManager implements ToolExecutor {
     // 注册飞书工具
     this.registerTool(new FeishuMentionTool());
 
-    // 注册全局 Python 工具（tools/global/*_tool.py）
-    this.registerGlobalPythonTools();
+    // Python 工具已迁移到对应的 skill 目录下，通过 skill 调用
   }
 
-  /**
-   * 扫描 tools/global/ 并注册所有 Python 工具
-   */
-  private registerGlobalPythonTools(): void {
-    try {
-      // 项目根目录：从 src/tools/ 向上两级
-      const projectRoot = path.resolve(__dirname, '..', '..');
-      const pythonTools = loadGlobalPythonTools(projectRoot);
-      for (const tool of pythonTools) {
-        this.registerTool(tool);
-      }
-    } catch (err: any) {
-      // 加载失败不阻塞启动
-      Logger.warning(`[ToolManager] 全局 Python 工具加载失败: ${err.message}`);
-    }
-  }
 
   /**
    * 注册工具
