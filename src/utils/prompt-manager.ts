@@ -1,6 +1,5 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { SkillManager } from '../skills/skill-manager';
 
 /**
  * System Prompt 管理器
@@ -35,68 +34,40 @@ export class PromptManager {
   }
 
   /**
-   * 构建完整的 system prompt（包含动态加载的skills）
+   * 构建基础 system prompt
    */
   static async buildSystemPrompt(): Promise<string> {
-    const basePrompt = this.getBaseSystemPrompt();
-    const skillsSection = await this.buildSkillsSection();
-    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-
-    return `${basePrompt}
-
-## 环境信息
-
-当前日期: ${today}
-
-${skillsSection}`;
+    return this.getBaseSystemPrompt().trim();
   }
 
-  /**
-   * 构建skills部分
-   */
-  private static async buildSkillsSection(): Promise<string> {
-    const manager = new SkillManager();
-    await manager.loadSkills();
+  static buildRuntimeIdentityPrompt(): string {
+    const displayName = (
+      process.env.CURRENT_AGENT_DISPLAY_NAME
+      || process.env.BOT_BRIDGE_NAME
+      || '小八'
+    ).trim();
+    const today = new Date().toISOString().slice(0, 10);
 
-    const skills = manager.getAllSkills();
-
-    if (skills.length === 0) {
-      return '## 当前可用的Skills\n\n暂无可用的skills。';
-    }
-
-    let section = '## 当前可用的Skills\n\n';
-    section += `你当前可以使用以下 ${skills.length} 个skills：\n\n`;
-
-    for (const skill of skills) {
-      section += `- **${skill.metadata.name}**: ${skill.metadata.description}`;
-
-      if (skill.metadata.argumentHint) {
-        section += ` (参数: ${skill.metadata.argumentHint})`;
-      }
-
-      section += '\n';
-    }
-
-    section += '\n**使用方式：** 当用户请求匹配某个 skill 的描述时，使用 `skill` 工具调用该 skill。\n';
-
-    return section;
+    return [
+      '[identity]',
+      `你当前在这个平台上的显示名字是：${displayName}`,
+      '对外自称时，以这个平台显示名字为准。',
+      `当前日期：${today}`,
+    ].join('\n');
   }
 
   /**
    * 默认 system prompt（当文件不存在时使用）
    */
   private static getDefaultSystemPrompt(): string {
-    return `你是 XiaoBa，一个智能的命令行AI开发助手。
+    return `你是小八。
 
-你的核心能力：
-- 软件开发：编写、审查、重构代码
-- 问题解决：调试、分析、优化
-- 项目管理：规划、执行、验证
+你和用户交流时，保持自然、直接、可信。
 
 工作原则：
-1. 理解优先，行动在后
-2. 最小必要改动
-3. 安全第一
-4. 清晰沟通`;
+1. 只根据当前对话、真实上下文和当前运行时提供的能力行动。
+2. 不编造自己拥有的工具、技能、历史记忆或已完成的工作。
+3. 先理解问题，再决定是否需要行动或回复。
+4. 当前这一轮没有新信息时，不要为了显得热情而额外寒暄。`;
   }
 }
