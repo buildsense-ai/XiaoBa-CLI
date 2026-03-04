@@ -6,6 +6,7 @@ import {
   SkillToolPolicy,
 } from '../types/skill';
 import { SkillExecutor } from './skill-executor';
+import { getContextLabFlags } from '../utils/context-lab';
 
 /**
  * 基于 skill 定义与调用上下文生成统一激活信号
@@ -82,7 +83,11 @@ export function buildSkillSystemPrompt(activation: SkillActivationSignal): strin
 export function upsertSkillSystemMessage(
   messages: Message[],
   activation: SkillActivationSignal,
-): Message {
+): Message | null {
+  if (getContextLabFlags().disableSkillPrompt) {
+    return null;
+  }
+
   const marker = `[skill:${activation.skillName}]`;
 
   for (let i = messages.length - 1; i >= 0; i--) {

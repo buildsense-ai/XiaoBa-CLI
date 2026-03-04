@@ -11,6 +11,7 @@ import {
   parseSkillActivationSignal,
   upsertSkillSystemMessage,
 } from '../skills/skill-activation-protocol';
+import { getContextLabFlags } from '../utils/context-lab';
 
 const ESSENTIAL_TOOLS = new Set([
   'skill',
@@ -33,6 +34,7 @@ const ANTHROPIC_PROMPT_BUDGET = 180000;
 const MIN_MESSAGE_BUDGET = 2000;
 const OVERFLOW_REDUCTION_RATIO = 0.6;
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
+const TRANSIENT_SOFT_CHECK_PREFIX = '[transient_soft_check]';
 
 /**
  * 对话运行回调
@@ -54,10 +56,14 @@ export interface RunnerCallbacks {
 export interface RunResult {
   /** 最终文本回复 */
   response: string;
-  /** 完整的消息列表（包含工具调用中间过程） */
+  /** 最终文本是否代表用户可见输出 */
+  finalResponseVisible: boolean;
+  /** durable session 消息列表（适合长期保存） */
   messages: Message[];
-  /** 本次 run() 期间新增的 assistant/tool 消息（不含最终纯文本回复） */
+  /** 本次 run() 期间新增的 durable 消息（不含最终纯文本回复） */
   newMessages: Message[];
+  /** 当前 run 的 working trace（provider-native） */
+  workingMessages?: Message[];
 }
 
 interface ToolExecutionRecord {
@@ -153,12 +159,17 @@ export class ConversationRunner {
    * @returns 最终文本回复和完整消息列表
    */
   async run(messages: Message[], callbacks?: RunnerCallbacks): Promise<RunResult> {
+    const durableMessages = messages;
+    const workingMessages = [...messages];
     const allTools = this.toolExecutor.getToolDefinitions();
     const toolDefinitions = new Map(allTools.map(tool => [tool.name, tool]));
     const newMessages: Message[] = [];
     let nextTurnTransientHints: Message[] = [];
     let lastDeliveredOutboundSignature: string | null = null;
     let hasNewObservationSinceLastOutbound = false;
+    let hasDeliveredMessageOutThisRun = false;
+    let softCheckedNoMessageOut = false;
+    const latestUserQuery = this.extractLatestUserQuery(workingMessages);
     let turns = 0;
 
     while (turns++ < this.maxTurns) {
@@ -168,23 +179,41 @@ export class ConversationRunner {
       }
 
       // ===== 上下文压缩检查（可选） =====
-      if (this.enableCompression && this.compressor.needsCompaction(messages)) {
-        const usage = this.compressor.getUsageInfo(messages);
+      if (this.enableCompression && this.compressor.needsCompaction(workingMessages)) {
+        const usage = this.compressor.getUsageInfo(workingMessages);
         Logger.info(`上下文使用率 ${usage.usagePercent}%，触发压缩...`);
-        const compacted = await this.compressor.compact(messages);
-        // 原地替换 messages 内容（保持外部引用有效）
-        messages.length = 0;
-        messages.push(...compacted);
+        const compactedWorking = await this.compressor.compact(workingMessages);
+        workingMessages.length = 0;
+        workingMessages.push(...compactedWorking);
+
+        const compactedDurable = await this.compressor.compact(durableMessages);
+        durableMessages.length = 0;
+        durableMessages.push(...compactedDurable);
       }
 
       // 根据 stream 选项选择调用方式
       const activeTools = this.applyToolPolicy(allTools, this.activeSkillToolPolicy)
         .filter(t => !this.disabledTools.has(t.name));
-      const requestMessages = this.buildProviderInputMessages(messages, nextTurnTransientHints);
+      const requestMessages = this.buildProviderInputMessages(workingMessages, nextTurnTransientHints);
       nextTurnTransientHints = [];
       this.ensurePromptBudget(requestMessages, activeTools);
       Logger.info(`[Turn ${turns}] 调用AI推理 (可用工具: ${activeTools.length}个)`);
-      const response = await this.requestModelResponse(requestMessages, activeTools, callbacks);
+      let response;
+      try {
+        response = await this.requestModelResponse(requestMessages, activeTools, callbacks);
+      } catch (error: any) {
+        if (hasDeliveredMessageOutThisRun && this.isMessageSurface()) {
+          Logger.warning(`[Turn ${turns}] 已有外发消息送达，后续推理失败后直接收束: ${error.message}`);
+          return {
+            response: '',
+            finalResponseVisible: false,
+            messages: durableMessages,
+            newMessages,
+            workingMessages,
+          };
+        }
+        throw error;
+      }
 
       // 记录 AI 调用 metrics
       if (response.usage) {
@@ -195,10 +224,32 @@ export class ConversationRunner {
       // 没有工具调用，返回最终回复
       if (!response.toolCalls || response.toolCalls.length === 0) {
         Logger.info(`[Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(response.content || '', 300)}`);
+        if (this.isMessageSurface()) {
+          const finalText = response.content || '';
+
+          if (!hasDeliveredMessageOutThisRun && finalText && !softCheckedNoMessageOut) {
+            workingMessages.push({ role: 'assistant', content: finalText });
+            nextTurnTransientHints = [this.buildNoMessageOutSoftCheckHint(latestUserQuery)];
+            softCheckedNoMessageOut = true;
+            Logger.warning(`[Turn ${turns}] 本轮尚未产生用户可见消息，注入一次 soft check 后继续`);
+            continue;
+          }
+
+          return {
+            response: '',
+            finalResponseVisible: false,
+            messages: durableMessages,
+            newMessages,
+            workingMessages,
+          };
+        }
+
         return {
           response: response.content || '',
-          messages,
-          newMessages
+          finalResponseVisible: true,
+          messages: durableMessages,
+          newMessages,
+          workingMessages,
         };
       }
 
@@ -237,7 +288,7 @@ export class ConversationRunner {
         );
         const result = await this.executeToolWithRetry(
           toolCall,
-          messages,
+          workingMessages,
           {
             ...this.toolExecutionContext,
             activeSkillName: this.activeSkillName,
@@ -257,12 +308,16 @@ export class ConversationRunner {
         if (outboundSignature && result.ok && !result.errorCode) {
           lastDeliveredOutboundSignature = outboundSignature;
           hasNewObservationSinceLastOutbound = false;
+          hasDeliveredMessageOutThisRun = true;
+          softCheckedNoMessageOut = false;
           if (wasConsecutiveDuplicateOutbound) {
             Logger.warning(`[Runner] 检测到连续重复外发: ${toolName}`);
-            transientTurnHints.push({
-              role: 'system',
-              content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n你刚刚连续发送了与上一条相同的内容。除非有新的信息或你确实在刻意重复强调，否则下一步尽量不要再发送完全相同的话；如果这轮已经说完了，可以考虑调用 pause_turn。`,
-            });
+            if (!getContextLabFlags().disableTransientHints) {
+              transientTurnHints.push({
+                role: 'system',
+                content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n你刚刚连续发送了与上一条相同的内容。除非有新的信息或你确实在刻意重复强调，否则下一步尽量不要再发送完全相同的话；如果这轮已经说完了，可以考虑调用 pause_turn。`,
+              });
+            }
           }
         } else if (
           transcriptMode === 'default'
@@ -308,8 +363,11 @@ export class ConversationRunner {
             this.maxTurns = Math.max(this.maxTurns, turns + activation.maxTurns);
           }
 
-          const systemMsg = upsertSkillSystemMessage(messages, activation);
-          newMessages.push(systemMsg);
+          upsertSkillSystemMessage(workingMessages, activation);
+          const durableSystemMsg = upsertSkillSystemMessage(durableMessages, activation);
+          if (durableSystemMsg) {
+            newMessages.push(durableSystemMsg);
+          }
 
           toolContent = `Skill "${activation.skillName}" 已激活`;
         }
@@ -328,13 +386,19 @@ export class ConversationRunner {
         callbacks?.onToolEnd?.(toolCall.function.name, toolContent);
       }
 
-      const transcriptMessages = this.buildTurnTranscriptMessages(
+      const durableTurnMessages = this.buildTurnTranscriptMessages(
         assistantMsg,
         executionRecords,
         toolDefinitions,
       );
-      messages.push(...transcriptMessages);
-      newMessages.push(...transcriptMessages);
+      const workingTurnMessages = this.buildTurnWorkingMessages(
+        assistantMsg,
+        executionRecords,
+        toolDefinitions,
+      );
+      durableMessages.push(...durableTurnMessages);
+      workingMessages.push(...workingTurnMessages);
+      newMessages.push(...durableTurnMessages);
       if (!shouldPauseTurn && transientTurnHints.length > 0) {
         nextTurnTransientHints = transientTurnHints;
       }
@@ -343,8 +407,10 @@ export class ConversationRunner {
         Logger.info(`[Turn ${turns}] pause_turn 已触发，本轮收束`);
         return {
           response: '',
-          messages,
+          finalResponseVisible: false,
+          messages: durableMessages,
           newMessages,
+          workingMessages,
         };
       }
     }
@@ -352,8 +418,10 @@ export class ConversationRunner {
     Logger.warning(`达到最大工具调用轮次 (${this.maxTurns})`);
     return {
       response: '[达到最大工具调用轮次，请继续对话]',
-      messages,
-      newMessages
+      finalResponseVisible: !this.isMessageSurface(),
+      messages: durableMessages,
+      newMessages,
+      workingMessages,
     };
   }
 
@@ -437,12 +505,47 @@ export class ConversationRunner {
     return transcriptMessages;
   }
 
+  private buildTurnWorkingMessages(
+    assistantMsg: Message,
+    executionRecords: ToolExecutionRecord[],
+    toolDefinitions: Map<string, ToolDefinition>,
+  ): Message[] {
+    const workingMessages: Message[] = [];
+
+    const workingAssistant: Message = {
+      role: 'assistant',
+      content: assistantMsg.content,
+      ...(assistantMsg.tool_calls?.length ? { tool_calls: assistantMsg.tool_calls } : {}),
+    };
+
+    if (workingAssistant.content || workingAssistant.tool_calls?.length) {
+      workingMessages.push(workingAssistant);
+    }
+
+    for (const record of executionRecords) {
+      const transcriptMode = this.getToolTranscriptMode(record.toolName, toolDefinitions);
+      if (transcriptMode === 'suppress' && !record.result.errorCode) {
+        continue;
+      }
+
+      workingMessages.push({
+        role: 'tool',
+        content: record.toolContent,
+        tool_call_id: record.result.tool_call_id,
+        name: record.result.name,
+      });
+    }
+
+    return workingMessages;
+  }
+
   private buildProviderInputMessages(messages: Message[], transientHints: Message[]): Message[] {
     const sanitizedBase = messages.filter(message => {
       if (message.role !== 'system' || typeof message.content !== 'string') {
         return true;
       }
-      return !message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX);
+      return !message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)
+        && !message.content.startsWith(TRANSIENT_SOFT_CHECK_PREFIX);
     });
 
     const collapsed: Message[] = [];
@@ -509,7 +612,7 @@ export class ConversationRunner {
       }
       return {
         role: 'assistant',
-        content: text,
+        content: `[已发送信息] ${text}`,
       };
     }
 
@@ -611,6 +714,36 @@ export class ConversationRunner {
     }
 
     return allTools;
+  }
+
+  private isMessageSurface(): boolean {
+    const surface = this.toolExecutionContext?.surface;
+    return surface === 'catscompany' || surface === 'feishu';
+  }
+
+  private extractLatestUserQuery(messages: Message[]): string {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (message.role === 'user' && message.content?.trim()) {
+        return message.content.trim();
+      }
+    }
+    return '';
+  }
+
+  private buildNoMessageOutSoftCheckHint(latestUserQuery: string): Message {
+    const lines = [
+      TRANSIENT_SOFT_CHECK_PREFIX,
+      `当前用户 query 是：${latestUserQuery || '(空)'}`,
+      '本轮你还没有发送任何用户可见消息。',
+      '如果需要回复用户，请使用消息工具发送。',
+      '如果本轮可以结束且不需要发送消息，可以调用 pause_turn。',
+      '否则你也可以继续本轮推理。',
+    ];
+    return {
+      role: 'system',
+      content: lines.join('\n'),
+    };
   }
 
   private async requestModelResponse(

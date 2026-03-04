@@ -15,9 +15,11 @@ import { Logger } from '../utils/logger';
 import { saveSessionSummary, loadSessionSummary, removeSessionSummary } from '../utils/local-session-store';
 import { SessionStore } from '../utils/session-store';
 import { Metrics } from '../utils/metrics';
+import { getContextLabFlags } from '../utils/context-lab';
 
 const TRANSIENT_SUBAGENT_STATUS_PREFIX = '[transient_subagent_status]';
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
+const TRANSIENT_SOFT_CHECK_PREFIX = '[transient_soft_check]';
 export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
 export const ERROR_MESSAGE = '不好意思，刚才处理出了点问题，你再试一次？';
 
@@ -50,6 +52,11 @@ export interface HandleMessageOptions {
 export interface CommandResult {
   handled: boolean;
   reply?: string;
+}
+
+export interface HandleMessageResult {
+  text: string;
+  visibleToUser: boolean;
 }
 
 // ─── AgentSession 核心类 ────────────────────────────────
@@ -86,25 +93,40 @@ export class AgentSession {
   async init(): Promise<void> {
     if (this.initialized) return;
     this.initialized = true;
+    const labFlags = getContextLabFlags();
     const systemPrompt = await PromptManager.buildSystemPrompt();
-    this.messages.push({ role: 'system', content: systemPrompt });
-    if (this.isFeishuSession()) {
+    if (systemPrompt.trim()) {
+      this.messages.push({ role: 'system', content: systemPrompt });
+    }
+    const identityPrompt = PromptManager.buildRuntimeIdentityPrompt();
+    if (identityPrompt.trim()) {
+      this.messages.push({ role: 'system', content: identityPrompt });
+    }
+    const skillsCatalogPrompt = await PromptManager.buildSkillsCatalogPrompt();
+    if (skillsCatalogPrompt.trim()) {
+      this.messages.push({ role: 'system', content: skillsCatalogPrompt });
+    }
+    if (!labFlags.disableSurfacePrompt && this.isFeishuSession()) {
       const isGroup = this.key.startsWith('group:');
       const chatType = isGroup ? '群聊' : '私聊';
       this.messages.push({
         role: 'system',
-        content: `[surface:feishu:${isGroup ? 'group' : 'private'}]\n当前是飞书${chatType}会话。你的普通文本输出老师完全看不到，必须调用 reply 工具才能让老师收到消息。无论多简单的回复（包括打招呼、闲聊），都必须通过 reply 发送。如果当前这一轮你已经把该发的话发完了，调用 pause_turn 收束；如果还要继续查资料、看子任务进度或补充新的内容，就继续调用工具，不要机械停下。`,
+        content: labFlags.minimalSurfacePrompt
+          ? `[surface:feishu:${isGroup ? 'group' : 'private'}]\n当前是飞书${chatType}会话。用户只能看到你通过消息工具发送的内容；你的普通文本输出用户看不到。`
+          : `[surface:feishu:${isGroup ? 'group' : 'private'}]\n当前是飞书${chatType}会话。\n用户只能看到你通过消息工具发送的内容。\n你的普通文本输出用户看不到。\n如果这一轮不需要发送任何用户可见内容，可以调用 pause_turn 结束。`,
       });
-    } else if (this.isCatsCompanySession()) {
+    } else if (!labFlags.disableSurfacePrompt && this.isCatsCompanySession()) {
       this.messages.push({
         role: 'system',
-        content: '[surface:catscompany]\n当前是 Cats Company 聊天会话。用户只能看到你通过 reply / send_file 发送的内容，你的普通文本输出用户完全看不到。所以：所有要给用户看的话，必须通过工具发送。如果当前这一轮你已经把该发的话发完了，调用 pause_turn 收束；如果还要继续查文件、看子任务进度、补充新的信息，就继续调用工具，不要因为刚发过消息就机械停下。',
+        content: labFlags.minimalSurfacePrompt
+          ? '[surface:catscompany]\n当前是 Cats Company 聊天会话。用户只能看到你通过消息工具发送的内容；你的普通文本输出用户看不到。'
+          : '[surface:catscompany]\n当前是 Cats Company 聊天会话。\n用户只能看到你通过消息工具发送的内容。\n你的普通文本输出用户看不到。\n如果这一轮不需要发送任何用户可见内容，可以调用 pause_turn 结束。',
       });
     }
 
     // 加载上次会话摘要（本地文件兜底）
     if (this.isChatSession()) {
-      const previousSummary = loadSessionSummary(this.key);
+      const previousSummary = labFlags.disablePreviousSummary ? null : loadSessionSummary(this.key);
       if (previousSummary) {
         this.messages.push({
           role: 'system',
@@ -176,7 +198,7 @@ export class AgentSession {
   async handleMessage(
     text: string,
     callbacksOrOptions?: SessionCallbacks | HandleMessageOptions,
-  ): Promise<string> {
+  ): Promise<HandleMessageResult> {
     // 兼容旧签名：如果传入的对象有 onText/onToolStart 等字段，视为 SessionCallbacks
     let callbacks: SessionCallbacks | undefined;
     let channel: ChannelCallbacks | undefined;
@@ -194,7 +216,7 @@ export class AgentSession {
     }
 
     if (this.busy) {
-      return BUSY_MESSAGE;
+      return { text: BUSY_MESSAGE, visibleToUser: true };
     }
 
     // 按"单次消息"统计 metrics，避免跨轮次累积导致定位困难
@@ -215,7 +237,7 @@ export class AgentSession {
       // 注入后台子智能体状态（临时上下文，不持久化）
       const subAgentManager = SubAgentManager.getInstance();
       const runningSubAgents = subAgentManager.listByParent(this.key);
-      if (runningSubAgents.length > 0) {
+      if (!getContextLabFlags().disableSubagentStatus && runningSubAgents.length > 0) {
         const statusLines = runningSubAgents.map(s => {
           const statusLabel = s.status === 'running' ? '运行中' : s.status === 'completed' ? '已完成' : s.status === 'failed' ? '失败' : '已停止';
           const latest = s.progressLog[s.progressLog.length - 1] ?? '';
@@ -242,6 +264,8 @@ export class AgentSession {
       }
 
       const effectiveMaxTurns = this.activeSkillMaxTurns ?? this.detectSkillMaxTurns();
+      const labFlags = getContextLabFlags();
+      const labPreDisabledTools = this.buildLabPreDisabledTools(labFlags.allowedTools, labFlags.blockedTools);
       const surface = this.isCatsCompanySession()
         ? 'catscompany'
         : this.isFeishuSession()
@@ -254,6 +278,8 @@ export class AgentSession {
           ...(effectiveMaxTurns ? { maxTurns: effectiveMaxTurns } : {}),
           initialSkillName: this.activeSkillName,
           initialSkillToolPolicy: this.activeSkillToolPolicy,
+          enableCompression: !labFlags.disableCompression,
+          ...(labPreDisabledTools.length > 0 ? { preDisabledTools: labPreDisabledTools } : {}),
           toolExecutionContext: {
             sessionId: this.key,
             surface,
@@ -287,6 +313,7 @@ export class AgentSession {
       // runner 在"最终无工具调用"时不会自动附加 assistant 消息，这里补齐
       const lastMessage = this.messages[this.messages.length - 1];
       if (
+        result.finalResponseVisible &&
         result.response &&
         (
           !lastMessage ||
@@ -315,14 +342,17 @@ export class AgentSession {
         }
       }
 
-      return result.response || '[无回复]';
+      return {
+        text: result.finalResponseVisible ? (result.response || '[无回复]') : '',
+        visibleToUser: result.finalResponseVisible,
+      };
     } catch (err: any) {
       // 清理孤立的 user 消息，避免污染后续对话
       if (this.messages.length > 0 && this.messages[this.messages.length - 1].role === 'user') {
         this.messages.pop();
       }
       Logger.error(`[会话 ${this.key}] 处理失败: ${err.message}`);
-      return ERROR_MESSAGE;
+      return { text: ERROR_MESSAGE, visibleToUser: true };
     } finally {
       this.busy = false;
     }
@@ -432,6 +462,9 @@ ${conversationText}
 
   /** 从 DB 恢复消息（进程重启后调用） */
   restoreFromStore(): boolean {
+    if (getContextLabFlags().disableSessionRestore) {
+      return false;
+    }
     const store = SessionStore.getInstance();
     if (!store.hasActiveSession(this.key)) return false;
     const msgs = store.loadMessages(this.key);
@@ -535,8 +568,33 @@ ${conversationText}
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)) return false;
+      if (msg.content.startsWith(TRANSIENT_SOFT_CHECK_PREFIX)) return false;
       return true;
     });
+  }
+
+  private buildLabPreDisabledTools(allowedTools: string[], blockedTools: string[]): string[] {
+    if (!allowedTools.length && !blockedTools.length) {
+      return [];
+    }
+
+    const allToolNames = this.services.toolManager.getToolDefinitions().map(tool => tool.name);
+    const disabled = new Set<string>();
+
+    if (allowedTools.length > 0) {
+      const allowed = new Set(allowedTools);
+      for (const toolName of allToolNames) {
+        if (!allowed.has(toolName)) {
+          disabled.add(toolName);
+        }
+      }
+    }
+
+    for (const toolName of blockedTools) {
+      disabled.add(toolName);
+    }
+
+    return Array.from(disabled);
   }
 
   /** /skills 命令 */
@@ -581,7 +639,7 @@ ${conversationText}
     // 如果有参数，自动作为用户消息发送给 AI
     if (args.length > 0) {
       const reply = await this.handleMessage(args.join(' '), callbacks);
-      return { handled: true, reply };
+      return { handled: true, reply: reply.text };
     }
 
     return { handled: true, reply: `已激活 skill: ${skill.metadata.name}` };

@@ -5,6 +5,7 @@ import { AIProvider, StreamCallbacks } from '../providers/provider';
 import { AnthropicProvider } from '../providers/anthropic-provider';
 import { OpenAIProvider } from '../providers/openai-provider';
 import { Logger } from './logger';
+import { describeContextLabFlags, getContextLabFlags } from './context-lab';
 
 /**
  * AI 服务 - 统一的 AI 调用入口
@@ -65,6 +66,11 @@ export class AIService {
    */
   private buildProviderChain(): ProviderEndpoint[] {
     const chain: ProviderEndpoint[] = [];
+    const flags = getContextLabFlags();
+    const activeLabFlags = describeContextLabFlags(flags);
+    if (activeLabFlags.length > 0) {
+      Logger.info(`[ContextLab] 已启用: ${activeLabFlags.join(', ')}`);
+    }
 
     const primaryConfig = this.withResolvedProvider(this.config);
     chain.push({
@@ -72,6 +78,11 @@ export class AIService {
       config: primaryConfig,
       provider: this.createProvider(primaryConfig),
     });
+
+    if (flags.openAiOnly) {
+      Logger.info('[ContextLab] OpenAI-only 模式已启用：跳过所有 backup provider');
+      return chain;
+    }
 
     for (const backup of this.loadBackupConfigsFromEnv()) {
       chain.push({

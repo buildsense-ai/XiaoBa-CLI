@@ -372,9 +372,9 @@ export class FeishuBot {
     });
 
     try {
-      const reply = await session.handleMessage(userText, { channel });
-      if (reply === BUSY_MESSAGE || reply === ERROR_MESSAGE) {
-        await this.sender.reply(msg.chatId, reply);
+      const result = await session.handleMessage(userText, { channel });
+      if (result.text === BUSY_MESSAGE || result.text === ERROR_MESSAGE) {
+        await this.sender.reply(msg.chatId, result.text);
       }
     } finally {
       this.clearPendingAnswerBySession(key);
@@ -416,13 +416,13 @@ export class FeishuBot {
       });
 
       try {
-        const reply = await session.handleMessage(text, { channel });
-        if (reply === BUSY_MESSAGE) {
+        const result = await session.handleMessage(text, { channel });
+        if (result.text === BUSY_MESSAGE) {
           Logger.info(`[${sessionKey}] 主会话竞态忙碌，将重试`);
           continue;
         }
-        if (reply === ERROR_MESSAGE) {
-          await this.sender.reply(chatId, reply);
+        if (result.text === ERROR_MESSAGE) {
+          await this.sender.reply(chatId, result.text);
         }
         await this.drainMessageQueue(sessionKey);
         return;
@@ -458,9 +458,9 @@ export class FeishuBot {
     });
 
     try {
-      const reply = await session.handleMessage(mergedText, { channel });
-      if (reply === ERROR_MESSAGE) {
-        await this.sender.reply(last.chatId, reply);
+      const result = await session.handleMessage(mergedText, { channel });
+      if (result.text === ERROR_MESSAGE) {
+        await this.sender.reply(last.chatId, result.text);
       }
     } finally {
       this.clearPendingAnswerBySession(sessionKey);

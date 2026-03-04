@@ -12,6 +12,7 @@ import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { isToolAllowed } from '../utils/safety';
+import { getContextLabFlags } from '../utils/context-lab';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -179,6 +180,18 @@ export class SubAgentSession {
     const preDisabledTools = toolManager.getToolDefinitions()
       .map(t => t.name)
       .filter(name => !isToolAllowed(name).allowed);
+    const labFlags = getContextLabFlags();
+    const labAllowed = new Set(labFlags.allowedTools);
+
+    if (labAllowed.size > 0) {
+      for (const toolName of toolManager.getToolDefinitions().map(t => t.name)) {
+        if (!labAllowed.has(toolName)) {
+          preDisabledTools.push(toolName);
+        }
+      }
+    }
+
+    preDisabledTools.push(...labFlags.blockedTools);
 
     // 子智能体不允许再派遣子智能体（防止无限递归）
     const subagentTools = ['spawn_subagent', 'check_subagent', 'stop_subagent', 'resume_subagent'];
@@ -189,9 +202,9 @@ export class SubAgentSession {
       maxTurns: skill.metadata.maxTurns ?? 100,
       initialSkillName: this.skillName,
       initialSkillToolPolicy: skill.metadata.toolPolicy,
-      enableCompression: true,
+      enableCompression: !labFlags.disableCompression,
       shouldContinue: () => !this.stopped,
-      preDisabledTools,
+      preDisabledTools: Array.from(new Set(preDisabledTools)),
       toolExecutionContext: {
         sessionId: `subagent:${this.id}`,
         surface: 'agent',

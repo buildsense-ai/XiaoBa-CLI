@@ -10,6 +10,7 @@ import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { ChannelCallbacks } from '../types/tool';
 import { randomUUID } from 'crypto';
+import { getContextLabFlags } from '../utils/context-lab';
 
 interface PendingAttachment {
   fileName: string;
@@ -37,8 +38,7 @@ const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 
 /**
  * CatsCompanyBot 主类
- * 初始化官方 SDK，注册事件，编排消息处理流程
- * 连接、握手、重连与连接层错误处理都归 SDK 负责，runtime 不在这里兜底。
+ * 初始化 SDK，注册事件，编排消息处理流程
  * 结构与 FeishuBot 对齐
  */
 export class CatsCompanyBot {
@@ -104,8 +104,9 @@ export class CatsCompanyBot {
     }
 
     // 注册事件
-    this.bot.on('ready', (uid) => {
-      const botName = (this.bot as { name?: string }).name || '(未设置)';
+    this.bot.on('ready', (uid, name) => {
+      const botName = (name || (this.bot as { name?: string }).name || '').trim() || '(未设置)';
+      process.env.CURRENT_AGENT_DISPLAY_NAME = botName;
       Logger.success(`CatsCompany 机器人已连接，uid=${uid}, name=${botName}`);
     });
 
@@ -265,13 +266,13 @@ export class CatsCompanyBot {
     this.sender.sendTyping(msg.topic);
 
     try {
-      const reply = await session.handleMessage(userText, { channel });
-      if (reply === BUSY_MESSAGE || reply.startsWith('处理消息时出错:')) {
-        await this.sender.reply(msg.topic, reply);
-      } else if (!channel.hasOutbound && reply && reply !== '[无回复]') {
+      const result = await session.handleMessage(userText, { channel });
+      if (result.text === BUSY_MESSAGE || result.text.startsWith('处理消息时出错:')) {
+        await this.sender.reply(msg.topic, result.text);
+      } else if (!getContextLabFlags().disableReplyFallback && !channel.hasOutbound && result.visibleToUser && result.text && result.text !== '[无回复]') {
         // 兜底：AI 整轮对话都没有主动发过消息，把最终文本发出去
         Logger.warning(`[${key}] AI未调用reply，兜底发送回复`);
-        await this.sender.reply(msg.topic, reply);
+        await this.sender.reply(msg.topic, result.text);
       }
     } finally {
       this.clearPendingAnswerBySession(key);
@@ -351,16 +352,16 @@ export class CatsCompanyBot {
       });
 
       try {
-        const reply = await session.handleMessage(text, { channel });
-        if (reply === BUSY_MESSAGE) {
+        const result = await session.handleMessage(text, { channel });
+        if (result.text === BUSY_MESSAGE) {
           Logger.info(`[${sessionKey}] 主会话竞态忙碌，将重试`);
           continue;
         }
-        if (reply.startsWith('处理消息时出错:')) {
-          await this.sender.reply(topic, reply);
-        } else if (!channel.hasOutbound && reply && reply !== '[无回复]') {
+        if (result.text.startsWith('处理消息时出错:')) {
+          await this.sender.reply(topic, result.text);
+        } else if (!getContextLabFlags().disableReplyFallback && !channel.hasOutbound && result.visibleToUser && result.text && result.text !== '[无回复]') {
           Logger.warning(`[${sessionKey}] 子智能体反馈: AI未调用reply，兜底发送回复`);
-          await this.sender.reply(topic, reply);
+          await this.sender.reply(topic, result.text);
         }
         await this.drainMessageQueue(sessionKey);
         return;
@@ -396,12 +397,12 @@ export class CatsCompanyBot {
     });
 
     try {
-      const reply = await session.handleMessage(mergedText, { channel });
-      if (reply.startsWith('处理消息时出错:')) {
-        await this.sender.reply(last.topic, reply);
-      } else if (!channel.hasOutbound && reply && reply !== '[无回复]') {
+      const result = await session.handleMessage(mergedText, { channel });
+      if (result.text.startsWith('处理消息时出错:')) {
+        await this.sender.reply(last.topic, result.text);
+      } else if (!getContextLabFlags().disableReplyFallback && !channel.hasOutbound && result.visibleToUser && result.text && result.text !== '[无回复]') {
         Logger.warning(`[${sessionKey}] 队列消息: AI未调用reply，兜底发送回复`);
-        await this.sender.reply(last.topic, reply);
+        await this.sender.reply(last.topic, result.text);
       }
     } finally {
       this.clearPendingAnswerBySession(sessionKey);
