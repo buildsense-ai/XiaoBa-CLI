@@ -328,13 +328,30 @@ export class AgentSession {
         );
       }
 
-      // 持久化本轮所有消息（用户 + assistant/tool）
+      // 持久化本轮用户可见的消息（user + assistant最终回复，不含工具调用细节）
+      // 完整的工具调用链路已存入log文件，可通过 recall_log 工具查询
       if (this.isChatSession()) {
-        const newMsgs = [{ role: 'user' as const, content: text }, ...result.newMessages.filter(m => m.role !== 'system' && !(m as any).__injected)];
-        if (newMsgs.length > 0) {
-          SessionStore.getInstance().appendMessages(this.key, newMsgs);
+        const visibleMsgs = [
+          { role: 'user' as const, content: text },
+          ...result.newMessages.filter(m =>
+            m.role === 'assistant' &&
+            m.content &&
+            !m.tool_calls
+          )
+        ];
+        if (visibleMsgs.length > 0) {
+          SessionStore.getInstance().appendMessages(this.key, visibleMsgs);
         }
       }
+
+      // 清理内存中的工具调用细节，只保留用户可见的消息
+      // 这样下一轮对话看到的历史与聊天窗口一致（message-based bot设计）
+      this.messages = this.messages.filter(m =>
+        m.role === 'system' ||
+        m.role === 'user' ||
+        (m.role === 'assistant' && m.content && !m.tool_calls)
+      );
+
 
       return {
         text: result.finalResponseVisible ? (result.response || '[无回复]') : '',
