@@ -625,7 +625,7 @@ export class ConversationRunner {
       }
       return {
         role: 'assistant',
-        content: `[已发送信息] ${text}`,
+        content: text,
       };
     }
 
