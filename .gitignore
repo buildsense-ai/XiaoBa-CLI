@@ -154,6 +154,8 @@ vendor/
 # ------------------------------
 .pr*
 tierlist*.json
+tierlist*.png
+temp_*.py
 
 # ------------------------------
 # Logs
