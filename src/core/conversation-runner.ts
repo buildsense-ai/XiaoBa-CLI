@@ -135,7 +135,15 @@ export class ConversationRunner {
     this.enableCompression = options?.enableCompression ?? true;
     this.toolExecutionContext = options?.toolExecutionContext;
     this.activeSkillName = options?.initialSkillName;
-    this.activeSkillToolPolicy = options?.initialSkillToolPolicy;
+
+    // 设置默认工具策略：只允许 10 个基础 tool，其他工具通过 skill 访问
+    this.activeSkillToolPolicy = options?.initialSkillToolPolicy ?? {
+      allowedTools: [
+        'read', 'write', 'edit', 'glob', 'grep', 'bash',
+        'reply', 'send_file', 'pause_turn', 'skill'
+      ]
+    };
+
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.compressor = new ContextCompressor(this.aiService, {
       maxContextTokens: options?.maxContextTokens,
@@ -325,7 +333,7 @@ export class ConversationRunner {
         const activation = this.tryParseSkillActivation(toolCall, result.content);
         if (activation) {
           this.activeSkillName = activation.skillName;
-          this.activeSkillToolPolicy = activation.toolPolicy;
+          this.activeSkillToolPolicy = this.mergeAdditionalTools(activation.toolPolicy, activation.additionalTools);
 
           if (activation.maxTurns && activation.maxTurns > 0) {
             this.maxTurns = Math.max(this.maxTurns, turns + activation.maxTurns);
@@ -679,6 +687,30 @@ export class ConversationRunner {
     }
 
     return allTools;
+  }
+
+  private mergeAdditionalTools(policy?: SkillToolPolicy, additionalTools?: string[]): SkillToolPolicy | undefined {
+    if (!additionalTools || additionalTools.length === 0) {
+      return policy;
+    }
+
+    const normalized = additionalTools.map(t => normalizeToolName(t.trim())).filter(Boolean);
+    if (normalized.length === 0) {
+      return policy;
+    }
+
+    if (!policy) {
+      return { allowedTools: normalized };
+    }
+
+    const merged: SkillToolPolicy = { ...policy };
+    if (merged.allowedTools) {
+      merged.allowedTools = [...new Set([...merged.allowedTools, ...normalized])];
+    } else {
+      merged.allowedTools = normalized;
+    }
+
+    return merged;
   }
 
   private async requestModelResponse(

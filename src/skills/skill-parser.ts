@@ -45,6 +45,7 @@ export class SkillParser {
     }
 
     const toolPolicy = this.parseToolPolicy(data);
+    const additionalTools = this.parseAdditionalTools(data);
 
     const metadata: SkillMetadata = {
       name: data.name,
@@ -54,6 +55,7 @@ export class SkillParser {
       autoInvocable: data.autoInvocable !== false && data.invocable !== 'user',
       maxTurns: data['max-turns'] ? Number(data['max-turns']) : undefined,
       ...(toolPolicy ? { toolPolicy } : {}),
+      ...(additionalTools.length > 0 ? { additionalTools } : {}),
     };
 
     if (!this.validate(metadata)) {
@@ -76,6 +78,7 @@ export class SkillParser {
     }
 
     const toolPolicy = this.parseToolPolicy(data);
+    const additionalTools = this.parseAdditionalTools(data);
 
     const metadata: SkillMetadata = {
       name: data.name,
@@ -85,6 +88,7 @@ export class SkillParser {
       autoInvocable: data['auto-invocable'] !== false,
       maxTurns: data['max-turns'] ? Number(data['max-turns']) : undefined,
       ...(toolPolicy ? { toolPolicy } : {}),
+      ...(additionalTools.length > 0 ? { additionalTools } : {}),
     };
 
     if (!this.validate(metadata)) {
@@ -134,5 +138,16 @@ export class SkillParser {
       policy.disallowedTools = disallowedTools;
     }
     return policy;
+  }
+
+  /**
+   * 解析额外工具列表，兼容 kebab-case/camelCase
+   */
+  private static parseAdditionalTools(data: any): string[] {
+    const raw = data['additional-tools'] ?? data.additionalTools;
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return raw.map((item: any) => String(item).trim()).filter(Boolean);
   }
 }

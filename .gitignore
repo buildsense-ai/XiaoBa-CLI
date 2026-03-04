@@ -129,11 +129,12 @@ prompts/system-prompt-*.md
 xiaoba.png
 
 # ------------------------------
-# Skills (only keep agent-browser)
+# Skills (only keep agent-browser and _tool-skills)
 # ------------------------------
 skills/*
 !skills/README.md
 !skills/agent-browser/
+!skills/_tool-skills/
 
 # ------------------------------
 # Global tools (only keep analyze_image_tool)

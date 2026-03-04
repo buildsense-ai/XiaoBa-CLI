@@ -21,6 +21,7 @@ export interface SkillMetadata {
   autoInvocable?: boolean;         // 是否允许自动调用（默认 true）
   maxTurns?: number;               // 最大工具调用轮次（覆盖默认值）
   toolPolicy?: SkillToolPolicy;    // 工具策略（可选）
+  additionalTools?: string[];      // 需要额外加载的工具列表
 }
 
 /**
@@ -60,4 +61,5 @@ export interface SkillActivationSignal {
   prompt: string;
   maxTurns?: number;
   toolPolicy?: SkillToolPolicy;
+  additionalTools?: string[];
 }

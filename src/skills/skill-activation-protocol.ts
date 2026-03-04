@@ -29,6 +29,10 @@ export function buildSkillActivationSignal(
     signal.toolPolicy = normalizedPolicy;
   }
 
+  if (Array.isArray(skill.metadata.additionalTools) && skill.metadata.additionalTools.length > 0) {
+    signal.additionalTools = skill.metadata.additionalTools;
+  }
+
   return signal;
 }
 
@@ -61,6 +65,10 @@ export function parseSkillActivationSignal(content: string): SkillActivationSign
     const normalizedPolicy = normalizeSkillToolPolicy(parsed.toolPolicy);
     if (normalizedPolicy) {
       signal.toolPolicy = normalizedPolicy;
+    }
+
+    if (Array.isArray(parsed.additionalTools) && parsed.additionalTools.length > 0) {
+      signal.additionalTools = parsed.additionalTools.map((t: any) => String(t).trim()).filter(Boolean);
     }
 
     return signal;
