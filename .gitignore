@@ -137,12 +137,6 @@ skills/*
 !skills/_tool-skills/
 
 # ------------------------------
-# Global tools (only keep analyze_image_tool)
-# ------------------------------
-tools/global/*
-!tools/global/analyze_image_tool.py
-
-# ------------------------------
 # Secrets / local config
 # ------------------------------
 .env

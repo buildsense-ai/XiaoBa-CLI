@@ -9,10 +9,13 @@ import os
 import re
 import sys
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
 
+# 添加 tools 目录到 Python 路径
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / 'tools'))
 from base_tool import BaseTool
 
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504, 529}
