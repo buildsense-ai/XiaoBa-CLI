@@ -37,6 +37,7 @@ connects to your IM platforms, and bends to your will.
 
 ```bash
 git clone https://github.com/buildsense-ai/XiaoBa-CLI.git && cd XiaoBa-CLI
+git submodule update --init --recursive
 npm install
 cp .env.example .env   # 填入你的 API Key
 npm run build && npm link
@@ -104,7 +105,7 @@ Web 搜索 · Python 扩展 · 子 Agent 管理<br/>
 一行命令接入 IM 平台，变身团队 AI 助手：
 
 - **飞书 (Lark)** — WebSocket 长连接，群聊 @、文件收发、图片识别
-- **CatsCompany** — 自定义 IM 接入
+- **CatsCompany** — 基于 CatsCompany 官方 SDK 的自定义 IM 接入
 
 </td>
 </tr>
