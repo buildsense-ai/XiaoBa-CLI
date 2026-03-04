@@ -107,14 +107,14 @@ async function sendSingleMessage(
   const spinner = ora(styles.text('思考中...')).start();
 
   const { callbacks, didStream } = createStreamingCallbacks(spinner);
-  const reply = await session.handleMessage(message, callbacks);
+  const result = await session.handleMessage(message, callbacks);
 
   spinner.stop();
   if (didStream()) {
     process.stdout.write('\n\n');
   } else {
     // 没有流式输出（如错误信息），直接打印返回值
-    console.log('\n' + reply + '\n');
+    console.log('\n' + result.text + '\n');
   }
 }
 
@@ -240,13 +240,13 @@ async function interactiveChat(session: AgentSession): Promise<void> {
     const spinner = ora({ text: styles.text('思考中...'), color: 'yellow' }).start();
     const { callbacks, didStream } = createStreamingCallbacks(spinner);
 
-    const reply = await session.handleMessage(message, callbacks);
+    const result = await session.handleMessage(message, callbacks);
 
     spinner.stop();
     if (didStream()) {
       process.stdout.write('\n\n');
     } else {
-      console.log('\n' + reply + '\n');
+      console.log('\n' + result.text + '\n');
     }
 
     rl.prompt();
@@ -268,4 +268,3 @@ async function interactiveChat(session: AgentSession): Promise<void> {
   // 显示第一个提示符
   rl.prompt();
 }
-
