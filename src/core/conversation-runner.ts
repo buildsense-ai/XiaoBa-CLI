@@ -577,9 +577,9 @@ export class ConversationRunner {
       TRANSIENT_SOFT_CHECK_PREFIX,
       `当前用户 query 是：${latestUserQuery || '(空)'}`,
       '本轮你还没有发送任何用户可见消息。',
-      '如果需要回复用户，请使用消息工具发送。',
-      '如果本轮可以结束且不需要发送消息，可以调用 pause_turn。',
-      '否则你也可以继续本轮推理。',
+      '注意：你输出的文本用户看不到，必须使用 reply 工具发送消息。',
+      '如果用户的问题需要回复，请立即调用 reply 工具。',
+      '只有在用户的问题确实不需要回复时，才可以调用 pause_turn。',
     ];
     return {
       role: 'system',

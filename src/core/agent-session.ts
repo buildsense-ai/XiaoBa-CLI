@@ -328,28 +328,58 @@ export class AgentSession {
         );
       }
 
-      // 持久化本轮用户可见的消息（user + assistant最终回复，不含工具调用细节）
+      // 持久化本轮用户可见的消息（user + reply/send_file工具调用）
       // 完整的工具调用链路已存入log文件，可通过 recall_log 工具查询
       if (this.isChatSession()) {
+        // 收集 reply 和 send_file 的 tool_call_id
+        const outboundToolCallIds = new Set<string>();
+        result.newMessages.forEach(m => {
+          if (m.role === 'assistant' && m.tool_calls) {
+            m.tool_calls.forEach(tc => {
+              if (tc.function.name === 'reply' || tc.function.name === 'send_file') {
+                outboundToolCallIds.add(tc.id);
+              }
+            });
+          }
+        });
+
         const visibleMsgs = [
           { role: 'user' as const, content: text },
-          ...result.newMessages.filter(m =>
-            m.role === 'assistant' &&
-            m.content &&
-            !m.tool_calls
-          )
+          ...result.newMessages.filter(m => {
+            // 保留 reply 和 send_file 的 tool_use
+            if (m.role === 'assistant' && m.tool_calls) {
+              return m.tool_calls.some(tc => outboundToolCallIds.has(tc.id));
+            }
+            // 保留对应的 tool_result
+            if (m.role === 'tool' && m.tool_call_id) {
+              return outboundToolCallIds.has(m.tool_call_id);
+            }
+            return false;
+          })
         ];
         if (visibleMsgs.length > 0) {
           SessionStore.getInstance().appendMessages(this.key, visibleMsgs);
         }
       }
 
-      // 清理内存中的工具调用细节，只保留用户可见的消息
-      // 这样下一轮对话看到的历史与聊天窗口一致（message-based bot设计）
+      // 清理内存中的工具调用细节，保留 reply 和 send_file 的工具调用
+      // 这样AI知道必须通过工具发送消息，不会被误导直接输出文本
+      const outboundToolCallIds = new Set<string>();
+      this.messages.forEach(m => {
+        if (m.role === 'assistant' && m.tool_calls) {
+          m.tool_calls.forEach(tc => {
+            if (tc.function.name === 'reply' || tc.function.name === 'send_file') {
+              outboundToolCallIds.add(tc.id);
+            }
+          });
+        }
+      });
+
       this.messages = this.messages.filter(m =>
         m.role === 'system' ||
         m.role === 'user' ||
-        (m.role === 'assistant' && m.content && !m.tool_calls)
+        (m.role === 'assistant' && m.tool_calls && m.tool_calls.some(tc => outboundToolCallIds.has(tc.id))) ||
+        (m.role === 'tool' && m.tool_call_id && outboundToolCallIds.has(m.tool_call_id))
       );
 
       // 清除 skill 激活状态（turn-scoped，避免状态泄漏到下一轮）
