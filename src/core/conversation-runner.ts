@@ -244,8 +244,13 @@ export class ConversationRunner {
           };
         }
 
+        // 过滤AI回复中的系统标记前缀
+        let cleanedResponse = response.content || '';
+        cleanedResponse = cleanedResponse.replace(/^\[已发送信息\]\s*/, '');
+        cleanedResponse = cleanedResponse.replace(/^\[已发送文件\]\s*/, '');
+
         return {
-          response: response.content || '',
+          response: cleanedResponse,
           finalResponseVisible: true,
           messages: durableMessages,
           newMessages,
