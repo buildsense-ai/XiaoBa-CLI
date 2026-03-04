@@ -37,6 +37,7 @@ connects to your IM platforms, and bends to your will.
 
 ```bash
 git clone https://github.com/buildsense-ai/XiaoBa-CLI.git && cd XiaoBa-CLI
+git submodule update --init --recursive
 npm install
 cp .env.example .env   # 填入你的 API Key
 npm run build && npm link
