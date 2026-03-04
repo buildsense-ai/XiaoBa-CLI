@@ -119,7 +119,7 @@ export class AgentSession {
     } else if (this.isCatsCompanySession()) {
       this.messages.push({
         role: 'system',
-        content: '[surface:catscompany]\n当前是 Cats Company 聊天会话。\n用户只能看到你通过消息工具发送的内容。\n你的普通文本输出用户看不到。\n如果这一轮不需要发送任何用户可见内容，可以调用 pause_turn 结束。',
+        content: '[surface:catscompany]\n当前是 Cats Company 聊天会话。\n用户只能看到你通过 reply 或 send_file 发送的内容。\n你的普通 assistant 文本不会自动发送给用户。\n如果你希望用户看到文本回复，必须调用 reply。\n如果你希望用户看到文件，必须调用 send_file。',
       });
     }
 
@@ -352,6 +352,18 @@ export class AgentSession {
         (m.role === 'assistant' && m.content && !m.tool_calls)
       );
 
+      // 清除 skill 激活状态（turn-scoped，避免状态泄漏到下一轮）
+      this.activeSkillName = undefined;
+      this.activeSkillToolPolicy = undefined;
+      this.activeSkillMaxTurns = undefined;
+
+      // 移除 skill 系统消息（下一轮需要时会重新注入）
+      this.messages = this.messages.filter(m => {
+        if (m.role === 'system' && typeof m.content === 'string') {
+          return !m.content.match(/^\[skill:[^\]]+\]/);
+        }
+        return true;
+      });
 
       return {
         text: result.finalResponseVisible ? (result.response || '[无回复]') : '',
