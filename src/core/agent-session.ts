@@ -106,10 +106,6 @@ export class AgentSession {
     if (systemPrompt.trim()) {
       this.messages.push({ role: 'system', content: systemPrompt });
     }
-    const identityPrompt = PromptManager.buildRuntimeIdentityPrompt();
-    if (identityPrompt.trim()) {
-      this.messages.push({ role: 'system', content: identityPrompt });
-    }
     if (this.isFeishuSession()) {
       const isGroup = this.key.startsWith('group:');
       const chatType = isGroup ? '群聊' : '私聊';
