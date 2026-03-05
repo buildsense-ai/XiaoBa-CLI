@@ -19,6 +19,7 @@ import { Metrics } from '../utils/metrics';
 const TRANSIENT_SUBAGENT_STATUS_PREFIX = '[transient_subagent_status]';
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 const TRANSIENT_SOFT_CHECK_PREFIX = '[transient_soft_check]';
+const TRANSIENT_SKILLS_LIST_PREFIX = '[transient_skills_list]';
 export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
 export const ERROR_MESSAGE = '不好意思，刚才处理出了点问题，你再试一次？';
 
@@ -112,14 +113,32 @@ export class AgentSession {
     if (this.isFeishuSession()) {
       const isGroup = this.key.startsWith('group:');
       const chatType = isGroup ? '群聊' : '私聊';
+      const messageMode = (process.env.GAUZ_MESSAGE_MODE || 'ultra').toLowerCase();
+
+      let modeInstruction = '';
+      if (messageMode === 'ultra') {
+        modeInstruction = '用户只能看到你通过消息工具发送的内容。\n你的普通文本输出用户看不到。\n如果这一轮不需要发送任何用户可见内容，可以调用 pause_turn 结束。';
+      } else {
+        modeInstruction = '你的文本回复会自动发送给用户。\n如果需要发送文件，使用 send_file 工具。';
+      }
+
       this.messages.push({
         role: 'system',
-        content: `[surface:feishu:${isGroup ? 'group' : 'private'}]\n当前是飞书${chatType}会话。\n用户只能看到你通过消息工具发送的内容。\n你的普通文本输出用户看不到。\n如果这一轮不需要发送任何用户可见内容，可以调用 pause_turn 结束。`,
+        content: `[surface:feishu:${isGroup ? 'group' : 'private'}]\n当前是飞书${chatType}会话。\n${modeInstruction}`,
       });
     } else if (this.isCatsCompanySession()) {
+      const messageMode = (process.env.GAUZ_MESSAGE_MODE || 'ultra').toLowerCase();
+
+      let modeInstruction = '';
+      if (messageMode === 'ultra') {
+        modeInstruction = '用户只能看到你通过 reply 或 send_file 发送的内容。\n你的普通 assistant 文本不会自动发送给用户。\n如果你希望用户看到文本回复，必须调用 reply。\n如果你希望用户看到文件，必须调用 send_file。';
+      } else {
+        modeInstruction = '你的文本回复会自动发送给用户。\n如果需要发送文件，使用 send_file 工具。';
+      }
+
       this.messages.push({
         role: 'system',
-        content: '[surface:catscompany]\n当前是 Cats Company 聊天会话。\n用户只能看到你通过 reply 或 send_file 发送的内容。\n你的普通 assistant 文本不会自动发送给用户。\n如果你希望用户看到文本回复，必须调用 reply。\n如果你希望用户看到文件，必须调用 send_file。',
+        content: `[surface:catscompany]\n当前是 Cats Company 聊天会话。\n${modeInstruction}`,
       });
     }
 
@@ -252,6 +271,35 @@ export class AgentSession {
         // 插入到最后一条用户消息之前
         const lastUserIdx = contextMessages.length - 1;
         contextMessages.splice(lastUserIdx, 0, subagentStatusMsg);
+      }
+
+      // 动态注入当前可用 skills 列表（临时上下文，不持久化）
+      // 检测是否需要重新加载 skills（仅在上一轮有 skill 创建时）
+      const needReloadSkills = this.messages.slice(-10).some(msg => {
+        if (msg.role === 'tool' && typeof msg.content === 'string') {
+          try {
+            const parsed = JSON.parse(msg.content);
+            return parsed.__reload_skills__ === true;
+          } catch {
+            return false;
+          }
+        }
+        return false;
+      });
+
+      if (needReloadSkills) {
+        await this.services.skillManager.loadSkills();
+      }
+
+      const skills = this.services.skillManager.getUserInvocableSkills();
+      if (skills.length > 0) {
+        const skillList = skills.map(s => `- ${s.metadata.name}: ${s.metadata.description}`).join('\n');
+        const skillsListMsg: Message = {
+          role: 'system',
+          content: `${TRANSIENT_SKILLS_LIST_PREFIX}\n你可以使用以下skills（通过skill工具调用）：\n\n${skillList}`,
+        };
+        const lastUserIdx = contextMessages.length - 1;
+        contextMessages.splice(lastUserIdx, 0, skillsListMsg);
       }
 
       // 运行对话循环（优先用显式设置的 maxTurns，否则从 messages 中检测已激活 skill）
@@ -690,6 +738,7 @@ ${conversationText}
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SOFT_CHECK_PREFIX)) return false;
+      if (msg.content.startsWith(TRANSIENT_SKILLS_LIST_PREFIX)) return false;
       return true;
     });
   }
