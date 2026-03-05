@@ -148,6 +148,7 @@ skills/*
 # Vendor / third-party
 # ------------------------------
 vendor/
+!vendor/cats-company/
 
 # ------------------------------
 # PR / temp files

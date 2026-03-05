@@ -1,0 +1,117 @@
+syntax = "proto3";
+
+package pbx;
+
+option go_package = "github.com/openchat/openchat/pbx";
+
+// Node is the gRPC service for bot communication.
+service Node {
+  // MessageLoop is a bidirectional stream for bot message exchange.
+  rpc MessageLoop(stream ClientMsg) returns (stream ServerMsg) {}
+}
+
+// ClientMsg is sent by the bot to the server.
+message ClientMsg {
+  oneof message {
+    ClientHi hi = 1;
+    ClientLogin login = 2;
+    ClientSub sub = 3;
+    ClientPub pub = 4;
+    ClientNote note = 5;
+    ClientFriend friend = 10;
+  }
+}
+
+// ServerMsg is sent by the server to the bot.
+message ServerMsg {
+  oneof message {
+    ServerCtrl ctrl = 1;
+    ServerData data = 2;
+    ServerPres pres = 3;
+    ServerMeta meta = 4;
+    ServerInfo info = 5;
+    ServerFriend friend = 10;
+  }
+}
+
+message ClientHi {
+  string id = 1;
+  string user_agent = 2;
+  string ver = 3;
+  string lang = 4;
+}
+
+message ClientLogin {
+  string id = 1;
+  string scheme = 2;
+  bytes secret = 3;
+}
+
+message ClientSub {
+  string id = 1;
+  string topic = 2;
+}
+
+message ClientPub {
+  string id = 1;
+  string topic = 2;
+  bytes content = 3;
+}
+
+message ClientNote {
+  string topic = 1;
+  string what = 2;
+  int32 seq_id = 3;
+}
+
+// ClientFriend is the friend protocol message from bot.
+message ClientFriend {
+  string id = 1;
+  string action = 2;
+  int64 user_id = 3;
+  string message = 4;
+}
+
+message ServerCtrl {
+  string id = 1;
+  string topic = 2;
+  int32 code = 3;
+  string text = 4;
+  bytes params = 5;
+}
+
+message ServerData {
+  string topic = 1;
+  string from = 2;
+  int32 seq_id = 3;
+  bytes content = 4;
+  int64 timestamp = 5;
+}
+
+message ServerPres {
+  string topic = 1;
+  string what = 2;
+  string src = 3;
+}
+
+message ServerMeta {
+  string id = 1;
+  string topic = 2;
+  bytes desc = 3;
+  bytes sub = 4;
+}
+
+message ServerInfo {
+  string topic = 1;
+  string from = 2;
+  string what = 3;
+  int32 seq_id = 4;
+}
+
+// ServerFriend notifies the bot about friend events.
+message ServerFriend {
+  string action = 1;
+  int64 from_user_id = 2;
+  int64 to_user_id = 3;
+  string message = 4;
+}

@@ -1,0 +1,16 @@
+FROM golang:1.21-alpine AS builder
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
+WORKDIR /app
+COPY go.mod ./
+RUN go mod download || true
+COPY . .
+RUN go mod tidy && CGO_ENABLED=0 go build -o openchat-server ./server/cmd/
+
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
+COPY --from=builder /app/openchat-server .
+COPY --from=builder /app/server/tinode.conf .
+EXPOSE 6061 6062
+CMD ["./openchat-server", "tinode.conf"]

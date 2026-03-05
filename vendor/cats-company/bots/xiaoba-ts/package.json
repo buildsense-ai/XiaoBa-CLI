@@ -1,0 +1,16 @@
+{
+  "name": "xiaoba-ts",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@catscompany/bot-sdk": "file:../../bot-sdk/typescript"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.0"
+  }
+}
