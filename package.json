@@ -48,7 +48,7 @@
     "turndown": "^7.2.2"
   },
   "optionalDependencies": {
-    "@catscompany/bot-sdk": "file:./vendor/cats-company/bot-sdk/typescript"
+    "@catscompany/bot-sdk": "github:buildsense-ai/cats-company#main:bot-sdk/typescript"
   },
   "devDependencies": {
     "@types/deasync": "^0.1.5",
