@@ -231,14 +231,18 @@ export class ConversationRunner {
           finalText = finalText.replace(/^\[已发送信息\]\s*/, '');
           finalText = finalText.replace(/^\[已发送文件\]\s*/, '');
 
-          if (!hasDeliveredMessageOutThisRun && finalText && !softCheckedNoMessageOut) {
-            workingMessages.push({ role: 'assistant', content: finalText });
-            nextTurnTransientHints = [this.buildNoMessageOutSoftCheckHint(latestUserQuery)];
-            softCheckedNoMessageOut = true;
-            Logger.warning(`[Turn ${turns}] 本轮尚未产生用户可见消息，注入一次 soft check 后继续`);
-            continue;
+          // 双通道设计：文本输出直接发送给用户，同时保留 reply 工具
+          if (finalText) {
+            return {
+              response: finalText,
+              finalResponseVisible: true,
+              messages: durableMessages,
+              newMessages,
+              workingMessages,
+            };
           }
 
+          // 如果没有文本输出且没有调用消息工具，返回空响应
           return {
             response: '',
             finalResponseVisible: false,
