@@ -1,0 +1,28 @@
+FROM node:18-alpine AS builder
+WORKDIR /app
+
+# Copy SDK and bot source
+COPY bot-sdk/typescript/ bot-sdk/typescript/
+COPY bots/xiaoba-ts/ bots/xiaoba-ts/
+
+# Build SDK first
+WORKDIR /app/bot-sdk/typescript
+RUN npm install && npm run build
+
+# Build bot
+WORKDIR /app/bots/xiaoba-ts
+RUN npm install && npm run build
+
+# --- Runtime stage ---
+FROM node:18-alpine
+WORKDIR /app
+
+COPY --from=builder /app/bot-sdk/typescript/dist/ bot-sdk/typescript/dist/
+COPY --from=builder /app/bot-sdk/typescript/package.json bot-sdk/typescript/package.json
+COPY --from=builder /app/bot-sdk/typescript/node_modules/ bot-sdk/typescript/node_modules/
+
+COPY --from=builder /app/bots/xiaoba-ts/dist/ dist/
+COPY --from=builder /app/bots/xiaoba-ts/package.json package.json
+COPY --from=builder /app/bots/xiaoba-ts/node_modules/ node_modules/
+
+CMD ["node", "dist/main.js"]

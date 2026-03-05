@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Build output
+webapp/build/
+*.exe
+openchat-server
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+ios/CatsCompany.xcodeproj/project.xcworkspace/xcuserdata/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+deploy/.env
+*.pem
+*.key
+
+# SSL certificates (keep README and script)
+deploy/nginx/ssl/privkey.pem
+deploy/nginx/ssl/fullchain.pem
+!deploy/nginx/ssl/README.md
+!deploy/nginx/ssl/generate-certs.sh
+
+# Data
+mysql_data/
+*.log
+
+# Local AI tooling
+.claude/
+CLAUDE.md
+packages/skills/scripts/__pycache__/

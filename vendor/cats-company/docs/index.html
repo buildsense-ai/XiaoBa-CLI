@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cats Company API 文档</title>
+<style>
+  :root { --bg: #0d1117; --fg: #c9d1d9; --border: #30363d; --accent: #58a6ff; --code-bg: #161b22; --table-border: #30363d; --heading: #f0f6fc; --blockquote: #8b949e; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: var(--bg); color: var(--fg); line-height: 1.7; padding: 0; }
+  .container { max-width: 900px; margin: 0 auto; padding: 40px 24px; }
+  h1 { color: var(--heading); font-size: 2em; margin: 0 0 8px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+  h2 { color: var(--heading); font-size: 1.5em; margin: 48px 0 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h3 { color: var(--heading); font-size: 1.25em; margin: 32px 0 12px; }
+  h4 { color: var(--accent); font-size: 1em; margin: 24px 0 8px; font-family: 'SF Mono', Monaco, monospace; }
+  p { margin: 8px 0; }
+  a { color: var(--accent); text-decoration: none; }
+  blockquote { border-left: 3px solid var(--accent); padding: 4px 16px; color: var(--blockquote); margin: 8px 0; }
+  code { background: var(--code-bg); padding: 2px 6px; border-radius: 4px; font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace; font-size: 0.9em; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-x: auto; margin: 12px 0; }
+  pre code { background: none; padding: 0; font-size: 0.85em; line-height: 1.5; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9em; }
+  th, td { border: 1px solid var(--table-border); padding: 8px 12px; text-align: left; }
+  th { background: var(--code-bg); color: var(--heading); font-weight: 600; }
+  td code { font-size: 0.85em; }
+  ul, ol { padding-left: 24px; margin: 8px 0; }
+  li { margin: 4px 0; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+  .nav { position: fixed; top: 0; left: 0; width: 260px; height: 100vh; background: var(--code-bg); border-right: 1px solid var(--border); overflow-y: auto; padding: 20px 16px; font-size: 0.85em; }
+  .nav a { display: block; padding: 4px 8px; color: var(--fg); border-radius: 4px; margin: 2px 0; }
+  .nav a:hover { background: var(--border); color: var(--accent); }
+  .nav .n1 { font-weight: 600; margin-top: 12px; color: var(--heading); }
+  .nav .n2 { padding-left: 16px; color: var(--blockquote); }
+  @media (min-width: 800px) { .container { margin-left: 280px; } }
+  @media (max-width: 799px) { .nav { display: none; } .container { margin: 0 auto; } }
+  .loading { text-align: center; padding: 80px 0; color: var(--blockquote); }
+</style>
+</head>
+<body>
+<nav class="nav">
+  <div style="font-weight:700;font-size:1.1em;color:var(--accent);margin-bottom:16px;">Cats Company API</div>
+  <a class="n1" href="#overview">概述</a>
+  <a class="n1" href="#auth">1. 认证</a>
+  <a class="n2" href="#auth-jwt">JWT</a>
+  <a class="n2" href="#auth-apikey">API Key</a>
+  <a class="n1" href="#rest">2. REST API</a>
+  <a class="n2" href="#health">健康检查</a>
+  <a class="n2" href="#auth-api">认证接口</a>
+  <a class="n2" href="#users">用户接口</a>
+  <a class="n2" href="#friends">好友接口</a>
+  <a class="n2" href="#messages">消息接口</a>
+  <a class="n2" href="#groups">群组接口</a>
+  <a class="n2" href="#upload">文件上传</a>
+  <a class="n2" href="#bot-mgmt">Bot 管理（用户）</a>
+  <a class="n2" href="#bot-admin">Bot 管理（管理员）</a>
+  <a class="n1" href="#ws">3. WebSocket 协议</a>
+  <a class="n2" href="#ws-connect">连接与握手</a>
+  <a class="n2" href="#ws-c2s">Client → Server</a>
+  <a class="n2" href="#ws-s2c">Server → Client</a>
+  <a class="n2" href="#ws-rich">富媒体格式</a>
+  <a class="n2" href="#ws-topic">Topic 规则</a>
+  <a class="n1" href="#sdk">4. Bot SDK</a>
+  <a class="n2" href="#sdk-methods">方法参考</a>
+  <a class="n2" href="#sdk-events">事件列表</a>
+  <a class="n2" href="#sdk-context">MessageContext</a>
+  <a class="n1" href="#integration">5. 第三方接入</a>
+  <a class="n1" href="#errors">6. 错误码</a>
+</nav>
+<div class="container" id="content">
+  <div class="loading">加载文档中...</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+fetch('API.md')
+  .then(r => r.text())
+  .then(md => {
+    document.getElementById('content').innerHTML = marked.parse(md);
+  })
+  .catch(() => {
+    document.getElementById('content').innerHTML = '<p style="color:#f85149;">无法加载 API.md，请确保文件在同一目录下。</p>';
+  });
+</script>
+</body>
+</html>
