@@ -34,26 +34,23 @@ export class PromptManager {
   }
 
   /**
-   * 构建基础 system prompt
+   * 构建完整 system prompt（包含运行时信息）
    */
   static async buildSystemPrompt(): Promise<string> {
-    return this.getBaseSystemPrompt().trim();
-  }
-
-  static buildRuntimeIdentityPrompt(): string {
+    const basePrompt = this.getBaseSystemPrompt().trim();
     const displayName = (
       process.env.CURRENT_AGENT_DISPLAY_NAME
       || process.env.BOT_BRIDGE_NAME
-      || '小八'
+      || ''
     ).trim();
     const today = new Date().toISOString().slice(0, 10);
 
-    return [
-      '[identity]',
-      `你当前在这个平台上的显示名字是：${displayName}`,
-      '对外自称时，以这个平台显示名字为准。',
+    const runtimeInfo = [
+      displayName ? `你在这个平台上的名字是：${displayName}` : '',
       `当前日期：${today}`,
-    ].join('\n');
+    ].filter(Boolean).join('\n');
+
+    return [basePrompt, runtimeInfo].filter(Boolean).join('\n\n');
   }
 
   /**
