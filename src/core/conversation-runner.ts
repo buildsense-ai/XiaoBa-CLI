@@ -33,7 +33,6 @@ const ANTHROPIC_PROMPT_BUDGET = 180000;
 const MIN_MESSAGE_BUDGET = 2000;
 const OVERFLOW_REDUCTION_RATIO = 0.6;
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
-const TRANSIENT_SOFT_CHECK_PREFIX = '[transient_soft_check]';
 
 /**
  * 对话运行回调
@@ -137,11 +136,14 @@ export class ConversationRunner {
     this.activeSkillName = options?.initialSkillName;
 
     // 设置默认工具策略：只允许 10 个基础 tool，其他工具通过 skill 访问
+    const messageMode = (process.env.GAUZ_MESSAGE_MODE || 'ultra').toLowerCase();
+    const baseTools = ['read', 'write', 'edit', 'glob', 'grep', 'bash', 'send_file', 'skill'];
+    const allowedTools = messageMode === 'ultra'
+      ? [...baseTools, 'reply', 'pause_turn']
+      : baseTools;
+
     this.activeSkillToolPolicy = options?.initialSkillToolPolicy ?? {
-      allowedTools: [
-        'read', 'write', 'edit', 'glob', 'grep', 'bash',
-        'reply', 'send_file', 'pause_turn', 'skill'
-      ]
+      allowedTools
     };
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
@@ -173,8 +175,6 @@ export class ConversationRunner {
     const newMessages: Message[] = [];
     let nextTurnTransientHints: Message[] = [];
     let hasDeliveredMessageOutThisRun = false;
-    let softCheckedNoMessageOut = false;
-    const latestUserQuery = this.extractLatestUserQuery(workingMessages);
     let turns = 0;
 
     while (turns++ < this.maxTurns) {
@@ -227,22 +227,23 @@ export class ConversationRunner {
         Logger.info(`[Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(response.content || '', 300)}`);
         if (this.isMessageSurface()) {
           let finalText = response.content || '';
-          // 过滤AI回复中的系统标记前缀
           finalText = finalText.replace(/^\[已发送信息\]\s*/, '');
           finalText = finalText.replace(/^\[已发送文件\]\s*/, '');
 
-          // 双通道设计：文本输出直接发送给用户，同时保留 reply 工具
-          if (finalText) {
-            return {
-              response: finalText,
-              finalResponseVisible: true,
-              messages: durableMessages,
-              newMessages,
-              workingMessages,
-            };
+          const messageMode = (process.env.GAUZ_MESSAGE_MODE || 'ultra').toLowerCase();
+
+          if (messageMode === 'basic' && finalText && this.toolExecutionContext?.channel) {
+            try {
+              await this.toolExecutionContext.channel.reply(
+                this.toolExecutionContext.channel.chatId,
+                finalText
+              );
+              Logger.info(`[Turn ${turns}] 基础模式：已直接发送回复`);
+            } catch (err: any) {
+              Logger.error(`[Turn ${turns}] 基础模式发送失败: ${err.message}`);
+            }
           }
 
-          // 如果没有文本输出且没有调用消息工具，返回空响应
           return {
             response: '',
             finalResponseVisible: false,
@@ -252,7 +253,6 @@ export class ConversationRunner {
           };
         }
 
-        // 过滤AI回复中的系统标记前缀
         let cleanedResponse = response.content || '';
         cleanedResponse = cleanedResponse.replace(/^\[已发送信息\]\s*/, '');
         cleanedResponse = cleanedResponse.replace(/^\[已发送文件\]\s*/, '');
@@ -316,14 +316,16 @@ export class ConversationRunner {
           && !result.errorCode
         ) {
           hasDeliveredMessageOutThisRun = true;
-          softCheckedNoMessageOut = false;
         }
 
         let toolContent = result.content;
         const isBlocked = result.errorCode === 'TOOL_NOT_ALLOWED_BY_SKILL_POLICY'
           || result.errorCode === 'TOOL_BLOCKED_BY_SKILL_POLICY'
           || result.errorCode === 'TOOL_NOT_REGISTERED';
-        const isFailed = toolContent.startsWith('Python 工具执行失败') || toolContent.startsWith('错误:');
+        const isFailed = result.ok === false
+          || (result.errorCode && !isBlocked)
+          || toolContent.startsWith('Python 工具执行失败')
+          || toolContent.startsWith('错误:');
 
         if (isBlocked) {
           this.disabledTools.add(toolName);
@@ -531,8 +533,7 @@ export class ConversationRunner {
       if (message.role !== 'system' || typeof message.content !== 'string') {
         return true;
       }
-      return !message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)
-        && !message.content.startsWith(TRANSIENT_SOFT_CHECK_PREFIX);
+      return !message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX);
     });
 
     const collapsed: Message[] = [];
@@ -564,31 +565,6 @@ export class ConversationRunner {
   private isMessageSurface(): boolean {
     const surface = this.toolExecutionContext?.surface;
     return surface === 'catscompany' || surface === 'feishu';
-  }
-
-  private extractLatestUserQuery(messages: Message[]): string {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i];
-      if (message.role === 'user' && message.content?.trim()) {
-        return message.content.trim();
-      }
-    }
-    return '';
-  }
-
-  private buildNoMessageOutSoftCheckHint(latestUserQuery: string): Message {
-    const lines = [
-      TRANSIENT_SOFT_CHECK_PREFIX,
-      `当前用户 query 是：${latestUserQuery || '(空)'}`,
-      '本轮你还没有发送任何用户可见消息。',
-      '注意：你输出的文本用户看不到，必须使用 reply 工具发送消息。',
-      '如果用户的问题需要回复，请立即调用 reply 工具。',
-      '只有在用户的问题确实不需要回复时，才可以调用 pause_turn。',
-    ];
-    return {
-      role: 'system',
-      content: lines.join('\n'),
-    };
   }
 
   private getToolTranscriptMode(

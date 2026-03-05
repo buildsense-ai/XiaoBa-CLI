@@ -10,7 +10,6 @@ import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { AgentServices, BUSY_MESSAGE, ERROR_MESSAGE } from '../core/agent-session';
 import { Logger } from '../utils/logger';
-import { FeishuMentionTool } from '../tools/feishu-mention-tool';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { BridgeServer, GroupMessage } from '../bridge/bridge-server';
 import { BridgeClient } from '../bridge/bridge-client';
@@ -120,10 +119,6 @@ export class FeishuBot {
 
     const aiService = new AIService();
     const toolManager = new ToolManager();
-
-    // 注册飞书专用工具（feishu_mention 是飞书特有的，reply/send_file 已由 ToolManager 默认注册）
-    const mentionTool = new FeishuMentionTool();
-    toolManager.registerTool(mentionTool);
 
     // 加载同事档案 + 已知 chat_id（供 bridge 和 session 使用）
     const teammates = loadTeammateProfiles();

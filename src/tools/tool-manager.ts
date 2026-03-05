@@ -6,27 +6,11 @@ import { ShellTool } from './bash-tool';
 import { EditTool } from './edit-tool';
 import { GlobTool } from './glob-tool';
 import { GrepTool } from './grep-tool';
-import { TaskPlannerTool } from './task-planner-tool';
-import { TodoWriteTool } from './todo-write-tool';
-import { EnterPlanModeTool } from './enter-plan-mode-tool';
-import { ExitPlanModeTool } from './exit-plan-mode-tool';
-import { TaskTool } from './task-tool';
-import { TaskOutputTool } from './task-output-tool';
-import { TaskStopTool } from './task-stop-tool';
 import { SkillTool } from './skill-tool';
-import { WebSearchTool } from './web-search-tool';
-import { WebFetchTool } from './web-fetch-tool';
-
-import { SpawnSubagentTool } from './spawn-subagent-tool';
-import { CheckSubagentTool } from './check-subagent-tool';
-import { StopSubagentTool } from './stop-subagent-tool';
-import { ResumeSubagentTool } from './resume-subagent-tool';
 
 import { ReplyTool } from './reply-tool';
 import { SendFileTool } from './send-file-tool';
 import { PauseTurnTool } from './pause-turn-tool';
-import { RecallLogTool } from './recall-log-tool';
-import { FeishuMentionTool } from './feishu-mention-tool';
 import { normalizeToolName } from '../utils/tool-aliases';
 
 /**
@@ -50,7 +34,7 @@ export class ToolManager implements ToolExecutor {
    * 注册默认工具
    */
   private registerDefaultTools(): void {
-    // 注册基础工具
+    // 基础文件和Shell工具
     this.registerTool(new ReadTool());
     this.registerTool(new WriteTool());
     this.registerTool(new EditTool());
@@ -58,44 +42,18 @@ export class ToolManager implements ToolExecutor {
     this.registerTool(new GrepTool());
     this.registerTool(new ShellTool());
 
-    // 注册任务管理工具
-    this.registerTool(new TaskPlannerTool());
-    this.registerTool(new TodoWriteTool());
-
-    // 注册工作流工具
-    this.registerTool(new EnterPlanModeTool());
-    this.registerTool(new ExitPlanModeTool());
-
-    // 注册网络工具
-    this.registerTool(new WebSearchTool());
-    this.registerTool(new WebFetchTool());
-
-    // 注册 Skill 工具
+    // Skill 系统工具
     this.registerTool(new SkillTool());
 
-    // 注册平台通信工具（reply / send_file）
-    this.registerTool(new ReplyTool());
+    // 平台通信工具
+    const messageMode = (process.env.GAUZ_MESSAGE_MODE || 'ultra').toLowerCase();
+    if (messageMode === 'ultra') {
+      this.registerTool(new ReplyTool());
+      this.registerTool(new PauseTurnTool());
+    }
     this.registerTool(new SendFileTool());
-    this.registerTool(new PauseTurnTool());
 
-    // 注册子智能体工具
-    this.registerTool(new SpawnSubagentTool());
-    this.registerTool(new CheckSubagentTool());
-    this.registerTool(new StopSubagentTool());
-    this.registerTool(new ResumeSubagentTool());
-
-    // 注册多智能体系统工具
-    this.registerTool(new TaskTool());
-    this.registerTool(new TaskOutputTool());
-    this.registerTool(new TaskStopTool());
-
-    // 注册上下文回忆工具
-    this.registerTool(new RecallLogTool());
-
-    // 注册飞书工具
-    this.registerTool(new FeishuMentionTool());
-
-    // Python 工具已迁移到对应的 skill 目录下，通过 skill 调用
+    // 其他工具已迁移到 skills/_tool-skills/ 目录，通过 skill 工具调用
   }
 
 
