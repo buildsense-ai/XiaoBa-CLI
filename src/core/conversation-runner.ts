@@ -1,6 +1,6 @@
 import { Message } from '../types';
 import { AIService } from '../utils/ai-service';
-import { SkillActivationSignal } from '../types/skill';
+import { SkillActivationSignal, SkillToolPolicy } from '../types/skill';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { StreamCallbacks } from '../providers/provider';
 import { Logger } from '../utils/logger';
@@ -11,6 +11,22 @@ import {
   parseSkillActivationSignal,
   upsertSkillSystemMessage,
 } from '../skills/skill-activation-protocol';
+
+const ESSENTIAL_TOOLS = new Set([
+  'skill',
+]);
+
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  Bash: 'execute_shell',
+  bash: 'execute_shell',
+  Shell: 'execute_shell',
+  shell: 'execute_shell',
+  execute_bash: 'execute_shell',
+};
+
+function normalizeToolName(name: string): string {
+  return TOOL_NAME_ALIASES[name] ?? name;
+}
 
 const DEFAULT_PROMPT_BUDGET = 120000;
 const ANTHROPIC_PROMPT_BUDGET = 180000;
@@ -69,6 +85,8 @@ export interface RunnerOptions {
   toolExecutionContext?: Partial<ToolExecutionContext>;
   /** 会话已激活 skill 名称（可选） */
   initialSkillName?: string;
+  /** 会话初始 skill 工具策略（可选） */
+  initialSkillToolPolicy?: SkillToolPolicy;
 }
 
 /**
@@ -85,6 +103,7 @@ export class ConversationRunner {
   private enableCompression: boolean;
   private toolExecutionContext?: Partial<ToolExecutionContext>;
   private activeSkillName?: string;
+  private activeSkillToolPolicy?: SkillToolPolicy;
   private maxPromptTokens: number;
 
   /** 截断字符串用于日志输出，避免日志过大 */
@@ -113,6 +132,10 @@ export class ConversationRunner {
     const allowedTools = messageMode === 'ultra'
       ? [...baseTools, 'reply', 'pause_turn']
       : baseTools;
+
+    this.activeSkillToolPolicy = options?.initialSkillToolPolicy ?? {
+      allowedTools
+    };
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.compressor = new ContextCompressor(this.aiService, {
@@ -153,7 +176,7 @@ export class ConversationRunner {
         durableMessages.push(...compactedDurable);
       }
 
-      const activeTools = allTools;
+      const activeTools = this.applyToolPolicy(allTools, this.activeSkillToolPolicy);
       const requestMessages = this.buildProviderInputMessages(workingMessages, nextTurnTransientHints);
       nextTurnTransientHints = [];
       this.ensurePromptBudget(requestMessages, activeTools);
@@ -246,7 +269,8 @@ export class ConversationRunner {
         const toolName = toolCall.function.name;
         callbacks?.onToolStart?.(toolName);
         Logger.info(`[Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
-        const activeToolNames = allTools.map(tool => tool.name);
+        const activeToolNames = this.applyToolPolicy(allTools, this.activeSkillToolPolicy)
+          .map(tool => tool.name);
         const toolStart = Date.now();
         const result = await this.executeToolWithRetry(
           toolCall,
@@ -255,6 +279,9 @@ export class ConversationRunner {
             ...this.toolExecutionContext,
             activeSkillName: this.activeSkillName,
             allowedToolNames: activeToolNames,
+            blockedToolNames: this.activeSkillToolPolicy?.allowedTools
+              ? undefined
+              : this.activeSkillToolPolicy?.disallowedTools,
           },
           turns,
         );
@@ -276,6 +303,7 @@ export class ConversationRunner {
         const activation = this.tryParseSkillActivation(toolCall, result.content);
         if (activation) {
           this.activeSkillName = activation.skillName;
+          this.activeSkillToolPolicy = this.mergeAdditionalTools(activation.toolPolicy, activation.additionalTools);
 
           if (activation.maxTurns && activation.maxTurns > 0) {
             this.maxTurns = Math.max(this.maxTurns, turns + activation.maxTurns);
@@ -576,6 +604,58 @@ export class ConversationRunner {
     return null;
   }
 
+  private applyToolPolicy(allTools: ToolDefinition[], policy?: SkillToolPolicy): ToolDefinition[] {
+    if (!policy) {
+      return allTools;
+    }
+
+    if (policy.allowedTools && policy.allowedTools.length > 0) {
+      const allowed = new Set(
+        policy.allowedTools
+          .map(name => normalizeToolName(String(name).trim()))
+          .filter(Boolean),
+      );
+      for (const essential of ESSENTIAL_TOOLS) {
+        allowed.add(essential);
+      }
+      return allTools.filter(tool => allowed.has(tool.name));
+    }
+
+    if (policy.disallowedTools && policy.disallowedTools.length > 0) {
+      const blocked = new Set(
+        policy.disallowedTools
+          .map(name => normalizeToolName(String(name).trim()))
+          .filter(name => Boolean(name) && !ESSENTIAL_TOOLS.has(name)),
+      );
+      return allTools.filter(tool => !blocked.has(tool.name));
+    }
+
+    return allTools;
+  }
+
+  private mergeAdditionalTools(policy?: SkillToolPolicy, additionalTools?: string[]): SkillToolPolicy | undefined {
+    if (!additionalTools || additionalTools.length === 0) {
+      return policy;
+    }
+
+    const normalized = additionalTools.map(t => normalizeToolName(t.trim())).filter(Boolean);
+    if (normalized.length === 0) {
+      return policy;
+    }
+
+    if (!policy) {
+      return { allowedTools: normalized };
+    }
+
+    const merged: SkillToolPolicy = { ...policy };
+    if (merged.allowedTools) {
+      merged.allowedTools = [...new Set([...merged.allowedTools, ...normalized])];
+    } else {
+      merged.allowedTools = normalized;
+    }
+
+    return merged;
+  }
 
   private async requestModelResponse(
     messages: Message[],
