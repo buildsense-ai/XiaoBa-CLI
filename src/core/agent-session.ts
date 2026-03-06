@@ -113,7 +113,7 @@ export class AgentSession {
 
       let modeInstruction = '';
       if (messageMode === 'ultra') {
-        modeInstruction = '用户只能看到你通过消息工具发送的内容。\n你的普通文本输出用户看不到。\n如果这一轮不需要发送任何用户可见内容，可以调用 pause_turn 结束。';
+        modeInstruction = '【重要】用户只能看到你通过消息工具发送的内容。\n你的普通 assistant 文本用户完全看不到。\n\n每次回复用户时，你必须调用工具发送。\n如果这一轮不需要发送任何用户可见内容，可以调用 pause_turn 结束。';
       } else {
         modeInstruction = '你的文本回复会自动发送给用户。\n如果需要发送文件，使用 send_file 工具。';
       }
@@ -127,7 +127,7 @@ export class AgentSession {
 
       let modeInstruction = '';
       if (messageMode === 'ultra') {
-        modeInstruction = '用户只能看到你通过 reply 或 send_file 发送的内容。\n你的普通 assistant 文本不会自动发送给用户。\n如果你希望用户看到文本回复，必须调用 reply。\n如果你希望用户看到文件，必须调用 send_file。';
+        modeInstruction = '【重要】用户只能看到你通过 reply 或 send_file 工具发送的内容。\n你的普通 assistant 文本用户完全看不到。\n\n每次回复用户时，你必须：\n1. 调用 reply 工具发送文本，或\n2. 调用 send_file 工具发送文件\n\n禁止直接输出 assistant 文本，用户看不到。';
       } else {
         modeInstruction = '你的文本回复会自动发送给用户。\n如果需要发送文件，使用 send_file 工具。';
       }
