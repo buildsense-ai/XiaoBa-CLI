@@ -1,63 +1,12 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
 import * as dotenv from 'dotenv';
 import { ChatConfig } from '../types';
 
 // 加载环境变量（静默模式）
 dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || '.env', quiet: true });
 
-const CONFIG_DIR = path.join(os.homedir(), '.xiaoba');
-const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
-
 export class ConfigManager {
-  private static mergeConfig(base: ChatConfig, override?: Partial<ChatConfig>): ChatConfig {
-    if (!override) {
-      return base;
-    }
-
-    return {
-      ...base,
-      ...override,
-      feishu: {
-        ...(base.feishu || {}),
-        ...(override.feishu || {}),
-      },
-      catscompany: {
-        ...(base.catscompany || {}),
-        ...(override.catscompany || {}),
-      },
-    };
-  }
-
-  private static ensureConfigDir(): void {
-    if (!fs.existsSync(CONFIG_DIR)) {
-      fs.mkdirSync(CONFIG_DIR, { recursive: true });
-    }
-  }
-
-  private static loadUserConfigFile(): Partial<ChatConfig> {
-    if (!fs.existsSync(CONFIG_FILE)) {
-      return {};
-    }
-
-    try {
-      const content = fs.readFileSync(CONFIG_FILE, 'utf-8');
-      return JSON.parse(content);
-    } catch {
-      return {};
-    }
-  }
-
   static getConfig(): ChatConfig {
-    this.ensureConfigDir();
-    return this.mergeConfig(this.getDefaultConfig(), this.loadUserConfigFile());
-  }
-
-  static saveConfig(config: ChatConfig): void {
-    this.ensureConfigDir();
-    const merged = this.mergeConfig(this.loadUserConfigFile() as ChatConfig, config);
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2));
+    return this.getDefaultConfig();
   }
 
   static getDefaultConfig(): ChatConfig {

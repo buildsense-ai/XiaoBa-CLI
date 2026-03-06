@@ -9,23 +9,8 @@ export class PromptManager {
 
   /**
    * 获取基础 system prompt
-   * 优先加载 system-prompt-{botName}.md，找不到则回退到 system-prompt.md
    */
   static getBaseSystemPrompt(): string {
-    const botName = (process.env.BOT_BRIDGE_NAME || '').trim().toLowerCase();
-
-    // 尝试加载 bot 专属 prompt
-    if (botName) {
-      const botPromptPath = path.join(this.promptsDir, `system-prompt-${botName}.md`);
-      try {
-        const content = fs.readFileSync(botPromptPath, 'utf-8');
-        return content;
-      } catch {
-        // bot 专属文件不存在，回退到默认
-      }
-    }
-
-    // 回退到通用 system-prompt.md
     try {
       return fs.readFileSync(path.join(this.promptsDir, 'system-prompt.md'), 'utf-8');
     } catch (error) {
@@ -34,10 +19,22 @@ export class PromptManager {
   }
 
   /**
+   * 获取 soul prompt（bot 专属行为风格）
+   */
+  static getSoulPrompt(): string {
+    try {
+      return fs.readFileSync(path.join(this.promptsDir, 'soul.md'), 'utf-8');
+    } catch {
+      return '';
+    }
+  }
+
+  /**
    * 构建完整 system prompt（包含运行时信息）
    */
   static async buildSystemPrompt(): Promise<string> {
     const basePrompt = this.getBaseSystemPrompt().trim();
+    const soulPrompt = this.getSoulPrompt().trim();
     const displayName = (
       process.env.CURRENT_AGENT_DISPLAY_NAME
       || process.env.BOT_BRIDGE_NAME
@@ -50,7 +47,7 @@ export class PromptManager {
       `当前日期：${today}`,
     ].filter(Boolean).join('\n');
 
-    return [basePrompt, runtimeInfo].filter(Boolean).join('\n\n');
+    return [basePrompt, soulPrompt, runtimeInfo].filter(Boolean).join('\n\n');
   }
 
   /**

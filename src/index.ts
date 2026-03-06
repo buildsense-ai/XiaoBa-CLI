@@ -3,7 +3,6 @@
 import { Command } from 'commander';
 import { Logger } from './utils/logger';
 import { chatCommand } from './commands/chat';
-import { configCommand } from './commands/config';
 import { registerSkillCommand } from './commands/skill';
 import { feishuCommand } from './commands/feishu';
 
@@ -27,12 +26,6 @@ function main() {
     .option('-m, --message <message>', '发送单条消息')
     .option('-s, --skill <name>', '启动时绑定指定 skill')
     .action(chatCommand);
-
-  // 配置命令
-  program
-    .command('config')
-    .description('配置XiaoBa的API设置')
-    .action(configCommand);
 
   // 飞书机器人命令
   program

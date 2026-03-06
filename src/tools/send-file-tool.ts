@@ -10,7 +10,14 @@ import { Logger } from '../utils/logger';
 export class SendFileTool implements Tool {
   definition: ToolDefinition = {
     name: 'send_file',
-    description: '给用户发送一个文件。用于发送产出的文档、PPT等成果文件。',
+    description: `发送文件给用户（用于详细报告、长分析）。
+
+使用场景：
+- 内容超过 1000 字的详细报告或分析
+- 包含大量数据、代码、详细说明
+- 发送文件后，只需用 reply 工具简短说明"详情看文件"即可
+
+避免在聊天中发送大段文字，改用文件。`,
     transcriptMode: 'outbound_file',
     parameters: {
       type: 'object',

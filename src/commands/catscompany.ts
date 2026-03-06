@@ -1,5 +1,4 @@
 import { Logger } from '../utils/logger';
-import { ConfigManager } from '../utils/config';
 import { CatsCompanyBot } from '../catscompany';
 import { CatsCompanyConfig } from '../catscompany/types';
 
@@ -8,15 +7,14 @@ import { CatsCompanyConfig } from '../catscompany/types';
  * 启动 Cats Company 机器人 WebSocket 长连接服务
  */
 export async function catscompanyCommand(): Promise<void> {
-  const config = ConfigManager.getConfig();
-
-  const serverUrl = process.env.CATSCOMPANY_SERVER_URL || config.catscompany?.serverUrl;
-  const apiKey = process.env.CATSCOMPANY_API_KEY || config.catscompany?.apiKey;
-  const httpBaseUrl = process.env.CATSCOMPANY_HTTP_BASE_URL || config.catscompany?.httpBaseUrl;
+  const serverUrl = process.env.CATSCOMPANY_SERVER_URL;
+  const apiKey = process.env.CATSCOMPANY_API_KEY;
+  const httpBaseUrl = process.env.CATSCOMPANY_HTTP_BASE_URL;
 
   if (!serverUrl || !apiKey) {
-    Logger.error('CatsCompany 配置缺失。请设置环境变量 CATSCOMPANY_SERVER_URL 和 CATSCOMPANY_API_KEY，');
-    Logger.error('或在 ~/.xiaoba/config.json 中配置 catscompany.serverUrl 和 catscompany.apiKey。');
+    Logger.error('CatsCompany 配置缺失。请在 .env 中设置：');
+    Logger.error('  CATSCOMPANY_SERVER_URL=ws://your-server/v0/channels');
+    Logger.error('  CATSCOMPANY_API_KEY=your-api-key');
     process.exit(1);
   }
 
@@ -24,7 +22,6 @@ export async function catscompanyCommand(): Promise<void> {
     serverUrl,
     apiKey,
     httpBaseUrl,
-    sessionTTL: config.catscompany?.sessionTTL,
   };
 
   const bot = new CatsCompanyBot(botConfig);
