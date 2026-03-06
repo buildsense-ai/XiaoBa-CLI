@@ -327,12 +327,15 @@ export class ConversationRunner {
           || toolContent.startsWith('Python 工具执行失败')
           || toolContent.startsWith('错误:');
 
-        if (isBlocked) {
+        // 核心通信工具豁免熔断
+        const isCoreCommTool = ['reply', 'send_file', 'pause_turn'].includes(toolName);
+
+        if (isBlocked && !isCoreCommTool) {
           this.disabledTools.add(toolName);
           this.toolFailureCount.delete(toolName);
           toolContent += `\n\n[系统] 工具 "${toolName}" 已被自动禁用（策略阻断），请换用其他工具完成任务。`;
           Logger.warning(`[Turn ${turns}] 熔断: ${toolName} 被策略阻断，已从可用列表移除`);
-        } else if (isFailed) {
+        } else if (isFailed && !isCoreCommTool) {
           const count = (this.toolFailureCount.get(toolName) || 0) + 1;
           this.toolFailureCount.set(toolName, count);
           if (count >= ConversationRunner.FAILURE_THRESHOLD) {
