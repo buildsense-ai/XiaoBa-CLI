@@ -1,0 +1,8 @@
+{
+  "game_name": "龙之传说",
+  "version": "1.0",
+  "author": "AI游戏设计师",
+  "description": "一个文字冒险RPG游戏",
+  "starting_location": "新手村",
+  "difficulty": "中等"
+}

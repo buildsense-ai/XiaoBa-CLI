@@ -1,0 +1,40 @@
+{
+  "player": {
+    "name": "法师",
+    "level": 1,
+    "exp": 0,
+    "exp_to_next_level": 100,
+    "hp": 80,
+    "max_hp": 80,
+    "mp": 100,
+    "max_mp": 100,
+    "strength": 5,
+    "agility": 6,
+    "intelligence": 12,
+    "defense": 4,
+    "gold": 61,
+    "inventory": {
+      "weapons": [
+        "木剑"
+      ],
+      "armor": [
+        "布衣"
+      ],
+      "potions": [
+        "小治疗药水 x3"
+      ],
+      "misc": [
+        "魔法碎片",
+        "魔法碎片",
+        "旧装备"
+      ]
+    },
+    "skills": [
+      "基础攻击"
+    ],
+    "location": "森林",
+    "quests": [],
+    "created_at": "2026-03-04 23:06:52",
+    "last_saved": "2026-03-04 23:06:52"
+  }
+}

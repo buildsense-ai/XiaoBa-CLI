@@ -319,7 +319,6 @@ export class AgentSession {
         {
           ...(effectiveMaxTurns ? { maxTurns: effectiveMaxTurns } : {}),
           initialSkillName: this.activeSkillName,
-          initialSkillToolPolicy: this.activeSkillToolPolicy,
           shouldContinue: () => !this.interruptRequested,
           toolExecutionContext: {
             sessionId: this.key,
