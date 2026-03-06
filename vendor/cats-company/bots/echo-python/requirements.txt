@@ -1,4 +1,0 @@
-# Cats Company Echo Bot (Python)
-# Install the SDK from the local source or via pip:
-#   pip install -e ../../bot-sdk/python
-catscompany-bot>=0.2.0
