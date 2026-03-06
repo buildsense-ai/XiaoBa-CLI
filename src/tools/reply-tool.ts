@@ -10,7 +10,15 @@ import { Logger } from '../utils/logger';
 export class ReplyTool implements Tool {
   definition: ToolDefinition = {
     name: 'reply',
-    description: '给用户发送一条文本消息。如果你希望用户看到你的文本回复，必须调用此工具发送。普通 assistant 文本不会自动发送给用户。',
+    description: `发送纯文本消息给用户。
+
+重要约束：
+- 禁止使用 markdown 格式（无标题、列表、代码块、加粗等）
+- 单条消息建议 300 字以内
+- 长内容分多次发送，或使用 send_file 工具生成文件
+- 像人类一样自然表达，不要格式化输出
+
+如果你希望用户看到你的文本回复，必须调用此工具发送。普通 assistant 文本不会自动发送给用户。`,
     transcriptMode: 'outbound_message',
     parameters: {
       type: 'object',
