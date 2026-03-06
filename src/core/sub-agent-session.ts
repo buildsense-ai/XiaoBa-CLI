@@ -168,26 +168,13 @@ export class SubAgentSession {
       permissionProfile: 'strict',
     });
 
-    // 5. 预检测被策略阻断的工具，避免子智能体浪费 turn
-    const preDisabledTools = toolManager.getToolDefinitions()
-      .map(t => t.name)
-      .filter(name => !isToolAllowed(name).allowed);
-
-    // 子智能体不允许再派遣子智能体（防止无限递归）
-    const subagentTools = ['spawn_subagent', 'check_subagent', 'stop_subagent', 'resume_subagent'];
-    preDisabledTools.push(...subagentTools);
-
-    // 子智能体不直接和用户通信，禁用 reply / send_file
-    preDisabledTools.push('reply', 'send_file');
-
-    // 6. 创建独立的 ConversationRunner（不注入 channel，子智能体不直接和用户通信）
+    // 创建独立的 ConversationRunner（不注入 channel，子智能体不直接和用户通信）
     const runner = new ConversationRunner(this.aiService, toolManager, {
       maxTurns: skill.metadata.maxTurns ?? 100,
       initialSkillName: this.skillName,
       initialSkillToolPolicy: skill.metadata.toolPolicy,
       enableCompression: true,
       shouldContinue: () => !this.stopped,
-      preDisabledTools,
       toolExecutionContext: {
         sessionId: `subagent:${this.id}`,
         surface: 'agent',
