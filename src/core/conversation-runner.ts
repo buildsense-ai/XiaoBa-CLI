@@ -79,8 +79,6 @@ export interface RunnerOptions {
   stream?: boolean;
   /** 供 agent 检查 stop 状态，返回 false 时提前退出循环 */
   shouldContinue?: () => boolean;
-  /** 预先禁用的工具列表（如已知被策略阻断的工具），避免浪费 turn */
-  preDisabledTools?: string[];
   /** 是否启用上下文压缩（默认 true，agent 用 false） */
   enableCompression?: boolean;
   /** 透传给 ToolExecutor 的执行上下文（session/run/surface 等） */
@@ -107,13 +105,6 @@ export class ConversationRunner {
   private activeSkillName?: string;
   private activeSkillToolPolicy?: SkillToolPolicy;
   private maxPromptTokens: number;
-
-  /** 工具连续失败计数（用于熔断） */
-  private toolFailureCount = new Map<string, number>();
-  /** 已被熔断禁用的工具 */
-  private disabledTools = new Set<string>();
-
-  private static readonly FAILURE_THRESHOLD = 3;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: string, maxLen = 200): string {
@@ -150,15 +141,6 @@ export class ConversationRunner {
     this.compressor = new ContextCompressor(this.aiService, {
       maxContextTokens: options?.maxContextTokens,
     });
-    // 预先禁用已知被阻断的工具
-    if (options?.preDisabledTools) {
-      for (const name of options.preDisabledTools) {
-        this.disabledTools.add(name);
-      }
-      if (this.disabledTools.size > 0) {
-        Logger.info(`[Runner] 预禁用工具: [${[...this.disabledTools].join(', ')}]`);
-      }
-    }
   }
 
   /**
@@ -194,8 +176,7 @@ export class ConversationRunner {
         durableMessages.push(...compactedDurable);
       }
 
-      const activeTools = this.applyToolPolicy(allTools, this.activeSkillToolPolicy)
-        .filter(tool => !this.disabledTools.has(tool.name));
+      const activeTools = this.applyToolPolicy(allTools, this.activeSkillToolPolicy);
       const requestMessages = this.buildProviderInputMessages(workingMessages, nextTurnTransientHints);
       nextTurnTransientHints = [];
       this.ensurePromptBudget(requestMessages, activeTools);
@@ -289,7 +270,6 @@ export class ConversationRunner {
         callbacks?.onToolStart?.(toolName);
         Logger.info(`[Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
         const activeToolNames = this.applyToolPolicy(allTools, this.activeSkillToolPolicy)
-          .filter(tool => !this.disabledTools.has(tool.name))
           .map(tool => tool.name);
         const toolStart = Date.now();
         const result = await this.executeToolWithRetry(
@@ -319,34 +299,6 @@ export class ConversationRunner {
         }
 
         let toolContent = result.content;
-        const isBlocked = result.errorCode === 'TOOL_NOT_ALLOWED_BY_SKILL_POLICY'
-          || result.errorCode === 'TOOL_BLOCKED_BY_SKILL_POLICY'
-          || result.errorCode === 'TOOL_NOT_REGISTERED';
-        const isFailed = result.ok === false
-          || (result.errorCode && !isBlocked)
-          || toolContent.startsWith('Python 工具执行失败')
-          || toolContent.startsWith('错误:');
-
-        // 核心通信工具豁免熔断
-        const isCoreCommTool = ['reply', 'send_file', 'pause_turn'].includes(toolName);
-
-        if (isBlocked && !isCoreCommTool) {
-          this.disabledTools.add(toolName);
-          this.toolFailureCount.delete(toolName);
-          toolContent += `\n\n[系统] 工具 "${toolName}" 已被自动禁用（策略阻断），请换用其他工具完成任务。`;
-          Logger.warning(`[Turn ${turns}] 熔断: ${toolName} 被策略阻断，已从可用列表移除`);
-        } else if (isFailed && !isCoreCommTool) {
-          const count = (this.toolFailureCount.get(toolName) || 0) + 1;
-          this.toolFailureCount.set(toolName, count);
-          if (count >= ConversationRunner.FAILURE_THRESHOLD) {
-            this.disabledTools.add(toolName);
-            this.toolFailureCount.delete(toolName);
-            toolContent += `\n\n[系统] 工具 "${toolName}" 连续失败 ${count} 次，已被自动禁用，请换用其他工具完成任务。`;
-            Logger.warning(`[Turn ${turns}] 熔断: ${toolName} 连续失败 ${count} 次，已从可用列表移除`);
-          }
-        } else {
-          this.toolFailureCount.delete(toolName);
-        }
 
         const activation = this.tryParseSkillActivation(toolCall, result.content);
         if (activation) {
