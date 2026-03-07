@@ -14,7 +14,8 @@ export async function chatCommand(options: CommandOptions): Promise<void> {
 
   // 初始化 ToolManager
   const toolManager = new ToolManager();
-  Logger.info(`已加载 ${toolManager.getToolCount()} 个工具`);
+  Logger.info(`已注册 ${toolManager.getToolCount()} 个基础工具 (message mode)`);
+  Logger.info(`运行时可用工具数量将根据 skill toolPolicy 动态过滤`);
 
   // 初始化 SkillManager
   const skillManager = new SkillManager();

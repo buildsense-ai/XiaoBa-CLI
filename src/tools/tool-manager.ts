@@ -8,9 +8,8 @@ import { GlobTool } from './glob-tool';
 import { GrepTool } from './grep-tool';
 import { SkillTool } from './skill-tool';
 
-import { ReplyTool } from './reply-tool';
 import { SendFileTool } from './send-file-tool';
-import { PauseTurnTool } from './pause-turn-tool';
+import { ThinkingTool } from './thinking-tool';
 import { normalizeToolName } from '../utils/tool-aliases';
 
 /**
@@ -46,14 +45,8 @@ export class ToolManager implements ToolExecutor {
     this.registerTool(new SkillTool());
 
     // 平台通信工具
-    const messageMode = (process.env.GAUZ_MESSAGE_MODE || 'ultra').toLowerCase();
-    if (messageMode === 'ultra') {
-      this.registerTool(new ReplyTool());
-      this.registerTool(new PauseTurnTool());
-    }
+    this.registerTool(new ThinkingTool());
     this.registerTool(new SendFileTool());
-
-    // 其他工具已迁移到 skills/_tool-skills/ 目录，通过 skill 工具调用
   }
 
 

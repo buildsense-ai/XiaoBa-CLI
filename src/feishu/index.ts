@@ -138,7 +138,8 @@ export class FeishuBot {
       Logger.info(`Bot Bridge 已配置: peers=${this.bridgeClient.getPeerNames().join(', ')}`);
     }
 
-    Logger.info(`已加载 ${toolManager.getToolCount()} 个工具`);
+    Logger.info(`已注册 ${toolManager.getToolCount()} 个基础工具 (message mode)`);
+    Logger.info(`运行时可用工具数量将根据 skill toolPolicy 动态过滤`);
 
     const skillManager = new SkillManager();
 

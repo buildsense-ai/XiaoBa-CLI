@@ -109,28 +109,44 @@ export class AgentSession {
     if (this.isFeishuSession()) {
       const isGroup = this.key.startsWith('group:');
       const chatType = isGroup ? '群聊' : '私聊';
-      const messageMode = (process.env.GAUZ_MESSAGE_MODE || 'ultra').toLowerCase();
+      const modeInstruction = `【消息模式】你的每次文本输出都会立即自动发送给用户。
 
-      let modeInstruction = '';
-      if (messageMode === 'ultra') {
-        modeInstruction = '【重要】用户只能看到你通过消息工具发送的内容。\n你的普通 assistant 文本用户完全看不到。\n\n每次回复用户时，你必须调用工具发送。\n如果这一轮不需要发送任何用户可见内容，可以调用 pause_turn 结束。';
-      } else {
-        modeInstruction = '你的文本回复会自动发送给用户。\n如果需要发送文件，使用 send_file 工具。';
-      }
+工作流程：
+1. 简单问答：直接输出文本回答
+2. 需要工具：调用工具（read/write/grep 等）后再回答
+3. 复杂推理：可选使用 thinking 工具（仅用于多步骤复杂任务）
+
+thinking 工具使用场景（谨慎使用）：
+- 需要多步骤规划的复杂任务
+- 需要权衡多个方案的决策
+- 不适用于简单问答、单次工具调用等场景
+
+重要规则：
+- 如果还需要调用工具，不要输出任何文本
+- 只在最终准备回答用户时才输出文本
+- thinking 内容简洁，用户看不到但保留在历史中`;
 
       this.messages.push({
         role: 'system',
         content: `[surface:feishu:${isGroup ? 'group' : 'private'}]\n当前是飞书${chatType}会话。\n${modeInstruction}`,
       });
     } else if (this.isCatsCompanySession()) {
-      const messageMode = (process.env.GAUZ_MESSAGE_MODE || 'ultra').toLowerCase();
+      const modeInstruction = `【消息模式】你的每次文本输出都会立即自动发送给用户。
 
-      let modeInstruction = '';
-      if (messageMode === 'ultra') {
-        modeInstruction = '【重要】用户只能看到你通过 reply 或 send_file 工具发送的内容。\n你的普通 assistant 文本用户完全看不到。\n\n每次回复用户时，你必须：\n1. 调用 reply 工具发送文本，或\n2. 调用 send_file 工具发送文件\n\n禁止直接输出 assistant 文本，用户看不到。';
-      } else {
-        modeInstruction = '你的文本回复会自动发送给用户。\n如果需要发送文件，使用 send_file 工具。';
-      }
+工作流程：
+1. 简单问答：直接输出文本回答
+2. 需要工具：调用工具（read/write/grep 等）后再回答
+3. 复杂推理：可选使用 thinking 工具（仅用于多步骤复杂任务）
+
+thinking 工具使用场景（谨慎使用）：
+- 需要多步骤规划的复杂任务
+- 需要权衡多个方案的决策
+- 不适用于简单问答、单次工具调用等场景
+
+重要规则：
+- 如果还需要调用工具，不要输出任何文本
+- 只在最终准备回答用户时才输出文本
+- thinking 内容简洁，用户看不到但保留在历史中`;
 
       this.messages.push({
         role: 'system',

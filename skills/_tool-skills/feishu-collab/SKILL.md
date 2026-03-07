@@ -1,7 +1,6 @@
 ---
 name: feishu-collab
 description: 飞书群协作与@人通信。用于需要在飞书群聊中@指定成员、跨群发送消息、根据 Group/*.md 查询 chat_id/open_id 的场景。
-additional-tools: [feishu_mention]
 ---
 
 # 飞书群协作（Feishu Collab）

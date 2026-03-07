@@ -56,12 +56,10 @@ export interface RunResult {
   response: string;
   /** 最终文本是否代表用户可见输出 */
   finalResponseVisible: boolean;
-  /** durable session 消息列表（适合长期保存） */
+  /** session 消息列表 */
   messages: Message[];
-  /** 本次 run() 期间新增的 durable 消息（不含最终纯文本回复） */
+  /** 本次 run() 期间新增的消息（不含最终纯文本回复） */
   newMessages: Message[];
-  /** 当前 run 的 working trace（provider-native） */
-  workingMessages?: Message[];
 }
 
 interface ToolExecutionRecord {
@@ -126,12 +124,8 @@ export class ConversationRunner {
     this.toolExecutionContext = options?.toolExecutionContext;
     this.activeSkillName = options?.initialSkillName;
 
-    // 设置默认工具策略：只允许 10 个基础 tool，其他工具通过 skill 访问
-    const messageMode = (process.env.GAUZ_MESSAGE_MODE || 'ultra').toLowerCase();
-    const baseTools = ['read', 'write', 'edit', 'glob', 'grep', 'bash', 'send_file', 'skill'];
-    const allowedTools = messageMode === 'ultra'
-      ? [...baseTools, 'reply', 'pause_turn']
-      : baseTools;
+    // 设置默认工具策略：只允许基础 tool，其他工具通过 skill 访问
+    const allowedTools = ['read', 'write', 'edit', 'glob', 'grep', 'bash', 'send_file', 'skill', 'thinking'];
 
     this.activeSkillToolPolicy = options?.initialSkillToolPolicy ?? {
       allowedTools
@@ -152,8 +146,6 @@ export class ConversationRunner {
   async run(messages: Message[], callbacks?: RunnerCallbacks): Promise<RunResult> {
     const allTools = this.toolExecutor.getToolDefinitions();
     const toolDefinitions = new Map(allTools.map(tool => [tool.name, tool]));
-    const durableMessages = messages;
-    const workingMessages = [...messages];
     const newMessages: Message[] = [];
     let nextTurnTransientHints: Message[] = [];
     let hasDeliveredMessageOutThisRun = false;
@@ -164,20 +156,16 @@ export class ConversationRunner {
         break;
       }
 
-      if (this.enableCompression && this.compressor.needsCompaction(workingMessages)) {
-        const usage = this.compressor.getUsageInfo(workingMessages);
+      if (this.enableCompression && this.compressor.needsCompaction(messages)) {
+        const usage = this.compressor.getUsageInfo(messages);
         Logger.info(`上下文使用率 ${usage.usagePercent}%，触发压缩...`);
-        const compactedWorking = await this.compressor.compact(workingMessages);
-        workingMessages.length = 0;
-        workingMessages.push(...compactedWorking);
-
-        const compactedDurable = await this.compressor.compact(durableMessages);
-        durableMessages.length = 0;
-        durableMessages.push(...compactedDurable);
+        const compacted = await this.compressor.compact(messages);
+        messages.length = 0;
+        messages.push(...compacted);
       }
 
       const activeTools = this.applyToolPolicy(allTools, this.activeSkillToolPolicy);
-      const requestMessages = this.buildProviderInputMessages(workingMessages, nextTurnTransientHints);
+      const requestMessages = this.buildProviderInputMessages(messages, nextTurnTransientHints);
       nextTurnTransientHints = [];
       this.ensurePromptBudget(requestMessages, activeTools);
       Logger.info(`[Turn ${turns}] 调用AI推理 (可用工具: ${activeTools.length}个)`);
@@ -191,9 +179,8 @@ export class ConversationRunner {
           return {
             response: '',
             finalResponseVisible: false,
-            messages: durableMessages,
+            messages,
             newMessages,
-            workingMessages,
           };
         }
         throw error;
@@ -211,26 +198,24 @@ export class ConversationRunner {
           finalText = finalText.replace(/^\[已发送信息\]\s*/, '');
           finalText = finalText.replace(/^\[已发送文件\]\s*/, '');
 
-          const messageMode = (process.env.GAUZ_MESSAGE_MODE || 'ultra').toLowerCase();
-
-          if (messageMode === 'basic' && finalText && this.toolExecutionContext?.channel) {
+          if (finalText && this.toolExecutionContext?.channel) {
             try {
               await this.toolExecutionContext.channel.reply(
                 this.toolExecutionContext.channel.chatId,
                 finalText
               );
-              Logger.info(`[Turn ${turns}] 基础模式：已直接发送回复`);
+              const preview = finalText.length > 100 ? finalText.slice(0, 100) + '...' : finalText;
+              Logger.info(`[Turn ${turns}] Message模式：已自动转发 "${preview}"`);
             } catch (err: any) {
-              Logger.error(`[Turn ${turns}] 基础模式发送失败: ${err.message}`);
+              Logger.error(`[Turn ${turns}] Message模式发送失败: ${err.message}`);
             }
           }
 
           return {
             response: '',
             finalResponseVisible: false,
-            messages: durableMessages,
+            messages,
             newMessages,
-            workingMessages,
           };
         }
 
@@ -241,9 +226,8 @@ export class ConversationRunner {
         return {
           response: cleanedResponse,
           finalResponseVisible: true,
-          messages: durableMessages,
+          messages,
           newMessages,
-          workingMessages,
         };
       }
 
@@ -274,7 +258,7 @@ export class ConversationRunner {
         const toolStart = Date.now();
         const result = await this.executeToolWithRetry(
           toolCall,
-          workingMessages,
+          messages,
           {
             ...this.toolExecutionContext,
             activeSkillName: this.activeSkillName,
@@ -303,16 +287,16 @@ export class ConversationRunner {
         const activation = this.tryParseSkillActivation(toolCall, result.content);
         if (activation) {
           this.activeSkillName = activation.skillName;
-          this.activeSkillToolPolicy = this.mergeAdditionalTools(activation.toolPolicy, activation.additionalTools);
+          this.activeSkillToolPolicy = activation.toolPolicy;
 
           if (activation.maxTurns && activation.maxTurns > 0) {
             this.maxTurns = Math.max(this.maxTurns, turns + activation.maxTurns);
           }
 
-          upsertSkillSystemMessage(workingMessages, activation);
-          const durableSystemMsg = upsertSkillSystemMessage(durableMessages, activation);
-          if (durableSystemMsg) {
-            newMessages.push(durableSystemMsg);
+          upsertSkillSystemMessage(messages, activation);
+          const systemMsg = upsertSkillSystemMessage(messages, activation);
+          if (systemMsg) {
+            newMessages.push(systemMsg);
           }
 
           toolContent = `Skill "${activation.skillName}" 已激活`;
@@ -333,28 +317,21 @@ export class ConversationRunner {
         callbacks?.onToolEnd?.(toolCall.function.name, toolContent);
       }
 
-      const durableTurnMessages = this.buildTurnTranscriptMessages(
+      const turnMessages = this.buildTurnMessages(
         assistantMsg,
         executionRecords,
         toolDefinitions,
       );
-      const workingTurnMessages = this.buildTurnWorkingMessages(
-        assistantMsg,
-        executionRecords,
-        toolDefinitions,
-      );
-      durableMessages.push(...durableTurnMessages);
-      workingMessages.push(...workingTurnMessages);
-      newMessages.push(...durableTurnMessages);
+      messages.push(...turnMessages);
+      newMessages.push(...turnMessages);
 
       if (shouldPauseTurn) {
         Logger.info(`[Turn ${turns}] pause_turn 已触发，本轮收束`);
         return {
           response: '',
           finalResponseVisible: false,
-          messages: durableMessages,
+          messages,
           newMessages,
-          workingMessages,
         };
       }
     }
@@ -363,9 +340,8 @@ export class ConversationRunner {
     return {
       response: this.isMessageSurface() ? '' : '[达到最大工具调用轮次，请继续对话]',
       finalResponseVisible: !this.isMessageSurface(),
-      messages: durableMessages,
+      messages,
       newMessages,
-      workingMessages,
     };
   }
 
@@ -396,74 +372,21 @@ export class ConversationRunner {
     return parseSkillActivationSignal(content);
   }
 
-  private buildTurnTranscriptMessages(
+  private buildTurnMessages(
     assistantMsg: Message,
     executionRecords: ToolExecutionRecord[],
     toolDefinitions: Map<string, ToolDefinition>,
   ): Message[] {
-    const retainedToolCalls: ToolCall[] = [];
-    const retainedToolMessages: Message[] = [];
-    const normalizedMessages: Message[] = [];
+    const messages: Message[] = [];
 
-    for (const record of executionRecords) {
-      const transcriptMode = this.getToolTranscriptMode(record.toolName, toolDefinitions);
-      const normalized = this.shouldNormalizeOutboundRecord(record, transcriptMode)
-        ? this.buildOutboundAssistantMessage(record, toolDefinitions)
-        : null;
-
-      if (normalized) {
-        normalizedMessages.push(normalized);
-        continue;
-      }
-
-      if (transcriptMode === 'suppress' && !record.result.errorCode) {
-        continue;
-      }
-
-      retainedToolCalls.push(record.toolCall);
-      retainedToolMessages.push({
-        role: 'tool',
-        content: record.toolContent,
-        tool_call_id: record.result.tool_call_id,
-        name: record.result.name,
-      });
-    }
-
-    const transcriptMessages: Message[] = [];
-    const hasNormalizedOutbound = normalizedMessages.length > 0;
-    const assistantContent =
-      hasNormalizedOutbound && assistantMsg.content
-        ? null
-        : assistantMsg.content;
-
-    if (assistantContent || retainedToolCalls.length > 0) {
-      transcriptMessages.push({
-        role: 'assistant',
-        content: assistantContent,
-        ...(retainedToolCalls.length > 0 ? { tool_calls: retainedToolCalls } : {}),
-      });
-    }
-
-    transcriptMessages.push(...retainedToolMessages);
-    transcriptMessages.push(...normalizedMessages);
-    return transcriptMessages;
-  }
-
-  private buildTurnWorkingMessages(
-    assistantMsg: Message,
-    executionRecords: ToolExecutionRecord[],
-    toolDefinitions: Map<string, ToolDefinition>,
-  ): Message[] {
-    const workingMessages: Message[] = [];
-
-    const workingAssistant: Message = {
+    const assistant: Message = {
       role: 'assistant',
       content: assistantMsg.content,
       ...(assistantMsg.tool_calls?.length ? { tool_calls: assistantMsg.tool_calls } : {}),
     };
 
-    if (workingAssistant.content || workingAssistant.tool_calls?.length) {
-      workingMessages.push(workingAssistant);
+    if (assistant.content || assistant.tool_calls?.length) {
+      messages.push(assistant);
     }
 
     for (const record of executionRecords) {
@@ -472,7 +395,7 @@ export class ConversationRunner {
         continue;
       }
 
-      workingMessages.push({
+      messages.push({
         role: 'tool',
         content: record.toolContent,
         tool_call_id: record.result.tool_call_id,
@@ -480,7 +403,7 @@ export class ConversationRunner {
       });
     }
 
-    return workingMessages;
+    return messages;
   }
 
   private buildProviderInputMessages(messages: Message[], transientHints: Message[]): Message[] {
@@ -631,30 +554,6 @@ export class ConversationRunner {
     }
 
     return allTools;
-  }
-
-  private mergeAdditionalTools(policy?: SkillToolPolicy, additionalTools?: string[]): SkillToolPolicy | undefined {
-    if (!additionalTools || additionalTools.length === 0) {
-      return policy;
-    }
-
-    const normalized = additionalTools.map(t => normalizeToolName(t.trim())).filter(Boolean);
-    if (normalized.length === 0) {
-      return policy;
-    }
-
-    if (!policy) {
-      return { allowedTools: normalized };
-    }
-
-    const merged: SkillToolPolicy = { ...policy };
-    if (merged.allowedTools) {
-      merged.allowedTools = [...new Set([...merged.allowedTools, ...normalized])];
-    } else {
-      merged.allowedTools = normalized;
-    }
-
-    return merged;
   }
 
   private async requestModelResponse(
