@@ -34,12 +34,11 @@ export class CatsClient extends EventEmitter {
   connect(): void {
     if (this.ws) return;
 
-    // 在URL中添加apiKey作为查询参数
-    const url = `${this.config.serverUrl}?apiKey=${this.config.apiKey}`;
+    const url = `${this.config.serverUrl}?api_key=${this.config.apiKey}`;
     this.ws = new WebSocket(url);
 
     this.ws.on('open', () => {
-      // 连接后不需要再发送auth消息
+      this.send({ hi: { id: '1', ver: '0.1.0', ua: 'XiaoBa/1.0' } });
     });
 
     this.ws.on('message', (data: Buffer) => {
@@ -55,33 +54,34 @@ export class CatsClient extends EventEmitter {
   }
 
   private handleMessage(msg: any): void {
-    if (msg.type === 'ctrl') {
-      if (msg.event === 'ready') {
-        this.uid = msg.uid;
-        this.name = msg.name;
-        this.emit('ready', { uid: msg.uid, name: msg.name });
+    // Tinode握手响应
+    if (msg.ctrl) {
+      if (msg.ctrl.code === 200 && msg.ctrl.params?.build === 'catscompany') {
+        // 握手成功，发送登录
+        this.send({ login: { id: '2', scheme: 'token', secret: this.config.apiKey } });
+      } else if (msg.ctrl.code === 200 && msg.ctrl.params?.user) {
+        // 登录成功
+        this.uid = msg.ctrl.params.user;
+        this.name = msg.ctrl.params.user;
+        this.emit('ready', { uid: this.uid, name: this.name });
       }
-    } else if (msg.type === 'data') {
+    } else if (msg.data) {
+      // 消息数据
       const ctx: MessageContext = {
-        topic: msg.topic,
-        senderId: msg.sender_id,
-        text: msg.text || '',
-        content: msg.content,
-        isGroup: msg.is_group || false,
+        topic: msg.data.topic || '',
+        senderId: msg.data.from || '',
+        text: msg.data.content || '',
+        content: msg.data.content,
+        isGroup: false,
       };
       this.emit('message', ctx);
-    } else if (msg.type === 'ack') {
-      const pending = this.pendingAcks.get(msg.msg_id);
-      if (pending) {
-        clearTimeout(pending.timer);
-        pending.resolve(msg.seq);
-        this.pendingAcks.delete(msg.msg_id);
-      }
+    } else if (msg.pres) {
+      // 在线状态，忽略
     }
   }
 
   async sendMessage(topic: string, text: string): Promise<number> {
-    const msgId = `msg_${++this.msgId}`;
+    const msgId = `${++this.msgId}`;
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -90,12 +90,12 @@ export class CatsClient extends EventEmitter {
       }, 10000);
 
       this.pendingAcks.set(msgId, { resolve, reject, timer });
-      this.send({ type: 'send', msg_id: msgId, topic, text });
+      this.send({ pub: { id: msgId, topic, content: text } });
     });
   }
 
   sendTyping(topic: string): void {
-    this.send({ type: 'typing', topic });
+    this.send({ note: { topic, what: 'kp' } });
   }
 
   private send(data: any): void {
