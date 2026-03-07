@@ -44,6 +44,7 @@
     "gray-matter": "^4.0.3",
     "inquirer": "^8.2.7",
     "ora": "^5.4.1",
+    "playwright": "^1.58.2",
     "terminal-image": "^4.2.0",
     "turndown": "^7.2.2"
   },

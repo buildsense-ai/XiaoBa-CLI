@@ -372,33 +372,28 @@ export class CatsCompanyBot {
     const queue = this.messageQueue.get(sessionKey);
     if (!queue || queue.length === 0) return;
 
-    // 一次性取出所有积压消息
-    const messages = queue.splice(0);
-    this.messageQueue.delete(sessionKey);
+    // 逐条处理，避免合并导致超长回复
+    const msg = queue.shift()!;
+    if (queue.length === 0) {
+      this.messageQueue.delete(sessionKey);
+    }
 
-    // 合并为单条文本
-    const mergedText = messages.length === 1
-      ? messages[0].userText
-      : `[系统提示：以下是用户在你忙碌时发送的 ${messages.length} 条连续消息，请依次处理]\n\n` +
-        messages.map((m, i) => `消息 ${i + 1}:\n${m.userText}`).join('\n\n---\n\n');
-
-    const last = messages[messages.length - 1];
     const session = this.sessionManager.getOrCreate(sessionKey);
-    const channel = this.buildChannel(last.topic, {
+    const channel = this.buildChannel(msg.topic, {
       sessionKey,
-      senderId: last.senderId,
+      senderId: msg.senderId,
     });
 
     try {
-      const result = await session.handleMessage(mergedText, { channel });
+      const result = await session.handleMessage(msg.userText, { channel });
       if (result.text.startsWith('处理消息时出错:')) {
-        await this.sender.reply(last.topic, result.text);
+        await this.sender.reply(msg.topic, result.text);
       }
     } finally {
       this.clearPendingAnswerBySession(sessionKey);
     }
 
-    // 处理期间可能又有新消息入队，递归排空
+    // 递归处理下一条
     await this.drainMessageQueue(sessionKey);
   }
 
