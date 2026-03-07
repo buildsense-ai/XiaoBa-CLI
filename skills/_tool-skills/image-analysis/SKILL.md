@@ -1,66 +1,34 @@
 ---
 name: image-analysis
-description: "图片分析：读取图片文件并调用多模态视觉模型进行分析。适用于图片内容识别、OCR、图表解读等场景。"
-additional-tools: [analyze_image]
+description: "图片分析：OCR 文字识别、图表解读、多模态视觉分析。"
 ---
 
 # 图片分析
 
-读取图片文件并调用多模态视觉模型（OpenAI/Anthropic）进行分析，返回纯文字结果。
+提供 OCR 文字识别、图表解读等图片分析能力。
 
-## 可用工具
+## 可用脚本
 
-| 工具 | 用途 |
-|------|------|
-| `analyze_image` | 图片多模态分析 |
+### analyze_image_tool.py - 图片分析
 
-## 使用场景
-
-- 识别图片内容、物体、场景
-- OCR 文字识别
-- 图表、图形解读
-- 截图内容分析
-
-## analyze_image 用法
-
-```json
-{
-  "file_path": "<图片路径>",
-  "prompt": "<分析提示词>",
-  "detail": "auto",
-  "max_tokens": 2048
-}
+**调用方式**:
+```bash
+python3 skills/_tool-skills/image-analysis/analyze_image_tool.py '{"image_path":"path/to/image.png","task":"ocr"}'
 ```
 
-参数说明：
-- `file_path`（必需）：图片文件路径（支持绝对路径和相对路径）
-- `prompt`（必需）：分析提示词，描述你希望模型关注的内容
-- `detail`（可选）：图片分析精度，可选 auto / low / high，默认 auto
-- `max_tokens`（可选）：最大输出 token 数，默认 2048
-- `system`（可选）：系统提示词
+**参数**:
+- `image_path` (必需): 图片路径
+- `task` (可选): 任务类型
 
-## 示例
+**返回**: JSON 格式的分析结果
 
-识别图片内容：
-```json
-{
-  "file_path": "screenshot.png",
-  "prompt": "请描述这张图片的内容"
-}
-```
+## 工作流程
 
-OCR 文字识别：
-```json
-{
-  "file_path": "document.jpg",
-  "prompt": "请提取图片中的所有文字"
-}
-```
+1. 用户提供图片路径
+2. 使用 bash 工具调用 Python 脚本
+3. 解析返回结果
+4. 向用户展示分析结果
 
-图表解读：
-```json
-{
-  "file_path": "chart.png",
-  "prompt": "请分析这个图表，说明数据趋势和关键发现"
-}
-```
+## 注意
+
+AI 模型本身支持视觉能力，可以直接分析图片。此 skill 提供额外的专业分析工具。

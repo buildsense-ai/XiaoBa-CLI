@@ -69,9 +69,8 @@ export class CatsCompanyBot {
     const aiService = new AIService();
     const toolManager = new ToolManager();
 
-    // reply / send_file 已由 ToolManager 默认注册，无需手动注册
-
-    Logger.info(`已加载 ${toolManager.getToolCount()} 个工具`);
+    Logger.info(`已注册 ${toolManager.getToolCount()} 个基础工具 (message mode)`);
+    Logger.info(`运行时可用工具数量将根据 skill toolPolicy 动态过滤`);
 
     const skillManager = new SkillManager();
 
@@ -381,7 +380,8 @@ export class CatsCompanyBot {
     // 合并为单条文本
     const mergedText = messages.length === 1
       ? messages[0].userText
-      : messages.map((m, i) => `[队列消息 ${i + 1}] ${m.userText}`).join('\n');
+      : `[系统提示：以下是用户在你忙碌时发送的 ${messages.length} 条连续消息，请依次处理]\n\n` +
+        messages.map((m, i) => `消息 ${i + 1}:\n${m.userText}`).join('\n\n---\n\n');
 
     const last = messages[messages.length - 1];
     const session = this.sessionManager.getOrCreate(sessionKey);

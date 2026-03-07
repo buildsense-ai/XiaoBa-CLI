@@ -1,0 +1,20 @@
+[
+  {
+    "test": 1,
+    "message": "你好",
+    "screenshot": "test_1.png",
+    "status": "completed"
+  },
+  {
+    "test": 2,
+    "message": "帮我分析 package.json",
+    "screenshot": "test_2.png",
+    "status": "completed"
+  },
+  {
+    "test": 3,
+    "message": "读取 README.md 并总结",
+    "screenshot": "test_3.png",
+    "status": "completed"
+  }
+]

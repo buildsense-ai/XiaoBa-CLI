@@ -37,6 +37,13 @@ export class SkillTool implements Tool {
     const { skill: skillName, args: skillArgs = '' } = args;
 
     try {
+      // 特殊命令：reload
+      if (skillName === 'reload' || skillName === '__reload__') {
+        await this.skillManager.loadSkills();
+        const count = this.skillManager.getAllSkills().length;
+        return JSON.stringify({ __reload_skills__: true, message: `已重新加载 ${count} 个 skills` });
+      }
+
       // 加载所有 skills
       await this.skillManager.loadSkills();
 
