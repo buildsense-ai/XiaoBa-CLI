@@ -48,15 +48,13 @@
     "terminal-image": "^4.2.0",
     "turndown": "^7.2.2"
   },
-  "optionalDependencies": {
-    "@catscompany/bot-sdk": "github:buildsense-ai/cats-company#main:bot-sdk/typescript"
-  },
   "devDependencies": {
     "@types/deasync": "^0.1.5",
     "@types/glob": "^8.1.0",
     "@types/inquirer": "^9.0.9",
     "@types/node": "^20.10.5",
     "@types/turndown": "^5.0.6",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
   },

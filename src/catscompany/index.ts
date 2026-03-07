@@ -1,4 +1,4 @@
-import { CatsBot, MessageContext } from '@catscompany/bot-sdk';
+import { CatsClient, MessageContext } from './client';
 import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo } from './types';
 import { MessageSender } from './message-sender';
 import { SessionManager } from './session-manager';
@@ -42,7 +42,7 @@ const PENDING_ANSWER_TIMEOUT_MS = 120_000;
  * 结构与 FeishuBot 对齐
  */
 export class CatsCompanyBot {
-  private bot: CatsBot;
+  private bot: CatsClient;
   private sender: MessageSender;
   private sessionManager: SessionManager;
   private agentServices: AgentServices;
@@ -58,7 +58,7 @@ export class CatsCompanyBot {
   private botUid: string | null = null;
 
   constructor(config: CatsCompanyConfig) {
-    this.bot = new CatsBot({
+    this.bot = new CatsClient({
       serverUrl: config.serverUrl,
       apiKey: config.apiKey,
       httpBaseUrl: config.httpBaseUrl,
@@ -106,26 +106,22 @@ export class CatsCompanyBot {
     }
 
     // 注册事件
-    this.bot.on('ready', (uid, name) => {
-      this.botUid = uid;
-      const botName = (name || (this.bot as { name?: string }).name || '').trim() || '(未设置)';
+    this.bot.on('ready', (info: { uid: string; name: string }) => {
+      this.botUid = info.uid;
+      const botName = info.name.trim() || '(未设置)';
       process.env.CURRENT_AGENT_DISPLAY_NAME = botName;
-      Logger.success(`CatsCompany 机器人已连接，uid=${uid}, name=${botName}`);
+      Logger.success(`CatsCompany 机器人已连接，uid=${info.uid}, name=${botName}`);
     });
 
     this.bot.on('message', async (ctx: MessageContext) => {
       await this.onMessage(ctx);
     });
 
-    this.bot.on('reconnecting', (attempt) => {
-      Logger.warning(`CatsCompany 正在重连 (第 ${attempt} 次)...`);
-    });
-
-    this.bot.on('error', (err) => {
+    this.bot.on('error', (err: Error) => {
       Logger.error(`CatsCompany 连接错误: ${err.message}`);
     });
 
-    await this.bot.connect();
+    this.bot.connect();
     Logger.success('CatsCompany 机器人已启动，等待消息...');
   }
 
@@ -309,8 +305,8 @@ export class CatsCompanyBot {
     return {
       topic: ctx.topic,
       chatType,
-      senderId: ctx.from,
-      seq: ctx.seq,
+      senderId: ctx.senderId,
+      seq: 0,  // 简化：不需要seq
       text: text || (file ? `[${file.type === 'image' ? '图片' : '文件'}] ${file.fileName}` : ''),
       rawContent: ctx.content,
       file,
