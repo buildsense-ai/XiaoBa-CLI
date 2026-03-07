@@ -219,10 +219,9 @@ export class CatsCompanyBot {
 
     Logger.info(`[${key}] 收到消息: ${msg.text.slice(0, 50)}...`);
 
-    let userText = msg.text;
+    let userMessage: string | import('../types').ContentBlock[] = msg.text;
 
     if (msg.file) {
-      // 文件/图片消息：下载后交给 Agent 自主判断
       const localPath = await this.sender.downloadFile(msg.file.url, msg.file.fileName);
       if (!localPath) {
         await this.sender.reply(msg.topic, `文件下载失败：${msg.file.fileName}\n请重试上传。`);
@@ -236,20 +235,20 @@ export class CatsCompanyBot {
         receivedAt: Date.now(),
       });
       const queuedAttachments = this.consumePendingAttachments(key);
-      userText = this.buildAttachmentOnlyPrompt(queuedAttachments);
-      Logger.info(`[${key}] 附件消息已交给 Agent 自主判断（attachments=${queuedAttachments.length})`);
+      userMessage = this.buildMultimodalMessage(msg.text, queuedAttachments);
+      Logger.info(`[${key}] 附件消息（attachments=${queuedAttachments.length})`);
     } else {
-      // 普通文本消息：若有待处理附件，拼接上下文后一并交给 Agent
       const queuedAttachments = this.consumePendingAttachments(key);
       if (queuedAttachments.length > 0) {
-        userText = `${msg.text}\n${this.formatAttachmentContext(queuedAttachments)}`;
-        Logger.info(`[${key}] 追加 ${queuedAttachments.length} 个待处理附件到用户指令`);
+        userMessage = this.buildMultimodalMessage(msg.text, queuedAttachments);
+        Logger.info(`[${key}] 追加 ${queuedAttachments.length} 个附件`);
       }
     }
 
     // 并发保护：忙时消息静默入队，空闲后自动处理
     if (session.isBusy()) {
       const queue = this.messageQueue.get(key) ?? [];
+      const userText = typeof userMessage === 'string' ? userMessage : '[multimodal]';
       queue.push({ userText, topic: msg.topic, senderId: msg.senderId });
       this.messageQueue.set(key, queue);
       Logger.info(`[${key}] 主会话忙，消息已入队 (队列长度: ${queue.length})`);
@@ -266,7 +265,7 @@ export class CatsCompanyBot {
     this.sender.sendTyping(msg.topic);
 
     try {
-      const result = await session.handleMessage(userText, { channel });
+      const result = await session.handleMessage(userMessage, { channel });
       if (result.text === BUSY_MESSAGE || result.text.startsWith('处理消息时出错:')) {
         await this.sender.reply(msg.topic, result.text);
       }
@@ -430,6 +429,26 @@ export class CatsCompanyBot {
     const queue = this.pendingAttachments.get(sessionKey) ?? [];
     this.pendingAttachments.delete(sessionKey);
     return queue;
+  }
+
+  private buildMultimodalMessage(text: string, attachments: PendingAttachment[]): import('../types').ContentBlock[] {
+    const { createImageBlock } = require('../utils/image-utils');
+    const blocks: import('../types').ContentBlock[] = [];
+
+    if (text) {
+      blocks.push({ type: 'text', text });
+    }
+
+    for (const att of attachments) {
+      if (att.type === 'image') {
+        const imgBlock = createImageBlock(att.localPath);
+        if (imgBlock) blocks.push(imgBlock);
+      } else {
+        blocks.push({ type: 'text', text: `[文件] ${att.fileName}\n[路径] ${att.localPath}` });
+      }
+    }
+
+    return blocks;
   }
 
   private formatAttachmentContext(attachments: PendingAttachment[]): string {

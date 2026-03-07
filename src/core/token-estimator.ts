@@ -40,10 +40,12 @@ export function estimateTokens(text: string): number {
  * 估算单条消息的 token 数（含 role、content、tool_calls）
  */
 export function estimateMessageTokens(message: Message): number {
-  let tokens = 4; // 每条消息的固定开销（role 标记等）
+  let tokens = 4;
 
   if (message.content) {
-    tokens += estimateTokens(message.content);
+    const content = typeof message.content === 'string' ? message.content :
+      message.content.map(b => b.type === 'text' ? b.text : '[图片]').join('');
+    tokens += estimateTokens(content);
   }
 
   if (message.tool_calls) {

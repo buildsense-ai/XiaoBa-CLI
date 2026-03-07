@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { Message, ChatConfig, ChatResponse } from '../types';
+import { Message, ChatConfig, ChatResponse, ContentBlock } from '../types';
 import { ToolDefinition } from '../types/tool';
 import { AIProvider, StreamCallbacks } from './provider';
 import { ContextDebugLogger } from '../utils/context-debug-logger';
@@ -28,10 +28,19 @@ export class OpenAIProvider implements AIProvider {
    * 构建请求体
    */
   private buildRequestBody(messages: Message[], tools?: ToolDefinition[], stream = false): any {
-    const sanitizedMessages = messages.map(message => ({
-      ...message,
-      content: message.content ?? ''
-    }));
+    const sanitizedMessages = messages.map(message => {
+      if (Array.isArray(message.content)) {
+        return {
+          ...message,
+          content: message.content.map(block =>
+            block.type === 'text'
+              ? { type: 'text', text: block.text }
+              : { type: 'image_url', image_url: { url: `data:${block.source.media_type};base64,${block.source.data}` } }
+          )
+        };
+      }
+      return { ...message, content: message.content ?? '' };
+    });
 
     const body: any = {
       model: this.model,

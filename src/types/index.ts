@@ -1,6 +1,10 @@
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'; data: string } };
+
 export interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string | null;
+  content: string | ContentBlock[] | null;
   tool_calls?: Array<{
     id: string;
     type: 'function';

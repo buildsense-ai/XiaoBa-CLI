@@ -87,7 +87,7 @@ export function upsertSkillSystemMessage(
 
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
-    if (msg.role === 'system' && msg.content?.startsWith(marker)) {
+    if (msg.role === 'system' && typeof msg.content === 'string' && msg.content.startsWith(marker)) {
       messages.splice(i, 1);
     }
   }

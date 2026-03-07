@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { Message, ChatConfig, ChatResponse } from '../types';
+import { Message, ChatConfig, ChatResponse, ContentBlock } from '../types';
 import { ToolDefinition } from '../types/tool';
 import { AIProvider, StreamCallbacks } from './provider';
 import { ContextDebugLogger } from '../utils/context-debug-logger';
@@ -46,7 +46,7 @@ export class AnthropicProvider implements AIProvider {
    */
   private transformMessages(messages: Message[]): { system?: string; messages: Anthropic.MessageParam[] } {
     const systemMessages = messages.filter(msg => msg.role === 'system');
-    const systemPrompt = systemMessages.map(msg => msg.content).join('\n\n');
+    const systemPrompt = systemMessages.map(msg => typeof msg.content === 'string' ? msg.content : '').join('\n\n');
 
     const nonSystemMessages = messages.filter(msg => msg.role !== 'system');
     const transformedMessages: Anthropic.MessageParam[] = [];
@@ -77,7 +77,7 @@ export class AnthropicProvider implements AIProvider {
       if (msg.role === 'assistant') {
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           const blocks: (Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam)[] = [];
-          if (msg.content) {
+          if (msg.content && typeof msg.content === 'string') {
             blocks.push({ type: 'text', text: msg.content });
           }
           for (const toolCall of msg.tool_calls) {
@@ -96,10 +96,20 @@ export class AnthropicProvider implements AIProvider {
           }
           transformedMessages.push({ role: 'assistant', content: blocks });
         } else {
-          transformedMessages.push({ role: 'assistant', content: msg.content || '' });
+          const content = typeof msg.content === 'string' ? msg.content : '';
+          transformedMessages.push({ role: 'assistant', content: content || '' });
         }
       } else if (msg.role === 'user') {
-        transformedMessages.push({ role: 'user', content: msg.content || '' });
+        if (Array.isArray(msg.content)) {
+          const blocks = msg.content.map(block =>
+            block.type === 'text'
+              ? { type: 'text' as const, text: block.text }
+              : { type: 'image' as const, source: block.source }
+          );
+          transformedMessages.push({ role: 'user', content: blocks });
+        } else {
+          transformedMessages.push({ role: 'user', content: msg.content || '' });
+        }
       }
     }
 

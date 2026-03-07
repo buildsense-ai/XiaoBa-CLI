@@ -226,7 +226,7 @@ thinking 工具使用场景（谨慎使用）：
    * @param callbacksOrOptions 旧签名兼容 SessionCallbacks，新签名用 HandleMessageOptions
    */
   async handleMessage(
-    text: string,
+    text: string | import('../types').ContentBlock[],
     callbacksOrOptions?: SessionCallbacks | HandleMessageOptions,
   ): Promise<HandleMessageResult> {
     // 兼容旧签名：如果传入的对象有 onText/onToolStart 等字段，视为 SessionCallbacks
@@ -258,7 +258,8 @@ thinking 工具使用场景（谨慎使用）：
 
     try {
       await this.init();
-      this.tryAutoActivateSkill(text);
+      const textContent = typeof text === 'string' ? text : '';
+      this.tryAutoActivateSkill(textContent);
       this.messages.push({ role: 'user', content: text });
 
 
@@ -660,7 +661,7 @@ ${conversationText}
   /** 从 messages 中检测已激活 skill 的 maxTurns（兜底机制） */
   private detectSkillMaxTurns(): number | undefined {
     for (const msg of this.messages) {
-      if (msg.role === 'system' && msg.content) {
+      if (msg.role === 'system' && typeof msg.content === 'string') {
         const match = msg.content.match(/^\[skill:([^\]]+)\]/);
         if (match) {
           const skill = this.services.skillManager.getSkill(match[1]);
@@ -676,7 +677,7 @@ ${conversationText}
   private detectActiveSkillName(): string | undefined {
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const msg = this.messages[i];
-      if (msg.role !== 'system' || !msg.content) continue;
+      if (msg.role !== 'system' || typeof msg.content !== 'string') continue;
       const match = msg.content.match(/^\[skill:([^\]]+)\]/);
       if (match) {
         return match[1];
@@ -811,7 +812,7 @@ ${conversationText}
   }
 
   private parseActivationFromSystemMessage(msg: Message): SkillActivationSignal | null {
-    if (msg.role !== 'system' || !msg.content) {
+    if (msg.role !== 'system' || typeof msg.content !== 'string') {
       return null;
     }
 

@@ -1,8 +1,14 @@
-import { Message } from '../types';
+import { Message, ContentBlock } from '../types';
 import { AIService } from '../utils/ai-service';
 import { estimateMessagesTokens } from './token-estimator';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
+
+function contentToString(content: string | ContentBlock[] | null): string {
+  if (!content) return '';
+  if (typeof content === 'string') return content;
+  return content.map(block => block.type === 'text' ? block.text : '[图片]').join('');
+}
 
 /**
  * ContextCompressor - 上下文压缩器
@@ -85,7 +91,7 @@ export class ContextCompressor {
       const role = m.role === 'user' ? '用户'
         : m.role === 'assistant' ? 'AI'
         : `工具(${m.name || 'unknown'})`;
-      const content = m.content || '';
+      const content = contentToString(m.content);
       // 单条消息限制 1500 字符，避免摘要 prompt 本身过大
       const trimmed = content.length > 1500
         ? content.slice(0, 1500) + `...[共${content.length}字符]`

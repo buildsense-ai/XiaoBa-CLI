@@ -57,7 +57,8 @@ export class ContextDebugLogger {
     let currentQuery = '';
 
     for (const msg of messages) {
-      const c = msg.content || '';
+      const c = typeof msg.content === 'string' ? msg.content :
+        Array.isArray(msg.content) ? msg.content.map(b => b.type === 'text' ? b.text : '[图片]').join('') : '';
       const t = estimateMessageTokens(msg);
 
       if (msg.role === 'system') {
