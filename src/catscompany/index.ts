@@ -372,7 +372,6 @@ export class CatsCompanyBot {
     const queue = this.messageQueue.get(sessionKey);
     if (!queue || queue.length === 0) return;
 
-    // 逐条处理，避免合并导致超长回复
     const msg = queue.shift()!;
     if (queue.length === 0) {
       this.messageQueue.delete(sessionKey);
@@ -385,7 +384,12 @@ export class CatsCompanyBot {
     });
 
     try {
-      const result = await session.handleMessage(msg.userText, { channel });
+      // 添加系统提示，避免AI累积回答队列中的多个问题
+      const wrappedMessage = queue.length > 0
+        ? `[系统提示：这是队列中的一条消息，仅回答此问题，不要提及队列中的其他消息]\n${msg.userText}`
+        : msg.userText;
+
+      const result = await session.handleMessage(wrappedMessage, { channel });
       if (result.text.startsWith('处理消息时出错:')) {
         await this.sender.reply(msg.topic, result.text);
       }
@@ -393,7 +397,6 @@ export class CatsCompanyBot {
       this.clearPendingAnswerBySession(sessionKey);
     }
 
-    // 递归处理下一条
     await this.drainMessageQueue(sessionKey);
   }
 
