@@ -57,13 +57,18 @@ export class CatsClient extends EventEmitter {
     // Tinode握手响应
     if (msg.ctrl) {
       if (msg.ctrl.code === 200 && msg.ctrl.params?.build === 'catscompany') {
-        // 握手成功，发送登录
-        this.send({ login: { id: '2', scheme: 'token', secret: this.config.apiKey } });
-      } else if (msg.ctrl.code === 200 && msg.ctrl.params?.user) {
-        // 登录成功
-        this.uid = msg.ctrl.params.user;
-        this.name = msg.ctrl.params.user;
+        // 从服务器获取bot信息
+        this.uid = String(msg.ctrl.params?.uid || 'bot');
+        this.name = String(msg.ctrl.params?.name || 'XiaoBa');
         this.emit('ready', { uid: this.uid, name: this.name });
+      } else if (msg.ctrl.id && msg.ctrl.code === 200) {
+        // 处理ack响应
+        const pending = this.pendingAcks.get(msg.ctrl.id);
+        if (pending) {
+          clearTimeout(pending.timer);
+          pending.resolve(msg.ctrl.params?.seq || 0);
+          this.pendingAcks.delete(msg.ctrl.id);
+        }
       }
     } else if (msg.data) {
       // 消息数据
@@ -75,8 +80,6 @@ export class CatsClient extends EventEmitter {
         isGroup: false,
       };
       this.emit('message', ctx);
-    } else if (msg.pres) {
-      // 在线状态，忽略
     }
   }
 
