@@ -125,7 +125,7 @@ export class ConversationRunner {
     this.activeSkillName = options?.initialSkillName;
 
     // 设置默认工具策略：只允许基础 tool，其他工具通过 skill 访问
-    const allowedTools = ['read', 'write', 'edit', 'glob', 'grep', 'bash', 'send_file', 'skill', 'thinking'];
+    const allowedTools = ['read', 'write', 'edit', 'glob', 'grep', 'bash', 'send_file', 'send_by_segments', 'skill', 'thinking'];
 
     this.activeSkillToolPolicy = options?.initialSkillToolPolicy ?? {
       allowedTools

@@ -1,0 +1,32 @@
+[
+  {
+    "case": "短消息",
+    "input": "你好",
+    "expect": "单条消息",
+    "timestamp": 1772935022.0077171
+  },
+  {
+    "case": "中等长度",
+    "input": "详细解释一下 React Hooks 的原理，包括 useState 和 useEffect 的工作机制",
+    "expect": "2-3条消息",
+    "timestamp": 1772935042.5439942
+  },
+  {
+    "case": "长内容",
+    "input": "写一份关于 TypeScript 类型系统的完整教程，包括基础类型、高级类型、泛型等",
+    "expect": "文件+说明",
+    "timestamp": 1772935063.077986
+  },
+  {
+    "case": "代码示例",
+    "input": "给我写一个完整的 Express 服务器示例，包括路由、中间件、错误处理",
+    "expect": "分段消息",
+    "timestamp": 1772935083.6124501
+  },
+  {
+    "case": "列表内容",
+    "input": "列出 15 个 JavaScript 最佳实践，每个都要有详细说明",
+    "expect": "分段消息",
+    "timestamp": 1772935104.150136
+  }
+]
