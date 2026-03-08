@@ -1,0 +1,52 @@
+[
+  {
+    "case": "极短消息",
+    "input": "好",
+    "wait_time": 10
+  },
+  {
+    "case": "正常短消息",
+    "input": "今天天气怎么样？",
+    "wait_time": 10
+  },
+  {
+    "case": "接近200字",
+    "input": "请简单介绍一下 Python 的特点，包括它的优势和适用场景，大概100字左右就可以",
+    "wait_time": 15
+  },
+  {
+    "case": "中等技术解释",
+    "input": "解释一下什么是闭包，为什么需要闭包，给个简单例子",
+    "wait_time": 20
+  },
+  {
+    "case": "多个概念",
+    "input": "对比一下 Promise、async/await、Generator 这三种异步方案的区别",
+    "wait_time": 25
+  },
+  {
+    "case": "简单代码",
+    "input": "写一个 Python 快速排序",
+    "wait_time": 15
+  },
+  {
+    "case": "完整示例",
+    "input": "写一个 React 组件，包含状态管理和事件处理",
+    "wait_time": 20
+  },
+  {
+    "case": "详细教程",
+    "input": "写一份 Git 使用教程，包括基础命令、分支管理、冲突解决等",
+    "wait_time": 30
+  },
+  {
+    "case": "短列表",
+    "input": "列出 5 个 Python 常用库",
+    "wait_time": 15
+  },
+  {
+    "case": "长列表",
+    "input": "列出 10 个前端性能优化技巧，每个都要有说明",
+    "wait_time": 25
+  }
+]
