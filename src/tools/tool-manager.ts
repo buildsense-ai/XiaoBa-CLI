@@ -10,7 +10,7 @@ import { SkillTool } from './skill-tool';
 
 import { SendFileTool } from './send-file-tool';
 import { ThinkingTool } from './thinking-tool';
-import { SendSegmentsTool } from './send-segments-tool';
+import { SendTextTool } from './send-text-tool';
 import { normalizeToolName } from '../utils/tool-aliases';
 
 /**
@@ -48,7 +48,7 @@ export class ToolManager implements ToolExecutor {
     // 平台通信工具
     this.registerTool(new ThinkingTool());
     this.registerTool(new SendFileTool());
-    this.registerTool(new SendSegmentsTool());
+    this.registerTool(new SendTextTool());
   }
 
 

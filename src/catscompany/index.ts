@@ -198,7 +198,7 @@ export class CatsCompanyBot {
     });
 
     // 处理斜杠命令
-    if (msg.text.startsWith('/')) {
+    if (typeof msg.text === 'string' && msg.text.startsWith('/')) {
       const parts = msg.text.slice(1).split(/\s+/);
       const command = parts[0];
       const args = parts.slice(1);

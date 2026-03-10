@@ -7,14 +7,14 @@ import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
 export class SendSegmentsTool implements Tool {
   definition: ToolDefinition = {
     name: 'send_by_segments',
-    description: '分段发送长消息。当回复内容超过 200 字时使用此工具，将内容拆成多个语义完整的段落逐条发送，提升用户阅读体验。',
+    description: '【强制使用】当回复内容超过 150 字时，禁止直接输出文本，必须使用此工具分段发送。将内容拆成多个段落（每段 50-150 字），逐条发送。直接输出长文本会导致用户体验极差。',
     parameters: {
       type: 'object',
       properties: {
         segments: {
           type: 'array',
           items: { type: 'string' },
-          description: '消息段落数组。每段应为 50-200 字的完整段落，保持语义独立可读。总共 2-5 段为宜。',
+          description: '消息段落数组。每段 50-150 字，保持语义完整。总共 2-5 段。',
         },
       },
       required: ['segments'],

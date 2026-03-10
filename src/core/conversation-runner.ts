@@ -14,6 +14,9 @@ import {
 
 const ESSENTIAL_TOOLS = new Set([
   'skill',
+  'thinking',
+  'send_text',
+  'send_file',
 ]);
 
 const TOOL_NAME_ALIASES: Record<string, string> = {
@@ -125,7 +128,7 @@ export class ConversationRunner {
     this.activeSkillName = options?.initialSkillName;
 
     // 设置默认工具策略：只允许基础 tool，其他工具通过 skill 访问
-    const allowedTools = ['read', 'write', 'edit', 'glob', 'grep', 'bash', 'send_file', 'send_by_segments', 'skill', 'thinking'];
+    const allowedTools = ['read', 'write', 'edit', 'glob', 'grep', 'bash', 'send_file', 'send_text', 'skill', 'thinking'];
 
     this.activeSkillToolPolicy = options?.initialSkillToolPolicy ?? {
       allowedTools
@@ -168,11 +171,14 @@ export class ConversationRunner {
       const requestMessages = this.buildProviderInputMessages(messages, nextTurnTransientHints);
       nextTurnTransientHints = [];
       this.ensurePromptBudget(requestMessages, activeTools);
+      const aiStartTime = Date.now();
       Logger.info(`[Turn ${turns}] 调用AI推理 (可用工具: ${activeTools.length}个)`);
 
       let response;
       try {
         response = await this.requestModelResponse(requestMessages, activeTools, callbacks);
+        const aiDuration = Date.now() - aiStartTime;
+        Logger.info(`[Turn ${turns}] AI推理完成，耗时: ${aiDuration}ms`);
       } catch (error: any) {
         if (hasDeliveredMessageOutThisRun && this.isMessageSurface()) {
           Logger.warning(`[Turn ${turns}] 已有外发消息送达，后续推理失败后直接收束: ${error.message}`);

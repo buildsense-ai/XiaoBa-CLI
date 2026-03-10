@@ -51,9 +51,30 @@ export class MessageSender {
     return segments;
   }
 
-  // 文件功能暂时移除，后续需要时再实现
   async sendFile(topic: string, filePath: string, fileName: string): Promise<void> {
-    Logger.warning('文件发送功能暂未实现');
+    try {
+      if (!fs.existsSync(filePath)) {
+        Logger.error(`文件不存在: ${filePath}`);
+        return;
+      }
+
+      const ext = path.extname(fileName).toLowerCase();
+      const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(ext.slice(1));
+      const uploadType = isImage ? 'image' as const : 'file' as const;
+
+      const uploadResult = await this.bot.uploadFile(filePath, uploadType);
+
+      if (isImage) {
+        await this.bot.sendImage(topic, uploadResult);
+      } else {
+        await this.bot.sendFile(topic, uploadResult);
+      }
+
+      Logger.info(`CatsCompany 文件已发送: ${fileName}`);
+    } catch (err: any) {
+      Logger.error(`文件发送失败: ${err.message}`);
+      throw err;
+    }
   }
 
   async downloadFile(url: string, fileName: string): Promise<string | null> {

@@ -27,6 +27,8 @@ export async function catscompanyCommand(): Promise<void> {
     sessionTTL: config.catscompany?.sessionTTL,
   };
 
+  console.log('[DEBUG] botConfig:', JSON.stringify(botConfig, null, 2));
+
   const bot = new CatsCompanyBot(botConfig);
 
   // 优雅退出
