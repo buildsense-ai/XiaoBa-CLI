@@ -22,29 +22,29 @@ connects to your IM platforms, and bends to your will.
 
 ---
 
-**8 Skills** · **9 Core Tools** · **Hot-Reload** · **Multi-LLM** · **IM Integration**
+**3 Skills** · **14 Core Tools** · **Hot-Reload** · **Multi-LLM** · **IM Integration**
 
-[Quick Start](#-quick-start) · [Architecture](#-architecture) · [Skills](#-skills) · [Configuration](#%EF%B8%8F-configuration) · [Documentation](#-documentation)
+[Quick Start](#-quick-start) · [Architecture](#-architecture) · [Skills](#-skills) · [Configuration](#%EF%B8%8F-configuration)
 
 </div>
 
 <br/>
 
-## ⚡ Quick Start
+## Quick Start
 
 ```bash
 git clone https://github.com/buildsense-ai/XiaoBa-CLI.git
 cd XiaoBa-CLI
 npm install
-cp .env.example .env   # 填入你的 API Key
+cp .env.example .env   # fill in your API keys
 npm run build
 ```
 
 ```bash
-# 交互模式
+# Interactive CLI
 node dist/index.js chat
 
-# 飞书 Bot
+# Feishu Bot
 node dist/index.js feishu
 
 # CatsCompany Bot
@@ -53,184 +53,118 @@ node dist/index.js catscompany
 
 <br/>
 
-## 🏗️ Architecture
-
-XiaoBa-CLI 采用三层架构设计：
+## Architecture
 
 ```
 ┌─────────────────────────────────────┐
 │         AI Agent Runtime            │
 ├─────────────────────────────────────┤
-│  Skill 层 (扩展层)                   │
-│  - 8 个 skills                      │
-│  - Markdown 定义                    │
-│  - 热加载支持                        │
+│  Skill Layer                        │
+│  - SKILL.md prompt + optional scripts│
+│  - Hot-reload, self-evolution       │
 ├─────────────────────────────────────┤
-│  Tool 层 (基础层)                    │
-│  - 9 个核心工具                      │
-│  - TypeScript 实现                  │
-│  - 权限控制                          │
+│  Tool Layer (14 tools)              │
+│  - File: read, write, edit, glob, grep │
+│  - Shell: execute_shell             │
+│  - Communication: send_text, send_file │
+│  - Meta: thinking, skill            │
+│  - Sub-agent: spawn, check, stop, resume │
+├─────────────────────────────────────┤
+│  Platform Adapters                  │
+│  - Feishu (WebSocket)               │
+│  - CatsCompany (WebSocket)          │
+│  - CLI (interactive)                │
 └─────────────────────────────────────┘
 ```
 
-### Core Tools (9)
+### Core Tools (14)
 
-| Tool | 功能 |
-|------|------|
-| `read` | 读取文件 |
-| `write` | 写入文件 |
-| `edit` | 编辑文件 |
-| `glob` | 文件搜索 (支持 glob 模式) |
-| `grep` | 内容搜索 (正则表达式) |
-| `bash` | 命令执行 |
-| `skill` | 调用 skill (支持 `skill reload` 热加载) |
-| `send_file` | 发送文件 |
-| `thinking` / `reply` | 消息工具 (根据模式) |
+| Category | Tool | Description |
+|----------|------|-------------|
+| File | `read_file` | Read file contents |
+| File | `write_file` | Write file |
+| File | `edit_file` | Edit file (diff-based) |
+| File | `glob` | File search (glob patterns) |
+| File | `grep` | Content search (regex) |
+| Shell | `execute_shell` | Run shell commands |
+| Comm | `send_text` | Send text message to user |
+| Comm | `send_file` | Send file to user |
+| Meta | `thinking` | Internal reasoning (not visible to user) |
+| Meta | `skill` | Invoke a skill |
+| Agent | `spawn_subagent` | Spawn background sub-agent |
+| Agent | `check_subagent` | Check sub-agent progress |
+| Agent | `stop_subagent` | Stop a sub-agent |
+| Agent | `resume_subagent` | Resume a sub-agent |
 
-### Skills (11)
+### Skills (3)
 
-可插拔的专业能力模块，Markdown 定义，零代码扩展。
+Pluggable capability modules defined in Markdown.
 
-| Skill | 功能 |
-|-------|------|
-| `sub-agent` | 后台子任务执行 |
-| `academic-search` | 学术论文搜索 |
-| `image-analysis` | 图片分析 OCR |
-| `feishu-collab` | 飞书群协作 |
-| `multi-agent` | 多智能体协作 |
-| `context-recall` | 上下文回忆 |
-| `task-planning` | 任务规划拆分 |
-| `web-research` | 网络研究 |
-| `deploy-agent` | Agent 部署 |
-| `agent-browser` | 浏览器自动化 |
-| `devops-manager` | DevOps 管理 |
+| Skill | Description |
+|-------|-------------|
+| `sub-agent` | Background sub-task execution |
+| `agent-browser` | Browser automation via Playwright |
+| `self-evolution` | Create new skills and tools at runtime |
 
 <br/>
 
-## 🔥 Features
+## Skills
 
-### 🔄 Hot Reload
-
-修改 skill 无需重启：
+### Using Skills
 
 ```bash
-# AI 调用
-skill reload
+# Slash command in chat
+/agent-browser https://example.com
 
-# 新 skill 立即生效
+# Or mention by name — auto-triggered if invocable: both
 ```
 
-### 🎯 Two Modes
+### Creating Custom Skills
 
-**Message Mode** (推荐 IM 平台):
-- AI 文本输出自动转发
-- 使用 `thinking` 工具内部推理
-- 自然对话体验
+1. Create `skills/my-skill/SKILL.md`:
 
-**Ultra Mode** (精确控制):
-- AI 必须调用 `reply` 工具
-- 使用 `pause_turn` 结束回合
-- 完全可控
-
-```bash
-GAUZ_MESSAGE_MODE=message  # 或 ultra
-```
-
-### 🔗 Multi-LLM Support
-
-支持任何 OpenAI 兼容 API：
-- Claude (Anthropic)
-- GPT (OpenAI)
-- DeepSeek
-- 自定义 Provider
-
-### 📱 IM Integration
-
-- **飞书 (Lark)** - WebSocket 长连接
-- **CatsCompany** - 自定义 IM
-
-<br/>
-
-## 🎯 Skills
-
-### 创建自定义 Skill
-
-1. 创建目录和文件：
-```bash
-mkdir skills/my-skill
-```
-
-2. 创建 `skills/my-skill/SKILL.md`：
 ```markdown
 ---
 name: my-skill
-description: 我的自定义 Skill
-version: 1.0.0
+description: What this skill does
+invocable: user
 ---
 
-你是一个专业的...
-[在这里写 prompt]
+Your prompt here...
 ```
 
-3. 可选：添加辅助脚本
-```bash
-# skills/my-skill/helper.sh
-echo "helper script"
-```
+2. Optional: add scripts under `skills/my-skill/`
+3. Hot-reload: `skill reload` or auto-detected
 
-4. 在 SKILL.md 中说明如何使用脚本
-
-5. 热加载生效：
-```bash
-# AI 调用
-skill reload
-```
-
-**注意**: 脚本通过 `bash` 工具执行，不会自动注册为独立工具。
+Or use the **self-evolution** skill to create new skills interactively.
 
 <br/>
 
-## ⚙️ Configuration
+## Configuration
 
-复制 `.env.example` → `.env`：
+Copy `.env.example` to `.env`:
 
 ```bash
-# LLM 配置
+# Required: LLM provider
 GAUZ_LLM_PROVIDER=anthropic
-GAUZ_LLM_MODEL=claude-opus-4-6
+GAUZ_LLM_MODEL=claude-sonnet-4-20250514
 GAUZ_LLM_API_KEY=your-key
 
-# 运行模式
-GAUZ_MESSAGE_MODE=message
-
-# 工具白名单 (可选)
-GAUZ_TOOL_ALLOW=read,write,bash,skill
-
-# 飞书 Bot (可选)
+# Optional: Feishu bot
 FEISHU_APP_ID=your-app-id
 FEISHU_APP_SECRET=your-secret
+
+# Optional: CatsCompany bot
+CATSCOMPANY_SERVER_URL=wss://your-server/v0/channels
+CATSCOMPANY_API_KEY=your-key
+CATSCOMPANY_HTTP_BASE_URL=https://your-server
 ```
 
-<br/>
-
-## 📚 Documentation
-
-- [ARCHITECTURE.md](./ARCHITECTURE.md) - 架构设计详解
-- [SKILL-DEVELOPMENT.md](./SKILL-DEVELOPMENT.md) - Skill 开发指南 (即将推出)
+See [.env.example](./.env.example) for all options.
 
 <br/>
 
-## 🤝 Contributing
-
-```bash
-fork → git checkout -b feat/xxx → commit → push → PR
-```
-
-欢迎贡献 Issue、PR、Skill、Tool。
-
-<br/>
-
-## 📄 License
+## License
 
 [MIT](./LICENSE)
 
@@ -238,8 +172,6 @@ fork → git checkout -b feat/xxx → commit → push → PR
 
 <div align="center">
 
-**如果觉得有用，点个 ⭐ 就是最大的支持。**
-
-Built with 🖤 by **CatCompany**
+Built with intent by **CatCompany**
 
 </div>
