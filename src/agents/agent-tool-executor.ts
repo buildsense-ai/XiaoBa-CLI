@@ -14,8 +14,7 @@ function normalizeToolName(name: string): string {
 
 /**
  * AgentToolExecutor - 轻量适配器
- * 将 AgentContext.tools (Tool[]) 包装为 ToolExecutor 接口
- * 供 ConversationRunner 在 Agent 内部使用
+ * 将 Tool[] 包装为 ToolExecutor 接口，供 ConversationRunner 在 Agent/SubAgent 内部使用
  */
 export class AgentToolExecutor implements ToolExecutor {
   constructor(
@@ -24,14 +23,8 @@ export class AgentToolExecutor implements ToolExecutor {
     private contextDefaults: Partial<ToolExecutionContext> = {},
   ) {}
 
-  getToolDefinitions(allowedNames?: string[]): ToolDefinition[] {
-    if (!allowedNames || allowedNames.length === 0) {
-      return this.tools.map(t => t.definition);
-    }
-    const allowed = new Set(allowedNames.map(name => normalizeToolName(name)));
-    return this.tools
-      .filter(t => allowed.has(t.definition.name))
-      .map(t => t.definition);
+  getToolDefinitions(): ToolDefinition[] {
+    return this.tools.map(t => t.definition);
   }
 
   async executeTool(
@@ -41,38 +34,6 @@ export class AgentToolExecutor implements ToolExecutor {
   ): Promise<ToolResult> {
     const requestedName = toolCall.function.name;
     const name = normalizeToolName(requestedName);
-
-    const allowedSet = contextOverrides?.allowedToolNames
-      ? new Set(contextOverrides.allowedToolNames.map(toolName => normalizeToolName(toolName)))
-      : null;
-    const blockedSet = contextOverrides?.blockedToolNames
-      ? new Set(contextOverrides.blockedToolNames.map(toolName => normalizeToolName(toolName)))
-      : null;
-
-    if (allowedSet && !allowedSet.has(name)) {
-      return {
-        tool_call_id: toolCall.id,
-        role: 'tool',
-        name: requestedName,
-        content: `执行被阻止：工具 "${requestedName}" 不在当前 skill 允许列表中`,
-        ok: false,
-        errorCode: 'TOOL_NOT_ALLOWED_BY_SKILL_POLICY',
-        retryable: false,
-      };
-    }
-
-    if (blockedSet && blockedSet.has(name)) {
-      return {
-        tool_call_id: toolCall.id,
-        role: 'tool',
-        name: requestedName,
-        content: `执行被阻止：工具 "${requestedName}" 被当前 skill 明确禁止`,
-        ok: false,
-        errorCode: 'TOOL_BLOCKED_BY_SKILL_POLICY',
-        retryable: false,
-      };
-    }
-
     const tool = this.tools.find(t => t.definition.name === name);
 
     if (!tool) {

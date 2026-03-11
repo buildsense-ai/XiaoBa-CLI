@@ -3,7 +3,6 @@ import {
   Skill,
   SkillActivationSignal,
   SkillInvocationContext,
-  SkillToolPolicy,
 } from '../types/skill';
 import { SkillExecutor } from './skill-executor';
 
@@ -22,11 +21,6 @@ export function buildSkillActivationSignal(
 
   if (typeof skill.metadata.maxTurns === 'number' && Number.isFinite(skill.metadata.maxTurns)) {
     signal.maxTurns = skill.metadata.maxTurns;
-  }
-
-  const normalizedPolicy = normalizeSkillToolPolicy(skill.metadata.toolPolicy);
-  if (normalizedPolicy) {
-    signal.toolPolicy = normalizedPolicy;
   }
 
   return signal;
@@ -56,11 +50,6 @@ export function parseSkillActivationSignal(content: string): SkillActivationSign
 
     if (typeof parsed.maxTurns === 'number' && Number.isFinite(parsed.maxTurns)) {
       signal.maxTurns = parsed.maxTurns;
-    }
-
-    const normalizedPolicy = normalizeSkillToolPolicy(parsed.toolPolicy);
-    if (normalizedPolicy) {
-      signal.toolPolicy = normalizedPolicy;
     }
 
     return signal;
@@ -98,33 +87,4 @@ export function upsertSkillSystemMessage(
   };
   messages.push(systemMsg);
   return systemMsg;
-}
-
-function normalizeSkillToolPolicy(policy: unknown): SkillToolPolicy | undefined {
-  if (!policy || typeof policy !== 'object') {
-    return undefined;
-  }
-
-  const allowedRaw = (policy as SkillToolPolicy).allowedTools;
-  const disallowedRaw = (policy as SkillToolPolicy).disallowedTools;
-
-  const allowedTools = Array.isArray(allowedRaw)
-    ? Array.from(new Set(allowedRaw.map(name => String(name).trim()).filter(Boolean)))
-    : [];
-  const disallowedTools = Array.isArray(disallowedRaw)
-    ? Array.from(new Set(disallowedRaw.map(name => String(name).trim()).filter(Boolean)))
-    : [];
-
-  if (allowedTools.length === 0 && disallowedTools.length === 0) {
-    return undefined;
-  }
-
-  const normalized: SkillToolPolicy = {};
-  if (allowedTools.length > 0) {
-    normalized.allowedTools = allowedTools;
-  }
-  if (disallowedTools.length > 0) {
-    normalized.disallowedTools = disallowedTools;
-  }
-  return normalized;
 }

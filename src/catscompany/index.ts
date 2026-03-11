@@ -1,7 +1,7 @@
 import { CatsClient, MessageContext } from './client';
 import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo } from './types';
 import { MessageSender } from './message-sender';
-import { SessionManager } from './session-manager';
+import { MessageSessionManager } from '../core/message-session-manager';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
@@ -44,7 +44,7 @@ const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 export class CatsCompanyBot {
   private bot: CatsClient;
   private sender: MessageSender;
-  private sessionManager: SessionManager;
+  private sessionManager: MessageSessionManager;
   private agentServices: AgentServices;
   /** key = pendingAnswerId */
   private pendingAnswers = new Map<string, PendingAnswer>();
@@ -80,11 +80,11 @@ export class CatsCompanyBot {
       skillManager,
     };
 
-    this.sessionManager = new SessionManager(
+    this.sessionManager = new MessageSessionManager(
       this.agentServices,
       config.sessionTTL,
     );
-    this.sessionManager.setSender(this.sender);
+    this.sessionManager.setWakeupSendFn((channelId, text) => this.sender.reply(channelId, text));
   }
 
   /**
@@ -167,7 +167,9 @@ export class CatsCompanyBot {
     // 过滤 bot 自己发出的消息，防止循环
     if (this.botUid && msg.senderId === this.botUid) return;
 
-    const key = this.sessionManager.getSessionKey(msg);
+    const key = msg.chatType === 'group'
+      ? `cc_group:${msg.topic}`
+      : `cc_user:${msg.senderId}`;
 
     // ── 拦截：如果当前 session 正在等待回答，按 sender 精确匹配 ──
     const pendingId = this.pendingAnswerBySession.get(key);

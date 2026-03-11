@@ -172,7 +172,6 @@ export class SubAgentSession {
     const runner = new ConversationRunner(this.aiService, toolManager, {
       maxTurns: skill.metadata.maxTurns ?? 100,
       initialSkillName: this.skillName,
-      initialSkillToolPolicy: skill.metadata.toolPolicy,
       enableCompression: true,
       shouldContinue: () => !this.stopped,
       toolExecutionContext: {

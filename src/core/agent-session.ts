@@ -2,7 +2,7 @@ import { Message } from '../types';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
-import { SkillActivationSignal, SkillInvocationContext, SkillToolPolicy } from '../types/skill';
+import { SkillActivationSignal, SkillInvocationContext } from '../types/skill';
 import { ChannelCallbacks } from '../types/tool';
 import {
   buildSkillActivationSignal,
@@ -77,7 +77,6 @@ export class AgentSession {
   private initialized = false;
   private busy = false;
   private activeSkillName?: string;
-  private activeSkillToolPolicy?: SkillToolPolicy;
   private activeSkillMaxTurns?: number;
   private pendingRestore?: Message[];
   /** 过期时主动唤醒用户的回调（由平台 SessionManager 注入） */
@@ -320,7 +319,6 @@ thinking 工具使用场景（谨慎使用）：
       if (detectedSkillName) {
         const detectedSkill = this.services.skillManager.getSkill(detectedSkillName);
         this.activeSkillName = detectedSkillName;
-        this.activeSkillToolPolicy = detectedSkill?.metadata.toolPolicy;
         this.activeSkillMaxTurns = detectedSkill?.metadata.maxTurns;
       }
 
@@ -336,7 +334,6 @@ thinking 工具使用场景（谨慎使用）：
         {
           ...(effectiveMaxTurns ? { maxTurns: effectiveMaxTurns } : {}),
           initialSkillName: this.activeSkillName,
-          initialSkillToolPolicy: this.activeSkillToolPolicy,
           shouldContinue: () => !this.interruptRequested,
           toolExecutionContext: {
             sessionId: this.key,
@@ -392,12 +389,12 @@ thinking 工具使用场景（谨慎使用）：
       // 持久化本轮用户可见的消息（user + reply/send_file工具调用）
       // 完整的工具调用链路已存入log文件，可通过 recall_log 工具查询
       if (this.isChatSession()) {
-        // 收集 reply 和 send_file 的 tool_call_id
+        // 收集 send_text 和 send_file 的 tool_call_id
         const outboundToolCallIds = new Set<string>();
         result.newMessages.forEach(m => {
           if (m.role === 'assistant' && m.tool_calls) {
             m.tool_calls.forEach(tc => {
-              if (tc.function.name === 'reply' || tc.function.name === 'send_file') {
+              if (tc.function.name === 'send_text' || tc.function.name === 'send_file') {
                 outboundToolCallIds.add(tc.id);
               }
             });
@@ -407,7 +404,7 @@ thinking 工具使用场景（谨慎使用）：
         const visibleMsgs = [
           { role: 'user' as const, content: text },
           ...result.newMessages.filter(m => {
-            // 保留 reply 和 send_file 的 tool_use
+            // 保留 send_text 和 send_file 的 tool_use
             if (m.role === 'assistant' && m.tool_calls) {
               return m.tool_calls.some(tc => outboundToolCallIds.has(tc.id));
             }
@@ -423,29 +420,20 @@ thinking 工具使用场景（谨慎使用）：
         }
       }
 
-      // 清理内存中的工具调用细节，保留 reply 和 send_file 的工具调用
-      // 这样AI知道必须通过工具发送消息，不会被误导直接输出文本
-      const outboundToolCallIds = new Set<string>();
-      this.messages.forEach(m => {
-        if (m.role === 'assistant' && m.tool_calls) {
-          m.tool_calls.forEach(tc => {
-            if (tc.function.name === 'reply' || tc.function.name === 'send_file') {
-              outboundToolCallIds.add(tc.id);
+      // 替换 base64 图片数据为轻量占位符，避免撑爆 context
+      for (const msg of this.messages) {
+        if (Array.isArray(msg.content)) {
+          msg.content = msg.content.map(block => {
+            if (block.type === 'image' && block.source?.data) {
+              return { type: 'text' as const, text: `[图片: ${block.source.media_type || 'image'}]` };
             }
+            return block;
           });
         }
-      });
-
-      this.messages = this.messages.filter(m =>
-        m.role === 'system' ||
-        m.role === 'user' ||
-        (m.role === 'assistant' && m.tool_calls && m.tool_calls.some(tc => outboundToolCallIds.has(tc.id))) ||
-        (m.role === 'tool' && m.tool_call_id && outboundToolCallIds.has(m.tool_call_id))
-      );
+      }
 
       // 清除 skill 激活状态（turn-scoped，避免状态泄漏到下一轮）
       this.activeSkillName = undefined;
-      this.activeSkillToolPolicy = undefined;
       this.activeSkillMaxTurns = undefined;
 
       // 移除 skill 系统消息（下一轮需要时会重新注入）
@@ -519,7 +507,6 @@ thinking 工具使用场景（谨慎使用）：
     this.messages = [];
     this.initialized = false;
     this.activeSkillName = undefined;
-    this.activeSkillToolPolicy = undefined;
     this.activeSkillMaxTurns = undefined;
     this.lastActiveAt = Date.now();
   }
@@ -807,7 +794,6 @@ ${conversationText}
   private applySkillActivation(activation: SkillActivationSignal): void {
     upsertSkillSystemMessage(this.messages, activation);
     this.activeSkillName = activation.skillName;
-    this.activeSkillToolPolicy = activation.toolPolicy;
     this.activeSkillMaxTurns = activation.maxTurns;
   }
 
@@ -830,7 +816,6 @@ ${conversationText}
       skillName,
       prompt,
       maxTurns: skill?.metadata.maxTurns,
-      toolPolicy: skill?.metadata.toolPolicy,
     };
   }
 }

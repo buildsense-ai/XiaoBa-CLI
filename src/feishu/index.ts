@@ -4,7 +4,7 @@ import * as path from 'path';
 import { FeishuConfig } from './types';
 import { MessageHandler } from './message-handler';
 import { MessageSender } from './message-sender';
-import { SessionManager } from './session-manager';
+import { MessageSessionManager } from '../core/message-session-manager';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
@@ -73,7 +73,7 @@ export class FeishuBot {
   private wsClient: Lark.WSClient;
   private handler: MessageHandler;
   private sender: MessageSender;
-  private sessionManager: SessionManager;
+  private sessionManager: MessageSessionManager;
   private agentServices: AgentServices;
   private bridgeServer: BridgeServer | null = null;
   private bridgeClient: BridgeClient | null = null;
@@ -150,16 +150,16 @@ export class FeishuBot {
       skillManager,
     };
 
-    this.sessionManager = new SessionManager(
+    this.sessionManager = new MessageSessionManager(
       this.agentServices,
       config.sessionTTL,
     );
-    this.sessionManager.setSender(this.sender);
+    this.sessionManager.setWakeupSendFn((channelId, text) => this.sender.reply(channelId, text));
 
     // H1: 注入同事档案到 session
     const teammateCtx = buildTeammateContext(teammates);
     if (teammateCtx) {
-      this.sessionManager.setTeammateContext(teammateCtx);
+      this.sessionManager.setContextInjector(session => session.injectContext(teammateCtx));
       Logger.info(`已加载同事档案: ${teammates.map(t => t.name).join(', ')}`);
     }
   }
@@ -260,7 +260,9 @@ export class FeishuBot {
     }
 
 
-    const key = this.sessionManager.getSessionKey(msg);
+    const key = msg.chatType === 'group'
+      ? `group:${msg.chatId}`
+      : `user:${msg.senderId}`;
 
     // ── 拦截：如果当前 session 正在等待回答，按 sender 精确匹配 ──
     const pendingId = this.pendingAnswerBySession.get(key);

@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
-import { ToolPolicyGateway } from '../utils/tool-policy-gateway';
+import { isReadPathAllowed } from '../utils/safety';
 
 /**
  * Read 工具 - 读取文件内容
@@ -43,7 +43,7 @@ export class ReadTool implements Tool {
         ? file_path
         : path.join(context.workingDirectory, file_path);
 
-      const pathPermission = ToolPolicyGateway.checkReadPath(absolutePath, context);
+      const pathPermission = isReadPathAllowed(absolutePath, context.workingDirectory);
       if (!pathPermission.allowed) {
         return `执行被阻止: ${pathPermission.reason}`;
       }

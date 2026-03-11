@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
 import { glob } from 'glob';
-import { ToolPolicyGateway } from '../utils/tool-policy-gateway';
+import { isReadPathAllowed } from '../utils/safety';
 
 /**
  * Glob 工具 - 文件模式匹配搜索
@@ -41,7 +41,7 @@ export class GlobTool implements Tool {
         ? (path.isAbsolute(searchPath) ? searchPath : path.join(context.workingDirectory, searchPath))
         : context.workingDirectory;
 
-      const pathPermission = ToolPolicyGateway.checkReadPath(cwd, context);
+      const pathPermission = isReadPathAllowed(cwd, context.workingDirectory);
       if (!pathPermission.allowed) {
         return `执行被阻止: ${pathPermission.reason}`;
       }

@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
 import { Logger } from '../utils/logger';
-import { ToolPolicyGateway } from '../utils/tool-policy-gateway';
+import { isToolAllowed, isPathAllowed } from '../utils/safety';
 
 /**
  * Write 工具 - 写入文件内容
@@ -31,7 +31,7 @@ export class WriteTool implements Tool {
     const { file_path, content } = args;
 
     try {
-      const toolPermission = ToolPolicyGateway.checkTool(this.definition.name, context);
+      const toolPermission = isToolAllowed(this.definition.name);
       if (!toolPermission.allowed) {
         return `执行被阻止: ${toolPermission.reason}`;
       }
@@ -41,7 +41,7 @@ export class WriteTool implements Tool {
         ? file_path
         : path.join(context.workingDirectory, file_path);
 
-      const pathPermission = ToolPolicyGateway.checkWritePath(absolutePath, context);
+      const pathPermission = isPathAllowed(absolutePath, context.workingDirectory);
       if (!pathPermission.allowed) {
         return `执行被阻止: ${pathPermission.reason}`;
       }
