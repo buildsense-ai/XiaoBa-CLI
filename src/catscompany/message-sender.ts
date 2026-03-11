@@ -78,7 +78,24 @@ export class MessageSender {
   }
 
   async downloadFile(url: string, fileName: string): Promise<string | null> {
-    Logger.warning('文件下载功能暂未实现');
-    return null;
+    try {
+      const tmpDir = path.join(process.cwd(), 'tmp', 'downloads');
+      fs.mkdirSync(tmpDir, { recursive: true });
+
+      const localPath = path.join(tmpDir, `${Date.now()}_${fileName}`);
+      const res = await fetch(url);
+      if (!res.ok) {
+        Logger.error(`文件下载失败: HTTP ${res.status} - ${url}`);
+        return null;
+      }
+
+      const buffer = Buffer.from(await res.arrayBuffer());
+      fs.writeFileSync(localPath, buffer);
+      Logger.info(`文件已下载: ${fileName} → ${localPath} (${buffer.length} bytes)`);
+      return localPath;
+    } catch (err: any) {
+      Logger.error(`文件下载失败: ${err.message}`);
+      return null;
+    }
   }
 }

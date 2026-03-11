@@ -86,7 +86,7 @@ export class CatsClient extends EventEmitter {
       const ctx: MessageContext = {
         topic: msg.data.topic || '',
         senderId: msg.data.from || '',
-        text: msg.data.content || '',
+        text: typeof msg.data.content === 'string' ? msg.data.content : '',
         content: msg.data.content,
         isGroup: false,
       };

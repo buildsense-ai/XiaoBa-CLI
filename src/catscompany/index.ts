@@ -279,7 +279,7 @@ export class CatsCompanyBot {
    * 从 MessageContext 解析为 ParsedCatsMessage
    */
   private parseMessage(ctx: MessageContext): ParsedCatsMessage | null {
-    const text = ctx.text;
+    const text = typeof ctx.text === 'string' ? ctx.text : '';
     const chatType = ctx.isGroup ? 'group' : 'p2p';
 
     // 检测 rich content 中的文件/图片
