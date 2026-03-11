@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from 'child_process';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
-import { ToolPolicyGateway } from '../utils/tool-policy-gateway';
+import { isReadPathAllowed } from '../utils/safety';
 
 /**
  * Grep 工具 - 代码内容搜索（基于 ripgrep）
@@ -70,7 +70,7 @@ export class GrepTool implements Tool {
       const resolvedSearchPath = searchPath
         ? (path.isAbsolute(searchPath) ? searchPath : path.join(context.workingDirectory, searchPath))
         : context.workingDirectory;
-      const pathPermission = ToolPolicyGateway.checkReadPath(resolvedSearchPath, context);
+      const pathPermission = isReadPathAllowed(resolvedSearchPath, context.workingDirectory);
       if (!pathPermission.allowed) {
         return `执行被阻止: ${pathPermission.reason}`;
       }

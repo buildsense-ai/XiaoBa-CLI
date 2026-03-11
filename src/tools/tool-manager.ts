@@ -7,11 +7,30 @@ import { EditTool } from './edit-tool';
 import { GlobTool } from './glob-tool';
 import { GrepTool } from './grep-tool';
 import { SkillTool } from './skill-tool';
-
 import { SendFileTool } from './send-file-tool';
 import { ThinkingTool } from './thinking-tool';
 import { SendTextTool } from './send-text-tool';
-import { normalizeToolName } from '../utils/tool-aliases';
+import { SpawnSubagentTool } from './spawn-subagent-tool';
+import { CheckSubagentTool } from './check-subagent-tool';
+import { StopSubagentTool } from './stop-subagent-tool';
+import { ResumeSubagentTool } from './resume-subagent-tool';
+
+/**
+ * 工具名别名映射（Claude Code 工具名 → XiaoBa 内部注册名）
+ */
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  Bash: 'execute_shell',
+  bash: 'execute_shell',
+  Shell: 'execute_shell',
+  execute_bash: 'execute_shell',
+  Read: 'read_file',
+  Write: 'write_file',
+  Edit: 'edit_file',
+};
+
+function resolveToolName(name: string): string {
+  return TOOL_NAME_ALIASES[name] ?? name;
+}
 
 /**
  * 工具管理器 - 管理所有可用的工具
@@ -30,11 +49,8 @@ export class ToolManager implements ToolExecutor {
     this.registerDefaultTools();
   }
 
-  /**
-   * 注册默认工具
-   */
   private registerDefaultTools(): void {
-    // 基础文件和Shell工具
+    // 基础文件工具 (6)
     this.registerTool(new ReadTool());
     this.registerTool(new WriteTool());
     this.registerTool(new EditTool());
@@ -42,26 +58,27 @@ export class ToolManager implements ToolExecutor {
     this.registerTool(new GrepTool());
     this.registerTool(new ShellTool());
 
-    // Skill 系统工具
-    this.registerTool(new SkillTool());
-
-    // 平台通信工具
-    this.registerTool(new ThinkingTool());
-    this.registerTool(new SendFileTool());
+    // 通信工具 (2)
     this.registerTool(new SendTextTool());
+    this.registerTool(new SendFileTool());
+
+    // 元工具 (2)
+    this.registerTool(new ThinkingTool());
+    this.registerTool(new SpawnSubagentTool());
+
+    // Sub-Agent 管理 (2)
+    this.registerTool(new CheckSubagentTool());
+    this.registerTool(new StopSubagentTool());
+    this.registerTool(new ResumeSubagentTool());
+
+    // Skill 调用 (1)
+    this.registerTool(new SkillTool());
   }
 
-
-  /**
-   * 注册工具
-   */
   registerTool(tool: Tool): void {
     this.tools.set(tool.definition.name, tool);
   }
 
-  /**
-   * 更新默认执行上下文（session/surface/run 等）
-   */
   setContextDefaults(contextDefaults: Partial<ToolExecutionContext>): void {
     this.contextDefaults = {
       ...this.contextDefaults,
@@ -70,77 +87,21 @@ export class ToolManager implements ToolExecutor {
   }
 
   /**
-   * 将工具名解析为 XiaoBa 内部注册名（兼容 Claude Code 别名）
+   * 获取所有工具定义（直接返回全部，不再过滤）
    */
-  static resolveToolName(name: string): string {
-    return normalizeToolName(name);
-  }
-
-  /**
-   * 批量解析工具名列表
-   */
-  private static resolveToolNames(names: string[]): string[] {
-    return names.map(n => ToolManager.resolveToolName(n));
-  }
-
-  /**
-   * 获取所有工具定义（用于传递给 AI）
-   */
-  getToolDefinitions(allowedNames?: string[]): ToolDefinition[] {
-    const all = Array.from(this.tools.values());
-    if (!allowedNames || allowedNames.length === 0) {
-      return all.map(tool => tool.definition);
-    }
-    const allowed = new Set(ToolManager.resolveToolNames(allowedNames));
-    return all.filter(t => allowed.has(t.definition.name)).map(t => t.definition);
+  getToolDefinitions(): ToolDefinition[] {
+    return Array.from(this.tools.values()).map(tool => tool.definition);
   }
 
   /**
    * 执行工具调用
-   * @param toolCall 工具调用请求
-   * @param conversationHistory 可选的对话历史，传递给工具作为上下文
    */
   async executeTool(
     toolCall: ToolCall,
     conversationHistory?: any[],
     contextOverrides?: Partial<ToolExecutionContext>,
   ): Promise<ToolResult> {
-    // 解析别名：Claude Code 工具名 → XiaoBa 内部名
-    const toolName = ToolManager.resolveToolName(toolCall.function.name);
-
-    // 先做 skill 策略层的强制校验，避免仅靠提示词约束
-    // 策略列表也做别名解析，兼容 Claude Code 格式的 allowed-tools / disallowed-tools
-    const allowedSet = contextOverrides?.allowedToolNames
-      ? new Set(ToolManager.resolveToolNames(contextOverrides.allowedToolNames))
-      : null;
-    const blockedSet = contextOverrides?.blockedToolNames
-      ? new Set(ToolManager.resolveToolNames(contextOverrides.blockedToolNames))
-      : null;
-
-    if (allowedSet && !allowedSet.has(toolName)) {
-      return {
-        tool_call_id: toolCall.id,
-        role: 'tool',
-        name: toolName,
-        content: `执行被阻止：工具 "${toolName}" 不在当前 skill 允许列表中`,
-        ok: false,
-        errorCode: 'TOOL_NOT_ALLOWED_BY_SKILL_POLICY',
-        retryable: false,
-      };
-    }
-
-    if (blockedSet && blockedSet.has(toolName)) {
-      return {
-        tool_call_id: toolCall.id,
-        role: 'tool',
-        name: toolName,
-        content: `执行被阻止：工具 "${toolName}" 被当前 skill 明确禁止`,
-        ok: false,
-        errorCode: 'TOOL_BLOCKED_BY_SKILL_POLICY',
-        retryable: false,
-      };
-    }
-
+    const toolName = resolveToolName(toolCall.function.name);
     const tool = this.tools.get(toolName);
 
     if (!tool) {
@@ -201,23 +162,14 @@ export class ToolManager implements ToolExecutor {
     }
   }
 
-  /**
-   * 获取工具数量
-   */
   getToolCount(): number {
     return this.tools.size;
   }
 
-  /**
-   * 获取工具实例
-   */
   getTool<T extends Tool = Tool>(name: string): T | undefined {
     return this.tools.get(name) as T | undefined;
   }
 
-  /**
-   * 获取所有工具实例
-   */
   getAllTools(): Tool[] {
     return Array.from(this.tools.values());
   }
