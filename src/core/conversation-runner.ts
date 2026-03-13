@@ -120,6 +120,8 @@ export class ConversationRunner {
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.compressor = new ContextCompressor(this.aiService, {
       maxContextTokens: this.maxPromptTokens,
+      compactionThreshold: 0.5,
+      keepRecentCount: 4,
     });
   }
 
@@ -182,6 +184,11 @@ export class ConversationRunner {
 
       if (!response.toolCalls || response.toolCalls.length === 0) {
         Logger.info(`[Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(response.content || '', 300)}`);
+
+        // 统一处理：所有最终回复都添加到历史
+        messages.push({ role: 'assistant', content: response.content || '' });
+        newMessages.push({ role: 'assistant', content: response.content || '' });
+
         if (this.isMessageSurface()) {
           let finalText = response.content || '';
           finalText = finalText.replace(/^\[已发送信息\]\s*/, '');

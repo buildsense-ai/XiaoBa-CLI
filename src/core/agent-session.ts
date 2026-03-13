@@ -362,20 +362,6 @@ thinking 工具使用场景（谨慎使用）：
         }
       }
 
-      // runner 在"最终无工具调用"时不会自动附加 assistant 消息，这里补齐
-      const lastMessage = this.messages[this.messages.length - 1];
-      if (
-        result.finalResponseVisible &&
-        result.response &&
-        (
-          !lastMessage ||
-          lastMessage.role !== 'assistant' ||
-          (lastMessage.content || '') !== result.response
-        )
-      ) {
-        this.messages.push({ role: 'assistant', content: result.response });
-      }
-
       // 输出本次请求的 metrics 摘要
       const metrics = Metrics.getSummary();
       if (metrics.aiCalls > 0 || metrics.toolCalls > 0) {
@@ -504,6 +490,7 @@ thinking 工具使用场景（谨慎使用）：
   /** 清空历史 */
   clear(): void {
     SessionStore.getInstance().archiveSession(this.key);
+    removeSessionSummary(this.key); // 同时清除长期记忆摘要
     this.messages = [];
     this.initialized = false;
     this.activeSkillName = undefined;
