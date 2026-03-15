@@ -12,6 +12,7 @@ import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
 import { SubAgentManager } from './sub-agent-manager';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
+import { SessionTurnLogger } from '../utils/session-turn-logger';
 import { saveSessionSummary, loadSessionSummary, removeSessionSummary, getMasterSummary, updateMasterSummary } from '../utils/local-session-store';
 import { SessionStore } from '../utils/session-store';
 import { Metrics } from '../utils/metrics';
@@ -81,14 +82,24 @@ export class AgentSession {
   private pendingRestore?: Message[];
   /** 过期时主动唤醒用户的回调（由平台 SessionManager 注入） */
   private wakeupReply?: (text: string) => Promise<void>;
-  /** 外部请求中断当前 run（例如用户在 busy 时发送“停止”） */
+  /** 外部请求中断当前 run（例如用户在 busy 时发送”停止”） */
   private interruptRequested = false;
   lastActiveAt: number = Date.now();
+  private sessionTurnLogger: SessionTurnLogger;
 
   constructor(
     public readonly key: string,
     private services: AgentServices,
-  ) {}
+  ) {
+    const sessionType = this.extractSessionType(key);
+    this.sessionTurnLogger = new SessionTurnLogger(sessionType, key);
+  }
+
+  private extractSessionType(key: string): string {
+    if (key.startsWith('catscompany:')) return 'catscompany';
+    if (key.startsWith('feishu:')) return 'feishu';
+    return 'chat';
+  }
 
   /** 注入主动唤醒回调（由平台 SessionManager 在创建/获取 session 时调用） */
   setWakeupReply(callback: (text: string) => Promise<void>): void {
@@ -429,6 +440,32 @@ thinking 工具使用场景（谨慎使用）：
         }
         return true;
       });
+
+      // 记录本轮对话到 session log
+      const toolCalls = result.newMessages
+        .filter(m => m.role === 'assistant' && m.tool_calls)
+        .flatMap(m => m.tool_calls || [])
+        .map(tc => {
+          const resultMsg = result.newMessages.find(m => m.role === 'tool' && m.tool_call_id === tc.id);
+          const resultContent = resultMsg?.content || '';
+          const resultStr = typeof resultContent === 'string'
+            ? resultContent
+            : resultContent.map(b => b.type === 'text' ? (b as any).text : '[非文本内容]').join('');
+
+          return {
+            id: tc.id,
+            name: tc.function.name,
+            arguments: tc.function.arguments,
+            result: resultStr,
+          };
+        });
+
+      this.sessionTurnLogger.logTurn(
+        text,
+        result.response || '',
+        toolCalls,
+        { prompt: metrics.totalPromptTokens, completion: metrics.totalCompletionTokens }
+      );
 
       return {
         text: result.finalResponseVisible ? (result.response || '[无回复]') : '',

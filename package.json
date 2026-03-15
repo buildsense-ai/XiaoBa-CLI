@@ -11,7 +11,9 @@
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "watch": "tsc --watch",
-    "test": "tsx --test tests/**/*.test.ts"
+    "test": "tsx --test tests/**/*.test.ts",
+    "report": "node dist/index.js chat --exec '/report'",
+    "clean-logs": "node scripts/clean-logs.mjs"
   },
   "keywords": [
     "cli",

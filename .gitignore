@@ -135,6 +135,7 @@ skills/*
 !skills/README.md
 !skills/agent-browser/
 !skills/_tool-skills/
+!skills/report/
 
 # ------------------------------
 # Secrets / local config
