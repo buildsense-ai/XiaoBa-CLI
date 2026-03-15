@@ -28,7 +28,7 @@ interface PendingAnswer {
 }
 
 interface QueuedMessage {
-  userText: string;
+  userMessage: string | import('../types').ContentBlock[];
   topic: string;
   senderId: string;
 }
@@ -246,8 +246,7 @@ export class CatsCompanyBot {
     // 并发保护：忙时消息静默入队，空闲后自动处理
     if (session.isBusy()) {
       const queue = this.messageQueue.get(key) ?? [];
-      const userText = typeof userMessage === 'string' ? userMessage : '[multimodal]';
-      queue.push({ userText, topic: msg.topic, senderId: msg.senderId });
+      queue.push({ userMessage, topic: msg.topic, senderId: msg.senderId });
       this.messageQueue.set(key, queue);
       Logger.info(`[${key}] 主会话忙，消息已入队 (队列长度: ${queue.length})`);
       return;
@@ -382,12 +381,7 @@ export class CatsCompanyBot {
     });
 
     try {
-      // 添加系统提示，避免AI累积回答队列中的多个问题
-      const wrappedMessage = queue.length > 0
-        ? `[系统提示：这是队列中的一条消息，仅回答此问题，不要提及队列中的其他消息]\n${msg.userText}`
-        : msg.userText;
-
-      const result = await session.handleMessage(wrappedMessage, { channel });
+      const result = await session.handleMessage(msg.userMessage, { channel });
       if (result.text.startsWith('处理消息时出错:')) {
         await this.sender.reply(msg.topic, result.text);
       }
@@ -438,12 +432,18 @@ export class CatsCompanyBot {
     for (const att of attachments) {
       if (att.type === 'image') {
         const imgBlock = createImageBlock(att.localPath);
-        if (imgBlock) blocks.push(imgBlock);
+        if (imgBlock) {
+          blocks.push(imgBlock);
+          Logger.info(`[多模态] 已添加图片块: ${att.fileName}, base64长度: ${(imgBlock.source as any)?.data?.length || 0}`);
+        } else {
+          Logger.warning(`[多模态] 图片块创建失败: ${att.fileName} at ${att.localPath}`);
+        }
       } else {
         blocks.push({ type: 'text', text: `[文件] ${att.fileName}\n[路径] ${att.localPath}` });
       }
     }
 
+    Logger.info(`[多模态] 构建完成，共 ${blocks.length} 个块: ${blocks.map(b => b.type).join(', ')}`);
     return blocks;
   }
 

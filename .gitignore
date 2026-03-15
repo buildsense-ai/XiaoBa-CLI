@@ -136,6 +136,7 @@ skills/*
 !skills/agent-browser/
 !skills/_tool-skills/
 !skills/report/
+!skills/self-evolution/
 
 # ------------------------------
 # Secrets / local config

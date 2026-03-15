@@ -526,7 +526,7 @@ thinking 工具使用场景（谨慎使用）：
 
   /** 清空历史 */
   clear(): void {
-    SessionStore.getInstance().archiveSession(this.key);
+    SessionStore.getInstance().deleteSession(this.key);
     removeSessionSummary(this.key); // 同时清除长期记忆摘要
     this.messages = [];
     this.initialized = false;
