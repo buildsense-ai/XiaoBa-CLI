@@ -80,4 +80,17 @@ export class SessionStore {
   hasActiveSession(sessionKey: string): boolean {
     return fs.existsSync(filePath(sessionKey));
   }
+
+  /** 删除会话文件（包括归档文件） */
+  deleteSession(sessionKey: string): void {
+    try {
+      const fp = filePath(sessionKey);
+      const archived = archivedPath(sessionKey);
+      if (fs.existsSync(fp)) fs.unlinkSync(fp);
+      if (fs.existsSync(archived)) fs.unlinkSync(archived);
+      Logger.info(`会话已删除: ${sessionKey}`);
+    } catch (err) {
+      Logger.error(`删除会话失败 [${sessionKey}]: ${err}`);
+    }
+  }
 }
