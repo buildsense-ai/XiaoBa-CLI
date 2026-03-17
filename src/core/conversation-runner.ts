@@ -186,8 +186,8 @@ export class ConversationRunner {
         Logger.info(`[Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(response.content || '', 300)}`);
 
         // 统一处理：所有最终回复都添加到历史
-        messages.push({ role: 'assistant', content: response.content || '' });
-        newMessages.push({ role: 'assistant', content: response.content || '' });
+        messages.push({ role: 'assistant', content: response.content || null });
+        newMessages.push({ role: 'assistant', content: response.content || null });
 
         if (this.isMessageSurface()) {
           let finalText = response.content || '';
