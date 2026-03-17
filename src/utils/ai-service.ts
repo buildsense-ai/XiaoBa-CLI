@@ -250,7 +250,8 @@ export class AIService {
             if (allowStreamRetry) {
               return await this.withRetry(
                 () => endpoint.provider.chatStream(messages, tools, streamCallbacks),
-                endpoint
+                endpoint,
+                callbacks
               );
             }
             return await endpoint.provider.chatStream(messages, tools, streamCallbacks);
@@ -384,7 +385,7 @@ export class AIService {
   /**
    * 带指数退避的重试包装器
    */
-  private async withRetry<T>(fn: () => Promise<T>, endpoint: ProviderEndpoint): Promise<T> {
+  private async withRetry<T>(fn: () => Promise<T>, endpoint: ProviderEndpoint, callbacks?: StreamCallbacks): Promise<T> {
     let lastError: any;
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -395,6 +396,11 @@ export class AIService {
 
         if (attempt >= MAX_RETRIES || !this.isRetryable(error)) {
           throw error;
+        }
+
+        // 通知用户正在重试
+        if (attempt === 0 && callbacks?.onRetry) {
+          callbacks.onRetry(attempt + 1, MAX_RETRIES);
         }
 
         // 计算等待时间：优先用 Retry-After，否则指数退避

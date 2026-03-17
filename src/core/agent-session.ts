@@ -40,6 +40,7 @@ export interface SessionCallbacks {
   onToolStart?: (name: string) => void;
   onToolEnd?: (name: string, result: string) => void;
   onToolDisplay?: (name: string, content: string) => void;
+  onRetry?: (attempt: number, maxRetries: number) => void;
 }
 
 /** 消息处理选项（由平台适配层传入） */
@@ -359,6 +360,7 @@ thinking 工具使用场景（谨慎使用）：
         onToolStart: callbacks?.onToolStart,
         onToolEnd: callbacks?.onToolEnd,
         onToolDisplay: callbacks?.onToolDisplay,
+        onRetry: callbacks?.onRetry,
       };
 
       const result = await runner.run(contextMessages, runnerCallbacks);

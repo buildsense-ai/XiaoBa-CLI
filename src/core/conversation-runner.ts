@@ -42,6 +42,8 @@ export interface RunnerCallbacks {
   onToolEnd?: (name: string, result: string) => void;
   /** 需要显示工具输出（如 task_planner） */
   onToolDisplay?: (name: string, content: string) => void;
+  /** 重试通知 */
+  onRetry?: (attempt: number, maxRetries: number) => void;
 }
 
 /**
@@ -526,6 +528,7 @@ export class ConversationRunner {
       if (this.stream) {
         const streamCallbacks: StreamCallbacks = {
           onText: (text) => callbacks?.onText?.(text),
+          onRetry: (attempt, maxRetries) => callbacks?.onRetry?.(attempt, maxRetries),
         };
         return await this.aiService.chatStream(messages, activeTools, streamCallbacks);
       }

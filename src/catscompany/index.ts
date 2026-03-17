@@ -262,7 +262,14 @@ export class CatsCompanyBot {
     this.sender.sendTyping(msg.topic);
 
     try {
-      const result = await session.handleMessage(userMessage, { channel });
+      const result = await session.handleMessage(userMessage, {
+        channel,
+        callbacks: {
+          onRetry: async (attempt, maxRetries) => {
+            await this.sender.reply(msg.topic, `⚠️ 大模型请求失败，正在重试 (${attempt}/${maxRetries})...`);
+          },
+        },
+      });
       if (result.visibleToUser && result.text) {
         await this.sender.reply(msg.topic, result.text);
       }

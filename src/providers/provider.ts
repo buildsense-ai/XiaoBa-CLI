@@ -11,6 +11,8 @@ export interface StreamCallbacks {
   onComplete?: (response: ChatResponse) => void;
   /** 发生错误 */
   onError?: (error: Error) => void;
+  /** 重试通知 */
+  onRetry?: (attempt: number, maxRetries: number) => void;
 }
 
 /**
