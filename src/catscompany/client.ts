@@ -145,13 +145,6 @@ export class CatsClient extends EventEmitter {
     const httpBaseUrl = this.config.httpBaseUrl || 'https://api.catsco.cc';
     const url = `${httpBaseUrl}/api/upload?type=${type}`;
 
-    // 检查文件大小（客户端限制10MB，实际限制取决于服务器配置）
-    const stats = fs.statSync(filePath);
-    const fileSizeMB = stats.size / (1024 * 1024);
-    if (fileSizeMB > 10) {
-      throw new Error(`文件太大 (${fileSizeMB.toFixed(1)}MB)，客户端限制10MB`);
-    }
-
     const buffer = fs.readFileSync(filePath);
     const filename = path.basename(filePath);
 
