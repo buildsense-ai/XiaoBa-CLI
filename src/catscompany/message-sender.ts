@@ -6,7 +6,11 @@ import { Logger } from '../utils/logger';
 const MAX_MSG_LENGTH = 4000;
 
 export class MessageSender {
-  constructor(private bot: CatsClient) {}
+  private readonly baseUrl: string;
+
+  constructor(private bot: CatsClient, baseUrl?: string) {
+    this.baseUrl = baseUrl || 'https://api.catsco.cc';
+  }
 
   async reply(topic: string, text: string): Promise<void> {
     const segments = this.splitText(text, MAX_MSG_LENGTH);
@@ -82,8 +86,11 @@ export class MessageSender {
       const tmpDir = path.join(process.cwd(), 'tmp', 'downloads');
       fs.mkdirSync(tmpDir, { recursive: true });
 
+      // 处理相对路径，拼接完整 URL
+      const fullUrl = url.startsWith('http') ? url : `${this.baseUrl}${url}`;
+
       const localPath = path.join(tmpDir, `${Date.now()}_${fileName}`);
-      const res = await fetch(url);
+      const res = await fetch(fullUrl);
       if (!res.ok) {
         Logger.error(`文件下载失败: HTTP ${res.status} - ${url}`);
         return null;
