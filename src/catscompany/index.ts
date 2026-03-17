@@ -64,7 +64,7 @@ export class CatsCompanyBot {
       httpBaseUrl: config.httpBaseUrl,
     });
 
-    this.sender = new MessageSender(this.bot);
+    this.sender = new MessageSender(this.bot, config.httpBaseUrl);
 
     const aiService = new AIService();
     const toolManager = new ToolManager();
