@@ -263,7 +263,7 @@ export class CatsCompanyBot {
 
     try {
       const result = await session.handleMessage(userMessage, { channel });
-      if (result.text === BUSY_MESSAGE || result.text.startsWith('处理消息时出错:')) {
+      if (result.visibleToUser && result.text) {
         await this.sender.reply(msg.topic, result.text);
       }
     } finally {
