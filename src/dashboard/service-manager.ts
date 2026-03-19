@@ -34,16 +34,41 @@ export class ServiceManager extends EventEmitter {
     this.registerBuiltinServices();
   }
 
+  private isPackaged(): boolean {
+    // Electron 打包版会设置 XIAOBA_APP_ROOT
+    return !!process.env.XIAOBA_APP_ROOT;
+  }
+
+  private getAppRoot(): string {
+    // 打包版：asar 路径；开发版：projectRoot 就是项目根目录
+    return process.env.XIAOBA_APP_ROOT || this.projectRoot;
+  }
+
   private registerBuiltinServices() {
-    const tsxBin = path.join(this.projectRoot, 'node_modules', '.bin', 'tsx');
-    const entry = path.join(this.projectRoot, 'src', 'index.ts');
+    const packaged = this.isPackaged();
+    const appRoot = this.getAppRoot();
+
+    let command: string;
+    let args: (name: string) => string[];
+
+    if (packaged) {
+      // 打包版：用系统 node 跑 app 目录里的 dist/index.js
+      command = 'node';
+      const distEntry = path.join(appRoot, 'dist', 'index.js');
+      args = (name) => [distEntry, name];
+    } else {
+      // 开发版：用 tsx 跑 ts 源码
+      command = path.join(this.projectRoot, 'node_modules', '.bin', 'tsx');
+      const entry = path.join(this.projectRoot, 'src', 'index.ts');
+      args = (name) => [entry, name];
+    }
 
     this.services.set('catscompany', {
       info: {
         name: 'catscompany',
         label: 'Cats Company 机器人',
-        command: tsxBin,
-        args: [entry, 'catscompany'],
+        command,
+        args: args('catscompany'),
         status: 'stopped',
       },
       logs: [],
@@ -53,8 +78,8 @@ export class ServiceManager extends EventEmitter {
       info: {
         name: 'feishu',
         label: '飞书机器人',
-        command: tsxBin,
-        args: [entry, 'feishu'],
+        command,
+        args: args('feishu'),
         status: 'stopped',
       },
       logs: [],
@@ -100,8 +125,13 @@ export class ServiceManager extends EventEmitter {
       envVars = { ...envVars, ...parsed };
     }
 
+    // 打包版：cwd 设为 app 目录，让子进程能解析 node_modules
+    const spawnCwd = this.isPackaged()
+      ? this.getAppRoot()
+      : this.projectRoot;
+
     const child = spawn(svc.info.command, svc.info.args, {
-      cwd: this.projectRoot,
+      cwd: spawnCwd,
       env: envVars,
       stdio: ['ignore', 'pipe', 'pipe'],
     });

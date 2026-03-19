@@ -7,6 +7,27 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { PathResolver } from '../../utils/path-resolver';
+import matter from 'gray-matter';
+
+/**
+ * 安装 skill 的 npm 依赖（读取 SKILL.md 的 npm-dependencies 字段）
+ */
+function installSkillNpmDeps(skillDir: string): void {
+  const skillMdPath = ['SKILL.md', 'SKILL.MD'].map(f => path.join(skillDir, f)).find(f => fs.existsSync(f));
+  if (!skillMdPath) return;
+
+  try {
+    const { data } = matter(fs.readFileSync(skillMdPath, 'utf-8'));
+    const deps: string[] = data['npm-dependencies'];
+    if (!deps || !Array.isArray(deps) || deps.length === 0) return;
+
+    const { execSync } = require('child_process');
+    const projectRoot = process.cwd();
+    execSync(`npm install --no-save ${deps.join(' ')}`, { cwd: projectRoot, timeout: 120000 });
+  } catch (e: any) {
+    // npm 安装失败不阻塞
+  }
+}
 
 export function createApiRouter(serviceManager: ServiceManager): Router {
   const router = Router();
@@ -271,6 +292,9 @@ export function createApiRouter(serviceManager: ServiceManager): Router {
         }
       }
 
+      // 检查npm依赖
+      installSkillNpmDeps(targetDir);
+
       res.json({ ok: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -307,6 +331,9 @@ export function createApiRouter(serviceManager: ServiceManager): Router {
           // pip失败不阻塞
         }
       }
+
+      // 检查npm依赖
+      installSkillNpmDeps(targetDir);
 
       res.json({ ok: true, name: repoName });
     } catch (e: any) {
