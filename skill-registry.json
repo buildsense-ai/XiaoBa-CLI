@@ -1,0 +1,50 @@
+[
+  {
+    "name": "deploy-ops",
+    "description": "部署、运维、管理 Agent Runtime 到云服务器或本地机器",
+    "category": "运维",
+    "recommended": true,
+    "repo": "local",
+    "dir": "deploy-ops"
+  },
+  {
+    "name": "agent-browser",
+    "description": "浏览器自动化：导航页面、填写表单、截图、提取数据、测试 Web 应用",
+    "category": "工具",
+    "recommended": true,
+    "repo": "local",
+    "dir": "agent-browser"
+  },
+  {
+    "name": "report",
+    "description": "生成每日工作报告、日报、工作总结",
+    "category": "效率",
+    "recommended": true,
+    "repo": "local",
+    "dir": "report"
+  },
+  {
+    "name": "self-evolution",
+    "description": "自我进化：引导创建新的 skill 或 Python tool，扩展能力边界",
+    "category": "核心",
+    "recommended": true,
+    "repo": "local",
+    "dir": "self-evolution"
+  },
+  {
+    "name": "protein-analysis",
+    "description": "蛋白质结构预测：监听邮箱获取序列，调用ESMFold预测3D结构，生成可视化报告",
+    "category": "科研",
+    "recommended": false,
+    "repo": "local",
+    "dir": "protein-analysis"
+  },
+  {
+    "name": "sub-agent",
+    "description": "子智能体管理：在后台派遣子智能体执行耗时长的任务",
+    "category": "核心",
+    "recommended": true,
+    "repo": "local",
+    "dir": "_tool-skills/sub-agent"
+  }
+]

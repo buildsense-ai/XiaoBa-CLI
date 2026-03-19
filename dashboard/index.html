@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>XiaoBa Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #242836;
+      --border: #2e3348;
+      --text: #e1e4ed;
+      --text2: #8b8fa3;
+      --accent: #6c5ce7;
+      --accent2: #a29bfe;
+      --green: #00b894;
+      --orange: #fdcb6e;
+      --red: #e17055;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .nav {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 32px; background: var(--surface); border-bottom: 1px solid var(--border);
+    }
+    .nav-brand { font-size: 20px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .logo { font-size: 24px; }
+    .nav-info { font-size: 13px; color: var(--text2); display: flex; gap: 16px; }
+    .main { max-width: 1200px; margin: 0 auto; padding: 32px; }
+
+    /* Services */
+    .services-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-bottom: 32px; }
+    .service-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px;
+    }
+    .service-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .service-name { font-size: 16px; font-weight: 600; }
+    .service-status {
+      font-size: 12px; padding: 3px 10px; border-radius: 10px; font-weight: 600;
+    }
+    .service-status.running { background: rgba(0,184,148,0.15); color: var(--green); }
+    .service-status.stopped { background: var(--surface2); color: var(--text2); }
+    .service-status.error { background: rgba(225,112,85,0.15); color: var(--red); }
+    .service-detail { font-size: 13px; color: var(--text2); margin-bottom: 12px; }
+    .service-detail span { margin-right: 16px; }
+    .service-actions { display: flex; gap: 8px; }
+
+    /* Status cards */
+    .status-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px; margin-bottom: 32px;
+    }
+    .status-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px;
+    }
+    .status-card .label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+    .status-card .value { font-size: 16px; font-weight: 600; }
+
+    /* Section */
+    .section { margin-bottom: 32px; }
+    .section-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+    .section-header h2 { font-size: 18px; font-weight: 600; }
+    .badge { background: var(--accent); color: white; font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 10px; }
+
+    /* Skills */
+    .skills-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+    .skill-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px;
+      transition: border-color 0.2s;
+    }
+    .skill-card:hover { border-color: var(--accent); }
+    .skill-card.disabled { opacity: 0.5; }
+    .skill-name { font-size: 15px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+    .skill-desc { font-size: 13px; color: var(--text2); line-height: 1.5; margin-bottom: 10px; }
+    .skill-meta { display: flex; gap: 6px; flex-wrap: wrap; }
+    .tag { font-size: 11px; padding: 3px 8px; border-radius: 6px; background: var(--surface2); color: var(--text2); }
+    .tag.active { background: rgba(108,92,231,0.15); color: var(--accent2); }
+    .skill-files { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text2); }
+    .skill-actions { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
+
+    /* Buttons */
+    .btn {
+      font-size: 12px; padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--surface2); color: var(--text2); cursor: pointer; transition: all 0.2s;
+    }
+    .btn:hover { border-color: var(--accent); color: var(--text); }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: white; }
+    .btn-primary:hover { background: #5b4bd5; }
+    .btn-danger:hover { border-color: var(--red); color: var(--red); }
+    .btn-success { border-color: var(--green); color: var(--green); }
+    .btn-success:hover { background: rgba(0,184,148,0.1); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* Logs modal */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      z-index: 100; align-items: center; justify-content: center;
+    }
+    .modal-overlay.show { display: flex; }
+    .modal {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      width: 90%; max-width: 800px; max-height: 80vh; display: flex; flex-direction: column;
+    }
+    .modal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 20px; border-bottom: 1px solid var(--border);
+    }
+    .modal-header h3 { font-size: 16px; }
+    .modal-body {
+      flex: 1; overflow-y: auto; padding: 16px 20px;
+      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; line-height: 1.6;
+      color: var(--text2); white-space: pre-wrap; word-break: break-all;
+    }
+    .modal-close { background: none; border: none; color: var(--text2); font-size: 20px; cursor: pointer; }
+
+    .loading { color: var(--text2); padding: 40px; text-align: center; }
+
+    /* Config panel */
+    .config-panel {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px;
+    }
+    .config-group { margin-bottom: 20px; }
+    .config-group:last-child { margin-bottom: 0; }
+    .config-group-title { font-size: 13px; font-weight: 600; color: var(--accent2); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .config-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+    .config-label { font-size: 13px; color: var(--text2); min-width: 200px; flex-shrink: 0; }
+    .config-input {
+      flex: 1; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px 12px; color: var(--text); font-size: 13px; font-family: 'SF Mono', 'Fira Code', monospace;
+      outline: none; transition: border-color 0.2s;
+    }
+    .config-input:focus { border-color: var(--accent); }
+    .config-input::placeholder { color: #555; }
+    .config-select {
+      flex: 1; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px 12px; color: var(--text); font-size: 13px; outline: none;
+    }
+    .config-saved { color: var(--green); font-size: 13px; margin-left: 12px; opacity: 0; transition: opacity 0.3s; }
+    .config-saved.show { opacity: 1; }
+
+    /* Store */
+    .store-install-row { display: flex; gap: 12px; margin-bottom: 16px; }
+    .store-install-row .config-input { flex: 1; }
+    .tag.recommended { background: rgba(0,184,148,0.15); color: var(--green); }
+    .tag.installed-tag { background: rgba(108,92,231,0.15); color: var(--accent2); }
+
+    @media (max-width: 768px) {
+      .main { padding: 16px; }
+      .nav { padding: 12px 16px; }
+      .skills-grid, .services-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <nav class="nav">
+      <div class="nav-brand"><span class="logo">⚡</span> XiaoBa Dashboard</div>
+      <div class="nav-info">
+        <span id="nav-model">-</span>
+        <span id="nav-platform">-</span>
+      </div>
+    </nav>
+
+    <main class="main">
+      <!-- Services -->
+      <section class="section">
+        <div class="section-header"><h2>服务</h2></div>
+        <div class="services-grid" id="services-grid"><div class="loading">加载中...</div></div>
+      </section>
+
+      <!-- Status -->
+      <section class="status-grid" id="status-grid"></section>
+
+      <!-- Config -->
+      <section class="section">
+        <div class="section-header">
+          <h2>配置</h2>
+          <button class="btn btn-primary" id="save-config-btn" onclick="saveConfig()" style="display:none">保存</button>
+        </div>
+        <div class="config-panel" id="config-panel"><div class="loading">加载中...</div></div>
+      </section>
+
+      <!-- Skills -->
+      <section class="section">
+        <div class="section-header">
+          <h2>Skills</h2>
+          <span class="badge" id="skill-count">0</span>
+        </div>
+        <div class="skills-grid" id="skills-grid"><div class="loading">加载中...</div></div>
+      </section>
+
+      <!-- Skill Store -->
+      <section class="section">
+        <div class="section-header">
+          <h2>Skill Store</h2>
+        </div>
+        <div class="store-install-row">
+          <input class="config-input" id="github-url-input" type="text" placeholder="输入 GitHub 仓库地址安装 skill..." />
+          <button class="btn btn-primary" onclick="installFromGithub()">安装</button>
+        </div>
+        <div class="skills-grid" id="store-grid"><div class="loading">加载中...</div></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Logs Modal -->
+  <div class="modal-overlay" id="logs-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="logs-title">日志</h3>
+        <button class="modal-close" onclick="closeLogs()">&times;</button>
+      </div>
+      <div class="modal-body" id="logs-body">暂无日志</div>
+    </div>
+  </div>
+
+  <script>
+    const API = '';
+
+    async function fetchStatus() {
+      try {
+        const res = await fetch(`${API}/api/status`);
+        const data = await res.json();
+        renderStatus(data);
+        renderServices(data.services || []);
+        document.getElementById('nav-model').textContent = data.model || '-';
+        document.getElementById('nav-platform').textContent = `${data.platform} · ${data.nodeVersion}`;
+      } catch (e) {
+        document.getElementById('nav-model').textContent = 'offline';
+      }
+    }
+
+    async function fetchSkills() {
+      try {
+        const res = await fetch(`${API}/api/skills-all`);
+        const skills = await res.json();
+        renderSkills(skills);
+      } catch (e) {
+        document.getElementById('skills-grid').innerHTML = '<div class="loading">无法加载</div>';
+      }
+    }
+
+    function renderStatus(data) {
+      document.getElementById('status-grid').innerHTML = `
+        <div class="status-card"><div class="label">Version</div><div class="value">${data.version}</div></div>
+        <div class="status-card"><div class="label">Provider</div><div class="value">${data.provider || '-'}</div></div>
+        <div class="status-card"><div class="label">Host</div><div class="value">${data.hostname}</div></div>
+        <div class="status-card"><div class="label">Skills Path</div><div class="value" style="font-size:12px;word-break:break-all">${data.skillsPath}</div></div>
+      `;
+    }
+
+    function renderServices(services) {
+      const grid = document.getElementById('services-grid');
+      if (!services.length) {
+        grid.innerHTML = '<div class="loading">无服务</div>';
+        return;
+      }
+      grid.innerHTML = services.map(svc => {
+        const isRunning = svc.status === 'running';
+        const uptime = isRunning && svc.uptime ? formatUptime(svc.uptime) : '-';
+        return `
+          <div class="service-card">
+            <div class="service-header">
+              <div class="service-name">${svc.label}</div>
+              <span class="service-status ${svc.status}">${svc.status}</span>
+            </div>
+            <div class="service-detail">
+              ${isRunning ? `<span>PID: ${svc.pid}</span><span>Uptime: ${uptime}</span>` : ''}
+              ${svc.lastError ? `<span style="color:var(--red)">${svc.lastError}</span>` : ''}
+            </div>
+            <div class="service-actions">
+              ${isRunning
+                ? `<button class="btn btn-danger" onclick="svcAction('${svc.name}','stop')">停止</button>
+                   <button class="btn" onclick="svcAction('${svc.name}','restart')">重启</button>`
+                : `<button class="btn btn-success" onclick="svcAction('${svc.name}','start')">启动</button>`
+              }
+              <button class="btn" onclick="showLogs('${svc.name}','${svc.label}')">日志</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderSkills(skills) {
+      document.getElementById('skill-count').textContent = skills.length;
+      const grid = document.getElementById('skills-grid');
+      if (!skills.length) {
+        grid.innerHTML = '<div class="loading">暂无 Skills</div>';
+        return;
+      }
+      grid.innerHTML = skills.map(skill => `
+        <div class="skill-card${skill.enabled === false ? ' disabled' : ''}">
+          <div class="skill-name">
+            ${skill.enabled === false ? '⏸' : '⚡'} ${skill.name}
+            ${skill.enabled === false ? '<span class="tag" style="background:rgba(225,112,85,0.15);color:var(--red)">已禁用</span>' : ''}
+          </div>
+          <div class="skill-desc">${skill.description}</div>
+          <div class="skill-meta">
+            ${skill.userInvocable ? '<span class="tag active">用户调用</span>' : ''}
+            ${skill.autoInvocable ? '<span class="tag active">自动调用</span>' : ''}
+            ${skill.maxTurns ? `<span class="tag">max ${skill.maxTurns} turns</span>` : ''}
+          </div>
+          ${skill.files ? `<div class="skill-files">📁 ${skill.files.join(', ')}</div>` : ''}
+          <div class="skill-actions">
+            <button class="btn" onclick="toggleSkill('${skill.name}', ${skill.enabled !== false})">
+              ${skill.enabled === false ? '启用' : '禁用'}
+            </button>
+            <button class="btn btn-danger" onclick="deleteSkill('${skill.name}')">删除</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // === Actions ===
+
+    async function svcAction(name, action) {
+      try {
+        await fetch(`${API}/api/services/${name}/${action}`, { method: 'POST' });
+        setTimeout(fetchStatus, 500);
+      } catch (e) {
+        alert('操作失败: ' + e.message);
+      }
+    }
+
+    async function showLogs(name, label) {
+      document.getElementById('logs-title').textContent = `${label} - 日志`;
+      document.getElementById('logs-body').textContent = '加载中...';
+      document.getElementById('logs-modal').classList.add('show');
+      try {
+        const res = await fetch(`${API}/api/services/${name}/logs?lines=200`);
+        const logs = await res.json();
+        document.getElementById('logs-body').textContent = logs.length ? logs.join('\n') : '暂无日志';
+      } catch (e) {
+        document.getElementById('logs-body').textContent = '加载失败';
+      }
+    }
+
+    function closeLogs() {
+      document.getElementById('logs-modal').classList.remove('show');
+    }
+
+    async function toggleSkill(name, currentlyEnabled) {
+      const action = currentlyEnabled ? 'disable' : 'enable';
+      await fetch(`${API}/api/skills/${encodeURIComponent(name)}/${action}`, { method: 'POST' });
+      fetchSkills();
+    }
+
+    async function deleteSkill(name) {
+      if (!confirm(`确定要删除 skill "${name}" 吗？此操作不可恢复。`)) return;
+      await fetch(`${API}/api/skills/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      fetchSkills();
+    }
+
+    function formatUptime(seconds) {
+      if (seconds < 60) return `${Math.floor(seconds)}s`;
+      if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      return `${h}h ${m}m`;
+    }
+
+    // === Config ===
+    let configData = {};
+    const configGroups = [
+      { title: 'LLM 主模型', keys: [
+        { key: 'GAUZ_LLM_PROVIDER', label: 'Provider', type: 'select', options: ['anthropic', 'openai'] },
+        { key: 'GAUZ_LLM_API_BASE', label: 'API Base URL' },
+        { key: 'GAUZ_LLM_API_KEY', label: 'API Key', sensitive: true },
+        { key: 'GAUZ_LLM_MODEL', label: 'Model' },
+      ]},
+      { title: 'LLM 备用模型', keys: [
+        { key: 'GAUZ_LLM_BACKUP_PROVIDER', label: 'Provider', type: 'select', options: ['', 'anthropic', 'openai'] },
+        { key: 'GAUZ_LLM_BACKUP_API_BASE', label: 'API Base URL' },
+        { key: 'GAUZ_LLM_BACKUP_API_KEY', label: 'API Key', sensitive: true },
+        { key: 'GAUZ_LLM_BACKUP_MODEL', label: 'Model' },
+      ]},
+      { title: 'Cats Company', keys: [
+        { key: 'CATSCOMPANY_SERVER_URL', label: 'WebSocket URL' },
+        { key: 'CATSCOMPANY_API_KEY', label: 'API Key', sensitive: true },
+        { key: 'CATSCOMPANY_HTTP_BASE_URL', label: 'HTTP Base URL' },
+      ]},
+      { title: '飞书', keys: [
+        { key: 'FEISHU_APP_ID', label: 'App ID' },
+        { key: 'FEISHU_APP_SECRET', label: 'App Secret', sensitive: true },
+        { key: 'FEISHU_BOT_OPEN_ID', label: 'Bot Open ID' },
+        { key: 'FEISHU_BOT_ALIASES', label: 'Bot Aliases' },
+      ]},
+    ];
+
+    async function fetchConfig() {
+      try {
+        const res = await fetch(`${API}/api/config`);
+        configData = await res.json();
+        renderConfig();
+      } catch (e) {
+        document.getElementById('config-panel').innerHTML = '<div class="loading">加载失败</div>';
+      }
+    }
+
+    function renderConfig() {
+      const panel = document.getElementById('config-panel');
+      document.getElementById('save-config-btn').style.display = 'inline-block';
+
+      panel.innerHTML = configGroups.map(group => `
+        <div class="config-group">
+          <div class="config-group-title">${group.title}</div>
+          ${group.keys.map(item => {
+            const val = configData[item.key] || '';
+            if (item.type === 'select') {
+              return `<div class="config-row">
+                <label class="config-label">${item.label}</label>
+                <select class="config-select" data-key="${item.key}">
+                  ${item.options.map(o => `<option value="${o}" ${val === o ? 'selected' : ''}>${o || '(空)'}</option>`).join('')}
+                </select>
+              </div>`;
+            }
+            return `<div class="config-row">
+              <label class="config-label">${item.label}</label>
+              <input class="config-input" data-key="${item.key}" type="${item.sensitive ? 'password' : 'text'}"
+                value="${val}" placeholder="${item.key}" />
+            </div>`;
+          }).join('')}
+        </div>
+      `).join('') + '<span class="config-saved" id="config-saved">✓ 已保存</span>';
+    }
+
+    async function saveConfig() {
+      const inputs = document.querySelectorAll('[data-key]');
+      const updates = {};
+      inputs.forEach(el => {
+        updates[el.dataset.key] = el.value;
+      });
+      try {
+        const res = await fetch(`${API}/api/config`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updates),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          const saved = document.getElementById('config-saved');
+          saved.classList.add('show');
+          setTimeout(() => saved.classList.remove('show'), 2000);
+        }
+      } catch (e) {
+        alert('保存失败: ' + e.message);
+      }
+    }
+
+    // === Store ===
+
+    async function fetchStore() {
+      try {
+        const res = await fetch(`${API}/api/store`);
+        const items = await res.json();
+        renderStore(items);
+      } catch (e) {
+        document.getElementById('store-grid').innerHTML = '<div class="loading">加载失败</div>';
+      }
+    }
+
+    function renderStore(items) {
+      const grid = document.getElementById('store-grid');
+      if (!items.length) {
+        grid.innerHTML = '<div class="loading">暂无可用 Skill</div>';
+        return;
+      }
+      grid.innerHTML = items.map(item => `
+        <div class="skill-card${item.installed ? '' : ''}">
+          <div class="skill-name">
+            ${item.name}
+            ${item.recommended ? '<span class="tag recommended">推荐</span>' : ''}
+            ${item.installed ? '<span class="tag installed-tag">已安装</span>' : ''}
+          </div>
+          <div class="skill-desc">${item.description}</div>
+          <div class="skill-meta">
+            <span class="tag">${item.category || '其他'}</span>
+          </div>
+          <div class="skill-actions">
+            ${item.installed
+              ? '<button class="btn" disabled>已安装</button>'
+              : `<button class="btn btn-primary" onclick="installSkill('${item.name}','${item.repo}','${item.dir || ''}')">安装</button>`
+            }
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function installSkill(name, repo, dir) {
+      try {
+        const res = await fetch(`${API}/api/store/install`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, repo, dir }),
+        });
+        const data = await res.json();
+        if (data.error) {
+          alert('安装失败: ' + data.error);
+        } else {
+          fetchStore();
+          fetchSkills();
+        }
+      } catch (e) {
+        alert('安装失败: ' + e.message);
+      }
+    }
+
+    async function installFromGithub() {
+      const input = document.getElementById('github-url-input');
+      const url = input.value.trim();
+      if (!url) return;
+      try {
+        const res = await fetch(`${API}/api/store/install-github`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        const data = await res.json();
+        if (data.error) {
+          alert('安装失败: ' + data.error);
+        } else {
+          input.value = '';
+          fetchStore();
+          fetchSkills();
+        }
+      } catch (e) {
+        alert('安装失败: ' + e.message);
+      }
+    }
+
+    // Init
+    fetchStatus();
+    fetchSkills();
+    fetchConfig();
+    fetchStore();
+    setInterval(fetchStatus, 5000);
+    setInterval(fetchSkills, 30000);
+
+    // ESC close modal
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLogs(); });
+    document.getElementById('logs-modal').addEventListener('click', e => {
+      if (e.target === e.currentTarget) closeLogs();
+    });
+  </script>
+</body>
+</html>

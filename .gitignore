@@ -122,6 +122,15 @@ prompts/system-prompt-*.md
 # ------------------------------
 返回结果
 -p/
+results/
+/*.py
+/*.html
+!dashboard/**/*.html
+/*.pdb
+/*.txt
+/*.jpg
+/*.png
+/*.pdf
 
 # ------------------------------
 # Large binaries

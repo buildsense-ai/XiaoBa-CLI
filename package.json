@@ -42,6 +42,7 @@
     "commander": "^11.1.0",
     "deasync": "^0.1.31",
     "dotenv": "^17.2.3",
+    "express": "^5.2.1",
     "glob": "^10.3.10",
     "gray-matter": "^4.0.3",
     "inquirer": "^8.2.7",
@@ -52,6 +53,7 @@
   },
   "devDependencies": {
     "@types/deasync": "^0.1.5",
+    "@types/express": "^5.0.6",
     "@types/glob": "^8.1.0",
     "@types/inquirer": "^9.0.9",
     "@types/node": "^20.10.5",
