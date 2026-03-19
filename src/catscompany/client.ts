@@ -88,7 +88,7 @@ export class CatsClient extends EventEmitter {
         senderId: msg.data.from || '',
         text: typeof msg.data.content === 'string' ? msg.data.content : '',
         content: msg.data.content,
-        isGroup: false,
+        isGroup: msg.data.topic?.startsWith('grp_') ?? false,
       };
       this.emit('message', ctx);
     } else if (msg.pres) {
