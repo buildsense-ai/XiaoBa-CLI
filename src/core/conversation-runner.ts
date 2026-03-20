@@ -98,6 +98,7 @@ export class ConversationRunner {
   private toolExecutionContext?: Partial<ToolExecutionContext>;
   private activeSkillName?: string;
   private maxPromptTokens: number;
+  private sessionLabel: string;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: string, maxLen = 200): string {
@@ -120,6 +121,9 @@ export class ConversationRunner {
     this.activeSkillName = options?.initialSkillName;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
+    this.sessionLabel = this.toolExecutionContext?.sessionId
+      ? `${this.toolExecutionContext.sessionId} `
+      : '';
     this.compressor = new ContextCompressor(this.aiService, {
       maxContextTokens: this.maxPromptTokens,
       compactionThreshold: 0.5,
@@ -159,16 +163,16 @@ export class ConversationRunner {
       nextTurnTransientHints = [];
       this.ensurePromptBudget(requestMessages, activeTools);
       const aiStartTime = Date.now();
-      Logger.info(`[Turn ${turns}] 调用AI推理 (可用工具: ${activeTools.length}个)`);
+      Logger.info(`[${this.sessionLabel}Turn ${turns}] 调用AI推理 (可用工具: ${activeTools.length}个)`);
 
       let response;
       try {
         response = await this.requestModelResponse(requestMessages, activeTools, callbacks);
         const aiDuration = Date.now() - aiStartTime;
-        Logger.info(`[Turn ${turns}] AI推理完成，耗时: ${aiDuration}ms`);
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] AI推理完成，耗时: ${aiDuration}ms`);
       } catch (error: any) {
         if (hasDeliveredMessageOutThisRun && this.isMessageSurface()) {
-          Logger.warning(`[Turn ${turns}] 已有外发消息送达，后续推理失败后直接收束: ${error.message}`);
+          Logger.warning(`[${this.sessionLabel}Turn ${turns}] 已有外发消息送达，后续推理失败后直接收束: ${error.message}`);
           return {
             response: '',
             finalResponseVisible: false,
@@ -181,11 +185,11 @@ export class ConversationRunner {
 
       if (response.usage) {
         Metrics.recordAICall(this.stream ? 'stream' : 'chat', response.usage);
-        Logger.info(`[Turn ${turns}] AI返回 tokens: ${response.usage.promptTokens}+${response.usage.completionTokens}=${response.usage.totalTokens}`);
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] AI返回 tokens: ${response.usage.promptTokens}+${response.usage.completionTokens}=${response.usage.totalTokens}`);
       }
 
       if (!response.toolCalls || response.toolCalls.length === 0) {
-        Logger.info(`[Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(response.content || '', 300)}`);
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(response.content || '', 300)}`);
 
         // 统一处理：所有最终回复都添加到历史
         messages.push({ role: 'assistant', content: response.content || null });
@@ -203,9 +207,9 @@ export class ConversationRunner {
                 finalText
               );
               const preview = finalText.length > 100 ? finalText.slice(0, 100) + '...' : finalText;
-              Logger.info(`[Turn ${turns}] Message模式：已自动转发 "${preview}"`);
+              Logger.info(`[${this.sessionLabel}Turn ${turns}] Message模式：已自动转发 "${preview}"`);
             } catch (err: any) {
-              Logger.error(`[Turn ${turns}] Message模式发送失败: ${err.message}`);
+              Logger.error(`[${this.sessionLabel}Turn ${turns}] Message模式发送失败: ${err.message}`);
             }
           }
 
@@ -230,10 +234,10 @@ export class ConversationRunner {
       }
 
       if (response.content) {
-        Logger.info(`[Turn ${turns}] AI文本: ${ConversationRunner.truncateForLog(response.content, 300)}`);
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] AI文本: ${ConversationRunner.truncateForLog(response.content, 300)}`);
       }
       const toolNames = response.toolCalls.map(tc => tc.function.name).join(', ');
-      Logger.info(`[Turn ${turns}] AI选择工具: [${toolNames}]`);
+      Logger.info(`[${this.sessionLabel}Turn ${turns}] AI选择工具: [${toolNames}]`);
 
       const assistantMsg: Message = {
         role: 'assistant',
@@ -250,7 +254,7 @@ export class ConversationRunner {
 
         const toolName = toolCall.function.name;
         callbacks?.onToolStart?.(toolName);
-        Logger.info(`[Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
         const activeToolNames = allTools.map(tool => tool.name);
         const toolStart = Date.now();
         const result = await this.executeToolWithRetry(
@@ -264,7 +268,7 @@ export class ConversationRunner {
         );
         const toolDuration = Date.now() - toolStart;
         Metrics.recordToolCall(toolName, toolDuration);
-        Logger.info(`[Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
 
         const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
         if (
@@ -318,7 +322,7 @@ export class ConversationRunner {
       newMessages.push(...turnMessages);
 
       if (shouldPauseTurn) {
-        Logger.info(`[Turn ${turns}] pause_turn 已触发，本轮收束`);
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] pause_turn 已触发，本轮收束`);
         return {
           response: '',
           finalResponseVisible: false,
@@ -748,7 +752,7 @@ export class ConversationRunner {
         return lastResult;
       }
       const delay = ConversationRunner.RETRY_BASE_DELAY_MS * attempt;
-      Logger.warning(`[Turn ${turn}] ${toolCall.function.name} 触发限流 (429)，${delay}ms 后重试 (${attempt}/${ConversationRunner.MAX_RETRIES})`);
+      Logger.warning(`[${this.sessionLabel}Turn ${turn}] ${toolCall.function.name} 触发限流 (429)，${delay}ms 后重试 (${attempt}/${ConversationRunner.MAX_RETRIES})`);
       await new Promise(resolve => setTimeout(resolve, delay));
       lastResult = await this.toolExecutor.executeTool(toolCall, messages, context);
     }

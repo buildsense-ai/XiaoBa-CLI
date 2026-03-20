@@ -59,6 +59,8 @@ export interface CommandResult {
 export interface HandleMessageResult {
   text: string;
   visibleToUser: boolean;
+  /** code mode 过程数据（thinking / tool_use / tool_result） */
+  newMessages?: import('../types').Message[];
 }
 
 // ─── AgentSession 核心类 ────────────────────────────────
@@ -472,6 +474,7 @@ thinking 工具使用场景（谨慎使用）：
       return {
         text: result.finalResponseVisible ? (result.response || '[无回复]') : '',
         visibleToUser: result.finalResponseVisible,
+        newMessages: result.newMessages,
       };
     } catch (err: any) {
       // 清理孤立的 user 消息，避免污染后续对话

@@ -1,6 +1,7 @@
 import { CatsClient, MessageContext } from './client';
 import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo } from './types';
 import { MessageSender } from './message-sender';
+import { extractContentBlocks } from './content-blocks';
 import { MessageSessionManager } from '../core/message-session-manager';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
@@ -64,7 +65,7 @@ export class CatsCompanyBot {
       httpBaseUrl: config.httpBaseUrl,
     });
 
-    this.sender = new MessageSender(this.bot, config.httpBaseUrl);
+    this.sender = new MessageSender(this.bot, config.httpBaseUrl, config.apiKey);
 
     const aiService = new AIService();
     const toolManager = new ToolManager();
@@ -272,6 +273,14 @@ export class CatsCompanyBot {
       });
       if (result.visibleToUser && result.text) {
         await this.sender.reply(msg.topic, result.text);
+      }
+
+      // code mode: 发送 content_blocks（thinking / tool_use / tool_result）
+      if (result.newMessages && result.newMessages.length > 0) {
+        const blocks = extractContentBlocks(result.newMessages);
+        if (blocks.length > 0) {
+          await this.sender.sendWithBlocks(msg.topic, '', blocks);
+        }
       }
     } finally {
       this.clearPendingAnswerBySession(key);
