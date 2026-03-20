@@ -2,7 +2,7 @@
   "name": "xiaoba-cli",
   "version": "0.1.0",
   "description": "XiaoBa - 一个智能的AI对话助手CLI工具",
-  "main": "dist/index.js",
+  "main": "electron/main.js",
   "bin": {
     "xiaoba": "dist/index.js"
   },
@@ -10,6 +10,11 @@
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
+    "start:cli": "node dist/index.js",
+    "electron:dev": "npm run build && electron .",
+    "electron:build": "npm run build && electron-builder",
+    "electron:build:mac": "npm run build && electron-builder --mac",
+    "electron:build:win": "npm run build && electron-builder --win",
     "watch": "tsc --watch",
     "test": "tsx --test tests/**/*.test.ts",
     "report": "node dist/index.js chat --exec '/report'",
@@ -42,25 +47,102 @@
     "commander": "^11.1.0",
     "deasync": "^0.1.31",
     "dotenv": "^17.2.3",
+    "express": "^5.2.1",
     "glob": "^10.3.10",
     "gray-matter": "^4.0.3",
     "inquirer": "^8.2.7",
     "ora": "^5.4.1",
-    "playwright": "^1.58.2",
+
     "terminal-image": "^4.2.0",
     "turndown": "^7.2.2"
   },
   "devDependencies": {
     "@types/deasync": "^0.1.5",
+    "@types/express": "^5.0.6",
     "@types/glob": "^8.1.0",
     "@types/inquirer": "^9.0.9",
     "@types/node": "^20.10.5",
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.18.1",
+    "electron": "^33.4.11",
+    "electron-builder": "^26.8.1",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "build": {
+    "appId": "com.catcompany.xiaoba",
+    "productName": "XiaoBa",
+    "directories": {
+      "output": "release"
+    },
+    "asar": false,
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "dashboard/**/*",
+      "skills/agent-browser/**/*",
+      "skills/_tool-skills/**/*",
+      "skills/report/**/*",
+      "skills/self-evolution/**/*",
+      "skills/deploy-ops/**/*",
+      "skills/protein-analysis/**/*",
+      "skills/README.md",
+      "skill-registry.json",
+      ".env.example",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "node_modules",
+        "to": "node_modules",
+        "filter": [
+          "express/**",
+          "dotenv/**",
+          "axios/**",
+          "chalk/**",
+          "commander/**",
+          "glob/**",
+          "gray-matter/**",
+          "ora/**"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg"
+      ],
+      "icon": null
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": null
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "XiaoBa"
+    },
+    "dmg": {
+      "title": "XiaoBa",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
   }
 }

@@ -5,6 +5,8 @@ invocable: user
 autoInvocable: true
 argument-hint: "<url>"
 max-turns: 80
+npm-dependencies:
+  - "playwright@^1.58.2"
 ---
 
 # Agent Browser

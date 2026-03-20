@@ -49,6 +49,16 @@ function main() {
       await catscompanyCommand();
     });
 
+  // Dashboard 命令
+  program
+    .command('dashboard')
+    .description('启动 XiaoBa Dashboard 管理面板')
+    .option('-p, --port <port>', '指定端口号', '3800')
+    .action(async (options) => {
+      const { dashboardCommand } = await import('./commands/dashboard');
+      await dashboardCommand(options);
+    });
+
   // Skill 管理命令
   registerSkillCommand(program);
 
