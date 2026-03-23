@@ -1543,6 +1543,7 @@
       {title:'LLM 备用模型', collapsed:true, keys:[{key:'GAUZ_LLM_BACKUP_PROVIDER',label:'Provider',type:'select',options:['','anthropic','openai']},{key:'GAUZ_LLM_BACKUP_API_BASE',label:'API Base URL'},{key:'GAUZ_LLM_BACKUP_API_KEY',label:'API Key',sensitive:true},{key:'GAUZ_LLM_BACKUP_MODEL',label:'Model'}]},
       {title:'Cats Company', collapsed:false, keys:[{key:'CATSCOMPANY_SERVER_URL',label:'WebSocket URL'},{key:'CATSCOMPANY_API_KEY',label:'API Key',sensitive:true},{key:'CATSCOMPANY_HTTP_BASE_URL',label:'HTTP Base URL'}]},
       {title:'飞书', collapsed:false, keys:[{key:'FEISHU_APP_ID',label:'App ID'},{key:'FEISHU_APP_SECRET',label:'App Secret',sensitive:true},{key:'FEISHU_BOT_OPEN_ID',label:'Bot Open ID'},{key:'FEISHU_BOT_ALIASES',label:'Bot Aliases'}]},
+      {title:'微信', collapsed:false, keys:[{key:'WEIXIN_TOKEN',label:'Token',sensitive:true}]},
     ];
 
     async function fetchConfig(){try{const r=await fetch(API+'/api/config');configData=await r.json();renderConfig();}catch(e){document.getElementById('config-panel').innerHTML='<div class="loading">加载失败</div>';}}
@@ -1560,7 +1561,8 @@
         const rows = g.keys.map(i=>{
           const v=configData[i.key]||'';
           if(i.type==='select') return '<div class="config-row"><label class="config-label">'+i.label+'</label><select class="config-select" data-key="'+i.key+'">'+i.options.map(o=>'<option value="'+o+'"'+(v===o?' selected':'')+'>'+(o||'(空)')+'</option>').join('')+'</select></div>';
-          return '<div class="config-row"><label class="config-label">'+i.label+'</label><input class="config-input" data-key="'+i.key+'" type="'+(i.sensitive?'password':'text')+'" value="'+v+'" placeholder="'+i.key+'" /></div>';
+          const extraBtn = (i.key==='WEIXIN_TOKEN')?'<button class="btn btn-primary" onclick="getWeixinToken()" style="margin-left:8px">获取Token</button>':'';
+          return '<div class="config-row"><label class="config-label">'+i.label+'</label><input class="config-input" data-key="'+i.key+'" type="'+(i.sensitive?'password':'text')+'" value="'+v+'" placeholder="'+i.key+'" />'+extraBtn+'</div>';
         }).join('');
         return '<div class="config-group'+collapsedClass+'" id="config-grp-'+idx+'"><div class="config-group-title" onclick="toggleConfigGroup('+idx+')">'+g.title+'</div><div class="config-group-body">'+rows+'</div></div>';
       }).join('')+'<span class="config-saved" id="config-saved">已保存</span>';
@@ -1610,6 +1612,37 @@
       const input=document.getElementById('github-url-input'),url=input.value.trim();
       if(!url)return;
       try{const r=await fetch(API+'/api/store/install-github',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});const d=await r.json();if(d.error)alert('安装失败: '+d.error);else{input.value='';fetchStore();fetchSkills();}}catch(e){alert('安装失败: '+e.message);}
+    }
+
+    // === 微信 Token 获取 ===
+    let weixinPollInterval;
+    async function getWeixinToken(){
+      try{
+        const r=await fetch(API+'/api/weixin/qrcode');
+        const d=await r.json();
+        if(d.qrcode){
+          document.getElementById('logs-title').textContent='微信扫码授权';
+          document.getElementById('logs-body').innerHTML='<div style="text-align:center;padding:20px"><p style="margin-bottom:16px;color:var(--text)">请用微信扫描下方二维码授权</p><a href="'+d.qrcode_img_content+'" target="_blank" style="display:inline-block;padding:12px 20px;background:var(--accent-gradient);color:white;text-decoration:none;border-radius:12px;font-weight:700">点击打开二维码</a><p style="margin-top:16px;font-size:12px;color:var(--text3)">等待扫码中...</p></div>';
+          document.getElementById('logs-modal').classList.add('show');
+          if(weixinPollInterval)clearInterval(weixinPollInterval);
+          weixinPollInterval=setInterval(()=>checkWeixinStatus(d.qrcode),2000);
+        }
+      }catch(e){alert('获取二维码失败: '+e.message);}
+    }
+    async function checkWeixinStatus(qrcode){
+      try{
+        const r=await fetch(API+'/api/weixin/qrcode-status?qrcode='+qrcode);
+        const d=await r.json();
+        if(d.status==='confirmed'&&d.bot_token){
+          clearInterval(weixinPollInterval);
+          document.querySelector('[data-key="WEIXIN_TOKEN"]').value=d.bot_token;
+          document.getElementById('logs-body').innerHTML='<div style="text-align:center;padding:20px;color:var(--green)"><p style="font-size:18px;font-weight:700;margin-bottom:12px">✓ 授权成功</p><p>Token 已自动填入，请点击保存按钮</p></div>';
+          setTimeout(()=>document.getElementById('logs-modal').classList.remove('show'),2000);
+        }else if(d.status==='expired'){
+          clearInterval(weixinPollInterval);
+          document.getElementById('logs-body').innerHTML='<div style="text-align:center;padding:20px;color:var(--red)">二维码已过期，请重新获取</div>';
+        }
+      }catch(e){}
     }
 
     // Init

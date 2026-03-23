@@ -86,6 +86,17 @@ export class ServiceManager extends EventEmitter {
       },
       logs: [],
     });
+
+    this.services.set('weixin', {
+      info: {
+        name: 'weixin',
+        label: '微信机器人',
+        command,
+        args: args('weixin'),
+        status: 'stopped',
+      },
+      logs: [],
+    });
   }
 
   getAll(): ServiceInfo[] {
