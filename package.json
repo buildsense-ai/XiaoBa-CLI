@@ -78,7 +78,12 @@
     "directories": {
       "output": "release"
     },
-    "asar": false,
+    "asar": true,
+    "asarUnpack": [
+      "dist/**/*",
+      "skills/**/*",
+      "prompts/**/*"
+    ],
     "files": [
       "dist/**/*",
       "electron/**/*",
@@ -101,11 +106,14 @@
         "from": "node_modules",
         "to": "node_modules",
         "filter": [
-          "**/*",
-          "!**/node_modules/**",
+          "**/*.node",
+          "**/*.js",
+          "**/*.json",
           "!**/.bin/**",
+          "!**/test/**",
+          "!**/tests/**",
+          "!**/*.md",
           "!electron-builder/**",
-          "!electron-publish/**",
           "!@types/**",
           "!typescript/**"
         ]
