@@ -20,9 +20,14 @@ function getAppRoot() {
  */
 function getNodeExePath() {
   if (app.isPackaged) {
-    // extraFiles 将 build-resources/node/ 复制到安装目录下的 node/
+    // extraFiles 将 build-resources/node/ 复制到 Contents/node/
     const nodeFileName = process.platform === 'win32' ? 'node.exe' : 'node';
-    const embeddedNode = path.join(path.dirname(process.execPath), 'node', nodeFileName);
+    // macOS: process.execPath = Contents/MacOS/XiaoBa, 需要 ../node/node
+    // Windows: process.execPath = XiaoBa.exe, 需要 ./node/node.exe
+    const contentsDir = process.platform === 'darwin'
+      ? path.join(path.dirname(process.execPath), '..')
+      : path.dirname(process.execPath);
+    const embeddedNode = path.join(contentsDir, 'node', nodeFileName);
     const fs = require('fs');
     if (fs.existsSync(embeddedNode)) {
       return embeddedNode;
