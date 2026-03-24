@@ -6,11 +6,10 @@ let mainWindow = null;
 let tray = null;
 
 function getAppRoot() {
-  // asar 已关闭
-  // 打包后: Resources/app/electron/main.js -> Resources/app/
+  // 打包后: Resources/app.asar/electron/main.js -> Resources/app.asar.unpacked/
   // 开发时: electron/main.js -> ./
   if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'app');
+    return path.join(process.resourcesPath, 'app.asar.unpacked');
   }
   return path.join(__dirname, '..');
 }

@@ -78,7 +78,12 @@
     "directories": {
       "output": "release"
     },
-    "asar": false,
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/**/*",
+      "dashboard/**/*",
+      "dist/**/*"
+    ],
     "files": [
       "dist/**/*",
       "electron/**/*",
@@ -96,35 +101,6 @@
       ".env.example",
       "package.json"
     ],
-    "extraResources": [
-      {
-        "from": "node_modules",
-        "to": "node_modules",
-        "filter": [
-          "**/*",
-          "!electron/**",
-          "!electron-builder/**",
-          "!electron-publish/**",
-          "!electron-winstaller/**",
-          "!app-builder-bin/**",
-          "!app-builder-lib/**",
-          "!builder-util/**",
-          "!builder-util-runtime/**",
-          "!dmg-builder/**",
-          "!7zip-bin/**",
-          "!@electron/**",
-          "!@esbuild/**",
-          "!@types/**",
-          "!typescript/**",
-          "!tsx/**",
-          "!esbuild/**",
-          "!@malept/**",
-          "!@develar/**",
-          "!@npmcli/**",
-          "!@babel/**"
-        ]
-      }
-    ],
     "extraFiles": [
       {
         "from": "build-resources/node",
@@ -139,7 +115,7 @@
       "target": [
         "dmg"
       ],
-      "icon": "build-resources/icon.png"
+      "icon": "build-resources/icon-512.png"
     },
     "win": {
       "target": [
