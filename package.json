@@ -102,24 +102,12 @@
         "to": "node_modules",
         "filter": [
           "**/*",
+          "!**/node_modules/**",
+          "!**/.bin/**",
           "!electron-builder/**",
           "!electron-publish/**",
-          "!electron-winstaller/**",
-          "!app-builder-bin/**",
-          "!app-builder-lib/**",
-          "!builder-util/**",
-          "!builder-util-runtime/**",
-          "!dmg-builder/**",
-          "!7zip-bin/**",
-          "!@esbuild/**",
           "!@types/**",
-          "!typescript/**",
-          "!tsx/**",
-          "!esbuild/**",
-          "!@malept/**",
-          "!@develar/**",
-          "!@npmcli/**",
-          "!@babel/**"
+          "!typescript/**"
         ]
       }
     ],
