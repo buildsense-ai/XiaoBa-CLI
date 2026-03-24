@@ -21,12 +21,13 @@ function getAppRoot() {
 function getNodeExePath() {
   if (app.isPackaged) {
     // extraFiles 将 build-resources/node/ 复制到安装目录下的 node/
-    const embeddedNode = path.join(path.dirname(process.execPath), 'node', 'node.exe');
+    const nodeFileName = process.platform === 'win32' ? 'node.exe' : 'node';
+    const embeddedNode = path.join(path.dirname(process.execPath), 'node', nodeFileName);
     const fs = require('fs');
     if (fs.existsSync(embeddedNode)) {
       return embeddedNode;
     }
-    console.warn('Embedded node.exe not found at', embeddedNode, ', falling back to system node');
+    console.warn('Embedded node not found at', embeddedNode, ', falling back to system node');
   }
   return 'node';
 }
