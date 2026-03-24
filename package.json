@@ -108,8 +108,9 @@
           "!**/test/**",
           "!**/tests/**",
           "!**/*.md",
+          "!electron/**",
           "!electron-builder/**",
-          "!@types/**",
+          "@types/**",
           "!typescript/**"
         ]
       }
