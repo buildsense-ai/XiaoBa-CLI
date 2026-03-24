@@ -102,7 +102,6 @@
         "to": "node_modules",
         "filter": [
           "**/*",
-          "!electron/**",
           "!electron-builder/**",
           "!electron-publish/**",
           "!electron-winstaller/**",
@@ -112,7 +111,6 @@
           "!builder-util-runtime/**",
           "!dmg-builder/**",
           "!7zip-bin/**",
-          "!@electron/**",
           "!@esbuild/**",
           "!@types/**",
           "!typescript/**",
