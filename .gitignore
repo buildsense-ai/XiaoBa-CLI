@@ -37,3 +37,6 @@ Thumbs.db
 
 # 系统文件
 bash.exe.stackdump
+
+# Node 二进制文件
+build-resources/node/
