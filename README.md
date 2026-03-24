@@ -6,7 +6,7 @@
   **不是工具，是伙伴 | 像人一样思考和交流的智能助手**
 
   [![Release](https://img.shields.io/github/v/release/buildsense-ai/XiaoBa-CLI)](https://github.com/buildsense-ai/XiaoBa-CLI/releases)
-  [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+  [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
   [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/buildsense-ai/XiaoBa-CLI)
 
   [快速开始](#-快速开始) • [功能特性](#-功能特性) • [下载安装](#-下载安装) • [文档](#-文档)
@@ -141,7 +141,7 @@ npm run electron:build:linux # Linux
 
 ## 📄 License
 
-MIT © CatCompany
+Apache-2.0 © CatCompany
 
 ---
 
