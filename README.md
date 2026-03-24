@@ -84,12 +84,10 @@ AI：好的！我将为您执行以下步骤：
 4. 在 Dashboard 中启动所需的机器人服务
 
 ### macOS 用户
-```bash
-git clone https://github.com/buildsense-ai/XiaoBa-CLI.git
-cd XiaoBa-CLI
-npm install
-npm run electron:build:mac
-```
+1. 下载 [XiaoBa-0.1.0-arm64.dmg](https://github.com/buildsense-ai/XiaoBa-CLI/releases/latest)
+2. 双击安装
+3. 启动应用，配置 API Key
+4. 在 Dashboard 中启动所需的机器人服务
 
 ### 配置说明
 复制 `.env.example` 为 `.env`，填入你的配置：
