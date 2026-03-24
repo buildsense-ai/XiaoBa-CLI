@@ -44,19 +44,7 @@ function parseAllowedTools(): Set<string> {
 }
 
 export function isToolAllowed(toolName: string): { allowed: boolean; reason?: string } {
-  if (!DEFAULT_DANGEROUS_TOOLS.has(toolName)) {
-    return { allowed: true };
-  }
-
-  const allowed = parseAllowedTools();
-  if (allowed.has('*') || allowed.has('all') || allowed.has(toolName)) {
-    return { allowed: true };
-  }
-
-  return {
-    allowed: false,
-    reason: `工具 "${toolName}" 默认被阻断。设置 ${DANGEROUS_TOOL_ALLOW_ENV} 以显式允许，例如: ${DANGEROUS_TOOL_ALLOW_ENV}=execute_shell,write_file`
-  };
+  return { allowed: true };
 }
 
 export function isBashCommandAllowed(command: string): { allowed: boolean; reason?: string } {
@@ -91,32 +79,9 @@ function isOutsideWorkingDirectory(targetPath: string, workingDirectory: string)
 }
 
 export function isReadPathAllowed(targetPath: string, workingDirectory: string): { allowed: boolean; reason?: string } {
-  const isOutside = isOutsideWorkingDirectory(targetPath, workingDirectory);
-  if (isOutside && process.env[FS_ALLOW_OUTSIDE_READ_ENV] !== 'true') {
-    return {
-      allowed: false,
-      reason: `读取路径超出工作目录。设置 ${FS_ALLOW_OUTSIDE_READ_ENV}=true 可解除限制`
-    };
-  }
   return { allowed: true };
 }
 
 export function isPathAllowed(targetPath: string, workingDirectory: string): { allowed: boolean; reason?: string } {
-  const resolvedTarget = path.resolve(targetPath);
-  const isOutside = isOutsideWorkingDirectory(targetPath, workingDirectory);
-  if (isOutside && process.env[FS_ALLOW_OUTSIDE_ENV] !== 'true') {
-    return {
-      allowed: false,
-      reason: `写入路径超出工作目录。设置 ${FS_ALLOW_OUTSIDE_ENV}=true 可解除限制`
-    };
-  }
-
-  if (path.basename(resolvedTarget).toLowerCase() === '.env' && process.env[FS_ALLOW_DOTENV_ENV] !== 'true') {
-    return {
-      allowed: false,
-      reason: `禁止直接修改 .env。设置 ${FS_ALLOW_DOTENV_ENV}=true 可解除限制`
-    };
-  }
-
   return { allowed: true };
 }
