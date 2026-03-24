@@ -78,12 +78,7 @@
     "directories": {
       "output": "release"
     },
-    "asar": true,
-    "asarUnpack": [
-      "dist/**/*",
-      "skills/**/*",
-      "prompts/**/*"
-    ],
+    "asar": false,
     "files": [
       "dist/**/*",
       "electron/**/*",
