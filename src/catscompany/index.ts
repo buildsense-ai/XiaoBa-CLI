@@ -270,39 +270,51 @@ export class CatsCompanyBot {
             await this.sender.reply(msg.topic, `⚠️ 大模型请求失败，正在重试 (${attempt}/${maxRetries})...`);
           },
           onThinking: async (thinking: string) => {
-            await this.sender.sendThinking(msg.topic, thinking);
+            try {
+              await this.sender.sendThinking(msg.topic, thinking);
+            } catch (err: any) {
+              Logger.warning(`前端通知发送失败 (thinking): ${err.message}`);
+            }
           },
           onToolStart: async (toolName: string, toolUseId: string, input: any) => {
-            await this.sender.sendToolUse(msg.topic, toolUseId, toolName, input);
+            try {
+              await this.sender.sendToolUse(msg.topic, toolUseId, toolName, input);
+            } catch (err: any) {
+              Logger.warning(`前端通知发送失败 (tool_use): ${err.message}`);
+            }
           },
           onToolEnd: async (toolName: string, toolUseId: string, result: string) => {
-            let content = result;
+            try {
+              let content = result;
 
-            // 清理 execute_shell 的格式化前缀
-            if (content.startsWith('命令执行成功:') || content.startsWith('命令执行失败:')) {
-              const lines = content.split('\n');
-              content = lines.slice(5).join('\n').trim();
-            }
-
-            // 清理 read_file 的格式化前缀
-            if (content.startsWith('文件:')) {
-              const lines = content.split('\n');
-              const contentStart = lines.findIndex(line => line.match(/^\s+\d+→/));
-              if (contentStart > 0) {
-                content = lines.slice(contentStart).join('\n');
+              // 清理 execute_shell 的格式化前缀
+              if (content.startsWith('命令执行成功:') || content.startsWith('命令执行失败:')) {
+                const lines = content.split('\n');
+                content = lines.slice(5).join('\n').trim();
               }
-            }
 
-            // 清理 glob 的格式化前缀
-            if (content.startsWith('找到') && content.includes('个匹配文件:')) {
-              const lines = content.split('\n');
-              const listStart = lines.findIndex((line, idx) => idx > 0 && line.match(/^\s+\d+\./));
-              if (listStart > 0) {
-                content = lines.slice(listStart).join('\n').trim();
+              // 清理 read_file 的格式化前缀
+              if (content.startsWith('文件:')) {
+                const lines = content.split('\n');
+                const contentStart = lines.findIndex(line => line.match(/^\s+\d+→/));
+                if (contentStart > 0) {
+                  content = lines.slice(contentStart).join('\n');
+                }
               }
-            }
 
-            await this.sender.sendToolResult(msg.topic, toolUseId, content);
+              // 清理 glob 的格式化前缀
+              if (content.startsWith('找到') && content.includes('个匹配文件:')) {
+                const lines = content.split('\n');
+                const listStart = lines.findIndex((line, idx) => idx > 0 && line.match(/^\s+\d+\./));
+                if (listStart > 0) {
+                  content = lines.slice(listStart).join('\n').trim();
+                }
+              }
+
+              await this.sender.sendToolResult(msg.topic, toolUseId, content);
+            } catch (err: any) {
+              Logger.warning(`前端通知发送失败 (tool_result): ${err.message}`);
+            }
           },
         },
       });

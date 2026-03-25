@@ -39,6 +39,7 @@ export class MessageSender {
           'Authorization': `ApiKey ${this.apiKey}`,
         },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000), // 10秒超时
       });
 
       if (!res.ok) {
