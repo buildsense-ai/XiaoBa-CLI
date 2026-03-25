@@ -10,7 +10,7 @@ export class MessageSender {
   private readonly apiKey: string;
 
   constructor(private bot: CatsClient, baseUrl?: string, apiKey?: string) {
-    this.baseUrl = baseUrl || 'https://api.catsco.cc';
+    this.baseUrl = baseUrl || 'https://app.catsco.cc';
     this.apiKey = apiKey || '';
   }
 

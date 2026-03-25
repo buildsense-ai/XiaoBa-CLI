@@ -127,7 +127,7 @@ export class CatsClient extends EventEmitter {
   }
 
   private async acceptFriendRequest(userId: number): Promise<void> {
-    const httpBaseUrl = this.config.httpBaseUrl || 'https://api.catsco.cc';
+    const httpBaseUrl = this.config.httpBaseUrl || 'https://app.catsco.cc';
     const res = await fetch(`${httpBaseUrl}/api/friends/accept`, {
       method: 'POST',
       headers: {
@@ -148,7 +148,7 @@ export class CatsClient extends EventEmitter {
   }
 
   async uploadFile(filePath: string, type: 'image' | 'file' = 'file'): Promise<UploadResult> {
-    const httpBaseUrl = this.config.httpBaseUrl || 'https://api.catsco.cc';
+    const httpBaseUrl = this.config.httpBaseUrl || 'https://app.catsco.cc';
     const url = `${httpBaseUrl}/api/upload?type=${type}`;
 
     const buffer = fs.readFileSync(filePath);
