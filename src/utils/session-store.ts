@@ -73,4 +73,19 @@ export class SessionStore {
       Logger.error(`删除会话失败 [${sessionKey}]: ${err}`);
     }
   }
+
+  /** 归档会话文件（移动到 archive 目录） */
+  archiveSession(sessionKey: string): void {
+    try {
+      const fp = filePath(sessionKey);
+      if (!fs.existsSync(fp)) return;
+      const archiveDir = path.join(SESSIONS_DIR, 'archive');
+      if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
+      const archivePath = path.join(archiveDir, keyToFilename(sessionKey));
+      fs.renameSync(fp, archivePath);
+      Logger.info(`会话已归档: ${sessionKey}`);
+    } catch (err) {
+      Logger.error(`归档会话失败 [${sessionKey}]: ${err}`);
+    }
+  }
 }
