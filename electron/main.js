@@ -1,9 +1,14 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, dialog } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const path = require('path');
 
 const DASHBOARD_PORT = 3800;
 let mainWindow = null;
 let tray = null;
+
+// 配置自动更新
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = true;
 
 function getAppRoot() {
   // asar 已关闭
@@ -181,11 +186,39 @@ function createTray() {
   });
 }
 
+// 更新事件监听
+autoUpdater.on('update-available', (info) => {
+  dialog.showMessageBox({
+    type: 'info',
+    title: '发现新版本',
+    message: `发现新版本 ${info.version}，是否下载？`,
+    buttons: ['下载', '稍后'],
+  }).then((result) => {
+    if (result.response === 0) autoUpdater.downloadUpdate();
+  });
+});
+
+autoUpdater.on('update-downloaded', () => {
+  dialog.showMessageBox({
+    type: 'info',
+    title: '更新已下载',
+    message: '更新已下载完成，重启应用后生效',
+    buttons: ['立即重启', '稍后'],
+  }).then((result) => {
+    if (result.response === 0) autoUpdater.quitAndInstall();
+  });
+});
+
 app.whenReady().then(async () => {
   try {
     await startServer();
     createWindow();
     createTray();
+    
+    // 启动后检查更新
+    if (app.isPackaged) {
+      setTimeout(() => autoUpdater.checkForUpdates(), 3000);
+    }
   } catch (err) {
     console.error('启动失败:', err);
     app.quit();

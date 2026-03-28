@@ -32,6 +32,10 @@ export class CatsClient extends EventEmitter {
   private msgId = 0;
   private closed = false;
   private pendingAcks = new Map<string, any>();
+  private pingTimer: NodeJS.Timeout | null = null;
+  private pongTimer: NodeJS.Timeout | null = null;
+  private reconnectAttempts = 0;
+  private subscribedTopics = new Set<string>();
 
   public uid = '';
   public name = '';
@@ -50,18 +54,26 @@ export class CatsClient extends EventEmitter {
     });
 
     this.ws.on('open', () => {
+      this.reconnectAttempts = 0;
       this.send({ hi: { id: '1', ver: '0.1.0', ua: 'XiaoBa/1.0' } });
+      this.startHeartbeat();
     });
 
     this.ws.on('message', (data: Buffer) => {
+      this.resetPongTimer();
       const msg = JSON.parse(data.toString());
       this.handleMessage(msg);
     });
 
+    this.ws.on('pong', () => {
+      this.resetPongTimer();
+    });
+
     this.ws.on('error', (err: Error) => this.emit('error', err));
     this.ws.on('close', () => {
+      this.stopHeartbeat();
       this.ws = null;
-      if (!this.closed) setTimeout(() => this.connect(), 3000);
+      if (!this.closed) this.scheduleReconnect();
     });
   }
 
@@ -73,6 +85,7 @@ export class CatsClient extends EventEmitter {
         this.name = String(msg.ctrl.params?.name || 'XiaoBa');
         this.emit('ready', { uid: this.uid, name: this.name });
         this.autoAcceptFriendRequests().catch(console.error);
+        this.resubscribeTopics();
       } else if (msg.ctrl.id && msg.ctrl.code === 200) {
         const pending = this.pendingAcks.get(msg.ctrl.id);
         if (pending) {
@@ -83,6 +96,7 @@ export class CatsClient extends EventEmitter {
       }
     } else if (msg.data) {
       console.log('[DEBUG] 收到消息数据:', JSON.stringify(msg.data));
+      this.subscribedTopics.add(msg.data.topic);
       const ctx: MessageContext = {
         topic: msg.data.topic || '',
         senderId: msg.data.from || '',
@@ -225,8 +239,54 @@ export class CatsClient extends EventEmitter {
     }
   }
 
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.pingTimer = setInterval(() => {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.ping();
+      }
+    }, 20000);
+    this.resetPongTimer();
+  }
+
+  private resetPongTimer(): void {
+    if (this.pongTimer) clearTimeout(this.pongTimer);
+    this.pongTimer = setTimeout(() => {
+      console.log('[DEBUG] 心跳超时，断开连接');
+      this.ws?.terminate();
+    }, 90000);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+    if (this.pongTimer) {
+      clearTimeout(this.pongTimer);
+      this.pongTimer = null;
+    }
+  }
+
+  private scheduleReconnect(): void {
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+    console.log(`[DEBUG] ${delay}ms后重连 (尝试 ${this.reconnectAttempts + 1})`);
+    this.reconnectAttempts++;
+    setTimeout(() => this.connect(), delay);
+  }
+
+  private resubscribeTopics(): void {
+    if (this.subscribedTopics.size > 0) {
+      console.log(`[DEBUG] 重新订阅 ${this.subscribedTopics.size} 个会话`);
+      this.subscribedTopics.forEach(topic => {
+        this.send({ sub: { topic } });
+      });
+    }
+  }
+
   disconnect(): void {
     this.closed = true;
+    this.stopHeartbeat();
     this.ws?.close();
   }
 }

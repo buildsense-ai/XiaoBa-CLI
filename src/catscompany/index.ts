@@ -298,6 +298,10 @@ export class CatsCompanyBot {
             }
           },
           onToolStart: async (toolName: string, toolUseId: string, input: any) => {
+            // 跳过输出型工具的 WORKING 消息
+            if (toolName === 'send_text' || toolName === 'send_file') {
+              return;
+            }
             try {
               await this.sender.sendToolUse(msg.topic, toolUseId, toolName, input);
             } catch (err: any) {
@@ -305,6 +309,10 @@ export class CatsCompanyBot {
             }
           },
           onToolEnd: async (toolName: string, toolUseId: string, result: string) => {
+            // 跳过输出型工具的 WORKING 消息
+            if (toolName === 'send_text' || toolName === 'send_file') {
+              return;
+            }
             try {
               let content = result;
 

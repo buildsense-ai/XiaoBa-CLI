@@ -11,6 +11,8 @@ import * as http from 'http';
 import { PathResolver } from '../../utils/path-resolver';
 import matter from 'gray-matter';
 import { execSync } from 'child_process';
+import { ReportGenerator } from '../../utils/report-generator';
+import { LogUploader } from '../../utils/log-uploader';
 
 /**
  * 安装 skill 的 npm 依赖（读取 SKILL.md 的 npm-dependencies 字段）
@@ -368,6 +370,57 @@ export function createApiRouter(serviceManager: ServiceManager): Router {
       const response = await fetch(`https://ilinkai.weixin.qq.com/ilink/bot/get_qrcode_status?qrcode=${qrcode}`);
       const data = await response.json();
       res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==================== 日志和报告 ====================
+
+  router.post('/logs/upload', async (req, res) => {
+    try {
+      const { date } = req.body;
+      if (!date) return res.status(400).json({ error: 'date required' });
+      
+      const serverUrl = process.env.LOG_SERVER_URL;
+      const apiKey = process.env.LOG_API_KEY;
+      if (!serverUrl || !apiKey) {
+        return res.status(500).json({ error: '未配置日志服务器' });
+      }
+
+      const uploader = new LogUploader(serverUrl, apiKey);
+      await uploader.uploadLogs(path.resolve('logs/sessions'), date);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.get('/reports/daily', (req, res) => {
+    try {
+      const date = req.query.date as string;
+      if (!date) return res.status(400).json({ error: 'date required' });
+
+      const generator = new ReportGenerator();
+      const report = generator.generateDailyReport(date);
+      res.json(report);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.post('/reports/generate', (req, res) => {
+    try {
+      const { date, output } = req.body;
+      if (!date) return res.status(400).json({ error: 'date required' });
+
+      const generator = new ReportGenerator();
+      const report = generator.generateDailyReport(date);
+      
+      const outputPath = output || path.resolve(`logs/reports/${date}.json`);
+      generator.saveReport(report, outputPath);
+      
+      res.json({ ok: true, path: outputPath, report });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
