@@ -376,12 +376,13 @@ thinking 工具使用场景（谨慎使用）：
         );
       }
 
-      // 替换 base64 图片数据为轻量占位符，避免撑爆 context
+      // 替换 base64 图片数据为路径占位符，避免撑爆 context
       for (const msg of this.messages) {
         if (Array.isArray(msg.content)) {
           msg.content = msg.content.map(block => {
             if (block.type === 'image' && block.source?.data) {
-              return { type: 'text' as const, text: `[图片: ${block.source.media_type || 'image'}]` };
+              const filePath = (block as any).filePath || '未知路径';
+              return { type: 'text' as const, text: `[图片: ${filePath}]` };
             }
             return block;
           });
