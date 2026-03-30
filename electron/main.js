@@ -1,14 +1,19 @@
 const { app, BrowserWindow, Tray, Menu, nativeImage, dialog } = require('electron');
-const { autoUpdater } = require('electron-updater');
 const path = require('path');
 
 const DASHBOARD_PORT = 3800;
 let mainWindow = null;
 let tray = null;
+let autoUpdater = null;
 
-// 配置自动更新
-autoUpdater.autoDownload = false;
-autoUpdater.autoInstallOnAppQuit = true;
+// 尝试加载 electron-updater（可选）
+try {
+  autoUpdater = require('electron-updater').autoUpdater;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+} catch (err) {
+  console.log('electron-updater not available, auto-update disabled');
+}
 
 function getAppRoot() {
   // asar 已关闭
@@ -187,27 +192,29 @@ function createTray() {
 }
 
 // 更新事件监听
-autoUpdater.on('update-available', (info) => {
-  dialog.showMessageBox({
-    type: 'info',
-    title: '发现新版本',
-    message: `发现新版本 ${info.version}，是否下载？`,
-    buttons: ['下载', '稍后'],
-  }).then((result) => {
-    if (result.response === 0) autoUpdater.downloadUpdate();
+if (autoUpdater) {
+  autoUpdater.on('update-available', (info) => {
+    dialog.showMessageBox({
+      type: 'info',
+      title: '发现新版本',
+      message: `发现新版本 ${info.version}，是否下载？`,
+      buttons: ['下载', '稍后'],
+    }).then((result) => {
+      if (result.response === 0) autoUpdater.downloadUpdate();
+    });
   });
-});
 
-autoUpdater.on('update-downloaded', () => {
-  dialog.showMessageBox({
-    type: 'info',
-    title: '更新已下载',
-    message: '更新已下载完成，重启应用后生效',
-    buttons: ['立即重启', '稍后'],
-  }).then((result) => {
-    if (result.response === 0) autoUpdater.quitAndInstall();
+  autoUpdater.on('update-downloaded', () => {
+    dialog.showMessageBox({
+      type: 'info',
+      title: '更新已下载',
+      message: '更新已下载完成，重启应用后生效',
+      buttons: ['立即重启', '稍后'],
+    }).then((result) => {
+      if (result.response === 0) autoUpdater.quitAndInstall();
+    });
   });
-});
+}
 
 app.whenReady().then(async () => {
   try {
@@ -216,7 +223,7 @@ app.whenReady().then(async () => {
     createTray();
     
     // 启动后检查更新
-    if (app.isPackaged) {
+    if (app.isPackaged && autoUpdater) {
       setTimeout(() => autoUpdater.checkForUpdates(), 3000);
     }
   } catch (err) {
