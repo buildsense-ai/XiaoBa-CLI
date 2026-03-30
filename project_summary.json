@@ -1,0 +1,36 @@
+{
+  "project": "TCGA-BRCA Immune Infiltration Analysis",
+  "samples": {
+    "tumor": 200,
+    "normal": 50
+  },
+  "differential_expression": {
+    "upregulated": 5,
+    "downregulated": 0
+  },
+  "immune_cell_types": [
+    "T cells",
+    "CD8+ T",
+    "CD4+ T",
+    "B cells",
+    "NK cells",
+    "Macrophages",
+    "DC",
+    "Neutrophils"
+  ],
+  "checkpoint_genes": [
+    "PDCD1",
+    "PDL1",
+    "CTLA4"
+  ],
+  "survival_pvalue": 0.10358620679584936,
+  "output_files": [
+    "volcano_plot.png",
+    "immune_infiltration_scores.csv",
+    "checkpoint_correlation.csv",
+    "survival_plot.png",
+    "heatmap.png",
+    "tcga_brca_degs.csv",
+    "analysis_report.txt"
+  ]
+}
