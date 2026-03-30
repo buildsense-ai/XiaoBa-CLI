@@ -181,6 +181,18 @@ thinking 工具使用场景（谨慎使用）：
       this.messages.push(...this.pendingRestore);
       Logger.info(`[会话 ${this.key}] 已恢复 ${this.pendingRestore.length} 条消息`);
       this.pendingRestore = undefined;
+
+      // 恢复后立即检查是否需要压缩
+      if (this.compressor.needsCompaction(this.messages)) {
+        const usage = this.compressor.getUsageInfo(this.messages);
+        Logger.info(`[${this.key}] 恢复后上下文过大，立即压缩: ${usage.usedTokens}/${usage.maxTokens} tokens (${usage.usagePercent}%)`);
+        try {
+          this.messages = await this.compressor.compact(this.messages);
+          Logger.info(`[${this.key}] 压缩完成，当前消息数: ${this.messages.length}`);
+        } catch (err) {
+          Logger.error(`[${this.key}] 压缩失败: ${err}`);
+        }
+      }
     }
   }
 
