@@ -11,8 +11,8 @@ import * as http from 'http';
 import { PathResolver } from '../../utils/path-resolver';
 import matter from 'gray-matter';
 import { execSync } from 'child_process';
-import { ReportGenerator } from '../../utils/report-generator';
-import { LogUploader } from '../../utils/log-uploader';
+// import { ReportGenerator } from '../../utils/report-generator';
+// import { LogUploader } from '../../utils/log-uploader';
 
 /**
  * 安装 skill 的 npm 依赖（读取 SKILL.md 的 npm-dependencies 字段）
@@ -376,7 +376,9 @@ export function createApiRouter(serviceManager: ServiceManager): Router {
   });
 
   // ==================== 日志和报告 ====================
+  // 注释：以下功能需要 report-generator 和 log-uploader 模块，暂时禁用
 
+  /*
   router.post('/logs/upload', async (req, res) => {
     try {
       const { date } = req.body;
@@ -425,6 +427,7 @@ export function createApiRouter(serviceManager: ServiceManager): Router {
       res.status(500).json({ error: e.message });
     }
   });
+  */
 
   return router;
 }
