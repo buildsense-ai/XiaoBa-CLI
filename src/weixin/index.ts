@@ -184,18 +184,24 @@ export class WeixinBot {
     const mediaFiles = await this.handler.downloadMedia(parsed);
     const hasMedia = mediaFiles.length > 0;
 
-    Logger.info(`[${sessionKey}] 收到消息: ${parsed.text?.slice(0, 50) || '[媒体消息]'}${hasMedia ? ` +${mediaFiles.length}图` : ''}...`);
+    const mediaDesc = hasMedia
+      ? ` +${mediaFiles.filter(f => /\.(jpg|jpeg|png|gif)$/i.test(f)).length}图 +${mediaFiles.filter(f => !/\.(jpg|jpeg|png|gif)$/i.test(f)).length}文件`
+      : '';
+
+    Logger.info(`[${sessionKey}] 收到消息: ${parsed.text?.slice(0, 50) || '[媒体消息]'}${mediaDesc}...`);
 
     const session = this.sessionManager.getOrCreate(sessionKey, msg.to_user_id);
     const channel = this.buildChannel(msg.to_user_id, sessionKey);
 
     let userText = parsed.text || '';
     if (hasMedia) {
-      const attachmentLines = mediaFiles.map((file, i) =>
-        `[图片${i + 1}] ${file.split(/[/\\]/).pop()}\n[图片路径] ${file}`
-      );
-      const attachmentContext = `[用户已上传图片]\n${attachmentLines.join('\n')}`;
-      userText = userText ? `${userText}\n${attachmentContext}` : `[用户仅上传了图片，暂未给出明确任务]\n${attachmentContext}`;
+      const attachmentLines = mediaFiles.map((file, i) => {
+        const fileName = file.split(/[/\\]/).pop();
+        const isImage = /\.(jpg|jpeg|png|gif)$/i.test(file);
+        return `[${isImage ? '图片' : '文件'}${i + 1}] ${fileName}\n[路径] ${file}`;
+      });
+      const attachmentContext = `[用户已上传${mediaFiles.length}个附件]\n${attachmentLines.join('\n')}`;
+      userText = userText ? `${userText}\n${attachmentContext}` : `[用户仅上传了附件，暂未给出明确任务]\n${attachmentContext}`;
     }
 
     await session.handleMessage(userText, { channel });
