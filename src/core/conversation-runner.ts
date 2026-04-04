@@ -15,6 +15,7 @@ import {
 function contentToString(content: string | ContentBlock[] | null): string {
   if (!content) return '';
   if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '[图片]';
   return content.map(block => block.type === 'text' ? block.text : '[图片]').join('');
 }
 
@@ -156,6 +157,7 @@ export class ConversationRunner {
     let nextTurnTransientHints: Message[] = [];
     let hasDeliveredMessageOutThisRun = false;
     let turns = 0;
+    let consecutiveThinkingCount = 0;
 
     while (turns++ < this.maxTurns) {
       if (this.shouldContinue && !this.shouldContinue()) {
@@ -280,7 +282,7 @@ export class ConversationRunner {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
         const activeToolNames = allTools.map(tool => tool.name);
         const toolStart = Date.now();
-        const result = await this.executeToolWithRetry(
+        let result = await this.executeToolWithRetry(
           toolCall,
           messages,
           {
@@ -289,6 +291,15 @@ export class ConversationRunner {
           },
           turns,
         );
+        if (toolName === 'thinking') {
+          consecutiveThinkingCount++;
+          if (consecutiveThinkingCount >= 3) {
+            Logger.warning(`[${this.sessionLabel}Turn ${turns}] 检测到连续thinking ${consecutiveThinkingCount} 次，强制中断`);
+            result = { ...result, content: '你已经连续思考多次，请立即执行具体操作，不要再调用thinking工具。' };
+          }
+        } else {
+          consecutiveThinkingCount = 0;
+        }
         const toolDuration = Date.now() - toolStart;
         Metrics.recordToolCall(toolName, toolDuration);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
