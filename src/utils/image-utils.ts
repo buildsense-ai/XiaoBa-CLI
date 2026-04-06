@@ -84,7 +84,8 @@ export async function createImageBlock(filePath: string, maxTokens: number = DEF
       },
       // Store dimensions for coordinate mapping
       ...(processed.dimensions && { dimensions: processed.dimensions }),
-    };
+      filePath,
+    } as any;
   } catch (error) {
     console.error(`Failed to process image ${filePath}:`, error);
     return null;
