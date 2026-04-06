@@ -112,16 +112,10 @@ export class ReadTool implements Tool {
   private async readImage(absolutePath: string, file_path: string): Promise<any> {
     const imageBlock = await createImageBlock(absolutePath);
     if (imageBlock) {
-      const stats = fs.statSync(absolutePath);
-      const sizeKB = (stats.size / 1024).toFixed(2);
-      
-      // 返回元数据 + 独立的图片消息（参考 Claude Code）
       return {
-        toolContent: `已读取图片: ${file_path} (${sizeKB} KB)`,
-        newMessages: [{
-          role: 'user',
-          content: [imageBlock]
-        }]
+        _imageForNewMessage: true,
+        imageBlock,
+        filePath: file_path
       };
     }
     

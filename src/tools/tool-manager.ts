@@ -8,7 +8,6 @@ import { GlobTool } from './glob-tool';
 import { GrepTool } from './grep-tool';
 import { SkillTool } from './skill-tool';
 import { SendFileTool } from './send-file-tool';
-import { ThinkingTool } from './thinking-tool';
 import { SendTextTool } from './send-text-tool';
 import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
@@ -62,8 +61,7 @@ export class ToolManager implements ToolExecutor {
     this.registerTool(new SendTextTool());
     this.registerTool(new SendFileTool());
 
-    // 元工具 (2)
-    this.registerTool(new ThinkingTool());
+    // 元工具
     this.registerTool(new SpawnSubagentTool());
 
     // Sub-Agent 管理 (2)
@@ -140,6 +138,20 @@ export class ToolManager implements ToolExecutor {
       }
 
       const output = await tool.execute(args, context);
+
+      // 处理特殊返回格式（如图片需要额外消息）
+      if (output && typeof output === 'object' && 'toolContent' in output && 'newMessages' in output) {
+        const specialOutput = output as { toolContent: string; newMessages: any[] };
+        return {
+          tool_call_id: toolCall.id,
+          role: 'tool',
+          name: toolCall.function.name,
+          content: specialOutput.toolContent,
+          ok: true,
+          controlSignal: tool.definition.controlMode,
+          newMessages: specialOutput.newMessages,
+        };
+      }
 
       return {
         tool_call_id: toolCall.id,

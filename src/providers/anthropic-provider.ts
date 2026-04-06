@@ -54,9 +54,45 @@ export class AnthropicProvider implements AIProvider {
 
     const flushToolResults = () => {
       if (pendingToolResults.length === 0) return;
+      
+      // 检查是否有 tool_result 包含图片，需要提取出来
+      const contentBlocks: (Anthropic.ToolResultBlockParam | Anthropic.ImageBlockParam)[] = [];
+      
+      for (const toolResult of pendingToolResults) {
+        if (Array.isArray(toolResult.content)) {
+          // 分离 text 和 image blocks
+          const textBlocks = toolResult.content.filter((b: any) => b.type === 'text');
+          const imageBlocks = toolResult.content.filter((b: any) => b.type === 'image');
+          
+          // tool_result 只保留 text
+          if (textBlocks.length > 0) {
+            contentBlocks.push({
+              type: 'tool_result',
+              tool_use_id: toolResult.tool_use_id,
+              content: textBlocks.length === 1 && typeof textBlocks[0].text === 'string' 
+                ? textBlocks[0].text 
+                : textBlocks
+            });
+          } else {
+            contentBlocks.push({
+              type: 'tool_result',
+              tool_use_id: toolResult.tool_use_id,
+              content: ''
+            });
+          }
+          
+          // 图片作为独立的 image blocks 添加到 content 数组
+          for (const imageBlock of imageBlocks) {
+            contentBlocks.push(imageBlock);
+          }
+        } else {
+          contentBlocks.push(toolResult);
+        }
+      }
+      
       transformedMessages.push({
         role: 'user',
-        content: pendingToolResults
+        content: contentBlocks
       });
       pendingToolResults = [];
     };
@@ -64,10 +100,19 @@ export class AnthropicProvider implements AIProvider {
     for (const msg of nonSystemMessages) {
       if (msg.role === 'tool') {
         if (!msg.tool_call_id) continue;
+        
+        const content = Array.isArray(msg.content)
+          ? msg.content.map(block =>
+              block.type === 'text'
+                ? { type: 'text' as const, text: block.text }
+                : { type: 'image' as const, source: block.source }
+            )
+          : msg.content || '';
+        
         pendingToolResults.push({
           type: 'tool_result',
           tool_use_id: msg.tool_call_id,
-          content: msg.content || ''
+          content
         });
         continue;
       }

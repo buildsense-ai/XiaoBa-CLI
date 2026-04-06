@@ -6,6 +6,17 @@ import { chatCommand } from './commands/chat';
 import { configCommand } from './commands/config';
 import { registerSkillCommand } from './commands/skill';
 import { feishuCommand } from './commands/feishu';
+import { LogUploadScheduler } from './utils/log-upload-scheduler';
+
+// 启动日志上传调度器
+const uploadScheduler = new LogUploadScheduler();
+uploadScheduler.start();
+
+// 优雅退出
+process.on('SIGINT', () => {
+  uploadScheduler.stop();
+  process.exit(0);
+});
 
 function main() {
   const program = new Command();

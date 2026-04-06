@@ -251,12 +251,12 @@ export class CatsCompanyBot {
         receivedAt: Date.now(),
       });
       const queuedAttachments = this.consumePendingAttachments(key);
-      userMessage = this.buildMultimodalMessage(msg.text, queuedAttachments);
+      userMessage = await this.buildMultimodalMessage(msg.text, queuedAttachments);
       Logger.info(`[${key}] 附件消息（attachments=${queuedAttachments.length})`);
     } else {
       const queuedAttachments = this.consumePendingAttachments(key);
       if (queuedAttachments.length > 0) {
-        userMessage = this.buildMultimodalMessage(msg.text, queuedAttachments);
+        userMessage = await this.buildMultimodalMessage(msg.text, queuedAttachments);
         Logger.info(`[${key}] 追加 ${queuedAttachments.length} 个附件`);
       }
     }
@@ -530,7 +530,7 @@ export class CatsCompanyBot {
     return queue;
   }
 
-  private buildMultimodalMessage(text: string, attachments: PendingAttachment[]): import('../types').ContentBlock[] {
+  private async buildMultimodalMessage(text: string, attachments: PendingAttachment[]): Promise<import('../types').ContentBlock[]> {
     const { createImageBlock } = require('../utils/image-utils');
     const blocks: import('../types').ContentBlock[] = [];
 
@@ -540,7 +540,7 @@ export class CatsCompanyBot {
 
     for (const att of attachments) {
       if (att.type === 'image') {
-        const imgBlock = createImageBlock(att.localPath);
+        const imgBlock = await createImageBlock(att.localPath);
         if (imgBlock) {
           blocks.push(imgBlock);
           Logger.info(`[多模态] 已添加图片块: ${att.fileName}, base64长度: ${(imgBlock.source as any)?.data?.length || 0}`);

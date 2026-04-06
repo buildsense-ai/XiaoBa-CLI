@@ -44,7 +44,7 @@ export function estimateMessageTokens(message: Message): number {
 
   if (message.content) {
     const content = typeof message.content === 'string' ? message.content :
-      message.content.map(b => b.type === 'text' ? b.text : '[图片]').join('');
+      Array.isArray(message.content) ? message.content.map(b => b.type === 'text' ? b.text : '[图片]').join('') : '[图片]';
     tokens += estimateTokens(content);
   }
 

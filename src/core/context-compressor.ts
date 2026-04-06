@@ -7,6 +7,7 @@ import { Metrics } from '../utils/metrics';
 function contentToString(content: string | ContentBlock[] | null): string {
   if (!content) return '';
   if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '[图片]';
   return content.map(block => block.type === 'text' ? block.text : '[图片]').join('');
 }
 

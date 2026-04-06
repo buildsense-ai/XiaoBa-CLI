@@ -4,6 +4,13 @@ import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
 import { glob } from 'glob';
 import { isReadPathAllowed } from '../utils/safety';
 
+interface GlobResult {
+  numFiles: number;
+  filenames: string[];
+  truncated: boolean;
+  durationMs: number;
+}
+
 /**
  * Glob 工具 - 文件模式匹配搜索
  */
@@ -24,7 +31,7 @@ export class GlobTool implements Tool {
         },
         limit: {
           type: 'number',
-          description: '返回结果的最大数量（可选，默认 100）',
+          description: '返回结果的最大数量（默认 100）',
           default: 100
         }
       },
@@ -34,6 +41,7 @@ export class GlobTool implements Tool {
 
   async execute(args: any, context: ToolExecutionContext): Promise<string> {
     const { pattern, path: searchPath, limit = 100 } = args;
+    const startTime = Date.now();
 
     try {
       // 确定搜索目录
@@ -43,12 +51,12 @@ export class GlobTool implements Tool {
 
       const pathPermission = isReadPathAllowed(cwd, context.workingDirectory);
       if (!pathPermission.allowed) {
-        return `执行被阻止: ${pathPermission.reason}`;
+        return JSON.stringify({ error: `执行被阻止: ${pathPermission.reason}` });
       }
 
       // 检查目录是否存在
       if (!fs.existsSync(cwd)) {
-        return `错误：目录不存在: ${cwd}`;
+        return JSON.stringify({ error: `目录不存在: ${cwd}` });
       }
 
       // 执行 glob 搜索
@@ -61,35 +69,49 @@ export class GlobTool implements Tool {
       });
 
       if (files.length === 0) {
-        return `未找到匹配的文件。\n模式: ${pattern}\n目录: ${cwd}`;
+        return `未找到匹配的文件。\n模式: ${pattern}\n目录: ${searchPath || '.'}`;
       }
 
-      // 获取文件的修改时间并排序
-      const filesWithStats = files.map(file => {
+      // 使用Promise.allSettled容错处理stat（文件可能在glob后被删除）
+      const statsPromises = files.map(file => {
         const fullPath = path.join(cwd, file);
-        const stats = fs.statSync(fullPath);
-        return {
-          path: file,
-          mtime: stats.mtime.getTime()
-        };
+        return fs.promises.stat(fullPath)
+          .then(stats => ({ file, mtime: stats.mtime.getTime() }))
+          .catch(() => ({ file, mtime: 0 })); // 失败的文件排在最后
       });
+
+      const filesWithStats = await Promise.all(statsPromises);
 
       // 按修改时间降序排序（最新的在前）
       filesWithStats.sort((a, b) => b.mtime - a.mtime);
 
       // 应用限制
+      const truncated = files.length > limit;
       const limitedFiles = filesWithStats.slice(0, limit);
-      const hasMore = files.length > limit;
 
-      // 格式化输出
-      const fileList = limitedFiles.map((f, index) => {
-        const date = new Date(f.mtime).toISOString().split('T')[0];
-        return `${(index + 1).toString().padStart(4, ' ')}. ${f.path} (${date})`;
-      }).join('\n');
+      const result: GlobResult = {
+        numFiles: limitedFiles.length,
+        filenames: limitedFiles.map(f => f.file),
+        truncated,
+        durationMs: Date.now() - startTime
+      };
 
-      return `找到 ${files.length} 个匹配文件${hasMore ? `，显示前 ${limit} 个` : ''}:\n模式: ${pattern}\n目录: ${searchPath || '.'}\n\n${fileList}`;
+      return this.formatResult(result, pattern, searchPath);
     } catch (error: any) {
-      return `Glob 搜索失败: ${error.message}`;
+      return JSON.stringify({ error: `Glob 搜索失败: ${error.message}` });
     }
+  }
+
+  private formatResult(
+    result: GlobResult,
+    pattern: string,
+    searchPath: string | undefined
+  ): string {
+    const { numFiles, filenames, truncated, durationMs } = result;
+
+    const header = `找到 ${numFiles} 个文件 (${durationMs}ms)${truncated ? ' - 结果已截断，考虑使用更精确的模式' : ''}:\n模式: ${pattern}\n目录: ${searchPath || '.'}\n\n`;
+    const fileList = filenames.map((file, i) => `${(i + 1).toString().padStart(4, ' ')}. ${file}`).join('\n');
+    
+    return header + fileList + (truncated ? '\n\n提示: 结果被限制在前 100 个文件。使用更具体的路径或模式来缩小范围。' : '');
   }
 }

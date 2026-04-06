@@ -1,3 +1,5 @@
+import { ContentBlock } from './index';
+
 /**
  * 工具参数定义
  */
@@ -62,11 +64,12 @@ export interface ToolResult {
   tool_call_id: string;
   role: 'tool';
   name: string;
-  content: string;
+  content: string | import('./index').ContentBlock[];
   ok?: boolean;
   errorCode?: string;
   retryable?: boolean;
   controlSignal?: ToolControlMode;
+  newMessages?: import('./index').Message[];
 }
 
 export type ToolSurface = 'cli' | 'feishu' | 'catscompany' | 'agent' | 'research' | 'unknown';
@@ -109,7 +112,7 @@ export interface ToolExecutionContext {
  */
 export interface Tool {
   definition: ToolDefinition;
-  execute(args: any, context: ToolExecutionContext): Promise<string>;
+  execute(args: any, context: ToolExecutionContext): Promise<string | ContentBlock[]>;
 }
 
 /**

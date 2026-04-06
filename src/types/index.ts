@@ -47,6 +47,11 @@ export interface ChatConfig {
     sessionTTL?: number;
     longPollTimeout?: number;
   };
+  logUpload?: {
+    enabled?: boolean;
+    serverUrl?: string;
+    intervalMinutes?: number;
+  };
 }
 
 export interface TokenUsage {

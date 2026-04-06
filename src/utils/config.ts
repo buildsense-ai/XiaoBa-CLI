@@ -91,6 +91,11 @@ export class ConfigManager {
           .map(item => item.trim())
           .filter(Boolean),
       },
+      logUpload: {
+        enabled: process.env.LOG_UPLOAD_ENABLED === 'true',
+        serverUrl: process.env.LOG_UPLOAD_SERVER_URL,
+        intervalMinutes: parseInt(process.env.LOG_UPLOAD_INTERVAL_MINUTES || '30'),
+      },
     };
   }
 }

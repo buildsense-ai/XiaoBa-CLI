@@ -157,7 +157,7 @@ export class ConversationRunner {
     let nextTurnTransientHints: Message[] = [];
     let hasDeliveredMessageOutThisRun = false;
     let turns = 0;
-    let consecutiveThinkingCount = 0;
+    let thinkingCount = 0;
 
     while (turns++ < this.maxTurns) {
       if (this.shouldContinue && !this.shouldContinue()) {
@@ -165,10 +165,16 @@ export class ConversationRunner {
       }
 
       if (this.enableCompression) {
-        const usage = this.compressor.getUsageInfo(messages);
-        Logger.info(`[${this.sessionLabel}Turn ${turns}] 上下文: ${usage.usedTokens} tokens (${usage.usagePercent}%)`);
-        if (this.compressor.needsCompaction(messages)) {
-          Logger.info(`上下文使用率 ${usage.usagePercent}%，触发压缩...`);
+        const toolTokens = estimateToolsTokens(allTools);
+        const messageTokens = estimateMessagesTokens(messages);
+        const totalTokens = messageTokens + toolTokens;
+        const usagePercent = Math.round((totalTokens / this.maxPromptTokens) * 100);
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] 上下文: ${messageTokens} + ${toolTokens} = ${totalTokens} tokens (${usagePercent}%)`);
+        
+        // 检查压缩：考虑工具tokens，留足安全边际
+        const threshold = this.maxPromptTokens * 0.5;
+        if (totalTokens > threshold) {
+          Logger.info(`上下文使用率 ${usagePercent}%，触发压缩...`);
           const compacted = await this.compressor.compact(messages);
           messages.length = 0;
           messages.push(...compacted);
@@ -292,13 +298,7 @@ export class ConversationRunner {
           turns,
         );
         if (toolName === 'thinking') {
-          consecutiveThinkingCount++;
-          if (consecutiveThinkingCount >= 3) {
-            Logger.warning(`[${this.sessionLabel}Turn ${turns}] 检测到连续thinking ${consecutiveThinkingCount} 次，强制中断`);
-            result = { ...result, content: '你已经连续思考多次，请立即执行具体操作，不要再调用thinking工具。' };
-          }
-        } else {
-          consecutiveThinkingCount = 0;
+          thinkingCount++;
         }
         const toolDuration = Date.now() - toolStart;
         Metrics.recordToolCall(toolName, toolDuration);
@@ -426,16 +426,32 @@ export class ConversationRunner {
         continue;
       }
 
-      messages.push({
-        role: 'tool',
-        content: record.toolContent,
-        tool_call_id: record.result.tool_call_id,
-        name: record.result.name,
-      });
+      // 检测图片读取结果的特殊标记
+      if (typeof record.toolContent === 'object' && record.toolContent && '_imageForNewMessage' in record.toolContent) {
+        const imageData = record.toolContent as any;
+        // tool result 包含文本 + 图片（避免产生连续的 user 消息）
+        messages.push({
+          role: 'tool',
+          content: [
+            { type: 'text', text: `已读取图片: ${imageData.filePath}` },
+            imageData.imageBlock,
+          ],
+          tool_call_id: record.result.tool_call_id,
+          name: record.result.name,
+        });
+      } else {
+        // 正常的 tool result
+        messages.push({
+          role: 'tool',
+          content: record.toolContent,
+          tool_call_id: record.result.tool_call_id,
+          name: record.result.name,
+        });
 
-      // 插入额外消息（如图片）
-      if (record.newMessages) {
-        messages.push(...record.newMessages);
+        // 插入额外消息（如图片）
+        if (record.newMessages) {
+          messages.push(...record.newMessages);
+        }
       }
     }
 
