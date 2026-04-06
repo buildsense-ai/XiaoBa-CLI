@@ -61,8 +61,8 @@ export class AnthropicProvider implements AIProvider {
       for (const toolResult of pendingToolResults) {
         if (Array.isArray(toolResult.content)) {
           // 分离 text 和 image blocks
-          const textBlocks = toolResult.content.filter((b: any) => b.type === 'text');
-          const imageBlocks = toolResult.content.filter((b: any) => b.type === 'image');
+          const textBlocks = toolResult.content.filter((b: any) => b.type === 'text') as Anthropic.TextBlockParam[];
+          const imageBlocks = toolResult.content.filter((b: any) => b.type === 'image') as Anthropic.ImageBlockParam[];
           
           // tool_result 只保留 text
           if (textBlocks.length > 0) {
@@ -71,7 +71,7 @@ export class AnthropicProvider implements AIProvider {
               tool_use_id: toolResult.tool_use_id,
               content: textBlocks.length === 1 && typeof textBlocks[0].text === 'string' 
                 ? textBlocks[0].text 
-                : textBlocks
+                : textBlocks as any
             });
           } else {
             contentBlocks.push({
@@ -83,7 +83,7 @@ export class AnthropicProvider implements AIProvider {
           
           // 图片作为独立的 image blocks 添加到 content 数组
           for (const imageBlock of imageBlocks) {
-            contentBlocks.push(imageBlock);
+            contentBlocks.push(imageBlock as any);
           }
         } else {
           contentBlocks.push(toolResult);
