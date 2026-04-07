@@ -11,25 +11,35 @@ const { execSync } = require('child_process');
 
 const rootDir = path.resolve(__dirname, '..');
 
-// 获取版本号：命令行参数 > Git tag > package.json
+// 获取版本号：命令行参数 > GITHUB_REF 环境变量 > git tag
 let version;
 if (process.argv[2]) {
   version = process.argv[2];
 } else {
-  try {
-    // 优先从环境变量 GITHUB_REF 取（CI 环境）
-    const ref = process.env.GITHUB_REF || '';
-    const tagMatch = ref.match(/refs\/tags\/v?([\d.]+)/);
-    if (tagMatch) {
-      version = tagMatch[1];
-    } else {
-      // 回退：从本地 git tag 取最新
-      const localTag = execSync('git describe --tags --abbrev=0', { cwd: rootDir })
-        .toString().trim().replace(/^v/, '');
-      version = localTag || require(path.join(rootDir, 'package.json')).version;
+  // 优先从环境变量 GITHUB_REF 取（CI 环境）
+  const ref = process.env.GITHUB_REF || '';
+  const tagMatch = ref.match(/refs\/tags\/v?([\d.]+)/);
+  if (tagMatch) {
+    version = tagMatch[1];
+  } else {
+    // CI 环境：尝试 fetch tags 后获取
+    const isCI = process.env.GITHUB_ACTIONS === 'true';
+    if (isCI) {
+      try {
+        execSync('git fetch --tags', { cwd: rootDir, stdio: 'pipe' });
+        const localTag = execSync('git describe --tags --abbrev=0', { cwd: rootDir })
+          .toString().trim().replace(/^v/, '');
+        if (localTag) {
+          version = localTag;
+        }
+      } catch (e) {
+        // ignore
+      }
     }
-  } catch {
-    version = require(path.join(rootDir, 'package.json')).version;
+    // 最后回退到 package.json
+    if (!version) {
+      version = require(path.join(rootDir, 'package.json')).version;
+    }
   }
 }
 
