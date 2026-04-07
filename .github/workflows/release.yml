@@ -1,12 +1,7 @@
-name: Build and Release
+name: Desktop Release CD
 
-# 普通 push：只 lint + 构建，不发布
-# 打 tag（v*）：触发三平台构建 + 发布
 on:
   push:
-    branches:
-      - main
-      - master
     tags:
       - 'v*'
 
@@ -14,36 +9,7 @@ env:
   NODE_VERSION: '20'
 
 jobs:
-  # 代码检查和测试
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Cache node_modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build TypeScript
-        run: npm run build
-
-      - name: Run tests
-        run: npm test || true
-
-  # macOS 构建
   build-mac:
-    needs: lint
     runs-on: macos-latest
     steps:
       - name: Checkout code
@@ -53,12 +19,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-
-      - name: Cache node_modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
@@ -66,26 +27,20 @@ jobs:
       - name: Inject version into source
         run: node scripts/inject-version.js
 
-      - name: Build TypeScript
-        run: npm run build
-
       - name: Build Electron app (macOS)
         run: npm run electron:build:mac
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: macos-release
+          if-no-files-found: error
           path: |
             release/*.dmg
             release/*.dmg.blockmap
             release/latest-mac.yml
 
-  # Windows 构建
   build-win:
-    needs: lint
     runs-on: windows-latest
     steps:
       - name: Checkout code
@@ -95,12 +50,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-
-      - name: Cache node_modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
@@ -108,26 +58,20 @@ jobs:
       - name: Inject version into source
         run: node scripts/inject-version.js
 
-      - name: Build TypeScript
-        run: npm run build
-
       - name: Build Electron app (Windows)
         run: npm run electron:build:win
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-release
+          if-no-files-found: error
           path: |
             release/*.exe
             release/*.exe.blockmap
             release/latest.yml
 
-  # Linux 构建
   build-linux:
-    needs: lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -137,21 +81,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-
-      - name: Cache node_modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
 
       - name: Inject version into source
         run: node scripts/inject-version.js
-
-      - name: Build TypeScript
-        run: npm run build
 
       - name: Install Linux build dependencies
         run: |
@@ -160,29 +96,23 @@ jobs:
 
       - name: Build Electron app (Linux)
         run: npm run electron:build:linux
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux-release
+          if-no-files-found: error
           path: |
             release/*.AppImage
             release/*.deb
             release/latest-linux.yml
 
-  # 发布：只有打 tag 才触发
   release:
     needs: [build-mac, build-win, build-linux]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Download macOS artifacts
         uses: actions/download-artifact@v4
         with:
@@ -204,8 +134,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref }}
-          name: XiaoBa ${{ github.ref }}
+          tag_name: ${{ github.ref_name }}
+          name: XiaoBa ${{ github.ref_name }}
           draft: false
           prerelease: false
           generate_release_notes: true

@@ -1477,6 +1477,7 @@
       try {
         const res = await fetch(API+'/api/status');
         const data = await res.json();
+        document.querySelector('.sidebar-brand-ver').textContent = 'v' + (data.version || '-');
         renderStatus(data);
         renderServices(data.services || []);
         document.getElementById('footer-platform').textContent = data.platform || '-';

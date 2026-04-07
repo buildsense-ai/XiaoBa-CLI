@@ -11,6 +11,7 @@ import * as http from 'http';
 import { PathResolver } from '../../utils/path-resolver';
 import matter from 'gray-matter';
 import { execSync } from 'child_process';
+import { APP_VERSION } from '../../version';
 // import { ReportGenerator } from '../../utils/report-generator';
 // import { LogUploader } from '../../utils/log-uploader';
 
@@ -43,7 +44,7 @@ export function createApiRouter(serviceManager: ServiceManager): Router {
     const config = ConfigManager.getConfig();
     const services = serviceManager.getAll();
     res.json({
-      version: '0.1.1',
+      version: APP_VERSION,
       hostname: os.hostname(),
       platform: os.platform(),
       nodeVersion: process.version,
