@@ -471,10 +471,20 @@ export class AgentSession {
   ): Promise<CommandResult> {
     const commandName = command.toLowerCase();
 
+    // /stop - 中断当前正在运行的请求
+    if (commandName === 'stop') {
+      this.requestInterrupt();
+      return { handled: true, reply: '正在停止当前请求...' };
+    }
+
     // /clear
     if (commandName === 'clear') {
-      this.clear();
-      return { handled: true, reply: '会话已清空' };
+      if (args.includes('--all')) {
+        this.clear();
+        return { handled: true, reply: '历史已清空，文件已删除' };
+      }
+      this.reset();
+      return { handled: true, reply: '历史已清空' };
     }
 
     // /skills
@@ -503,14 +513,19 @@ export class AgentSession {
 
   // ─── 生命周期 ──────────────────────────────────────
 
-  /** 清空历史 */
-  clear(): void {
-    SessionStore.getInstance().deleteSession(this.key);
+  /** 重置会话状态（仅清内存，保留历史文件） */
+  reset(): void {
     this.messages = [];
     this.initialized = false;
     this.activeSkillName = undefined;
     this.activeSkillMaxTurns = undefined;
     this.lastActiveAt = Date.now();
+  }
+
+  /** 清空历史（同时删除文件） */
+  clear(): void {
+    SessionStore.getInstance().deleteSession(this.key);
+    this.reset();
   }
 
   async summarizeAndDestroy(): Promise<boolean> {

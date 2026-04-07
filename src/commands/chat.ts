@@ -157,8 +157,10 @@ async function interactiveChat(session: AgentSession): Promise<void> {
   console.log(
     styles.text('开始对话吧！输入消息后按回车发送。\n输入 ') +
     styles.highlight('/exit') + styles.text(' 退出对话，输入 ') +
-    styles.highlight('/skills') + styles.text(' 查看可用技能。\n输入 ') +
+    styles.highlight('/stop') + styles.text(' 暂停会话，输入 ') +
     styles.highlight('/clear') + styles.text(' 清空历史，输入 ') +
+    styles.highlight('/clear --all') + styles.text(' 清空历史并删除文件，输入 ') +
+    styles.highlight('/skills') + styles.text(' 查看可用技能。\n输入 ') +
     styles.highlight('/history') + styles.text(' 查看历史信息。\n'),
   );
 
