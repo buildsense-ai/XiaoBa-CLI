@@ -1,20 +1,20 @@
-name: CI Build and Release
+name: Build and Release
 
+# 普通 push：只 lint + 构建，不发布
+# 打 tag（v*）：触发三平台构建 + 发布
 on:
   push:
     branches:
       - main
       - master
-  pull_request:
-    branches:
-      - main
-      - master
+    tags:
+      - 'v*'
 
 env:
   NODE_VERSION: '20'
 
 jobs:
-  # 代码检查和测试 job
+  # 代码检查和测试
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -51,6 +51,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Inject version into source
+        run: node scripts/inject-version.js
+
       - name: Build TypeScript
         run: npm run build
 
@@ -83,6 +86,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Inject version into source
+        run: node scripts/inject-version.js
 
       - name: Build TypeScript
         run: npm run build
@@ -117,6 +123,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Inject version into source
+        run: node scripts/inject-version.js
+
       - name: Build TypeScript
         run: npm run build
 
@@ -139,11 +148,11 @@ jobs:
             release/*.deb
             release/latest-linux.yml
 
-  # 发布 job：下载所有构建产物，自动打 tag 并创建 Release
+  # 发布：只有打 tag 才触发
   release:
     needs: [build-mac, build-win, build-linux]
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
@@ -168,44 +177,11 @@ jobs:
           name: linux-release
           path: release-linux
 
-      - name: Get version from package.json
-        id: version
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Current version: $VERSION"
-
-      - name: Generate tag
-        run: |
-          TAG="v${{ steps.version.outputs.version }}"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-        id: tag
-
-      - name: Check if tag exists
-        run: |
-          TAG="v${{ steps.version.outputs.version }}"
-          if git revparse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists, skipping tag creation"
-            echo "tag_exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "tag_exists=false" >> $GITHUB_OUTPUT
-          fi
-        id: check_tag
-
-      - name: Create and push tag (if not exists)
-        if: steps.check_tag.outputs.tag_exists == 'false'
-        run: |
-          TAG="v${{ steps.version.outputs.version }}"
-          git config user.name "GitHub Actions Bot"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "$TAG" -m "Release $TAG"
-          git push origin "$TAG"
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: XiaoBa v${{ steps.version.outputs.version }}
+          tag_name: ${{ github.ref }}
+          name: XiaoBa ${{ github.ref }}
           draft: false
           prerelease: false
           generate_release_notes: true

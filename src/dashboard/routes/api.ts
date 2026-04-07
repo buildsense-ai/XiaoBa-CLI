@@ -43,7 +43,7 @@ export function createApiRouter(serviceManager: ServiceManager): Router {
     const config = ConfigManager.getConfig();
     const services = serviceManager.getAll();
     res.json({
-      version: '0.1.0',
+      version: '0.1.1',
       hostname: os.hostname(),
       platform: os.platform(),
       nodeVersion: process.version,
