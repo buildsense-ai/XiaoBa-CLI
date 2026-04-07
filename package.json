@@ -30,7 +30,7 @@
     "command-line",
     "typescript"
   ],
-  "author": "CatCompany",
+  "author": "CatCompany <cat@company.com>",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
