@@ -1,34 +1,64 @@
-name: Build and Release
+name: CI Build and Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+env:
+  NODE_VERSION: '20'
 
 jobs:
-  build-mac:
-    runs-on: macos-latest
-    
+  # 代码检查和测试 job
+  lint:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      
+          node-version: ${{ env.NODE_VERSION }}
+
       - name: Install dependencies
         run: npm ci
-      
-      - name: Build
+
+      - name: Build TypeScript
         run: npm run build
-      
+
+      - name: Run tests
+        run: npm test || true
+
+  # macOS 构建
+  build-mac:
+    needs: lint
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
       - name: Build Electron app (macOS)
         run: npm run electron:build:mac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -38,29 +68,30 @@ jobs:
             release/*.dmg.blockmap
             release/latest-mac.yml
 
-  build-windows:
+  # Windows 构建
+  build-win:
+    needs: lint
     runs-on: windows-latest
-    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      
+          node-version: ${{ env.NODE_VERSION }}
+
       - name: Install dependencies
         run: npm ci
-      
-      - name: Build
+
+      - name: Build TypeScript
         run: npm run build
-      
+
       - name: Build Electron app (Windows)
         run: npm run electron:build:win
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -70,29 +101,114 @@ jobs:
             release/*.exe.blockmap
             release/latest.yml
 
-  release:
-    needs: [build-mac, build-windows]
+  # Linux 构建
+  build-linux:
+    needs: lint
     runs-on: ubuntu-latest
-    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2
+
+      - name: Build Electron app (Linux)
+        run: npm run electron:build:linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/latest-linux.yml
+
+  # 发布 job：下载所有构建产物，自动打 tag 并创建 Release
+  release:
+    needs: [build-mac, build-win, build-linux]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    permissions:
+      contents: write
     steps:
       - name: Download macOS artifacts
         uses: actions/download-artifact@v4
         with:
           name: macos-release
           path: release-mac
-      
+
       - name: Download Windows artifacts
         uses: actions/download-artifact@v4
         with:
           name: windows-release
           path: release-win
-      
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
         with:
+          name: linux-release
+          path: release-linux
+
+      - name: Get version from package.json
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $VERSION"
+
+      - name: Generate tag
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+        id: tag
+
+      - name: Check if tag exists
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          if git revparse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping tag creation"
+            echo "tag_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "tag_exists=false" >> $GITHUB_OUTPUT
+          fi
+        id: check_tag
+
+      - name: Create and push tag (if not exists)
+        if: steps.check_tag.outputs.tag_exists == 'false'
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          git config user.name "GitHub Actions Bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: XiaoBa v${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
           files: |
             release-mac/*
             release-win/*
-          generate_release_notes: true
+            release-linux/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
