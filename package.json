@@ -136,13 +136,15 @@
       "target": [
         "dmg"
       ],
-      "icon": "build-resources/icon.png"
+      "icon": "build-resources/icon.png",
+      "artifactName": "${productName}-${version}-mac.${ext}"
     },
     "win": {
       "target": [
         "nsis"
       ],
-      "icon": "build-resources/icon.ico"
+      "icon": "build-resources/icon.ico",
+      "artifactName": "${productName}-${version}-win.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -156,7 +158,8 @@
         "deb"
       ],
       "category": "Development",
-      "icon": "build-resources/icon.png"
+      "icon": "build-resources/icon.png",
+      "artifactName": "${productName}-${version}-linux.${ext}"
     },
     "dmg": {
       "title": "XiaoBa",
