@@ -34,12 +34,12 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/c3811yyds/XiaoBa-CLI.git"
+    "url": "https://github.com/buildsense-ai/XiaoBa-CLI.git"
   },
   "bugs": {
-    "url": "https://github.com/c3811yyds/XiaoBa-CLI/issues"
+    "url": "https://github.com/buildsense-ai/XiaoBa-CLI/issues"
   },
-  "homepage": "https://github.com/c3811yyds/XiaoBa-CLI#readme",
+  "homepage": "https://github.com/buildsense-ai/XiaoBa-CLI#readme",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.0",
     "@larksuiteoapi/node-sdk": "^1.58.0",
@@ -84,7 +84,7 @@
     "asar": false,
     "publish": {
       "provider": "github",
-      "owner": "c3811yyds",
+      "owner": "buildsense-ai",
       "repo": "XiaoBa-CLI"
     },
     "files": [
