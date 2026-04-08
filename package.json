@@ -93,6 +93,7 @@
       "dashboard/**/*",
       "prompts/**/*",
       "skills/agent-browser/**/*",
+      "skills/desktop-cd/**/*",
       "skills/_tool-skills/**/*",
       "skills/report/**/*",
       "skills/self-evolution/**/*",
