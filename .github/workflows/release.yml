@@ -7,6 +7,7 @@ on:
 
 env:
   NODE_VERSION: '20'
+  NPM_INSTALL_FLAGS: '--prefer-offline --no-audit --fund=false'
 
 jobs:
   build-mac:
@@ -20,9 +21,10 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci ${{ env.NPM_INSTALL_FLAGS }}
 
       - name: Inject version into source
         run: node scripts/inject-version.js
@@ -51,9 +53,10 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci ${{ env.NPM_INSTALL_FLAGS }}
 
       - name: Inject version into source
         run: node scripts/inject-version.js
@@ -82,9 +85,10 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci ${{ env.NPM_INSTALL_FLAGS }}
 
       - name: Inject version into source
         run: node scripts/inject-version.js
