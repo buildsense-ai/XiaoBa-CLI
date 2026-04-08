@@ -269,11 +269,19 @@ export class ContextCompressor {
         },
       ];
 
-      const resp = await this.aiService.chat(summaryMessages);
-      const rawSummary = resp.content || '';
+      // 用流式调用（和正常聊天一致），避免非流式请求在某些 baseURL 下 503
+      let fullContent = '';
+      const resp = await this.aiService.chatStream(
+        summaryMessages,
+        undefined, // 不需要 tools
+        {
+          onText: (text) => { fullContent += text; },
+        }
+      );
+      const rawSummary = fullContent;
 
       if (resp.usage) {
-        Metrics.recordAICall('chat', resp.usage);
+        Metrics.recordAICall('stream', resp.usage);
       }
 
       const summaryText = parseCompactSummary(rawSummary);
