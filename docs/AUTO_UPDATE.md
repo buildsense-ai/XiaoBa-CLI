@@ -1,51 +1,23 @@
-# 自动更新配置指南
+# 自动更新说明
 
-## 使用方法
+自动更新依赖 GitHub Release 中的桌面端安装包和元数据文件。
 
-### 1. 设置 GitHub Token
+## 当前发布入口
 
-发布需要 GitHub Token，在环境变量中设置：
+当前标准发布方式不是手动执行 `electron-builder --publish always`，而是：
 
-```bash
-export GH_TOKEN="your_github_token"
-```
+1. 推送代码
+2. 打发布 tag，例如 `v0.1.2`
+3. 推送该 tag
+4. 由 GitHub Actions 自动构建并创建 Release
 
-或在 `.env` 中添加：
-```
-GH_TOKEN=your_github_token
-```
+完整流程见 [CD_RELEASE.md](./CD_RELEASE.md)。
 
-### 2. 更新版本号
+## 自动更新依赖的内容
 
-修改 `package.json` 中的 `version` 字段：
-```json
-{
-  "version": "0.1.1"
-}
-```
+- GitHub Release
+- Windows `latest.yml`
+- macOS `latest-mac.yml`
+- Linux `latest-linux.yml`
 
-### 3. 发布新版本
-
-```bash
-./scripts/release.sh
-```
-
-或手动执行：
-```bash
-npm run build
-npm run electron:build
-npx electron-builder --publish always
-```
-
-## 工作原理
-
-1. 应用启动 3 秒后自动检查 GitHub Releases
-2. 发现新版本时弹窗提示用户
-3. 用户确认后下载更新
-4. 下载完成后提示重启应用
-
-## 注意事项
-
-- 只有打包后的应用才会检查更新
-- 需要在 GitHub 创建 Release 并上传安装包
-- 确保 `package.json` 中的 `repository` 配置正确
+只有当这套 tag 驱动的 CD 成功完成后，客户端自动更新链路才是完整可用的。

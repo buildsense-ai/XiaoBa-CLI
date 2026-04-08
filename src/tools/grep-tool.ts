@@ -46,11 +46,15 @@ function formatLimitInfo(
 }
 
 function toRelativePath(absolutePath: string, cwd: string): string {
-  if (absolutePath.startsWith(cwd)) {
-    const relative = absolutePath.slice(cwd.length);
-    return relative.startsWith('/') ? relative.slice(1) : relative;
+  let relative = absolutePath;
+
+  if (path.isAbsolute(absolutePath)) {
+    relative = path.relative(cwd, absolutePath);
+  } else if (absolutePath.startsWith('./') || absolutePath.startsWith('.\\')) {
+    relative = absolutePath.slice(2);
   }
-  return absolutePath;
+
+  return relative.replace(/\\/g, '/');
 }
 
 function isCommandAvailable(command: string): boolean {
@@ -126,7 +130,8 @@ export class GrepTool implements Tool {
     if (globPattern) rgArgs.push(`--glob=${globPattern}`);
     
     if (pattern.startsWith('-')) { rgArgs.push('-e', pattern); } else { rgArgs.push('--', pattern); }
-    if (originalPath) rgArgs.push(searchPath);
+    // Always pass an explicit search path so rg searches files instead of empty stdin.
+    rgArgs.push(originalPath ? searchPath : '.');
 
     let output: string;
     try {

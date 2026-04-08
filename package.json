@@ -1,6 +1,6 @@
 {
   "name": "xiaoba-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "XiaoBa - 一个智能的AI对话助手CLI工具",
   "main": "electron/main.js",
   "bin": {
@@ -12,10 +12,10 @@
     "start": "node dist/index.js",
     "start:cli": "node dist/index.js",
     "electron:dev": "npm run build && electron .",
-    "electron:build": "npm run build && electron-builder",
-    "electron:build:mac": "npm run build && electron-builder --mac",
-    "electron:build:win": "npm run build && electron-builder --win",
-    "electron:build:linux": "npm run build && electron-builder --linux",
+    "electron:build": "npm run build && electron-builder --publish never",
+    "electron:build:mac": "npm run build && electron-builder --mac --publish never",
+    "electron:build:win": "npm run build && electron-builder --win --publish never",
+    "electron:build:linux": "npm run build && electron-builder --linux --publish never",
     "watch": "tsc --watch",
     "test": "tsx --test tests/**/*.test.ts",
     "report": "node dist/index.js chat --exec '/report'",
@@ -30,7 +30,7 @@
     "command-line",
     "typescript"
   ],
-  "author": "CatCompany",
+  "author": "CatCompany <cat@company.com>",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -136,13 +136,15 @@
       "target": [
         "dmg"
       ],
-      "icon": "build-resources/icon.png"
+      "icon": "build-resources/icon.png",
+      "artifactName": "${productName}-${version}-mac.${ext}"
     },
     "win": {
       "target": [
         "nsis"
       ],
-      "icon": "build-resources/icon.ico"
+      "icon": "build-resources/icon.ico",
+      "artifactName": "${productName}-${version}-win.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -156,7 +158,8 @@
         "deb"
       ],
       "category": "Development",
-      "icon": "build-resources/icon.png"
+      "icon": "build-resources/icon.png",
+      "artifactName": "${productName}-${version}-linux.${ext}"
     },
     "dmg": {
       "title": "XiaoBa",

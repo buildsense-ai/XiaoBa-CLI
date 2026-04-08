@@ -1,0 +1,47 @@
+name: Warm Main Branch Caches
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: warm-main-caches-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '20'
+  NPM_INSTALL_FLAGS: '--prefer-offline --no-audit --fund=false'
+
+jobs:
+  warm-npm-cache:
+    name: Warm npm cache (${{ matrix.os_name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            os_name: Linux
+          - os: windows-latest
+            os_name: Windows
+          - os: macos-latest
+            os_name: macOS
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Warm npm cache
+        run: npm ci ${{ env.NPM_INSTALL_FLAGS }}

@@ -6,6 +6,7 @@ import { chatCommand } from './commands/chat';
 import { configCommand } from './commands/config';
 import { registerSkillCommand } from './commands/skill';
 import { feishuCommand } from './commands/feishu';
+import { APP_VERSION } from './version';
 // import { LogUploadScheduler } from './utils/log-upload-scheduler';
 
 // 启动日志上传调度器
@@ -27,7 +28,7 @@ function main() {
   program
     .name('xiaoba')
     .description('XiaoBa - 您的智能AI命令行助手')
-    .version('0.1.0')
+    .version(APP_VERSION)
     .option('-s, --skill <name>', '启动时绑定指定 skill');
 
   // 聊天命令
