@@ -9,6 +9,7 @@ import { GrepTool } from './grep-tool';
 import { SkillTool } from './skill-tool';
 import { SendFileTool } from './send-file-tool';
 import { SendTextTool } from './send-text-tool';
+import { SendToInspectorTool } from './send-to-inspector-tool';
 import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
 import { StopSubagentTool } from './stop-subagent-tool';
@@ -29,6 +30,17 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
 
 function resolveToolName(name: string): string {
   return TOOL_NAME_ALIASES[name] ?? name;
+}
+
+function isRateLimitLikeMessage(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes('rate limit')
+    || lower.includes('too many requests')
+    || lower.includes('频率受限')
+    || lower.includes('限流')
+    || /(status(?:\s*code)?|http(?:\s*status)?|错误码|code)\s*[:=]?\s*429\b/i.test(message)
+    || /\b429\b.{0,24}(too many requests|rate limit|频率受限|限流)/i.test(message)
+    || /(too many requests|rate limit|频率受限|限流).{0,24}\b429\b/i.test(message);
 }
 
 /**
@@ -60,6 +72,7 @@ export class ToolManager implements ToolExecutor {
     // 通信工具 (2)
     this.registerTool(new SendTextTool());
     this.registerTool(new SendFileTool());
+    this.registerTool(new SendToInspectorTool());
 
     // 元工具
     this.registerTool(new SpawnSubagentTool());
@@ -162,14 +175,16 @@ export class ToolManager implements ToolExecutor {
         controlSignal: tool.definition.controlMode,
       };
     } catch (error: any) {
+      const message = String(error?.message || error || '');
+      const isRateLimit = isRateLimitLikeMessage(message);
       return {
         tool_call_id: toolCall.id,
         role: 'tool',
         name: toolCall.function.name,
-        content: `工具执行错误: ${error.message}`,
+        content: `工具执行错误: ${message}`,
         ok: false,
-        errorCode: 'TOOL_EXECUTION_ERROR',
-        retryable: false,
+        errorCode: isRateLimit ? 'RATE_LIMIT' : 'TOOL_EXECUTION_ERROR',
+        retryable: isRateLimit,
       };
     }
   }

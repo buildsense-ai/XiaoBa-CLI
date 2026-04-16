@@ -1,6 +1,7 @@
 import { Logger } from '../utils/logger';
 import { WeixinBot } from '../weixin';
 import { WeixinConfig } from '../weixin/types';
+import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/runtime-command-support';
 
 export async function weixinCommand(): Promise<void> {
   const token = process.env.WEIXIN_TOKEN;
@@ -18,11 +19,16 @@ export async function weixinCommand(): Promise<void> {
   const bot = new WeixinBot(config);
 
   const shutdown = () => {
-    bot.destroy();
-    process.exit(0);
+    Promise.resolve(stopRuntimeCommandSupport())
+      .catch(() => undefined)
+      .finally(() => {
+        bot.destroy();
+        process.exit(0);
+      });
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
   await bot.start();
+  await startRuntimeCommandSupport();
 }

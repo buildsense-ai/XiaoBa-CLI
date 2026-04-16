@@ -764,33 +764,48 @@ export class ConversationRunner {
 
   private static readonly MAX_RETRIES = 2;
   private static readonly RETRY_BASE_DELAY_MS = 5000;
+  private static readonly RATE_LIMIT_ERROR_CODES = new Set([
+    'RATE_LIMIT',
+    'HTTP_429',
+    'TOO_MANY_REQUESTS',
+  ]);
+
+  private static hasRateLimitMarkers(text: string): boolean {
+    if (!text) {
+      return false;
+    }
+
+    const lower = text.toLowerCase();
+    if (
+      lower.includes('rate limit')
+      || lower.includes('too many requests')
+      || lower.includes('频率受限')
+      || lower.includes('限流')
+    ) {
+      return true;
+    }
+
+    return /(status(?:\s*code)?|http(?:\s*status)?|错误码|code)\s*[:=]?\s*429\b/i.test(text)
+      || /\b429\b.{0,24}(too many requests|rate limit|频率受限|限流)/i.test(text)
+      || /(too many requests|rate limit|频率受限|限流).{0,24}\b429\b/i.test(text);
+  }
 
   /** 检测工具结果是否为 429 限流错误（避免把正文里的数字 429 误判为限流） */
   private static isRateLimitError(result: ToolResult): boolean {
     const content = String(result.content || '');
-    const trimmed = content.trim();
-    const lower = trimmed.toLowerCase();
+    if (result.errorCode && ConversationRunner.RATE_LIMIT_ERROR_CODES.has(result.errorCode)) {
+      return true;
+    }
 
-    // 先判断这条工具结果是否“看起来是失败”
-    const looksFailed = result.ok === false
+    const isFailure = result.ok === false
       || Boolean(result.errorCode)
-      || /^(错误[:：]|读取文件失败[:：]|发送失败[:：]|文件发送失败[:：]|命令执行失败[:：]|工具执行错误[:：]|Python 工具执行失败)/.test(trimmed);
+      || result.retryable === true;
 
-    if (!looksFailed) {
+    if (!isFailure) {
       return false;
     }
 
-    // 必须出现“限流上下文”，不能仅仅因为正文里出现了数字 429
-    const hasRateLimitKeyword = lower.includes('rate limit')
-      || lower.includes('too many requests')
-      || lower.includes('频率受限')
-      || lower.includes('限流');
-
-    const has429WithErrorContext = /(status\s*code|http|错误码|code)\s*[:=]?\s*429/i.test(trimmed)
-      || /(失败|error|exception|retry|重试).{0,24}\b429\b/i.test(trimmed)
-      || /\b429\b.{0,24}(失败|error|exception|retry|重试)/i.test(trimmed);
-
-    return hasRateLimitKeyword || has429WithErrorContext;
+    return ConversationRunner.hasRateLimitMarkers(content);
   }
 
   /** 带 429 重试的工具执行 */

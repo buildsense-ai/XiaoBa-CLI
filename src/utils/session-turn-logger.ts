@@ -3,6 +3,7 @@ import * as path from 'path';
 import { Message, ContentBlock } from '../types';
 
 const SESSION_LOG_DIR = path.resolve('logs/sessions');
+const MAX_TOOL_RESULT_LENGTH = Number(process.env.XIAOBA_SESSION_TOOL_RESULT_LIMIT || 10000);
 
 interface TurnLog {
   turn: number;
@@ -82,7 +83,7 @@ export class SessionTurnLogger {
         text: assistantText,
         tool_calls: toolCalls.map(tc => ({
           ...tc,
-          result: this.truncate(tc.result, 1000),
+          result: this.truncate(tc.result, MAX_TOOL_RESULT_LENGTH),
         })),
       },
       tokens,

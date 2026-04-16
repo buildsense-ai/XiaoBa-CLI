@@ -2,6 +2,7 @@ import { Logger } from '../utils/logger';
 import { ConfigManager } from '../utils/config';
 import { CatsCompanyBot } from '../catscompany';
 import { CatsCompanyConfig } from '../catscompany/types';
+import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/runtime-command-support';
 
 /**
  * CLI 命令：xiaoba catscompany
@@ -33,6 +34,7 @@ export async function catscompanyCommand(): Promise<void> {
 
   // 优雅退出
   const shutdown = async () => {
+    await stopRuntimeCommandSupport();
     await bot.destroy();
     process.exit(0);
   };
@@ -40,4 +42,5 @@ export async function catscompanyCommand(): Promise<void> {
   process.on('SIGTERM', shutdown);
 
   await bot.start();
+  await startRuntimeCommandSupport();
 }

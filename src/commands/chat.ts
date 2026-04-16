@@ -7,10 +7,12 @@ import { styles } from '../theme/colors';
 import { SkillManager } from '../skills/skill-manager';
 import { ToolManager } from '../tools/tool-manager';
 import { AgentSession, AgentServices, SessionCallbacks } from '../core/agent-session';
+import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/runtime-command-support';
 
 export async function chatCommand(options: CommandOptions): Promise<void> {
   const aiService = new AIService();
   Logger.openLogFile('cli', undefined, true);
+  await startRuntimeCommandSupport();
 
   // 初始化 ToolManager
   const toolManager = new ToolManager();
@@ -51,6 +53,7 @@ export async function chatCommand(options: CommandOptions): Promise<void> {
   // 单条消息模式
   if (options.message) {
     await sendSingleMessage(session, options.message);
+    await stopRuntimeCommandSupport();
     Logger.closeLogFile();
     return;
   }
@@ -137,6 +140,7 @@ async function interactiveChat(session: AgentSession): Promise<void> {
     const cleanup = async () => {
       try {
         await session.cleanup();
+        await stopRuntimeCommandSupport();
         Logger.info('已保存对话历史');
         console.log(styles.text('再见！期待下次与你对话。\n'));
       } finally {
@@ -193,6 +197,7 @@ async function interactiveChat(session: AgentSession): Promise<void> {
         }
         isExiting = true;
         rl.close();
+        await stopRuntimeCommandSupport();
         Logger.closeLogFile();
         originalExit(0);
         return;
@@ -229,6 +234,7 @@ async function interactiveChat(session: AgentSession): Promise<void> {
     // 处理退出命令（向后兼容）
     if (message.toLowerCase() === 'exit' || message.toLowerCase() === 'quit') {
       await session.summarizeAndDestroy();
+      await stopRuntimeCommandSupport();
       console.log('\n' + styles.text('再见！期待下次与你对话。') + '\n');
       isExiting = true;
       rl.close();
