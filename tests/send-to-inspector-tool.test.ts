@@ -54,6 +54,7 @@ describe('SendToInspectorTool', () => {
     );
 
     let receivedBody: any;
+    let completionCount = 0;
     const uploadedFiles: Array<{ path?: string; kind?: string; raw: string }> = [];
     const server = http.createServer((req, res) => {
       const chunks: Buffer[] = [];
@@ -78,6 +79,13 @@ describe('SendToInspectorTool', () => {
           });
           res.writeHead(201, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true }));
+          return;
+        }
+
+        if (req.url === '/api/inspector/cases/case-demo-1/complete') {
+          completionCount += 1;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, caseId: 'case-demo-1', status: 'received' }));
           return;
         }
 
@@ -123,6 +131,7 @@ describe('SendToInspectorTool', () => {
         uploadedFiles.map(file => file.kind).sort(),
         ['runtime_log', 'session_jsonl'],
       );
+      assert.strictEqual(completionCount, 1);
       assert.ok(fs.existsSync(path.join(testRoot, 'files', 'inspector-cases')));
     } finally {
       server.close();

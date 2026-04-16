@@ -389,6 +389,8 @@ export class SendToInspectorTool implements Tool {
       await this.uploadFile(`${endpoint}/${encodeURIComponent(caseId)}/files`, file, process.env.INSPECTOR_SERVER_API_KEY?.trim());
     }
 
+    await this.postJson(`${endpoint}/${encodeURIComponent(caseId)}/complete`, {}, process.env.INSPECTOR_SERVER_API_KEY?.trim());
+
     fs.writeFileSync(path.join(bundleDir, 'upload-result.json'), JSON.stringify(response, null, 2), 'utf-8');
     return response;
   }
