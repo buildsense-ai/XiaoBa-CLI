@@ -12,6 +12,9 @@ env:
 jobs:
   build-mac:
     runs-on: macos-latest
+    environment: cn_jiasu
+    env:
+      XIAOBA_UPDATE_BASE_URL: ${{ secrets.XIAOBA_UPDATE_BASE_URL }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -50,6 +53,9 @@ jobs:
 
   build-win:
     runs-on: windows-latest
+    environment: cn_jiasu
+    env:
+      XIAOBA_UPDATE_BASE_URL: ${{ secrets.XIAOBA_UPDATE_BASE_URL }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -88,6 +94,9 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
+    environment: cn_jiasu
+    env:
+      XIAOBA_UPDATE_BASE_URL: ${{ secrets.XIAOBA_UPDATE_BASE_URL }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -132,8 +141,19 @@ jobs:
   release:
     needs: [build-mac, build-win, build-linux]
     runs-on: ubuntu-latest
+    environment: cn_jiasu
     permissions:
       contents: write
+    env:
+      VOLC_TOS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_ACCESS_KEY_ID }}
+      VOLC_TOS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
+      VOLC_TOS_BUCKET: ${{ secrets.VOLC_TOS_BUCKET }}
+      VOLC_TOS_REGION: ${{ secrets.VOLC_TOS_REGION }}
+      XIAOBA_UPDATE_BASE_URL: ${{ secrets.XIAOBA_UPDATE_BASE_URL }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ secrets.VOLC_TOS_REGION }}
+      AWS_EC2_METADATA_DISABLED: 'true'
     steps:
       - name: Download macOS artifacts
         uses: actions/download-artifact@v4
@@ -167,3 +187,60 @@ jobs:
             release-linux/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Ensure AWS CLI is available
+        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != '' && env.VOLC_TOS_BUCKET != '' && env.VOLC_TOS_REGION != '' && env.XIAOBA_UPDATE_BASE_URL != ''
+        run: |
+          if ! command -v aws >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y awscli
+          fi
+          aws --version
+          aws configure set default.s3.addressing_style virtual
+
+      - name: Upload update artifacts to Volcengine TOS
+        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != '' && env.VOLC_TOS_BUCKET != '' && env.VOLC_TOS_REGION != '' && env.XIAOBA_UPDATE_BASE_URL != ''
+        run: |
+          set -euo pipefail
+
+          ENDPOINT_URL="https://tos-${VOLC_TOS_REGION}.volces.com"
+
+          upload_file() {
+            local source_file="$1"
+            local target_key="$2"
+            local cache_control="$3"
+
+            aws s3 cp "$source_file" "s3://${VOLC_TOS_BUCKET}/${target_key}" \
+              --endpoint-url "$ENDPOINT_URL" \
+              --acl public-read \
+              --cache-control "$cache_control" \
+              --only-show-errors
+          }
+
+          for file in release-mac/* release-win/* release-linux/*; do
+            [ -f "$file" ] || continue
+
+            name="$(basename "$file")"
+            cache_control="public, max-age=31536000, immutable"
+            case "$name" in
+              latest*.yml)
+                cache_control="no-cache, no-store, must-revalidate, max-age=0"
+                ;;
+            esac
+
+            upload_file "$file" "update/$name" "$cache_control"
+          done
+
+      - name: Verify published update metadata
+        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != '' && env.VOLC_TOS_BUCKET != '' && env.VOLC_TOS_REGION != '' && env.XIAOBA_UPDATE_BASE_URL != ''
+        run: |
+          set -euo pipefail
+
+          for file in latest.yml latest-mac.yml latest-linux.yml; do
+            url="${XIAOBA_UPDATE_BASE_URL}/${file}"
+            status="$(curl -I -L -s -o /dev/null -w "%{http_code}" "$url")"
+            if [ "$status" != "200" ]; then
+              echo "Metadata check failed for $url (HTTP $status)"
+              exit 1
+            fi
+          done
