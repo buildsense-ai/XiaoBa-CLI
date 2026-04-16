@@ -11,9 +11,11 @@ const projectRoot = path.join(__dirname, '..');
 const runtimeRoot = path.join(projectRoot, 'build-resources', 'runtime');
 const platform = normalizePlatform(process.argv[2] || process.platform);
 
-main();
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  main();
+}
 
-function main() {
+export function main() {
   console.log(`Preparing bundled runtimes for ${platform}...`);
 
   fs.rmSync(runtimeRoot, { recursive: true, force: true });
@@ -26,9 +28,9 @@ function main() {
   };
 
   manifest.runtimes.push(prepareNodeRuntime());
+  manifest.runtimes.push(preparePythonRuntime());
 
   if (platform === 'win32') {
-    manifest.runtimes.push(preparePythonRuntime());
     manifest.runtimes.push(prepareGitRuntime());
   }
 
@@ -112,12 +114,24 @@ function getPythonInstallRoot() {
     if (result.status === 0) {
       const executable = (result.stdout || '').trim();
       if (executable && fs.existsSync(executable)) {
-        return path.dirname(executable);
+        return inferPythonInstallRoot(executable, platform);
       }
     }
   }
 
   throw new Error('python runtime not found');
+}
+
+export function inferPythonInstallRoot(executable, currentPlatform = platform) {
+  const executableDirectory = path.dirname(executable);
+
+  if (currentPlatform === 'win32') {
+    return executableDirectory;
+  }
+
+  return path.basename(executableDirectory) === 'bin'
+    ? path.dirname(executableDirectory)
+    : executableDirectory;
 }
 
 function resolveCommand(command) {
