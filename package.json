@@ -86,7 +86,7 @@
     "asar": false,
     "publish": {
       "provider": "github",
-      "owner": "c3811yyds",
+      "owner": "buildsense-ai",
       "repo": "XiaoBa-CLI"
     },
     "files": [
@@ -180,5 +180,3 @@
     }
   }
 }
-
-

@@ -12,7 +12,7 @@ env:
 jobs:
   build-mac:
     runs-on: macos-latest
-    environment: cn_jiasu
+    environment: release-prod
     env:
       XIAOBA_UPDATE_BASE_URL: https://github-release.tos-cn-guangzhou.volces.com/update
     steps:
@@ -75,7 +75,7 @@ jobs:
 
   build-win:
     runs-on: windows-latest
-    environment: cn_jiasu
+    environment: release-prod
     env:
       XIAOBA_UPDATE_BASE_URL: https://github-release.tos-cn-guangzhou.volces.com/update
     steps:
@@ -138,7 +138,7 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
-    environment: cn_jiasu
+    environment: release-prod
     env:
       XIAOBA_UPDATE_BASE_URL: https://github-release.tos-cn-guangzhou.volces.com/update
     steps:
@@ -207,7 +207,7 @@ jobs:
   release:
     needs: [build-mac, build-win, build-linux]
     runs-on: ubuntu-latest
-    environment: cn_jiasu
+    environment: release-prod
     permissions:
       contents: write
     env:
