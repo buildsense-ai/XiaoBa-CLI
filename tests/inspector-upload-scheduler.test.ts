@@ -51,16 +51,24 @@ describe('InspectorUploadScheduler', () => {
     const stableRuntimeLog = path.join(runtimeLogDir, 'stable.log');
     const freshRuntimeLog = path.join(runtimeLogDir, 'fresh.log');
     const stableSessionLog = path.join(sessionLogDir, 'user_demo.jsonl');
+    const reviewSessionLog = path.join(sessionLogDir, 'group_demo_inspector-review_case-1.jsonl');
+    const oldRuntimeLog = path.join(runtimeLogDir, 'older.log');
     fs.writeFileSync(stableRuntimeLog, '[INFO] stable runtime', 'utf-8');
     fs.writeFileSync(freshRuntimeLog, '[INFO] fresh runtime', 'utf-8');
     fs.writeFileSync(stableSessionLog, '{"turn":1}', 'utf-8');
+    fs.writeFileSync(reviewSessionLog, '{"turn":1,"role":"assistant"}', 'utf-8');
+    fs.writeFileSync(oldRuntimeLog, '[INFO] old runtime', 'utf-8');
 
     const oldDate = new Date(Date.now() - 10 * 60 * 1000);
     fs.utimesSync(stableRuntimeLog, oldDate, oldDate);
     fs.utimesSync(stableSessionLog, oldDate, oldDate);
+    fs.utimesSync(reviewSessionLog, oldDate, oldDate);
+    const olderDate = new Date(Date.now() - 30 * 60 * 1000);
+    fs.utimesSync(oldRuntimeLog, olderDate, olderDate);
 
     const receivedBodies: any[] = [];
     const uploadedFiles: Array<{ path?: string; kind?: string }> = [];
+    const completedCases: string[] = [];
     server = http.createServer((req, res) => {
       const chunks: Buffer[] = [];
       req.on('data', chunk => {
@@ -71,7 +79,7 @@ describe('InspectorUploadScheduler', () => {
         if (req.url === '/api/inspector/cases') {
           receivedBodies.push(JSON.parse(bodyBuffer.toString('utf-8') || '{}'));
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ caseId: `case-${receivedBodies.length}`, status: 'received' }));
+          res.end(JSON.stringify({ caseId: `case-${receivedBodies.length}`, status: 'uploading' }));
           return;
         }
 
@@ -83,6 +91,14 @@ describe('InspectorUploadScheduler', () => {
           });
           res.writeHead(201, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true }));
+          return;
+        }
+
+        const completeMatch = String(req.url).match(/^\/api\/inspector\/cases\/(case-\d+)\/complete$/);
+        if (completeMatch) {
+          completedCases.push(completeMatch[1]);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, caseId: completeMatch[1], status: 'received' }));
           return;
         }
 
@@ -99,30 +115,37 @@ describe('InspectorUploadScheduler', () => {
     process.env.INSPECTOR_SERVER_API_KEY = 'demo-key';
     process.env.INSPECTOR_AUTO_UPLOAD_ENABLED = 'true';
     process.env.INSPECTOR_AUTO_UPLOAD_STABLE_MINUTES = '5';
-    process.env.INSPECTOR_AUTO_UPLOAD_MAX_FILES = '12';
+    process.env.INSPECTOR_AUTO_UPLOAD_MAX_FILES = '2';
     delete process.env.XIAOBA_ROLE;
 
     const scheduler = new InspectorUploadScheduler(testRoot);
     await scheduler.start();
 
-    await waitFor(() => uploadedFiles.length === 2);
+    await waitFor(() => completedCases.length === 1);
     assert.strictEqual(receivedBodies.length, 1);
     assert.deepStrictEqual(
       uploadedFiles.map(file => file.path).sort(),
       ['2026-04-14/stable.log', 'sessions/feishu/2026-04-14/user_demo.jsonl'],
     );
+    assert.strictEqual(completedCases.length, 1);
+    assert.ok(!uploadedFiles.some(file => file.path === '2026-04-14/older.log'));
+    assert.ok(!uploadedFiles.some(file => String(file.path).includes('inspector-review')));
 
     await scheduler.runPendingUploadCycle('manual');
-    assert.strictEqual(receivedBodies.length, 1);
+    assert.strictEqual(receivedBodies.length, 2);
+    assert.deepStrictEqual(
+      uploadedFiles.slice(2).map(file => file.path),
+      ['2026-04-14/older.log'],
+    );
 
     fs.writeFileSync(stableSessionLog, '{"turn":1}\n{"turn":2}', 'utf-8');
     const newerOldDate = new Date(Date.now() - 10 * 60 * 1000);
     fs.utimesSync(stableSessionLog, newerOldDate, newerOldDate);
 
     await scheduler.runPendingUploadCycle('manual');
-    assert.strictEqual(receivedBodies.length, 2);
+    assert.strictEqual(receivedBodies.length, 3);
     assert.deepStrictEqual(
-      uploadedFiles.slice(2).map(file => file.path),
+      uploadedFiles.slice(3).map(file => file.path),
       ['sessions/feishu/2026-04-14/user_demo.jsonl'],
     );
 
@@ -138,6 +161,11 @@ function restoreEnv(key: string, value: string | undefined): void {
   }
 }
 
+function extractMultipartField(raw: string, fieldName: string): string | undefined {
+  const match = raw.match(new RegExp(`name="${fieldName}"\\r\\n\\r\\n([^\\r]+)`));
+  return match?.[1];
+}
+
 async function waitFor(predicate: () => boolean, maxAttempts: number = 40, delayMs: number = 50): Promise<void> {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (predicate()) {
@@ -146,9 +174,4 @@ async function waitFor(predicate: () => boolean, maxAttempts: number = 40, delay
     await new Promise(resolve => setTimeout(resolve, delayMs));
   }
   throw new Error('waitFor timeout');
-}
-
-function extractMultipartField(raw: string, fieldName: string): string | undefined {
-  const match = raw.match(new RegExp(`name="${fieldName}"\\r\\n\\r\\n([^\\r]+)`));
-  return match?.[1];
 }

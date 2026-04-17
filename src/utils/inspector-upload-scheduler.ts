@@ -90,36 +90,30 @@ export class InspectorUploadScheduler {
 
     this.running = true;
     try {
-      let uploadedCount = 0;
-      while (!this.stopped) {
-        const pendingLogPaths = await this.collectPendingLogPaths();
-        if (pendingLogPaths.length === 0) {
-          if (uploadedCount === 0) {
-            Logger.info(`[InspectorAutoUpload] no pending stable logs (${reason})`);
-          }
-          break;
-        }
-
-        const batch = pendingLogPaths.slice(0, this.getMaxBatchFiles());
-        const result = await this.tool.executeWithResult(
-          {
-            analysis_type: 'runtime',
-            user_request: this.buildAutoUploadRequest(reason, batch.length),
-            log_paths: batch,
-            max_files: batch.length,
-          },
-          this.createToolContext(),
-        );
-
-        if (!result.uploaded) {
-          Logger.warning(`[InspectorAutoUpload] upload skipped/failed (${reason}): ${result.message}`);
-          break;
-        }
-
-        this.markUploaded(result.selectedFiles, result.caseId);
-        uploadedCount += result.selectedFiles.length;
-        Logger.info(`[InspectorAutoUpload] uploaded ${result.selectedFiles.length} files (${reason}) -> ${result.caseId || 'unknown-case'}`);
+      const pendingLogPaths = await this.collectPendingLogPaths();
+      if (pendingLogPaths.length === 0) {
+        Logger.info(`[InspectorAutoUpload] no pending stable logs (${reason})`);
+        return;
       }
+
+      const batch = pendingLogPaths.slice(0, this.getMaxBatchFiles());
+      const result = await this.tool.executeWithResult(
+        {
+          analysis_type: 'runtime',
+          user_request: this.buildAutoUploadRequest(reason, batch.length),
+          log_paths: batch,
+          max_files: batch.length,
+        },
+        this.createToolContext(),
+      );
+
+      if (!result.uploaded) {
+        Logger.warning(`[InspectorAutoUpload] upload skipped/failed (${reason}): ${result.message}`);
+        return;
+      }
+
+      this.markUploaded(result.selectedFiles, result.caseId);
+      Logger.info(`[InspectorAutoUpload] uploaded ${result.selectedFiles.length} files (${reason}) -> ${result.caseId || 'unknown-case'}`);
     } catch (error: any) {
       Logger.warning(`[InspectorAutoUpload] cycle failed (${reason}): ${error.message}`);
     } finally {
@@ -193,7 +187,7 @@ export class InspectorUploadScheduler {
       absolute: false,
       nodir: true,
       windowsPathsNoEscape: true,
-      ignore: ['**/inspector-review*.jsonl'],
+      ignore: ['**/*inspector-review*.jsonl'],
     });
 
     return candidates
@@ -202,7 +196,7 @@ export class InspectorUploadScheduler {
       .sort((a, b) => {
         const aStats = fs.statSync(path.join(this.logsRoot, a));
         const bStats = fs.statSync(path.join(this.logsRoot, b));
-        return aStats.mtimeMs - bStats.mtimeMs;
+        return bStats.mtimeMs - aStats.mtimeMs;
       })
       .map(relativePath => path.join('logs', relativePath).replace(/\\/g, '/'));
   }
