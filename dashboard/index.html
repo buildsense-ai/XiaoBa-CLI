@@ -1453,6 +1453,37 @@
       word-break: break-word;
     }
 
+    .update-fallback-box {
+      display: none;
+      margin-top: -2px;
+      margin-bottom: 14px;
+      border: 1px solid rgba(79,140,255,0.18);
+      background: rgba(79,140,255,0.08);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+
+    .update-fallback-title {
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .update-fallback-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .update-fallback-note {
+      margin-top: 8px;
+      color: var(--text2);
+      font-size: 12px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+
     .update-actions {
       display: flex;
       flex-wrap: wrap;
@@ -1611,6 +1642,15 @@
 
         <div class="update-error-box" id="update-error-box"></div>
 
+        <div class="update-fallback-box" id="update-fallback-box">
+          <div class="update-fallback-title">&#x81EA;&#x52A8;&#x66F4;&#x65B0;&#x5931;&#x8D25;&#x65F6;&#xFF0C;&#x53EF;&#x5148;&#x624B;&#x52A8;&#x83B7;&#x53D6;&#x6700;&#x65B0;&#x5B89;&#x88C5;&#x5305;&#x3002;</div>
+          <div class="update-fallback-actions">
+            <button class="btn btn-ghost" id="update-copy-manual-btn" onclick="copyManualInstallerUrl()" style="display:none">&#x590D;&#x5236;&#x5B89;&#x88C5;&#x5305;&#x5730;&#x5740;</button>
+            <button class="btn btn-ghost" id="update-copy-release-btn" onclick="copyReleasePageUrl()" style="display:none">&#x590D;&#x5236; GitHub &#x53D1;&#x5E03;&#x9875;</button>
+          </div>
+          <div class="update-fallback-note" id="update-fallback-note"></div>
+        </div>
+
         <div class="update-actions">
           <button class="btn" id="update-check-btn" onclick="checkForUpdates()">检查更新</button>
           <button class="btn btn-primary" id="update-download-btn" onclick="downloadUpdate()" style="display:none">下载更新</button>
@@ -1622,6 +1662,7 @@
 
   <script>
     const API = '';
+    let appStatusSnapshot = {};
     const pageTitles = { services:'服务', config:'配置', skills:'Skills', store:'商店' };
 
     function switchPage(name) {
@@ -1638,6 +1679,7 @@
       try {
         const res = await fetch(API+'/api/status');
         const data = await res.json();
+        appStatusSnapshot = data || {};
         document.querySelector('.sidebar-brand-ver').textContent = 'v' + (data.version || '-');
         renderStatus(data);
         renderServices(data.services || []);
@@ -1700,6 +1742,60 @@
       lastStage: null,
     };
 
+    function normalizeClientUrl(value){
+      if (!value) return "";
+      return String(value).trim().replace(/\/+$/, "");
+    }
+
+    function resolveManualInstallerUrl(state){
+      const baseUrl = normalizeClientUrl(state?.updateBaseUrl);
+      const version = state?.availableVersion;
+      const platform = appStatusSnapshot.platform || "";
+
+      if (!baseUrl || !version || !platform) return "";
+
+      if (platform === "win32") return `${baseUrl}/XiaoBa-${version}-win.exe`;
+      if (platform === "darwin") return `${baseUrl}/XiaoBa-${version}-mac.dmg`;
+      if (platform === "linux") return `${baseUrl}/XiaoBa-${version}-linux.AppImage`;
+      return "";
+    }
+
+    async function copyTextValue(value, label){
+      if (!value) {
+        alert(label + " \u6682\u4E0D\u53EF\u7528");
+        return;
+      }
+
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(value);
+        } else {
+          const textarea = document.createElement("textarea");
+          textarea.value = value;
+          textarea.setAttribute("readonly", "readonly");
+          textarea.style.position = "fixed";
+          textarea.style.opacity = "0";
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand("copy");
+          document.body.removeChild(textarea);
+        }
+
+        alert(label + " \u5DF2\u590D\u5236");
+      } catch (e) {
+        alert("\u590D\u5236\u5931\u8D25: " + (e.message || String(e)));
+      }
+    }
+
+    function copyManualInstallerUrl(){
+      const url = document.getElementById("update-copy-manual-btn")?.dataset.url || "";
+      return copyTextValue(url, "\u5B89\u88C5\u5305\u5730\u5740");
+    }
+
+    function copyReleasePageUrl(){
+      const url = document.getElementById("update-copy-release-btn")?.dataset.url || "";
+      return copyTextValue(url, "GitHub \u53D1\u5E03\u9875\u5730\u5740");
+    }
     function formatBytes(value){
       const bytes = Number(value || 0);
       if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -1776,11 +1872,15 @@
       const speedEl = document.getElementById('update-speed');
       const sizeEl = document.getElementById('update-size');
       const errEl = document.getElementById('update-error-box');
+      const fallbackEl = document.getElementById('update-fallback-box');
+      const fallbackNoteEl = document.getElementById('update-fallback-note');
+      const manualBtn = document.getElementById('update-copy-manual-btn');
+      const releaseBtn = document.getElementById('update-copy-release-btn');
       const checkBtn = document.getElementById('update-check-btn');
       const downloadBtn = document.getElementById('update-download-btn');
       const installBtn = document.getElementById('update-install-btn');
 
-      if (!stageEl || !msgEl || !currentEl || !latestEl || !barEl || !percentEl || !speedEl || !sizeEl || !errEl || !checkBtn || !downloadBtn || !installBtn) {
+      if (!stageEl || !msgEl || !currentEl || !latestEl || !barEl || !percentEl || !speedEl || !sizeEl || !errEl || !fallbackEl || !fallbackNoteEl || !manualBtn || !releaseBtn || !checkBtn || !downloadBtn || !installBtn) {
         return;
       }
 
@@ -1812,10 +1912,32 @@
       if (state?.lastError?.message) {
         const reason = state?.lastError?.reason || 'UPDATE_ERROR';
         errEl.style.display = 'block';
-        errEl.textContent = '失败原因: ' + reason + '\n' + state.lastError.message;
+        errEl.textContent = '\u5931\u8D25\u539F\u56E0: ' + reason + '\n' + state.lastError.message;
       } else {
         errEl.style.display = 'none';
         errEl.textContent = '';
+      }
+
+      const releaseUrl = normalizeClientUrl(state?.releasePageUrl);
+      const manualUrl = resolveManualInstallerUrl(state);
+      const showFallback = stage === 'error' && Boolean(releaseUrl || manualUrl);
+
+      fallbackEl.style.display = showFallback ? 'block' : 'none';
+      manualBtn.style.display = manualUrl ? 'inline-flex' : 'none';
+      manualBtn.dataset.url = manualUrl || '';
+      releaseBtn.style.display = releaseUrl ? 'inline-flex' : 'none';
+      releaseBtn.dataset.url = releaseUrl || '';
+
+      if (showFallback) {
+        if (manualUrl && releaseUrl) {
+          fallbackNoteEl.textContent = '\u81EA\u52A8\u66F4\u65B0\u5931\u8D25\u65F6\uFF0C\u53EF\u5148\u590D\u5236\u5F53\u524D\u5E73\u53F0\u5B89\u88C5\u5305\u5730\u5740\uFF1B\u5982\u679C\u4ECD\u4E0D\u65B9\u4FBF\uFF0C\u518D\u8D70 GitHub \u53D1\u5E03\u9875\u3002';
+        } else if (manualUrl) {
+          fallbackNoteEl.textContent = '\u81EA\u52A8\u66F4\u65B0\u5931\u8D25\u65F6\uFF0C\u53EF\u5148\u590D\u5236\u5F53\u524D\u5E73\u53F0\u5B89\u88C5\u5305\u5730\u5740\u624B\u52A8\u66F4\u65B0\u3002';
+        } else {
+          fallbackNoteEl.textContent = '\u81EA\u52A8\u66F4\u65B0\u5931\u8D25\u65F6\uFF0C\u53EF\u5148\u590D\u5236 GitHub \u53D1\u5E03\u9875\u5730\u5740\u624B\u52A8\u66F4\u65B0\u3002';
+        }
+      } else {
+        fallbackNoteEl.textContent = '';
       }
 
       if (autoOpen && !updateUi.modalOpen && stage !== updateUi.lastStage) {

@@ -1,5 +1,6 @@
 const { app, BrowserWindow, Tray, Menu, nativeImage } = require('electron');
 const path = require('path');
+const fs = require('fs');
 
 const DASHBOARD_PORT = 3800;
 let mainWindow = null;
@@ -16,6 +17,50 @@ try {
 }
 
 
+function normalizeUrl(value) {
+  if (!value) return null;
+  return String(value).trim().replace(/\/+$/, '');
+}
+
+function resolveReleasePageUrl() {
+  try {
+    const packageJsonPath = path.join(getAppRoot(), 'package.json');
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    const publishConfig = Array.isArray(packageJson.build?.publish)
+      ? packageJson.build.publish.find((item) => item?.provider === 'github')
+      : packageJson.build?.publish;
+
+    if (publishConfig?.owner && publishConfig?.repo) {
+      return `https://github.com/${publishConfig.owner}/${publishConfig.repo}/releases/latest`;
+    }
+  } catch (_error) {
+    return null;
+  }
+
+  return null;
+}
+
+function readPackagedUpdateBaseUrl() {
+  if (!app.isPackaged) return null;
+
+  try {
+    const updateConfigPath = path.join(process.resourcesPath, 'app-update.yml');
+    if (!fs.existsSync(updateConfigPath)) return null;
+
+    const configContent = fs.readFileSync(updateConfigPath, 'utf8');
+    const match = configContent.match(/^\s*url:\s*(.+)\s*$/m);
+    if (!match) return null;
+
+    return normalizeUrl(match[1].replace(/^['"]|['"]$/g, ''));
+  } catch (_error) {
+    return null;
+  }
+}
+
+function resolveUpdateBaseUrl() {
+  return normalizeUrl(process.env.XIAOBA_UPDATE_BASE_URL) || readPackagedUpdateBaseUrl();
+}
+
 const updateState = {
   enabled: Boolean(autoUpdater),
   stage: autoUpdater ? 'idle' : 'disabled',
@@ -23,6 +68,8 @@ const updateState = {
   currentVersion: app.getVersion(),
   availableVersion: null,
   releaseNotes: null,
+  releasePageUrl: resolveReleasePageUrl(),
+  updateBaseUrl: resolveUpdateBaseUrl(),
   percent: 0,
   bytesPerSecond: 0,
   transferred: 0,
