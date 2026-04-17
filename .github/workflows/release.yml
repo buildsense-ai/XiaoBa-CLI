@@ -14,7 +14,7 @@ jobs:
     runs-on: macos-latest
     environment: cn_jiasu
     env:
-      XIAOBA_UPDATE_BASE_URL: https://github-hk.tos-cn-hongkong.volces.com/update
+      XIAOBA_UPDATE_BASE_URL: https://github-release.tos-cn-guangzhou.volces.com/update
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -55,7 +55,7 @@ jobs:
     runs-on: windows-latest
     environment: cn_jiasu
     env:
-      XIAOBA_UPDATE_BASE_URL: https://github-hk.tos-cn-hongkong.volces.com/update
+      XIAOBA_UPDATE_BASE_URL: https://github-release.tos-cn-guangzhou.volces.com/update
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -96,7 +96,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: cn_jiasu
     env:
-      XIAOBA_UPDATE_BASE_URL: https://github-hk.tos-cn-hongkong.volces.com/update
+      XIAOBA_UPDATE_BASE_URL: https://github-release.tos-cn-guangzhou.volces.com/update
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -147,12 +147,13 @@ jobs:
     env:
       VOLC_TOS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_ACCESS_KEY_ID }}
       VOLC_TOS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
-      VOLC_TOS_BUCKET: github-hk
-      VOLC_TOS_REGION: cn-hongkong
-      XIAOBA_UPDATE_BASE_URL: https://github-hk.tos-cn-hongkong.volces.com/update
+      TOS_SOURCE_BUCKET: github-hk
+      TOS_SOURCE_REGION: cn-hongkong
+      TOS_TARGET_BUCKET: github-release
+      TOS_TARGET_REGION: cn-guangzhou
+      XIAOBA_UPDATE_BASE_URL: https://github-release.tos-cn-guangzhou.volces.com/update
       AWS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
-      AWS_DEFAULT_REGION: 'cn-hongkong'
       AWS_EC2_METADATA_DISABLED: 'true'
     steps:
       - name: Download macOS artifacts
@@ -189,7 +190,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Ensure AWS CLI is available
-        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != '' && env.VOLC_TOS_BUCKET != '' && env.VOLC_TOS_REGION != '' && env.XIAOBA_UPDATE_BASE_URL != ''
+        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != ''
         run: |
           if ! command -v aws >/dev/null 2>&1; then
             sudo apt-get update
@@ -198,22 +199,23 @@ jobs:
           aws --version
           aws configure set default.s3.addressing_style virtual
 
-      - name: Upload update artifacts to Volcengine TOS
-        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != '' && env.VOLC_TOS_BUCKET != '' && env.VOLC_TOS_REGION != '' && env.XIAOBA_UPDATE_BASE_URL != ''
+      - name: Upload release payloads to Hong Kong source bucket
+        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != ''
         run: |
           set -euo pipefail
 
-          ENDPOINT_URL="https://tos-s3-${VOLC_TOS_REGION}.volces.com"
+          SOURCE_ENDPOINT_URL="https://tos-s3-${TOS_SOURCE_REGION}.volces.com"
+          IMMUTABLE_CACHE_CONTROL="public, max-age=31536000, immutable"
+          replicated_keys=()
 
-          upload_file() {
+          upload_source_file() {
             local source_file="$1"
             local target_key="$2"
-            local cache_control="$3"
 
-            aws s3 cp "$source_file" "s3://${VOLC_TOS_BUCKET}/${target_key}" \
-              --endpoint-url "$ENDPOINT_URL" \
+            aws s3 cp "$source_file" "s3://${TOS_SOURCE_BUCKET}/$target_key" \
+              --endpoint-url "$SOURCE_ENDPOINT_URL" \
               --acl public-read \
-              --cache-control "$cache_control" \
+              --cache-control "$IMMUTABLE_CACHE_CONTROL" \
               --only-show-errors
           }
 
@@ -221,23 +223,89 @@ jobs:
             [ -f "$file" ] || continue
 
             name="$(basename "$file")"
-            cache_control="public, max-age=31536000, immutable"
             case "$name" in
               latest*.yml)
-                cache_control="no-cache, no-store, must-revalidate, max-age=0"
+                continue
                 ;;
             esac
 
-            upload_file "$file" "update/$name" "$cache_control"
+            target_key="update/$name"
+            upload_source_file "$file" "$target_key"
+            replicated_keys+=("$target_key")
+          done
+
+          printf '%s\n' "${replicated_keys[@]}" > replicated-keys.txt
+
+      - name: Wait for Guangzhou bucket replication
+        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != ''
+        run: |
+          set -euo pipefail
+
+          TARGET_ENDPOINT_URL="https://tos-s3-${TOS_TARGET_REGION}.volces.com"
+          ATTEMPTS=36
+          DELAY_SECONDS=10
+
+          wait_for_target_object() {
+            local key="$1"
+            local attempt=1
+
+            while [ "$attempt" -le "$ATTEMPTS" ]; do
+              if aws s3api head-object \
+                --bucket "$TOS_TARGET_BUCKET" \
+                --key "$key" \
+                --endpoint-url "$TARGET_ENDPOINT_URL" \
+                >/dev/null 2>&1; then
+                echo "Replicated: $key"
+                return 0
+              fi
+
+              echo "Waiting for replicated object $key ($attempt/$ATTEMPTS)..."
+              sleep "$DELAY_SECONDS"
+              attempt=$((attempt + 1))
+            done
+
+            echo "Timed out waiting for replicated object: $key"
+            return 1
+          }
+
+          while IFS= read -r key; do
+            [ -n "$key" ] || continue
+            wait_for_target_object "$key"
+          done < replicated-keys.txt
+
+      - name: Publish latest metadata to Guangzhou bucket
+        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != ''
+        run: |
+          set -euo pipefail
+
+          TARGET_ENDPOINT_URL="https://tos-s3-${TOS_TARGET_REGION}.volces.com"
+          METADATA_CACHE_CONTROL="no-cache, no-store, must-revalidate, max-age=0"
+
+          upload_metadata_file() {
+            local source_file="$1"
+            [ -f "$source_file" ] || return 0
+
+            local name
+            name="$(basename "$source_file")"
+
+            aws s3 cp "$source_file" "s3://${TOS_TARGET_BUCKET}/update/$name" \
+              --endpoint-url "$TARGET_ENDPOINT_URL" \
+              --acl public-read \
+              --cache-control "$METADATA_CACHE_CONTROL" \
+              --only-show-errors
+          }
+
+          for file in release-mac/latest*.yml release-win/latest*.yml release-linux/latest*.yml; do
+            upload_metadata_file "$file"
           done
 
       - name: Verify published update metadata
-        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != '' && env.VOLC_TOS_BUCKET != '' && env.VOLC_TOS_REGION != '' && env.XIAOBA_UPDATE_BASE_URL != ''
+        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != ''
         run: |
           set -euo pipefail
 
           for file in latest.yml latest-mac.yml latest-linux.yml; do
-            url="${XIAOBA_UPDATE_BASE_URL}/${file}"
+            url="${XIAOBA_UPDATE_BASE_URL}/$file"
             status="$(curl -I -L -s -o /dev/null -w "%{http_code}" "$url")"
             if [ "$status" != "200" ]; then
               echo "Metadata check failed for $url (HTTP $status)"
