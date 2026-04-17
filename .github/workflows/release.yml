@@ -46,6 +46,7 @@ jobs:
         with:
           name: macos-release
           if-no-files-found: error
+          compression-level: 0
           path: |
             release/*.dmg
             release/*.dmg.blockmap
@@ -87,6 +88,7 @@ jobs:
         with:
           name: windows-release
           if-no-files-found: error
+          compression-level: 0
           path: |
             release/*.exe
             release/*.exe.blockmap
@@ -133,17 +135,16 @@ jobs:
         with:
           name: linux-release
           if-no-files-found: error
+          compression-level: 0
           path: |
             release/*.AppImage
             release/*.deb
             release/latest-linux.yml
 
-  release:
-    needs: [build-mac, build-win, build-linux]
+  upload-tos-mac:
+    needs: build-mac
     runs-on: ubuntu-latest
     environment: cn_jiasu
-    permissions:
-      contents: write
     env:
       VOLC_TOS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_ACCESS_KEY_ID }}
       VOLC_TOS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
@@ -154,6 +155,217 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: ${{ secrets.VOLC_TOS_REGION }}
       AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - name: Check TOS upload configuration
+        id: tos
+        run: |
+          if [ -n "$VOLC_TOS_ACCESS_KEY_ID" ] && [ -n "$VOLC_TOS_SECRET_ACCESS_KEY" ] && [ -n "$VOLC_TOS_BUCKET" ] && [ -n "$VOLC_TOS_REGION" ] && [ -n "$XIAOBA_UPDATE_BASE_URL" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "TOS upload is not configured; skipping macOS upload."
+          fi
+
+      - name: Download macOS artifacts
+        if: steps.tos.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-release
+          path: release-mac
+
+      - name: Ensure AWS CLI is available
+        if: steps.tos.outputs.enabled == 'true'
+        run: |
+          if ! command -v aws >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y awscli
+          fi
+          aws --version
+          aws configure set default.s3.addressing_style virtual
+          aws configure set default.s3.max_concurrent_requests 20
+          aws configure set default.s3.max_queue_size 10000
+          aws configure set default.s3.multipart_threshold 64MB
+          aws configure set default.s3.multipart_chunksize 32MB
+
+      - name: Upload macOS artifacts to Volcengine TOS
+        if: steps.tos.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+
+          ENDPOINT_URL="https://tos-s3-${VOLC_TOS_REGION}.volces.com"
+          IMMUTABLE_CACHE_CONTROL="public, max-age=31536000, immutable"
+          METADATA_CACHE_CONTROL="no-cache, no-store, must-revalidate, max-age=0"
+
+          aws s3 cp release-mac "s3://${VOLC_TOS_BUCKET}/update/" \
+            --recursive \
+            --exclude "latest*.yml" \
+            --endpoint-url "$ENDPOINT_URL" \
+            --acl public-read \
+            --cache-control "$IMMUTABLE_CACHE_CONTROL" \
+            --only-show-errors
+
+          for file in release-mac/latest*.yml; do
+            [ -f "$file" ] || continue
+            name="$(basename "$file")"
+            aws s3 cp "$file" "s3://${VOLC_TOS_BUCKET}/update/$name" \
+              --endpoint-url "$ENDPOINT_URL" \
+              --acl public-read \
+              --cache-control "$METADATA_CACHE_CONTROL" \
+              --only-show-errors
+          done
+
+  upload-tos-win:
+    needs: build-win
+    runs-on: ubuntu-latest
+    environment: cn_jiasu
+    env:
+      VOLC_TOS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_ACCESS_KEY_ID }}
+      VOLC_TOS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
+      VOLC_TOS_BUCKET: ${{ secrets.VOLC_TOS_BUCKET }}
+      VOLC_TOS_REGION: ${{ secrets.VOLC_TOS_REGION }}
+      XIAOBA_UPDATE_BASE_URL: ${{ secrets.XIAOBA_UPDATE_BASE_URL }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ secrets.VOLC_TOS_REGION }}
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - name: Check TOS upload configuration
+        id: tos
+        run: |
+          if [ -n "$VOLC_TOS_ACCESS_KEY_ID" ] && [ -n "$VOLC_TOS_SECRET_ACCESS_KEY" ] && [ -n "$VOLC_TOS_BUCKET" ] && [ -n "$VOLC_TOS_REGION" ] && [ -n "$XIAOBA_UPDATE_BASE_URL" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "TOS upload is not configured; skipping Windows upload."
+          fi
+
+      - name: Download Windows artifacts
+        if: steps.tos.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: release-win
+
+      - name: Ensure AWS CLI is available
+        if: steps.tos.outputs.enabled == 'true'
+        run: |
+          if ! command -v aws >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y awscli
+          fi
+          aws --version
+          aws configure set default.s3.addressing_style virtual
+          aws configure set default.s3.max_concurrent_requests 20
+          aws configure set default.s3.max_queue_size 10000
+          aws configure set default.s3.multipart_threshold 64MB
+          aws configure set default.s3.multipart_chunksize 32MB
+
+      - name: Upload Windows artifacts to Volcengine TOS
+        if: steps.tos.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+
+          ENDPOINT_URL="https://tos-s3-${VOLC_TOS_REGION}.volces.com"
+          IMMUTABLE_CACHE_CONTROL="public, max-age=31536000, immutable"
+          METADATA_CACHE_CONTROL="no-cache, no-store, must-revalidate, max-age=0"
+
+          aws s3 cp release-win "s3://${VOLC_TOS_BUCKET}/update/" \
+            --recursive \
+            --exclude "latest*.yml" \
+            --endpoint-url "$ENDPOINT_URL" \
+            --acl public-read \
+            --cache-control "$IMMUTABLE_CACHE_CONTROL" \
+            --only-show-errors
+
+          for file in release-win/latest*.yml; do
+            [ -f "$file" ] || continue
+            name="$(basename "$file")"
+            aws s3 cp "$file" "s3://${VOLC_TOS_BUCKET}/update/$name" \
+              --endpoint-url "$ENDPOINT_URL" \
+              --acl public-read \
+              --cache-control "$METADATA_CACHE_CONTROL" \
+              --only-show-errors
+          done
+
+  upload-tos-linux:
+    needs: build-linux
+    runs-on: ubuntu-latest
+    environment: cn_jiasu
+    env:
+      VOLC_TOS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_ACCESS_KEY_ID }}
+      VOLC_TOS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
+      VOLC_TOS_BUCKET: ${{ secrets.VOLC_TOS_BUCKET }}
+      VOLC_TOS_REGION: ${{ secrets.VOLC_TOS_REGION }}
+      XIAOBA_UPDATE_BASE_URL: ${{ secrets.XIAOBA_UPDATE_BASE_URL }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ secrets.VOLC_TOS_REGION }}
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - name: Check TOS upload configuration
+        id: tos
+        run: |
+          if [ -n "$VOLC_TOS_ACCESS_KEY_ID" ] && [ -n "$VOLC_TOS_SECRET_ACCESS_KEY" ] && [ -n "$VOLC_TOS_BUCKET" ] && [ -n "$VOLC_TOS_REGION" ] && [ -n "$XIAOBA_UPDATE_BASE_URL" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "TOS upload is not configured; skipping Linux upload."
+          fi
+
+      - name: Download Linux artifacts
+        if: steps.tos.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-release
+          path: release-linux
+
+      - name: Ensure AWS CLI is available
+        if: steps.tos.outputs.enabled == 'true'
+        run: |
+          if ! command -v aws >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y awscli
+          fi
+          aws --version
+          aws configure set default.s3.addressing_style virtual
+          aws configure set default.s3.max_concurrent_requests 20
+          aws configure set default.s3.max_queue_size 10000
+          aws configure set default.s3.multipart_threshold 64MB
+          aws configure set default.s3.multipart_chunksize 32MB
+
+      - name: Upload Linux artifacts to Volcengine TOS
+        if: steps.tos.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+
+          ENDPOINT_URL="https://tos-s3-${VOLC_TOS_REGION}.volces.com"
+          IMMUTABLE_CACHE_CONTROL="public, max-age=31536000, immutable"
+          METADATA_CACHE_CONTROL="no-cache, no-store, must-revalidate, max-age=0"
+
+          aws s3 cp release-linux "s3://${VOLC_TOS_BUCKET}/update/" \
+            --recursive \
+            --exclude "latest*.yml" \
+            --endpoint-url "$ENDPOINT_URL" \
+            --acl public-read \
+            --cache-control "$IMMUTABLE_CACHE_CONTROL" \
+            --only-show-errors
+
+          for file in release-linux/latest*.yml; do
+            [ -f "$file" ] || continue
+            name="$(basename "$file")"
+            aws s3 cp "$file" "s3://${VOLC_TOS_BUCKET}/update/$name" \
+              --endpoint-url "$ENDPOINT_URL" \
+              --acl public-read \
+              --cache-control "$METADATA_CACHE_CONTROL" \
+              --only-show-errors
+          done
+
+  release:
+    needs: [build-mac, build-win, build-linux]
+    runs-on: ubuntu-latest
+    environment: cn_jiasu
+    permissions:
+      contents: write
     steps:
       - name: Download macOS artifacts
         uses: actions/download-artifact@v4
@@ -188,73 +400,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Ensure AWS CLI is available
-        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != '' && env.VOLC_TOS_BUCKET != '' && env.VOLC_TOS_REGION != '' && env.XIAOBA_UPDATE_BASE_URL != ''
+  verify-tos:
+    needs: [upload-tos-mac, upload-tos-win, upload-tos-linux]
+    runs-on: ubuntu-latest
+    environment: cn_jiasu
+    env:
+      XIAOBA_UPDATE_BASE_URL: ${{ secrets.XIAOBA_UPDATE_BASE_URL }}
+      VOLC_TOS_ACCESS_KEY_ID: ${{ secrets.VOLC_TOS_ACCESS_KEY_ID }}
+      VOLC_TOS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
+      VOLC_TOS_BUCKET: ${{ secrets.VOLC_TOS_BUCKET }}
+      VOLC_TOS_REGION: ${{ secrets.VOLC_TOS_REGION }}
+    steps:
+      - name: Check TOS upload configuration
+        id: tos
         run: |
-          if ! command -v aws >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y awscli
+          if [ -n "$VOLC_TOS_ACCESS_KEY_ID" ] && [ -n "$VOLC_TOS_SECRET_ACCESS_KEY" ] && [ -n "$VOLC_TOS_BUCKET" ] && [ -n "$VOLC_TOS_REGION" ] && [ -n "$XIAOBA_UPDATE_BASE_URL" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "TOS upload is not configured; skipping metadata verification."
           fi
-          aws --version
-          aws configure set default.s3.addressing_style virtual
-          aws configure set default.s3.max_concurrent_requests 20
-          aws configure set default.s3.max_queue_size 10000
-          aws configure set default.s3.multipart_threshold 64MB
-          aws configure set default.s3.multipart_chunksize 32MB
-
-      - name: Upload update artifacts to Volcengine TOS
-        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != '' && env.VOLC_TOS_BUCKET != '' && env.VOLC_TOS_REGION != '' && env.XIAOBA_UPDATE_BASE_URL != ''
-        run: |
-          set -euo pipefail
-
-          ENDPOINT_URL="https://tos-s3-${VOLC_TOS_REGION}.volces.com"
-          IMMUTABLE_CACHE_CONTROL="public, max-age=31536000, immutable"
-          METADATA_CACHE_CONTROL="no-cache, no-store, must-revalidate, max-age=0"
-
-          upload_release_dir() {
-            local source_dir="$1"
-            [ -d "$source_dir" ] || return 0
-
-            aws s3 cp "$source_dir" "s3://${VOLC_TOS_BUCKET}/update/" \
-              --recursive \
-              --exclude "latest*.yml" \
-              --endpoint-url "$ENDPOINT_URL" \
-              --acl public-read \
-              --cache-control "$IMMUTABLE_CACHE_CONTROL" \
-              --only-show-errors
-          }
-
-          upload_metadata_file() {
-            local source_file="$1"
-            [ -f "$source_file" ] || return 0
-
-            local name
-            name="$(basename "$source_file")"
-
-            aws s3 cp "$source_file" "s3://${VOLC_TOS_BUCKET}/update/$name" \
-              --endpoint-url "$ENDPOINT_URL" \
-              --acl public-read \
-              --cache-control "$METADATA_CACHE_CONTROL" \
-              --only-show-errors
-          }
-
-          upload_release_dir release-mac &
-          pid_mac=$!
-          upload_release_dir release-win &
-          pid_win=$!
-          upload_release_dir release-linux &
-          pid_linux=$!
-
-          wait "$pid_mac"
-          wait "$pid_win"
-          wait "$pid_linux"
-
-          for file in release-mac/latest*.yml release-win/latest*.yml release-linux/latest*.yml; do
-            upload_metadata_file "$file"
-          done
 
       - name: Verify published update metadata
-        if: env.VOLC_TOS_ACCESS_KEY_ID != '' && env.VOLC_TOS_SECRET_ACCESS_KEY != '' && env.VOLC_TOS_BUCKET != '' && env.VOLC_TOS_REGION != '' && env.XIAOBA_UPDATE_BASE_URL != ''
+        if: steps.tos.outputs.enabled == 'true'
         run: |
           set -euo pipefail
 
