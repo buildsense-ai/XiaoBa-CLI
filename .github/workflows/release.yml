@@ -203,7 +203,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          ENDPOINT_URL="https://tos-${VOLC_TOS_REGION}.volces.com"
+          ENDPOINT_URL="https://tos-s3-${VOLC_TOS_REGION}.volces.com"
 
           upload_file() {
             local source_file="$1"
