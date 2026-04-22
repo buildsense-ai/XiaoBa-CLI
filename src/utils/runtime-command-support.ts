@@ -1,7 +1,9 @@
 import { InspectorUploadScheduler } from './inspector-upload-scheduler';
+import { LogIngestScheduler } from './log-ingest-scheduler';
 
 interface ActiveRuntimeSupport {
-  uploadScheduler: InspectorUploadScheduler | null;
+  autoDevLogIngestScheduler: LogIngestScheduler | null;
+  inspectorUploadScheduler: InspectorUploadScheduler | null;
   stop(): Promise<void>;
 }
 
@@ -15,19 +17,29 @@ export async function startRuntimeCommandSupport(): Promise<ActiveRuntimeSupport
 
   if (!startPromise) {
     startPromise = (async () => {
-      const uploadScheduler = InspectorUploadScheduler.shouldStartForCurrentRuntime()
+      const autoDevLogIngestScheduler = LogIngestScheduler.shouldStartForCurrentRuntime()
+        ? new LogIngestScheduler(process.cwd())
+        : null;
+      const inspectorUploadScheduler = !autoDevLogIngestScheduler && InspectorUploadScheduler.shouldStartForCurrentRuntime()
         ? new InspectorUploadScheduler(process.cwd())
         : null;
 
-      if (uploadScheduler) {
-        await uploadScheduler.start();
+      if (autoDevLogIngestScheduler) {
+        await autoDevLogIngestScheduler.start();
+      }
+      if (inspectorUploadScheduler) {
+        await inspectorUploadScheduler.start();
       }
 
       const support: ActiveRuntimeSupport = {
-        uploadScheduler,
+        autoDevLogIngestScheduler,
+        inspectorUploadScheduler,
         async stop() {
-          if (uploadScheduler) {
-            await uploadScheduler.stop();
+          if (autoDevLogIngestScheduler) {
+            await autoDevLogIngestScheduler.stop();
+          }
+          if (inspectorUploadScheduler) {
+            await inspectorUploadScheduler.stop();
           }
         },
       };
