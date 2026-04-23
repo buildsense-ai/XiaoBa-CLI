@@ -288,7 +288,13 @@ export class AgentSession {
 
       try {
         await this.init();
-        const textContent = typeof text === 'string' ? text : '';
+        await this.services.skillManager.loadSkills();
+
+        this.tryAutoActivateAttachmentSkill(text);
+
+        const textContent = typeof text === 'string'
+          ? text
+          : this.extractTextFromContentBlocks(text);
         this.tryAutoActivateSkill(textContent);
         this.messages.push({ role: 'user', content: text });
 
@@ -318,8 +324,6 @@ export class AgentSession {
 
         // 动态注入当前可用 skills 列表（临时上下文，不持久化）
         // 每次处理消息时重新从磁盘加载 skills，确保 Dashboard 的禁用/启用/安装/删除立即生效
-        await this.services.skillManager.loadSkills();
-
         const skills = this.services.skillManager.getUserInvocableSkills();
         if (skills.length > 0) {
           const skillList = skills.map(s => `- ${s.metadata.name}: ${s.metadata.description}`).join('\n');
@@ -767,6 +771,101 @@ ${conversationText}`;
     this.applySkillActivation(activation);
 
     Logger.info(`[${this.key}] 自动激活 skill: ${matched.metadata.name}`);
+  }
+
+  private tryAutoActivateAttachmentSkill(
+    input: string | import('../types').ContentBlock[],
+  ): void {
+    if (this.activeSkillName) return;
+
+    const attachmentKind = this.detectAttachmentKind(input);
+    if (!attachmentKind) return;
+
+    const hasDirectImageBlocks = Array.isArray(input) && input.some(block => block.type === 'image');
+    if (
+      attachmentKind === 'image'
+      && hasDirectImageBlocks
+      && this.services.aiService.supportsDirectImageInput()
+    ) {
+      Logger.info(
+        `[${this.key}] Image attachment detected and current model appears vision-capable, skip auto-activating fallback skill`,
+      );
+      return;
+    }
+
+    const preferredNames = attachmentKind === 'image'
+      ? ['vision-analysis', 'advanced-reader']
+      : ['advanced-reader', 'vision-analysis'];
+
+    const skill = preferredNames
+      .map(name => this.services.skillManager.getSkill(name))
+      .find(candidate => candidate && candidate.metadata.autoInvocable !== false);
+
+    if (!skill) {
+      Logger.warning(
+        `[${this.key}] Attachment fallback skill missing for ${attachmentKind} input`
+      );
+      return;
+    }
+
+    const context: SkillInvocationContext = {
+      skillName: skill.metadata.name,
+      arguments: [],
+      rawArguments: '',
+      userMessage: typeof input === 'string'
+        ? input
+        : this.extractTextFromContentBlocks(input),
+    };
+    const activation = buildSkillActivationSignal(skill, context);
+    this.applySkillActivation(activation);
+
+    Logger.info(
+      `[${this.key}] Auto-activated attachment fallback skill: ${skill.metadata.name} (${attachmentKind})`
+    );
+  }
+
+  private detectAttachmentKind(
+    input: string | import('../types').ContentBlock[],
+  ): 'image' | 'file' | undefined {
+    if (typeof input === 'string') {
+      return this.detectAttachmentKindFromText(input);
+    }
+
+    if (input.some(block => block.type === 'image')) {
+      return 'image';
+    }
+
+    return this.detectAttachmentKindFromText(
+      this.extractTextFromContentBlocks(input),
+    );
+  }
+
+  private detectAttachmentKindFromText(text: string): 'image' | 'file' | undefined {
+    const input = text.trim();
+    if (!input) return undefined;
+
+    const hasPathLikeValue = /[a-z]:\\|https?:\/\/|\/uploads\/|\\users\\|\/home\/|\/tmp\/|\\tmp\\/i.test(input);
+    if (!hasPathLikeValue) return undefined;
+
+    if (/\(image\)|\.(png|jpg|jpeg|gif|webp|bmp|svg|heic|heif)\b/i.test(input)) {
+      return 'image';
+    }
+
+    if (/\(file\)|\.(pdf|doc|docx|ppt|pptx|xls|xlsx|csv|txt|md)\b/i.test(input)) {
+      return 'file';
+    }
+
+    return undefined;
+  }
+
+  private extractTextFromContentBlocks(
+    blocks: import('../types').ContentBlock[],
+  ): string {
+    return blocks
+      .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
+      .map(block => block.text)
+      .join('\n')
+      .trim();
   }
 
   private isAttachmentOnlyInput(input: string): boolean {

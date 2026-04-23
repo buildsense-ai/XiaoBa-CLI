@@ -1,47 +1,96 @@
 ---
 name: advanced-reader
-description: 高级文件读取技能。当主模型不支持视觉识别（如无法直接读取图片、PDF、扫描件等）时，使用此技能完成文件分析。
-category: 工具
+description: Conservative fallback skill for reading images, screenshots, scanned files, and PDFs only when attachment understanding is required. Use it when the user needs content extracted from an attachment and the current model cannot read the attachment reliably.
+category: tools
 invocable: both
-argument-hint: "<文件路径> [分析需求描述]"
+argument-hint: "<file_path_or_url> [analysis_prompt]"
+max-turns: 8
 ---
 
-# Advanced Reader（高级读取器）
+# Advanced Reader
 
-当用户发送图片或 PDF 文件，需要描述、分析或提取内容时，**使用 execute_shell 工具执行 curl 命令调用微服务**。
+Use this skill only as a fallback when the user provides an image, screenshot,
+scanned document, or PDF and the current model cannot read the attachment
+reliably.
 
-## 使用场景
+The role of this skill is narrow:
 
-- 用户发送了图片（截图、照片、图表）
-- 用户发送了 PDF 文档
-- 主模型无法读取这些文件时
+1. Send the attachment to the Cats `POST /api/reader/analyze` proxy.
+2. Return extracted content or tightly bounded attachment understanding.
+3. Let XiaoBa's main model produce the final answer afterward.
 
-## 单文件分析
+## Core Rules
+
+- Do not call the API if the user question can be answered without opening the attachment.
+- Do not guess attachment content from the file name or path.
+- Treat this skill as a reader, not as the final response generator.
+- Prefer extraction-oriented prompts over interpretive prompts.
+- For PDFs, keep the default conservative mode unless the user clearly asks for full-document coverage.
+- If the API call fails, explain that attachment parsing failed and ask the user for another try or extra text context.
+
+## Default Call
+
+Run:
 
 ```bash
-curl -X POST "http://localhost:8000/analyze" \
-  -F "file=@<文件路径>" \
-  -F "prompt=<分析需求>"
+python "<SKILL_DIR>/scripts/invoke_reader_api.py" "<file_path_or_url>" "<analysis_prompt>"
 ```
 
-**使用示例：**
-- 用户："帮我看看这张图" → `curl -X POST "http://localhost:8000/analyze" -F "file=@图片.png" -F "prompt=详细描述这张图"`
-- 用户："总结这个 PDF" → `curl -X POST "http://localhost:8000/analyze" -F "file=@文档.pdf" -F "prompt=总结这个文档"`
-- 用户："这是什么" → `curl -X POST "http://localhost:8000/analyze" -F "file=@文件路径" -F "prompt=描述这张图"`
+The helper script reads:
 
-## 批量分析
+- `CATSCOMPANY_HTTP_BASE_URL`
+- `CATSCOMPANY_API_KEY`
+- optional: `CATSCOMPANY_READER_API_URL`
+- optional overrides: `READER_PROXY_URL`, `READER_PROXY_API_KEY`, `READER_PROXY_BEARER_TOKEN`
+- Default value: `https://app.catsco.cc/api/reader`
+
+The skill no longer calls `advanced-reader` directly. Cats backend handles
+service-to-service forwarding and upstream signing.
+
+## Escalated Call
+
+Use broader coverage only when the user explicitly needs it:
 
 ```bash
-curl -X POST "http://localhost:8000/analyze/batch" \
-  -F "files=@图1.png" \
-  -F "files=@图2.png" \
-  -F "files=@图3.png" \
-  -F "prompt=<分析需求>"
+python "<SKILL_DIR>/scripts/invoke_reader_api.py" --full "<file_path_or_url>" "<analysis_prompt>"
+python "<SKILL_DIR>/scripts/invoke_reader_api.py" --force-vision "<file_path_or_url>" "<analysis_prompt>"
 ```
 
-## 配置
+## Preferred Prompts
 
-- 微服务地址默认 `http://localhost:8000`
-- 可通过环境变量 `ADVANCED_READER_URL` 配置其他地址
+- General extraction:
+  `Extract the visible text and structure from this file. If there is little text, describe only the clearly visible content without adding conclusions.`
+- Screenshot reading:
+  `Extract the visible text, UI labels, error messages, and layout from this screenshot. Do not diagnose yet.`
+- PDF extraction:
+  `Extract the document text and preserve section structure as much as possible.`
+- OCR-style reading:
+  `Read all visible text from this file and keep the original order and hierarchy as much as possible.`
 
-**禁止**只回复而不执行！
+## When To Use
+
+- The user asks what is written in an image or screenshot.
+- The user uploads a PDF and wants the content extracted or summarized later.
+- The user asks you to read a scan, OCR-like image, or screenshot text.
+- The answer depends on the attachment and the current model cannot read it reliably.
+
+## When Not To Use
+
+- The user question is purely textual and does not depend on the attachment.
+- The user already pasted the relevant text into the conversation.
+- The current model has already read the attachment successfully.
+- The user only needs a meta-level answer that does not require opening the file.
+
+## Flow
+
+1. Locate the local attachment path or remote attachment URL.
+2. Build a prompt that asks for extraction first, not interpretation.
+3. Call the helper script.
+4. Read the extracted result.
+5. Continue the conversation using that result as input to the main model.
+
+## Output Rules
+
+- Use the API result as attachment context for the next answer.
+- Do not treat the API result as the final user-facing answer unless the user asked for raw extraction only.
+- Do not say you cannot see the image before trying this fallback when attachment reading is truly required.

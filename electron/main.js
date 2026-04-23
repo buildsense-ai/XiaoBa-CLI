@@ -6,6 +6,8 @@ const DASHBOARD_PORT = 3800;
 let mainWindow = null;
 let tray = null;
 let autoUpdater = null;
+const REFRESHABLE_BUNDLED_SKILLS = new Set(['advanced-reader', 'vision-analysis']);
+const SKILL_SYNC_MARKER = '.xiaoba-bundled-skill.json';
 
 // 闂佽绻愮换鎴犳崲閸℃稒鍎婃い鏍仜缁€澶愭煟濡厧鍔嬬紒?electron-updater闂備焦瀵х粙鎴︽偋閸℃哎浜归柡灞诲劜閻掕顭块懜鐢点€掔紒鈧?
 try {
@@ -245,6 +247,58 @@ function getNodeModulesPath() {
   return path.join(__dirname, '..', 'node_modules');
 }
 
+function shouldCopyBundledSkillEntry(srcPath) {
+  const normalized = srcPath.split(path.sep).join('/');
+  return !normalized.includes('/__pycache__/')
+    && !normalized.endsWith('/__pycache__')
+    && !normalized.endsWith('.pyc')
+    && !normalized.endsWith('.pyo');
+}
+
+function readBundledSkillSyncVersion(fs, dest) {
+  try {
+    const markerPath = path.join(dest, SKILL_SYNC_MARKER);
+    if (!fs.existsSync(markerPath)) return null;
+    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+    return typeof marker.version === 'string' ? marker.version : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeBundledSkillSyncMarker(fs, dest, skillName) {
+  try {
+    fs.writeFileSync(
+      path.join(dest, SKILL_SYNC_MARKER),
+      JSON.stringify({
+        name: skillName,
+        version: app.getVersion(),
+        syncedAt: new Date().toISOString(),
+      }, null, 2)
+    );
+  } catch (error) {
+    console.warn(`Failed to write bundled skill sync marker for ${skillName}:`, error);
+  }
+}
+
+function shouldRefreshBundledSkill(fs, skillName, dest) {
+  if (!app.isPackaged) return true;
+  if (!REFRESHABLE_BUNDLED_SKILLS.has(skillName)) return false;
+  return readBundledSkillSyncVersion(fs, dest) !== app.getVersion();
+}
+
+function syncBundledSkillDir(fs, skillName, src, dest, overwrite = false) {
+  if (overwrite && fs.existsSync(dest)) {
+    fs.rmSync(dest, { recursive: true, force: true });
+  }
+  fs.cpSync(src, dest, {
+    recursive: true,
+    force: true,
+    filter: shouldCopyBundledSkillEntry,
+  });
+  writeBundledSkillSyncMarker(fs, dest, skillName);
+}
+
 async function startServer() {
   const appRoot = getAppRoot();
 
@@ -278,8 +332,11 @@ async function startServer() {
       const dest = path.join(skillsPath, dir.name);
 
       // 闂備礁鎲￠悷顖涚濠婂煻鍥蓟閵夈儳顦梺鍝勭墢閺佹悂鎮峰┑瀣€垫繛鎴烆仾椤忓嫸鑰挎い蹇撶墛閸?skill
-      if (!fs.existsSync(dest)) {
-        fs.cpSync(src, dest, { recursive: true });
+      const shouldRefresh = shouldRefreshBundledSkill(fs, dir.name, dest);
+      if (!app.isPackaged || shouldRefresh) {
+        syncBundledSkillDir(fs, dir.name, src, dest, true);
+      } else if (!fs.existsSync(dest)) {
+        syncBundledSkillDir(fs, dir.name, src, dest, false);
       }
     }
 

@@ -205,6 +205,50 @@ export class AIService {
   }
 
   /**
+   * 内置判断当前主模型是否大概率支持直接图片输入。
+   * 这里不要求用户额外配置，按 provider + model 名称做保守判定。
+   * 如果无法确定，宁可返回 false，让上层走 reader fallback，避免主模型硬猜图片。
+   */
+  supportsDirectImageInput(): boolean {
+    const primaryConfig = this.providerChain[0]?.config ?? this.withResolvedProvider(this.config);
+    const provider = primaryConfig.provider ?? this.resolveProvider(primaryConfig);
+    const apiUrl = (primaryConfig.apiUrl || '').trim().toLowerCase();
+    const model = (primaryConfig.model || '').trim().toLowerCase();
+    const explicitOverride = (process.env.XIAOBA_DIRECT_IMAGE_INPUT || '').trim().toLowerCase();
+
+    if (!model) {
+      return false;
+    }
+
+    if (explicitOverride === 'false') {
+      return false;
+    }
+
+    if (explicitOverride === 'true') {
+      return provider === 'anthropic'
+        ? this.isLikelyVisionCapableAnthropicModel(model)
+        : this.isLikelyVisionCapableOpenAIModel(model);
+    }
+
+    if (provider === 'anthropic') {
+      const isOfficialAnthropic = apiUrl.includes('api.anthropic.com') || apiUrl.includes('anthropic');
+      return isOfficialAnthropic && this.isLikelyVisionCapableAnthropicModel(model);
+    }
+
+    const isOfficialOpenAI = apiUrl.includes('api.openai.com');
+    const isExplicitVisionModel = /(vision|multimodal|\bvl\b|-vl\b|vl-)/.test(model);
+    return isExplicitVisionModel || (isOfficialOpenAI && this.isLikelyVisionCapableOpenAIModel(model));
+  }
+
+  private isLikelyVisionCapableAnthropicModel(model: string): boolean {
+    return /(claude-3|claude-3\.5|claude-3\.7|claude-3-5|claude-3-7|claude-4|claude-sonnet-4|claude-opus-4|claude-haiku-4|vision|multimodal|image)/.test(model);
+  }
+
+  private isLikelyVisionCapableOpenAIModel(model: string): boolean {
+    return /(gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-4-vision|gpt-4v|o1|o3|o4|vision|multimodal|\bvl\b|-vl\b|vl-)/.test(model);
+  }
+
+  /**
    * 普通调用（非流式），带自动重试 + 主备切换
    */
   async chat(messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse> {
