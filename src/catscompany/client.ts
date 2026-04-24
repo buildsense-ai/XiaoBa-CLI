@@ -27,11 +27,58 @@ export interface UploadResult {
   size: number;
 }
 
+export interface CatsOutgoingMessage {
+  topic_id?: string;
+  topic?: string;
+  type?: string;
+  msg_type?: string;
+  content?: unknown;
+  metadata?: Record<string, unknown>;
+  content_blocks?: unknown[];
+  mode?: string;
+  role?: string;
+  reply_to?: number;
+}
+
+interface PendingAck {
+  resolve: (seq: number) => void;
+  reject: (err: Error) => void;
+  timer: NodeJS.Timeout;
+}
+
+export type CatsSendErrorKind = 'transport' | 'ack' | 'timeout';
+
+export class CatsSendError extends Error {
+  constructor(
+    public readonly kind: CatsSendErrorKind,
+    message: string,
+    public readonly code?: number
+  ) {
+    super(message);
+    this.name = 'CatsSendError';
+  }
+}
+
+function describeReadyState(ws: WebSocket | null): string {
+  switch (ws?.readyState) {
+    case WebSocket.CONNECTING:
+      return 'CONNECTING';
+    case WebSocket.OPEN:
+      return 'OPEN';
+    case WebSocket.CLOSING:
+      return 'CLOSING';
+    case WebSocket.CLOSED:
+      return 'CLOSED';
+    default:
+      return 'NO_SOCKET';
+  }
+}
+
 export class CatsClient extends EventEmitter {
   private ws: WebSocket | null = null;
   private msgId = 0;
   private closed = false;
-  private pendingAcks = new Map<string, any>();
+  private pendingAcks = new Map<string, PendingAck>();
   private pingTimer: NodeJS.Timeout | null = null;
   private pongTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
@@ -86,12 +133,20 @@ export class CatsClient extends EventEmitter {
         this.emit('ready', { uid: this.uid, name: this.name });
         this.autoAcceptFriendRequests().catch(console.error);
         this.resubscribeTopics();
-      } else if (msg.ctrl.id && msg.ctrl.code === 200) {
+      } else if (msg.ctrl.id) {
         const pending = this.pendingAcks.get(msg.ctrl.id);
         if (pending) {
           clearTimeout(pending.timer);
-          pending.resolve(msg.ctrl.params?.seq || 0);
           this.pendingAcks.delete(msg.ctrl.id);
+          if (msg.ctrl.code >= 200 && msg.ctrl.code < 300) {
+            pending.resolve(Number(msg.ctrl.params?.seq || 0));
+          } else {
+            pending.reject(new CatsSendError(
+              'ack',
+              `CatsCompany ack ${msg.ctrl.code}: ${msg.ctrl.text || 'request failed'}`,
+              msg.ctrl.code
+            ));
+          }
         }
       }
     } else if (msg.data) {
@@ -117,16 +172,53 @@ export class CatsClient extends EventEmitter {
   }
 
   async sendMessage(topic: string, text: string): Promise<number> {
+    return this.sendStructuredMessage({ topic_id: topic, type: 'text', content: text });
+  }
+
+  private buildPubMessage(msgId: string, payload: CatsOutgoingMessage): Record<string, unknown> {
+    const topic = payload.topic_id || payload.topic;
+    if (!topic) {
+      throw new Error('CatsCompany topic is required');
+    }
+
+    const pub: Record<string, unknown> = {
+      id: msgId,
+      topic,
+    };
+
+    if (payload.content !== undefined) pub.content = payload.content;
+    if (payload.content_blocks !== undefined) pub.content_blocks = payload.content_blocks;
+    if (payload.metadata !== undefined) pub.metadata = payload.metadata;
+    if (payload.type !== undefined) pub.type = payload.type;
+    if (payload.msg_type !== undefined) pub.msg_type = payload.msg_type;
+    if (payload.mode !== undefined) pub.mode = payload.mode;
+    if (payload.role !== undefined) pub.role = payload.role;
+    if (payload.reply_to !== undefined) pub.reply_to = payload.reply_to;
+
+    return pub;
+  }
+
+  async sendStructuredMessage(payload: CatsOutgoingMessage): Promise<number> {
     const msgId = `${++this.msgId}`;
+    const pub = this.buildPubMessage(msgId, payload);
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingAcks.delete(msgId);
-        reject(new Error('Ack timeout'));
+        reject(new CatsSendError(
+          'timeout',
+          'WebSocket 已发送消息，但 10 秒内没有收到 CatsCompany 服务器确认'
+        ));
       }, 10000);
 
       this.pendingAcks.set(msgId, { resolve, reject, timer });
-      this.send({ pub: { id: msgId, topic, content: text } });
+      try {
+        this.sendOrThrow({ pub });
+      } catch (err: any) {
+        clearTimeout(timer);
+        this.pendingAcks.delete(msgId);
+        reject(err);
+      }
     });
   }
 
@@ -207,7 +299,7 @@ export class CatsClient extends EventEmitter {
         size: upload.size,
       },
     };
-    return this.sendRichContent(topic, content);
+    return this.sendStructuredMessage({ topic_id: topic, type: 'image', content });
   }
 
   async sendFile(topic: string, upload: UploadResult): Promise<number> {
@@ -219,26 +311,29 @@ export class CatsClient extends EventEmitter {
         size: upload.size,
       },
     };
-    return this.sendRichContent(topic, content);
-  }
-
-  private async sendRichContent(topic: string, content: any): Promise<number> {
-    const msgId = `${++this.msgId}`;
-
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingAcks.delete(msgId);
-        reject(new Error('Ack timeout'));
-      }, 10000);
-
-      this.pendingAcks.set(msgId, { resolve, reject, timer });
-      this.send({ pub: { id: msgId, topic, content } });
-    });
+    return this.sendStructuredMessage({ topic_id: topic, type: 'file', content });
   }
 
   private send(data: any): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(data));
+    }
+  }
+
+  private sendOrThrow(data: any): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      throw new CatsSendError(
+        'transport',
+        `小八到 CatsCompany 的 WebSocket 未连接，当前状态: ${describeReadyState(this.ws)}`
+      );
+    }
+    try {
+      this.ws.send(JSON.stringify(data));
+    } catch (err: any) {
+      throw new CatsSendError(
+        'transport',
+        `WebSocket 写入失败: ${err?.message || 'unknown error'}`
+      );
     }
   }
 
