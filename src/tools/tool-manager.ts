@@ -1,4 +1,4 @@
-import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor } from '../types/tool';
+import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
 import { ReadTool } from './read-tool';
 import { WriteTool } from './write-tool';
@@ -152,25 +152,43 @@ export class ToolManager implements ToolExecutor {
 
       const output = await tool.execute(args, context);
 
-      // 处理特殊返回格式（如图片需要额外消息）
-      if (output && typeof output === 'object' && 'toolContent' in output && 'newMessages' in output) {
-        const specialOutput = output as { toolContent: string; newMessages: any[] };
+      // 失败结果：统一走 ok=false 分支
+      if (!output.ok) {
         return {
           tool_call_id: toolCall.id,
           role: 'tool',
           name: toolCall.function.name,
-          content: specialOutput.toolContent,
-          ok: true,
-          controlSignal: tool.definition.controlMode,
-          newMessages: specialOutput.newMessages,
+          content: output.message,
+          ok: false,
+          errorCode: output.errorCode,
+          retryable: output.retryable ?? isRateLimitLikeMessage(output.message),
         };
+      }
+
+      // 成功结果：处理特殊返回格式（如图片需要额外消息）
+      if (typeof output.content === 'object') {
+        const contentObj = output.content as Record<string, any>;
+        if ('_imageForNewMessage' in contentObj && contentObj._imageForNewMessage === true) {
+          // 图片读取结果：从内部结构提取 imageBlock，生成额外消息
+          return {
+            tool_call_id: toolCall.id,
+            role: 'tool',
+            name: toolCall.function.name,
+            content: contentObj.filePath
+              ? `文件: ${contentObj.filePath}\n类型: 图片\n[图片内容已附加]`
+              : '[图片内容已附加]',
+            ok: true,
+            controlSignal: tool.definition.controlMode,
+            newMessages: contentObj.imageBlock ? [contentObj.imageBlock] : [],
+          };
+        }
       }
 
       return {
         tool_call_id: toolCall.id,
         role: 'tool',
         name: toolCall.function.name,
-        content: output,
+        content: output.content,
         ok: true,
         controlSignal: tool.definition.controlMode,
       };

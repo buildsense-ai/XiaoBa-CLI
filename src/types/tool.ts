@@ -58,7 +58,7 @@ export interface ToolCall {
 }
 
 /**
- * 工具调用结果
+ * 工具调用结果（ConversationRunner 最终收到的结构）
  */
 export interface ToolResult {
   tool_call_id: string;
@@ -71,6 +71,23 @@ export interface ToolResult {
   controlSignal?: ToolControlMode;
   newMessages?: import('./index').Message[];
 }
+
+/**
+ * 工具内部执行结果的统一类型
+ * 工具 execute() 必须返回此类型，由 BaseTool 统一处理失败兜底
+ */
+export type ToolExecutionResult =
+  | { ok: true; content: string | import('./index').ContentBlock[] }
+  | { ok: false; errorCode: string; message: string; retryable?: boolean };
+
+export type ToolErrorCode =
+  | 'TOOL_NOT_FOUND'
+  | 'INVALID_TOOL_ARGUMENTS'
+  | 'TOOL_EXECUTION_ERROR'
+  | 'RATE_LIMIT'
+  | 'PERMISSION_DENIED'
+  | 'FILE_NOT_FOUND'
+  | 'EXECUTION_TIMEOUT';
 
 export type ToolSurface = 'cli' | 'feishu' | 'catscompany' | 'agent' | 'research' | 'unknown';
 export type ToolPermissionProfile = 'strict' | 'default' | 'relaxed';
@@ -112,7 +129,32 @@ export interface ToolExecutionContext {
  */
 export interface Tool {
   definition: ToolDefinition;
-  execute(args: any, context: ToolExecutionContext): Promise<string | ContentBlock[]>;
+  execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult>;
+}
+
+/**
+ * 工具基类
+ * - 统一 catch 兜底，确保所有工具执行结果都有 ok 语义
+ * - 子类只需返回 ok:true 的成功结果，失败时 throw 即可
+ */
+export abstract class BaseTool implements Tool {
+  abstract definition: ToolDefinition;
+
+  abstract executeImpl(args: any, context: ToolExecutionContext): Promise<string | ContentBlock[]>;
+
+  async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
+    try {
+      const content = await this.executeImpl(args, context);
+      return { ok: true, content };
+    } catch (error: any) {
+      return {
+        ok: false,
+        errorCode: (error as any).errorCode || 'TOOL_EXECUTION_ERROR',
+        message: String(error?.message || error || 'Unknown error'),
+        retryable: false,
+      };
+    }
+  }
 }
 
 /**

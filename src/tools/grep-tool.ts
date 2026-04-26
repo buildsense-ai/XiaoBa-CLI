@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
-import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { isReadPathAllowed } from '../utils/safety';
 
 const VCS_DIRECTORIES_TO_EXCLUDE = ['.git', '.svn', '.hg', '.bzr'] as const;
@@ -92,26 +92,28 @@ export class GrepTool implements Tool {
     }
   };
 
-  async execute(args: any, context: ToolExecutionContext): Promise<string> {
-    const { pattern, path: searchPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
+  async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
+    const { pattern, path: searchPath } = args;
 
-    try {
-      const resolvedSearchPath = searchPath ? (path.isAbsolute(searchPath) ? searchPath : path.join(context.workingDirectory, searchPath)) : context.workingDirectory;
-      const pathPermission = isReadPathAllowed(resolvedSearchPath, context.workingDirectory);
-      if (!pathPermission.allowed) {
-        return JSON.stringify({ error: `执行被阻止: ${pathPermission.reason}` });
-      }
+    const resolvedSearchPath = searchPath
+      ? (path.isAbsolute(searchPath) ? searchPath : path.join(context.workingDirectory, searchPath))
+      : context.workingDirectory;
 
-      if (isCommandAvailable('rg')) {
-        return await this.executeWithRipgrep(args, resolvedSearchPath, context);
-      } else if (isCommandAvailable('grep')) {
-        return await this.executeWithSystemGrep(args, resolvedSearchPath, context);
-      } else {
-        return await this.executeWithNodeJS(args, resolvedSearchPath, context);
-      }
-    } catch (error: any) {
-      return JSON.stringify({ error: `Grep 搜索失败: ${error.message}` });
+    const pathPermission = isReadPathAllowed(resolvedSearchPath, context.workingDirectory);
+    if (!pathPermission.allowed) {
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
     }
+
+    let content: string;
+    if (isCommandAvailable('rg')) {
+      content = await this.executeWithRipgrep(args, resolvedSearchPath, context);
+    } else if (isCommandAvailable('grep')) {
+      content = await this.executeWithSystemGrep(args, resolvedSearchPath, context);
+    } else {
+      content = await this.executeWithNodeJS(args, resolvedSearchPath, context);
+    }
+
+    return { ok: true, content };
   }
 
   private async executeWithRipgrep(args: any, searchPath: string, context: ToolExecutionContext): Promise<string> {
