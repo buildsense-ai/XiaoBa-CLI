@@ -18,6 +18,11 @@ interface GrepResult {
   appliedOffset?: number;
 }
 
+interface FallbackResult {
+  content: string;
+  error?: string;
+}
+
 function applyHeadLimit<T>(
   items: T[],
   limit: number | undefined,
@@ -104,19 +109,37 @@ export class GrepTool implements Tool {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
     }
 
-    let content: string;
-    if (isCommandAvailable('rg')) {
-      content = await this.executeWithRipgrep(args, resolvedSearchPath, context);
-    } else if (isCommandAvailable('grep')) {
-      content = await this.executeWithSystemGrep(args, resolvedSearchPath, context);
-    } else {
-      content = await this.executeWithNodeJS(args, resolvedSearchPath, context);
+    // 按优先级尝试各个 fallback
+    const fallbacks = [
+      { name: 'ripgrep (rg)', fn: () => this.executeWithRipgrep(args, resolvedSearchPath, context) },
+      { name: 'system grep', fn: () => this.executeWithSystemGrep(args, resolvedSearchPath, context) },
+      { name: 'Node.js glob', fn: () => this.executeWithNodeJS(args, resolvedSearchPath, context) },
+    ];
+
+    let lastError: Error | null = null;
+
+    for (const { name, fn } of fallbacks) {
+      try {
+        const result = await fn();
+        // 有内容直接返回，无内容继续尝试下一个 fallback
+        if (result.content) {
+          return { ok: true, content: result.content };
+        }
+        lastError = null; // 重置错误，因为空结果是正常情况
+        continue;
+      } catch (error: any) {
+        lastError = error;
+        // 如果有多个 fallback，继续尝试下一个
+        continue;
+      }
     }
 
-    return { ok: true, content };
+    // 所有 fallback 都失败
+    const errorMsg = lastError?.message || '所有搜索方法都失败了';
+    return { ok: false, errorCode: 'EXECUTION_ERROR', message: errorMsg };
   }
 
-  private async executeWithRipgrep(args: any, searchPath: string, context: ToolExecutionContext): Promise<string> {
+  private async executeWithRipgrep(args: any, searchPath: string, context: ToolExecutionContext): Promise<FallbackResult> {
     const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
     const rgArgs: string[] = ['--color=never', '--no-heading', '--hidden'];
     
@@ -132,21 +155,23 @@ export class GrepTool implements Tool {
     if (globPattern) rgArgs.push(`--glob=${globPattern}`);
     
     if (pattern.startsWith('-')) { rgArgs.push('-e', pattern); } else { rgArgs.push('--', pattern); }
-    // Always pass an explicit search path so rg searches files instead of empty stdin.
     rgArgs.push(originalPath ? searchPath : '.');
 
-    let output: string;
     try {
-      output = execFileSync('rg', rgArgs, { cwd: context.workingDirectory, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] }) as string;
+      const output = execFileSync('rg', rgArgs, { cwd: context.workingDirectory, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] }) as string;
+      return { content: this.processOutput(output, args, context) };
     } catch (error: any) {
-      if (error.status === 1) return this.formatResult({ mode: output_mode, numFiles: 0, filenames: [], content: '', numLines: 0, numMatches: 0 }, pattern, originalPath, globPattern, fileType);
-      throw error;
+      if (error.status === 1) {
+        // 无匹配，返回格式化的"未找到"
+        return { content: this.formatNoMatch(pattern, originalPath, globPattern, fileType) };
+      }
+      // exit code 2 或其他错误，抛出让 execute 统一处理
+      const errorMsg = error.stderr || `rg 执行失败 (exit ${error.status})`;
+      throw new Error(errorMsg);
     }
-
-    return this.processOutput(output, args, context);
   }
 
-  private async executeWithSystemGrep(args: any, searchPath: string, context: ToolExecutionContext): Promise<string> {
+  private async executeWithSystemGrep(args: any, searchPath: string, context: ToolExecutionContext): Promise<FallbackResult> {
     const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
     const grepArgs: string[] = [];
     
@@ -159,57 +184,68 @@ export class GrepTool implements Tool {
     for (const dir of VCS_DIRECTORIES_TO_EXCLUDE) grepArgs.push('--exclude-dir=' + dir);
     grepArgs.push(pattern, searchPath);
 
-    let output: string;
     try {
-      output = execFileSync('grep', grepArgs, { cwd: context.workingDirectory, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] }) as string;
+      const output = execFileSync('grep', grepArgs, { cwd: context.workingDirectory, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] }) as string;
+      let processedOutput = output;
+      
+      if (globPattern) {
+        const lines = output.trim().split('\n').filter(Boolean);
+        const globRegex = new RegExp(globPattern.replace(/\*/g, '.*').replace(/\?/g, '.'));
+        processedOutput = lines.filter(line => globRegex.test(path.basename(line.split(':')[0]))).join('\n');
+      }
+      
+      return { content: this.processOutput(processedOutput, args, context) };
     } catch (error: any) {
-      if (error.status === 1) return this.formatResult({ mode: output_mode, numFiles: 0, filenames: [], content: '', numLines: 0, numMatches: 0 }, pattern, originalPath, globPattern, fileType);
-      throw error;
+      if (error.status === 1) {
+        return { content: this.formatNoMatch(pattern, originalPath, globPattern, fileType) };
+      }
+      const errorMsg = error.stderr || `grep 执行失败 (exit ${error.status})`;
+      throw new Error(errorMsg);
     }
-
-    if (globPattern) {
-      const lines = output.trim().split('\n').filter(Boolean);
-      const globRegex = new RegExp(globPattern.replace(/\*/g, '.*').replace(/\?/g, '.'));
-      output = lines.filter(line => globRegex.test(path.basename(line.split(':')[0]))).join('\n');
-    }
-
-    return this.processOutput(output, args, context);
   }
 
-  private async executeWithNodeJS(args: any, searchPath: string, context: ToolExecutionContext): Promise<string> {
+  private async executeWithNodeJS(args: any, searchPath: string, context: ToolExecutionContext): Promise<FallbackResult> {
     const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
+    
+    if (!fs.existsSync(searchPath)) {
+      throw new Error(`目录不存在: ${searchPath}`);
+    }
+    
     const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(escapeRegex(pattern), case_insensitive ? 'i' : '');
     const results: string[] = [];
     
     const walkDir = (dir: string) => {
       if (!fs.existsSync(dir)) return;
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        const fullPath = path.join(dir, entry.name);
-        if (VCS_DIRECTORIES_TO_EXCLUDE.includes(entry.name as any)) continue;
-        if (entry.isDirectory()) { walkDir(fullPath); continue; }
-        if (entry.isFile()) {
-          if (globPattern) {
-            const globRegex = new RegExp('^' + globPattern.replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
-            if (!globRegex.test(entry.name)) continue;
-          }
-          try {
-            const lines = fs.readFileSync(fullPath, 'utf-8').split('\n');
-            for (let i = 0; i < lines.length; i++) {
-              if (regex.test(lines[i])) {
-                if (output_mode === 'files') { results.push(fullPath); break; }
-                else if (output_mode === 'count') { results.push(`${fullPath}:1`); break; }
-                else results.push(`${fullPath}:${i + 1}:${lines[i]}`);
-              }
+      try {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const fullPath = path.join(dir, entry.name);
+          if (VCS_DIRECTORIES_TO_EXCLUDE.includes(entry.name as any)) continue;
+          if (entry.isDirectory()) { walkDir(fullPath); continue; }
+          if (entry.isFile()) {
+            if (globPattern) {
+              const globRegex = new RegExp('^' + globPattern.replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
+              if (!globRegex.test(entry.name)) continue;
             }
-          } catch {}
+            try {
+              const lines = fs.readFileSync(fullPath, 'utf-8').split('\n');
+              for (let i = 0; i < lines.length; i++) {
+                if (regex.test(lines[i])) {
+                  if (output_mode === 'files') { results.push(fullPath); break; }
+                  else if (output_mode === 'count') { results.push(`${fullPath}:1`); break; }
+                  else results.push(`${fullPath}:${i + 1}:${lines[i]}`);
+                }
+              }
+            } catch {}
+          }
         }
+      } catch (error: any) {
+        throw new Error(`读取目录失败: ${error.message}`);
       }
     };
     
     walkDir(searchPath);
-    if (results.length === 0) return this.formatResult({ mode: output_mode, numFiles: 0, filenames: [], content: '', numLines: 0, numMatches: 0 }, pattern, originalPath, globPattern, fileType);
-    return this.processOutput(results.join('\n'), args, context);
+    return { content: this.processOutput(results.join('\n'), args, context) };
   }
 
   private processOutput(output: string, args: any, context: ToolExecutionContext): string {
@@ -241,6 +277,10 @@ export class GrepTool implements Tool {
     }
 
     return this.formatResult(result, pattern, originalPath, globPattern, fileType);
+  }
+
+  private formatNoMatch(pattern: string, searchPath: string | undefined, globPattern: string | undefined, fileType: string | undefined): string {
+    return `未找到匹配项。\n模式: ${pattern}\n路径: ${searchPath || '.'}\n${globPattern ? `Glob: ${globPattern}\n` : ''}${fileType ? `类型: ${fileType}\n` : ''}`;
   }
 
   private formatResult(result: GrepResult, pattern: string, searchPath: string | undefined, globPattern: string | undefined, fileType: string | undefined): string {

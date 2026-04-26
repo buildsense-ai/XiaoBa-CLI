@@ -70,11 +70,15 @@ export class SendToInspectorTool implements Tool {
   };
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
-    const result = await this.executeWithResult(args, context);
-    if (!result.uploaded && !result.dryRun) {
-      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: result.message };
+    try {
+      const result = await this.executeWithResult(args, context);
+      if (!result.uploaded && !result.dryRun) {
+        return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: result.message };
+      }
+      return { ok: true, content: result.message };
+    } catch (error: any) {
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: error.message };
     }
-    return { ok: true, content: result.message };
   }
 
   async executeWithResult(args: any, context: ToolExecutionContext): Promise<SendToInspectorExecutionResult> {
