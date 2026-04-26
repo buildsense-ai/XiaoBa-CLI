@@ -51,8 +51,13 @@ export class SendFileTool implements Tool {
       return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: '文件名不能为空' };
     }
 
-    await channel.sendFile(channel.chatId, file_path, file_name);
-    Logger.info(`[send_file] 已发送: ${file_name}`);
-    return { ok: true, content: `文件 "${file_name}" 已发送` };
+    try {
+      await channel.sendFile(channel.chatId, file_path, file_name);
+      Logger.info(`[send_file] 已发送: ${file_name}`);
+      return { ok: true, content: `文件 "${file_name}" 已发送` };
+    } catch (error: any) {
+      Logger.error(`文件发送失败 (sendFile): ${error.message}`);
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `文件发送失败: ${error.message}` };
+    }
   }
 }
