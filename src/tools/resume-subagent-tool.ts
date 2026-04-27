@@ -1,4 +1,4 @@
-import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { Logger } from '../utils/logger';
 
@@ -30,12 +30,12 @@ export class ResumeSubagentTool implements Tool {
     },
   };
 
-  async execute(args: any, context: ToolExecutionContext): Promise<string> {
+  async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { subagent_id, answer } = args;
     const sessionKey = context.sessionId || 'unknown';
 
     if (!subagent_id || !answer) {
-      return '错误：请提供 subagent_id 和 answer';
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: '错误：请提供 subagent_id 和 answer' };
     }
 
     const manager = SubAgentManager.getInstance();
@@ -44,12 +44,12 @@ export class ResumeSubagentTool implements Tool {
     switch (result) {
       case 'resumed':
         Logger.info(`[ResumeSubagent] 已恢复 ${subagent_id}`);
-        return `子智能体 ${subagent_id} 已恢复执行。`;
+        return { ok: true, content: `子智能体 ${subagent_id} 已恢复执行。` };
       case 'not_waiting':
-        return `子智能体 ${subagent_id} 当前未处于等待状态，无需恢复。`;
+        return { ok: true, content: `子智能体 ${subagent_id} 当前未处于等待状态，无需恢复。` };
       case 'forbidden':
       case 'not_found':
-        return `未找到子智能体 ${subagent_id}。`;
+        return { ok: false, errorCode: 'TOOL_NOT_FOUND', message: `未找到子智能体 ${subagent_id}。` };
     }
   }
 }

@@ -1,4 +1,4 @@
-import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { AIService } from '../utils/ai-service';
 import { SkillManager } from '../skills/skill-manager';
@@ -51,11 +51,11 @@ export class SpawnSubagentTool implements Tool {
     },
   };
 
-  async execute(args: any, context: ToolExecutionContext): Promise<string> {
+  async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { skill_name, task_description, user_message } = args;
 
     if (!skill_name || !task_description || !user_message) {
-      return '错误：skill_name、task_description、user_message 均为必填参数';
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: '错误：skill_name、task_description、user_message 均为必填参数' };
     }
 
     const manager = SubAgentManager.getInstance();
@@ -78,20 +78,20 @@ export class SpawnSubagentTool implements Tool {
     );
 
     if ('error' in result) {
-      return `派遣失败：${result.error}`;
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `派遣失败：${result.error}` };
     }
 
     console.log('\n' + styles.highlight(`🚀 派遣子智能体: ${task_description}`));
     console.log(styles.text(`   ID: ${result.id}`));
     console.log(styles.text(`   Skill: ${skill_name}\n`));
 
-    return [
+    return { ok: true, content: [
       `子智能体 ${result.id} 已派遣，正在后台执行「${task_description}」。`,
       `Skill: ${skill_name}`,
       `状态: running`,
       ``,
       `子智能体完成后会通知你结果和产出文件列表。届时请用 reply 和 send_file 转发给用户。`,
       `你可以用 check_subagent 查看进度，用 stop_subagent 停止任务。`,
-    ].join('\n');
+    ].join('\n') };
   }
 }
