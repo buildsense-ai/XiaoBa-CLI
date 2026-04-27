@@ -157,7 +157,7 @@ describe('SendToInspectorTool', () => {
       },
     );
     assert.strictEqual(result.ok, false);
-    assert.ok(result.content?.includes('不允许上传非日志文件'));
+    assert.ok(result.message.includes('不允许上传非日志文件'));
   });
 });
 
