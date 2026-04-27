@@ -14,6 +14,8 @@
     "electron:dev": "npm run build && electron .",
     "electron:build": "npm run build && npm run prepare:runtime && electron-builder --config electron-builder.config.cjs --publish never",
     "electron:build:mac": "npm run build && npm run prepare:runtime && electron-builder --config electron-builder.config.cjs --mac --publish never",
+    "electron:build:mac:x64": "npm run build && node scripts/prepare-runtime.mjs darwin x64 && electron-builder --config electron-builder.config.cjs --mac --x64 --publish never",
+    "electron:build:mac:arm64": "npm run build && node scripts/prepare-runtime.mjs darwin arm64 && electron-builder --config electron-builder.config.cjs --mac --arm64 --publish never",
     "electron:build:win": "npm run build && npm run prepare:runtime && electron-builder --config electron-builder.config.cjs --win --publish never",
     "electron:build:linux": "npm run build && npm run prepare:runtime && electron-builder --config electron-builder.config.cjs --linux --publish never",
     "watch": "tsc --watch",
@@ -144,7 +146,7 @@
         "dmg"
       ],
       "icon": "build-resources/icon.png",
-      "artifactName": "${productName}-${version}-mac.${ext}"
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     },
     "win": {
       "target": [

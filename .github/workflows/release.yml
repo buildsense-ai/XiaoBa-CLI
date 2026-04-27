@@ -13,8 +13,12 @@ jobs:
   build-mac:
     runs-on: macos-latest
     environment: release-prod
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
     env:
-      XIAOBA_UPDATE_BASE_URL: https://github-release.tos-cn-guangzhou.volces.com/update
+      XIAOBA_UPDATE_BASE_URL: https://github-release.tos-cn-guangzhou.volces.com/update/macos-${{ matrix.arch }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -30,7 +34,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .cache/runtime-downloads
-          key: ${{ runner.os }}-${{ runner.arch }}-runtime-${{ hashFiles('scripts/runtime-manifest.json') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ matrix.arch }}-runtime-${{ hashFiles('scripts/runtime-manifest.json') }}
+
+      - name: Install Rosetta for x64 build on Apple Silicon runners
+        if: matrix.arch == 'x64'
+        run: |
+          if [ "$(uname -m)" = "arm64" ]; then
+            /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
+          fi
 
       - name: Install dependencies
         shell: bash
@@ -60,18 +71,22 @@ jobs:
       - name: Inject version into source
         run: node scripts/inject-version.js
 
-      - name: Build Electron app (macOS)
-        run: npm run electron:build:mac
+      - name: Build Electron app (macOS ${{ matrix.arch }})
+        run: npm run electron:build:mac:${{ matrix.arch }}
+
+      - name: Keep architecture-specific macOS update metadata
+        run: cp release/latest-mac.yml release/latest-mac-${{ matrix.arch }}.yml
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macos-release
+          name: macos-release-${{ matrix.arch }}
           if-no-files-found: error
           path: |
             release/*.dmg
             release/*.dmg.blockmap
             release/latest-mac.yml
+            release/latest-mac-${{ matrix.arch }}.yml
 
   build-win:
     runs-on: windows-latest
@@ -222,11 +237,17 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.VOLC_TOS_SECRET_ACCESS_KEY }}
       AWS_EC2_METADATA_DISABLED: 'true'
     steps:
-      - name: Download macOS artifacts
+      - name: Download macOS x64 artifacts
         uses: actions/download-artifact@v4
         with:
-          name: macos-release
-          path: release-mac
+          name: macos-release-x64
+          path: release-mac/x64
+
+      - name: Download macOS arm64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-release-arm64
+          path: release-mac/arm64
 
       - name: Download Windows artifacts
         uses: actions/download-artifact@v4
@@ -249,7 +270,12 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
-            release-mac/*
+            release-mac/x64/*.dmg
+            release-mac/x64/*.dmg.blockmap
+            release-mac/x64/latest-mac-x64.yml
+            release-mac/arm64/*.dmg
+            release-mac/arm64/*.dmg.blockmap
+            release-mac/arm64/latest-mac-arm64.yml
             release-win/*
             release-linux/*
         env:
@@ -284,9 +310,25 @@ jobs:
               --only-show-errors
           }
 
-          for file in release-mac/* release-win/* release-linux/*; do
-            [ -f "$file" ] || continue
+          target_key_for_file() {
+            local source_file="$1"
+            local name
+            name="$(basename "$source_file")"
 
+            case "$source_file" in
+              release-mac/x64/*)
+                printf 'update/macos-x64/%s\n' "$name"
+                ;;
+              release-mac/arm64/*)
+                printf 'update/macos-arm64/%s\n' "$name"
+                ;;
+              *)
+                printf 'update/%s\n' "$name"
+                ;;
+            esac
+          }
+
+          while IFS= read -r -d '' file; do
             name="$(basename "$file")"
             case "$name" in
               latest*.yml)
@@ -294,10 +336,10 @@ jobs:
                 ;;
             esac
 
-            target_key="update/$name"
+            target_key="$(target_key_for_file "$file")"
             upload_source_file "$file" "$target_key"
             replicated_keys+=("$target_key")
-          done
+          done < <(find release-mac release-win release-linux -type f -print0)
 
           printf '%s\n' "${replicated_keys[@]}" > replicated-keys.txt
 
@@ -367,20 +409,22 @@ jobs:
 
           upload_metadata_file() {
             local source_file="$1"
+            local target_key="$2"
             [ -f "$source_file" ] || return 0
 
-            local name
-            name="$(basename "$source_file")"
-
-            aws s3 cp "$source_file" "s3://${TOS_TARGET_BUCKET}/update/$name" \
+            aws s3 cp "$source_file" "s3://${TOS_TARGET_BUCKET}/$target_key" \
               --endpoint-url "$TARGET_ENDPOINT_URL" \
               --acl public-read \
               --cache-control "$METADATA_CACHE_CONTROL" \
               --only-show-errors
           }
 
-          for file in release-mac/latest*.yml release-win/latest*.yml release-linux/latest*.yml; do
-            upload_metadata_file "$file"
+          upload_metadata_file release-mac/x64/latest-mac.yml update/macos-x64/latest-mac.yml
+          upload_metadata_file release-mac/arm64/latest-mac.yml update/macos-arm64/latest-mac.yml
+
+          for file in release-win/latest*.yml release-linux/latest*.yml; do
+            name="$(basename "$file")"
+            upload_metadata_file "$file" "update/$name"
           done
 
       - name: Verify published update metadata
@@ -388,8 +432,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          for file in latest.yml latest-mac.yml latest-linux.yml; do
-            url="${XIAOBA_UPDATE_BASE_URL}/$file"
+          metadata_urls=(
+            "${XIAOBA_UPDATE_BASE_URL}/latest.yml"
+            "${XIAOBA_UPDATE_BASE_URL}/latest-linux.yml"
+            "${XIAOBA_UPDATE_BASE_URL}/macos-x64/latest-mac.yml"
+            "${XIAOBA_UPDATE_BASE_URL}/macos-arm64/latest-mac.yml"
+          )
+
+          for url in "${metadata_urls[@]}"; do
             status="$(curl -I -L -s -o /dev/null -w "%{http_code}" "$url")"
             if [ "$status" != "200" ]; then
               echo "Metadata check failed for $url (HTTP $status)"
