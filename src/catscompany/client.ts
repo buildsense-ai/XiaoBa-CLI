@@ -48,6 +48,14 @@ interface PendingAck {
 
 export type CatsSendErrorKind = 'transport' | 'ack' | 'timeout';
 
+const MIME_BY_EXT: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+};
+
 export class CatsSendError extends Error {
   constructor(
     public readonly kind: CatsSendErrorKind,
@@ -259,12 +267,13 @@ export class CatsClient extends EventEmitter {
 
     const buffer = fs.readFileSync(filePath);
     const filename = path.basename(filePath);
+    const mimeType = MIME_BY_EXT[path.extname(filename).toLowerCase()] || 'application/octet-stream';
 
     try {
-      console.log(`[DEBUG] 开始上传文件到: ${url}, 大小: ${buffer.length} bytes`);
+      console.log(`[DEBUG] 开始上传文件到: ${url}, 大小: ${buffer.length} bytes, MIME: ${mimeType}`);
 
       const formData = new FormData();
-      formData.append('file', new Blob([buffer]), filename);
+      formData.append('file', new Blob([buffer], { type: mimeType }), filename);
 
       const res = await fetch(url, {
         method: 'POST',
