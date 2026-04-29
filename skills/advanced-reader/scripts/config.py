@@ -1,7 +1,7 @@
 """视觉分析技能 - 配置文件"""
 import os
 
-API_KEY = "sk-ant-oat01-RGKn219y1sJbP6GTeSNfJjyXlbi3MLN12JsO1jAcmULXNufxOAVRseReNKCPWkbWQ8cYP_PZ4g5qFD72BqJD7GRpe1IPQAA"
+API_KEY = ""
 BASE_URL = "https://code.newcli.com/claude/ultra"
 MODEL = "claude-opus-4-6"
 
