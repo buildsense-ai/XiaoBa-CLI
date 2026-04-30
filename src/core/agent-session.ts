@@ -3,7 +3,7 @@ import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { SkillActivationSignal, SkillInvocationContext } from '../types/skill';
-import { ChannelCallbacks } from '../types/tool';
+import { ChannelCallbacks, ToolExecutionContext } from '../types/tool';
 import {
   buildSkillActivationSignal,
   upsertSkillSystemMessage,
@@ -51,6 +51,10 @@ export interface HandleMessageOptions {
   channel?: ChannelCallbacks;
   /** 当前 run 忙碌期间新到的用户消息，在 turn 边界合并进上下文。 */
   pendingUserInputProvider?: PendingUserInputProvider;
+  /** 平台层补充的工具上下文，例如当前模型是否能直接读图。 */
+  toolExecutionContext?: Partial<ToolExecutionContext>;
+  /** 禁用文本命中 skill 名称时的自动激活，让模型必须显式调用 skill 工具。 */
+  skipAutoSkillActivation?: boolean;
 }
 
 /** 命令处理结果 */
@@ -281,6 +285,8 @@ export class AgentSession {
       let callbacks: SessionCallbacks | undefined;
       let channel: ChannelCallbacks | undefined;
       let pendingUserInputProvider: PendingUserInputProvider | undefined;
+      let extraToolExecutionContext: Partial<ToolExecutionContext> | undefined;
+      let skipAutoSkillActivation = false;
 
       if (callbacksOrOptions) {
         if ('channel' in callbacksOrOptions || 'callbacks' in callbacksOrOptions) {
@@ -289,6 +295,8 @@ export class AgentSession {
           callbacks = opts.callbacks;
           channel = opts.channel;
           pendingUserInputProvider = opts.pendingUserInputProvider;
+          extraToolExecutionContext = opts.toolExecutionContext;
+          skipAutoSkillActivation = opts.skipAutoSkillActivation === true;
         } else {
           // 旧签名 SessionCallbacks
           callbacks = callbacksOrOptions as SessionCallbacks;
@@ -322,12 +330,12 @@ export class AgentSession {
         await this.init();
         await this.services.skillManager.loadSkills();
 
-        this.tryAutoActivateAttachmentSkill(text);
-
         const textContent = typeof text === 'string'
           ? text
           : this.extractTextFromContentBlocks(text);
-        this.tryAutoActivateSkill(textContent);
+        if (!skipAutoSkillActivation) {
+          this.tryAutoActivateSkill(textContent);
+        }
         this.messages.push({ role: 'user', content: text });
 
 
@@ -390,6 +398,7 @@ export class AgentSession {
             shouldContinue: () => !this.interruptRequested,
             pendingUserInputProvider,
             toolExecutionContext: {
+              ...(extraToolExecutionContext || {}),
               sessionId: this.key,
               surface,
               permissionProfile: 'strict',

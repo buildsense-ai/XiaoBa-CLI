@@ -12,12 +12,12 @@ import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { ChannelCallbacks } from '../types/tool';
 import { randomUUID } from 'crypto';
-import * as fs from 'fs/promises';
 
 interface PendingAttachment {
   fileName: string;
   localPath: string;
   type: 'file' | 'image';
+  senderId: string;
   receivedAt: number;
 }
 
@@ -32,6 +32,8 @@ interface PendingAnswer {
 
 interface QueuedMessage {
   userMessage: string | ContentBlock[];
+  currentUserText: string;
+  currentTurnAttachments: PendingAttachment[];
   topic: string;
   senderId: string;
   seq: number;
@@ -46,17 +48,7 @@ interface PendingTextMerge {
 
 const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 const TEXT_ATTACHMENT_MERGE_WINDOW_MS = 1200;
-const READER_ANALYZE_TIMEOUT_MS = 60_000;
-const STRICT_IMAGE_READER_PROMPT = [
-  'Read this image conservatively and do not guess.',
-  'Only report text or structure that is directly visible.',
-  'If any text is blurry, cropped, tiny, or uncertain, write [unclear] instead of inferring.',
-  'Preserve the original visible language.',
-  'Do not infer the document type, app name, business meaning, or context unless the exact words are visible.',
-  'Output in three sections: Visible text, Layout/structure, and Only clearly visible colors/icons.',
-  'Do not add conclusions, diagnosis, or background knowledge.',
-  'Primary task: extract all visible text from this image in reading order as much as possible.',
-].join(' ');
+const PENDING_ATTACHMENT_TTL_MS = 5000;
 
 /**
  * CatsCompanyBot 主类
@@ -69,8 +61,6 @@ export class CatsCompanyBot {
   private sender: MessageSender;
   private sessionManager: MessageSessionManager;
   private agentServices: AgentServices;
-  private readonly readerProxyBaseUrl: string;
-  private readonly readerProxyApiKey: string;
   /** key = pendingAnswerId */
   private pendingAnswers = new Map<string, PendingAnswer>();
   /** key = sessionKey, value = pendingAnswerId */
@@ -84,8 +74,8 @@ export class CatsCompanyBot {
   private botUid: string | null = null;
 
   constructor(config: CatsCompanyConfig) {
-    this.readerProxyBaseUrl = (config.httpBaseUrl || 'https://app.catsco.cc').replace(/\/$/, '');
-    this.readerProxyApiKey = config.apiKey;
+    process.env.CATSCOMPANY_HTTP_BASE_URL ||= (config.httpBaseUrl || 'https://app.catsco.cc').replace(/\/$/, '');
+    process.env.CATSCOMPANY_API_KEY ||= config.apiKey;
     this.bot = new CatsClient({
       serverUrl: config.serverUrl,
       apiKey: config.apiKey,
@@ -260,6 +250,7 @@ export class CatsCompanyBot {
     Logger.info(`[${key}] 收到消息: ${msg.text.slice(0, 50)}...`);
 
     let userMessage: string | import('../types').ContentBlock[] = msg.text;
+    let currentTurnAttachments: PendingAttachment[] = [];
 
     if (msg.file) {
       const localPath = await this.sender.downloadFile(msg.file.url, msg.file.fileName);
@@ -276,31 +267,38 @@ export class CatsCompanyBot {
         fileName: msg.file.fileName,
         localPath,
         type: msg.file.type,
+        senderId: msg.senderId,
         receivedAt: Date.now(),
       });
       if (this.hasPendingTextMerge(key, msg.senderId)) {
         Logger.info(`[${key}] 附件已缓存，等待与刚到的文本合并`);
         return;
       }
-      const queuedAttachments = this.consumePendingAttachments(key);
-      userMessage = await this.buildMultimodalMessage(
-        msg.text,
-        queuedAttachments,
-        session.getRecentTextContext(),
-      );
-      Logger.info(`[${key}] 附件消息（attachments=${queuedAttachments.length})`);
+      if (await this.waitForTextToConsumeAttachment(key, msg.senderId, localPath)) {
+        Logger.info(`[${key}] 附件已被后续文本合并处理: ${msg.file.fileName}`);
+        return;
+      }
+      const queuedAttachments = this.consumePendingAttachments(key, {
+        senderId: msg.senderId,
+        since: Date.now() - PENDING_ATTACHMENT_TTL_MS,
+      });
+      const selectedAttachments = this.selectCurrentTurnAttachments(msg.text, queuedAttachments, key);
+      currentTurnAttachments = selectedAttachments;
+      userMessage = await this.buildMultimodalMessage(msg.text, selectedAttachments);
+      Logger.info(`[${key}] 附件消息（attachments=${selectedAttachments.length})`);
     } else {
-      let queuedAttachments = this.consumePendingAttachments(key);
+      let queuedAttachments = this.consumePendingAttachments(key, {
+        senderId: msg.senderId,
+        since: Date.now() - TEXT_ATTACHMENT_MERGE_WINDOW_MS,
+      });
       if (queuedAttachments.length === 0 && this.shouldWaitForTrailingAttachment(msg.text)) {
         queuedAttachments = await this.waitForTrailingAttachments(key, msg.senderId, msg.text);
       }
       if (queuedAttachments.length > 0) {
-        userMessage = await this.buildMultimodalMessage(
-          msg.text,
-          queuedAttachments,
-          session.getRecentTextContext(),
-        );
-        Logger.info(`[${key}] 追加 ${queuedAttachments.length} 个附件`);
+        const selectedAttachments = this.selectCurrentTurnAttachments(msg.text, queuedAttachments, key);
+        currentTurnAttachments = selectedAttachments;
+        userMessage = await this.buildMultimodalMessage(msg.text, selectedAttachments);
+        Logger.info(`[${key}] 追加 ${selectedAttachments.length} 个附件`);
       }
     }
 
@@ -309,6 +307,8 @@ export class CatsCompanyBot {
       const queue = this.messageQueue.get(key) ?? [];
       queue.push({
         userMessage,
+        currentUserText: msg.text,
+        currentTurnAttachments,
         topic: msg.topic,
         senderId: msg.senderId,
         seq: msg.seq,
@@ -332,6 +332,12 @@ export class CatsCompanyBot {
       const result = await session.handleMessage(userMessage, {
         channel,
         pendingUserInputProvider: () => this.consumeQueuedUserInput(key),
+        skipAutoSkillActivation: currentTurnAttachments.length > 0,
+        toolExecutionContext: {
+          supportsDirectImageInput: this.agentServices.aiService.supportsDirectImageInput(),
+          currentUserText: msg.text,
+          currentTurnAttachments,
+        },
         callbacks: {
           onRetry: async (attempt, maxRetries) => {
             try {
@@ -546,6 +552,12 @@ export class CatsCompanyBot {
       const result = await session.handleMessage(msg.userMessage, {
         channel,
         pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey),
+        skipAutoSkillActivation: msg.currentTurnAttachments.length > 0,
+        toolExecutionContext: {
+          supportsDirectImageInput: this.agentServices.aiService.supportsDirectImageInput(),
+          currentUserText: msg.currentUserText,
+          currentTurnAttachments: msg.currentTurnAttachments,
+        },
       });
       if (result.text !== BUSY_MESSAGE && result.visibleToUser && result.text) {
         try {
@@ -633,22 +645,74 @@ export class CatsCompanyBot {
   }
 
   private enqueuePendingAttachment(sessionKey: string, attachment: PendingAttachment): number {
-    const queue = this.pendingAttachments.get(sessionKey) ?? [];
+    const queue = this.prunePendingAttachments(sessionKey);
     queue.push(attachment);
     const trimmed = queue.slice(-5);
     this.pendingAttachments.set(sessionKey, trimmed);
     return trimmed.length;
   }
 
-  private consumePendingAttachments(sessionKey: string): PendingAttachment[] {
+  private consumePendingAttachments(
+    sessionKey: string,
+    opts: {
+      senderId?: string;
+      since?: number;
+    } = {},
+  ): PendingAttachment[] {
+    const queue = this.prunePendingAttachments(sessionKey);
+    const matched: PendingAttachment[] = [];
+    const remaining: PendingAttachment[] = [];
+
+    for (const attachment of queue) {
+      const sameSender = !opts.senderId || attachment.senderId === opts.senderId;
+      const recentEnough = !opts.since || attachment.receivedAt >= opts.since;
+
+      if (sameSender && recentEnough) {
+        matched.push(attachment);
+      } else {
+        remaining.push(attachment);
+      }
+    }
+
+    if (remaining.length > 0) {
+      this.pendingAttachments.set(sessionKey, remaining);
+    } else {
+      this.pendingAttachments.delete(sessionKey);
+    }
+
+    return matched;
+  }
+
+  private prunePendingAttachments(sessionKey: string): PendingAttachment[] {
+    const now = Date.now();
     const queue = this.pendingAttachments.get(sessionKey) ?? [];
-    this.pendingAttachments.delete(sessionKey);
-    return queue;
+    const fresh = queue.filter(attachment => now - attachment.receivedAt <= PENDING_ATTACHMENT_TTL_MS);
+
+    if (fresh.length > 0) {
+      this.pendingAttachments.set(sessionKey, fresh);
+    } else {
+      this.pendingAttachments.delete(sessionKey);
+    }
+
+    return fresh;
   }
 
   private hasPendingTextMerge(sessionKey: string, senderId: string): boolean {
     const pending = this.pendingTextMerges.get(sessionKey);
     return Boolean(pending && pending.senderId === senderId);
+  }
+
+  private async waitForTextToConsumeAttachment(
+    sessionKey: string,
+    senderId: string,
+    localPath: string,
+  ): Promise<boolean> {
+    await new Promise(resolve => setTimeout(resolve, TEXT_ATTACHMENT_MERGE_WINDOW_MS));
+
+    const queue = this.prunePendingAttachments(sessionKey);
+    return !queue.some(attachment => {
+      return attachment.senderId === senderId && attachment.localPath === localPath;
+    });
   }
 
   private async waitForTrailingAttachments(
@@ -670,7 +734,10 @@ export class CatsCompanyBot {
       this.pendingTextMerges.delete(sessionKey);
     }
 
-    return this.consumePendingAttachments(sessionKey);
+    return this.consumePendingAttachments(sessionKey, {
+      senderId,
+      since: Date.now() - TEXT_ATTACHMENT_MERGE_WINDOW_MS,
+    });
   }
 
   private shouldWaitForTrailingAttachment(text: string): boolean {
@@ -686,7 +753,6 @@ export class CatsCompanyBot {
   private async buildMultimodalMessage(
     text: string,
     attachments: PendingAttachment[],
-    sessionContext = '',
   ): Promise<import('../types').ContentBlock[]> {
     const canModelReadImagesDirectly = this.agentServices.aiService.supportsDirectImageInput();
     const blocks: import('../types').ContentBlock[] = [];
@@ -716,13 +782,14 @@ export class CatsCompanyBot {
           Logger.warning(`[多模态] 图片块创建失败，回退到 reader: ${att.fileName} at ${att.localPath}`);
         }
 
-        const fallbackBlock = await this.buildReaderFallbackBlock(att, text, sessionContext);
-        blocks.push(fallbackBlock);
-        if (fallbackBlock.text.startsWith('[Reader result')) {
-          Logger.info(`[多模态] 已注入 reader 结果: ${att.fileName} (${fallbackBlock.text.length} chars)`);
-        } else {
-          Logger.warning(`[多模态] reader 结果缺失，已禁止主模型猜图: ${att.fileName}`);
-        }
+        blocks.push({
+          type: 'text',
+          text: [
+            `[图片] ${att.fileName}`,
+            `[路径] ${att.localPath}`,
+            '[读取要求] 当前主模型不能直接可靠读取图片。请先调用 read_file 读取这个路径；如果 read_file 提示需要 reader skill，请按已激活的 vision-analysis/advanced-reader skill 调用 reader 后再回答。',
+          ].join('\n'),
+        });
       } else {
         blocks.push({ type: 'text', text: `[文件] ${att.fileName}\n[路径] ${att.localPath}` });
       }
@@ -730,118 +797,6 @@ export class CatsCompanyBot {
 
     Logger.info(`[多模态] 构建完成，共 ${blocks.length} 个块: ${blocks.map(b => b.type).join(', ')}`);
     return blocks;
-  }
-
-  private async buildReaderFallbackBlock(
-    attachment: PendingAttachment,
-    userText: string,
-    sessionContext: string,
-  ): Promise<{ type: 'text'; text: string }> {
-    const analysis = await this.readImageAttachment(attachment, userText, sessionContext);
-    if (analysis) {
-      return {
-        type: 'text',
-        text: [
-          `[Reader result for image: ${attachment.fileName}]`,
-          analysis,
-        ].join('\n'),
-      };
-    }
-
-    return {
-      type: 'text',
-      text: [
-        `[Reader unavailable for image: ${attachment.fileName}]`,
-        'The current model did not receive a reliable image parse result.',
-        'Do not guess the image content. Tell the user the image could not be read reliably right now.',
-      ].join('\n'),
-    };
-  }
-
-  private async readImageAttachment(
-    attachment: PendingAttachment,
-    userText: string,
-    sessionContext: string,
-  ): Promise<string | null> {
-    if (!this.readerProxyApiKey) {
-      Logger.warning(`[多模态] reader proxy API key missing, skip image pre-read: ${attachment.fileName}`);
-      return null;
-    }
-
-    try {
-      const fileBytes = await fs.readFile(attachment.localPath);
-      const formData = new FormData();
-      const contentType = this.guessContentType(attachment.fileName);
-      const fileBlob = new Blob([fileBytes], { type: contentType });
-      formData.append('prompt', this.buildReaderAnalyzePrompt(userText, sessionContext));
-      formData.append('file', fileBlob, attachment.fileName);
-
-      const response = await fetch(`${this.readerProxyBaseUrl}/api/reader/analyze`, {
-        method: 'POST',
-        headers: {
-          Authorization: `ApiKey ${this.readerProxyApiKey}`,
-        },
-        body: formData,
-        signal: AbortSignal.timeout(READER_ANALYZE_TIMEOUT_MS),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        Logger.warning(
-          `[多模态] reader proxy failed for ${attachment.fileName}: HTTP ${response.status} ${errorText}`,
-        );
-        return null;
-      }
-
-      const payload = await response.json() as { analysis?: unknown };
-      if (typeof payload.analysis === 'string' && payload.analysis.trim()) {
-        return payload.analysis.trim();
-      }
-
-      Logger.warning(`[多模态] reader proxy returned empty analysis for ${attachment.fileName}`);
-      return null;
-    } catch (error: any) {
-      Logger.warning(`[多模态] reader proxy request error for ${attachment.fileName}: ${error.message}`);
-      return null;
-    }
-  }
-
-  private buildReaderAnalyzePrompt(userText: string, sessionContext: string): string {
-    const trimmedText = (userText || '').trim();
-    const trimmedContext = (sessionContext || '').trim();
-    const contextRules = [
-      'Use the user text and session background only to decide what visible parts of the image deserve attention.',
-      'Do not invent image content from the background. If something is not visible in the image, say it is not visible.',
-      'Prefer the current turn image over any earlier image or attachment mentioned in the session.',
-    ];
-
-    return [
-      STRICT_IMAGE_READER_PROMPT,
-      '[CURRENT USER TEXT]',
-      trimmedText || '[none]',
-      '[RECENT SESSION BACKGROUND]',
-      trimmedContext || '[none]',
-      '[CONTEXT RULES]',
-      ...contextRules,
-    ].join('\n');
-  }
-
-  private guessContentType(fileName: string): string {
-    const normalized = fileName.toLowerCase();
-    if (normalized.endsWith('.png')) return 'image/png';
-    if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg')) return 'image/jpeg';
-    if (normalized.endsWith('.webp')) return 'image/webp';
-    if (normalized.endsWith('.gif')) return 'image/gif';
-    if (normalized.endsWith('.bmp')) return 'image/bmp';
-    if (normalized.endsWith('.svg')) return 'image/svg+xml';
-    return 'application/octet-stream';
-  }
-
-  private formatAttachmentSummary(attachments: PendingAttachment[]): string {
-    const lines = attachments.map((attachment, index) => {
-      return `[附件${index + 1}] ${attachment.fileName} (${attachment.type})`;
-    });
-    return `[用户本轮新上传的附件]\n${lines.join('\n')}`;
   }
 
   private formatAttachmentContext(attachments: PendingAttachment[]): string {
@@ -861,7 +816,7 @@ export class CatsCompanyBot {
     const trimmedText = (text || '').trim();
     const imageRoutingRule = canModelReadImagesDirectly
       ? 'The current primary model appears vision-capable, so image attachments from this turn may be read directly.'
-      : 'The current primary model does not appear vision-capable, so image attachments from this turn were pre-read by the reader service before reaching you.';
+      : 'The current primary model does not appear vision-capable. For image attachments from this turn, first call read_file on the exact current file path. If the answer depends on image pixels, decide as an agent to call the skill tool with vision-analysis or advanced-reader, then answer from that reader result.';
 
     return [
       '[CURRENT TURN HAS NEW ATTACHMENTS]',
@@ -870,12 +825,12 @@ export class CatsCompanyBot {
       'Do not continue, reuse, or paraphrase descriptions from earlier images, screenshots, or attachments unless the user explicitly asks for a comparison.',
       'If the user text is vague, such as "answer this", "look at this", or "what is in the image", treat it as referring to the attachments from this turn.',
       imageRoutingRule,
-      'If a reader result is present, prefer it over any visual guess. If the image is still uncertain, say so instead of inventing details.',
+      'Do not answer image-dependent questions from the file name alone.',
+      'Prefer the current turn attachment over any earlier image or attachment in the session.',
       trimmedText
         ? `[USER TEXT IN THIS TURN]\n${trimmedText}`
         : '[USER TEXT IN THIS TURN]\n[none]',
-      this.formatAttachmentSummary(attachments),
-      'Do not answer from the file name alone.',
+      this.formatAttachmentContext(attachments),
     ].join('\n');
   }
 
@@ -887,6 +842,37 @@ export class CatsCompanyBot {
       '如果任务不明确，先提出一个最小澄清问题；如果任务足够明确，再自行执行。',
       this.formatAttachmentContext(attachments),
     ].join('\n');
+  }
+
+  private selectCurrentTurnAttachments(
+    text: string,
+    attachments: PendingAttachment[],
+    sessionKey: string,
+  ): PendingAttachment[] {
+    const images = attachments.filter(attachment => attachment.type === 'image');
+    if (images.length <= 1 || this.hasMultiImageIntent(text)) {
+      return attachments;
+    }
+
+    const latestImage = images.reduce((latest, attachment) => {
+      return attachment.receivedAt > latest.receivedAt ? attachment : latest;
+    });
+    const selected = attachments.filter(attachment => attachment.type !== 'image' || attachment === latestImage);
+    const dropped = images
+      .filter(attachment => attachment !== latestImage)
+      .map(attachment => attachment.fileName)
+      .join(', ');
+
+    Logger.info(
+      `[${sessionKey}] 合并到多张图片，但用户未表达多图意图；仅保留最近图片: ${latestImage.fileName}` +
+      (dropped ? `，忽略: ${dropped}` : ''),
+    );
+    return selected;
+  }
+
+  private hasMultiImageIntent(text: string): boolean {
+    const input = (text || '').toLowerCase();
+    return /这些|所有|全部|多张|几张|两张|每张|每个|对比|比较|一起看|all|both|multiple|each|compare/.test(input);
   }
 
   private registerPendingAnswer(

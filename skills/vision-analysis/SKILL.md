@@ -74,4 +74,4 @@ python "<SKILL_DIR>/scripts/invoke_reader_api.py" "<file_path_or_url>" "<analysi
 skills/advanced-reader/scripts/invoke_reader_api.py
 ```
 
-这样图片入口和通用附件入口都保留，但 reader proxy 鉴权、上传和错误处理只维护一份。
+这样图片入口和共享 reader 实现都保留，但 reader proxy 鉴权、上传和错误处理只维护一份。

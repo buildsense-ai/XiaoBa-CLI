@@ -37,6 +37,21 @@ export class ShellTool implements Tool {
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { command, description, timeout = 30000 } = args;
 
+    const requiredReaderSkill = this.detectReaderSkillCommand(command);
+    if (requiredReaderSkill && context.activeSkillName !== requiredReaderSkill) {
+      return {
+        ok: false,
+        errorCode: 'SKILL_NOT_ACTIVATED',
+        retryable: false,
+        message: [
+          `Reader script "${requiredReaderSkill}" must be activated through the native skill tool before execute_shell can run it.`,
+          'Call the `skill` tool first, for example:',
+          JSON.stringify({ skill: requiredReaderSkill, args: '<current image path> <current user question>' }),
+          'After the skill tool returns that the skill is activated, retry the reader command from the activated skill context.',
+        ].join('\n'),
+      };
+    }
+
     const toolPermission = isToolAllowed(this.definition.name);
     if (!toolPermission.allowed) {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${toolPermission.reason}` };
@@ -63,7 +78,11 @@ export class ShellTool implements Tool {
     try {
       const { stdout, stderr } = await execAsync(command, {
         cwd: context.workingDirectory,
-        env: runtimeEnvironment.env,
+        env: {
+          ...runtimeEnvironment.env,
+          PYTHONIOENCODING: 'utf-8',
+          PYTHONUTF8: '1',
+        },
         encoding: 'utf-8',
         timeout: timeout,
         maxBuffer: 10 * 1024 * 1024, // 10MB
@@ -103,4 +122,18 @@ export class ShellTool implements Tool {
       return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `命令执行失败:\n$ ${command}\n\n执行时间: ${executionTime}ms\n错误信息:\n${errorOutput}` };
     }
   }
+
+  private detectReaderSkillCommand(command?: string): 'advanced-reader' | 'vision-analysis' | null {
+    if (!command) return null;
+
+    const normalized = command.replace(/\\/g, '/').toLowerCase();
+    if (normalized.includes('/skills/vision-analysis/scripts/invoke_reader_api.py')) {
+      return 'vision-analysis';
+    }
+    if (normalized.includes('/skills/advanced-reader/scripts/invoke_reader_api.py')) {
+      return 'advanced-reader';
+    }
+    return null;
+  }
+
 }
