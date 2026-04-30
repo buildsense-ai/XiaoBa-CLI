@@ -120,6 +120,13 @@ export interface ToolExecutionContext {
   runId?: string;
   abortSignal?: AbortSignal;
   activeSkillName?: string;
+  supportsDirectImageInput?: boolean;
+  currentUserText?: string;
+  currentTurnAttachments?: Array<{
+    fileName: string;
+    localPath: string;
+    type: 'file' | 'image';
+  }>;
   /** 平台通道回调（飞书/CatsCompany 等聊天会话时由平台层注入） */
   channel?: ChannelCallbacks;
 }

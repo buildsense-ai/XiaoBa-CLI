@@ -29,6 +29,10 @@ export class ReadTool implements Tool {
         pages: {
           type: 'string',
           description: 'PDF 文件的页码范围，如 "1-5" 或 "3"（仅适用于 PDF 文件）'
+        },
+        analysis_prompt: {
+          type: 'string',
+          description: '图片或附件读取时的用户问题/分析目标（可选）。如果不填，聊天平台会使用本轮用户文字。'
         }
       },
       required: ['file_path']
@@ -36,7 +40,7 @@ export class ReadTool implements Tool {
   };
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
-    const { file_path, offset = 0, limit, pages } = args;
+    const { file_path, offset = 0, limit, pages, analysis_prompt } = args;
 
     // 解析文件路径
     const absolutePath = path.isAbsolute(file_path)
@@ -61,6 +65,22 @@ export class ReadTool implements Tool {
       const content = this.readPDF(absolutePath, file_path, pages);
       return { ok: true, content };
     } else if (['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'].includes(ext)) {
+      const currentAttachmentCheck = this.checkCurrentTurnImageAttachment(absolutePath, context);
+      if (!currentAttachmentCheck.allowed) {
+        return { ok: true, content: currentAttachmentCheck.message };
+      }
+
+      if (context.supportsDirectImageInput === false) {
+        return {
+          ok: true,
+          content: this.buildImageReaderGuidance(
+            absolutePath,
+            file_path,
+            String(analysis_prompt || context.currentUserText || '').trim(),
+          ),
+        };
+      }
+
       const result = await this.readImage(absolutePath, file_path);
       // readImage 成功时会返回特殊对象表示图片消息
       if (result && typeof result === 'object' && '_imageForNewMessage' in result) {
@@ -166,6 +186,72 @@ export class ReadTool implements Tool {
     }
 
     return result;
+  }
+
+  private checkCurrentTurnImageAttachment(
+    absolutePath: string,
+    context: ToolExecutionContext,
+  ): { allowed: true } | { allowed: false; message: string } {
+    const currentImages = (context.currentTurnAttachments || [])
+      .filter(attachment => attachment.type === 'image');
+
+    if (currentImages.length === 0) {
+      return { allowed: true };
+    }
+
+    const normalizedTarget = this.normalizePath(absolutePath);
+    const matched = currentImages.some(attachment => {
+      return this.normalizePath(attachment.localPath) === normalizedTarget;
+    });
+
+    if (matched) {
+      return { allowed: true };
+    }
+
+    const candidates = currentImages
+      .map((attachment, index) => `${index + 1}. ${attachment.fileName}: ${attachment.localPath}`)
+      .join('\n');
+
+    return {
+      allowed: false,
+      message: [
+        'The requested image is not one of the images attached in the current user turn.',
+        'Do not analyze this file for the current question, because it may be an older image from conversation history.',
+        '',
+        'Use one of the current-turn image paths below instead:',
+        candidates,
+      ].join('\n'),
+    };
+  }
+
+  private normalizePath(filePath: string): string {
+    return path.resolve(filePath).replace(/\\/g, '/').toLowerCase();
+  }
+
+  private buildImageReaderGuidance(absolutePath: string, file_path: string, userPrompt: string): string {
+    const stats = fs.statSync(absolutePath);
+    const sizeKB = (stats.size / 1024).toFixed(2);
+
+    return [
+      `文件: ${file_path}`,
+      '类型: 图片文件',
+      `大小: ${sizeKB} KB`,
+      '',
+      'This is the image attached in the current user turn.',
+      userPrompt
+        ? `Current user text / analysis prompt: ${userPrompt}`
+        : 'Current user text / analysis prompt: [none]',
+      '',
+      'read_file can confirm the file and path, but it cannot decode image pixels for this non-vision primary model.',
+      'Do not guess from the file name, old images, or prior conversation context.',
+      'If the answer depends on this image, the next step MUST be a native tool call to the `skill` tool. Do not call any reader Python script directly from execute_shell.',
+      'Recommended tool call:',
+      JSON.stringify({
+        skill: 'vision-analysis',
+        args: `${absolutePath}${userPrompt ? ` ${userPrompt}` : ''}`,
+      }),
+      'After the skill is activated, follow that skill guidance to run the reader script and answer from the reader result plus the current user text.',
+    ].join('\n');
   }
 
 }

@@ -236,8 +236,12 @@ export class AIService {
     }
 
     const isOfficialOpenAI = apiUrl.includes('api.openai.com');
-    const isExplicitVisionModel = /(vision|multimodal|\bvl\b|-vl\b|vl-)/.test(model);
-    return isExplicitVisionModel || (isOfficialOpenAI && this.isLikelyVisionCapableOpenAIModel(model));
+    const isExplicitVisionModel = this.hasExplicitVisionMarker(model);
+    if (!isOfficialOpenAI) {
+      return isExplicitVisionModel;
+    }
+
+    return this.isLikelyVisionCapableOpenAIModel(model);
   }
 
   private isLikelyVisionCapableAnthropicModel(model: string): boolean {
@@ -246,6 +250,10 @@ export class AIService {
 
   private isLikelyVisionCapableOpenAIModel(model: string): boolean {
     return /(gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-4-vision|gpt-4v|o1|o3|o4|vision|multimodal|\bvl\b|-vl\b|vl-)/.test(model);
+  }
+
+  private hasExplicitVisionMarker(model: string): boolean {
+    return /(vision|multimodal|image|\bvl\b|-vl\b|vl-)/.test(model);
   }
 
   /**
