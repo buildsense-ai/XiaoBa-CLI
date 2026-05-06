@@ -1,6 +1,6 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { isToolAllowed, isBashCommandAllowed } from '../utils/safety';
@@ -34,17 +34,17 @@ export class ShellTool implements Tool {
     }
   };
 
-  async execute(args: any, context: ToolExecutionContext): Promise<string> {
+  async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { command, description, timeout = 30000 } = args;
 
     const toolPermission = isToolAllowed(this.definition.name);
     if (!toolPermission.allowed) {
-      return `执行被阻止: ${toolPermission.reason}`;
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${toolPermission.reason}` };
     }
 
     const commandPermission = isBashCommandAllowed(command);
     if (!commandPermission.allowed) {
-      return `执行被阻止: ${commandPermission.reason}`;
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${commandPermission.reason}` };
     }
 
     // 显示命令信息
@@ -92,7 +92,7 @@ export class ShellTool implements Tool {
         Logger.info(`    ... (还有 ${outputLines - 10} 行)`);
       }
 
-      return `命令执行成功:\n$ ${command}\n\n执行时间: ${executionTime}ms\n输出行数: ${outputLines}\n\n${output}`;
+      return { ok: true, content: `命令执行成功:\n$ ${command}\n\n执行时间: ${executionTime}ms\n输出行数: ${outputLines}\n\n${output}` };
     } catch (error: any) {
       const executionTime = Date.now() - startTime;
       const errorOutput = error.stderr || error.stdout || error.message;
@@ -100,7 +100,7 @@ export class ShellTool implements Tool {
       Logger.error(`✗ 命令执行失败 (耗时: ${executionTime}ms)`);
       Logger.error(`  错误: ${error.message}`);
 
-      return `命令执行失败:\n$ ${command}\n\n执行时间: ${executionTime}ms\n错误信息:\n${errorOutput}`;
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `命令执行失败:\n$ ${command}\n\n执行时间: ${executionTime}ms\n错误信息:\n${errorOutput}` };
     }
   }
 }

@@ -1,4 +1,4 @@
-import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
 
 export class ThinkingTool implements Tool {
@@ -41,16 +41,16 @@ export class ThinkingTool implements Tool {
     },
   };
 
-  async execute(args: any, context: ToolExecutionContext): Promise<string> {
+  async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { content } = args;
 
     if (!content || typeof content !== 'string') {
-      return '思考内容不能为空';
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: '思考内容不能为空' };
     }
 
     this.callCount++;
     Logger.info(`[thinking #${this.callCount}] ${content.slice(0, 200)}${content.length > 200 ? '...' : ''}`);
 
-    return `已思考 #${this.callCount} 次`;
+    return { ok: true, content: `已思考 #${this.callCount} 次` };
   }
 }

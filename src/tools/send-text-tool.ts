@@ -1,4 +1,4 @@
-import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 
 /**
  * send_text 工具
@@ -21,7 +21,7 @@ export class SendTextTool implements Tool {
     },
   };
 
-  async execute(args: { text: string }, context: ToolExecutionContext): Promise<string> {
+  async execute(args: { text: string }, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { text } = args;
 
     if (!context.channel) {
@@ -35,6 +35,6 @@ export class SendTextTool implements Tool {
     const chatId = context.channel.chatId;
     await context.channel.reply(chatId, text.trim());
 
-    return `已发送`;
+    return { ok: true, content: '已发送' };
   }
 }

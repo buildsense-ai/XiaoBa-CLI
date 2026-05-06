@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { glob } from 'glob';
 import { isReadPathAllowed } from '../utils/safety';
 
@@ -39,67 +39,63 @@ export class GlobTool implements Tool {
     }
   };
 
-  async execute(args: any, context: ToolExecutionContext): Promise<string> {
+  async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { pattern, path: searchPath, limit = 100 } = args;
     const startTime = Date.now();
 
-    try {
-      // 确定搜索目录
-      const cwd = searchPath
-        ? (path.isAbsolute(searchPath) ? searchPath : path.join(context.workingDirectory, searchPath))
-        : context.workingDirectory;
+    // 确定搜索目录
+    const cwd = searchPath
+      ? (path.isAbsolute(searchPath) ? searchPath : path.join(context.workingDirectory, searchPath))
+      : context.workingDirectory;
 
-      const pathPermission = isReadPathAllowed(cwd, context.workingDirectory);
-      if (!pathPermission.allowed) {
-        return JSON.stringify({ error: `执行被阻止: ${pathPermission.reason}` });
-      }
-
-      // 检查目录是否存在
-      if (!fs.existsSync(cwd)) {
-        return JSON.stringify({ error: `目录不存在: ${cwd}` });
-      }
-
-      // 执行 glob 搜索
-      const files = await glob(pattern, {
-        cwd,
-        absolute: false,
-        nodir: true,
-        dot: false,
-        ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**']
-      });
-
-      if (files.length === 0) {
-        return `未找到匹配的文件。\n模式: ${pattern}\n目录: ${searchPath || '.'}`;
-      }
-
-      // 使用Promise.allSettled容错处理stat（文件可能在glob后被删除）
-      const statsPromises = files.map(file => {
-        const fullPath = path.join(cwd, file);
-        return fs.promises.stat(fullPath)
-          .then(stats => ({ file, mtime: stats.mtime.getTime() }))
-          .catch(() => ({ file, mtime: 0 })); // 失败的文件排在最后
-      });
-
-      const filesWithStats = await Promise.all(statsPromises);
-
-      // 按修改时间降序排序（最新的在前）
-      filesWithStats.sort((a, b) => b.mtime - a.mtime);
-
-      // 应用限制
-      const truncated = files.length > limit;
-      const limitedFiles = filesWithStats.slice(0, limit);
-
-      const result: GlobResult = {
-        numFiles: limitedFiles.length,
-        filenames: limitedFiles.map(f => f.file),
-        truncated,
-        durationMs: Date.now() - startTime
-      };
-
-      return this.formatResult(result, pattern, searchPath);
-    } catch (error: any) {
-      return JSON.stringify({ error: `Glob 搜索失败: ${error.message}` });
+    const pathPermission = isReadPathAllowed(cwd, context.workingDirectory);
+    if (!pathPermission.allowed) {
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
     }
+
+    // 检查目录是否存在
+    if (!fs.existsSync(cwd)) {
+      return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `目录不存在: ${cwd}` };
+    }
+
+    // 执行 glob 搜索
+    const files = await glob(pattern, {
+      cwd,
+      absolute: false,
+      nodir: true,
+      dot: false,
+      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**']
+    });
+
+    if (files.length === 0) {
+      return { ok: true, content: `未找到匹配的文件。\n模式: ${pattern}\n目录: ${searchPath || '.'}` };
+    }
+
+    // 使用Promise.allSettled容错处理stat（文件可能在glob后被删除）
+    const statsPromises = files.map(file => {
+      const fullPath = path.join(cwd, file);
+      return fs.promises.stat(fullPath)
+        .then(stats => ({ file, mtime: stats.mtime.getTime() }))
+        .catch(() => ({ file, mtime: 0 })); // 失败的文件排在最后
+    });
+
+    const filesWithStats = await Promise.all(statsPromises);
+
+    // 按修改时间降序排序（最新的在前）
+    filesWithStats.sort((a, b) => b.mtime - a.mtime);
+
+    // 应用限制
+    const truncated = files.length > limit;
+    const limitedFiles = filesWithStats.slice(0, limit);
+
+    const result: GlobResult = {
+      numFiles: limitedFiles.length,
+      filenames: limitedFiles.map(f => f.file),
+      truncated,
+      durationMs: Date.now() - startTime
+    };
+
+    return { ok: true, content: this.formatResult(result, pattern, searchPath) };
   }
 
   private formatResult(

@@ -1,6 +1,6 @@
 {
   "name": "xiaoba-cli",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "description": "CatsCo - local agent runtime and dashboard",
   "main": "electron/main.js",
   "bin": {
@@ -26,7 +26,11 @@
     "report": "node dist/index.js chat --exec '/report'",
     "clean-logs": "node scripts/clean-logs.mjs",
     "prepare:runtime": "node scripts/prepare-runtime.mjs",
-    "prepare:runtime:refresh": "node scripts/prepare-runtime.mjs --refresh"
+    "prepare:runtime:refresh": "node scripts/prepare-runtime.mjs --refresh",
+    "electron:build:mac:x64": "npm run build && node scripts/prepare-runtime.mjs darwin x64 && electron-builder --config electron-builder.config.cjs --mac --x64 --publish never",
+    "electron:build:mac:arm64": "npm run build && node scripts/prepare-runtime.mjs darwin arm64 && electron-builder --config electron-builder.config.cjs --mac --arm64 --publish never",
+    "release:check": "node scripts/check-release-branding.mjs",
+    "version:sync": "node scripts/inject-version.js"
   },
   "keywords": [
     "cli",
@@ -101,11 +105,16 @@
       "dashboard/**/*",
       "prompts/**/*",
       "skills/agent-browser/**/*",
+      "skills/advanced-reader/**/*",
       "skills/_tool-skills/**/*",
       "skills/report/**/*",
       "skills/self-evolution/**/*",
       "skills/skill-publish/**/*",
+      "skills/vision-analysis/**/*",
       "skills/remember/**/*",
+      "!skills/**/*.pyo",
+      "!skills/**/*.pyc",
+      "!skills/**/__pycache__/**",
       "skills/README.md",
       "skill-registry.json",
       ".env.example",

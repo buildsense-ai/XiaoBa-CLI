@@ -4,9 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-const TSX_LOADER = require.resolve('tsx');
+const TSX_LOADER = pathToFileURL(require.resolve('tsx')).href;
 
 function runConfigProbe(homeDir: string, envFile: string, method: 'getConfig' | 'getConfigReadonly' = 'getConfig'): any {
   const output = execFileSync(
@@ -19,7 +20,8 @@ function runConfigProbe(homeDir: string, envFile: string, method: 'getConfig' | 
       `
         import fs from 'node:fs';
         import path from 'node:path';
-        import { ConfigManager } from ${JSON.stringify(path.join(PROJECT_ROOT, 'src/utils/config.ts'))};
+        const configModule = await import(${JSON.stringify(pathToFileURL(path.join(PROJECT_ROOT, 'src/utils/config.ts')).href)});
+        const { ConfigManager } = configModule.default ?? configModule;
         const config = ConfigManager.${method}();
         process.stdout.write(JSON.stringify({
           config,
@@ -32,6 +34,8 @@ function runConfigProbe(homeDir: string, envFile: string, method: 'getConfig' | 
       env: {
         ...process.env,
         HOME: homeDir,
+        USERPROFILE: homeDir,
+        XIAOBA_CONFIG_PATH: path.join(homeDir, '.xiaoba', 'config.json'),
         DOTENV_CONFIG_PATH: envFile,
       },
       encoding: 'utf8',
@@ -53,7 +57,8 @@ function runDashboardStatusProbe(homeDir: string, envFile: string): any {
         import fs from 'node:fs';
         import path from 'node:path';
         import express from 'express';
-        import { createApiRouter } from ${JSON.stringify(path.join(PROJECT_ROOT, 'src/dashboard/routes/api.ts'))};
+        const apiModule = await import(${JSON.stringify(pathToFileURL(path.join(PROJECT_ROOT, 'src/dashboard/routes/api.ts')).href)});
+        const { createApiRouter } = apiModule.default ?? apiModule;
 
         const app = express();
         app.use('/api', createApiRouter({ getAll: () => [] }));
@@ -75,6 +80,8 @@ function runDashboardStatusProbe(homeDir: string, envFile: string): any {
       env: {
         ...process.env,
         HOME: homeDir,
+        USERPROFILE: homeDir,
+        XIAOBA_CONFIG_PATH: path.join(homeDir, '.xiaoba', 'config.json'),
         DOTENV_CONFIG_PATH: envFile,
       },
       encoding: 'utf8',

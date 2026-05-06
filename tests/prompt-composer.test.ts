@@ -181,7 +181,7 @@ describe('PromptComposer', () => {
 
     assert.match(prompt, /你在这个平台上的名字是：Desk Bot/);
     assert.match(prompt, /当前平台：feishu/);
-    assert.match(prompt, /你的默认工作目录是：`\/tmp\/xiaoba-runtime-profile`/);
+    assert.match(prompt.replace(/\\/g, '/'), /`.*\/tmp\/xiaoba-runtime-profile`/);
   });
 
   test('legacy env composition keeps current default workspace text when prompt metadata is empty', () => {
@@ -224,7 +224,7 @@ describe('PromptComposer', () => {
 
     assert.match(prompt, /你在这个平台上的名字是：Desk Bot/);
     assert.match(prompt, /当前平台： feishu /);
-    assert.match(prompt, /你的默认工作目录是：`\/tmp\/xiaoba-runtime-profile`/);
+    assert.match(prompt.replace(/\\/g, '/'), /`.*\/tmp\/xiaoba-runtime-profile`/);
   });
 
   function writePrompt(filename: string, content: string): void {

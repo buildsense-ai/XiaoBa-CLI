@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as http from 'http';
 import * as https from 'https';
 import { glob } from 'glob';
-import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { getInspectorServerUrl } from '../utils/inspector-upload-config';
 
 export type InspectorAnalysisType = 'runtime' | 'skill' | 'auto';
@@ -69,9 +69,16 @@ export class SendToInspectorTool implements Tool {
     },
   };
 
-  async execute(args: any, context: ToolExecutionContext): Promise<string> {
-    const result = await this.executeWithResult(args, context);
-    return result.message;
+  async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
+    try {
+      const result = await this.executeWithResult(args, context);
+      if (!result.uploaded && !result.dryRun) {
+        return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: result.message };
+      }
+      return { ok: true, content: result.message };
+    } catch (error: any) {
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: error.message };
+    }
   }
 
   async executeWithResult(args: any, context: ToolExecutionContext): Promise<SendToInspectorExecutionResult> {

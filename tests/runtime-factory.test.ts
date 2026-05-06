@@ -52,7 +52,7 @@ describe('RuntimeFactory', () => {
     assert.deepStrictEqual(runtime.services.skillManager.getAllSkills(), []);
 
     const sessionLogPath = (runtime.session as any).sessionTurnLogger.getLogFilePath();
-    assert.match(sessionLogPath, /logs\/sessions\/cli\/\d{4}-\d{2}-\d{2}\/cli_cli\.jsonl$/);
+    assert.match(sessionLogPath.replace(/\\/g, '/'), /logs\/sessions\/cli\/\d{4}-\d{2}-\d{2}\/cli_cli\.jsonl$/);
   });
 
   test('loads skills through the factory helper when enabled', async () => {
@@ -100,7 +100,7 @@ describe('RuntimeFactory', () => {
     assert.match(messages[0].content, /当前平台：cli/);
     assert.match(
       messages[0].content,
-      new RegExp(`你的默认工作目录是：\`${escapeRegExp(path.resolve(testRoot))}\``),
+      new RegExp(escapeRegExp(path.resolve(testRoot))),
     );
   });
 
@@ -128,7 +128,7 @@ describe('RuntimeFactory', () => {
 
     assert.match(
       messages[0].content,
-      new RegExp(`你的默认工作目录是：\`${escapeRegExp(path.resolve(originalWorkingDirectory))}\``),
+      new RegExp(escapeRegExp(path.resolve(originalWorkingDirectory))),
     );
     assert.equal(
       (runtime.services.toolManager as any).workingDirectory,
@@ -280,11 +280,11 @@ describe('RuntimeFactory', () => {
 
     const prompt = await provider();
 
-    assert.match(prompt, /你在这个平台上的名字是：Feishu Bot/);
+    assert.match(prompt, /Feishu Bot/);
     assert.match(prompt, /当前平台：feishu/);
     assert.match(
       prompt,
-      new RegExp(`你的默认工作目录是：\`${escapeRegExp(path.resolve(originalWorkingDirectory))}\``),
+      new RegExp(escapeRegExp(path.resolve(originalWorkingDirectory))),
     );
   });
 

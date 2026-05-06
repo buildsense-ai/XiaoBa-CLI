@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { isReadPathAllowed } from '../utils/safety';
 import { createImageBlock } from '../utils/image-utils';
 
@@ -35,45 +35,53 @@ export class ReadTool implements Tool {
     }
   };
 
-  async execute(args: any, context: ToolExecutionContext): Promise<string | any> {
+  async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { file_path, offset = 0, limit, pages } = args;
 
-    try {
-      // 解析文件路径
-      const absolutePath = path.isAbsolute(file_path)
-        ? file_path
-        : path.join(context.workingDirectory, file_path);
+    // 解析文件路径
+    const absolutePath = path.isAbsolute(file_path)
+      ? file_path
+      : path.join(context.workingDirectory, file_path);
 
-      const pathPermission = isReadPathAllowed(absolutePath, context.workingDirectory);
-      if (!pathPermission.allowed) {
-        return `执行被阻止: ${pathPermission.reason}`;
+    const pathPermission = isReadPathAllowed(absolutePath, context.workingDirectory);
+    if (!pathPermission.allowed) {
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
+    }
+
+    // 检查文件是否存在
+    if (!fs.existsSync(absolutePath)) {
+      return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `错误：文件不存在: ${absolutePath}` };
+    }
+
+    // 获取文件扩展名
+    const ext = path.extname(absolutePath).toLowerCase();
+
+    // 根据文件类型选择处理方式
+    if (ext === '.pdf') {
+      const content = this.readPDF(absolutePath, file_path, pages);
+      return { ok: true, content };
+    } else if (['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'].includes(ext)) {
+      const result = await this.readImage(absolutePath, file_path);
+      // readImage 成功时会返回特殊对象表示图片消息
+      if (result && typeof result === 'object' && '_imageForNewMessage' in result) {
+        return {
+          ok: true,
+          content: result as unknown as string,
+          // tool-manager 特殊处理：通过 content 结构中的 _imageForNewMessage 触发额外消息
+        };
       }
-
-      // 检查文件是否存在
-      if (!fs.existsSync(absolutePath)) {
-        return `错误：文件不存在: ${absolutePath}`;
-      }
-
-      // 获取文件扩展名
-      const ext = path.extname(absolutePath).toLowerCase();
-
-      // 根据文件类型选择处理方式
-      if (ext === '.pdf') {
-        return await this.readPDF(absolutePath, file_path, pages);
-      } else if (['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'].includes(ext)) {
-        return await this.readImage(absolutePath, file_path);
-      } else if (ext === '.ipynb') {
-        return await this.readNotebook(absolutePath, file_path);
-      } else {
-        // 默认作为文本文件处理
-        return await this.readTextFile(absolutePath, file_path, offset, limit);
-      }
-    } catch (error: any) {
-      return `读取文件失败: ${error.message}`;
+      return { ok: true, content: result as string };
+    } else if (ext === '.ipynb') {
+      const content = await this.readNotebook(absolutePath, file_path);
+      return { ok: true, content };
+    } else {
+      // 默认作为文本文件处理
+      const content = this.readTextFile(absolutePath, file_path, offset, limit);
+      return { ok: true, content };
     }
   }
 
-  private async readTextFile(absolutePath: string, file_path: string, offset: number, limit?: number): Promise<string> {
+  private readTextFile(absolutePath: string, file_path: string, offset: number, limit?: number): string {
     const content = fs.readFileSync(absolutePath, 'utf-8');
     const lines = content.split('\n');
 
@@ -91,7 +99,7 @@ export class ReadTool implements Tool {
     return `文件: ${file_path}\n总行数: ${lines.length}\n显示: ${startLine + 1}-${Math.min(endLine, lines.length)}\n\n${formattedLines.join('\n')}`;
   }
 
-  private async readPDF(absolutePath: string, file_path: string, pages?: string): Promise<string> {
+  private readPDF(absolutePath: string, file_path: string, pages?: string): string {
     const stats = fs.statSync(absolutePath);
     const sizeMB = (stats.size / 1024 / 1024).toFixed(2);
 
@@ -124,7 +132,7 @@ export class ReadTool implements Tool {
     return `文件: ${file_path}\n类型: 图片文件\n大小: ${sizeKB} KB\n\n无法读取图片（格式不支持或文件损坏）`;
   }
 
-  private async readNotebook(absolutePath: string, file_path: string): Promise<string> {
+  private readNotebook(absolutePath: string, file_path: string): string {
     const content = fs.readFileSync(absolutePath, 'utf-8');
     const notebook = JSON.parse(content);
 

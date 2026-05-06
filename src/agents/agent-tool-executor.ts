@@ -1,4 +1,4 @@
-import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor } from '../types/tool';
+import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor, ToolExecutionResult } from '../types/tool';
 
 const TOOL_NAME_ALIASES: Record<string, string> = {
   Bash: 'execute_shell',
@@ -73,11 +73,23 @@ export class AgentToolExecutor implements ToolExecutor {
 
       const output = await tool.execute(args, context);
 
+      if (!output.ok) {
+        return {
+          tool_call_id: toolCall.id,
+          role: 'tool',
+          name: requestedName,
+          content: output.message,
+          ok: false,
+          errorCode: output.errorCode,
+          retryable: output.retryable,
+        };
+      }
+
       return {
         tool_call_id: toolCall.id,
         role: 'tool',
         name: requestedName,
-        content: output,
+        content: output.content,
         ok: true,
         controlSignal: tool.definition.controlMode,
       };

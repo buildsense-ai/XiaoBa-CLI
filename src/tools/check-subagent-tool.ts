@@ -1,4 +1,4 @@
-import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { SubAgentManager } from '../core/sub-agent-manager';
 
 /**
@@ -26,7 +26,7 @@ export class CheckSubagentTool implements Tool {
     },
   };
 
-  async execute(args: any, context: ToolExecutionContext): Promise<string> {
+  async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const manager = SubAgentManager.getInstance();
     const sessionKey = context.sessionId || 'unknown';
     const { subagent_id } = args || {};
@@ -35,19 +35,19 @@ export class CheckSubagentTool implements Tool {
     if (subagent_id) {
       const info = manager.getInfoForParent(sessionKey, subagent_id);
       if (!info) {
-        return `未找到子智能体 ${subagent_id}`;
+        return { ok: false, errorCode: 'TOOL_NOT_FOUND', message: `未找到子智能体 ${subagent_id}` };
       }
-      return this.formatInfo(info);
+      return { ok: true, content: this.formatInfo(info) };
     }
 
     // 列出当前会话所有子智能体
     const all = manager.listByParent(sessionKey);
     if (all.length === 0) {
-      return '当前没有后台运行的子任务。';
+      return { ok: true, content: '当前没有后台运行的子任务。' };
     }
 
     const lines = all.map(info => this.formatInfo(info));
-    return `当前会话共有 ${all.length} 个子任务：\n\n${lines.join('\n\n---\n\n')}`;
+    return { ok: true, content: `当前会话共有 ${all.length} 个子任务：\n\n${lines.join('\n\n---\n\n')}` };
   }
 
   private formatInfo(info: any): string {

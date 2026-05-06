@@ -8,6 +8,11 @@ __pycache__/
 skills/_crafted/
 skills/_learned/
 skills/bio-skills/
+skills/**/test_outputs/
+skills/**/.env
+skills/**/.env.*
+skills/**/config.local.*
+skills/**/secrets.*
 
 # 数据文件
 data/

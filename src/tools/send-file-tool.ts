@@ -1,4 +1,4 @@
-import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
 
 /**
@@ -35,30 +35,29 @@ export class SendFileTool implements Tool {
     },
   };
 
-  async execute(args: any, context: ToolExecutionContext): Promise<string> {
+  async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { file_path, file_name } = args;
     const channel = context.channel;
 
     if (!channel) {
-      return '当前不在聊天会话中，无法发送文件';
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: '当前不在聊天会话中，无法发送文件' };
     }
 
     if (!file_path || typeof file_path !== 'string') {
-      return '文件路径不能为空';
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: '文件路径不能为空' };
     }
 
     if (!file_name || typeof file_name !== 'string') {
-      return '文件名不能为空';
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: '文件名不能为空' };
     }
 
     try {
       await channel.sendFile(channel.chatId, file_path, file_name);
       Logger.info(`[send_file] 已发送: ${file_name}`);
-      return `文件 "${file_name}" 已发送`;
-    } catch (err: any) {
-      const errorMsg = `文件发送失败: ${err.message}`;
-      Logger.error(`[send_file] ${errorMsg}`);
-      return errorMsg;
+      return { ok: true, content: `文件 "${file_name}" 已发送` };
+    } catch (error: any) {
+      Logger.error(`文件发送失败 (sendFile): ${error.message}`);
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `文件发送失败: ${error.message}` };
     }
   }
 }

@@ -43,9 +43,11 @@ describe('prompt copy regression', () => {
         sessionId: 'cli',
       });
 
-      assert.doesNotMatch(result, /reply 工具/);
-      assert.doesNotMatch(result, /用 reply/);
-      assert.doesNotMatch(result, /reply 和 send_file/);
+      assert.equal(result.ok, true);
+      const content = result.ok ? result.content : result.message;
+      assert.doesNotMatch(content, /reply 工具/);
+      assert.doesNotMatch(content, /用 reply/);
+      assert.doesNotMatch(content, /reply 和 send_file/);
     } finally {
       (SubAgentManager as any).getInstance = originalGetInstance;
     }
