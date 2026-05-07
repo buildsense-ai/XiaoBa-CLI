@@ -100,7 +100,8 @@ describe('ToolManager - ToolExecutionResult 统一处理', () => {
 
       assert.strictEqual(result.ok, true);
       assert.ok(String(result.content).includes('当前主模型不能直接读取图片内容'));
-      assert.ok(String(result.content).includes('Cats reader proxy'));
+      assert.ok(String(result.content).includes('读图服务配置缺失'));
+      assert.ok(String(result.content).includes('排查信息'));
       assert.strictEqual(result.errorCode, undefined);
     } finally {
       if (previousConfigPath === undefined) delete process.env.XIAOBA_CONFIG_PATH;

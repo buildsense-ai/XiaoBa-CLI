@@ -5,7 +5,7 @@ import { isReadPathAllowed } from '../utils/safety';
 import { createImageBlock } from '../utils/image-utils';
 import { ConfigManager } from '../utils/config';
 import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
-import { analyzeImageWithReaderProxy } from '../utils/reader-proxy';
+import { analyzeImageWithReaderProxy, ReaderProxyResult } from '../utils/reader-proxy';
 
 /**
  * Read tool - reads local files and returns content to the model.
@@ -163,6 +163,57 @@ export class ReadTool implements Tool {
     return [`文件: ${filePath}`, '类型: 图片文件', `大小: ${sizeKB} KB`].join('\n');
   }
 
+  private formatReaderProxyFailure(proxyResult: ReaderProxyResult, visionCapable: boolean): string {
+    const status = proxyResult.status;
+    const attempts = proxyResult.attempts && proxyResult.attempts > 1
+      ? `已自动重试 ${proxyResult.attempts} 次。`
+      : '';
+    const rawError = String(proxyResult.error || 'unknown error').trim();
+    const shortError = rawError.length > 500 ? `${rawError.slice(0, 500)}...` : rawError;
+
+    let title = '读图失败：读图服务暂时没有返回可用结果。';
+    let action = '可以稍后重试，或先把图片里的关键文字/区域用文字补充一下。';
+
+    if (/requires CATSCOMPANY_API_KEY|READER_PROXY_API_KEY|apiKey/i.test(rawError)) {
+      title = '读图失败：读图服务配置缺失。';
+      action = '请检查 CatsCo API Key / Reader Proxy API Key 是否已配置到 XiaoBa。';
+    } else if (status === 400) {
+      title = '读图失败：图片请求格式不被服务接受。';
+      action = '请确认上传的是常见图片格式（png/jpg/jpeg/webp/gif/bmp），必要时重新截图后再发。';
+    } else if (status === 401 || status === 403) {
+      title = '读图失败：读图服务鉴权失败。';
+      action = '请检查 CatsCo API Key 是否正确、是否仍然有效，以及当前机器人是否有权限调用读图服务。';
+    } else if (status === 404) {
+      title = '读图失败：读图服务地址不正确。';
+      action = '请检查 Reader Proxy URL / CatsCo HTTP Base URL 是否指向正确服务。';
+    } else if (status === 413) {
+      title = '读图失败：图片太大，服务拒绝处理。';
+      action = '请压缩图片、裁剪重点区域，或改发更小的截图。';
+    } else if (status === 415) {
+      title = '读图失败：图片格式暂不支持。';
+      action = '请转成 png 或 jpg 后重试。';
+    } else if (status === 429) {
+      title = '读图失败：读图服务正在忙。';
+      action = '当前同一客户端并发读图太多，请等上一张图片处理完后再试。';
+    } else if (status === 502 || status === 503 || status === 504) {
+      title = '读图失败：读图服务临时不可用。';
+      action = '可能是服务重启、上游模型繁忙或网关超时，请稍后重试。';
+    } else if (/timeout|ECONNRESET|ECONNABORTED|EAI_AGAIN|ENOTFOUND|network|socket/i.test(rawError)) {
+      title = '读图失败：XiaoBa 连接读图服务失败。';
+      action = '请检查本机网络、代理、DNS，或 CatsCo 服务是否能访问。';
+    }
+
+    return [
+      visionCapable
+        ? '主模型图片块生成失败，XiaoBa 已尝试改用 CatsCo 读图服务。'
+        : '当前主模型不能直接读取图片内容，XiaoBa 已尝试调用 CatsCo 读图服务。',
+      title,
+      action,
+      attempts,
+      `排查信息: ${status ? `HTTP ${status}; ` : ''}${shortError}`,
+    ].filter(Boolean).join('\n');
+  }
+
   private async readImage(
     absolutePath: string,
     filePath: string,
@@ -204,11 +255,7 @@ export class ReadTool implements Tool {
     return [
       this.formatImageMetadata(absolutePath, filePath),
       '',
-      visionCapable
-        ? '无法生成图片输入，也无法调用 Cats reader proxy 完成解析。'
-        : '当前主模型不能直接读取图片内容，且 Cats reader proxy 调用失败。',
-      `失败原因: ${proxyResult.error || 'unknown error'}`,
-      '请检查 CatsCo API Key / Reader Proxy 配置或网络后重试。',
+      this.formatReaderProxyFailure(proxyResult, visionCapable),
     ].join('\n');
   }
 
