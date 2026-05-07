@@ -59,6 +59,8 @@ export class GlobTool implements Tool {
     }
 
     // 执行 glob 搜索
+    const shouldReturnAbsolutePaths = Boolean(searchPath && path.isAbsolute(searchPath));
+
     const files = await glob(pattern, {
       cwd,
       absolute: false,
@@ -90,7 +92,7 @@ export class GlobTool implements Tool {
 
     const result: GlobResult = {
       numFiles: limitedFiles.length,
-      filenames: limitedFiles.map(f => f.file),
+      filenames: limitedFiles.map(f => shouldReturnAbsolutePaths ? path.join(cwd, f.file) : f.file),
       truncated,
       durationMs: Date.now() - startTime
     };

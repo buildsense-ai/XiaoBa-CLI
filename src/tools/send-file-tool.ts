@@ -10,14 +10,15 @@ import { Logger } from '../utils/logger';
 export class SendFileTool implements Tool {
   definition: ToolDefinition = {
     name: 'send_file',
-    description: `发送文件给用户（用于详细报告、长分析）。
+    description: `Send a local file to the current chat.
 
-使用场景：
-- 内容超过 1000 字的详细报告或分析
-- 包含大量数据、代码、详细说明
-- 发送文件后，最终回复里简短说明"详情看文件"即可
+Use this only when file_path points to a real local file that should be sent to the user.
 
-避免在聊天中发送大段文字，改用文件。`,
+CatsCo file selection rules:
+- tmp/downloads/... is the local cache for files/images received from chat. Do not use it when the user asks for a new/local file or a file they have not sent before.
+- If the user did not provide an exact local path, ask for the path or search likely local folders first.
+- Only resend tmp/downloads/... files when the user explicitly asks to resend/open an earlier chat attachment.
+- After sending a file, keep the final reply short.`,
     transcriptMode: 'outbound_file',
     parameters: {
       type: 'object',

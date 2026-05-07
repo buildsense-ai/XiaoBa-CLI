@@ -302,6 +302,7 @@ export class ConversationRunner {
         const toolName = toolCall.function.name;
         const toolUseId = toolCall.id;
         const toolInput = JSON.parse(toolCall.function.arguments);
+        const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
         callbacks?.onToolStart?.(toolName, toolUseId, toolInput);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
         const activeToolNames = allTools.map(tool => tool.name);
@@ -323,7 +324,6 @@ export class ConversationRunner {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
         callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
 
-        const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
         if (
           (transcriptMode === 'outbound_message' || transcriptMode === 'outbound_file')
           && result.ok
@@ -522,7 +522,15 @@ export class ConversationRunner {
         messages.push({
           role: 'tool',
           content: [
-            { type: 'text', text: `已读取图片: ${imageData.filePath}` },
+            {
+              type: 'text',
+              text: [
+                `Image file read: ${imageData.filePath}`,
+                'Use only the image attached in this same tool result.',
+                'Do not describe old images, file names, or prior conversation context.',
+                'If visual details are unclear, say you are not sure.',
+              ].join('\n'),
+            },
             imageData.imageBlock,
           ],
           tool_call_id: record.result.tool_call_id,

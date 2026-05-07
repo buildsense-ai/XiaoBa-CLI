@@ -6,7 +6,8 @@ const DASHBOARD_PORT = 3800;
 let mainWindow = null;
 let tray = null;
 let autoUpdater = null;
-const REFRESHABLE_BUNDLED_SKILLS = new Set(['advanced-reader', 'vision-analysis']);
+const REFRESHABLE_BUNDLED_SKILLS = new Set([]);
+const RETIRED_BUNDLED_SKILLS = new Set(['advanced-reader', 'vision-analysis']);
 const SKILL_SYNC_MARKER = '.xiaoba-bundled-skill.json';
 
 // 闂佽绻愮换鎴犳崲閸℃稒鍎婃い鏍仜缁€澶愭煟濡厧鍔嬬紒?electron-updater闂備焦瀵х粙鎴︽偋閸℃哎浜归柡灞诲劜閻掕顭块懜鐢点€掔紒鈧?
@@ -287,6 +288,23 @@ function shouldRefreshBundledSkill(fs, skillName, dest) {
   return readBundledSkillSyncVersion(fs, dest) !== app.getVersion();
 }
 
+function removeRetiredBundledSkills(fs, skillsPath) {
+  for (const skillName of RETIRED_BUNDLED_SKILLS) {
+    const skillPath = path.join(skillsPath, skillName);
+    const skillMdPath = path.join(skillPath, 'SKILL.md');
+    if (!fs.existsSync(skillMdPath)) continue;
+
+    try {
+      const skillMd = fs.readFileSync(skillMdPath, 'utf8');
+      if (skillMd.includes(`name: ${skillName}`)) {
+        fs.rmSync(skillPath, { recursive: true, force: true });
+      }
+    } catch (error) {
+      console.warn(`Failed to remove retired bundled skill ${skillName}:`, error);
+    }
+  }
+}
+
 function syncBundledSkillDir(fs, skillName, src, dest, overwrite = false) {
   if (overwrite && fs.existsSync(dest)) {
     fs.rmSync(dest, { recursive: true, force: true });
@@ -322,6 +340,7 @@ async function startServer() {
 
   if (fs.existsSync(bundledSkills)) {
     fs.mkdirSync(skillsPath, { recursive: true });
+    removeRetiredBundledSkills(fs, skillsPath);
 
     // 濠电姰鍨煎▔娑氱矓閹绢喖鏄ユ俊銈傚亾鐞氭瑩鐓崶褔鍙勯柛銈咁儔閺屾盯骞囬浣告闂?skill闂備焦瀵х粙鎴︽偋閸涱垳绠斿璺烘湰閸熸椽鏌涢埄鍐噭缁剧偓澹嗛埀顒傛嚀閹猜ゃ亹閸愵喗鍋ら柕濞炬櫅閹瑰爼鏌曟繛褍瀚弳鐘绘⒑?
     const bundledSkillDirs = fs.readdirSync(bundledSkills, { withFileTypes: true })

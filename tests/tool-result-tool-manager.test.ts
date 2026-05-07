@@ -65,6 +65,55 @@ describe('ToolManager - ToolExecutionResult 统一处理', () => {
     assert.strictEqual(result.errorCode, undefined);
   });
 
+  test('glob returns absolute filenames when searching an absolute path', async () => {
+    const filePath = path.join(testRoot, 'absolute-result.txt');
+    fs.writeFileSync(filePath, '');
+
+    const result = await manager.executeTool(
+      { id: 't4_abs', type: 'function', function: { name: 'glob', arguments: JSON.stringify({ pattern: '*.txt', path: testRoot }) } },
+      [],
+    );
+
+    assert.strictEqual(result.ok, true);
+    assert.ok(String(result.content).includes(filePath));
+    assert.strictEqual(result.errorCode, undefined);
+  });
+
+  test('read_file uses reader proxy path for images when primary model is text-only', async () => {
+    const previousConfigPath = process.env.XIAOBA_CONFIG_PATH;
+    const previousModel = process.env.GAUZ_LLM_MODEL;
+    const previousApiKey = process.env.CATSCOMPANY_API_KEY;
+    const previousReaderApiKey = process.env.READER_PROXY_API_KEY;
+    process.env.XIAOBA_CONFIG_PATH = path.join(testRoot, 'missing-config.json');
+    process.env.GAUZ_LLM_MODEL = 'gpt-3.5-turbo';
+    delete process.env.CATSCOMPANY_API_KEY;
+    delete process.env.READER_PROXY_API_KEY;
+
+    try {
+      const filePath = path.join(testRoot, 'image.png');
+      fs.writeFileSync(filePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+      const result = await manager.executeTool(
+        { id: 't2_img', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ file_path: filePath }) } },
+        [{ role: 'user', content: '帮我看看图里有什么' }],
+      );
+
+      assert.strictEqual(result.ok, true);
+      assert.ok(String(result.content).includes('当前主模型不能直接读取图片内容'));
+      assert.ok(String(result.content).includes('Cats reader proxy'));
+      assert.strictEqual(result.errorCode, undefined);
+    } finally {
+      if (previousConfigPath === undefined) delete process.env.XIAOBA_CONFIG_PATH;
+      else process.env.XIAOBA_CONFIG_PATH = previousConfigPath;
+      if (previousModel === undefined) delete process.env.GAUZ_LLM_MODEL;
+      else process.env.GAUZ_LLM_MODEL = previousModel;
+      if (previousApiKey === undefined) delete process.env.CATSCOMPANY_API_KEY;
+      else process.env.CATSCOMPANY_API_KEY = previousApiKey;
+      if (previousReaderApiKey === undefined) delete process.env.READER_PROXY_API_KEY;
+      else process.env.READER_PROXY_API_KEY = previousReaderApiKey;
+    }
+  });
+
   test('grep 成功返回 ok=true', async () => {
     const filePath = path.join(testRoot, 'grep_ok.txt');
     fs.writeFileSync(filePath, 'match line here');

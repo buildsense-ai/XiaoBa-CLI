@@ -18,6 +18,14 @@ describe('surface prompt', () => {
     '- 只在最终准备回答用户时才输出文本',
   ].join('\n');
 
+  const catscoFileSelectionInstruction = [
+    '[CatsCo file selection rules]',
+    '- tmp/downloads/... is the local cache for files/images received from chat. It is not the user\'s general local file library.',
+    '- If the user asks for a new/local file or says they have not sent it before, do not reuse files from tmp/downloads/... or old conversation paths.',
+    '- If the user did not provide an exact path, first ask for the location or search likely local folders such as Desktop, Downloads, Documents, Pictures, or an explicit path the user mentioned.',
+    '- Only reuse tmp/downloads/... when the user clearly asks to resend/open an earlier chat attachment.',
+  ].join('\n');
+
   test('resolves session surface from current session key conventions', () => {
     assert.equal(resolveSessionSurface('user:feishu-user'), 'feishu');
     assert.equal(resolveSessionSurface('group:feishu-group'), 'feishu');
@@ -53,7 +61,7 @@ describe('surface prompt', () => {
 
     assert.equal(
       catsUserPrompt,
-      `[surface:catscompany]\n当前是 CatsCo 聊天会话。\n${autoSendModeInstruction}`,
+      `[surface:catscompany]\n当前是 CatsCo 聊天会话。\n${autoSendModeInstruction}\n\n${catscoFileSelectionInstruction}`,
     );
     assert.equal(catsGroupPrompt, catsUserPrompt);
     assert.equal(composeSurfacePrompt('cli'), undefined);
