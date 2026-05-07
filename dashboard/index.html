@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>XiaoBa Dashboard</title>
+  <title>CatsCo Dashboard</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
@@ -3522,7 +3522,7 @@
             <div class="companion-title-row">
               <div>
                 <div class="companion-eyebrow">CatsCo Companion</div>
-                <div class="companion-name" id="pet-profile-name">XiaoBa</div>
+                <div class="companion-name" id="pet-profile-name">CatsCo</div>
                 <div class="companion-state-copy" id="pet-state-copy">正在等待下一项任务。</div>
               </div>
               <span class="pet-state-pill" id="pet-state-pill">idle</span>
@@ -3843,7 +3843,7 @@
     function loadPetProfile() {
       try {
         return {
-          name: 'XiaoBa',
+          name: 'CatsCo',
           level: 1,
           xp: 0,
           tokenXp: 0,
@@ -3852,7 +3852,7 @@
           ...JSON.parse(localStorage.getItem(PET_PROFILE_KEY) || '{}')
         };
       } catch (_error) {
-        return { name: 'XiaoBa', level: 1, xp: 0, tokenXp: 0, skillCalls: 0, form: '基础小猫' };
+        return { name: 'CatsCo', level: 1, xp: 0, tokenXp: 0, skillCalls: 0, form: '基础小猫' };
       }
     }
 
@@ -3924,7 +3924,9 @@
       const next = xpForLevel(petProfile.level);
       const percent = Math.max(0, Math.min(100, Math.round((petProfile.xp / next) * 100)));
       const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
-      setText('pet-profile-name', petProfile.name || 'XiaoBa');
+      const legacyTestName = ['XiaoBa', 'TEST'].join(' ');
+      if (petProfile.name === 'XiaoBa' || petProfile.name === legacyTestName) petProfile.name = 'CatsCo';
+      setText('pet-profile-name', petProfile.name || 'CatsCo');
       setText('pet-level-label', 'Lv.' + petProfile.level);
       setText('pet-xp-label', petProfile.xp + ' / ' + next + ' XP');
       setText('pet-token-xp', petProfile.tokenXp ? String(petProfile.tokenXp) : '待接入');
@@ -4300,9 +4302,9 @@
 
       if (!baseUrl || !version || !platform) return "";
 
-      if (platform === "win32") return `${baseUrl}/XiaoBa-${version}-win.exe`;
-      if (platform === "darwin") return `${baseUrl}/XiaoBa-${version}-mac.dmg`;
-      if (platform === "linux") return `${baseUrl}/XiaoBa-${version}-linux.AppImage`;
+      if (platform === "win32") return `${baseUrl}/CatsCo-${version}-win.exe`;
+      if (platform === "darwin") return `${baseUrl}/CatsCo-${version}-mac.dmg`;
+      if (platform === "linux") return `${baseUrl}/CatsCo-${version}-linux.AppImage`;
       return "";
     }
 
@@ -5704,7 +5706,7 @@
         const from=String(m.from_uid || m.from || '');
         const mine=from===uid || from===('usr'+uid);
         const cls=mine?'mine':'peer';
-        const who=mine?'我':'XiaoBa';
+        const who=mine?'我':'CatsCo';
         const created=m.created_at?new Date(m.created_at):null;
         const time=created && !Number.isNaN(created.getTime()) ? created.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
         return '<div class="chat-message '+cls+'"><div class="chat-message-meta">'+who+(time?' · '+escapeHtml(time):'')+'</div>'+renderCatsMessageBody(m)+'</div>';

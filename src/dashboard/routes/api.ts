@@ -951,11 +951,15 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
 
       const botsResponse = await catsRequest('GET', state.httpBaseUrl, '/api/bots', undefined, state.token);
       const bots = Array.isArray(botsResponse?.bots) ? botsResponse.bots : [];
-      const preferredUsername = String(req.body?.botUsername || `xiaoba_${userUid}`).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
-      const preferredName = String(req.body?.botDisplayName || 'XiaoBa').trim() || 'XiaoBa';
+      const preferredUsername = String(req.body?.botUsername || `catsco_${userUid}`).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+      const preferredName = String(req.body?.botDisplayName || 'CatsCo').trim() || 'CatsCo';
+      const legacyUsername = `xiaoba_${userUid}`;
+      const legacyName = 'XiaoBa';
       let bot = bots.find((item: any) => String(item.id || item.uid) === String(state.botUid || ''))
         || bots.find((item: any) => String(item.username || '') === preferredUsername)
-        || bots.find((item: any) => String(item.display_name || '') === preferredName);
+        || bots.find((item: any) => String(item.display_name || '') === preferredName)
+        || bots.find((item: any) => String(item.username || '') === legacyUsername)
+        || bots.find((item: any) => String(item.display_name || '') === legacyName);
 
       if (!bot) {
         const created = await catsRequest('POST', state.httpBaseUrl, '/api/bots', {
@@ -985,7 +989,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       try {
         await catsRequest('POST', state.httpBaseUrl, '/api/friends/request', {
           user_id: Number(botUid),
-          message: 'Connect XiaoBa desktop chatbot',
+          message: 'Connect CatsCo desktop agent',
         }, state.token);
       } catch (friendRequestError: any) {
         const msg = String(friendRequestError?.message || '');

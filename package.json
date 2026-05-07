@@ -88,7 +88,7 @@
   },
   "build": {
     "appId": "com.catcompany.xiaoba",
-    "productName": "XiaoBa",
+    "productName": "CatsCo",
     "icon": null,
     "directories": {
       "output": "release"
@@ -165,7 +165,7 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "XiaoBa"
+      "shortcutName": "CatsCo"
     },
     "linux": {
       "target": [
@@ -177,7 +177,7 @@
       "artifactName": "${productName}-${version}-linux.${ext}"
     },
     "dmg": {
-      "title": "XiaoBa",
+      "title": "CatsCo",
       "contents": [
         {
           "x": 130,

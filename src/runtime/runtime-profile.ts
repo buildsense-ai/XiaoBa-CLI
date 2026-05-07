@@ -65,7 +65,7 @@ export function resolveDefaultRuntimeProfile(
 ): RuntimeProfile {
   const env = options.env ?? process.env;
   const envDisplayName = (env.CURRENT_AGENT_DISPLAY_NAME || env.BOT_BRIDGE_NAME || '').trim();
-  const displayName = (options.displayName || envDisplayName || 'XiaoBa').trim();
+  const displayName = (options.displayName || envDisplayName || 'CatsCo').trim();
   const surface = options.surface ?? resolveSurfaceFromEnv(env);
   const platform = env.CURRENT_PLATFORM || undefined;
 

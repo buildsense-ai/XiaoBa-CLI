@@ -176,7 +176,7 @@ export class ReadTool implements Tool {
 
     if (/requires CATSCOMPANY_API_KEY|READER_PROXY_API_KEY|apiKey/i.test(rawError)) {
       title = '读图失败：读图服务配置缺失。';
-      action = '请检查 CatsCo API Key / Reader Proxy API Key 是否已配置到 XiaoBa。';
+      action = '请检查 CatsCo API Key / Reader Proxy API Key 是否已配置到 CatsCo 桌面端。';
     } else if (status === 400) {
       title = '读图失败：图片请求格式不被服务接受。';
       action = '请确认上传的是常见图片格式（png/jpg/jpeg/webp/gif/bmp），必要时重新截图后再发。';
@@ -199,14 +199,14 @@ export class ReadTool implements Tool {
       title = '读图失败：读图服务临时不可用。';
       action = '可能是服务重启、上游模型繁忙或网关超时，请稍后重试。';
     } else if (/timeout|ECONNRESET|ECONNABORTED|EAI_AGAIN|ENOTFOUND|network|socket/i.test(rawError)) {
-      title = '读图失败：XiaoBa 连接读图服务失败。';
+      title = '读图失败：CatsCo 桌面端连接读图服务失败。';
       action = '请检查本机网络、代理、DNS，或 CatsCo 服务是否能访问。';
     }
 
     return [
       visionCapable
-        ? '主模型图片块生成失败，XiaoBa 已尝试改用 CatsCo 读图服务。'
-        : '当前主模型不能直接读取图片内容，XiaoBa 已尝试调用 CatsCo 读图服务。',
+        ? '主模型图片块生成失败，CatsCo 桌面端已尝试改用读图服务。'
+        : '当前主模型不能直接读取图片内容，CatsCo 桌面端已尝试调用读图服务。',
       title,
       action,
       attempts,

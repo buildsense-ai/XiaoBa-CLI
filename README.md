@@ -1,7 +1,7 @@
 <div align="center">
-  <img src="assets/banner.png" alt="XiaoBa Banner" width="100%">
+  <img src="assets/banner.png" alt="CatsCo Banner" width="100%">
 
-  # 🐱 XiaoBa - 世界上最拟人的 AI Agent
+  # 🐱 CatsCo - 世界上最拟人的 AI Agent
 
   **不是工具，是伙伴 | 像人一样思考和交流的智能助手**
 
@@ -14,9 +14,9 @@
 
 ---
 
-## 💡 什么是 XiaoBa？
+## 💡 什么是 CatsCo？
 
-XiaoBa 不是传统的 AI 助手，它是一个**真正拟人化的 Agent**。
+CatsCo 不是传统的 AI 助手，它是一个**真正拟人化的 Agent**。
 
 - 🗣️ **像人一样交流** - 不用表格、进度条、Markdown 格式，就像在微信上聊天
 - 🧠 **像人一样思考** - 遇到问题会自己想办法解决，不会动不动就问你
@@ -33,7 +33,7 @@ AI：好的！我将为您执行以下步骤：
 ...
 ```
 
-**XiaoBa：**
+**CatsCo：**
 ```
 用户：帮我读一下这篇论文
 小八：好的老师，我先看看。
@@ -78,13 +78,13 @@ AI：好的！我将为您执行以下步骤：
 ## 🚀 快速开始
 
 ### Windows 用户
-1. 下载 [XiaoBa Setup 0.1.0.exe](https://github.com/buildsense-ai/XiaoBa-CLI/releases/latest)
+1. 下载 [CatsCo Setup](https://github.com/buildsense-ai/XiaoBa-CLI/releases/latest)
 2. 双击安装
 3. 启动应用，配置 API Key
 4. 在 Dashboard 中启动所需的机器人服务
 
 ### macOS 用户
-1. 下载 [XiaoBa-0.1.0-arm64.dmg](https://github.com/buildsense-ai/XiaoBa-CLI/releases/latest)
+1. 下载 [CatsCo macOS 安装包](https://github.com/buildsense-ai/XiaoBa-CLI/releases/latest)
 2. 双击安装
 3. 启动应用，配置 API Key
 4. 在 Dashboard 中启动所需的机器人服务

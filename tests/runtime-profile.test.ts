@@ -36,7 +36,7 @@ describe('RuntimeProfile', () => {
     });
 
     assert.equal(profile.id, 'xiaoba-cli');
-    assert.equal(profile.displayName, 'XiaoBa');
+    assert.equal(profile.displayName, 'CatsCo');
     assert.equal(profile.surface, 'cli');
     assert.equal(profile.workingDirectory, fs.realpathSync(testRoot));
     assert.deepStrictEqual(profile.model, {});

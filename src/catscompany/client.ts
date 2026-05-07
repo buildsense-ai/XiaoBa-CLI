@@ -57,9 +57,9 @@ const MIME_BY_EXT: Record<string, string> = {
   '.webp': 'image/webp',
 };
 
-// Cats 服务端握手协议版本，不是 XiaoBa 客户端发布版本。
+// Cats 服务端握手协议版本，不是 CatsCo 客户端发布版本。
 const CATSCOMPANY_PROTOCOL_VERSION = '0.1.0';
-const CATSCOMPANY_CLIENT_UA = 'XiaoBa/1.0';
+const CATSCOMPANY_CLIENT_UA = 'CatsCo/1.0';
 
 function maskSecret(value: string): string {
   if (value.length <= 10) return '***';
@@ -149,7 +149,7 @@ export class CatsClient extends EventEmitter {
     if (msg.ctrl) {
       if (msg.ctrl.code === 200 && msg.ctrl.params?.build === 'catscompany') {
         this.uid = String(msg.ctrl.params?.uid || 'bot');
-        this.name = String(msg.ctrl.params?.name || 'XiaoBa');
+        this.name = String(msg.ctrl.params?.name || 'CatsCo');
         Logger.info(
           `[CatsCompany] 握手成功: uid=${this.uid}, name=${this.name}, ` +
           `protocol=${CATSCOMPANY_PROTOCOL_VERSION}, serverProtocol=${msg.ctrl.params?.ver || 'unknown'}`

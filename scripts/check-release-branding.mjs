@@ -39,9 +39,9 @@ function walk(relativeDir, results = []) {
 }
 
 const packageJson = JSON.parse(readText('package.json'));
-assertEqual('build.productName', packageJson.build?.productName, 'XiaoBa');
-assertEqual('build.nsis.shortcutName', packageJson.build?.nsis?.shortcutName, 'XiaoBa');
-assertEqual('build.dmg.title', packageJson.build?.dmg?.title, 'XiaoBa');
+assertEqual('build.productName', packageJson.build?.productName, 'CatsCo');
+assertEqual('build.nsis.shortcutName', packageJson.build?.nsis?.shortcutName, 'CatsCo');
+assertEqual('build.dmg.title', packageJson.build?.dmg?.title, 'CatsCo');
 
 const filesToScan = [
   'package.json',
@@ -56,7 +56,7 @@ const filesToScan = [
 
 for (const file of filesToScan) {
   const text = readText(file);
-  if (/XiaoBa\s+TEST/i.test(text)) {
+  if (/(XiaoBa|CatsCo)\s+TEST/i.test(text)) {
     fail(`${file} contains a test app name`);
   }
 

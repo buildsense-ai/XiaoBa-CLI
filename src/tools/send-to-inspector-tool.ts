@@ -33,7 +33,7 @@ const DEFAULT_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 export class SendToInspectorTool implements Tool {
   definition: ToolDefinition = {
     name: 'send_to_inspector',
-    description: '将 XiaoBa 的运行日志打包并上传到配置好的 Inspector 服务。仅允许上传 logs/ 下的 .log 和 .jsonl 文件。只在用户明确要求交给 Inspector / 督察猫查看日志时使用。',
+    description: '将 CatsCo 的运行日志打包并上传到配置好的 Inspector 服务。仅允许上传 logs/ 下的 .log 和 .jsonl 文件。只在用户明确要求交给 Inspector / 督察猫查看日志时使用。',
     parameters: {
       type: 'object',
       properties: {

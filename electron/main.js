@@ -420,7 +420,7 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    title: 'XiaoBa Dashboard',
+    title: 'CatsCo Dashboard',
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0f1117',
     webPreferences: {
@@ -450,7 +450,7 @@ function createTray() {
   tray = new Tray(icon.resize({ width: 16, height: 16 }));
 
   const contextMenu = Menu.buildFromTemplate([
-    { label: 'Open Dashboard', click: () => {
+    { label: 'Open CatsCo Dashboard', click: () => {
       if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
       else createWindow();
     }},
@@ -458,7 +458,7 @@ function createTray() {
     { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); }} ,
   ]);
 
-  tray.setToolTip('XiaoBa Dashboard');
+  tray.setToolTip('CatsCo Dashboard');
   tray.setContextMenu(contextMenu);
   tray.on('click', () => {
     if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
