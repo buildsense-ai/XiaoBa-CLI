@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { SkillManager } from '../../skills/skill-manager';
+import type { Skill } from '../../types/skill';
 import { ConfigManager } from '../../utils/config';
 import { ServiceManager } from '../service-manager';
 import type { UpdateController } from '../server';
@@ -36,6 +37,17 @@ import {
 
 const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cc';
 const DEFAULT_CATSCO_WS_URL = 'wss://app.catsco.cc/v0/channels';
+const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
+const SYSTEM_SKILL_DIRS = new Set(['_tool-skills']);
+
+type SkillSource = 'system' | 'bundled' | 'user';
+
+interface SkillManagementInfo {
+  source: SkillSource;
+  protected: boolean;
+  canDisable: boolean;
+  canDelete: boolean;
+}
 
 interface CatsAuthState {
   token?: string;
@@ -603,17 +615,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
     try {
       const manager = new SkillManager();
       await manager.loadSkills();
-      const active = manager.getAllSkills().map(s => ({
-        name: s.metadata.name,
-        description: s.metadata.description,
-        argumentHint: s.metadata.argumentHint || null,
-        userInvocable: s.metadata.userInvocable !== false,
-        autoInvocable: s.metadata.autoInvocable !== false,
-        maxTurns: s.metadata.maxTurns || null,
-        path: s.filePath,
-        files: getSkillFiles(s.filePath),
-        enabled: true,
-      }));
+      const active = manager.getAllSkills().map(skillToDashboardPayload);
       const disabled = findAllDisabledSkills(PathResolver.getSkillsPath());
       res.json([...active, ...disabled]);
     } catch (e: any) {
@@ -646,12 +648,14 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       await manager.loadSkills();
       const skill = manager.getSkill(req.params.name);
       if (!skill) return res.status(404).json({ error: 'Skill not found' });
+      const management = getSkillManagementInfo(skill.filePath);
       res.json({
         name: skill.metadata.name,
         description: skill.metadata.description,
         content: skill.content,
         path: skill.filePath,
         files: getSkillFiles(skill.filePath),
+        ...management,
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -666,10 +670,18 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       if (!skill) {
         const disabled = findDisabledSkillByName(PathResolver.getSkillsPath(), req.params.name);
         if (disabled) {
+          const management = getSkillManagementInfo(disabled);
+          if (!management.canDelete) {
+            return res.status(403).json({ error: formatSkillDeleteBlockedMessage(management) });
+          }
           fs.rmSync(path.dirname(disabled), { recursive: true, force: true });
           return res.json({ ok: true });
         }
         return res.status(404).json({ error: 'Skill not found' });
+      }
+      const management = getSkillManagementInfo(skill.filePath);
+      if (!management.canDelete) {
+        return res.status(403).json({ error: formatSkillDeleteBlockedMessage(management) });
       }
       fs.rmSync(path.dirname(skill.filePath), { recursive: true, force: true });
       res.json({ ok: true });
@@ -684,6 +696,10 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       await manager.loadSkills();
       const skill = manager.getSkill(req.params.name);
       if (!skill) return res.status(404).json({ error: 'Skill not found' });
+      const management = getSkillManagementInfo(skill.filePath);
+      if (!management.canDisable) {
+        return res.status(403).json({ error: '系统 Skill 不能禁用。' });
+      }
       fs.renameSync(skill.filePath, skill.filePath + '.disabled');
       res.json({ ok: true });
     } catch (e: any) {
@@ -717,14 +733,16 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const registry = mergeRegistries(local, remote);
       const manager = new SkillManager();
       await manager.loadSkills();
-      const installed = new Set(manager.getAllSkills().map(s => s.metadata.name));
+      const installed = new Map<string, any>();
+      manager.getAllSkills().forEach(s => installed.set(s.metadata.name, skillToDashboardPayload(s)));
       // 也算上disabled的
       const disabled = findAllDisabledSkills(PathResolver.getSkillsPath());
-      disabled.forEach(s => installed.add(s.name));
+      disabled.forEach(s => installed.set(s.name, s));
 
       const available = registry.map(entry => ({
         ...entry,
         installed: installed.has(entry.name),
+        installedSkill: installed.get(entry.name) || null,
       }));
       res.json(available);
     } catch (e: any) {
@@ -1393,6 +1411,50 @@ function getSkillFiles(skillFilePath: string): string[] {
   } catch { return []; }
 }
 
+function skillToDashboardPayload(skill: Skill): any {
+  return {
+    name: skill.metadata.name,
+    description: skill.metadata.description,
+    argumentHint: skill.metadata.argumentHint || null,
+    userInvocable: skill.metadata.userInvocable !== false,
+    autoInvocable: skill.metadata.autoInvocable !== false,
+    maxTurns: skill.metadata.maxTurns || null,
+    path: skill.filePath,
+    files: getSkillFiles(skill.filePath),
+    enabled: true,
+    ...getSkillManagementInfo(skill.filePath),
+  };
+}
+
+function getSkillManagementInfo(skillFilePath: string): SkillManagementInfo {
+  const dir = path.dirname(skillFilePath);
+  const skillsRoot = PathResolver.getSkillsPath();
+  const relative = path.relative(skillsRoot, dir);
+  const parts = relative.split(path.sep).filter(Boolean);
+  const source: SkillSource = parts.some(part => SYSTEM_SKILL_DIRS.has(part))
+    ? 'system'
+    : fs.existsSync(path.join(dir, BUNDLED_SKILL_MARKER))
+      ? 'bundled'
+      : 'user';
+
+  return {
+    source,
+    protected: source === 'system',
+    canDisable: source !== 'system',
+    canDelete: source === 'user',
+  };
+}
+
+function formatSkillDeleteBlockedMessage(management: SkillManagementInfo): string {
+  if (management.source === 'system') {
+    return '系统 Skill 不能删除。';
+  }
+  if (management.source === 'bundled') {
+    return '内置 Skill 不能删除，可在界面中禁用；这样升级后也不会被自动恢复成启用状态。';
+  }
+  return '该 Skill 当前不能删除。';
+}
+
 function findDisabledSkillByName(basePath: string, name: string): string | null {
   if (!fs.existsSync(basePath)) return null;
   for (const entry of fs.readdirSync(basePath, { withFileTypes: true })) {
@@ -1420,12 +1482,14 @@ function findAllDisabledSkills(basePath: string): any[] {
       const content = fs.readFileSync(disabledFile, 'utf-8');
       const nm = content.match(/name:\s*(.+)/);
       const desc = content.match(/description:\s*(.+)/);
+      const management = getSkillManagementInfo(disabledFile);
       results.push({
         name: nm ? nm[1].trim() : entry.name,
         description: desc ? desc[1].trim() : '',
         enabled: false,
         path: disabledFile,
         files: getSkillFiles(disabledFile),
+        ...management,
       });
     }
     results.push(...findAllDisabledSkills(fullPath));

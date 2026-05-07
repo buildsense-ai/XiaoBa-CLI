@@ -4232,11 +4232,37 @@
       '</div>';
     }
 
+    function skillJsArg(name) {
+      return String(name || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    }
+
+    function renderSkillSourceTag(sk) {
+      if (sk.source === 'system') return ' <span class="tag" title="系统关键 Skill，不允许禁用或删除">系统</span>';
+      if (sk.source === 'bundled') return ' <span class="tag" title="应用内置 Skill，可禁用但不直接删除">内置</span>';
+      return '';
+    }
+
+    function renderSkillActionButtons(sk) {
+      const name = skillJsArg(sk.name);
+      const actions = [];
+      if (sk.canDisable === false) {
+        actions.push('<button class="btn" disabled>系统保护</button>');
+      } else {
+        actions.push('<button class="btn" onclick="toggleSkill(\''+name+'\',' +(sk.enabled!==false)+')">'+(sk.enabled===false?'启用':'禁用')+'</button>');
+      }
+      if (sk.canDelete) {
+        actions.push('<button class="btn btn-danger" onclick="deleteSkill(\''+name+'\')">卸载</button>');
+      } else if (sk.source === 'bundled') {
+        actions.push('<button class="btn" disabled title="内置 Skill 可禁用，不能直接删除">内置 Skill</button>');
+      }
+      return '<div class="skill-actions">'+actions.join('')+'</div>';
+    }
+
     function renderSkills(skills) {
       document.getElementById('skill-count').textContent = skills.length;
       const g = document.getElementById('skills-grid');
       if (!skills.length) { g.innerHTML = '<div class="loading">暂无 Skills</div>'; return; }
-      g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">已禁用</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">用户调用</span>':'')+(sk.autoInvocable?'<span class="tag active">自动调用</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+renderSkillGrowth(sk.name)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+'<div class="skill-actions"><button class="btn" onclick="toggleSkill(\''+sk.name+'\',' +(sk.enabled!==false)+')">'+(sk.enabled===false?'启用':'禁用')+'</button><button class="btn btn-danger" onclick="deleteSkill(\''+sk.name+'\')">删除</button></div></div>').join('');
+      g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">已禁用</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">用户调用</span>':'')+(sk.autoInvocable?'<span class="tag active">自动调用</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+renderSkillGrowth(sk.name)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+renderSkillActionButtons(sk)+'</div>').join('');
     }
 
     async function svcAction(n,a) {
@@ -4564,8 +4590,19 @@
         alert('安装更新失败: ' + (e.message || String(e)));
       }
     }
-    async function toggleSkill(n,c){await fetch(API+'/api/skills/'+encodeURIComponent(n)+'/'+(c?'disable':'enable'),{method:'POST'});fetchSkills();}
-    async function deleteSkill(n){if(!confirm('确定要删除 skill "'+n+'" 吗？此操作不可恢复。'))return;await fetch(API+'/api/skills/'+encodeURIComponent(n),{method:'DELETE'});fetchSkills();}
+    async function toggleSkill(n,c){
+      const r=await fetch(API+'/api/skills/'+encodeURIComponent(n)+'/'+(c?'disable':'enable'),{method:'POST'});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){alert('操作失败: '+(d.error||('HTTP '+r.status)));return;}
+      fetchSkills();fetchStore();
+    }
+    async function deleteSkill(n){
+      if(!confirm('确定要卸载 skill "'+n+'" 吗？此操作不可恢复。'))return;
+      const r=await fetch(API+'/api/skills/'+encodeURIComponent(n),{method:'DELETE'});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){alert('卸载失败: '+(d.error||('HTTP '+r.status)));return;}
+      fetchSkills();fetchStore();
+    }
     function formatUptime(s){if(s<60)return Math.floor(s)+'s';if(s<3600)return Math.floor(s/60)+'m';return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';}
 
     // === Config with collapsible LLM groups ===
@@ -5015,7 +5052,24 @@
     function renderStore(items){
       const g=document.getElementById('store-grid');
       if(!items.length){g.innerHTML='<div class="loading">暂无可用 Skill</div>';return;}
-      g.innerHTML=items.map(i=>'<div class="skill-card"><div class="skill-name">'+i.name+(i.recommended?' <span class="tag recommended">推荐</span>':'')+(i.installed?' <span class="tag installed-tag">已安装</span>':'')+'</div><div class="skill-desc">'+(i.description||'')+'</div><div class="skill-meta"><span class="tag">'+(i.category||'其他')+'</span></div><div class="skill-actions">'+(i.installed?'<button class="btn" disabled>已安装</button>':'<button class="btn btn-primary" onclick="installSkill(\''+i.name+'\',\''+i.repo+'\',\''+(i.dir||'')+'\')">安装</button>')+'</div></div>').join('');
+      g.innerHTML=items.map(i=>'<div class="skill-card"><div class="skill-name">'+i.name+(i.recommended?' <span class="tag recommended">推荐</span>':'')+(i.installed?' <span class="tag installed-tag">已安装</span>':'')+'</div><div class="skill-desc">'+(i.description||'')+'</div><div class="skill-meta"><span class="tag">'+(i.category||'其他')+'</span></div>'+renderStoreSkillActions(i)+'</div>').join('');
+    }
+    function renderStoreSkillActions(i){
+      if(!i.installed){
+        return '<div class="skill-actions"><button class="btn btn-primary" onclick="installSkill(\''+skillJsArg(i.name)+'\',\''+skillJsArg(i.repo)+'\',\''+skillJsArg(i.dir||'')+'\')">安装</button></div>';
+      }
+      const sk=i.installedSkill||{};
+      if(sk.canDisable===false){
+        return '<div class="skill-actions"><button class="btn" disabled>系统保护</button></div>';
+      }
+      const name=skillJsArg(i.name);
+      let html='<button class="btn" onclick="toggleSkill(\''+name+'\',' +(sk.enabled!==false)+')">'+(sk.enabled===false?'启用':'禁用')+'</button>';
+      if(sk.canDelete){
+        html+='<button class="btn btn-danger" onclick="deleteSkill(\''+name+'\')">卸载</button>';
+      }else if(sk.source==='bundled'){
+        html+='<button class="btn" disabled title="内置 Skill 可禁用，不能直接删除">内置 Skill</button>';
+      }
+      return '<div class="skill-actions">'+html+'</div>';
     }
     async function installSkill(n,r,d){
       const btn=event.target;
