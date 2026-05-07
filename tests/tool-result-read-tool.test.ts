@@ -54,6 +54,8 @@ describe('ReadTool - ToolExecutionResult', () => {
     assert.strictEqual(result.ok, true);
     const content = result.content as string;
     assert.ok(content.includes('PDF'));
-    assert.ok(content.includes('paper-analysis'));
+    assert.ok(content.includes('不再做 PDF 全文解析'));
+    assert.ok(content.includes('文档解析工具'));
+    assert.ok(!content.includes('paper-analysis'));
   });
 });
