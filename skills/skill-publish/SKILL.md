@@ -1,6 +1,6 @@
 ---
 name: skill-publish
-description: "发布 Skill 到官方 Skill Hub：创建独立仓库并注册到 registry，让所有 XiaoBa 用户都能安装。"
+description: "发布 Skill 到官方 Skill Hub：创建独立仓库并注册到 registry，让所有 CatsCo 用户都能安装。"
 invocable: user
 autoInvocable: false
 argument-hint: "<skill名称>"
@@ -8,7 +8,7 @@ argument-hint: "<skill名称>"
 
 # Skill Publish
 
-将本地 skill 发布到 XiaoBa 官方 Skill Hub，供所有用户安装使用。
+将本地 skill 发布到 CatsCo 官方 Skill Hub（当前仓库名仍为 XiaoBa-Skill-Hub），供所有用户安装使用。
 
 ## 发布流程
 
@@ -127,4 +127,4 @@ rm -rf /tmp/xiaoba-publish
 - **SSH Key**：确保本地配置了 SSH key 或使用 HTTPS + token
 - **仓库命名**：必须是 `xiaoba-skill-<name>` 格式
 - **skill 内容**：确保 SKILL.md 在仓库根目录
-- **PR 审核**：提交后需要 XiaoBa 维护者审核合入
+- **PR 审核**：提交后需要 CatsCo 维护者审核合入

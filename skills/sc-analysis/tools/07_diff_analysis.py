@@ -44,7 +44,7 @@ Step 07: 差异分析
         --cluster-key leiden
 """
 
-__author__ = "XiaoBa"
+__author__ = "CatsCo"
 __version__ = "3.0.0"
 import os
 import sys

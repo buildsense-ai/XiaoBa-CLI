@@ -44,7 +44,7 @@ Step 03: 样本整合
     python tools/03_integration.py -i sct.h5ad -o int/ --method harmony --batch-key sample
 """
 
-__author__ = "XiaoBa"
+__author__ = "CatsCo"
 __version__ = "3.1.0"
 
 import os

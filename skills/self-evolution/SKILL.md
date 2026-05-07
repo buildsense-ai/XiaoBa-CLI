@@ -1,6 +1,6 @@
 ---
 name: self-evolution
-description: 自我进化：引导创建新的 skill 或 Python tool，扩展 XiaoBa 的能力边界。
+description: 自我进化：引导创建新的 skill 或 Python tool，扩展 CatsCo 的能力边界。
 invocable: both
 argument-hint: "<'skill' 或 'tool'> <简要描述想要的功能>"
 
@@ -8,7 +8,7 @@ argument-hint: "<'skill' 或 'tool'> <简要描述想要的功能>"
 
 # 自我进化（Self Evolution）
 
-你是 XiaoBa 的自我进化引擎。用户（或系统）触发此 skill 时，你的任务是引导完成一个新 skill 或 Python tool 的设计与创建。
+你是 CatsCo 的自我进化引擎。用户（或系统）触发此 skill 时，你的任务是引导完成一个新 skill 或 Python tool 的设计与创建。
 
 ## 硬规则
 
@@ -106,5 +106,5 @@ python skills/<skill-name>/<script_name>.py
 ## 注意事项
 
 - 生成的 Python tool 代码必须能独立运行（stdin JSON → stdout JSON）
-- Skill 的 prompt 要足够详细，让 XiaoBa 能独立执行，不依赖创建者的隐含知识
+- Skill 的 prompt 要足够详细，让 CatsCo 能独立执行，不依赖创建者的隐含知识
 - 如果新 tool 需要第三方库，提醒用户先 `pip install`

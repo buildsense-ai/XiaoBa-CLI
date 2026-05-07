@@ -23,7 +23,7 @@ function describeAckFailure(err: CatsSendError): string {
     case 400:
       return `服务器拒绝消息：请求格式或消息协议不符合要求。${err.message}`;
     case 401:
-      return `服务器拒绝消息：API Key 无效或未登录。请检查 Cats Company 配置里的 API Key。${err.message}`;
+      return `CatsCo 服务器拒绝消息：API Key 无效或未登录。请检查 CatsCo 连接配置里的 API Key。${err.message}`;
     case 403:
       return `服务器拒绝消息：权限不足，可能是不在该会话/群组、已被禁言，或机器人没有发送权限。${err.message}`;
     case 404:
@@ -32,7 +32,7 @@ function describeAckFailure(err: CatsSendError): string {
       return `服务器拒绝消息：触发限流或机器人循环保护，请稍后再试。${err.message}`;
     default:
       if (err.code && err.code >= 500) {
-        return `服务器处理消息失败：Cats Company 服务端异常。${err.message}`;
+        return `CatsCo 服务器处理消息失败。${err.message}`;
       }
       return `服务器拒绝消息：${err.message}`;
   }
@@ -41,7 +41,7 @@ function describeAckFailure(err: CatsSendError): string {
 function describeCatsSendFailure(err: unknown): string {
   if (err instanceof CatsSendError) {
     if (err.kind === 'transport') {
-      return `小八本机到 Cats Company 的 WebSocket 链路不可用，可能是本机网络、代理、防火墙、服务器地址或连接重连中的问题。${err.message}`;
+      return `CatsCo 桌面端到 CatsCo 服务器的 WebSocket 链路不可用，可能是本机网络、代理、防火墙、服务器地址或连接重连中的问题。${err.message}`;
     }
     if (err.kind === 'timeout') {
       return `WebSocket 消息已写出，但服务器确认超时。可能是服务器处理慢、网络抖动或连接半断开；为避免重复消息，不会自动改用 HTTP 重发。${err.message}`;
@@ -62,7 +62,7 @@ function describeHttpFailure(status: number, body: string): string {
     case 400:
       return `HTTP 兜底失败：请求格式不符合服务器要求。${detail}`;
     case 401:
-      return `HTTP 兜底失败：API Key 无效或未授权，请检查 Cats Company 配置。${detail}`;
+      return `HTTP 兜底失败：API Key 无效或未授权，请检查 CatsCo 连接配置。${detail}`;
     case 403:
       return `HTTP 兜底失败：权限不足，可能是不在会话/群组、被禁言或机器人没有发送权限。${detail}`;
     case 404:
@@ -71,7 +71,7 @@ function describeHttpFailure(status: number, body: string): string {
       return `HTTP 兜底失败：服务端限流，请稍后重试。${detail}`;
     default:
       if (status >= 500) {
-        return `HTTP 兜底失败：Cats Company 服务端异常，状态码 ${status}。${detail}`;
+        return `HTTP 兜底失败：CatsCo 服务器异常，状态码 ${status}。${detail}`;
       }
       return `HTTP 兜底失败：状态码 ${status}。${detail}`;
   }
@@ -79,7 +79,7 @@ function describeHttpFailure(status: number, body: string): string {
 
 function describeHttpException(err: any): string {
   if (err?.name === 'AbortError' || err?.name === 'TimeoutError') {
-    return `HTTP 请求超时：小八到 Cats Company 服务器的 HTTP 链路不可用或服务器响应过慢。${err.message || ''}`;
+    return `HTTP 请求超时：CatsCo 桌面端到 CatsCo 服务器的 HTTP 链路不可用或服务器响应过慢。${err.message || ''}`;
   }
   if (err?.cause?.code) {
     return `HTTP 网络连接失败：${err.cause.code}。可能是本机网络、DNS、代理、防火墙或服务器不可达。`;

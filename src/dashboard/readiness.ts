@@ -368,8 +368,8 @@ function buildCatsCoChatChecks(
         target: 'settings',
       }),
     serverUrl && isValidUrl(serverUrl, ['ws:', 'wss:'])
-      ? passCheck('catsco.serverUrl', 'CatsCo WebSocket', 'CatsCo WebSocket 地址格式有效')
-      : failCheck('catsco.serverUrl', 'CatsCo WebSocket', '需要配置 CatsCo WebSocket 地址', 'blocker', {
+      ? passCheck('catsco.serverUrl', 'CatsCo 服务器 WebSocket', 'CatsCo 服务器 WebSocket 地址格式有效')
+      : failCheck('catsco.serverUrl', 'CatsCo 服务器 WebSocket', '需要配置 CatsCo 服务器 WebSocket 地址', 'blocker', {
         label: '打开设置',
         target: 'settings',
       }),
@@ -412,8 +412,8 @@ function buildServiceSpecificChecks(
     );
     return [
       serverUrl && isValidUrl(serverUrl, ['ws:', 'wss:'])
-        ? passCheck('service.catsco.serverUrl', 'CatsCo WebSocket', 'CatsCo WebSocket 地址格式有效')
-        : failCheck('service.catsco.serverUrl', 'CatsCo WebSocket', '需要配置 CatsCo WebSocket 地址', 'blocker', {
+        ? passCheck('service.catsco.serverUrl', 'CatsCo 服务器 WebSocket', 'CatsCo 服务器 WebSocket 地址格式有效')
+        : failCheck('service.catsco.serverUrl', 'CatsCo 服务器 WebSocket', '需要配置 CatsCo 服务器 WebSocket 地址', 'blocker', {
           label: '打开设置',
           target: 'settings',
         }),

@@ -27,7 +27,7 @@ Step 14: 综合报告生成
     python tools/14_report.py -i annot/annotated.h5ad -o report/ --markers markers/markers.csv
 """
 
-__author__ = "XiaoBa"
+__author__ = "CatsCo"
 __version__ = "3.0.0"
 import os
 import sys

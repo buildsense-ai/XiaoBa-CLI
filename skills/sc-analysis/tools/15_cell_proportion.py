@@ -29,7 +29,7 @@ Step 15: 细胞比例分析
     - proportion_comparison.png   : 组间比例对比图
 """
 
-__author__ = "XiaoBa"
+__author__ = "CatsCo"
 __version__ = "3.1.0"
 
 import os

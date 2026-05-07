@@ -17,7 +17,7 @@ import { ResumeSubagentTool } from './resume-subagent-tool';
 import { DEFAULT_TOOL_NAMES } from './default-tool-names';
 
 /**
- * 工具名别名映射（Claude Code 工具名 → XiaoBa 内部注册名）
+ * 工具名别名映射（Claude Code 工具名 → CatsCo 内部注册名）
  */
 const TOOL_NAME_ALIASES: Record<string, string> = {
   Bash: 'execute_shell',

@@ -23,18 +23,18 @@ skills/
 ### 查看所有可用的 Skills
 
 ```bash
-xiaoba skill list
+catsco skill list
 ```
 
 ### 从 GitHub 安装 Skill
 
 ```bash
-xiaoba skill install-github owner/repo
+catsco skill install-github owner/repo
 ```
 
 示例：
 ```bash
-xiaoba skill install-github obra/superpowers
+catsco skill install-github obra/superpowers
 ```
 
 Skill 会被克隆到 `skills/` 目录。
@@ -42,18 +42,18 @@ Skill 会被克隆到 `skills/` 目录。
 ### 查看 Skill 详情
 
 ```bash
-xiaoba skill info <skill-name>
+catsco skill info <skill-name>
 ```
 
 ### 删除 Skill
 
 ```bash
-xiaoba skill remove <skill-name>
+catsco skill remove <skill-name>
 ```
 
 强制删除（不询问）：
 ```bash
-xiaoba skill remove <skill-name> -f
+catsco skill remove <skill-name> -f
 ```
 
 ## 手动添加 Skill
@@ -86,6 +86,7 @@ invocable: user
 - ✅ 每个 Skill 一个独立文件夹
 - ✅ 必须包含 `SKILL.md` 文件
 - ✅ 支持从 GitHub 直接安装
+- ✅ 旧版 `xiaoba skill ...` 命令仍作为兼容别名保留
 - ❌ 不再支持多级目录（npm、用户级、项目级等复杂结构）
 
 ## 迁移现有 Skills

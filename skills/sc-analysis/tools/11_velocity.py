@@ -44,7 +44,7 @@ Step 11: RNA Velocity分析
     python tools/11_velocity.py -i annot/annotated.h5ad -o velo/ --mode stochastic
 """
 
-__author__ = "XiaoBa"
+__author__ = "CatsCo"
 __version__ = "3.0.0"
 import os
 import sys

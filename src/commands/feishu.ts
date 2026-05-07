@@ -5,7 +5,7 @@ import { FeishuConfig } from '../feishu/types';
 import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/runtime-command-support';
 
 /**
- * CLI 命令：xiaoba feishu
+ * CLI 命令：catsco feishu / xiaoba feishu
  * 启动飞书机器人长连接服务
  */
 export async function feishuCommand(): Promise<void> {
@@ -17,7 +17,7 @@ export async function feishuCommand(): Promise<void> {
   const botOpenId = process.env.FEISHU_BOT_OPEN_ID || config.feishu?.botOpenId;
   const botAliases = (
     process.env.FEISHU_BOT_ALIASES
-    || (config.feishu?.botAliases ? config.feishu.botAliases.join(',') : '小八,xiaoba')
+    || (config.feishu?.botAliases ? config.feishu.botAliases.join(',') : 'CatsCo,catsco,小八,xiaoba')
   )
     .split(',')
     .map(item => item.trim())

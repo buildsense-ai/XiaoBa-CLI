@@ -43,7 +43,7 @@ Step 04: 多分辨率聚类 + UMAP/t-SNE可视化
     python tools/04_clustering.py -i int/integrated.h5ad -o cluster/ --resolutions 0.3,0.6,1.0
 """
 
-__author__ = "XiaoBa"
+__author__ = "CatsCo"
 __version__ = "3.0.0"
 import os
 import sys

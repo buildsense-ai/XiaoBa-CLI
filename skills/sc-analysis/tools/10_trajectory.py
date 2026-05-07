@@ -45,7 +45,7 @@ Step 10: 轨迹分析
     python tools/10_trajectory.py -i annot/annotated.h5ad -o traj/ --method monocle3
 """
 
-__author__ = "XiaoBa"
+__author__ = "CatsCo"
 __version__ = "3.0.0"
 import os
 import sys

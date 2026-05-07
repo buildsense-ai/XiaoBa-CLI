@@ -1,4 +1,4 @@
-// 内部 CatsCo WebSocket 客户端
+// CatsCo 服务器 WebSocket 客户端
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
@@ -353,7 +353,7 @@ export class CatsClient extends EventEmitter {
     if (this.ws?.readyState !== WebSocket.OPEN) {
       throw new CatsSendError(
         'transport',
-        `小八到 CatsCompany 的 WebSocket 未连接，当前状态: ${describeReadyState(this.ws)}`
+        `CatsCo 桌面端到 CatsCo 服务器的 WebSocket 未连接，当前状态: ${describeReadyState(this.ws)}`
       );
     }
     try {
