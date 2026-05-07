@@ -2,11 +2,11 @@
 set -e
 
 # ============================================
-#  XiaoBa 一键安装脚本 (macOS / Linux)
+#  CatsCo 一键安装脚本 (macOS / Linux)
 # ============================================
 
 REPO_URL="https://github.com/buildsense-ai/XiaoBa-CLI.git"
-INSTALL_DIR="$HOME/xiaoba"
+INSTALL_DIR="$HOME/catsco"
 DASHBOARD_PORT=3800
 
 # 颜色
@@ -19,12 +19,7 @@ NC='\033[0m'
 print_banner() {
   echo ""
   echo -e "${CYAN}"
-  echo "  ██╗  ██╗██╗ █████╗  ██████╗ ██████╗  █████╗"
-  echo "  ╚██╗██╔╝██║██╔══██╗██╔═══██╗██╔══██╗██╔══██╗"
-  echo "   ╚███╔╝ ██║███████║██║   ██║██████╔╝███████║"
-  echo "   ██╔██╗ ██║██╔══██║██║   ██║██╔══██╗██╔══██║"
-  echo "  ██╔╝ ██╗██║██║  ██║╚██████╔╝██████╔╝██║  ██║"
-  echo "  ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝"
+  echo "  CatsCo"
   echo -e "${NC}"
   echo "  一键安装程序"
   echo ""
@@ -109,7 +104,7 @@ setup_repo() {
     cd "$INSTALL_DIR"
     git pull --ff-only || warn "更新失败，使用现有版本继续"
   else
-    log "正在下载 XiaoBa..."
+    log "正在下载 CatsCo..."
     git clone "$REPO_URL" "$INSTALL_DIR"
     cd "$INSTALL_DIR"
   fi
@@ -145,7 +140,7 @@ create_launcher() {
   cat > "$LAUNCHER" << 'EOF'
 #!/bin/bash
 cd "$(dirname "$0")"
-echo "正在启动 XiaoBa Dashboard..."
+echo "正在启动 CatsCo Dashboard..."
 npx tsx src/index.ts dashboard &
 sleep 2
 open "http://localhost:3800" 2>/dev/null || xdg-open "http://localhost:3800" 2>/dev/null || echo "请打开浏览器访问 http://localhost:3800"
@@ -172,7 +167,7 @@ main() {
 
   echo ""
   echo -e "${GREEN}════════════════════════════════════════${NC}"
-  echo -e "${GREEN}  XiaoBa 安装完成！${NC}"
+  echo -e "${GREEN}  CatsCo 安装完成！${NC}"
   echo -e "${GREEN}════════════════════════════════════════${NC}"
   echo ""
   echo "  安装目录: $INSTALL_DIR"

@@ -43,7 +43,7 @@ describe('PromptComposer', () => {
         '你在这个平台上的名字是：Desk Bot',
         '当前平台：feishu',
         '当前日期：2026-05-01',
-        '你的默认工作目录是：`~/xiaoba-workspace/Desk Bot`',
+        '你的默认工作目录是：`~/catsco-workspace/Desk Bot`',
       ].join('\n'),
     ].join('\n\n'));
   });
@@ -63,7 +63,7 @@ describe('PromptComposer', () => {
       'Base prompt',
       [
         '当前日期：2026-05-01',
-        '你的默认工作目录是：`~/xiaoba-workspace/default`',
+        '你的默认工作目录是：`~/catsco-workspace/default`',
       ].join('\n'),
     ].join('\n\n'));
   });
@@ -122,7 +122,7 @@ describe('PromptComposer', () => {
 
     assert.doesNotMatch(blankDisplayNamePrompt, /你在这个平台上的名字是/);
     assert.match(blankDisplayNamePrompt, /当前平台： feishu /);
-    assert.match(blankDisplayNamePrompt, /你的默认工作目录是：`~\/xiaoba-workspace\/default`/);
+    assert.match(blankDisplayNamePrompt, /你的默认工作目录是：`~\/catsco-workspace\/default`/);
   });
 
   test('PromptManager delegates to PromptComposer without changing output', async () => {
@@ -199,7 +199,7 @@ describe('PromptComposer', () => {
       'Base prompt',
       [
         '当前日期：2026-05-01',
-        '你的默认工作目录是：`~/xiaoba-workspace/default`',
+        '你的默认工作目录是：`~/catsco-workspace/default`',
       ].join('\n'),
     ].join('\n\n'));
   });

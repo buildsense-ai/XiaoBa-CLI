@@ -62,7 +62,7 @@ export class PromptComposer {
     const today = options.now.toISOString().slice(0, 10);
 
     const workspaceName = displayName || 'default';
-    const workspacePath = options.workspacePath ?? `~/xiaoba-workspace/${workspaceName}`;
+    const workspacePath = options.workspacePath ?? `~/catsco-workspace/${workspaceName}`;
 
     const runtimeInfo = [
       displayName ? `你在这个平台上的名字是：${displayName}` : '',

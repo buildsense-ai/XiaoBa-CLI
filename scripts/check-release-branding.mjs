@@ -53,6 +53,9 @@ assertIncludes('dashboard title', readText('dashboard/index.html'), '<title>Cats
 assertIncludes('electron window title', readText('electron/main.js'), "title: 'CatsCo Dashboard'");
 assertIncludes('electron tray tooltip', readText('electron/main.js'), "tray.setToolTip('CatsCo Dashboard')");
 assertIncludes('GitHub release title', readText('.github/workflows/release.yml'), 'name: CatsCo ${{ github.ref_name }}');
+assertIncludes('Windows install shortcut', readText('install.ps1'), 'CatsCo Dashboard');
+assertIncludes('Unix install launcher', readText('install.sh'), 'CatsCo Dashboard');
+assertIncludes('default workspace prompt', readText('src/runtime/prompt-composer.ts'), '~/catsco-workspace/');
 
 const filesToScan = [
   'package.json',
