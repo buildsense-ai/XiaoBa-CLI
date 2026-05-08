@@ -600,10 +600,19 @@ function commandExists(command: string, env: NodeJS.ProcessEnv): boolean {
   }
 
   const searchPath = env.PATH || process.env.PATH || '';
+  const extensions = process.platform === 'win32'
+    ? (env.PATHEXT || process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD')
+      .split(';')
+      .filter(Boolean)
+    : [''];
+  const candidates = process.platform === 'win32' && path.extname(trimmed)
+    ? [trimmed]
+    : [trimmed, ...extensions.map(extension => `${trimmed}${extension.toLowerCase()}`), ...extensions.map(extension => `${trimmed}${extension.toUpperCase()}`)];
+
   return searchPath
     .split(path.delimiter)
     .filter(Boolean)
-    .some(dir => fs.existsSync(path.join(dir, trimmed)));
+    .some(dir => candidates.some(candidate => fs.existsSync(path.join(dir, candidate))));
 }
 
 function sanitizeRuntimeMessage(message: string, runtimeRoot: string): string {
