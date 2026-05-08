@@ -47,6 +47,37 @@ export class ServiceManager extends EventEmitter {
     return process.env.XIAOBA_APP_ROOT || this.projectRoot;
   }
 
+  private resolveDevTsxRunner(): { command: string; argsPrefix: string[] } {
+    const packageJsonPath = path.join(this.projectRoot, 'node_modules', 'tsx', 'package.json');
+    if (fs.existsSync(packageJsonPath)) {
+      try {
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as {
+          bin?: string | Record<string, string>;
+        };
+        const binEntry = typeof packageJson.bin === 'string' ? packageJson.bin : packageJson.bin?.tsx;
+        if (binEntry) {
+          const cliPath = path.resolve(path.dirname(packageJsonPath), binEntry);
+          if (fs.existsSync(cliPath)) {
+            return { command: process.execPath, argsPrefix: [cliPath] };
+          }
+        }
+      } catch {
+        // Fall back to the package-manager shim below.
+      }
+    }
+
+    const binName = isWindows ? 'tsx.cmd' : 'tsx';
+    return {
+      command: path.join(this.projectRoot, 'node_modules', '.bin', binName),
+      argsPrefix: [],
+    };
+  }
+
+  private formatSpawnError(info: ServiceInfo, error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    return `${message} (runner: ${path.basename(info.command)})`;
+  }
+
   private registerBuiltinServices() {
     const packaged = this.isPackaged();
     const appRoot = this.getAppRoot();
@@ -68,9 +99,10 @@ export class ServiceManager extends EventEmitter {
       args = (name) => [distEntry, name];
     } else {
       // 开发版：用 tsx 跑 ts 源码
-      command = path.join(this.projectRoot, 'node_modules', '.bin', 'tsx');
+      const runner = this.resolveDevTsxRunner();
+      command = runner.command;
       const entry = path.join(this.projectRoot, 'src', 'index.ts');
-      args = (name) => [entry, name];
+      args = (name) => [...runner.argsPrefix, entry, name];
     }
 
     this.services.set('catscompany', {
@@ -164,12 +196,22 @@ export class ServiceManager extends EventEmitter {
     });
     envVars = runtimeEnvironment.env;
 
-    const child = spawn(svc.info.command, svc.info.args, {
-      cwd: spawnCwd,
-      env: envVars,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
+    let child: ChildProcess;
+    try {
+      child = spawn(svc.info.command, svc.info.args, {
+        cwd: spawnCwd,
+        env: envVars,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+    } catch (err) {
+      const message = this.formatSpawnError(svc.info, err);
+      svc.info.status = 'error';
+      svc.info.lastError = message;
+      svc.process = undefined;
+      this.emit('service-error', name, err);
+      throw new Error(message);
+    }
 
     svc.process = child;
     svc.info.status = 'running';
@@ -201,7 +243,7 @@ export class ServiceManager extends EventEmitter {
 
     child.on('error', (err) => {
       svc.info.status = 'error';
-      svc.info.lastError = err.message;
+      svc.info.lastError = this.formatSpawnError(svc.info, err);
       svc.process = undefined;
       this.emit('service-error', name, err);
     });
