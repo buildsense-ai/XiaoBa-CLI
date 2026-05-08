@@ -39,6 +39,9 @@ export class ServiceManager extends EventEmitter {
 
   private isPackaged(): boolean {
     // Electron 打包版会设置 XIAOBA_APP_ROOT
+    if (process.env.XIAOBA_IS_PACKAGED !== undefined) {
+      return /^(1|true|yes)$/i.test(process.env.XIAOBA_IS_PACKAGED);
+    }
     return !!process.env.XIAOBA_APP_ROOT;
   }
 
@@ -47,7 +50,21 @@ export class ServiceManager extends EventEmitter {
     return process.env.XIAOBA_APP_ROOT || this.projectRoot;
   }
 
-  private resolveDevTsxRunner(): { command: string; argsPrefix: string[] } {
+  private resolveNodeExecutable(runtimeEnvironment: ReturnType<typeof resolveRuntimeEnvironment>): string {
+    const candidates = [
+      process.env.npm_node_execpath,
+      runtimeEnvironment.binaries.node.executable,
+      path.basename(process.execPath).toLowerCase().includes('electron') ? undefined : process.execPath,
+    ];
+
+    for (const candidate of candidates) {
+      if (candidate && fs.existsSync(candidate)) return candidate;
+    }
+
+    return 'node';
+  }
+
+  private resolveDevTsxRunner(nodeExecutable: string): { command: string; argsPrefix: string[] } {
     const packageJsonPath = path.join(this.projectRoot, 'node_modules', 'tsx', 'package.json');
     if (fs.existsSync(packageJsonPath)) {
       try {
@@ -58,7 +75,7 @@ export class ServiceManager extends EventEmitter {
         if (binEntry) {
           const cliPath = path.resolve(path.dirname(packageJsonPath), binEntry);
           if (fs.existsSync(cliPath)) {
-            return { command: process.execPath, argsPrefix: [cliPath] };
+            return { command: nodeExecutable, argsPrefix: [cliPath] };
           }
         }
       } catch {
@@ -99,7 +116,7 @@ export class ServiceManager extends EventEmitter {
       args = (name) => [distEntry, name];
     } else {
       // 开发版：用 tsx 跑 ts 源码
-      const runner = this.resolveDevTsxRunner();
+      const runner = this.resolveDevTsxRunner(this.resolveNodeExecutable(runtimeEnvironment));
       command = runner.command;
       const entry = path.join(this.projectRoot, 'src', 'index.ts');
       args = (name) => [...runner.argsPrefix, entry, name];

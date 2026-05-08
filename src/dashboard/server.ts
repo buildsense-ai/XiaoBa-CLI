@@ -23,7 +23,7 @@ export async function startDashboard(
   controllers: DashboardControllers = {}
 ): Promise<void> {
   const app = express();
-  const projectRoot = process.cwd();
+  const projectRoot = process.env.XIAOBA_APP_ROOT || process.cwd();
   const serviceManager = new ServiceManager(projectRoot);
 
   app.use(express.json());

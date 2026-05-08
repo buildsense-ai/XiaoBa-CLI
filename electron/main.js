@@ -386,6 +386,7 @@ async function startServer() {
 
   // 闂備礁鎲＄粙鎴︽晝閵娾晜鍎?dashboard server app 闂備焦鐪归崝宀€鈧凹鍓熼幃鍧楀礋椤栨稈鎸冮梺鍛婁緱閸撴稓绮旂€靛摜纾介柛鎰劤濞呮瑧绱掓潏銊у磼sar 闂備礁鎲￠崝鏇㈠箯閹寸姵顫?
   process.env.XIAOBA_APP_ROOT = appRoot;
+  process.env.XIAOBA_IS_PACKAGED = app.isPackaged ? '1' : '0';
   process.env.XIAOBA_RUNTIME_ROOT = getRuntimeRoot();
 
   // 闂備胶鎳撻悘姘跺箰閸濄儮鍋撻崹顐€块柟顔ㄥ洤閱囨い鎺戝€婚悰銉╂煟閻樿京顦﹀褌绮欓幃?NODE_PATH 闂佽崵濮崇拋鏌ュ疾濞戙垺鍋ゆ繛鍡樺姈娴溿倖绻涢幋鐐茬劰闁哄被鍊濋弻銈団偓鍦Т琚氭繝銏ｎ潐閿曘垹鐣?node_modules
