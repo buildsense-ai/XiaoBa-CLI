@@ -12,7 +12,7 @@
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "start:cli": "node dist/index.js",
-    "electron:dev": "npm run build && electron .",
+    "electron:dev": "npm run build && node scripts/start-electron-dev.mjs",
     "electron:build": "npm run build && npm run prepare:runtime && electron-builder --config electron-builder.config.cjs --publish never",
     "electron:build:mac": "npm run build && npm run prepare:runtime && electron-builder --config electron-builder.config.cjs --mac --publish never",
     "electron:build:win": "npm run build && npm run prepare:runtime && electron-builder --config electron-builder.config.cjs --win --publish never",
