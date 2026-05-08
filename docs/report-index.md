@@ -19,11 +19,9 @@ This branch keeps the runtime foundation reports and the current productization 
 ## Slide Reports
 
 - `docs/runtime-productization-summary-slides.html`
-- `docs/runtime-productization-summary-slides.pdf`
 - `docs/catsco-subagent-management-summary-slides.html`
-- `docs/catsco-subagent-management-summary-slides.pdf`
 
 ## Notes
 
 - The slimming reports are historical context. New work should use `docs/runtime-productization-plan.md` and `docs/runtime-productization-log.md` as the active planning and progress sources.
-- The PDF reports are generated from the matching HTML files and are intended for quick PR/review reading.
+- The generated PDF reports were removed during repository slimming. Re-export from the matching HTML files only when a review specifically needs PDF attachments.
