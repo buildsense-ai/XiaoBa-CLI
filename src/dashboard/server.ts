@@ -16,6 +16,7 @@ export interface UpdateController {
 
 export interface DashboardControllers {
   updateController?: UpdateController;
+  projectRoot?: string;
 }
 
 export async function startDashboard(
@@ -23,7 +24,8 @@ export async function startDashboard(
   controllers: DashboardControllers = {}
 ): Promise<void> {
   const app = express();
-  const projectRoot = process.env.XIAOBA_APP_ROOT || process.cwd();
+  const envPackaged = /^(1|true|yes)$/i.test(process.env.XIAOBA_IS_PACKAGED || '');
+  const projectRoot = controllers.projectRoot || (envPackaged ? process.env.XIAOBA_APP_ROOT : undefined) || process.cwd();
   const serviceManager = new ServiceManager(projectRoot);
 
   app.use(express.json());

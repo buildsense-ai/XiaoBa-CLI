@@ -405,6 +405,9 @@ async function startServer() {
     runtimeRoot: process.env.XIAOBA_RUNTIME_ROOT,
     isPackaged: app.isPackaged,
   });
+  if (runtimeEnvironment.binaries.node.executable) {
+    runtimeEnvironment.env.XIAOBA_NODE_EXECUTABLE = runtimeEnvironment.binaries.node.executable;
+  }
   Object.assign(process.env, runtimeEnvironment.env);
   console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.node));
   console.log('[runtime]', formatRuntimeSummary(runtimeEnvironment.binaries.python));
@@ -412,7 +415,7 @@ async function startServer() {
 
   // 闂備胶鍎甸弲娑㈡偤閵娧勬殰闁圭虎鍠栭幑鍫曟煏婵炲灝鈧洟鎯佸鍫濈骇闁冲搫鍊婚妴鎺楁煃鐠囧眰鍋㈢€规洏鍎甸、娑橆潩椤戭偅顣筧shboard server
   const { startDashboard } = require(path.join(appRoot, 'dist', 'dashboard', 'server'));
-  await startDashboard(DASHBOARD_PORT, { updateController });
+  await startDashboard(DASHBOARD_PORT, { updateController, projectRoot: appRoot });
 }
 
 function createWindow() {

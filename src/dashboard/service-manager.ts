@@ -52,6 +52,7 @@ export class ServiceManager extends EventEmitter {
 
   private resolveNodeExecutable(runtimeEnvironment: ReturnType<typeof resolveRuntimeEnvironment>): string {
     const candidates = [
+      process.env.XIAOBA_NODE_EXECUTABLE,
       process.env.npm_node_execpath,
       runtimeEnvironment.binaries.node.executable,
       path.basename(process.execPath).toLowerCase().includes('electron') ? undefined : process.execPath,

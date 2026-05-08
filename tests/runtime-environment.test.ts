@@ -90,6 +90,27 @@ describe('resolveRuntimeEnvironment', () => {
     assert.ok(fs.existsSync(path.join(shimRoot, shimName)));
   });
 
+  test('does not overwrite a shim with a self-referential command', (t) => {
+    if (process.platform !== 'win32') {
+      t.skip('Windows .cmd shim recursion is platform-specific');
+      return;
+    }
+
+    const shimPath = path.join(shimRoot, 'node.cmd');
+    const originalContent = `@echo off\r\n"${shimPath}" %*\r\n`;
+    fs.writeFileSync(shimPath, originalContent, 'utf8');
+
+    resolveRuntimeEnvironment({
+      runtimeRoot: testRoot,
+      env: { PATH: `${shimRoot}${path.delimiter}${process.env.PATH || ''}` },
+      includeSystemFallback: true,
+      probeVersion: false,
+      shimDirectory: shimRoot,
+    });
+
+    assert.strictEqual(fs.readFileSync(shimPath, 'utf8'), originalContent);
+  });
+
   test('reports missing python when no bundled or system runtime is available', () => {
     const runtimeEnvironment = resolveRuntimeEnvironment({
       runtimeRoot: testRoot,
