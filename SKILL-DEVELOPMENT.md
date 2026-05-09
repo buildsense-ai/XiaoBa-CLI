@@ -7,7 +7,7 @@
 
 ## 什么是 Skill
 
-Skill 是 XiaoBa-CLI 的扩展模块，用于提供专业能力。
+Skill 是 CatsCo 的扩展模块，用于提供专业能力。
 
 **特点**:
 - Markdown 定义，零代码
@@ -298,7 +298,7 @@ version: 1.0.0
 你:
 1. `bash skills/deploy-agent/scripts/check-ssh.sh server1`
 2. 确认连接成功
-3. `bash skills/deploy-agent/scripts/deploy.sh server1 xiaoba`
+3. `bash skills/deploy-agent/scripts/deploy.sh server1 catsco`
 4. 报告部署状态
 ```
 

@@ -1,4 +1,4 @@
-import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { SkillManager } from '../skills/skill-manager';
 import { SkillInvocationContext } from '../types/skill';
 import { buildSkillActivationSignal } from '../skills/skill-activation-protocol';
@@ -33,7 +33,7 @@ export class SkillTool implements Tool {
     }
   };
 
-  async execute(args: any, context: ToolExecutionContext): Promise<string> {
+  async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { skill: skillName, args: skillArgs = '' } = args;
 
     try {
@@ -41,7 +41,7 @@ export class SkillTool implements Tool {
       if (skillName === 'reload' || skillName === '__reload__') {
         await this.skillManager.loadSkills();
         const count = this.skillManager.getAllSkills().length;
-        return JSON.stringify({ __reload_skills__: true, message: `已重新加载 ${count} 个 skills` });
+        return { ok: true, content: JSON.stringify({ __reload_skills__: true, message: `已重新加载 ${count} 个 skills` }) };
       }
 
       // 加载所有 skills
@@ -54,13 +54,12 @@ export class SkillTool implements Tool {
         const availableSkills = this.skillManager.getAllSkills()
           .map(s => s.metadata.name)
           .join(', ');
-
-        return `错误：未找到 skill "${skillName}"。\n\n可用的 skills: ${availableSkills}`;
+        return { ok: false, errorCode: 'TOOL_NOT_FOUND', message: `错误：未找到 skill "${skillName}"。\n\n可用的 skills: ${availableSkills}` };
       }
 
       // 检查 skill 是否可被用户调用
       if (skill.metadata.userInvocable === false) {
-        return `错误：Skill "${skillName}" 不允许用户调用。`;
+        return { ok: false, errorCode: 'PERMISSION_DENIED', message: `错误：Skill "${skillName}" 不允许用户调用。` };
       }
 
       Logger.info(`执行 Skill: ${skillName}`);
@@ -82,10 +81,10 @@ export class SkillTool implements Tool {
       // 返回结构化激活信号，由 ConversationRunner 统一处理
       const signal = buildSkillActivationSignal(skill, invocationContext);
 
-      return JSON.stringify(signal);
+      return { ok: true, content: JSON.stringify(signal) };
     } catch (error: any) {
       Logger.error(`Skill 执行失败: ${error.message}`);
-      return `Skill 执行失败: ${error.message}`;
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `Skill 执行失败: ${error.message}` };
     }
   }
 }

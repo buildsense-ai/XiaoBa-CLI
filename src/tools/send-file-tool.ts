@@ -1,4 +1,4 @@
-import { Tool, ToolDefinition, ToolExecutionContext } from '../types/tool';
+import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
 
 /**
@@ -10,14 +10,15 @@ import { Logger } from '../utils/logger';
 export class SendFileTool implements Tool {
   definition: ToolDefinition = {
     name: 'send_file',
-    description: `发送文件给用户（用于详细报告、长分析）。
+    description: `Send a local file to the current chat.
 
-使用场景：
-- 内容超过 1000 字的详细报告或分析
-- 包含大量数据、代码、详细说明
-- 发送文件后，最终回复里简短说明"详情看文件"即可
+Use this only when file_path points to a real local file that should be sent to the user.
 
-避免在聊天中发送大段文字，改用文件。`,
+CatsCo file selection rules:
+- tmp/downloads/... is the local cache for files/images received from chat. Do not use it when the user asks for a new/local file or a file they have not sent before.
+- If the user did not provide an exact local path, ask for the path or search likely local folders first.
+- Only resend tmp/downloads/... files when the user explicitly asks to resend/open an earlier chat attachment.
+- After sending a file, keep the final reply short.`,
     transcriptMode: 'outbound_file',
     parameters: {
       type: 'object',
@@ -35,30 +36,29 @@ export class SendFileTool implements Tool {
     },
   };
 
-  async execute(args: any, context: ToolExecutionContext): Promise<string> {
+  async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { file_path, file_name } = args;
     const channel = context.channel;
 
     if (!channel) {
-      return '当前不在聊天会话中，无法发送文件';
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: '当前不在聊天会话中，无法发送文件' };
     }
 
     if (!file_path || typeof file_path !== 'string') {
-      return '文件路径不能为空';
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: '文件路径不能为空' };
     }
 
     if (!file_name || typeof file_name !== 'string') {
-      return '文件名不能为空';
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: '文件名不能为空' };
     }
 
     try {
       await channel.sendFile(channel.chatId, file_path, file_name);
       Logger.info(`[send_file] 已发送: ${file_name}`);
-      return `文件 "${file_name}" 已发送`;
-    } catch (err: any) {
-      const errorMsg = `文件发送失败: ${err.message}`;
-      Logger.error(`[send_file] ${errorMsg}`);
-      return errorMsg;
+      return { ok: true, content: `文件 "${file_name}" 已发送` };
+    } catch (error: any) {
+      Logger.error(`文件发送失败 (sendFile): ${error.message}`);
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `文件发送失败: ${error.message}` };
     }
   }
 }

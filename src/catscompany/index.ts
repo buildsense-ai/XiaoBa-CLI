@@ -9,12 +9,20 @@ import { SubAgentManager } from '../core/sub-agent-manager';
 import { ChannelCallbacks } from '../types/tool';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
 import { randomUUID } from 'crypto';
+import { ConfigManager } from '../utils/config';
+import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
 
 interface PendingAttachment {
   fileName: string;
   localPath: string;
   type: 'file' | 'image';
   receivedAt: number;
+}
+
+interface PendingTextMessage {
+  msg: ParsedCatsMessage;
+  receivedAt: number;
+  timeoutHandle: ReturnType<typeof setTimeout>;
 }
 
 interface PendingAnswer {
@@ -34,6 +42,7 @@ interface QueuedMessage {
 }
 
 const PENDING_ANSWER_TIMEOUT_MS = 120_000;
+const TEXT_ATTACHMENT_COALESCE_MS = Number(process.env.CATSCO_TEXT_ATTACHMENT_COALESCE_MS || 1500);
 
 export function createCatsCompanyRuntime(sessionTTL?: number): AdapterRuntimeBundle {
   return createAdapterRuntime({
@@ -60,6 +69,8 @@ export class CatsCompanyBot {
   private pendingAnswerBySession = new Map<string, string>();
   /** 等待用户后续指令的附件队列，key 为 sessionKey */
   private pendingAttachments = new Map<string, PendingAttachment[]>();
+  /** Text can arrive just before the image/file event; hold it briefly so one user turn stays together. */
+  private pendingTextMessages = new Map<string, PendingTextMessage>();
   /** 主会话忙时的消息队列，key = sessionKey */
   private messageQueue = new Map<string, QueuedMessage[]>();
   /** Bot 自身的 uid，用于过滤自己发出的消息 */
@@ -196,6 +207,13 @@ export class CatsCompanyBot {
     }
 
     // 获取或创建会话
+    const coalescedMsg = this.coalesceIncomingMessage(key, msg);
+    if (!coalescedMsg) return;
+
+    await this.processParsedMessage(coalescedMsg, key);
+  }
+
+  private async processParsedMessage(msg: ParsedCatsMessage, key: string): Promise<void> {
     const session = this.sessionManager.getOrCreate(key);
 
     // 注册持久化回调到 SubAgentManager
@@ -363,6 +381,73 @@ export class CatsCompanyBot {
     await this.drainMessageQueue(key);
   }
 
+  private coalesceIncomingMessage(sessionKey: string, msg: ParsedCatsMessage): ParsedCatsMessage | null {
+    if (msg.file) {
+      const pendingText = this.pendingTextMessages.get(sessionKey);
+      if (
+        pendingText
+        && pendingText.msg.senderId === msg.senderId
+        && pendingText.msg.topic === msg.topic
+      ) {
+        clearTimeout(pendingText.timeoutHandle);
+        this.pendingTextMessages.delete(sessionKey);
+
+        const mergedText = pendingText.msg.text.trim() || msg.text;
+        Logger.info(
+          `[${sessionKey}] 合并延迟文本与随后到达的附件: ${msg.file.fileName} ` +
+          `(wait=${Date.now() - pendingText.receivedAt}ms)`
+        );
+        return { ...msg, text: mergedText };
+      }
+
+      return msg;
+    }
+
+    if (!this.shouldDelayTextForAttachment(sessionKey, msg)) {
+      return msg;
+    }
+
+    this.deferTextForPossibleAttachment(sessionKey, msg);
+    return null;
+  }
+
+  private shouldDelayTextForAttachment(sessionKey: string, msg: ParsedCatsMessage): boolean {
+    if (TEXT_ATTACHMENT_COALESCE_MS <= 0) return false;
+    if (!msg.text.trim()) return false;
+    if (msg.text.trim().startsWith('/')) return false;
+    if ((this.pendingAttachments.get(sessionKey)?.length ?? 0) > 0) return false;
+    return true;
+  }
+
+  private deferTextForPossibleAttachment(sessionKey: string, msg: ParsedCatsMessage): void {
+    const existing = this.pendingTextMessages.get(sessionKey);
+    if (existing) {
+      clearTimeout(existing.timeoutHandle);
+      this.pendingTextMessages.delete(sessionKey);
+      void this.processParsedMessage(existing.msg, sessionKey).catch((error: any) => {
+        Logger.error(`[${sessionKey}] 处理被新文本顶出的延迟消息失败: ${error.message}`);
+      });
+    }
+
+    const timeoutHandle = setTimeout(() => {
+      const pending = this.pendingTextMessages.get(sessionKey);
+      if (!pending || pending.msg !== msg) return;
+
+      this.pendingTextMessages.delete(sessionKey);
+      void this.processParsedMessage(msg, sessionKey).catch((error: any) => {
+        Logger.error(`[${sessionKey}] 处理延迟文本消息失败: ${error.message}`);
+      });
+    }, TEXT_ATTACHMENT_COALESCE_MS);
+
+    this.pendingTextMessages.set(sessionKey, {
+      msg,
+      receivedAt: Date.now(),
+      timeoutHandle,
+    });
+
+    Logger.info(`[${sessionKey}] 文本消息暂存 ${TEXT_ATTACHMENT_COALESCE_MS}ms，等待可能随后到达的附件`);
+  }
+
   /**
    * 从 MessageContext 解析为 ParsedCatsMessage
    */
@@ -513,6 +598,10 @@ export class CatsCompanyBot {
       this.clearPendingAnswerById(pendingId);
     }
     this.pendingAnswerBySession.clear();
+    for (const pending of this.pendingTextMessages.values()) {
+      clearTimeout(pending.timeoutHandle);
+    }
+    this.pendingTextMessages.clear();
     this.pendingAttachments.clear();
     this.messageQueue.clear();
     Logger.info('CatsCo agent 已停止');
@@ -535,6 +624,10 @@ export class CatsCompanyBot {
   private async buildMultimodalMessage(text: string, attachments: PendingAttachment[]): Promise<import('../types').ContentBlock[]> {
     const { createImageBlock } = require('../utils/image-utils');
     const blocks: import('../types').ContentBlock[] = [];
+    const config = ConfigManager.getConfigReadonly();
+    const primaryModelCanSeeImages = isPrimaryModelVisionCapable(config);
+    const currentImagePaths: string[] = [];
+    const currentFilePaths: string[] = [];
 
     if (text) {
       blocks.push({ type: 'text', text });
@@ -542,6 +635,11 @@ export class CatsCompanyBot {
 
     for (const att of attachments) {
       if (att.type === 'image') {
+        if (!primaryModelCanSeeImages) {
+          currentImagePaths.push(`[Current image] ${att.fileName}\n[Current image path] ${att.localPath}`);
+          continue;
+        }
+
         const imgBlock = await createImageBlock(att.localPath);
         if (imgBlock) {
           blocks.push(imgBlock);
@@ -555,6 +653,31 @@ export class CatsCompanyBot {
     }
 
     Logger.info(`[多模态] 构建完成，共 ${blocks.length} 个块: ${blocks.map(b => b.type).join(', ')}`);
+    if (currentImagePaths.length > 0) {
+      blocks.push({
+        type: 'text',
+        text: [
+          '[Current user turn contains image attachments]',
+          'The primary model cannot directly inspect image pixels in this runtime.',
+          'If the user request depends on image content, call read_file on the current image path below.',
+          'Use only the current image path(s) listed here. Do not use old tmp/downloads paths, old image URLs, old filenames, or prior image descriptions.',
+          currentImagePaths.join('\n\n'),
+        ].join('\n'),
+      });
+      Logger.info(`[CatsCo] Primary model is text-only; exposed ${currentImagePaths.length} current image path(s) for read_file`);
+    }
+
+    if (currentFilePaths.length > 0) {
+      blocks.push({
+        type: 'text',
+        text: [
+          '[Current user turn contains file attachments]',
+          'If file content is needed, use only the current file path(s) below. Do not reuse historical attachment paths.',
+          currentFilePaths.join('\n\n'),
+        ].join('\n'),
+      });
+    }
+
     return blocks;
   }
 

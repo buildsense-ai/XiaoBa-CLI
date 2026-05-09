@@ -39,7 +39,7 @@ export class DailyReportGenerator {
     const sessions = this.scanLogs(date);
 
     if (sessions.length === 0) {
-      return `# XiaoBa 工作日报 - ${date}\n\n今天没有记录到任何会话。`;
+      return `# CatsCo 工作日报 - ${date}\n\n今天没有记录到任何会话。`;
     }
 
     const grouped = this.groupByType(sessions);
@@ -212,7 +212,7 @@ export class DailyReportGenerator {
     grouped: Record<string, SessionSummary[]>,
     stats: any
   ): string {
-    let report = `# XiaoBa 工作日报 - ${date}\n\n`;
+    let report = `# CatsCo 工作日报 - ${date}\n\n`;
     report += `## 📊 统计概览\n`;
     report += `- 总会话数：${stats.total_sessions}（个人 ${stats.chat_sessions}，团队 ${stats.team_sessions}）\n`;
     report += `- 总交互轮次：${stats.total_turns}\n`;

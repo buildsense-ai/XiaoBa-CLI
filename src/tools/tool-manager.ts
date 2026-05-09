@@ -1,4 +1,4 @@
-import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor } from '../types/tool';
+import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
 import { ReadTool } from './read-tool';
 import { WriteTool } from './write-tool';
@@ -17,7 +17,7 @@ import { ResumeSubagentTool } from './resume-subagent-tool';
 import { DEFAULT_TOOL_NAMES } from './default-tool-names';
 
 /**
- * 工具名别名映射（Claude Code 工具名 → XiaoBa 内部注册名）
+ * 工具名别名映射（Claude Code 工具名 → CatsCo 内部注册名）
  */
 const TOOL_NAME_ALIASES: Record<string, string> = {
   Bash: 'execute_shell',
@@ -165,17 +165,16 @@ export class ToolManager implements ToolExecutor {
 
       const output = await tool.execute(args, context);
 
-      // 处理特殊返回格式（如图片需要额外消息）
-      if (output && typeof output === 'object' && 'toolContent' in output && 'newMessages' in output) {
-        const specialOutput = output as { toolContent: string; newMessages: any[] };
+      // 失败结果：统一走 ok=false 分支
+      if (!output.ok) {
         return {
           tool_call_id: toolCall.id,
           role: 'tool',
           name: toolCall.function.name,
-          content: specialOutput.toolContent,
-          ok: true,
-          controlSignal: tool.definition.controlMode,
-          newMessages: specialOutput.newMessages,
+          content: output.message,
+          ok: false,
+          errorCode: output.errorCode,
+          retryable: output.retryable ?? isRateLimitLikeMessage(output.message),
         };
       }
 
@@ -183,7 +182,7 @@ export class ToolManager implements ToolExecutor {
         tool_call_id: toolCall.id,
         role: 'tool',
         name: toolCall.function.name,
-        content: output,
+        content: output.content,
         ok: true,
         controlSignal: tool.definition.controlMode,
       };

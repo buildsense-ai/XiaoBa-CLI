@@ -26,8 +26,8 @@ npm run electron:build:mac
 ### 4. 输出文件
 
 构建完成后，DMG 安装包会生成在 `release` 目录：
-- `XiaoBa-{version}-arm64.dmg` (Apple Silicon)
-- `XiaoBa-{version}-x64.dmg` (Intel)
+- `CatsCo-{version}-arm64.dmg` (Apple Silicon)
+- `CatsCo-{version}-x64.dmg` (Intel)
 
 ## 注意事项
 

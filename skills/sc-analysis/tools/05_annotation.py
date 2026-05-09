@@ -46,7 +46,7 @@ Step 05: 细胞类型注释
         --method manual --annotations "0:T_cell,1:B_cell,2:Macrophage"
 """
 
-__author__ = "XiaoBa"
+__author__ = "CatsCo"
 __version__ = "3.0.0"
 import os
 import sys

@@ -307,6 +307,39 @@ describe('dashboard readiness and service preflight API', () => {
     assert.equal(text.includes('sk-readiness-secret'), false);
     assert.equal(text.includes('catsco-agent-secret'), false);
   });
+
+  const windowsOnlyTest = process.platform === 'win32' ? test : test.skip;
+
+  windowsOnlyTest('Windows command preflight accepts PATHEXT executable lookup', async () => {
+    const previousPath = process.env.PATH;
+    const previousPathExt = process.env.PATHEXT;
+    const binDir = path.join(testRoot, 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, 'node.exe'), '');
+    services.catscompany.command = 'node';
+    process.env.PATH = `${binDir}${path.delimiter}${previousPath || ''}`;
+    process.env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
+    writeEnv([
+      'GAUZ_LLM_PROVIDER=anthropic',
+      'GAUZ_LLM_API_BASE=https://model.example.test/v1/messages',
+      'GAUZ_LLM_API_KEY=sk-readiness-secret',
+      'GAUZ_LLM_MODEL=MiniMax-M2.7-highspeed',
+      'CATSCO_SERVER_URL=wss://app.catsco.cc/v0/channels',
+      'CATSCO_API_KEY=catsco-agent-secret',
+    ]);
+
+    try {
+      const response = await fetch(`${baseUrl}/api/services/catscompany/preflight`, { method: 'POST' });
+      const data = await response.json() as any;
+      assert.equal(response.status, 200);
+      assert.equal(data.blockingChecks.includes('runtime.command'), false);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousPathExt === undefined) delete process.env.PATHEXT;
+      else process.env.PATHEXT = previousPathExt;
+    }
+  });
 });
 
 function createServices(): Record<string, ServiceInfo> {

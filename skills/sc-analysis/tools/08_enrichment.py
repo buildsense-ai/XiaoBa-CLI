@@ -26,7 +26,7 @@ Step 08: 功能富集分析
     - *.png/pdf                 : 可视化图
 """
 
-__author__ = "XiaoBa"
+__author__ = "CatsCo"
 __version__ = "3.2.0"
 
 import scanpy as sc

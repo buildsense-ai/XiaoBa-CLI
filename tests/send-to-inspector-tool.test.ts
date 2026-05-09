@@ -116,8 +116,10 @@ describe('SendToInspectorTool', () => {
         },
       );
 
-      assert.match(output, /已上传 Inspector 诊断包/);
-      assert.match(output, /caseId: case-demo-1/);
+      assert.strictEqual(output.ok, true);
+      const content = output.content as string;
+      assert.match(content, /已上传 Inspector 诊断包/);
+      assert.match(content, /caseId: case-demo-1/);
       assert.ok(receivedBody);
       assert.strictEqual(receivedBody.source, 'send_to_inspector_tool');
       assert.strictEqual(receivedBody.analysisType, 'runtime');
@@ -144,20 +146,18 @@ describe('SendToInspectorTool', () => {
 
     const tool = new SendToInspectorTool();
 
-    await assert.rejects(
-      () =>
-        tool.execute(
-          {
-            analysis_type: 'runtime',
-            log_paths: ['outside.txt'],
-          },
-          {
-            workingDirectory: testRoot,
-            conversationHistory: [],
-          },
-        ),
-      /不允许上传非日志文件/,
+    const result = await tool.execute(
+      {
+        analysis_type: 'runtime',
+        log_paths: ['outside.txt'],
+      },
+      {
+        workingDirectory: testRoot,
+        conversationHistory: [],
+      },
     );
+    assert.strictEqual(result.ok, false);
+    assert.ok(result.message.includes('不允许上传非日志文件'));
   });
 });
 

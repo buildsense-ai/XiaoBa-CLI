@@ -2,7 +2,7 @@
 name: sc-analysis
 description: "单细胞RNA-seq分析完整流程。从原始数据到可发表图表，智能判断当前阶段并执行，16步覆盖数据探查、QC、整合、聚类、注释、Marker、差异、富集、轨迹、Velocity、SCENIC、CellChat全流程。"
 category: 科研
-author: XiaoBa
+author: CatsCo
 version: 3.0.0
 invocable: both
 argument-hint: "<数据路径>"

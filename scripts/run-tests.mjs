@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -11,13 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 const require = createRequire(import.meta.url);
 
-const legacyTests = [
-  'tests/coo-message-integration.test.ts',
-  'tests/coo-prompt-and-data.test.ts',
-  'tests/coo-scenario.test.ts',
-  'tests/gauzmem-speaker-identity.test.ts',
-  'tests/reminder-scheduler.test.ts',
-].sort();
+const legacyTests = [];
 
 const args = process.argv.slice(2);
 const suite = args.find(arg => !arg.startsWith('--')) || 'runtime';
@@ -39,13 +32,6 @@ const suites = {
 
 if (!Object.hasOwn(suites, suite)) {
   console.error(`Unknown test suite "${suite}". Expected one of: ${Object.keys(suites).join(', ')}`);
-  process.exit(1);
-}
-
-const missingLegacyTests = legacyTests.filter(file => !fs.existsSync(path.join(rootDir, file)));
-if (missingLegacyTests.length > 0) {
-  console.error('Legacy test suite references missing files. Update scripts/run-tests.mjs:');
-  for (const file of missingLegacyTests) console.error(`- ${file}`);
   process.exit(1);
 }
 

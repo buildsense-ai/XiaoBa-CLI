@@ -35,7 +35,7 @@ Step 12: 细胞通讯分析
     python tools/12_cellchat.py -i annot/annotated.h5ad -o chat/ --species mouse
 """
 
-__author__ = "XiaoBa"
+__author__ = "CatsCo"
 __version__ = "3.0.0"
 import os
 import sys

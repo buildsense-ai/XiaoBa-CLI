@@ -36,7 +36,7 @@ Step 09: SCENIC转录因子分析
     python tools/09_scenic.py -i annot/annotated.h5ad -o scenic/ --species mouse
 """
 
-__author__ = "XiaoBa"
+__author__ = "CatsCo"
 __version__ = "3.0.0"
 import os
 import sys

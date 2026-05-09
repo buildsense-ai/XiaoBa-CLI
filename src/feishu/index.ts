@@ -119,7 +119,7 @@ export class FeishuBot {
     } else {
       const aliases = (config.botAliases && config.botAliases.length > 0)
         ? config.botAliases
-        : ['小八', 'xiaoba'];
+        : ['CatsCo', 'catsco', '小八', 'xiaoba'];
       this.handler.setMentionAliases(aliases);
       Logger.warning(`未配置 FEISHU_BOT_OPEN_ID，群聊 @ 将使用别名匹配: ${aliases.join(', ')}`);
     }

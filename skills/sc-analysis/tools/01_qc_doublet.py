@@ -49,7 +49,7 @@ Step 01: QC质控 + Doublet检测
     python tools/01_qc_doublet.py -i /data/10X/run1/ -s S1 -o qc/
 """
 
-__author__ = "XiaoBa"
+__author__ = "CatsCo"
 __version__ = "3.1.0"
 
 import os

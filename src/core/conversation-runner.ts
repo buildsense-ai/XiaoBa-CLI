@@ -69,6 +69,13 @@ export interface RunResult {
   newMessages: Message[];
 }
 
+export type PendingUserInputProvider = () =>
+  | string
+  | ContentBlock[]
+  | null
+  | undefined
+  | Promise<string | ContentBlock[] | null | undefined>;
+
 interface ToolExecutionRecord {
   toolCall: ToolCall;
   toolName: string;
@@ -91,6 +98,8 @@ export interface RunnerOptions {
   toolExecutionContext?: Partial<ToolExecutionContext>;
   /** 会话已激活 skill 名称（可选） */
   initialSkillName?: string;
+  /** Pulls user messages that arrived while the current run was busy. */
+  pendingUserInputProvider?: PendingUserInputProvider;
 }
 
 /**
@@ -109,6 +118,7 @@ export class ConversationRunner {
   private activeSkillName?: string;
   private maxPromptTokens: number;
   private sessionLabel: string;
+  private pendingUserInputProvider?: PendingUserInputProvider;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -132,6 +142,7 @@ export class ConversationRunner {
     this.enableCompression = options?.enableCompression ?? true;
     this.toolExecutionContext = options?.toolExecutionContext;
     this.activeSkillName = options?.initialSkillName;
+    this.pendingUserInputProvider = options?.pendingUserInputProvider;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.sessionLabel = this.toolExecutionContext?.sessionId
@@ -221,6 +232,10 @@ export class ConversationRunner {
           newMessages.push(finalAssistantMessage);
         }
 
+        if (await this.appendPendingUserInput(messages, newMessages, turns)) {
+          continue;
+        }
+
         if (this.isMessageSurface()) {
           let finalText = response.content || '';
           finalText = finalText.replace(/^\[已发送信息\]\s*/, '');
@@ -287,6 +302,7 @@ export class ConversationRunner {
         const toolName = toolCall.function.name;
         const toolUseId = toolCall.id;
         const toolInput = JSON.parse(toolCall.function.arguments);
+        const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
         callbacks?.onToolStart?.(toolName, toolUseId, toolInput);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
         const activeToolNames = allTools.map(tool => tool.name);
@@ -308,7 +324,6 @@ export class ConversationRunner {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
         callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
 
-        const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
         if (
           (transcriptMode === 'outbound_message' || transcriptMode === 'outbound_file')
           && result.ok
@@ -388,6 +403,8 @@ export class ConversationRunner {
           newMessages,
         };
       }
+
+      await this.appendPendingUserInput(messages, newMessages, turns);
     }
 
     Logger.warning(`达到最大工具调用轮次 (${this.maxTurns})`);
@@ -397,6 +414,31 @@ export class ConversationRunner {
       messages,
       newMessages,
     };
+  }
+
+  private async appendPendingUserInput(
+    messages: Message[],
+    newMessages: Message[],
+    turns: number,
+  ): Promise<boolean> {
+    if (!this.pendingUserInputProvider) return false;
+
+    const pending = await this.pendingUserInputProvider();
+    if (!pending) return false;
+
+    const userMessage: Message = { role: 'user', content: pending };
+    messages.push(userMessage);
+    newMessages.push(userMessage);
+
+    const preview = typeof pending === 'string'
+      ? pending
+      : pending.map(block => block.type === 'text' ? block.text : '[image]').join('');
+    Logger.info(
+      `[${this.sessionLabel}Turn ${turns}] 已合并处理期间新到的用户消息: ` +
+      ConversationRunner.truncateForLog(preview, 240)
+    );
+
+    return true;
   }
 
   /**
@@ -480,7 +522,15 @@ export class ConversationRunner {
         messages.push({
           role: 'tool',
           content: [
-            { type: 'text', text: `已读取图片: ${imageData.filePath}` },
+            {
+              type: 'text',
+              text: [
+                `Image file read: ${imageData.filePath}`,
+                'Use only the image attached in this same tool result.',
+                'Do not describe old images, file names, or prior conversation context.',
+                'If visual details are unclear, say you are not sure.',
+              ].join('\n'),
+            },
             imageData.imageBlock,
           ],
           tool_call_id: record.result.tool_call_id,

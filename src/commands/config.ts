@@ -4,7 +4,7 @@ import { ConfigManager } from '../utils/config';
 import { styles } from '../theme/colors';
 
 export async function configCommand(): Promise<void> {
-  Logger.title('XiaoBa 配置');
+  Logger.title('CatsCo 配置');
 
   const currentConfig = ConfigManager.getConfig();
 

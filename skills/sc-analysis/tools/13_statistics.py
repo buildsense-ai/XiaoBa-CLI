@@ -39,7 +39,7 @@ Step 13: 统计分析
     python tools/13_statistics.py -i annot/annotated.h5ad -o stats/ --groupby group
 """
 
-__author__ = "XiaoBa"
+__author__ = "CatsCo"
 __version__ = "3.0.0"
 import os
 import sys

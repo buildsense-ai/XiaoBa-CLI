@@ -108,8 +108,8 @@ export const DASHBOARD_SETTING_DEFINITIONS: DashboardSettingDefinition[] = [
   {
     id: 'catsco.wsUrl',
     group: 'catsco',
-    label: 'CatsCo WebSocket 地址',
-    description: 'CatsCo connector 使用的 WebSocket 地址。',
+    label: 'CatsCo 服务器 WebSocket 地址',
+    description: 'CatsCo 桌面端 connector 连接服务器时使用的 WebSocket 地址。',
     envKey: 'CATSCO_SERVER_URL',
     type: 'url',
     required: false,

@@ -36,7 +36,7 @@ Step 06: Marker基因鉴定
     python tools/06_markers.py -i annot/annotated.h5ad -o markers/
 """
 
-__author__ = "XiaoBa"
+__author__ = "CatsCo"
 __version__ = "3.1.0"
 
 import os

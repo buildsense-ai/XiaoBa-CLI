@@ -2,7 +2,7 @@
 name: remember
 description: 记住用户的个性化偏好并持久化。当用户要求"记住"、"改名"、"以后叫"、"设置偏好"、"改变行为"时使用此 skill
 version: 1.0.0
-author: XiaoBa Team
+author: CatsCo Team
 user_invocable: true
 ---
 

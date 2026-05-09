@@ -1,22 +1,17 @@
 # ============================================
-#  XiaoBa 一键安装脚本 (Windows PowerShell)
+#  CatsCo 一键安装脚本 (Windows PowerShell)
 #  用法: 右键以管理员身份运行，或在 PowerShell 中执行:
 #  irm https://raw.githubusercontent.com/buildsense-ai/XiaoBa-CLI/main/install.ps1 | iex
 # ============================================
 
 $ErrorActionPreference = "Stop"
 $RepoUrl = "https://github.com/buildsense-ai/XiaoBa-CLI.git"
-$InstallDir = "$env:USERPROFILE\xiaoba"
+$InstallDir = "$env:USERPROFILE\catsco"
 $DashboardPort = 3800
 
 function Write-Banner {
     Write-Host ""
-    Write-Host "  ██╗  ██╗██╗ █████╗  ██████╗ ██████╗  █████╗" -ForegroundColor Cyan
-    Write-Host "  ╚██╗██╔╝██║██╔══██╗██╔═══██╗██╔══██╗██╔══██╗" -ForegroundColor Cyan
-    Write-Host "   ╚███╔╝ ██║███████║██║   ██║██████╔╝███████║" -ForegroundColor Cyan
-    Write-Host "   ██╔██╗ ██║██╔══██║██║   ██║██╔══██╗██╔══██║" -ForegroundColor Cyan
-    Write-Host "  ██╔╝ ██╗██║██║  ██║╚██████╔╝██████╔╝██║  ██║" -ForegroundColor Cyan
-    Write-Host "  ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝" -ForegroundColor Cyan
+    Write-Host "  CatsCo" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  一键安装程序 (Windows)" -ForegroundColor White
     Write-Host ""
@@ -74,7 +69,7 @@ function Setup-Repo {
         git pull --ff-only 2>$null
         if ($LASTEXITCODE -ne 0) { Warn "更新失败，使用现有版本继续" }
     } else {
-        Log "正在下载 XiaoBa..."
+        Log "正在下载 CatsCo..."
         git clone $RepoUrl $InstallDir
         Set-Location $InstallDir
     }
@@ -107,10 +102,10 @@ function Init-Config {
 # ---- 创建启动脚本 ----
 function Create-Launcher {
     $launcher = "$InstallDir\start.bat"
-    @"
+@"
 @echo off
 cd /d "%~dp0"
-echo 正在启动 XiaoBa Dashboard...
+echo 正在启动 CatsCo Dashboard...
 start http://localhost:$DashboardPort
 npx tsx src/index.ts dashboard
 "@ | Out-File -FilePath $launcher -Encoding ASCII
@@ -120,7 +115,7 @@ npx tsx src/index.ts dashboard
     try {
         $desktop = [Environment]::GetFolderPath("Desktop")
         $shell = New-Object -ComObject WScript.Shell
-        $shortcut = $shell.CreateShortcut("$desktop\XiaoBa Dashboard.lnk")
+        $shortcut = $shell.CreateShortcut("$desktop\CatsCo Dashboard.lnk")
         $shortcut.TargetPath = $launcher
         $shortcut.WorkingDirectory = $InstallDir
         $shortcut.IconLocation = "shell32.dll,21"
@@ -144,11 +139,11 @@ Create-Launcher
 
 Write-Host ""
 Write-Host "════════════════════════════════════════" -ForegroundColor Green
-Write-Host "  XiaoBa 安装完成！" -ForegroundColor Green
+Write-Host "  CatsCo 安装完成！" -ForegroundColor Green
 Write-Host "════════════════════════════════════════" -ForegroundColor Green
 Write-Host ""
 Write-Host "  安装目录: $InstallDir"
-Write-Host "  启动方式: 双击桌面 'XiaoBa Dashboard' 快捷方式"
+Write-Host "  启动方式: 双击桌面 'CatsCo Dashboard' 快捷方式"
 Write-Host "  或运行:   $InstallDir\start.bat"
 Write-Host "  Dashboard: http://localhost:$DashboardPort"
 Write-Host ""

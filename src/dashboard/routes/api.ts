@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { SkillManager } from '../../skills/skill-manager';
+import type { Skill } from '../../types/skill';
 import { ConfigManager } from '../../utils/config';
 import { ServiceManager } from '../service-manager';
 import type { UpdateController } from '../server';
@@ -7,11 +8,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
-import * as https from 'https';
-import * as http from 'http';
 import { PathResolver } from '../../utils/path-resolver';
-import matter from 'gray-matter';
-import { execSync } from 'child_process';
 import { APP_VERSION } from '../../version';
 import { createRuntimeConfigSnapshot } from '../../runtime/runtime-config-snapshot';
 import {
@@ -36,6 +33,17 @@ import {
 
 const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cc';
 const DEFAULT_CATSCO_WS_URL = 'wss://app.catsco.cc/v0/channels';
+const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
+const SYSTEM_SKILL_DIRS = new Set(['_tool-skills']);
+
+type SkillSource = 'system' | 'bundled' | 'user';
+
+interface SkillManagementInfo {
+  source: SkillSource;
+  protected: boolean;
+  canDisable: boolean;
+  canDelete: boolean;
+}
 
 interface CatsAuthState {
   token?: string;
@@ -265,26 +273,6 @@ function persistCatsUserSession(state: CatsAuthState, login: any): void {
     CATSCOMPANY_USER_NAME: login.username || '',
     CATSCOMPANY_USER_DISPLAY_NAME: login.display_name || login.username || '',
   });
-}
-
-/**
- * 安装 skill 的 npm 依赖（读取 SKILL.md 的 npm-dependencies 字段）
- */
-function installSkillNpmDeps(skillDir: string): void {
-  const skillMdPath = ['SKILL.md', 'SKILL.MD'].map(f => path.join(skillDir, f)).find(f => fs.existsSync(f));
-  if (!skillMdPath) return;
-
-  try {
-    const { data } = matter(fs.readFileSync(skillMdPath, 'utf-8'));
-    const deps: string[] = data['npm-dependencies'];
-    if (!deps || !Array.isArray(deps) || deps.length === 0) return;
-
-    const { execSync } = require('child_process');
-    const projectRoot = process.cwd();
-    execSync(`npm install --no-save ${deps.join(' ')}`, { cwd: projectRoot, timeout: 120000 });
-  } catch (e: any) {
-    // npm 安装失败不阻塞
-  }
 }
 
 export function createApiRouter(serviceManager: ServiceManager, updateController?: UpdateController): Router {
@@ -603,17 +591,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
     try {
       const manager = new SkillManager();
       await manager.loadSkills();
-      const active = manager.getAllSkills().map(s => ({
-        name: s.metadata.name,
-        description: s.metadata.description,
-        argumentHint: s.metadata.argumentHint || null,
-        userInvocable: s.metadata.userInvocable !== false,
-        autoInvocable: s.metadata.autoInvocable !== false,
-        maxTurns: s.metadata.maxTurns || null,
-        path: s.filePath,
-        files: getSkillFiles(s.filePath),
-        enabled: true,
-      }));
+      const active = manager.getAllSkills().map(skillToDashboardPayload);
       const disabled = findAllDisabledSkills(PathResolver.getSkillsPath());
       res.json([...active, ...disabled]);
     } catch (e: any) {
@@ -646,12 +624,14 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       await manager.loadSkills();
       const skill = manager.getSkill(req.params.name);
       if (!skill) return res.status(404).json({ error: 'Skill not found' });
+      const management = getSkillManagementInfo(skill.filePath);
       res.json({
         name: skill.metadata.name,
         description: skill.metadata.description,
         content: skill.content,
         path: skill.filePath,
         files: getSkillFiles(skill.filePath),
+        ...management,
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -666,10 +646,18 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       if (!skill) {
         const disabled = findDisabledSkillByName(PathResolver.getSkillsPath(), req.params.name);
         if (disabled) {
+          const management = getSkillManagementInfo(disabled);
+          if (!management.canDelete) {
+            return res.status(403).json({ error: formatSkillDeleteBlockedMessage(management) });
+          }
           fs.rmSync(path.dirname(disabled), { recursive: true, force: true });
           return res.json({ ok: true });
         }
         return res.status(404).json({ error: 'Skill not found' });
+      }
+      const management = getSkillManagementInfo(skill.filePath);
+      if (!management.canDelete) {
+        return res.status(403).json({ error: formatSkillDeleteBlockedMessage(management) });
       }
       fs.rmSync(path.dirname(skill.filePath), { recursive: true, force: true });
       res.json({ ok: true });
@@ -684,6 +672,10 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       await manager.loadSkills();
       const skill = manager.getSkill(req.params.name);
       if (!skill) return res.status(404).json({ error: 'Skill not found' });
+      const management = getSkillManagementInfo(skill.filePath);
+      if (!management.canDisable) {
+        return res.status(403).json({ error: '系统 Skill 不能禁用。' });
+      }
       fs.renameSync(skill.filePath, skill.filePath + '.disabled');
       res.json({ ok: true });
     } catch (e: any) {
@@ -702,110 +694,34 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
     }
   });
 
-  // ==================== Skill Store ====================
+  // ==================== Local Skill Management ====================
 
-  // GET /api/store - 可安装的skills（本地+远程registry合并）
-  // ?refresh=1 强制刷新远程缓存
-  router.get('/store', async (req, res) => {
+  // GET /api/store - local installed and disabled skills only
+  router.get('/store', async (_req, res) => {
     try {
-      if (req.query.refresh === '1') {
-        remoteRegistryCache = null;
-        remoteRegistryCacheTime = 0;
-      }
-      const local = loadRegistry();
-      const remote = await fetchRemoteRegistry();
-      const registry = mergeRegistries(local, remote);
-      const manager = new SkillManager();
-      await manager.loadSkills();
-      const installed = new Set(manager.getAllSkills().map(s => s.metadata.name));
-      // 也算上disabled的
-      const disabled = findAllDisabledSkills(PathResolver.getSkillsPath());
-      disabled.forEach(s => installed.add(s.name));
-
-      const available = registry.map(entry => ({
-        ...entry,
-        installed: installed.has(entry.name),
-      }));
-      res.json(available);
+      const localSkillManager = new SkillManager();
+      await localSkillManager.loadSkills();
+      const activeSkills = localSkillManager.getAllSkills().map(skillToDashboardPayload);
+      const disabledSkills = findAllDisabledSkills(PathResolver.getSkillsPath());
+      res.json([...activeSkills, ...disabledSkills]);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   });
 
-  // POST /api/store/install - 安装skill
-  router.post('/store/install', async (req, res) => {
+  // POST /api/store/install - remote skill install is offline
+  router.post('/store/install', async (_req, res) => {
     try {
-      const { name, repo, dir } = req.body;
-      const skillsPath = PathResolver.getSkillsPath();
-      const targetDir = path.join(skillsPath, dir || name);
-
-      // 防止路径逃逸
-      if (!targetDir.startsWith(skillsPath)) {
-        return res.status(400).json({ error: '非法路径' });
-      }
-
-      if (fs.existsSync(targetDir)) {
-        return res.status(400).json({ error: `Skill "${name}" 已存在` });
-      }
-
-      if (repo === 'local') {
-        return res.json({ ok: true, message: 'Skill already bundled' });
-      }
-
-      PathResolver.ensureDir(skillsPath);
-      const warnings: string[] = [];
-
-      // 优先用 ZIP 下载（不需要 git），失败时回退 git clone
-      const installed = await installFromGitHub(repo, targetDir, warnings);
-      if (!installed) {
-        return res.status(500).json({ error: 'Skill 安装失败，请检查 URL 是否正确' });
-      }
-
-      // 安装依赖
-      installPythonDeps(targetDir, warnings);
-      installSkillNpmDeps(targetDir);
-
-      res.json({ ok: true, warnings: warnings.length > 0 ? warnings : undefined });
+      res.status(410).json({ error: 'Remote skill install has been disabled. Manage installed skills locally.' });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   });
 
-  // POST /api/store/install-github - 手动输入GitHub地址安装
-  router.post('/store/install-github', async (req, res) => {
+  // POST /api/store/install-github - remote skill install is offline
+  router.post('/store/install-github', async (_req, res) => {
     try {
-      const { url } = req.body;
-      if (!url) return res.status(400).json({ error: 'URL is required' });
-
-      // 从URL提取仓库名
-      const repoName = url.replace(/\.git$/, '').split('/').pop();
-      if (!repoName) return res.status(400).json({ error: 'Invalid URL' });
-
-      const skillsPath = PathResolver.getSkillsPath();
-      const targetDir = path.join(skillsPath, repoName);
-
-      // 防止路径逃逸
-      if (!targetDir.startsWith(skillsPath)) {
-        return res.status(400).json({ error: '非法路径' });
-      }
-
-      if (fs.existsSync(targetDir)) {
-        return res.status(400).json({ error: `目录 "${repoName}" 已存在` });
-      }
-
-      PathResolver.ensureDir(skillsPath);
-      const warnings: string[] = [];
-
-      const installed = await installFromGitHub(url, targetDir, warnings);
-      if (!installed) {
-        return res.status(500).json({ error: 'Skill 安装失败，请检查 URL 是否正确' });
-      }
-
-      // 安装依赖
-      installPythonDeps(targetDir, warnings);
-      installSkillNpmDeps(targetDir);
-
-      res.json({ ok: true, name: repoName, warnings: warnings.length > 0 ? warnings : undefined });
+      res.status(410).json({ error: 'GitHub skill install has been disabled. Manage installed skills locally.' });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -951,11 +867,15 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
 
       const botsResponse = await catsRequest('GET', state.httpBaseUrl, '/api/bots', undefined, state.token);
       const bots = Array.isArray(botsResponse?.bots) ? botsResponse.bots : [];
-      const preferredUsername = String(req.body?.botUsername || `xiaoba_${userUid}`).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
-      const preferredName = String(req.body?.botDisplayName || 'XiaoBa').trim() || 'XiaoBa';
+      const preferredUsername = String(req.body?.botUsername || `catsco_${userUid}`).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+      const preferredName = String(req.body?.botDisplayName || 'CatsCo').trim() || 'CatsCo';
+      const legacyUsername = `xiaoba_${userUid}`;
+      const legacyName = 'XiaoBa';
       let bot = bots.find((item: any) => String(item.id || item.uid) === String(state.botUid || ''))
         || bots.find((item: any) => String(item.username || '') === preferredUsername)
-        || bots.find((item: any) => String(item.display_name || '') === preferredName);
+        || bots.find((item: any) => String(item.display_name || '') === preferredName)
+        || bots.find((item: any) => String(item.username || '') === legacyUsername)
+        || bots.find((item: any) => String(item.display_name || '') === legacyName);
 
       if (!bot) {
         const created = await catsRequest('POST', state.httpBaseUrl, '/api/bots', {
@@ -985,7 +905,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       try {
         await catsRequest('POST', state.httpBaseUrl, '/api/friends/request', {
           user_id: Number(botUid),
-          message: 'Connect XiaoBa desktop chatbot',
+          message: 'Connect CatsCo desktop agent',
         }, state.token);
       } catch (friendRequestError: any) {
         const msg = String(friendRequestError?.message || '');
@@ -1178,215 +1098,55 @@ function sanitizeServerUrl(serverUrl?: string): string | undefined {
 
 // ==================== Helpers ====================
 
-const REMOTE_REGISTRY_URL = 'https://raw.githubusercontent.com/buildsense-ai/XiaoBa-Skill-Hub/main/registry.json';
-let remoteRegistryCache: any[] | null = null;
-let remoteRegistryCacheTime = 0;
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-
-function loadRegistry(): any[] {
-  const registryPath = path.join(process.cwd(), 'skill-registry.json');
-  if (!fs.existsSync(registryPath)) return [];
-  return JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
-}
-
-function fetchRemoteRegistry(): Promise<any[]> {
-  return new Promise((resolve) => {
-    // Use cache if fresh
-    if (remoteRegistryCache && (Date.now() - remoteRegistryCacheTime < CACHE_TTL)) {
-      return resolve(remoteRegistryCache);
-    }
-
-    const doFetch = (url: string, redirects: number = 0) => {
-      if (redirects > 5) return resolve([]);
-      const protocol = url.startsWith('https') ? https : http;
-      const req = protocol.get(url, { timeout: 8000 }, (res) => {
-        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          return doFetch(res.headers.location, redirects + 1);
-        }
-        if (res.statusCode !== 200) { return resolve([]); }
-        let data = '';
-        res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            remoteRegistryCache = Array.isArray(parsed) ? parsed : [];
-            remoteRegistryCacheTime = Date.now();
-            resolve(remoteRegistryCache);
-          } catch { resolve([]); }
-        });
-      });
-      req.on('error', () => resolve([]));
-      req.on('timeout', () => { req.destroy(); resolve([]); });
-    };
-    doFetch(REMOTE_REGISTRY_URL);
-  });
-}
-
-function mergeRegistries(local: any[], remote: any[]): any[] {
-  const map = new Map<string, any>();
-  for (const entry of local) map.set(entry.name, entry);
-  for (const entry of remote) {
-    if (!map.has(entry.name)) map.set(entry.name, entry);
-  }
-  return Array.from(map.values());
-}
-
-/**
- * 从 GitHub 下载 ZIP 并解压到 targetDir，不依赖 git
- * 优先 ZIP 下载，失败则回退 git clone
- */
-async function installFromGitHub(repoUrl: string, targetDir: string, warnings: string[]): Promise<boolean> {
-  // 解析 GitHub URL → ZIP 下载地址
-  // 支持格式: https://github.com/user/repo, https://github.com/user/repo.git
-  const zipUrl = githubUrlToZip(repoUrl);
-
-  if (zipUrl) {
-    try {
-      await downloadAndExtractZip(zipUrl, targetDir);
-      return true;
-    } catch (e: any) {
-      warnings.push(`ZIP 下载失败 (${e.message})，尝试 git clone...`);
-    }
-  }
-
-  // 回退：git clone
-  try {
-    execSync(`git clone ${repoUrl} "${targetDir}"`, { timeout: 60000 });
-    return true;
-  } catch (e: any) {
-    warnings.push(`git clone 也失败: ${e.message}`);
-    return false;
-  }
-}
-
-/**
- * 将 GitHub 仓库 URL 转换为 ZIP 下载地址
- */
-function githubUrlToZip(url: string): string | null {
-  // https://github.com/user/repo(.git) → https://github.com/user/repo/archive/refs/heads/main.zip
-  const match = url.match(/github\.com\/([^/]+)\/([^/.]+)/);
-  if (!match) return null;
-  const [, user, repo] = match;
-  return `https://github.com/${user}/${repo}/archive/refs/heads/main.zip`;
-}
-
-/**
- * 下载 ZIP 并解压到目标目录
- * GitHub ZIP 格式: repo-main/ 下面才是文件，需要提升一层
- */
-function downloadAndExtractZip(url: string, targetDir: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const tmpZip = path.join(os.tmpdir(), `xiaoba-skill-${Date.now()}.zip`);
-    const file = fs.createWriteStream(tmpZip);
-
-    const doRequest = (reqUrl: string, redirectCount: number = 0) => {
-      if (redirectCount > 5) {
-        fs.unlinkSync(tmpZip);
-        return reject(new Error('Too many redirects'));
-      }
-
-      const protocol = reqUrl.startsWith('https') ? https : http;
-      protocol.get(reqUrl, (response) => {
-        // 跟随重定向
-        if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-          return doRequest(response.headers.location, redirectCount + 1);
-        }
-        if (response.statusCode !== 200) {
-          file.close();
-          if (fs.existsSync(tmpZip)) fs.unlinkSync(tmpZip);
-          // 如果 main 分支不存在，尝试 master
-          if (redirectCount === 0 && url.includes('/main.zip')) {
-            const masterUrl = url.replace('/main.zip', '/master.zip');
-            return doRequest(masterUrl, redirectCount + 1);
-          }
-          return reject(new Error(`HTTP ${response.statusCode}`));
-        }
-        response.pipe(file);
-        file.on('finish', () => {
-          file.close(() => {
-            try {
-              extractZip(tmpZip, targetDir);
-              resolve();
-            } catch (e) {
-              reject(e);
-            } finally {
-              if (fs.existsSync(tmpZip)) fs.unlinkSync(tmpZip);
-            }
-          });
-        });
-      }).on('error', (err) => {
-        file.close();
-        if (fs.existsSync(tmpZip)) fs.unlinkSync(tmpZip);
-        reject(err);
-      });
-    };
-
-    doRequest(url);
-  });
-}
-
-/**
- * 使用内置工具解压 ZIP：优先 PowerShell（Windows 自带），回退 unzip
- */
-function extractZip(zipPath: string, targetDir: string): void {
-  const tmpExtract = path.join(os.tmpdir(), `xiaoba-extract-${Date.now()}`);
-  fs.mkdirSync(tmpExtract, { recursive: true });
-
-  try {
-    if (process.platform === 'win32') {
-      // PowerShell Expand-Archive（Windows 自带，无需额外安装）
-      execSync(
-        `powershell -NoProfile -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${tmpExtract}' -Force"`,
-        { timeout: 60000 }
-      );
-    } else {
-      execSync(`unzip -o "${zipPath}" -d "${tmpExtract}"`, { timeout: 60000 });
-    }
-
-    // GitHub ZIP 里有一层 repo-branch/ 目录，提升到 targetDir
-    const entries = fs.readdirSync(tmpExtract);
-    const innerDir = entries.length === 1
-      ? path.join(tmpExtract, entries[0])
-      : tmpExtract;
-
-    // 如果 innerDir 是单个目录，把里面的内容移出来
-    if (fs.statSync(innerDir).isDirectory() && innerDir !== tmpExtract) {
-      fs.renameSync(innerDir, targetDir);
-    } else {
-      fs.renameSync(tmpExtract, targetDir);
-    }
-  } finally {
-    // 清理临时目录
-    if (fs.existsSync(tmpExtract)) {
-      fs.rmSync(tmpExtract, { recursive: true, force: true });
-    }
-  }
-}
-
-/**
- * 安装 Python 依赖：pip3 → pip → python -m pip 逐个尝试
- */
-function installPythonDeps(skillDir: string, warnings: string[]): void {
-  const reqFile = path.join(skillDir, 'requirements.txt');
-  if (!fs.existsSync(reqFile)) return;
-
-  const pipCommands = ['pip3', 'pip', 'python -m pip', 'python3 -m pip'];
-  for (const cmd of pipCommands) {
-    try {
-      execSync(`${cmd} install -r "${reqFile}"`, { cwd: skillDir, timeout: 120000, stdio: 'pipe' });
-      return; // 成功就返回
-    } catch {
-      // 继续尝试下一个
-    }
-  }
-  warnings.push('Python 依赖安装失败：未找到 pip。请手动运行 pip install -r requirements.txt');
-}
-
 function getSkillFiles(skillFilePath: string): string[] {
   try {
     const dir = path.dirname(skillFilePath);
     return fs.readdirSync(dir).filter(e => !e.startsWith('.') && e !== '__pycache__');
   } catch { return []; }
+}
+
+function skillToDashboardPayload(skill: Skill): any {
+  return {
+    name: skill.metadata.name,
+    description: skill.metadata.description,
+    argumentHint: skill.metadata.argumentHint || null,
+    userInvocable: skill.metadata.userInvocable !== false,
+    autoInvocable: skill.metadata.autoInvocable !== false,
+    maxTurns: skill.metadata.maxTurns || null,
+    path: skill.filePath,
+    files: getSkillFiles(skill.filePath),
+    enabled: true,
+    ...getSkillManagementInfo(skill.filePath),
+  };
+}
+
+function getSkillManagementInfo(skillFilePath: string): SkillManagementInfo {
+  const dir = path.dirname(skillFilePath);
+  const skillsRoot = PathResolver.getSkillsPath();
+  const relative = path.relative(skillsRoot, dir);
+  const parts = relative.split(path.sep).filter(Boolean);
+  const source: SkillSource = parts.some(part => SYSTEM_SKILL_DIRS.has(part))
+    ? 'system'
+    : fs.existsSync(path.join(dir, BUNDLED_SKILL_MARKER))
+      ? 'bundled'
+      : 'user';
+
+  return {
+    source,
+    protected: source === 'system',
+    canDisable: source !== 'system',
+    canDelete: source === 'user',
+  };
+}
+
+function formatSkillDeleteBlockedMessage(management: SkillManagementInfo): string {
+  if (management.source === 'system') {
+    return '系统 Skill 不能删除。';
+  }
+  if (management.source === 'bundled') {
+    return '内置 Skill 不能删除，可在界面中禁用；这样升级后也不会被自动恢复成启用状态。';
+  }
+  return '该 Skill 当前不能删除。';
 }
 
 function findDisabledSkillByName(basePath: string, name: string): string | null {
@@ -1416,12 +1176,14 @@ function findAllDisabledSkills(basePath: string): any[] {
       const content = fs.readFileSync(disabledFile, 'utf-8');
       const nm = content.match(/name:\s*(.+)/);
       const desc = content.match(/description:\s*(.+)/);
+      const management = getSkillManagementInfo(disabledFile);
       results.push({
         name: nm ? nm[1].trim() : entry.name,
         description: desc ? desc[1].trim() : '',
         enabled: false,
         path: disabledFile,
         files: getSkillFiles(disabledFile),
+        ...management,
       });
     }
     results.push(...findAllDisabledSkills(fullPath));

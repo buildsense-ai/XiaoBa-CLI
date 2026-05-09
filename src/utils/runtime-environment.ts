@@ -271,6 +271,10 @@ function ensureRuntimeShims(
     fs.mkdirSync(shimDirectory, { recursive: true });
 
     for (const binary of availableBinaries) {
+      if (containsPath([shimDirectory], path.dirname(binary.executable))) {
+        continue;
+      }
+
       for (const commandName of SHIM_COMMAND_NAMES[binary.name]) {
         const shimPath = path.join(shimDirectory, IS_WINDOWS ? `${commandName}.cmd` : commandName);
         const shimContent = buildShimContent(binary.executable);

@@ -32,7 +32,7 @@ Step 02: SCTransform标准化 + 细胞周期校正
     python tools/02_sctransform.py -i qc/clean.h5ad -o sct/ --batch-key sample
 """
 
-__author__ = "XiaoBa"
+__author__ = "CatsCo"
 __version__ = "3.0.0"
 import os
 import sys
