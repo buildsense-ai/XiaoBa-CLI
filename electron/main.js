@@ -367,13 +367,6 @@ async function startServer() {
     }
   }
 
-  // 婵犳鍣徊鐣屾崲閹达富鏁冨┑鍌滎焾鐟欙附銇勯弽銊ㄥ鐞氱喖姊绘笟鍥ф灕濠殿喓鍊曠叅闁秆勵殔濡?skill-registry.json闂備焦瀵х粙鎴︽偋韫囨稑鐏虫俊顖濆吹閳瑰秵绻濋棃娑氬闁哄棗绻橀弻鐔衡偓闈涙啞閻掓寧顨ラ悙鑼妞ゆ洏鍎辫灃濞达綁鈧稓甯涢梻浣告惈閸婅绔熼崱妞绘灁闁硅揪绠戠€氬銇勯幒鍡椾壕濠电姭鍋撻悗闈涙啞椤洟鏌曡箛鏇炐ョ紒灞芥健閺?
-  const registryDest = path.join(userDataPath, 'skill-registry.json');
-  const registrySrc = path.join(appRoot, 'skill-registry.json');
-  if (fs.existsSync(registrySrc)) {
-    fs.copyFileSync(registrySrc, registryDest);
-  }
-
   // 濠电姰鍨煎▔娑氱矓閹绢喖鏄?prompts 闂備胶鍎甸弲鈺呭窗閺嶎偆绀?
   const promptsDest = path.join(userDataPath, 'prompts');
   const promptsSrc = path.join(appRoot, 'prompts');

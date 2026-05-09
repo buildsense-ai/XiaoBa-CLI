@@ -108,13 +108,11 @@
       "skills/_tool-skills/**/*",
       "skills/report/**/*",
       "skills/self-evolution/**/*",
-      "skills/skill-publish/**/*",
       "skills/remember/**/*",
       "!skills/**/*.pyo",
       "!skills/**/*.pyc",
       "!skills/**/__pycache__/**",
       "skills/README.md",
-      "skill-registry.json",
       ".env.example",
       "package.json"
     ],

@@ -57,7 +57,7 @@ CatsCo：读完了，这篇主要讲...
 
 ### 🔌 强大的 Skill 系统
 - **可扩展架构** - 通过 Skill 插件无限扩展能力
-- **官方 Skill Hub** - 社区共享，一键安装
+- **本地 Skill 管理** - Dashboard 中支持启用、禁用和管理已安装 Skill
 - **自定义 Skill** - 支持 Python/TypeScript 编写专属技能
 
 ### 🎯 智能交互
@@ -125,17 +125,9 @@ npm run electron:build:linux # Linux
 
 ## 📚 文档
 
-- [Skill 开发指南](https://github.com/buildsense-ai/XiaoBa-Skill-Hub)
+- Skill 开发请参考内置 `skills/README.md` 与现有 Skill 示例
 - [API 文档](docs/API.md)
 - [配置说明](docs/CONFIG.md)
-
----
-
-## 🏪 Skill Hub
-
-访问 [XiaoBa-Skill-Hub](https://github.com/buildsense-ai/XiaoBa-Skill-Hub) 获取更多社区 Skills。
-
----
 
 ## 📄 License
 

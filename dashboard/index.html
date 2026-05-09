@@ -1199,26 +1199,6 @@
       flex-wrap: wrap;
     }
 
-    .store-install-bar {
-      display: flex;
-      gap: 12px;
-      margin-bottom: 22px;
-      padding: 16px;
-      border-radius: 22px;
-      background: rgba(255, 255, 255, 0.56);
-      border: 1px solid rgba(255, 255, 255, 0.56);
-      box-shadow: var(--shadow-sm), var(--glow);
-      backdrop-filter: blur(14px) saturate(135%);
-      -webkit-backdrop-filter: blur(14px) saturate(135%);
-    }
-
-    .store-install-bar .config-input { flex: 1; }
-
-    .store-card.installed {
-      border-color: rgba(30, 169, 113, 0.28);
-      border-style: dashed;
-    }
-
     .modal-overlay {
       display: none;
       position: fixed;
@@ -1668,23 +1648,6 @@
     .config-panel {
       display: grid;
       gap: 16px;
-    }
-
-    .store-install-row {
-      display: flex;
-      gap: 12px;
-      margin-bottom: 22px;
-      padding: 16px;
-      border-radius: 22px;
-      background: rgba(255, 255, 255, 0.56);
-      border: 1px solid rgba(255, 255, 255, 0.56);
-      box-shadow: var(--shadow-sm), var(--glow);
-      backdrop-filter: blur(14px) saturate(135%);
-      -webkit-backdrop-filter: blur(14px) saturate(135%);
-    }
-
-    .store-install-row .config-input {
-      flex: 1;
     }
 
     .skill-meta {
@@ -3014,8 +2977,7 @@
     .service-card,
     .pet-stage,
     .pet-controls,
-    .chat-panel,
-    .store-install-bar {
+    .chat-panel {
       background: #fff;
       border: 1px solid var(--border);
       border-radius: 12px;
@@ -3706,11 +3668,8 @@
 
       <!-- Page: Store -->
       <div class="page" id="page-store">
-        <div class="section-title">Skills <button class="btn" onclick="refreshStore()" id="refresh-store-btn" style="font-size:12px;padding:6px 14px;margin-left:8px">刷新</button></div>
-        <div class="store-install-bar">
-          <input class="config-input" id="github-url-input" type="text" placeholder="输入 GitHub 仓库地址安装 skill..." />
-          <button class="btn btn-primary" onclick="installFromGithub()">安装</button>
-        </div>
+        <div class="section-title">Skills <button class="btn" onclick="fetchSkills()" style="font-size:12px;padding:6px 14px;margin-left:8px">刷新</button></div>
+        <div class="runtime-note">远程 Skill 安装暂时下线。本页只管理本地已安装 Skills：启用、禁用和卸载用户自定义 Skill。</div>
         <div class="skills-grid" id="store-grid"><div class="loading">加载中...</div></div>
       </div>
 
@@ -4111,6 +4070,7 @@
         const res = await fetch(API+'/api/skills-all');
         const skills = await res.json();
         renderSkills(skills);
+        renderLocalSkillStore(skills);
       } catch (e) { document.getElementById('skills-grid').innerHTML = '<div class="loading">无法加载</div>'; }
     }
 
@@ -4263,6 +4223,13 @@
       const g = document.getElementById('skills-grid');
       if (!skills.length) { g.innerHTML = '<div class="loading">暂无 Skills</div>'; return; }
       g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">已禁用</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">用户调用</span>':'')+(sk.autoInvocable?'<span class="tag active">自动调用</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+renderSkillGrowth(sk.name)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+renderSkillActionButtons(sk)+'</div>').join('');
+    }
+
+    function renderLocalSkillStore(skills) {
+      const g = document.getElementById('store-grid');
+      if (!g) return;
+      if (!skills.length) { g.innerHTML = '<div class="loading">暂无 Skills</div>'; return; }
+      g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">已禁用</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">用户调用</span>':'')+(sk.autoInvocable?'<span class="tag active">自动调用</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+renderSkillActionButtons(sk)+'</div>').join('');
     }
 
     async function svcAction(n,a) {
@@ -4594,14 +4561,14 @@
       const r=await fetch(API+'/api/skills/'+encodeURIComponent(n)+'/'+(c?'disable':'enable'),{method:'POST'});
       const d=await r.json().catch(()=>({}));
       if(!r.ok){alert('操作失败: '+(d.error||('HTTP '+r.status)));return;}
-      fetchSkills();fetchStore();
+      fetchSkills();
     }
     async function deleteSkill(n){
       if(!confirm('确定要卸载 skill "'+n+'" 吗？此操作不可恢复。'))return;
       const r=await fetch(API+'/api/skills/'+encodeURIComponent(n),{method:'DELETE'});
       const d=await r.json().catch(()=>({}));
       if(!r.ok){alert('卸载失败: '+(d.error||('HTTP '+r.status)));return;}
-      fetchSkills();fetchStore();
+      fetchSkills();
     }
     function formatUptime(s){if(s<60)return Math.floor(s)+'s';if(s<3600)return Math.floor(s/60)+'m';return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';}
 
@@ -5040,63 +5007,6 @@
       const inputs=document.querySelectorAll('[data-key]'),updates={};
       inputs.forEach(el=>{updates[el.dataset.key]=el.value;});
       try{const r=await fetch(API+'/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(updates)});const d=await r.json();if(d.ok){const s=document.getElementById('config-saved');s.classList.add('show');setTimeout(()=>s.classList.remove('show'),2000);}}catch(e){alert('保存失败: '+e.message);}
-    }
-
-    // === Store ===
-    async function fetchStore(refresh){try{const r=await fetch(API+'/api/store'+(refresh?'?refresh=1':''));renderStore(await r.json());}catch(e){document.getElementById('store-grid').innerHTML='<div class="loading">加载失败</div>';}}
-    async function refreshStore(){
-      const btn=document.getElementById('refresh-store-btn');btn.disabled=true;btn.textContent='刷新中...';
-      await fetchStore(true);
-      btn.disabled=false;btn.textContent='刷新';
-    }
-    function renderStore(items){
-      const g=document.getElementById('store-grid');
-      if(!items.length){g.innerHTML='<div class="loading">暂无可用 Skill</div>';return;}
-      g.innerHTML=items.map(i=>'<div class="skill-card"><div class="skill-name">'+i.name+(i.recommended?' <span class="tag recommended">推荐</span>':'')+(i.installed?' <span class="tag installed-tag">已安装</span>':'')+'</div><div class="skill-desc">'+(i.description||'')+'</div><div class="skill-meta"><span class="tag">'+(i.category||'其他')+'</span></div>'+renderStoreSkillActions(i)+'</div>').join('');
-    }
-    function renderStoreSkillActions(i){
-      if(!i.installed){
-        return '<div class="skill-actions"><button class="btn btn-primary" onclick="installSkill(\''+skillJsArg(i.name)+'\',\''+skillJsArg(i.repo)+'\',\''+skillJsArg(i.dir||'')+'\')">安装</button></div>';
-      }
-      const sk=i.installedSkill||{};
-      if(sk.canDisable===false){
-        return '<div class="skill-actions"><button class="btn" disabled>系统保护</button></div>';
-      }
-      const name=skillJsArg(i.name);
-      let html='<button class="btn" onclick="toggleSkill(\''+name+'\',' +(sk.enabled!==false)+')">'+(sk.enabled===false?'启用':'禁用')+'</button>';
-      if(sk.canDelete){
-        html+='<button class="btn btn-danger" onclick="deleteSkill(\''+name+'\')">卸载</button>';
-      }else if(sk.source==='bundled'){
-        html+='<button class="btn" disabled title="内置 Skill 可禁用，不能直接删除">内置 Skill</button>';
-      }
-      return '<div class="skill-actions">'+html+'</div>';
-    }
-    async function installSkill(n,r,d){
-      const btn=event.target;
-      btn.disabled=true;
-      btn.textContent='安装中...';
-      try{
-        const res=await fetch(API+'/api/store/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,repo:r,dir:d})});
-        const data=await res.json();
-        if(data.error){
-          alert('安装失败: '+data.error);
-          btn.disabled=false;
-          btn.textContent='安装';
-        }else{
-          btn.textContent='已安装';
-          fetchStore();
-          fetchSkills();
-        }
-      }catch(e){
-        alert('安装失败: '+e.message);
-        btn.disabled=false;
-        btn.textContent='安装';
-      }
-    }
-    async function installFromGithub(){
-      const input=document.getElementById('github-url-input'),url=input.value.trim();
-      if(!url)return;
-      try{const r=await fetch(API+'/api/store/install-github',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});const d=await r.json();if(d.error)alert('安装失败: '+d.error);else{input.value='';fetchStore();fetchSkills();}}catch(e){alert('安装失败: '+e.message);}
     }
 
     // === CatsCo Chat ===
@@ -5839,7 +5749,7 @@
 
     // Init
     preloadPetFrames();renderPetProfile();renderPetProcess();setPetState('idle');
-    setupEnvConfigLazyLoad();fetchStatus();fetchSkills();fetchDashboardSettings();fetchRuntimeConfig();fetchStore();fetchUpdateStatus(true);fetchCatsStatus();
+    setupEnvConfigLazyLoad();fetchStatus();fetchSkills();fetchDashboardSettings();fetchRuntimeConfig();fetchUpdateStatus(true);fetchCatsStatus();
     setInterval(fetchStatus,5000);setInterval(fetchSkills,30000);setInterval(()=>fetchUpdateStatus(true),5000);
     const catsMessageInput = document.getElementById('cats-message-input');
     catsMessageInput.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendCatsMessage();}});

@@ -1,9 +1,0 @@
-[
-  {
-    "name": "academic-search",
-    "description": "学术论文搜索：通过 Semantic Scholar / arXiv 搜索论文、获取论文详情、引用关系和推荐",
-    "category": "科研",
-    "recommended": false,
-    "repo": "https://github.com/fightheyyy/xiaoba-skill-academic-search"
-  }
-]
