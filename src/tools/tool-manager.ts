@@ -178,25 +178,6 @@ export class ToolManager implements ToolExecutor {
         };
       }
 
-      // 成功结果：处理特殊返回格式（如图片需要额外消息）
-      if (typeof output.content === 'object') {
-        const contentObj = output.content as Record<string, any>;
-        if ('_imageForNewMessage' in contentObj && contentObj._imageForNewMessage === true) {
-          // 图片读取结果：从内部结构提取 imageBlock，生成额外消息
-          return {
-            tool_call_id: toolCall.id,
-            role: 'tool',
-            name: toolCall.function.name,
-            content: contentObj.filePath
-              ? `文件: ${contentObj.filePath}\n类型: 图片\n[图片内容已附加]`
-              : '[图片内容已附加]',
-            ok: true,
-            controlSignal: tool.definition.controlMode,
-            newMessages: contentObj.imageBlock ? [contentObj.imageBlock] : [],
-          };
-        }
-      }
-
       return {
         tool_call_id: toolCall.id,
         role: 'tool',

@@ -308,12 +308,9 @@ describe('dashboard readiness and service preflight API', () => {
     assert.equal(text.includes('catsco-agent-secret'), false);
   });
 
-  test('Windows command preflight accepts PATHEXT executable lookup', async (t) => {
-    if (process.platform !== 'win32') {
-      t.skip('PATHEXT lookup is Windows-specific');
-      return;
-    }
+  const windowsOnlyTest = process.platform === 'win32' ? test : test.skip;
 
+  windowsOnlyTest('Windows command preflight accepts PATHEXT executable lookup', async () => {
     const previousPath = process.env.PATH;
     const previousPathExt = process.env.PATHEXT;
     const binDir = path.join(testRoot, 'bin');
