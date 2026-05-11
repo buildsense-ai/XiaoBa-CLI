@@ -318,6 +318,7 @@ export class AgentSession {
         this.messages = result.messages;
         this.activeSkillName = result.activeSkillName;
         this.activeSkillMaxTurns = result.activeSkillMaxTurns;
+        this.lifecycleManager.saveContext(this.messages);
         return result;
       } catch (err: any) {
         // 不删除用户消息，而是添加一个错误回复，保持上下文连贯
@@ -339,6 +340,7 @@ export class AgentSession {
           content: `[处理失败: ${err.message}]`
         });
         this.messages = this.turnContextBuilder.removeTransientMessages(this.messages);
+        this.lifecycleManager.saveContext(this.messages);
 
         return { text: errorReply, visibleToUser: true };
       } finally {

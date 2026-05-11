@@ -129,6 +129,21 @@ describe('AgentSession lifecycle', () => {
     );
   });
 
+  test('handleMessage persists each completed turn before cleanup', async () => {
+    const { AgentSession, SessionStore } = loadSessionModules();
+    const session = new AgentSession('catscompany:lifecycle-autosave', buildMockServices(), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    const result = await session.handleMessage('autosave user');
+
+    assert.equal(result.text, 'ok');
+    const restored = SessionStore.getInstance().loadContext('catscompany:lifecycle-autosave');
+    assert.deepStrictEqual(
+      restored.map(message => message.content),
+      ['autosave user', 'ok'],
+    );
+  });
+
   test('cleanup persists without invoking hidden AI wakeup checks', async () => {
     const { AgentSession, SessionStore } = loadSessionModules();
     let aiCalls = 0;
