@@ -4578,6 +4578,12 @@
     let runtimeConfigSnapshot={};
     let envConfigLoaded=false;
     let envConfigLoading=false;
+    let customModelSettingsOpen=false;
+    let customModelAutoSaveTimer=null;
+    let customModelAutoSaveInFlight=false;
+    let customModelAutoSaveQueued=false;
+    let customModelAutoSaveLastSignature='';
+    const CUSTOM_MODEL_AUTO_SAVE_DELAY=900;
     const configGroups=[
       {title:'自定义模型兼容配置', collapsed:true, keys:[{key:'GAUZ_LLM_PROVIDER',label:'兼容类型',type:'select',options:['anthropic','openai']},{key:'GAUZ_LLM_API_BASE',label:'模型地址'},{key:'GAUZ_LLM_API_KEY',label:'访问凭证',sensitive:true},{key:'GAUZ_LLM_MODEL',label:'模型名称'}]},
       {title:'CatsCo webapp（高级）', collapsed:true, keys:[{key:'CATSCOMPANY_API_KEY',label:'Agent 访问凭证',sensitive:true}]},
@@ -4595,7 +4601,7 @@
         const data=await r.json();
         if(!r.ok||data.error)throw new Error(data.error||'settings 加载失败');
         dashboardSettingsSnapshot=data;
-        renderModelSource(data);
+        if(!shouldDeferModelSourceRender()) renderModelSource(data);
       }catch(e){
         const p=document.getElementById('model-source-panel');
         if(p)p.innerHTML='<div class="runtime-note danger">模型来源加载失败：'+escapeHtml(e.message||String(e))+'</div>';
@@ -4608,6 +4614,63 @@
 
     function settingValue(id){
       return settingField(id).value||'';
+    }
+
+    function shouldDeferModelSourceRender(){
+      const page=document.getElementById('page-config');
+      const details=document.getElementById('custom-model-settings');
+      if(!page || !details || !page.classList.contains('active'))return false;
+      return details.open || details.contains(document.activeElement);
+    }
+
+    function captureCustomModelDraft(){
+      const details=document.getElementById('custom-model-settings');
+      const active=document.activeElement;
+      const activeInForm=Boolean(details && active && details.contains(active));
+      return {
+        open: details ? details.open : customModelSettingsOpen,
+        activeId: activeInForm ? active.id : '',
+        selectionStart: activeInForm && typeof active.selectionStart==='number' ? active.selectionStart : null,
+        selectionEnd: activeInForm && typeof active.selectionEnd==='number' ? active.selectionEnd : null,
+        provider: document.getElementById('model-provider-setting')?.value,
+        apiBase: document.getElementById('model-api-base-setting')?.value,
+        model: document.getElementById('model-name-setting')?.value,
+        secret: document.getElementById('model-secret-setting')?.value,
+        clearSecret: document.getElementById('model-secret-clear-setting')?.checked,
+      };
+    }
+
+    function restoreCustomModelDraft(draft){
+      const details=document.getElementById('custom-model-settings');
+      if(!details)return;
+      details.open=Boolean(draft?.open || customModelSettingsOpen);
+      customModelSettingsOpen=details.open;
+      details.addEventListener('toggle',()=>{customModelSettingsOpen=details.open;});
+
+      if(draft && draft.open){
+        const pairs=[
+          ['model-provider-setting',draft.provider],
+          ['model-api-base-setting',draft.apiBase],
+          ['model-name-setting',draft.model],
+          ['model-secret-setting',draft.secret],
+        ];
+        pairs.forEach(([id,value])=>{
+          const el=document.getElementById(id);
+          if(el && value!==undefined)el.value=value;
+        });
+        const clear=document.getElementById('model-secret-clear-setting');
+        if(clear && draft.clearSecret!==undefined)clear.checked=Boolean(draft.clearSecret);
+      }
+
+      if(draft?.activeId){
+        const active=document.getElementById(draft.activeId);
+        if(active){
+          active.focus();
+          if(draft.selectionStart!==null && typeof active.setSelectionRange==='function'){
+            active.setSelectionRange(draft.selectionStart,draft.selectionEnd ?? draft.selectionStart);
+          }
+        }
+      }
     }
 
     function renderModelSource(snapshot){
@@ -4633,6 +4696,7 @@
       const hideInternalGateway=isInternalModelGateway(apiBaseValue);
       const apiBaseDisplayValue=hideInternalGateway?'':apiBaseValue;
       const apiBasePlaceholder=hideInternalGateway?'已配置 CatsCo 内部兼容网关（隐藏）':'https://example.com/v1/messages';
+      const draft=captureCustomModelDraft();
 
       p.innerHTML=`<div class="config-group" id="model-source-group">
         <div class="config-group-title" onclick="document.getElementById('model-source-group').classList.toggle('collapsed')">
@@ -4654,12 +4718,12 @@
                 <button class="btn" onclick="switchPage('chat')">${catsConnected?'查看 CatsCo 连接':'登录 CatsCo'}</button>
               </div>
             </div>
-            <details class="model-source-card warning" id="custom-model-settings">
+            <details class="model-source-card warning" id="custom-model-settings"${customModelSettingsOpen?' open':''}>
               <summary>
                 <div class="model-source-head">
                   <div>
                     <div class="model-source-title">自定义模型（高级）</div>
-                    <div class="model-source-copy">用于开发、自有模型或托管模型未接入前。访问凭证只保存 presence，不会回显。</div>
+                    <div class="model-source-copy">用于开发、自有模型或托管模型未接入前。修改会自动保存，访问凭证只保存 presence，不会回显。</div>
                   </div>
                   ${runtimeTag(credentialMeta, keyField.present?'green':'red')}
                 </div>
@@ -4677,12 +4741,14 @@
                   <button class="btn btn-primary" onclick="saveCustomModelSettings()">保存自定义模型</button>
                   <span class="config-saved" id="model-source-saved">已保存</span>
                 </div>
-                <div id="model-source-status" style="color:var(--text2);font-size:13px"></div>
+                <div id="model-source-status" style="color:var(--text2);font-size:13px">改动会自动保存；新 session 或下一次启动 connector 后生效。</div>
               </div>
             </details>
           </div>
         </div>
       </div>`;
+      restoreCustomModelDraft(draft);
+      bindCustomModelAutoSave();
     }
 
     function isInternalModelGateway(value){
@@ -4695,14 +4761,18 @@
       }
     }
 
-    async function saveCustomModelSettings(){
+    function setModelSourceStatus(message, tone){
       const status=document.getElementById('model-source-status');
+      if(!status)return;
+      status.style.color=tone==='error'?'var(--red)':tone==='success'?'var(--green)':'var(--text2)';
+      status.textContent=message;
+    }
+
+    function buildCustomModelSettingsPayload(){
       const secret=document.getElementById('model-secret-setting').value;
       const clearSecret=document.getElementById('model-secret-clear-setting').checked;
       if(secret && clearSecret){
-        status.style.color='var(--red)';
-        status.textContent='不能同时替换和清除访问凭证。';
-        return;
+        throw new Error('不能同时替换和清除访问凭证。');
       }
       const secretUpdate=clearSecret
         ? {action:'clear'}
@@ -4711,34 +4781,111 @@
           : {action:'keep'};
       const apiBaseInput=document.getElementById('model-api-base-setting');
       const apiBaseValue=apiBaseInput.value.trim() || (apiBaseInput.dataset.hiddenInternal==='true'?settingValue('model.apiBase'):'');
-      const sensitive=secretUpdate.action!=='keep';
-      const message=sensitive
-        ? '保存自定义模型设置？访问凭证会写入本地 .env，仅用于本机 runtime。保存后新 session 或下一次启动的 connector 生效。'
-        : '保存自定义模型设置？保存后新 session 或下一次启动的 connector 生效。';
-      if(!confirm(message))return;
-      try{
-        status.style.color='var(--text2)';
-        status.textContent='保存中...';
-        const payload={
+      return {
+        secretUpdate,
+        payload:{
           settings:{
             'model.provider':document.getElementById('model-provider-setting').value,
             'model.apiBase':apiBaseValue,
             'model.model':document.getElementById('model-name-setting').value.trim(),
             'model.apiKey':secretUpdate,
           }
-        };
+        }
+      };
+    }
+
+    function customModelPayloadSignature(payload){
+      const settings=payload.settings||{};
+      const secret=settings['model.apiKey']||{action:'keep'};
+      return JSON.stringify({
+        provider:settings['model.provider'],
+        apiBase:settings['model.apiBase'],
+        model:settings['model.model'],
+        secretAction:secret.action,
+      });
+    }
+
+    function bindCustomModelAutoSave(){
+      const provider=document.getElementById('model-provider-setting');
+      const apiBase=document.getElementById('model-api-base-setting');
+      const model=document.getElementById('model-name-setting');
+      const secret=document.getElementById('model-secret-setting');
+      const clear=document.getElementById('model-secret-clear-setting');
+      const schedule=()=>{
+        clearTimeout(customModelAutoSaveTimer);
+        setModelSourceStatus('改动待自动保存...', 'muted');
+        customModelAutoSaveTimer=setTimeout(()=>saveCustomModelSettings({auto:true}),CUSTOM_MODEL_AUTO_SAVE_DELAY);
+      };
+      if(provider)provider.addEventListener('change',schedule);
+      if(apiBase)apiBase.addEventListener('input',schedule);
+      if(model)model.addEventListener('input',schedule);
+      if(secret)secret.addEventListener('change',schedule);
+      if(clear)clear.addEventListener('change',schedule);
+    }
+
+    async function saveCustomModelSettings(options){
+      const auto=Boolean(options&&options.auto);
+      let built;
+      try{
+        built=buildCustomModelSettingsPayload();
+      }catch(e){
+        setModelSourceStatus(e.message||String(e),'error');
+        return;
+      }
+      const payload=built.payload;
+      const secretUpdate=built.secretUpdate;
+      const apiBaseValue=payload.settings['model.apiBase'];
+      const modelValue=payload.settings['model.model'];
+      if(auto && (!apiBaseValue || !modelValue)){
+        setModelSourceStatus('等待补全模型地址和模型名称后自动保存。','muted');
+        return;
+      }
+      const signature=customModelPayloadSignature(payload);
+      if(auto && signature===customModelAutoSaveLastSignature && secretUpdate.action==='keep'){
+        setModelSourceStatus('已保存。新 session 或下一次启动 connector 后生效。','success');
+        return;
+      }
+      if(auto && customModelAutoSaveInFlight){
+        customModelAutoSaveQueued=true;
+        return;
+      }
+      const sensitive=secretUpdate.action!=='keep';
+      const message=sensitive
+        ? '保存自定义模型设置？访问凭证会写入本地 .env，仅用于本机 runtime。保存后新 session 或下一次启动的 connector 生效。'
+        : '保存自定义模型设置？保存后新 session 或下一次启动的 connector 生效。';
+      if(!auto && !confirm(message))return;
+      try{
+        customModelAutoSaveInFlight=true;
+        setModelSourceStatus(auto?'自动保存中...':'保存中...','muted');
         const r=await fetch(API+'/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
         const d=await r.json();
         if(!r.ok||d.error)throw new Error(d.error||'保存失败');
-        status.style.color='var(--green)';
-        status.textContent='已保存。新 session 或下一次启动的 connector 生效。';
+        customModelAutoSaveLastSignature=signature;
+        setModelSourceStatus((auto?'已自动保存。':'已保存。')+'新 session 或下一次启动 connector 后生效。','success');
+        const secretInput=document.getElementById('model-secret-setting');
+        const clearInput=document.getElementById('model-secret-clear-setting');
+        if(secretInput && secretUpdate.action==='replace'){
+          secretInput.value='';
+          secretInput.placeholder='已更新，留空表示保持现有凭证';
+        }
+        if(clearInput && secretUpdate.action==='clear')clearInput.checked=false;
         const saved=document.getElementById('model-source-saved');
         if(saved){saved.classList.add('show');setTimeout(()=>saved.classList.remove('show'),2000);}
-        await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchRuntimeConfig()]);
+        if(!auto)await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchRuntimeConfig()]);
       }catch(e){
-        status.style.color='var(--red)';
-        status.textContent='保存失败：'+(e.message||String(e));
+        setModelSourceStatus('保存失败：'+(e.message||String(e)),'error');
+      }finally{
+        customModelAutoSaveInFlight=false;
+        if(customModelAutoSaveQueued){
+          customModelAutoSaveQueued=false;
+          scheduleCustomModelSaveSoon();
+        }
       }
+    }
+
+    function scheduleCustomModelSaveSoon(){
+      clearTimeout(customModelAutoSaveTimer);
+      customModelAutoSaveTimer=setTimeout(()=>saveCustomModelSettings({auto:true}),250);
     }
 
     async function fetchConfig(){
@@ -4976,7 +5123,10 @@
 
     function toggleConfigGroup(idx) {
       const el = document.getElementById('config-grp-'+idx);
-      if (el) el.classList.toggle('collapsed');
+      if (el) {
+        el.classList.toggle('collapsed');
+        if(configGroups[idx])configGroups[idx].collapsed=el.classList.contains('collapsed');
+      }
     }
 
     function setupEnvConfigLazyLoad(){
@@ -5241,7 +5391,7 @@
         const data=await parseCatsResponse(await fetch(API+'/api/cats/status'));
         catsState=data||{};
         renderCatsStatus();
-        if((dashboardSettingsSnapshot.fields||[]).length)renderModelSource(dashboardSettingsSnapshot);
+        if((dashboardSettingsSnapshot.fields||[]).length && !shouldDeferModelSourceRender())renderModelSource(dashboardSettingsSnapshot);
         if(catsState.topicId) loadCatsMessages(false);
       }catch(e){
         document.getElementById('cats-status').innerHTML='<div class="chat-muted" style="color:var(--red)">状态加载失败：'+escapeHtml(e.message)+'</div>';
@@ -5758,8 +5908,6 @@
     catsMessageInput.addEventListener('blur',()=>{if(!catsMessageInput.value.trim()) setPetAutoBaseline(petAutoBaseline);});
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeLogs();closeUpdateModal();}});
     document.addEventListener('click',e=>{const shell=document.getElementById('floating-pet');if(shell && !shell.contains(e.target)) closeFloatingPetMenu();});
-    document.getElementById('logs-modal').addEventListener('click',e=>{if(e.target===e.currentTarget)closeLogs();});
-    document.getElementById('update-modal').addEventListener('click',e=>{if(e.target===e.currentTarget)closeUpdateModal();});
   </script>
 </body>
 </html>
