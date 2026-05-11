@@ -143,7 +143,6 @@ function writeSkill(name: string): void {
       `name: ${name}`,
       'description: Demo skill for runtime config snapshot',
       'user-invocable: true',
-      'auto-invocable: false',
       '---',
       '',
       'Demo skill body.',

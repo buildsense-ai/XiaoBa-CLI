@@ -30,8 +30,6 @@ export interface RunAgentTurnParams {
   input: string | ContentBlock[];
   messages: Message[];
   runtimeFeedback: string[];
-  activeSkillName?: string;
-  activeSkillMaxTurns?: number;
   callbacks?: AgentTurnCallbacks;
   channel?: ChannelCallbacks;
   pendingUserInputProvider?: PendingUserInputProvider;
@@ -43,8 +41,6 @@ export interface RunAgentTurnResult {
   visibleToUser: boolean;
   newMessages: Message[];
   messages: Message[];
-  activeSkillName?: string;
-  activeSkillMaxTurns?: number;
 }
 
 export interface AgentTurnControllerOptions {
@@ -63,18 +59,6 @@ export class AgentTurnController {
   constructor(private readonly options: AgentTurnControllerOptions) {}
 
   async run(params: RunAgentTurnParams): Promise<RunAgentTurnResult> {
-    let activeSkillName = params.activeSkillName;
-    let activeSkillMaxTurns = params.activeSkillMaxTurns;
-
-    const textContent = typeof params.input === 'string' ? params.input : '';
-    const autoActivation = this.options.skillRuntime.createAutoActivation(textContent, activeSkillName);
-    if (autoActivation) {
-      const state = this.options.skillRuntime.applyActivation(params.messages, autoActivation);
-      activeSkillName = state.activeSkillName;
-      activeSkillMaxTurns = state.activeSkillMaxTurns;
-      Logger.info(`[${this.options.sessionKey}] 自动激活 skill: ${autoActivation.skillName}`);
-    }
-
     params.messages.push({ role: 'user', content: params.input });
 
     const turnContext = await this.options.turnContextBuilder.build({
@@ -84,43 +68,19 @@ export class AgentTurnController {
       skillRuntime: this.options.skillRuntime,
     });
 
-    const detectedSkillName = activeSkillName
-      ?? this.options.skillRuntime.detectActiveSkillName(params.messages);
-    if (detectedSkillName) {
-      const detectedSkill = this.options.services.skillManager.getSkill(detectedSkillName);
-      activeSkillName = detectedSkillName;
-      activeSkillMaxTurns = detectedSkill?.metadata.maxTurns;
-    }
-
-    const effectiveMaxTurns = activeSkillMaxTurns
-      ?? this.options.skillRuntime.detectSkillMaxTurns(params.messages);
     const runner = this.createRunner({
-      activeSkillName,
-      effectiveMaxTurns,
       channel: params.channel,
       pendingUserInputProvider: params.pendingUserInputProvider,
       shouldContinue: params.shouldContinue,
     });
 
     const result = await runner.run(turnContext.messages, this.toRunnerCallbacks(params.callbacks));
-    let nextMessages = this.options.turnContextBuilder.removeTransientMessages(result.messages);
-
-    for (const msg of result.newMessages) {
-      const activation = this.options.skillRuntime.parseActivationFromSystemMessage(msg);
-      if (!activation) continue;
-      const state = this.options.skillRuntime.applyActivation(nextMessages, activation);
-      activeSkillName = state.activeSkillName;
-      activeSkillMaxTurns = state.activeSkillMaxTurns;
-    }
+    const nextMessages = this.options.turnContextBuilder.removeTransientMessages(result.messages);
 
     const metrics = Metrics.getSummary();
     this.logMetrics(metrics);
 
     this.replaceBase64Images(nextMessages);
-
-    activeSkillName = undefined;
-    activeSkillMaxTurns = undefined;
-    nextMessages = this.options.skillRuntime.removeSkillSystemMessages(nextMessages);
 
     this.options.turnLogRecorder.recordTurn({
       userInput: params.input,
@@ -134,14 +94,10 @@ export class AgentTurnController {
       visibleToUser: result.finalResponseVisible,
       newMessages: result.newMessages,
       messages: nextMessages,
-      activeSkillName,
-      activeSkillMaxTurns,
     };
   }
 
   private createRunner(options: {
-    activeSkillName?: string;
-    effectiveMaxTurns?: number;
     channel?: ChannelCallbacks;
     pendingUserInputProvider?: PendingUserInputProvider;
     shouldContinue: () => boolean;
@@ -151,8 +107,6 @@ export class AgentTurnController {
       this.options.services.aiService,
       this.options.services.toolManager,
       {
-        ...(options.effectiveMaxTurns ? { maxTurns: options.effectiveMaxTurns } : {}),
-        initialSkillName: options.activeSkillName,
         shouldContinue: options.shouldContinue,
         pendingUserInputProvider: options.pendingUserInputProvider,
         // AgentSession/ContextWindowManager compacts durable history before the turn.

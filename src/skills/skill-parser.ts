@@ -32,7 +32,7 @@ export class SkillParser {
    * 检测是否为 Claude Code 格式
    */
   private static isClaudeCodeFormat(data: any): boolean {
-    return !!(data.invocable || data.autoInvocable !== undefined);
+    return !!data.invocable;
   }
 
   /**
@@ -48,8 +48,6 @@ export class SkillParser {
       description: data.description,
       argumentHint: data['argument-hint'] || data.argumentHint,
       userInvocable: data.invocable === 'user' || data.invocable === 'both',
-      autoInvocable: data.autoInvocable !== false && data.invocable !== 'user',
-      maxTurns: data['max-turns'] ? Number(data['max-turns']) : undefined,
     };
 
     if (!this.validate(metadata)) {
@@ -76,8 +74,6 @@ export class SkillParser {
       description: data.description,
       argumentHint: data['argument-hint'],
       userInvocable: data['user-invocable'] !== false,
-      autoInvocable: data['auto-invocable'] !== false,
-      maxTurns: data['max-turns'] ? Number(data['max-turns']) : undefined,
     };
 
     if (!this.validate(metadata)) {

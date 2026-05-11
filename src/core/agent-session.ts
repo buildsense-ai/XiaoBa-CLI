@@ -2,7 +2,6 @@ import { Message } from '../types';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
-import { SkillActivationSignal } from '../types/skill';
 import { ChannelCallbacks } from '../types/tool';
 import {
   SessionSkillRuntime,
@@ -92,8 +91,6 @@ export class AgentSession {
   private messages: Message[] = [];
   private initialized = false;
   private busy = false;
-  private activeSkillName?: string;
-  private activeSkillMaxTurns?: number;
   private systemPromptOverride?: SystemPromptProvider;
   /** 外部请求中断当前 run（例如用户在 busy 时发送"停止"） */
   private interruptRequested = false;
@@ -201,26 +198,6 @@ export class AgentSession {
     }
   }
 
-  /**
-   * 启动时激活指定 skill，将其 prompt 注入系统消息。
-   * 用于 --skill 参数，在会话开始前绑定 skill 上下文。
-   */
-  async activateSkill(skillName: string): Promise<boolean> {
-    return this.withLogContext(async () => {
-      const activation = this.skillRuntime.createStartupActivation(skillName);
-      if (!activation) {
-        Logger.warning(`Skill "${skillName}" 未找到`);
-        return false;
-      }
-
-      await this.init();
-      this.applySkillActivation(activation);
-
-      Logger.info(`[${this.key}] 启动时激活 skill: ${activation.skillName}${activation.maxTurns ? ` (maxTurns=${activation.maxTurns})` : ''}`);
-      return true;
-    });
-  }
-
   // ─── 消息处理 ───────────────────────────────────────
 
   private static readonly MAX_INJECTED_CONTEXT = 30;
@@ -311,13 +288,9 @@ export class AgentSession {
           callbacks,
           channel,
           pendingUserInputProvider,
-          activeSkillName: this.activeSkillName,
-          activeSkillMaxTurns: this.activeSkillMaxTurns,
           shouldContinue: () => !this.interruptRequested,
         });
         this.messages = result.messages;
-        this.activeSkillName = result.activeSkillName;
-        this.activeSkillMaxTurns = result.activeSkillMaxTurns;
         this.lifecycleManager.saveContext(this.messages);
         return result;
       } catch (err: any) {
@@ -396,8 +369,7 @@ export class AgentSession {
       }
 
 
-      // skill 斜杠命令
-      return this.handleSkillCommand(commandName, args, callbacks);
+      return { handled: false };
     });
   }
 
@@ -408,8 +380,6 @@ export class AgentSession {
     this.messages = [];
     const state = this.lifecycleManager.reset();
     this.initialized = state.initialized;
-    this.activeSkillName = state.activeSkillName;
-    this.activeSkillMaxTurns = state.activeSkillMaxTurns;
     this.lastActiveAt = state.lastActiveAt;
   }
 
@@ -418,8 +388,6 @@ export class AgentSession {
     this.messages = [];
     const state = this.lifecycleManager.clear();
     this.initialized = state.initialized;
-    this.activeSkillName = state.activeSkillName;
-    this.activeSkillMaxTurns = state.activeSkillMaxTurns;
     this.lastActiveAt = state.lastActiveAt;
   }
 
@@ -480,37 +448,4 @@ export class AgentSession {
     if (idx >= 0) this.messages.splice(idx, 1);
   }
 
-  /** skill 斜杠命令处理 */
-  private async handleSkillCommand(
-    commandName: string,
-    args: string[],
-    callbacks?: SessionCallbacks,
-  ): Promise<CommandResult> {
-    const commandResult = this.skillRuntime.handleSkillCommand(commandName, args);
-    if (!commandResult.handled) return { handled: false };
-    if (!commandResult.activation) {
-      return {
-        handled: true,
-        reply: commandResult.reply,
-      };
-    }
-
-    await this.init();
-    this.applySkillActivation(commandResult.activation);
-    Logger.info(`[${this.key}] 已激活 skill: ${commandResult.activation.skillName}${commandResult.activation.maxTurns ? ` (maxTurns=${commandResult.activation.maxTurns})` : ''}`);
-
-    // 如果有参数，自动作为用户消息发送给 AI
-    if (commandResult.runMessage) {
-      const reply = await this.handleMessage(commandResult.runMessage, callbacks);
-      return { handled: true, reply: reply.text };
-    }
-
-    return { handled: true, reply: commandResult.reply };
-  }
-
-  private applySkillActivation(activation: SkillActivationSignal): void {
-    const state = this.skillRuntime.applyActivation(this.messages, activation);
-    this.activeSkillName = state.activeSkillName;
-    this.activeSkillMaxTurns = state.activeSkillMaxTurns;
-  }
 }

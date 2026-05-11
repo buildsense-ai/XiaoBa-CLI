@@ -85,7 +85,6 @@ async function listSkills(): Promise<void> {
   for (const skill of skills) {
     const invocable = [];
     if (skill.metadata.userInvocable) invocable.push('用户调用');
-    if (skill.metadata.autoInvocable) invocable.push('自动调用');
 
     Logger.info(`${styles.highlight('●')} ${styles.highlight(skill.metadata.name)}`);
     Logger.info(`  ${chalk.gray('描述:')} ${skill.metadata.description}`);
@@ -155,7 +154,6 @@ async function showSkillInfo(name: string): Promise<void> {
   }
 
   Logger.info(`${chalk.gray('用户可调用:')} ${skill.metadata.userInvocable ? '是' : '否'}`);
-  Logger.info(`${chalk.gray('自动可调用:')} ${skill.metadata.autoInvocable ? '是' : '否'}`);
   Logger.info(`${chalk.gray('文件路径:')} ${skill.filePath}`);
 
   Logger.info(`\n${chalk.gray('提示词内容:')}`);

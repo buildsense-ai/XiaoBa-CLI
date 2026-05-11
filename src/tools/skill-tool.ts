@@ -1,7 +1,7 @@
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { SkillManager } from '../skills/skill-manager';
 import { SkillInvocationContext } from '../types/skill';
-import { buildSkillActivationSignal } from '../skills/skill-activation-protocol';
+import { SkillExecutor } from '../skills/skill-executor';
 import { Logger } from '../utils/logger';
 
 /**
@@ -41,7 +41,7 @@ export class SkillTool implements Tool {
       if (skillName === 'reload' || skillName === '__reload__') {
         await this.skillManager.loadSkills();
         const count = this.skillManager.getAllSkills().length;
-        return { ok: true, content: JSON.stringify({ __reload_skills__: true, message: `已重新加载 ${count} 个 skills` }) };
+        return { ok: true, content: `已重新加载 ${count} 个 skills` };
       }
 
       // 加载所有 skills
@@ -78,10 +78,10 @@ export class SkillTool implements Tool {
         userMessage: skillArgs
       };
 
-      // 返回结构化激活信号，由 ConversationRunner 统一处理
-      const signal = buildSkillActivationSignal(skill, invocationContext);
+      // 直接返回渲染后的 SKILL.md 内容，由 tool_result 并入上下文
+      const result = SkillExecutor.execute(skill, invocationContext);
 
-      return { ok: true, content: JSON.stringify(signal) };
+      return { ok: true, content: result };
     } catch (error: any) {
       Logger.error(`Skill 执行失败: ${error.message}`);
       return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `Skill 执行失败: ${error.message}` };

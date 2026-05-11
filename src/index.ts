@@ -17,15 +17,13 @@ function main() {
   program
     .name('catsco')
     .description('CatsCo agent CLI')
-    .version(APP_VERSION)
-    .option('-s, --skill <name>', 'Bind a skill at startup');
+    .version(APP_VERSION);
 
   program
     .command('chat')
     .description('Start a CatsCo local chat session')
     .option('-i, --interactive', 'Enter interactive mode')
     .option('-m, --message <message>', 'Send a single message')
-    .option('-s, --skill <name>', 'Bind a skill at startup')
     .action(chatCommand);
 
   program
@@ -87,8 +85,7 @@ function main() {
   registerSkillCommand(program);
 
   program.action(() => {
-    const options = program.opts();
-    chatCommand({ interactive: true, skill: options.skill });
+    chatCommand({ interactive: true });
   });
 
   program.parse();

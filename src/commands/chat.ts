@@ -30,15 +30,8 @@ export async function chatCommand(options: CommandOptions): Promise<void> {
     await RuntimeFactory.loadSkills(services.skillManager);
   }
 
-  // 启动时激活指定 skill
   if (options.skill) {
-    const activated = await session.activateSkill(options.skill);
-    if (!activated) {
-      Logger.error(`Skill "${options.skill}" 未找到，请通过 catsco skill list 查看可用 skills`);
-      Logger.closeLogFile();
-      return;
-    }
-    Logger.info(`已绑定 skill: ${options.skill}`);
+    Logger.warning('--skill 启动绑定已停用；请在对话中让 agent 通过 skill 工具调用对应 skill。');
   }
 
   // 单条消息模式
