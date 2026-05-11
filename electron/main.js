@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -423,6 +423,7 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
     },
   });
 
@@ -439,6 +440,40 @@ function createWindow() {
     mainWindow = null;
   });
 }
+
+function isTrustedDashboardUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    return url.protocol === 'http:' &&
+      (url.hostname === 'localhost' || url.hostname === '127.0.0.1') &&
+      url.port === String(DASHBOARD_PORT);
+  } catch (_error) {
+    return false;
+  }
+}
+
+ipcMain.handle('catsco:select-files', async (event) => {
+  const owner = BrowserWindow.fromWebContents(event.sender) || mainWindow || undefined;
+  const frameUrl = event.senderFrame?.url || event.sender.getURL();
+  if (owner !== mainWindow || !isTrustedDashboardUrl(frameUrl)) return [];
+
+  const options = {
+    properties: ['openFile', 'multiSelections'],
+  };
+  const result = await dialog.showOpenDialog(owner, options);
+  if (result.canceled) return [];
+
+  const { createLocalFileGrant } = require(path.join(getAppRoot(), 'dist', 'dashboard', 'local-file-grants'));
+  return result.filePaths
+    .map((filePath) => {
+      try {
+        return createLocalFileGrant(filePath);
+      } catch (_error) {
+        return null;
+      }
+    })
+    .filter(Boolean);
+});
 
 function createTray() {
   const icon = nativeImage.createFromDataURL(

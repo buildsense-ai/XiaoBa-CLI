@@ -3235,12 +3235,98 @@
       color: rgba(255,255,255,0.74);
     }
 
+    .chat-composer {
+      padding: 12px 14px 14px;
+      border-top: 1px solid var(--border-light);
+      background: var(--surface-strong);
+    }
+
+    .chat-attachment-tray {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .chat-attach-note {
+      margin-bottom: 10px;
+      color: var(--text3);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .chat-upload-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      max-width: min(420px, 100%);
+      padding: 8px 10px;
+      border: 1px solid var(--border-light);
+      border-radius: 8px;
+      background: white;
+    }
+
+    .chat-upload-chip.sending {
+      border-color: rgba(37, 99, 235, 0.35);
+      background: rgba(37, 99, 235, 0.06);
+    }
+
+    .chat-upload-chip.error {
+      border-color: rgba(239, 68, 68, 0.35);
+      background: rgba(239, 68, 68, 0.06);
+    }
+
+    .chat-upload-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      color: var(--accent);
+      background: var(--accent-light);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .chat-upload-info {
+      min-width: 0;
+    }
+
+    .chat-upload-info strong,
+    .chat-upload-info small {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .chat-upload-info small {
+      color: var(--text3);
+      font-size: 12px;
+      margin-top: 2px;
+    }
+
+    .chat-upload-remove {
+      min-width: 0;
+      height: 28px;
+      padding: 0 8px;
+    }
+
     .chat-input-bar {
       display: flex;
       gap: 10px;
-      padding: 14px;
-      border-top: 1px solid var(--border-light);
-      background: var(--surface-strong);
+      align-items: stretch;
+    }
+
+    .chat-attach-btn {
+      width: 44px;
+      min-width: 44px;
+      height: 44px;
+      padding: 0;
+      font-size: 20px;
+      line-height: 1;
     }
 
     .chat-input-bar textarea {
@@ -3254,7 +3340,7 @@
       bottom: 92px;
     }
 
-    .chat-window.locked .chat-input-bar {
+    .chat-window.locked .chat-composer {
       background: rgba(247, 249, 252, 0.92);
     }
 
@@ -4225,9 +4311,14 @@
             <div class="chat-messages" id="cats-messages">
               <div class="loading">连接 CatsCo 后开始对话</div>
             </div>
-            <div class="chat-input-bar">
-              <textarea class="config-input" id="cats-message-input" placeholder="等待 CatsCo Chat 检查完成" disabled></textarea>
-              <button class="btn btn-primary" onclick="sendCatsMessage()" id="cats-send-btn" disabled>发送</button>
+            <div class="chat-composer" id="cats-composer">
+              <div class="chat-attachment-tray" id="cats-attachment-tray" hidden></div>
+              <div class="chat-attach-note" id="cats-attach-note" hidden>浏览器无法直接添加本地附件；请在 CatsCo 桌面客户端使用 + 选择文件，或把文件路径作为普通文本发给 Agent。</div>
+              <div class="chat-input-bar">
+                <button class="btn chat-attach-btn" type="button" onclick="chooseCatsFiles()" id="cats-attach-btn" title="添加本地文件" disabled>+</button>
+                <textarea class="config-input" id="cats-message-input" placeholder="等待 CatsCo Chat 检查完成" disabled></textarea>
+                <button class="btn btn-primary" onclick="sendCatsMessage()" id="cats-send-btn" disabled>发送</button>
+              </div>
             </div>
           </div>
         </div>
@@ -4387,6 +4478,9 @@
     let catsConnectCollapsed = true;
     let catsConnectManualOverride = false;
     const CATS_SCROLL_BOTTOM_THRESHOLD = 80;
+    let catsAttachmentQueue = [];
+    let catsAttachmentSeq = 0;
+    const CATS_ATTACHMENT_BROWSER_MESSAGE = '浏览器无法直接添加本地附件；请在 CatsCo 桌面客户端使用 + 选择文件，或把文件路径作为普通文本发给 Agent。';
     const CATS_DEFAULT_HTTP_BASE = 'https://app.catsco.cc';
     const CATS_DEFAULT_WS_URL = 'wss://app.catsco.cc/v0/channels';
     const CATS_WORKING_TEXT_PREFIX = 'AI文本:';
@@ -6260,12 +6354,20 @@
       if(details)details.textContent=stage.key==='ready'?'ready':'needs attention';
       const input=document.getElementById('cats-message-input');
       const send=document.getElementById('cats-send-btn');
+      const attach=document.getElementById('cats-attach-btn');
       const locked=stage.key!=='ready';
       if(input){
         input.disabled=locked;
         input.placeholder=stage.inputPlaceholder||'连接 CatsCo 后开始对话';
       }
       if(send)send.disabled=locked;
+      if(attach){
+        const desktopPickerReady=catsDesktopFilePickerAvailable();
+        attach.disabled=locked || !desktopPickerReady;
+        attach.title=desktopPickerReady?'添加本地文件':CATS_ATTACHMENT_BROWSER_MESSAGE;
+      }
+      const attachNote=document.getElementById('cats-attach-note');
+      if(attachNote)attachNote.hidden=locked || catsDesktopFilePickerAvailable();
       const chatWindow=document.querySelector('.chat-window');
       if(chatWindow)chatWindow.classList.toggle('locked', locked);
     }
@@ -7009,10 +7111,144 @@
       }
     }
 
+    function catsAttachmentKind(name, type){
+      if(/^image\//i.test(String(type||'')))return 'IMG';
+      return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(String(name||''))?'IMG':'FILE';
+    }
+
+    function catsAttachmentStatus(item){
+      if(item.status==='sending')return '上传中';
+      if(item.status==='sent')return '已发送';
+      if(item.status==='error')return item.error||'附件授权无效';
+      return '待发送';
+    }
+
+    function catsDesktopFilePickerAvailable(){
+      return Boolean(window.catscoDesktop && typeof window.catscoDesktop.selectFiles==='function');
+    }
+
+    function renderCatsAttachments(){
+      const tray=document.getElementById('cats-attachment-tray');
+      if(!tray)return;
+      tray.hidden=catsAttachmentQueue.length===0;
+      tray.innerHTML=catsAttachmentQueue.map(item=>{
+        const cls='chat-upload-chip '+(item.status||'queued');
+        const meta=[formatBytes(item.size), catsAttachmentStatus(item)].filter(Boolean).join(' · ');
+        const remove=item.status==='sending'
+          ? ''
+          : '<button class="btn chat-upload-remove" type="button" onclick="removeCatsAttachment('+item.id+')">移除</button>';
+        return '<div class="'+cls+'">'+
+          '<span class="chat-upload-icon">'+escapeHtml(catsAttachmentKind(item.name,item.type))+'</span>'+
+          '<span class="chat-upload-info"><strong>'+escapeHtml(item.name)+'</strong><small title="'+escapeHtml(item.error||item.name||'')+'">'+escapeHtml(meta)+'</small></span>'+
+          remove+
+        '</div>';
+      }).join('');
+    }
+
+    function removeCatsAttachment(id){
+      catsAttachmentQueue=catsAttachmentQueue.filter(item=>item.id!==id || item.status==='sending');
+      renderCatsAttachments();
+    }
+
+    function normalizeCatsFileItem(file){
+      const token=String(file?.token || file?.file_token || '').trim();
+      const name=String(file?.name || '本地文件').trim() || '本地文件';
+      const size=Number(file?.size || 0);
+      const type=String(file?.type || '');
+      return {
+        id: ++catsAttachmentSeq,
+        name,
+        size,
+        type,
+        token,
+        status: token?'queued':'error',
+        error: token?'':'附件没有经过客户端文件选择器授权，请重新使用 + 按钮选择文件。',
+      };
+    }
+
+    function queueCatsFiles(files){
+      const list=Array.from(files||[]).filter(Boolean);
+      if(!list.length)return;
+      catsAttachmentQueue.push(...list.map(normalizeCatsFileItem));
+      renderCatsAttachments();
+      const invalid=catsAttachmentQueue.filter(item=>!item.token).length;
+      if(invalid)setCatsAction('有附件没有客户端授权，请重新使用 + 按钮选择文件。', true);
+      else pulsePetState('typing','已添加附件',1200);
+    }
+
+    async function chooseCatsFiles(){
+      const stage=buildCatsChatStage();
+      if(stage.key!=='ready'){
+        renderCatsStatus();
+        setCatsAction(stage.copy||'请先完成 CatsCo Chat 检查项',true);
+        return;
+      }
+
+      if(!catsDesktopFilePickerAvailable()){
+        setCatsAction(CATS_ATTACHMENT_BROWSER_MESSAGE, true);
+        return;
+      }
+
+      try{
+        const files=await window.catscoDesktop.selectFiles();
+        queueCatsFiles(files);
+      }catch(e){
+        setCatsAction('打开文件选择失败：'+e.message,true);
+      }
+    }
+
+    async function sendCatsAttachment(item){
+      item.status='sending';
+      item.error='';
+      renderCatsAttachments();
+      try{
+        await parseCatsResponse(await fetch(API+'/api/cats/messages/send-file',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            topic_id:catsState.topicId,
+            file_token:item.token,
+            file_name:item.name,
+          }),
+        }));
+        item.status='sent';
+      }catch(e){
+        item.status='error';
+        item.error=e.message;
+        throw e;
+      }finally{
+        renderCatsAttachments();
+      }
+    }
+
+    function setupCatsAttachmentInputs(){
+      const chatWindow=document.querySelector('.chat-window');
+      if(chatWindow){
+        ['dragenter','dragover'].forEach(eventName=>{
+          chatWindow.addEventListener(eventName,e=>{
+            if(!e.dataTransfer?.types || !Array.from(e.dataTransfer.types).includes('Files'))return;
+            e.preventDefault();
+          });
+        });
+        chatWindow.addEventListener('drop',e=>{
+          if(!e.dataTransfer?.files?.length)return;
+          e.preventDefault();
+          setCatsAction(CATS_ATTACHMENT_BROWSER_MESSAGE, true);
+        });
+      }
+    }
+
     async function sendCatsMessage(){
       const input=document.getElementById('cats-message-input');
       const content=input.value.trim();
-      if(!content)return;
+      const attachments=catsAttachmentQueue.filter(item=>item.status!=='sent');
+      const invalid=attachments.filter(item=>!item.token);
+      const sendable=attachments.filter(item=>item.token && item.status!=='sending');
+      if(!content && !sendable.length)return;
+      if(invalid.length){
+        setCatsAction('有附件没有客户端授权，请移除后重新选择。',true);
+        return;
+      }
       const stage=buildCatsChatStage();
       if(stage.key!=='ready'){
         renderCatsStatus();
@@ -7021,18 +7257,34 @@
       }
       if(!catsState.topicId){setCatsAction('请先完成 CatsCo 连接和 agent 绑定',true);return;}
       const btn=document.getElementById('cats-send-btn');
+      const attach=document.getElementById('cats-attach-btn');
       btn.disabled=true;
-      pulsePetState('typing', '发送中...', 1400);
+      if(attach)attach.disabled=true;
+      pulsePetState('typing', sendable.length?'上传中...':'发送中...', 1400);
       try{
-        await parseCatsResponse(await fetch(API+'/api/cats/messages/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({topic_id:catsState.topicId,content})}));
-        input.value='';
+        if(content){
+          await parseCatsResponse(await fetch(API+'/api/cats/messages/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({topic_id:catsState.topicId,content})}));
+          input.value='';
+        }
+        let failed=0;
+        for(const item of sendable){
+          try{
+            await sendCatsAttachment(item);
+          }catch(_e){
+            failed+=1;
+          }
+        }
+        catsAttachmentQueue=catsAttachmentQueue.filter(item=>item.status!=='sent');
+        renderCatsAttachments();
         catsScrollPinnedToBottom=true;
-        pulsePetState('success', '已发送', 1800);
+        if(failed)setCatsAction(failed+' 个附件发送失败，请重新选择文件或检查 CatsCo 连接。',true);
+        else pulsePetState('success', '已发送', 1800);
         await loadCatsMessages(true);
       }catch(e){
         setCatsAction('发送失败：'+e.message,true);
       }finally{
-        btn.disabled=false;
+        btn.disabled=buildCatsChatStage().key!=='ready';
+        if(attach)attach.disabled=buildCatsChatStage().key!=='ready' || !catsDesktopFilePickerAvailable();
       }
     }
 
@@ -7076,9 +7328,17 @@
     catsMessagesBox.addEventListener('scroll', updateCatsMessageScrollIntent, { passive: true });
     const catsMessageInput = document.getElementById('cats-message-input');
     catsMessageInput.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendCatsMessage();}});
+    catsMessageInput.addEventListener('paste',e=>{
+      const files=e.clipboardData?.files;
+      if(files && files.length){
+        e.preventDefault();
+        setCatsAction(CATS_ATTACHMENT_BROWSER_MESSAGE, true);
+      }
+    });
     catsMessageInput.addEventListener('input',()=>{if(catsMessageInput.value.trim()) setPetState('typing', { message:'输入中...' }); else setPetAutoBaseline(petAutoBaseline);});
     catsMessageInput.addEventListener('focus',()=>setPetState('typing', { message:'准备输入' }));
     catsMessageInput.addEventListener('blur',()=>{if(!catsMessageInput.value.trim()) setPetAutoBaseline(petAutoBaseline);});
+    setupCatsAttachmentInputs();
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeLogs();closeUpdateModal();closeCatsMediaPreview();}});
     document.addEventListener('click',e=>{const shell=document.getElementById('floating-pet');if(shell && !shell.contains(e.target)) closeFloatingPetMenu();});
   </script>

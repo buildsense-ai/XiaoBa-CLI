@@ -28,6 +28,8 @@ import {
   rollbackRuntimeProfileEdit,
   saveRuntimeProfileEdit,
 } from '../../runtime/runtime-profile-editor';
+import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/upload';
+import { consumeLocalFileGrant } from '../local-file-grants';
 // import { ReportGenerator } from '../../utils/report-generator';
 // import { LogUploader } from '../../utils/log-uploader';
 
@@ -1116,6 +1118,57 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         content,
       }, state.token);
       res.json(data);
+    } catch (e: any) {
+      res.status(e.status || 500).json({ error: e.message, data: e.data });
+    }
+  });
+
+  router.post('/cats/messages/send-file', async (req, res) => {
+    try {
+      const state = getCatsAuthState();
+      if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
+
+      const topicId = String(req.body?.topic_id || '').trim();
+      const fileToken = String(req.body?.file_token || '').trim();
+      if (!topicId || !fileToken) return res.status(400).json({ error: 'topic_id and file_token are required' });
+
+      const grant = consumeLocalFileGrant(fileToken);
+      const stat = fs.statSync(grant.filePath);
+      if (!stat.isFile()) return res.status(400).json({ error: 'file_token must point to a file' });
+
+      const fileName = grant.name;
+      const uploadType = inferCatsUploadType(fileName);
+      const upload = await uploadCatsLocalFile({
+        httpBaseUrl: state.httpBaseUrl,
+        filePath: grant.filePath,
+        type: uploadType,
+        authHeader: `Bearer ${state.token}`,
+      });
+
+      const content = {
+        type: uploadType,
+        payload: {
+          url: upload.url,
+          name: upload.name || fileName,
+          size: upload.size || stat.size,
+        },
+      };
+      const data = await catsRequest('POST', state.httpBaseUrl, '/api/messages/send', {
+        topic_id: topicId,
+        type: uploadType,
+        content,
+      }, state.token);
+
+      res.json({
+        ok: true,
+        type: uploadType,
+        file: {
+          name: fileName,
+          size: stat.size,
+        },
+        upload,
+        message: data,
+      });
     } catch (e: any) {
       res.status(e.status || 500).json({ error: e.message, data: e.data });
     }

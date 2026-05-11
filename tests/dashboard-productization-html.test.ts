@@ -97,6 +97,7 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /<summary>高级 endpoint<\/summary>/);
   assert.match(dashboardHtml, /input\.disabled=locked/);
   assert.match(dashboardHtml, /send\.disabled=locked/);
+  assert.match(dashboardHtml, /attach\.disabled=locked/);
   assert.match(dashboardHtml, /id="cats-message-input"[^>]*disabled/);
   assert.match(dashboardHtml, /id="cats-send-btn" disabled/);
   assert.match(dashboardHtml, /needs-readiness/);
@@ -116,4 +117,25 @@ test('CatsCo Chat preserves scroll position while reading history', () => {
   assert.match(renderBlock, /const shouldStickToBottom=/);
   assert.match(renderBlock, /if\(shouldStickToBottom\)scrollCatsMessagesToBottom\(box\)/);
   assert.doesNotMatch(renderBlock, /box\.scrollTop=box\.scrollHeight;\s*updatePetFromCatsMessages/);
+});
+
+test('CatsCo Chat composer supports local attachments', () => {
+  assert.doesNotMatch(dashboardHtml, /id="cats-file-input"/);
+  assert.match(dashboardHtml, /id="cats-attachment-tray"/);
+  assert.match(dashboardHtml, /id="cats-attach-note" hidden/);
+  assert.match(dashboardHtml, /id="cats-attach-btn"/);
+  assert.match(dashboardHtml, /function chooseCatsFiles\(\)/);
+  assert.match(dashboardHtml, /function catsDesktopFilePickerAvailable\(\)/);
+  assert.match(dashboardHtml, /const CATS_ATTACHMENT_BROWSER_MESSAGE =/);
+  assert.match(dashboardHtml, /attach\.disabled=locked \|\| !desktopPickerReady/);
+  assert.match(dashboardHtml, /attachNote\.hidden=locked \|\| catsDesktopFilePickerAvailable\(\)/);
+  assert.match(dashboardHtml, /setCatsAction\(CATS_ATTACHMENT_BROWSER_MESSAGE, true\)/);
+  assert.match(dashboardHtml, /window\.catscoDesktop\.selectFiles/);
+  assert.match(dashboardHtml, /file_token:item\.token/);
+  assert.match(dashboardHtml, /function setupCatsAttachmentInputs\(\)/);
+  assert.doesNotMatch(dashboardHtml, /file_path:item\.path/);
+  assert.doesNotMatch(dashboardHtml, /input\.click\(\)/);
+  assert.doesNotMatch(dashboardHtml, /queueCatsPaths/);
+  assert.match(dashboardHtml, /catsMessageInput\.addEventListener\('paste'/);
+  assert.match(dashboardHtml, /\/api\/cats\/messages\/send-file/);
 });

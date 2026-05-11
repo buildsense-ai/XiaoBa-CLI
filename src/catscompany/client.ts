@@ -1,10 +1,10 @@
 // CatsCo 服务器 WebSocket 客户端
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as crypto from 'crypto';
 import { Logger } from '../utils/logger';
+import { uploadCatsLocalFile, type UploadResult } from './upload';
+
+export type { UploadResult } from './upload';
 
 export interface CatsClientConfig {
   serverUrl: string;
@@ -21,12 +21,6 @@ export interface MessageContext {
   isGroup: boolean;
   from?: string;  // 原始 Cats 发送方字段，供兼容和排查使用
   seq?: number;   // Cats 服务端消息序号，用于排序和补充消息合并
-}
-
-export interface UploadResult {
-  url: string;
-  name: string;
-  size: number;
 }
 
 export interface CatsOutgoingMessage {
@@ -50,14 +44,6 @@ interface PendingAck {
 
 export type CatsSendErrorKind = 'transport' | 'ack' | 'timeout';
 
-const MIME_BY_EXT: Record<string, string> = {
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.png': 'image/png',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-};
-
 // Cats 服务端握手协议版本，不是 CatsCo 客户端发布版本。
 const CATSCOMPANY_PROTOCOL_VERSION = '0.1.0';
 const CATSCOMPANY_CLIENT_UA = 'CatsCo/1.0';
@@ -65,10 +51,6 @@ const CATSCOMPANY_CLIENT_UA = 'CatsCo/1.0';
 function maskSecret(value: string): string {
   if (value.length <= 10) return '***';
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
-}
-
-function limitLogText(value: string, maxLength = 500): string {
-  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
 
 export class CatsSendError extends Error {
@@ -284,41 +266,12 @@ export class CatsClient extends EventEmitter {
   }
 
   async uploadFile(filePath: string, type: 'image' | 'file' = 'file'): Promise<UploadResult> {
-    const httpBaseUrl = (this.config.httpBaseUrl || 'https://app.catsco.cc').replace(/\/$/, '');
-    const url = `${httpBaseUrl}/api/upload?type=${type}`;
-
-    const buffer = fs.readFileSync(filePath);
-    const filename = path.basename(filePath);
-    const mimeType = MIME_BY_EXT[path.extname(filename).toLowerCase()] || 'application/octet-stream';
-
-    try {
-      Logger.info(`[CatsCompany] 开始上传文件: ${filename}, type=${type}, size=${buffer.length} bytes, mime=${mimeType}`);
-
-      const formData = new FormData();
-      formData.append('file', new Blob([buffer], { type: mimeType }), filename);
-
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Authorization': `ApiKey ${this.config.apiKey}`,
-        },
-        body: formData,
-        signal: AbortSignal.timeout(60000),
-      });
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        Logger.error(`[CatsCompany] 上传失败: status=${res.status}, body=${limitLogText(errorText)}`);
-        throw new Error(`Upload failed: ${res.status} - ${errorText}`);
-      }
-
-      const result = await res.json() as UploadResult;
-      Logger.info(`[CatsCompany] 上传成功: ${result.name || filename}, size=${result.size || buffer.length} bytes`);
-      return result;
-    } catch (err: any) {
-      Logger.error(`[CatsCompany] 上传异常: ${err.message || 'unknown error'}`);
-      throw new Error(`Upload failed: ${err.message}`);
-    }
+    return uploadCatsLocalFile({
+      httpBaseUrl: this.config.httpBaseUrl || 'https://app.catsco.cc',
+      filePath,
+      type,
+      authHeader: `ApiKey ${this.config.apiKey}`,
+    });
   }
 
   async sendImage(topic: string, upload: UploadResult): Promise<number> {
