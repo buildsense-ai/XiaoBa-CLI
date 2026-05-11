@@ -7,6 +7,7 @@ import {
   loadRuntimeManifest,
   normalizeArch,
   normalizePlatform,
+  repairNodeRuntimeEntrypoints,
   resolveExtractedRoot,
   resolveRuntimeTarget,
   resolveRuntimeTargetKey,
@@ -125,3 +126,60 @@ describe('resolveExtractedRoot', () => {
     }
   });
 });
+
+describe('repairNodeRuntimeEntrypoints', () => {
+  test('repairs POSIX npm, npx, and corepack entrypoints that were copied as regular files', (t) => {
+    if (process.platform === 'win32') {
+      t.skip('POSIX symlink repair is not used for Windows Node runtimes');
+      return;
+    }
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-node-runtime-'));
+    try {
+      writeExecutable(path.join(root, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'));
+      writeExecutable(path.join(root, 'lib', 'node_modules', 'npm', 'bin', 'npx-cli.js'));
+      writeExecutable(path.join(root, 'lib', 'node_modules', 'corepack', 'dist', 'corepack.js'));
+
+      const bin = path.join(root, 'bin');
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(path.join(bin, 'npm'), "require('../lib/cli.js')(process)\n");
+      fs.writeFileSync(path.join(bin, 'npx'), "require('../lib/cli.js')(process)\n");
+      fs.writeFileSync(path.join(bin, 'corepack'), "require('./lib/corepack.cjs')\n");
+
+      assert.deepStrictEqual(
+        repairNodeRuntimeEntrypoints(root, 'linux').sort(),
+        ['corepack', 'npm', 'npx'],
+      );
+
+      assertSymlinkTarget(path.join(bin, 'npm'), path.join('..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'));
+      assertSymlinkTarget(path.join(bin, 'npx'), path.join('..', 'lib', 'node_modules', 'npm', 'bin', 'npx-cli.js'));
+      assertSymlinkTarget(path.join(bin, 'corepack'), path.join('..', 'lib', 'node_modules', 'corepack', 'dist', 'corepack.js'));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('leaves Windows runtimes untouched', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-node-runtime-win-'));
+    try {
+      const npmPath = path.join(root, 'npm.cmd');
+      fs.writeFileSync(npmPath, '@echo off\r\n');
+
+      assert.deepStrictEqual(repairNodeRuntimeEntrypoints(root, 'win32'), []);
+      assert.strictEqual(fs.readFileSync(npmPath, 'utf-8'), '@echo off\r\n');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+function writeExecutable(filePath: string): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, '#!/usr/bin/env node\n');
+  fs.chmodSync(filePath, 0o755);
+}
+
+function assertSymlinkTarget(linkPath: string, expectedTarget: string): void {
+  assert.strictEqual(fs.lstatSync(linkPath).isSymbolicLink(), true);
+  assert.strictEqual(path.normalize(fs.readlinkSync(linkPath)), path.normalize(expectedTarget));
+}

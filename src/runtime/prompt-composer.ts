@@ -56,7 +56,6 @@ export class PromptComposer {
     now: Date;
   }): string {
     const basePrompt = this.getBaseSystemPrompt(options.promptsDir, options.defaultSystemPrompt).trim();
-    const behaviorPrompt = this.getBehaviorPrompt(options.promptsDir).trim();
     const displayName = options.displayName;
     const platform = options.platform;
     const today = options.now.toISOString().slice(0, 10);
@@ -71,7 +70,7 @@ export class PromptComposer {
       `你的默认工作目录是：\`${workspacePath}\``,
     ].filter(Boolean).join('\n');
 
-    return [basePrompt, behaviorPrompt, runtimeInfo].filter(Boolean).join('\n\n');
+    return [basePrompt, runtimeInfo].filter(Boolean).join('\n\n');
   }
 
   static getBaseSystemPrompt(promptsDir: string, defaultSystemPrompt: string): string {
@@ -79,18 +78,6 @@ export class PromptComposer {
       return fs.readFileSync(path.join(promptsDir, 'system-prompt.md'), 'utf-8');
     } catch {
       return defaultSystemPrompt;
-    }
-  }
-
-  static getBehaviorPrompt(promptsDir: string): string {
-    try {
-      const content = fs.readFileSync(path.join(promptsDir, 'behavior.md'), 'utf-8').trim();
-      if (content === '（在下方添加你的个性化设置）') {
-        return '';
-      }
-      return content;
-    } catch {
-      return '';
     }
   }
 }

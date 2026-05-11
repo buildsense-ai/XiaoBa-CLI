@@ -172,6 +172,12 @@ async function prepareDownloadedRuntime(manifest, runtimeName, platform, arch, r
   const destination = path.join(runtimeRoot, target.targetSubdir);
 
   installRuntimeArchive(artifact.archivePath, destination, target);
+  if (runtimeName === 'node') {
+    const repaired = repairNodeRuntimeEntrypoints(destination, platform);
+    if (repaired.length > 0) {
+      console.log(`  node: repaired bin entrypoints: ${repaired.join(', ')}`);
+    }
+  }
 
   console.log(`  ${runtimeName}: ${artifact.selectedSource.url} -> ${destination}`);
 
@@ -343,7 +349,7 @@ function copyDirectory(source, target, options = {}) {
   fs.cpSync(source, target, {
     recursive: true,
     force: true,
-    dereference: true,
+    dereference: false,
     filter: (src) => {
       const name = path.basename(src);
       if (skipNames.has(name)) {
@@ -365,6 +371,66 @@ function copyDirectoryContents(source, target, options = {}) {
 
   for (const entry of fs.readdirSync(source)) {
     copyDirectory(path.join(source, entry), path.join(target, entry), options);
+  }
+}
+
+const POSIX_NODE_BIN_LINKS = [
+  {
+    name: 'npm',
+    target: path.join('..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  },
+  {
+    name: 'npx',
+    target: path.join('..', 'lib', 'node_modules', 'npm', 'bin', 'npx-cli.js'),
+  },
+  {
+    name: 'corepack',
+    target: path.join('..', 'lib', 'node_modules', 'corepack', 'dist', 'corepack.js'),
+  },
+];
+
+export function repairNodeRuntimeEntrypoints(nodeRuntimeRoot, platform = process.platform) {
+  if (normalizePlatform(platform) === 'win32') {
+    return [];
+  }
+
+  const binDir = path.join(nodeRuntimeRoot, 'bin');
+  if (!fs.existsSync(binDir)) {
+    return [];
+  }
+
+  const repaired = [];
+
+  for (const link of POSIX_NODE_BIN_LINKS) {
+    const linkPath = path.join(binDir, link.name);
+    const targetPath = path.resolve(binDir, link.target);
+
+    if (!fs.existsSync(targetPath)) {
+      throw new Error(`Bundled Node runtime is missing ${link.name} target: ${targetPath}`);
+    }
+
+    if (isExpectedSymlink(linkPath, link.target)) {
+      continue;
+    }
+
+    fs.rmSync(linkPath, { force: true });
+    fs.symlinkSync(link.target, linkPath);
+    fs.chmodSync(targetPath, 0o755);
+    repaired.push(link.name);
+  }
+
+  return repaired;
+}
+
+function isExpectedSymlink(linkPath, expectedTarget) {
+  try {
+    const stat = fs.lstatSync(linkPath);
+    if (!stat.isSymbolicLink()) {
+      return false;
+    }
+    return path.normalize(fs.readlinkSync(linkPath)) === path.normalize(expectedTarget);
+  } catch {
+    return false;
   }
 }
 

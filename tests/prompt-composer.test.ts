@@ -22,9 +22,8 @@ describe('PromptComposer', () => {
     }
   });
 
-  test('composes base prompt, behavior prompt, and runtime info in the current order', () => {
+  test('composes base prompt and runtime info in the current order', () => {
     writePrompt('system-prompt.md', 'Base prompt\n');
-    writePrompt('behavior.md', 'Behavior prompt\n');
 
     const prompt = PromptComposer.composeSystemPrompt({
       promptsDir: testRoot,
@@ -38,7 +37,6 @@ describe('PromptComposer', () => {
 
     assert.equal(prompt, [
       'Base prompt',
-      'Behavior prompt',
       [
         '你在这个平台上的名字是：Desk Bot',
         '当前平台：feishu',
@@ -48,9 +46,9 @@ describe('PromptComposer', () => {
     ].join('\n\n'));
   });
 
-  test('suppresses template behavior prompt and uses default workspace without display name', () => {
+  test('ignores legacy behavior prompt files', () => {
     writePrompt('system-prompt.md', 'Base prompt');
-    writePrompt('behavior.md', '（在下方添加你的个性化设置）');
+    writePrompt('behavior.md', 'Legacy behavior prompt that must not be loaded');
 
     const prompt = PromptComposer.composeSystemPrompt({
       promptsDir: testRoot,
@@ -66,24 +64,7 @@ describe('PromptComposer', () => {
         '你的默认工作目录是：`~/catsco-workspace/default`',
       ].join('\n'),
     ].join('\n\n'));
-  });
-
-  test('keeps behavior prompt when user appends preferences after the template marker', () => {
-    writePrompt('system-prompt.md', 'Base prompt');
-    writePrompt('behavior.md', [
-      '（在下方添加你的个性化设置）',
-      '',
-      '用户偏好：回答要更简短。',
-    ].join('\n'));
-
-    const prompt = PromptComposer.composeSystemPrompt({
-      promptsDir: testRoot,
-      defaultSystemPrompt: 'Fallback prompt',
-      env: {},
-      now: new Date('2026-05-01T12:00:00.000Z'),
-    });
-
-    assert.match(prompt, /用户偏好：回答要更简短。/);
+    assert.doesNotMatch(prompt, /Legacy behavior prompt/);
   });
 
   test('falls back to default system prompt when system prompt file is missing', () => {
@@ -127,7 +108,6 @@ describe('PromptComposer', () => {
 
   test('PromptManager delegates to PromptComposer without changing output', async () => {
     writePrompt('system-prompt.md', 'Base prompt\n');
-    writePrompt('behavior.md', 'Behavior prompt\n');
 
     delete require.cache[require.resolve('../src/utils/prompt-manager')];
     const { PromptManager } = require('../src/utils/prompt-manager');
@@ -160,7 +140,6 @@ describe('PromptComposer', () => {
 
   test('profile-aware composition uses profile workingDirectory', () => {
     writePrompt('system-prompt.md', 'Base prompt\n');
-    writePrompt('behavior.md', 'Behavior prompt\n');
     const env = {
       CURRENT_AGENT_DISPLAY_NAME: 'Desk Bot',
       CURRENT_PLATFORM: 'feishu',

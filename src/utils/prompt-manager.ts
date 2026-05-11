@@ -15,13 +15,6 @@ export class PromptManager {
   }
 
   /**
-   * 获取 behavior prompt（用户偏好）
-   */
-  static getBehaviorPrompt(): string {
-    return PromptComposer.getBehaviorPrompt(this.promptsDir);
-  }
-
-  /**
    * 构建完整 system prompt（包含运行时信息）
    */
   static async buildSystemPrompt(): Promise<string> {
