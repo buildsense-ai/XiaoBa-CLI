@@ -81,3 +81,17 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /appReadinessLoaded/);
   assert.doesNotMatch(dashboardHtml, /末尾 \+/);
 });
+
+test('CatsCo Chat preserves scroll position while reading history', () => {
+  assert.match(dashboardHtml, /let catsScrollPinnedToBottom = true/);
+  assert.match(dashboardHtml, /const CATS_SCROLL_BOTTOM_THRESHOLD = 80/);
+  assert.match(dashboardHtml, /function isCatsMessageScrollNearBottom\(box\)/);
+  assert.match(dashboardHtml, /function updateCatsMessageScrollIntent\(\)/);
+  assert.match(dashboardHtml, /function scrollCatsMessagesToBottom\(box\)/);
+  assert.match(dashboardHtml, /addEventListener\('scroll', updateCatsMessageScrollIntent, \{ passive: true \}\)/);
+
+  const renderBlock = dashboardHtml.match(/function renderCatsMessages\(messages\)\{[\s\S]*?async function loadCatsMessages/)?.[0] || '';
+  assert.match(renderBlock, /const shouldStickToBottom=/);
+  assert.match(renderBlock, /if\(shouldStickToBottom\)scrollCatsMessagesToBottom\(box\)/);
+  assert.doesNotMatch(renderBlock, /box\.scrollTop=box\.scrollHeight;\s*updatePetFromCatsMessages/);
+});

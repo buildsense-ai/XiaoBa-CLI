@@ -3763,6 +3763,8 @@
     let catsState = {};
     let catsNextAction = 'none';
     let catsPollTimer = null;
+    let catsScrollPinnedToBottom = true;
+    const CATS_SCROLL_BOTTOM_THRESHOLD = 80;
     const CATS_DEFAULT_HTTP_BASE = 'https://app.catsco.cc';
     const CATS_DEFAULT_WS_URL = 'wss://app.catsco.cc/v0/channels';
     const petFrames = {
@@ -5361,6 +5363,7 @@
         catsState={};
         catsWorkingActive=false;
         lastCatsMessageSignature='';
+        catsScrollPinnedToBottom=true;
         document.getElementById('cats-account').value='';
         document.getElementById('cats-password').value='';
         document.getElementById('cats-messages').innerHTML='<div class="loading">连接 CatsCo 后开始对话</div>';
@@ -5659,9 +5662,27 @@
       return html;
     }
 
+    function isCatsMessageScrollNearBottom(box){
+      if(!box)return true;
+      const distance=box.scrollHeight-box.scrollTop-box.clientHeight;
+      return distance<=CATS_SCROLL_BOTTOM_THRESHOLD;
+    }
+
+    function updateCatsMessageScrollIntent(){
+      const box=document.getElementById('cats-messages');
+      catsScrollPinnedToBottom=isCatsMessageScrollNearBottom(box);
+    }
+
+    function scrollCatsMessagesToBottom(box){
+      if(!box)return;
+      box.scrollTop=box.scrollHeight;
+      catsScrollPinnedToBottom=true;
+    }
+
     function renderCatsMessages(messages){
       const box=document.getElementById('cats-messages');
       const uid=String(catsState.user?.uid||'');
+      const shouldStickToBottom=catsScrollPinnedToBottom || !box.scrollHeight || isCatsMessageScrollNearBottom(box);
       if(!messages || !messages.length){
         box.innerHTML='<div class="loading">暂无消息</div>';
         return;
@@ -5675,7 +5696,7 @@
         const time=created && !Number.isNaN(created.getTime()) ? created.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
         return '<div class="chat-message '+cls+'"><div class="chat-message-meta">'+who+(time?' · '+escapeHtml(time):'')+'</div>'+renderCatsMessageBody(m)+'</div>';
       }).join('');
-      box.scrollTop=box.scrollHeight;
+      if(shouldStickToBottom)scrollCatsMessagesToBottom(box);
       updatePetFromCatsMessages(messages);
     }
 
@@ -5707,6 +5728,7 @@
       try{
         await parseCatsResponse(await fetch(API+'/api/cats/messages/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({topic_id:catsState.topicId,content})}));
         input.value='';
+        catsScrollPinnedToBottom=true;
         pulsePetState('success', '已发送', 1800);
         await loadCatsMessages(true);
       }catch(e){
@@ -5751,6 +5773,8 @@
     preloadPetFrames();renderPetProfile();renderPetProcess();setPetState('idle');
     setupEnvConfigLazyLoad();fetchStatus();fetchSkills();fetchDashboardSettings();fetchRuntimeConfig();fetchUpdateStatus(true);fetchCatsStatus();
     setInterval(fetchStatus,5000);setInterval(fetchSkills,30000);setInterval(()=>fetchUpdateStatus(true),5000);
+    const catsMessagesBox = document.getElementById('cats-messages');
+    catsMessagesBox.addEventListener('scroll', updateCatsMessageScrollIntent, { passive: true });
     const catsMessageInput = document.getElementById('cats-message-input');
     catsMessageInput.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendCatsMessage();}});
     catsMessageInput.addEventListener('input',()=>{if(catsMessageInput.value.trim()) setPetState('typing', { message:'输入中...' }); else setPetAutoBaseline(petAutoBaseline);});
