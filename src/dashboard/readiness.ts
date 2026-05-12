@@ -314,14 +314,14 @@ function buildCatsCoSection(
   const service = serviceManager.getService('catscompany');
   const checks = buildCatsCoChatChecks(env, config);
   if (service?.status === 'running') {
-    checks.push(passCheck('catsco.connector', '本地 connector', 'CatsCo connector 正在运行'));
+    checks.push(passCheck('catsco.connector', 'CatsCompany connector', 'CatsCompany connector 正在运行'));
   } else if (statusFromChecks(checks) === 'ready') {
-    checks.push(failCheck('catsco.connector', '本地 connector', 'CatsCo connector 尚未启动', 'warning', {
-      label: '启动 CatsCo agent',
+    checks.push(failCheck('catsco.connector', 'CatsCompany connector', 'CatsCompany connector 尚未启动', 'warning', {
+      label: '启动 CatsCompany connector',
       target: 'service',
     }));
   } else {
-    checks.push(failCheck('catsco.connector', '本地 connector', '完成账号和绑定后再启动 connector', 'warning', {
+    checks.push(failCheck('catsco.connector', 'CatsCompany connector', '完成 CatsCo 账号和 agent 绑定后再启动 CatsCompany connector', 'warning', {
       label: '打开 CatsCo',
       target: 'catsco',
     }));

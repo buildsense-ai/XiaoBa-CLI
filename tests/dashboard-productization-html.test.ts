@@ -14,16 +14,36 @@ test('dashboard settings page uses model source before Runtime Profile', () => {
   assert.match(dashboardHtml, /id="model-source-panel"/);
   assert.match(dashboardHtml, /function fetchDashboardSettings\(\)/);
   assert.match(dashboardHtml, /\/api\/settings/);
+  assert.match(dashboardHtml, /id="settings-setup-panel"/);
+  assert.match(dashboardHtml, /先完成关键配置/);
   assert.match(dashboardHtml, /CatsCo 托管模型/);
-  assert.match(dashboardHtml, /自定义模型（高级）/);
+  assert.match(dashboardHtml, /自定义模型（当前需要）/);
   assert.match(dashboardHtml, /托管模型目录和用量服务还没有接入当前本地版本/);
   assert.match(dashboardHtml, /访问凭证只保存 presence，不会回显/);
   assert.match(dashboardHtml, /保存自定义模型设置？访问凭证会写入本地 \.env，仅用于本机 runtime。/);
   assert.match(dashboardHtml, /Runtime Profile 状态/);
   assert.match(dashboardHtml, /受控编辑/);
+  assert.match(dashboardHtml, /config-group-title-main/);
+  assert.match(dashboardHtml, /config-group-title-actions/);
   assert.match(dashboardHtml, /保存后新 session 生效/);
+  assert.match(dashboardHtml, /title==='CatsCo Chat'\?'运行中':'完成'/);
+  assert.match(dashboardHtml, /title==='CatsCo Chat'\?'未启动':'需处理'/);
+  assert.doesNotMatch(dashboardHtml, /status==='warning'\?'注意'/);
   assert.match(dashboardHtml, /当前已运行 session 不会热更新/);
   assert.doesNotMatch(dashboardHtml, /buildsense\.asia/i);
+});
+
+test('dashboard settings collapse state survives refresh-oriented rerenders', () => {
+  assert.match(dashboardHtml, /const settingsCollapseState=\{/);
+  assert.match(dashboardHtml, /function toggleSettingsGroup\(id, key\)/);
+  assert.match(dashboardHtml, /settingsCollapsedClass\('modelSource', false\)/);
+  assert.match(dashboardHtml, /settingsCollapsedClass\('runtimeStatus', valid\)/);
+  assert.match(dashboardHtml, /settingsCollapsedClass\('runtimeEditor', true\)/);
+  assert.match(dashboardHtml, /function shouldDeferRuntimeConfigRender\(\)/);
+  assert.match(dashboardHtml, /editor\.contains\(active\) && active\.matches\('input, select, textarea'\)/);
+  assert.match(dashboardHtml, /fetchRuntimeConfig\(\{force:true\}\)/);
+  assert.match(dashboardHtml, /飞书（高级）/);
+  assert.match(dashboardHtml, /微信（高级）/);
 });
 
 test('run page is driven by readiness instead of raw diagnostics cards', () => {
@@ -70,7 +90,9 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /function renderCatsChecklist\(stage\)/);
   assert.match(dashboardHtml, /function runCatsNextAction\(\)/);
   assert.match(dashboardHtml, /先完成模型来源/);
-  assert.match(dashboardHtml, /Dashboard Chat 连接同一个 CatsCo webapp 会话/);
+  assert.match(dashboardHtml, /Dashboard Chat 连接同一个 CatsCompany 网页会话/);
+  assert.match(dashboardHtml, /CatsCompany connector/);
+  assert.match(dashboardHtml, /恢复 CatsCompany connector/);
   assert.match(dashboardHtml, /<details class="chat-diagnostics" id="cats-connection-details">/);
   assert.match(dashboardHtml, /<summary>高级 endpoint<\/summary>/);
   assert.match(dashboardHtml, /input\.disabled=locked/);

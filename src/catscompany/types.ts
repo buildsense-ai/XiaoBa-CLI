@@ -30,6 +30,8 @@ export interface ParsedCatsMessage {
   rawContent: unknown;
   /** 文件附件信息（rich content file/image 时存在） */
   file?: CatsFileInfo;
+  /** 同一条消息里的全部附件（content_blocks 或 rich content） */
+  files?: CatsFileInfo[];
 }
 
 /**

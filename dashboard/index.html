@@ -164,7 +164,7 @@
       font-size: 16px;
       font-weight: 700;
       color: #fff;
-      letter-spacing: -0.02em;
+      letter-spacing: 0;
       margin-bottom: 2px;
     }
 
@@ -268,7 +268,7 @@
     .topbar-title {
       font-size: 18px;
       font-weight: 700;
-      letter-spacing: -0.03em;
+      letter-spacing: 0;
       color: var(--text);
     }
 
@@ -420,7 +420,7 @@
     .overview-card .ov-value {
       font-size: 22px;
       font-weight: 800;
-      letter-spacing: -0.04em;
+      letter-spacing: 0;
       color: var(--text);
       word-break: break-word;
     }
@@ -478,7 +478,7 @@
       font-size: 16px;
       font-weight: 700;
       margin-bottom: 8px;
-      letter-spacing: -0.02em;
+      letter-spacing: 0;
     }
 
     .svc-meta {
@@ -641,6 +641,78 @@
     .settings-meta {
       color: var(--text2);
       font-size: 13px;
+      line-height: 1.5;
+      margin-top: 6px;
+    }
+
+    .settings-setup-card {
+      border: 1px solid rgba(59, 130, 246, 0.18);
+      background: rgba(59, 130, 246, 0.06);
+      border-radius: 18px;
+      padding: 16px;
+    }
+
+    .settings-setup-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .settings-setup-title {
+      color: var(--text);
+      font-size: 15px;
+      font-weight: 800;
+      line-height: 1.35;
+    }
+
+    .settings-setup-copy {
+      color: var(--text2);
+      font-size: 13px;
+      line-height: 1.55;
+      margin-top: 5px;
+    }
+
+    .settings-step-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .settings-step {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.64);
+      padding: 12px;
+      min-width: 0;
+      width: 100%;
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+      transition: border-color 0.18s ease, background 0.18s ease;
+    }
+
+    .settings-step:hover {
+      border-color: var(--border-strong);
+      background: rgba(255, 255, 255, 0.88);
+    }
+
+    .settings-step-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.35;
+    }
+
+    .settings-step-meta {
+      color: var(--text2);
+      font-size: 12px;
       line-height: 1.5;
       margin-top: 6px;
     }
@@ -926,6 +998,12 @@
       margin-top: 16px;
     }
 
+    .advanced-muted {
+      color: var(--text3);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
     .config-group {
       border-radius: 24px;
       padding: 24px;
@@ -967,7 +1045,8 @@
     .config-group-title {
       font-size: 15px;
       font-weight: 700;
-      letter-spacing: -0.02em;
+      letter-spacing: 0;
+      gap: 10px;
     }
 
     .config-row {
@@ -1106,7 +1185,7 @@
       font-size: 15px;
       font-weight: 700;
       margin-bottom: 2px;
-      letter-spacing: -0.02em;
+      letter-spacing: 0;
       word-break: break-word;
     }
 
@@ -1236,7 +1315,7 @@
     .modal-header h3 {
       font-size: 16px;
       font-weight: 700;
-      letter-spacing: -0.02em;
+      letter-spacing: 0;
     }
 
     .modal-body {
@@ -1284,7 +1363,7 @@
     .section-title {
       font-size: 22px;
       font-weight: 800;
-      letter-spacing: -0.04em;
+      letter-spacing: 0;
       margin-bottom: 18px;
       display: flex;
       align-items: center;
@@ -1330,7 +1409,7 @@
       gap: 10px;
       font-size: 18px;
       font-weight: 800;
-      letter-spacing: -0.03em;
+      letter-spacing: 0;
       color: var(--text);
     }
 
@@ -1393,7 +1472,7 @@
     .section-header h2 {
       font-size: 22px;
       font-weight: 800;
-      letter-spacing: -0.04em;
+      letter-spacing: 0;
       color: var(--text);
     }
 
@@ -1431,7 +1510,7 @@
     .status-card .value {
       font-size: 20px;
       font-weight: 800;
-      letter-spacing: -0.03em;
+      letter-spacing: 0;
       color: var(--text);
       word-break: break-word;
     }
@@ -1470,7 +1549,7 @@
       font-size: 24px;
       font-weight: 850;
       color: var(--text);
-      letter-spacing: -0.04em;
+      letter-spacing: 0;
     }
 
     .run-summary-meta {
@@ -2006,6 +2085,7 @@
       }
 
       .profile-summary-grid,
+      .settings-step-grid,
       .model-source-grid,
       .runtime-field-row {
         grid-template-columns: 1fr;
@@ -2096,8 +2176,11 @@
     }
 
     /* Collapsible config groups */
-    .config-group-title { cursor: pointer; user-select: none; display: flex; align-items: center; justify-content: space-between; }
+    .config-group-title { cursor: pointer; user-select: none; display: flex; align-items: center; justify-content: flex-start; gap: 12px; }
+    .config-group-title-main { flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .config-group-title-actions { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
     .config-group-title::after { content: ''; display: inline-block; width: 8px; height: 8px; border-right: 2px solid var(--text3); border-bottom: 2px solid var(--text3); transform: rotate(45deg); transition: transform 0.2s ease; flex-shrink: 0; }
+    .config-group:not(.collapsed) .config-group-title::after { transform: rotate(225deg); }
     
     .config-group-body { transition: max-height 0.3s ease, opacity 0.2s ease; overflow: hidden; }
     
@@ -3635,7 +3718,7 @@
             <div class="chat-connect-header">
               <div>
                 <h3>CatsCo 连接</h3>
-                <div class="chat-muted chat-connect-intro">Dashboard Chat 连接同一个 CatsCo webapp 会话；本地 agent 通过 connector 回复。</div>
+                <div class="chat-muted chat-connect-intro">Dashboard Chat 连接同一个 CatsCompany 网页会话；本地 agent 通过 CatsCompany connector 回复。</div>
               </div>
               <span class="status-dot stopped" id="cats-chat-state">checking</span>
             </div>
@@ -3643,7 +3726,7 @@
             <div class="chat-state-card warning" id="cats-state-card">
               <div>
                 <div class="chat-state-title" id="cats-state-title">正在检查 CatsCo Chat</div>
-                <div class="chat-muted" id="cats-state-copy">检查模型来源、CatsCo 账号、agent 绑定和本地 connector。</div>
+                <div class="chat-muted" id="cats-state-copy">检查模型来源、CatsCo 账号、agent 绑定和 CatsCompany connector。</div>
               </div>
               <button class="btn btn-primary" id="cats-state-action" onclick="runCatsNextAction()">查看</button>
             </div>
@@ -3730,6 +3813,18 @@
             <div class="settings-meta">优先使用 CatsCo 托管模型；自定义模型和本地环境变量保留在高级区域。</div>
           </div>
           <button class="btn" onclick="refreshSettingsPage()">刷新</button>
+        </div>
+        <div class="config-section settings-setup-card" id="settings-setup-panel">
+          <div class="settings-setup-head">
+            <div>
+              <div class="settings-setup-title">先完成关键配置</div>
+              <div class="settings-setup-copy">普通使用只需要确认 CatsCo 登录和模型来源；Runtime Profile、.env、adapter endpoint 都放在高级折叠区。</div>
+            </div>
+            <span class="tag warm">setup</span>
+          </div>
+          <div class="settings-step-grid">
+            <div class="settings-step"><div class="settings-step-title">加载中 <span class="tag gray">...</span></div><div class="settings-step-meta">正在读取 readiness。</div></div>
+          </div>
         </div>
         <div class="config-section" id="model-source-panel"><div class="loading">加载模型来源...</div></div>
         <div class="config-section" id="runtime-config-panel"><div class="loading">加载 runtime 配置...</div></div>
@@ -4098,6 +4193,8 @@
       if (name === 'chat') {
         fetchCatsStatus();
         if (!catsPollTimer) catsPollTimer = setInterval(fetchCatsStatus, 5000);
+      } else if (name === 'config') {
+        refreshSettingsPage();
       } else if (name === 'companion') {
         setPetState(petState);
       }
@@ -4139,12 +4236,14 @@
         appReadinessLoaded = true;
         appReadinessError = '';
         renderReadiness(appReadinessSnapshot);
+        renderSettingsSetupSummary();
         if (document.getElementById('page-chat')?.classList.contains('active')) renderCatsStatus();
       } catch (e) {
         appReadinessSnapshot = {};
         appReadinessLoaded = false;
         appReadinessError = e && e.message ? e.message : 'Readiness API 暂不可用';
         renderReadinessError(e);
+        renderSettingsSetupSummary();
         if (document.getElementById('page-chat')?.classList.contains('active')) renderCatsStatus();
       }
     }
@@ -4668,15 +4767,87 @@
     let customModelAutoSaveQueued=false;
     let customModelAutoSaveLastSignature='';
     const CUSTOM_MODEL_AUTO_SAVE_DELAY=900;
+    const settingsCollapseState={
+      modelSource:false,
+      runtimeStatus:true,
+      runtimeEditor:true,
+    };
     const configGroups=[
       {title:'自定义模型兼容配置', collapsed:true, keys:[{key:'GAUZ_LLM_PROVIDER',label:'兼容类型',type:'select',options:['anthropic','openai']},{key:'GAUZ_LLM_API_BASE',label:'模型地址'},{key:'GAUZ_LLM_API_KEY',label:'访问凭证',sensitive:true},{key:'GAUZ_LLM_MODEL',label:'模型名称'}]},
       {title:'CatsCo webapp（高级）', collapsed:true, keys:[{key:'CATSCOMPANY_API_KEY',label:'Agent 访问凭证',sensitive:true}]},
-      {title:'飞书', collapsed:false, keys:[{key:'FEISHU_APP_ID',label:'App ID'},{key:'FEISHU_APP_SECRET',label:'App Secret',sensitive:true},{key:'FEISHU_BOT_OPEN_ID',label:'Bot Open ID'},{key:'FEISHU_BOT_ALIASES',label:'Bot Aliases'}]},
-      {title:'微信', collapsed:false, keys:[{key:'WEIXIN_TOKEN',label:'Token',sensitive:true}]},
+      {title:'飞书（高级）', collapsed:true, keys:[{key:'FEISHU_APP_ID',label:'App ID'},{key:'FEISHU_APP_SECRET',label:'App Secret',sensitive:true},{key:'FEISHU_BOT_OPEN_ID',label:'Bot Open ID'},{key:'FEISHU_BOT_ALIASES',label:'Bot Aliases'}]},
+      {title:'微信（高级）', collapsed:true, keys:[{key:'WEIXIN_TOKEN',label:'Token',sensitive:true}]},
     ];
 
     async function refreshSettingsPage(){
-      await Promise.all([fetchDashboardSettings(), fetchRuntimeConfig()]);
+      await Promise.all([fetchDashboardSettings(), fetchRuntimeConfig(), fetchReadiness()]);
+      renderSettingsSetupSummary();
+    }
+
+    function settingsCollapsedClass(key, fallback){
+      if(settingsCollapseState[key]===undefined)settingsCollapseState[key]=Boolean(fallback);
+      return settingsCollapseState[key]?' collapsed':'';
+    }
+
+    function toggleSettingsGroup(id, key){
+      const el=document.getElementById(id);
+      if(!el)return;
+      el.classList.toggle('collapsed');
+      settingsCollapseState[key]=el.classList.contains('collapsed');
+    }
+
+    function settingsStepHtml(title, status, meta, action){
+      const tone=status==='ready'?'green':status==='warning'?'warm':status==='blocked'?'red':'gray';
+      const label=status==='ready'?(title==='CatsCo Chat'?'运行中':'完成'):status==='warning'?(title==='CatsCo Chat'?'未启动':'需处理'):status==='blocked'?'待配置':'等待';
+      return '<button class="settings-step" type="button" onclick="'+action+'"><div class="settings-step-title">'+escapeHtml(title)+' '+runtimeTag(label,tone)+'</div><div class="settings-step-meta">'+escapeHtml(meta||'')+'</div></button>';
+    }
+
+    function renderSettingsSetupSummary(){
+      const panel=document.getElementById('settings-setup-panel');
+      if(!panel)return;
+      const modelSection=getReadinessSection('model');
+      const catscoSection=getReadinessSection('catsco');
+      const runtimeSection=getReadinessSection('runtimeProfile');
+      const modelMeta=appReadinessLoaded && modelSection
+        ? firstReadinessProblem(modelSection)||modelSection.summary
+        : (appReadinessError||'等待模型来源检查完成');
+      const catsMeta=appReadinessLoaded && catscoSection
+        ? firstReadinessProblem(catscoSection)||catscoSection.summary
+        : '等待 CatsCompany connector 检查完成';
+      const runtimeMeta=appReadinessLoaded && runtimeSection
+        ? firstReadinessProblem(runtimeSection)||runtimeSection.summary
+        : '仅在要改显示名、工作目录或工具开关时需要打开';
+      const next = modelSection?.status==='blocked'
+        ? '先补齐模型来源；当前托管模型未接入前，自定义模型是启动本地 agent 的必要配置。'
+        : catscoSection?.status==='blocked'
+          ? '模型已就绪后，继续登录并绑定 CatsCo Chat。'
+          : catscoSection?.status==='warning'
+            ? 'CatsCompany connector 还未启动；这只影响网页 Chat，飞书和微信在运行页独立启动。'
+            : '关键配置看起来可用；高级区保持折叠，按需诊断。';
+      panel.innerHTML=`<div class="settings-setup-head">
+        <div>
+          <div class="settings-setup-title">先完成关键配置</div>
+          <div class="settings-setup-copy">${escapeHtml(next)}</div>
+        </div>
+        ${runtimeTag('setup','warm')}
+      </div>
+      <div class="settings-step-grid">
+        ${settingsStepHtml('模型来源', modelSection?.status||'unknown', modelMeta, "openCustomModelSettings()")}
+        ${settingsStepHtml('CatsCo Chat', catscoSection?.status||'unknown', catsMeta, "switchPage('chat')")}
+        ${settingsStepHtml('Runtime Profile', runtimeSection?.status||'unknown', runtimeMeta, "toggleSettingsGroup('runtime-config-group','runtimeStatus')")}
+      </div>`;
+    }
+
+    function openCustomModelSettings(){
+      settingsCollapseState.modelSource=false;
+      const group=document.getElementById('model-source-group');
+      if(group)group.classList.remove('collapsed');
+      const details=document.getElementById('custom-model-settings');
+      if(details){
+        details.open=true;
+        customModelSettingsOpen=true;
+        details.scrollIntoView({behavior:'smooth',block:'start'});
+      }
     }
 
     async function fetchDashboardSettings(){
@@ -4685,6 +4856,7 @@
         const data=await r.json();
         if(!r.ok||data.error)throw new Error(data.error||'settings 加载失败');
         dashboardSettingsSnapshot=data;
+        renderSettingsSetupSummary();
         if(!shouldDeferModelSourceRender()) renderModelSource(data);
       }catch(e){
         const p=document.getElementById('model-source-panel');
@@ -4782,13 +4954,15 @@
       const apiBasePlaceholder=hideInternalGateway?'已配置 CatsCo 内部兼容网关（隐藏）':'https://example.com/v1/messages';
       const draft=captureCustomModelDraft();
 
-      p.innerHTML=`<div class="config-group" id="model-source-group">
-        <div class="config-group-title" onclick="document.getElementById('model-source-group').classList.toggle('collapsed')">
-          <span>模型来源</span>
-          <span class="tag warm" style="margin-left:8px">CatsCo 托管模型优先</span>
+      p.innerHTML=`<div class="config-group${settingsCollapsedClass('modelSource', false)}" id="model-source-group">
+        <div class="config-group-title" onclick="toggleSettingsGroup('model-source-group','modelSource')">
+          <span class="config-group-title-main">
+            <span>模型来源</span>
+            <span class="tag warm">当前关键配置</span>
+          </span>
         </div>
         <div class="config-group-body model-source-layout">
-          <div class="runtime-note">普通用户只需要登录 CatsCo。托管模型后端接入前，自定义模型是当前可运行路径；保存后影响新 session 或下一次启动的 connector。</div>
+          <div class="runtime-note">普通用户优先确认这里：托管模型后端接入前，自定义模型是当前可运行路径；保存后影响新 session 或下一次启动的 connector。</div>
           <div class="model-source-grid">
             <div class="model-source-card primary">
               <div class="model-source-head">
@@ -4806,8 +4980,8 @@
               <summary>
                 <div class="model-source-head">
                   <div>
-                    <div class="model-source-title">自定义模型（高级）</div>
-                    <div class="model-source-copy">用于开发、自有模型或托管模型未接入前。修改会自动保存，访问凭证只保存 presence，不会回显。</div>
+                    <div class="model-source-title">自定义模型（当前需要）</div>
+                    <div class="model-source-copy">托管模型未接入前，启动本地 agent 需要这里的模型地址、模型名称和访问凭证。修改会自动保存，访问凭证只保存 presence，不会回显。</div>
                   </div>
                   ${runtimeTag(credentialMeta, keyField.present?'green':'red')}
                 </div>
@@ -4987,7 +5161,25 @@
         envConfigLoading=false;
       }
     }
-    async function fetchRuntimeConfig(){try{const r=await fetch(API+'/api/runtime/config');renderRuntimeConfig(await r.json());}catch(e){document.getElementById('runtime-config-panel').innerHTML='<div class="loading">runtime 配置加载失败</div>';}}
+    async function fetchRuntimeConfig(options){
+      try{
+        const r=await fetch(API+'/api/runtime/config');
+        const data=await r.json();
+        runtimeConfigSnapshot=data;
+        if(!(options&&options.force) && shouldDeferRuntimeConfigRender())return;
+        renderRuntimeConfig(data);
+      }catch(e){
+        document.getElementById('runtime-config-panel').innerHTML='<div class="loading">runtime 配置加载失败</div>';
+      }
+    }
+
+    function shouldDeferRuntimeConfigRender(){
+      const page=document.getElementById('page-config');
+      const editor=document.getElementById('runtime-profile-editor');
+      const active=document.activeElement;
+      if(!page || !page.classList.contains('active') || !editor || !active)return false;
+      return editor.contains(active) && active.matches('input, select, textarea');
+    }
 
     function renderRuntimeConfig(snapshot){
       const p=document.getElementById('runtime-config-panel');
@@ -5032,10 +5224,16 @@
         ? '<div class="runtime-issue-row"><strong>skills.loadError</strong> · '+escapeHtml(skills.loadError)+'</div>'
         : '';
 
-      p.innerHTML=`<div class="config-group" id="runtime-config-group">
-        <div class="config-group-title" onclick="document.getElementById('runtime-config-group').classList.toggle('collapsed')">
-          <span>Runtime Profile 状态</span>
-          <button class="btn btn-ghost" onclick="event.stopPropagation();fetchRuntimeConfig()" style="font-size:12px;padding:4px 10px">刷新</button>
+      if(!valid)settingsCollapseState.runtimeStatus=false;
+      p.innerHTML=`<div class="config-group${settingsCollapsedClass('runtimeStatus', valid)}" id="runtime-config-group">
+        <div class="config-group-title" onclick="toggleSettingsGroup('runtime-config-group','runtimeStatus')">
+          <span class="config-group-title-main">
+            <span>Runtime Profile 状态</span>
+            <span class="advanced-muted">高级诊断</span>
+          </span>
+          <span class="config-group-title-actions">
+            <button class="btn btn-ghost" onclick="event.stopPropagation();fetchRuntimeConfig()" style="font-size:12px;padding:4px 10px">刷新</button>
+          </span>
         </div>
         <div class="config-group-body">
           <div class="profile-status-line">
@@ -5091,8 +5289,13 @@
     function renderRuntimeProfileEditor(profile, registeredTools, skills){
       const enabledTools=new Set((profile.tools&&profile.tools.enabled)||[]);
       const toolControls=(registeredTools||[]).map(t=>'<label class="runtime-check-row"><input type="checkbox" data-runtime-tool="'+escapeHtml(t.name)+'" '+(enabledTools.has(t.name)?'checked':'')+' /> <span>'+escapeHtml(t.name)+'</span></label>').join('');
-      return `<div class="config-group" id="runtime-profile-editor">
-        <div class="config-group-title">受控编辑 <span class="tag warm" style="margin-left:8px">保存后新 session 生效</span></div>
+      return `<div class="config-group${settingsCollapsedClass('runtimeEditor', true)}" id="runtime-profile-editor">
+        <div class="config-group-title" onclick="toggleSettingsGroup('runtime-profile-editor','runtimeEditor')">
+          <span class="config-group-title-main">
+            <span>受控编辑</span>
+            <span class="tag warm">保存后新 session 生效</span>
+          </span>
+        </div>
         <div class="config-group-body">
           <div class="runtime-note">只保存显示名、默认工作目录、启用工具和 skills 开关。访问凭证、token、secret 不会写入 Runtime Profile。</div>
           <div class="config-row"><label class="config-label">Agent 显示名</label><input class="config-input" id="runtime-profile-display-name" value="${escapeHtml(profile.displayName||'')}" placeholder="例如 CatsCo Assistant" /></div>
@@ -5163,7 +5366,7 @@
           const s=document.getElementById('runtime-profile-edit-saved');
           s.classList.add('show');
           setTimeout(()=>s.classList.remove('show'),2000);
-          await fetchRuntimeConfig();
+          await fetchRuntimeConfig({force:true});
         }
       }catch(e){
         status.textContent='失败：'+e.message;
@@ -5191,7 +5394,7 @@
         if(!r.ok||d.error)throw new Error(d.error||'回滚失败');
         status.style.color='var(--green)';
         status.textContent=d.deleted?'已删除新建的 profile 文件。':'已恢复上一次 profile 文件。';
-        await fetchRuntimeConfig();
+        await fetchRuntimeConfig({force:true});
       }catch(e){
         status.style.color='var(--red)';
         status.textContent='回滚失败：'+e.message;
@@ -5232,7 +5435,7 @@
           const extraBtn = (i.key==='WEIXIN_TOKEN')?'<button class="btn btn-primary" onclick="getWeixinToken()" style="margin-left:8px">获取Token</button>':'';
           return '<div class="config-row"><label class="config-label">'+escapeHtml(i.label)+'</label><input class="config-input" data-key="'+escapeHtml(i.key)+'" type="'+(i.sensitive?'password':'text')+'" value="'+escapeHtml(v)+'" placeholder="'+escapeHtml(i.key)+'" />'+extraBtn+'</div>';
         }).join('');
-        return '<div class="config-group'+collapsedClass+'" id="config-grp-'+idx+'"><div class="config-group-title" onclick="toggleConfigGroup('+idx+')">'+escapeHtml(g.title)+'</div><div class="config-group-body">'+rows+'</div></div>';
+        return '<div class="config-group'+collapsedClass+'" id="config-grp-'+idx+'"><div class="config-group-title" onclick="toggleConfigGroup('+idx+')"><span class="config-group-title-main">'+escapeHtml(g.title)+'</span></div><div class="config-group-body">'+rows+'</div></div>';
       }).join('');
     }
 
@@ -5369,11 +5572,11 @@
           key:'needs-connector',
           status:'warning',
           badge:'start',
-          title:'启动本地 connector',
-          copy:'账号和 agent 已绑定，启动 connector 后 webapp 消息会进入本地 runtime。',
+          title:'启动 CatsCompany connector',
+          copy:'账号和 agent 已绑定，启动后 CatsCompany 网页消息会进入本地 runtime。',
           action:'setup',
           actionLabel:'检查并启动',
-          inputPlaceholder:'先启动本地 connector',
+          inputPlaceholder:'先启动 CatsCompany connector',
         };
       }
       if(!topicReady){
@@ -5393,7 +5596,7 @@
         status:'ready',
         badge:'ready',
         title:'可以直接对话',
-        copy:'消息会发送到 CatsCo webapp 会话，本地 agent 通过 connector 回复。',
+        copy:'消息会发送到 CatsCompany 网页会话，本地 agent 通过 CatsCompany connector 回复。',
         action:'refresh',
         actionLabel:'刷新消息',
         inputPlaceholder:'输入消息，Enter 发送，Shift+Enter 换行',
@@ -5417,7 +5620,7 @@
         {label:'模型来源', status:modelStatus, meta:modelSection?firstReadinessProblem(modelSection)||modelSection.summary:'等待 readiness'},
         {label:'CatsCo 账号', status:connected?'pass':'fail', meta:connected?(user.display_name||user.username||'已登录'):'未登录'},
         {label:'Agent 绑定', status:configured?'pass':'fail', meta:configured&&catsState.botUid?('uid '+catsState.botUid):'未绑定'},
-        {label:'Connector', status:running?'pass':(configured?'warning':'fail'), meta:running?'运行中':'未启动'},
+        {label:'CatsCompany connector', status:running?'pass':(configured?'warning':'fail'), meta:running?'运行中':'未启动'},
         {label:'Chat 会话', status:topicReady?'pass':'fail', meta:topicReady?'已就绪':'等待 topic'},
       ];
       list.innerHTML=steps.map(step=>
@@ -5508,7 +5711,7 @@
         '<div class="chat-status-row"><span>账号</span><strong>'+(connected?(user.display_name?escapeHtml(user.display_name):'已登录'):'未登录')+'</strong></div>'+
         '<div class="chat-status-row"><span>CatsCo Agent</span><strong>'+(catsState.botUid?escapeHtml(catsState.botUid):'未绑定')+'</strong></div>'+
         '<div class="chat-status-row"><span>Topic</span><strong>'+(catsState.topicId?escapeHtml(catsState.topicId):'未就绪')+'</strong></div>'+
-        '<div class="chat-status-row"><span>本地服务</span><strong style="color:'+(running?'var(--green)':'var(--orange)')+'">'+(running?'运行中':'未启动')+'</strong></div>';
+        '<div class="chat-status-row"><span>CatsCompany connector</span><strong style="color:'+(running?'var(--green)':'var(--orange)')+'">'+(running?'运行中':'未启动')+'</strong></div>';
 
       const httpInput=document.getElementById('cats-http-base');
       const wsInput=document.getElementById('cats-ws-url');
@@ -5518,7 +5721,7 @@
       document.getElementById('cats-auth-panel').style.display=connected?'none':'grid';
       document.getElementById('cats-connected-card').style.display=connected?'block':'none';
       document.getElementById('cats-connected-copy').textContent=configured
-        ? (running?'可以直接开始对话。':'账号和 agent 已绑定，点击“检查并启动”恢复本地服务。')
+        ? (running?'可以直接开始对话。':'账号和 agent 已绑定，点击“检查并启动”恢复 CatsCompany connector。')
         : '账号已登录，点击“检查并启动”完成 CatsCo agent 绑定。';
       renderCatsChecklist(stage);
       updateCatsChatGate(stage);
@@ -5572,7 +5775,7 @@
     async function setupCatsBot(){
       const btn=document.getElementById('cats-setup-btn');
       btn.disabled=true;
-      setCatsAction('正在绑定 bot 并启动本地服务...');
+      setCatsAction('正在绑定 bot 并启动 CatsCompany connector...');
       try{
         const data=await parseCatsResponse(await fetch(API+'/api/cats/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(getCatsEndpointFields())}));
         catsState={...catsState,...data, connected:true, configured:true, botUid:data.bot?.uid||data.botUid, topicId:data.topicId, user:data.user, service:data.service};

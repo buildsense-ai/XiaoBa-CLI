@@ -162,6 +162,9 @@ describe('dashboard readiness and service preflight API', () => {
     const catsco = readiness.sections.find((section: any) => section.id === 'catsco');
     assert.equal(catsco.status, 'warning');
     assert.equal(catsco.checks.some((check: any) => check.id === 'catsco.connector' && check.status === 'warning'), true);
+    assert.equal(catsco.checks.some((check: any) => check.id === 'catsco.connector' && check.label === 'CatsCompany connector'), true);
+    assert.equal(catsco.checks.some((check: any) => check.id === 'catsco.connector' && check.message === 'CatsCompany connector 尚未启动'), true);
+    assert.equal(catsco.checks.some((check: any) => check.id === 'catsco.connector' && check.action?.label === '启动 CatsCompany connector'), true);
     assert.equal(readinessText.includes('sk-readiness-secret'), false);
     assert.equal(readinessText.includes('catsco-agent-secret'), false);
     assert.equal(readinessText.includes(testRoot), false);

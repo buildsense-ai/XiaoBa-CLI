@@ -17,6 +17,7 @@ export interface MessageContext {
   senderId: string;
   text: string;
   content?: any;
+  content_blocks?: unknown[];
   isGroup: boolean;
   from?: string;  // 原始 Cats 发送方字段，供兼容和排查使用
   seq?: number;   // Cats 服务端消息序号，用于排序和补充消息合并
@@ -184,6 +185,7 @@ export class CatsClient extends EventEmitter {
         senderId: msg.data.from || '',
         text: typeof msg.data.content === 'string' ? msg.data.content : '',
         content: msg.data.content,
+        content_blocks: Array.isArray(msg.data.content_blocks) ? msg.data.content_blocks : undefined,
         isGroup: msg.data.topic?.startsWith('grp_') ?? false,
         seq: Number(msg.data.seq || 0),
       };

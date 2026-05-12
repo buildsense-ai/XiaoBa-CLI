@@ -50,7 +50,7 @@ export function resolveCatsCoCommandConfig(
 
 /**
  * CLI 命令：catsco connect / catsco catscompany / xiaoba catscompany
- * 启动 CatsCo agent WebSocket 长连接服务
+ * 启动 CatsCompany WebSocket connector
  */
 export async function catscompanyCommand(): Promise<void> {
   const config = ConfigManager.getConfig();

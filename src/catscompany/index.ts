@@ -111,7 +111,7 @@ export class CatsCompanyBot {
    */
   async start(): Promise<void> {
     Logger.openLogFile('catscompany');
-    Logger.info('正在启动 CatsCo agent connector...');
+    Logger.info('正在启动 CatsCompany connector...');
 
     // 加载 skills
     await this.runtime.loadSkills();
@@ -252,25 +252,32 @@ export class CatsCompanyBot {
     let userMessage: string | import('../types').ContentBlock[] = msg.text;
     const runtimeFeedback: RuntimeFeedbackInput[] = [];
 
-    if (msg.file) {
-      const localPath = await this.sender.downloadFile(msg.file.url, msg.file.fileName);
-      if (!localPath) {
-        runtimeFeedback.push({
-          source: 'catscompany.file_download',
-          message: `文件下载失败: ${msg.file.fileName}`,
-          actionHint: '请告知用户该附件没有成功读取，并让用户重试上传或改用文字说明。',
-        });
-        userMessage = `[用户上传了文件：${msg.file.fileName}，但平台未能下载该附件]`;
-      } else {
-        this.enqueuePendingAttachment(key, {
-          fileName: msg.file.fileName,
+    const messageFiles = msg.files && msg.files.length > 0 ? msg.files : (msg.file ? [msg.file] : []);
+    if (messageFiles.length > 0) {
+      const attachments: PendingAttachment[] = [];
+      for (const file of messageFiles) {
+        const localPath = await this.sender.downloadFile(file.url, file.fileName);
+        if (!localPath) {
+          runtimeFeedback.push({
+            source: 'catscompany.file_download',
+            message: `文件下载失败: ${file.fileName}`,
+            actionHint: '请告知用户该附件没有成功读取，并让用户重试上传或改用文字说明。',
+          });
+          continue;
+        }
+        attachments.push({
+          fileName: file.fileName,
           localPath,
-          type: msg.file.type,
+          type: file.type,
           receivedAt: Date.now(),
         });
-        const queuedAttachments = this.consumePendingAttachments(key);
-        userMessage = await this.buildMultimodalMessage(msg.text, queuedAttachments);
-        Logger.info(`[${key}] 附件消息（attachments=${queuedAttachments.length})`);
+      }
+
+      if (attachments.length > 0) {
+        userMessage = await this.buildMultimodalMessage(msg.text, attachments);
+        Logger.info(`[${key}] 原子附件消息（attachments=${attachments.length})`);
+      } else {
+        userMessage = `[用户上传了 ${messageFiles.length} 个附件，但平台未能下载这些附件]`;
       }
     } else {
       const queuedAttachments = this.consumePendingAttachments(key);
@@ -393,7 +400,8 @@ export class CatsCompanyBot {
   }
 
   private coalesceIncomingMessage(sessionKey: string, msg: ParsedCatsMessage): ParsedCatsMessage | null {
-    if (msg.file) {
+    const messageFiles = msg.files && msg.files.length > 0 ? msg.files : (msg.file ? [msg.file] : []);
+    if (messageFiles.length > 0) {
       const pendingText = this.pendingTextMessages.get(sessionKey);
       if (
         pendingText
@@ -405,7 +413,7 @@ export class CatsCompanyBot {
 
         const mergedText = pendingText.msg.text.trim() || msg.text;
         Logger.info(
-          `[${sessionKey}] 合并延迟文本与随后到达的附件: ${msg.file.fileName} ` +
+          `[${sessionKey}] 合并延迟文本与随后到达的附件: ${messageFiles.map(file => file.fileName).join(', ')} ` +
           `(wait=${Date.now() - pendingText.receivedAt}ms)`
         );
         return { ...msg, text: mergedText };
@@ -468,7 +476,40 @@ export class CatsCompanyBot {
 
     // 检测 rich content 中的文件/图片
     let file: CatsFileInfo | undefined;
+    const files: CatsFileInfo[] = [];
+    const blockTextParts: string[] = [];
     let content = ctx.content;
+    const seenFileUrls = new Set<string>();
+    const appendFile = (candidate: CatsFileInfo) => {
+      if (typeof candidate.url !== 'string') return;
+      const url = candidate.url.trim();
+      if (!url || seenFileUrls.has(url)) return;
+      seenFileUrls.add(url);
+      const normalized = { ...candidate, url };
+      files.push(normalized);
+      if (!file) file = normalized;
+    };
+
+    if (Array.isArray(ctx.content_blocks)) {
+      for (const block of ctx.content_blocks) {
+        if (!block || typeof block !== 'object') continue;
+        const typedBlock = block as any;
+        if (typedBlock.type === 'text' && typeof typedBlock.text === 'string' && typedBlock.text.trim()) {
+          blockTextParts.push(typedBlock.text);
+          continue;
+        }
+        if ((typedBlock.type === 'file' || typedBlock.type === 'image') && typedBlock.payload) {
+          const payload = typedBlock.payload;
+          const url = typeof payload.url === 'string' ? payload.url : '';
+          if (!url) continue;
+          appendFile({
+            url,
+            fileName: payload.name || payload.file_name || (typedBlock.type === 'image' ? 'image.png' : 'unknown'),
+            type: typedBlock.type === 'image' ? 'image' : 'file',
+          });
+        }
+      }
+    }
 
     // 如果 content 是 JSON 字符串，先解析
     if (typeof content === 'string') {
@@ -482,31 +523,35 @@ export class CatsCompanyBot {
     if (typeof content === 'object' && content !== null) {
       const rich = content as any;
       if (rich.type === 'file' && rich.payload) {
-        file = {
+        appendFile({
           url: rich.payload.url,
           fileName: rich.payload.name || 'unknown',
           type: 'file',
-        };
+        });
       } else if (rich.type === 'image' && rich.payload) {
-        file = {
+        appendFile({
           url: rich.payload.url,
           fileName: rich.payload.name || 'image.png',
           type: 'image',
-        };
+        });
       }
     }
 
-    // 纯文本和文件都为空则忽略
-    if (!text && !file) return null;
+    // content_blocks 里的 text block 是新协议的 canonical 用户文本；
+    // 顶层 content 可能只是附件摘要，因此只作为没有 text block 时的 fallback。
+    const blockText = blockTextParts.join('\n\n');
+    const mergedText = blockText || text;
+    if (!mergedText && files.length === 0) return null;
 
     return {
       topic: ctx.topic,
       chatType,
       senderId: ctx.senderId,
       seq: ctx.seq ?? 0,
-      text: text || (file ? `[${file.type === 'image' ? '图片' : '文件'}] ${file.fileName}` : ''),
+      text: mergedText || (files.length > 0 ? files.map(item => `[${item.type === 'image' ? '图片' : '文件'}] ${item.fileName}`).join('\n') : ''),
       rawContent: ctx.content,
-      file,
+      file: files[0],
+      files,
     };
   }
 
