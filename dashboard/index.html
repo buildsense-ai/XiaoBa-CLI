@@ -2550,6 +2550,11 @@
       max-width: 420px;
     }
 
+    .chat-form .config-input {
+      width: 100%;
+      box-sizing: border-box;
+    }
+
     .chat-form-row {
       display: flex;
       gap: 8px;
@@ -3747,6 +3752,7 @@
 
             <div class="chat-form" id="cats-auth-panel">
               <div id="cats-login-fields">
+                <div class="chat-muted" id="cats-login-copy" style="margin-bottom:10px">使用 CatsCo webapp（CatsCompany）同一账号登录。</div>
                 <input class="config-input" id="cats-account" type="text" placeholder="邮箱或用户名" style="margin-bottom:10px" />
                 <input class="config-input" id="cats-password" type="password" placeholder="密码" />
                 <button class="btn btn-primary" onclick="submitCatsAuth()" id="cats-auth-btn" style="width:100%;margin-top:12px">登录并连接</button>
@@ -4940,7 +4946,7 @@
         return;
       }
       const user=catsState.user||{};
-      const catsConnected=Boolean(catsState.connected||catsState.tokenPresent);
+      const catsConnected=isCatsLoggedIn();
       const managedStatus=catsConnected?'待后端接入':'需要登录';
       const managedTone=catsConnected?'warm':'gray';
       const managedCopy=catsConnected
@@ -5500,9 +5506,19 @@
       return active?.message || section?.summary || '';
     }
 
+    function isCatsLoggedIn(){
+      return Boolean(catsState.connected && catsState.user && catsState.user.uid);
+    }
+
+    function catsAuthHelpText(){
+      if(catsState.authStatus==='invalid')return catsState.authError||'本地登录态已失效，请重新登录。';
+      if(catsState.authStatus==='unchecked'&&catsState.authError)return catsState.authError;
+      return '使用 CatsCo webapp（CatsCompany）同一账号登录。';
+    }
+
     function buildCatsChatStage(){
       const service=catsState.service||{};
-      const connected=Boolean(catsState.connected || catsState.tokenPresent);
+      const connected=isCatsLoggedIn();
       const configured=Boolean(catsState.configured);
       const running=service.status==='running';
       const topicReady=connected && configured && Boolean(catsState.topicId);
@@ -5520,6 +5536,18 @@
           inputPlaceholder:'等待启动状态检查',
         };
       }
+      if(!connected){
+        return {
+          key:'needs-auth',
+          status:'blocked',
+          badge:'login',
+          title:'登录 CatsCo',
+          copy:catsAuthHelpText(),
+          action:'auth',
+          actionLabel:'登录或注册',
+          inputPlaceholder:'先登录 CatsCo',
+        };
+      }
       const modelBlocked=modelSection?.status==='blocked';
       if(modelBlocked){
         return {
@@ -5531,18 +5559,6 @@
           action:'settings',
           actionLabel:'打开设置',
           inputPlaceholder:'先完成模型来源设置',
-        };
-      }
-      if(!connected){
-        return {
-          key:'needs-auth',
-          status:'blocked',
-          badge:'login',
-          title:'登录 CatsCo',
-          copy:'登录后会绑定同一个 CatsCo webapp 账号，并为本地 agent 准备会话。',
-          action:'auth',
-          actionLabel:'登录或注册',
-          inputPlaceholder:'先登录 CatsCo',
         };
       }
       if(catscoSection.status==='blocked'){
@@ -5610,17 +5626,20 @@
       if(!list)return;
       const service=catsState.service||{};
       const user=catsState.user||{};
-      const connected=Boolean(catsState.connected || catsState.tokenPresent);
+      const connected=isCatsLoggedIn();
       const configured=Boolean(catsState.configured);
       const running=service.status==='running';
       const topicReady=connected && configured && Boolean(catsState.topicId);
+      const accountMeta=connected
+        ? (user.display_name||user.username||'已登录')
+        : (catsState.authStatus==='invalid'?'登录态失效':'未登录');
       const modelSection=getReadinessSection('model');
       const modelStatus=modelSection
         ? (modelSection.status==='blocked'?'fail':modelSection.status==='warning'?'warning':'pass')
         : 'fail';
       const steps=[
         {label:'模型来源', status:modelStatus, meta:modelSection?firstReadinessProblem(modelSection)||modelSection.summary:'等待 readiness'},
-        {label:'CatsCo 账号', status:connected?'pass':'fail', meta:connected?(user.display_name||user.username||'已登录'):'未登录'},
+        {label:'CatsCo 账号', status:connected?'pass':'fail', meta:accountMeta},
         {label:'Agent 绑定', status:configured?'pass':'fail', meta:configured&&catsState.botUid?('uid '+catsState.botUid):'未绑定'},
         {label:'CatsCompany connector', status:running?'pass':(configured?'warning':'fail'), meta:running?'运行中':'未启动'},
         {label:'Chat 会话', status:topicReady?'pass':'fail', meta:topicReady?'已就绪':'等待 topic'},
@@ -5692,7 +5711,7 @@
       if(!panel)return;
       const service=catsState.service||{};
       const user=catsState.user||{};
-      const connected=Boolean(catsState.connected || catsState.tokenPresent);
+      const connected=isCatsLoggedIn();
       const configured=Boolean(catsState.configured);
       const running=service.status==='running';
       panel.classList.toggle('needs-auth', !connected);
@@ -5706,11 +5725,14 @@
       const user=catsState.user||{};
       const status=document.getElementById('cats-status');
       const running=service.status==='running';
-      const connected=Boolean(catsState.connected || catsState.tokenPresent);
+      const connected=isCatsLoggedIn();
       const configured=Boolean(catsState.configured);
       const stage=buildCatsChatStage();
+      const accountMeta=connected
+        ? (user.display_name?escapeHtml(user.display_name):'已登录')
+        : (catsState.authStatus==='invalid'?'登录态失效':'未登录');
       status.innerHTML=
-        '<div class="chat-status-row"><span>账号</span><strong>'+(connected?(user.display_name?escapeHtml(user.display_name):'已登录'):'未登录')+'</strong></div>'+
+        '<div class="chat-status-row"><span>账号</span><strong>'+accountMeta+'</strong></div>'+
         '<div class="chat-status-row"><span>CatsCo Agent</span><strong>'+(catsState.botUid?escapeHtml(catsState.botUid):'未绑定')+'</strong></div>'+
         '<div class="chat-status-row"><span>Topic</span><strong>'+(catsState.topicId?escapeHtml(catsState.topicId):'未就绪')+'</strong></div>'+
         '<div class="chat-status-row"><span>CatsCompany connector</span><strong style="color:'+(running?'var(--green)':'var(--orange)')+'">'+(running?'运行中':'未启动')+'</strong></div>';
@@ -5722,6 +5744,8 @@
       document.getElementById('cats-topic-label').textContent=catsState.topicId?('Topic: '+catsState.topicId):'尚未绑定会话';
       document.getElementById('cats-auth-panel').style.display=connected?'none':'grid';
       document.getElementById('cats-connected-card').style.display=connected?'block':'none';
+      const loginCopy=document.getElementById('cats-login-copy');
+      if(loginCopy)loginCopy.textContent=catsAuthHelpText();
       document.getElementById('cats-connected-copy').textContent=configured
         ? (running?'可以直接开始对话。':'账号和 agent 已绑定，点击“检查并启动”恢复 CatsCompany connector。')
         : '账号已登录，点击“检查并启动”完成 CatsCo agent 绑定。';

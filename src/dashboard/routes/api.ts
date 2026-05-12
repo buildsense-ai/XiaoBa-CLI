@@ -56,6 +56,10 @@ interface CatsAuthState {
   apiKey?: string;
 }
 
+interface CatsRequestOptions {
+  timeoutMs?: number;
+}
+
 function normalizeBaseUrl(value: unknown, fallback: string): string {
   const text = String(value || '').trim().replace(/\/+$/, '');
   return text || fallback;
@@ -67,6 +71,39 @@ function p2pTopicId(uid1: string | number, uid2: string | number): string {
   if (!Number.isFinite(a) || !Number.isFinite(b)) return '';
   const [left, right] = a < b ? [a, b] : [b, a];
   return `p2p_${left}_${right}`;
+}
+
+function hostLabel(value: string): string {
+  try {
+    return new URL(value).host || value;
+  } catch {
+    return value;
+  }
+}
+
+function createCatsNetworkError(error: any, httpBaseUrl: string): Error {
+  const code = String(error?.cause?.code || error?.code || '').trim();
+  const causeMessage = String(error?.cause?.message || error?.message || '').trim();
+  const host = hostLabel(httpBaseUrl);
+  let reason = `无法连接 CatsCo/CatsCompany 服务 ${host}`;
+
+  if (/ENOTFOUND|EAI_AGAIN/i.test(code) || /getaddrinfo|dns/i.test(causeMessage)) {
+    reason = `无法解析 CatsCo/CatsCompany 服务域名 ${host}`;
+  } else if (/ECONNREFUSED/i.test(code)) {
+    reason = `CatsCo/CatsCompany 服务 ${host} 拒绝连接`;
+  } else if (/ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT/i.test(code) || /timed?out|timeout/i.test(causeMessage)) {
+    reason = `连接 CatsCo/CatsCompany 服务 ${host} 超时`;
+  } else if (/CERT|TLS|SSL/i.test(code) || /certificate|tls|ssl/i.test(causeMessage)) {
+    reason = `CatsCo/CatsCompany 服务 ${host} 的 HTTPS 证书校验失败`;
+  }
+
+  const wrapped = new Error(causeMessage ? `${reason}：${causeMessage}` : reason);
+  (wrapped as any).status = 502;
+  (wrapped as any).data = {
+    reason: code || 'FETCH_FAILED',
+    host,
+  };
+  return wrapped;
 }
 
 function readEnvFile(): Record<string, string> {
@@ -196,15 +233,34 @@ async function catsRequest(
   apiPath: string,
   body?: unknown,
   token?: string,
+  options: CatsRequestOptions = {},
 ): Promise<any> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const response = await fetch(`${httpBaseUrl}${apiPath}`, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  const controller = options.timeoutMs ? new AbortController() : undefined;
+  const timeout = controller
+    ? setTimeout(() => controller.abort(), options.timeoutMs)
+    : undefined;
+  let response: Response;
+
+  try {
+    response = await fetch(`${httpBaseUrl}${apiPath}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: controller?.signal,
+    });
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      const timeoutError = new Error(`连接 CatsCo/CatsCompany 服务 ${hostLabel(httpBaseUrl)} 超时`);
+      (timeoutError as any).status = 408;
+      throw timeoutError;
+    }
+    throw createCatsNetworkError(error, httpBaseUrl);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 
   const text = await response.text();
   let data: any = {};
@@ -266,6 +322,12 @@ async function catsApiKeyRequest(
 
 function persistCatsUserSession(state: CatsAuthState, login: any): void {
   writeEnvUpdates({
+    CATSCO_HTTP_BASE_URL: state.httpBaseUrl,
+    CATSCO_SERVER_URL: state.serverUrl,
+    CATSCO_USER_TOKEN: login.token,
+    CATSCO_USER_UID: String(login.uid || ''),
+    CATSCO_USER_NAME: login.username || '',
+    CATSCO_USER_DISPLAY_NAME: login.display_name || login.username || '',
     CATSCOMPANY_HTTP_BASE_URL: state.httpBaseUrl,
     CATSCOMPANY_SERVER_URL: state.serverUrl,
     CATSCOMPANY_USER_TOKEN: login.token,
@@ -753,20 +815,59 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
 
   // ==================== CatsCo webapp 本地连接器 ====================
 
-  router.get('/cats/status', (_req, res) => {
+  router.get('/cats/status', async (_req, res) => {
     const state = getCatsAuthState();
     const service = serviceManager.getService('catscompany');
+    const tokenPresent = Boolean(state.token);
+    let connected = false;
+    let authStatus: 'missing' | 'valid' | 'invalid' | 'unchecked' = tokenPresent ? 'unchecked' : 'missing';
+    let authError = '';
+    let user = state.uid ? {
+      uid: state.uid,
+      username: state.username || '',
+      display_name: state.displayName || state.username || '',
+    } : null;
+
+    if (state.token) {
+      try {
+        const me = await catsRequest('GET', state.httpBaseUrl, '/api/me', undefined, state.token, {
+          timeoutMs: 4000,
+        });
+        const uid = String(me.uid || state.uid || '').trim();
+        connected = Boolean(uid);
+        authStatus = connected ? 'valid' : 'invalid';
+        user = connected ? {
+          uid,
+          username: me.username || state.username || '',
+          display_name: me.display_name || me.username || state.displayName || state.username || '',
+        } : null;
+        if (!connected) authError = 'CatsCo 账号验证失败，请重新登录';
+      } catch (error: any) {
+        const status = Number(error?.status || 0);
+        if (status === 401 || status === 403) {
+          connected = false;
+          authStatus = 'invalid';
+          authError = '本地登录态已失效，请使用 CatsCo webapp 同一账号重新登录';
+          user = null;
+        } else {
+          connected = Boolean(state.uid);
+          authStatus = 'unchecked';
+          authError = status === 408
+            ? 'CatsCo 账号验证超时，暂时保留本地登录态'
+            : '暂时无法验证 CatsCo 登录态，已保留本地登录态';
+        }
+      }
+    }
+
     res.json({
-      connected: Boolean(state.token),
-      configured: Boolean(state.apiKey && state.serverUrl),
-      tokenPresent: Boolean(state.token),
-      user: state.uid ? {
-        uid: state.uid,
-        username: state.username || '',
-        display_name: state.displayName || state.username || '',
-      } : null,
+      connected,
+      configured: connected && Boolean(state.apiKey && state.serverUrl),
+      tokenPresent,
+      authStatus,
+      authError,
+      user,
       botUid: state.botUid || null,
-      topicId: state.uid && state.botUid ? p2pTopicId(state.uid, state.botUid) : '',
+      topicId: connected && user?.uid && state.botUid ? p2pTopicId(user.uid, state.botUid) : '',
       httpBaseUrl: state.httpBaseUrl,
       serverUrl: state.serverUrl,
       service: service || null,
@@ -925,6 +1026,14 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       }
 
       const updated = writeEnvUpdates({
+        CATSCO_HTTP_BASE_URL: state.httpBaseUrl,
+        CATSCO_SERVER_URL: state.serverUrl,
+        CATSCO_USER_TOKEN: state.token,
+        CATSCO_USER_UID: userUid,
+        CATSCO_USER_NAME: me.username || state.username || '',
+        CATSCO_USER_DISPLAY_NAME: me.display_name || me.username || state.displayName || '',
+        CATSCO_BOT_UID: botUid,
+        CATSCO_API_KEY: apiKey,
         CATSCOMPANY_HTTP_BASE_URL: state.httpBaseUrl,
         CATSCOMPANY_SERVER_URL: state.serverUrl,
         CATSCOMPANY_USER_TOKEN: state.token,
