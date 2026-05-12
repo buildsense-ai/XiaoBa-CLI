@@ -19,6 +19,7 @@ describe('dashboard skills API', () => {
     process.chdir(testRoot);
 
     writeSkill('skills/user-tool/SKILL.md', 'user-tool', 'User managed skill');
+    writePackagedSkill('skills/example-tool-skill', 'example-tool-skill', 'Example packaged skill');
     writeSkill('skills/bundled-tool/SKILL.md', 'bundled-tool', 'Bundled skill');
     fs.writeFileSync(
       path.join(testRoot, 'skills/bundled-tool/.xiaoba-bundled-skill.json'),
@@ -70,6 +71,10 @@ describe('dashboard skills API', () => {
       canDisable: false,
       canDelete: false,
     });
+    assert.equal(byName.get('example-tool-skill').packageInfo.hasManifest, true);
+    assert.equal(byName.get('example-tool-skill').packageInfo.readiness.status, 'not_configured');
+    assert.deepEqual(byName.get('example-tool-skill').packageInfo.readiness.missingEnv, ['XIAOBA_TEST_TOOL_URL']);
+    assert.deepEqual(byName.get('example-tool-skill').packageInfo.manifest.providerSafeToolNames, ['example_health']);
   });
 
   test('protects system skills and allows user skill removal', async () => {
@@ -98,6 +103,20 @@ describe('dashboard skills API', () => {
     assert.equal(fs.existsSync(path.join(testRoot, 'skills/bundled-tool')), true);
   });
 
+  test('keeps package info visible for disabled packaged skills', async () => {
+    const disable = await fetch(`${baseUrl}/api/skills/example-tool-skill/disable`, { method: 'POST' });
+    assert.equal(disable.status, 200);
+
+    const response = await fetch(`${baseUrl}/api/skills-all`);
+    const skills = await response.json() as any[];
+    const disabledSkill = skills.find(skill => skill.name === 'example-tool-skill');
+
+    assert.equal(disabledSkill.enabled, false);
+    assert.equal(disabledSkill.packageInfo.hasManifest, true);
+    assert.equal(disabledSkill.packageInfo.readiness.status, 'not_configured');
+    assert.deepEqual(disabledSkill.packageInfo.readiness.missingEnv, ['XIAOBA_TEST_TOOL_URL']);
+  });
+
   function writeSkill(relativePath: string, name: string, description: string): void {
     const filePath = path.join(testRoot, relativePath);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -110,6 +129,29 @@ describe('dashboard skills API', () => {
       `# ${name}`,
       '',
     ].join('\n'));
+  }
+
+  function writePackagedSkill(relativeDir: string, name: string, description: string): void {
+    const dir = path.join(testRoot, relativeDir);
+    writeSkill(path.join(relativeDir, 'SKILL.md'), name, description);
+    fs.writeFileSync(path.join(dir, 'README.md'), '# Packaged skill\n');
+    fs.writeFileSync(path.join(dir, 'LICENSE'), 'Test license\n');
+    fs.writeFileSync(path.join(dir, 'agent_tools.json'), JSON.stringify({
+      schema_version: 'example.agent-tools.v1',
+      package_version: '0.2.0',
+      name,
+      environment: {
+        required: [{ name: 'XIAOBA_TEST_TOOL_URL' }],
+      },
+      tools: [{
+        name: 'example.health',
+        provider_safe_name: 'example_health',
+        command: 'health',
+        parameters_schema: { type: 'object', additionalProperties: false, properties: {} },
+        output_schema: { type: 'object', properties: {} },
+        timeout_seconds: 60,
+      }],
+    }));
   }
 });
 

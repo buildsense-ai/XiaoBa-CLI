@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import matter from 'gray-matter';
 import { Skill, SkillMetadata } from '../types/skill';
+import { inspectSkillPackage } from './skill-package';
 
 /**
  * Skill 解析器
@@ -60,6 +61,7 @@ export class SkillParser {
       metadata,
       content: content.trim(),
       filePath,
+      packageInfo: inspectSkillPackage(filePath),
     };
   }
 
@@ -88,6 +90,7 @@ export class SkillParser {
       metadata,
       content: content.trim(),
       filePath,
+      packageInfo: inspectSkillPackage(filePath),
     };
   }
 

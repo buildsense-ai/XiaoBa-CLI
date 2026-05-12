@@ -10,6 +10,37 @@ export interface SkillMetadata {
   maxTurns?: number;               // 最大工具调用轮次（覆盖默认值）
 }
 
+export type SkillPackageReadinessStatus = 'ready' | 'not_configured' | 'invalid';
+
+/**
+ * 外部 skill 包信息。
+ *
+ * 这只描述安装包是否完整、是否已配置到可用状态；
+ * 不代表平台已经把包内工具动态注册为模型工具。
+ */
+export interface SkillPackageInfo {
+  directory: string;
+  hasReadme: boolean;
+  hasLicense: boolean;
+  hasManifest: boolean;
+  manifestPath?: string;
+  manifest?: {
+    name?: string;
+    schemaVersion?: string;
+    packageVersion?: string;
+    toolCount: number;
+    providerSafeToolNames: string[];
+    requiredEnv: string[];
+    optionalEnv: string[];
+  };
+  readiness: {
+    status: SkillPackageReadinessStatus;
+    reasons: string[];
+    missingEnv: string[];
+    invalidManifest?: string;
+  };
+}
+
 /**
  * Skill 完整定义
  */
@@ -17,6 +48,7 @@ export interface Skill {
   metadata: SkillMetadata;         // 元数据
   content: string;                 // Markdown 内容（提示词）
   filePath: string;                // 文件路径
+  packageInfo?: SkillPackageInfo;  // 外部 skill 包信息
 }
 
 /**

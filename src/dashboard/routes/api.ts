@@ -28,6 +28,7 @@ import {
   rollbackRuntimeProfileEdit,
   saveRuntimeProfileEdit,
 } from '../../runtime/runtime-profile-editor';
+import { inspectSkillPackage } from '../../skills/skill-package';
 // import { ReportGenerator } from '../../utils/report-generator';
 // import { LogUploader } from '../../utils/log-uploader';
 
@@ -631,6 +632,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         content: skill.content,
         path: skill.filePath,
         files: getSkillFiles(skill.filePath),
+        packageInfo: skill.packageInfo || null,
         ...management,
       });
     } catch (e: any) {
@@ -1115,6 +1117,7 @@ function skillToDashboardPayload(skill: Skill): any {
     maxTurns: skill.metadata.maxTurns || null,
     path: skill.filePath,
     files: getSkillFiles(skill.filePath),
+    packageInfo: skill.packageInfo || null,
     enabled: true,
     ...getSkillManagementInfo(skill.filePath),
   };
@@ -1183,6 +1186,7 @@ function findAllDisabledSkills(basePath: string): any[] {
         enabled: false,
         path: disabledFile,
         files: getSkillFiles(disabledFile),
+        packageInfo: inspectSkillPackage(disabledFile),
         ...management,
       });
     }
