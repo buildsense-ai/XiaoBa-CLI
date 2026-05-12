@@ -1,11 +1,45 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as readline from 'readline';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { isReadPathAllowed } from '../utils/safety';
 import { createImageBlock } from '../utils/image-utils';
 import { ConfigManager } from '../utils/config';
 import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
 import { analyzeImageWithReaderProxy, ReaderProxyResult } from '../utils/reader-proxy';
+
+export const DEFAULT_TEXT_READ_LIMIT = 200;
+export const MAX_TEXT_READ_LIMIT = 2000;
+export const MAX_TEXT_READ_BYTES = 256 * 1024;
+
+interface TextReadOptions {
+  offset?: unknown;
+  limit?: unknown;
+}
+
+interface NormalizedTextReadOptions {
+  startLine: number;
+  lineLimit?: number;
+  requestedLimit?: number;
+  isDefaultLimit: boolean;
+  isUnlimitedRequest: boolean;
+  limitWasCapped: boolean;
+}
+
+interface TextReadResult {
+  lines: string[];
+  totalLines: number;
+  readLines: number;
+  startLine: number;
+  endLine: number;
+  reachedLineLimit: boolean;
+  reachedByteLimit: boolean;
+  limitWasCapped: boolean;
+  isDefaultLimit: boolean;
+  isUnlimitedRequest: boolean;
+  requestedLimit?: number;
+  nextOffset?: number;
+}
 
 /**
  * Read tool - reads local files and returns content to the model.
@@ -27,11 +61,11 @@ export class ReadTool implements Tool {
         },
         offset: {
           type: 'number',
-          description: '从第几行开始读取，默认从第 1 行开始，仅适用于文本文件。',
+          description: '从第几行开始读取，1-based，默认从第 1 行开始，仅适用于文本文件。',
         },
         limit: {
           type: 'number',
-          description: '最多读取多少行，仅适用于文本文件。',
+          description: `最多读取多少行，仅适用于文本文件。默认 ${DEFAULT_TEXT_READ_LIMIT} 行；设为 0 表示尝试读取全文，但仍受输出字节上限保护。`,
         },
         pages: {
           type: 'string',
@@ -47,7 +81,7 @@ export class ReadTool implements Tool {
   };
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
-    const { file_path, offset = 0, limit, pages, prompt, analysis_prompt } = args;
+    const { file_path, offset, limit, pages, prompt, analysis_prompt } = args;
 
     const absolutePath = path.isAbsolute(file_path)
       ? file_path
@@ -79,29 +113,183 @@ export class ReadTool implements Tool {
       return { ok: true, content };
     }
 
-    const content = this.readTextFile(absolutePath, file_path, offset, limit);
+    const content = await this.readTextFile(absolutePath, file_path, { offset, limit }, context);
     return { ok: true, content };
   }
 
-  private readTextFile(absolutePath: string, filePath: string, offset: number, limit?: number): string {
-    const content = fs.readFileSync(absolutePath, 'utf-8');
-    const lines = content.split('\n');
-    const startLine = Math.max(0, Number(offset) || 0);
-    const endLine = limit ? startLine + Number(limit) : lines.length;
-    const selectedLines = lines.slice(startLine, endLine);
+  private normalizeTextReadOptions({ offset, limit }: TextReadOptions): NormalizedTextReadOptions {
+    const parsedOffset = Number(offset);
+    const startLine = Number.isFinite(parsedOffset) && parsedOffset > 0
+      ? Math.floor(parsedOffset)
+      : 1;
 
-    const formattedLines = selectedLines.map((line, index) => {
-      const lineNumber = startLine + index + 1;
-      return `${lineNumber.toString().padStart(5, ' ')}→ ${line}`;
-    });
+    if (limit === 0 || limit === '0') {
+      return {
+        startLine,
+        isDefaultLimit: false,
+        isUnlimitedRequest: true,
+        limitWasCapped: false,
+      };
+    }
+
+    const parsedLimit = Number(limit);
+    const hasExplicitLimit = limit !== undefined && limit !== null && limit !== '';
+    const requestedLimit = hasExplicitLimit && Number.isFinite(parsedLimit)
+      ? Math.floor(parsedLimit)
+      : undefined;
+
+    if (!hasExplicitLimit || requestedLimit === undefined || requestedLimit <= 0) {
+      return {
+        startLine,
+        lineLimit: DEFAULT_TEXT_READ_LIMIT,
+        isDefaultLimit: true,
+        isUnlimitedRequest: false,
+        limitWasCapped: false,
+      };
+    }
+
+    return {
+      startLine,
+      lineLimit: Math.min(requestedLimit, MAX_TEXT_READ_LIMIT),
+      requestedLimit,
+      isDefaultLimit: false,
+      isUnlimitedRequest: false,
+      limitWasCapped: requestedLimit > MAX_TEXT_READ_LIMIT,
+    };
+  }
+
+  private trimToUtf8ByteLimit(value: string, maxBytes: number): string {
+    if (maxBytes <= 0) return '';
+    const buffer = Buffer.from(value, 'utf-8');
+    if (buffer.length <= maxBytes) return value;
+    return buffer.subarray(0, maxBytes).toString('utf-8');
+  }
+
+  private async collectTextLines(
+    absolutePath: string,
+    options: NormalizedTextReadOptions,
+    context: ToolExecutionContext,
+  ): Promise<TextReadResult> {
+    const selectedLines: string[] = [];
+    let totalLines = 0;
+    let selectedBytes = 0;
+    let reachedLineLimit = false;
+    let reachedByteLimit = false;
+
+    const input = fs.createReadStream(absolutePath, { encoding: 'utf-8' });
+    const reader = readline.createInterface({ input, crlfDelay: Infinity });
+
+    const abort = () => {
+      input.destroy(new Error('读取已取消'));
+      reader.close();
+    };
+    context.abortSignal?.addEventListener('abort', abort, { once: true });
+
+    try {
+      for await (const line of reader) {
+        if (context.abortSignal?.aborted) {
+          throw new Error('读取已取消');
+        }
+
+        totalLines += 1;
+
+        if (totalLines < options.startLine) continue;
+
+        const relativeLineIndex = totalLines - options.startLine;
+        if (options.lineLimit !== undefined && relativeLineIndex >= options.lineLimit) {
+          reachedLineLimit = true;
+          continue;
+        }
+
+        if (reachedByteLimit) continue;
+
+        const lineBytes = Buffer.byteLength(line, 'utf-8') + 1;
+        const remainingBytes = MAX_TEXT_READ_BYTES - selectedBytes;
+        if (lineBytes > remainingBytes) {
+          const trimmed = this.trimToUtf8ByteLimit(line, Math.max(remainingBytes - 1, 0));
+          if (trimmed) {
+            selectedLines.push(trimmed);
+            selectedBytes = MAX_TEXT_READ_BYTES;
+          }
+          reachedByteLimit = true;
+          continue;
+        }
+
+        selectedLines.push(line);
+        selectedBytes += lineBytes;
+      }
+    } finally {
+      context.abortSignal?.removeEventListener('abort', abort);
+    }
+
+    const readLines = selectedLines.length;
+    const endLine = readLines > 0 ? options.startLine + readLines - 1 : options.startLine - 1;
+    const hasMoreAfterSelection = totalLines > endLine && endLine >= options.startLine;
+    const nextOffset = hasMoreAfterSelection ? endLine + 1 : undefined;
+
+    return {
+      lines: selectedLines,
+      totalLines,
+      readLines,
+      startLine: options.startLine,
+      endLine,
+      reachedLineLimit,
+      reachedByteLimit,
+      limitWasCapped: options.limitWasCapped,
+      isDefaultLimit: options.isDefaultLimit,
+      isUnlimitedRequest: options.isUnlimitedRequest,
+      requestedLimit: options.requestedLimit,
+      nextOffset,
+    };
+  }
+
+  private formatTextReadResult(filePath: string, result: TextReadResult): string {
+    const formattedLines = result.lines
+      .map((line, index) => {
+        const lineNumber = result.startLine + index;
+        return `${lineNumber.toString().padStart(5, ' ')}→ ${line}`;
+      });
+
+    const displayRange = result.readLines > 0
+      ? `${result.startLine}-${result.endLine}`
+      : `无（从第 ${result.startLine} 行开始无内容）`;
+
+    const notes: string[] = [];
+    if (result.limitWasCapped) {
+      notes.push(`请求的 limit=${result.requestedLimit} 已限制为 ${MAX_TEXT_READ_LIMIT} 行。`);
+    }
+    if (result.isDefaultLimit && result.nextOffset) {
+      notes.push(`默认只显示 ${DEFAULT_TEXT_READ_LIMIT} 行，避免超大文件占满上下文。`);
+    }
+    if (result.reachedByteLimit) {
+      notes.push(`输出达到 ${(MAX_TEXT_READ_BYTES / 1024).toFixed(0)} KB 上限，已停止追加内容。`);
+    }
+    if (result.nextOffset) {
+      const nextLimit = result.isUnlimitedRequest
+        ? DEFAULT_TEXT_READ_LIMIT
+        : (result.limitWasCapped ? MAX_TEXT_READ_LIMIT : (result.requestedLimit || DEFAULT_TEXT_READ_LIMIT));
+      notes.push(`继续读取请调用 read_file，参数 offset=${result.nextOffset}, limit=${nextLimit}。`);
+    }
 
     return [
       `文件: ${filePath}`,
-      `总行数: ${lines.length}`,
-      `显示: ${startLine + 1}-${Math.min(endLine, lines.length)}`,
+      `总行数: ${result.totalLines}`,
+      `显示: ${displayRange}`,
       '',
       formattedLines.join('\n'),
-    ].join('\n');
+      notes.length > 0 ? ['', ...notes].join('\n') : '',
+    ].filter(part => part !== '').join('\n');
+  }
+
+  private async readTextFile(
+    absolutePath: string,
+    filePath: string,
+    options: TextReadOptions,
+    context: ToolExecutionContext,
+  ): Promise<string> {
+    const normalizedOptions = this.normalizeTextReadOptions(options);
+    const result = await this.collectTextLines(absolutePath, normalizedOptions, context);
+    return this.formatTextReadResult(filePath, result);
   }
 
   private readPDF(absolutePath: string, filePath: string, pages?: string): string {
