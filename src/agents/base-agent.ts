@@ -144,7 +144,6 @@ export abstract class BaseAgent implements Agent {
     }
 
     const runner = new ConversationRunner(this.aiService, toolExecutor, {
-      maxTurns: this.config.maxTurns ?? options?.maxTurns ?? 30,
       stream: false,
       enableCompression: false,
       shouldContinue: () => this.status === 'running',

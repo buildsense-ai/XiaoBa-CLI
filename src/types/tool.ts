@@ -119,7 +119,6 @@ export interface ToolExecutionContext {
   permissionProfile?: ToolPermissionProfile;
   runId?: string;
   abortSignal?: AbortSignal;
-  activeSkillName?: string;
   /** 平台通道回调（飞书/CatsCompany 等聊天会话时由平台层注入） */
   channel?: ChannelCallbacks;
 }

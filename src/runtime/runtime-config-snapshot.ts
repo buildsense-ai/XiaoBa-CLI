@@ -28,8 +28,6 @@ export interface RuntimeSkillConfigSnapshot {
   name: string;
   description: string;
   userInvocable: boolean;
-  autoInvocable: boolean;
-  maxTurns?: number;
   filePath: string;
 }
 
@@ -284,8 +282,6 @@ async function buildSkillSnapshot(loadSkills: boolean): Promise<RuntimeConfigSna
     name: skill.metadata.name,
     description: skill.metadata.description,
     userInvocable: skill.metadata.userInvocable !== false,
-    autoInvocable: skill.metadata.autoInvocable !== false,
-    maxTurns: skill.metadata.maxTurns,
     filePath: skill.filePath,
   }));
 

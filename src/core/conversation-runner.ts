@@ -1,16 +1,13 @@
 import { Message, ContentBlock } from '../types';
 import { AIService } from '../utils/ai-service';
-import { SkillActivationSignal } from '../types/skill';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { StreamCallbacks } from '../providers/provider';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
 import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
-import {
-  parseSkillActivationSignal,
-  upsertSkillSystemMessage,
-} from '../skills/skill-activation-protocol';
+import * as fs from 'fs';
+import * as path from 'path';
 
 function contentToString(content: string | ContentBlock[] | null): string {
   if (!content) return '';
@@ -86,7 +83,6 @@ interface ToolExecutionRecord {
 
 /** ConversationRunner 构造选项 */
 export interface RunnerOptions {
-  maxTurns?: number;
   maxContextTokens?: number;
   /** false 时用 aiService.chat() 代替 chatStream()（默认 true） */
   stream?: boolean;
@@ -96,8 +92,6 @@ export interface RunnerOptions {
   enableCompression?: boolean;
   /** 透传给 ToolExecutor 的执行上下文（session/run/surface 等） */
   toolExecutionContext?: Partial<ToolExecutionContext>;
-  /** 会话已激活 skill 名称（可选） */
-  initialSkillName?: string;
   /** Pulls user messages that arrived while the current run was busy. */
   pendingUserInputProvider?: PendingUserInputProvider;
 }
@@ -109,13 +103,11 @@ export interface RunnerOptions {
  * 依赖 ToolExecutor 抽象，同时支持 ToolManager（主会话）和 AgentToolExecutor（子 agent）。
  */
 export class ConversationRunner {
-  private maxTurns: number;
   private compressor: ContextCompressor;
   private stream: boolean;
   private shouldContinue?: () => boolean;
   private enableCompression: boolean;
   private toolExecutionContext?: Partial<ToolExecutionContext>;
-  private activeSkillName?: string;
   private maxPromptTokens: number;
   private sessionLabel: string;
   private pendingUserInputProvider?: PendingUserInputProvider;
@@ -136,12 +128,10 @@ export class ConversationRunner {
     private toolExecutor: ToolExecutor,
     options?: RunnerOptions,
   ) {
-    this.maxTurns = options?.maxTurns ?? 150;
     this.stream = options?.stream ?? true;
     this.shouldContinue = options?.shouldContinue;
     this.enableCompression = options?.enableCompression ?? true;
     this.toolExecutionContext = options?.toolExecutionContext;
-    this.activeSkillName = options?.initialSkillName;
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
@@ -171,7 +161,8 @@ export class ConversationRunner {
     let turns = 0;
     let thinkingCount = 0;
 
-    while (turns++ < this.maxTurns) {
+    while (true) {
+      turns++;
       if (this.shouldContinue && !this.shouldContinue()) {
         break;
       }
@@ -197,6 +188,7 @@ export class ConversationRunner {
       const requestMessages = this.buildProviderInputMessages(messages, nextTurnTransientHints);
       nextTurnTransientHints = [];
       this.ensurePromptBudget(requestMessages, activeTools);
+      this.logProviderMessagesForDebug(requestMessages, activeTools, turns);
       const aiStartTime = Date.now();
       Logger.info(`[${this.sessionLabel}Turn ${turns}] 调用AI推理 (可用工具: ${activeTools.length}个)`);
 
@@ -307,13 +299,10 @@ export class ConversationRunner {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
         const activeToolNames = allTools.map(tool => tool.name);
         const toolStart = Date.now();
-        let result = await this.executeToolWithRetry(
+        const result = await this.executeToolWithRetry(
           toolCall,
           messages,
-          {
-            ...this.toolExecutionContext,
-            activeSkillName: this.activeSkillName,
-          },
+          this.toolExecutionContext || {},
           turns,
         );
         if (toolName === 'thinking') {
@@ -332,24 +321,7 @@ export class ConversationRunner {
           hasDeliveredMessageOutThisRun = true;
         }
 
-        let toolContent = result.content;
-
-        const activation = this.tryParseSkillActivation(toolCall, contentToString(result.content));
-        if (activation) {
-          this.activeSkillName = activation.skillName;
-
-          if (activation.maxTurns && activation.maxTurns > 0) {
-            this.maxTurns = Math.max(this.maxTurns, turns + activation.maxTurns);
-          }
-
-          upsertSkillSystemMessage(messages, activation);
-          const systemMsg = upsertSkillSystemMessage(messages, activation);
-          if (systemMsg) {
-            newMessages.push(systemMsg);
-          }
-
-          toolContent = `Skill "${activation.skillName}" 已激活`;
-        }
+        const toolContent = result.content;
 
         this.handleToolDisplay(toolCall, contentToString(toolContent), callbacks);
         executionRecords.push({
@@ -407,10 +379,9 @@ export class ConversationRunner {
       await this.appendPendingUserInput(messages, newMessages, turns);
     }
 
-    Logger.warning(`达到最大工具调用轮次 (${this.maxTurns})`);
     return {
-      response: this.isMessageSurface() ? '' : '[达到最大工具调用轮次，请继续对话]',
-      finalResponseVisible: !this.isMessageSurface(),
+      response: '',
+      finalResponseVisible: false,
       messages,
       newMessages,
     };
@@ -455,17 +426,6 @@ export class ConversationRunner {
         callbacks.onToolDisplay(toolCall.function.name, content);
       }
     }
-  }
-
-  private tryParseSkillActivation(
-    toolCall: ToolCall,
-    content: string,
-  ): SkillActivationSignal | null {
-    if (toolCall.function.name !== 'skill') {
-      return null;
-    }
-
-    return parseSkillActivationSignal(content);
   }
 
   private buildTurnMessages(
@@ -702,6 +662,89 @@ export class ConversationRunner {
       role: 'system',
       content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n你刚刚连续发送了与上一条相同的内容：“${content}”。如果这是用户真正需要的重复确认，可以继续；否则请避免无意义重复，必要时调用 pause_turn 收束。`,
     };
+  }
+
+  private logProviderMessagesForDebug(
+    messages: Message[],
+    activeTools: ToolDefinition[],
+    turn: number,
+  ): void {
+    if (!/^(1|true|yes)$/i.test(process.env.XIAOBA_DEBUG_PROVIDER_MESSAGES || '')) {
+      return;
+    }
+
+    const entries = messages.map((message, index) => {
+      const content = contentToString(message.content);
+      const toolCalls = message.tool_calls
+        ?.map(call => `${call.function.name}(${ConversationRunner.truncateForLog(call.function.arguments, 180)})`)
+        .join(', ');
+      const markers = [
+        message.role === 'system' && content.includes('[skill:') ? 'contains_skill_system_marker' : '',
+        message.role === 'system' && content.includes('SKILL.md') ? 'system_mentions_skill_md' : '',
+        message.role === 'tool' && message.name === 'skill' ? 'skill_tool_result' : '',
+      ].filter(Boolean).join(',');
+
+      return {
+        index,
+        role: message.role,
+        name: message.name,
+        tool_call_id: message.tool_call_id,
+        tool_calls: toolCalls,
+        length: content.length,
+        markers: markers ? markers.split(',') : [],
+        content,
+      };
+    });
+
+    Logger.info(`[${this.sessionLabel}Turn ${turn}] Provider input debug: messages=${messages.length}, tools=${activeTools.length}`);
+    for (const entry of entries) {
+      Logger.info(
+        `[${this.sessionLabel}Turn ${turn}] provider[${entry.index}] role=${entry.role}`
+        + `${entry.name ? ` name=${entry.name}` : ''}`
+        + `${entry.tool_call_id ? ` tool_call_id=${entry.tool_call_id}` : ''}`
+        + `${entry.tool_calls ? ` tool_calls=${entry.tool_calls}` : ''}`
+        + ` len=${entry.length}`
+        + `${entry.markers.length ? ` markers=${entry.markers.join(',')}` : ''}`
+        + ` content=${ConversationRunner.truncateForLog(entry.content, 800)}`
+      );
+    }
+
+    this.writeProviderMessagesDebugFile(turn, activeTools, entries);
+  }
+
+  private writeProviderMessagesDebugFile(
+    turn: number,
+    activeTools: ToolDefinition[],
+    entries: Array<{
+      index: number;
+      role: Message['role'];
+      name?: string;
+      tool_call_id?: string;
+      tool_calls?: string;
+      length: number;
+      markers: string[];
+      content: string;
+    }>,
+  ): void {
+    try {
+      const date = new Date();
+      const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+      const dir = path.resolve('logs', 'provider-messages', dateStr);
+      fs.mkdirSync(dir, { recursive: true });
+      const safeSession = (this.toolExecutionContext?.sessionId || 'unknown').replace(/[:<>"|?*]/g, '_');
+      const filePath = path.join(dir, `${safeSession}.jsonl`);
+      fs.appendFileSync(filePath, JSON.stringify({
+        entry_type: 'provider_messages',
+        timestamp: date.toISOString(),
+        session_id: this.toolExecutionContext?.sessionId,
+        surface: this.toolExecutionContext?.surface,
+        turn,
+        tool_count: activeTools.length,
+        messages: entries,
+      }) + '\n', 'utf-8');
+    } catch (error: any) {
+      Logger.warning(`[${this.sessionLabel}Turn ${turn}] provider debug file write failed: ${error.message}`);
+    }
   }
 
   private async requestModelResponse(

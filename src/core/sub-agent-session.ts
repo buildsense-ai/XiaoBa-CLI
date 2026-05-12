@@ -3,10 +3,7 @@ import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import { SkillInvocationContext } from '../types/skill';
-import {
-  buildSkillActivationSignal,
-  upsertSkillSystemMessage,
-} from '../skills/skill-activation-protocol';
+import { SkillExecutor } from '../skills/skill-executor';
 import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
@@ -143,7 +140,7 @@ export class SubAgentSession {
     const systemPrompt = await PromptManager.buildSystemPrompt();
     this.messages.push({ role: 'system', content: systemPrompt });
 
-    // 2. 注入 skill
+    // 2. 以 tool_result 形式注入 skill 内容，避免写入 system prompt
     const skill = this.skillManager.getSkill(this.skillName);
     if (!skill) {
       throw new Error(`Skill "${this.skillName}" 未找到`);
@@ -155,8 +152,25 @@ export class SubAgentSession {
       rawArguments: '',
       userMessage: this.options.userMessage,
     };
-    const activation = buildSkillActivationSignal(skill, invocationContext);
-    upsertSkillSystemMessage(this.messages, activation);
+    const skillToolCallId = `subagent-skill-${this.id}`;
+    this.messages.push({
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        id: skillToolCallId,
+        type: 'function',
+        function: {
+          name: 'skill',
+          arguments: JSON.stringify({ skill: this.skillName, args: '' }),
+        },
+      }],
+    });
+    this.messages.push({
+      role: 'tool',
+      content: SkillExecutor.execute(skill, invocationContext),
+      tool_call_id: skillToolCallId,
+      name: 'skill',
+    });
 
     // 3. 注入用户消息
     this.messages.push({ role: 'user', content: this.options.userMessage });
@@ -170,8 +184,6 @@ export class SubAgentSession {
 
     // 创建独立的 ConversationRunner（不注入 channel，子智能体不直接和用户通信）
     const runner = new ConversationRunner(this.aiService, toolManager, {
-      maxTurns: skill.metadata.maxTurns ?? 100,
-      initialSkillName: this.skillName,
       enableCompression: true,
       shouldContinue: () => !this.stopped,
       toolExecutionContext: {

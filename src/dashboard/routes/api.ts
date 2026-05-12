@@ -608,8 +608,6 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         description: s.metadata.description,
         argumentHint: s.metadata.argumentHint || null,
         userInvocable: s.metadata.userInvocable !== false,
-        autoInvocable: s.metadata.autoInvocable !== false,
-        maxTurns: s.metadata.maxTurns || null,
         path: s.filePath,
         files: getSkillFiles(s.filePath),
       })));
@@ -1111,8 +1109,6 @@ function skillToDashboardPayload(skill: Skill): any {
     description: skill.metadata.description,
     argumentHint: skill.metadata.argumentHint || null,
     userInvocable: skill.metadata.userInvocable !== false,
-    autoInvocable: skill.metadata.autoInvocable !== false,
-    maxTurns: skill.metadata.maxTurns || null,
     path: skill.filePath,
     files: getSkillFiles(skill.filePath),
     enabled: true,

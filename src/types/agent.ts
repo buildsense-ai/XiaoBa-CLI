@@ -28,7 +28,6 @@ export interface AgentConfig {
   description: string;
   prompt: string;
   model?: 'sonnet' | 'opus' | 'haiku';
-  maxTurns?: number;
   runInBackground?: boolean;
   availableTools?: string[];  // 可用工具名称列表
 }

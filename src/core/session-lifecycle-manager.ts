@@ -11,8 +11,6 @@ export interface SessionLifecycleManagerOptions {
 
 export interface ResetSessionStateResult {
   initialized: boolean;
-  activeSkillName?: string;
-  activeSkillMaxTurns?: number;
   lastActiveAt: number;
 }
 
@@ -59,8 +57,6 @@ export class SessionLifecycleManager {
     this.options.runtimeFeedbackInbox.reset();
     return {
       initialized: false,
-      activeSkillName: undefined,
-      activeSkillMaxTurns: undefined,
       lastActiveAt: Date.now(),
     };
   }
