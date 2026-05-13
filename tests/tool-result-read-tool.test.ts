@@ -43,7 +43,23 @@ describe('ReadTool - ToolExecutionResult', () => {
     assert.ok(content.includes(`显示: 1-${DEFAULT_TEXT_READ_LIMIT}`));
     assert.ok(content.includes(`默认只显示 ${DEFAULT_TEXT_READ_LIMIT} 行`));
     assert.ok(content.includes(`offset=${DEFAULT_TEXT_READ_LIMIT + 1}`));
+    assert.ok(content.includes(`总行数: 至少 ${DEFAULT_TEXT_READ_LIMIT + 1}`));
     assert.ok(content.includes('line200'));
+    assert.ok(!content.includes('line201'));
+  });
+
+  test('达到默认窗口后不继续扫描完整文件统计总行数', async () => {
+    const filePath = path.join(testRoot, 'huge.txt');
+    const lines = Array.from({ length: DEFAULT_TEXT_READ_LIMIT + 5000 }, (_, index) => `line${index + 1}`);
+    fs.writeFileSync(filePath, lines.join('\n'));
+
+    const result = await tool.execute({ file_path: filePath }, context);
+
+    assert.strictEqual(result.ok, true);
+    const content = result.content as string;
+    assert.ok(content.includes(`总行数: 至少 ${DEFAULT_TEXT_READ_LIMIT + 1}`));
+    assert.ok(content.includes('已停止继续统计'));
+    assert.ok(!content.includes(`总行数: ${DEFAULT_TEXT_READ_LIMIT + 5000}`));
     assert.ok(!content.includes('line201'));
   });
 

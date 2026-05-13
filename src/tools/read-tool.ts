@@ -29,6 +29,7 @@ interface NormalizedTextReadOptions {
 interface TextReadResult {
   lines: string[];
   totalLines: number;
+  totalLinesKnown: boolean;
   readLines: number;
   startLine: number;
   endLine: number;
@@ -172,6 +173,7 @@ export class ReadTool implements Tool {
   ): Promise<TextReadResult> {
     const selectedLines: string[] = [];
     let totalLines = 0;
+    let totalLinesKnown = true;
     let selectedBytes = 0;
     let reachedLineLimit = false;
     let reachedByteLimit = false;
@@ -198,10 +200,9 @@ export class ReadTool implements Tool {
         const relativeLineIndex = totalLines - options.startLine;
         if (options.lineLimit !== undefined && relativeLineIndex >= options.lineLimit) {
           reachedLineLimit = true;
-          continue;
+          totalLinesKnown = false;
+          break;
         }
-
-        if (reachedByteLimit) continue;
 
         const lineBytes = Buffer.byteLength(line, 'utf-8') + 1;
         const remainingBytes = MAX_TEXT_READ_BYTES - selectedBytes;
@@ -212,7 +213,8 @@ export class ReadTool implements Tool {
             selectedBytes = MAX_TEXT_READ_BYTES;
           }
           reachedByteLimit = true;
-          continue;
+          totalLinesKnown = false;
+          break;
         }
 
         selectedLines.push(line);
@@ -230,6 +232,7 @@ export class ReadTool implements Tool {
     return {
       lines: selectedLines,
       totalLines,
+      totalLinesKnown,
       readLines,
       startLine: options.startLine,
       endLine,
@@ -253,6 +256,9 @@ export class ReadTool implements Tool {
     const displayRange = result.readLines > 0
       ? `${result.startLine}-${result.endLine}`
       : `无（从第 ${result.startLine} 行开始无内容）`;
+    const totalLinesLabel = result.totalLinesKnown
+      ? `${result.totalLines}`
+      : `至少 ${result.totalLines}（已停止继续统计，避免超大文件读取耗时）`;
 
     const notes: string[] = [];
     if (result.limitWasCapped) {
@@ -273,7 +279,7 @@ export class ReadTool implements Tool {
 
     return [
       `文件: ${filePath}`,
-      `总行数: ${result.totalLines}`,
+      `总行数: ${totalLinesLabel}`,
       `显示: ${displayRange}`,
       '',
       formattedLines.join('\n'),
