@@ -359,6 +359,7 @@ function toRunView(run: JsonRecord, nodesById: Map<string, JsonRecord>, edgesByI
     searchTerms: Array.isArray(run.searchPlan?.termGroups)
       ? run.searchPlan.termGroups.map((group: JsonRecord) => group.term).filter(Boolean).slice(0, 12)
       : [],
+    searchTrace: sanitizeSearchTrace(run.searchTrace || []),
   };
 }
 
@@ -610,6 +611,17 @@ function pickStats(stats: JsonRecord): JsonRecord {
     'reasoner',
   ];
   return Object.fromEntries(keys.filter(key => Object.prototype.hasOwnProperty.call(stats, key)).map(key => [key, stats[key]]));
+}
+
+function sanitizeSearchTrace(trace: JsonRecord[]): JsonRecord[] {
+  return (trace || []).map(item => ({
+    termId: item.termId,
+    pattern: item.pattern,
+    graphNodeHits: Number(item.graphNodeHits || 0),
+    graphEdgeHits: Number(item.graphEdgeHits || 0),
+    sourceHitCount: Number(item.sourceHitCount || item.hitCount || 0),
+    sourceEvidenceCount: Number(item.sourceEvidenceCount || item.evidenceCount || 0),
+  })).filter(item => item.pattern).slice(0, 12);
 }
 
 function latestTimestamp(items: JsonRecord[]): string | undefined {
