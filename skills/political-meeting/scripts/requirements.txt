@@ -1,0 +1,5 @@
+# OfficeCLI 处理所有 .docx 操作（需单独安装：irm https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.ps1 | iex）
+# format_convert.py 依赖：
+olefile>=0.46       # .doc 二进制提取
+pdf2image>=1.16.3   # PDF 转图片
+Pillow>=10.0.0      # 图片处理

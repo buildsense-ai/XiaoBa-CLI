@@ -1,0 +1,18 @@
+{
+  "timeslots": [
+    { "section": "门口值日1", "label": "上午上学", "start": "07:35", "end": "08:05", "content_hint": "在校门口维持秩序" },
+    { "section": "早读", "label": "", "start": "08:00", "end": null, "tolerance_minutes": 10, "content_hint": "查教师到岗情况" },
+    { "section": "阳光运动", "label": "", "start": "08:20", "end": null, "tolerance_minutes": 10, "content_hint": "查教室" },
+    { "section": "课间值日", "label": "", "start": "09:30", "end": "09:45", "content_hint": "制止学生追跑打闹" },
+    { "section": "课间值日", "label": "", "start": "10:25", "end": "10:40", "content_hint": "制止学生追跑打闹" },
+    { "section": "课间值日", "label": "", "start": "10:25", "end": "11:35", "content_hint": "制止学生追跑打闹" },
+    { "section": "门口值日2", "label": "上午放学", "start": "12:10", "end": "12:30", "content_hint": "在校门口维持秩序" },
+    { "section": "巡午餐", "label": "", "start": "12:15", "end": "12:35", "content_hint": "用餐纪律" },
+    { "section": "午休", "label": "", "start": "12:45", "end": "14:00", "content_hint": "功能室清场" },
+    { "section": "门口值日3", "label": "下午上学", "start": "13:55", "end": "14:15", "content_hint": "在校门口维持秩序" },
+    { "section": "下午课间1", "label": "", "start": "15:00", "end": "15:15", "content_hint": "制止学生追跑打闹" },
+    { "section": "门口值日4", "label": "小学放学", "start": "15:55", "end": "16:25", "content_hint": "在校门口维持秩序" },
+    { "section": "巡晚托", "label": "", "start": "16:30", "end": "18:00", "content_hint": "检查教师到位情况" },
+    { "section": "门口值日5", "label": "小学晚托放学、清场", "start": "17:55", "end": "18:15", "content_hint": "在校门口维持秩序" }
+  ]
+}

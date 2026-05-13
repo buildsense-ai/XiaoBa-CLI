@@ -1,0 +1,47 @@
+[
+  {
+    "teacher_name": "黄灼林",
+    "leave_type": "调休",
+    "start_time": "2024-09-14 08:00",
+    "end_time": "2024-09-14 12:00",
+    "hours": 4,
+    "reason": "家里有事",
+    "approval_no": "20260901001"
+  },
+  {
+    "teacher_name": "谭永青",
+    "leave_type": "病假",
+    "start_time": "2024-10-21 08:00",
+    "end_time": "2024-10-21 17:00",
+    "hours": 8,
+    "reason": "发烧就诊",
+    "approval_no": "20261002001"
+  },
+  {
+    "teacher_name": "冯笑梅",
+    "leave_type": "婚假",
+    "start_time": "2025-02-14 08:00",
+    "end_time": "2025-02-17 17:00",
+    "hours": 32,
+    "reason": "新婚",
+    "approval_no": "20260214001"
+  },
+  {
+    "teacher_name": "张丽萍",
+    "leave_type": "事假",
+    "start_time": "2025-04-10 08:00",
+    "end_time": "2025-04-10 12:00",
+    "hours": 4,
+    "reason": "家里有急事",
+    "approval_no": "20260410001"
+  },
+  {
+    "teacher_name": "王杏",
+    "leave_type": "产检",
+    "start_time": "2024-11-18 08:00",
+    "end_time": "2024-11-18 12:00",
+    "hours": 4,
+    "reason": "产检",
+    "approval_no": "20261118001"
+  }
+]
