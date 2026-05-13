@@ -54,7 +54,13 @@ export async function startDashboard(
 
   const server = app.listen(port, '127.0.0.1', () => {
     Logger.success(`\nCatsCo Dashboard 已启动`);
-    Logger.info(`打开浏览器访问: http://localhost:${port}\n`);
+    Logger.info(`打开浏览器访问: http://127.0.0.1:${port} 或 http://localhost:${port}\n`);
   });
   activeServers.push(server);
+
+  const localhostIpv6Server = app.listen(port, '::1');
+  localhostIpv6Server.on('error', () => {
+    // Some environments do not expose IPv6 loopback. The IPv4 listener above is enough.
+  });
+  activeServers.push(localhostIpv6Server);
 }

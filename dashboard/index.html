@@ -1483,6 +1483,10 @@
       gap: 18px;
     }
 
+    .services-grid.robot-grid {
+      margin-bottom: 20px;
+    }
+
     .status-card,
     .service-card {
       border-radius: 22px;
@@ -1667,6 +1671,13 @@
       font-size: 16px;
       font-weight: 700;
       color: var(--text);
+    }
+
+    .service-copy {
+      color: var(--text2);
+      font-size: 13px;
+      line-height: 1.5;
+      margin: -4px 0 14px;
     }
 
     .service-status {
@@ -1912,6 +1923,17 @@
       justify-content: flex-end;
       gap: 6px;
       pointer-events: none;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .floating-pet.positioned {
+      right: auto !important;
+      bottom: auto !important;
+    }
+
+    .floating-pet.dragging {
+      cursor: grabbing;
     }
 
     .floating-pet-bubble {
@@ -1943,11 +1965,17 @@
       border: 0;
       padding: 0;
       background: transparent;
-      cursor: pointer;
+      cursor: grab;
       pointer-events: auto;
       display: grid;
       place-items: end center;
       position: relative;
+      touch-action: none;
+    }
+
+    .floating-pet-button:active,
+    .floating-pet.dragging .floating-pet-button {
+      cursor: grabbing;
     }
 
     .floating-pet-button::before {
@@ -2343,11 +2371,15 @@
 
     .chat-shell {
       display: grid;
-      grid-template-columns: clamp(320px, 20vw, 360px) minmax(0, 1fr);
+      grid-template-columns: clamp(300px, 19vw, 360px) minmax(0, 1fr);
       gap: 12px;
       height: calc(100vh - 118px);
       min-height: 620px;
       align-items: stretch;
+    }
+
+    .chat-shell.connect-collapsed {
+      grid-template-columns: 64px minmax(0, 1fr);
     }
 
     body.chat-active .main-wrapper {
@@ -2396,6 +2428,7 @@
       max-height: 100%;
       overflow-x: hidden;
       overflow-y: auto;
+      transition: padding 0.18s ease;
     }
 
     .chat-connect > * {
@@ -2430,6 +2463,81 @@
       grid-template-columns: minmax(0, 1fr) auto;
       align-items: flex-start;
       gap: 12px;
+    }
+
+    .chat-connect-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .chat-collapse-toggle {
+      width: 34px;
+      height: 34px;
+      min-height: 34px;
+      padding: 0;
+      justify-content: center;
+      border-radius: 8px;
+      font-size: 17px;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .chat-collapse-toggle .collapse-icon {
+      transform: translateY(-1px);
+    }
+
+    .chat-shell.connect-collapsed .chat-connect {
+      padding: 10px 8px;
+      gap: 10px;
+      overflow: hidden;
+    }
+
+    .chat-shell.connect-collapsed .chat-connect-header {
+      grid-template-columns: 1fr;
+      justify-items: center;
+      gap: 8px;
+    }
+
+    .chat-shell.connect-collapsed .chat-connect-header > div:first-child {
+      display: grid;
+      justify-items: center;
+    }
+
+    .chat-shell.connect-collapsed .chat-connect h3 {
+      max-width: 48px;
+      text-align: center;
+      font-size: 12px;
+      line-height: 1.25;
+    }
+
+    .chat-shell.connect-collapsed .chat-connect-intro,
+    .chat-shell.connect-collapsed #cats-state-card,
+    .chat-shell.connect-collapsed #cats-checklist,
+    .chat-shell.connect-collapsed #cats-connected-card,
+    .chat-shell.connect-collapsed #cats-auth-panel,
+    .chat-shell.connect-collapsed #cats-connection-details,
+    .chat-shell.connect-collapsed #cats-action-status {
+      display: none !important;
+    }
+
+    .chat-shell.connect-collapsed .chat-connect-controls {
+      flex-direction: column;
+      width: 100%;
+    }
+
+    .chat-shell.connect-collapsed #cats-chat-state {
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      justify-content: center;
+      font-size: 0;
+    }
+
+    .chat-shell.connect-collapsed #cats-chat-state::before {
+      width: 8px;
+      height: 8px;
+      box-shadow: 0 0 0 5px rgba(255, 255, 255, 0.6);
     }
 
     .chat-state-card {
@@ -2692,42 +2800,118 @@
     .chat-messages {
       flex: 1;
       min-height: 0;
-      padding: 24px;
+      padding: 0;
       overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
       background: rgba(250, 251, 255, 0.68);
     }
 
+    .chat-timeline-inner {
+      width: 100%;
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 20px 24px 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
     .chat-message {
-      max-width: min(920px, 92%);
-      padding: 11px 13px;
-      border-radius: 10px;
+      display: grid;
+      grid-template-columns: 36px minmax(0, 1fr);
+      gap: 12px;
+      max-width: 100%;
+      padding: 8px 0;
       font-size: 14px;
       line-height: 1.55;
       word-break: break-word;
-      border: 1px solid var(--border-light);
-      background: #fff;
       color: var(--text);
+      border: 0;
+      background: transparent;
     }
 
     .chat-message.mine {
-      align-self: flex-end;
-      background: var(--accent);
-      color: #fff;
-      border-color: rgba(59, 130, 246, 0.22);
+      grid-template-columns: minmax(0, 1fr) 36px;
+      color: var(--text);
     }
 
-    .chat-message.peer {
-      align-self: flex-start;
+    .chat-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: #e2e8f0;
+      color: #334155;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 900;
+      flex-shrink: 0;
+      user-select: none;
+    }
+
+    .chat-message.peer .chat-avatar {
+      background: linear-gradient(135deg, #f59e0b, #2563eb);
+      color: #fff;
+    }
+
+    .chat-message.mine .chat-avatar {
+      grid-column: 2;
+      grid-row: 1;
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .chat-message-body {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      max-width: min(860px, 92%);
+    }
+
+    .chat-message.mine .chat-message-body {
+      grid-column: 1;
+      grid-row: 1;
+      justify-self: end;
+      align-items: flex-end;
+      max-width: min(720px, 88%);
+    }
+
+    .chat-message-content {
+      width: fit-content;
+      max-width: 100%;
+      min-width: 0;
+      color: var(--text);
+      border-radius: 8px;
+    }
+
+    .chat-message.peer .chat-message-content {
+      padding: 10px 12px;
+      background: #fff;
+      border: 1px solid var(--border-light);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .chat-message.mine .chat-message-content {
+      padding: 10px 12px;
+      background: var(--accent);
+      color: #fff;
+      border: 1px solid rgba(59, 130, 246, 0.22);
+      border-radius: 10px;
     }
 
     .chat-message-meta {
       font-size: 11px;
-      opacity: 0.68;
       margin-bottom: 4px;
       font-weight: 700;
+      color: var(--text2);
+      display: flex;
+      gap: 6px;
+      align-items: baseline;
+    }
+
+    .chat-message.mine .chat-message-meta {
+      justify-content: flex-end;
     }
 
     .chat-markdown {
@@ -2811,6 +2995,42 @@
       text-underline-offset: 2px;
     }
 
+    .chat-table-wrap {
+      max-width: 100%;
+      overflow-x: auto;
+      margin: 8px 0;
+      border: 1px solid var(--border-light);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .chat-markdown table {
+      width: 100%;
+      min-width: 360px;
+      border-collapse: collapse;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .chat-markdown th,
+    .chat-markdown td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border-light);
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+
+    .chat-markdown th {
+      background: var(--surface-muted);
+      color: var(--text);
+      font-weight: 800;
+    }
+
+    .chat-markdown tr:last-child td {
+      border-bottom: 0;
+    }
+
     .chat-message.mine .chat-markdown a,
     .chat-message.mine .chat-markdown blockquote {
       color: rgba(255,255,255,0.88);
@@ -2820,51 +3040,137 @@
       background: rgba(255,255,255,0.18);
     }
 
+    .chat-message.mine .chat-table-wrap {
+      border-color: rgba(255,255,255,0.22);
+      background: rgba(255,255,255,0.08);
+    }
+
+    .chat-message.mine .chat-markdown th {
+      background: rgba(255,255,255,0.14);
+      color: #fff;
+    }
+
+    .chat-message.mine .chat-markdown td,
+    .chat-message.mine .chat-markdown th {
+      border-color: rgba(255,255,255,0.18);
+    }
+
     .chat-working {
-      margin-top: 8px;
-      border: 1px solid var(--border-light);
-      border-radius: 8px;
-      background: rgba(247, 244, 255, 0.76);
+      margin: 8px 0 2px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
       color: var(--text2);
       overflow: hidden;
     }
 
     .chat-working summary {
       cursor: pointer;
-      padding: 8px 10px;
-      font-size: 12px;
+      padding: 5px 8px;
+      font-size: 11px;
       font-weight: 800;
       color: var(--text2);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--border-light);
+      border-radius: 7px;
+      background: var(--surface-muted);
+      list-style: none;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    .chat-working summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .chat-working[open] .chat-working-chevron {
+      transform: rotate(90deg);
+    }
+
+    .chat-working-chevron {
+      display: inline-block;
+      transition: transform 0.16s ease;
+    }
+
+    .chat-working-hint {
+      color: var(--text3);
+      font-weight: 700;
+      text-transform: none;
     }
 
     .chat-working-body {
       display: grid;
-      gap: 8px;
-      padding: 0 10px 10px;
+      gap: 10px;
+      margin: 8px 0 0 7px;
+      padding: 2px 0 2px 14px;
+      border-left: 2px solid var(--border-light);
       font-size: 12px;
     }
 
     .chat-working-step {
-      padding: 8px;
-      border-radius: 8px;
-      background: rgba(255,255,255,0.74);
-      border: 1px solid var(--border-light);
+      min-width: 0;
     }
 
     .chat-working-step-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
       font-weight: 800;
-      color: var(--text);
+      color: var(--accent);
       margin-bottom: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .chat-working-step-meta {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text3);
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .chat-working-code {
+      max-width: 100%;
+      overflow: hidden;
+      border: 1px solid var(--border-light);
+      border-radius: 7px;
+      background: #111827;
+    }
+
+    .chat-working-code pre {
+      margin: 0;
+      padding: 9px 11px;
+      overflow-x: auto;
+      max-height: 240px;
+      color: #e5e7eb;
+      font-size: 12px;
+      line-height: 1.5;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .chat-rich-image-button {
+      display: block;
+      padding: 0;
+      margin-top: 6px;
+      border: 0;
+      background: transparent;
+      cursor: zoom-in;
+      max-width: 100%;
     }
 
     .chat-rich-image {
       display: block;
-      max-width: min(320px, 100%);
-      max-height: 260px;
+      max-width: min(420px, 100%);
+      max-height: 320px;
       border-radius: 8px;
       object-fit: cover;
       border: 1px solid var(--border-light);
-      margin-top: 6px;
     }
 
     .chat-attachment {
@@ -2872,16 +3178,19 @@
       gap: 10px;
       align-items: center;
       margin-top: 6px;
-      padding: 10px;
+      padding: 10px 12px;
       border-radius: 8px;
       border: 1px solid var(--border-light);
-      background: rgba(247, 244, 255, 0.72);
+      background: #fff;
       color: inherit;
       text-decoration: none;
+      width: max-content;
+      max-width: 100%;
+      box-shadow: var(--shadow-sm);
     }
 
     .chat-attachment-icon {
-      width: 34px;
+      width: 42px;
       height: 34px;
       border-radius: 8px;
       background: var(--accent-light);
@@ -2889,6 +3198,7 @@
       align-items: center;
       justify-content: center;
       font-weight: 800;
+      font-size: 10px;
       color: var(--accent);
       flex-shrink: 0;
     }
@@ -2901,6 +3211,23 @@
     .chat-attachment-meta {
       font-size: 12px;
       color: var(--text3);
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .chat-message.mine .chat-attachment {
+      background: rgba(255,255,255,0.12);
+      border-color: rgba(255,255,255,0.2);
+      color: #fff;
+    }
+
+    .chat-message.mine .chat-attachment-icon {
+      background: rgba(255,255,255,0.18);
+      color: #fff;
+    }
+
+    .chat-message.mine .chat-attachment-meta {
+      color: rgba(255,255,255,0.74);
     }
 
     .chat-input-bar {
@@ -2918,6 +3245,10 @@
       resize: vertical;
     }
 
+    body.chat-active .floating-pet {
+      bottom: 92px;
+    }
+
     .chat-window.locked .chat-input-bar {
       background: rgba(247, 249, 252, 0.92);
     }
@@ -2926,11 +3257,64 @@
       color: var(--text2);
     }
 
+    #media-preview-modal .modal {
+      width: min(960px, 100%);
+      background: #0f172a;
+      border-radius: 12px;
+    }
+
+    #media-preview-modal .modal-header {
+      background: #0f172a;
+      border-bottom-color: rgba(255,255,255,0.12);
+      color: #fff;
+    }
+
+    #media-preview-modal .modal-close {
+      background: rgba(255,255,255,0.08);
+      color: #fff;
+    }
+
+    #media-preview-modal .modal-body {
+      padding: 0;
+      background: #0f172a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 280px;
+    }
+
+    .media-preview-image {
+      display: block;
+      max-width: 100%;
+      max-height: 78vh;
+      object-fit: contain;
+    }
+
     @media (max-width: 760px) {
       .chat-shell {
         grid-template-columns: 1fr;
         height: auto;
         min-height: 560px;
+      }
+      .chat-shell.connect-collapsed {
+        grid-template-columns: 1fr;
+      }
+      .chat-shell.connect-collapsed .chat-connect {
+        min-height: 58px;
+      }
+      .chat-shell.connect-collapsed .chat-connect-header {
+        grid-template-columns: minmax(0, 1fr) auto;
+        justify-items: stretch;
+      }
+      .chat-shell.connect-collapsed .chat-connect-header > div:first-child {
+        justify-items: start;
+      }
+      .chat-shell.connect-collapsed .chat-connect h3 {
+        max-width: none;
+      }
+      .chat-shell.connect-collapsed .chat-connect-controls {
+        flex-direction: row;
+        width: auto;
       }
       .chat-step-list {
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2940,6 +3324,35 @@
       }
       .chat-window {
         min-height: 560px;
+      }
+      body.chat-active .floating-pet {
+        bottom: 86px;
+      }
+      .chat-timeline-inner {
+        padding: 16px 14px 24px;
+      }
+      .chat-message,
+      .chat-message.mine {
+        grid-template-columns: 30px minmax(0, 1fr);
+        gap: 9px;
+      }
+      .chat-avatar {
+        width: 30px;
+        height: 30px;
+        border-radius: 7px;
+        font-size: 11px;
+      }
+      .chat-message.mine .chat-avatar {
+        grid-column: 1;
+      }
+      .chat-message.mine .chat-message-body {
+        grid-column: 2;
+        justify-self: start;
+        align-items: flex-start;
+        max-width: 100%;
+      }
+      .chat-message-body {
+        max-width: 100%;
       }
     }
 
@@ -3570,7 +3983,7 @@
 
   </style>
 </head>
-<body>
+<body class="chat-active">
   <!-- Sidebar -->
   <aside class="sidebar">
     <div class="sidebar-brand">
@@ -3581,20 +3994,20 @@
       </div>
     </div>
     <nav class="sidebar-nav">
-      <a class="nav-item active" onclick="switchPage('services')" data-page="services">
-        <span class="nav-icon">&gt;</span> <span>运行</span>
-      </a>
-      <a class="nav-item" onclick="switchPage('companion')" data-page="companion">
-        <span class="nav-icon">*</span> <span>伙伴</span>
-      </a>
-      <a class="nav-item" onclick="switchPage('chat')" data-page="chat">
+      <a class="nav-item active" onclick="switchPage('chat')" data-page="chat">
         <span class="nav-icon">@</span> <span>CatsCo</span>
+      </a>
+      <a class="nav-item" onclick="switchPage('services')" data-page="services">
+        <span class="nav-icon">&gt;</span> <span>机器人</span>
       </a>
       <a class="nav-item" onclick="switchPage('config')" data-page="config">
         <span class="nav-icon">~</span> <span>设置</span>
       </a>
       <a class="nav-item" onclick="switchPage('store')" data-page="store">
         <span class="nav-icon">+</span> <span>Skills</span>
+      </a>
+      <a class="nav-item" onclick="switchPage('companion')" data-page="companion">
+        <span class="nav-icon">*</span> <span>伙伴</span>
       </a>
     </nav>
     <div class="sidebar-footer">
@@ -3612,23 +4025,30 @@
     <div class="page-content">
 
       <!-- Page: Services -->
-      <div class="page active" id="page-services">
-        <div class="section-title">运行</div>
-        <div class="run-overview">
-          <div class="run-summary" id="run-summary">
-            <div class="run-summary-main">
-              <div class="run-summary-label">启动状态</div>
-              <div class="run-summary-title">正在检查本地 agent</div>
-              <div class="run-summary-meta">检查模型来源、CatsCo Chat、Runtime Profile 和 Skills。</div>
-            </div>
-            <button class="btn btn-primary" onclick="fetchStatus()">刷新</button>
+      <div class="page" id="page-services">
+        <div class="settings-header">
+          <div class="settings-heading">
+            <div class="settings-kicker">Connectors</div>
+            <div class="section-title" style="margin-bottom:0">机器人连接器</div>
+            <div class="settings-meta">启动 CatsCo webapp、飞书或微信入口；日志和诊断保留在同一页，方便排障。</div>
           </div>
-          <div class="readiness-grid" id="readiness-grid"><div class="loading">加载中...</div></div>
+          <button class="btn btn-primary" onclick="fetchStatus()">刷新状态</button>
         </div>
-        <details class="run-details">
-          <summary><span>Service details</span><span class="tag">connector</span></summary>
+        <div class="services-grid robot-grid" id="services-grid"><div class="loading">加载中...</div></div>
+        <details class="run-details" open>
+          <summary><span>启动前检查</span><span class="tag">readiness</span></summary>
           <div class="run-details-body">
-            <div class="services-grid" id="services-grid"><div class="loading">加载中...</div></div>
+            <div class="run-overview">
+              <div class="run-summary" id="run-summary">
+                <div class="run-summary-main">
+                  <div class="run-summary-label">启动状态</div>
+                  <div class="run-summary-title">正在检查本地 agent</div>
+                  <div class="run-summary-meta">检查模型来源、CatsCo Chat、Runtime Profile 和 Skills。</div>
+                </div>
+                <button class="btn" onclick="fetchStatus()">刷新</button>
+              </div>
+              <div class="readiness-grid" id="readiness-grid"><div class="loading">加载中...</div></div>
+            </div>
           </div>
         </details>
         <details class="run-details" id="diagnostics-details">
@@ -3641,7 +4061,7 @@
 
       <!-- Page: Companion -->
       <div class="page" id="page-companion">
-        <div class="section-title">伙伴 <span class="badge" id="skill-count">0</span></div>
+        <div class="section-title">伙伴 <span class="badge">预览</span> <span class="badge" id="skill-count">0</span></div>
         <div class="companion-hero">
           <div class="pet-stage companion-card" aria-label="电子宠物动画预览">
             <img class="pet-frame" id="pet-frame" src="pet/idle/01.png" alt="CatsCo companion" />
@@ -3705,13 +4125,13 @@
           </div>
         </div>
         <div style="margin-top:22px">
-          <div class="section-title">宠物能力</div>
+          <div class="section-title">能力成长预览</div>
           <div class="skills-grid" id="skills-grid"><div class="loading">加载中...</div></div>
         </div>
       </div>
 
       <!-- Page: Chat -->
-      <div class="page" id="page-chat">
+      <div class="page active" id="page-chat">
         <div class="section-title">CatsCo Chat</div>
         <div class="chat-shell">
           <div class="chat-panel chat-connect">
@@ -3720,7 +4140,10 @@
                 <h3>CatsCo 连接</h3>
                 <div class="chat-muted chat-connect-intro">Dashboard Chat 连接同一个 CatsCompany 网页会话；本地 agent 通过 CatsCompany connector 回复。</div>
               </div>
-              <span class="status-dot stopped" id="cats-chat-state">checking</span>
+              <div class="chat-connect-controls">
+                <span class="status-dot stopped" id="cats-chat-state">checking</span>
+                <button class="btn chat-collapse-toggle" type="button" id="cats-connect-toggle" onclick="toggleCatsConnectPanel()" title="收起连接面板" aria-label="收起连接面板" style="display:none"><span class="collapse-icon">&lt;</span></button>
+              </div>
             </div>
 
             <div class="chat-state-card warning" id="cats-state-card">
@@ -3867,11 +4290,12 @@
       <div class="companion-process-list" id="floating-process-list"></div>
       <div class="floating-pet-panel-actions">
         <button type="button" onclick="switchPage('companion');closeFloatingPetMenu()">打开伙伴页</button>
+        <button type="button" onclick="resetFloatingPetPosition()">归位</button>
         <button type="button" onclick="clearPetProcess()">清空</button>
       </div>
     </div>
-    <button class="floating-pet-button" type="button" onclick="toggleFloatingPetMenu()" aria-label="CatsCo 悬浮伙伴">
-      <img class="floating-pet-frame" id="floating-pet-frame" src="pet/idle/01.png" alt="" />
+    <button class="floating-pet-button" id="floating-pet-button" type="button" onclick="toggleFloatingPetMenu()" aria-label="CatsCo 悬浮伙伴">
+      <img class="floating-pet-frame" id="floating-pet-frame" src="pet/idle/01.png" alt="" draggable="false" />
     </button>
   </div>
 
@@ -3929,6 +4353,18 @@
       </div>
     </div>
   </div>
+  <!-- Media Preview Modal -->
+  <div class="modal-overlay" id="media-preview-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="media-preview-title">预览</h3>
+        <button class="modal-close" onclick="closeCatsMediaPreview()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <img class="media-preview-image" id="media-preview-image" src="" alt="" />
+      </div>
+    </div>
+  </div>
 
   <script>
     const API = '';
@@ -3936,15 +4372,19 @@
     let appReadinessSnapshot = {};
     let appReadinessLoaded = false;
     let appReadinessError = '';
-    const pageTitles = { services:'运行', companion:'伙伴', chat:'CatsCo', config:'Runtime Profile', store:'Skills' };
+    const pageTitles = { services:'机器人', companion:'伙伴', chat:'CatsCo', config:'设置', store:'Skills' };
     let catsAuthMode = 'login';
     let catsState = {};
     let catsNextAction = 'none';
     let catsPollTimer = null;
     let catsScrollPinnedToBottom = true;
+    let catsConnectCollapsed = true;
+    let catsConnectManualOverride = false;
     const CATS_SCROLL_BOTTOM_THRESHOLD = 80;
     const CATS_DEFAULT_HTTP_BASE = 'https://app.catsco.cc';
     const CATS_DEFAULT_WS_URL = 'wss://app.catsco.cc/v0/channels';
+    const CATS_WORKING_TEXT_PREFIX = 'AI文本:';
+    const CATS_WORKING_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
     const petFrames = {
       idle: ['pet/idle/01.png', 'pet/idle/02.png', 'pet/idle/03.png', 'pet/idle/04.png'],
       thinking: ['pet/thinking/01.png', 'pet/thinking/02.png', 'pet/thinking/03.png', 'pet/thinking/04.png'],
@@ -3963,6 +4403,7 @@
     };
     const PET_PROFILE_KEY = 'xiaoba.petProfile';
     const PET_PROCESS_KEY = 'xiaoba.petProcess';
+    const PET_POSITION_KEY = 'xiaoba.petPosition';
     const petUnlocks = [
       { level: 2, title: '专注表情', meta: '更多 thinking 动态' },
       { level: 4, title: 'CatsCo 皮肤', meta: '浅色工作台主题' },
@@ -3974,6 +4415,8 @@
     let petStateHoldTimer = null;
     let petBubbleTimer = null;
     let petAutoBaseline = 'idle';
+    let petDragState = null;
+    let petDragSuppressClick = false;
     let petProfile = loadPetProfile();
     let petProcess = loadPetProcess();
     let lastCatsMessageSignature = '';
@@ -4170,7 +4613,128 @@
       setPetAutoBaseline(inferServicePetBaseline(services));
     }
 
+    function clampFloatingPetPosition(x, y) {
+      const shell = document.getElementById('floating-pet');
+      const rect = shell ? shell.getBoundingClientRect() : { width: 112, height: 124 };
+      const pad = 8;
+      const width = rect.width || 112;
+      const height = rect.height || 124;
+      return {
+        x: Math.max(pad, Math.min(window.innerWidth - width - pad, x)),
+        y: Math.max(pad, Math.min(window.innerHeight - height - pad, y)),
+      };
+    }
+
+    function applyFloatingPetPosition(position, persist = false) {
+      const shell = document.getElementById('floating-pet');
+      if (!shell || !position) return;
+      const next = clampFloatingPetPosition(Number(position.x) || 0, Number(position.y) || 0);
+      shell.classList.add('positioned');
+      shell.style.left = next.x + 'px';
+      shell.style.top = next.y + 'px';
+      shell.style.right = 'auto';
+      shell.style.bottom = 'auto';
+      if (persist) {
+        try { localStorage.setItem(PET_POSITION_KEY, JSON.stringify(next)); } catch (_e) {}
+      }
+    }
+
+    function restoreFloatingPetPosition() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(PET_POSITION_KEY) || 'null');
+        if (saved && Number.isFinite(Number(saved.x)) && Number.isFinite(Number(saved.y))) {
+          applyFloatingPetPosition(saved, true);
+        }
+      } catch (_e) {}
+    }
+
+    function resetFloatingPetPosition() {
+      const shell = document.getElementById('floating-pet');
+      if (!shell) return;
+      shell.classList.remove('positioned', 'dragging');
+      shell.style.left = '';
+      shell.style.top = '';
+      shell.style.right = '';
+      shell.style.bottom = '';
+      closeFloatingPetMenu();
+      try { localStorage.removeItem(PET_POSITION_KEY); } catch (_e) {}
+    }
+
+    function clampFloatingPetToViewport() {
+      const shell = document.getElementById('floating-pet');
+      if (!shell || !shell.classList.contains('positioned')) return;
+      const rect = shell.getBoundingClientRect();
+      applyFloatingPetPosition({ x: rect.left, y: rect.top }, true);
+    }
+
+    function startFloatingPetDrag(event) {
+      if (event.button !== undefined && event.button !== 0) return;
+      const shell = document.getElementById('floating-pet');
+      const handle = document.getElementById('floating-pet-button');
+      if (!shell || !handle) return;
+      if (petDragState) return;
+      const rect = shell.getBoundingClientRect();
+      petDragState = {
+        pointerId: event.pointerId ?? 'mouse',
+        startX: event.clientX,
+        startY: event.clientY,
+        originX: rect.left,
+        originY: rect.top,
+        moved: false,
+      };
+      shell.classList.add('dragging');
+      closeFloatingPetMenu();
+      if (event.pointerId !== undefined && handle.setPointerCapture) handle.setPointerCapture(event.pointerId);
+    }
+
+    function moveFloatingPetDrag(event) {
+      if (!petDragState) return;
+      if (event.pointerId !== undefined && event.pointerId !== petDragState.pointerId) return;
+      const dx = event.clientX - petDragState.startX;
+      const dy = event.clientY - petDragState.startY;
+      if (Math.abs(dx) + Math.abs(dy) > 4) petDragState.moved = true;
+      applyFloatingPetPosition({ x: petDragState.originX + dx, y: petDragState.originY + dy }, false);
+      event.preventDefault();
+    }
+
+    function endFloatingPetDrag(event) {
+      if (!petDragState) return;
+      if (event.pointerId !== undefined && event.pointerId !== petDragState.pointerId) return;
+      const shell = document.getElementById('floating-pet');
+      const handle = document.getElementById('floating-pet-button');
+      if (shell) shell.classList.remove('dragging');
+      if (event.pointerId !== undefined && handle && handle.releasePointerCapture) {
+        try { handle.releasePointerCapture(event.pointerId); } catch (_e) {}
+      }
+      if (petDragState.moved) {
+        const rect = shell ? shell.getBoundingClientRect() : null;
+        if (rect) applyFloatingPetPosition({ x: rect.left, y: rect.top }, true);
+        petDragSuppressClick = true;
+        setTimeout(() => { petDragSuppressClick = false; }, 120);
+      }
+      petDragState = null;
+    }
+
+    function initFloatingPetDrag() {
+      const handle = document.getElementById('floating-pet-button');
+      if (!handle) return;
+      restoreFloatingPetPosition();
+      handle.addEventListener('pointerdown', startFloatingPetDrag);
+      handle.addEventListener('pointermove', moveFloatingPetDrag);
+      handle.addEventListener('pointerup', endFloatingPetDrag);
+      handle.addEventListener('pointercancel', endFloatingPetDrag);
+      handle.addEventListener('mousedown', startFloatingPetDrag);
+      document.addEventListener('mousemove', moveFloatingPetDrag);
+      document.addEventListener('mouseup', endFloatingPetDrag);
+      handle.addEventListener('dragstart', event => event.preventDefault());
+      window.addEventListener('resize', clampFloatingPetToViewport);
+    }
+
     function toggleFloatingPetMenu() {
+      if (petDragSuppressClick) {
+        petDragSuppressClick = false;
+        return;
+      }
       const shell = document.getElementById('floating-pet');
       if (shell) shell.classList.toggle('open');
       showPetBubble(petStateLabels[petState]);
@@ -4346,12 +4910,27 @@
       return 'error';
     }
 
+    function serviceCopy(name) {
+      if (name === 'catscompany') return '连接 CatsCo webapp，会把网页会话消息送入本地 agent。';
+      if (name === 'feishu') return '启动飞书机器人入口，用飞书 App 配置接入本地 agent。';
+      if (name === 'weixin') return '启动微信机器人入口，用微信 Token 接入本地 agent。';
+      return '启动本地机器人连接器。';
+    }
+
+    function servicePrimaryAction(name, running) {
+      if (running) return '停止';
+      if (name === 'catscompany') return '启动 CatsCo';
+      if (name === 'feishu') return '启动飞书';
+      if (name === 'weixin') return '启动微信';
+      return '启动';
+    }
+
     function renderServices(svcs) {
       const g = document.getElementById('services-grid');
       if (!svcs.length) { g.innerHTML = '<div class="loading">无服务</div>'; return; }
       g.innerHTML = svcs.map(s => {
         const r = s.status==='running', up = r&&s.uptime?formatUptime(s.uptime):'-';
-        return '<div class="service-card"><div class="service-header"><div class="service-name">'+s.label+'</div><span class="service-status '+s.status+'">'+s.status+'</span></div><div class="service-detail">'+(r?'<span>PID: '+s.pid+'</span><span>Uptime: '+up+'</span>':'')+(s.lastError?'<span style="color:var(--red)">'+s.lastError+'</span>':'')+'</div><div class="service-actions">'+(r?'<button class="btn btn-danger" onclick="svcAction(\''+s.name+'\',\'stop\')">停止</button><button class="btn" onclick="svcAction(\''+s.name+'\',\'restart\')">重启</button>':'<button class="btn btn-success" onclick="svcAction(\''+s.name+'\',\'start\')">启动</button>')+'<button class="btn" onclick="showLogs(\''+s.name+'\',\''+s.label+'\')">日志</button></div></div>';
+        return '<div class="service-card"><div class="service-header"><div class="service-name">'+escapeHtml(s.label)+'</div><span class="service-status '+escapeHtml(s.status)+'">'+escapeHtml(s.status)+'</span></div><div class="service-copy">'+escapeHtml(serviceCopy(s.name))+'</div><div class="service-detail">'+(r?'<span>PID: '+escapeHtml(s.pid)+'</span><span>Uptime: '+up+'</span>':'<span>未运行</span>')+(s.lastError?'<span style="color:var(--red)">'+escapeHtml(s.lastError)+'</span>':'')+'</div><div class="service-actions">'+(r?'<button class="btn btn-danger" onclick="svcAction(\''+s.name+'\',\'stop\')">'+servicePrimaryAction(s.name, true)+'</button><button class="btn" onclick="svcAction(\''+s.name+'\',\'restart\')">重启</button>':'<button class="btn btn-success" onclick="svcAction(\''+s.name+'\',\'start\')">'+servicePrimaryAction(s.name, false)+'</button>')+'<button class="btn" onclick="showLogs(\''+s.name+'\',\''+escapeHtml(s.label)+'\')">日志</button></div></div>';
       }).join('');
     }
 
@@ -4407,7 +4986,7 @@
       document.getElementById('skill-count').textContent = skills.length;
       const g = document.getElementById('skills-grid');
       if (!skills.length) { g.innerHTML = '<div class="loading">暂无 Skills</div>'; return; }
-      g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">已禁用</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">用户调用</span>':'')+(sk.autoInvocable?'<span class="tag active">自动调用</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+renderSkillGrowth(sk.name)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+renderSkillActionButtons(sk)+'</div>').join('');
+      g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">已禁用</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">用户调用</span>':'')+(sk.autoInvocable?'<span class="tag active">自动调用</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+renderSkillGrowth(sk.name)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+'</div>').join('');
     }
 
     function renderLocalSkillStore(skills) {
@@ -5476,6 +6055,16 @@
       if(advanced)advanced.open=!advanced.open;
     }
 
+    function setCatsConnectCollapsed(collapsed, manual=false){
+      catsConnectCollapsed=Boolean(collapsed);
+      if(manual) catsConnectManualOverride=true;
+      updateCatsLayoutState();
+    }
+
+    function toggleCatsConnectPanel(){
+      setCatsConnectCollapsed(!catsConnectCollapsed, true);
+    }
+
     async function parseCatsResponse(resp){
       const data=await resp.json().catch(()=>({}));
       if(!resp.ok) throw new Error(data.error || ('HTTP '+resp.status));
@@ -5687,7 +6276,7 @@
       }
     }
 
-    function updateCatsLayoutState(){
+    function updateCatsLayoutState(stage){
       const panel=document.querySelector('.chat-connect');
       if(!panel)return;
       const service=catsState.service||{};
@@ -5695,6 +6284,24 @@
       const connected=Boolean(catsState.connected || catsState.tokenPresent);
       const configured=Boolean(catsState.configured);
       const running=service.status==='running';
+      const chatStage=stage||buildCatsChatStage();
+      const ready=chatStage.key==='ready' || (connected && configured && running && Boolean(catsState.topicId));
+      const shell=document.querySelector('.chat-shell');
+      const toggle=document.getElementById('cats-connect-toggle');
+      if(!ready){
+        catsConnectCollapsed=false;
+        catsConnectManualOverride=false;
+      }else if(!catsConnectManualOverride){
+        catsConnectCollapsed=true;
+      }
+      if(shell) shell.classList.toggle('connect-collapsed', ready && catsConnectCollapsed);
+      if(toggle){
+        toggle.style.display=ready?'inline-flex':'none';
+        toggle.title=catsConnectCollapsed?'展开连接面板':'收起连接面板';
+        toggle.setAttribute('aria-label', toggle.title);
+        const icon=toggle.querySelector('.collapse-icon');
+        if(icon) icon.textContent=catsConnectCollapsed?'>':'<';
+      }
       panel.classList.toggle('needs-auth', !connected);
       panel.classList.toggle('needs-setup', connected && (!configured || !running));
       if(!connected) panel.classList.add('expanded');
@@ -5727,7 +6334,7 @@
         : '账号已登录，点击“检查并启动”完成 CatsCo agent 绑定。';
       renderCatsChecklist(stage);
       updateCatsChatGate(stage);
-      updateCatsLayoutState();
+      updateCatsLayoutState(stage);
     }
 
     async function sendCatsCode(){
@@ -5833,11 +6440,52 @@
       return '';
     }
 
+    function showCatsMediaPreview(src,title){
+      const modal=document.getElementById('media-preview-modal');
+      const image=document.getElementById('media-preview-image');
+      const heading=document.getElementById('media-preview-title');
+      if(!modal||!image)return;
+      image.src=src||'';
+      image.alt=title||'image';
+      if(heading)heading.textContent=title||'图片预览';
+      modal.classList.add('show');
+    }
+
+    function closeCatsMediaPreview(){
+      const modal=document.getElementById('media-preview-modal');
+      const image=document.getElementById('media-preview-image');
+      if(modal)modal.classList.remove('show');
+      if(image)image.src='';
+    }
+
+    function isMarkdownTableSeparator(line){
+      const cells=String(line||'').trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(cell=>cell.trim());
+      return cells.length>1 && cells.every(cell=>/^:?-{3,}:?$/.test(cell));
+    }
+
+    function isMarkdownTableRow(line){
+      const text=String(line||'').trim();
+      return text.includes('|') && text.replace(/\|/g,'').trim().length>0;
+    }
+
+    function splitMarkdownTableRow(line){
+      return String(line||'').trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(cell=>cell.trim());
+    }
+
+    function renderMarkdownTable(lines){
+      if(!lines.length)return '';
+      const header=splitMarkdownTableRow(lines[0]);
+      const rows=lines.slice(2).map(splitMarkdownTableRow);
+      const head='<thead><tr>'+header.map(cell=>'<th>'+renderInlineMarkdown(cell)+'</th>').join('')+'</tr></thead>';
+      const body='<tbody>'+rows.map(row=>'<tr>'+header.map((_cell,idx)=>'<td>'+renderInlineMarkdown(row[idx]||'')+'</td>').join('')+'</tr>').join('')+'</tbody>';
+      return '<div class="chat-table-wrap"><table>'+head+body+'</table></div>';
+    }
+
     function renderInlineMarkdown(text){
       let value=escapeHtml(text);
       const codeSpans=[];
       value=value.replace(/`([^`]+)`/g,(_,code)=>{
-        const token='@@INLINE_CODE_'+codeSpans.length+'@@';
+        const token='%%CODESPAN'+codeSpans.length+'%%';
         codeSpans.push('<code>'+code+'</code>');
         return token;
       });
@@ -5849,7 +6497,7 @@
       value=value.replace(/__([^_]+)__/g,'<strong>$1</strong>');
       value=value.replace(/\*([^*\n]+)\*/g,'<em>$1</em>');
       value=value.replace(/_([^_\n]+)_/g,'<em>$1</em>');
-      codeSpans.forEach((html,idx)=>{value=value.replace('@@INLINE_CODE_'+idx+'@@',html);});
+      codeSpans.forEach((html,idx)=>{value=value.replace('%%CODESPAN'+idx+'%%',html);});
       return value;
     }
 
@@ -5880,6 +6528,18 @@
         const trimmed=line.trim();
         if(!trimmed){flushParagraph();continue;}
         if(/^@@CODE_BLOCK_\d+@@$/.test(trimmed)){flushParagraph();html.push(trimmed);continue;}
+        if(isMarkdownTableRow(line) && i+1<lines.length && isMarkdownTableSeparator(lines[i+1])){
+          flushParagraph();
+          const tableLines=[line, lines[i+1]];
+          i+=2;
+          while(i<lines.length && isMarkdownTableRow(lines[i])){
+            tableLines.push(lines[i]);
+            i++;
+          }
+          i--;
+          html.push(renderMarkdownTable(tableLines));
+          continue;
+        }
         const heading=trimmed.match(/^(#{1,3})\s+(.+)$/);
         if(heading){flushParagraph();html.push('<h'+heading[1].length+'>'+renderInlineMarkdown(heading[2])+'</h'+heading[1].length+'>');continue;}
         if(/^>\s?/.test(trimmed)){
@@ -5951,27 +6611,28 @@
     function renderRichCatsContent(content){
       const rich=parseCatsContent(content);
       if(!rich || !rich.type)return '';
-      const payload=rich.payload||{};
+      const payload=rich.payload||rich;
       if(rich.type==='image'){
         const src=normalizeMediaUrl(payload.url||payload.thumbnail);
-        return src?'<img class="chat-rich-image" src="'+escapeHtml(src)+'" alt="'+escapeHtml(payload.name||'image')+'" />':'';
+        const title=payload.name||payload.alt||'image';
+        return src?'<button class="chat-rich-image-button" type="button" data-src="'+escapeHtml(src)+'" data-title="'+escapeHtml(title)+'" onclick="showCatsMediaPreview(this.dataset.src,this.dataset.title)"><img class="chat-rich-image" src="'+escapeHtml(src)+'" alt="'+escapeHtml(title)+'" /></button>':'';
       }
       if(rich.type==='file'){
         const url=normalizeMediaUrl(payload.url);
         const name=payload.name||'File';
         const meta=[formatCatsFileSize(payload.size), name.includes('.')?name.split('.').pop().toUpperCase():'FILE'].filter(Boolean).join(' · ');
-        const inner='<span class="chat-attachment-icon">F</span><span><div class="chat-attachment-name">'+escapeHtml(name)+'</div><div class="chat-attachment-meta">'+escapeHtml(meta)+'</div></span>';
+        const inner='<span class="chat-attachment-icon">FILE</span><span><div class="chat-attachment-name">'+escapeHtml(name)+'</div><div class="chat-attachment-meta">'+escapeHtml(meta)+'</div></span>';
         return url?'<a class="chat-attachment" href="'+escapeHtml(url)+'" target="_blank" rel="noopener noreferrer">'+inner+'</a>':'<div class="chat-attachment">'+inner+'</div>';
       }
       if(rich.type==='link_preview'){
         const url=safeLinkUrl(payload.url);
         const title=payload.title||payload.url||'Link';
         const desc=payload.description||payload.site_name||'';
-        const inner='<span class="chat-attachment-icon">↗</span><span><div class="chat-attachment-name">'+escapeHtml(title)+'</div><div class="chat-attachment-meta">'+escapeHtml(desc)+'</div></span>';
+        const inner='<span class="chat-attachment-icon">URL</span><span><div class="chat-attachment-name">'+escapeHtml(title)+'</div><div class="chat-attachment-meta">'+escapeHtml(desc)+'</div></span>';
         return url?'<a class="chat-attachment" href="'+escapeHtml(url)+'" target="_blank" rel="noopener noreferrer">'+inner+'</a>':'';
       }
       if(rich.type==='card'){
-        return '<div class="chat-attachment"><span class="chat-attachment-icon">C</span><span><div class="chat-attachment-name">'+escapeHtml(payload.title||'Card')+'</div><div class="chat-attachment-meta">'+escapeHtml(payload.description||'')+'</div></span></div>';
+        return '<div class="chat-attachment"><span class="chat-attachment-icon">CARD</span><span><div class="chat-attachment-name">'+escapeHtml(payload.title||'Card')+'</div><div class="chat-attachment-meta">'+escapeHtml(payload.description||'')+'</div></span></div>';
       }
       return '';
     }
@@ -5988,11 +6649,111 @@
       return block.thinking||block.text||block.content||'';
     }
 
+    function catsWorkingCode(value){
+      if(value==null || value==='')return '';
+      if(typeof value==='string')return value;
+      try{return JSON.stringify(value,null,2);}catch(_e){return String(value);}
+    }
+
+    function catsWorkingBlockKey(block){
+      return String(block?.id || block?.tool_use_id || block?.tool_id || block?.call_id || '');
+    }
+
+    function catsMessageType(message){
+      const type=message?.type||'';
+      if(type)return type;
+      const msgType=message?.msg_type||'';
+      return CATS_WORKING_TYPES.has(msgType)?msgType:'';
+    }
+
+    function isCatsWorkingTextMessage(message){
+      const type=message?.type || message?.msg_type || '';
+      const content=typeof message?.content==='string'?message.content.trim():'';
+      return type==='text' && content.startsWith(CATS_WORKING_TEXT_PREFIX);
+    }
+
+    function catsWorkingTextContent(text){
+      const value=String(text||'').trim();
+      return value.startsWith(CATS_WORKING_TEXT_PREFIX)
+        ? value.slice(CATS_WORKING_TEXT_PREFIX.length).trim()
+        : value;
+    }
+
+    function catsContentBlocksFromMessage(message){
+      const stored=Array.isArray(message?.content_blocks)?message.content_blocks:[];
+      if(stored.length)return stored;
+      const type=catsMessageType(message);
+      if(type==='thinking'){
+        return [{type:'thinking', thinking:extractCatsMessageText(message)}];
+      }
+      if(type==='tool_use'){
+        return [{
+          type:'tool_use',
+          id:message.metadata?.id || message.metadata?.tool_call_id || message.metadata?.tool_use_id,
+          name:extractCatsMessageText(message)||'Tool',
+          input:message.metadata?.input,
+        }];
+      }
+      if(type==='tool_result'){
+        return [{
+          type:'tool_result',
+          tool_use_id:message.metadata?.tool_use_id || message.metadata?.id || message.metadata?.tool_call_id,
+          content:extractCatsMessageText(message),
+          is_error:Boolean(message.metadata?.is_error),
+        }];
+      }
+      if(isCatsWorkingTextMessage(message)){
+        return [{type:'assistant_text', text:catsWorkingTextContent(message.content)}];
+      }
+      return [];
+    }
+
+    function groupCatsWorkingBlocks(blocks){
+      const groups=[];
+      const tools=new Map();
+      blocks.forEach(block=>{
+        const type=block?.type||'';
+        if(type==='text' || ['image','file','link_preview','card'].includes(type))return;
+        if(type==='thinking'){
+          groups.push({type:'thinking', block});
+          return;
+        }
+        if(type==='assistant_text'){
+          groups.push({type:'assistant_text', block});
+          return;
+        }
+        if(type==='tool_use'){
+          const group={type:'tool', tool:block, result:null};
+          groups.push(group);
+          const key=catsWorkingBlockKey(block);
+          if(key)tools.set(key,group);
+          return;
+        }
+        if(type==='tool_result'){
+          const key=catsWorkingBlockKey(block);
+          const group=key?tools.get(key):null;
+          if(group && !group.result){
+            group.result=block;
+          }else{
+            const fallback=groups.find(item=>item.type==='tool' && !item.result);
+            if(fallback){
+              fallback.result=block;
+            }else{
+              groups.push({type:'tool_result', result:block});
+            }
+          }
+          return;
+        }
+      });
+      return groups;
+    }
+
     function isCatsWorkingMessage(message){
-      const type=message?.type||message?.msg_type||'';
-      if(['thinking','tool_use','tool_result'].includes(type))return true;
+      const type=catsMessageType(message);
+      if(CATS_WORKING_TYPES.has(type))return true;
+      if(isCatsWorkingTextMessage(message))return true;
       const blocks=Array.isArray(message?.content_blocks)?message.content_blocks:[];
-      return blocks.some(block => block && block.type && block.type !== 'text' && block.type !== 'assistant_text');
+      return blocks.some(block => block && CATS_WORKING_TYPES.has(block.type));
     }
 
     function catsMessageComparableId(message){
@@ -6050,25 +6811,47 @@
 
     function renderCatsWorkingBlocks(blocks){
       if(!blocks.length)return '';
-      const steps=blocks.map(block=>{
-        const type=block.type||'';
-        const title=type==='thinking'?'Thinking':type==='tool_use'?('Tool: '+(block.name||'Tool')):type==='tool_result'?'Tool Result':type;
+      const groups=groupCatsWorkingBlocks(blocks);
+      const steps=groups.map(group=>{
+        if(group.type==='tool'){
+          const tool=group.tool||{};
+          const result=group.result||{};
+          const title='Tool: '+(tool.name||tool.tool_name||'Tool');
+          const inputSummary=catsWorkingSummary(tool);
+          const input=catsWorkingCode(tool.input||tool.arguments);
+          const output=catsWorkingCode(result.content||result.text||result.output||result.result);
+          return '<div class="chat-working-step"><div class="chat-working-step-title">'+escapeHtml(title)+(inputSummary?'<span class="chat-working-step-meta">'+escapeHtml(inputSummary)+'</span>':'')+'</div>'+
+            (input?'<div class="chat-working-code"><pre>'+escapeHtml(input)+'</pre></div>':'')+
+            (output?'<div class="chat-working-code" style="margin-top:6px"><pre>'+escapeHtml(output)+'</pre></div>':'')+
+            '</div>';
+        }
+        const block=group.block||group.result||{};
+        const type=group.type||block.type||'Working';
+        const title=type==='thinking'?'Thinking':type==='assistant_text'?'Assistant':type==='tool_result'?'Tool Result':type;
         const body=type==='tool_result'
-          ? '<pre><code>'+escapeHtml(block.content||block.text||'')+'</code></pre>'
-          : renderMarkdown(catsWorkingSummary(block));
-        return '<div class="chat-working-step"><div class="chat-working-step-title">'+escapeHtml(title)+'</div><div class="chat-markdown">'+body+'</div></div>';
+          ? '<div class="chat-working-code"><pre>'+escapeHtml(catsWorkingCode(block.content||block.text||block.output||block.result))+'</pre></div>'
+          : '<div class="chat-markdown">'+renderMarkdown(catsWorkingSummary(block))+'</div>';
+        return '<div class="chat-working-step"><div class="chat-working-step-title">'+escapeHtml(title)+'</div>'+body+'</div>';
       }).join('');
-      return '<details class="chat-working"><summary>WORKING...</summary><div class="chat-working-body">'+steps+'</div></details>';
+      const countLabel=groups.length===1?'1 step':(groups.length+' steps');
+      return '<details class="chat-working"><summary><span class="chat-working-chevron">&gt;</span><span>WORKING...</span><span class="chat-working-hint">'+escapeHtml(countLabel)+'</span></summary><div class="chat-working-body">'+steps+'</div></details>';
     }
 
     function renderCatsMessageBody(message){
       const blocks=Array.isArray(message?.content_blocks)?message.content_blocks:[];
       const textBlocks=[];
+      const richBlocks=[];
       const workingBlocks=[];
+      const messageType=message?.type||message?.msg_type||'';
+      const messageIsWorking=isCatsWorkingMessage(message);
       for(const block of blocks){
-        if(block.type==='text' || block.type==='assistant_text'){
+        if(block.type==='text' || (block.type==='assistant_text' && !messageIsWorking)){
           textBlocks.push(block.text||block.content||'');
-        }else if(block.type){
+        }else if(block.type==='assistant_text' && messageIsWorking){
+          workingBlocks.push(block);
+        }else if(['image','file','link_preview','card'].includes(block.type)){
+          richBlocks.push(block);
+        }else if(block.type && CATS_WORKING_TYPES.has(block.type)){
           workingBlocks.push(block);
         }
       }
@@ -6076,7 +6859,11 @@
       let html='';
       if(textBlocks.length){
         html+='<div class="chat-markdown">'+renderMarkdown(textBlocks.join('\n\n'))+'</div>';
-      }else{
+      }
+      if(richBlocks.length){
+        html+=richBlocks.map(renderRichCatsContent).join('');
+      }
+      if(!textBlocks.length && !richBlocks.length && !messageIsWorking){
         const richHtml=renderRichCatsContent(message.content);
         if(richHtml){
           html+=richHtml;
@@ -6086,14 +6873,8 @@
         }
       }
 
-      if(!workingBlocks.length && ['thinking','tool_use','tool_result'].includes(message.type||message.msg_type||'')){
-        workingBlocks.push({
-          type: message.type||message.msg_type,
-          name: message.type==='tool_use'?extractCatsMessageText(message):undefined,
-          content: message.type==='tool_result'?extractCatsMessageText(message):undefined,
-          thinking: message.type==='thinking'?extractCatsMessageText(message):undefined,
-          input: message.metadata?.input,
-        });
+      if(!workingBlocks.length && messageIsWorking){
+        workingBlocks.push(...catsContentBlocksFromMessage(message));
       }
       html+=renderCatsWorkingBlocks(workingBlocks);
       return html;
@@ -6116,6 +6897,62 @@
       catsScrollPinnedToBottom=true;
     }
 
+    function groupCatsTimelineMessages(messages, uid){
+      const groups=[];
+      let currentWorking=null;
+      let prevSender='';
+      let prevTime=0;
+      (messages||[]).forEach(message=>{
+        const from=String(message.from_uid || message.from || '');
+        const created=message.created_at?new Date(message.created_at):null;
+        const time=created && !Number.isNaN(created.getTime()) ? created.getTime() : Date.now();
+        const consecutive=prevSender===from && time-prevTime < 5*60*1000;
+        if(isCatsWorkingMessage(message)){
+          if(!currentWorking){
+            currentWorking={type:'working', messages:[], from, isConsecutive:consecutive};
+          }
+          currentWorking.messages.push(message);
+          prevSender=from;
+          prevTime=time;
+          return;
+        }
+        if(currentWorking){
+          groups.push(currentWorking);
+          currentWorking=null;
+        }
+        groups.push({type:'text', message, from, isConsecutive:consecutive});
+        prevSender=from;
+        prevTime=time;
+      });
+      if(currentWorking)groups.push(currentWorking);
+      return groups;
+    }
+
+    function renderCatsWorkingMessagesBody(messages){
+      const blocks=[];
+      (messages||[]).forEach(message=>{
+        blocks.push(...catsContentBlocksFromMessage(message));
+      });
+      return renderCatsWorkingBlocks(blocks);
+    }
+
+    function renderCatsMessageShell(message, body, options={}){
+      const uid=String(catsState.user?.uid||'');
+      const from=String(message.from_uid || message.from || '');
+      const mine=from===uid || from===('usr'+uid);
+      const cls=mine?'mine':'peer';
+      const who=mine?'我':'CatsCo';
+      const created=message.created_at?new Date(message.created_at):null;
+      const time=created && !Number.isNaN(created.getTime()) ? created.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+      return '<div class="chat-message '+cls+(options.working?' has-working':'')+(options.isConsecutive?' grouped':'')+'">'+
+        '<div class="chat-avatar" aria-hidden="true">'+(mine?'我':'C')+'</div>'+
+        '<div class="chat-message-body">'+
+          '<div class="chat-message-meta"><span>'+escapeHtml(who)+'</span>'+(time?'<span>'+escapeHtml(time)+'</span>':'')+'</div>'+
+          '<div class="chat-message-content">'+body+'</div>'+
+        '</div>'+
+      '</div>';
+    }
+
     function renderCatsMessages(messages){
       const box=document.getElementById('cats-messages');
       const uid=String(catsState.user?.uid||'');
@@ -6124,15 +6961,15 @@
         box.innerHTML='<div class="loading">暂无消息</div>';
         return;
       }
-      box.innerHTML=messages.map(m=>{
-        const from=String(m.from_uid || m.from || '');
-        const mine=from===uid || from===('usr'+uid);
-        const cls=mine?'mine':'peer';
-        const who=mine?'我':'CatsCo';
-        const created=m.created_at?new Date(m.created_at):null;
-        const time=created && !Number.isNaN(created.getTime()) ? created.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
-        return '<div class="chat-message '+cls+'"><div class="chat-message-meta">'+who+(time?' · '+escapeHtml(time):'')+'</div>'+renderCatsMessageBody(m)+'</div>';
+      const groups=groupCatsTimelineMessages(messages, uid);
+      const html=groups.map(group=>{
+        if(group.type==='working'){
+          const first=group.messages[0]||{};
+          return renderCatsMessageShell(first, renderCatsWorkingMessagesBody(group.messages), {working:true, isConsecutive:group.isConsecutive});
+        }
+        return renderCatsMessageShell(group.message, renderCatsMessageBody(group.message), {isConsecutive:group.isConsecutive});
       }).join('');
+      box.innerHTML='<div class="chat-timeline-inner">'+html+'</div>';
       if(shouldStickToBottom)scrollCatsMessagesToBottom(box);
       updatePetFromCatsMessages(messages);
     }
@@ -6207,8 +7044,9 @@
     }
 
     // Init
-    preloadPetFrames();renderPetProfile();renderPetProcess();setPetState('idle');
+    preloadPetFrames();renderPetProfile();renderPetProcess();initFloatingPetDrag();setPetState('idle');
     setupEnvConfigLazyLoad();fetchStatus();fetchSkills();fetchDashboardSettings();fetchRuntimeConfig();fetchUpdateStatus(true);fetchCatsStatus();
+    if(document.getElementById('page-chat')?.classList.contains('active') && !catsPollTimer) catsPollTimer = setInterval(fetchCatsStatus, 5000);
     setInterval(fetchStatus,5000);setInterval(fetchSkills,30000);setInterval(()=>fetchUpdateStatus(true),5000);
     const catsMessagesBox = document.getElementById('cats-messages');
     catsMessagesBox.addEventListener('scroll', updateCatsMessageScrollIntent, { passive: true });
@@ -6217,7 +7055,7 @@
     catsMessageInput.addEventListener('input',()=>{if(catsMessageInput.value.trim()) setPetState('typing', { message:'输入中...' }); else setPetAutoBaseline(petAutoBaseline);});
     catsMessageInput.addEventListener('focus',()=>setPetState('typing', { message:'准备输入' }));
     catsMessageInput.addEventListener('blur',()=>{if(!catsMessageInput.value.trim()) setPetAutoBaseline(petAutoBaseline);});
-    document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeLogs();closeUpdateModal();}});
+    document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeLogs();closeUpdateModal();closeCatsMediaPreview();}});
     document.addEventListener('click',e=>{const shell=document.getElementById('floating-pet');if(shell && !shell.contains(e.target)) closeFloatingPetMenu();});
   </script>
 </body>
