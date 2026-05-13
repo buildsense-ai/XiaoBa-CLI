@@ -15,6 +15,8 @@ test('GauzMem dashboard HTML exposes replay, graph, and metabolism views', () =>
   assert.match(html, /id="graph-svg"/);
   assert.match(html, /id="timeline"/);
   assert.match(html, /id="metabolism-bars"/);
+  assert.match(html, /class="run-stats"/);
+  assert.match(html, /function renderTraceRow/);
 });
 
 test('main dashboard links to the GauzMem dashboard without replacing the existing SPA pages', () => {

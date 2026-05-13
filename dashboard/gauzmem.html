@@ -218,6 +218,60 @@
       grid-template-columns: 1fr 1fr;
       gap: 8px;
     }
+    .run-stats {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .run-stat {
+      border: 1px solid var(--line);
+      background: #f8fafc;
+      border-radius: 8px;
+      padding: 7px 8px;
+      min-width: 0;
+    }
+    .run-stat .k {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      margin-bottom: 4px;
+      white-space: nowrap;
+    }
+    .run-stat .v {
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 780;
+      line-height: 1.1;
+    }
+    .trace {
+      display: grid;
+      gap: 5px;
+    }
+    .trace-row {
+      display: grid;
+      grid-template-columns: minmax(80px, 150px) minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .trace-term {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .trace-bar {
+      display: flex;
+      height: 8px;
+      background: var(--panel2);
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+    }
+    .trace-hit.source { background: var(--blue); }
+    .trace-hit.graph { background: var(--green); }
     .mini-list {
       display: grid;
       gap: 5px;
@@ -351,7 +405,7 @@
       .topbar, .panel-head { align-items: stretch; flex-direction: column; }
       .actions { justify-content: flex-start; }
       .stat-grid { grid-template-columns: repeat(2, 1fr); }
-      .control-row, .graph-lists, .run-grid, .bar-row { grid-template-columns: 1fr; }
+      .control-row, .graph-lists, .run-grid, .run-stats, .bar-row, .trace-row { grid-template-columns: 1fr; }
       #graph-svg { min-height: 320px; }
     }
   </style>
@@ -578,13 +632,26 @@
       const nodes = (run.nodes || []).slice(0, 5);
       const edges = (run.edges || []).slice(0, 5);
       const stats = run.stats || {};
+      const trace = (run.searchTrace || []).slice(0, 8);
       return `<div class="run">
         <div class="row">
           <span class="chip blue">${escapeHtml(run.callType || 'passive')}</span>
           <span class="chip amber">${escapeHtml(run.retrieveMode || 'unknown')}</span>
           <span class="chip">${escapeHtml(run.runId || '-')}</span>
         </div>
-        <div class="item-meta">energy ${escapeHtml(stats.energyRemaining ?? '-')} / ${escapeHtml(stats.energyInitial ?? '-')} · graph seeds ${escapeHtml(stats.graphSeedCount ?? 0)} · constructed ${escapeHtml(stats.constructedNodeCount ?? 0)} nodes / ${escapeHtml(stats.constructedEdgeCount ?? 0)} edges</div>
+        <div class="run-stats">
+          ${runStat('scanned', stats.docsScanned ?? 0, 'docs')}
+          ${runStat('source hits', stats.sourceHitCount ?? 0, 'raw matches')}
+          ${runStat('windows', stats.sourceWindowCount ?? 0, 'shown to LLM')}
+          ${runStat('evidence', stats.sourceEvidenceCount ?? stats.evidenceCount ?? 0, 'source nodes')}
+          ${runStat('graph seeds', `${stats.graphSeedCount ?? 0}/${stats.graphEdgeSeedCount ?? 0}`, 'node/edge')}
+          ${runStat('constructed', `${stats.constructedNodeCount ?? 0}/${stats.constructedEdgeCount ?? 0}`, 'node/edge')}
+          ${runStat('returned', `${run.evidenceIds?.length || 0}/${run.edges?.length || 0}`, 'node/edge')}
+          ${runStat('energy', `${stats.energyRemaining ?? '-'}/${stats.energyInitial ?? '-'}`, 'left/initial')}
+          ${runStat('mode', run.retrieveMode || 'unknown', 'retrieve')}
+          ${runStat('reasoner', stats.reasoner || '-', 'judge')}
+        </div>
+        ${trace.length ? `<div class="trace">${trace.map(renderTraceRow).join('')}</div>` : `<div class="item-meta">no search trace</div>`}
         <div class="run-grid">
           <div class="mini-list">
             ${nodes.map(node => `<div class="mini-item"><b>${escapeHtml(node.id)}</b><br>${escapeHtml(node.preview || '')}</div>`).join('') || '<div class="mini-item">no evidence nodes</div>'}
@@ -593,6 +660,26 @@
             ${edges.map(edge => `<div class="mini-item"><b>${escapeHtml(edge.mode)}</b><br>${escapeHtml(edge.whyPreview || '')}</div>`).join('') || '<div class="mini-item">no edges</div>'}
           </div>
         </div>
+      </div>`;
+    }
+
+    function runStat(label, value, hint) {
+      return `<div class="run-stat"><div class="k">${escapeHtml(label)}</div><div class="v">${escapeHtml(value)}</div><div class="item-meta">${escapeHtml(hint)}</div></div>`;
+    }
+
+    function renderTraceRow(item) {
+      const sourceHits = Number(item.sourceHitCount || 0);
+      const graphHits = Number(item.graphNodeHits || 0) + Number(item.graphEdgeHits || 0);
+      const total = Math.max(1, sourceHits + graphHits);
+      const sourceWidth = Math.max(sourceHits ? 4 : 0, Math.round((sourceHits / total) * 100));
+      const graphWidth = Math.max(graphHits ? 4 : 0, Math.round((graphHits / total) * 100));
+      return `<div class="trace-row">
+        <div class="trace-term" title="${escapeHtml(item.pattern || '')}">${escapeHtml(item.pattern || '-')}</div>
+        <div class="trace-bar">
+          <div class="trace-hit source" style="width:${sourceWidth}%"></div>
+          <div class="trace-hit graph" style="width:${graphWidth}%"></div>
+        </div>
+        <div>${escapeHtml(sourceHits)} src · ${escapeHtml(graphHits)} graph · ${escapeHtml(item.sourceEvidenceCount || 0)} ev</div>
       </div>`;
     }
 
