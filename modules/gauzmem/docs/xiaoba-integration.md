@@ -98,6 +98,7 @@ GAUZMEM_TIMEOUT_MS=45000
 
 Do not put `GAUZMEM_LLM_API_KEY` in XiaoBa's root `.env`. Keep it in
 GauzMem's own `.env`, or leave it blank and let managed mode inherit XiaoBa's
-`GAUZ_LLM_PROVIDER`, `GAUZ_LLM_API_KEY`, `GAUZ_LLM_API_BASE`, and
-`GAUZ_LLM_MODEL`. `GAUZMEM_LLM_*` values always win when present, so a
+`GAUZ_LLM_API_KEY`, `GAUZ_LLM_API_BASE`, and `GAUZ_LLM_MODEL`. GauzMem always
+uses the Anthropic-compatible `/v1/messages` request shape, matching XiaoBa's
+default Anthropic path. `GAUZMEM_LLM_*` values always win when present, so a
 standalone sidecar can still use a separate model.
