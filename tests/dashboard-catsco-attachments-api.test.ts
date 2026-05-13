@@ -5,7 +5,13 @@ import * as fs from 'fs';
 import type { Server } from 'http';
 import * as os from 'os';
 import * as path from 'path';
-import { createLocalFileGrant } from '../src/dashboard/local-file-grants';
+import {
+  consumeLocalFileGrant,
+  createLocalFileGrant,
+  LOCAL_FILE_GRANT_MAX_SIZE_BYTES,
+  LOCAL_FILE_GRANT_TTL_MS,
+  validateLocalFileGrant,
+} from '../src/dashboard/local-file-grants';
 import { createApiRouter } from '../src/dashboard/routes/api';
 
 async function listen(app: express.Express): Promise<Server> {
@@ -138,6 +144,49 @@ describe('dashboard CatsCo attachment API', () => {
 
     assert.equal(response.status, 400);
     assert.equal(data.error, 'topic_id and file_token are required');
+  });
+
+  test('local file grants are one-time tokens', () => {
+    const filePath = path.join(testRoot, 'one-time.txt');
+    fs.writeFileSync(filePath, 'hello world');
+    const grant = createLocalFileGrant(filePath);
+
+    assert.equal(consumeLocalFileGrant(grant.token).name, 'one-time.txt');
+    assert.throws(() => consumeLocalFileGrant(grant.token), /invalid or expired/);
+  });
+
+  test('local file grants expire', () => {
+    const filePath = path.join(testRoot, 'expires.txt');
+    fs.writeFileSync(filePath, 'hello world');
+    const originalNow = Date.now;
+    let now = originalNow();
+
+    try {
+      (Date as any).now = () => now;
+      const grant = createLocalFileGrant(filePath);
+      now += LOCAL_FILE_GRANT_TTL_MS + 1;
+
+      assert.throws(() => consumeLocalFileGrant(grant.token), /invalid or expired/);
+    } finally {
+      (Date as any).now = originalNow;
+    }
+  });
+
+  test('rejects files that changed after selection', () => {
+    const filePath = path.join(testRoot, 'changed.txt');
+    fs.writeFileSync(filePath, 'hello world');
+    const grant = createLocalFileGrant(filePath);
+
+    fs.writeFileSync(filePath, 'hello world changed');
+    assert.throws(() => validateLocalFileGrant(consumeLocalFileGrant(grant.token)), /changed after selection/);
+  });
+
+  test('rejects oversized local file grants before upload', () => {
+    const filePath = path.join(testRoot, 'too-large.bin');
+    fs.writeFileSync(filePath, '');
+    fs.truncateSync(filePath, LOCAL_FILE_GRANT_MAX_SIZE_BYTES + 1);
+
+    assert.throws(() => createLocalFileGrant(filePath), /too large/);
   });
 
   test('does not retry failed uploads with the agent API key', async () => {

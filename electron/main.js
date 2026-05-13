@@ -452,6 +452,8 @@ function isTrustedDashboardUrl(value) {
   }
 }
 
+const CATSCOMPANY_FILE_SELECTION_LIMIT = 6;
+
 ipcMain.handle('catsco:select-files', async (event) => {
   const owner = BrowserWindow.fromWebContents(event.sender) || mainWindow || undefined;
   const frameUrl = event.senderFrame?.url || event.sender.getURL();
@@ -465,11 +467,22 @@ ipcMain.handle('catsco:select-files', async (event) => {
 
   const { createLocalFileGrant } = require(path.join(getAppRoot(), 'dist', 'dashboard', 'local-file-grants'));
   return result.filePaths
-    .map((filePath) => {
+    .map((filePath, index) => {
       try {
+        if (index >= CATSCOMPANY_FILE_SELECTION_LIMIT) {
+          return {
+            name: path.basename(filePath),
+            size: 0,
+            error: `一次最多选择 ${CATSCOMPANY_FILE_SELECTION_LIMIT} 个文件。`,
+          };
+        }
         return createLocalFileGrant(filePath);
-      } catch (_error) {
-        return null;
+      } catch (error) {
+        return {
+          name: path.basename(filePath),
+          size: 0,
+          error: error?.message || '文件无法授权，请重新选择。',
+        };
       }
     })
     .filter(Boolean);

@@ -29,7 +29,7 @@ import {
   saveRuntimeProfileEdit,
 } from '../../runtime/runtime-profile-editor';
 import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/upload';
-import { consumeLocalFileGrant } from '../local-file-grants';
+import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-grants';
 // import { ReportGenerator } from '../../utils/report-generator';
 // import { LogUploader } from '../../utils/log-uploader';
 
@@ -1133,8 +1133,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       if (!topicId || !fileToken) return res.status(400).json({ error: 'topic_id and file_token are required' });
 
       const grant = consumeLocalFileGrant(fileToken);
-      const stat = fs.statSync(grant.filePath);
-      if (!stat.isFile()) return res.status(400).json({ error: 'file_token must point to a file' });
+      const stat = validateLocalFileGrant(grant);
 
       const fileName = grant.name;
       const uploadType = inferCatsUploadType(fileName);

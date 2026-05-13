@@ -2,13 +2,17 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
-const LOCAL_FILE_GRANT_TTL_MS = 10 * 60 * 1000;
+export const LOCAL_FILE_GRANT_TTL_MS = 10 * 60 * 1000;
+export const LOCAL_FILE_GRANT_MAX_SIZE_BYTES = 50 * 1024 * 1024;
 
 export interface LocalFileGrant {
   token: string;
   filePath: string;
   name: string;
   size: number;
+  mtimeMs: number;
+  dev: number;
+  ino: number;
   createdAt: number;
 }
 
@@ -35,6 +39,9 @@ export function createLocalFileGrant(filePath: string): Pick<LocalFileGrant, 'to
   if (!stat.isFile()) {
     throw grantError('local file grant must point to a file');
   }
+  if (stat.size > LOCAL_FILE_GRANT_MAX_SIZE_BYTES) {
+    throw grantError(`local file is too large; max size is ${LOCAL_FILE_GRANT_MAX_SIZE_BYTES} bytes`, 413);
+  }
 
   const token = crypto.randomBytes(32).toString('base64url');
   const grant: LocalFileGrant = {
@@ -42,6 +49,9 @@ export function createLocalFileGrant(filePath: string): Pick<LocalFileGrant, 'to
     filePath: resolvedPath,
     name: path.basename(resolvedPath),
     size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    dev: stat.dev,
+    ino: stat.ino,
     createdAt: Date.now(),
   };
   grants.set(token, grant);
@@ -61,4 +71,25 @@ export function consumeLocalFileGrant(token: string): LocalFileGrant {
   }
   grants.delete(token);
   return grant;
+}
+
+export function validateLocalFileGrant(grant: LocalFileGrant): fs.Stats {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(grant.filePath);
+  } catch (_error) {
+    throw grantError('authorized file is no longer available; please choose it again');
+  }
+  if (!stat.isFile()) {
+    throw grantError('file_token must point to a file');
+  }
+  if (
+    stat.size !== grant.size ||
+    stat.mtimeMs !== grant.mtimeMs ||
+    stat.dev !== grant.dev ||
+    stat.ino !== grant.ino
+  ) {
+    throw grantError('authorized file changed after selection; please choose it again');
+  }
+  return stat;
 }

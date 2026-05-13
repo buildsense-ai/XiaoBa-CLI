@@ -4313,7 +4313,7 @@
             </div>
             <div class="chat-composer" id="cats-composer">
               <div class="chat-attachment-tray" id="cats-attachment-tray" hidden></div>
-              <div class="chat-attach-note" id="cats-attach-note" hidden>浏览器无法直接添加本地附件；请在 CatsCo 桌面客户端使用 + 选择文件，或把文件路径作为普通文本发给 Agent。</div>
+              <div class="chat-attach-note" id="cats-attach-note" hidden>普通浏览器不能直接上传本地附件；请在 CatsCo 桌面客户端使用 + 选择文件，或把文件路径作为文字说明发给 Agent。</div>
               <div class="chat-input-bar">
                 <button class="btn chat-attach-btn" type="button" onclick="chooseCatsFiles()" id="cats-attach-btn" title="添加本地文件" disabled>+</button>
                 <textarea class="config-input" id="cats-message-input" placeholder="等待 CatsCo Chat 检查完成" disabled></textarea>
@@ -4480,7 +4480,7 @@
     const CATS_SCROLL_BOTTOM_THRESHOLD = 80;
     let catsAttachmentQueue = [];
     let catsAttachmentSeq = 0;
-    const CATS_ATTACHMENT_BROWSER_MESSAGE = '浏览器无法直接添加本地附件；请在 CatsCo 桌面客户端使用 + 选择文件，或把文件路径作为普通文本发给 Agent。';
+    const CATS_ATTACHMENT_BROWSER_MESSAGE = '普通浏览器不能直接上传本地附件；请在 CatsCo 桌面客户端使用 + 选择文件，或把文件路径作为文字说明发给 Agent。';
     const CATS_DEFAULT_HTTP_BASE = 'https://app.catsco.cc';
     const CATS_DEFAULT_WS_URL = 'wss://app.catsco.cc/v0/channels';
     const CATS_WORKING_TEXT_PREFIX = 'AI文本:';
@@ -7155,6 +7155,7 @@
       const name=String(file?.name || '本地文件').trim() || '本地文件';
       const size=Number(file?.size || 0);
       const type=String(file?.type || '');
+      const error=String(file?.error || '').trim();
       return {
         id: ++catsAttachmentSeq,
         name,
@@ -7162,7 +7163,7 @@
         type,
         token,
         status: token?'queued':'error',
-        error: token?'':'附件没有经过客户端文件选择器授权，请重新使用 + 按钮选择文件。',
+        error: token?'':(error||'附件没有经过客户端文件选择器授权，请重新使用 + 按钮选择文件。'),
       };
     }
 
@@ -7171,8 +7172,8 @@
       if(!list.length)return;
       catsAttachmentQueue.push(...list.map(normalizeCatsFileItem));
       renderCatsAttachments();
-      const invalid=catsAttachmentQueue.filter(item=>!item.token).length;
-      if(invalid)setCatsAction('有附件没有客户端授权，请重新使用 + 按钮选择文件。', true);
+      const invalid=catsAttachmentQueue.filter(item=>!item.token);
+      if(invalid.length)setCatsAction(invalid[0].error||'有附件没有客户端授权，请重新使用 + 按钮选择文件。', true);
       else pulsePetState('typing','已添加附件',1200);
     }
 

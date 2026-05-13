@@ -53,9 +53,9 @@ test('run page is driven by readiness instead of raw diagnostics cards', () => {
   assert.match(dashboardHtml, /function renderReadiness\(data\)/);
   assert.match(dashboardHtml, /启动前检查未通过/);
   assert.match(dashboardHtml, /模型来源、CatsCo Chat、Runtime Profile 和 Skills/);
-  assert.match(dashboardHtml, /<details class="run-details">\s*<summary><span>Service details<\/span><span class="tag">connector<\/span><\/summary>/);
+  assert.match(dashboardHtml, /<details class="run-details" open>\s*<summary><span>启动前检查<\/span><span class="tag">readiness<\/span><\/summary>/);
   assert.match(dashboardHtml, /<summary><span>Diagnostics<\/span><span class="tag">version \/ host \/ paths<\/span><\/summary>/);
-  assert.doesNotMatch(dashboardHtml, /<details class="run-details" open>/);
+  assert.doesNotMatch(dashboardHtml, /<summary><span>Service details<\/span><span class="tag">connector<\/span><\/summary>/);
   assert.doesNotMatch(dashboardHtml, /<div class="section-title">系统状态<\/div>/);
   assert.doesNotMatch(dashboardHtml, /<div class="label">Provider<\/div>/);
 });
