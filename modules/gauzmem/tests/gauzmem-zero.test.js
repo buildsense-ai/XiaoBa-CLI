@@ -3,6 +3,13 @@
 process.env.GAUZMEM_LLM_API_KEY = "";
 process.env.GAUZMEM_LLM_BASE_URL = "";
 process.env.GAUZMEM_LLM_MODEL = "";
+process.env.GAUZMEM_LLM_PROVIDER = "";
+process.env.GAUZMEM_LLM_TIMEOUT_MS = "";
+process.env.GAUZ_LLM_API_KEY = "";
+process.env.GAUZ_LLM_API_BASE = "";
+process.env.GAUZ_LLM_MODEL = "";
+process.env.GAUZ_LLM_PROVIDER = "";
+process.env.GAUZ_LLM_TIMEOUT_MS = "";
 process.env.GAUZMEM_ALLOWED_ROOTS = "";
 process.env.GAUZMEM_HTTP_TOKEN = "";
 process.env.GAUZMEM_AUTH_TOKEN = "";
@@ -18,13 +25,17 @@ const test = require("node:test");
 const {
   appendEdgeStates,
   appendNodeStates,
+  AnthropicCompatibleReasoner,
+  createReasoner,
   defaultEdgeState,
   defaultNodeState,
+  DeterministicReasoner,
   evidenceEdgeId,
   findCaseInsensitiveMatches,
   loadSearchDocs,
   loadGraph,
   listen,
+  OpenAICompatibleReasoner,
   parseXiaoBaLogFile,
   recordFeedback,
   registerAttachment,
@@ -85,6 +96,93 @@ function postJsonWithHeaders(url, body, headers = {}) {
     req.end(JSON.stringify(body));
   });
 }
+
+function withEnv(overrides, fn) {
+  const keys = Object.keys(overrides);
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const [key, value] of Object.entries(overrides)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    return fn();
+  } finally {
+    for (const key of keys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+test("reasoner uses deterministic mode when neither GauzMem nor XiaoBa LLM key is configured", () => {
+  withEnv({
+    GAUZMEM_LLM_API_KEY: "",
+    GAUZ_LLM_API_KEY: "",
+  }, () => {
+    assert.equal(createReasoner() instanceof DeterministicReasoner, true);
+  });
+});
+
+test("reasoner falls back to XiaoBa Anthropic-compatible LLM config", () => {
+  withEnv({
+    GAUZMEM_LLM_API_KEY: "",
+    GAUZMEM_LLM_BASE_URL: "",
+    GAUZMEM_LLM_MODEL: "",
+    GAUZMEM_LLM_PROVIDER: "",
+    GAUZ_LLM_PROVIDER: "anthropic",
+    GAUZ_LLM_API_KEY: "xiaoba-key",
+    GAUZ_LLM_API_BASE: "https://model.example.test/v1/messages",
+    GAUZ_LLM_MODEL: "claude-test",
+  }, () => {
+    const reasoner = createReasoner();
+    assert.equal(reasoner instanceof AnthropicCompatibleReasoner, true);
+    assert.equal(reasoner.constructor.name, "AnthropicCompatibleReasoner");
+    assert.equal(reasoner.apiKey, "xiaoba-key");
+    assert.equal(reasoner.baseUrl, "https://model.example.test");
+    assert.equal(reasoner.model, "claude-test");
+  });
+});
+
+test("reasoner keeps GauzMem LLM config ahead of XiaoBa fallback", () => {
+  withEnv({
+    GAUZMEM_LLM_PROVIDER: "anthropic",
+    GAUZMEM_LLM_API_KEY: "gauzmem-key",
+    GAUZMEM_LLM_BASE_URL: "https://gauzmem.example.test/anthropic",
+    GAUZMEM_LLM_MODEL: "gauzmem-model",
+    GAUZMEM_LLM_TIMEOUT_MS: "1234",
+    GAUZ_LLM_PROVIDER: "openai",
+    GAUZ_LLM_API_KEY: "xiaoba-key",
+    GAUZ_LLM_API_BASE: "https://xiaoba.example.test/v1/chat/completions",
+    GAUZ_LLM_MODEL: "xiaoba-model",
+  }, () => {
+    const reasoner = createReasoner();
+    assert.equal(reasoner.constructor.name, "AnthropicCompatibleReasoner");
+    assert.equal(reasoner.apiKey, "gauzmem-key");
+    assert.equal(reasoner.baseUrl, "https://gauzmem.example.test/anthropic");
+    assert.equal(reasoner.model, "gauzmem-model");
+    assert.equal(reasoner.timeoutMs, 1234);
+  });
+});
+
+test("reasoner falls back to XiaoBa OpenAI-compatible LLM config", () => {
+  withEnv({
+    GAUZMEM_LLM_API_KEY: "",
+    GAUZMEM_LLM_BASE_URL: "",
+    GAUZMEM_LLM_MODEL: "",
+    GAUZMEM_LLM_PROVIDER: "",
+    GAUZ_LLM_PROVIDER: "openai",
+    GAUZ_LLM_API_KEY: "xiaoba-key",
+    GAUZ_LLM_API_BASE: "https://openai.example.test/v1",
+    GAUZ_LLM_MODEL: "gpt-test",
+  }, () => {
+    const reasoner = createReasoner();
+    assert.equal(reasoner instanceof OpenAICompatibleReasoner, true);
+    assert.equal(reasoner.apiKey, "xiaoba-key");
+    assert.equal(reasoner.apiUrl, "https://openai.example.test/v1/chat/completions");
+    assert.equal(reasoner.model, "gpt-test");
+  });
+});
 
 test("XiaoBa source adapter only parses current turn entries", () => {
   const root = tmpDir("gauzmem-zero-source-");

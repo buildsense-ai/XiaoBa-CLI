@@ -5,19 +5,15 @@ const { loadGauzMemEnv } = require("./env");
 
 const DEFAULT_LLM_BASE_URL = "https://api.minimaxi.com/anthropic";
 const DEFAULT_LLM_MODEL = "MiniMax-M2.7-highspeed";
+const DEFAULT_OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
+const DEFAULT_OPENAI_MODEL = "gpt-4o";
 
 function createReasoner(input = {}) {
   loadGauzMemEnv();
   if (input.reasoner) return input.reasoner;
-  const apiKey = input.apiKey || process.env.GAUZMEM_LLM_API_KEY;
-  if (apiKey) {
-    return new AnthropicCompatibleReasoner({
-      apiKey,
-      baseUrl: input.baseUrl || process.env.GAUZMEM_LLM_BASE_URL || DEFAULT_LLM_BASE_URL,
-      model: input.model || process.env.GAUZMEM_LLM_MODEL || DEFAULT_LLM_MODEL,
-      timeoutMs: input.timeoutMs || Number(process.env.GAUZMEM_LLM_TIMEOUT_MS || 20000),
-    });
-  }
+  const config = resolveReasonerConfig(input);
+  if (config.apiKey && config.provider === "openai") return new OpenAICompatibleReasoner(config);
+  if (config.apiKey) return new AnthropicCompatibleReasoner(config);
   return new DeterministicReasoner();
 }
 
@@ -102,7 +98,7 @@ class AnthropicCompatibleReasoner extends DeterministicReasoner {
   constructor(options = {}) {
     super();
     this.apiKey = options.apiKey;
-    this.baseUrl = String(options.baseUrl || DEFAULT_LLM_BASE_URL).replace(/\/+$/, "");
+    this.baseUrl = normalizeAnthropicBaseUrl(options.baseUrl || DEFAULT_LLM_BASE_URL);
     this.model = options.model || DEFAULT_LLM_MODEL;
     this.timeoutMs = options.timeoutMs || 20000;
   }
@@ -258,6 +254,50 @@ class AnthropicCompatibleReasoner extends DeterministicReasoner {
   }
 }
 
+class OpenAICompatibleReasoner extends AnthropicCompatibleReasoner {
+  constructor(options = {}) {
+    super({
+      ...options,
+      baseUrl: options.baseUrl || DEFAULT_OPENAI_API_URL,
+      model: options.model || DEFAULT_OPENAI_MODEL,
+    });
+    this.apiUrl = normalizeOpenAIApiUrl(options.baseUrl || DEFAULT_OPENAI_API_URL);
+    this.model = options.model || DEFAULT_OPENAI_MODEL;
+  }
+
+  async completeText(system, user, options = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await fetch(this.apiUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          max_tokens: options.maxTokens || 1200,
+          temperature: options.temperature ?? 0,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        throw new Error(`LLM HTTP ${response.status}: ${body.slice(0, 300)}`);
+      }
+      const payload = await response.json();
+      return extractOpenAIText(payload);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
 function extractAnthropicText(payload) {
   const content = payload?.content || [];
   const text = content
@@ -268,6 +308,24 @@ function extractAnthropicText(payload) {
     })
     .join("\n")
     .trim();
+  if (!text) throw new Error("LLM response contained no text");
+  return text;
+}
+
+function extractOpenAIText(payload) {
+  const content = payload?.choices?.[0]?.message?.content;
+  if (Array.isArray(content)) {
+    const text = content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part?.type === "text") return part.text || "";
+        return "";
+      })
+      .join("\n")
+      .trim();
+    if (text) return text;
+  }
+  const text = String(content || "").trim();
   if (!text) throw new Error("LLM response contained no text");
   return text;
 }
@@ -295,6 +353,79 @@ function sanitizeSelection(payload, nodes, edges, fallback, options = {}) {
     rejectedEdgeIds: cleanIds(payload.rejectedEdgeIds, edgeIds),
     reasonById: typeof payload.reasonById === "object" && payload.reasonById ? payload.reasonById : {},
   };
+}
+
+function resolveReasonerConfig(input = {}) {
+  const provider = resolveProvider(input);
+  return {
+    apiKey: firstNonEmpty(input.apiKey, process.env.GAUZMEM_LLM_API_KEY, process.env.GAUZ_LLM_API_KEY),
+    provider,
+    baseUrl: firstNonEmpty(
+      input.baseUrl,
+      process.env.GAUZMEM_LLM_BASE_URL,
+      process.env.GAUZMEM_LLM_API_BASE,
+      process.env.GAUZ_LLM_API_BASE,
+      provider === "openai" ? DEFAULT_OPENAI_API_URL : DEFAULT_LLM_BASE_URL,
+    ),
+    model: firstNonEmpty(
+      input.model,
+      process.env.GAUZMEM_LLM_MODEL,
+      process.env.GAUZ_LLM_MODEL,
+      provider === "openai" ? DEFAULT_OPENAI_MODEL : DEFAULT_LLM_MODEL,
+    ),
+    timeoutMs: firstPositiveNumber(
+      input.timeoutMs,
+      process.env.GAUZMEM_LLM_TIMEOUT_MS,
+      process.env.GAUZ_LLM_TIMEOUT_MS,
+      20000,
+    ),
+  };
+}
+
+function resolveProvider(input = {}) {
+  const explicit = firstNonEmpty(input.provider, process.env.GAUZMEM_LLM_PROVIDER, process.env.GAUZ_LLM_PROVIDER);
+  if (typeof explicit === "string") {
+    const normalized = explicit.trim().toLowerCase();
+    if (normalized === "openai" || normalized === "anthropic") return normalized;
+  }
+
+  const baseUrl = firstNonEmpty(input.baseUrl, process.env.GAUZMEM_LLM_BASE_URL, process.env.GAUZMEM_LLM_API_BASE, process.env.GAUZ_LLM_API_BASE, "");
+  const model = firstNonEmpty(input.model, process.env.GAUZMEM_LLM_MODEL, process.env.GAUZ_LLM_MODEL, "");
+  const haystack = `${baseUrl} ${model}`.toLowerCase();
+  if (haystack.includes("anthropic") || haystack.includes("claude") || haystack.includes("minimax")) return "anthropic";
+  if (haystack.includes("/chat/completions") || haystack.includes("openai") || haystack.includes("gpt-") || haystack.includes("deepseek") || haystack.includes("qwen")) return "openai";
+  return "anthropic";
+}
+
+function normalizeAnthropicBaseUrl(url) {
+  return String(url || DEFAULT_LLM_BASE_URL)
+    .replace(/\/+$/, "")
+    .replace(/\/v1\/messages$/, "")
+    .replace(/\/v1$/, "");
+}
+
+function normalizeOpenAIApiUrl(url) {
+  const value = String(url || DEFAULT_OPENAI_API_URL).replace(/\/+$/, "");
+  if (value.endsWith("/chat/completions")) return value;
+  if (value.endsWith("/v1")) return `${value}/chat/completions`;
+  return `${value}/v1/chat/completions`;
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function firstPositiveNumber(...values) {
+  for (const value of values) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return 20000;
 }
 
 function shortText(text, limit = 240) {
@@ -328,5 +459,6 @@ function uniqueTerms(items, limit) {
 module.exports = {
   AnthropicCompatibleReasoner,
   DeterministicReasoner,
+  OpenAICompatibleReasoner,
   createReasoner,
 };

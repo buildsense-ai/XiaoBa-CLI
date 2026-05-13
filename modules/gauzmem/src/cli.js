@@ -42,7 +42,7 @@ Commands:
 Environment:
   GauzMem loads .env by default, or GAUZMEM_ENV_FILE when set.
   Required for HTTP source paths: GAUZMEM_ALLOWED_ROOTS.
-  Required for real LLM: GAUZMEM_LLM_API_KEY.
+  Required for real LLM: GAUZMEM_LLM_API_KEY, or XiaoBa GAUZ_LLM_API_KEY fallback.
 `);
 }
 
