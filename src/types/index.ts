@@ -22,6 +22,8 @@ export interface Message {
   /** 标记内部 runtime observation，例如子 agent 完成结果；对模型仍以 user role 承载 */
   __runtimeObservation?: boolean;
   runtimeObservationSource?: string;
+  /** 标记本轮可见但不应进入长期 session/log 的临时消息 */
+  __transient?: boolean;
 }
 
 export interface ChatConfig {

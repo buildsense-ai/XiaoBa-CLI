@@ -23,7 +23,7 @@ export interface ToolParameter {
 /**
  * 工具定义
  */
-export type ToolTranscriptMode = 'default' | 'outbound_message' | 'outbound_file' | 'suppress';
+export type ToolTranscriptMode = 'default' | 'outbound_message' | 'outbound_file' | 'suppress' | 'transient';
 export type ToolControlMode = 'pause_turn';
 
 export interface ToolDefinition {
@@ -39,6 +39,7 @@ export interface ToolDefinition {
    * default: 保留 tool_result；
    * outbound_message/outbound_file: 成功后折叠为用户已看到的外发结果。
    * suppress: 成功后不进入后续 transcript（适合控制类工具）。
+   * transient: 本轮模型可见，但 turn 结束后不进入 durable session 或 session log。
    */
   transcriptMode?: ToolTranscriptMode;
   /**
@@ -131,6 +132,9 @@ export interface ToolExecutionContext {
   surface?: ToolSurface;
   permissionProfile?: ToolPermissionProfile;
   runId?: string;
+  toolCallId?: string;
+  gauzMemRunIds?: string[];
+  gauzMemRuns?: Array<Record<string, unknown>>;
   abortSignal?: AbortSignal;
   planRuntime?: PlanRuntime;
   getCurrentDirectory?: () => string;

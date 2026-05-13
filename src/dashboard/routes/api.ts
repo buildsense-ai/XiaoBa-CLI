@@ -30,6 +30,7 @@ import {
 } from '../../runtime/runtime-profile-editor';
 import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/upload';
 import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-grants';
+import { buildGauzMemDashboardView } from '../gauzmem-view';
 // import { ReportGenerator } from '../../utils/report-generator';
 // import { LogUploader } from '../../utils/log-uploader';
 
@@ -376,6 +377,56 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         runtimeRoot: process.cwd(),
         config: ConfigManager.getConfigReadonly(),
       }));
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.get('/gauzmem/dashboard', (req, res) => {
+    try {
+      res.json(buildGauzMemDashboardView({
+        maxSessions: positiveQueryInt(req.query.maxSessions, 30),
+        maxTurnsPerSession: positiveQueryInt(req.query.maxTurnsPerSession, 80),
+        maxGraphNodes: positiveQueryInt(req.query.maxGraphNodes, 120),
+        maxGraphEdges: positiveQueryInt(req.query.maxGraphEdges, 180),
+        maxRecentRuns: positiveQueryInt(req.query.maxRecentRuns, 12),
+        maxDailyRows: positiveQueryInt(req.query.maxDailyRows, 60),
+      }));
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.get('/gauzmem/summary', (_req, res) => {
+    try {
+      const view = buildGauzMemDashboardView({ maxGraphNodes: 20, maxGraphEdges: 40, maxRecentRuns: 20 });
+      res.json({ ok: true, generatedAt: view.generatedAt, store: view.store, summary: view.summary, metabolism: view.metabolism });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.get('/gauzmem/sessions', (req, res) => {
+    try {
+      const view = buildGauzMemDashboardView({
+        maxSessions: positiveQueryInt(req.query.maxSessions, 50),
+        maxTurnsPerSession: positiveQueryInt(req.query.maxTurnsPerSession, 120),
+        maxGraphNodes: 20,
+        maxGraphEdges: 40,
+      });
+      res.json({ ok: true, generatedAt: view.generatedAt, store: view.store, sessions: view.sessions });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.get('/gauzmem/graph', (req, res) => {
+    try {
+      const view = buildGauzMemDashboardView({
+        maxGraphNodes: positiveQueryInt(req.query.maxGraphNodes, 160),
+        maxGraphEdges: positiveQueryInt(req.query.maxGraphEdges, 240),
+      });
+      res.json({ ok: true, generatedAt: view.generatedAt, store: view.store, graph: view.graph });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || String(e) });
     }
@@ -1228,6 +1279,13 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
   */
 
   return router;
+}
+
+function positiveQueryInt(value: unknown, fallback: number): number {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(1000, Math.trunc(parsed));
 }
 
 function sanitizeRuntimeProfileEditResponse<T extends Record<string, any>>(payload: T): T {

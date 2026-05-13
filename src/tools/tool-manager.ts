@@ -16,8 +16,12 @@ import { ResumeSubagentTool } from './resume-subagent-tool';
 import { UpdatePlanTool } from './update-plan-tool';
 import { RecordDecisionTool } from './record-decision-tool';
 import { AskParentTool } from './ask-parent-tool';
-import { DEFAULT_TOOL_NAMES } from './default-tool-names';
+import {
+  KNOWN_TOOL_NAMES,
+  shouldEnableGauzMemTool,
+} from './default-tool-names';
 import { mergeToolExecutionContext } from '../utils/tool-context';
+import { GauzMemSearchTool } from './gauzmem-search-tool';
 
 const INTERNAL_TOOL_NAMES = ['ask_parent'] as const;
 
@@ -88,8 +92,12 @@ export class ToolManager implements ToolExecutor {
       new ResumeSubagentTool(),
       new UpdatePlanTool(),
       new RecordDecisionTool(),
-      new SkillTool(),
     ];
+    const gauzMemRequested = enabled ? enabled.has('gauzmem_search') : shouldEnableGauzMemTool();
+    if (gauzMemRequested) {
+      defaultTools.push(new GauzMemSearchTool());
+    }
+    defaultTools.push(new SkillTool());
 
     for (const tool of defaultTools) {
       if (enabled && !enabled.has(tool.definition.name)) continue;
@@ -101,7 +109,7 @@ export class ToolManager implements ToolExecutor {
         this.registerTool(new AskParentTool());
       }
       const knownTools = new Set<string>([
-        ...(DEFAULT_TOOL_NAMES as readonly string[]),
+        ...(KNOWN_TOOL_NAMES as readonly string[]),
         ...(INTERNAL_TOOL_NAMES as readonly string[]),
       ]);
       for (const toolName of enabled) {

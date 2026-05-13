@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { ChatConfig } from '../types';
-import { DEFAULT_TOOL_NAMES } from '../tools/default-tool-names';
+import { DEFAULT_TOOL_NAMES, KNOWN_TOOL_NAMES, resolveDefaultToolNames } from '../tools/default-tool-names';
 
 export type RuntimeSurface = 'cli' | 'feishu' | 'catscompany' | 'weixin' | 'agent' | 'unknown';
 
@@ -40,7 +40,7 @@ export interface RuntimeProfile {
 }
 
 export const DEFAULT_RUNTIME_TOOL_NAMES = [...DEFAULT_TOOL_NAMES];
-const DEFAULT_RUNTIME_TOOL_NAME_SET = new Set<string>(DEFAULT_RUNTIME_TOOL_NAMES);
+const KNOWN_RUNTIME_TOOL_NAME_SET = new Set<string>(KNOWN_TOOL_NAMES);
 
 export interface RuntimeProfileValidationIssue {
   path: string;
@@ -81,7 +81,7 @@ export function resolveDefaultRuntimeProfile(
       platform,
     },
     tools: {
-      enabled: [...(options.tools ?? DEFAULT_RUNTIME_TOOL_NAMES)],
+      enabled: [...(options.tools ?? resolveDefaultToolNames(env))],
     },
     skills: {
       enabled: options.skillsEnabled ?? true,
@@ -120,7 +120,7 @@ export function validateRuntimeProfile(profile: RuntimeProfile): RuntimeProfileV
 
   profile.tools.enabled.forEach((toolName, index) => {
     const path = `tools.enabled[${index}]`;
-    if (!DEFAULT_RUNTIME_TOOL_NAME_SET.has(toolName)) {
+    if (!KNOWN_RUNTIME_TOOL_NAME_SET.has(toolName)) {
       issues.push({
         path,
         message: `Unknown runtime tool: ${toolName}`,

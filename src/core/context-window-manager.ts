@@ -75,7 +75,7 @@ function splitDurableAndTransient(messages: Message[]): {
 }
 
 function isTransientMessage(message: Message): boolean {
-  if (message.__injected || message.__runtimeFeedback) return true;
+  if (message.__transient || message.__injected || message.__runtimeFeedback) return true;
   if (message.role !== 'system' || typeof message.content !== 'string') return false;
   return message.content.startsWith('[transient_');
 }

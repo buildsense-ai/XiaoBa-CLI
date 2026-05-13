@@ -23,10 +23,11 @@ export class TurnLogRecorder {
   constructor(private readonly logger: SessionTurnLogger) {}
 
   recordTurn(params: RecordTurnParams): void {
+    const durableNewMessages = params.result.newMessages.filter(message => !message.__transient);
     this.logger.logTurn(
       params.userInput,
       params.result.response || '',
-      this.extractToolCalls(params.result.newMessages),
+      this.extractToolCalls(durableNewMessages),
       params.tokens,
       {
         runtimeFeedback: params.runtimeFeedback,
