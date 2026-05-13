@@ -31,7 +31,6 @@ tests/              core and real-LLM smoke tests
 Copy `.env.example` to `.env` and fill values:
 
 ```bash
-GAUZMEM_LLM_PROVIDER=anthropic
 GAUZMEM_LLM_API_KEY=...
 GAUZMEM_LLM_BASE_URL=https://api.minimaxi.com/anthropic
 GAUZMEM_LLM_MODEL=MiniMax-M2.7-highspeed
@@ -41,8 +40,9 @@ GAUZMEM_ALLOWED_ROOTS=../../logs/sessions
 GauzMem loads `.env` automatically. You can also set `GAUZMEM_ENV_FILE=/path/to/env`.
 When vendored under XiaoBa, GauzMem-specific LLM values are optional: if
 `GAUZMEM_LLM_*` is blank, the managed sidecar falls back to XiaoBa's
-`GAUZ_LLM_PROVIDER`, `GAUZ_LLM_API_KEY`, `GAUZ_LLM_API_BASE`, and
-`GAUZ_LLM_MODEL`. GauzMem-specific values still take precedence when present.
+`GAUZ_LLM_API_KEY`, `GAUZ_LLM_API_BASE`, and `GAUZ_LLM_MODEL`. GauzMem always
+uses the Anthropic-compatible `/v1/messages` request shape, matching XiaoBa's
+default Anthropic path. GauzMem-specific values still take precedence when present.
 
 ## Run
 
@@ -105,7 +105,6 @@ If GauzMem is vendored under XiaoBa as `modules/gauzmem`, XiaoBa can use
 The GauzMem sidecar can own:
 
 ```bash
-GAUZMEM_LLM_PROVIDER=...
 GAUZMEM_LLM_API_KEY=...
 GAUZMEM_ALLOWED_ROOTS=...
 ```

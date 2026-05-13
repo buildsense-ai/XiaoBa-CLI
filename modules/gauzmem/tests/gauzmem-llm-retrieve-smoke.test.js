@@ -45,7 +45,7 @@ test("configured LLM retrieve constructs evidence and localAssociation edges", {
     timestamp: "2026-05-12T00:00:01.000Z",
   });
 
-  assert.match(result.stats.reasoner, /^(AnthropicCompatibleReasoner|OpenAICompatibleReasoner)$/);
+  assert.equal(result.stats.reasoner, "AnthropicCompatibleReasoner");
   assert.equal(result.evidence.length >= 1, true);
   assert.match(result.promptBundle, /\[gauzmem_recall\]/);
 
