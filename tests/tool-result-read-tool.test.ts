@@ -74,6 +74,32 @@ describe('ReadTool - ToolExecutionResult', () => {
     assert.ok(!content.includes('    1→ line1'));
   });
 
+  test('显式小 limit 达到窗口后停止扫描并提示至少行数', async () => {
+    const filePath = path.join(testRoot, 'small-window.txt');
+    fs.writeFileSync(filePath, [
+      'before-window',
+      'window-first',
+      'window-second',
+      'after-window',
+      'never-scanned-exact-total',
+    ].join('\n'));
+
+    const result = await tool.execute({ file_path: filePath, offset: 2, limit: 2 }, context);
+
+    assert.strictEqual(result.ok, true);
+    const content = result.content as string;
+    assert.ok(content.includes('显示: 2-3'));
+    assert.ok(content.includes('    2→ window-first'));
+    assert.ok(content.includes('    3→ window-second'));
+    assert.ok(content.includes('总行数: 至少 4'));
+    assert.ok(content.includes('offset=4, limit=2'));
+    assert.ok(content.includes('已停止继续统计'));
+    assert.ok(!content.includes('before-window'));
+    assert.ok(!content.includes('after-window'));
+    assert.ok(!content.includes('never-scanned-exact-total'));
+    assert.ok(!content.includes('总行数: 5'));
+  });
+
   test('limit=0 对小文本文件读取全文', async () => {
     const filePath = path.join(testRoot, 'full.txt');
     fs.writeFileSync(filePath, 'line1\nline2\nline3');
