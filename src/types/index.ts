@@ -19,6 +19,8 @@ export interface Message {
   __injected?: boolean;
   /** 标记注入给 agent 看的运行时反馈，仅供内部清理和日志记录使用 */
   __runtimeFeedback?: boolean;
+  /** 标记本轮可见但不应进入长期 session/log 的临时消息 */
+  __transient?: boolean;
 }
 
 export interface ChatConfig {

@@ -14,7 +14,8 @@ import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
 import { StopSubagentTool } from './stop-subagent-tool';
 import { ResumeSubagentTool } from './resume-subagent-tool';
-import { DEFAULT_TOOL_NAMES } from './default-tool-names';
+import { GauzMemSearchTool } from './gauzmem-search-tool';
+import { KNOWN_TOOL_NAMES, shouldEnableGauzMemTool } from './default-tool-names';
 
 /**
  * 工具名别名映射（Claude Code 工具名 → CatsCo 内部注册名）
@@ -82,8 +83,12 @@ export class ToolManager implements ToolExecutor {
       new CheckSubagentTool(),
       new StopSubagentTool(),
       new ResumeSubagentTool(),
-      new SkillTool(),
     ];
+    const gauzMemRequested = enabled ? enabled.has('gauzmem_search') : shouldEnableGauzMemTool();
+    if (gauzMemRequested) {
+      defaultTools.push(new GauzMemSearchTool());
+    }
+    defaultTools.push(new SkillTool());
 
     for (const tool of defaultTools) {
       if (enabled && !enabled.has(tool.definition.name)) continue;
@@ -92,7 +97,7 @@ export class ToolManager implements ToolExecutor {
 
     if (enabled) {
       for (const toolName of enabled) {
-        if (!(DEFAULT_TOOL_NAMES as readonly string[]).includes(toolName)) {
+        if (!(KNOWN_TOOL_NAMES as readonly string[]).includes(toolName)) {
           Logger.warning(`未知工具已被忽略: ${toolName}`);
         }
       }

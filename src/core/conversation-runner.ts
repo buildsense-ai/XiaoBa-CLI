@@ -65,6 +65,9 @@ export interface RunResult {
   messages: Message[];
   /** 本次 run() 期间新增的消息（不含最终纯文本回复） */
   newMessages: Message[];
+  /** GauzMem runs observed through transient memory in this turn. */
+  gauzMemRunIds?: string[];
+  gauzMemRuns?: Array<Record<string, unknown>>;
 }
 
 export type PendingUserInputProvider = () =>
@@ -160,6 +163,8 @@ export class ConversationRunner {
     let lastOutboundContent: string | null = null;
     let observationSinceLastOutbound = false;
     const deliveredOutboundFiles = new Set<string>();
+    const gauzMemRunIds: string[] = [];
+    const gauzMemRuns: Array<Record<string, unknown>> = [];
     let turns = 0;
     let thinkingCount = 0;
 
@@ -207,6 +212,8 @@ export class ConversationRunner {
             finalResponseVisible: false,
             messages,
             newMessages,
+            gauzMemRunIds,
+            gauzMemRuns,
           };
         }
         throw error;
@@ -255,6 +262,8 @@ export class ConversationRunner {
             finalResponseVisible: true,
             messages,
             newMessages,
+            gauzMemRunIds,
+            gauzMemRuns,
           };
         }
 
@@ -267,6 +276,8 @@ export class ConversationRunner {
           finalResponseVisible: true,
           messages,
           newMessages,
+          gauzMemRunIds,
+          gauzMemRuns,
         };
       }
 
@@ -298,7 +309,10 @@ export class ConversationRunner {
         const toolInput = JSON.parse(toolCall.function.arguments);
         const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
         callbacks?.onToolStart?.(toolName, toolUseId, toolInput);
-        Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
+        const argsForLog = transcriptMode === 'transient'
+          ? '[transient tool input omitted]'
+          : ConversationRunner.truncateForLog(toolCall.function.arguments, 500);
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${argsForLog}`);
         const activeToolNames = allTools.map(tool => tool.name);
         const toolStart = Date.now();
         const outboundFileKey = transcriptMode === 'outbound_file'
@@ -309,7 +323,12 @@ export class ConversationRunner {
           : await this.executeToolWithRetry(
             toolCall,
             messages,
-            this.toolExecutionContext || {},
+            {
+              ...this.toolExecutionContext,
+              toolCallId: toolCall.id,
+              gauzMemRunIds,
+              gauzMemRuns,
+            },
             turns,
           );
         if (toolName === 'thinking') {
@@ -317,7 +336,10 @@ export class ConversationRunner {
         }
         const toolDuration = Date.now() - toolStart;
         Metrics.recordToolCall(toolName, toolDuration);
-        Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
+        const resultForLog = transcriptMode === 'transient' && !result.errorCode && result.ok !== false
+          ? '[transient tool result omitted]'
+          : ConversationRunner.truncateForLog(result.content, 300);
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${resultForLog}`);
         callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
 
         if (
@@ -385,6 +407,8 @@ export class ConversationRunner {
           finalResponseVisible: false,
           messages,
           newMessages,
+          gauzMemRunIds,
+          gauzMemRuns,
         };
       }
 
@@ -396,6 +420,8 @@ export class ConversationRunner {
       finalResponseVisible: false,
       messages,
       newMessages,
+      gauzMemRunIds,
+      gauzMemRuns,
     };
   }
 
@@ -447,6 +473,7 @@ export class ConversationRunner {
   ): Message[] {
     const messages: Message[] = [];
     const transcriptRecords: ToolExecutionRecord[] = [];
+    const transientRecords: ToolExecutionRecord[] = [];
     const outboundMessages: Message[] = [];
     const hasTranscriptRecord = executionRecords.some(record => {
       const transcriptMode = this.getToolTranscriptMode(record.toolName, toolDefinitions);
@@ -468,10 +495,15 @@ export class ConversationRunner {
       if (transcriptMode === 'suppress' && !record.result.errorCode && record.result.ok !== false) {
         continue;
       }
+      if (transcriptMode === 'transient' && !record.result.errorCode && record.result.ok !== false) {
+        transientRecords.push(record);
+        continue;
+      }
       transcriptRecords.push(record);
     }
 
     const transcriptToolCalls = this.filterToolCallsForTranscript(assistantMsg, transcriptRecords);
+    const transientToolCalls = this.filterToolCallsForTranscript(assistantMsg, transientRecords);
     const assistant: Message = {
       role: 'assistant',
       content: this.shouldKeepAssistantDraft(assistantMsg, outboundMessages)
@@ -486,13 +518,23 @@ export class ConversationRunner {
       messages.push(assistant);
     }
 
+    if (transientToolCalls?.length) {
+      messages.push({
+        role: 'assistant',
+        content: null,
+        tool_calls: transientToolCalls,
+        __transient: true,
+      });
+    }
+
     messages.push(...outboundMessages);
 
-    for (const record of transcriptRecords) {
+    for (const record of [...transientRecords, ...transcriptRecords]) {
       const transcriptMode = this.getToolTranscriptMode(record.toolName, toolDefinitions);
       if (transcriptMode === 'suppress' && !record.result.errorCode) {
         continue;
       }
+      const isTransient = transcriptMode === 'transient' && !record.result.errorCode && record.result.ok !== false;
 
       // 检测图片读取结果的特殊标记
       if (typeof record.toolContent === 'object' && record.toolContent && '_imageForNewMessage' in record.toolContent) {
@@ -514,6 +556,7 @@ export class ConversationRunner {
           ],
           tool_call_id: record.result.tool_call_id,
           name: record.result.name,
+          ...(isTransient ? { __transient: true } : {}),
         });
       } else {
         // 正常的 tool result
@@ -522,11 +565,15 @@ export class ConversationRunner {
           content: record.toolContent,
           tool_call_id: record.result.tool_call_id,
           name: record.result.name,
+          ...(isTransient ? { __transient: true } : {}),
         });
 
         // 插入额外消息（如图片）
         if (record.newMessages) {
-          messages.push(...record.newMessages);
+          messages.push(...record.newMessages.map(message => ({
+            ...message,
+            ...(isTransient ? { __transient: true } : {}),
+          })));
         }
       }
     }

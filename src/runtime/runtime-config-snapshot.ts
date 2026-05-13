@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SkillManager } from '../skills/skill-manager';
 import { ToolManager } from '../tools/tool-manager';
+import { resolveDefaultToolNames } from '../tools/default-tool-names';
 import { ToolTranscriptMode } from '../types/tool';
 import { ChatConfig } from '../types';
 import { PathResolver } from '../utils/path-resolver';
@@ -236,7 +237,11 @@ function resolveRuntimeProfileForSnapshot(options: {
 
 function buildToolSnapshot(profile: RuntimeProfile): RuntimeConfigSnapshot['tools'] {
   const enabledNames = new Set(profile.tools.enabled);
-  const registered = new ToolManager(profile.workingDirectory)
+  const registeredToolNames = Array.from(new Set([
+    ...resolveDefaultToolNames(),
+    ...profile.tools.enabled,
+  ]));
+  const registered = new ToolManager(profile.workingDirectory, {}, { enabledToolNames: registeredToolNames })
     .getToolDefinitions()
     .map(definition => ({
       name: definition.name,

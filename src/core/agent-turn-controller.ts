@@ -1,4 +1,5 @@
 import { ContentBlock, Message } from '../types';
+import * as crypto from 'crypto';
 import { ChannelCallbacks } from '../types/tool';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
@@ -6,10 +7,11 @@ import { SkillManager } from '../skills/skill-manager';
 import { SessionSkillRuntime } from '../skills/session-skill-runtime';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
-import { ConversationRunner, RunnerCallbacks, PendingUserInputProvider } from './conversation-runner';
+import { ConversationRunner, RunnerCallbacks, PendingUserInputProvider, RunResult } from './conversation-runner';
 import { resolveSessionSurface } from './session-surface';
 import { TurnContextBuilder } from './turn-context-builder';
 import { TurnLogRecorder } from './turn-log-recorder';
+import { GauzMemClient } from '../utils/gauzmem-client';
 
 export interface AgentTurnServices {
   aiService: AIService;
@@ -66,6 +68,7 @@ export class AgentTurnController {
 
     const turnContext = await this.options.turnContextBuilder.build({
       sessionKey: this.options.sessionKey,
+      sessionType: this.options.sessionType,
       durableMessages: params.messages,
       runtimeFeedback: params.runtimeFeedback,
       skillRuntime: this.options.skillRuntime,
@@ -91,6 +94,15 @@ export class AgentTurnController {
       tokens: { prompt: metrics.totalPromptTokens, completion: metrics.totalCompletionTokens },
       runtimeFeedback: turnContext.runtimeFeedbackForLog,
     });
+    await this.recordGauzMemTurnMetadata({
+      input: params.input,
+      result,
+      runIds: uniqueStrings([
+        ...turnContext.gauzMemRunIds,
+        ...(result.gauzMemRunIds || []),
+      ]),
+      passiveRuns: turnContext.gauzMemPassiveRuns,
+    });
 
     return {
       text: result.finalResponseVisible ? (result.response || '[无回复]') : '',
@@ -98,6 +110,37 @@ export class AgentTurnController {
       newMessages: result.newMessages,
       messages: nextMessages,
     };
+  }
+
+  private async recordGauzMemTurnMetadata(input: {
+    input: string | ContentBlock[];
+    result: RunResult;
+    runIds: string[];
+    passiveRuns: Array<Record<string, unknown>>;
+  }): Promise<void> {
+    if (input.runIds.length === 0) return;
+    const client = new GauzMemClient();
+    if (!client.enabled) return;
+    try {
+      const userText = contentToPlainText(input.input);
+      const assistantText = input.result.response || '';
+      await client.recordTurnMetadata({
+        turnId: `xiaoba_${shortHash(`${this.options.sessionKey}:${Date.now()}:${userText}`)}`,
+        sessionId: this.options.sessionKey,
+        sessionType: this.options.sessionType,
+        userTextHash: shortHash(userText),
+        assistantTextHash: shortHash(assistantText),
+        gauzmemRunIds: input.runIds,
+        metadata: {
+          visibleToUser: input.result.finalResponseVisible,
+          activeRunCount: input.result.gauzMemRunIds?.length || 0,
+          passive: { runs: input.passiveRuns },
+          activeSearches: input.result.gauzMemRuns || [],
+        },
+      });
+    } catch {
+      // GauzMem turn metadata helps metabolism, but must not block XiaoBa.
+    }
   }
 
   private createRunner(options: {
@@ -160,4 +203,19 @@ export class AgentTurnController {
       });
     }
   }
+}
+
+function uniqueStrings(items: string[]): string[] {
+  return Array.from(new Set(items.filter(Boolean)));
+}
+
+function contentToPlainText(content: string | ContentBlock[]): string {
+  if (typeof content === 'string') return content;
+  return content
+    .map(block => block.type === 'text' ? block.text : '[image]')
+    .join('');
+}
+
+function shortHash(text: string): string {
+  return crypto.createHash('sha256').update(text || '').digest('hex').slice(0, 16);
 }

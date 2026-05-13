@@ -7,11 +7,11 @@ import {
   resolveDefaultRuntimeProfile,
   validateRuntimeProfile,
 } from '../src/runtime/runtime-profile';
+import { DEFAULT_TOOL_NAMES, resolveDefaultToolNames } from '../src/tools/default-tool-names';
 import {
   getDefaultRuntimeProfileConfigPath,
   resolveRuntimeProfileFromConfig,
 } from '../src/runtime/runtime-profile-config';
-import { ToolManager } from '../src/tools/tool-manager';
 
 describe('RuntimeProfile', () => {
   let testRoot: string;
@@ -45,9 +45,19 @@ describe('RuntimeProfile', () => {
       displayName: undefined,
       platform: undefined,
     });
-    assert.deepStrictEqual(profile.tools.enabled, getCurrentToolManagerNames());
+    assert.deepStrictEqual(profile.tools.enabled, DEFAULT_TOOL_NAMES);
     assert.equal(profile.skills.enabled, true);
     assert.equal(profile.logging.sessionEvents, true);
+  });
+
+  test('adds GauzMem to default CLI tools only when enabled by env', () => {
+    const profile = resolveDefaultRuntimeProfile({
+      env: {
+        GAUZMEM_ENABLED: 'true',
+      },
+    });
+
+    assert.deepStrictEqual(profile.tools.enabled, resolveDefaultToolNames({ GAUZMEM_ENABLED: 'true' } as NodeJS.ProcessEnv));
   });
 
   test('uses runtime identity and surface from env without mutating process env', () => {
@@ -269,9 +279,3 @@ describe('RuntimeProfile', () => {
     );
   });
 });
-
-function getCurrentToolManagerNames(): string[] {
-  return new ToolManager('/tmp/xiaoba-runtime-profile-tools')
-    .getToolDefinitions()
-    .map(definition => definition.name);
-}

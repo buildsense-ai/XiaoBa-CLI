@@ -776,40 +776,47 @@ test('runner allows sending the same outbound content again after a new observat
 });
 
 test('agent session stores normalized assistant messages after send_text tool calls', async () => {
+  const originalGauzMemEnabled = process.env.GAUZMEM_ENABLED;
+  process.env.GAUZMEM_ENABLED = 'false';
   const responses = [
     makeToolResponse(makeToolCall('call_1', 'send_text', { text: '先回老师一声。' })),
     makeToolResponse(makeToolCall('call_2', 'send_text', { text: '我继续查一下。' })),
     makeFinalResponse(),
   ];
-  const mock = createMockAI(responses);
-  const toolManager = new ToolManager();
-  const services: AgentServices = {
-    aiService: mock.aiService,
-    toolManager,
-    skillManager: new SkillManager(),
-  };
-  const session = new AgentSession('cli', services);
+  try {
+    const mock = createMockAI(responses);
+    const toolManager = new ToolManager(process.cwd(), {}, { enabledToolNames: ['send_text'] });
+    const services: AgentServices = {
+      aiService: mock.aiService,
+      toolManager,
+      skillManager: new SkillManager(),
+    };
+    const session = new AgentSession('cli', services);
 
-  await session.handleMessage('你好', {
-    channel: {
-      chatId: 'test-chat',
-      reply: async () => {},
-      sendFile: async () => {},
-    },
-  });
+    await session.handleMessage('你好', {
+      channel: {
+        chatId: 'test-chat',
+        reply: async () => {},
+        sendFile: async () => {},
+      },
+    });
 
-  const messages = ((session as any).messages as Message[]).filter(message => message.role !== 'system');
-  assert.equal(
-    messages.some(message => message.role === 'tool'),
-    false,
-    'session transcript should not keep outbound send_text tool_result messages',
-  );
-  assert.deepEqual(
-    messages.map(message => ({ role: message.role, content: message.content })),
-    [
-      { role: 'user', content: '你好' },
-      { role: 'assistant', content: '先回老师一声。' },
-      { role: 'assistant', content: '我继续查一下。' },
-    ],
-  );
+    const messages = ((session as any).messages as Message[]).filter(message => message.role !== 'system');
+    assert.equal(
+      messages.some(message => message.role === 'tool'),
+      false,
+      'session transcript should not keep outbound send_text tool_result messages',
+    );
+    assert.deepEqual(
+      messages.map(message => ({ role: message.role, content: message.content })),
+      [
+        { role: 'user', content: '你好' },
+        { role: 'assistant', content: '先回老师一声。' },
+        { role: 'assistant', content: '我继续查一下。' },
+      ],
+    );
+  } finally {
+    if (originalGauzMemEnabled === undefined) delete process.env.GAUZMEM_ENABLED;
+    else process.env.GAUZMEM_ENABLED = originalGauzMemEnabled;
+  }
 });
