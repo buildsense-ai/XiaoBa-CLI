@@ -40,6 +40,11 @@ describe('skill tool direct content mode', () => {
 
     assert.equal(result.ok, true);
     assert.equal(typeof result.content, 'string');
+    assert.match(String(result.content), /\[skill:demo\]/);
+    assert.match(String(result.content), new RegExp(`Skill file: ${escapeRegExp(path.join(testRoot, 'skills', 'demo', 'SKILL.md'))}`));
+    assert.match(String(result.content), new RegExp(`Skill directory: ${escapeRegExp(path.join(testRoot, 'skills', 'demo'))}`));
+    assert.match(String(result.content), /Resolve relative paths mentioned in this skill relative to Skill directory\./);
+    assert.match(String(result.content), /--- SKILL\.md ---/);
     assert.match(String(result.content), /Use demo from /);
     assert.match(String(result.content), /with alpha beta \/ alpha \/ beta \//);
     assert.doesNotMatch(String(result.content), /skill_activation/);
@@ -56,3 +61,7 @@ describe('skill tool direct content mode', () => {
     assert.doesNotMatch(String(result.content), /__reload_skills__/);
   });
 });
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

@@ -33,6 +33,15 @@ export class SkillExecutor {
     // 清理未替换的占位符
     content = content.replace(/\$\d+/g, '');
 
-    return content;
+    return [
+      `[skill:${skill.metadata.name}]`,
+      `Skill file: ${skill.filePath}`,
+      `Skill directory: ${skillDir}`,
+      'Resolve relative paths mentioned in this skill relative to Skill directory.',
+      'When running scripts or reading referenced files, prefer absolute paths under Skill directory.',
+      '',
+      '--- SKILL.md ---',
+      content,
+    ].join('\n');
   }
 }
