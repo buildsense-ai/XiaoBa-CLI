@@ -9,8 +9,12 @@ const test = require("node:test");
 require("../src/gauzmem-zero/env").loadGauzMemEnv();
 const { loadGraph, retrieve } = require("../src/gauzmem-zero");
 
-test("MiniMax-backed retrieve constructs evidence and localAssociation edges", {
-  skip: !process.env.GAUZMEM_LLM_API_KEY,
+function hasLlmKey() {
+  return Boolean(process.env.GAUZMEM_LLM_API_KEY || process.env.GAUZ_LLM_API_KEY);
+}
+
+test("configured LLM retrieve constructs evidence and localAssociation edges", {
+  skip: !hasLlmKey(),
 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "gauzmem-llm-retrieve-"));
   const storeRoot = path.join(root, ".gauzmem-zero");
@@ -41,7 +45,7 @@ test("MiniMax-backed retrieve constructs evidence and localAssociation edges", {
     timestamp: "2026-05-12T00:00:01.000Z",
   });
 
-  assert.equal(result.stats.reasoner, "AnthropicCompatibleReasoner");
+  assert.match(result.stats.reasoner, /^(AnthropicCompatibleReasoner|OpenAICompatibleReasoner)$/);
   assert.equal(result.evidence.length >= 1, true);
   assert.match(result.promptBundle, /\[gauzmem_recall\]/);
 

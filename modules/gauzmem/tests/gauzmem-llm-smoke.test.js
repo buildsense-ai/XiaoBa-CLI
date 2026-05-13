@@ -6,8 +6,12 @@ const test = require("node:test");
 require("../src/gauzmem-zero/env").loadGauzMemEnv();
 const { createReasoner } = require("../src/gauzmem-zero");
 
-test("MiniMax Anthropic-compatible reasoner returns real structured output", {
-  skip: !process.env.GAUZMEM_LLM_API_KEY,
+function hasLlmKey() {
+  return Boolean(process.env.GAUZMEM_LLM_API_KEY || process.env.GAUZ_LLM_API_KEY);
+}
+
+test("configured LLM reasoner returns real structured output", {
+  skip: !hasLlmKey(),
 }, async () => {
   const reasoner = createReasoner();
   const selection = await reasoner.selectRootRelevant({

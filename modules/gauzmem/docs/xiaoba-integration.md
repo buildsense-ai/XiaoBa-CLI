@@ -6,16 +6,15 @@ GauzMem is a sidecar. XiaoBa should integrate it as a thin HTTP client.
 
 ```text
 GauzMem
-  owns LLM key
-  owns graph store
-  owns source allowlist
+  owns graph store and source allowlist
+  optionally owns LLM key
   exposes HTTP API
 
 XiaoBa
   sends current query
   receives transient memory bundle
   records run ids after the turn
-  never stores GauzMem LLM key
+  may provide GAUZ_LLM_* fallback values to a managed sidecar
 ```
 
 XiaoBa supports two transports:
@@ -97,4 +96,8 @@ GAUZMEM_ROOTS=logs/sessions
 GAUZMEM_TIMEOUT_MS=45000
 ```
 
-Do not put `GAUZMEM_LLM_API_KEY` in XiaoBa. It belongs in GauzMem's own `.env`.
+Do not put `GAUZMEM_LLM_API_KEY` in XiaoBa's root `.env`. Keep it in
+GauzMem's own `.env`, or leave it blank and let managed mode inherit XiaoBa's
+`GAUZ_LLM_PROVIDER`, `GAUZ_LLM_API_KEY`, `GAUZ_LLM_API_BASE`, and
+`GAUZ_LLM_MODEL`. `GAUZMEM_LLM_*` values always win when present, so a
+standalone sidecar can still use a separate model.
