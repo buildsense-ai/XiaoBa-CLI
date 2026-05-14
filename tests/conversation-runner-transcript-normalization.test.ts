@@ -315,6 +315,143 @@ test('runner pauses only when pause_turn is called explicitly', async () => {
   );
 });
 
+test('runner continues after an outbound file and blocks duplicate file sends in the same run', async () => {
+  const responses = [
+    makeToolResponse(makeToolCall('call_file', 'send_file', {
+      file_path: 'C:\\Users\\test\\Desktop\\report.docx',
+      file_name: 'report.docx',
+    })),
+    makeToolResponse(makeToolCall('call_file_again', 'send_file', {
+      file_path: 'C:\\Users\\test\\Desktop\\report.docx',
+      file_name: 'report.docx',
+    })),
+    makeFinalResponse('已发送 report.docx。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [
+      {
+        name: 'send_file',
+        description: 'send visible file',
+        transcriptMode: 'outbound_file',
+        parameters: {
+          type: 'object',
+          properties: {
+            file_path: { type: 'string' },
+            file_name: { type: 'string' },
+          },
+          required: ['file_path', 'file_name'],
+        },
+      },
+    ],
+    {
+      send_file: [
+        'File sent to current chat.',
+        'Path: C:\\Users\\test\\Desktop\\report.docx',
+        'Name: report.docx',
+      ].join('\n'),
+    },
+  );
+
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, {
+    stream: true,
+    enableCompression: false,
+  });
+  const result = await runner.run([{ role: 'user', content: 'send the desktop docx' }]);
+
+  assert.equal(
+    mock.getReceivedMessages().length,
+    3,
+    'runner should continue normally after sending a file',
+  );
+  assert.equal(
+    toolExecutor.getExecutionCount('send_file'),
+    1,
+    'duplicate send_file calls for the same file should not execute the upload again',
+  );
+  const thirdCallMessages = mock.getReceivedMessages()[2];
+  assert.ok(
+    thirdCallMessages.some(
+      message => message.role === 'tool'
+        && typeof message.content === 'string'
+        && message.content.includes('already sent earlier in the current agent run'),
+    ),
+    'the model should see a tool_result explaining that the duplicate send was blocked',
+  );
+  assert.equal(result.response, '已发送 report.docx。');
+  assert.deepEqual(
+    result.messages
+      .filter(message => message.role !== 'tool')
+      .map(message => ({ role: message.role, content: message.content })),
+    [
+      { role: 'user', content: 'send the desktop docx' },
+      { role: 'assistant', content: 'report.docx' },
+      { role: 'assistant', content: null },
+      { role: 'assistant', content: '已发送 report.docx。' },
+    ],
+  );
+});
+
+test('runner does not locally retry failed outbound file sends unless the failure is rate limited', async () => {
+  const responses = [
+    makeToolResponse(makeToolCall('call_file', 'send_file', {
+      file_path: 'C:\\Users\\test\\Desktop\\resume.html',
+      file_name: 'resume.html',
+    })),
+    makeFinalResponse('这个平台不支持直接发送 html 文件。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [
+      {
+        name: 'send_file',
+        description: 'send visible file',
+        transcriptMode: 'outbound_file',
+        parameters: {
+          type: 'object',
+          properties: {
+            file_path: { type: 'string' },
+            file_name: { type: 'string' },
+          },
+          required: ['file_path', 'file_name'],
+        },
+      },
+    ],
+    {
+      send_file: 'File send failed: Upload failed: 400 - {"error":"file type not allowed"}',
+    },
+  );
+
+  const originalExecute = toolExecutor.executeTool.bind(toolExecutor);
+  toolExecutor.executeTool = async (toolCall, history, context) => {
+    const result = await originalExecute(toolCall, history, context);
+    return {
+      ...result,
+      ok: false,
+      errorCode: 'TOOL_EXECUTION_ERROR',
+      retryable: false,
+    };
+  };
+
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, {
+    stream: true,
+    enableCompression: false,
+  });
+  const result = await runner.run([{ role: 'user', content: 'send the desktop html' }]);
+
+  assert.equal(
+    toolExecutor.getExecutionCount('send_file'),
+    1,
+    'ordinary upload failures must not be retried locally without another model turn',
+  );
+  assert.equal(
+    mock.getReceivedMessages().length,
+    2,
+    'the next action after a non-rate-limit send failure should be another model turn with the tool_result',
+  );
+  assert.equal(result.response, '这个平台不支持直接发送 html 文件。');
+});
+
 test('runner allows duplicate outbound messages but injects a soft hint before the next turn', async () => {
   const responses = [
     makeToolResponse(makeToolCall('call_1', 'send_text', { text: '老师好！' })),

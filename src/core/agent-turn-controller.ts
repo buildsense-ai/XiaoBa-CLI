@@ -50,6 +50,9 @@ export interface AgentTurnControllerOptions {
   skillRuntime: SessionSkillRuntime;
   turnContextBuilder: TurnContextBuilder;
   turnLogRecorder: TurnLogRecorder;
+  workspaceRoot: string;
+  getCurrentDirectory: () => string;
+  updateCurrentDirectory: (directory: string) => void;
 }
 
 /**
@@ -116,6 +119,10 @@ export class AgentTurnController {
           sessionId: this.options.sessionKey,
           surface,
           permissionProfile: 'strict',
+          workspaceRoot: this.options.workspaceRoot,
+          workingDirectory: this.options.getCurrentDirectory(),
+          getCurrentDirectory: this.options.getCurrentDirectory,
+          updateCurrentDirectory: this.options.updateCurrentDirectory,
           channel: options.channel,
         },
       },

@@ -164,11 +164,12 @@ export class CatsCompanyBot {
         }
       },
       sendFile: async (_targetTopic: string, filePath: string, fileName: string) => {
-        _hasOutbound = true;
         try {
           await this.sender.sendFile(topic, filePath, fileName);
+          _hasOutbound = true;
         } catch (err: any) {
           Logger.warning(`文件发送失败 (sendFile): ${err.message}`);
+          throw err;
         }
       },
     };

@@ -63,11 +63,20 @@ export class SessionLifecycleManager {
 
   clear(): ResetSessionStateResult {
     this.sessionStore.deleteSession(this.options.sessionKey);
+    this.sessionStore.deleteRuntimeState(this.options.sessionKey);
     return this.reset();
   }
 
   saveContext(messages: Message[]): void {
     this.sessionStore.saveContext(this.options.sessionKey, messages);
+  }
+
+  loadCurrentDirectory(): string | undefined {
+    return this.sessionStore.loadRuntimeState(this.options.sessionKey).currentDirectory;
+  }
+
+  saveCurrentDirectory(currentDirectory: string): void {
+    this.sessionStore.saveRuntimeState(this.options.sessionKey, { currentDirectory });
   }
 
   persistAndClear(messages: Message[]): PersistAndClearResult {

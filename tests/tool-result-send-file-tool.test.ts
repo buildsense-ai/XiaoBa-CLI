@@ -1,8 +1,4 @@
-/**
- * send-file-tool 测试：验证 ToolExecutionResult 结构，以及关键修复——
- * 文件不存在时必须返回 ok=false，而非误报成功
- */
-import { describe, test, beforeEach } from 'node:test';
+import { describe, test, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert';
 import * as path from 'path';
 import * as os from 'os';
@@ -18,52 +14,109 @@ describe('SendFileTool - ToolExecutionResult', () => {
   beforeEach(() => {
     tool = new SendFileTool();
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'send-file-test-'));
-    // channel 为空，模拟非聊天会话环境
-    context = { workingDirectory: testRoot, conversationHistory: [], surface: 'cli' };
+    context = { workingDirectory: testRoot, workspaceRoot: testRoot, conversationHistory: [], surface: 'cli' };
   });
 
-  test('文件不存在时必须返回 ok=false（这是本次修复的核心场景）', async () => {
+  afterEach(() => {
+    if (testRoot && fs.existsSync(testRoot)) {
+      fs.rmSync(testRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('definition marks sent files as outbound transcript messages', () => {
+    assert.strictEqual(tool.definition.transcriptMode, 'outbound_file');
+    assert.strictEqual(tool.definition.controlMode, undefined);
+  });
+
+  test('missing file returns FILE_NOT_FOUND with resolved path', async () => {
     const result = await tool.execute(
-      { file_path: '/this/file/does/not/exist.txt', file_name: 'nope.txt' },
+      { file_path: 'missing.txt', file_name: 'missing.txt' },
       context,
     );
+
     assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.errorCode, 'TOOL_EXECUTION_ERROR');
-    assert.ok(result.message!.includes('不在聊天会话中') || result.message!.includes('无法发送'));
+    assert.strictEqual(result.errorCode, 'FILE_NOT_FOUND');
+    assert.ok(result.message.includes('File not found.'));
+    assert.ok(result.message.includes(`Resolved path: ${path.join(testRoot, 'missing.txt')}`));
   });
 
-  test('file_path 为空返回 ok=false', async () => {
-    // 注意：当没有 channel 时，优先返回"不在聊天会话中"
+  test('empty file_path returns ok=false', async () => {
     const result = await tool.execute({ file_path: '', file_name: 'test.txt' }, context);
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.errorCode, 'TOOL_EXECUTION_ERROR');
-    // channel 检查优先于参数检查
-    assert.ok(result.message!.includes('不在聊天会话中') || result.message!.includes('文件路径不能为空'));
+    assert.ok(result.message.includes('文件路径不能为空'));
   });
 
-  test('file_name 为空返回 ok=false', async () => {
-    // 注意：当没有 channel 时，优先返回"不在聊天会话中"
-    const result = await tool.execute({ file_path: '/some/path.txt', file_name: '' }, context);
+  test('empty file_name returns ok=false', async () => {
+    const result = await tool.execute({ file_path: 'some-path.txt', file_name: '' }, context);
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.errorCode, 'TOOL_EXECUTION_ERROR');
-    assert.ok(result.message!.includes('不在聊天会话中') || result.message!.includes('文件名不能为空'));
+    assert.ok(result.message.includes('文件名不能为空'));
   });
 
-  test('无 channel 时返回 ok=false', async () => {
+  test('existing file without channel returns ok=false', async () => {
     const filePath = path.join(testRoot, 'real.txt');
     fs.writeFileSync(filePath, 'exists');
+
     const result = await tool.execute({ file_path: filePath, file_name: 'real.txt' }, context);
+
     assert.strictEqual(result.ok, false);
-    assert.ok(result.message!.includes('不在聊天会话中'));
+    assert.strictEqual(result.errorCode, 'TOOL_EXECUTION_ERROR');
+    assert.ok(result.message.includes('当前不在聊天会话中'));
   });
 
-  test('无 channel 时不会尝试上传文件', async () => {
-    const filePath = path.join(testRoot, 'should_not_upload.txt');
-    fs.writeFileSync(filePath, 'content');
-    // 即使文件存在，没有 channel 也要返回失败
-    const result = await tool.execute({ file_path: filePath, file_name: 'should_not_upload.txt' }, context);
+  test('relative file_path resolves from current directory before send', async () => {
+    const filePath = path.join(testRoot, 'report.md');
+    fs.writeFileSync(filePath, 'hello');
+    let sentPath = '';
+    context.channel = {
+      chatId: 'chat-1',
+      reply: async () => {},
+      sendFile: async (_chatId, resolvedPath) => {
+        sentPath = resolvedPath;
+      },
+    };
+
+    const result = await tool.execute({ file_path: 'report.md', file_name: 'report.md' }, context);
+
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(sentPath, filePath);
+    assert.ok((result.content as string).includes('File sent to current chat.'));
+    assert.ok((result.content as string).includes(`Path: ${filePath}`));
+  });
+
+  test('directory path is rejected before send', async () => {
+    context.channel = {
+      chatId: 'chat-1',
+      reply: async () => {},
+      sendFile: async () => {
+        throw new Error('should not send');
+      },
+    };
+
+    const result = await tool.execute({ file_path: '.', file_name: 'root' }, context);
+
     assert.strictEqual(result.ok, false);
-    // 不应该返回 ok=true 的成功消息
-    assert.ok(!result.message!.includes('已发送'));
+    assert.strictEqual(result.errorCode, 'TOOL_EXECUTION_ERROR');
+    assert.ok(result.message.includes('Path is not a file.'));
+  });
+
+  test('channel errors are returned in tool_result content', async () => {
+    const filePath = path.join(testRoot, 'real.txt');
+    fs.writeFileSync(filePath, 'exists');
+    context.channel = {
+      chatId: 'chat-1',
+      reply: async () => {},
+      sendFile: async () => {
+        throw new Error('upload failed');
+      },
+    };
+
+    const result = await tool.execute({ file_path: filePath, file_name: 'real.txt' }, context);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'TOOL_EXECUTION_ERROR');
+    assert.ok(result.message.includes('File send failed: upload failed'));
+    assert.ok(result.message.includes(`Path: ${filePath}`));
   });
 });

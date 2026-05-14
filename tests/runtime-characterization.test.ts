@@ -41,7 +41,7 @@ describe('runtime characterization', () => {
     assert.doesNotMatch(prompt, /你是小八/);
     assert.match(prompt, /当前平台：characterization/);
     assert.match(prompt, new RegExp(`当前日期：${today}`));
-    assert.match(prompt, /你的默认工作目录是：`~\/catsco-workspace\/RuntimeTestAgent`/);
+    assert.match(prompt, /Current directory is provided in a transient message/);
     assert.doesNotMatch(prompt, /~\/Documents\/xiaoba/);
     assert.doesNotMatch(prompt, /必须多次调用 send_text/);
     assert.doesNotMatch(prompt, /150字以上/);

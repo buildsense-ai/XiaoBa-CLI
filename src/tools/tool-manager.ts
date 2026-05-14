@@ -110,6 +110,10 @@ export class ToolManager implements ToolExecutor {
     };
   }
 
+  getWorkspaceRoot(): string {
+    return this.workingDirectory;
+  }
+
   /**
    * 获取所有工具定义（直接返回全部，不再过滤）
    */
@@ -141,11 +145,18 @@ export class ToolManager implements ToolExecutor {
     }
 
     try {
-      const context: ToolExecutionContext = {
+      const mergedContext: Partial<ToolExecutionContext> = {
         workingDirectory: this.workingDirectory,
+        workspaceRoot: this.workingDirectory,
         conversationHistory: conversationHistory || [],
         ...this.contextDefaults,
         ...contextOverrides,
+      };
+      const context: ToolExecutionContext = {
+        ...mergedContext,
+        workingDirectory: mergedContext.getCurrentDirectory?.() || mergedContext.workingDirectory || this.workingDirectory,
+        workspaceRoot: mergedContext.workspaceRoot || this.workingDirectory,
+        conversationHistory: mergedContext.conversationHistory || conversationHistory || [],
       };
 
       let args: unknown;

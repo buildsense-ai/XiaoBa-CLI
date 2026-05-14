@@ -1,4 +1,6 @@
 import { Message } from '../types';
+import * as fs from 'fs';
+import * as path from 'path';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
@@ -103,6 +105,8 @@ export class AgentSession {
   private skillRuntime: SessionSkillRuntime;
   private runtimeFeedbackInbox = new RuntimeFeedbackInbox();
   private lifecycleManager: SessionLifecycleManager;
+  private readonly defaultDirectory: string;
+  private currentDirectory: string;
 
   constructor(
     public readonly key: string,
@@ -118,6 +122,8 @@ export class AgentSession {
       sessionKey: key,
       runtimeFeedbackInbox: this.runtimeFeedbackInbox,
     });
+    this.defaultDirectory = this.resolveDefaultDirectory();
+    this.currentDirectory = this.loadInitialCurrentDirectory();
     this.turnController = new AgentTurnController({
       sessionKey: key,
       sessionType,
@@ -125,7 +131,48 @@ export class AgentSession {
       skillRuntime: this.skillRuntime,
       turnContextBuilder: this.turnContextBuilder,
       turnLogRecorder: this.turnLogRecorder,
+      workspaceRoot: this.defaultDirectory,
+      getCurrentDirectory: () => this.currentDirectory,
+      updateCurrentDirectory: directory => this.updateCurrentDirectory(directory),
     });
+  }
+
+  private resolveDefaultDirectory(): string {
+    const toolManager = this.services.toolManager as any;
+    const root = typeof toolManager.getWorkspaceRoot === 'function'
+      ? toolManager.getWorkspaceRoot()
+      : process.cwd();
+    return path.resolve(root);
+  }
+
+  private loadInitialCurrentDirectory(): string {
+    const stored = this.lifecycleManager.loadCurrentDirectory();
+    if (stored && this.isExistingDirectory(stored)) {
+      return path.resolve(stored);
+    }
+    this.lifecycleManager.saveCurrentDirectory(this.defaultDirectory);
+    return this.defaultDirectory;
+  }
+
+  private isExistingDirectory(directory: string): boolean {
+    try {
+      return fs.existsSync(directory) && fs.statSync(directory).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
+  private updateCurrentDirectory(directory: string): void {
+    const resolved = path.resolve(directory);
+    if (!this.isExistingDirectory(resolved)) return;
+    if (resolved === this.currentDirectory) return;
+    this.currentDirectory = resolved;
+    this.lifecycleManager.saveCurrentDirectory(resolved);
+  }
+
+  private resetCurrentDirectory(): void {
+    this.currentDirectory = this.defaultDirectory;
+    this.lifecycleManager.saveCurrentDirectory(this.defaultDirectory);
   }
 
   private extractSessionType(key: string): string {
@@ -378,6 +425,7 @@ export class AgentSession {
   /** 重置会话状态（仅清内存，保留历史文件） */
   reset(): void {
     this.messages = [];
+    this.resetCurrentDirectory();
     const state = this.lifecycleManager.reset();
     this.initialized = state.initialized;
     this.lastActiveAt = state.lastActiveAt;
@@ -387,6 +435,7 @@ export class AgentSession {
   clear(): void {
     this.messages = [];
     const state = this.lifecycleManager.clear();
+    this.resetCurrentDirectory();
     this.initialized = state.initialized;
     this.lastActiveAt = state.lastActiveAt;
   }
