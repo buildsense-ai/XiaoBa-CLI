@@ -207,6 +207,57 @@ test('runner does not persist assistant draft content when send_text already del
   );
 });
 
+test('message surface stops after successful outbound file to avoid duplicate sends', async () => {
+  const responses = [
+    makeToolResponse(makeToolCall('call_1', 'send_file', {
+      file_path: 'E:\\report.docx',
+      file_name: 'report.docx',
+    })),
+    makeToolResponse(makeToolCall('call_2', 'send_file', {
+      file_path: 'E:\\report.docx',
+      file_name: 'report.docx',
+    })),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'send_file',
+      description: 'send visible file',
+      transcriptMode: 'outbound_file',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string' },
+          file_name: { type: 'string' },
+        },
+        required: ['file_path', 'file_name'],
+      },
+    }],
+    { send_file: '文件 "report.docx" 已发送' },
+  );
+
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, {
+    stream: true,
+    enableCompression: false,
+    toolExecutionContext: { surface: 'weixin' },
+  });
+
+  const result = await runner.run([{ role: 'user', content: '发送文件' }]);
+
+  assert.equal(toolExecutor.getExecutionCount('send_file'), 1);
+  assert.equal(mock.getReceivedMessages().length, 1);
+  assert.equal(result.finalResponseVisible, false);
+  assert.deepEqual(
+    result.messages
+      .filter(message => message.role !== 'system')
+      .map(message => ({ role: message.role, content: message.content })),
+    [
+      { role: 'user', content: '发送文件' },
+      { role: 'assistant', content: 'report.docx' },
+    ],
+  );
+});
+
 test('runner keeps non-outbound tools as assistant/tool transcript', async () => {
   const responses = [
     makeToolResponse(makeToolCall('call_read', 'read_file', { file_path: '/tmp/a.txt' })),

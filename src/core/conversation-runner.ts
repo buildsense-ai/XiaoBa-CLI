@@ -376,7 +376,20 @@ export class ConversationRunner {
         };
       }
 
-      await this.appendPendingUserInput(messages, newMessages, turns);
+      const hasPendingUserInput = await this.appendPendingUserInput(messages, newMessages, turns);
+      if (hasPendingUserInput) {
+        continue;
+      }
+
+      if (hasDeliveredMessageOutThisRun && this.isMessageSurface()) {
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] 已有外发消息送达，本轮自动收束`);
+        return {
+          response: '',
+          finalResponseVisible: false,
+          messages,
+          newMessages,
+        };
+      }
     }
 
     return {
