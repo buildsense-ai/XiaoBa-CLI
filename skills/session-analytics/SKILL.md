@@ -20,31 +20,41 @@ argument-hint: "<'today' | 'week' | '--date YYYY-MM-DD' | '--range N'>"
 
 ```bash
 # 分析今天的数据
-python3 session_analytics.py
+python3 <SKILL_DIR>/session_analytics.py
 
 # 分析指定日期
-python3 session_analytics.py --date 2026-05-12
+python3 <SKILL_DIR>/session_analytics.py --date 2026-05-12
 
 # 分析最近 7 天
-python3 session_analytics.py --range 7
+python3 <SKILL_DIR>/session_analytics.py --range 7
 
 # 只看某个会话
-python3 session_analytics.py --session usr2
+python3 <SKILL_DIR>/session_analytics.py --session usr2
 
 # Markdown 格式输出（适合直接展示）
-python3 session_analytics.py --format markdown
+python3 <SKILL_DIR>/session_analytics.py --format markdown
+
+# 指定日志目录
+python3 <SKILL_DIR>/session_analytics.py --log-dir ./logs/sessions
 ```
+
+## 日志目录解析优先级
+
+1. `--log-dir` 命令行参数（最高优先级）
+2. `CATSCO_SESSIONS_DIR` 环境变量
+3. 当前工作目录下的 `logs/sessions`（Electron runtime 场景）
+4. `~/Documents/xiaoba/logs/sessions`（legacy fallback）
 
 ## 常用场景
 
 | 用户需求 | 命令 |
 |---------|------|
-| "今天用了多少 token" | `python3 session_analytics.py` |
-| "这周的使用情况" | `python3 session_analytics.py --range 7` |
-| "哪个工具用得最多" | `python3 session_analytics.py --top-tools 5` |
-| "最近有什么错误" | `python3 session_analytics.py --errors` |
-| "生成今天的日报" | `python3 session_analytics.py --format markdown` |
-| "某个会话的详情" | `python3 session_analytics.py --session <id>` |
+| "今天用了多少 token" | `python3 <SKILL_DIR>/session_analytics.py` |
+| "这周的使用情况" | `python3 <SKILL_DIR>/session_analytics.py --range 7` |
+| "哪个工具用得最多" | `python3 <SKILL_DIR>/session_analytics.py --top-tools 5` |
+| "最近有什么错误" | `python3 <SKILL_DIR>/session_analytics.py --errors` |
+| "生成今天的日报" | `python3 <SKILL_DIR>/session_analytics.py --format markdown` |
+| "某个会话的详情" | `python3 <SKILL_DIR>/session_analytics.py --session <id>` |
 
 ## 输出说明
 

@@ -23,10 +23,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-DEFAULT_LOG_DIR = Path(os.environ.get(
-    "CATSCO_SESSIONS_DIR",
-    Path.home() / "Documents" / "xiaoba" / "logs" / "sessions"
-))
+
+def _resolve_default_log_dir() -> Path:
+    """Resolve session log directory with fallback chain."""
+    if env_dir := os.environ.get("CATSCO_SESSIONS_DIR"):
+        return Path(env_dir)
+    cwd_logs = Path.cwd() / "logs" / "sessions"
+    if cwd_logs.is_dir():
+        return cwd_logs
+    return Path.home() / "Documents" / "xiaoba" / "logs" / "sessions"
+
+
+DEFAULT_LOG_DIR = _resolve_default_log_dir()
 
 
 def find_session_files(
@@ -114,10 +122,14 @@ def analyze(records: List[Dict[str, Any]], top_n: int = 10, errors_only: bool = 
             hour = timestamp[11:13]
             hourly[hour] += 1
 
-        usage = record.get("usage", {})
-        if isinstance(usage, dict):
-            total_input_tokens += usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0)
-            total_output_tokens += usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
+        tokens_field = record.get("tokens", {})
+        usage_field = record.get("usage", {})
+        if isinstance(tokens_field, dict) and ("prompt" in tokens_field or "completion" in tokens_field):
+            total_input_tokens += tokens_field.get("prompt", 0)
+            total_output_tokens += tokens_field.get("completion", 0)
+        elif isinstance(usage_field, dict):
+            total_input_tokens += usage_field.get("prompt_tokens", 0) or usage_field.get("input_tokens", 0)
+            total_output_tokens += usage_field.get("completion_tokens", 0) or usage_field.get("output_tokens", 0)
 
         assistant = record.get("assistant", {})
         if not isinstance(assistant, dict):
