@@ -1,4 +1,7 @@
 import { ContentBlock } from './index';
+import type { AIService } from '../utils/ai-service';
+import type { SkillManager } from '../skills/skill-manager';
+import type { PlanRuntime, RuntimePlanSnapshot } from '../core/plan-runtime';
 
 /**
  * 工具参数定义
@@ -103,10 +106,17 @@ export interface ChannelCallbacks {
   reply: (chatId: string, text: string) => Promise<void>;
   /** 发送文件 */
   sendFile: (chatId: string, filePath: string, fileName: string) => Promise<void>;
+  /** 发送临时运行时计划。仅 CatsCompany 等支持实时 UI 的平台实现。 */
+  sendRuntimePlan?: (chatId: string, snapshot: RuntimePlanSnapshot) => Promise<void>;
 }
 
 /** @deprecated Use ChannelCallbacks instead */
 export type FeishuChannelCallbacks = ChannelCallbacks;
+
+export interface RuntimeToolServices {
+  aiService: AIService;
+  skillManager: SkillManager;
+}
 
 /**
  * 工具执行上下文
@@ -119,6 +129,11 @@ export interface ToolExecutionContext {
   permissionProfile?: ToolPermissionProfile;
   runId?: string;
   abortSignal?: AbortSignal;
+  planRuntime?: PlanRuntime;
+  /** 子智能体需要主 agent 补充信息时使用；仅 subagent runtime 注入 */
+  requestParentInput?: (question: string) => Promise<string>;
+  /** 当前 runtime 已创建的共享服务，供调度类工具复用，避免重复初始化 */
+  runtimeServices?: RuntimeToolServices;
   /** 平台通道回调（飞书/CatsCompany 等聊天会话时由平台层注入） */
   channel?: ChannelCallbacks;
 }

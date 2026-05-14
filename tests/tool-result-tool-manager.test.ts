@@ -7,6 +7,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { ToolManager } from '../src/tools/tool-manager';
+import { SubAgentManager } from '../src/core/sub-agent-manager';
 
 describe('ToolManager - ToolExecutionResult 统一处理', () => {
   let manager: ToolManager;
@@ -127,13 +128,29 @@ describe('ToolManager - ToolExecutionResult 统一处理', () => {
     assert.strictEqual(result.errorCode, undefined);
   });
 
-  test('thinking 成功返回 ok=true', async () => {
-    // thinking-tool 直接实例化测试（不在 ToolManager 默认注册）
-    const { ThinkingTool } = await import('../src/tools/thinking-tool');
-    const tool = new ThinkingTool();
-    const result = await tool.execute({ content: 'test thinking' }, { workingDirectory: testRoot, conversationHistory: [] });
+  test('record_decision 成功返回 ok=true 且默认不进 transcript', async () => {
+    const definition = manager.getToolDefinitions().find(tool => tool.name === 'record_decision');
+    assert.equal(definition?.transcriptMode, 'suppress');
+
+    const result = await manager.executeTool(
+      {
+        id: 't_record_decision',
+        type: 'function',
+        function: {
+          name: 'record_decision',
+          arguments: JSON.stringify({
+            summary: '这轮先出 plan，再把登录和日志拆出去并行检查',
+            plan_decision: 'use_plan',
+            subagent_decision: 'spawn_now',
+            task_split: ['主线检查聊天体验', '子 agent 扫登录绑定', '子 agent 审查日志链路'],
+          }),
+        },
+      },
+      [],
+    );
     assert.strictEqual(result.ok, true);
-    assert.ok(result.content?.includes('已思考'));
+    assert.ok(result.content?.includes('决策说明已记录'));
+    assert.strictEqual(result.errorCode, undefined);
   });
 
   // ─── 失败路径 ───────────────────────────────────────────────
@@ -255,6 +272,50 @@ describe('ToolManager - ToolExecutionResult 统一处理', () => {
     assert.strictEqual(result.errorCode, 'TOOL_NOT_FOUND');
   });
 
+  test('stop_subagent 跨会话返回 PERMISSION_DENIED', async () => {
+    const subAgentManager = SubAgentManager.getInstance() as any;
+    subAgentManager.parentMap.set('sub-forbidden-stop', 'other-session');
+    subAgentManager.subAgents.set('sub-forbidden-stop', {
+      status: 'running',
+      stop() {},
+    });
+
+    try {
+      const result = await manager.executeTool(
+        { id: 't18_forbidden', type: 'function', function: { name: 'stop_subagent', arguments: JSON.stringify({ subagent_id: 'sub-forbidden-stop' }) } },
+        [],
+        { sessionId: 'current-session' },
+      );
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.errorCode, 'PERMISSION_DENIED');
+    } finally {
+      subAgentManager.parentMap.delete('sub-forbidden-stop');
+      subAgentManager.subAgents.delete('sub-forbidden-stop');
+    }
+  });
+
+  test('resume_subagent 跨会话返回 PERMISSION_DENIED', async () => {
+    const subAgentManager = SubAgentManager.getInstance() as any;
+    subAgentManager.parentMap.set('sub-forbidden-resume', 'other-session');
+    subAgentManager.subAgents.set('sub-forbidden-resume', {
+      status: 'waiting_for_input',
+      resume() { return true; },
+    });
+
+    try {
+      const result = await manager.executeTool(
+        { id: 't18_resume_forbidden', type: 'function', function: { name: 'resume_subagent', arguments: JSON.stringify({ subagent_id: 'sub-forbidden-resume', answer: 'ok' }) } },
+        [],
+        { sessionId: 'current-session' },
+      );
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.errorCode, 'PERMISSION_DENIED');
+    } finally {
+      subAgentManager.parentMap.delete('sub-forbidden-resume');
+      subAgentManager.subAgents.delete('sub-forbidden-resume');
+    }
+  });
+
   // ─── 别名兼容 ───────────────────────────────────────────────
 
   test('Bash 别名映射到 execute_shell 成功', async () => {
@@ -264,6 +325,55 @@ describe('ToolManager - ToolExecutionResult 统一处理', () => {
     );
     assert.strictEqual(result.ok, true);
     assert.ok(result.content?.includes('hello'));
+  });
+
+  test('execute_shell 支持 AbortSignal 取消长命令', async () => {
+    const controller = new AbortController();
+    const nodePath = process.execPath.replace(/"/g, '\\"');
+    const command = `"${nodePath}" -e "setTimeout(function(){}, 5000)"`;
+
+    const startedAt = Date.now();
+    const execution = manager.executeTool(
+      { id: 't19_abort', type: 'function', function: { name: 'execute_shell', arguments: JSON.stringify({ command, timeout: 10000 }) } },
+      [],
+      { abortSignal: controller.signal },
+    );
+
+    setTimeout(() => controller.abort(), 100);
+    const result = await execution;
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'EXECUTION_TIMEOUT');
+    assert.match(String(result.content), /取消/);
+    assert.ok(Date.now() - startedAt < 3000, 'abort should return before the command timeout');
+  });
+
+  test('context overrides do not clear an existing AbortSignal with undefined', async () => {
+    const controller = new AbortController();
+    const scopedManager = new ToolManager(testRoot, { abortSignal: controller.signal }, {
+      enabledToolNames: [],
+    });
+    let capturedSignal: AbortSignal | undefined;
+    scopedManager.registerTool({
+      definition: {
+        name: 'capture_signal',
+        description: 'capture signal',
+        parameters: { type: 'object', properties: {} },
+      },
+      async execute(_args, context) {
+        capturedSignal = context.abortSignal;
+        return { ok: true, content: 'ok' };
+      },
+    });
+
+    const result = await scopedManager.executeTool(
+      { id: 't19_context_merge', type: 'function', function: { name: 'capture_signal', arguments: '{}' } },
+      [],
+      { abortSignal: undefined },
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(capturedSignal, controller.signal);
   });
 
   test('Write 别名映射到 write_file 成功', async () => {

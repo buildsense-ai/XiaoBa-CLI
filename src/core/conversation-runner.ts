@@ -6,15 +6,41 @@ import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
 import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
+import {
+  PLAN_SOFT_NUDGE_MIN_TOOL_CALLS,
+  PLAN_SOFT_NUDGE_TOOL_INTERVAL,
+  PLAN_TOOL_NAME,
+  RECORD_DECISION_TOOL_NAME,
+  SUBAGENT_SOFT_NUDGE_MIN_TOOL_CALLS,
+  SUBAGENT_SOFT_NUDGE_TOOL_INTERVAL,
+  SUBAGENT_TOOL_NAME,
+  TRANSIENT_RUNNER_HINT_PREFIX,
+  buildDuplicateOutboundHint,
+  buildCheckpointDecisionRequiredHint,
+  buildExplicitPlanFinalAnswerRetryHint,
+  buildExplicitPlanRequestNudgeIfUseful,
+  buildInitialDecisionCheckpointIfUseful,
+  buildInitialOrchestrationRetryHint,
+  buildInitialPlanNudgeIfUseful,
+  buildInitialSubagentNudgeIfUseful,
+  buildMaxTurnFinalizationHint,
+  buildPlanSoftNudge,
+  buildRuntimeOrchestrationCheckpointHint,
+  buildSubagentSoftNudge,
+  buildUnavailableToolCallHint,
+  contentToString,
+  findCheckpointBlockedExploratoryTools,
+  filterOrchestrationCheckpointTools,
+  hasCompletedOrchestrationCheckpoint,
+  hasOrchestrationCheckpointTools,
+  shouldAddInitialOrchestrationRetryHint,
+  shouldAddMaxTurnFinalizationHint,
+  shouldAddPlanSoftNudge,
+  shouldAddRuntimeOrchestrationCheckpoint,
+  shouldAddSubagentSoftNudge,
+} from './runner-orchestration-policy';
 import * as fs from 'fs';
 import * as path from 'path';
-
-function contentToString(content: string | ContentBlock[] | null): string {
-  if (!content) return '';
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '[图片]';
-  return content.map(block => block.type === 'text' ? block.text : '[图片]').join('');
-}
 
 const TOOL_NAME_ALIASES: Record<string, string> = {
   Bash: 'execute_shell',
@@ -32,7 +58,6 @@ const DEFAULT_PROMPT_BUDGET = 120000;
 const ANTHROPIC_PROMPT_BUDGET = 200000;
 const MIN_MESSAGE_BUDGET = 2000;
 const OVERFLOW_REDUCTION_RATIO = 0.6;
-const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 
 /**
  * 对话运行回调
@@ -83,6 +108,8 @@ interface ToolExecutionRecord {
 
 /** ConversationRunner 构造选项 */
 export interface RunnerOptions {
+  /** Optional safety cap for autonomous tool loops. Undefined means no runner-level cap. */
+  maxTurns?: number;
   maxContextTokens?: number;
   /** false 时用 aiService.chat() 代替 chatStream()（默认 true） */
   stream?: boolean;
@@ -94,6 +121,8 @@ export interface RunnerOptions {
   toolExecutionContext?: Partial<ToolExecutionContext>;
   /** Pulls user messages that arrived while the current run was busy. */
   pendingUserInputProvider?: PendingUserInputProvider;
+  /** Mechanically folds older tool outputs so long-running ReAct loops do not carry every file read forever. */
+  compactStaleToolResults?: boolean;
 }
 
 /**
@@ -109,8 +138,11 @@ export class ConversationRunner {
   private enableCompression: boolean;
   private toolExecutionContext?: Partial<ToolExecutionContext>;
   private maxPromptTokens: number;
+  private maxTurns?: number;
   private sessionLabel: string;
   private pendingUserInputProvider?: PendingUserInputProvider;
+  private compactStaleToolResultsEnabled: boolean;
+  private static readonly RECENT_TOOL_RESULTS_TO_KEEP = 4;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -133,6 +165,8 @@ export class ConversationRunner {
     this.enableCompression = options?.enableCompression ?? true;
     this.toolExecutionContext = options?.toolExecutionContext;
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
+    this.compactStaleToolResultsEnabled = options?.compactStaleToolResults ?? false;
+    this.maxTurns = options?.maxTurns;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.sessionLabel = this.toolExecutionContext?.sessionId
@@ -158,13 +192,63 @@ export class ConversationRunner {
     let hasDeliveredMessageOutThisRun = false;
     let lastOutboundContent: string | null = null;
     let observationSinceLastOutbound = false;
+    let executedToolCallsThisRun = 0;
+    let hasSpawnedSubagentThisRun = false;
+    let hasUpdatedPlanThisRun = false;
+    let hasRecordedDecisionThisRun = false;
+    let subagentSoftNudgeCount = 0;
+    let planSoftNudgeCount = 0;
+    let forceInitialOrchestrationCheckpointNextTurn = false;
+    let forceRuntimeOrchestrationCheckpointNextTurn = false;
+    let forceStrictOrchestrationCheckpointNextTurn = false;
+    let nextSubagentSoftNudgeAtToolCount = SUBAGENT_SOFT_NUDGE_MIN_TOOL_CALLS;
+    let nextPlanSoftNudgeAtToolCount = PLAN_SOFT_NUDGE_MIN_TOOL_CALLS;
+    let hasShownMaxTurnFinalizationHint = false;
+    let hasShownInitialOrchestrationRetryHint = false;
+    let hasShownRuntimeOrchestrationCheckpoint = false;
+    let hasShownExplicitPlanFinalAnswerRetryHint = false;
+    let checkpointExplorationBlockCount = 0;
     let turns = 0;
-    let thinkingCount = 0;
+    const explicitPlanNudge = buildExplicitPlanRequestNudgeIfUseful(messages, allTools);
+    if (explicitPlanNudge) {
+      nextTurnTransientHints.push(explicitPlanNudge);
+      Logger.info(`[${this.sessionLabel}Turn 1] 已注入明确 plan 请求提醒`);
+    }
+    const initialDecisionCheckpoint = buildInitialDecisionCheckpointIfUseful(messages, allTools);
+    if (initialDecisionCheckpoint) {
+      nextTurnTransientHints.push(initialDecisionCheckpoint);
+      Logger.info(`[${this.sessionLabel}Turn 1] 已注入复杂任务编排 checkpoint`);
+    }
+    const initialPlanNudge = buildInitialPlanNudgeIfUseful(messages, allTools);
+    if (initialPlanNudge) {
+      nextTurnTransientHints.push(initialPlanNudge);
+      Logger.info(`[${this.sessionLabel}Turn 1] 已注入复杂任务 plan 提醒`);
+    }
+    const initialSubagentNudge = buildInitialSubagentNudgeIfUseful(messages, allTools);
+    if (initialSubagentNudge) {
+      nextTurnTransientHints.push(initialSubagentNudge);
+      Logger.info(`[${this.sessionLabel}Turn 1] 已注入复杂任务子 agent 拆分提醒`);
+    }
+    if (explicitPlanNudge || initialPlanNudge || initialSubagentNudge) {
+      forceInitialOrchestrationCheckpointNextTurn = true;
+    }
+    const hadExplicitPlanRequest = Boolean(explicitPlanNudge);
+    const hadInitialOrchestrationNudge = Boolean(initialDecisionCheckpoint || explicitPlanNudge || initialPlanNudge || initialSubagentNudge);
 
-    while (true) {
+    while (this.maxTurns === undefined || turns < this.maxTurns) {
       turns++;
       if (this.shouldContinue && !this.shouldContinue()) {
         break;
+      }
+
+      if (shouldAddMaxTurnFinalizationHint(this.maxTurns, turns, hasShownMaxTurnFinalizationHint)) {
+        nextTurnTransientHints.push(buildMaxTurnFinalizationHint(this.maxTurns, turns));
+        hasShownMaxTurnFinalizationHint = true;
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] 已注入工具预算收束提醒`);
+      }
+
+      if (this.compactStaleToolResultsEnabled) {
+        this.compactStaleToolResults(messages);
       }
 
       if (this.enableCompression) {
@@ -184,7 +268,32 @@ export class ConversationRunner {
         }
       }
 
-      const activeTools = allTools;
+      const pendingCheckpointKind = forceRuntimeOrchestrationCheckpointNextTurn
+        ? 'runtime'
+        : forceInitialOrchestrationCheckpointNextTurn
+          ? 'initial'
+          : null;
+      const hasPendingOrchestrationCheckpoint =
+        pendingCheckpointKind !== null
+        && !hasCompletedOrchestrationCheckpoint({
+          hasUpdatedPlan: hasUpdatedPlanThisRun,
+          hasSpawnedSubagent: hasSpawnedSubagentThisRun,
+          hasRecordedDecision: hasRecordedDecisionThisRun,
+        })
+        && hasOrchestrationCheckpointTools(allTools);
+      const activeTools = hasPendingOrchestrationCheckpoint && forceStrictOrchestrationCheckpointNextTurn
+        ? filterOrchestrationCheckpointTools(allTools)
+        : allTools;
+      const isStrictOrchestrationCheckpoint = activeTools.length !== allTools.length;
+      forceInitialOrchestrationCheckpointNextTurn = false;
+      forceRuntimeOrchestrationCheckpointNextTurn = false;
+      forceStrictOrchestrationCheckpointNextTurn = false;
+      if (hasPendingOrchestrationCheckpoint) {
+        const mode = isStrictOrchestrationCheckpoint
+          ? `只开放编排工具 (${activeTools.length}/${allTools.length}个)`
+          : `工具列表保持完整 (${activeTools.length}个)`;
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] 编排 checkpoint ${mode}`);
+      }
       const requestMessages = this.buildProviderInputMessages(messages, nextTurnTransientHints);
       nextTurnTransientHints = [];
       this.ensurePromptBudget(requestMessages, activeTools);
@@ -217,6 +326,20 @@ export class ConversationRunner {
 
       if (!response.toolCalls || response.toolCalls.length === 0) {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(response.content || '', 300)}`);
+
+        if (
+          hadExplicitPlanRequest
+          && !hasUpdatedPlanThisRun
+          && !hasShownExplicitPlanFinalAnswerRetryHint
+          && allTools.some(tool => tool.name === PLAN_TOOL_NAME)
+        ) {
+          nextTurnTransientHints.push(buildExplicitPlanFinalAnswerRetryHint());
+          forceInitialOrchestrationCheckpointNextTurn = true;
+          forceStrictOrchestrationCheckpointNextTurn = true;
+          hasShownExplicitPlanFinalAnswerRetryHint = true;
+          Logger.info(`[${this.sessionLabel}Turn ${turns}] 明确 plan 请求未调用 update_plan，已重试提醒`);
+          continue;
+        }
 
         if (response.content) {
           const finalAssistantMessage: Message = { role: 'assistant', content: response.content };
@@ -278,6 +401,64 @@ export class ConversationRunner {
       const toolNames = response.toolCalls.map(tc => tc.function.name).join(', ');
       Logger.info(`[${this.sessionLabel}Turn ${turns}] AI选择工具: [${toolNames}]`);
 
+      const unavailableToolNames = this.findUnavailableToolCalls(response.toolCalls, activeTools);
+      if (unavailableToolNames.length > 0) {
+        const availableToolNames = activeTools.map(tool => tool.name);
+        nextTurnTransientHints.push(buildUnavailableToolCallHint(
+          unavailableToolNames,
+          availableToolNames,
+          hasPendingOrchestrationCheckpoint,
+        ));
+        if (hasPendingOrchestrationCheckpoint) {
+          if (pendingCheckpointKind === 'runtime') {
+            forceRuntimeOrchestrationCheckpointNextTurn = true;
+          } else {
+            forceInitialOrchestrationCheckpointNextTurn = true;
+          }
+          forceStrictOrchestrationCheckpointNextTurn = true;
+        }
+        Logger.warning(
+          `[${this.sessionLabel}Turn ${turns}] AI请求了当前未开放的工具: `
+          + `${unavailableToolNames.join(', ')}；本轮工具调用已拒绝`
+        );
+        continue;
+      }
+
+      if (hasPendingOrchestrationCheckpoint) {
+        const requestedToolNames = response.toolCalls.map(toolCall => normalizeToolName(toolCall.function.name));
+        const blockedToolNames = findCheckpointBlockedExploratoryTools(
+          requestedToolNames,
+          {
+            hasUpdatedPlan: hasUpdatedPlanThisRun,
+            hasSpawnedSubagent: hasSpawnedSubagentThisRun,
+            hasRecordedDecision: hasRecordedDecisionThisRun,
+          },
+        );
+        if (blockedToolNames.length > 0) {
+          nextTurnTransientHints.push(buildCheckpointDecisionRequiredHint(
+            blockedToolNames,
+            allTools,
+            {
+              hasUpdatedPlan: hasUpdatedPlanThisRun,
+              hasSpawnedSubagent: hasSpawnedSubagentThisRun,
+              hasRecordedDecision: hasRecordedDecisionThisRun,
+            },
+          ));
+          if (pendingCheckpointKind === 'runtime') {
+            forceRuntimeOrchestrationCheckpointNextTurn = true;
+          } else {
+            forceInitialOrchestrationCheckpointNextTurn = true;
+          }
+          forceStrictOrchestrationCheckpointNextTurn = true;
+          checkpointExplorationBlockCount++;
+          Logger.warning(
+            `[${this.sessionLabel}Turn ${turns}] 编排 checkpoint 未完成，已拦截探索工具: `
+            + blockedToolNames.join(', ')
+          );
+          continue;
+        }
+      }
+
       const assistantMsg: Message = {
         role: 'assistant',
         content: response.content,
@@ -305,13 +486,21 @@ export class ConversationRunner {
           this.toolExecutionContext || {},
           turns,
         );
-        if (toolName === 'thinking') {
-          thinkingCount++;
-        }
         const toolDuration = Date.now() - toolStart;
         Metrics.recordToolCall(toolName, toolDuration);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
         callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
+
+        executedToolCallsThisRun++;
+        if (toolName === SUBAGENT_TOOL_NAME && result.ok !== false && !result.errorCode) {
+          hasSpawnedSubagentThisRun = true;
+        }
+        if (toolName === PLAN_TOOL_NAME && result.ok !== false && !result.errorCode) {
+          hasUpdatedPlanThisRun = true;
+        }
+        if (toolName === RECORD_DECISION_TOOL_NAME && result.ok !== false && !result.errorCode) {
+          hasRecordedDecisionThisRun = true;
+        }
 
         if (
           (transcriptMode === 'outbound_message' || transcriptMode === 'outbound_file')
@@ -353,7 +542,7 @@ export class ConversationRunner {
           const content = typeof outbound?.content === 'string' ? outbound.content : '';
           if (content) {
             if (lastOutboundContent === content && !observationSinceLastOutbound) {
-              nextTurnTransientHints = [this.buildDuplicateOutboundHint(content)];
+              nextTurnTransientHints = [buildDuplicateOutboundHint(content)];
             }
             lastOutboundContent = content;
             observationSinceLastOutbound = false;
@@ -376,9 +565,119 @@ export class ConversationRunner {
         };
       }
 
+      if (
+        shouldAddInitialOrchestrationRetryHint(
+          allTools,
+          hadInitialOrchestrationNudge,
+          hasShownInitialOrchestrationRetryHint,
+          turns,
+          executionRecords,
+          {
+            hasUpdatedPlan: hasUpdatedPlanThisRun,
+            hasSpawnedSubagent: hasSpawnedSubagentThisRun,
+            hasRecordedDecision: hasRecordedDecisionThisRun,
+          },
+        )
+      ) {
+        nextTurnTransientHints.push(buildInitialOrchestrationRetryHint(
+          allTools,
+          {
+            hasUpdatedPlan: hasUpdatedPlanThisRun,
+            hasSpawnedSubagent: hasSpawnedSubagentThisRun,
+            hasRecordedDecision: hasRecordedDecisionThisRun,
+          },
+        ));
+        forceInitialOrchestrationCheckpointNextTurn = true;
+        forceStrictOrchestrationCheckpointNextTurn = true;
+        hasShownInitialOrchestrationRetryHint = true;
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] 已注入复杂任务编排二次提醒`);
+      }
+
+      let hasQueuedOrchestrationCheckpoint = forceInitialOrchestrationCheckpointNextTurn;
+      if (
+        !hasQueuedOrchestrationCheckpoint
+        &&
+        shouldAddRuntimeOrchestrationCheckpoint(
+          allTools,
+          turns,
+          executedToolCallsThisRun,
+          hasShownRuntimeOrchestrationCheckpoint,
+          {
+            hasUpdatedPlan: hasUpdatedPlanThisRun,
+            hasSpawnedSubagent: hasSpawnedSubagentThisRun,
+            hasRecordedDecision: hasRecordedDecisionThisRun,
+          },
+        )
+      ) {
+        nextTurnTransientHints.push(buildRuntimeOrchestrationCheckpointHint(
+          turns,
+          executedToolCallsThisRun,
+          allTools,
+          {
+            hasUpdatedPlan: hasUpdatedPlanThisRun,
+            hasSpawnedSubagent: hasSpawnedSubagentThisRun,
+            hasRecordedDecision: hasRecordedDecisionThisRun,
+          },
+        ));
+        forceRuntimeOrchestrationCheckpointNextTurn = true;
+        forceStrictOrchestrationCheckpointNextTurn = true;
+        hasShownRuntimeOrchestrationCheckpoint = true;
+        hasQueuedOrchestrationCheckpoint = true;
+        Logger.info(
+          `[${this.sessionLabel}Turn ${turns}] 已注入运行中编排 checkpoint `
+          + `(turns=${turns}, tools=${executedToolCallsThisRun})`
+        );
+      }
+
+      if (shouldAddSubagentSoftNudge(
+        allTools,
+        turns,
+        executedToolCallsThisRun,
+        hasSpawnedSubagentThisRun || hasRecordedDecisionThisRun,
+        nextSubagentSoftNudgeAtToolCount,
+      ) && !hasQueuedOrchestrationCheckpoint) {
+        nextTurnTransientHints.push(buildSubagentSoftNudge(turns, executedToolCallsThisRun, subagentSoftNudgeCount));
+        subagentSoftNudgeCount++;
+        nextSubagentSoftNudgeAtToolCount += SUBAGENT_SOFT_NUDGE_TOOL_INTERVAL + (subagentSoftNudgeCount * 4);
+        Logger.info(
+          `[${this.sessionLabel}Turn ${turns}] 已注入子 agent 柔性提醒 `
+          + `(turns=${turns}, tools=${executedToolCallsThisRun}, count=${subagentSoftNudgeCount})`
+        );
+      }
+
+      if (shouldAddPlanSoftNudge(
+        allTools,
+        turns,
+        executedToolCallsThisRun,
+        hasUpdatedPlanThisRun || hasRecordedDecisionThisRun,
+        nextPlanSoftNudgeAtToolCount,
+      ) && !hasQueuedOrchestrationCheckpoint) {
+        nextTurnTransientHints.push(buildPlanSoftNudge(turns, executedToolCallsThisRun, planSoftNudgeCount));
+        planSoftNudgeCount++;
+        nextPlanSoftNudgeAtToolCount += PLAN_SOFT_NUDGE_TOOL_INTERVAL + (planSoftNudgeCount * 3);
+        Logger.info(
+          `[${this.sessionLabel}Turn ${turns}] 已注入 plan 柔性提醒 `
+          + `(turns=${turns}, tools=${executedToolCallsThisRun}, count=${planSoftNudgeCount})`
+        );
+      }
+
       await this.appendPendingUserInput(messages, newMessages, turns);
     }
 
+    if (this.shouldContinue && !this.shouldContinue()) {
+      const label = this.sessionLabel.trim();
+      Logger.info(label ? `[${label}] 当前回合已中止` : '当前回合已中止');
+      return {
+        response: '',
+        finalResponseVisible: false,
+        messages,
+        newMessages,
+      };
+    }
+
+    if (this.maxTurns !== undefined) {
+      Logger.warning(`达到最大工具调用轮次 (${this.maxTurns})`);
+    }
     return {
       response: '',
       finalResponseVisible: false,
@@ -657,11 +956,20 @@ export class ConversationRunner {
     return null;
   }
 
-  private buildDuplicateOutboundHint(content: string): Message {
-    return {
-      role: 'system',
-      content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n你刚刚连续发送了与上一条相同的内容：“${content}”。如果这是用户真正需要的重复确认，可以继续；否则请避免无意义重复，必要时调用 pause_turn 收束。`,
-    };
+  private findUnavailableToolCalls(
+    toolCalls: ToolCall[],
+    activeTools: ToolDefinition[],
+  ): string[] {
+    const availableToolNames = new Set(activeTools.map(tool => tool.name));
+    const unavailable: string[] = [];
+    for (const toolCall of toolCalls) {
+      const requested = toolCall.function.name;
+      const normalized = normalizeToolName(requested);
+      if (!availableToolNames.has(requested) && !availableToolNames.has(normalized)) {
+        unavailable.push(requested);
+      }
+    }
+    return Array.from(new Set(unavailable));
   }
 
   private logProviderMessagesForDebug(
@@ -758,9 +1066,13 @@ export class ConversationRunner {
           onText: (text) => callbacks?.onText?.(text),
           onRetry: (attempt, maxRetries) => callbacks?.onRetry?.(attempt, maxRetries),
         };
-        return await this.aiService.chatStream(messages, activeTools, streamCallbacks);
+        return await this.aiService.chatStream(messages, activeTools, streamCallbacks, {
+          signal: this.toolExecutionContext?.abortSignal,
+        });
       }
-      return await this.aiService.chat(messages, activeTools);
+      return await this.aiService.chat(messages, activeTools, {
+        signal: this.toolExecutionContext?.abortSignal,
+      });
     } catch (error: any) {
       if (!this.isPromptTooLongError(error)) {
         throw error;
@@ -774,9 +1086,13 @@ export class ConversationRunner {
         const streamCallbacks: StreamCallbacks = {
           onText: (text) => callbacks?.onText?.(text),
         };
-        return await this.aiService.chatStream(messages, activeTools, streamCallbacks);
+        return await this.aiService.chatStream(messages, activeTools, streamCallbacks, {
+          signal: this.toolExecutionContext?.abortSignal,
+        });
       }
-      return await this.aiService.chat(messages, activeTools);
+      return await this.aiService.chat(messages, activeTools, {
+        signal: this.toolExecutionContext?.abortSignal,
+      });
     }
   }
 
@@ -889,6 +1205,33 @@ export class ConversationRunner {
     return next;
   }
 
+  private compactStaleToolResults(messages: Message[]): void {
+    const toolIndexes = messages
+      .map((message, index) => ({ message, index }))
+      .filter(item => item.message.role === 'tool')
+      .map(item => item.index);
+
+    if (toolIndexes.length <= ConversationRunner.RECENT_TOOL_RESULTS_TO_KEEP) return;
+
+    const preserved = new Set(toolIndexes.slice(-ConversationRunner.RECENT_TOOL_RESULTS_TO_KEEP));
+    for (const index of toolIndexes) {
+      if (preserved.has(index)) continue;
+      const message = messages[index];
+      if (message.role !== 'tool') continue;
+      const content = message.content;
+      const alreadyCompacted = typeof content === 'string' && content.startsWith('[tool:') && content.includes('历史工具输出已省略');
+      if (alreadyCompacted) continue;
+
+      const toolName = message.name || 'unknown';
+      const originalLength = typeof content === 'string'
+        ? content.length
+        : Array.isArray(content)
+          ? content.length
+          : 0;
+      message.content = `[tool:${toolName}] 历史工具输出已省略；如仍需要细节，请重新调用工具读取更小范围。${originalLength > 0 ? ` 原始长度约 ${originalLength}。` : ''}`;
+    }
+  }
+
   private resolveMessageCharLimit(message: Message, aggressive: boolean): number {
     if (message.role === 'system') return aggressive ? 1200 : 2400;
     if (message.role === 'user') return aggressive ? 600 : 1200;
@@ -984,18 +1327,61 @@ export class ConversationRunner {
     context: Partial<ToolExecutionContext>,
     turn: number,
   ): Promise<ToolResult> {
+    if (context.abortSignal?.aborted) {
+      return buildAbortedToolResult(toolCall);
+    }
+
     let lastResult = await this.toolExecutor.executeTool(toolCall, messages, context);
 
     for (let attempt = 1; attempt <= ConversationRunner.MAX_RETRIES; attempt++) {
+      if (context.abortSignal?.aborted) {
+        return buildAbortedToolResult(toolCall);
+      }
       if (!ConversationRunner.isRateLimitError(lastResult)) {
         return lastResult;
       }
       const delay = ConversationRunner.RETRY_BASE_DELAY_MS * attempt;
       Logger.warning(`[${this.sessionLabel}Turn ${turn}] ${toolCall.function.name} 触发限流 (429)，${delay}ms 后重试 (${attempt}/${ConversationRunner.MAX_RETRIES})`);
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await waitForRetryDelay(delay, context.abortSignal);
+      if (context.abortSignal?.aborted) {
+        return buildAbortedToolResult(toolCall);
+      }
       lastResult = await this.toolExecutor.executeTool(toolCall, messages, context);
     }
 
     return lastResult;
   }
+}
+
+function buildAbortedToolResult(toolCall: ToolCall): ToolResult {
+  return {
+    tool_call_id: toolCall.id,
+    role: 'tool',
+    name: toolCall.function.name,
+    content: '工具执行已取消',
+    ok: false,
+    errorCode: 'EXECUTION_TIMEOUT',
+    retryable: false,
+  };
+}
+
+function waitForRetryDelay(ms: number, abortSignal?: AbortSignal): Promise<void> {
+  if (!abortSignal) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+  if (abortSignal.aborted) {
+    return Promise.resolve();
+  }
+
+  return new Promise(resolve => {
+    let timer: ReturnType<typeof setTimeout>;
+    const cleanup = () => {
+      clearTimeout(timer);
+      abortSignal.removeEventListener('abort', onAbort);
+      resolve();
+    };
+    const onAbort = () => cleanup();
+    timer = setTimeout(cleanup, ms);
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+  });
 }

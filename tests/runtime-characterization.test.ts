@@ -42,6 +42,16 @@ describe('runtime characterization', () => {
     assert.match(prompt, /当前平台：characterization/);
     assert.match(prompt, new RegExp(`当前日期：${today}`));
     assert.match(prompt, /你的默认工作目录是：`~\/catsco-workspace\/RuntimeTestAgent`/);
+    assert.doesNotMatch(prompt, /运行时计划/);
+    assert.doesNotMatch(prompt, /update_plan/);
+    assert.doesNotMatch(prompt, /决策日志/);
+    assert.doesNotMatch(prompt, /record_decision/);
+    assert.doesNotMatch(prompt, /后台子 agent 调度/);
+    assert.doesNotMatch(prompt, /spawn_subagent/);
+    assert.doesNotMatch(prompt, /压缩 observation/);
+    assert.doesNotMatch(prompt, /子 agent 通信与回流/);
+    assert.doesNotMatch(prompt, /ask_parent/);
+    assert.doesNotMatch(prompt, /resume_subagent/);
     assert.doesNotMatch(prompt, /~\/Documents\/xiaoba/);
     assert.doesNotMatch(prompt, /必须多次调用 send_text/);
     assert.doesNotMatch(prompt, /150字以上/);
@@ -62,13 +72,14 @@ describe('runtime characterization', () => {
         'glob',
         'grep',
         'read_file',
+        'record_decision',
         'resume_subagent',
         'send_file',
         'send_text',
-        'send_to_inspector',
         'skill',
         'spawn_subagent',
         'stop_subagent',
+        'update_plan',
         'write_file',
       ],
     );
@@ -234,6 +245,100 @@ describe('runtime characterization', () => {
     assert.equal(result.text, 'done');
     assert.equal(capturedSurface, 'catscompany');
   });
+
+  test('AgentSession requestInterrupt aborts the active tool context', async () => {
+    const { AgentSession } = loadAgentSessionModules();
+    let capturedSignal: AbortSignal | undefined;
+    let releaseExecuteStart: (() => void) | undefined;
+    const executeStarted = new Promise<void>(resolve => {
+      releaseExecuteStart = resolve;
+    });
+
+    const session = new AgentSession('cc_user:abort-demo', buildMockServices({
+      aiService: {
+        async chatStream() {
+          return {
+            content: null,
+            toolCalls: [{
+              id: 'tool-abort',
+              type: 'function',
+              function: {
+                name: 'capture_abort',
+                arguments: '{}',
+              },
+            }],
+          };
+        },
+      },
+      toolManager: {
+        getToolDefinitions() {
+          return [{
+            name: 'capture_abort',
+            description: 'Capture abort signal',
+            parameters: {
+              type: 'object',
+              properties: {},
+            },
+          }];
+        },
+        async executeTool(toolCall: any, _messages: any[], context: any) {
+          capturedSignal = context.abortSignal;
+          releaseExecuteStart?.();
+          await waitForSignalAbort(context.abortSignal, 1000);
+          return {
+            tool_call_id: toolCall.id,
+            role: 'tool',
+            name: toolCall.function.name,
+            content: 'aborted',
+            ok: true,
+          };
+        },
+      },
+    }));
+
+    const run = session.handleMessage('run abortable tool');
+    await executeStarted;
+    session.requestInterrupt();
+    await run;
+
+    assert.equal(capturedSignal?.aborted, true);
+  });
+
+  test('AgentSession requestInterrupt aborts in-flight AI inference', async () => {
+    const { AgentSession } = loadAgentSessionModules();
+    let capturedSignal: AbortSignal | undefined;
+    let releaseInferenceStart: (() => void) | undefined;
+    const inferenceStarted = new Promise<void>(resolve => {
+      releaseInferenceStart = resolve;
+    });
+
+    const session = new AgentSession('cc_user:ai-abort-demo', buildMockServices({
+      aiService: {
+        async chatStream(_messages: any[], _tools: any[], _callbacks: any, options: { signal?: AbortSignal }) {
+          capturedSignal = options.signal;
+          releaseInferenceStart?.();
+          await waitForSignalAbort(options.signal, 1000);
+          const err = new Error('aborted');
+          err.name = 'AbortError';
+          throw err;
+        },
+      },
+      toolManager: {
+        getToolDefinitions() {
+          return [];
+        },
+      },
+    }));
+
+    const run = session.handleMessage('run abortable inference');
+    await inferenceStarted;
+    session.requestInterrupt();
+    const result = await run;
+
+    assert.equal(capturedSignal?.aborted, true);
+    assert.equal(result.visibleToUser, false);
+    assert.equal(result.text, '');
+  });
 });
 
 function loadAgentSessionModules(): any {
@@ -273,4 +378,21 @@ function setSessionSystemPrompt(session: any, sessionKey: string, sessionType?: 
     () => 'base system prompt',
     { sessionKey, sessionType },
   ));
+}
+
+function waitForSignalAbort(signal: AbortSignal | undefined, timeoutMs: number): Promise<void> {
+  if (!signal) return Promise.reject(new Error('missing AbortSignal'));
+  if (signal.aborted) return Promise.resolve();
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      reject(new Error('AbortSignal was not aborted'));
+    }, timeoutMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }

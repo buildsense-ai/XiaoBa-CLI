@@ -2787,10 +2787,19 @@
       line-height: 1.5;
     }
 
-    .chat-window {
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
+        .chat-window {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            background: #181b20;
+            color: #e8eaed;
+        }
+
+    .chat-panel.chat-window {
+      background: #181b20;
+      border-color: rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
     }
 
     .chat-window-header {
@@ -2799,7 +2808,9 @@
       justify-content: space-between;
       gap: 12px;
       padding: 18px 20px;
-      border-bottom: 1px solid var(--border-light);
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      background: #181b20;
+      color: #f3f4f6;
     }
 
     .chat-messages {
@@ -2807,62 +2818,75 @@
       min-height: 0;
       padding: 0;
       overflow-y: auto;
-      background: rgba(250, 251, 255, 0.68);
+      background: #181b20;
+      color: #d8dbe2;
     }
 
     .chat-timeline-inner {
       width: 100%;
-      max-width: 980px;
+      max-width: 1120px;
       margin: 0 auto;
-      padding: 20px 24px 28px;
+      padding: 18px 24px 24px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 2px;
+    }
+
+    .chat-history-loading {
+      color: #858991;
+      font-size: 12px;
+      font-weight: 700;
+      text-align: center;
+      padding: 8px 0 12px;
     }
 
     .chat-message {
-      display: grid;
-      grid-template-columns: 36px minmax(0, 1fr);
+      display: flex;
+      align-items: flex-start;
       gap: 12px;
       max-width: 100%;
-      padding: 8px 0;
-      font-size: 14px;
-      line-height: 1.55;
+      padding: 10px 18px;
+      border-radius: 0;
+      font-size: 15px;
+      line-height: 1.5;
       word-break: break-word;
-      color: var(--text);
+      color: #d8dbe2;
       border: 0;
       background: transparent;
+      transition: background 0.15s ease;
+    }
+
+    .chat-message:hover {
+      background: rgba(255,255,255,0.035);
     }
 
     .chat-message.mine {
-      grid-template-columns: minmax(0, 1fr) 36px;
-      color: var(--text);
+      flex-direction: row-reverse;
+      color: #eef2ff;
     }
 
     .chat-avatar {
       width: 36px;
       height: 36px;
-      border-radius: 8px;
-      background: #e2e8f0;
-      color: #334155;
+      border-radius: 6px;
+      background: #d8dbe2;
+      color: #202327;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 900;
-      flex-shrink: 0;
+      flex: 0 0 auto;
       user-select: none;
     }
 
     .chat-message.peer .chat-avatar {
-      background: linear-gradient(135deg, #f59e0b, #2563eb);
-      color: #fff;
+      background: #b8750b;
+      color: #202327;
     }
 
     .chat-message.mine .chat-avatar {
-      grid-column: 2;
-      grid-row: 1;
-      background: var(--accent);
+      background: #2563eb;
       color: #fff;
     }
 
@@ -2871,48 +2895,50 @@
       display: flex;
       flex-direction: column;
       align-items: flex-start;
-      max-width: min(860px, 92%);
+      flex: 1;
+      max-width: 100%;
     }
 
     .chat-message.mine .chat-message-body {
-      grid-column: 1;
-      grid-row: 1;
-      justify-self: end;
       align-items: flex-end;
-      max-width: min(720px, 88%);
+      flex: 0 1 min(720px, 78%);
     }
 
     .chat-message-content {
-      width: fit-content;
+      width: auto;
       max-width: 100%;
       min-width: 0;
-      color: var(--text);
-      border-radius: 8px;
+      color: inherit;
     }
 
     .chat-message.peer .chat-message-content {
-      padding: 10px 12px;
-      background: #fff;
-      border: 1px solid var(--border-light);
-      box-shadow: var(--shadow-sm);
+      padding: 0;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
     }
 
     .chat-message.mine .chat-message-content {
       padding: 10px 12px;
-      background: var(--accent);
+      background: #2563eb;
       color: #fff;
-      border: 1px solid rgba(59, 130, 246, 0.22);
-      border-radius: 10px;
+      border: 1px solid rgba(96, 165, 250, 0.26);
+      border-radius: 8px;
     }
 
     .chat-message-meta {
-      font-size: 11px;
-      margin-bottom: 4px;
-      font-weight: 700;
-      color: var(--text2);
       display: flex;
-      gap: 6px;
       align-items: baseline;
+      gap: 8px;
+      font-size: 12px;
+      color: #858991;
+      margin-bottom: 4px;
+    }
+
+    .chat-message-meta span:first-child {
+      color: #f3f4f6;
+      font-weight: 700;
+      font-size: 15px;
     }
 
     .chat-message.mine .chat-message-meta {
@@ -2921,7 +2947,8 @@
 
     .chat-markdown {
       white-space: normal;
-      line-height: 1.62;
+      line-height: 1.6;
+      color: inherit;
     }
 
     .chat-markdown p {
@@ -2953,14 +2980,14 @@
     .chat-markdown blockquote {
       margin: 8px 0;
       padding-left: 10px;
-      border-left: 3px solid rgba(59, 130, 246, 0.28);
-      color: var(--text2);
+      border-left: 3px solid rgba(52, 211, 153, 0.36);
+      color: #b9bec8;
     }
 
     .chat-markdown code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 0.9em;
-      background: rgba(31, 34, 50, 0.07);
+      background: rgba(255,255,255,0.08);
       border-radius: 4px;
       padding: 2px 4px;
     }
@@ -2971,8 +2998,9 @@
       border-radius: 8px;
       background: #171923;
       color: #eef2ff;
-      overflow-x: auto;
+      overflow: auto;
       max-width: 100%;
+      max-height: 360px;
     }
 
     .chat-markdown pre code {
@@ -2995,7 +3023,7 @@
     }
 
     .chat-markdown a {
-      color: var(--accent);
+      color: #93c5fd;
       text-decoration: underline;
       text-underline-offset: 2px;
     }
@@ -3004,9 +3032,9 @@
       max-width: 100%;
       overflow-x: auto;
       margin: 8px 0;
-      border: 1px solid var(--border-light);
+      border: 1px solid rgba(255,255,255,0.1);
       border-radius: 8px;
-      background: #fff;
+      background: #202327;
     }
 
     .chat-markdown table {
@@ -3020,15 +3048,15 @@
     .chat-markdown th,
     .chat-markdown td {
       padding: 8px 10px;
-      border-bottom: 1px solid var(--border-light);
+      border-bottom: 1px solid rgba(255,255,255,0.08);
       text-align: left;
       vertical-align: top;
       white-space: nowrap;
     }
 
     .chat-markdown th {
-      background: var(--surface-muted);
-      color: var(--text);
+      background: #252a31;
+      color: #f3f4f6;
       font-weight: 800;
     }
 
@@ -3061,29 +3089,30 @@
     }
 
     .chat-working {
-      margin: 8px 0 2px;
-      border: 0;
-      border-radius: 0;
-      background: transparent;
-      color: var(--text2);
+      margin-top: 8px;
+      border: 1px solid rgba(52, 211, 153, 0.24);
+      border-radius: 6px;
+      background: rgba(14, 18, 23, 0.8);
+      color: #b9bec8;
       overflow: hidden;
     }
 
     .chat-working summary {
       cursor: pointer;
-      padding: 5px 8px;
-      font-size: 11px;
+      padding: 8px 10px;
+      font-size: 12px;
       font-weight: 800;
-      color: var(--text2);
+      color: #34d399;
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      border: 1px solid var(--border-light);
-      border-radius: 7px;
-      background: var(--surface-muted);
+      border: 0;
+      border-radius: 0;
+      background: transparent;
       list-style: none;
       text-transform: uppercase;
-      letter-spacing: 0;
+      letter-spacing: 0.02em;
+      user-select: none;
     }
 
     .chat-working summary::-webkit-details-marker {
@@ -3100,22 +3129,28 @@
     }
 
     .chat-working-hint {
-      color: var(--text3);
+      color: #8290a4;
       font-weight: 700;
       text-transform: none;
     }
 
     .chat-working-body {
       display: grid;
-      gap: 10px;
-      margin: 8px 0 0 7px;
-      padding: 2px 0 2px 14px;
-      border-left: 2px solid var(--border-light);
+      gap: 8px;
+      margin: 0;
+      padding: 0 10px 10px;
+      border-left: 0;
       font-size: 12px;
+      max-height: 420px;
+      overflow: auto;
     }
 
     .chat-working-step {
       min-width: 0;
+      padding: 8px;
+      border-radius: 6px;
+      background: rgba(255,255,255,0.035);
+      border: 1px solid rgba(255,255,255,0.08);
     }
 
     .chat-working-step-title {
@@ -3123,7 +3158,7 @@
       align-items: center;
       gap: 6px;
       font-weight: 800;
-      color: var(--accent);
+      color: #f3f4f6;
       margin-bottom: 4px;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 12px;
@@ -3134,7 +3169,7 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      color: var(--text3);
+      color: #8290a4;
       font-family: inherit;
       font-size: 11px;
       font-weight: 700;
@@ -3143,8 +3178,8 @@
     .chat-working-code {
       max-width: 100%;
       overflow: hidden;
-      border: 1px solid var(--border-light);
-      border-radius: 7px;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 6px;
       background: #111827;
     }
 
@@ -3169,13 +3204,107 @@
       max-width: 100%;
     }
 
+    .chat-working-summary-meta {
+      margin-left: 8px;
+      color: #8290a4;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .chat-working-note {
+      margin-top: 6px;
+      color: #8290a4;
+      font-size: 11px;
+    }
+
+    .chat-plan {
+      margin-top: 8px;
+      border: 1px solid rgba(96, 165, 250, 0.22);
+      border-radius: 6px;
+      background: rgba(15, 23, 42, 0.78);
+      color: #dbeafe;
+      overflow: hidden;
+    }
+
+    .chat-plan summary {
+      cursor: pointer;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-weight: 800;
+      color: #93c5fd;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 0;
+      background: transparent;
+      list-style: none;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      user-select: none;
+    }
+
+    .chat-plan summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .chat-plan[open] .chat-working-chevron {
+      transform: rotate(90deg);
+    }
+
+    .chat-plan-body {
+      display: grid;
+      gap: 7px;
+      padding: 0 10px 10px;
+    }
+
+    .chat-plan-step {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      padding: 8px;
+      border-radius: 6px;
+      background: rgba(255,255,255,0.035);
+      border: 1px solid rgba(255,255,255,0.08);
+      font-size: 13px;
+      color: #d1d5db;
+    }
+
+    .chat-plan-status {
+      width: 76px;
+      text-align: center;
+      border-radius: 999px;
+      padding: 3px 7px;
+      font-size: 11px;
+      font-weight: 800;
+      color: #cbd5e1;
+      background: rgba(148, 163, 184, 0.12);
+    }
+
+    .chat-plan-step.completed .chat-plan-status {
+      color: #86efac;
+      background: rgba(34, 197, 94, 0.12);
+    }
+
+    .chat-plan-step.in-progress .chat-plan-status {
+      color: #93c5fd;
+      background: rgba(59, 130, 246, 0.14);
+    }
+
+    .chat-plan-text {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      line-height: 1.45;
+    }
+
     .chat-rich-image {
       display: block;
-      max-width: min(420px, 100%);
-      max-height: 320px;
-      border-radius: 8px;
+      max-width: min(320px, 100%);
+      max-height: 260px;
+      border-radius: 6px;
       object-fit: cover;
-      border: 1px solid var(--border-light);
+      border: 1px solid rgba(255,255,255,0.12);
+      margin-top: 6px;
     }
 
     .chat-attachment {
@@ -3183,22 +3312,22 @@
       gap: 10px;
       align-items: center;
       margin-top: 6px;
-      padding: 10px 12px;
-      border-radius: 8px;
-      border: 1px solid var(--border-light);
-      background: #fff;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(255,255,255,0.045);
       color: inherit;
       text-decoration: none;
       width: max-content;
       max-width: 100%;
-      box-shadow: var(--shadow-sm);
+      box-shadow: none;
     }
 
     .chat-attachment-icon {
       width: 42px;
       height: 34px;
-      border-radius: 8px;
-      background: var(--accent-light);
+      border-radius: 6px;
+      background: rgba(59, 130, 246, 0.16);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -3215,7 +3344,7 @@
 
     .chat-attachment-meta {
       font-size: 12px;
-      color: var(--text3);
+      color: #858991;
       overflow: hidden;
       text-overflow: ellipsis;
     }
@@ -3236,18 +3365,59 @@
     }
 
     .chat-input-bar {
-      display: flex;
-      gap: 10px;
-      padding: 14px;
-      border-top: 1px solid var(--border-light);
-      background: var(--surface-strong);
+      display: grid;
+      gap: 0;
+      padding: 0 20px 20px;
+      border-top: 0;
+      background: #181b20;
     }
 
-    .chat-input-bar textarea {
-      flex: 1;
+    .chat-input-bar textarea.config-input {
+      width: 100%;
       min-height: 44px;
-      max-height: 120px;
-      resize: vertical;
+      max-height: 160px;
+      resize: none;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-bottom: 0;
+      border-radius: 8px 8px 0 0;
+      background: #222529;
+      color: #f3f4f6;
+      padding: 12px;
+      font-size: 15px;
+      line-height: 1.5;
+      outline: none;
+      box-shadow: none;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    .chat-input-bar textarea.config-input::placeholder {
+      color: #858991;
+    }
+
+    .chat-input-bar textarea.config-input:focus {
+      border-color: rgba(255,255,255,0.22);
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.16);
+      background: #222529;
+    }
+
+    .chat-input-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 6px 10px;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-top: 1px solid rgba(255,255,255,0.06);
+      border-radius: 0 0 8px 8px;
+      background: #222529;
+      color: #858991;
+      font-size: 11px;
+    }
+
+    .chat-input-footer .btn {
+      min-height: 30px;
+      padding: 4px 12px;
+      border-radius: 4px;
     }
 
     body.chat-active .floating-pet {
@@ -3255,11 +3425,12 @@
     }
 
     .chat-window.locked .chat-input-bar {
-      background: rgba(247, 249, 252, 0.92);
+      background: #181b20;
     }
 
     .chat-window.locked .chat-input-bar textarea {
-      color: var(--text2);
+      color: #858991;
+      background: #202327;
     }
 
     #media-preview-modal .modal {
@@ -3338,8 +3509,9 @@
       }
       .chat-message,
       .chat-message.mine {
-        grid-template-columns: 30px minmax(0, 1fr);
+        display: flex;
         gap: 9px;
+        padding: 9px 10px;
       }
       .chat-avatar {
         width: 30px;
@@ -3348,12 +3520,11 @@
         font-size: 11px;
       }
       .chat-message.mine .chat-avatar {
-        grid-column: 1;
+        order: 0;
       }
       .chat-message.mine .chat-message-body {
-        grid-column: 2;
-        justify-self: start;
         align-items: flex-start;
+        flex: 1;
         max-width: 100%;
       }
       .chat-message-body {
@@ -4227,7 +4398,10 @@
             </div>
             <div class="chat-input-bar">
               <textarea class="config-input" id="cats-message-input" placeholder="等待 CatsCo Chat 检查完成" disabled></textarea>
-              <button class="btn btn-primary" onclick="sendCatsMessage()" id="cats-send-btn" disabled>发送</button>
+              <div class="chat-input-footer">
+                <span>Enter 发送，Shift + Enter 换行</span>
+                <button class="btn btn-primary" onclick="sendCatsMessage()" id="cats-send-btn" disabled>发送</button>
+              </div>
             </div>
           </div>
         </div>
@@ -4387,10 +4561,18 @@
     let catsConnectCollapsed = true;
     let catsConnectManualOverride = false;
     const CATS_SCROLL_BOTTOM_THRESHOLD = 80;
+    const CATS_HISTORY_TOP_THRESHOLD = 120;
+    const CATS_MESSAGES_PAGE_SIZE = 50;
     const CATS_DEFAULT_HTTP_BASE = 'https://app.catsco.cc';
     const CATS_DEFAULT_WS_URL = 'wss://app.catsco.cc/v0/channels';
     const CATS_WORKING_TEXT_PREFIX = 'AI文本:';
     const CATS_WORKING_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
+    const CATS_RUNTIME_PLAN_TYPE = 'runtime_plan';
+    let catsMessagesCache = [];
+    let catsMessagesTopic = '';
+    let catsHistoryOffset = 0;
+    let catsHasMoreHistory = false;
+    let catsLoadingOlder = false;
     const petFrames = {
       idle: ['pet/idle/01.png', 'pet/idle/02.png', 'pet/idle/03.png', 'pet/idle/04.png'],
       thinking: ['pet/thinking/01.png', 'pet/thinking/02.png', 'pet/thinking/03.png', 'pet/thinking/04.png'],
@@ -5348,6 +5530,7 @@
     let runtimeConfigSnapshot={};
     let envConfigLoaded=false;
     let envConfigLoading=false;
+    let runtimePromptDetailsOpen=false;
     let customModelSettingsOpen=false;
     let customModelAutoSaveTimer=null;
     let customModelAutoSaveInFlight=false;
@@ -5864,13 +6047,18 @@
             ${renderRuntimeField('可编辑字段','<div class="runtime-tag-list">'+(editFields||runtimeTag('未开放编辑','gray'))+'</div>')}
             ${renderRuntimeField('只读字段','<div class="runtime-tag-list">'+(readOnlyFields||runtimeTag('-','gray'))+'</div>')}
           </div>
-          <details style="margin-top:18px">
+          <details id="runtime-prompt-details" style="margin-top:18px"${runtimePromptDetailsOpen?' open':''}>
             <summary style="cursor:pointer;color:var(--text2);font-weight:700">Diagnostics: System prompt 展开结果（${Number(prompt.length||0)} chars）</summary>
             <pre style="margin-top:10px;max-height:340px;overflow:auto;white-space:pre-wrap;background:var(--surface-muted);border:1px solid var(--border);border-radius:16px;padding:14px;color:var(--text);font-size:12px;line-height:1.6">${escapeHtml(prompt.text||'')}</pre>
           </details>
         </div>
       </div>
       ${renderRuntimeProfileEditor(profile, registeredTools, skills)}`;
+      const promptDetails=document.getElementById('runtime-prompt-details');
+      if(promptDetails){
+        runtimePromptDetailsOpen=promptDetails.open;
+        promptDetails.addEventListener('toggle',()=>{runtimePromptDetailsOpen=promptDetails.open;});
+      }
     }
 
     function renderRuntimeProfileEditor(profile, registeredTools, skills){
@@ -6416,7 +6604,7 @@
         setCatsAction('已连接。可以直接开始对话。');
         pulsePetState('success', '已连接', 2200);
         fetchStatus();
-        await loadCatsMessages(true);
+        await loadCatsMessages(true, {reset:true});
       }catch(e){
         setCatsAction('绑定失败：'+e.message,true);
       }finally{
@@ -6432,6 +6620,7 @@
         catsWorkingActive=false;
         lastCatsMessageSignature='';
         catsScrollPinnedToBottom=true;
+        resetCatsHistoryCache();
         document.getElementById('cats-account').value='';
         document.getElementById('cats-password').value='';
         document.getElementById('cats-messages').innerHTML='<div class="loading">连接 CatsCo 后开始对话</div>';
@@ -6679,15 +6868,98 @@
       try{return JSON.stringify(value,null,2);}catch(_e){return String(value);}
     }
 
+    function truncateCatsWorkingText(text,limit=1200){
+      const value=String(text||'');
+      if(value.length<=limit)return {text:value,truncated:false};
+      return {text:value.slice(0,limit).trimEnd(),truncated:true,originalLength:value.length};
+    }
+
     function catsWorkingBlockKey(block){
       return String(block?.id || block?.tool_use_id || block?.tool_id || block?.call_id || '');
+    }
+
+    function catsStableHash(value){
+      const text=String(value||'');
+      let hash=0;
+      for(let i=0;i<text.length;i++){
+        hash=((hash<<5)-hash)+text.charCodeAt(i);
+        hash|=0;
+      }
+      return Math.abs(hash).toString(36);
+    }
+
+    function catsWorkingDetailKey(blocks){
+      const items=Array.isArray(blocks)?blocks:[];
+      for(const block of items){
+        const explicit=catsWorkingBlockKey(block);
+        if(explicit)return 'working:'+explicit;
+        const metadata=block?.metadata && typeof block.metadata==='object' ? block.metadata : {};
+        const input=block?.input && typeof block.input==='object' ? block.input : {};
+        const subagentId=metadata.subagent_id || input.subagent_id;
+        if(subagentId)return 'working:subagent:'+subagentId;
+      }
+      const fallback=items.map(block=>[
+        block?.type||'',
+        block?.name||block?.tool_name||'',
+        catsWorkingSummary(block).slice(0,120),
+      ].join(':')).join('|');
+      return 'working:fallback:'+catsStableHash(fallback);
+    }
+
+    function captureCatsOpenDetails(root){
+      const openKeys=new Set();
+      if(!root)return openKeys;
+      root.querySelectorAll('details[data-cats-detail-key]').forEach(details=>{
+        if(details.open)openKeys.add(details.getAttribute('data-cats-detail-key'));
+      });
+      return openKeys;
+    }
+
+    function restoreCatsOpenDetails(root, openKeys){
+      if(!root || !openKeys || !openKeys.size)return;
+      root.querySelectorAll('details[data-cats-detail-key]').forEach(details=>{
+        if(openKeys.has(details.getAttribute('data-cats-detail-key')))details.open=true;
+      });
+    }
+
+    function captureCatsWorkingScrollPositions(root){
+      const positions=new Map();
+      if(!root)return positions;
+      root.querySelectorAll('details[data-cats-detail-key]').forEach(details=>{
+        const key=details.getAttribute('data-cats-detail-key');
+        if(!key)return;
+        details.querySelectorAll('.chat-working-body, .chat-working-code pre').forEach((el,index)=>{
+          if(el.scrollTop || el.scrollLeft){
+            positions.set(key+':'+index, {top:el.scrollTop, left:el.scrollLeft});
+          }
+        });
+      });
+      return positions;
+    }
+
+    function restoreCatsWorkingScrollPositions(root, positions){
+      if(!root || !positions || !positions.size)return;
+      root.querySelectorAll('details[data-cats-detail-key]').forEach(details=>{
+        const key=details.getAttribute('data-cats-detail-key');
+        if(!key)return;
+        details.querySelectorAll('.chat-working-body, .chat-working-code pre').forEach((el,index)=>{
+          const position=positions.get(key+':'+index);
+          if(!position)return;
+          el.scrollTop=Math.min(position.top, Math.max(0, el.scrollHeight-el.clientHeight));
+          el.scrollLeft=Math.min(position.left, Math.max(0, el.scrollWidth-el.clientWidth));
+        });
+      });
     }
 
     function catsMessageType(message){
       const type=message?.type||'';
       if(type)return type;
       const msgType=message?.msg_type||'';
-      return CATS_WORKING_TYPES.has(msgType)?msgType:'';
+      return CATS_WORKING_TYPES.has(msgType)||msgType===CATS_RUNTIME_PLAN_TYPE?msgType:'';
+    }
+
+    function isCatsRuntimePlanMessage(message){
+      return catsMessageType(message)===CATS_RUNTIME_PLAN_TYPE;
     }
 
     function isCatsWorkingTextMessage(message){
@@ -6780,6 +7052,19 @@
       return blocks.some(block => block && CATS_WORKING_TYPES.has(block.type));
     }
 
+    function parseCatsRuntimePlan(message){
+      const raw=parseCatsContent(message?.content) || message?.content || {};
+      const snapshot=raw && raw.payload && Array.isArray(raw.payload.steps) ? raw.payload : raw;
+      const steps=Array.isArray(snapshot?.steps) ? snapshot.steps : [];
+      return {
+        revision: Number(snapshot?.revision || message?.metadata?.revision || 0),
+        steps: steps.map(step=>({
+          text: String(step?.text || step?.content || '').trim(),
+          status: ['pending','in_progress','completed'].includes(step?.status) ? step.status : 'pending',
+        })).filter(step=>step.text),
+      };
+    }
+
     function catsMessageComparableId(message){
       return String(message?.seq_id || message?.id || message?.created_at || '');
     }
@@ -6804,7 +7089,7 @@
           lastUserIndex=index;
           return;
         }
-        if(isCatsWorkingMessage(message)){
+        if(isCatsWorkingMessage(message) || isCatsRuntimePlanMessage(message)){
           lastWorkingIndex=index;
           return;
         }
@@ -6827,10 +7112,28 @@
       const latestMine=from===uid || from===('usr'+uid);
       if(signature && signature!==lastCatsMessageSignature){
         lastCatsMessageSignature=signature;
-        if(!latestMine && !isCatsWorkingMessage(latest) && lastBotTextIndex >= lastUserIndex){
+        if(!latestMine && !isCatsWorkingMessage(latest) && !isCatsRuntimePlanMessage(latest) && lastBotTextIndex >= lastUserIndex){
           pulsePetState('success','CatsCo 回复了',1800);
         }
       }
+    }
+
+    function renderCatsRuntimePlan(message){
+      const snapshot=parseCatsRuntimePlan(message);
+      if(!snapshot.steps.length)return '';
+      const completed=snapshot.steps.filter(step=>step.status==='completed').length;
+      const active=snapshot.steps.filter(step=>step.status==='in_progress').length;
+      const summaryMeta=[
+        completed+'/'+snapshot.steps.length+' done',
+        active?active+' active':'',
+      ].filter(Boolean).join(' · ');
+      const detailKey='plan:'+(snapshot.revision || catsMessageKey(message));
+      const labels={pending:'待处理',in_progress:'进行中',completed:'已完成'};
+      const steps=snapshot.steps.map(step=>{
+        const cls=step.status==='in_progress'?'in-progress':step.status;
+        return '<div class="chat-plan-step '+escapeHtml(cls)+'"><span class="chat-plan-status">'+escapeHtml(labels[step.status]||step.status)+'</span><span class="chat-plan-text">'+escapeHtml(step.text)+'</span></div>';
+      }).join('');
+      return '<details class="chat-plan" data-cats-detail-key="'+escapeHtml(detailKey)+'" open><summary><span class="chat-working-chevron">&gt;</span><span>PLAN</span><span class="chat-working-hint">'+escapeHtml(summaryMeta)+'</span></summary><div class="chat-plan-body">'+steps+'</div></details>';
     }
 
     function renderCatsWorkingBlocks(blocks){
@@ -6840,33 +7143,52 @@
         if(group.type==='tool'){
           const tool=group.tool||{};
           const result=group.result||{};
-          const title='Tool: '+(tool.name||tool.tool_name||'Tool');
+          const input=tool.input && typeof tool.input==='object' ? tool.input : {};
+          const metadata=tool.metadata && typeof tool.metadata==='object' ? tool.metadata : {};
+          const isSubagent=input.kind==='subagent' || metadata.kind==='subagent_event' || String(tool.id||tool.tool_use_id||'').startsWith('subagent:');
+          const subagentName=input.subagent_name || metadata.subagent_name || tool.name || '子agent';
+          const status=metadata.subagent_status || input.status || '';
+          const title=isSubagent
+            ? (subagentName + (status ? ' · '+status : ''))
+            : 'Tool: '+(tool.name||tool.tool_name||'Tool');
           const inputSummary=catsWorkingSummary(tool);
-          const input=catsWorkingCode(tool.input||tool.arguments);
-          const output=catsWorkingCode(result.content||result.text||result.output||result.result);
+          const inputCode=truncateCatsWorkingText(catsWorkingCode(tool.input||tool.arguments),900);
+          const output=truncateCatsWorkingText(catsWorkingCode(result.content||result.text||result.output||result.result),1400);
+          const inputNote=inputCode.truncated?'<div class="chat-working-note">已折叠长输入，完整内容请看 CatsCo 日志。</div>':'';
+          const outputNote=output.truncated?'<div class="chat-working-note">已折叠长输出，完整内容请看 CatsCo 日志。</div>':'';
           return '<div class="chat-working-step"><div class="chat-working-step-title">'+escapeHtml(title)+(inputSummary?'<span class="chat-working-step-meta">'+escapeHtml(inputSummary)+'</span>':'')+'</div>'+
-            (input?'<div class="chat-working-code"><pre>'+escapeHtml(input)+'</pre></div>':'')+
-            (output?'<div class="chat-working-code" style="margin-top:6px"><pre>'+escapeHtml(output)+'</pre></div>':'')+
+            (inputCode.text?'<div class="chat-working-code"><pre>'+escapeHtml(inputCode.text)+'</pre></div>'+inputNote:'')+
+            (output.text?'<div class="chat-working-code" style="margin-top:6px"><pre>'+escapeHtml(output.text)+'</pre></div>'+outputNote:'')+
             '</div>';
         }
         const block=group.block||group.result||{};
         const type=group.type||block.type||'Working';
         const title=type==='thinking'?'Thinking':type==='assistant_text'?'Assistant':type==='tool_result'?'Tool Result':type;
+        const rawBody=type==='tool_result'
+          ? catsWorkingCode(block.content||block.text||block.output||block.result)
+          : catsWorkingSummary(block);
+        const clipped=truncateCatsWorkingText(rawBody,type==='tool_result'?1400:700);
+        const note=clipped.truncated
+          ? '<div class="chat-working-note">已折叠长输出，完整内容请看 CatsCo 日志。</div>'
+          : '';
         const body=type==='tool_result'
-          ? '<div class="chat-working-code"><pre>'+escapeHtml(catsWorkingCode(block.content||block.text||block.output||block.result))+'</pre></div>'
-          : '<div class="chat-markdown">'+renderMarkdown(catsWorkingSummary(block))+'</div>';
+          ? '<div class="chat-working-code"><pre>'+escapeHtml(clipped.text)+'</pre></div>'+note
+          : '<div class="chat-markdown">'+renderMarkdown(clipped.text)+note+'</div>';
         return '<div class="chat-working-step"><div class="chat-working-step-title">'+escapeHtml(title)+'</div>'+body+'</div>';
       }).join('');
       const countLabel=groups.length===1?'1 step':(groups.length+' steps');
-      return '<details class="chat-working"><summary><span class="chat-working-chevron">&gt;</span><span>WORKING...</span><span class="chat-working-hint">'+escapeHtml(countLabel)+'</span></summary><div class="chat-working-body">'+steps+'</div></details>';
+      const detailKey=catsWorkingDetailKey(blocks);
+      return '<details class="chat-working" data-cats-detail-key="'+escapeHtml(detailKey)+'"><summary><span class="chat-working-chevron">&gt;</span><span>WORKING...</span><span class="chat-working-hint">'+escapeHtml(countLabel)+'</span></summary><div class="chat-working-body">'+steps+'</div></details>';
     }
 
     function renderCatsMessageBody(message){
+      if(isCatsRuntimePlanMessage(message)){
+        return renderCatsRuntimePlan(message);
+      }
       const blocks=Array.isArray(message?.content_blocks)?message.content_blocks:[];
       const textBlocks=[];
       const richBlocks=[];
       const workingBlocks=[];
-      const messageType=message?.type||message?.msg_type||'';
       const messageIsWorking=isCatsWorkingMessage(message);
       for(const block of blocks){
         if(block.type==='text' || (block.type==='assistant_text' && !messageIsWorking)){
@@ -6891,7 +7213,7 @@
         const richHtml=renderRichCatsContent(message.content);
         if(richHtml){
           html+=richHtml;
-        }else{
+        }else if(!messageIsWorking){
           const text=extractCatsMessageText(message);
           html+='<div class="chat-markdown">'+renderMarkdown(text)+'</div>';
         }
@@ -6919,6 +7241,49 @@
       if(!box)return;
       box.scrollTop=box.scrollHeight;
       catsScrollPinnedToBottom=true;
+    }
+
+    function resetCatsHistoryCache(topic=''){
+      catsMessagesCache=[];
+      catsMessagesTopic=topic;
+      catsHistoryOffset=0;
+      catsHasMoreHistory=false;
+      catsLoadingOlder=false;
+    }
+
+    function catsMessageKey(message){
+      if(!message)return '';
+      return String(message.seq_id || message.id || [message.created_at, message.from_uid, message.msg_type || message.type, message.content].join('|'));
+    }
+
+    function catsMessageOrderValue(message){
+      const numeric=Number(message?.seq_id || message?.id || 0);
+      if(Number.isFinite(numeric) && numeric>0)return numeric;
+      const created=message?.created_at?Date.parse(message.created_at):0;
+      return Number.isFinite(created)?created:0;
+    }
+
+    function mergeCatsMessageLists(...lists){
+      const byKey=new Map();
+      lists.flat().forEach(message=>{
+        if(!message)return;
+        const key=catsMessageKey(message);
+        if(key)byKey.set(key, {...(byKey.get(key)||{}), ...message});
+      });
+      return Array.from(byKey.values()).sort((a,b)=>catsMessageOrderValue(a)-catsMessageOrderValue(b));
+    }
+
+    async function fetchCatsMessagePage(offset=0, limit=CATS_MESSAGES_PAGE_SIZE){
+      const topic=catsState.topicId;
+      const url=API+'/api/cats/messages?topic='+encodeURIComponent(topic)+'&limit='+encodeURIComponent(limit)+'&offset='+encodeURIComponent(offset);
+      const data=await parseCatsResponse(await fetch(url));
+      return Array.isArray(data.messages)?data.messages:[];
+    }
+
+    function handleCatsMessagesScroll(){
+      const box=document.getElementById('cats-messages');
+      updateCatsMessageScrollIntent();
+      if(box && box.scrollTop<=CATS_HISTORY_TOP_THRESHOLD) loadOlderCatsMessages();
     }
 
     function groupCatsTimelineMessages(messages, uid){
@@ -6977,10 +7342,14 @@
       '</div>';
     }
 
-    function renderCatsMessages(messages){
+    function renderCatsMessages(messages, options={}){
       const box=document.getElementById('cats-messages');
       const uid=String(catsState.user?.uid||'');
+      const anchor=options.scrollAnchor||null;
+      const openDetailKeys=captureCatsOpenDetails(box);
+      const workingScrollPositions=captureCatsWorkingScrollPositions(box);
       const shouldStickToBottom=catsScrollPinnedToBottom || !box.scrollHeight || isCatsMessageScrollNearBottom(box);
+      const preservedScrollTop=box ? box.scrollTop : 0;
       if(!messages || !messages.length){
         box.innerHTML='<div class="loading">暂无消息</div>';
         return;
@@ -6993,19 +7362,64 @@
         }
         return renderCatsMessageShell(group.message, renderCatsMessageBody(group.message), {isConsecutive:group.isConsecutive});
       }).join('');
-      box.innerHTML='<div class="chat-timeline-inner">'+html+'</div>';
-      if(shouldStickToBottom)scrollCatsMessagesToBottom(box);
+      const loadingHtml=catsLoadingOlder?'<div class="chat-history-loading">加载更早消息...</div>':'';
+      box.innerHTML='<div class="chat-timeline-inner">'+loadingHtml+html+'</div>';
+      restoreCatsOpenDetails(box, openDetailKeys);
+      restoreCatsWorkingScrollPositions(box, workingScrollPositions);
+      if(anchor){
+        box.scrollTop=anchor.scrollTop+(box.scrollHeight-anchor.scrollHeight);
+        catsScrollPinnedToBottom=false;
+      }else if(shouldStickToBottom){
+        scrollCatsMessagesToBottom(box);
+      }else if(box){
+        box.scrollTop=Math.min(preservedScrollTop, Math.max(0, box.scrollHeight-box.clientHeight));
+        catsScrollPinnedToBottom=false;
+      }
       updatePetFromCatsMessages(messages);
     }
 
-    async function loadCatsMessages(showErrors=true){
+    async function loadCatsMessages(showErrors=true, options={}){
       if(!catsState.topicId)return;
+      const topic=catsState.topicId;
+      const reset=Boolean(options.reset) || catsMessagesTopic!==topic || catsMessagesCache.length===0;
+      if(reset){
+        resetCatsHistoryCache(topic);
+        catsScrollPinnedToBottom=true;
+      }
       try{
-        const data=await parseCatsResponse(await fetch(API+'/api/cats/messages?topic='+encodeURIComponent(catsState.topicId)+'&limit=50&offset=0'));
-        renderCatsMessages(data.messages||[]);
+        const latest=await fetchCatsMessagePage(0);
+        catsMessagesTopic=topic;
+        catsMessagesCache=reset?latest:mergeCatsMessageLists(catsMessagesCache, latest);
+        catsHistoryOffset=catsMessagesCache.length;
+        if(reset || catsMessagesCache.length<=latest.length){
+          catsHasMoreHistory=latest.length===CATS_MESSAGES_PAGE_SIZE;
+        }
+        renderCatsMessages(catsMessagesCache);
         if(showErrors) pulsePetState('success','消息已刷新',1400);
       }catch(e){
         if(showErrors)setCatsAction('加载消息失败：'+e.message,true);
+      }
+    }
+
+    async function loadOlderCatsMessages(){
+      if(!catsState.topicId || catsLoadingOlder || !catsHasMoreHistory)return;
+      const box=document.getElementById('cats-messages');
+      const anchor=box?{scrollHeight:box.scrollHeight, scrollTop:box.scrollTop}:null;
+      catsLoadingOlder=true;
+      try{
+        const older=await fetchCatsMessagePage(catsHistoryOffset);
+        if(older.length){
+          catsMessagesCache=mergeCatsMessageLists(older, catsMessagesCache);
+          catsHistoryOffset=catsMessagesCache.length;
+          catsHasMoreHistory=older.length===CATS_MESSAGES_PAGE_SIZE;
+          renderCatsMessages(catsMessagesCache, {scrollAnchor: anchor});
+        }else{
+          catsHasMoreHistory=false;
+        }
+      }catch(e){
+        setCatsAction('加载更早消息失败：'+e.message,true);
+      }finally{
+        catsLoadingOlder=false;
       }
     }
 
@@ -7028,7 +7442,7 @@
         input.value='';
         catsScrollPinnedToBottom=true;
         pulsePetState('success', '已发送', 1800);
-        await loadCatsMessages(true);
+        await loadCatsMessages(true, {reset:false});
       }catch(e){
         setCatsAction('发送失败：'+e.message,true);
       }finally{
@@ -7073,7 +7487,7 @@
     if(document.getElementById('page-chat')?.classList.contains('active') && !catsPollTimer) catsPollTimer = setInterval(fetchCatsStatus, 5000);
     setInterval(fetchStatus,5000);setInterval(fetchSkills,30000);setInterval(()=>fetchUpdateStatus(true),5000);
     const catsMessagesBox = document.getElementById('cats-messages');
-    catsMessagesBox.addEventListener('scroll', updateCatsMessageScrollIntent, { passive: true });
+    catsMessagesBox.addEventListener('scroll', handleCatsMessagesScroll, { passive: true });
     const catsMessageInput = document.getElementById('cats-message-input');
     catsMessageInput.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendCatsMessage();}});
     catsMessageInput.addEventListener('input',()=>{if(catsMessageInput.value.trim()) setPetState('typing', { message:'输入中...' }); else setPetAutoBaseline(petAutoBaseline);});

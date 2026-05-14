@@ -37,6 +37,10 @@ export class ShellTool implements Tool {
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { command, description, timeout = 30000 } = args;
 
+    if (context.abortSignal?.aborted) {
+      return { ok: false, errorCode: 'EXECUTION_TIMEOUT', message: `命令已取消，未开始执行:\n$ ${command}` };
+    }
+
     const toolPermission = isToolAllowed(this.definition.name);
     if (!toolPermission.allowed) {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${toolPermission.reason}` };
@@ -66,6 +70,8 @@ export class ShellTool implements Tool {
         env: runtimeEnvironment.env,
         encoding: 'utf-8',
         timeout: timeout,
+        signal: context.abortSignal,
+        killSignal: 'SIGTERM',
         maxBuffer: 10 * 1024 * 1024, // 10MB
       });
 
@@ -97,10 +103,25 @@ export class ShellTool implements Tool {
       const executionTime = Date.now() - startTime;
       const errorOutput = error.stderr || error.stdout || error.message;
 
+      if (context.abortSignal?.aborted || isAbortError(error)) {
+        Logger.warning(`命令已取消 (耗时: ${executionTime}ms): ${command}`);
+        return {
+          ok: false,
+          errorCode: 'EXECUTION_TIMEOUT',
+          message: `命令已取消:\n$ ${command}\n\n执行时间: ${executionTime}ms`,
+        };
+      }
+
       Logger.error(`✗ 命令执行失败 (耗时: ${executionTime}ms)`);
       Logger.error(`  错误: ${error.message}`);
 
       return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `命令执行失败:\n$ ${command}\n\n执行时间: ${executionTime}ms\n错误信息:\n${errorOutput}` };
     }
   }
+}
+
+function isAbortError(error: any): boolean {
+  return error?.name === 'AbortError'
+    || error?.code === 'ABORT_ERR'
+    || /abort|cancel/i.test(String(error?.message || ''));
 }

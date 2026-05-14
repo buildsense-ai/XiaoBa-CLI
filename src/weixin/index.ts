@@ -3,7 +3,8 @@ import { WeixinConfig, WeixinMessage } from './types';
 import { MessageHandler } from './message-handler';
 import { MessageSender } from './message-sender';
 import { MessageSessionManager } from '../core/message-session-manager';
-import { AgentServices, RuntimeFeedbackInput } from '../core/agent-session';
+import { AgentServices, BUSY_MESSAGE, ERROR_MESSAGE, RuntimeFeedbackInput } from '../core/agent-session';
+import { SubAgentManager } from '../core/sub-agent-manager';
 import { Logger } from '../utils/logger';
 import { ChannelCallbacks } from '../types/tool';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
@@ -12,6 +13,13 @@ import path from 'path';
 
 const CHANNEL_VERSION = 'xiaoba-weixin/1.0';
 const DEFAULT_LONGPOLL_MS = 30000;
+
+interface QueuedWeixinMessage {
+  userText: string;
+  chatId: string;
+  runtimeFeedback?: RuntimeFeedbackInput[];
+  source?: 'user' | 'subagent_feedback';
+}
 
 export function createWeixinRuntime(): AdapterRuntimeBundle {
   return createAdapterRuntime({
@@ -28,6 +36,7 @@ export class WeixinBot {
   private agentServices: AgentServices;
   private runtime: AdapterRuntimeBundle;
   private contextTokens = new Map<string, string>();
+  private messageQueue = new Map<string, QueuedWeixinMessage[]>();
   private isRunning = false;
   private getUpdatesBuf = '';
   private stateDir: string;
@@ -177,6 +186,7 @@ export class WeixinBot {
     if (!parsed || this.handler.shouldIgnoreMessage(parsed)) return;
 
     const session = this.sessionManager.getOrCreate(sessionKey);
+    this.registerSubAgentCallbacks(sessionKey, msg.to_user_id || from);
     const channel = this.buildChannel(msg.to_user_id, sessionKey);
     const expectedMediaCount = (parsed.item_list || []).filter(item =>
       (item.type === 2 && item.image_item?.media)
@@ -213,10 +223,94 @@ export class WeixinBot {
     }
 
     await session.handleMessage(userText, { channel, runtimeFeedback });
+    await this.drainMessageQueue(sessionKey);
   }
 
   destroy(): void {
     this.isRunning = false;
+    this.messageQueue.clear();
     Logger.info('[微信] 机器人已停止');
+  }
+
+  private registerSubAgentCallbacks(sessionKey: string, chatId: string): void {
+    SubAgentManager.getInstance().registerPlatformCallbacks(sessionKey, {
+      injectMessage: async (text: string) => {
+        await this.handleSubAgentFeedback(sessionKey, chatId, text);
+      },
+    });
+  }
+
+  private async handleSubAgentFeedback(
+    sessionKey: string,
+    chatId: string,
+    text: string,
+  ): Promise<void> {
+    const session = this.sessionManager.getOrCreate(sessionKey);
+    if (session.isBusy()) {
+      this.enqueueMessage(sessionKey, {
+        userText: text,
+        chatId,
+        source: 'subagent_feedback',
+      });
+      Logger.info(`[${sessionKey}] 主会话忙，子智能体反馈已入队 (队列长度: ${this.messageQueue.get(sessionKey)?.length || 0})`);
+      return;
+    }
+
+    const channel = this.buildChannel(chatId, sessionKey);
+    const result = await session.handleRuntimeObservation(text, { channel, source: 'subagent_result' });
+    if (result.text === BUSY_MESSAGE) {
+      this.enqueueMessage(sessionKey, {
+        userText: text,
+        chatId,
+        source: 'subagent_feedback',
+      });
+      Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
+      return;
+    }
+    if (result.text === ERROR_MESSAGE) {
+      await channel.reply(chatId, result.text);
+    }
+    await this.drainMessageQueue(sessionKey);
+  }
+
+  private enqueueMessage(sessionKey: string, message: QueuedWeixinMessage): void {
+    const queue = this.messageQueue.get(sessionKey) ?? [];
+    queue.push(message);
+    this.messageQueue.set(sessionKey, queue);
+  }
+
+  private async drainMessageQueue(sessionKey: string): Promise<void> {
+    const queue = this.messageQueue.get(sessionKey);
+    if (!queue || queue.length === 0) return;
+
+    const session = this.sessionManager.getOrCreate(sessionKey);
+    if (session.isBusy()) {
+      Logger.info(`[${sessionKey}] 主会话仍忙，暂缓排空微信队列 (队列长度: ${queue.length})`);
+      return;
+    }
+
+    const messages = queue.splice(0);
+    this.messageQueue.delete(sessionKey);
+
+    const mergedText = messages.length === 1
+      ? messages[0].userText
+      : messages.map((m, i) => `[${m.source === 'subagent_feedback' ? '后台子agent通知' : '队列消息'} ${i + 1}] ${m.userText}`).join('\n');
+    const runtimeFeedback = messages.flatMap(message => message.runtimeFeedback || []);
+    const last = messages[messages.length - 1];
+    const channel = this.buildChannel(last.chatId, sessionKey);
+
+    const singleSubAgentFeedback = messages.length === 1 && messages[0].source === 'subagent_feedback';
+    const result = singleSubAgentFeedback
+      ? await session.handleRuntimeObservation(mergedText, {
+        channel,
+        runtimeFeedback,
+        source: 'subagent_result',
+      })
+      : await session.handleMessage(mergedText, { channel, runtimeFeedback });
+    if (result.text === ERROR_MESSAGE) {
+      await channel.reply(last.chatId, result.text);
+    }
+
+    await this.drainMessageQueue(sessionKey);
   }
 }

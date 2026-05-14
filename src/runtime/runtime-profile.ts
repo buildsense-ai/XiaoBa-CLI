@@ -73,7 +73,7 @@ export function resolveDefaultRuntimeProfile(
     id: options.id ?? `xiaoba-${surface}`,
     displayName,
     surface,
-    workingDirectory: path.resolve(options.workingDirectory ?? process.cwd()),
+    workingDirectory: resolveDefaultWorkingDirectory(options, env),
     model: options.model ?? {},
     prompt: {
       source: 'prompt-manager',
@@ -91,6 +91,27 @@ export function resolveDefaultRuntimeProfile(
       uploadEnabled: options.logging?.uploadEnabled,
     },
   };
+}
+
+function resolveDefaultWorkingDirectory(
+  options: ResolveRuntimeProfileOptions,
+  env: NodeJS.ProcessEnv,
+): string {
+  if (options.workingDirectory) {
+    return path.resolve(options.workingDirectory);
+  }
+
+  const appRoot = (env.XIAOBA_APP_ROOT || '').trim();
+  const isPackaged = (env.XIAOBA_IS_PACKAGED || '').trim();
+
+  // Electron dev runs from userData so app config/logs are colocated, but the
+  // source project root remains XIAOBA_APP_ROOT. Use it as the default tool cwd
+  // only for dev; packaged apps should not default to the installed app bundle.
+  if (appRoot && isPackaged === '0') {
+    return path.resolve(appRoot);
+  }
+
+  return path.resolve(process.cwd());
 }
 
 export function validateRuntimeProfile(profile: RuntimeProfile): RuntimeProfileValidationIssue[] {

@@ -1,6 +1,7 @@
 import { AgentSession, AgentServices, SystemPromptProvider } from './agent-session';
 import { Logger } from '../utils/logger';
 import { composeSessionSystemPromptProvider } from './session-system-prompt';
+import { SubAgentManager } from './sub-agent-manager';
 
 /** 默认会话过期时间：60 分钟 */
 const DEFAULT_SESSION_TTL = 60 * 60 * 1000;
@@ -49,6 +50,15 @@ export class MessageSessionManager {
 
   static getManager(sessionType: string): MessageSessionManager | null {
     return this.managers.get(sessionType) || null;
+  }
+
+  /** 获取已存在的会话；不会因为查询而新建会话 */
+  get(key: string): AgentSession | null {
+    const session = this.sessions.get(key) || null;
+    if (session) {
+      session.lastActiveAt = Date.now();
+    }
+    return session;
   }
 
   /** 设置上下文注入器，新建 session 时自动调用 */
@@ -102,6 +112,11 @@ export class MessageSessionManager {
     for (const [key, session] of this.sessions) {
       if (this.destroying.has(key)) continue;
       if (now - session.lastActiveAt <= this.ttl) continue;
+      if (SubAgentManager.getInstance().hasActiveForParent(key)) {
+        session.lastActiveAt = now;
+        session.runWithLogContext(() => Logger.info(`会话仍有后台子任务运行，跳过过期清理: ${key}`));
+        continue;
+      }
 
       this.destroying.add(key);
       this.sessions.delete(key);
@@ -124,7 +139,10 @@ export class MessageSessionManager {
 
     // 保存所有活跃会话
     const cleanupPromises = Array.from(this.sessions.values()).map(session =>
-      session.cleanup().catch(err =>
+      session.cleanup({
+        stopSubAgents: true,
+        subAgentStopReason: '会话管理器销毁',
+      }).catch(err =>
         session.runWithLogContext(() => Logger.warning(`会话 ${session.key} 清理失败: ${err}`))
       )
     );

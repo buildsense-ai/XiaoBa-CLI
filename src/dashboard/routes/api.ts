@@ -34,9 +34,8 @@ import {
 const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cc';
 const DEFAULT_CATSCO_WS_URL = 'wss://app.catsco.cc/v0/channels';
 const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
-const SYSTEM_SKILL_DIRS = new Set(['_tool-skills']);
 
-type SkillSource = 'system' | 'bundled' | 'user';
+type SkillSource = 'bundled' | 'user';
 
 interface SkillManagementInfo {
   source: SkillSource;
@@ -734,7 +733,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       if (!skill) return res.status(404).json({ error: 'Skill not found' });
       const management = getSkillManagementInfo(skill.filePath);
       if (!management.canDisable) {
-        return res.status(403).json({ error: '系统 Skill 不能禁用。' });
+        return res.status(403).json({ error: '该 Skill 当前不能禁用。' });
       }
       fs.renameSync(skill.filePath, skill.filePath + '.disabled');
       res.json({ ok: true });
@@ -1227,27 +1226,19 @@ function skillToDashboardPayload(skill: Skill): any {
 
 function getSkillManagementInfo(skillFilePath: string): SkillManagementInfo {
   const dir = path.dirname(skillFilePath);
-  const skillsRoot = PathResolver.getSkillsPath();
-  const relative = path.relative(skillsRoot, dir);
-  const parts = relative.split(path.sep).filter(Boolean);
-  const source: SkillSource = parts.some(part => SYSTEM_SKILL_DIRS.has(part))
-    ? 'system'
-    : fs.existsSync(path.join(dir, BUNDLED_SKILL_MARKER))
-      ? 'bundled'
-      : 'user';
+  const source: SkillSource = fs.existsSync(path.join(dir, BUNDLED_SKILL_MARKER))
+    ? 'bundled'
+    : 'user';
 
   return {
     source,
-    protected: source === 'system',
-    canDisable: source !== 'system',
+    protected: false,
+    canDisable: true,
     canDelete: source === 'user',
   };
 }
 
 function formatSkillDeleteBlockedMessage(management: SkillManagementInfo): string {
-  if (management.source === 'system') {
-    return '系统 Skill 不能删除。';
-  }
   if (management.source === 'bundled') {
     return '内置 Skill 不能删除，可在界面中禁用；这样升级后也不会被自动恢复成启用状态。';
   }

@@ -7,6 +7,7 @@ import type { RunResult } from './conversation-runner';
 
 export interface RecordTurnParams {
   userInput: string | ContentBlock[];
+  runtimeObservationSource?: string;
   result: RunResult;
   tokens: {
     prompt: number;
@@ -27,7 +28,10 @@ export class TurnLogRecorder {
       params.result.response || '',
       this.extractToolCalls(params.result.newMessages),
       params.tokens,
-      { runtimeFeedback: params.runtimeFeedback },
+      {
+        runtimeFeedback: params.runtimeFeedback,
+        runtimeObservationSource: params.runtimeObservationSource,
+      },
     );
   }
 

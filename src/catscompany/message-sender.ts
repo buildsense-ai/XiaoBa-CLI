@@ -1,11 +1,12 @@
 import { CatsClient, CatsSendError } from './client';
+import type { RuntimePlanSnapshot } from '../core/plan-runtime';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Logger } from '../utils/logger';
 
 const MAX_MSG_LENGTH = 4000;
 
-type CatsMessageType = 'thinking' | 'tool_use' | 'tool_result' | 'text' | 'image' | 'file';
+type CatsMessageType = 'thinking' | 'tool_use' | 'tool_result' | 'runtime_plan' | 'text' | 'image' | 'file';
 
 interface CatsSendBody {
   topic_id: string;
@@ -152,8 +153,8 @@ export class MessageSender {
     }
   }
 
-  async sendThinking(topic: string, thinking: string): Promise<void> {
-    await this.send(topic, 'thinking', thinking);
+  async sendThinking(topic: string, thinking: string, metadata?: any): Promise<void> {
+    await this.send(topic, 'thinking', thinking, metadata);
     Logger.info(`Thinking 已发送: ${thinking.slice(0, 50)}...`);
   }
 
@@ -166,13 +167,23 @@ export class MessageSender {
     topic: string,
     toolUseId: string,
     content: string,
-    isError = false
+    isError = false,
+    metadata?: any
   ): Promise<void> {
     await this.send(topic, 'tool_result', content, {
       tool_use_id: toolUseId,
       is_error: isError,
+      ...(metadata || {}),
     });
     Logger.info(`Tool result 已发送: tool_use_id=${toolUseId}`);
+  }
+
+  async sendRuntimePlan(topic: string, snapshot: RuntimePlanSnapshot): Promise<void> {
+    await this.send(topic, 'runtime_plan', snapshot, {
+      transient: true,
+      revision: snapshot.revision,
+    });
+    Logger.info(`Runtime plan 已发送: revision=${snapshot.revision}, steps=${snapshot.steps.length}`);
   }
 
   async sendText(topic: string, text: string): Promise<void> {

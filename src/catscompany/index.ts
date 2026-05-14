@@ -6,6 +6,8 @@ import { MessageSessionManager } from '../core/message-session-manager';
 import { AgentServices, BUSY_MESSAGE, RuntimeFeedbackInput } from '../core/agent-session';
 import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
+import type { SubAgentRuntimeEvent } from '../core/sub-agent-events';
+import type { SubAgentInfo } from '../core/sub-agent-session';
 import { ChannelCallbacks } from '../types/tool';
 import { ContentBlock } from '../types';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
@@ -42,10 +44,46 @@ interface QueuedMessage {
   seq: number;
   receivedAt: number;
   runtimeFeedback?: RuntimeFeedbackInput[];
+  source?: 'user' | 'subagent_feedback';
 }
 
 const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 const TEXT_ATTACHMENT_COALESCE_MS = Number(process.env.CATSCO_TEXT_ATTACHMENT_COALESCE_MS || 1500);
+const HIDDEN_CATS_TOOL_PROGRESS = new Set([
+  'send_text',
+  'send_file',
+  'spawn_subagent',
+  'check_subagent',
+  'stop_subagent',
+  'resume_subagent',
+  'update_plan',
+  'record_decision',
+]);
+
+const TERMINAL_SUBAGENT_EVENTS = new Set<SubAgentRuntimeEvent['type']>([
+  'agent_completed',
+  'agent_failed',
+  'agent_stopped',
+]);
+
+const PROGRESS_SUBAGENT_EVENTS = new Set<SubAgentRuntimeEvent['type']>([
+  'agent_progress',
+  'artifact_update',
+]);
+
+function shouldHideCatsToolProgress(toolName: string): boolean {
+  return HIDDEN_CATS_TOOL_PROGRESS.has(toolName);
+}
+
+function shouldSuppressSubAgentProgress(
+  event: SubAgentRuntimeEvent,
+  info?: SubAgentInfo,
+): boolean {
+  if (event.type !== 'agent_progress') return false;
+  if (event.payload?.temporaryDirectory) return true;
+  if (event.summary.includes('临时目录已清理')) return true;
+  return info?.status === 'completed' || info?.status === 'failed' || info?.status === 'stopped';
+}
 
 export function createCatsCompanyRuntime(sessionTTL?: number): AdapterRuntimeBundle {
   return createAdapterRuntime({
@@ -171,6 +209,13 @@ export class CatsCompanyBot {
           Logger.warning(`文件发送失败 (sendFile): ${err.message}`);
         }
       },
+      sendRuntimePlan: async (_targetTopic, snapshot) => {
+        try {
+          await this.sender.sendRuntimePlan(topic, snapshot);
+        } catch (err: any) {
+          Logger.warning(`运行时计划发送失败 (runtime_plan): ${err.message}`);
+        }
+      },
     };
 
     return channel;
@@ -182,6 +227,13 @@ export class CatsCompanyBot {
    * 处理收到的消息
    */
   private async onMessage(ctx: MessageContext): Promise<void> {
+    if (this.botUid && ctx.senderId === this.botUid) return;
+
+    if (this.isCancelMessage(ctx)) {
+      this.handleCancelMessage(ctx);
+      return;
+    }
+
     const msg = this.parseMessage(ctx);
     if (!msg) return;
 
@@ -222,8 +274,13 @@ export class CatsCompanyBot {
     // 注册持久化回调到 SubAgentManager
     const subAgentManager = SubAgentManager.getInstance();
     subAgentManager.registerPlatformCallbacks(key, {
+      // Result observation 通道：子 agent 完成/失败/ask_parent 时注入主会话，触发主 agent 继续推理。
       injectMessage: async (text: string) => {
         await this.handleSubAgentFeedback(key, msg.topic, msg.senderId, text);
+      },
+      // Event 通道：只负责把运行状态推到 CatsCompany/CatsCo WORKING UI。
+      onSubAgentEvent: async (event, info) => {
+        await this.handleSubAgentRuntimeEvent(msg.topic, event, info);
       },
     });
 
@@ -289,6 +346,10 @@ export class CatsCompanyBot {
 
     // 并发保护：忙时消息静默入队，空闲后自动处理
     if (session.isBusy()) {
+      if (this.isInterruptMessage(msg.text)) {
+        session.requestInterrupt();
+        Logger.warning(`[${key}] 检测到用户中断请求，已请求中止当前回合`);
+      }
       const queue = this.messageQueue.get(key) ?? [];
       queue.push({
         userMessage,
@@ -297,6 +358,7 @@ export class CatsCompanyBot {
         seq: msg.seq,
         receivedAt: Date.now(),
         runtimeFeedback,
+        source: 'user',
       });
       this.messageQueue.set(key, queue);
       Logger.info(`[${key}] 主会话忙，消息已入队 (队列长度: ${queue.length})`);
@@ -334,7 +396,7 @@ export class CatsCompanyBot {
           },
           onToolStart: async (toolName: string, toolUseId: string, input: any) => {
             // 跳过输出型工具的 WORKING 消息
-            if (toolName === 'send_text' || toolName === 'send_file') {
+            if (shouldHideCatsToolProgress(toolName)) {
               return;
             }
             try {
@@ -345,7 +407,7 @@ export class CatsCompanyBot {
           },
           onToolEnd: async (toolName: string, toolUseId: string, result: string) => {
             // 跳过输出型工具的 WORKING 消息
-            if (toolName === 'send_text' || toolName === 'send_file') {
+            if (shouldHideCatsToolProgress(toolName)) {
               return;
             }
             try {
@@ -564,47 +626,138 @@ export class CatsCompanyBot {
     senderId: string,
     text: string,
   ): Promise<void> {
-    const MAX_RETRIES = 10;
-    const RETRY_DELAY_MS = 5000;
+    const session = this.sessionManager.getOrCreate(sessionKey);
 
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      if (attempt > 0) {
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-      }
-
-      const session = this.sessionManager.getOrCreate(sessionKey);
-
-      if (session.isBusy()) {
-        Logger.info(`[${sessionKey}] 主会话忙，等待重试注入子智能体反馈 (${attempt + 1}/${MAX_RETRIES + 1})`);
-        continue;
-      }
-
-      const channel = this.buildChannel(topic, {
-        sessionKey,
-        senderId,
-      });
-
-      try {
-        const result = await session.handleMessage(text, { channel });
-        if (result.text === BUSY_MESSAGE) {
-          Logger.info(`[${sessionKey}] 主会话竞态忙碌，将重试`);
-          continue;
-        }
-        if (result.text.startsWith('处理消息时出错:')) {
-          try {
-            await this.sender.reply(topic, result.text);
-          } catch (err: any) {
-            Logger.warning(`错误消息发送失败: ${err.message}`);
-          }
-        }
-        await this.drainMessageQueue(sessionKey);
-        return;
-      } finally {
-        this.clearPendingAnswerBySession(sessionKey);
-      }
+    if (session.isBusy()) {
+      this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text);
+      return;
     }
 
-    Logger.warning(`[${sessionKey}] 子智能体反馈注入失败：主会话持续忙碌`);
+    const channel = this.buildChannel(topic, {
+      sessionKey,
+      senderId,
+    });
+
+    try {
+      this.sender.sendTyping(topic);
+      const result = await session.handleRuntimeObservation(text, { channel, source: 'subagent_result' });
+      if (result.text === BUSY_MESSAGE) {
+        this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text);
+        Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
+        return;
+      }
+      if (result.text.startsWith('处理消息时出错:')) {
+        try {
+          await this.sender.reply(topic, result.text);
+        } catch (err: any) {
+          Logger.warning(`错误消息发送失败: ${err.message}`);
+        }
+      } else if (result.visibleToUser && result.text) {
+        try {
+          await this.sender.sendText(topic, result.text);
+        } catch (err: any) {
+          Logger.warning(`子智能体反馈回复发送失败: ${err.message}`);
+        }
+      }
+      await this.drainMessageQueue(sessionKey);
+    } finally {
+      this.clearPendingAnswerBySession(sessionKey);
+    }
+  }
+
+  private enqueueSubAgentFeedback(
+    sessionKey: string,
+    topic: string,
+    senderId: string,
+    text: string,
+  ): void {
+    const queue = this.messageQueue.get(sessionKey) ?? [];
+    queue.push({
+      userMessage: text,
+      topic,
+      senderId,
+      seq: 0,
+      receivedAt: Date.now(),
+      source: 'subagent_feedback',
+    });
+    this.messageQueue.set(sessionKey, queue);
+    Logger.info(`[${sessionKey}] 主会话忙，子智能体反馈已入队 (队列长度: ${queue.length})`);
+  }
+
+  private async handleSubAgentRuntimeEvent(
+    topic: string,
+    event: SubAgentRuntimeEvent,
+    info?: SubAgentInfo,
+  ): Promise<void> {
+    // 这里是 event -> UI 的适配层，不回写主 agent 上下文。
+    // 主 agent 的结果回流由 injectMessage/handleSubAgentFeedback 单独负责。
+    const toolUseId = this.subAgentToolUseId(event.subAgentId);
+    const displayName = info?.displayName || event.subAgentName || '子agent';
+
+    try {
+      if (event.type === 'agent_spawned') {
+        await this.sender.sendToolUse(topic, toolUseId, displayName, {
+          kind: 'subagent',
+          subagent_id: event.subAgentId,
+          status: info?.status || 'running',
+          task: info?.taskDescription || event.summary,
+          agent_type: info?.agentType,
+          tool_scope: info?.toolScope,
+          allowed_tools: info?.allowedTools,
+        });
+        return;
+      }
+
+      if (PROGRESS_SUBAGENT_EVENTS.has(event.type)) {
+        if (shouldSuppressSubAgentProgress(event, info)) {
+          return;
+        }
+        await this.sender.sendThinking(topic, `[${displayName}] ${event.summary}`, this.subAgentEventMetadata(event, info));
+        return;
+      }
+
+      if (TERMINAL_SUBAGENT_EVENTS.has(event.type)) {
+        const status = info?.status || subAgentStatusFromEvent(event.type);
+        const summary = [
+          `${displayName} ${subAgentStatusLabel(status)}`,
+          `ID: ${event.subAgentId}`,
+          info?.taskDescription ? `任务: ${info.taskDescription}` : '',
+          `结果摘要: ${compactCatsSubAgentSummary(info?.resultSummary || event.summary || '（无结果）')}`,
+          info?.outputFiles?.length ? `产出文件:\n${info.outputFiles.map(file => `- ${file}`).join('\n')}` : '',
+        ].filter(Boolean).join('\n');
+        await this.sender.sendToolResult(
+          topic,
+          toolUseId,
+          summary,
+          event.type === 'agent_failed',
+          this.subAgentEventMetadata(event, info, status),
+        );
+      }
+    } catch (err: any) {
+      Logger.warning(`子智能体工作状态发送失败: ${err.message}`);
+    }
+  }
+
+  private subAgentToolUseId(subAgentId: string): string {
+    return `subagent:${subAgentId}`;
+  }
+
+  private subAgentEventMetadata(
+    event: SubAgentRuntimeEvent,
+    info?: SubAgentInfo,
+    status?: SubAgentInfo['status'],
+  ): Record<string, unknown> {
+    return {
+      kind: 'subagent_event',
+      subagent_id: event.subAgentId,
+      subagent_name: info?.displayName || event.subAgentName,
+      subagent_event_type: event.type,
+      subagent_status: status || info?.status,
+      subagent_task: info?.taskDescription,
+      agent_type: info?.agentType,
+      tool_scope: info?.toolScope,
+      seq: event.seq,
+    };
   }
 
   /**
@@ -614,23 +767,34 @@ export class CatsCompanyBot {
     const queue = this.messageQueue.get(sessionKey);
     if (!queue || queue.length === 0) return;
 
+    const session = this.sessionManager.getOrCreate(sessionKey);
+    if (session.isBusy()) {
+      Logger.info(`[${sessionKey}] 主会话仍忙，暂缓排空队列 (队列长度: ${queue.length})`);
+      return;
+    }
+
     const msg = queue.shift()!;
     if (queue.length === 0) {
       this.messageQueue.delete(sessionKey);
     }
 
-    const session = this.sessionManager.getOrCreate(sessionKey);
     const channel = this.buildChannel(msg.topic, {
       sessionKey,
       senderId: msg.senderId,
     });
 
     try {
-      const result = await session.handleMessage(msg.userMessage, {
+      const handleOptions = {
         channel,
         runtimeFeedback: msg.runtimeFeedback,
         pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey),
-      });
+      };
+      const result = msg.source === 'subagent_feedback'
+        ? await session.handleRuntimeObservation(msg.userMessage as string, {
+          ...handleOptions,
+          source: 'subagent_result',
+        })
+        : await session.handleMessage(msg.userMessage, handleOptions);
       if (result.text !== BUSY_MESSAGE && result.visibleToUser && result.text) {
         try {
           await this.sender.sendText(msg.topic, result.text);
@@ -662,7 +826,7 @@ export class CatsCompanyBot {
       return a.receivedAt - b.receivedAt;
     });
 
-    Logger.info(`[${sessionKey}] 合并 ${messages.length} 条处理期间新到的用户消息`);
+    Logger.info(`[${sessionKey}] 合并 ${messages.length} 条处理期间新到的消息/事件`);
     return this.mergeQueuedMessages(messages);
   }
 
@@ -672,14 +836,14 @@ export class CatsCompanyBot {
     }
 
     const header = [
-      `用户在你处理上一轮时又补充了 ${messages.length} 条消息。`,
-      '请把这些补充消息作为当前最新需求一起处理；如果前后要求冲突，以最后一条为准。',
+      `你处理上一轮时又收到了 ${messages.length} 条消息/运行时事件。`,
+      '请把它们作为当前最新上下文一起处理；如果前后要求冲突，以最后一条用户消息为准。',
     ].join('\n');
 
     const hasRichContent = messages.some(item => Array.isArray(item.userMessage));
     if (!hasRichContent) {
       const body = messages
-        .map((item, index) => `${index + 1}. ${item.senderId}: ${item.userMessage as string}`)
+        .map((item, index) => `${index + 1}. ${this.formatQueuedMessageLabel(item, index)}: ${item.userMessage as string}`)
         .join('\n');
       return `${header}\n\n${body}`;
     }
@@ -688,7 +852,7 @@ export class CatsCompanyBot {
     for (const [index, item] of messages.entries()) {
       blocks.push({
         type: 'text',
-        text: `\n[补充消息 ${index + 1} / ${messages.length}，来自 ${item.senderId}]\n`,
+        text: `\n[${this.formatQueuedMessageLabel(item, index)} / ${messages.length}]\n`,
       });
       if (Array.isArray(item.userMessage)) {
         blocks.push(...item.userMessage);
@@ -698,6 +862,13 @@ export class CatsCompanyBot {
     }
 
     return blocks;
+  }
+
+  private formatQueuedMessageLabel(item: QueuedMessage, index: number): string {
+    if (item.source === 'subagent_feedback') {
+      return `后台子agent通知 ${index + 1}`;
+    }
+    return `用户补充 ${index + 1}，来自 ${item.senderId}`;
   }
 
   /**
@@ -859,5 +1030,72 @@ export class CatsCompanyBot {
     if (mappedId === pendingId) {
       this.pendingAnswerBySession.delete(pending.sessionKey);
     }
+  }
+
+  /** 判断消息是否在请求“立即停下当前行为” */
+  private isInterruptMessage(text: string): boolean {
+    const normalized = (text || '').trim().toLowerCase();
+    if (!normalized) return false;
+
+    const patterns = [
+      /^(stop|halt|cancel)\b/i,
+      /停止|停下|别发|别刷|别刷屏|住手|够了|打住/,
+    ];
+    return patterns.some(p => p.test(normalized));
+  }
+
+  /** CatsCompany 网页停止按钮发来的轻量取消事件，不落历史消息 */
+  private isCancelMessage(ctx: MessageContext): boolean {
+    const type = String(ctx.type || ctx.msg_type || '').trim();
+    const streamEvent = String(ctx.metadata?.stream_event || '').trim();
+    const control = String(ctx.metadata?.control || '').trim();
+    return type === 'stream_cancel' || streamEvent === 'cancel' || control === 'interrupt';
+  }
+
+  private handleCancelMessage(ctx: MessageContext): void {
+    const key = ctx.isGroup
+      ? `cc_group:${ctx.topic}`
+      : `cc_user:${ctx.senderId}`;
+    const session = this.sessionManager.get(key);
+    if (!session) {
+      Logger.info(`[${key}] 收到取消事件，但当前没有活跃会话`);
+      return;
+    }
+    if (!session.isBusy()) {
+      session.requestInterrupt();
+      Logger.info(`[${key}] 收到取消事件，当前主会话未在推理，已尝试停止后台子任务`);
+      return;
+    }
+    session.requestInterrupt();
+    Logger.warning(`[${key}] 收到 CatsCompany 取消事件，已请求中止当前回合`);
+  }
+}
+
+function compactCatsSubAgentSummary(text: string, maxChars = 1800): string {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, maxChars)}... [已压缩，原始 ${normalized.length} 字符]`;
+}
+
+function subAgentStatusFromEvent(type: SubAgentRuntimeEvent['type']): SubAgentInfo['status'] {
+  if (type === 'agent_failed') return 'failed';
+  if (type === 'agent_stopped') return 'stopped';
+  return 'completed';
+}
+
+function subAgentStatusLabel(status: SubAgentInfo['status']): string {
+  switch (status) {
+    case 'completed':
+      return '已完成';
+    case 'failed':
+      return '失败';
+    case 'stopped':
+      return '已停止';
+    case 'waiting_for_input':
+      return '等待输入';
+    case 'running':
+      return '运行中';
+    default:
+      return String(status);
   }
 }

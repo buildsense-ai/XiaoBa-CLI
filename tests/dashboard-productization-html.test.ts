@@ -42,6 +42,9 @@ test('dashboard settings collapse state survives refresh-oriented rerenders', ()
   assert.match(dashboardHtml, /function shouldDeferRuntimeConfigRender\(\)/);
   assert.match(dashboardHtml, /editor\.contains\(active\) && active\.matches\('input, select, textarea'\)/);
   assert.match(dashboardHtml, /fetchRuntimeConfig\(\{force:true\}\)/);
+  assert.match(dashboardHtml, /let runtimePromptDetailsOpen=false/);
+  assert.match(dashboardHtml, /id="runtime-prompt-details"[\s\S]*runtimePromptDetailsOpen\?' open':''/);
+  assert.match(dashboardHtml, /runtimePromptDetailsOpen=promptDetails\.open/);
   assert.match(dashboardHtml, /飞书（高级）/);
   assert.match(dashboardHtml, /微信（高级）/);
 });
@@ -53,9 +56,8 @@ test('run page is driven by readiness instead of raw diagnostics cards', () => {
   assert.match(dashboardHtml, /function renderReadiness\(data\)/);
   assert.match(dashboardHtml, /启动前检查未通过/);
   assert.match(dashboardHtml, /模型来源、CatsCo Chat、Runtime Profile 和 Skills/);
-  assert.match(dashboardHtml, /<details class="run-details">\s*<summary><span>Service details<\/span><span class="tag">connector<\/span><\/summary>/);
+  assert.match(dashboardHtml, /<details class="run-details" open>\s*<summary><span>启动前检查<\/span><span class="tag">readiness<\/span><\/summary>/);
   assert.match(dashboardHtml, /<summary><span>Diagnostics<\/span><span class="tag">version \/ host \/ paths<\/span><\/summary>/);
-  assert.doesNotMatch(dashboardHtml, /<details class="run-details" open>/);
   assert.doesNotMatch(dashboardHtml, /<div class="section-title">系统状态<\/div>/);
   assert.doesNotMatch(dashboardHtml, /<div class="label">Provider<\/div>/);
 });
@@ -107,13 +109,59 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
 test('CatsCo Chat preserves scroll position while reading history', () => {
   assert.match(dashboardHtml, /let catsScrollPinnedToBottom = true/);
   assert.match(dashboardHtml, /const CATS_SCROLL_BOTTOM_THRESHOLD = 80/);
+  assert.match(dashboardHtml, /const CATS_HISTORY_TOP_THRESHOLD = 120/);
+  assert.match(dashboardHtml, /const CATS_MESSAGES_PAGE_SIZE = 50/);
   assert.match(dashboardHtml, /function isCatsMessageScrollNearBottom\(box\)/);
   assert.match(dashboardHtml, /function updateCatsMessageScrollIntent\(\)/);
+  assert.match(dashboardHtml, /function loadOlderCatsMessages\(\)/);
+  assert.match(dashboardHtml, /function mergeCatsMessageLists\(\.\.\.lists\)/);
   assert.match(dashboardHtml, /function scrollCatsMessagesToBottom\(box\)/);
-  assert.match(dashboardHtml, /addEventListener\('scroll', updateCatsMessageScrollIntent, \{ passive: true \}\)/);
+  assert.match(dashboardHtml, /addEventListener\('scroll', handleCatsMessagesScroll, \{ passive: true \}\)/);
 
-  const renderBlock = dashboardHtml.match(/function renderCatsMessages\(messages\)\{[\s\S]*?async function loadCatsMessages/)?.[0] || '';
+  const renderBlock = dashboardHtml.match(/function renderCatsMessages\(messages, options=\{\}\)\{[\s\S]*?async function loadCatsMessages/)?.[0] || '';
   assert.match(renderBlock, /const shouldStickToBottom=/);
-  assert.match(renderBlock, /if\(shouldStickToBottom\)scrollCatsMessagesToBottom\(box\)/);
+  assert.match(renderBlock, /const preservedScrollTop=box \? box\.scrollTop : 0/);
+  assert.match(renderBlock, /else if\(shouldStickToBottom\)\{\s*scrollCatsMessagesToBottom\(box\)/);
+  assert.match(renderBlock, /box\.scrollTop=Math\.min\(preservedScrollTop, Math\.max\(0, box\.scrollHeight-box\.clientHeight\)\)/);
+  assert.match(renderBlock, /catsScrollPinnedToBottom=false/);
   assert.doesNotMatch(renderBlock, /box\.scrollTop=box\.scrollHeight;\s*updatePetFromCatsMessages/);
+});
+
+test('CatsCo Chat inline code placeholders survive emphasis rendering', () => {
+  assert.match(dashboardHtml, /const token='%%CODESPAN'\+codeSpans\.length\+'%%'/);
+  assert.match(dashboardHtml, /value=value\.replace\('%%CODESPAN'\+idx\+'%%',html\)/);
+  assert.doesNotMatch(dashboardHtml, /@@INLINECODE|@@INLINE_CODE_/);
+});
+
+test('CatsCo Chat keeps standalone working messages out of normal message text', () => {
+  assert.match(dashboardHtml, /const messageIsWorking=isCatsWorkingMessage\(message\)/);
+  assert.match(dashboardHtml, /else if\(!messageIsWorking\)\{/);
+  assert.match(dashboardHtml, /workingBlocks\.push\(\.\.\.catsContentBlocksFromMessage\(message\)\)/);
+});
+
+test('CatsCo Chat renders runtime plan messages as separate collapsible cards', () => {
+  assert.match(dashboardHtml, /const CATS_RUNTIME_PLAN_TYPE = 'runtime_plan'/);
+  assert.match(dashboardHtml, /function isCatsRuntimePlanMessage\(message\)/);
+  assert.match(dashboardHtml, /function parseCatsRuntimePlan\(message\)/);
+  assert.match(dashboardHtml, /function renderCatsRuntimePlan\(message\)/);
+  assert.match(dashboardHtml, /class="chat-plan"/);
+  assert.match(dashboardHtml, /PLAN/);
+  assert.match(dashboardHtml, /if\(isCatsRuntimePlanMessage\(message\)\)\{\s*return renderCatsRuntimePlan\(message\)/);
+  assert.match(dashboardHtml, /!isCatsRuntimePlanMessage\(latest\)/);
+});
+
+test('CatsCo Chat keeps expanded working details across refresh rerenders', () => {
+  assert.match(dashboardHtml, /function catsWorkingDetailKey\(blocks\)/);
+  assert.match(dashboardHtml, /function captureCatsOpenDetails\(root\)/);
+  assert.match(dashboardHtml, /function restoreCatsOpenDetails\(root, openKeys\)/);
+  assert.match(dashboardHtml, /function captureCatsWorkingScrollPositions\(root\)/);
+  assert.match(dashboardHtml, /function restoreCatsWorkingScrollPositions\(root, positions\)/);
+  assert.match(dashboardHtml, /data-cats-detail-key/);
+  assert.match(dashboardHtml, /\.chat-working-body, \.chat-working-code pre/);
+
+  const renderBlock = dashboardHtml.match(/function renderCatsMessages\(messages, options=\{\}\)\{[\s\S]*?async function loadCatsMessages/)?.[0] || '';
+  assert.match(renderBlock, /const openDetailKeys=captureCatsOpenDetails\(box\)/);
+  assert.match(renderBlock, /const workingScrollPositions=captureCatsWorkingScrollPositions\(box\)/);
+  assert.match(renderBlock, /restoreCatsOpenDetails\(box, openDetailKeys\)/);
+  assert.match(renderBlock, /restoreCatsWorkingScrollPositions\(box, workingScrollPositions\)/);
 });

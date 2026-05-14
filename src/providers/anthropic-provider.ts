@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { Message, ChatConfig, ChatResponse, ContentBlock } from '../types';
 import { ToolDefinition } from '../types/tool';
-import { AIProvider, StreamCallbacks } from './provider';
+import { AIProvider, AIRequestOptions, StreamCallbacks } from './provider';
 import { ContextDebugLogger } from '../utils/context-debug-logger';
 
 /**
@@ -229,7 +229,7 @@ export class AnthropicProvider implements AIProvider {
   /**
    * 普通调用
    */
-  async chat(messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse> {
+  async chat(messages: Message[], tools?: ToolDefinition[], options?: AIRequestOptions): Promise<ChatResponse> {
     const { system, messages: transformed } = this.transformMessages(messages);
 
     const params: Anthropic.MessageCreateParamsNonStreaming = {
@@ -248,7 +248,7 @@ export class AnthropicProvider implements AIProvider {
       params
     });
 
-    const response = await this.client.messages.create(params);
+    const response = await this.client.messages.create(params, { signal: options?.signal } as any);
 
     // [CONTEXT_DEBUG] SDK 调用后：记录完整的响应
     ContextDebugLogger.dumpSdkBoundary('after', undefined, { response });
@@ -259,7 +259,12 @@ export class AnthropicProvider implements AIProvider {
   /**
    * 流式调用
    */
-  async chatStream(messages: Message[], tools?: ToolDefinition[], callbacks?: StreamCallbacks): Promise<ChatResponse> {
+  async chatStream(
+    messages: Message[],
+    tools?: ToolDefinition[],
+    callbacks?: StreamCallbacks,
+    options?: AIRequestOptions,
+  ): Promise<ChatResponse> {
     const { system, messages: transformed } = this.transformMessages(messages);
 
     const params: Anthropic.MessageCreateParamsStreaming = {
@@ -280,7 +285,7 @@ export class AnthropicProvider implements AIProvider {
         params
       });
 
-      const stream = this.client.messages.stream(params);
+      const stream = this.client.messages.stream(params, { signal: options?.signal } as any);
 
       // 逐 token 回调文本
       stream.on('text', (text) => {

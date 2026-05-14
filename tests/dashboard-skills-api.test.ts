@@ -24,7 +24,6 @@ describe('dashboard skills API', () => {
       path.join(testRoot, 'skills/bundled-tool/.xiaoba-bundled-skill.json'),
       JSON.stringify({ name: 'bundled-tool', version: 'test' })
     );
-    writeSkill('skills/_tool-skills/sub-agent/SKILL.md', 'sub-agent', 'System skill');
 
     const app = express();
     app.use(express.json());
@@ -64,21 +63,9 @@ describe('dashboard skills API', () => {
       canDisable: true,
       canDelete: false,
     });
-    assert.deepEqual(pickManagement(byName.get('sub-agent')), {
-      source: 'system',
-      protected: true,
-      canDisable: false,
-      canDelete: false,
-    });
   });
 
-  test('protects system skills and allows user skill removal', async () => {
-    const disableSystem = await fetch(`${baseUrl}/api/skills/sub-agent/disable`, { method: 'POST' });
-    assert.equal(disableSystem.status, 403);
-
-    const deleteSystem = await fetch(`${baseUrl}/api/skills/sub-agent`, { method: 'DELETE' });
-    assert.equal(deleteSystem.status, 403);
-
+  test('allows user skill removal', async () => {
     const deleteUser = await fetch(`${baseUrl}/api/skills/user-tool`, { method: 'DELETE' });
     assert.equal(deleteUser.status, 200);
     assert.equal(fs.existsSync(path.join(testRoot, 'skills/user-tool')), false);
@@ -123,8 +110,31 @@ function pickManagement(skill: any): any {
 }
 
 function listen(app: express.Express): Promise<Server> {
-  return new Promise((resolve, reject) => {
-    const server = app.listen(0, '127.0.0.1', () => resolve(server));
-    server.on('error', reject);
-  });
+  return listenOnFetchSafePort(app, 10);
 }
+
+async function listenOnFetchSafePort(app: express.Express, attempts: number): Promise<Server> {
+  let lastServer: Server | undefined;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const server = await new Promise<Server>((resolve, reject) => {
+      const nextServer = app.listen(0, '127.0.0.1', () => resolve(nextServer));
+      nextServer.on('error', reject);
+    });
+    lastServer = server;
+    const address = server.address();
+    if (address && typeof address !== 'string' && !FETCH_FORBIDDEN_PORTS.has(address.port)) {
+      return server;
+    }
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+  throw new Error(`could not bind a fetch-safe test port${lastServer ? '' : ' (no server created)'}`);
+}
+
+const FETCH_FORBIDDEN_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69,
+  77, 79, 87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119,
+  123, 135, 137, 139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515,
+  526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990,
+  993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000,
+  6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080,
+]);

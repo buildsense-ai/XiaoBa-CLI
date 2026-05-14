@@ -20,7 +20,7 @@ describe('MessageSessionManager', () => {
   afterEach(() => {
     process.chdir(originalCwd);
     if (testRoot && fs.existsSync(testRoot)) {
-      fs.rmSync(testRoot, { recursive: true, force: true });
+      fs.rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -121,6 +121,21 @@ describe('MessageSessionManager', () => {
     }
   });
 
+  test('get returns existing sessions without creating new ones', async () => {
+    const { MessageSessionManager } = loadSessionManagerModules();
+    const manager = new MessageSessionManager(buildMockServices(), 'get-existing-test', 1234);
+
+    try {
+      assert.equal(manager.get('user:missing'), null);
+
+      const session = manager.getOrCreate('user:existing');
+      assert.strictEqual(manager.get('user:existing'), session);
+      assert.equal((manager as any).sessions.has('user:missing'), false);
+    } finally {
+      await manager.destroy();
+    }
+  });
+
   test('ttl cleanup saves expired sessions without hidden AI wakeup', async () => {
     const { MessageSessionManager, SessionStore } = loadSessionManagerModules();
     let aiCalls = 0;
@@ -150,6 +165,68 @@ describe('MessageSessionManager', () => {
         ['expire user', 'expire assistant'],
       );
     } finally {
+      await manager.destroy();
+    }
+  });
+
+  test('ttl cleanup unregisters subagent platform callbacks for expired sessions', async () => {
+    const { MessageSessionManager, SubAgentManager } = loadSessionManagerModules();
+    const manager = new MessageSessionManager(buildMockServices(), 'ttl-callback-cleanup-test', { ttl: 10 });
+    const subAgentManager = SubAgentManager.getInstance();
+
+    try {
+      const session = manager.getOrCreate('user:ttl-callback-expired');
+      (session as any).messages.push({ role: 'user', content: 'expire with callback' });
+      session.lastActiveAt = 100;
+      subAgentManager.registerPlatformCallbacks('user:ttl-callback-expired', {
+        injectMessage: async () => undefined,
+      });
+
+      await (manager as any).cleanupExpiredSessions(111);
+
+      const spawned = await subAgentManager.spawn(
+        'user:ttl-callback-expired',
+        {
+          agentType: 'explorer',
+          taskDescription: 'should fail after cleanup',
+          userMessage: 'should fail after cleanup',
+        },
+        process.cwd(),
+        {} as any,
+        { getSkill: () => undefined } as any,
+      );
+
+      assert.ok('error' in spawned);
+      assert.match(spawned.error, /平台回调未注册/);
+    } finally {
+      await manager.destroy();
+    }
+  });
+
+  test('ttl cleanup keeps sessions with active subagents alive', async () => {
+    const { MessageSessionManager, SubAgentManager } = loadSessionManagerModules();
+    const originalGetInstance = SubAgentManager.getInstance;
+    const manager = new MessageSessionManager(buildMockServices(), 'ttl-active-subagent-test', { ttl: 10 });
+
+    (SubAgentManager as any).getInstance = () => ({
+      hasActiveForParent(sessionKey: string) {
+        return sessionKey === 'user:ttl-active-subagent';
+      },
+      stopAllForParent() {
+        return { stopped: 0, active: 0 };
+      },
+    });
+
+    try {
+      const session = manager.getOrCreate('user:ttl-active-subagent');
+      session.lastActiveAt = 100;
+
+      await (manager as any).cleanupExpiredSessions(111);
+
+      assert.equal((manager as any).sessions.has('user:ttl-active-subagent'), true);
+      assert.equal(session.lastActiveAt, 111);
+    } finally {
+      (SubAgentManager as any).getInstance = originalGetInstance;
       await manager.destroy();
     }
   });
@@ -190,12 +267,14 @@ function loadSessionManagerModules(): any {
     '../src/core/message-session-manager',
     '../src/core/agent-session',
     '../src/core/session-lifecycle-manager',
+    '../src/core/sub-agent-manager',
     '../src/utils/session-store',
   ]) {
     delete require.cache[require.resolve(modulePath)];
   }
   return {
     MessageSessionManager: require('../src/core/message-session-manager').MessageSessionManager,
+    SubAgentManager: require('../src/core/sub-agent-manager').SubAgentManager,
     SessionStore: require('../src/utils/session-store').SessionStore,
   };
 }

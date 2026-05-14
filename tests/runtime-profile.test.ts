@@ -50,6 +50,34 @@ describe('RuntimeProfile', () => {
     assert.equal(profile.logging.sessionEvents, true);
   });
 
+  test('uses app root as default working directory in Electron dev runtime', () => {
+    const appRoot = path.join(testRoot, 'app-root');
+    fs.mkdirSync(appRoot);
+
+    const profile = resolveDefaultRuntimeProfile({
+      env: {
+        XIAOBA_APP_ROOT: appRoot,
+        XIAOBA_IS_PACKAGED: '0',
+      },
+    });
+
+    assert.equal(profile.workingDirectory, appRoot);
+  });
+
+  test('keeps user data cwd as default working directory in packaged runtime', () => {
+    const appRoot = path.join(testRoot, 'packaged-app-root');
+    fs.mkdirSync(appRoot);
+
+    const profile = resolveDefaultRuntimeProfile({
+      env: {
+        XIAOBA_APP_ROOT: appRoot,
+        XIAOBA_IS_PACKAGED: '1',
+      },
+    });
+
+    assert.equal(profile.workingDirectory, fs.realpathSync(testRoot));
+  });
+
   test('uses runtime identity and surface from env without mutating process env', () => {
     const env = {
       CURRENT_AGENT_DISPLAY_NAME: 'Desk Bot',

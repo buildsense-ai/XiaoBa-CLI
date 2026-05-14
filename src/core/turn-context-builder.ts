@@ -4,9 +4,13 @@ import {
   TRANSIENT_SKILLS_LIST_PREFIX,
 } from '../skills/session-skill-runtime';
 import { isRuntimeFeedbackContent } from './runtime-feedback';
-import { SubAgentManager } from './sub-agent-manager';
+import { PlanRuntime } from './plan-runtime';
+import {
+  TRANSIENT_SUBAGENT_STATUS_PREFIX,
+  buildSubAgentStatusMessage,
+} from './sub-agent-observation';
 
-const TRANSIENT_SUBAGENT_STATUS_PREFIX = '[transient_subagent_status]';
+const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 const TRANSIENT_SOFT_CHECK_PREFIX = '[transient_soft_check]';
 
@@ -15,6 +19,7 @@ export interface BuildTurnContextParams {
   durableMessages: Message[];
   runtimeFeedback: string[];
   skillRuntime: SessionSkillRuntime;
+  planRuntime?: PlanRuntime;
 }
 
 export interface BuildTurnContextResult {
@@ -31,6 +36,7 @@ export class TurnContextBuilder {
   async build(params: BuildTurnContextParams): Promise<BuildTurnContextResult> {
     const contextMessages = [...params.durableMessages];
     this.injectRuntimeFeedback(contextMessages, params.runtimeFeedback);
+    this.injectPlanStatus(contextMessages, params.planRuntime);
     this.injectSubAgentStatus(contextMessages, params.sessionKey);
 
     await params.skillRuntime.reloadSkills();
@@ -50,6 +56,7 @@ export class TurnContextBuilder {
       if (msg.__runtimeFeedback) return false;
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
+      if (msg.content.startsWith(TRANSIENT_PLAN_STATUS_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SOFT_CHECK_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SKILLS_LIST_PREFIX)) return false;
@@ -69,30 +76,19 @@ export class TurnContextBuilder {
     this.insertBeforeLastUser(messages, ...runtimeFeedbackMessages);
   }
 
-  private injectSubAgentStatus(messages: Message[], sessionKey: string): void {
-    const subAgentManager = SubAgentManager.getInstance();
-    const runningSubAgents = subAgentManager.listByParent(sessionKey);
-    if (runningSubAgents.length === 0) return;
-
-    const statusLines = runningSubAgents.map(s => {
-      const statusLabel = s.status === 'running'
-        ? '运行中'
-        : s.status === 'completed'
-          ? '已完成'
-          : s.status === 'failed'
-            ? '失败'
-            : '已停止';
-      const latest = s.progressLog[s.progressLog.length - 1] ?? '';
-      const summary = s.status === 'completed' && s.resultSummary
-        ? `\n  结果: ${s.resultSummary.slice(0, 200)}`
-        : '';
-      return `- [${s.id}] ${s.taskDescription} (${statusLabel}) ${latest}${summary}`;
-    }).join('\n');
-
+  private injectPlanStatus(messages: Message[], planRuntime?: PlanRuntime): void {
+    const observation = planRuntime?.formatForPrompt();
+    if (!observation) return;
     this.insertBeforeLastUser(messages, {
       role: 'system',
-      content: `${TRANSIENT_SUBAGENT_STATUS_PREFIX}\n当前有 ${runningSubAgents.length} 个后台子任务：\n${statusLines}\n\n用户如果询问任务进度，请基于以上信息回答。如果用户要求停止任务，使用 stop_subagent 工具。`,
+      content: `${TRANSIENT_PLAN_STATUS_PREFIX}\n${observation}`,
     });
+  }
+
+  private injectSubAgentStatus(messages: Message[], sessionKey: string): void {
+    const statusMessage = buildSubAgentStatusMessage(sessionKey);
+    if (!statusMessage) return;
+    this.insertBeforeLastUser(messages, statusMessage);
   }
 
   private extractRuntimeFeedback(messages: Message[]): string[] {

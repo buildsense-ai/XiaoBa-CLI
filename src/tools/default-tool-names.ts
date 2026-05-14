@@ -7,11 +7,12 @@ export const DEFAULT_TOOL_NAMES = [
   'execute_shell',
   'send_text',
   'send_file',
-  'send_to_inspector',
   'spawn_subagent',
   'check_subagent',
   'stop_subagent',
   'resume_subagent',
+  'update_plan',
+  'record_decision',
   'skill',
 ] as const;
 

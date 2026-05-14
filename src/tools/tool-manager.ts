@@ -9,12 +9,17 @@ import { GrepTool } from './grep-tool';
 import { SkillTool } from './skill-tool';
 import { SendFileTool } from './send-file-tool';
 import { SendTextTool } from './send-text-tool';
-import { SendToInspectorTool } from './send-to-inspector-tool';
 import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
 import { StopSubagentTool } from './stop-subagent-tool';
 import { ResumeSubagentTool } from './resume-subagent-tool';
+import { AskParentTool } from './ask-parent-tool';
+import { UpdatePlanTool } from './update-plan-tool';
+import { RecordDecisionTool } from './record-decision-tool';
 import { DEFAULT_TOOL_NAMES } from './default-tool-names';
+import { mergeToolExecutionContext } from '../utils/tool-context';
+
+const INTERNAL_TOOL_NAMES = ['ask_parent'] as const;
 
 /**
  * 工具名别名映射（Claude Code 工具名 → CatsCo 内部注册名）
@@ -77,11 +82,12 @@ export class ToolManager implements ToolExecutor {
       new ShellTool(),
       new SendTextTool(),
       new SendFileTool(),
-      new SendToInspectorTool(),
       new SpawnSubagentTool(),
       new CheckSubagentTool(),
       new StopSubagentTool(),
       new ResumeSubagentTool(),
+      new UpdatePlanTool(),
+      new RecordDecisionTool(),
       new SkillTool(),
     ];
 
@@ -90,9 +96,17 @@ export class ToolManager implements ToolExecutor {
       this.registerTool(tool);
     }
 
+    if (enabled?.has('ask_parent')) {
+      this.registerTool(new AskParentTool());
+    }
+
     if (enabled) {
+      const knownTools = new Set<string>([
+        ...(DEFAULT_TOOL_NAMES as readonly string[]),
+        ...(INTERNAL_TOOL_NAMES as readonly string[]),
+      ]);
       for (const toolName of enabled) {
-        if (!(DEFAULT_TOOL_NAMES as readonly string[]).includes(toolName)) {
+        if (!knownTools.has(toolName)) {
           Logger.warning(`未知工具已被忽略: ${toolName}`);
         }
       }
@@ -141,12 +155,11 @@ export class ToolManager implements ToolExecutor {
     }
 
     try {
-      const context: ToolExecutionContext = {
+      const context: ToolExecutionContext = mergeToolExecutionContext({
         workingDirectory: this.workingDirectory,
         conversationHistory: conversationHistory || [],
         ...this.contextDefaults,
-        ...contextOverrides,
-      };
+      }, contextOverrides);
 
       let args: unknown;
       try {

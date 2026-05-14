@@ -7,9 +7,11 @@ import { SessionSkillRuntime } from '../skills/session-skill-runtime';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { ConversationRunner, RunnerCallbacks, PendingUserInputProvider } from './conversation-runner';
+import { PlanRuntime } from './plan-runtime';
 import { resolveSessionSurface } from './session-surface';
 import { TurnContextBuilder } from './turn-context-builder';
 import { TurnLogRecorder } from './turn-log-recorder';
+import { SubAgentManager } from './sub-agent-manager';
 
 export interface AgentTurnServices {
   aiService: AIService;
@@ -30,9 +32,11 @@ export interface RunAgentTurnParams {
   input: string | ContentBlock[];
   messages: Message[];
   runtimeFeedback: string[];
+  runtimeObservationSource?: string;
   callbacks?: AgentTurnCallbacks;
   channel?: ChannelCallbacks;
   pendingUserInputProvider?: PendingUserInputProvider;
+  abortSignal?: AbortSignal;
   shouldContinue: () => boolean;
 }
 
@@ -48,6 +52,7 @@ export interface AgentTurnControllerOptions {
   sessionType?: string;
   services: AgentTurnServices;
   skillRuntime: SessionSkillRuntime;
+  planRuntime: PlanRuntime;
   turnContextBuilder: TurnContextBuilder;
   turnLogRecorder: TurnLogRecorder;
 }
@@ -59,18 +64,28 @@ export class AgentTurnController {
   constructor(private readonly options: AgentTurnControllerOptions) {}
 
   async run(params: RunAgentTurnParams): Promise<RunAgentTurnResult> {
-    params.messages.push({ role: 'user', content: params.input });
+    const inputMessage: Message = {
+      role: 'user',
+      content: params.input,
+      ...(params.runtimeObservationSource && {
+        __runtimeObservation: true,
+        runtimeObservationSource: params.runtimeObservationSource,
+      }),
+    };
+    params.messages.push(inputMessage);
 
     const turnContext = await this.options.turnContextBuilder.build({
       sessionKey: this.options.sessionKey,
       durableMessages: params.messages,
       runtimeFeedback: params.runtimeFeedback,
       skillRuntime: this.options.skillRuntime,
+      planRuntime: this.options.planRuntime,
     });
 
     const runner = this.createRunner({
       channel: params.channel,
       pendingUserInputProvider: params.pendingUserInputProvider,
+      abortSignal: params.abortSignal,
       shouldContinue: params.shouldContinue,
     });
 
@@ -82,24 +97,64 @@ export class AgentTurnController {
 
     this.replaceBase64Images(nextMessages);
 
+    const responseText = result.finalResponseVisible
+      ? this.appendActiveSubAgentNotice(result.response || '[无回复]', nextMessages)
+      : '';
+
     this.options.turnLogRecorder.recordTurn({
       userInput: params.input,
-      result,
+      runtimeObservationSource: params.runtimeObservationSource,
+      result: {
+        ...result,
+        response: responseText,
+        messages: nextMessages,
+      },
       tokens: { prompt: metrics.totalPromptTokens, completion: metrics.totalCompletionTokens },
       runtimeFeedback: turnContext.runtimeFeedbackForLog,
     });
 
     return {
-      text: result.finalResponseVisible ? (result.response || '[无回复]') : '',
+      text: responseText,
       visibleToUser: result.finalResponseVisible,
       newMessages: result.newMessages,
       messages: nextMessages,
     };
   }
 
+  private appendActiveSubAgentNotice(response: string, messages: Message[]): string {
+    const activeSubAgents = SubAgentManager.getInstance()
+      .listByParent(this.options.sessionKey)
+      .filter(subAgent => subAgent.status === 'running' || subAgent.status === 'waiting_for_input');
+
+    if (activeSubAgents.length === 0) return response;
+
+    const labels = activeSubAgents
+      .slice(0, 3)
+      .map(subAgent => {
+        const name = subAgent.displayName || subAgent.id.slice(0, 8);
+        return `${name}: ${subAgent.taskDescription}`;
+      })
+      .join('；');
+    const more = activeSubAgents.length > 3 ? `；另有 ${activeSubAgents.length - 3} 个` : '';
+    const notice = `\n\n（阶段性回复：后台还有 ${activeSubAgents.length} 个子任务在运行：${labels}${more}。完成后我会再补充。）`;
+    const nextResponse = response.trimEnd() + notice;
+
+    const lastAssistant = [...messages].reverse().find(message => (
+      message.role === 'assistant'
+      && typeof message.content === 'string'
+      && message.content.trimEnd() === response.trimEnd()
+    ));
+    if (lastAssistant && typeof lastAssistant.content === 'string') {
+      lastAssistant.content = nextResponse;
+    }
+
+    return nextResponse;
+  }
+
   private createRunner(options: {
     channel?: ChannelCallbacks;
     pendingUserInputProvider?: PendingUserInputProvider;
+    abortSignal?: AbortSignal;
     shouldContinue: () => boolean;
   }): ConversationRunner {
     const surface = resolveSessionSurface(this.options.sessionKey, this.options.sessionType);
@@ -112,11 +167,18 @@ export class AgentTurnController {
         // AgentSession/ContextWindowManager compacts durable history before the turn.
         // Runner-level compaction can fold transient runtime feedback into summary.
         enableCompression: false,
+        compactStaleToolResults: true,
         toolExecutionContext: {
           sessionId: this.options.sessionKey,
           surface,
           permissionProfile: 'strict',
           channel: options.channel,
+          abortSignal: options.abortSignal,
+          planRuntime: this.options.planRuntime,
+          runtimeServices: {
+            aiService: this.options.services.aiService,
+            skillManager: this.options.services.skillManager,
+          },
         },
       },
     );
@@ -125,6 +187,7 @@ export class AgentTurnController {
   private toRunnerCallbacks(callbacks?: AgentTurnCallbacks): RunnerCallbacks {
     return {
       onText: callbacks?.onText,
+      onThinking: callbacks?.onThinking,
       onToolStart: callbacks?.onToolStart,
       onToolEnd: callbacks?.onToolEnd,
       onToolDisplay: callbacks?.onToolDisplay,
