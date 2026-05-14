@@ -102,10 +102,10 @@ export class ConfigManager {
           .map(item => item.trim())
           .filter(Boolean),
       },
-      logUpload: {
-        enabled: process.env.LOG_UPLOAD_ENABLED === 'true',
-        serverUrl: process.env.LOG_UPLOAD_SERVER_URL,
-        intervalMinutes: parseInt(process.env.LOG_UPLOAD_INTERVAL_MINUTES || '30'),
+      catscoLogUpload: {
+        enabled: process.env.CATSCO_LOG_UPLOAD_ENABLED !== 'false',
+        serverUrl: process.env.CATSCO_LOG_API_BASE_URL || 'https://logs.catsco.fun:8000',
+        intervalMinutes: parseInt(process.env.CATSCO_LOG_UPLOAD_INTERVAL_MINUTES || '30'),
       },
     };
   }

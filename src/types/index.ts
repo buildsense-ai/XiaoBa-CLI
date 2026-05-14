@@ -49,7 +49,7 @@ export interface ChatConfig {
     sessionTTL?: number;
     longPollTimeout?: number;
   };
-  logUpload?: {
+  catscoLogUpload?: {
     enabled?: boolean;
     serverUrl?: string;
     intervalMinutes?: number;

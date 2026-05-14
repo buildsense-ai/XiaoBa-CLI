@@ -1,7 +1,7 @@
-import { LogIngestScheduler } from './log-ingest-scheduler';
+import { CatscoLogUploadScheduler } from './catsco-log-upload-scheduler';
 
 interface ActiveRuntimeSupport {
-  logIngestScheduler: LogIngestScheduler | null;
+  catscoLogUploadScheduler: CatscoLogUploadScheduler | null;
   stop(): Promise<void>;
 }
 
@@ -15,19 +15,19 @@ export async function startRuntimeCommandSupport(): Promise<ActiveRuntimeSupport
 
   if (!startPromise) {
     startPromise = (async () => {
-      const logIngestScheduler = LogIngestScheduler.shouldStartForCurrentRuntime()
-        ? new LogIngestScheduler(process.cwd())
+      const catscoLogUploadScheduler = CatscoLogUploadScheduler.shouldStartForCurrentRuntime()
+        ? new CatscoLogUploadScheduler(process.cwd())
         : null;
 
-      if (logIngestScheduler) {
-        await logIngestScheduler.start();
+      if (catscoLogUploadScheduler) {
+        await catscoLogUploadScheduler.start();
       }
 
       const support: ActiveRuntimeSupport = {
-        logIngestScheduler,
+        catscoLogUploadScheduler,
         async stop() {
-          if (logIngestScheduler) {
-            await logIngestScheduler.stop();
+          if (catscoLogUploadScheduler) {
+            await catscoLogUploadScheduler.stop();
           }
         },
       };

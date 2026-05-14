@@ -34,9 +34,9 @@ describe('dashboard runtime config snapshot', () => {
         model: 'test-model',
         temperature: 0.1,
         maxTokens: 2048,
-        logUpload: {
+        catscoLogUpload: {
           enabled: true,
-          serverUrl: 'https://token:secret@logs.example.test/ingest?api_key=secret',
+          serverUrl: 'https://token:secret@logs.example.test:8000/ingest?api_key=secret',
           intervalMinutes: 15,
         },
       },
@@ -64,7 +64,7 @@ describe('dashboard runtime config snapshot', () => {
     assert.doesNotMatch(snapshot.systemPrompt.text.replace(/\\/g, '/'), new RegExp(escapeRegExp(fs.realpathSync(testRoot).replace(/\\/g, '/'))));
     assert.equal(snapshot.logging.sessionLogDir, path.join(fs.realpathSync(testRoot), 'logs/sessions'));
     assert.equal(snapshot.logging.upload.enabled, true);
-    assert.equal(snapshot.logging.upload.serverUrl, 'https://logs.example.test');
+    assert.equal(snapshot.logging.upload.serverUrl, 'https://logs.example.test:8000');
     assert.equal(JSON.stringify(snapshot).includes('api_key=secret'), false);
     assert.equal(JSON.stringify(snapshot).includes('token:secret'), false);
   });
