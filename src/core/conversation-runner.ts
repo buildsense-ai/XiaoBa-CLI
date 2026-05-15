@@ -6,6 +6,20 @@ import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
 import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
+import {
+  buildExplicitPlanRequestHintIfUseful,
+  buildInitialDecisionHintIfUseful,
+  buildPlanSoftNudge,
+  buildSubagentSoftNudge,
+  nextPlanNudgeToolCount,
+  nextSubagentNudgeToolCount,
+  PLAN_TOOL_NAME,
+  RECORD_DECISION_TOOL_NAME,
+  shouldAddPlanSoftNudge,
+  shouldAddSubagentSoftNudge,
+  SUBAGENT_TOOL_NAME,
+  TRANSIENT_RUNNER_HINT_PREFIX,
+} from './runner-orchestration-policy';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -32,7 +46,6 @@ const DEFAULT_PROMPT_BUDGET = 120000;
 const ANTHROPIC_PROMPT_BUDGET = 200000;
 const MIN_MESSAGE_BUDGET = 2000;
 const OVERFLOW_REDUCTION_RATIO = 0.6;
-const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 const TRANSIENT_CURRENT_DIRECTORY_PREFIX = '[transient_current_directory]';
 
 /**
@@ -161,6 +174,15 @@ export class ConversationRunner {
     let observationSinceLastOutbound = false;
     const deliveredOutboundFiles = new Set<string>();
     let turns = 0;
+    let executedToolCalls = 0;
+    let hasUpdatedPlan = false;
+    let hasSpawnedSubagent = false;
+    let hasRecordedDecision = false;
+    let hasShownInitialOrchestrationHint = false;
+    let planSoftNudgeCount = 0;
+    let subagentSoftNudgeCount = 0;
+    let nextPlanNudgeAt = nextPlanNudgeToolCount(0);
+    let nextSubagentNudgeAt = nextSubagentNudgeToolCount(0);
 
     while (true) {
       turns++;
@@ -186,7 +208,29 @@ export class ConversationRunner {
       }
 
       const activeTools = allTools;
-      const requestMessages = this.buildProviderInputMessages(messages, nextTurnTransientHints);
+      const orchestrationHints: Message[] = [];
+      if (turns === 1 && !hasShownInitialOrchestrationHint) {
+        const explicitPlanHint = buildExplicitPlanRequestHintIfUseful(messages, activeTools);
+        const decisionHint = buildInitialDecisionHintIfUseful(messages, activeTools);
+        if (explicitPlanHint) orchestrationHints.push(explicitPlanHint);
+        if (decisionHint) orchestrationHints.push(decisionHint);
+        hasShownInitialOrchestrationHint = orchestrationHints.length > 0;
+      }
+      if (shouldAddPlanSoftNudge(activeTools, turns, executedToolCalls, hasUpdatedPlan || hasRecordedDecision, nextPlanNudgeAt)) {
+        orchestrationHints.push(buildPlanSoftNudge(turns, executedToolCalls, planSoftNudgeCount));
+        planSoftNudgeCount++;
+        nextPlanNudgeAt = nextPlanNudgeToolCount(executedToolCalls);
+      }
+      if (shouldAddSubagentSoftNudge(activeTools, turns, executedToolCalls, hasSpawnedSubagent || hasRecordedDecision, nextSubagentNudgeAt)) {
+        orchestrationHints.push(buildSubagentSoftNudge(turns, executedToolCalls, subagentSoftNudgeCount));
+        subagentSoftNudgeCount++;
+        nextSubagentNudgeAt = nextSubagentNudgeToolCount(executedToolCalls);
+      }
+
+      const requestMessages = this.buildProviderInputMessages(messages, [
+        ...nextTurnTransientHints,
+        ...orchestrationHints,
+      ]);
       nextTurnTransientHints = [];
       this.ensurePromptBudget(requestMessages, activeTools);
       this.logProviderMessagesForDebug(requestMessages, activeTools, turns);
@@ -311,6 +355,14 @@ export class ConversationRunner {
             this.toolExecutionContext || {},
             turns,
           );
+        executedToolCalls++;
+        if (toolName === PLAN_TOOL_NAME) {
+          hasUpdatedPlan = true;
+        } else if (toolName === SUBAGENT_TOOL_NAME) {
+          hasSpawnedSubagent = true;
+        } else if (toolName === RECORD_DECISION_TOOL_NAME) {
+          hasRecordedDecision = true;
+        }
         const toolDuration = Date.now() - toolStart;
         Metrics.recordToolCall(toolName, toolDuration);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
