@@ -169,4 +169,21 @@ describe('CatsCo content blocks', () => {
     ]);
     assert.deepStrictEqual(handledTurns[0].options.runtimeFeedback, []);
   });
+
+  test('channel sendFile propagates upload failures to tool execution', async () => {
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.sender = {
+      sendFile: async () => {
+        throw new Error('Upload failed: 400 - {"error":"file type not allowed"}');
+      },
+    };
+
+    const channel = bot.buildChannel('p2p_1_2');
+
+    await assert.rejects(
+      () => channel.sendFile('p2p_1_2', 'C:\\tmp\\resume.html', 'resume.html'),
+      /file type not allowed/,
+    );
+    assert.strictEqual(channel.hasOutbound, false);
+  });
 });

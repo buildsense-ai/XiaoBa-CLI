@@ -112,13 +112,18 @@ export type FeishuChannelCallbacks = ChannelCallbacks;
  * 工具执行上下文
  */
 export interface ToolExecutionContext {
+  /** Current directory for this session. Relative paths in regular file tools resolve from here. */
   workingDirectory: string;
+  /** Stable default/root directory for tools that must not follow session directory changes. */
+  workspaceRoot?: string;
   conversationHistory: any[];
   sessionId?: string;
   surface?: ToolSurface;
   permissionProfile?: ToolPermissionProfile;
   runId?: string;
   abortSignal?: AbortSignal;
+  getCurrentDirectory?: () => string;
+  updateCurrentDirectory?: (directory: string) => void;
   /** 平台通道回调（飞书/CatsCompany 等聊天会话时由平台层注入） */
   channel?: ChannelCallbacks;
 }

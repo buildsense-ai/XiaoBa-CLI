@@ -85,7 +85,7 @@ export class SendToInspectorTool implements Tool {
     const analysisType = this.resolveAnalysisType(args.analysis_type, args.user_request);
     const maxFiles = this.parseMaxFiles(args.max_files);
     const dryRun = args.dry_run === true;
-    const projectRoot = context.workingDirectory;
+    const projectRoot = context.workspaceRoot || context.workingDirectory;
     const logsRoot = path.resolve(projectRoot, 'logs');
 
     if (!fs.existsSync(logsRoot) || !fs.statSync(logsRoot).isDirectory()) {

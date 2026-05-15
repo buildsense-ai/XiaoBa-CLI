@@ -60,14 +60,11 @@ export class PromptComposer {
     const platform = options.platform;
     const today = options.now.toISOString().slice(0, 10);
 
-    const workspaceName = displayName || 'default';
-    const workspacePath = options.workspacePath ?? `~/catsco-workspace/${workspaceName}`;
-
     const runtimeInfo = [
       displayName ? `你在这个平台上的名字是：${displayName}` : '',
       platform ? `当前平台：${platform}` : '',
       `当前日期：${today}`,
-      `你的默认工作目录是：\`${workspacePath}\``,
+      'Current directory is provided in a transient message for each model request. Use that current directory for relative file and shell paths.',
     ].filter(Boolean).join('\n');
 
     return [basePrompt, runtimeInfo].filter(Boolean).join('\n\n');

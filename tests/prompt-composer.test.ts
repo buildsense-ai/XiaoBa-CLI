@@ -41,7 +41,7 @@ describe('PromptComposer', () => {
         '你在这个平台上的名字是：Desk Bot',
         '当前平台：feishu',
         '当前日期：2026-05-01',
-        '你的默认工作目录是：`~/catsco-workspace/Desk Bot`',
+        'Current directory is provided in a transient message for each model request. Use that current directory for relative file and shell paths.',
       ].join('\n'),
     ].join('\n\n'));
   });
@@ -61,7 +61,7 @@ describe('PromptComposer', () => {
       'Base prompt',
       [
         '当前日期：2026-05-01',
-        '你的默认工作目录是：`~/catsco-workspace/default`',
+        'Current directory is provided in a transient message for each model request. Use that current directory for relative file and shell paths.',
       ].join('\n'),
     ].join('\n\n'));
     assert.doesNotMatch(prompt, /Legacy behavior prompt/);
@@ -103,7 +103,7 @@ describe('PromptComposer', () => {
 
     assert.doesNotMatch(blankDisplayNamePrompt, /你在这个平台上的名字是/);
     assert.match(blankDisplayNamePrompt, /当前平台： feishu /);
-    assert.match(blankDisplayNamePrompt, /你的默认工作目录是：`~\/catsco-workspace\/default`/);
+    assert.match(blankDisplayNamePrompt, /Current directory is provided in a transient message/);
   });
 
   test('PromptManager delegates to PromptComposer without changing output', async () => {
@@ -138,7 +138,7 @@ describe('PromptComposer', () => {
     }
   });
 
-  test('profile-aware composition uses profile workingDirectory', () => {
+  test('profile-aware composition uses transient current-directory guidance instead of concrete profile path', () => {
     writePrompt('system-prompt.md', 'Base prompt\n');
     const env = {
       CURRENT_AGENT_DISPLAY_NAME: 'Desk Bot',
@@ -160,7 +160,8 @@ describe('PromptComposer', () => {
 
     assert.match(prompt, /你在这个平台上的名字是：Desk Bot/);
     assert.match(prompt, /当前平台：feishu/);
-    assert.match(prompt.replace(/\\/g, '/'), /`.*\/tmp\/xiaoba-runtime-profile`/);
+    assert.match(prompt, /Current directory is provided in a transient message/);
+    assert.doesNotMatch(prompt.replace(/\\/g, '/'), /\/tmp\/xiaoba-runtime-profile/);
   });
 
   test('legacy env composition keeps current default workspace text when prompt metadata is empty', () => {
@@ -178,7 +179,7 @@ describe('PromptComposer', () => {
       'Base prompt',
       [
         '当前日期：2026-05-01',
-        '你的默认工作目录是：`~/catsco-workspace/default`',
+        'Current directory is provided in a transient message for each model request. Use that current directory for relative file and shell paths.',
       ].join('\n'),
     ].join('\n\n'));
   });
@@ -203,7 +204,8 @@ describe('PromptComposer', () => {
 
     assert.match(prompt, /你在这个平台上的名字是：Desk Bot/);
     assert.match(prompt, /当前平台： feishu /);
-    assert.match(prompt.replace(/\\/g, '/'), /`.*\/tmp\/xiaoba-runtime-profile`/);
+    assert.match(prompt, /Current directory is provided in a transient message/);
+    assert.doesNotMatch(prompt.replace(/\\/g, '/'), /\/tmp\/xiaoba-runtime-profile/);
   });
 
   function writePrompt(filename: string, content: string): void {

@@ -97,6 +97,6 @@ export class EditTool implements Tool {
     const newLines = newContent.split('\n').length;
     const lineDiff = newLines - oldLines;
 
-    return { ok: true, content: `成功编辑文件: ${file_path}\n替换次数: ${replacedCount}\n原始行数: ${oldLines}\n新行数: ${newLines}${lineDiff !== 0 ? `\n行数变化: ${lineDiff > 0 ? '+' : ''}${lineDiff}` : ''}` };
+    return { ok: true, content: `成功编辑文件: ${file_path}\nPath: ${absolutePath}\n替换次数: ${replacedCount}\n原始行数: ${oldLines}\n新行数: ${newLines}${lineDiff !== 0 ? `\n行数变化: ${lineDiff > 0 ? '+' : ''}${lineDiff}` : ''}` };
   }
 }

@@ -4,6 +4,7 @@ import { Message } from '../types';
 import { Logger } from './logger';
 
 const SESSIONS_DIR = path.resolve(process.cwd(), 'data', 'sessions');
+const SESSION_STATE_DIR = path.resolve(process.cwd(), 'data', 'session-state');
 
 function ensureDir(): void {
   if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -15,6 +16,15 @@ function keyToFilename(key: string): string {
 
 function filePath(key: string): string {
   return path.join(SESSIONS_DIR, keyToFilename(key));
+}
+
+function stateFilePath(key: string): string {
+  return path.join(SESSION_STATE_DIR, keyToFilename(key).replace(/\.jsonl$/, '.json'));
+}
+
+export interface SessionRuntimeState {
+  currentDirectory?: string;
+  updatedAt?: string;
 }
 
 export class SessionStore {
@@ -72,6 +82,39 @@ export class SessionStore {
       Logger.info(`会话已删除: ${sessionKey}`);
     } catch (err) {
       Logger.error(`删除会话失败 [${sessionKey}]: ${err}`);
+    }
+  }
+
+  loadRuntimeState(sessionKey: string): SessionRuntimeState {
+    try {
+      const fp = stateFilePath(sessionKey);
+      if (!fs.existsSync(fp)) return {};
+      const parsed = JSON.parse(fs.readFileSync(fp, 'utf-8')) as SessionRuntimeState;
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (err) {
+      Logger.error(`Failed to load session state [${sessionKey}]: ${err}`);
+      return {};
+    }
+  }
+
+  saveRuntimeState(sessionKey: string, state: SessionRuntimeState): void {
+    try {
+      if (!fs.existsSync(SESSION_STATE_DIR)) fs.mkdirSync(SESSION_STATE_DIR, { recursive: true });
+      fs.writeFileSync(stateFilePath(sessionKey), JSON.stringify({
+        ...state,
+        updatedAt: new Date().toISOString(),
+      }, null, 2), 'utf-8');
+    } catch (err) {
+      Logger.error(`Failed to save session state [${sessionKey}]: ${err}`);
+    }
+  }
+
+  deleteRuntimeState(sessionKey: string): void {
+    try {
+      const fp = stateFilePath(sessionKey);
+      if (fs.existsSync(fp)) fs.unlinkSync(fp);
+    } catch (err) {
+      Logger.error(`Failed to delete session state [${sessionKey}]: ${err}`);
     }
   }
 }

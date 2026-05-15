@@ -83,6 +83,30 @@ describe('AgentSession lifecycle', () => {
     assert.equal(SessionStore.getInstance().hasSession('user:lifecycle-clear'), false);
   });
 
+  test('current directory is persisted per session and reset clears it to default directory', async () => {
+    const { AgentSession, SessionStore } = loadSessionModules();
+    const defaultDir = fs.mkdtempSync(path.join(testRoot, 'default-'));
+    const nestedDir = path.join(defaultDir, 'nested');
+    fs.mkdirSync(nestedDir);
+    const services = buildMockServices({
+      toolManager: {
+        getWorkspaceRoot() { return defaultDir; },
+        getToolDefinitions() { return []; },
+        executeTool() { throw new Error('not expected'); },
+      },
+    });
+
+    const session = new AgentSession('user:lifecycle-cwd', services, 'feishu');
+    (session as any).updateCurrentDirectory(nestedDir);
+
+    const restored = new AgentSession('user:lifecycle-cwd', services, 'feishu');
+    assert.equal((restored as any).currentDirectory, nestedDir);
+
+    restored.reset();
+    assert.equal((restored as any).currentDirectory, defaultDir);
+    assert.equal(SessionStore.getInstance().loadRuntimeState('user:lifecycle-cwd').currentDirectory, defaultDir);
+  });
+
   test('reset and clear discard pending runtime feedback', async () => {
     const { AgentSession } = loadSessionModules();
     const resetSession = new AgentSession('user:lifecycle-feedback-reset', buildMockServices(), 'feishu');
@@ -225,7 +249,7 @@ function buildMockServices(overrides: any = {}): any {
       },
       ...(overrides.aiService || {}),
     },
-    toolManager: {
+    toolManager: overrides.toolManager ?? {
       getToolDefinitions() { return []; },
       executeTool() { throw new Error('not expected'); },
     },

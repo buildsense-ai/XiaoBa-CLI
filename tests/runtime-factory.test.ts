@@ -74,7 +74,7 @@ describe('RuntimeFactory', () => {
     );
   });
 
-  test('factory-created sessions use profile workingDirectory in the system prompt', async () => {
+  test('factory-created sessions keep concrete workingDirectory out of the system prompt', async () => {
     const profile = resolveDefaultRuntimeProfile({
       surface: 'cli',
       workingDirectory: testRoot,
@@ -98,13 +98,14 @@ describe('RuntimeFactory', () => {
     assert.equal(messages[0].role, 'system');
     assert.match(messages[0].content, /你在这个平台上的名字是：Factory Bot/);
     assert.match(messages[0].content, /当前平台：cli/);
-    assert.match(
-      messages[0].content,
-      new RegExp(escapeRegExp(path.resolve(testRoot))),
+    assert.match(messages[0].content, /Current directory is provided in a transient message/);
+    assert.doesNotMatch(
+      messages[0].content.replace(/\\/g, '/'),
+      new RegExp(escapeRegExp(path.resolve(testRoot).replace(/\\/g, '/'))),
     );
   });
 
-  test('factory prompt provider snapshots profile workingDirectory at session creation', async () => {
+  test('factory services snapshot profile workingDirectory without putting it in the system prompt', async () => {
     const originalWorkingDirectory = path.join(testRoot, 'workspace-a');
     const mutatedWorkingDirectory = path.join(testRoot, 'workspace-b');
     fs.mkdirSync(originalWorkingDirectory);
@@ -126,9 +127,14 @@ describe('RuntimeFactory', () => {
     await runtime.session.init();
     const messages = (runtime.session as any).messages;
 
-    assert.match(
-      messages[0].content,
-      new RegExp(escapeRegExp(path.resolve(originalWorkingDirectory))),
+    assert.match(messages[0].content, /Current directory is provided in a transient message/);
+    assert.doesNotMatch(
+      messages[0].content.replace(/\\/g, '/'),
+      new RegExp(escapeRegExp(path.resolve(originalWorkingDirectory).replace(/\\/g, '/'))),
+    );
+    assert.doesNotMatch(
+      messages[0].content.replace(/\\/g, '/'),
+      new RegExp(escapeRegExp(path.resolve(mutatedWorkingDirectory).replace(/\\/g, '/'))),
     );
     assert.equal(
       (runtime.services.toolManager as any).workingDirectory,
@@ -282,9 +288,14 @@ describe('RuntimeFactory', () => {
 
     assert.match(prompt, /Feishu Bot/);
     assert.match(prompt, /当前平台：feishu/);
-    assert.match(
-      prompt,
-      new RegExp(escapeRegExp(path.resolve(originalWorkingDirectory))),
+    assert.match(prompt, /Current directory is provided in a transient message/);
+    assert.doesNotMatch(
+      prompt.replace(/\\/g, '/'),
+      new RegExp(escapeRegExp(path.resolve(originalWorkingDirectory).replace(/\\/g, '/'))),
+    );
+    assert.doesNotMatch(
+      prompt.replace(/\\/g, '/'),
+      new RegExp(escapeRegExp(path.resolve(mutatedWorkingDirectory).replace(/\\/g, '/'))),
     );
   });
 

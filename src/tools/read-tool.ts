@@ -246,7 +246,7 @@ export class ReadTool implements Tool {
     };
   }
 
-  private formatTextReadResult(filePath: string, result: TextReadResult): string {
+  private formatTextReadResult(filePath: string, absolutePath: string, result: TextReadResult): string {
     const formattedLines = result.lines
       .map((line, index) => {
         const lineNumber = result.startLine + index;
@@ -279,6 +279,7 @@ export class ReadTool implements Tool {
 
     return [
       `文件: ${filePath}`,
+      `Path: ${absolutePath}`,
       `总行数: ${totalLinesLabel}`,
       `显示: ${displayRange}`,
       '',
@@ -295,7 +296,7 @@ export class ReadTool implements Tool {
   ): Promise<string> {
     const normalizedOptions = this.normalizeTextReadOptions(options);
     const result = await this.collectTextLines(absolutePath, normalizedOptions, context);
-    return this.formatTextReadResult(filePath, result);
+    return this.formatTextReadResult(filePath, absolutePath, result);
   }
 
   private readPDF(absolutePath: string, filePath: string, pages?: string): string {
@@ -304,6 +305,7 @@ export class ReadTool implements Tool {
 
     const lines = [
       `文件: ${filePath}`,
+      `Path: ${absolutePath}`,
       '类型: PDF',
       `大小: ${sizeMB} MB`,
       '',
@@ -354,7 +356,7 @@ export class ReadTool implements Tool {
   private formatImageMetadata(absolutePath: string, filePath: string): string {
     const stats = fs.statSync(absolutePath);
     const sizeKB = (stats.size / 1024).toFixed(2);
-    return [`文件: ${filePath}`, '类型: 图片文件', `大小: ${sizeKB} KB`].join('\n');
+    return [`文件: ${filePath}`, `Path: ${absolutePath}`, '类型: 图片文件', `大小: ${sizeKB} KB`].join('\n');
   }
 
   private formatReaderProxyFailure(proxyResult: ReaderProxyResult, visionCapable: boolean): string {
@@ -457,7 +459,7 @@ export class ReadTool implements Tool {
     const content = fs.readFileSync(absolutePath, 'utf-8');
     const notebook = JSON.parse(content);
 
-    let result = `文件: ${filePath}\nJupyter Notebook\n单元格数量: ${notebook.cells?.length || 0}\n\n`;
+    let result = `文件: ${filePath}\nPath: ${absolutePath}\nJupyter Notebook\n单元格数量: ${notebook.cells?.length || 0}\n\n`;
 
     if (notebook.cells && Array.isArray(notebook.cells)) {
       notebook.cells.forEach((cell: any, index: number) => {

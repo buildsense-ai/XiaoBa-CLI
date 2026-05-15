@@ -80,7 +80,6 @@ describe('adapter runtime', () => {
       surface: 'feishu',
       promptSnapshotMode: 'fixed',
     });
-    const expectedWorkingDirectory = fs.realpathSync(testRoot);
     runtime.profile.prompt.displayName = 'Late Feishu Name';
     runtime.profile.workingDirectory = path.join(testRoot, 'mutated');
 
@@ -89,18 +88,15 @@ describe('adapter runtime', () => {
     const prompt = await provider();
 
     assert.doesNotMatch(prompt, /Late Feishu Name/);
-    assert.match(
-      prompt,
-      new RegExp(`你的默认工作目录是：\`${escapeRegExp(expectedWorkingDirectory)}\``),
-    );
+    assert.match(prompt, /Current directory is provided in a transient message/);
+    assert.doesNotMatch(prompt.replace(/\\/g, '/'), /mutated/);
   });
 
-  test('mutable identity mode reads latest displayName but keeps original workingDirectory', async () => {
+  test('mutable identity mode reads latest displayName without concrete workingDirectory prompt', async () => {
     const runtime = createAdapterRuntime({
       surface: 'catscompany',
       promptSnapshotMode: 'mutable-identity',
     });
-    const expectedWorkingDirectory = fs.realpathSync(testRoot);
     runtime.profile.prompt.displayName = 'Cats Runtime Bot';
     runtime.profile.workingDirectory = path.join(testRoot, 'mutated');
 
@@ -109,10 +105,8 @@ describe('adapter runtime', () => {
     const prompt = await provider();
 
     assert.match(prompt, /你在这个平台上的名字是：Cats Runtime Bot/);
-    assert.match(
-      prompt,
-      new RegExp(`你的默认工作目录是：\`${escapeRegExp(expectedWorkingDirectory)}\``),
-    );
+    assert.match(prompt, /Current directory is provided in a transient message/);
+    assert.doesNotMatch(prompt.replace(/\\/g, '/'), /mutated/);
   });
 
   test('exposes adapter skill loading lifecycle with warning and fail-fast modes', async () => {

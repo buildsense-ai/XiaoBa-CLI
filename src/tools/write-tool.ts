@@ -89,6 +89,6 @@ export class WriteTool implements Tool {
       }
     }
 
-    return { ok: true, content: `成功${operation}文件: ${file_path}\n行数: ${lines}\n大小: ${sizeKB} KB (${bytes} bytes)` };
+    return { ok: true, content: `成功${operation}文件: ${file_path}\nPath: ${absolutePath}\n行数: ${lines}\n大小: ${sizeKB} KB (${bytes} bytes)` };
   }
 }
