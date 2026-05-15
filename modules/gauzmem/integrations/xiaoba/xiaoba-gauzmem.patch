@@ -1,0 +1,784 @@
+diff -ruN --exclude=README.md .env.example .env.example
+--- .env.example	2026-05-12 16:22:57
++++ .env.example	2026-05-12 16:26:25
+@@ -52,6 +52,14 @@
+ INSPECTOR_AUTO_UPLOAD_STABLE_MINUTES=5
+ INSPECTOR_AUTO_UPLOAD_MAX_FILES=12
+ 
++# Optional GauzMem sidecar. XiaoBa only stores the sidecar URL and source roots;
++# MiniMax / LLM credentials stay in the standalone GauzMem project.
++GAUZMEM_ENABLED=false
++GAUZMEM_URL=http://127.0.0.1:8788
++GAUZMEM_ROOTS=logs/sessions
++GAUZMEM_TIMEOUT_MS=1500
++GAUZMEM_HTTP_TOKEN=
++
+ # Legacy log upload. Prefer LOG_INGEST/INSPECTOR settings for new deployments.
+ LOG_UPLOAD_ENABLED=false
+ LOG_UPLOAD_SERVER_URL=
+diff -ruN --exclude=README.md src/core/agent-turn-controller.ts src/core/agent-turn-controller.ts
+--- src/core/agent-turn-controller.ts	2026-05-12 16:25:31
++++ src/core/agent-turn-controller.ts	2026-05-12 16:34:08
+@@ -1,4 +1,5 @@
+ import { ContentBlock, Message } from '../types';
++import * as crypto from 'crypto';
+ import { ChannelCallbacks } from '../types/tool';
+ import { AIService } from '../utils/ai-service';
+ import { ToolManager } from '../tools/tool-manager';
+@@ -6,10 +7,11 @@
+ import { SessionSkillRuntime } from '../skills/session-skill-runtime';
+ import { Logger } from '../utils/logger';
+ import { Metrics } from '../utils/metrics';
+-import { ConversationRunner, RunnerCallbacks, PendingUserInputProvider } from './conversation-runner';
++import { ConversationRunner, RunnerCallbacks, PendingUserInputProvider, RunResult } from './conversation-runner';
+ import { resolveSessionSurface } from './session-surface';
+ import { TurnContextBuilder } from './turn-context-builder';
+ import { TurnLogRecorder } from './turn-log-recorder';
++import { GauzMemClient } from '../utils/gauzmem-client';
+ 
+ export interface AgentTurnServices {
+   aiService: AIService;
+@@ -79,6 +81,7 @@
+ 
+     const turnContext = await this.options.turnContextBuilder.build({
+       sessionKey: this.options.sessionKey,
++      sessionType: this.options.sessionType,
+       durableMessages: params.messages,
+       runtimeFeedback: params.runtimeFeedback,
+       skillRuntime: this.options.skillRuntime,
+@@ -128,6 +131,15 @@
+       tokens: { prompt: metrics.totalPromptTokens, completion: metrics.totalCompletionTokens },
+       runtimeFeedback: turnContext.runtimeFeedbackForLog,
+     });
++    await this.recordGauzMemTurnMetadata({
++      input: params.input,
++      result,
++      runIds: uniqueStrings([
++        ...turnContext.gauzMemRunIds,
++        ...(result.gauzMemRunIds || []),
++      ]),
++      passiveRuns: turnContext.gauzMemPassiveRuns,
++    });
+ 
+     return {
+       text: result.finalResponseVisible ? (result.response || '[无回复]') : '',
+@@ -139,6 +151,37 @@
+     };
+   }
+ 
++  private async recordGauzMemTurnMetadata(input: {
++    input: string | ContentBlock[];
++    result: RunResult;
++    runIds: string[];
++    passiveRuns: Array<Record<string, unknown>>;
++  }): Promise<void> {
++    if (input.runIds.length === 0) return;
++    const client = new GauzMemClient();
++    if (!client.enabled) return;
++    try {
++      const userText = contentToPlainText(input.input);
++      const assistantText = input.result.response || '';
++      await client.recordTurnMetadata({
++        turnId: `xiaoba_${shortHash(`${this.options.sessionKey}:${Date.now()}:${userText}`)}`,
++        sessionId: this.options.sessionKey,
++        sessionType: this.options.sessionType,
++        userTextHash: shortHash(userText),
++        assistantTextHash: shortHash(assistantText),
++        gauzmemRunIds: input.runIds,
++        metadata: {
++          visibleToUser: input.result.finalResponseVisible,
++          activeRunCount: input.result.gauzMemRunIds?.length || 0,
++          passive: { runs: input.passiveRuns },
++          activeSearches: input.result.gauzMemRuns || [],
++        },
++      });
++    } catch {
++      // GauzMem turn metadata is useful for metabolism, but must not block XiaoBa.
++    }
++  }
++
+   private createRunner(options: {
+     activeSkillName?: string;
+     effectiveMaxTurns?: number;
+@@ -199,4 +242,19 @@
+       });
+     }
+   }
++}
++
++function uniqueStrings(items: string[]): string[] {
++  return Array.from(new Set(items.filter(Boolean)));
++}
++
++function contentToPlainText(content: string | ContentBlock[]): string {
++  if (typeof content === 'string') return content;
++  return content
++    .map(block => block.type === 'text' ? block.text : '[image]')
++    .join('');
++}
++
++function shortHash(text: string): string {
++  return crypto.createHash('sha256').update(text || '').digest('hex').slice(0, 16);
+ }
+diff -ruN --exclude=README.md src/core/context-window-manager.ts src/core/context-window-manager.ts
+--- src/core/context-window-manager.ts	2026-05-12 16:25:31
++++ src/core/context-window-manager.ts	2026-05-12 16:26:26
+@@ -75,7 +75,7 @@
+ }
+ 
+ function isTransientMessage(message: Message): boolean {
+-  if (message.__injected || message.__runtimeFeedback) return true;
++  if (message.__transient || message.__injected || message.__runtimeFeedback) return true;
+   if (message.role !== 'system' || typeof message.content !== 'string') return false;
+   return message.content.startsWith('[transient_');
+ }
+diff -ruN --exclude=README.md src/core/conversation-runner.ts src/core/conversation-runner.ts
+--- src/core/conversation-runner.ts	2026-05-12 16:25:31
++++ src/core/conversation-runner.ts	2026-05-12 16:32:28
+@@ -67,6 +67,9 @@
+   messages: Message[];
+   /** 本次 run() 期间新增的消息（不含最终纯文本回复） */
+   newMessages: Message[];
++  /** GauzMem runs observed through transient memory in this turn. */
++  gauzMemRunIds?: string[];
++  gauzMemRuns?: Array<Record<string, unknown>>;
+ }
+ 
+ export type PendingUserInputProvider = () =>
+@@ -168,6 +171,8 @@
+     let hasDeliveredMessageOutThisRun = false;
+     let lastOutboundContent: string | null = null;
+     let observationSinceLastOutbound = false;
++    const gauzMemRunIds: string[] = [];
++    const gauzMemRuns: Array<Record<string, unknown>> = [];
+     let turns = 0;
+     let thinkingCount = 0;
+ 
+@@ -213,6 +218,8 @@
+             finalResponseVisible: false,
+             messages,
+             newMessages,
++            gauzMemRunIds,
++            gauzMemRuns,
+           };
+         }
+         throw error;
+@@ -261,6 +268,8 @@
+             finalResponseVisible: true,
+             messages,
+             newMessages,
++            gauzMemRunIds,
++            gauzMemRuns,
+           };
+         }
+ 
+@@ -273,6 +282,8 @@
+           finalResponseVisible: true,
+           messages,
+           newMessages,
++          gauzMemRunIds,
++          gauzMemRuns,
+         };
+       }
+ 
+@@ -304,7 +315,10 @@
+         const toolInput = JSON.parse(toolCall.function.arguments);
+         const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
+         callbacks?.onToolStart?.(toolName, toolUseId, toolInput);
+-        Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
++        const argsForLog = transcriptMode === 'transient'
++          ? '[transient tool input omitted]'
++          : ConversationRunner.truncateForLog(toolCall.function.arguments, 500);
++        Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${argsForLog}`);
+         const activeToolNames = allTools.map(tool => tool.name);
+         const toolStart = Date.now();
+         let result = await this.executeToolWithRetry(
+@@ -313,6 +327,9 @@
+           {
+             ...this.toolExecutionContext,
+             activeSkillName: this.activeSkillName,
++            toolCallId: toolCall.id,
++            gauzMemRunIds,
++            gauzMemRuns,
+           },
+           turns,
+         );
+@@ -321,7 +338,10 @@
+         }
+         const toolDuration = Date.now() - toolStart;
+         Metrics.recordToolCall(toolName, toolDuration);
+-        Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
++        const resultForLog = transcriptMode === 'transient' && !result.errorCode && result.ok !== false
++          ? '[transient tool result omitted]'
++          : ConversationRunner.truncateForLog(result.content, 300);
++        Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${resultForLog}`);
+         callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
+ 
+         if (
+@@ -401,6 +421,8 @@
+           finalResponseVisible: false,
+           messages,
+           newMessages,
++          gauzMemRunIds,
++          gauzMemRuns,
+         };
+       }
+ 
+@@ -413,6 +435,8 @@
+       finalResponseVisible: !this.isMessageSurface(),
+       messages,
+       newMessages,
++      gauzMemRunIds,
++      gauzMemRuns,
+     };
+   }
+ 
+@@ -475,6 +499,7 @@
+   ): Message[] {
+     const messages: Message[] = [];
+     const transcriptRecords: ToolExecutionRecord[] = [];
++    const transientRecords: ToolExecutionRecord[] = [];
+     const outboundMessages: Message[] = [];
+ 
+     for (const record of executionRecords) {
+@@ -489,10 +514,15 @@
+       if (transcriptMode === 'suppress' && !record.result.errorCode && record.result.ok !== false) {
+         continue;
+       }
++      if (transcriptMode === 'transient' && !record.result.errorCode && record.result.ok !== false) {
++        transientRecords.push(record);
++        continue;
++      }
+       transcriptRecords.push(record);
+     }
+ 
+     const transcriptToolCalls = this.filterToolCallsForTranscript(assistantMsg, transcriptRecords);
++    const transientToolCalls = this.filterToolCallsForTranscript(assistantMsg, transientRecords);
+     const assistant: Message = {
+       role: 'assistant',
+       content: this.shouldKeepAssistantDraft(assistantMsg, outboundMessages)
+@@ -507,13 +537,23 @@
+       messages.push(assistant);
+     }
+ 
++    if (transientToolCalls?.length) {
++      messages.push({
++        role: 'assistant',
++        content: null,
++        tool_calls: transientToolCalls,
++        __transient: true,
++      });
++    }
++
+     messages.push(...outboundMessages);
+ 
+-    for (const record of transcriptRecords) {
++    for (const record of [...transientRecords, ...transcriptRecords]) {
+       const transcriptMode = this.getToolTranscriptMode(record.toolName, toolDefinitions);
+       if (transcriptMode === 'suppress' && !record.result.errorCode) {
+         continue;
+       }
++      const isTransient = transcriptMode === 'transient' && !record.result.errorCode && record.result.ok !== false;
+ 
+       // 检测图片读取结果的特殊标记
+       if (typeof record.toolContent === 'object' && record.toolContent && '_imageForNewMessage' in record.toolContent) {
+@@ -535,6 +575,7 @@
+           ],
+           tool_call_id: record.result.tool_call_id,
+           name: record.result.name,
++          ...(isTransient ? { __transient: true } : {}),
+         });
+       } else {
+         // 正常的 tool result
+@@ -543,11 +584,15 @@
+           content: record.toolContent,
+           tool_call_id: record.result.tool_call_id,
+           name: record.result.name,
++          ...(isTransient ? { __transient: true } : {}),
+         });
+ 
+         // 插入额外消息（如图片）
+         if (record.newMessages) {
+-          messages.push(...record.newMessages);
++          messages.push(...record.newMessages.map(message => ({
++            ...message,
++            ...(isTransient ? { __transient: true } : {}),
++          })));
+         }
+       }
+     }
+diff -ruN --exclude=README.md src/core/turn-context-builder.ts src/core/turn-context-builder.ts
+--- src/core/turn-context-builder.ts	2026-05-12 16:25:31
++++ src/core/turn-context-builder.ts	2026-05-12 16:29:40
+@@ -5,6 +5,11 @@
+ } from '../skills/session-skill-runtime';
+ import { isRuntimeFeedbackContent } from './runtime-feedback';
+ import { SubAgentManager } from './sub-agent-manager';
++import {
++  GauzMemClient,
++  GAUZMEM_TRANSIENT_PREFIX,
++  formatGauzMemPrompt,
++} from '../utils/gauzmem-client';
+ 
+ const TRANSIENT_SUBAGENT_STATUS_PREFIX = '[transient_subagent_status]';
+ const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
+@@ -12,6 +17,7 @@
+ 
+ export interface BuildTurnContextParams {
+   sessionKey: string;
++  sessionType?: string;
+   durableMessages: Message[];
+   runtimeFeedback: string[];
+   skillRuntime: SessionSkillRuntime;
+@@ -20,6 +26,8 @@
+ export interface BuildTurnContextResult {
+   messages: Message[];
+   runtimeFeedbackForLog: string[];
++  gauzMemRunIds: string[];
++  gauzMemPassiveRuns: Array<Record<string, unknown>>;
+ }
+ 
+ /**
+@@ -32,6 +40,10 @@
+     const contextMessages = [...params.durableMessages];
+     this.injectRuntimeFeedback(contextMessages, params.runtimeFeedback);
+     this.injectSubAgentStatus(contextMessages, params.sessionKey);
++    const gauzMemPassiveRuns = await this.injectGauzMemRecall(contextMessages, params.sessionKey, params.sessionType);
++    const gauzMemRunIds = gauzMemPassiveRuns
++      .map(run => typeof run.runId === 'string' ? run.runId : '')
++      .filter(Boolean);
+ 
+     await params.skillRuntime.reloadSkills();
+     const skillsListMsg = params.skillRuntime.buildSkillsListMessage();
+@@ -42,16 +54,20 @@
+     return {
+       messages: contextMessages,
+       runtimeFeedbackForLog: this.extractRuntimeFeedback(contextMessages),
++      gauzMemRunIds,
++      gauzMemPassiveRuns,
+     };
+   }
+ 
+   removeTransientMessages(messages: Message[]): Message[] {
+     return messages.filter(msg => {
++      if (msg.__transient) return false;
+       if (msg.__runtimeFeedback) return false;
+       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
+       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
+       if (msg.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)) return false;
+       if (msg.content.startsWith(TRANSIENT_SOFT_CHECK_PREFIX)) return false;
++      if (msg.content.startsWith(GAUZMEM_TRANSIENT_PREFIX)) return false;
+       if (msg.content.startsWith(TRANSIENT_SKILLS_LIST_PREFIX)) return false;
+       return true;
+     });
+@@ -95,6 +111,41 @@
+     });
+   }
+ 
++  private async injectGauzMemRecall(messages: Message[], sessionKey: string, sessionType?: string): Promise<Array<Record<string, unknown>>> {
++    const query = this.lastUserText(messages);
++    if (!query) return [];
++
++    const client = new GauzMemClient();
++    if (!client.enabled) return [];
++
++    try {
++      const result = await client.retrieve({
++        query,
++        sessionId: sessionKey,
++        sessionType,
++      });
++      if (!result) return [];
++      const prompt = formatGauzMemPrompt(result);
++      if (!prompt) return [];
++      this.insertBeforeLastUser(messages, {
++        role: 'system',
++        content: prompt,
++        __injected: true,
++        __transient: true,
++      });
++      return result.runId ? [{
++        runId: result.runId,
++        query,
++        evidenceIds: result.memoryBundle?.evidenceIds || [],
++        edgeIds: result.memoryBundle?.edgeIds || [],
++        stats: result.stats || {},
++      }] : [];
++    } catch {
++      // GauzMem 是可选 sidecar，失败不能阻塞正常对话。
++      return [];
++    }
++  }
++
+   private extractRuntimeFeedback(messages: Message[]): string[] {
+     return messages
+       .filter(message => message.__runtimeFeedback && isRuntimeFeedbackContent(message.content))
+@@ -108,6 +159,22 @@
+       return;
+     }
+     messages.splice(lastUserIdx, 0, ...inserted);
++  }
++
++  private lastUserText(messages: Message[]): string {
++    for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
++      const message = messages[idx];
++      if (message.role !== 'user') continue;
++      if (typeof message.content === 'string') return message.content;
++      if (Array.isArray(message.content)) {
++        return message.content
++          .filter(block => block.type === 'text')
++          .map(block => block.text)
++          .join('');
++      }
++      return '';
++    }
++    return '';
+   }
+ }
+ 
+diff -ruN --exclude=README.md src/core/turn-log-recorder.ts src/core/turn-log-recorder.ts
+--- src/core/turn-log-recorder.ts	2026-05-12 16:22:57
++++ src/core/turn-log-recorder.ts	2026-05-12 16:26:26
+@@ -22,10 +22,11 @@
+   constructor(private readonly logger: SessionTurnLogger) {}
+ 
+   recordTurn(params: RecordTurnParams): void {
++    const durableNewMessages = params.result.newMessages.filter(message => !message.__transient);
+     this.logger.logTurn(
+       params.userInput,
+       params.result.response || '',
+-      this.extractToolCalls(params.result.newMessages),
++      this.extractToolCalls(durableNewMessages),
+       params.tokens,
+       { runtimeFeedback: params.runtimeFeedback },
+     );
+diff -ruN --exclude=README.md src/tools/default-tool-names.ts src/tools/default-tool-names.ts
+--- src/tools/default-tool-names.ts	2026-05-12 16:22:57
++++ src/tools/default-tool-names.ts	2026-05-12 16:26:25
+@@ -12,6 +12,7 @@
+   'check_subagent',
+   'stop_subagent',
+   'resume_subagent',
++  'gauzmem_search',
+   'skill',
+ ] as const;
+ 
+diff -ruN --exclude=README.md src/tools/gauzmem-search-tool.ts src/tools/gauzmem-search-tool.ts
+--- src/tools/gauzmem-search-tool.ts	1970-01-01 08:00:00
++++ src/tools/gauzmem-search-tool.ts	2026-05-12 16:27:55
+@@ -0,0 +1,79 @@
++import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
++import { GauzMemClient } from '../utils/gauzmem-client';
++
++export class GauzMemSearchTool implements Tool {
++  definition: ToolDefinition = {
++    name: 'gauzmem_search',
++    description: '搜索 GauzMem 长期记忆 sidecar，返回本轮临时 memory bundle。服务不可用时不要重试阻塞主任务。',
++    transcriptMode: 'transient',
++    parameters: {
++      type: 'object',
++      properties: {
++        query: {
++          type: 'string',
++          description: '要从 GauzMem 中检索的记忆问题或关键词。',
++        },
++        max_evidence: {
++          type: 'number',
++          description: '最多返回多少条 evidence，默认 12。',
++          default: 12,
++        },
++        max_graph_hops: {
++          type: 'number',
++          description: '从命中 evidence 继续披露几跳 graph，默认 1。',
++          default: 1,
++        },
++      },
++      required: ['query'],
++    },
++  };
++
++  async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
++    const query = String(args.query || '').trim();
++    if (!query) {
++      return {
++        ok: false,
++        errorCode: 'INVALID_TOOL_ARGUMENTS',
++        message: 'query 不能为空',
++        retryable: false,
++      };
++    }
++
++    const client = new GauzMemClient();
++    if (!client.enabled) {
++      return {
++        ok: false,
++        errorCode: 'TOOL_EXECUTION_ERROR',
++        message: 'GauzMem is disabled. Set GAUZMEM_ENABLED=true to use gauzmem_search.',
++        retryable: false,
++      };
++    }
++
++    const result = await client.toolSearch({
++      query,
++      sessionId: context.sessionId || 'unknown',
++      sessionType: context.surface,
++      maxEvidence: typeof args.max_evidence === 'number' ? args.max_evidence : 12,
++      maxGraphHops: typeof args.max_graph_hops === 'number' ? args.max_graph_hops : 1,
++    });
++    if (result?.runId && context.gauzMemRunIds && !context.gauzMemRunIds.includes(result.runId)) {
++      context.gauzMemRunIds.push(result.runId);
++    }
++    if (result?.runId && context.gauzMemRuns) {
++      context.gauzMemRuns.push({
++        runId: result.runId,
++        query,
++        toolCallId: context.toolCallId,
++        evidenceIds: result.memoryBundle?.evidenceIds || [],
++        edgeIds: result.memoryBundle?.edgeIds || [],
++        stats: result.stats || {},
++      });
++    }
++
++    const bundle = result?.memoryBundle?.text || result?.promptBundle;
++    if (!bundle?.trim()) {
++      return { ok: true, content: '[gauzmem_recall]\n(no memory found)\n[/gauzmem_recall]' };
++    }
++    return { ok: true, content: `runId: ${result?.runId}\n${bundle}` };
++  }
++}
+diff -ruN --exclude=README.md src/tools/tool-manager.ts src/tools/tool-manager.ts
+--- src/tools/tool-manager.ts	2026-05-12 16:22:57
++++ src/tools/tool-manager.ts	2026-05-12 16:29:40
+@@ -14,6 +14,7 @@
+ import { CheckSubagentTool } from './check-subagent-tool';
+ import { StopSubagentTool } from './stop-subagent-tool';
+ import { ResumeSubagentTool } from './resume-subagent-tool';
++import { GauzMemSearchTool } from './gauzmem-search-tool';
+ import { DEFAULT_TOOL_NAMES } from './default-tool-names';
+ 
+ /**
+@@ -84,6 +85,9 @@
+       new ResumeSubagentTool(),
+       new SkillTool(),
+     ];
++    if (String(process.env.GAUZMEM_ENABLED || '').toLowerCase() === 'true' && (!enabled || enabled.has('gauzmem_search'))) {
++      defaultTools.push(new GauzMemSearchTool());
++    }
+ 
+     for (const tool of defaultTools) {
+       if (enabled && !enabled.has(tool.definition.name)) continue;
+diff -ruN --exclude=README.md src/types/index.ts src/types/index.ts
+--- src/types/index.ts	2026-05-12 16:22:57
++++ src/types/index.ts	2026-05-12 16:26:25
+@@ -19,6 +19,8 @@
+   __injected?: boolean;
+   /** 标记注入给 agent 看的运行时反馈，仅供内部清理和日志记录使用 */
+   __runtimeFeedback?: boolean;
++  /** 标记本轮可见但不应进入长期 session/log 的临时消息 */
++  __transient?: boolean;
+ }
+ 
+ export interface ChatConfig {
+diff -ruN --exclude=README.md src/types/tool.ts src/types/tool.ts
+--- src/types/tool.ts	2026-05-12 16:22:57
++++ src/types/tool.ts	2026-05-12 16:26:25
+@@ -20,7 +20,7 @@
+ /**
+  * 工具定义
+  */
+-export type ToolTranscriptMode = 'default' | 'outbound_message' | 'outbound_file' | 'suppress';
++export type ToolTranscriptMode = 'default' | 'outbound_message' | 'outbound_file' | 'suppress' | 'transient';
+ export type ToolControlMode = 'pause_turn';
+ 
+ export interface ToolDefinition {
+@@ -36,6 +36,7 @@
+    * default: 保留 tool_result；
+    * outbound_message/outbound_file: 成功后折叠为用户已看到的外发结果。
+    * suppress: 成功后不进入后续 transcript（适合控制类工具）。
++   * transient: 本轮模型可见，但 turn 结束后不进入 durable session 或 session log。
+    */
+   transcriptMode?: ToolTranscriptMode;
+   /**
+@@ -118,6 +119,9 @@
+   surface?: ToolSurface;
+   permissionProfile?: ToolPermissionProfile;
+   runId?: string;
++  toolCallId?: string;
++  gauzMemRunIds?: string[];
++  gauzMemRuns?: Array<Record<string, unknown>>;
+   abortSignal?: AbortSignal;
+   activeSkillName?: string;
+   /** 平台通道回调（飞书/CatsCompany 等聊天会话时由平台层注入） */
+@@ -168,4 +172,4 @@
+     conversationHistory?: any[],
+     contextOverrides?: Partial<ToolExecutionContext>
+   ): Promise<ToolResult>;
+-}
+\ No newline at end of file
++}
+diff -ruN --exclude=README.md src/utils/gauzmem-client.ts src/utils/gauzmem-client.ts
+--- src/utils/gauzmem-client.ts	1970-01-01 08:00:00
++++ src/utils/gauzmem-client.ts	2026-05-12 16:27:55
+@@ -0,0 +1,162 @@
++import * as path from 'path';
++
++export const GAUZMEM_TRANSIENT_PREFIX = '[transient_gauzmem_recall]';
++
++export interface GauzMemRetrieveOptions {
++  query: string;
++  sessionId: string;
++  sessionType?: string;
++  rootPaths?: string[];
++  maxTerms?: number;
++  maxEvidence?: number;
++  maxGraphHops?: number;
++}
++
++export interface GauzMemRetrieveResult {
++  runId: string;
++  promptBundle: string;
++  memoryBundle?: {
++    text?: string;
++    evidenceIds?: string[];
++    edgeIds?: string[];
++  };
++  evidence?: unknown[];
++  disclosedGraph?: {
++    nodes?: unknown[];
++    edges?: unknown[];
++  };
++  searchTrace?: unknown[];
++  stats?: unknown;
++}
++
++export interface GauzMemTurnMetadataOptions {
++  turnId?: string;
++  sessionId: string;
++  sessionType?: string;
++  userTextHash?: string;
++  assistantTextHash?: string;
++  gauzmemRunIds: string[];
++  metadata?: Record<string, unknown>;
++}
++
++export interface GauzMemClientOptions {
++  enabled?: boolean;
++  baseUrl?: string;
++  timeoutMs?: number;
++  rootPaths?: string[];
++  token?: string;
++  env?: NodeJS.ProcessEnv;
++}
++
++function isEnabled(env: NodeJS.ProcessEnv): boolean {
++  return String(env.GAUZMEM_ENABLED || '').toLowerCase() === 'true';
++}
++
++function parseTimeout(env: NodeJS.ProcessEnv): number {
++  const raw = Number(env.GAUZMEM_TIMEOUT_MS || 1500);
++  return Number.isFinite(raw) && raw > 0 ? raw : 1500;
++}
++
++function parseRootPaths(env: NodeJS.ProcessEnv): string[] {
++  const raw = env.GAUZMEM_ROOTS || env.GAUZMEM_ROOT_PATHS;
++  if (!raw || !raw.trim()) return [path.resolve('logs/sessions')];
++  return raw
++    .split(path.delimiter)
++    .map(item => item.trim())
++    .filter(Boolean)
++    .map(item => path.resolve(item));
++}
++
++export class GauzMemClient {
++  readonly enabled: boolean;
++  readonly baseUrl: string;
++  readonly timeoutMs: number;
++  readonly rootPaths: string[];
++  readonly token?: string;
++
++  constructor(options: GauzMemClientOptions = {}) {
++    const env = options.env ?? process.env;
++    this.enabled = options.enabled ?? isEnabled(env);
++    this.baseUrl = (options.baseUrl || env.GAUZMEM_URL || 'http://127.0.0.1:8788').replace(/\/+$/, '');
++    this.timeoutMs = options.timeoutMs ?? parseTimeout(env);
++    this.rootPaths = options.rootPaths ?? parseRootPaths(env);
++    this.token = options.token ?? env.GAUZMEM_HTTP_TOKEN ?? env.GAUZMEM_AUTH_TOKEN ?? env.GAUZMEM_TOKEN;
++  }
++
++  async retrieve(options: GauzMemRetrieveOptions): Promise<GauzMemRetrieveResult | null> {
++    return this.retrieveFrom('/v1/retrieve', options);
++  }
++
++  async toolSearch(options: GauzMemRetrieveOptions): Promise<GauzMemRetrieveResult | null> {
++    return this.retrieveFrom('/v1/tool/search', options);
++  }
++
++  async retrievePrompt(options: GauzMemRetrieveOptions): Promise<string | null> {
++    const result = await this.retrieve(options);
++    if (!result?.promptBundle?.trim()) return null;
++    return formatGauzMemPrompt(result);
++  }
++
++  async recordTurnMetadata(options: GauzMemTurnMetadataOptions): Promise<void> {
++    if (!this.enabled || options.gauzmemRunIds.length === 0) return;
++    await this.postJson('/v1/events/turn', {
++      agent: 'xiaoba',
++      turnId: options.turnId,
++      sessionId: options.sessionId,
++      sessionType: options.sessionType,
++      userTextHash: options.userTextHash,
++      assistantTextHash: options.assistantTextHash,
++      gauzmemRunIds: options.gauzmemRunIds,
++      metadata: options.metadata || {},
++    });
++  }
++
++  private async retrieveFrom(pathname: string, options: GauzMemRetrieveOptions): Promise<GauzMemRetrieveResult | null> {
++    if (!this.enabled) return null;
++    const query = options.query.trim();
++    if (!query) return null;
++
++    const response = await this.postJson(pathname, {
++      agent: 'xiaoba',
++      sessionId: options.sessionId,
++      sessionType: options.sessionType,
++      query,
++      rootPaths: options.rootPaths ?? this.rootPaths,
++      budget: {
++        maxTerms: options.maxTerms ?? 12,
++        maxEvidence: options.maxEvidence ?? 12,
++        maxGraphHops: options.maxGraphHops ?? 1,
++      },
++    });
++
++    if (!response || typeof response.promptBundle !== 'string') return null;
++    return response as GauzMemRetrieveResult;
++  }
++
++  private async postJson(pathname: string, body: unknown): Promise<any> {
++    const controller = new AbortController();
++    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
++    try {
++      const headers: Record<string, string> = { 'content-type': 'application/json' };
++      if (this.token) headers.authorization = `Bearer ${this.token}`;
++      const response = await fetch(`${this.baseUrl}${pathname}`, {
++        method: 'POST',
++        headers,
++        body: JSON.stringify(body),
++        signal: controller.signal,
++      });
++      if (!response.ok) {
++        await response.text().catch(() => '');
++        throw new Error(`GauzMem HTTP ${response.status}`);
++      }
++      return await response.json();
++    } finally {
++      clearTimeout(timer);
++    }
++  }
++}
++
++export function formatGauzMemPrompt(result: GauzMemRetrieveResult): string | null {
++  if (!result.promptBundle?.trim()) return null;
++  return `${GAUZMEM_TRANSIENT_PREFIX}\nrunId: ${result.runId}\n${result.promptBundle}`;
++}

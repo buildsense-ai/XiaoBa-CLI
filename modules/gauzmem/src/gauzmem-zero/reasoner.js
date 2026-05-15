@@ -84,7 +84,7 @@ class DeterministicReasoner {
 
   async writeWhyRelevant(input = {}) {
     return [
-      `Local association found while answering: ${input.query}`,
+      "Local association found between evidence nodes.",
       `From: ${shortText(input.from?.text || "")}`,
       `To: ${shortText(input.to?.text || "")}`,
     ].join("\n");

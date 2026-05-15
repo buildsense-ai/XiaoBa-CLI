@@ -32,6 +32,11 @@ test('GauzMem dashboard view summarizes graph, replay, and metabolism without le
     assert.equal(view.sessions[0].key, 'chat/session-a');
     assert.equal(view.sessions[0].turns[0].runs.length, 2);
     assert.match(view.sessions[0].turns[0].query, /语言偏好/);
+    const toolRun = view.sessions[0].turns[0].runs.find((run: any) => run.runId === 'r_code');
+    assert.equal(toolRun.stats.retrieveAlgorithm, 'frontier_loop_v0.2');
+    assert.equal(toolRun.stats.graphFrontierSteps, 2);
+    assert.equal(toolRun.searchTrace[0].phase, 'source_construct');
+    assert.equal(toolRun.searchTrace[0].constructReason, 'graph_no_unvisited_edge');
     assert.equal(view.graph.nodes.some((node: any) => node.id === 'n_python'), true);
     assert.equal(view.graph.edges.some((edge: any) => edge.id === 'e_lang' && edge.whyRelevant.includes('Python 优先')), true);
     assert.equal(view.metabolism.rows.some((row: any) => row.date === '2026-05-13' && row.fadedNodes >= 1), true);
@@ -148,8 +153,33 @@ function seedStore(storeRoot: string, logPath: string): void {
       returnedEdgeIds: ['e_code'],
       disclosedNodeIds: ['n_python', 'n_code'],
       disclosedEdgeIds: ['e_code'],
-      stats: { energyInitial: 48, energyRemaining: 18, graphSeedCount: 1, constructedNodeCount: 1, constructedEdgeCount: 1 },
+      stats: {
+        energyInitial: 48,
+        energyRemaining: 18,
+        graphSeedCount: 1,
+        constructedNodeCount: 1,
+        constructedEdgeCount: 1,
+        retrieveAlgorithm: 'frontier_loop_v0.2',
+        frontierSteps: 4,
+        graphFrontierSteps: 2,
+        sourceConstructCount: 1,
+        nodeConstructCount: 1,
+        rootConstructCount: 0,
+        constructAttemptCount: 1,
+        graphDisclosureCount: 2,
+        finalGraphWasSufficient: true,
+      },
       searchPlan: { termGroups: [{ term: 'TaskRegistry' }] },
+      searchTrace: [{
+        termId: 'n_python:term_1',
+        pattern: 'TaskRegistry',
+        phase: 'source_construct',
+        parentNodeId: 'n_python',
+        parent: 'node',
+        constructReason: 'graph_no_unvisited_edge',
+        hitCount: 2,
+        evidenceCount: 1,
+      }],
     },
   ]);
   writeJsonl(path.join(storeRoot, 'events.jsonl'), [

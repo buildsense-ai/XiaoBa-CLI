@@ -11,13 +11,13 @@ import {
 } from './sub-agent-observation';
 import {
   GauzMemClient,
-  GAUZMEM_TRANSIENT_PREFIX,
   formatGauzMemPrompt,
 } from '../utils/gauzmem-client';
 
 const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 const TRANSIENT_SOFT_CHECK_PREFIX = '[transient_soft_check]';
+const LEGACY_GAUZMEM_TRANSIENT_PREFIX = '[transient_gauzmem_recall]';
 
 export interface BuildTurnContextParams {
   sessionKey: string;
@@ -74,7 +74,8 @@ export class TurnContextBuilder {
       if (msg.content.startsWith(TRANSIENT_PLAN_STATUS_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SOFT_CHECK_PREFIX)) return false;
-      if (msg.content.startsWith(GAUZMEM_TRANSIENT_PREFIX)) return false;
+      if (msg.content.startsWith(LEGACY_GAUZMEM_TRANSIENT_PREFIX)) return false;
+      if (msg.content.startsWith('[gauzmem_recall]')) return false;
       if (msg.content.startsWith(TRANSIENT_SKILLS_LIST_PREFIX)) return false;
       return true;
     });

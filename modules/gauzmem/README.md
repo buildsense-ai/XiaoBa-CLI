@@ -1,6 +1,6 @@
 # GauzMem
 
-GauzMem is a zero-index, query-driven graph memory sidecar.
+GauzMem 0.2 is a zero-index, query-driven graph memory sidecar.
 
 It keeps the memory core independent from agent runtimes. Agents such as XiaoBa call GauzMem through HTTP:
 
@@ -15,6 +15,47 @@ GauzMem sidecar
   -> optional MiniMax reasoning
   -> JSONL graph store
 ```
+
+## 0.2 Retrieval Loop
+
+GauzMem 0.2 is no longer a one-shot construct pass. Each retrieve run uses a
+frontier loop:
+
+```text
+root query
+  -> scan existing graph
+  -> disclose retrievable graph window
+  -> root relevance judge
+  -> selected nodes enter graph frontier
+
+while energy remains:
+  if graph frontier has available retrievable edges:
+    disclose graph
+    root relevance judge
+    selected nodes continue graph frontier
+  else:
+    construct from source for the exhausted frontier
+    write exact evidence nodes and localAssociation edges only
+    return the original frontier node to graph disclose
+```
+
+The transient memory bundle stays simple and agent-facing:
+
+```text
+[gauzmem_recall]
+相关记忆线索：
+
+- evidence text
+  可能联想到：
+  - related evidence text：whyRelevant
+[/gauzmem_recall]
+```
+
+Run metadata, source refs, ids, energy traces, and metabolism state are persisted
+in JSONL for dashboard replay and later metabolism, but are not injected into the
+agent prompt by default.
+
+Detailed algorithm contract: [docs/gauzmem-0.2-algorithm.md](docs/gauzmem-0.2-algorithm.md).
 
 ## Layout
 

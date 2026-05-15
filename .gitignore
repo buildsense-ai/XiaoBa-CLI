@@ -5,9 +5,24 @@ release/
 *.log
 turnLogs/
 __pycache__/
-skills/_crafted/
-skills/_learned/
-skills/bio-skills/
+
+# 本地/用户安装的 skills 默认不进仓库；只显式保留内置基础 skills。
+skills/*
+!skills/README.md
+!skills/_tool-skills/
+!skills/_tool-skills/**
+!skills/agent-browser/
+!skills/agent-browser/**
+!skills/memory-search/
+!skills/memory-search/**
+!skills/officecli/
+!skills/officecli/**
+!skills/report/
+!skills/report/**
+!skills/self-evolution/
+!skills/self-evolution/**
+
+skills/**/__pycache__/
 skills/**/test_outputs/
 skills/**/.env
 skills/**/.env.*

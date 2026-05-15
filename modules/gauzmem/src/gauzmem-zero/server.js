@@ -76,7 +76,7 @@ function createGauzMemZeroServer(options = {}) {
       if (req.method === "GET" && url.pathname === "/v1/health") {
         sendJson(res, 200, {
           ok: true,
-          version: "0.1.0",
+          version: "0.2.0",
           mode: "zero-index",
         });
         return;
@@ -209,6 +209,11 @@ function sanitizeBudget(raw) {
   setInteger(out, raw, "maxGraphHitsPerTerm", 1, 200);
   setInteger(out, raw, "maxHitsPerTerm", 1, 200);
   setInteger(out, raw, "maxRunEdges", 0, 64);
+  setInteger(out, raw, "maxFrontierSteps", 1, 20);
+  setInteger(out, raw, "maxFrontierNodes", 1, 64);
+  setInteger(out, raw, "maxConstructAttemptsPerNode", 1, 5);
+  setInteger(out, raw, "maxGraphDiscloseAttemptsPerNode", 1, 8);
+  setInteger(out, raw, "maxRootConstructAttempts", 0, 5);
   setInteger(out, raw, "maxPromptChars", 1000, 50000);
   setInteger(out, raw, "energy", 1, 200);
   setNumber(out, raw, "minGraphTermCoverage", 0, 1);

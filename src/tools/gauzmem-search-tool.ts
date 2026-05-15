@@ -4,7 +4,7 @@ import { GauzMemClient } from '../utils/gauzmem-client';
 export class GauzMemSearchTool implements Tool {
   definition: ToolDefinition = {
     name: 'gauzmem_search',
-    description: '搜索 GauzMem 长期记忆 sidecar，返回本轮临时 memory bundle。服务不可用时不要重试阻塞主任务。',
+    description: '搜索 GauzMem 长期记忆 sidecar，返回自然语言记忆线索。服务不可用时不要重试阻塞主任务。',
     transcriptMode: 'transient',
     parameters: {
       type: 'object',
@@ -72,8 +72,8 @@ export class GauzMemSearchTool implements Tool {
 
     const bundle = result?.memoryBundle?.text || result?.promptBundle;
     if (!bundle?.trim()) {
-      return { ok: true, content: '[gauzmem_recall]\n(no memory found)\n[/gauzmem_recall]' };
+      return { ok: true, content: '[gauzmem_recall]\n相关记忆线索：\n\n- 暂时没有找到明确相关记忆。\n[/gauzmem_recall]' };
     }
-    return { ok: true, content: `runId: ${result?.runId}\n${bundle}` };
+    return { ok: true, content: bundle };
   }
 }
