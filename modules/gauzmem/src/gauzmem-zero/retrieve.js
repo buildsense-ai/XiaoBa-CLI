@@ -1,5 +1,6 @@
 "use strict";
 
+const { performance } = require("perf_hooks");
 const { createSearchPlan } = require("./planner");
 const { createReasoner } = require("./reasoner");
 const { loadSearchDocs } = require("./sourceAdapter");
@@ -36,6 +37,7 @@ const {
 } = require("./state");
 
 async function retrieve(input = {}) {
+  const timing = createTimingRecorder();
   const query = String(input.query || "").trim();
   if (!query) throw new Error("query is required");
 
@@ -55,8 +57,10 @@ async function retrieve(input = {}) {
   });
   const energy = new EnergyMeter(budget.energy);
 
-  const rootSearchPlan = await createReasonedSearchPlan({ query, input, budget, reasoner });
-  const graphBefore = loadGraphWithState(storeRoot);
+  const rootSearchPlan = await timing.step("root_search_plan", () => createReasonedSearchPlan({ query, input, budget, reasoner }), {
+    reasoner: reasoner.constructor.name,
+  });
+  const graphBefore = await timing.step("load_graph_initial", () => loadGraphWithState(storeRoot));
   const tick = currentTick(graphBefore);
   const graphOptions = { budget, thresholds, tick };
   const sourceRootPaths = sourceRootsForInput(input);
@@ -175,34 +179,37 @@ async function retrieve(input = {}) {
 
   let initialSeedNodes = [];
   if (energy.consume("graph_scan", 1)) {
-    const initialGraph = loadGraphWithState(storeRoot);
-    const initialGraphMatch = scanGraph(rootSearchPlan, initialGraph, graphOptions);
+    const initialGraph = await timing.step("graph_scan_load_graph", () => loadGraphWithState(storeRoot));
+    const initialGraphMatch = await timing.step("graph_scan_initial", () => scanGraph(rootSearchPlan, initialGraph, graphOptions));
     rememberGraphMatch(initialGraphMatch);
     initialSeedNodes = idsToNodes(initialGraphMatch.seedNodeIds, initialGraph);
     if (initialGraphMatch.seedNodeIds.length > 0 && energy.consume("graph_disclose", 1)) {
-      const initialDisclosure = discloseGraph(initialGraphMatch.seedNodeIds, initialGraph, {
+      const initialDisclosure = await timing.step("graph_disclose_initial", () => discloseGraph(initialGraphMatch.seedNodeIds, initialGraph, {
         ...graphOptions,
         maxGraphHops: budget.maxGraphHops,
         maxGraphEdges: budget.maxGraphEdges,
         visited: traversalVisited,
-      });
+      }), { seedNodeCount: initialGraphMatch.seedNodeIds.length });
       graphDisclosureCount += 1;
       rememberDisclosure(initialDisclosure);
       if (energy.consume("root_relevance_graph", 4)) {
-        const initialSelection = await reasoner.selectRootRelevant({
+        const initialSelection = await timing.step("llm_root_relevance_initial_graph", () => reasoner.selectRootRelevant({
           query,
           nodes: initialDisclosure.nodes,
           edges: initialDisclosure.edges,
           minSelected: 0,
           allowEmpty: true,
           allowReject: true,
+        }), {
+          nodeCount: initialDisclosure.nodes.length,
+          edgeCount: initialDisclosure.edges.length,
         });
         rememberSelection(initialSelection, initialGraph);
       }
     }
   }
 
-  const initialGraphAfterGate = loadGraphWithState(storeRoot);
+  const initialGraphAfterGate = await timing.step("graph_sufficiency_load_graph", () => loadGraphWithState(storeRoot));
   const initialGraphWasUseful = selectedNodeIdsSet.size > 0;
   const initialGraphWasSufficient = isGraphSufficient({
     searchPlan: rootSearchPlan,
@@ -220,19 +227,20 @@ async function retrieve(input = {}) {
 
   async function processGraphFrontier(frontier) {
     if (frontier.type !== "node") return;
+    return timing.step("graph_frontier_step", async () => {
     const nodeId = frontier.node.id;
     const discloseCount = graphDiscloseCountByNode.get(nodeId) || 0;
     if (discloseCount >= budget.maxGraphDiscloseAttemptsPerNode) return;
     graphDiscloseCountByNode.set(nodeId, discloseCount + 1);
     graphFrontierSteps += 1;
-    const graphForWalk = loadGraphWithState(storeRoot);
+    const graphForWalk = await timing.step("graph_frontier_load_graph", () => loadGraphWithState(storeRoot), { nodeId });
     if (!energy.consume("graph_disclose", 1)) return;
-    const disclosure = discloseGraph([nodeId], graphForWalk, {
+    const disclosure = await timing.step("graph_frontier_disclose", () => discloseGraph([nodeId], graphForWalk, {
       ...graphOptions,
       maxGraphHops: budget.maxGraphHops,
       maxGraphEdges: budget.maxGraphEdges,
       visited: traversalVisited,
-    });
+    }), { nodeId });
     graphDisclosureCount += 1;
     rememberDisclosure(disclosure);
 
@@ -242,22 +250,31 @@ async function retrieve(input = {}) {
     }
 
     if (energy.consume("root_relevance_graph", 4)) {
-      const selection = await reasoner.selectRootRelevant({
+      const selection = await timing.step("llm_graph_frontier_relevance", () => reasoner.selectRootRelevant({
         query,
         nodes: disclosure.nodes,
         edges: disclosure.edges,
         minSelected: 0,
         allowEmpty: true,
         allowReject: true,
+      }), {
+        nodeId,
+        nodeCount: disclosure.nodes.length,
+        edgeCount: disclosure.edges.length,
       });
       const selectionResult = rememberSelection(selection, graphForWalk, { excludeNodeId: nodeId });
       if (!selectionResult.addedRoute) {
         enqueueConstructFrontier(frontier, "graph_no_selected_next");
       }
     }
+    }, {
+      nodeId: frontier.node.id,
+      origin: frontier.origin,
+    });
   }
 
   async function processConstructFrontier(frontier) {
+    return timing.step("construct_frontier_step", async () => {
     if (!hasSourceRoots) return;
     const frontierKey = frontier.type === "root" ? "root_query" : frontier.node.id;
     const attemptCount = constructAttemptByFrontier.get(frontierKey) || 0;
@@ -270,34 +287,49 @@ async function retrieve(input = {}) {
 
     if (!energy.consume("source_grep", 3)) return;
     if (!docsLoaded) {
-      docs = loadSearchDocs({
+      docs = await timing.step("source_docs_load", () => loadSearchDocs({
         rootPaths: sourceRootPaths,
         storeRoot,
+      }), {
+        rootCount: sourceRootPaths.length,
       });
       docsLoaded = true;
     }
     const parent = frontier.node;
     const parentSearchPlan = frontier.type === "root"
       ? rootSearchPlan
-      : await createReasonedSearchPlan({ query, input, budget, reasoner, parent });
-    const stepHits = scanDocs(docs, parentSearchPlan, { budget });
+      : await timing.step("construct_search_plan", () => createReasonedSearchPlan({ query, input, budget, reasoner, parent }), {
+        frontierType: frontier.type,
+        parentNodeId: parent.id,
+      });
+    const stepHits = await timing.step("source_search", () => scanDocs(docs, parentSearchPlan, { budget }), {
+      frontierType: frontier.type,
+      parentNodeId: frontier.type === "node" ? parent.id : undefined,
+      docCount: docs.length,
+    });
     hits.push(...stepHits);
-    const stepWindows = buildSourceWindowsFromHits(stepHits, {
+    const stepWindows = await timing.step("source_windows", () => buildSourceWindowsFromHits(stepHits, {
       budget,
       maxEvidence: budget.maxWindows,
       maxEvidenceChars: budget.maxEvidenceChars,
+    }), {
+      hitCount: stepHits.length,
     });
     windows.push(...stepWindows);
 
     let stepEvidence = [];
     if (stepWindows.length > 0 && energy.consume("llm_extract_evidence", 6)) {
       const extractionQuery = frontier.type === "root" ? query : (parent.text || query);
-      const extracted = await reasoner.extractEvidence({
+      const extracted = await timing.step("llm_extract_evidence", () => reasoner.extractEvidence({
         query: extractionQuery,
         rootQuery: query,
         parent,
         windows: stepWindows,
         maxEvidence: budget.maxEvidence,
+      }), {
+        frontierType: frontier.type,
+        parentNodeId: frontier.type === "node" ? parent.id : undefined,
+        windowCount: stepWindows.length,
       });
       stepEvidence = evidenceNodesFromWindowEvidence(extracted, stepWindows, {
         timestamp,
@@ -326,19 +358,26 @@ async function retrieve(input = {}) {
     })));
 
     if (stepEvidence.length === 0) return;
-    const graphBeforeNodeWrites = loadGraphWithState(storeRoot);
-    for (const node of upsertNodes(storeRoot, stepEvidence)) createdNodeById.set(node.id, node);
-    appendInitialNodeStates(storeRoot, graphBeforeNodeWrites, stepEvidence, tick);
+    const graphBeforeNodeWrites = await timing.step("construct_load_graph_before_nodes", () => loadGraphWithState(storeRoot));
+    const stepCreatedNodes = await timing.step("persist_construct_nodes", () => upsertNodes(storeRoot, stepEvidence), {
+      evidenceCount: stepEvidence.length,
+    });
+    for (const node of stepCreatedNodes) createdNodeById.set(node.id, node);
+    await timing.step("persist_initial_node_states", () => appendInitialNodeStates(storeRoot, graphBeforeNodeWrites, stepEvidence, tick), {
+      evidenceCount: stepEvidence.length,
+    });
 
     if (frontier.type === "root") {
       if (energy.consume("root_relevance_graph", 4)) {
-        const selection = await reasoner.selectRootRelevant({
+        const selection = await timing.step("llm_root_relevance_construct", () => reasoner.selectRootRelevant({
           query,
           nodes: stepEvidence,
           edges: [],
           minSelected: 0,
           allowEmpty: true,
           allowReject: true,
+        }), {
+          evidenceCount: stepEvidence.length,
         });
         rememberSelection(selection, { nodes: stepEvidence, edges: [] });
       }
@@ -346,8 +385,8 @@ async function retrieve(input = {}) {
     }
 
     if (energy.consume("write_local_edges", 6)) {
-      const graphForWalk = loadGraphWithState(storeRoot);
-      const candidateEdges = await createConstructEdges({
+      const graphForWalk = await timing.step("construct_load_graph_before_edges", () => loadGraphWithState(storeRoot));
+      const candidateEdges = await timing.step("llm_write_local_edges", () => createConstructEdges({
         query,
         runId,
         timestamp,
@@ -358,6 +397,9 @@ async function retrieve(input = {}) {
         maxEdges: Math.max(0, budget.maxRunEdges - constructEdges.length),
         maxParents: 1,
         maxIncomingEdgesPerRun: budget.maxIncomingConstructEdgesPerRun,
+      }), {
+        parentNodeId: frontier.node.id,
+        sourceNodeCount: stepEvidence.length,
       });
       const stepConstructEdges = [];
       for (const edge of candidateEdges) {
@@ -368,14 +410,23 @@ async function retrieve(input = {}) {
         constructIncomingByTarget.set(edge.to, incomingCount + 1);
       }
       constructEdges.push(...stepConstructEdges);
-      const stepCreatedEdges = upsertEdges(storeRoot, stepConstructEdges);
+      const stepCreatedEdges = await timing.step("persist_construct_edges", () => upsertEdges(storeRoot, stepConstructEdges), {
+        edgeCount: stepConstructEdges.length,
+      });
       for (const edge of stepCreatedEdges) createdEdgeById.set(edge.id, edge);
-      const graphAfterEdges = loadGraphWithState(storeRoot);
-      appendInitialEdgeStates(storeRoot, graphAfterEdges, stepCreatedEdges, tick);
+      const graphAfterEdges = await timing.step("construct_load_graph_after_edges", () => loadGraphWithState(storeRoot));
+      await timing.step("persist_initial_edge_states", () => appendInitialEdgeStates(storeRoot, graphAfterEdges, stepCreatedEdges, tick), {
+        edgeCount: stepCreatedEdges.length,
+      });
       if (stepCreatedEdges.length > 0) {
         enqueueGraphNode(frontier.node, "construct_refresh", { force: true });
       }
     }
+    }, {
+      frontierType: frontier.type,
+      parentNodeId: frontier.type === "node" ? frontier.node.id : undefined,
+      reason: frontier.reason,
+    });
   }
 
   while (frontierSteps < budget.maxFrontierSteps && energy.remaining > 0) {
@@ -424,16 +475,19 @@ async function retrieve(input = {}) {
   const rejectedNodeIds = uniqueIds(Array.from(rejectedNodeIdsSet));
   const rejectedEdgeIds = uniqueIds(Array.from(rejectedEdgeIdsSet));
 
-  const graphAfterWrites = loadGraphWithState(storeRoot);
-  appendStateUpdates(storeRoot, graphAfterWrites, {
+  const graphAfterWrites = await timing.step("load_graph_before_state_updates", () => loadGraphWithState(storeRoot));
+  await timing.step("persist_state_updates", () => appendStateUpdates(storeRoot, graphAfterWrites, {
     tick,
     selectedNodeIds,
     selectedEdgeIds,
     rejectedNodeIds,
     rejectedEdgeIds,
+  }), {
+    selectedNodeCount: selectedNodeIds.length,
+    selectedEdgeCount: selectedEdgeIds.length,
   });
 
-  const graphFinal = loadGraphWithState(storeRoot);
+  const graphFinal = await timing.step("load_graph_final", () => loadGraphWithState(storeRoot));
   const evidence = idsToNodes(selectedNodeIds, graphFinal);
   const finalGraphWasSufficient = isGraphSufficient({
     searchPlan: rootSearchPlan,
@@ -523,8 +577,17 @@ async function retrieve(input = {}) {
       reasoner: reasoner.constructor.name,
     },
   };
+  const runEndedAt = new Date().toISOString();
+  const runDurationMs = timing.totalDurationMs();
+  run.startedAt = timing.startedAt;
+  run.endedAt = runEndedAt;
+  run.durationMs = runDurationMs;
+  run.timings = timing.entries();
+  run.stats.durationMs = runDurationMs;
+  run.stats.timingCount = run.timings.length;
+
   appendRun(storeRoot, run);
-  appendEvents(storeRoot, buildEvents({
+  const runEvents = buildEvents({
     run,
     timestamp,
     graphMatch,
@@ -538,11 +601,16 @@ async function retrieve(input = {}) {
     returnedEdgeIds,
     rejectedNodeIds,
     rejectedEdgeIds,
-  }));
+  });
+  appendEvents(storeRoot, runEvents);
 
   return {
     runId,
     query,
+    startedAt: run.startedAt,
+    endedAt: run.endedAt,
+    durationMs: run.durationMs,
+    timings: run.timings,
     searchPlan: rootSearchPlan,
     searchTrace: trace,
     retrieveMode,
@@ -651,6 +719,46 @@ function recordFeedback(input = {}) {
   return { runId, eventsWritten: events.length, events, nodeStatesWritten: nodeStates.length, edgeStatesWritten: edgeStates.length };
 }
 
+function createTimingRecorder() {
+  const startedAt = new Date().toISOString();
+  const started = performance.now();
+  const timings = [];
+
+  async function step(stepName, task, metadata = {}) {
+    const stepStarted = performance.now();
+    try {
+      return await task();
+    } finally {
+      timings.push(cleanTiming({
+        step: stepName,
+        durationMs: elapsedMs(stepStarted),
+        ...metadata,
+      }));
+    }
+  }
+
+  return {
+    startedAt,
+    step,
+    entries: () => timings.slice(),
+    totalDurationMs: () => elapsedMs(started),
+  };
+}
+
+function elapsedMs(started) {
+  return Math.max(0, Math.round(performance.now() - started));
+}
+
+function cleanTiming(timing) {
+  const out = {};
+  for (const [key, value] of Object.entries(timing)) {
+    if (value === undefined || value === null || value === "") continue;
+    if (typeof value === "number" && !Number.isFinite(value)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 function recordTurnMetadata(input = {}) {
   const timestamp = input.timestamp || new Date().toISOString();
   const record = {
@@ -719,6 +827,10 @@ function replayRunIfExists(input) {
   return {
     runId: run.runId,
     query: run.query,
+    startedAt: run.startedAt,
+    endedAt: run.endedAt,
+    durationMs: run.durationMs,
+    timings: run.timings || [],
     searchPlan: run.searchPlan,
     searchTrace: run.searchTrace || [],
     retrieveMode: run.retrieveMode,

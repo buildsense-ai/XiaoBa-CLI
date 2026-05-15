@@ -218,7 +218,14 @@ rootConstructCount
 constructAttemptCount
 graphDisclosureCount
 energyTrace
+durationMs
+timings[]
 ```
+
+`timings[]` contains small step records such as `root_search_plan`,
+`source_search`, `construct_frontier_step`, and LLM phases. Timings are recorded
+in memory during a retrieve run and persisted once with the run trace; they do
+not include prompts, source windows, or other large payloads.
 
 Search trace entries can include:
 

@@ -51,9 +51,9 @@ The transient memory bundle stays simple and agent-facing:
 [/gauzmem_recall]
 ```
 
-Run metadata, source refs, ids, energy traces, and metabolism state are persisted
-in JSONL for dashboard replay and later metabolism, but are not injected into the
-agent prompt by default.
+Run metadata, source refs, ids, energy traces, step timings, and metabolism state
+are persisted in JSONL for dashboard replay and later optimization, but are not
+injected into the agent prompt by default.
 
 Detailed algorithm contract: [docs/gauzmem-0.2-algorithm.md](docs/gauzmem-0.2-algorithm.md).
 
