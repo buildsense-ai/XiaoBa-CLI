@@ -2791,6 +2791,15 @@
       display: flex;
       flex-direction: column;
       min-height: 0;
+      background: #181b20;
+      color: #e8eaed;
+    }
+
+    .chat-panel.chat-window {
+      border-color: rgba(255,255,255,0.08);
+      background: #181b20;
+      box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+      overflow: hidden;
     }
 
     .chat-window-header {
@@ -2799,7 +2808,13 @@
       justify-content: space-between;
       gap: 12px;
       padding: 18px 20px;
-      border-bottom: 1px solid var(--border-light);
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      background: #181b20;
+      color: #f3f4f6;
+    }
+
+    .chat-window-header .muted {
+      color: #8da0bc;
     }
 
     .chat-messages {
@@ -2807,36 +2822,46 @@
       min-height: 0;
       padding: 0;
       overflow-y: auto;
-      background: rgba(250, 251, 255, 0.68);
+      background: #181b20;
+      color: #d8dbe2;
     }
 
     .chat-timeline-inner {
       width: 100%;
-      max-width: 980px;
+      max-width: 1120px;
       margin: 0 auto;
-      padding: 20px 24px 28px;
+      padding: 18px 24px 24px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 2px;
     }
 
     .chat-message {
-      display: grid;
-      grid-template-columns: 36px minmax(0, 1fr);
-      gap: 12px;
+      display: flex;
+      gap: 14px;
       max-width: 100%;
-      padding: 8px 0;
-      font-size: 14px;
-      line-height: 1.55;
+      padding: 10px 18px;
+      font-size: 15px;
+      line-height: 1.62;
       word-break: break-word;
-      color: var(--text);
+      color: #d8dbe2;
       border: 0;
       background: transparent;
+      border-radius: 0;
+      transition: background 0.12s ease;
+    }
+
+    .chat-message.grouped {
+      padding-top: 2px;
+    }
+
+    .chat-message:not(.mine):hover {
+      background: rgba(255,255,255,0.025);
     }
 
     .chat-message.mine {
-      grid-template-columns: minmax(0, 1fr) 36px;
-      color: var(--text);
+      justify-content: flex-end;
+      color: #f8fafc;
     }
 
     .chat-avatar {
@@ -2855,15 +2880,21 @@
     }
 
     .chat-message.peer .chat-avatar {
-      background: linear-gradient(135deg, #f59e0b, #2563eb);
-      color: #fff;
+      background: #b7790a;
+      color: #18202b;
+      font-size: 0;
+    }
+
+    .chat-message.peer .chat-avatar::after {
+      content: "X";
+      font-size: 17px;
+      font-weight: 900;
     }
 
     .chat-message.mine .chat-avatar {
-      grid-column: 2;
-      grid-row: 1;
       background: var(--accent);
       color: #fff;
+      order: 2;
     }
 
     .chat-message-body {
@@ -2871,45 +2902,42 @@
       display: flex;
       flex-direction: column;
       align-items: flex-start;
-      max-width: min(860px, 92%);
+      max-width: min(1040px, calc(100% - 50px));
     }
 
     .chat-message.mine .chat-message-body {
-      grid-column: 1;
-      grid-row: 1;
-      justify-self: end;
       align-items: flex-end;
-      max-width: min(720px, 88%);
+      max-width: min(760px, 86%);
     }
 
     .chat-message-content {
       width: fit-content;
       max-width: 100%;
       min-width: 0;
-      color: var(--text);
+      color: #d8dbe2;
       border-radius: 8px;
     }
 
     .chat-message.peer .chat-message-content {
-      padding: 10px 12px;
-      background: #fff;
-      border: 1px solid var(--border-light);
-      box-shadow: var(--shadow-sm);
+      padding: 0;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
     }
 
     .chat-message.mine .chat-message-content {
       padding: 10px 12px;
       background: var(--accent);
       color: #fff;
-      border: 1px solid rgba(59, 130, 246, 0.22);
+      border: 0;
       border-radius: 10px;
     }
 
     .chat-message-meta {
-      font-size: 11px;
-      margin-bottom: 4px;
+      font-size: 12px;
+      margin-bottom: 6px;
       font-weight: 700;
-      color: var(--text2);
+      color: #aeb8c9;
       display: flex;
       gap: 6px;
       align-items: baseline;
@@ -2922,6 +2950,7 @@
     .chat-markdown {
       white-space: normal;
       line-height: 1.62;
+      color: inherit;
     }
 
     .chat-markdown p {
@@ -2953,26 +2982,28 @@
     .chat-markdown blockquote {
       margin: 8px 0;
       padding-left: 10px;
-      border-left: 3px solid rgba(59, 130, 246, 0.28);
-      color: var(--text2);
+      border-left: 3px solid rgba(125, 211, 252, 0.3);
+      color: #b6c0cf;
     }
 
     .chat-markdown code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 0.9em;
-      background: rgba(31, 34, 50, 0.07);
+      background: rgba(255,255,255,0.09);
       border-radius: 4px;
       padding: 2px 4px;
+      color: #e5e7eb;
     }
 
     .chat-markdown pre {
       margin: 10px 0;
       padding: 10px 12px;
       border-radius: 8px;
-      background: #171923;
+      background: #101318;
       color: #eef2ff;
       overflow-x: auto;
       max-width: 100%;
+      border: 1px solid rgba(255,255,255,0.08);
     }
 
     .chat-markdown pre code {
@@ -2988,14 +3019,14 @@
       margin: 8px 0 -6px;
       padding: 2px 6px;
       border-radius: 6px 6px 0 0;
-      background: #111827;
+      background: #101318;
       color: #b8c2d8;
       font-size: 11px;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
 
     .chat-markdown a {
-      color: var(--accent);
+      color: #7dd3fc;
       text-decoration: underline;
       text-underline-offset: 2px;
     }
@@ -3004,9 +3035,9 @@
       max-width: 100%;
       overflow-x: auto;
       margin: 8px 0;
-      border: 1px solid var(--border-light);
+      border: 1px solid rgba(255,255,255,0.08);
       border-radius: 8px;
-      background: #fff;
+      background: rgba(255,255,255,0.03);
     }
 
     .chat-markdown table {
@@ -3020,15 +3051,15 @@
     .chat-markdown th,
     .chat-markdown td {
       padding: 8px 10px;
-      border-bottom: 1px solid var(--border-light);
+      border-bottom: 1px solid rgba(255,255,255,0.08);
       text-align: left;
       vertical-align: top;
       white-space: nowrap;
     }
 
     .chat-markdown th {
-      background: var(--surface-muted);
-      color: var(--text);
+      background: rgba(255,255,255,0.05);
+      color: #f8fafc;
       font-weight: 800;
     }
 
@@ -3062,25 +3093,25 @@
 
     .chat-working {
       margin: 8px 0 2px;
-      border: 0;
-      border-radius: 0;
-      background: transparent;
-      color: var(--text2);
+      border: 1px solid rgba(16, 185, 129, 0.26);
+      border-radius: 8px;
+      background: rgba(16, 185, 129, 0.03);
+      color: #b9c3d5;
       overflow: hidden;
     }
 
     .chat-working summary {
       cursor: pointer;
-      padding: 5px 8px;
-      font-size: 11px;
+      padding: 8px 11px;
+      font-size: 12px;
       font-weight: 800;
-      color: var(--text2);
+      color: #d1d5db;
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      border: 1px solid var(--border-light);
-      border-radius: 7px;
-      background: var(--surface-muted);
+      border: 0;
+      border-radius: 0;
+      background: transparent;
       list-style: none;
       text-transform: uppercase;
       letter-spacing: 0;
@@ -3100,7 +3131,13 @@
     }
 
     .chat-working-hint {
-      color: var(--text3);
+      color: #7f8da6;
+      font-weight: 700;
+      text-transform: none;
+    }
+
+    .chat-working-summary-meta {
+      color: #8da0bc;
       font-weight: 700;
       text-transform: none;
     }
@@ -3108,14 +3145,19 @@
     .chat-working-body {
       display: grid;
       gap: 10px;
-      margin: 8px 0 0 7px;
-      padding: 2px 0 2px 14px;
-      border-left: 2px solid var(--border-light);
+      margin: 0 0 10px 9px;
+      padding: 2px 10px 2px 14px;
+      border-left: 2px solid rgba(16, 185, 129, 0.25);
       font-size: 12px;
+      max-height: 420px;
+      overflow: auto;
     }
 
     .chat-working-step {
       min-width: 0;
+      border-radius: 7px;
+      padding: 6px 8px;
+      background: rgba(255,255,255,0.025);
     }
 
     .chat-working-step-title {
@@ -3123,7 +3165,7 @@
       align-items: center;
       gap: 6px;
       font-weight: 800;
-      color: var(--accent);
+      color: #10b981;
       margin-bottom: 4px;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 12px;
@@ -3134,18 +3176,24 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      color: var(--text3);
+      color: #8da0bc;
       font-family: inherit;
       font-size: 11px;
       font-weight: 700;
     }
 
+    .chat-working-note {
+      color: #8da0bc;
+      font-size: 11px;
+      margin-top: 4px;
+    }
+
     .chat-working-code {
       max-width: 100%;
       overflow: hidden;
-      border: 1px solid var(--border-light);
+      border: 1px solid rgba(255,255,255,0.08);
       border-radius: 7px;
-      background: #111827;
+      background: #101318;
     }
 
     .chat-working-code pre {
@@ -3256,7 +3304,7 @@
       max-height: 320px;
       border-radius: 8px;
       object-fit: cover;
-      border: 1px solid var(--border-light);
+      border: 1px solid rgba(255,255,255,0.08);
     }
 
     .chat-attachment {
@@ -3266,13 +3314,13 @@
       margin-top: 6px;
       padding: 10px 12px;
       border-radius: 8px;
-      border: 1px solid var(--border-light);
-      background: #fff;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04);
       color: inherit;
       text-decoration: none;
       width: max-content;
       max-width: 100%;
-      box-shadow: var(--shadow-sm);
+      box-shadow: none;
     }
 
     .chat-attachment-icon {
@@ -3296,7 +3344,7 @@
 
     .chat-attachment-meta {
       font-size: 12px;
-      color: var(--text3);
+      color: #8da0bc;
       overflow: hidden;
       text-overflow: ellipsis;
     }
@@ -3317,21 +3365,22 @@
     }
 
     .chat-composer {
-      padding: 12px 14px 14px;
-      border-top: 1px solid var(--border-light);
-      background: var(--surface-strong);
+      padding: 0 20px 20px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      background: #181b20;
     }
 
     .chat-attachment-tray {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
+      padding-top: 12px;
       margin-bottom: 10px;
     }
 
     .chat-attach-note {
       margin-bottom: 10px;
-      color: var(--text3);
+      color: #8da0bc;
       font-size: 12px;
       line-height: 1.5;
     }
@@ -3342,19 +3391,20 @@
       gap: 8px;
       max-width: min(420px, 100%);
       padding: 8px 10px;
-      border: 1px solid var(--border-light);
+      border: 1px solid rgba(255,255,255,0.08);
       border-radius: 8px;
-      background: white;
+      background: rgba(255,255,255,0.04);
+      color: #e5e7eb;
     }
 
     .chat-upload-chip.sending {
       border-color: rgba(37, 99, 235, 0.35);
-      background: rgba(37, 99, 235, 0.06);
+      background: rgba(37, 99, 235, 0.12);
     }
 
     .chat-upload-chip.error {
       border-color: rgba(239, 68, 68, 0.35);
-      background: rgba(239, 68, 68, 0.06);
+      background: rgba(239, 68, 68, 0.12);
     }
 
     .chat-upload-icon {
@@ -3384,7 +3434,7 @@
     }
 
     .chat-upload-info small {
-      color: var(--text3);
+      color: #8da0bc;
       font-size: 12px;
       margin-top: 2px;
     }
@@ -3396,25 +3446,55 @@
     }
 
     .chat-input-bar {
-      display: flex;
-      gap: 10px;
+      display: grid;
+      grid-template-columns: 44px minmax(0, 1fr) auto;
+      gap: 8px;
       align-items: stretch;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      background: #222529;
+      padding: 8px;
     }
 
     .chat-attach-btn {
-      width: 44px;
-      min-width: 44px;
-      height: 44px;
+      width: 40px;
+      min-width: 40px;
+      height: 40px;
       padding: 0;
       font-size: 20px;
       line-height: 1;
+      border-color: rgba(255,255,255,0.1);
+      background: rgba(255,255,255,0.04);
+      color: #aeb8c9;
     }
 
     .chat-input-bar textarea {
-      flex: 1;
-      min-height: 44px;
-      max-height: 120px;
-      resize: vertical;
+      width: 100%;
+      min-height: 40px;
+      max-height: 160px;
+      resize: none;
+      border: 0;
+      box-shadow: none;
+      background: transparent;
+      color: #f3f4f6;
+      padding: 8px;
+      font-size: 15px;
+      line-height: 1.5;
+      outline: none;
+    }
+
+    .chat-input-bar textarea:focus {
+      border: 0;
+      box-shadow: none;
+    }
+
+    .chat-input-bar textarea::placeholder {
+      color: #7f8da6;
+    }
+
+    .chat-input-bar .btn-primary {
+      min-height: 40px;
+      border-radius: 8px;
     }
 
     body.chat-active .floating-pet {
@@ -3422,11 +3502,11 @@
     }
 
     .chat-window.locked .chat-composer {
-      background: rgba(247, 249, 252, 0.92);
+      background: #181b20;
     }
 
     .chat-window.locked .chat-input-bar textarea {
-      color: var(--text2);
+      color: #8da0bc;
     }
 
     #media-preview-modal .modal {
@@ -6957,6 +7037,7 @@
           id:message.metadata?.id || message.metadata?.tool_call_id || message.metadata?.tool_use_id,
           name:extractCatsMessageText(message)||'Tool',
           input:message.metadata?.input,
+          metadata:message.metadata||{},
         }];
       }
       if(type==='tool_result'){
@@ -6965,6 +7046,7 @@
           tool_use_id:message.metadata?.tool_use_id || message.metadata?.id || message.metadata?.tool_call_id,
           content:extractCatsMessageText(message),
           is_error:Boolean(message.metadata?.is_error),
+          metadata:message.metadata||{},
         }];
       }
       if(isCatsWorkingTextMessage(message)){
@@ -7025,6 +7107,71 @@
       return String(message?.seq_id || message?.id || message?.created_at || '');
     }
 
+    function truncateCatsWorkingText(value, limit=1200){
+      const text=String(value||'');
+      if(text.length<=limit)return {text, truncated:false};
+      return {text:text.slice(0,limit).trimEnd()+'\n...', truncated:true};
+    }
+
+    function catsStableHash(value){
+      const text=typeof value==='string'?value:JSON.stringify(value||'');
+      let hash=0;
+      for(let i=0;i<text.length;i++){
+        hash=((hash<<5)-hash)+text.charCodeAt(i);
+        hash|=0;
+      }
+      return Math.abs(hash).toString(36);
+    }
+
+    function catsWorkingDetailKey(groups){
+      return catsStableHash((groups||[]).map(group=>{
+        const block=group.tool||group.block||group.result||{};
+        return [
+          group.type,
+          block.id,
+          block.tool_use_id,
+          block.call_id,
+          block.name,
+          block.metadata?.subagent_id,
+          block.metadata?.display_name,
+          catsWorkingSummary(block).slice(0,120),
+        ].filter(Boolean).join('|');
+      }).join('||'));
+    }
+
+    function captureCatsOpenDetails(root){
+      const keys=new Set();
+      if(!root)return keys;
+      root.querySelectorAll('details.chat-working[data-cats-detail-key]').forEach(item=>{
+        if(item.open)keys.add(item.dataset.catsDetailKey);
+      });
+      return keys;
+    }
+
+    function restoreCatsOpenDetails(root, keys){
+      if(!root || !keys)return;
+      root.querySelectorAll('details.chat-working[data-cats-detail-key]').forEach(item=>{
+        item.open=keys.has(item.dataset.catsDetailKey);
+      });
+    }
+
+    function captureCatsWorkingScrollPositions(root){
+      const positions=new Map();
+      if(!root)return positions;
+      root.querySelectorAll('.chat-working-body[data-cats-scroll-key]').forEach(item=>{
+        if(item.scrollTop>0)positions.set(item.dataset.catsScrollKey,item.scrollTop);
+      });
+      return positions;
+    }
+
+    function restoreCatsWorkingScrollPositions(root, positions){
+      if(!root || !positions)return;
+      root.querySelectorAll('.chat-working-body[data-cats-scroll-key]').forEach(item=>{
+        const value=positions.get(item.dataset.catsScrollKey);
+        if(typeof value==='number')item.scrollTop=value;
+      });
+    }
+
     function updatePetFromCatsMessages(messages){
       const items=Array.isArray(messages)?messages:[];
       if(!items.length){
@@ -7077,29 +7224,49 @@
     function renderCatsWorkingBlocks(blocks){
       if(!blocks.length)return '';
       const groups=groupCatsWorkingBlocks(blocks);
+      const detailKey=catsWorkingDetailKey(groups);
+      let subAgentCount=0;
       const steps=groups.map(group=>{
         if(group.type==='tool'){
           const tool=group.tool||{};
           const result=group.result||{};
-          const title='Tool: '+(tool.name||tool.tool_name||'Tool');
-          const inputSummary=catsWorkingSummary(tool);
-          const input=catsWorkingCode(tool.input||tool.arguments);
-          const output=catsWorkingCode(result.content||result.text||result.output||result.result);
+          const metadata=Object.assign({}, tool.metadata||{}, result.metadata||{});
+          const toolId=String(tool.id||tool.tool_use_id||tool.call_id||result.tool_use_id||'');
+          const inputKind=tool.input && typeof tool.input==='object' ? String(tool.input.kind||'') : '';
+          const isSubAgent=metadata.kind==='subagent_event' || inputKind==='subagent' || toolId.startsWith('subagent:');
+          if(isSubAgent)subAgentCount++;
+          const displayName=metadata.display_name||metadata.displayName||metadata.subagent_name||tool.input?.display_name||tool.input?.name||'子agent';
+          const agentType=metadata.agent_type||tool.input?.agent_type||tool.input?.type||'';
+          const status=metadata.status||tool.input?.status||'';
+          const title=isSubAgent ? displayName : 'Tool: '+(tool.name||tool.tool_name||'Tool');
+          const metaParts=isSubAgent
+            ? [agentType,status,metadata.step_count?metadata.step_count+' 步':''].filter(Boolean)
+            : [];
+          const inputSummary=isSubAgent
+            ? (metadata.task||tool.input?.task||metadata.summary||catsWorkingSummary(tool))
+            : catsWorkingSummary(tool);
+          const input=truncateCatsWorkingText(catsWorkingCode(tool.input||tool.arguments));
+          const output=truncateCatsWorkingText(catsWorkingCode(result.content||result.text||result.output||result.result));
           return '<div class="chat-working-step"><div class="chat-working-step-title">'+escapeHtml(title)+(inputSummary?'<span class="chat-working-step-meta">'+escapeHtml(inputSummary)+'</span>':'')+'</div>'+
-            (input?'<div class="chat-working-code"><pre>'+escapeHtml(input)+'</pre></div>':'')+
-            (output?'<div class="chat-working-code" style="margin-top:6px"><pre>'+escapeHtml(output)+'</pre></div>':'')+
+            (metaParts.length?'<div class="chat-working-summary-meta">'+escapeHtml(metaParts.join(' · '))+'</div>':'')+
+            (input.text?'<div class="chat-working-code"><pre>'+escapeHtml(input.text)+'</pre></div>'+(input.truncated?'<div class="chat-working-note">输入较长，已在 WORKING 中截断，完整内容请看日志。</div>':''):'')+
+            (output.text?'<div class="chat-working-code" style="margin-top:6px"><pre>'+escapeHtml(output.text)+'</pre></div>'+(output.truncated?'<div class="chat-working-note">输出较长，已在 WORKING 中截断，完整内容请看日志。</div>':''):'')+
             '</div>';
         }
         const block=group.block||group.result||{};
         const type=group.type||block.type||'Working';
         const title=type==='thinking'?'Thinking':type==='assistant_text'?'Assistant':type==='tool_result'?'Tool Result':type;
+        const text=type==='tool_result'
+          ? truncateCatsWorkingText(catsWorkingCode(block.content||block.text||block.output||block.result))
+          : truncateCatsWorkingText(catsWorkingSummary(block),900);
         const body=type==='tool_result'
-          ? '<div class="chat-working-code"><pre>'+escapeHtml(catsWorkingCode(block.content||block.text||block.output||block.result))+'</pre></div>'
-          : '<div class="chat-markdown">'+renderMarkdown(catsWorkingSummary(block))+'</div>';
-        return '<div class="chat-working-step"><div class="chat-working-step-title">'+escapeHtml(title)+'</div>'+body+'</div>';
+          ? '<div class="chat-working-code"><pre>'+escapeHtml(text.text)+'</pre></div>'
+          : '<div class="chat-markdown">'+renderMarkdown(text.text)+'</div>';
+        const note=text.truncated?'<div class="chat-working-note">内容较长，已在 WORKING 中截断，完整内容请看日志。</div>':'';
+        return '<div class="chat-working-step"><div class="chat-working-step-title">'+escapeHtml(title)+'</div>'+body+note+'</div>';
       }).join('');
-      const countLabel=groups.length===1?'1 step':(groups.length+' steps');
-      return '<details class="chat-working"><summary><span class="chat-working-chevron">&gt;</span><span>WORKING...</span><span class="chat-working-hint">'+escapeHtml(countLabel)+'</span></summary><div class="chat-working-body">'+steps+'</div></details>';
+      const countLabel=(groups.length===1?'1 step':(groups.length+' steps'))+(subAgentCount?' · '+subAgentCount+' subagent':'');
+      return '<details class="chat-working" data-cats-detail-key="'+escapeHtml(detailKey)+'"><summary><span class="chat-working-chevron">&gt;</span><span>WORKING...</span><span class="chat-working-hint">'+escapeHtml(countLabel)+'</span></summary><div class="chat-working-body" data-cats-scroll-key="'+escapeHtml(detailKey)+'">'+steps+'</div></details>';
     }
 
     function renderCatsMessageBody(message){
@@ -7227,6 +7394,8 @@
       const box=document.getElementById('cats-messages');
       const uid=String(catsState.user?.uid||'');
       const shouldStickToBottom=catsScrollPinnedToBottom || !box.scrollHeight || isCatsMessageScrollNearBottom(box);
+      const openDetails=captureCatsOpenDetails(box);
+      const workingScrollPositions=captureCatsWorkingScrollPositions(box);
       if(!messages || !messages.length){
         box.innerHTML='<div class="loading">暂无消息</div>';
         return;
@@ -7240,6 +7409,8 @@
         return renderCatsMessageShell(group.message, renderCatsMessageBody(group.message), {isConsecutive:group.isConsecutive});
       }).join('');
       box.innerHTML='<div class="chat-timeline-inner">'+html+'</div>';
+      restoreCatsOpenDetails(box, openDetails);
+      restoreCatsWorkingScrollPositions(box, workingScrollPositions);
       if(shouldStickToBottom)scrollCatsMessagesToBottom(box);
       updatePetFromCatsMessages(messages);
     }

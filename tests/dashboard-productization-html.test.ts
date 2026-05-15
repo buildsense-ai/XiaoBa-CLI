@@ -139,3 +139,14 @@ test('CatsCo Chat composer supports local attachments', () => {
   assert.match(dashboardHtml, /catsMessageInput\.addEventListener\('paste'/);
   assert.match(dashboardHtml, /\/api\/cats\/messages\/send-file/);
 });
+
+test('CatsCo Chat preserves fallback tool metadata for WORKING rendering', () => {
+  const fallbackBlock = dashboardHtml.match(/function catsContentBlocksFromMessage\(message\)\{[\s\S]*?function groupCatsWorkingBlocks/)?.[0] || '';
+  assert.match(fallbackBlock, /type:'tool_use'[\s\S]*metadata:message\.metadata\|\|\{\}/);
+  assert.match(fallbackBlock, /type:'tool_result'[\s\S]*metadata:message\.metadata\|\|\{\}/);
+
+  const workingBlock = dashboardHtml.match(/function renderCatsWorkingBlocks\(blocks\)\{[\s\S]*?function renderCatsMessageBody/)?.[0] || '';
+  assert.match(workingBlock, /const metadata=Object\.assign\(\{\}, tool\.metadata\|\|\{\}, result\.metadata\|\|\{\}\)/);
+  assert.match(workingBlock, /metadata\.status\|\|tool\.input\?\.status/);
+  assert.match(workingBlock, /metadata\.step_count\?metadata\.step_count\+' 步'/);
+});

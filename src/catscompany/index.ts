@@ -6,6 +6,7 @@ import { MessageSessionManager } from '../core/message-session-manager';
 import { AgentServices, BUSY_MESSAGE, RuntimeFeedbackInput } from '../core/agent-session';
 import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
+import type { SubAgentInfo } from '../core/sub-agent-session';
 import { ChannelCallbacks } from '../types/tool';
 import { ContentBlock } from '../types';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
@@ -46,6 +47,22 @@ interface QueuedMessage {
 
 const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 const TEXT_ATTACHMENT_COALESCE_MS = Number(process.env.CATSCO_TEXT_ATTACHMENT_COALESCE_MS || 1500);
+const HIDDEN_CATS_TOOL_PROGRESS = new Set([
+  'send_text',
+  'send_file',
+  'spawn_subagent',
+]);
+const SUBAGENT_TERMINAL_EVENTS = new Set(['agent_completed', 'agent_failed', 'agent_stopped']);
+
+function shouldHideCatsToolProgress(toolName: string): boolean {
+  return HIDDEN_CATS_TOOL_PROGRESS.has(toolName);
+}
+
+function compactCatsSubAgentSummary(text: string, maxLength = 4000): string {
+  const normalized = text.replace(/\s+\n/g, '\n').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength)}\n\n[内容较长，已截断；完整内容请查看本地日志]`;
+}
 
 export function createCatsCompanyRuntime(sessionTTL?: number): AdapterRuntimeBundle {
   return createAdapterRuntime({
@@ -191,6 +208,11 @@ export class CatsCompanyBot {
    * 处理收到的消息
    */
   private async onMessage(ctx: MessageContext): Promise<void> {
+    if (this.isCancelMessage(ctx)) {
+      this.handleCancelMessage(ctx);
+      return;
+    }
+
     const msg = this.parseMessage(ctx);
     if (!msg) return;
 
@@ -234,7 +256,10 @@ export class CatsCompanyBot {
       injectMessage: async (text: string) => {
         await this.handleSubAgentFeedback(key, msg.topic, msg.senderId, text);
       },
-    });
+      onSubAgentEvent: async (event: any, info?: SubAgentInfo) => {
+        await this.handleSubAgentRuntimeEvent(msg.topic, event, info);
+      },
+    } as any);
 
     // 处理斜杠命令
     if (typeof msg.text === 'string' && msg.text.startsWith('/')) {
@@ -343,7 +368,7 @@ export class CatsCompanyBot {
           },
           onToolStart: async (toolName: string, toolUseId: string, input: any) => {
             // 跳过输出型工具的 WORKING 消息
-            if (toolName === 'send_text' || toolName === 'send_file') {
+            if (shouldHideCatsToolProgress(toolName)) {
               return;
             }
             try {
@@ -354,7 +379,7 @@ export class CatsCompanyBot {
           },
           onToolEnd: async (toolName: string, toolUseId: string, result: string) => {
             // 跳过输出型工具的 WORKING 消息
-            if (toolName === 'send_text' || toolName === 'send_file') {
+            if (shouldHideCatsToolProgress(toolName)) {
               return;
             }
             try {
@@ -614,6 +639,106 @@ export class CatsCompanyBot {
     }
 
     Logger.warning(`[${sessionKey}] 子智能体反馈注入失败：主会话持续忙碌`);
+  }
+
+  private async handleSubAgentRuntimeEvent(
+    topic: string,
+    event: any,
+    info?: SubAgentInfo,
+  ): Promise<void> {
+    const subAgentId = String(event?.subAgentId || info?.id || '');
+    if (!subAgentId) return;
+
+    const displayName = String(event?.subAgentName || (info as any)?.displayName || subAgentId.slice(0, 12));
+    const toolUseId = `subagent:${subAgentId}`;
+    const status = info?.status || 'running';
+
+    try {
+      if (event?.type === 'agent_spawned') {
+        await this.sender.sendToolUse(topic, toolUseId, displayName, {
+          kind: 'subagent',
+          subagent_id: subAgentId,
+          display_name: displayName,
+          agent_type: (info as any)?.agentType || info?.skillName || '',
+          status,
+          task: info?.taskDescription || event?.summary || '',
+        }, this.subAgentEventMetadata(event, info, status));
+        return;
+      }
+
+      if (SUBAGENT_TERMINAL_EVENTS.has(String(event?.type))) {
+        const statusLabel = event.type === 'agent_completed'
+          ? '已完成'
+          : event.type === 'agent_stopped'
+            ? '已停止'
+            : '失败';
+        const summary = [
+          `${displayName} ${statusLabel}`,
+          `任务: ${info?.taskDescription || event?.summary || '（未知）'}`,
+          `结果摘要: ${compactCatsSubAgentSummary(info?.resultSummary || event?.summary || '（无结果）')}`,
+          info?.outputFiles?.length ? `产出文件:\n${info.outputFiles.map(file => `- ${file}`).join('\n')}` : '',
+        ].filter(Boolean).join('\n');
+        await this.sender.sendToolResult(
+          topic,
+          toolUseId,
+          summary,
+          event.type === 'agent_failed',
+          this.subAgentEventMetadata(event, info, status),
+        );
+        return;
+      }
+
+      if (event?.type === 'agent_waiting') {
+        return;
+      }
+
+      if (event?.summary) {
+        await this.sender.sendThinking(
+          topic,
+          `[${displayName}] ${event.summary}`,
+          this.subAgentEventMetadata(event, info, status),
+        );
+      }
+    } catch (err: any) {
+      Logger.warning(`子智能体状态通知发送失败: ${err.message}`);
+    }
+  }
+
+  private subAgentEventMetadata(event: any, info?: SubAgentInfo, status?: SubAgentInfo['status']): Record<string, unknown> {
+    return {
+      kind: 'subagent_event',
+      subagent_id: event?.subAgentId || info?.id,
+      subagent_name: event?.subAgentName || (info as any)?.displayName,
+      display_name: event?.subAgentName || (info as any)?.displayName,
+      subagent_event_type: event?.type,
+      agent_type: (info as any)?.agentType || info?.skillName,
+      status,
+      task: info?.taskDescription,
+      summary: event?.summary,
+      step_count: info?.progressLog?.length,
+    };
+  }
+
+  /** CatsCompany 网页停止按钮发来的轻量取消事件，不落历史消息 */
+  private isCancelMessage(ctx: MessageContext): boolean {
+    const type = String(ctx.type || ctx.msg_type || '').trim();
+    const streamEvent = String(ctx.metadata?.stream_event || '').trim();
+    const control = String(ctx.metadata?.control || '').trim();
+    return type === 'stream_cancel' || streamEvent === 'cancel' || control === 'interrupt';
+  }
+
+  private handleCancelMessage(ctx: MessageContext): void {
+    const key = ctx.isGroup
+      ? `cc_group:${ctx.topic}`
+      : `cc_user:${ctx.senderId}`;
+    const session = (this.sessionManager as any).get?.(key) ?? null;
+    if (!session) {
+      Logger.info(`[${key}] 收到取消事件，但会话不存在`);
+      return;
+    }
+
+    session.requestInterrupt();
+    Logger.info(`[${key}] 收到 CatsCompany 取消事件，已请求中断当前回合`);
   }
 
   /**
