@@ -36,7 +36,7 @@ import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-gra
 const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cc';
 const DEFAULT_CATSCO_WS_URL = 'wss://app.catsco.cc/v0/channels';
 const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
-const SYSTEM_SKILL_DIRS = new Set(['_tool-skills']);
+const SYSTEM_SKILL_DIRS = new Set<string>();
 
 type SkillSource = 'system' | 'bundled' | 'user';
 

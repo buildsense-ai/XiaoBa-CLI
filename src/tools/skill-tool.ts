@@ -22,7 +22,7 @@ export class SkillTool implements Tool {
       properties: {
         skill: {
           type: 'string',
-          description: 'Skill 名称（如 "paper-analysis", "commit" 等）'
+          description: '已注册的 Skill 名称（例如当前 skills 目录里存在的任务模板）'
         },
         args: {
           type: 'string',

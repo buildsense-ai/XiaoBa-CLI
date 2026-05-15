@@ -9,7 +9,6 @@ import { GrepTool } from './grep-tool';
 import { SkillTool } from './skill-tool';
 import { SendFileTool } from './send-file-tool';
 import { SendTextTool } from './send-text-tool';
-import { SendToInspectorTool } from './send-to-inspector-tool';
 import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
 import { StopSubagentTool } from './stop-subagent-tool';
@@ -77,7 +76,6 @@ export class ToolManager implements ToolExecutor {
       new ShellTool(),
       new SendTextTool(),
       new SendFileTool(),
-      new SendToInspectorTool(),
       new SpawnSubagentTool(),
       new CheckSubagentTool(),
       new StopSubagentTool(),

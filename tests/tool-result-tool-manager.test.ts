@@ -127,15 +127,6 @@ describe('ToolManager - ToolExecutionResult 统一处理', () => {
     assert.strictEqual(result.errorCode, undefined);
   });
 
-  test('thinking 成功返回 ok=true', async () => {
-    // thinking-tool 直接实例化测试（不在 ToolManager 默认注册）
-    const { ThinkingTool } = await import('../src/tools/thinking-tool');
-    const tool = new ThinkingTool();
-    const result = await tool.execute({ content: 'test thinking' }, { workingDirectory: testRoot, conversationHistory: [] });
-    assert.strictEqual(result.ok, true);
-    assert.ok(result.content?.includes('已思考'));
-  });
-
   // ─── 失败路径 ───────────────────────────────────────────────
 
   test('read_file 文件不存在返回 ok=false + FILE_NOT_FOUND', async () => {

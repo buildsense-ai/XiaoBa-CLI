@@ -106,7 +106,6 @@
       "dashboard/**/*",
       "prompts/**/*",
       "skills/agent-browser/**/*",
-      "skills/_tool-skills/**/*",
       "skills/report/**/*",
       "skills/self-evolution/**/*",
       "!skills/**/*.pyo",
