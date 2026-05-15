@@ -1044,6 +1044,12 @@ test("same runId replays persisted result without appending duplicate events or 
 
   assert.equal(first.runId, second.runId);
   assert.equal(second.stats.idempotentReplay, true);
+  assert.equal(typeof first.durationMs, "number");
+  assert.equal(Array.isArray(first.timings), true);
+  assert.equal(first.timings.some((entry) => entry.step === "root_search_plan"), true);
+  assert.equal(first.timings.some((entry) => entry.step === "construct_frontier_step"), true);
+  assert.deepEqual(second.timings, afterFirst.runs[0].timings);
+  assert.equal(second.durationMs, afterFirst.runs[0].durationMs);
   assert.equal(afterSecond.runs.length, afterFirst.runs.length);
   assert.equal(afterSecond.events.length, afterFirst.events.length);
   assert.equal(afterSecond.nodeStates.length, afterFirst.nodeStates.length);
@@ -1080,6 +1086,14 @@ test("prompt bundle has a hard character cap", async () => {
   });
 
   assert.equal(result.promptBundle.length <= 500, true);
+  assert.equal(typeof result.durationMs, "number");
+  assert.equal(Array.isArray(result.timings), true);
+  assert.equal(result.stats.durationMs, result.durationMs);
+  assert.equal(result.stats.timingCount, result.timings.length);
+  assert.equal(result.timings.every((entry) => typeof entry.step === "string" && typeof entry.durationMs === "number"), true);
+  const graphAfterRun = loadGraph(storeRoot);
+  assert.equal(graphAfterRun.runs[0].durationMs, result.durationMs);
+  assert.deepEqual(graphAfterRun.runs[0].timings, result.timings);
   assert.match(result.promptBundle, /truncated/);
   assert.match(result.promptBundle, /\[\/gauzmem_recall\]$/);
 
@@ -1134,12 +1148,17 @@ test("HTTP retrieve returns run trace and persists runs/events", async () => {
       budget: { maxTerms: 5, maxEvidence: 5 },
     });
     assert.ok(result.runId);
+    assert.equal(typeof result.durationMs, "number");
+    assert.equal(Array.isArray(result.timings), true);
+    assert.equal(result.stats.durationMs, result.durationMs);
     assert.equal(Array.isArray(result.searchTrace), true);
     assert.equal(result.evidence.length >= 1, true);
     assert.match(result.promptBundle, /\[gauzmem_recall\]/);
 
     const graph = loadGraph(storeRoot);
     assert.equal(graph.runs.length, 1);
+    assert.equal(graph.runs[0].durationMs, result.durationMs);
+    assert.deepEqual(graph.runs[0].timings, result.timings);
     assert.equal(graph.events.some((event) => event.eventType === "retrieved"), true);
   } finally {
     server.close();
