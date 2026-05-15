@@ -6,7 +6,6 @@
  * - assistant.content（有 tool_calls 时）→ thinking block
  * - assistant.tool_calls[i]              → tool_use block
  * - tool message                         → tool_result block
- * - thinking 工具调用                     → thinking block（提取 content 参数）
  * - 最终 assistant.content（无 tool_calls）不提取（属于最终回复）
  */
 
@@ -49,18 +48,6 @@ export function extractContentBlocks(newMessages: Message[]): CatsContentBlock[]
         for (const tc of msg.tool_calls!) {
           const name = tc.function.name;
 
-          // thinking 工具特殊处理：提取为 thinking block
-          if (name === 'thinking') {
-            try {
-              const args = JSON.parse(tc.function.arguments);
-              blocks.push({ type: 'thinking', thinking: args.content || args.text || '' });
-            } catch {
-              blocks.push({ type: 'thinking', thinking: tc.function.arguments });
-            }
-            continue;
-          }
-
-          // 普通工具 → tool_use block
           let input: Record<string, unknown> = {};
           try {
             input = JSON.parse(tc.function.arguments);
@@ -73,9 +60,6 @@ export function extractContentBlocks(newMessages: Message[]): CatsContentBlock[]
 
       // 最终回复（无 tool_calls）不提取，属于 message content
     } else if (msg.role === 'tool') {
-      // 跳过 thinking 工具的 result（无意义）
-      if (msg.name === 'thinking') continue;
-
       const content = typeof msg.content === 'string'
         ? truncate(msg.content, TOOL_RESULT_MAX_LEN)
         : msg.content;

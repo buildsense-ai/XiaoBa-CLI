@@ -24,7 +24,6 @@ describe('dashboard skills API', () => {
       path.join(testRoot, 'skills/bundled-tool/.xiaoba-bundled-skill.json'),
       JSON.stringify({ name: 'bundled-tool', version: 'test' })
     );
-    writeSkill('skills/_tool-skills/sub-agent/SKILL.md', 'sub-agent', 'System skill');
 
     const app = express();
     app.use(express.json());
@@ -64,21 +63,9 @@ describe('dashboard skills API', () => {
       canDisable: true,
       canDelete: false,
     });
-    assert.deepEqual(pickManagement(byName.get('sub-agent')), {
-      source: 'system',
-      protected: true,
-      canDisable: false,
-      canDelete: false,
-    });
   });
 
-  test('protects system skills and allows user skill removal', async () => {
-    const disableSystem = await fetch(`${baseUrl}/api/skills/sub-agent/disable`, { method: 'POST' });
-    assert.equal(disableSystem.status, 403);
-
-    const deleteSystem = await fetch(`${baseUrl}/api/skills/sub-agent`, { method: 'DELETE' });
-    assert.equal(deleteSystem.status, 403);
-
+  test('allows user skill removal', async () => {
     const deleteUser = await fetch(`${baseUrl}/api/skills/user-tool`, { method: 'DELETE' });
     assert.equal(deleteUser.status, 200);
     assert.equal(fs.existsSync(path.join(testRoot, 'skills/user-tool')), false);

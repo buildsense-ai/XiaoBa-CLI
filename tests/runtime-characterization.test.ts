@@ -65,7 +65,6 @@ describe('runtime characterization', () => {
         'resume_subagent',
         'send_file',
         'send_text',
-        'send_to_inspector',
         'skill',
         'spawn_subagent',
         'stop_subagent',

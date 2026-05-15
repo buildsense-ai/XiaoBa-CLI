@@ -161,7 +161,6 @@ export class ConversationRunner {
     let observationSinceLastOutbound = false;
     const deliveredOutboundFiles = new Set<string>();
     let turns = 0;
-    let thinkingCount = 0;
 
     while (true) {
       turns++;
@@ -312,9 +311,6 @@ export class ConversationRunner {
             this.toolExecutionContext || {},
             turns,
           );
-        if (toolName === 'thinking') {
-          thinkingCount++;
-        }
         const toolDuration = Date.now() - toolStart;
         Metrics.recordToolCall(toolName, toolDuration);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
