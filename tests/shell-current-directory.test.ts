@@ -68,4 +68,34 @@ describe('ShellTool current directory probe', () => {
     assert.strictEqual(currentDirectory, testRoot);
     assert.ok(!result.message.includes('__XIAOBA_CWD_MARKER__'));
   });
+
+  test('successful cd is persisted even when a later command fails', async () => {
+    const tool = new ShellTool();
+    const failingCommand = process.platform === 'win32'
+      ? 'cd sub && definitely_missing_xiaoba_command'
+      : 'cd sub && definitely_missing_xiaoba_command';
+    const result = await tool.execute({ command: failingCommand }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(currentDirectory, path.join(testRoot, 'sub'));
+    assert.ok(!result.message.includes('__XIAOBA_CWD_MARKER__'));
+  });
+
+  test('Windows for loop keeps cmd command-line percent syntax', {
+    skip: process.platform !== 'win32',
+  }, async () => {
+    fs.writeFileSync(path.join(testRoot, 'loop-target.txt'), 'ok');
+    const tool = new ShellTool();
+    const result = await tool.execute({ command: 'for %f in (*.txt) do @echo %f' }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    assert.ok((result.content as string).includes('loop-target.txt'));
+  });
+
 });

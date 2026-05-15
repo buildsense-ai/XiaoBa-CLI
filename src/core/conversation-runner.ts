@@ -448,10 +448,17 @@ export class ConversationRunner {
     const messages: Message[] = [];
     const transcriptRecords: ToolExecutionRecord[] = [];
     const outboundMessages: Message[] = [];
+    const hasTranscriptRecord = executionRecords.some(record => {
+      const transcriptMode = this.getToolTranscriptMode(record.toolName, toolDefinitions);
+      if (this.shouldNormalizeOutboundRecord(record, transcriptMode)) {
+        return false;
+      }
+      return transcriptMode !== 'suppress' || record.result.errorCode || record.result.ok === false;
+    });
 
     for (const record of executionRecords) {
       const transcriptMode = this.getToolTranscriptMode(record.toolName, toolDefinitions);
-      if (this.shouldNormalizeOutboundRecord(record, transcriptMode)) {
+      if (!hasTranscriptRecord && this.shouldNormalizeOutboundRecord(record, transcriptMode)) {
         const outbound = this.buildOutboundAssistantMessage(record, toolDefinitions);
         if (outbound) {
           outboundMessages.push(outbound);

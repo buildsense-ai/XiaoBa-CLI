@@ -1,7 +1,6 @@
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
@@ -12,9 +11,15 @@ const execAsync = promisify(exec);
 const CWD_MARKER_PREFIX = '__XIAOBA_CWD_MARKER__';
 
 interface WrappedCommand {
-  command: string;
+  command?: string;
   marker: string;
+  stdinScript?: string;
   scriptPath?: string;
+}
+
+interface ShellOutput {
+  stdout: string;
+  stderr: string;
 }
 
 export class ShellTool implements Tool {
@@ -71,13 +76,12 @@ export class ShellTool implements Tool {
     const wrapped = this.wrapCommandWithDirectoryProbe(command);
 
     try {
-      const { stdout, stderr } = await execAsync(wrapped.command, {
-        cwd: context.workingDirectory,
-        env: runtimeEnvironment.env,
-        encoding: 'utf-8',
+      const { stdout, stderr } = await this.executeWrappedCommand(
+        wrapped,
+        context.workingDirectory,
+        runtimeEnvironment.env,
         timeout,
-        maxBuffer: 10 * 1024 * 1024,
-      });
+      );
 
       const parsedStdout = this.extractDirectoryProbe(stdout || '', wrapped.marker);
       const parsedStderr = this.extractDirectoryProbe(stderr || '', wrapped.marker);
@@ -111,7 +115,14 @@ export class ShellTool implements Tool {
       };
     } catch (error: any) {
       const executionTime = Date.now() - startTime;
-      const errorOutput = this.stripAnyDirectoryProbe(error.stderr || error.stdout || error.message);
+      const parsedStdout = this.extractDirectoryProbe(error.stdout || '', wrapped.marker);
+      const parsedStderr = this.extractDirectoryProbe(error.stderr || '', wrapped.marker);
+      this.updateCurrentDirectory(parsedStdout.directory || parsedStderr.directory, context);
+      const errorOutput = [
+        parsedStderr.output,
+        parsedStdout.output,
+        this.stripAnyDirectoryProbe(error.message),
+      ].filter(Boolean).join('\n').trim();
 
       Logger.error(`✗ 命令执行失败 (耗时: ${executionTime}ms)`);
       Logger.error(`  错误: ${error.message}`);
@@ -129,22 +140,19 @@ export class ShellTool implements Tool {
   private wrapCommandWithDirectoryProbe(command: string): WrappedCommand {
     const marker = `${CWD_MARKER_PREFIX}${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
     if (process.platform === 'win32') {
-      // Node exec() uses cmd.exe on Windows. A temp .cmd keeps command lines sequential,
-      // so cd/chdir effects are visible to the final `cd` probe instead of being
-      // expanded before execution by `cmd /c`.
-      const scriptPath = path.join(os.tmpdir(), `xiaoba-shell-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.cmd`);
-      fs.writeFileSync(scriptPath, [
+      // Feed commands through stdin instead of writing a .cmd file. This keeps
+      // normal cmd.exe command-line semantics such as `for %f in (...) do ...`
+      // while still letting us append a cwd probe and preserve the exit code.
+      return {
+        marker,
+        stdinScript: [
         '@echo off',
         command,
         'set "__XIAOBA_STATUS__=%ERRORLEVEL%"',
-        `if "%__XIAOBA_STATUS__%"=="0" echo ${marker}`,
-        'if "%__XIAOBA_STATUS__%"=="0" cd',
+        `echo ${marker}`,
+        'cd',
         'exit /b %__XIAOBA_STATUS__%',
-      ].join('\r\n'), 'utf-8');
-      return {
-        marker,
-        command: `"${scriptPath}"`,
-        scriptPath,
+        ].join('\r\n'),
       };
     }
 
@@ -154,10 +162,125 @@ export class ShellTool implements Tool {
         command,
         'status=$?',
         // POSIX sh-compatible probe for Linux/macOS. Node exec() uses /bin/sh here.
-        `if [ "$status" -eq 0 ]; then printf '\\n${marker}=%s\\n' "$PWD"; fi`,
+        `printf '\\n${marker}=%s\\n' "$PWD"`,
         'exit "$status"',
       ].join('\n'),
     };
+  }
+
+  private async executeWrappedCommand(
+    wrapped: WrappedCommand,
+    cwd: string,
+    env: NodeJS.ProcessEnv,
+    timeout: number,
+  ): Promise<ShellOutput> {
+    if (process.platform !== 'win32') {
+      if (!wrapped.command) {
+        throw new Error('Internal error: missing shell command');
+      }
+      return execAsync(wrapped.command, {
+        cwd,
+        env,
+        encoding: 'utf-8',
+        timeout,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+    }
+
+    return this.executeWindowsStdinScript(wrapped, cwd, env, timeout);
+  }
+
+  private executeWindowsStdinScript(
+    wrapped: WrappedCommand,
+    cwd: string,
+    env: NodeJS.ProcessEnv,
+    timeout: number,
+  ): Promise<ShellOutput> {
+    if (!wrapped.stdinScript) {
+      return Promise.reject(new Error('Internal error: missing Windows stdin script'));
+    }
+
+    return new Promise((resolve, reject) => {
+      const child = spawn('cmd.exe', ['/d', '/q'], {
+        cwd,
+        env,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      let settled = false;
+      let timedOut = false;
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      const maxBuffer = 10 * 1024 * 1024;
+
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+
+      const fail = (error: any) => {
+        finish(() => {
+          try { child.kill(); } catch {}
+          error.stdout = Buffer.concat(stdoutChunks).toString('utf8');
+          error.stderr = Buffer.concat(stderrChunks).toString('utf8');
+          reject(error);
+        });
+      };
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        fail(new Error(`Command timed out after ${timeout}ms`));
+      }, timeout);
+
+      child.stdout.on('data', chunk => {
+        const buffer = Buffer.from(chunk);
+        stdoutBytes += buffer.length;
+        if (stdoutBytes > maxBuffer) {
+          fail(new Error(`stdout maxBuffer exceeded (${maxBuffer} bytes)`));
+          return;
+        }
+        stdoutChunks.push(buffer);
+      });
+
+      child.stderr.on('data', chunk => {
+        const buffer = Buffer.from(chunk);
+        stderrBytes += buffer.length;
+        if (stderrBytes > maxBuffer) {
+          fail(new Error(`stderr maxBuffer exceeded (${maxBuffer} bytes)`));
+          return;
+        }
+        stderrChunks.push(buffer);
+      });
+
+      child.on('error', error => {
+        fail(error);
+      });
+
+      child.on('close', code => {
+        if (settled) return;
+        const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+        const stderr = Buffer.concat(stderrChunks).toString('utf8');
+        finish(() => {
+          if (timedOut) return;
+          if (code === 0) {
+            resolve({ stdout, stderr });
+            return;
+          }
+          const error: any = new Error(`Command failed with exit code ${code}`);
+          error.code = code;
+          error.stdout = stdout;
+          error.stderr = stderr;
+          reject(error);
+        });
+      });
+
+      child.stdin.end(wrapped.stdinScript + '\r\n');
+    });
   }
 
   private cleanupWrappedCommand(wrapped: WrappedCommand): void {
@@ -179,7 +302,8 @@ export class ShellTool implements Tool {
         takeNextLineAsDirectory = false;
         return false;
       }
-      if (line.trim() === marker) {
+      const markerIndex = line.indexOf(marker);
+      if (markerIndex >= 0 && line.slice(markerIndex).trim() === marker) {
         takeNextLineAsDirectory = true;
         return false;
       }

@@ -392,6 +392,77 @@ test('runner continues after an outbound file and blocks duplicate file sends in
   );
 });
 
+test('runner keeps legal transcript order for duplicate send_file calls in the same assistant response', async () => {
+  const responses = [
+    {
+      content: null,
+      toolCalls: [
+        makeToolCall('call_file_1', 'send_file', {
+          file_path: 'C:\\Users\\test\\Desktop\\report.docx',
+          file_name: 'report.docx',
+        }),
+        makeToolCall('call_file_2', 'send_file', {
+          file_path: 'C:\\Users\\test\\Desktop\\report.docx',
+          file_name: 'report.docx',
+        }),
+      ],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+      },
+    },
+    makeFinalResponse('sent report.docx'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [
+      {
+        name: 'send_file',
+        description: 'send visible file',
+        transcriptMode: 'outbound_file',
+        parameters: {
+          type: 'object',
+          properties: {
+            file_path: { type: 'string' },
+            file_name: { type: 'string' },
+          },
+          required: ['file_path', 'file_name'],
+        },
+      },
+    ],
+    {
+      send_file: [
+        'File sent to current chat.',
+        'Path: C:\\Users\\test\\Desktop\\report.docx',
+        'Name: report.docx',
+      ].join('\n'),
+    },
+  );
+
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, {
+    stream: true,
+    enableCompression: false,
+  });
+  await runner.run([{ role: 'user', content: 'send the desktop docx twice' }]);
+
+  assert.equal(toolExecutor.getExecutionCount('send_file'), 1);
+  const secondCallMessages = mock.getReceivedMessages()[1];
+  const assistantIndex = secondCallMessages.findIndex(message => message.role === 'assistant' && Boolean(message.tool_calls?.length));
+  const firstToolIndex = secondCallMessages.findIndex(message => message.role === 'tool' && message.tool_call_id === 'call_file_1');
+  const secondToolIndex = secondCallMessages.findIndex(message => message.role === 'tool' && message.tool_call_id === 'call_file_2');
+  const outboundAssistantBetween = secondCallMessages
+    .slice(assistantIndex + 1, firstToolIndex)
+    .some(message => message.role === 'assistant');
+
+  assert.ok(assistantIndex >= 0);
+  assert.equal(secondCallMessages[assistantIndex].tool_calls?.length, 2);
+  assert.equal(firstToolIndex, assistantIndex + 1);
+  assert.equal(secondToolIndex, assistantIndex + 2);
+  assert.equal(outboundAssistantBetween, false);
+  assert.match(String(secondCallMessages[secondToolIndex].content), /already sent earlier/);
+});
+
 test('runner does not locally retry failed outbound file sends unless the failure is rate limited', async () => {
   const responses = [
     makeToolResponse(makeToolCall('call_file', 'send_file', {
