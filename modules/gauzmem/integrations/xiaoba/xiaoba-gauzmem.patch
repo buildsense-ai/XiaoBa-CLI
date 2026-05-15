@@ -4,7 +4,7 @@ diff -ruN --exclude=README.md .env.example .env.example
 @@ -52,6 +52,14 @@
  INSPECTOR_AUTO_UPLOAD_STABLE_MINUTES=5
  INSPECTOR_AUTO_UPLOAD_MAX_FILES=12
- 
+
 +# Optional GauzMem sidecar. XiaoBa only stores the sidecar URL and source roots;
 +# MiniMax / LLM credentials stay in the standalone GauzMem project.
 +GAUZMEM_ENABLED=false
@@ -35,11 +35,11 @@ diff -ruN --exclude=README.md src/core/agent-turn-controller.ts src/core/agent-t
  import { TurnContextBuilder } from './turn-context-builder';
  import { TurnLogRecorder } from './turn-log-recorder';
 +import { GauzMemClient } from '../utils/gauzmem-client';
- 
+
  export interface AgentTurnServices {
    aiService: AIService;
 @@ -79,6 +81,7 @@
- 
+
      const turnContext = await this.options.turnContextBuilder.build({
        sessionKey: this.options.sessionKey,
 +      sessionType: this.options.sessionType,
@@ -59,13 +59,13 @@ diff -ruN --exclude=README.md src/core/agent-turn-controller.ts src/core/agent-t
 +      ]),
 +      passiveRuns: turnContext.gauzMemPassiveRuns,
 +    });
- 
+
      return {
        text: result.finalResponseVisible ? (result.response || '[无回复]') : '',
 @@ -139,6 +151,37 @@
      };
    }
- 
+
 +  private async recordGauzMemTurnMetadata(input: {
 +    input: string | ContentBlock[];
 +    result: RunResult;
@@ -125,7 +125,7 @@ diff -ruN --exclude=README.md src/core/context-window-manager.ts src/core/contex
 +++ src/core/context-window-manager.ts	2026-05-12 16:26:26
 @@ -75,7 +75,7 @@
  }
- 
+
  function isTransientMessage(message: Message): boolean {
 -  if (message.__injected || message.__runtimeFeedback) return true;
 +  if (message.__transient || message.__injected || message.__runtimeFeedback) return true;
@@ -143,7 +143,7 @@ diff -ruN --exclude=README.md src/core/conversation-runner.ts src/core/conversat
 +  gauzMemRunIds?: string[];
 +  gauzMemRuns?: Array<Record<string, unknown>>;
  }
- 
+
  export type PendingUserInputProvider = () =>
 @@ -168,6 +171,8 @@
      let hasDeliveredMessageOutThisRun = false;
@@ -153,7 +153,7 @@ diff -ruN --exclude=README.md src/core/conversation-runner.ts src/core/conversat
 +    const gauzMemRuns: Array<Record<string, unknown>> = [];
      let turns = 0;
      let thinkingCount = 0;
- 
+
 @@ -213,6 +218,8 @@
              finalResponseVisible: false,
              messages,
@@ -171,7 +171,7 @@ diff -ruN --exclude=README.md src/core/conversation-runner.ts src/core/conversat
 +            gauzMemRuns,
            };
          }
- 
+
 @@ -273,6 +282,8 @@
            finalResponseVisible: true,
            messages,
@@ -180,7 +180,7 @@ diff -ruN --exclude=README.md src/core/conversation-runner.ts src/core/conversat
 +          gauzMemRuns,
          };
        }
- 
+
 @@ -304,7 +315,10 @@
          const toolInput = JSON.parse(toolCall.function.arguments);
          const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
@@ -213,7 +213,7 @@ diff -ruN --exclude=README.md src/core/conversation-runner.ts src/core/conversat
 +          : ConversationRunner.truncateForLog(result.content, 300);
 +        Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${resultForLog}`);
          callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
- 
+
          if (
 @@ -401,6 +421,8 @@
            finalResponseVisible: false,
@@ -223,7 +223,7 @@ diff -ruN --exclude=README.md src/core/conversation-runner.ts src/core/conversat
 +          gauzMemRuns,
          };
        }
- 
+
 @@ -413,6 +435,8 @@
        finalResponseVisible: !this.isMessageSurface(),
        messages,
@@ -232,14 +232,14 @@ diff -ruN --exclude=README.md src/core/conversation-runner.ts src/core/conversat
 +      gauzMemRuns,
      };
    }
- 
+
 @@ -475,6 +499,7 @@
    ): Message[] {
      const messages: Message[] = [];
      const transcriptRecords: ToolExecutionRecord[] = [];
 +    const transientRecords: ToolExecutionRecord[] = [];
      const outboundMessages: Message[] = [];
- 
+
      for (const record of executionRecords) {
 @@ -489,10 +514,15 @@
        if (transcriptMode === 'suppress' && !record.result.errorCode && record.result.ok !== false) {
@@ -251,7 +251,7 @@ diff -ruN --exclude=README.md src/core/conversation-runner.ts src/core/conversat
 +      }
        transcriptRecords.push(record);
      }
- 
+
      const transcriptToolCalls = this.filterToolCallsForTranscript(assistantMsg, transcriptRecords);
 +    const transientToolCalls = this.filterToolCallsForTranscript(assistantMsg, transientRecords);
      const assistant: Message = {
@@ -260,7 +260,7 @@ diff -ruN --exclude=README.md src/core/conversation-runner.ts src/core/conversat
 @@ -507,13 +537,23 @@
        messages.push(assistant);
      }
- 
+
 +    if (transientToolCalls?.length) {
 +      messages.push({
 +        role: 'assistant',
@@ -271,7 +271,7 @@ diff -ruN --exclude=README.md src/core/conversation-runner.ts src/core/conversat
 +    }
 +
      messages.push(...outboundMessages);
- 
+
 -    for (const record of transcriptRecords) {
 +    for (const record of [...transientRecords, ...transcriptRecords]) {
        const transcriptMode = this.getToolTranscriptMode(record.toolName, toolDefinitions);
@@ -279,7 +279,7 @@ diff -ruN --exclude=README.md src/core/conversation-runner.ts src/core/conversat
          continue;
        }
 +      const isTransient = transcriptMode === 'transient' && !record.result.errorCode && record.result.ok !== false;
- 
+
        // 检测图片读取结果的特殊标记
        if (typeof record.toolContent === 'object' && record.toolContent && '_imageForNewMessage' in record.toolContent) {
 @@ -535,6 +575,7 @@
@@ -296,7 +296,7 @@ diff -ruN --exclude=README.md src/core/conversation-runner.ts src/core/conversat
            name: record.result.name,
 +          ...(isTransient ? { __transient: true } : {}),
          });
- 
+
          // 插入额外消息（如图片）
          if (record.newMessages) {
 -          messages.push(...record.newMessages);
@@ -319,11 +319,11 @@ diff -ruN --exclude=README.md src/core/turn-context-builder.ts src/core/turn-con
 +  GAUZMEM_TRANSIENT_PREFIX,
 +  formatGauzMemPrompt,
 +} from '../utils/gauzmem-client';
- 
+
  const TRANSIENT_SUBAGENT_STATUS_PREFIX = '[transient_subagent_status]';
  const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 @@ -12,6 +17,7 @@
- 
+
  export interface BuildTurnContextParams {
    sessionKey: string;
 +  sessionType?: string;
@@ -337,7 +337,7 @@ diff -ruN --exclude=README.md src/core/turn-context-builder.ts src/core/turn-con
 +  gauzMemRunIds: string[];
 +  gauzMemPassiveRuns: Array<Record<string, unknown>>;
  }
- 
+
  /**
 @@ -32,6 +40,10 @@
      const contextMessages = [...params.durableMessages];
@@ -347,7 +347,7 @@ diff -ruN --exclude=README.md src/core/turn-context-builder.ts src/core/turn-con
 +    const gauzMemRunIds = gauzMemPassiveRuns
 +      .map(run => typeof run.runId === 'string' ? run.runId : '')
 +      .filter(Boolean);
- 
+
      await params.skillRuntime.reloadSkills();
      const skillsListMsg = params.skillRuntime.buildSkillsListMessage();
 @@ -42,16 +54,20 @@
@@ -358,7 +358,7 @@ diff -ruN --exclude=README.md src/core/turn-context-builder.ts src/core/turn-con
 +      gauzMemPassiveRuns,
      };
    }
- 
+
    removeTransientMessages(messages: Message[]): Message[] {
      return messages.filter(msg => {
 +      if (msg.__transient) return false;
@@ -374,7 +374,7 @@ diff -ruN --exclude=README.md src/core/turn-context-builder.ts src/core/turn-con
 @@ -95,6 +111,41 @@
      });
    }
- 
+
 +  private async injectGauzMemRecall(messages: Message[], sessionKey: string, sessionType?: string): Promise<Array<Record<string, unknown>>> {
 +    const query = this.lastUserText(messages);
 +    if (!query) return [];
@@ -435,13 +435,13 @@ diff -ruN --exclude=README.md src/core/turn-context-builder.ts src/core/turn-con
 +    return '';
    }
  }
- 
+
 diff -ruN --exclude=README.md src/core/turn-log-recorder.ts src/core/turn-log-recorder.ts
 --- src/core/turn-log-recorder.ts	2026-05-12 16:22:57
 +++ src/core/turn-log-recorder.ts	2026-05-12 16:26:26
 @@ -22,10 +22,11 @@
    constructor(private readonly logger: SessionTurnLogger) {}
- 
+
    recordTurn(params: RecordTurnParams): void {
 +    const durableNewMessages = params.result.newMessages.filter(message => !message.__transient);
      this.logger.logTurn(
@@ -462,7 +462,7 @@ diff -ruN --exclude=README.md src/tools/default-tool-names.ts src/tools/default-
 +  'gauzmem_search',
    'skill',
  ] as const;
- 
+
 diff -ruN --exclude=README.md src/tools/gauzmem-search-tool.ts src/tools/gauzmem-search-tool.ts
 --- src/tools/gauzmem-search-tool.ts	1970-01-01 08:00:00
 +++ src/tools/gauzmem-search-tool.ts	2026-05-12 16:27:55
@@ -555,7 +555,7 @@ diff -ruN --exclude=README.md src/tools/tool-manager.ts src/tools/tool-manager.t
  import { ResumeSubagentTool } from './resume-subagent-tool';
 +import { GauzMemSearchTool } from './gauzmem-search-tool';
  import { DEFAULT_TOOL_NAMES } from './default-tool-names';
- 
+
  /**
 @@ -84,6 +85,9 @@
        new ResumeSubagentTool(),
@@ -564,7 +564,7 @@ diff -ruN --exclude=README.md src/tools/tool-manager.ts src/tools/tool-manager.t
 +    if (String(process.env.GAUZMEM_ENABLED || '').toLowerCase() === 'true' && (!enabled || enabled.has('gauzmem_search'))) {
 +      defaultTools.push(new GauzMemSearchTool());
 +    }
- 
+
      for (const tool of defaultTools) {
        if (enabled && !enabled.has(tool.definition.name)) continue;
 diff -ruN --exclude=README.md src/types/index.ts src/types/index.ts
@@ -577,7 +577,7 @@ diff -ruN --exclude=README.md src/types/index.ts src/types/index.ts
 +  /** 标记本轮可见但不应进入长期 session/log 的临时消息 */
 +  __transient?: boolean;
  }
- 
+
  export interface ChatConfig {
 diff -ruN --exclude=README.md src/types/tool.ts src/types/tool.ts
 --- src/types/tool.ts	2026-05-12 16:22:57
@@ -589,7 +589,7 @@ diff -ruN --exclude=README.md src/types/tool.ts src/types/tool.ts
 -export type ToolTranscriptMode = 'default' | 'outbound_message' | 'outbound_file' | 'suppress';
 +export type ToolTranscriptMode = 'default' | 'outbound_message' | 'outbound_file' | 'suppress' | 'transient';
  export type ToolControlMode = 'pause_turn';
- 
+
  export interface ToolDefinition {
 @@ -36,6 +36,7 @@
     * default: 保留 tool_result；
