@@ -117,6 +117,25 @@ describe('RuntimeProfile', () => {
     });
   });
 
+  test('uses app root as default working directory in Electron dev only', () => {
+    const appRoot = path.join(testRoot, 'app-root');
+    const devProfile = resolveDefaultRuntimeProfile({
+      env: {
+        XIAOBA_APP_ROOT: appRoot,
+        XIAOBA_IS_PACKAGED: '0',
+      },
+    });
+    const packagedProfile = resolveDefaultRuntimeProfile({
+      env: {
+        XIAOBA_APP_ROOT: appRoot,
+        XIAOBA_IS_PACKAGED: '1',
+      },
+    });
+
+    assert.equal(devProfile.workingDirectory, appRoot);
+    assert.equal(packagedProfile.workingDirectory, fs.realpathSync(testRoot));
+  });
+
   test('validates unknown and duplicate runtime tool names', () => {
     const profile = resolveDefaultRuntimeProfile({
       tools: ['read_file', 'read_file', 'missing_tool'],
