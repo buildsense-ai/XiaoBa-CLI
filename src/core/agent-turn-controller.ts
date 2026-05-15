@@ -34,6 +34,7 @@ export interface RunAgentTurnParams {
   callbacks?: AgentTurnCallbacks;
   channel?: ChannelCallbacks;
   pendingUserInputProvider?: PendingUserInputProvider;
+  abortSignal?: AbortSignal;
   shouldContinue: () => boolean;
 }
 
@@ -77,6 +78,7 @@ export class AgentTurnController {
     const runner = this.createRunner({
       channel: params.channel,
       pendingUserInputProvider: params.pendingUserInputProvider,
+      abortSignal: params.abortSignal,
       shouldContinue: params.shouldContinue,
     });
 
@@ -106,6 +108,7 @@ export class AgentTurnController {
   private createRunner(options: {
     channel?: ChannelCallbacks;
     pendingUserInputProvider?: PendingUserInputProvider;
+    abortSignal?: AbortSignal;
     shouldContinue: () => boolean;
   }): ConversationRunner {
     const surface = resolveSessionSurface(this.options.sessionKey, this.options.sessionType);
@@ -127,6 +130,11 @@ export class AgentTurnController {
           getCurrentDirectory: this.options.getCurrentDirectory,
           updateCurrentDirectory: this.options.updateCurrentDirectory,
           planRuntime: this.options.planRuntime,
+          runtimeServices: {
+            aiService: this.options.services.aiService,
+            skillManager: this.options.services.skillManager,
+          },
+          abortSignal: options.abortSignal,
           channel: options.channel,
         },
       },
@@ -136,6 +144,7 @@ export class AgentTurnController {
   private toRunnerCallbacks(callbacks?: AgentTurnCallbacks): RunnerCallbacks {
     return {
       onText: callbacks?.onText,
+      onThinking: callbacks?.onThinking,
       onToolStart: callbacks?.onToolStart,
       onToolEnd: callbacks?.onToolEnd,
       onToolDisplay: callbacks?.onToolDisplay,

@@ -10,16 +10,13 @@ import { Logger } from '../utils/logger';
 export class ResumeSubagentTool implements Tool {
   definition: ToolDefinition = {
     name: 'resume_subagent',
-    description: `恢复一个处于 waiting_for_input 状态的子智能体。
-
-当子智能体遇到需要确认的问题时会挂起，通过 check_subagent 可以看到它的 pendingQuestion。
-你可以自己判断如何回答，也可以先问用户再回答。用此工具把答案传给子智能体，让它继续执行。`,
+    description: '恢复当前会话下等待输入的子智能体。先确认 pendingQuestion，再把主 agent 或用户的答案传给它继续执行。',
     parameters: {
       type: 'object',
       properties: {
         subagent_id: {
           type: 'string',
-          description: '要恢复的子智能体 ID',
+          description: '要恢复的子智能体 ID 或展示名（如 sub-... 或 子agent1）',
         },
         answer: {
           type: 'string',
@@ -43,11 +40,20 @@ export class ResumeSubagentTool implements Tool {
 
     switch (result) {
       case 'resumed':
-        Logger.info(`[ResumeSubagent] 已恢复 ${subagent_id}`);
-        return { ok: true, content: `子智能体 ${subagent_id} 已恢复执行。` };
+        {
+          const info = manager.getInfoForParent(sessionKey, subagent_id);
+          const label = info?.displayName ? `${info.displayName} (${info.id})` : subagent_id;
+          Logger.info(`[ResumeSubagent] 已恢复 ${label}`);
+          return { ok: true, content: `${label} 已恢复执行。` };
+        }
       case 'not_waiting':
-        return { ok: true, content: `子智能体 ${subagent_id} 当前未处于等待状态，无需恢复。` };
+        {
+          const info = manager.getInfoForParent(sessionKey, subagent_id);
+          const label = info?.displayName ? `${info.displayName} (${info.id})` : subagent_id;
+          return { ok: true, content: `${label} 当前未处于等待状态，无需恢复。` };
+        }
       case 'forbidden':
+        return { ok: false, errorCode: 'PERMISSION_DENIED', message: `无权恢复子智能体 ${subagent_id}。它不属于当前会话。` };
       case 'not_found':
         return { ok: false, errorCode: 'TOOL_NOT_FOUND', message: `未找到子智能体 ${subagent_id}。` };
     }

@@ -15,7 +15,11 @@ import { StopSubagentTool } from './stop-subagent-tool';
 import { ResumeSubagentTool } from './resume-subagent-tool';
 import { UpdatePlanTool } from './update-plan-tool';
 import { RecordDecisionTool } from './record-decision-tool';
+import { AskParentTool } from './ask-parent-tool';
 import { DEFAULT_TOOL_NAMES } from './default-tool-names';
+import { mergeToolExecutionContext } from '../utils/tool-context';
+
+const INTERNAL_TOOL_NAMES = ['ask_parent'] as const;
 
 /**
  * 工具名别名映射（Claude Code 工具名 → CatsCo 内部注册名）
@@ -93,8 +97,15 @@ export class ToolManager implements ToolExecutor {
     }
 
     if (enabled) {
+      if (enabled.has('ask_parent')) {
+        this.registerTool(new AskParentTool());
+      }
+      const knownTools = new Set<string>([
+        ...(DEFAULT_TOOL_NAMES as readonly string[]),
+        ...(INTERNAL_TOOL_NAMES as readonly string[]),
+      ]);
       for (const toolName of enabled) {
-        if (!(DEFAULT_TOOL_NAMES as readonly string[]).includes(toolName)) {
+        if (!knownTools.has(toolName)) {
           Logger.warning(`未知工具已被忽略: ${toolName}`);
         }
       }
@@ -147,13 +158,12 @@ export class ToolManager implements ToolExecutor {
     }
 
     try {
-      const mergedContext: Partial<ToolExecutionContext> = {
+      const mergedContext = mergeToolExecutionContext({
         workingDirectory: this.workingDirectory,
         workspaceRoot: this.workingDirectory,
         conversationHistory: conversationHistory || [],
         ...this.contextDefaults,
-        ...contextOverrides,
-      };
+      }, contextOverrides);
       const context: ToolExecutionContext = {
         ...mergedContext,
         workingDirectory: mergedContext.getCurrentDirectory?.() || mergedContext.workingDirectory || this.workingDirectory,

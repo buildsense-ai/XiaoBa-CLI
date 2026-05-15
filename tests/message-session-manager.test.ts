@@ -154,6 +154,27 @@ describe('MessageSessionManager', () => {
     }
   });
 
+  test('ttl cleanup keeps sessions with active subagents', async () => {
+    const { MessageSessionManager, SubAgentManager } = loadSessionManagerModules();
+    const manager = new MessageSessionManager(buildMockServices(), 'ttl-active-subagent-test', { ttl: 10 });
+    const subAgentManager = SubAgentManager.getInstance();
+    const originalHasActiveForParent = subAgentManager.hasActiveForParent.bind(subAgentManager);
+    (subAgentManager as any).hasActiveForParent = (key: string) => key === 'user:ttl-active-subagent';
+
+    try {
+      const session = manager.getOrCreate('user:ttl-active-subagent');
+      session.lastActiveAt = 100;
+
+      await (manager as any).cleanupExpiredSessions(111);
+
+      assert.equal((manager as any).sessions.has('user:ttl-active-subagent'), true);
+      assert.equal(session.lastActiveAt, 111);
+    } finally {
+      (subAgentManager as any).hasActiveForParent = originalHasActiveForParent;
+      await manager.destroy();
+    }
+  });
+
   test('ttl cleanup does not remove a new same-key session created while old cleanup is pending', async () => {
     const { MessageSessionManager } = loadSessionManagerModules();
     const manager = new MessageSessionManager(buildMockServices(), 'ttl-race-test', { ttl: 10 });
@@ -189,6 +210,7 @@ function loadSessionManagerModules(): any {
   for (const modulePath of [
     '../src/core/message-session-manager',
     '../src/core/agent-session',
+    '../src/core/sub-agent-manager',
     '../src/core/session-lifecycle-manager',
     '../src/utils/session-store',
   ]) {
@@ -196,6 +218,7 @@ function loadSessionManagerModules(): any {
   }
   return {
     MessageSessionManager: require('../src/core/message-session-manager').MessageSessionManager,
+    SubAgentManager: require('../src/core/sub-agent-manager').SubAgentManager,
     SessionStore: require('../src/utils/session-store').SessionStore,
   };
 }

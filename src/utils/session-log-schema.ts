@@ -38,11 +38,30 @@ export interface SessionRuntimeLogEntry {
   message: string;
 }
 
+export interface SessionSubAgentEventLogEntry {
+  entry_type: 'subagent_event';
+  timestamp: string;
+  session_id: string;
+  session_type: string;
+  subagent: {
+    id: string;
+    name?: string;
+    type?: string;
+    status?: string;
+    seq: number;
+  };
+  event: {
+    type: string;
+    summary: string;
+    payload?: Record<string, unknown>;
+  };
+}
+
 export interface LegacySessionTurnLogEntry extends Omit<SessionTurnLogEntry, 'entry_type'> {
   entry_type?: undefined;
 }
 
-export type SessionLogEntry = SessionTurnLogEntry | SessionRuntimeLogEntry;
+export type SessionLogEntry = SessionTurnLogEntry | SessionRuntimeLogEntry | SessionSubAgentEventLogEntry;
 export type ParsedSessionLogEntry = SessionLogEntry | LegacySessionTurnLogEntry;
 
 export function parseSessionLogContent(content: string): ParsedSessionLogEntry[] {

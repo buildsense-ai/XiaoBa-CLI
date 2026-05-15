@@ -1,4 +1,5 @@
 import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor, ToolExecutionResult } from '../types/tool';
+import { mergeToolExecutionContext } from '../utils/tool-context';
 
 const TOOL_NAME_ALIASES: Record<string, string> = {
   Bash: 'execute_shell',
@@ -49,13 +50,12 @@ export class AgentToolExecutor implements ToolExecutor {
     }
 
     try {
-      const mergedContext: Partial<ToolExecutionContext> = {
+      const mergedContext = mergeToolExecutionContext({
         workingDirectory: this.workingDirectory,
         workspaceRoot: this.workingDirectory,
         conversationHistory: conversationHistory || [],
         ...this.contextDefaults,
-        ...contextOverrides,
-      };
+      }, contextOverrides);
       const context: ToolExecutionContext = {
         ...mergedContext,
         workingDirectory: mergedContext.getCurrentDirectory?.() || mergedContext.workingDirectory || this.workingDirectory,

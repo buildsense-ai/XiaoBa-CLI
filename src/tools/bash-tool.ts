@@ -52,6 +52,10 @@ export class ShellTool implements Tool {
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { command, description, timeout = 30000 } = args;
 
+    if (context.abortSignal?.aborted) {
+      return { ok: false, errorCode: 'EXECUTION_TIMEOUT', message: `命令已取消，未开始执行:\n$ ${command}` };
+    }
+
     const toolPermission = isToolAllowed(this.definition.name);
     if (!toolPermission.allowed) {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${toolPermission.reason}` };
@@ -81,6 +85,7 @@ export class ShellTool implements Tool {
         context.workingDirectory,
         runtimeEnvironment.env,
         timeout,
+        context.abortSignal,
       );
 
       const parsedStdout = this.extractDirectoryProbe(stdout || '', wrapped.marker);
@@ -118,6 +123,14 @@ export class ShellTool implements Tool {
       const parsedStdout = this.extractDirectoryProbe(error.stdout || '', wrapped.marker);
       const parsedStderr = this.extractDirectoryProbe(error.stderr || '', wrapped.marker);
       this.updateCurrentDirectory(parsedStdout.directory || parsedStderr.directory, context);
+      if (context.abortSignal?.aborted || /aborted|abort/i.test(String(error.message || ''))) {
+        Logger.warning(`命令已取消 (耗时: ${executionTime}ms)`);
+        return {
+          ok: false,
+          errorCode: 'EXECUTION_TIMEOUT',
+          message: `命令已取消:\n$ ${command}\n\n执行时间: ${executionTime}ms`,
+        };
+      }
       const errorOutput = [
         parsedStderr.output,
         parsedStdout.output,
@@ -173,6 +186,7 @@ export class ShellTool implements Tool {
     cwd: string,
     env: NodeJS.ProcessEnv,
     timeout: number,
+    signal?: AbortSignal,
   ): Promise<ShellOutput> {
     if (process.platform !== 'win32') {
       if (!wrapped.command) {
@@ -183,11 +197,13 @@ export class ShellTool implements Tool {
         env,
         encoding: 'utf-8',
         timeout,
+        signal,
+        killSignal: 'SIGTERM',
         maxBuffer: 10 * 1024 * 1024,
       });
     }
 
-    return this.executeWindowsStdinScript(wrapped, cwd, env, timeout);
+    return this.executeWindowsStdinScript(wrapped, cwd, env, timeout, signal);
   }
 
   private executeWindowsStdinScript(
@@ -195,9 +211,13 @@ export class ShellTool implements Tool {
     cwd: string,
     env: NodeJS.ProcessEnv,
     timeout: number,
+    signal?: AbortSignal,
   ): Promise<ShellOutput> {
     if (!wrapped.stdinScript) {
       return Promise.reject(new Error('Internal error: missing Windows stdin script'));
+    }
+    if (signal?.aborted) {
+      return Promise.reject(new Error('Command aborted by user'));
     }
 
     return new Promise((resolve, reject) => {
@@ -215,11 +235,15 @@ export class ShellTool implements Tool {
       let stdoutBytes = 0;
       let stderrBytes = 0;
       const maxBuffer = 10 * 1024 * 1024;
+      let timer: NodeJS.Timeout;
 
       const finish = (fn: () => void) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (signal && abortHandler) {
+          signal.removeEventListener('abort', abortHandler);
+        }
         fn();
       };
 
@@ -232,10 +256,14 @@ export class ShellTool implements Tool {
         });
       };
 
-      const timer = setTimeout(() => {
+      timer = setTimeout(() => {
         timedOut = true;
         fail(new Error(`Command timed out after ${timeout}ms`));
       }, timeout);
+      const abortHandler = () => {
+        fail(new Error('Command aborted by user'));
+      };
+      signal?.addEventListener('abort', abortHandler, { once: true });
 
       child.stdout.on('data', chunk => {
         const buffer = Buffer.from(chunk);

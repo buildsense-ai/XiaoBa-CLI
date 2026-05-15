@@ -257,6 +257,34 @@ describe('ToolManager - ToolExecutionResult 统一处理', () => {
     assert.ok(result.content?.includes('hello'));
   });
 
+  test('context overrides do not clear an existing AbortSignal with undefined', async () => {
+    const controller = new AbortController();
+    const scopedManager = new ToolManager(testRoot, { abortSignal: controller.signal }, {
+      enabledToolNames: [],
+    });
+    let capturedSignal: AbortSignal | undefined;
+    scopedManager.registerTool({
+      definition: {
+        name: 'capture_signal',
+        description: 'capture signal',
+        parameters: { type: 'object', properties: {} },
+      },
+      async execute(_args, context) {
+        capturedSignal = context.abortSignal;
+        return { ok: true, content: 'ok' };
+      },
+    });
+
+    const result = await scopedManager.executeTool(
+      { id: 't19_context_merge', type: 'function', function: { name: 'capture_signal', arguments: '{}' } },
+      [],
+      { abortSignal: undefined },
+    );
+
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(capturedSignal, controller.signal);
+  });
+
   test('Write 别名映射到 write_file 成功', async () => {
     const result = await manager.executeTool(
       { id: 't20', type: 'function', function: { name: 'Write', arguments: JSON.stringify({ file_path: 'alias.txt', content: 'via alias' }) } },

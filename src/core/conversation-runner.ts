@@ -84,6 +84,8 @@ interface ToolExecutionRecord {
 
 /** ConversationRunner 构造选项 */
 export interface RunnerOptions {
+  /** Optional safety cap for autonomous tool loops. Undefined means no runner-level cap. */
+  maxTurns?: number;
   maxContextTokens?: number;
   /** false 时用 aiService.chat() 代替 chatStream()（默认 true） */
   stream?: boolean;
@@ -110,6 +112,7 @@ export class ConversationRunner {
   private enableCompression: boolean;
   private toolExecutionContext?: Partial<ToolExecutionContext>;
   private maxPromptTokens: number;
+  private maxTurns?: number;
   private sessionLabel: string;
   private pendingUserInputProvider?: PendingUserInputProvider;
 
@@ -134,6 +137,7 @@ export class ConversationRunner {
     this.enableCompression = options?.enableCompression ?? true;
     this.toolExecutionContext = options?.toolExecutionContext;
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
+    this.maxTurns = options?.maxTurns;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.sessionLabel = this.toolExecutionContext?.sessionId
@@ -166,6 +170,15 @@ export class ConversationRunner {
       turns++;
       if (this.shouldContinue && !this.shouldContinue()) {
         break;
+      }
+      if (this.maxTurns && turns > this.maxTurns) {
+        Logger.warning(`[${this.sessionLabel}] 已达到最大推理轮次 ${this.maxTurns}，正在收束`);
+        return {
+          response: `已达到本次后台任务的轮次预算（${this.maxTurns} 轮），我先基于已完成的信息收束。`,
+          finalResponseVisible: true,
+          messages,
+          newMessages,
+        };
       }
 
       if (this.enableCompression) {
