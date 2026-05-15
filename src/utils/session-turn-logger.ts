@@ -23,6 +23,7 @@ const MAX_RUNTIME_FEEDBACK_LENGTH = Number(process.env.XIAOBA_SESSION_RUNTIME_FE
 
 export interface LogTurnOptions {
   runtimeFeedback?: string[];
+  runtimeObservationSource?: string;
 }
 
 /**
@@ -81,6 +82,7 @@ export class SessionTurnLogger {
         text: userText,
         ...(userImages.length > 0 && { images: userImages }),
         ...(runtimeFeedback.length > 0 && { runtime_feedback: runtimeFeedback }),
+        ...(options.runtimeObservationSource && { runtime_observation_source: options.runtimeObservationSource }),
       },
       assistant: {
         text: assistantText,

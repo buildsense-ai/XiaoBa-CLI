@@ -30,7 +30,11 @@ describe('session-log-schema', () => {
       timestamp: '2026-05-01T08:00:00.000Z',
       session_id: 'user:current',
       session_type: 'chat',
-      user: { text: 'current', runtime_feedback: ['[运行时反馈] runtime\n错误: failed'] },
+      user: {
+        text: 'current',
+        runtime_feedback: ['[运行时反馈] runtime\n错误: failed'],
+        runtime_observation_source: 'subagent_result',
+      },
       assistant: { text: 'ok', tool_calls: [] },
       tokens: { prompt: 1, completion: 2 },
     };
@@ -67,6 +71,7 @@ describe('session-log-schema', () => {
     assert.equal(entries.length, 4);
     assert.deepStrictEqual(entries.map(entry => isSessionTurnEntry(entry)), [true, false, true, false]);
     assert.deepStrictEqual((entries[0] as any).user.runtime_feedback, ['[运行时反馈] runtime\n错误: failed']);
+    assert.equal((entries[0] as any).user.runtime_observation_source, 'subagent_result');
   });
 
   test('resolves session id from content and falls back when content has no session id', () => {

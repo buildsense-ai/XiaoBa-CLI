@@ -106,6 +106,52 @@ describe('runtime feedback', () => {
     assert.match(turnEntries[0].user.runtime_feedback[0], /feishu\.file_download/);
   });
 
+  test('AgentSession records runtime observations without treating them as runtime feedback', async () => {
+    const { AgentSession } = loadAgentSessionModules();
+    let capturedMessages: any[] = [];
+
+    const session = new AgentSession('user:runtime-observation-demo', buildMockServices({
+      aiService: {
+        async chatStream(messages: any[]) {
+          capturedMessages = messages.map(message => ({ ...message }));
+          return {
+            content: '已整合子任务结果',
+            toolCalls: [],
+            usage: { promptTokens: 7, completionTokens: 5, totalTokens: 12 },
+          };
+        },
+      },
+    }), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    const result = await session.handleRuntimeObservation('[子智能体完成]\n结果：ok', {
+      source: 'subagent_result',
+    });
+
+    assert.equal(result.text, '已整合子任务结果');
+    const capturedRuntimeMessage = capturedMessages.find(message => message.content === '[子智能体完成]\n结果：ok');
+    assert.equal(capturedRuntimeMessage?.role, 'user');
+
+    const retainedMessages = (session as any).messages as any[];
+    const runtimeMessage = retainedMessages.find(message => message.content === '[子智能体完成]\n结果：ok');
+    assert.equal(runtimeMessage?.__runtimeObservation, true);
+    assert.equal(runtimeMessage?.runtimeObservationSource, 'subagent_result');
+    assert.equal(retainedMessages.some(message => message.__runtimeFeedback), false);
+
+    const logPath = (session as any).sessionTurnLogger.getLogFilePath();
+    const entries = fs.readFileSync(logPath, 'utf-8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line));
+
+    const turnEntries = entries.filter(entry => entry.entry_type === 'turn');
+    assert.equal(turnEntries.length, 1);
+    assert.equal(turnEntries[0].user.text, '[子智能体完成]\n结果：ok');
+    assert.equal(turnEntries[0].user.runtime_observation_source, 'subagent_result');
+    assert.equal(turnEntries[0].user.runtime_feedback, undefined);
+  });
+
   test('HandleMessageOptions runtime feedback does not mutate session state while busy', async () => {
     const { AgentSession, BUSY_MESSAGE } = loadAgentSessionModules();
     const session = new AgentSession('user:busy-feedback-demo', buildMockServices(), 'feishu');

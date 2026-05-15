@@ -64,6 +64,11 @@ export interface HandleMessageOptions {
   pendingUserInputProvider?: PendingUserInputProvider;
 }
 
+export interface HandleRuntimeObservationOptions extends HandleMessageOptions {
+  /** 内部 observation 来源，例如 subagent_result */
+  source?: string;
+}
+
 /** 命令处理结果 */
 export interface CommandResult {
   handled: boolean;
@@ -285,6 +290,28 @@ export class AgentSession {
     text: string | import('../types').ContentBlock[],
     callbacksOrOptions?: SessionCallbacks | HandleMessageOptions,
   ): Promise<HandleMessageResult> {
+    return this.handleInput(text, callbacksOrOptions);
+  }
+
+  /**
+   * 处理 runtime observation（例如子 agent 完成结果）。
+   *
+   * 对外部模型 API 来说它仍是 role=user 的一轮输入；CatsCo 内部保留
+   * __runtimeObservation/runtimeObservationSource 标记，避免和真实用户追加消息混淆。
+   */
+  async handleRuntimeObservation(
+    text: string,
+    options: HandleRuntimeObservationOptions = {},
+  ): Promise<HandleMessageResult> {
+    const { source = 'runtime_observation', ...handleOptions } = options;
+    return this.handleInput(text, handleOptions, source);
+  }
+
+  private async handleInput(
+    text: string | import('../types').ContentBlock[],
+    callbacksOrOptions?: SessionCallbacks | HandleMessageOptions,
+    runtimeObservationSource?: string,
+  ): Promise<HandleMessageResult> {
     return this.withLogContext(async () => {
       // 兼容旧签名：如果传入的对象有 onText/onToolStart 等字段，视为 SessionCallbacks
       let callbacks: SessionCallbacks | undefined;
@@ -335,6 +362,7 @@ export class AgentSession {
           input: text,
           messages: this.messages,
           runtimeFeedback,
+          runtimeObservationSource,
           callbacks,
           channel,
           pendingUserInputProvider,

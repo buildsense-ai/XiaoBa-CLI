@@ -3,7 +3,8 @@ import { WeixinConfig, WeixinMessage } from './types';
 import { MessageHandler } from './message-handler';
 import { MessageSender } from './message-sender';
 import { MessageSessionManager } from '../core/message-session-manager';
-import { AgentServices, RuntimeFeedbackInput } from '../core/agent-session';
+import { AgentServices, BUSY_MESSAGE, ERROR_MESSAGE, RuntimeFeedbackInput } from '../core/agent-session';
+import { SubAgentManager } from '../core/sub-agent-manager';
 import { Logger } from '../utils/logger';
 import { ChannelCallbacks } from '../types/tool';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
@@ -12,6 +13,13 @@ import path from 'path';
 
 const CHANNEL_VERSION = 'xiaoba-weixin/1.0';
 const DEFAULT_LONGPOLL_MS = 30000;
+
+interface QueuedMessage {
+  userText: string;
+  chatId: string;
+  source?: 'user' | 'subagent_feedback';
+  runtimeFeedback?: RuntimeFeedbackInput[];
+}
 
 export function createWeixinRuntime(): AdapterRuntimeBundle {
   return createAdapterRuntime({
@@ -28,6 +36,7 @@ export class WeixinBot {
   private agentServices: AgentServices;
   private runtime: AdapterRuntimeBundle;
   private contextTokens = new Map<string, string>();
+  private messageQueue = new Map<string, QueuedMessage[]>();
   private isRunning = false;
   private getUpdatesBuf = '';
   private stateDir: string;
@@ -178,6 +187,11 @@ export class WeixinBot {
 
     const session = this.sessionManager.getOrCreate(sessionKey);
     const channel = this.buildChannel(msg.to_user_id, sessionKey);
+    SubAgentManager.getInstance().registerPlatformCallbacks(sessionKey, {
+      injectMessage: async (text: string) => {
+        await this.handleSubAgentFeedback(sessionKey, msg.to_user_id, text);
+      },
+    });
     const expectedMediaCount = (parsed.item_list || []).filter(item =>
       (item.type === 2 && item.image_item?.media)
       || (item.type === 4 && item.file_item?.media)
@@ -212,11 +226,96 @@ export class WeixinBot {
       userText = '[用户发送了媒体消息，但平台未能下载附件]';
     }
 
-    await session.handleMessage(userText, { channel, runtimeFeedback });
+    if (session.isBusy()) {
+      const queue = this.messageQueue.get(sessionKey) ?? [];
+      queue.push({
+        userText,
+        chatId: msg.to_user_id,
+        source: 'user',
+        runtimeFeedback,
+      });
+      this.messageQueue.set(sessionKey, queue);
+      Logger.info(`[${sessionKey}] 主会话忙，微信消息已入队 (队列长度: ${queue.length})`);
+      return;
+    }
+
+    const result = await session.handleMessage(userText, { channel, runtimeFeedback });
+    if (result.text === BUSY_MESSAGE || result.text === ERROR_MESSAGE) {
+      await channel.reply(msg.to_user_id, result.text);
+    }
+    await this.drainMessageQueue(sessionKey);
+  }
+
+  private async handleSubAgentFeedback(sessionKey: string, chatId: string, text: string): Promise<void> {
+    const session = this.sessionManager.getOrCreate(sessionKey);
+
+    if (session.isBusy()) {
+      this.enqueueSubAgentFeedback(sessionKey, chatId, text);
+      Logger.info(`[${sessionKey}] 主会话忙，微信子智能体反馈已入队`);
+      return;
+    }
+
+    const channel = this.buildChannel(chatId, sessionKey);
+    const result = await session.handleRuntimeObservation(text, {
+      channel,
+      source: 'subagent_result',
+    });
+    if (result.text === BUSY_MESSAGE) {
+      this.enqueueSubAgentFeedback(sessionKey, chatId, text);
+      return;
+    }
+    if (result.text === ERROR_MESSAGE) {
+      await channel.reply(chatId, result.text);
+    }
+    await this.drainMessageQueue(sessionKey);
+  }
+
+  private enqueueSubAgentFeedback(sessionKey: string, chatId: string, text: string): void {
+    const queue = this.messageQueue.get(sessionKey) ?? [];
+    queue.push({
+      userText: text,
+      chatId,
+      source: 'subagent_feedback',
+    });
+    this.messageQueue.set(sessionKey, queue);
+  }
+
+  private async drainMessageQueue(sessionKey: string): Promise<void> {
+    const queue = this.messageQueue.get(sessionKey);
+    if (!queue || queue.length === 0) return;
+
+    const msg = queue.shift()!;
+    if (queue.length === 0) {
+      this.messageQueue.delete(sessionKey);
+    }
+
+    const session = this.sessionManager.getOrCreate(sessionKey);
+    if (session.isBusy()) {
+      queue.unshift(msg);
+      this.messageQueue.set(sessionKey, queue);
+      return;
+    }
+
+    const channel = this.buildChannel(msg.chatId, sessionKey);
+    const result = msg.source === 'subagent_feedback'
+      ? await session.handleRuntimeObservation(msg.userText, {
+        channel,
+        source: 'subagent_result',
+      })
+      : await session.handleMessage(msg.userText, {
+        channel,
+        runtimeFeedback: msg.runtimeFeedback,
+      });
+
+    if (result.text === ERROR_MESSAGE) {
+      await channel.reply(msg.chatId, result.text);
+    }
+    await this.drainMessageQueue(sessionKey);
   }
 
   destroy(): void {
     this.isRunning = false;
+    this.messageQueue.clear();
     Logger.info('[微信] 机器人已停止');
   }
 }

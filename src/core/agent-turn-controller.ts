@@ -31,6 +31,7 @@ export interface RunAgentTurnParams {
   input: string | ContentBlock[];
   messages: Message[];
   runtimeFeedback: string[];
+  runtimeObservationSource?: string;
   callbacks?: AgentTurnCallbacks;
   channel?: ChannelCallbacks;
   pendingUserInputProvider?: PendingUserInputProvider;
@@ -64,7 +65,14 @@ export class AgentTurnController {
   constructor(private readonly options: AgentTurnControllerOptions) {}
 
   async run(params: RunAgentTurnParams): Promise<RunAgentTurnResult> {
-    params.messages.push({ role: 'user', content: params.input });
+    params.messages.push({
+      role: 'user',
+      content: params.input,
+      ...(params.runtimeObservationSource && {
+        __runtimeObservation: true,
+        runtimeObservationSource: params.runtimeObservationSource,
+      }),
+    });
 
     const turnContext = await this.options.turnContextBuilder.build({
       sessionKey: this.options.sessionKey,
@@ -93,6 +101,7 @@ export class AgentTurnController {
       result,
       tokens: { prompt: metrics.totalPromptTokens, completion: metrics.totalCompletionTokens },
       runtimeFeedback: turnContext.runtimeFeedbackForLog,
+      runtimeObservationSource: params.runtimeObservationSource,
     });
 
     return {

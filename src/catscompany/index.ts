@@ -41,6 +41,7 @@ interface QueuedMessage {
   senderId: string;
   seq: number;
   receivedAt: number;
+  source?: 'user' | 'subagent_feedback';
   runtimeFeedback?: RuntimeFeedbackInput[];
 }
 
@@ -305,6 +306,7 @@ export class CatsCompanyBot {
         senderId: msg.senderId,
         seq: msg.seq,
         receivedAt: Date.now(),
+        source: 'user',
         runtimeFeedback,
       });
       this.messageQueue.set(key, queue);
@@ -573,47 +575,53 @@ export class CatsCompanyBot {
     senderId: string,
     text: string,
   ): Promise<void> {
-    const MAX_RETRIES = 10;
-    const RETRY_DELAY_MS = 5000;
+    const session = this.sessionManager.getOrCreate(sessionKey);
 
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      if (attempt > 0) {
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-      }
-
-      const session = this.sessionManager.getOrCreate(sessionKey);
-
-      if (session.isBusy()) {
-        Logger.info(`[${sessionKey}] 主会话忙，等待重试注入子智能体反馈 (${attempt + 1}/${MAX_RETRIES + 1})`);
-        continue;
-      }
-
-      const channel = this.buildChannel(topic, {
-        sessionKey,
-        senderId,
-      });
-
-      try {
-        const result = await session.handleMessage(text, { channel });
-        if (result.text === BUSY_MESSAGE) {
-          Logger.info(`[${sessionKey}] 主会话竞态忙碌，将重试`);
-          continue;
-        }
-        if (result.text.startsWith('处理消息时出错:')) {
-          try {
-            await this.sender.reply(topic, result.text);
-          } catch (err: any) {
-            Logger.warning(`错误消息发送失败: ${err.message}`);
-          }
-        }
-        await this.drainMessageQueue(sessionKey);
-        return;
-      } finally {
-        this.clearPendingAnswerBySession(sessionKey);
-      }
+    if (session.isBusy()) {
+      this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text);
+      Logger.info(`[${sessionKey}] 主会话忙，子智能体反馈已入队`);
+      return;
     }
 
-    Logger.warning(`[${sessionKey}] 子智能体反馈注入失败：主会话持续忙碌`);
+    const channel = this.buildChannel(topic, {
+      sessionKey,
+      senderId,
+    });
+
+    try {
+      const result = await session.handleRuntimeObservation(text, {
+        channel,
+        source: 'subagent_result',
+      });
+      if (result.text === BUSY_MESSAGE) {
+        this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text);
+        Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
+        return;
+      }
+      if (result.text.startsWith('处理消息时出错:')) {
+        try {
+          await this.sender.reply(topic, result.text);
+        } catch (err: any) {
+          Logger.warning(`错误消息发送失败: ${err.message}`);
+        }
+      }
+      await this.drainMessageQueue(sessionKey);
+    } finally {
+      this.clearPendingAnswerBySession(sessionKey);
+    }
+  }
+
+  private enqueueSubAgentFeedback(sessionKey: string, topic: string, senderId: string, text: string): void {
+    const queue = this.messageQueue.get(sessionKey) ?? [];
+    queue.push({
+      userMessage: text,
+      topic,
+      senderId,
+      seq: 0,
+      receivedAt: Date.now(),
+      source: 'subagent_feedback',
+    });
+    this.messageQueue.set(sessionKey, queue);
   }
 
   /**
@@ -635,11 +643,16 @@ export class CatsCompanyBot {
     });
 
     try {
-      const result = await session.handleMessage(msg.userMessage, {
-        channel,
-        runtimeFeedback: msg.runtimeFeedback,
-        pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey),
-      });
+      const result = msg.source === 'subagent_feedback'
+        ? await session.handleRuntimeObservation(msg.userMessage as string, {
+          channel,
+          source: 'subagent_result',
+        })
+        : await session.handleMessage(msg.userMessage, {
+          channel,
+          runtimeFeedback: msg.runtimeFeedback,
+          pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey),
+        });
       if (result.text !== BUSY_MESSAGE && result.visibleToUser && result.text) {
         try {
           await this.sender.sendText(msg.topic, result.text);
@@ -665,8 +678,16 @@ export class CatsCompanyBot {
     const queue = this.messageQueue.get(sessionKey);
     if (!queue || queue.length === 0) return null;
 
-    this.messageQueue.delete(sessionKey);
-    const messages = [...queue].sort((a, b) => {
+    const userMessages = queue.filter(item => item.source !== 'subagent_feedback');
+    const runtimeMessages = queue.filter(item => item.source === 'subagent_feedback');
+    if (runtimeMessages.length > 0) {
+      this.messageQueue.set(sessionKey, runtimeMessages);
+    } else {
+      this.messageQueue.delete(sessionKey);
+    }
+    if (userMessages.length === 0) return null;
+
+    const messages = [...userMessages].sort((a, b) => {
       if (a.seq > 0 && b.seq > 0 && a.seq !== b.seq) return a.seq - b.seq;
       return a.receivedAt - b.receivedAt;
     });

@@ -18,6 +18,7 @@ export interface SessionTurnLogEntry {
     text: string;
     images?: string[];
     runtime_feedback?: string[];
+    runtime_observation_source?: string;
   };
   assistant: {
     text: string;
