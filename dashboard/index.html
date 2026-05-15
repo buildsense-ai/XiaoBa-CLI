@@ -1278,6 +1278,39 @@
       flex-wrap: wrap;
     }
 
+    .wizard-label {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .manifest-preview {
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 360px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      background: rgba(20, 28, 45, 0.04);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .portal-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .portal-row {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      background: var(--panel);
+    }
+
     .modal-overlay {
       display: none;
       position: fixed;
@@ -4178,6 +4211,9 @@
       <a class="nav-item" onclick="switchPage('store')" data-page="store">
         <span class="nav-icon">+</span> <span>Skills</span>
       </a>
+      <a class="nav-item" onclick="switchPage('developer')" data-page="developer">
+        <span class="nav-icon">{}</span> <span>开发者中心</span>
+      </a>
       <a class="nav-item" onclick="switchPage('companion')" data-page="companion">
         <span class="nav-icon">*</span> <span>伙伴</span>
       </a>
@@ -4447,9 +4483,97 @@
 
       <!-- Page: Store -->
       <div class="page" id="page-store">
-        <div class="section-title">Skills <button class="btn" onclick="fetchSkills()" style="font-size:12px;padding:6px 14px;margin-left:8px">刷新</button></div>
-        <div class="runtime-note">远程 Skill 安装暂时下线。本页只管理本地已安装 Skills：启用、禁用和卸载用户自定义 Skill。</div>
-        <div class="skills-grid" id="store-grid"><div class="loading">加载中...</div></div>
+        <div class="settings-header">
+          <div class="settings-heading">
+            <div class="settings-kicker">SkillHub</div>
+            <div class="section-title" style="margin-bottom:0">Skills</div>
+            <div class="settings-meta">登录后可搜索云端已审核 Skill，Agent 会自动下载、验签并安装。</div>
+          </div>
+          <button class="btn" onclick="refreshSkillHubPage()">刷新</button>
+        </div>
+
+        <div class="config-section" id="skillhub-account-card">
+          <div class="loading">正在检查 SkillHub 登录状态...</div>
+        </div>
+
+        <details class="config-section" open>
+          <summary class="settings-advanced-summary">
+            <span>发现技能</span>
+            <span class="tag">cloud registry</span>
+          </summary>
+          <div class="settings-advanced-body">
+            <div class="chat-form-row" style="margin-bottom:14px">
+              <input class="config-input" id="skillhub-search-input" placeholder="搜索合同审查、PPT、工程量清单..." onkeydown="if(event.key==='Enter')searchSkillHub()" />
+              <button class="btn btn-primary" onclick="searchSkillHub()">搜索</button>
+            </div>
+            <div class="skills-grid" id="skillhub-registry-grid"><div class="loading">登录后可搜索 SkillHub。</div></div>
+          </div>
+        </details>
+
+        <details class="config-section" open>
+          <summary class="settings-advanced-summary">
+            <span>已安装技能</span>
+            <span class="tag">local</span>
+          </summary>
+          <div class="settings-advanced-body">
+            <div class="skills-grid" id="store-grid"><div class="loading">加载中...</div></div>
+          </div>
+        </details>
+      </div>
+
+      <!-- Page: Developer -->
+      <div class="page" id="page-developer">
+        <div class="settings-header">
+          <div class="settings-heading">
+            <div class="settings-kicker">SkillHub Developer</div>
+            <div class="section-title" style="margin-bottom:0">开发者中心</div>
+            <div class="settings-meta">申请开发者权限、生成 skill.json、提交 Skill 到云端审核。</div>
+          </div>
+          <button class="btn" onclick="fetchSkillHubDeveloper()">刷新</button>
+        </div>
+
+        <div class="config-section" id="skillhub-developer-status">
+          <div class="loading">正在读取开发者状态...</div>
+        </div>
+
+        <div class="config-section" id="skillhub-developer-apply">
+          <div class="config-group-title-main">申请成为开发者</div>
+          <div class="settings-meta" style="margin-bottom:14px">普通账号申请通过后，云端会给账号增加 developer 角色。</div>
+          <div class="chat-form-row" style="margin-bottom:10px">
+            <input class="config-input" id="skillhub-apply-name" placeholder="开发者显示名称" />
+            <input class="config-input" id="skillhub-apply-homepage" placeholder="主页或组织链接（可选）" />
+          </div>
+          <textarea class="config-input" id="skillhub-apply-reason" rows="3" placeholder="简单说明你要发布哪些类型的 Skill"></textarea>
+          <div class="config-actions" style="margin-top:12px">
+            <button class="btn btn-primary" onclick="applySkillHubDeveloper()">提交申请</button>
+          </div>
+        </div>
+
+        <div class="config-section" id="skillhub-developer-console">
+          <div class="config-group-title-main">提交 Skill 审核</div>
+          <div class="settings-meta" style="margin-bottom:14px">选择本地 Skill 文件夹，填写基本信息；Agent 会读取文件、生成 manifest 草稿并提交云端扫描审核。</div>
+          <div class="settings-step-grid">
+            <label><span class="wizard-label">本地 Skill 文件夹</span><input class="config-input" id="skillhub-local-path" placeholder="例如 E:\\skills\\contract-review" /></label>
+            <label><span class="wizard-label">版本</span><input class="config-input" id="skillhub-version" value="1.0.0" /></label>
+            <label><span class="wizard-label">Skill 名称</span><input class="config-input" id="skillhub-name" placeholder="合同审查助手" /></label>
+            <label><span class="wizard-label">分类</span><input class="config-input" id="skillhub-category" placeholder="法务 / 办公 / 工程造价" /></label>
+            <label style="grid-column:1/-1"><span class="wizard-label">简介</span><input class="config-input" id="skillhub-description" placeholder="说明这个 Skill 解决什么问题" /></label>
+            <label style="grid-column:1/-1"><span class="wizard-label">关键词</span><input class="config-input" id="skillhub-keywords" placeholder="合同审查，采购合同，条款风险" /></label>
+            <label style="grid-column:1/-1"><span class="wizard-label">触发示例</span><textarea class="config-input" id="skillhub-triggers" rows="3" placeholder="帮我审查这份采购合同&#10;找出合同里的付款风险&#10;检查协议条款是否合理"></textarea></label>
+            <label><span class="wizard-label">权限</span><input class="config-input" id="skillhub-permissions" value="filesystem.read.user_selected" /></label>
+            <label><span class="wizard-label">仓库链接（可选）</span><input class="config-input" id="skillhub-repository-url" placeholder="https://github.com/org/repo" /></label>
+          </div>
+          <div class="config-actions" style="margin-top:14px">
+            <button class="btn" onclick="createSkillHubManifestDraft()">生成 skill.json 草稿</button>
+            <button class="btn btn-primary" onclick="submitSkillHubReview()">提交审核</button>
+          </div>
+          <pre class="manifest-preview" id="skillhub-manifest-preview" style="margin-top:14px">尚未生成 manifest。</pre>
+        </div>
+
+        <div class="config-section">
+          <div class="config-group-title-main">我的提交</div>
+          <div class="portal-list" id="skillhub-submissions-list"><div class="loading">暂无数据</div></div>
+        </div>
       </div>
 
     </div>
@@ -4550,7 +4674,7 @@
     let appReadinessSnapshot = {};
     let appReadinessLoaded = false;
     let appReadinessError = '';
-    const pageTitles = { services:'机器人', companion:'伙伴', chat:'CatsCo', config:'设置', store:'Skills' };
+    const pageTitles = { services:'机器人', companion:'伙伴', chat:'CatsCo', config:'设置', store:'Skills', developer:'开发者中心' };
     let catsAuthMode = 'login';
     let catsState = {};
     let catsNextAction = 'none';
@@ -4603,6 +4727,9 @@
     let petProcess = loadPetProcess();
     let lastCatsMessageSignature = '';
     let catsWorkingActive = false;
+    let skillHubState = { authenticated:false, roles:[], permissions:[], installed:[] };
+    let skillHubRegistryCache = [];
+    let skillHubDraftManifest = null;
 
     function loadPetProfile() {
       try {
@@ -4945,6 +5072,10 @@
         refreshSettingsPage();
       } else if (name === 'companion') {
         setPetState(petState);
+      } else if (name === 'store') {
+        refreshSkillHubPage();
+      } else if (name === 'developer') {
+        fetchSkillHubDeveloper();
       }
     }
 
@@ -5143,6 +5274,7 @@
     }
 
     function renderSkillSourceTag(sk) {
+      if (sk.skillHub) return ' <span class="tag green" title="通过 SkillHub 验签安装">SkillHub</span>';
       if (sk.source === 'system') return ' <span class="tag" title="系统关键 Skill，不允许禁用或删除">系统</span>';
       if (sk.source === 'bundled') return ' <span class="tag" title="应用内置 Skill，可禁用但不直接删除">内置</span>';
       return '';
@@ -5176,6 +5308,266 @@
       if (!g) return;
       if (!skills.length) { g.innerHTML = '<div class="loading">暂无 Skills</div>'; return; }
       g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">已禁用</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">用户调用</span>':'')+(sk.autoInvocable?'<span class="tag active">自动调用</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+renderSkillActionButtons(sk)+'</div>').join('');
+    }
+
+    async function refreshSkillHubPage() {
+      await Promise.all([fetchSkills(), fetchSkillHubStatus()]);
+      if (skillHubState.authenticated) await searchSkillHub('', true);
+    }
+
+    async function fetchSkillHubStatus() {
+      const card = document.getElementById('skillhub-account-card');
+      try {
+        const data = await parseSimpleResponse(await fetch(API + '/api/skillhub/status'));
+        skillHubState = data || { authenticated:false, roles:[], permissions:[], installed:[] };
+        renderSkillHubAccount();
+      } catch (e) {
+        if (card) card.innerHTML = '<div class="runtime-note danger">SkillHub 状态加载失败：'+escapeHtml(e.message || String(e))+'</div>';
+      }
+    }
+
+    function renderSkillHubAccount() {
+      const card = document.getElementById('skillhub-account-card');
+      if (!card) return;
+      if (skillHubState.authenticated) {
+        const user = skillHubState.user || {};
+        const developer = (skillHubState.roles || []).includes('developer');
+        card.innerHTML =
+          '<div class="settings-setup-head"><div><div class="settings-setup-title">已登录 SkillHub</div><div class="settings-setup-copy">'+escapeHtml(user.displayName || user.email || 'CatsCo 用户')+' · '+escapeHtml((skillHubState.roles || ['user']).join(', '))+'</div></div><span class="tag green">connected</span></div>'+
+          '<div class="config-actions" style="margin-top:14px">'+
+          '<button class="btn btn-primary" onclick="searchSkillHub()">搜索技能</button>'+
+          '<button class="btn" onclick="switchPage(\'developer\')">'+(developer?'打开开发者中心':'申请成为开发者')+'</button>'+
+          '<button class="btn" onclick="logoutSkillHub()">退出登录</button>'+
+          '</div>'+
+          (!skillHubState.trustReady?'<div class="runtime-note warning" style="margin-top:12px">当前 Agent 构建还没有内置 SkillHub root public key。正式发布前需要运行 trust-root 脚本写入官方 root 公钥。</div>':'');
+        return;
+      }
+
+      card.innerHTML =
+        '<div class="settings-setup-head"><div><div class="settings-setup-title">登录 SkillHub</div><div class="settings-setup-copy">登录后，Agent 会自动保存 session cookie，并在安装时自动校验包签名。</div></div><span class="tag warm">login</span></div>'+
+        '<div class="chat-form-row" style="margin-top:14px;margin-bottom:10px">'+
+        '<input class="config-input" id="skillhub-login-email" placeholder="邮箱" />'+
+        '<input class="config-input" id="skillhub-login-password" type="password" placeholder="密码" />'+
+        '</div>'+
+        '<div class="chat-form-row">'+
+        '<input class="config-input" id="skillhub-register-name" placeholder="显示名称（注册时填写）" />'+
+        '<button class="btn btn-primary" onclick="loginSkillHub()">登录</button>'+
+        '<button class="btn" onclick="registerSkillHub()">注册</button>'+
+        '</div>';
+    }
+
+    async function loginSkillHub() {
+      const email = document.getElementById('skillhub-login-email')?.value.trim();
+      const password = document.getElementById('skillhub-login-password')?.value || '';
+      if (!email || !password) return alert('请输入邮箱和密码');
+      try {
+        skillHubState = await parseSimpleResponse(await fetch(API + '/api/skillhub/auth/login', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ email, password }),
+        }));
+        renderSkillHubAccount();
+        await searchSkillHub('', true);
+      } catch (e) {
+        alert('SkillHub 登录失败：' + (e.message || String(e)));
+      }
+    }
+
+    async function registerSkillHub() {
+      const email = document.getElementById('skillhub-login-email')?.value.trim();
+      const password = document.getElementById('skillhub-login-password')?.value || '';
+      const displayName = document.getElementById('skillhub-register-name')?.value.trim() || email;
+      if (!email || !password) return alert('请输入邮箱和密码');
+      try {
+        skillHubState = await parseSimpleResponse(await fetch(API + '/api/skillhub/auth/register', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ email, password, displayName }),
+        }));
+        renderSkillHubAccount();
+        await searchSkillHub('', true);
+      } catch (e) {
+        alert('SkillHub 注册失败：' + (e.message || String(e)));
+      }
+    }
+
+    async function logoutSkillHub() {
+      try {
+        await parseSimpleResponse(await fetch(API + '/api/skillhub/auth/logout', { method:'POST' }));
+        skillHubState = { authenticated:false, roles:[], permissions:[], installed:[] };
+        renderSkillHubAccount();
+        const grid = document.getElementById('skillhub-registry-grid');
+        if (grid) grid.innerHTML = '<div class="loading">登录后可搜索 SkillHub。</div>';
+      } catch (e) {
+        alert('退出失败：' + (e.message || String(e)));
+      }
+    }
+
+    async function searchSkillHub(queryOverride, quiet) {
+      const input = document.getElementById('skillhub-search-input');
+      const query = queryOverride !== undefined ? queryOverride : (input ? input.value.trim() : '');
+      const grid = document.getElementById('skillhub-registry-grid');
+      if (grid && !quiet) grid.innerHTML = '<div class="loading">正在搜索 SkillHub...</div>';
+      try {
+        const data = await parseSimpleResponse(await fetch(API + '/api/skillhub/search?q=' + encodeURIComponent(query || '')));
+        skillHubRegistryCache = data.skills || [];
+        skillHubState.installed = data.installed || skillHubState.installed || [];
+        renderSkillHubRegistry(skillHubRegistryCache);
+      } catch (e) {
+        if (grid) grid.innerHTML = '<div class="runtime-note danger">SkillHub 搜索失败：'+escapeHtml(e.message || String(e))+'</div>';
+      }
+    }
+
+    function renderSkillHubRegistry(items) {
+      const grid = document.getElementById('skillhub-registry-grid');
+      if (!grid) return;
+      if (!items.length) {
+        grid.innerHTML = '<div class="loading">没有找到匹配的 Skill。</div>';
+        return;
+      }
+      const installedIds = new Set((skillHubState.installed || []).map(item => item.skillId + '@' + item.version));
+      grid.innerHTML = items.map(item => {
+        const key = item.skillId + '@' + item.latestVersion;
+        const installed = installedIds.has(key);
+        const tags = [...(item.categories || []), ...(item.tags || [])].slice(0, 4).map(tag => '<span class="tag">'+escapeHtml(tag)+'</span>').join('');
+        return '<div class="skill-card">'+
+          '<div class="skill-name">'+escapeHtml(item.displayName || item.name || item.skillId)+' <span class="tag green">SkillHub</span></div>'+
+          '<div class="skill-desc">'+escapeHtml(item.description || '')+'</div>'+
+          '<div class="skill-meta">'+tags+'<span class="tag">v'+escapeHtml(item.latestVersion || '-')+'</span><span class="tag">'+escapeHtml(item.riskLevel || 'low')+'</span></div>'+
+          '<div class="skill-files">'+escapeHtml((item.triggerExamples || []).slice(0, 3).join('；'))+'</div>'+
+          '<div class="skill-actions"><button class="btn btn-primary" '+(installed?'disabled':'onclick="installSkillHubSkill(\''+skillJsArg(item.skillId)+'\',\''+skillJsArg(item.latestVersion)+'\')"')+'>'+(installed?'已安装':'安装')+'</button></div>'+
+        '</div>';
+      }).join('');
+    }
+
+    async function installSkillHubSkill(skillId, version) {
+      pulsePetState('thinking', '正在安装 Skill...', 1600);
+      try {
+        const data = await parseSimpleResponse(await fetch(API + '/api/skillhub/install', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ skillId, version }),
+        }));
+        pulsePetState('success', 'Skill 已安装', 2200);
+        alert('安装完成：' + (data.skill?.name || skillId));
+        await refreshSkillHubPage();
+      } catch (e) {
+        pulsePetState('error', '安装失败', 2600);
+        alert('安装失败：' + (e.message || String(e)));
+      }
+    }
+
+    async function fetchSkillHubDeveloper() {
+      const statusBox = document.getElementById('skillhub-developer-status');
+      try {
+        const data = await parseSimpleResponse(await fetch(API + '/api/skillhub/developer'));
+        renderSkillHubDeveloper(data);
+      } catch (e) {
+        if (statusBox) statusBox.innerHTML = '<div class="runtime-note danger">开发者中心加载失败：'+escapeHtml(e.message || String(e))+'</div>';
+      }
+    }
+
+    function renderSkillHubDeveloper(data) {
+      const statusBox = document.getElementById('skillhub-developer-status');
+      const applyBox = document.getElementById('skillhub-developer-apply');
+      const consoleBox = document.getElementById('skillhub-developer-console');
+      const list = document.getElementById('skillhub-submissions-list');
+      const roles = data.roles || [];
+      const authenticated = Boolean(data.authenticated);
+      const developer = roles.includes('developer');
+      if (statusBox) {
+        statusBox.innerHTML = authenticated
+          ? '<div class="settings-setup-head"><div><div class="settings-setup-title">'+(developer?'开发者权限已启用':'当前账号还不是开发者')+'</div><div class="settings-setup-copy">'+escapeHtml(data.user?.displayName || data.user?.email || 'CatsCo 用户')+' · '+escapeHtml(roles.join(', ') || 'user')+'</div></div><span class="tag '+(developer?'green':'warm')+'">'+(developer?'developer':'user')+'</span></div>'
+          : '<div class="runtime-note warning">请先到 Skills 页面登录 SkillHub，然后再申请开发者权限。</div>';
+      }
+      if (applyBox) applyBox.style.display = authenticated && !developer ? 'block' : 'none';
+      if (consoleBox) consoleBox.style.display = developer ? 'block' : 'none';
+      if (list) {
+        const submissions = data.submissions || [];
+        list.innerHTML = submissions.length ? submissions.map(item => {
+          const manifest = item.normalizedManifest || item.manifest || {};
+          return '<div class="portal-row"><strong>'+escapeHtml(manifest.displayName || manifest.name || item.id)+'</strong><div class="settings-meta">'+escapeHtml(item.status || '-')+' · '+escapeHtml(manifest.version || '')+'</div></div>';
+        }).join('') : '<div class="loading">暂无提交记录</div>';
+      }
+    }
+
+    async function applySkillHubDeveloper() {
+      try {
+        const payload = {
+          displayName: document.getElementById('skillhub-apply-name')?.value.trim(),
+          homepageUrl: document.getElementById('skillhub-apply-homepage')?.value.trim(),
+          reason: document.getElementById('skillhub-apply-reason')?.value.trim(),
+        };
+        await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/apply', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify(payload),
+        }));
+        alert('申请已提交，等待管理员审核。');
+        fetchSkillHubDeveloper();
+      } catch (e) {
+        alert('提交申请失败：' + (e.message || String(e)));
+      }
+    }
+
+    function collectSkillHubDeveloperForm() {
+      return {
+        localPath: document.getElementById('skillhub-local-path')?.value.trim(),
+        name: document.getElementById('skillhub-name')?.value.trim(),
+        displayName: document.getElementById('skillhub-name')?.value.trim(),
+        version: document.getElementById('skillhub-version')?.value.trim(),
+        description: document.getElementById('skillhub-description')?.value.trim(),
+        category: document.getElementById('skillhub-category')?.value.trim(),
+        keywords: document.getElementById('skillhub-keywords')?.value.trim(),
+        triggerExamples: document.getElementById('skillhub-triggers')?.value.trim(),
+        permissions: document.getElementById('skillhub-permissions')?.value.trim(),
+        repositoryUrl: document.getElementById('skillhub-repository-url')?.value.trim(),
+      };
+    }
+
+    async function createSkillHubManifestDraft() {
+      const preview = document.getElementById('skillhub-manifest-preview');
+      if (preview) preview.textContent = '正在生成 manifest...';
+      try {
+        const data = await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/manifest-draft', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify(collectSkillHubDeveloperForm()),
+        }));
+        skillHubDraftManifest = data.manifest;
+        applySkillHubManifestToForm(skillHubDraftManifest);
+        if (preview) preview.textContent = JSON.stringify(skillHubDraftManifest, null, 2);
+      } catch (e) {
+        if (preview) preview.textContent = '生成失败：' + (e.message || String(e));
+      }
+    }
+
+    function applySkillHubManifestToForm(manifest) {
+      if (!manifest) return;
+      const set = (id, value) => { const el = document.getElementById(id); if (el && value !== undefined && value !== null) el.value = Array.isArray(value) ? value.join('，') : String(value); };
+      set('skillhub-name', manifest.displayName || manifest.name);
+      set('skillhub-version', manifest.version);
+      set('skillhub-description', manifest.description);
+      set('skillhub-category', (manifest.categories || [])[0]);
+      set('skillhub-keywords', manifest.keywords || []);
+      set('skillhub-triggers', (manifest.triggerExamples || []).join('\n'));
+    }
+
+    async function submitSkillHubReview() {
+      if (!confirm('提交后会上传这个 Skill 文件夹到 SkillHub 云端进行扫描和审核，是否继续？')) return;
+      try {
+        const payload = { ...collectSkillHubDeveloperForm(), manifest: skillHubDraftManifest || undefined };
+        await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/submissions', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify(payload),
+        }));
+        alert('已提交审核。');
+        skillHubDraftManifest = null;
+        fetchSkillHubDeveloper();
+      } catch (e) {
+        alert('提交审核失败：' + (e.message || String(e)));
+      }
     }
 
     async function svcAction(n,a) {
@@ -6250,6 +6642,12 @@
     async function parseCatsResponse(resp){
       const data=await resp.json().catch(()=>({}));
       if(!resp.ok) throw new Error(data.error || ('HTTP '+resp.status));
+      return data;
+    }
+
+    async function parseSimpleResponse(resp){
+      const data=await resp.json().catch(()=>({}));
+      if(!resp.ok) throw new Error((data.error && data.error.message) || data.message || data.error || ('HTTP '+resp.status));
       return data;
     }
 
@@ -7466,7 +7864,7 @@
 
     // Init
     preloadPetFrames();renderPetProfile();renderPetProcess();initFloatingPetDrag();setPetState('idle');
-    setupEnvConfigLazyLoad();fetchStatus();fetchSkills();fetchDashboardSettings();fetchRuntimeConfig();fetchUpdateStatus(true);fetchCatsStatus();
+    setupEnvConfigLazyLoad();fetchStatus();fetchSkills();fetchSkillHubStatus();fetchDashboardSettings();fetchRuntimeConfig();fetchUpdateStatus(true);fetchCatsStatus();
     if(document.getElementById('page-chat')?.classList.contains('active') && !catsPollTimer) catsPollTimer = setInterval(fetchCatsStatus, 5000);
     setInterval(fetchStatus,5000);setInterval(fetchSkills,30000);setInterval(()=>fetchUpdateStatus(true),5000);
     const catsMessagesBox = document.getElementById('cats-messages');
