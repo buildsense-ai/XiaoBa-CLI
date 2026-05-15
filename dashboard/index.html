@@ -3159,6 +3159,87 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
 
+    .chat-runtime-plan {
+      margin: 8px 0 4px;
+      border: 1px solid var(--border-light);
+      border-radius: 8px;
+      background: var(--surface-muted);
+      overflow: hidden;
+      max-width: min(760px, 100%);
+    }
+
+    .chat-runtime-plan summary {
+      cursor: pointer;
+      padding: 9px 11px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      list-style: none;
+      font-weight: 850;
+      color: var(--text);
+    }
+
+    .chat-runtime-plan summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .chat-runtime-plan[open] .chat-runtime-plan-chevron {
+      transform: rotate(90deg);
+    }
+
+    .chat-runtime-plan-chevron {
+      display: inline-block;
+      color: var(--accent);
+      transition: transform 0.16s ease;
+    }
+
+    .chat-runtime-plan-hint {
+      margin-left: auto;
+      color: var(--text3);
+      font-size: 11px;
+      font-weight: 750;
+    }
+
+    .chat-runtime-plan-body {
+      display: grid;
+      gap: 7px;
+      padding: 0 11px 11px 29px;
+    }
+
+    .chat-runtime-plan-step {
+      display: grid;
+      grid-template-columns: 74px minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .chat-runtime-plan-status {
+      border-radius: 999px;
+      padding: 2px 7px;
+      width: fit-content;
+      font-size: 11px;
+      font-weight: 850;
+      background: #eef2ff;
+      color: #3730a3;
+    }
+
+    .chat-runtime-plan-status.completed {
+      background: #dcfce7;
+      color: #166534;
+    }
+
+    .chat-runtime-plan-status.in_progress {
+      background: #ffedd5;
+      color: #c2410c;
+    }
+
+    .chat-runtime-plan-text {
+      min-width: 0;
+      line-height: 1.45;
+    }
+
     .chat-rich-image-button {
       display: block;
       padding: 0;
@@ -4485,6 +4566,7 @@
     const CATS_DEFAULT_WS_URL = 'wss://app.catsco.cc/v0/channels';
     const CATS_WORKING_TEXT_PREFIX = 'AI文本:';
     const CATS_WORKING_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
+    const catsRuntimePlanOpenState = new Map();
     const petFrames = {
       idle: ['pet/idle/01.png', 'pet/idle/02.png', 'pet/idle/03.png', 'pet/idle/04.png'],
       thinking: ['pet/thinking/01.png', 'pet/thinking/02.png', 'pet/thinking/03.png', 'pet/thinking/04.png'],
@@ -6548,6 +6630,7 @@
 
     function extractCatsMessageText(message){
       if(!message)return '';
+      if((message.type||message.msg_type)==='runtime_plan')return '';
       if(typeof message.content==='string')return message.content;
       if(Array.isArray(message.content_blocks)){
         return message.content_blocks.map(b=>b.text||b.content||'').filter(Boolean).join('\n');
@@ -6792,6 +6875,62 @@
       return CATS_WORKING_TYPES.has(msgType)?msgType:'';
     }
 
+    function catsRuntimePlanSnapshot(message){
+      if(catsMessageType(message)!=='runtime_plan')return null;
+      const content=message?.content;
+      if(content && typeof content==='object')return content;
+      if(typeof content==='string'){
+        try{
+          const parsed=JSON.parse(content);
+          return parsed && typeof parsed==='object'?parsed:null;
+        }catch(_e){
+          return null;
+        }
+      }
+      return null;
+    }
+
+    function catsRuntimePlanKey(message,snapshot){
+      return String(message?.seq_id || message?.id || snapshot?.revision || message?.created_at || 'runtime-plan');
+    }
+
+    function setCatsRuntimePlanOpen(key,open){
+      if(!key)return;
+      catsRuntimePlanOpenState.set(String(key), Boolean(open));
+    }
+    window.setCatsRuntimePlanOpen=setCatsRuntimePlanOpen;
+
+    function isCatsRuntimePlanMessage(message){
+      return Boolean(catsRuntimePlanSnapshot(message));
+    }
+
+    function isCatsRuntimePlanClearMessage(message){
+      const snapshot=catsRuntimePlanSnapshot(message);
+      return Boolean(snapshot && Array.isArray(snapshot.steps) && snapshot.steps.length===0);
+    }
+
+    function renderCatsRuntimePlan(message){
+      const snapshot=catsRuntimePlanSnapshot(message);
+      const steps=Array.isArray(snapshot?.steps)?snapshot.steps:[];
+      if(!steps.length)return '';
+      const key=catsRuntimePlanKey(message,snapshot);
+      const open=catsRuntimePlanOpenState.has(key)?catsRuntimePlanOpenState.get(key):true;
+      const done=steps.filter(step=>step?.status==='completed').length;
+      const statusLabels={pending:'待处理',in_progress:'进行中',completed:'已完成'};
+      const body=steps.map(step=>{
+        const status=String(step?.status||'pending');
+        const label=statusLabels[status]||status;
+        return '<div class="chat-runtime-plan-step">'+
+          '<span class="chat-runtime-plan-status '+escapeHtml(status)+'">'+escapeHtml(label)+'</span>'+
+          '<span class="chat-runtime-plan-text">'+escapeHtml(step?.text||'')+'</span>'+
+        '</div>';
+      }).join('');
+      return '<details class="chat-runtime-plan" data-plan-key="'+escapeHtml(key)+'" '+(open?'open':'')+' ontoggle="setCatsRuntimePlanOpen(this.dataset.planKey,this.open)">'+
+        '<summary><span class="chat-runtime-plan-chevron">&gt;</span><span>Plan</span><span class="chat-runtime-plan-hint">'+done+'/'+steps.length+' 已完成</span></summary>'+
+        '<div class="chat-runtime-plan-body">'+body+'</div>'+
+      '</details>';
+    }
+
     function isCatsWorkingTextMessage(message){
       const type=message?.type || message?.msg_type || '';
       const content=typeof message?.content==='string'?message.content.trim():'';
@@ -6964,6 +7103,10 @@
     }
 
     function renderCatsMessageBody(message){
+      if(isCatsRuntimePlanMessage(message)){
+        return renderCatsRuntimePlan(message);
+      }
+
       const blocks=Array.isArray(message?.content_blocks)?message.content_blocks:[];
       const textBlocks=[];
       const richBlocks=[];
@@ -7029,6 +7172,7 @@
       let prevSender='';
       let prevTime=0;
       (messages||[]).forEach(message=>{
+        if(isCatsRuntimePlanClearMessage(message))return;
         const from=String(message.from_uid || message.from || '');
         const created=message.created_at?new Date(message.created_at):null;
         const time=created && !Number.isNaN(created.getTime()) ? created.getTime() : Date.now();

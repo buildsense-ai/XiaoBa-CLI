@@ -23,6 +23,7 @@ import { TurnLogRecorder } from './turn-log-recorder';
 import { TurnContextBuilder } from './turn-context-builder';
 import { AgentTurnController } from './agent-turn-controller';
 import { SessionLifecycleManager } from './session-lifecycle-manager';
+import { PlanRuntime } from './plan-runtime';
 import type { PendingUserInputProvider } from './conversation-runner';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
@@ -104,6 +105,7 @@ export class AgentSession {
   private contextWindowManager: ContextWindowManager;
   private skillRuntime: SessionSkillRuntime;
   private runtimeFeedbackInbox = new RuntimeFeedbackInbox();
+  private planRuntime = new PlanRuntime();
   private lifecycleManager: SessionLifecycleManager;
   private readonly defaultDirectory: string;
   private currentDirectory: string;
@@ -129,6 +131,7 @@ export class AgentSession {
       sessionType,
       services,
       skillRuntime: this.skillRuntime,
+      planRuntime: this.planRuntime,
       turnContextBuilder: this.turnContextBuilder,
       turnLogRecorder: this.turnLogRecorder,
       workspaceRoot: this.defaultDirectory,
@@ -364,6 +367,7 @@ export class AgentSession {
 
         return { text: errorReply, visibleToUser: true };
       } finally {
+        this.planRuntime.clear();
         this.busy = false;
       }
     });
@@ -424,6 +428,7 @@ export class AgentSession {
 
   /** 重置会话状态（仅清内存，保留历史文件） */
   reset(): void {
+    this.planRuntime.clear();
     this.messages = [];
     this.resetCurrentDirectory();
     const state = this.lifecycleManager.reset();
@@ -433,6 +438,7 @@ export class AgentSession {
 
   /** 清空历史（同时删除文件） */
   clear(): void {
+    this.planRuntime.clear();
     this.messages = [];
     const state = this.lifecycleManager.clear();
     this.resetCurrentDirectory();
@@ -442,6 +448,7 @@ export class AgentSession {
 
   async summarizeAndDestroy(): Promise<boolean> {
     return this.withLogContext(async () => {
+      this.planRuntime.clear();
       if (this.messages.length === 0) return false;
       this.messages = [];
       return true;

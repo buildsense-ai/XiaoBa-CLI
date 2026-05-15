@@ -172,6 +172,14 @@ export class CatsCompanyBot {
           throw err;
         }
       },
+      sendRuntimePlan: async (_targetTopic, snapshot) => {
+        try {
+          await this.sender.sendRuntimePlan(topic, snapshot);
+        } catch (err: any) {
+          Logger.warning(`计划卡片发送失败 (sendRuntimePlan): ${err.message}`);
+          throw err;
+        }
+      },
     };
 
     return channel;

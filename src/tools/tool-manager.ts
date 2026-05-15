@@ -14,6 +14,8 @@ import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
 import { StopSubagentTool } from './stop-subagent-tool';
 import { ResumeSubagentTool } from './resume-subagent-tool';
+import { UpdatePlanTool } from './update-plan-tool';
+import { RecordDecisionTool } from './record-decision-tool';
 import { DEFAULT_TOOL_NAMES } from './default-tool-names';
 
 /**
@@ -82,6 +84,8 @@ export class ToolManager implements ToolExecutor {
       new CheckSubagentTool(),
       new StopSubagentTool(),
       new ResumeSubagentTool(),
+      new UpdatePlanTool(),
+      new RecordDecisionTool(),
       new SkillTool(),
     ];
 

@@ -10,6 +10,7 @@ import { ConversationRunner, RunnerCallbacks, PendingUserInputProvider } from '.
 import { resolveSessionSurface } from './session-surface';
 import { TurnContextBuilder } from './turn-context-builder';
 import { TurnLogRecorder } from './turn-log-recorder';
+import { PlanRuntime } from './plan-runtime';
 
 export interface AgentTurnServices {
   aiService: AIService;
@@ -48,6 +49,7 @@ export interface AgentTurnControllerOptions {
   sessionType?: string;
   services: AgentTurnServices;
   skillRuntime: SessionSkillRuntime;
+  planRuntime: PlanRuntime;
   turnContextBuilder: TurnContextBuilder;
   turnLogRecorder: TurnLogRecorder;
   workspaceRoot: string;
@@ -69,6 +71,7 @@ export class AgentTurnController {
       durableMessages: params.messages,
       runtimeFeedback: params.runtimeFeedback,
       skillRuntime: this.options.skillRuntime,
+      planRuntime: this.options.planRuntime,
     });
 
     const runner = this.createRunner({
@@ -123,6 +126,7 @@ export class AgentTurnController {
           workingDirectory: this.options.getCurrentDirectory(),
           getCurrentDirectory: this.options.getCurrentDirectory,
           updateCurrentDirectory: this.options.updateCurrentDirectory,
+          planRuntime: this.options.planRuntime,
           channel: options.channel,
         },
       },

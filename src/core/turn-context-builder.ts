@@ -5,8 +5,10 @@ import {
 } from '../skills/session-skill-runtime';
 import { isRuntimeFeedbackContent } from './runtime-feedback';
 import { SubAgentManager } from './sub-agent-manager';
+import { PlanRuntime } from './plan-runtime';
 
 const TRANSIENT_SUBAGENT_STATUS_PREFIX = '[transient_subagent_status]';
+const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 const TRANSIENT_SOFT_CHECK_PREFIX = '[transient_soft_check]';
 
@@ -15,6 +17,7 @@ export interface BuildTurnContextParams {
   durableMessages: Message[];
   runtimeFeedback: string[];
   skillRuntime: SessionSkillRuntime;
+  planRuntime?: PlanRuntime;
 }
 
 export interface BuildTurnContextResult {
@@ -31,6 +34,7 @@ export class TurnContextBuilder {
   async build(params: BuildTurnContextParams): Promise<BuildTurnContextResult> {
     const contextMessages = [...params.durableMessages];
     this.injectRuntimeFeedback(contextMessages, params.runtimeFeedback);
+    this.injectPlanStatus(contextMessages, params.planRuntime);
     this.injectSubAgentStatus(contextMessages, params.sessionKey);
 
     await params.skillRuntime.reloadSkills();
@@ -50,6 +54,7 @@ export class TurnContextBuilder {
       if (msg.__runtimeFeedback) return false;
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
+      if (msg.content.startsWith(TRANSIENT_PLAN_STATUS_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SOFT_CHECK_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SKILLS_LIST_PREFIX)) return false;
@@ -67,6 +72,15 @@ export class TurnContextBuilder {
       __runtimeFeedback: true,
     }));
     this.insertBeforeLastUser(messages, ...runtimeFeedbackMessages);
+  }
+
+  private injectPlanStatus(messages: Message[], planRuntime?: PlanRuntime): void {
+    const planText = planRuntime?.formatForPrompt();
+    if (!planText) return;
+    this.insertBeforeLastUser(messages, {
+      role: 'system',
+      content: `${TRANSIENT_PLAN_STATUS_PREFIX}\n${planText}`,
+    });
   }
 
   private injectSubAgentStatus(messages: Message[], sessionKey: string): void {

@@ -62,6 +62,7 @@ describe('runtime characterization', () => {
         'glob',
         'grep',
         'read_file',
+        'record_decision',
         'resume_subagent',
         'send_file',
         'send_text',
@@ -69,6 +70,7 @@ describe('runtime characterization', () => {
         'skill',
         'spawn_subagent',
         'stop_subagent',
+        'update_plan',
         'write_file',
       ],
     );

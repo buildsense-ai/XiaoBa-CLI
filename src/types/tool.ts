@@ -1,4 +1,5 @@
 import { ContentBlock } from './index';
+import type { PlanRuntime, RuntimePlanSnapshot } from '../core/plan-runtime';
 
 /**
  * 工具参数定义
@@ -103,6 +104,8 @@ export interface ChannelCallbacks {
   reply: (chatId: string, text: string) => Promise<void>;
   /** 发送文件 */
   sendFile: (chatId: string, filePath: string, fileName: string) => Promise<void>;
+  /** 发送临时运行时计划。支持实时 UI 的 surface 可实现为卡片展示。 */
+  sendRuntimePlan?: (chatId: string, snapshot: RuntimePlanSnapshot) => Promise<void>;
 }
 
 /** @deprecated Use ChannelCallbacks instead */
@@ -122,6 +125,7 @@ export interface ToolExecutionContext {
   permissionProfile?: ToolPermissionProfile;
   runId?: string;
   abortSignal?: AbortSignal;
+  planRuntime?: PlanRuntime;
   getCurrentDirectory?: () => string;
   updateCurrentDirectory?: (directory: string) => void;
   /** 平台通道回调（飞书/CatsCompany 等聊天会话时由平台层注入） */

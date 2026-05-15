@@ -2,10 +2,11 @@ import { CatsClient, CatsSendError } from './client';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Logger } from '../utils/logger';
+import { RuntimePlanSnapshot } from '../core/plan-runtime';
 
 const MAX_MSG_LENGTH = 4000;
 
-type CatsMessageType = 'thinking' | 'tool_use' | 'tool_result' | 'text' | 'image' | 'file';
+type CatsMessageType = 'thinking' | 'tool_use' | 'tool_result' | 'runtime_plan' | 'text' | 'image' | 'file';
 
 interface CatsSendBody {
   topic_id: string;
@@ -173,6 +174,15 @@ export class MessageSender {
       is_error: isError,
     });
     Logger.info(`Tool result 已发送: tool_use_id=${toolUseId}`);
+  }
+
+  async sendRuntimePlan(topic: string, snapshot: RuntimePlanSnapshot): Promise<void> {
+    await this.send(topic, 'runtime_plan', snapshot, {
+      runtime_plan: true,
+      revision: snapshot.revision,
+      cleared: snapshot.steps.length === 0,
+    });
+    Logger.info(`Runtime plan 已发送: revision=${snapshot.revision}, steps=${snapshot.steps.length}`);
   }
 
   async sendText(topic: string, text: string): Promise<void> {
