@@ -46,7 +46,10 @@ describe('ShellTool current directory probe', () => {
 
   test('successful cd at the start of a compound command persists the final directory', async () => {
     const tool = new ShellTool();
-    const result = await tool.execute({ command: 'cd sub && echo ok' }, {
+    const command = process.platform === 'win32'
+      ? 'Set-Location sub; Write-Output ok'
+      : 'cd sub && echo ok';
+    const result = await tool.execute({ command }, {
       ...context,
       workingDirectory: currentDirectory,
     });
@@ -72,7 +75,7 @@ describe('ShellTool current directory probe', () => {
   test('successful cd is persisted even when a later command fails', async () => {
     const tool = new ShellTool();
     const failingCommand = process.platform === 'win32'
-      ? 'cd sub && definitely_missing_xiaoba_command'
+      ? 'Set-Location sub; definitely_missing_xiaoba_command'
       : 'cd sub && definitely_missing_xiaoba_command';
     const result = await tool.execute({ command: failingCommand }, {
       ...context,
@@ -84,18 +87,47 @@ describe('ShellTool current directory probe', () => {
     assert.ok(!result.message.includes('__XIAOBA_CWD_MARKER__'));
   });
 
-  test('Windows for loop keeps cmd command-line percent syntax', {
+  test('Windows PowerShell command output is decoded as UTF-8', {
     skip: process.platform !== 'win32',
   }, async () => {
-    fs.writeFileSync(path.join(testRoot, 'loop-target.txt'), 'ok');
     const tool = new ShellTool();
-    const result = await tool.execute({ command: 'for %f in (*.txt) do @echo %f' }, {
+    const result = await tool.execute({ command: 'Write-Output "\u4e2d\u6587\u8f93\u51fa"' }, {
       ...context,
       workingDirectory: currentDirectory,
     });
 
     assert.strictEqual(result.ok, true);
-    assert.ok((result.content as string).includes('loop-target.txt'));
+    assert.ok((result.content as string).includes('\u4e2d\u6587\u8f93\u51fa'));
+  });
+
+  test('Windows PowerShell lists names without cmd banner or prompt pollution', {
+    skip: process.platform !== 'win32',
+  }, async () => {
+    fs.writeFileSync(path.join(testRoot, 'visible-file.txt'), 'ok');
+    const tool = new ShellTool();
+    const result = await tool.execute({ command: 'Get-ChildItem -Name' }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    assert.ok((result.content as string).includes('visible-file.txt'));
+    assert.ok(!(result.content as string).includes('Microsoft Windows'));
+    assert.ok(!(result.content as string).includes('__XIAOBA_CWD_MARKER__'));
+  });
+
+  test('Windows PowerShell cwd survives prompt changes', {
+    skip: process.platform !== 'win32',
+  }, async () => {
+    const tool = new ShellTool();
+    const result = await tool.execute({ command: 'Set-Location sub; function prompt { "USER> " }; Write-Output visible-output' }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    assert.ok((result.content as string).includes('visible-output'));
+    assert.strictEqual(currentDirectory, path.join(testRoot, 'sub'));
   });
 
 });

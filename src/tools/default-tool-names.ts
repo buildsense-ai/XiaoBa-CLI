@@ -4,6 +4,7 @@ export const DEFAULT_TOOL_NAMES = [
   'edit_file',
   'glob',
   'grep',
+  'resolve_common_directory',
   'execute_shell',
   'send_text',
   'send_file',

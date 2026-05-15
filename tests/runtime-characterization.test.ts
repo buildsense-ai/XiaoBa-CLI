@@ -63,6 +63,7 @@ describe('runtime characterization', () => {
         'grep',
         'read_file',
         'record_decision',
+        'resolve_common_directory',
         'resume_subagent',
         'send_file',
         'send_text',
