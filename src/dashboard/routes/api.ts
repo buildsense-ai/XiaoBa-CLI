@@ -28,6 +28,7 @@ import {
   rollbackRuntimeProfileEdit,
   saveRuntimeProfileEdit,
 } from '../../runtime/runtime-profile-editor';
+import { registerSkillHubRoutes } from '../skillhub';
 // import { ReportGenerator } from '../../utils/report-generator';
 // import { LogUploader } from '../../utils/log-uploader';
 
@@ -339,6 +340,7 @@ function persistCatsUserSession(state: CatsAuthState, login: any): void {
 
 export function createApiRouter(serviceManager: ServiceManager, updateController?: UpdateController): Router {
   const router = Router();
+  registerSkillHubRoutes(router);
 
   // ==================== 总览 ====================
 

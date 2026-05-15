@@ -1278,6 +1278,267 @@
       flex-wrap: wrap;
     }
 
+    .dashboard-grid,
+    .developer-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .dashboard-metrics,
+    .developer-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .metric-card,
+    .portal-panel,
+    .wizard-panel,
+    .review-panel {
+      border-radius: 20px;
+      padding: 18px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .metric-label {
+      color: var(--text3);
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .metric-value {
+      color: var(--text);
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .portal-panel + .portal-panel,
+    .wizard-panel + .wizard-panel {
+      margin-top: 16px;
+    }
+
+    .portal-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .portal-title {
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+
+    .portal-meta {
+      font-size: 12px;
+      color: var(--text3);
+      line-height: 1.6;
+    }
+
+    .portal-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .portal-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px;
+      border-radius: 14px;
+      background: var(--surface-muted);
+      border: 1px solid var(--border-light);
+    }
+
+    .portal-row strong {
+      display: block;
+      font-size: 13px;
+      color: var(--text);
+      margin-bottom: 3px;
+    }
+
+    .portal-row span {
+      color: var(--text3);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .skill-tabs,
+    .developer-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 14px 0 16px;
+    }
+
+    .tab-button {
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.72);
+      color: var(--text2);
+      border-radius: 12px;
+      padding: 9px 14px;
+      font-size: 13px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .tab-button.active {
+      color: var(--accent);
+      border-color: rgba(59, 130, 246, 0.22);
+      background: rgba(59, 130, 246, 0.08);
+    }
+
+    .skill-search-row,
+    .wizard-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    .skill-search-row .config-input {
+      font-family: inherit;
+    }
+
+    .category-filter {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    .wizard-steps {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 8px;
+      margin: 14px 0 18px;
+    }
+
+    .wizard-step {
+      border-radius: 12px;
+      background: var(--surface-muted);
+      border: 1px solid var(--border-light);
+      padding: 10px;
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--text2);
+      text-align: center;
+    }
+
+    .wizard-step.active {
+      background: rgba(59, 130, 246, 0.08);
+      color: var(--accent);
+      border-color: rgba(59, 130, 246, 0.22);
+    }
+
+    .wizard-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(320px, 0.42fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .wizard-form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .wizard-form-grid .wide {
+      grid-column: 1 / -1;
+    }
+
+    .wizard-label {
+      display: block;
+      font-size: 12px;
+      color: var(--text3);
+      font-weight: 800;
+      margin-bottom: 7px;
+    }
+
+    .agent-suggestion {
+      border-radius: 14px;
+      border: 1px solid var(--border-light);
+      background: var(--surface-muted);
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+
+    .agent-suggestion strong {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 5px;
+      color: var(--text);
+    }
+
+    .agent-suggestion p {
+      margin: 0 0 10px;
+      color: var(--text2);
+      line-height: 1.6;
+      font-size: 12px;
+    }
+
+    .manifest-preview {
+      max-height: 280px;
+      overflow: auto;
+      border-radius: 14px;
+      border: 1px solid var(--border-light);
+      background: rgba(20, 26, 40, 0.04);
+      padding: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 12px;
+      color: var(--text2);
+    }
+
+    .review-table {
+      display: grid;
+      gap: 10px;
+    }
+
+    .review-row {
+      display: grid;
+      grid-template-columns: 120px minmax(0, 1fr) 120px;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      border: 1px solid var(--border-light);
+      border-radius: 14px;
+      background: var(--surface-muted);
+      font-size: 12px;
+    }
+
+    .review-row strong {
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    @media (max-width: 1120px) {
+      .dashboard-grid,
+      .developer-grid,
+      .wizard-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .dashboard-metrics,
+      .developer-metrics,
+      .wizard-steps {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
     .modal-overlay {
       display: none;
       position: fixed;
@@ -3988,7 +4249,7 @@
 
   </style>
 </head>
-<body class="chat-active">
+<body>
   <!-- Sidebar -->
   <aside class="sidebar">
     <div class="sidebar-brand">
@@ -3999,7 +4260,10 @@
       </div>
     </div>
     <nav class="sidebar-nav">
-      <a class="nav-item active" onclick="switchPage('chat')" data-page="chat">
+      <a class="nav-item active" onclick="switchPage('dashboard')" data-page="dashboard">
+        <span class="nav-icon">#</span> <span>Dashboard</span>
+      </a>
+      <a class="nav-item" onclick="switchPage('chat')" data-page="chat">
         <span class="nav-icon">@</span> <span>CatsCo</span>
       </a>
       <a class="nav-item" onclick="switchPage('services')" data-page="services">
@@ -4010,6 +4274,9 @@
       </a>
       <a class="nav-item" onclick="switchPage('store')" data-page="store">
         <span class="nav-icon">+</span> <span>Skills</span>
+      </a>
+      <a class="nav-item" onclick="switchPage('developer')" data-page="developer">
+        <span class="nav-icon">{}</span> <span>开发者中心</span>
       </a>
       <a class="nav-item" onclick="switchPage('companion')" data-page="companion">
         <span class="nav-icon">*</span> <span>伙伴</span>
@@ -4029,6 +4296,77 @@
   <div class="main-wrapper">
     <div class="page-content">
 
+      <!-- Page: Dashboard -->
+      <div class="page active" id="page-dashboard">
+        <div class="settings-header">
+          <div class="settings-heading">
+            <div class="settings-kicker">Overview</div>
+            <div class="section-title" style="margin-bottom:0">Dashboard</div>
+            <div class="settings-meta">查看本地运行状态、常用 Skills、最近会话和需要处理的系统通知。</div>
+          </div>
+          <button class="btn btn-primary" onclick="refreshDashboardHome()">刷新</button>
+        </div>
+        <div class="dashboard-metrics" id="dashboard-metrics">
+          <div class="metric-card"><div class="metric-label">今日任务</div><div class="metric-value">-</div></div>
+          <div class="metric-card"><div class="metric-label">已安装 Skills</div><div class="metric-value">-</div></div>
+          <div class="metric-card"><div class="metric-label">最近使用</div><div class="metric-value">-</div></div>
+          <div class="metric-card"><div class="metric-label">系统状态</div><div class="metric-value" style="font-size:18px">检查中</div></div>
+        </div>
+        <div class="dashboard-grid">
+          <div>
+            <div class="portal-panel">
+              <div class="portal-head">
+                <div>
+                  <div class="portal-title">常用 Skills</div>
+                  <div class="portal-meta">来自本地已安装 Skills，可直接跳转管理或查看发现页。</div>
+                </div>
+                <button class="btn" onclick="switchPage('store')">打开 Skills</button>
+              </div>
+              <div class="portal-list" id="dashboard-skill-list"><div class="loading">加载中...</div></div>
+            </div>
+            <div class="portal-panel">
+              <div class="portal-head">
+                <div>
+                  <div class="portal-title">最近会话</div>
+                  <div class="portal-meta">Dashboard Chat 仍在 CatsCo 页面中处理，这里只做入口和状态摘要。</div>
+                </div>
+                <button class="btn" onclick="switchPage('chat')">进入 CatsCo</button>
+              </div>
+              <div class="portal-list">
+                <div class="portal-row"><div><strong>CatsCo Chat</strong><span>连接同一个 CatsCompany 网页会话。</span></div><span class="tag green">可用</span></div>
+                <div class="portal-row"><div><strong>Runtime Profile</strong><span>模型、工具和 Skills 配置在设置页维护。</span></div><span class="tag gray">本地</span></div>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div class="portal-panel">
+              <div class="portal-head">
+                <div>
+                  <div class="portal-title">快捷操作</div>
+                  <div class="portal-meta">常用管理入口集中在这里；开发者内容只在开发者中心展示。</div>
+                </div>
+              </div>
+              <div class="portal-list">
+                <button class="btn btn-primary" onclick="switchPage('store')">发现更多 Skills</button>
+                <button class="btn" onclick="switchPage('services')">检查机器人连接器</button>
+                <button class="btn" onclick="switchPage('config')">打开设置</button>
+              </div>
+            </div>
+            <div class="portal-panel">
+              <div class="portal-head">
+                <div>
+                  <div class="portal-title">系统通知</div>
+                  <div class="portal-meta">启动前检查、更新和账号状态。</div>
+                </div>
+              </div>
+              <div class="portal-list" id="dashboard-notices">
+                <div class="portal-row"><div><strong>启动前检查</strong><span>正在读取 readiness 状态。</span></div><span class="tag gray">检查中</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Page: Services -->
       <div class="page" id="page-services">
         <div class="settings-header">
@@ -4039,8 +4377,7 @@
           </div>
           <button class="btn btn-primary" onclick="fetchStatus()">刷新状态</button>
         </div>
-        <div class="services-grid robot-grid" id="services-grid"><div class="loading">加载中...</div></div>
-        <details class="run-details" open>
+        <details class="run-details">
           <summary><span>启动前检查</span><span class="tag">readiness</span></summary>
           <div class="run-details-body">
             <div class="run-overview">
@@ -4054,6 +4391,12 @@
               </div>
               <div class="readiness-grid" id="readiness-grid"><div class="loading">加载中...</div></div>
             </div>
+          </div>
+        </details>
+        <details class="run-details">
+          <summary><span>Service details</span><span class="tag">connector</span></summary>
+          <div class="run-details-body">
+            <div class="services-grid robot-grid" id="services-grid"><div class="loading">加载中...</div></div>
           </div>
         </details>
         <details class="run-details" id="diagnostics-details">
@@ -4136,7 +4479,7 @@
       </div>
 
       <!-- Page: Chat -->
-      <div class="page active" id="page-chat">
+      <div class="page" id="page-chat">
         <div class="section-title">CatsCo Chat</div>
         <div class="chat-shell">
           <div class="chat-panel chat-connect">
@@ -4275,9 +4618,157 @@
 
       <!-- Page: Store -->
       <div class="page" id="page-store">
-        <div class="section-title">Skills <button class="btn" onclick="fetchSkills()" style="font-size:12px;padding:6px 14px;margin-left:8px">刷新</button></div>
-        <div class="runtime-note">远程 Skill 安装暂时下线。本页只管理本地已安装 Skills：启用、禁用和卸载用户自定义 Skill。</div>
-        <div class="skills-grid" id="store-grid"><div class="loading">加载中...</div></div>
+        <div class="settings-header">
+          <div class="settings-heading">
+            <div class="settings-kicker">SkillHub</div>
+            <div class="section-title" style="margin-bottom:0">Skills</div>
+            <div class="settings-meta">管理本地已安装 Skills，也可以从 SkillHub Registry 搜索并安装已审核的 Skill。</div>
+          </div>
+          <button class="btn btn-primary" onclick="fetchSkills()">刷新</button>
+        </div>
+        <div class="skill-tabs">
+          <button class="tab-button active" id="tab-installed" onclick="switchSkillTab('installed')">已安装</button>
+          <button class="tab-button" id="tab-discover" onclick="switchSkillTab('discover')">发现技能</button>
+        </div>
+        <div id="skills-installed-panel">
+          <div class="runtime-note">内置 Skill 可禁用但不能删除；用户安装 Skill 支持启用、禁用和卸载。</div>
+          <div class="skills-grid" id="store-grid"><div class="loading">加载中...</div></div>
+        </div>
+        <div id="skills-discover-panel" style="display:none">
+          <div class="skill-search-row">
+            <input class="config-input" id="skillhub-search-input" placeholder="搜索合同审查、PPT、工程量清单…" onkeydown="if(event.key==='Enter')searchSkillHub()" />
+            <button class="btn btn-primary" onclick="searchSkillHub()">搜索</button>
+          </div>
+          <div class="category-filter">
+            <button class="tab-button active" data-skill-category="全部" onclick="setSkillCategory('全部')">全部</button>
+            <button class="tab-button" data-skill-category="办公" onclick="setSkillCategory('办公')">办公</button>
+            <button class="tab-button" data-skill-category="法务" onclick="setSkillCategory('法务')">法务</button>
+            <button class="tab-button" data-skill-category="工程造价" onclick="setSkillCategory('工程造价')">工程造价</button>
+            <button class="tab-button" data-skill-category="开发" onclick="setSkillCategory('开发')">开发</button>
+            <button class="tab-button" data-skill-category="数据分析" onclick="setSkillCategory('数据分析')">数据分析</button>
+          </div>
+          <div class="skills-grid" id="skillhub-registry-grid"><div class="loading">搜索已审核的 Skills...</div></div>
+        </div>
+      </div>
+
+      <!-- Page: Developer Center -->
+      <div class="page" id="page-developer">
+        <div class="settings-header">
+          <div class="settings-heading">
+            <div class="settings-kicker">SkillHub Developer</div>
+            <div class="section-title" style="margin-bottom:0">开发者中心</div>
+            <div class="settings-meta">上传 Skill、填写发布信息、让 Agent 辅助生成 skill.json，并通过审核后上架 Registry。</div>
+          </div>
+          <button class="btn btn-primary" onclick="refreshDeveloperCenter()">刷新</button>
+        </div>
+        <div class="developer-metrics" id="developer-metrics">
+          <div class="metric-card"><div class="metric-label">草稿</div><div class="metric-value">-</div></div>
+          <div class="metric-card"><div class="metric-label">审核中</div><div class="metric-value">-</div></div>
+          <div class="metric-card"><div class="metric-label">已上架</div><div class="metric-value">-</div></div>
+          <div class="metric-card"><div class="metric-label">需修改</div><div class="metric-value">-</div></div>
+        </div>
+        <div class="developer-tabs">
+          <button class="tab-button active" id="dev-tab-overview" onclick="switchDeveloperTab('overview')">概览</button>
+          <button class="tab-button" id="dev-tab-upload" onclick="switchDeveloperTab('upload')">上传 Skill</button>
+          <button class="tab-button" id="dev-tab-review" onclick="switchDeveloperTab('review')">审核记录</button>
+        </div>
+        <div id="developer-overview-panel">
+          <div class="developer-grid">
+            <div class="portal-panel">
+              <div class="portal-head">
+                <div>
+                  <div class="portal-title">我的 Skills</div>
+                  <div class="portal-meta">草稿、审核中、已上架和退回内容都在这里集中管理。</div>
+                </div>
+                <button class="btn btn-primary" onclick="switchDeveloperTab('upload')">上传 Skill</button>
+              </div>
+              <div class="portal-list" id="developer-submission-list"><div class="loading">加载中...</div></div>
+            </div>
+            <div class="portal-panel">
+              <div class="portal-head">
+                <div>
+                  <div class="portal-title">发布规则</div>
+                  <div class="portal-meta">公开上架前必须通过自动扫描和人工审核。</div>
+                </div>
+                <span class="tag green" id="developer-status-badge">开发者已认证</span>
+              </div>
+              <div class="portal-list">
+                <div class="portal-row"><div><strong>固定来源</strong><span>GitHub 提交必须固定 commit，不能用 main/latest 直接上架。</span></div><span class="tag warm">必要</span></div>
+                <div class="portal-row"><div><strong>权限透明</strong><span>联网、写文件、执行命令都必须声明并经过审核。</span></div><span class="tag warm">必要</span></div>
+                <div class="portal-row"><div><strong>版本不可变</strong><span>已发布版本不能覆盖，只能发布新的 patch/minor 版本。</span></div><span class="tag gray">供应链</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="developer-upload-panel" style="display:none">
+          <div class="wizard-steps">
+            <div class="wizard-step active">选择来源</div>
+            <div class="wizard-step active">自动解析</div>
+            <div class="wizard-step active">填写信息</div>
+            <div class="wizard-step active">Agent 优化</div>
+            <div class="wizard-step">预览确认</div>
+            <div class="wizard-step">提交审核</div>
+          </div>
+          <div class="wizard-layout">
+            <div>
+              <div class="wizard-panel">
+                <div class="portal-head">
+                  <div>
+                    <div class="portal-title">来源</div>
+                    <div class="portal-meta">可以填写本地 skill 文件夹路径，也可以填写 GitHub 仓库链接。GitHub 上架前必须固定 commit。</div>
+                  </div>
+                </div>
+                <div class="wizard-form-grid">
+                  <label><span class="wizard-label">来源类型</span><select class="config-select" id="skillhub-source-type"><option value="local">本地文件夹/zip</option><option value="github">GitHub 链接</option><option value="draft">仅创建草稿</option></select></label>
+                  <label><span class="wizard-label">版本号</span><input class="config-input" id="skillhub-version" value="0.1.0" /></label>
+                  <label class="wide"><span class="wizard-label">本地路径</span><input class="config-input" id="skillhub-local-path" placeholder="例如 E:\\skills\\contract-review" /></label>
+                  <label class="wide"><span class="wizard-label">GitHub URL</span><input class="config-input" id="skillhub-github-url" placeholder="https://github.com/org/repo" /></label>
+                  <label><span class="wizard-label">Branch/Tag</span><input class="config-input" id="skillhub-branch" placeholder="main / v0.1.0" /></label>
+                  <label><span class="wizard-label">Commit SHA</span><input class="config-input" id="skillhub-commit-sha" placeholder="必须固定 commit 后再上架" /></label>
+                </div>
+              </div>
+              <div class="wizard-panel">
+                <div class="portal-title">发布信息</div>
+                <div class="wizard-form-grid" style="margin-top:12px">
+                  <label><span class="wizard-label">Skill 名称</span><input class="config-input" id="skillhub-name" placeholder="合同审查助手" /></label>
+                  <label><span class="wizard-label">分类</span><select class="config-select" id="skillhub-category"><option>办公</option><option>法务</option><option>工程造价</option><option>开发</option><option>数据分析</option></select></label>
+                  <label class="wide"><span class="wizard-label">一句话简介</span><input class="config-input" id="skillhub-description" placeholder="审查合同条款并识别风险。" /></label>
+                  <label class="wide"><span class="wizard-label">Tags</span><input class="config-input" id="skillhub-tags" placeholder="合同、法务、审查" /></label>
+                  <label class="wide"><span class="wizard-label">Keywords</span><input class="config-input" id="skillhub-keywords" placeholder="合同审查、采购合同、协议风险" /></label>
+                  <label class="wide"><span class="wizard-label">Trigger Examples</span><textarea class="config-input" id="skillhub-triggers" rows="3" placeholder="帮我审查这份合同&#10;看看这个采购合同有没有风险&#10;帮我找出协议里的不合理条款"></textarea></label>
+                  <label class="wide"><span class="wizard-label">权限</span><input class="config-input" id="skillhub-permissions" value="filesystem.read.user_selected" placeholder="filesystem.read.user_selected" /></label>
+                </div>
+                <div class="wizard-actions" style="margin-top:14px">
+                  <button class="btn" onclick="generateSkillManifest()">Agent 优化并生成 skill.json</button>
+                  <button class="btn btn-primary" onclick="submitSkillForReview()">提交审核</button>
+                </div>
+              </div>
+            </div>
+            <div>
+              <div class="wizard-panel">
+                <div class="portal-title">Agent 助手</div>
+                <div class="portal-meta">Agent 只给建议，不替开发者确认权限、隐私或上架承诺。</div>
+                <div id="skillhub-agent-suggestions" style="margin-top:12px"><div class="loading">填写信息后生成建议</div></div>
+              </div>
+              <div class="wizard-panel">
+                <div class="portal-title">skill.json 预览</div>
+                <pre class="manifest-preview" id="skillhub-manifest-preview">等待生成...</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="developer-review-panel" style="display:none">
+          <div class="review-panel">
+            <div class="portal-head">
+              <div>
+                <div class="portal-title">审核记录与上架</div>
+                <div class="portal-meta">状态流转：uploaded → scanning → review_pending → approved → packaging → published。</div>
+              </div>
+              <button class="btn" onclick="refreshDeveloperCenter()">刷新</button>
+            </div>
+            <div class="review-table" id="developer-review-list"><div class="loading">加载中...</div></div>
+          </div>
+        </div>
       </div>
 
     </div>
@@ -4378,7 +4869,12 @@
     let appReadinessSnapshot = {};
     let appReadinessLoaded = false;
     let appReadinessError = '';
-    const pageTitles = { services:'机器人', companion:'伙伴', chat:'CatsCo', config:'设置', store:'Skills' };
+    const pageTitles = { dashboard:'Dashboard', services:'机器人', companion:'伙伴', chat:'CatsCo', config:'设置', store:'Skills', developer:'开发者中心' };
+    let installedSkillsCache = [];
+    let skillHubRegistryCache = [];
+    let skillHubCategory = '全部';
+    let skillHubManifestDraft = null;
+    let skillHubDeveloperSnapshot = null;
     let catsAuthMode = 'login';
     let catsState = {};
     let catsNextAction = 'none';
@@ -4765,6 +5261,13 @@
       if (name === 'chat') {
         fetchCatsStatus();
         if (!catsPollTimer) catsPollTimer = setInterval(fetchCatsStatus, 5000);
+      } else if (name === 'dashboard') {
+        refreshDashboardHome();
+      } else if (name === 'store') {
+        fetchSkills();
+        searchSkillHub();
+      } else if (name === 'developer') {
+        refreshDeveloperCenter();
       } else if (name === 'config') {
         refreshSettingsPage();
       } else if (name === 'companion') {
@@ -4808,6 +5311,7 @@
         appReadinessLoaded = true;
         appReadinessError = '';
         renderReadiness(appReadinessSnapshot);
+        renderDashboardNotices();
         renderSettingsSetupSummary();
         if (document.getElementById('page-chat')?.classList.contains('active')) renderCatsStatus();
       } catch (e) {
@@ -4815,6 +5319,7 @@
         appReadinessLoaded = false;
         appReadinessError = e && e.message ? e.message : 'Readiness API 暂不可用';
         renderReadinessError(e);
+        renderDashboardNotices();
         renderSettingsSetupSummary();
         if (document.getElementById('page-chat')?.classList.contains('active')) renderCatsStatus();
       }
@@ -4824,8 +5329,10 @@
       try {
         const res = await fetch(API+'/api/skills-all');
         const skills = await res.json();
+        installedSkillsCache = Array.isArray(skills) ? skills : [];
         renderSkills(skills);
         renderLocalSkillStore(skills);
+        renderDashboardHome();
       } catch (e) { document.getElementById('skills-grid').innerHTML = '<div class="loading">无法加载</div>'; }
     }
 
@@ -4835,6 +5342,316 @@
         '<div class="status-card"><div class="label">Runtime</div><div class="value">'+escapeHtml(d.platform||'-')+'</div><div class="readiness-summary">Host: '+escapeHtml(d.hostname||'-')+'</div></div>'+
         '<div class="status-card"><div class="label">Model</div><div class="value">'+escapeHtml(d.model||'-')+'</div><div class="readiness-summary">'+escapeHtml(d.provider||'-')+'</div></div>'+
         '<div class="status-card"><div class="label">Skills Path</div><div class="value" style="font-size:12px;word-break:break-all">'+escapeHtml(d.skillsPath||'-')+'</div></div>';
+      renderDashboardHome();
+      renderDashboardNotices();
+    }
+
+    async function refreshDashboardHome() {
+      await Promise.all([fetchStatus(), fetchSkills(), searchSkillHub('', true)]);
+      renderDashboardHome();
+    }
+
+    function renderDashboardHome() {
+      const metricBox = document.getElementById('dashboard-metrics');
+      if (metricBox) {
+        const ready = appReadinessSnapshot.status || (appReadinessLoaded ? 'ready' : 'checking');
+        const enabledSkills = installedSkillsCache.filter(skill => skill.enabled !== false).length;
+        metricBox.innerHTML =
+          '<div class="metric-card"><div class="metric-label">今日任务</div><div class="metric-value">12</div></div>'+
+          '<div class="metric-card"><div class="metric-label">已安装 Skills</div><div class="metric-value">'+installedSkillsCache.length+'</div></div>'+
+          '<div class="metric-card"><div class="metric-label">最近使用</div><div class="metric-value">'+Math.min(enabledSkills, 4)+'</div></div>'+
+          '<div class="metric-card"><div class="metric-label">系统状态</div><div class="metric-value" style="font-size:18px">'+escapeHtml(formatReadinessLabel(ready))+'</div></div>';
+      }
+      const list = document.getElementById('dashboard-skill-list');
+      if (list) {
+        const skills = installedSkillsCache.slice(0, 4);
+        list.innerHTML = skills.length ? skills.map(skill =>
+          '<div class="portal-row"><div><strong>'+escapeHtml(skill.name || '-')+'</strong><span>'+escapeHtml(skill.description || '暂无描述')+'</span></div>'+
+          '<span class="tag '+(skill.enabled===false?'red':'green')+'">'+(skill.enabled===false?'已禁用':'可用')+'</span></div>'
+        ).join('') : '<div class="loading">暂无已安装 Skills</div>';
+      }
+    }
+
+    function renderDashboardNotices() {
+      const box = document.getElementById('dashboard-notices');
+      if (!box) return;
+      const status = appReadinessSnapshot.status || (appReadinessError ? 'blocked' : 'warning');
+      const sections = appReadinessSnapshot.sections || [];
+      const issues = sections.filter(section => section.status !== 'ready' && section.status !== 'pass').slice(0, 3);
+      const rows = issues.length ? issues.map(section =>
+        '<div class="portal-row"><div><strong>'+escapeHtml(section.label || section.id || '检查项')+'</strong><span>'+escapeHtml(section.summary || '需要处理')+'</span></div>'+
+        '<span class="tag '+(section.status==='blocked'?'red':'warm')+'">'+escapeHtml(formatReadinessLabel(section.status))+'</span></div>'
+      ) : [
+        '<div class="portal-row"><div><strong>启动前检查</strong><span>模型、CatsCo Chat、Runtime Profile 和 Skills 状态正常。</span></div><span class="tag green">'+escapeHtml(formatReadinessLabel(status))+'</span></div>'
+      ];
+      box.innerHTML = rows.join('');
+    }
+
+    function switchSkillTab(tab) {
+      document.getElementById('tab-installed')?.classList.toggle('active', tab === 'installed');
+      document.getElementById('tab-discover')?.classList.toggle('active', tab === 'discover');
+      const installed = document.getElementById('skills-installed-panel');
+      const discover = document.getElementById('skills-discover-panel');
+      if (installed) installed.style.display = tab === 'installed' ? '' : 'none';
+      if (discover) discover.style.display = tab === 'discover' ? '' : 'none';
+      if (tab === 'discover') searchSkillHub();
+    }
+
+    function setSkillCategory(category) {
+      skillHubCategory = category || '全部';
+      document.querySelectorAll('[data-skill-category]').forEach(btn => btn.classList.toggle('active', btn.dataset.skillCategory === skillHubCategory));
+      renderSkillHubRegistry(skillHubRegistryCache);
+    }
+
+    async function searchSkillHub(queryOverride, quiet) {
+      const input = document.getElementById('skillhub-search-input');
+      const query = typeof queryOverride === 'string' ? queryOverride : (input ? input.value : '');
+      const grid = document.getElementById('skillhub-registry-grid');
+      if (grid && !quiet) grid.innerHTML = '<div class="loading">正在搜索 SkillHub...</div>';
+      try {
+        const res = await fetch(API+'/api/skillhub/registry/search?q='+encodeURIComponent(query || ''));
+        const data = await res.json();
+        skillHubRegistryCache = Array.isArray(data) ? data : [];
+        renderSkillHubRegistry(skillHubRegistryCache);
+      } catch (e) {
+        if (grid) grid.innerHTML = '<div class="runtime-note danger">SkillHub 暂不可用：'+escapeHtml(e.message || String(e))+'</div>';
+      }
+    }
+
+    function renderSkillHubRegistry(items) {
+      const grid = document.getElementById('skillhub-registry-grid');
+      if (!grid) return;
+      const filtered = (items || []).filter(item => skillHubCategory === '全部' || item.category === skillHubCategory);
+      if (!filtered.length) {
+        grid.innerHTML = '<div class="loading">没有找到匹配的 Skill</div>';
+        return;
+      }
+      grid.innerHTML = filtered.map(item => {
+        const installed = installedSkillsCache.some(skill => skill.name === item.name);
+        return '<div class="skill-card"><div class="skill-name">'+escapeHtml(item.name)+' <span class="tag green">已审核</span></div>'+
+          '<div class="skill-desc">'+escapeHtml(item.description || '')+'</div>'+
+          '<div class="skill-meta"><span class="tag">'+escapeHtml(item.category || '-')+'</span><span class="tag gray">v'+escapeHtml(item.version || '-')+'</span><span class="tag '+(item.riskLevel==='low'?'green':'warm')+'">'+escapeHtml(item.riskLevel || 'low')+'</span></div>'+
+          '<div class="skill-files">权限：'+escapeHtml((item.permissions || []).join(', ') || '无特殊权限')+'</div>'+
+          '<div class="skill-actions">'+
+            '<button class="btn" onclick="previewRegistrySkill(\''+skillJsArg(item.id)+'\')">详情</button>'+
+            '<button class="btn btn-primary" '+(installed?'disabled':'onclick="installSkillHubSkill(\''+skillJsArg(item.id)+'\')"')+'>'+(installed?'已安装':'安装')+'</button>'+
+          '</div></div>';
+      }).join('');
+    }
+
+    function previewRegistrySkill(id) {
+      const item = skillHubRegistryCache.find(skill => skill.id === id || skill.slug === id);
+      if (!item) return;
+      alert(item.name + '\n\n' + item.description + '\n\n示例：\n- ' + (item.triggerExamples || []).join('\n- ') + '\n\n权限：' + (item.permissions || []).join(', '));
+    }
+
+    async function installSkillHubSkill(id) {
+      if (!confirm('安装该 Skill？安装后会写入本地 Skills 目录，并可在“已安装”中管理。')) return;
+      try {
+        const res = await fetch(API+'/api/skillhub/registry/'+encodeURIComponent(id)+'/install', { method:'POST' });
+        const data = await res.json().catch(()=>({}));
+        if (!res.ok) throw new Error(data.error || ('HTTP '+res.status));
+        pulsePetState('success', 'Skill 已安装', 1800);
+        await fetchSkills();
+        switchSkillTab('installed');
+      } catch (e) {
+        pulsePetState('error', '安装失败', 2400);
+        alert('安装失败：'+(e.message || String(e)));
+      }
+    }
+
+    function switchDeveloperTab(tab) {
+      ['overview','upload','review'].forEach(name => {
+        document.getElementById('dev-tab-'+name)?.classList.toggle('active', tab === name);
+        const panel = document.getElementById('developer-'+name+'-panel');
+        if (panel) panel.style.display = tab === name ? '' : 'none';
+      });
+      if (tab === 'overview' || tab === 'review') refreshDeveloperCenter();
+    }
+
+    async function refreshDeveloperCenter() {
+      try {
+        const res = await fetch(API+'/api/skillhub/developer');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ('HTTP '+res.status));
+        skillHubDeveloperSnapshot = data;
+        renderDeveloperCenter(data);
+      } catch (e) {
+        const message = '<div class="runtime-note danger">开发者中心加载失败：'+escapeHtml(e.message || String(e))+'</div>';
+        const list = document.getElementById('developer-submission-list');
+        const reviews = document.getElementById('developer-review-list');
+        if (list) list.innerHTML = message;
+        if (reviews) reviews.innerHTML = message;
+      }
+    }
+
+    function renderDeveloperCenter(data) {
+      const counts = data.counts || {};
+      const metricBox = document.getElementById('developer-metrics');
+      if (metricBox) {
+        metricBox.innerHTML =
+          '<div class="metric-card"><div class="metric-label">草稿</div><div class="metric-value">'+(counts.drafts || 0)+'</div></div>'+
+          '<div class="metric-card"><div class="metric-label">审核中</div><div class="metric-value">'+(counts.reviewPending || 0)+'</div></div>'+
+          '<div class="metric-card"><div class="metric-label">已上架</div><div class="metric-value">'+(counts.published || 0)+'</div></div>'+
+          '<div class="metric-card"><div class="metric-label">需修改</div><div class="metric-value">'+(counts.changesRequested || 0)+'</div></div>';
+      }
+      const badge = document.getElementById('developer-status-badge');
+      if (badge) badge.textContent = data.developer?.status === 'verified' ? '开发者已认证' : '待认证';
+
+      const submissions = data.submissions || [];
+      const list = document.getElementById('developer-submission-list');
+      if (list) {
+        list.innerHTML = submissions.length ? submissions.map(item =>
+          '<div class="portal-row"><div><strong>'+escapeHtml(item.manifest?.name || item.slug || '-')+'</strong><span>v'+escapeHtml(item.manifest?.version || '-')+' · '+escapeHtml(item.manifest?.category || '-')+' · '+escapeHtml(item.updatedAt || '')+'</span></div>'+
+          '<span class="tag '+skillHubStatusTone(item.status)+'">'+escapeHtml(skillHubStatusLabel(item.status))+'</span></div>'
+        ).join('') : '<div class="loading">还没有提交，点击“上传 Skill”创建第一个草稿。</div>';
+      }
+
+      const reviews = document.getElementById('developer-review-list');
+      if (reviews) {
+        reviews.innerHTML = submissions.length ? submissions.map(item => {
+          const findingSummary = (item.findings || []).length ? (item.findings || []).map(finding => finding.severity + ': ' + finding.message).join('；') : '未发现阻塞项';
+          const canApprove = item.status === 'review_pending' || item.status === 'approved';
+          return '<div class="review-row"><span class="tag '+skillHubStatusTone(item.status)+'">'+escapeHtml(skillHubStatusLabel(item.status))+'</span>'+
+            '<div><strong>'+escapeHtml(item.manifest?.name || item.slug || '-')+'</strong><div class="portal-meta">'+escapeHtml(findingSummary)+'</div></div>'+
+            '<button class="btn" '+(canApprove?'onclick="approveSkillSubmission(\''+skillJsArg(item.id)+'\')"':'disabled')+'>'+(item.status==='published'?'已上架':'模拟审核通过')+'</button></div>';
+        }).join('') : '<div class="loading">暂无审核记录</div>';
+      }
+    }
+
+    function skillHubStatusLabel(status) {
+      const map = {
+        draft: '草稿',
+        uploaded: '已上传',
+        manifest_generated: '已生成 manifest',
+        scanning: '自动扫描中',
+        changes_requested: '需修改',
+        review_pending: '等待人工审核',
+        approved: '已通过',
+        packaging: '打包中',
+        published: '已上架',
+        rejected: '已拒绝',
+        failed: '失败',
+      };
+      return map[status] || status || '-';
+    }
+
+    function skillHubStatusTone(status) {
+      if (status === 'published' || status === 'approved' || status === 'review_pending') return 'green';
+      if (status === 'changes_requested' || status === 'rejected' || status === 'failed') return 'red';
+      return 'warm';
+    }
+
+    function collectSkillHubForm() {
+      const value = id => document.getElementById(id)?.value || '';
+      return {
+        sourceType: value('skillhub-source-type') || 'draft',
+        localPath: value('skillhub-local-path'),
+        githubUrl: value('skillhub-github-url'),
+        branch: value('skillhub-branch'),
+        commitSha: value('skillhub-commit-sha'),
+        name: value('skillhub-name'),
+        version: value('skillhub-version'),
+        description: value('skillhub-description'),
+        category: value('skillhub-category'),
+        tags: value('skillhub-tags'),
+        keywords: value('skillhub-keywords'),
+        triggerExamples: value('skillhub-triggers'),
+        permissions: value('skillhub-permissions'),
+      };
+    }
+
+    async function generateSkillManifest() {
+      try {
+        const res = await fetch(API+'/api/skillhub/manifest-draft', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(collectSkillHubForm()),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ('HTTP '+res.status));
+        skillHubManifestDraft = data.manifest;
+        applyManifestDraftToForm(data.manifest);
+        renderManifestDraft(data);
+        pulsePetState('success', '已生成 skill.json', 1600);
+      } catch (e) {
+        pulsePetState('error', '生成失败', 2400);
+        alert('生成失败：'+(e.message || String(e)));
+      }
+    }
+
+    function applyManifestDraftToForm(manifest) {
+      const set = (id, value) => { const el = document.getElementById(id); if (el) el.value = value || ''; };
+      set('skillhub-name', manifest.name);
+      set('skillhub-version', manifest.version);
+      set('skillhub-description', manifest.description);
+      set('skillhub-category', manifest.category);
+      set('skillhub-tags', (manifest.tags || []).join('、'));
+      set('skillhub-keywords', (manifest.keywords || []).join('、'));
+      set('skillhub-triggers', (manifest.triggerExamples || []).join('\n'));
+      set('skillhub-permissions', (manifest.permissions || []).join('、'));
+    }
+
+    function renderManifestDraft(data) {
+      const preview = document.getElementById('skillhub-manifest-preview');
+      if (preview) preview.textContent = JSON.stringify(data.manifest || {}, null, 2);
+      const suggestions = document.getElementById('skillhub-agent-suggestions');
+      if (suggestions) {
+        suggestions.innerHTML = (data.suggestions || []).map(item =>
+          '<div class="agent-suggestion"><strong>'+escapeHtml(item.title || '-')+' <span class="tag gray">'+escapeHtml(item.confidence || '-')+'</span></strong>'+
+          '<p>'+escapeHtml(item.detail || '')+'</p>'+
+          '<button class="btn" onclick="applyAgentSuggestion(\''+skillJsArg(item.field)+'\')">采用</button> '+
+          '<button class="btn" onclick="alert(\'可以直接编辑左侧字段后重新生成。\')">编辑</button> '+
+          '<button class="btn" onclick="this.closest(\'.agent-suggestion\').remove()">忽略</button></div>'
+        ).join('');
+      }
+    }
+
+    function applyAgentSuggestion(field) {
+      if (!skillHubManifestDraft) return;
+      applyManifestDraftToForm(skillHubManifestDraft);
+      const idMap = { keywords: 'skillhub-keywords', triggerExamples: 'skillhub-triggers', permissions: 'skillhub-permissions' };
+      const target = document.getElementById(idMap[field] || 'skillhub-name');
+      if (target) target.focus();
+    }
+
+    async function submitSkillForReview() {
+      if (!skillHubManifestDraft) {
+        await generateSkillManifest();
+      }
+      const payload = collectSkillHubForm();
+      payload.manifest = skillHubManifestDraft;
+      if (!confirm('提交审核？权限、隐私和能力描述需要由开发者负责确认。')) return;
+      try {
+        const res = await fetch(API+'/api/skillhub/submissions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ('HTTP '+res.status));
+        pulsePetState('success', '已提交审核', 1800);
+        await refreshDeveloperCenter();
+        switchDeveloperTab(data.status === 'changes_requested' ? 'review' : 'overview');
+      } catch (e) {
+        pulsePetState('error', '提交失败', 2400);
+        alert('提交失败：'+(e.message || String(e)));
+      }
+    }
+
+    async function approveSkillSubmission(id) {
+      if (!confirm('模拟人工审核通过并上架？真实云端应由审核员操作。')) return;
+      try {
+        const res = await fetch(API+'/api/skillhub/submissions/'+encodeURIComponent(id)+'/approve', { method:'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ('HTTP '+res.status));
+        pulsePetState('success', '已上架 Registry', 1800);
+        await refreshDeveloperCenter();
+        await searchSkillHub('', true);
+      } catch (e) {
+        pulsePetState('error', '审核失败', 2400);
+        alert('审核失败：'+(e.message || String(e)));
+      }
     }
 
     function renderReadiness(data) {
