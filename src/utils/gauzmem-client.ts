@@ -5,8 +5,6 @@ import {
 } from './gauzmem-managed-sidecar';
 import { resolveGauzMemProjectPath } from './gauzmem-paths';
 
-export const GAUZMEM_TRANSIENT_PREFIX = '[transient_gauzmem_recall]';
-
 export interface GauzMemRetrieveOptions {
   query: string;
   sessionId: string;
@@ -61,8 +59,8 @@ function isEnabled(env: NodeJS.ProcessEnv): boolean {
 }
 
 function parseTimeout(env: NodeJS.ProcessEnv): number {
-  const raw = Number(env.GAUZMEM_TIMEOUT_MS || 1500);
-  return Number.isFinite(raw) && raw > 0 ? raw : 1500;
+  const raw = Number(env.GAUZMEM_TIMEOUT_MS || 45000);
+  return Number.isFinite(raw) && raw > 0 ? raw : 45000;
 }
 
 function parseRootPaths(env: NodeJS.ProcessEnv): string[] {
@@ -182,5 +180,5 @@ export class GauzMemClient {
 
 export function formatGauzMemPrompt(result: GauzMemRetrieveResult): string | null {
   if (!result.promptBundle?.trim()) return null;
-  return `${GAUZMEM_TRANSIENT_PREFIX}\nrunId: ${result.runId}\n${result.promptBundle}`;
+  return result.promptBundle;
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import * as path from 'path';
 import { test } from 'node:test';
-import { GauzMemClient } from '../src/utils/gauzmem-client';
+import { formatGauzMemPrompt, GauzMemClient } from '../src/utils/gauzmem-client';
 import { shouldUseManagedGauzMem } from '../src/utils/gauzmem-managed-sidecar';
 import { resolveGauzMemProjectPath } from '../src/utils/gauzmem-paths';
 
@@ -29,4 +29,20 @@ test('GauzMem managed mode is explicit and keeps roots resolved', () => {
     resolveGauzMemProjectPath('logs/sessions'),
     '/tmp/gauzmem-fixture',
   ]);
+
+  const defaultTimeoutClient = new GauzMemClient({
+    env: { GAUZMEM_ENABLED: 'true' } as NodeJS.ProcessEnv,
+  });
+  assert.equal(defaultTimeoutClient.timeoutMs, 45000);
+});
+
+test('GauzMem prompt formatting keeps agent-facing memory natural', () => {
+  const prompt = formatGauzMemPrompt({
+    runId: 'gzr_debug_id',
+    promptBundle: '[gauzmem_recall]\n相关记忆线索：\n\n- 用户想把 sc-analysis 从 skill 移出。\n[/gauzmem_recall]',
+  });
+
+  assert.equal(prompt?.startsWith('[gauzmem_recall]'), true);
+  assert.equal(prompt?.includes('gzr_debug_id'), false);
+  assert.equal(prompt?.includes('[transient_gauzmem_recall]'), false);
 });

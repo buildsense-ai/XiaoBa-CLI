@@ -116,27 +116,51 @@ function buildPromptBundle(input = {}) {
   const graph = input.disclosedGraph || { nodes: [], edges: [] };
   const lines = [
     "[gauzmem_recall]",
-    `query: ${input.query}`,
-    "discipline: This is source-grounded retrieved memory. Use evidence only after checking source refs. Do not treat associations as facts.",
-    "",
-    "evidence:",
+    "相关记忆线索：",
   ];
   const byId = new Map(evidence.concat(graph.nodes || []).map((node) => [node.id, node]));
-  let index = 1;
-  for (const node of byId.values()) {
-    lines.push(`${index}. ${node.id}: ${node.text}`);
-    lines.push(`   source: ${formatSourceRef(node.sourceRef)}`);
-    index += 1;
-  }
-  if ((graph.edges || []).length > 0) {
+  const renderedNodeIds = new Set();
+  const edgeGroups = groupEdgesByFrom(graph.edges || [], byId);
+  for (const group of edgeGroups) {
     lines.push("");
-    lines.push("associations:");
-    for (const edge of graph.edges) {
-      lines.push(`- ${edge.from} -> ${edge.to}: ${edge.whyRelevant}`);
+    lines.push(`- ${cleanBundleLine(group.from.text)}`);
+    lines.push("  可能联想到：");
+    renderedNodeIds.add(group.from.id);
+    for (const item of group.items) {
+      lines.push(`  - ${cleanBundleLine(item.to.text)}：${cleanBundleLine(item.edge.whyRelevant)}`);
+      renderedNodeIds.add(item.to.id);
     }
+  }
+  const standaloneNodes = Array.from(byId.values()).filter((node) => !renderedNodeIds.has(node.id));
+  if (standaloneNodes.length > 0) {
+    lines.push("");
+    lines.push(edgeGroups.length > 0 ? "其他线索：" : "相关线索：");
+    for (const node of standaloneNodes) lines.push(`- ${cleanBundleLine(node.text)}`);
+  }
+  if (edgeGroups.length === 0 && standaloneNodes.length === 0) {
+    lines.push("");
+    lines.push("- 暂时没有找到明确相关记忆。");
   }
   lines.push("[/gauzmem_recall]");
   return lines.join("\n");
+}
+
+function groupEdgesByFrom(edges, nodesById) {
+  const groups = new Map();
+  for (const edge of edges || []) {
+    const from = nodesById.get(edge.from);
+    const to = nodesById.get(edge.to);
+    if (!from || !to || !edge.whyRelevant) continue;
+    if (!groups.has(from.id)) groups.set(from.id, { from, items: [] });
+    const group = groups.get(from.id);
+    if (group.items.some((item) => item.to.id === to.id && item.edge.whyRelevant === edge.whyRelevant)) continue;
+    group.items.push({ edge, to });
+  }
+  return Array.from(groups.values()).filter((group) => group.items.length > 0);
+}
+
+function cleanBundleLine(value) {
+  return String(value || "").replace(/\s+/g, " ").trim().replace(/^[-*]\s+/, "");
 }
 
 function formatSourceRef(sourceRef) {

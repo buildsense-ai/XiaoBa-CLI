@@ -55,163 +55,400 @@ async function retrieve(input = {}) {
   });
   const energy = new EnergyMeter(budget.energy);
 
-  const searchPlan = await createReasonedSearchPlan({ query, input, budget, reasoner });
+  const rootSearchPlan = await createReasonedSearchPlan({ query, input, budget, reasoner });
   const graphBefore = loadGraphWithState(storeRoot);
   const tick = currentTick(graphBefore);
   const graphOptions = { budget, thresholds, tick };
-  energy.consume("graph_scan", 1);
-  const graphMatch = scanGraph(searchPlan, graphBefore, graphOptions);
-  const graphSeedNodes = idsToNodes(graphMatch.seedNodeIds, graphBefore);
-  let graphDisclosure = { nodes: [], edges: [] };
-  let graphSelection = emptySelection();
-  let graphSelectedNodes = [];
+  const sourceRootPaths = sourceRootsForInput(input);
+  const hasSourceRoots = sourceRootPaths.length > 0;
+  const traversalVisited = { nodeIds: new Set(), edgeIds: new Set() };
+  const graphQueue = [];
+  const queuedGraphNodeIds = new Set();
+  const constructQueue = [];
+  const queuedConstructKeys = new Set();
+  const graphDiscloseCountByNode = new Map();
+  const constructAttemptByFrontier = new Map();
+  const selectedNodeIdsSet = new Set();
+  const selectedEdgeIdsSet = new Set();
+  const rejectedNodeIdsSet = new Set();
+  const rejectedEdgeIdsSet = new Set();
+  const disclosedNodeById = new Map();
+  const disclosedEdgeById = new Map();
+  const createdNodeById = new Map();
+  const createdEdgeById = new Map();
+  const sourceEvidenceById = new Map();
+  const constructIncomingByTarget = new Map();
+  const graphMatch = {
+    seedNodeIds: [],
+    seedEdgeIds: [],
+    nodeHits: [],
+    edgeHits: [],
+    trace: [],
+  };
+  const sourceTrace = [];
+  let docs = [];
+  let docsLoaded = false;
+  let hits = [];
+  let windows = [];
+  let constructEdges = [];
+  let frontierSteps = 0;
+  let graphFrontierSteps = 0;
+  let sourceConstructCount = 0;
+  let nodeConstructCount = 0;
+  let rootConstructCount = 0;
+  let graphDisclosureCount = 0;
 
-  if (graphSeedNodes.length > 0 && energy.consume("graph_disclose", 1)) {
-    graphDisclosure = discloseGraph(graphMatch.seedNodeIds, graphBefore, {
+  function enqueueGraphNode(node, origin, options = {}) {
+    if (!node?.id) return;
+    if (!options.force && (graphDiscloseCountByNode.get(node.id) || 0) >= budget.maxGraphDiscloseAttemptsPerNode) return;
+    if (queuedGraphNodeIds.has(node.id)) return;
+    if (graphQueue.length >= budget.maxFrontierNodes) return;
+    queuedGraphNodeIds.add(node.id);
+    graphQueue.push({ type: "node", node, origin });
+  }
+
+  function enqueueConstructFrontier(frontier, reason) {
+    if (!frontier?.node) return;
+    if (frontier.type === "root" && rootConstructCount >= budget.maxRootConstructAttempts) return;
+    const key = frontier.type === "root" ? "root_query" : frontier.node.id;
+    if ((constructAttemptByFrontier.get(key) || 0) >= budget.maxConstructAttemptsPerNode) return;
+    if (queuedConstructKeys.has(key)) return;
+    if (constructQueue.length >= budget.maxFrontierNodes) return;
+    queuedConstructKeys.add(key);
+    constructQueue.push({ ...frontier, reason });
+  }
+
+  function rememberGraphMatch(match) {
+    for (const id of match.seedNodeIds || []) if (!graphMatch.seedNodeIds.includes(id)) graphMatch.seedNodeIds.push(id);
+    for (const id of match.seedEdgeIds || []) if (!graphMatch.seedEdgeIds.includes(id)) graphMatch.seedEdgeIds.push(id);
+    graphMatch.nodeHits.push(...(match.nodeHits || []));
+    graphMatch.edgeHits.push(...(match.edgeHits || []));
+    graphMatch.trace.push(...(match.trace || []));
+  }
+
+  function rememberDisclosure(disclosure) {
+    for (const node of disclosure.nodes || []) disclosedNodeById.set(node.id, node);
+    for (const edge of disclosure.edges || []) disclosedEdgeById.set(edge.id, edge);
+  }
+
+  function rememberSelection(selection, graph, options = {}) {
+    const previousNodeIds = new Set(selectedNodeIdsSet);
+    const previousEdgeIds = new Set(selectedEdgeIdsSet);
+    for (const id of selection.selectedNodeIds || []) selectedNodeIdsSet.add(id);
+    for (const id of selection.selectedEdgeIds || []) selectedEdgeIdsSet.add(id);
+    for (const id of selection.rejectedNodeIds || []) rejectedNodeIdsSet.add(id);
+    for (const id of selection.rejectedEdgeIds || []) rejectedEdgeIdsSet.add(id);
+    const selectedEdges = idsToEdges(selection.selectedEdgeIds || [], graph);
+    let addedRoute = false;
+    for (const id of selection.selectedNodeIds || []) {
+      if (id !== options.excludeNodeId && !previousNodeIds.has(id)) addedRoute = true;
+    }
+    for (const id of selection.selectedEdgeIds || []) {
+      if (!previousEdgeIds.has(id)) addedRoute = true;
+    }
+    if (options.enqueue !== false) {
+      for (const node of idsToNodes(selection.selectedNodeIds || [], graph)) {
+        if (node.id !== options.excludeNodeId) enqueueGraphNode(node, "selected");
+      }
+      for (const edge of selectedEdges) {
+        for (const node of idsToNodes([edge.from, edge.to], graph)) {
+          if (node.id !== options.excludeNodeId) enqueueGraphNode(node, "selected_edge");
+        }
+      }
+    }
+    return { addedRoute };
+  }
+
+  function currentGraphSufficient() {
+    const graph = loadGraphWithState(storeRoot);
+    const selectedNodeIds = Array.from(selectedNodeIdsSet);
+    const selectedEdgeIds = Array.from(selectedEdgeIdsSet);
+    return isGraphSufficient({
+      searchPlan: rootSearchPlan,
+      selectedNodes: idsToNodes(selectedNodeIds, graph),
+      selectedEdges: idsToEdges(selectedEdgeIds, graph),
+      selectedNodeCount: selectedNodeIds.length,
+      selectedEdgeCount: selectedEdgeIds.length,
+      budget,
+    });
+  }
+
+  let initialSeedNodes = [];
+  if (energy.consume("graph_scan", 1)) {
+    const initialGraph = loadGraphWithState(storeRoot);
+    const initialGraphMatch = scanGraph(rootSearchPlan, initialGraph, graphOptions);
+    rememberGraphMatch(initialGraphMatch);
+    initialSeedNodes = idsToNodes(initialGraphMatch.seedNodeIds, initialGraph);
+    if (initialGraphMatch.seedNodeIds.length > 0 && energy.consume("graph_disclose", 1)) {
+      const initialDisclosure = discloseGraph(initialGraphMatch.seedNodeIds, initialGraph, {
+        ...graphOptions,
+        maxGraphHops: budget.maxGraphHops,
+        maxGraphEdges: budget.maxGraphEdges,
+        visited: traversalVisited,
+      });
+      graphDisclosureCount += 1;
+      rememberDisclosure(initialDisclosure);
+      if (energy.consume("root_relevance_graph", 4)) {
+        const initialSelection = await reasoner.selectRootRelevant({
+          query,
+          nodes: initialDisclosure.nodes,
+          edges: initialDisclosure.edges,
+          minSelected: 0,
+          allowEmpty: true,
+          allowReject: true,
+        });
+        rememberSelection(initialSelection, initialGraph);
+      }
+    }
+  }
+
+  const initialGraphAfterGate = loadGraphWithState(storeRoot);
+  const initialGraphWasUseful = selectedNodeIdsSet.size > 0;
+  const initialGraphWasSufficient = isGraphSufficient({
+    searchPlan: rootSearchPlan,
+    selectedNodes: idsToNodes(Array.from(selectedNodeIdsSet), initialGraphAfterGate),
+    selectedEdges: idsToEdges(Array.from(selectedEdgeIdsSet), initialGraphAfterGate),
+    selectedNodeCount: selectedNodeIdsSet.size,
+    selectedEdgeCount: selectedEdgeIdsSet.size,
+    budget,
+  });
+  if (!initialGraphWasUseful && initialSeedNodes.length > 0) {
+    for (const node of initialSeedNodes) {
+      enqueueConstructFrontier({ type: "node", node, origin: "graph_seed" }, "graph_seed_not_selected");
+    }
+  }
+
+  async function processGraphFrontier(frontier) {
+    if (frontier.type !== "node") return;
+    const nodeId = frontier.node.id;
+    const discloseCount = graphDiscloseCountByNode.get(nodeId) || 0;
+    if (discloseCount >= budget.maxGraphDiscloseAttemptsPerNode) return;
+    graphDiscloseCountByNode.set(nodeId, discloseCount + 1);
+    graphFrontierSteps += 1;
+    const graphForWalk = loadGraphWithState(storeRoot);
+    if (!energy.consume("graph_disclose", 1)) return;
+    const disclosure = discloseGraph([nodeId], graphForWalk, {
       ...graphOptions,
       maxGraphHops: budget.maxGraphHops,
       maxGraphEdges: budget.maxGraphEdges,
-      visited: { nodeIds: new Set(), edgeIds: new Set() },
+      visited: traversalVisited,
     });
+    graphDisclosureCount += 1;
+    rememberDisclosure(disclosure);
+
+    if (disclosure.edges.length === 0) {
+      enqueueConstructFrontier(frontier, "graph_no_unvisited_edge");
+      return;
+    }
+
     if (energy.consume("root_relevance_graph", 4)) {
-      graphSelection = await reasoner.selectRootRelevant({
+      const selection = await reasoner.selectRootRelevant({
         query,
-        nodes: graphDisclosure.nodes,
-        edges: graphDisclosure.edges,
+        nodes: disclosure.nodes,
+        edges: disclosure.edges,
         minSelected: 0,
         allowEmpty: true,
         allowReject: true,
       });
-      graphSelectedNodes = idsToNodes(graphSelection.selectedNodeIds, graphBefore);
+      const selectionResult = rememberSelection(selection, graphForWalk, { excludeNodeId: nodeId });
+      if (!selectionResult.addedRoute) {
+        enqueueConstructFrontier(frontier, "graph_no_selected_next");
+      }
     }
   }
 
-  const graphWasUseful = graphSelectedNodes.length > 0;
-  const graphWasSufficient = isGraphSufficient({
-    searchPlan,
-    selectedNodes: graphSelectedNodes,
-    selectedEdges: idsToEdges(graphSelection.selectedEdgeIds, graphBefore),
-    selectedNodeCount: graphSelectedNodes.length,
-    selectedEdgeCount: graphSelection.selectedEdgeIds.length,
-    budget,
-  });
-  const sourceRootPaths = sourceRootsForInput(input);
-  const hasSourceRoots = sourceRootPaths.length > 0;
-  const shouldConstruct = budget.forceConstruct
-    || !graphWasUseful
-    || (hasSourceRoots && !graphWasSufficient);
-  let docs = [];
-  let hits = [];
-  let windows = [];
-  let sourceEvidence = [];
-  let sourceSelection = emptySelection();
-  let sourceSelectedNodes = [];
-  let constructEdges = [];
-  let createdNodes = [];
-  let createdEdges = [];
+  async function processConstructFrontier(frontier) {
+    if (!hasSourceRoots) return;
+    const frontierKey = frontier.type === "root" ? "root_query" : frontier.node.id;
+    const attemptCount = constructAttemptByFrontier.get(frontierKey) || 0;
+    if (attemptCount >= budget.maxConstructAttemptsPerNode) return;
+    if (frontier.type === "root" && rootConstructCount >= budget.maxRootConstructAttempts) return;
+    constructAttemptByFrontier.set(frontierKey, attemptCount + 1);
+    sourceConstructCount += 1;
+    if (frontier.type === "root") rootConstructCount += 1;
+    else nodeConstructCount += 1;
 
-  if (shouldConstruct && energy.consume("source_grep", 3)) {
-    docs = loadSearchDocs({
-      rootPaths: sourceRootPaths,
-      storeRoot,
-    });
-    hits = scanDocs(docs, searchPlan, { budget });
-    windows = buildSourceWindowsFromHits(hits, {
+    if (!energy.consume("source_grep", 3)) return;
+    if (!docsLoaded) {
+      docs = loadSearchDocs({
+        rootPaths: sourceRootPaths,
+        storeRoot,
+      });
+      docsLoaded = true;
+    }
+    const parent = frontier.node;
+    const parentSearchPlan = frontier.type === "root"
+      ? rootSearchPlan
+      : await createReasonedSearchPlan({ query, input, budget, reasoner, parent });
+    const stepHits = scanDocs(docs, parentSearchPlan, { budget });
+    hits.push(...stepHits);
+    const stepWindows = buildSourceWindowsFromHits(stepHits, {
       budget,
       maxEvidence: budget.maxWindows,
       maxEvidenceChars: budget.maxEvidenceChars,
     });
+    windows.push(...stepWindows);
 
-    if (windows.length > 0 && energy.consume("llm_extract_evidence", 6)) {
+    let stepEvidence = [];
+    if (stepWindows.length > 0 && energy.consume("llm_extract_evidence", 6)) {
+      const extractionQuery = frontier.type === "root" ? query : (parent.text || query);
       const extracted = await reasoner.extractEvidence({
-        query,
-        parent: graphSelectedNodes[0] || { id: "root_query", query },
-        windows,
+        query: extractionQuery,
+        rootQuery: query,
+        parent,
+        windows: stepWindows,
         maxEvidence: budget.maxEvidence,
       });
-      sourceEvidence = evidenceNodesFromWindowEvidence(extracted, windows, {
+      stepEvidence = evidenceNodesFromWindowEvidence(extracted, stepWindows, {
         timestamp,
         budget,
         maxEvidence: budget.maxEvidence,
         runId,
       });
     }
-
-    if (sourceEvidence.length === 0) {
-      sourceEvidence = extractEvidenceFromHits(hits, {
+    if (stepEvidence.length === 0) {
+      stepEvidence = extractEvidenceFromHits(stepHits, {
         timestamp,
         budget,
         maxEvidence: budget.maxEvidence,
         runId,
       });
     }
+    stepEvidence = stepEvidence.filter((node) => node.id !== parent.id);
+    for (const node of stepEvidence) sourceEvidenceById.set(node.id, node);
+    sourceTrace.push(...searchTrace(parentSearchPlan, stepHits, stepEvidence).map((entry) => ({
+      ...entry,
+      termId: `${frontierKey}:${entry.termId}`,
+      phase: "source_construct",
+      parentNodeId: frontier.type === "node" ? frontier.node.id : undefined,
+      parent: frontier.type,
+      constructReason: frontier.reason,
+    })));
 
-    createdNodes = upsertNodes(storeRoot, sourceEvidence);
-    appendInitialNodeStates(storeRoot, graphBefore, sourceEvidence, tick);
+    if (stepEvidence.length === 0) return;
+    const graphBeforeNodeWrites = loadGraphWithState(storeRoot);
+    for (const node of upsertNodes(storeRoot, stepEvidence)) createdNodeById.set(node.id, node);
+    appendInitialNodeStates(storeRoot, graphBeforeNodeWrites, stepEvidence, tick);
 
-    if (sourceEvidence.length > 0 && energy.consume("root_relevance_source", 4)) {
-      sourceSelection = await reasoner.selectRootRelevant({
-        query,
-        nodes: sourceEvidence,
-        edges: [],
-        minSelected: 1,
-        allowReject: false,
-      });
-      sourceSelectedNodes = idsToNodes(sourceSelection.selectedNodeIds, { nodes: sourceEvidence });
+    if (frontier.type === "root") {
+      if (energy.consume("root_relevance_graph", 4)) {
+        const selection = await reasoner.selectRootRelevant({
+          query,
+          nodes: stepEvidence,
+          edges: [],
+          minSelected: 0,
+          allowEmpty: true,
+          allowReject: true,
+        });
+        rememberSelection(selection, { nodes: stepEvidence, edges: [] });
+      }
+      return;
     }
 
-    if (graphSelectedNodes.length > 0 && sourceSelectedNodes.length > 0 && energy.consume("write_local_edges", 6)) {
-      constructEdges = await createConstructEdges({
+    if (energy.consume("write_local_edges", 6)) {
+      const graphForWalk = loadGraphWithState(storeRoot);
+      const candidateEdges = await createConstructEdges({
         query,
         runId,
         timestamp,
         reasoner,
-        parents: graphSelectedNodes,
-        sourceNodes: sourceSelectedNodes,
-        existingEdges: graphBefore.edges,
-        maxEdges: budget.maxRunEdges,
-        maxParents: budget.maxConstructParents,
+        parents: [frontier.node],
+        sourceNodes: stepEvidence,
+        existingEdges: graphForWalk.edges,
+        maxEdges: Math.max(0, budget.maxRunEdges - constructEdges.length),
+        maxParents: 1,
         maxIncomingEdgesPerRun: budget.maxIncomingConstructEdgesPerRun,
       });
-      createdEdges = upsertEdges(storeRoot, constructEdges);
-      const graphAfterNodes = loadGraphWithState(storeRoot);
-      appendInitialEdgeStates(storeRoot, graphAfterNodes, createdEdges, tick);
+      const stepConstructEdges = [];
+      for (const edge of candidateEdges) {
+        const incomingCount = constructIncomingByTarget.get(edge.to) || 0;
+        if (incomingCount >= budget.maxIncomingConstructEdgesPerRun) continue;
+        if (constructEdges.length + stepConstructEdges.length >= budget.maxRunEdges) break;
+        stepConstructEdges.push(edge);
+        constructIncomingByTarget.set(edge.to, incomingCount + 1);
+      }
+      constructEdges.push(...stepConstructEdges);
+      const stepCreatedEdges = upsertEdges(storeRoot, stepConstructEdges);
+      for (const edge of stepCreatedEdges) createdEdgeById.set(edge.id, edge);
+      const graphAfterEdges = loadGraphWithState(storeRoot);
+      appendInitialEdgeStates(storeRoot, graphAfterEdges, stepCreatedEdges, tick);
+      if (stepCreatedEdges.length > 0) {
+        enqueueGraphNode(frontier.node, "construct_refresh", { force: true });
+      }
     }
   }
 
-  const selectedNodeIds = uniqueIds([
-    ...graphSelection.selectedNodeIds,
-    ...sourceSelection.selectedNodeIds,
-  ]);
-  const selectedEdgeIds = uniqueIds([
-    ...graphSelection.selectedEdgeIds,
-  ]);
+  while (frontierSteps < budget.maxFrontierSteps && energy.remaining > 0) {
+    if (graphQueue.length > 0) {
+      const frontier = graphQueue.shift();
+      queuedGraphNodeIds.delete(frontier.node.id);
+      frontierSteps += 1;
+      await processGraphFrontier(frontier);
+      continue;
+    }
+
+    if (!hasSourceRoots) break;
+    if (!budget.forceConstruct && currentGraphSufficient()) break;
+
+    if (constructQueue.length > 0) {
+      const frontier = constructQueue.shift();
+      const key = frontier.type === "root" ? "root_query" : frontier.node.id;
+      queuedConstructKeys.delete(key);
+      frontierSteps += 1;
+      await processConstructFrontier(frontier);
+      continue;
+    }
+
+    if (rootConstructCount < budget.maxRootConstructAttempts) {
+      frontierSteps += 1;
+      await processConstructFrontier({
+        type: "root",
+        node: { id: "root_query", query },
+        origin: "root",
+        reason: graphMatch.seedNodeIds.length > 0 ? "graph_exhausted" : "cold_start",
+      });
+      continue;
+    }
+
+    break;
+  }
+
+  const selectedNodeIds = uniqueIds(Array.from(selectedNodeIdsSet));
+  const selectedEdgeIds = uniqueIds(Array.from(selectedEdgeIdsSet));
+  const createdNodes = Array.from(createdNodeById.values());
+  const createdEdges = Array.from(createdEdgeById.values());
   const returnedConstructEdges = createdEdges;
   const createdEdgeIds = createdEdges.map((edge) => edge.id);
-  const returnedEdgeIds = uniqueIds([
-    ...selectedEdgeIds,
-    ...createdEdgeIds,
-  ]);
-  const rejectedNodeIds = uniqueIds([
-    ...graphSelection.rejectedNodeIds,
-    ...sourceSelection.rejectedNodeIds,
-  ]);
-  const rejectedEdgeIds = uniqueIds(graphSelection.rejectedEdgeIds);
+  const selectedCreatedEdgeIds = createdEdgeIds.filter((edgeId) => selectedEdgeIds.includes(edgeId));
+  const returnedEdgeIds = uniqueIds(selectedEdgeIds);
+  const rejectedNodeIds = uniqueIds(Array.from(rejectedNodeIdsSet));
+  const rejectedEdgeIds = uniqueIds(Array.from(rejectedEdgeIdsSet));
 
   const graphAfterWrites = loadGraphWithState(storeRoot);
   appendStateUpdates(storeRoot, graphAfterWrites, {
     tick,
     selectedNodeIds,
-    selectedEdgeIds: graphSelection.selectedEdgeIds,
+    selectedEdgeIds,
     rejectedNodeIds,
     rejectedEdgeIds,
   });
 
   const graphFinal = loadGraphWithState(storeRoot);
   const evidence = idsToNodes(selectedNodeIds, graphFinal);
+  const finalGraphWasSufficient = isGraphSufficient({
+    searchPlan: rootSearchPlan,
+    selectedNodes: evidence,
+    selectedEdges: idsToEdges(selectedEdgeIds, graphFinal),
+    selectedNodeCount: evidence.length,
+    selectedEdgeCount: selectedEdgeIds.length,
+    budget,
+  });
   const promptGraph = filterGraphForPrompt({
     graph: graphFinal,
-    disclosedGraph: graphDisclosure,
+    disclosedGraph: {
+      nodes: Array.from(disclosedNodeById.values()),
+      edges: Array.from(disclosedEdgeById.values()),
+    },
     selectedNodeIds,
     selectedEdgeIds,
     constructEdges: returnedConstructEdges,
@@ -230,19 +467,18 @@ async function retrieve(input = {}) {
     evidenceIds: evidence.map((node) => node.id),
     edgeIds: promptGraph.edges.map((edge) => edge.id),
     selectedEdgeIds,
-    createdEdgeIds,
+    createdEdgeIds: selectedCreatedEdgeIds,
   };
-  const sourceTrace = shouldConstruct ? searchTrace(searchPlan, hits, sourceEvidence) : [];
   const trace = mergeTrace(graphMatch.trace, sourceTrace);
-  const retrieveMode = shouldConstruct
-    ? (graphSeedNodes.length > 0 ? "graph_then_construct" : "source_construct")
+  const retrieveMode = sourceConstructCount > 0
+    ? (graphMatch.seedNodeIds.length > 0 ? "graph_then_construct" : "source_construct")
     : "graph_first";
   const run = {
     runId,
     query,
     timestamp,
     callType: input.callType || "passive",
-    searchPlan,
+    searchPlan: rootSearchPlan,
     searchTrace: trace,
     evidenceIds: evidence.map((node) => node.id),
     selectedNodeIds,
@@ -262,14 +498,23 @@ async function retrieve(input = {}) {
       sourceHitCount: hits.length,
       sourceWindowCount: windows.length,
       evidenceCount: evidence.length,
-      sourceEvidenceCount: sourceEvidence.length,
+      sourceEvidenceCount: sourceEvidenceById.size,
       graphSeedCount: graphMatch.seedNodeIds.length,
       graphEdgeSeedCount: graphMatch.seedEdgeIds.length,
       constructedNodeCount: createdNodes.length,
       constructedEdgeCount: createdEdges.length,
       constructCandidateEdgeCount: constructEdges.length,
       edgeCount: returnedEdgeIds.length,
-      graphWasSufficient,
+      graphWasSufficient: initialGraphWasSufficient,
+      finalGraphWasSufficient,
+      retrieveAlgorithm: "frontier_loop_v0.2",
+      frontierSteps,
+      graphFrontierSteps,
+      sourceConstructCount,
+      nodeConstructCount,
+      rootConstructCount,
+      graphDisclosureCount,
+      constructAttemptCount: Array.from(constructAttemptByFrontier.values()).reduce((sum, count) => sum + count, 0),
       promptCharCount: promptBundle.length,
       promptTruncated: promptBundle.length < rawPromptBundle.length,
       energyInitial: budget.energy,
@@ -290,6 +535,7 @@ async function retrieve(input = {}) {
     selectedNodeIds,
     selectedEdgeIds,
     createdEdgeIds,
+    returnedEdgeIds,
     rejectedNodeIds,
     rejectedEdgeIds,
   }));
@@ -297,7 +543,7 @@ async function retrieve(input = {}) {
   return {
     runId,
     query,
-    searchPlan,
+    searchPlan: rootSearchPlan,
     searchTrace: trace,
     retrieveMode,
     evidence,
@@ -424,7 +670,7 @@ function recordTurnMetadata(input = {}) {
 }
 
 function resolveBudget(raw = {}, callType) {
-  const defaultEnergy = callType === "tool_search" ? 48 : 32;
+  const defaultEnergy = callType === "tool_search" ? 96 : 64;
   return {
     maxTerms: raw.maxTerms || 12,
     maxEvidence: raw.maxEvidence || 12,
@@ -438,6 +684,11 @@ function resolveBudget(raw = {}, callType) {
     minGraphEvidence: raw.minGraphEvidence || 2,
     maxConstructParents: raw.maxConstructParents || 1,
     maxIncomingConstructEdgesPerRun: raw.maxIncomingConstructEdgesPerRun || 1,
+    maxFrontierSteps: raw.maxFrontierSteps ?? (callType === "tool_search" ? 12 : 8),
+    maxFrontierNodes: raw.maxFrontierNodes ?? (callType === "tool_search" ? 16 : 10),
+    maxConstructAttemptsPerNode: raw.maxConstructAttemptsPerNode ?? 2,
+    maxGraphDiscloseAttemptsPerNode: raw.maxGraphDiscloseAttemptsPerNode ?? 3,
+    maxRootConstructAttempts: raw.maxRootConstructAttempts ?? 1,
     minGraphTermCoverage: raw.minGraphTermCoverage ?? 0.8,
     maxPromptChars: raw.maxPromptChars || 12000,
     energy: raw.energy ?? defaultEnergy,
@@ -464,6 +715,7 @@ function replayRunIfExists(input) {
     disclosedGraph,
   });
   const promptBundle = limitPromptBundle(rawPromptBundle, input.maxPromptChars);
+  const selectedCreatedEdgeIds = (run.createdEdgeIds || []).filter((edgeId) => (run.selectedEdgeIds || []).includes(edgeId));
   return {
     runId: run.runId,
     query: run.query,
@@ -480,7 +732,7 @@ function replayRunIfExists(input) {
       evidenceIds: evidence.map((node) => node.id),
       edgeIds: disclosedGraph.edges.map((edge) => edge.id),
       selectedEdgeIds: run.selectedEdgeIds || [],
-      createdEdgeIds: run.createdEdgeIds || [],
+      createdEdgeIds: selectedCreatedEdgeIds,
     },
     promptBundle,
     selectedNodeIds: run.selectedNodeIds || [],
@@ -528,21 +780,27 @@ function sourceRootsForInput(input) {
   return [];
 }
 
-async function createReasonedSearchPlan({ query, input, budget, reasoner }) {
+async function createReasonedSearchPlan({ query, input, budget, reasoner, parent }) {
+  const parentText = parent?.text || "";
+  const isLocalParent = Boolean(parentText && parent?.id !== "root_query");
+  const queryText = isLocalParent ? parentText : query;
+  const explicitTerms = isLocalParent ? [] : (input.searchTerms || []);
   const basePlan = createSearchPlan({
-    query,
-    searchTerms: input.searchTerms,
+    query: queryText,
+    searchTerms: explicitTerms,
     maxTerms: budget.maxTerms,
     budget,
   });
   const baseTerms = basePlan.termGroups.map((group) => group.term);
   const reasonedTerms = await reasoner.generateSearchTerms({
-    query,
-    explicitTerms: input.searchTerms || [],
+    query: queryText,
+    rootQuery: query,
+    parent,
+    explicitTerms,
     maxTerms: budget.maxTerms,
   });
   const searchPlan = createSearchPlan({
-    query,
+    query: queryText,
     searchTerms: uniqueTerms([...reasonedTerms, ...baseTerms], budget.maxTerms),
     maxTerms: budget.maxTerms,
     budget,
@@ -653,15 +911,7 @@ function appendStateUpdates(storeRoot, graph, input) {
 function filterGraphForPrompt(input) {
   const selectedNodeSet = new Set(input.selectedNodeIds);
   const selectedEdgeSet = new Set(input.selectedEdgeIds);
-  for (const edge of input.constructEdges || []) {
-    selectedEdgeSet.add(edge.id);
-    selectedNodeSet.add(edge.from);
-    selectedNodeSet.add(edge.to);
-  }
-  const disclosedEdges = [
-    ...(input.disclosedGraph.edges || []),
-    ...(input.constructEdges || []),
-  ];
+  const disclosedEdges = input.disclosedGraph.edges || [];
   const edgeIds = new Set();
   const edges = [];
   for (const edge of disclosedEdges) {
@@ -704,7 +954,7 @@ function buildEvents(input) {
   for (const edgeId of input.selectedEdgeIds) {
     events.push(event(input.run, input.timestamp, "edge", edgeId, "selected"));
   }
-  for (const edgeId of input.createdEdgeIds || []) {
+  for (const edgeId of input.returnedEdgeIds || []) {
     events.push(event(input.run, input.timestamp, "edge", edgeId, "returned"));
   }
   for (const nodeId of input.rejectedNodeIds) {
@@ -742,7 +992,7 @@ function idsToEdges(ids, graph) {
 }
 
 function mergeTrace(graphTrace, sourceTrace) {
-  return (graphTrace || []).map((entry) => {
+  const merged = (graphTrace || []).map((entry) => {
     const source = (sourceTrace || []).find((item) => item.termId === entry.termId);
     return {
       ...entry,
@@ -750,6 +1000,18 @@ function mergeTrace(graphTrace, sourceTrace) {
       sourceEvidenceCount: source?.evidenceCount || 0,
     };
   });
+  const graphTermIds = new Set(merged.map((entry) => entry.termId));
+  for (const entry of sourceTrace || []) {
+    if (graphTermIds.has(entry.termId)) continue;
+    merged.push({
+      ...entry,
+      graphNodeHits: entry.graphNodeHits || 0,
+      graphEdgeHits: entry.graphEdgeHits || 0,
+      sourceHitCount: entry.hitCount || entry.sourceHitCount || 0,
+      sourceEvidenceCount: entry.evidenceCount || entry.sourceEvidenceCount || 0,
+    });
+  }
+  return merged;
 }
 
 function uniqueTerms(items, limit) {
