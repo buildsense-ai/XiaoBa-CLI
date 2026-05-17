@@ -8,14 +8,19 @@ const indexHtml = readFileSync(join(process.cwd(), 'dashboard/index.html'), 'utf
 
 test('GauzMem dashboard HTML exposes replay, graph, and metabolism views', () => {
   assert.match(html, /GauzMem Dashboard/);
-  assert.match(html, /Session Replay/);
+  assert.match(html, /Recall Replay/);
   assert.match(html, /Persistent Graph/);
   assert.match(html, /Metabolism Timeline/);
+  assert.match(html, /Bundle/);
+  assert.match(html, /Path/);
+  assert.match(html, /Construct/);
+  assert.match(html, /Weights/);
   assert.match(html, /\/api\/gauzmem\/dashboard/);
   assert.match(html, /id="graph-svg"/);
   assert.match(html, /id="timeline"/);
   assert.match(html, /id="metabolism-bars"/);
-  assert.match(html, /class="run-stats"/);
+  assert.match(html, /class="run-metrics"/);
+  assert.match(html, /function renderBundle/);
   assert.match(html, /function renderTraceRow/);
 });
 

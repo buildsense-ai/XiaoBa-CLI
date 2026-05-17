@@ -94,7 +94,8 @@ export function buildGauzMemDashboardView(options: GauzMemDashboardOptions = {})
     return b.effectiveWeight - a.effectiveWeight
       || String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
   });
-  const runs = snapshot.runs.map(run => toRunView(run, nodesById, edgesById));
+  const runEventsById = groupItemsByField(snapshot.events, 'runId');
+  const runs = snapshot.runs.map((run, index) => toRunView(run, nodesById, edgesById, runEventsById.get(String(run.runId || '')) || [], index + 1));
   const sessions = buildSessionReplay({
     turnMetadata: snapshot.turnMetadata,
     runs,
@@ -241,6 +242,24 @@ function groupEvents(events: JsonRecord[], targetType: string): Map<string, Json
   return out;
 }
 
+function groupItemsByField(items: JsonRecord[], field: string): Map<string, JsonRecord[]> {
+  const out = new Map<string, JsonRecord[]>();
+  for (const item of items) {
+    const id = String(item?.[field] || '');
+    if (!id) continue;
+    const group = out.get(id) || [];
+    group.push(item);
+    out.set(id, group);
+  }
+  return out;
+}
+
+function eventTargetIds(events: JsonRecord[], targetType: string, eventType: string): string[] {
+  return uniqueStrings(events
+    .filter(event => String(event.targetType || '') === targetType && String(event.eventType || '') === eventType)
+    .map(event => event.targetId));
+}
+
 function buildDegreeByNode(edges: JsonRecord[]): Map<string, number> {
   const out = new Map<string, number>();
   for (const edge of edges) {
@@ -327,39 +346,178 @@ function toEdgeView(input: {
   };
 }
 
-function toRunView(run: JsonRecord, nodesById: Map<string, JsonRecord>, edgesById: Map<string, JsonRecord>): JsonRecord {
+function toRunView(run: JsonRecord, nodesById: Map<string, JsonRecord>, edgesById: Map<string, JsonRecord>, events: JsonRecord[] = [], tick?: number): JsonRecord {
+  const createdNodeIds = eventTargetIds(events, 'node', 'created');
+  const injectedNodeIds = eventTargetIds(events, 'node', 'injected');
+  const injectedEdgeIds = eventTargetIds(events, 'edge', 'injected');
+  const rejectedNodeIds = uniqueStrings(run.rejectedNodeIds || eventTargetIds(events, 'node', 'root_relevance_rejected'));
+  const rejectedEdgeIds = uniqueStrings(run.rejectedEdgeIds || eventTargetIds(events, 'edge', 'root_relevance_rejected'));
+  const evidenceIds = uniqueStrings(run.evidenceIds || []);
+  const selectedNodeIds = uniqueStrings(run.selectedNodeIds || []);
+  const selectedEdgeIds = uniqueStrings(run.selectedEdgeIds || []);
+  const createdEdgeIds = uniqueStrings(run.createdEdgeIds || []);
+  const disclosedNodeIds = uniqueStrings(run.disclosedNodeIds || []);
+  const disclosedEdgeIds = uniqueStrings(run.disclosedEdgeIds || []);
+  const returnedEdgeIds = uniqueStrings(run.returnedEdgeIds || []);
+  const bundleNodeIds = uniqueStrings(evidenceIds.length ? evidenceIds : (injectedNodeIds.length ? injectedNodeIds : selectedNodeIds));
+  const bundleEdgeIds = uniqueStrings(
+    injectedEdgeIds.length
+      ? injectedEdgeIds
+      : (disclosedEdgeIds.length ? disclosedEdgeIds : (returnedEdgeIds.length ? returnedEdgeIds : selectedEdgeIds)),
+  );
   const nodeIds = uniqueStrings([
-    ...(run.evidenceIds || []),
-    ...(run.selectedNodeIds || []),
-    ...(run.disclosedNodeIds || []),
+    ...bundleNodeIds,
+    ...createdNodeIds,
+    ...selectedNodeIds,
+    ...disclosedNodeIds,
+    ...rejectedNodeIds,
   ]);
   const edgeIds = uniqueStrings([
-    ...(run.returnedEdgeIds || []),
-    ...(run.selectedEdgeIds || []),
-    ...(run.createdEdgeIds || []),
-    ...(run.disclosedEdgeIds || []),
+    ...bundleEdgeIds,
+    ...selectedEdgeIds,
+    ...createdEdgeIds,
+    ...disclosedEdgeIds,
+    ...rejectedEdgeIds,
     ...(run.edgeIds || []),
   ]);
+  const selectedCreatedEdgeIds = createdEdgeIds.filter(id => selectedEdgeIds.includes(id) || bundleEdgeIds.includes(id));
   return {
     runId: String(run.runId || ''),
     query: cleanText(run.query || ''),
     timestamp: run.timestamp,
     date: toDateKey(run.timestamp),
+    tick,
     callType: run.callType || 'passive',
     retrieveMode: run.retrieveMode || 'unknown',
-    evidenceIds: uniqueStrings(run.evidenceIds || []),
-    selectedNodeIds: uniqueStrings(run.selectedNodeIds || []),
-    selectedEdgeIds: uniqueStrings(run.selectedEdgeIds || []),
-    createdEdgeIds: uniqueStrings(run.createdEdgeIds || []),
-    disclosedNodeIds: uniqueStrings(run.disclosedNodeIds || []),
-    disclosedEdgeIds: uniqueStrings(run.disclosedEdgeIds || []),
+    durationMs: Number(run.durationMs || run.stats?.durationMs || 0),
+    startedAt: run.startedAt,
+    endedAt: run.endedAt,
+    evidenceIds,
+    bundleNodeIds,
+    bundleEdgeIds,
+    selectedNodeIds,
+    selectedEdgeIds,
+    createdNodeIds,
+    createdEdgeIds,
+    selectedCreatedEdgeIds,
+    disclosedNodeIds,
+    disclosedEdgeIds,
+    returnedEdgeIds,
+    rejectedNodeIds,
+    rejectedEdgeIds,
     nodes: nodeIds.map(id => nodesById.get(id)).filter(Boolean),
     edges: edgeIds.map(id => edgesById.get(id)).filter(Boolean),
+    bundle: buildBundleView(bundleNodeIds, bundleEdgeIds, nodesById, edgesById),
+    path: {
+      graphSeedNodeIds: uniqueStrings(run.graphSeedNodeIds || []),
+      graphSeedEdgeIds: uniqueStrings(run.graphSeedEdgeIds || []),
+      disclosedNodes: disclosedNodeIds.map(id => nodesById.get(id)).filter(Boolean),
+      disclosedEdges: disclosedEdgeIds.map(id => edgesById.get(id)).filter(Boolean),
+      selectedNodes: selectedNodeIds.map(id => nodesById.get(id)).filter(Boolean),
+      selectedEdges: selectedEdgeIds.map(id => edgesById.get(id)).filter(Boolean),
+      rejectedNodes: rejectedNodeIds.map(id => nodesById.get(id)).filter(Boolean),
+      rejectedEdges: rejectedEdgeIds.map(id => edgesById.get(id)).filter(Boolean),
+    },
+    construct: {
+      createdNodes: createdNodeIds.map(id => nodesById.get(id)).filter(Boolean),
+      createdEdges: createdEdgeIds.map(id => edgesById.get(id)).filter(Boolean),
+      selectedCreatedEdges: selectedCreatedEdgeIds.map(id => edgesById.get(id)).filter(Boolean),
+      persistedOnlyEdges: createdEdgeIds
+        .filter(id => !bundleEdgeIds.includes(id))
+        .map(id => edgesById.get(id))
+        .filter(Boolean),
+    },
+    weightChanges: buildWeightChanges({ selectedNodeIds, selectedEdgeIds, rejectedNodeIds, rejectedEdgeIds }, nodesById, edgesById),
+    timingSummary: buildTimingSummary(run.timings || [], Number(run.durationMs || run.stats?.durationMs || 0)),
     stats: pickStats(run.stats || {}),
     searchTerms: Array.isArray(run.searchPlan?.termGroups)
       ? run.searchPlan.termGroups.map((group: JsonRecord) => group.term).filter(Boolean).slice(0, 12)
       : [],
     searchTrace: sanitizeSearchTrace(run.searchTrace || []),
+  };
+}
+
+function buildBundleView(nodeIds: string[], edgeIds: string[], nodesById: Map<string, JsonRecord>, edgesById: Map<string, JsonRecord>): JsonRecord {
+  const nodes = nodeIds.map(id => nodesById.get(id)).filter((node): node is JsonRecord => Boolean(node));
+  const edges = edgeIds.map(id => edgesById.get(id)).filter((edge): edge is JsonRecord => Boolean(edge));
+  const nodesForBundle = new Map<string, JsonRecord>();
+  for (const node of nodes) nodesForBundle.set(node.id, node);
+  for (const edge of edges) {
+    const from = nodesById.get(edge.from);
+    const to = nodesById.get(edge.to);
+    if (from) nodesForBundle.set(from.id, from);
+    if (to) nodesForBundle.set(to.id, to);
+  }
+  const renderedNodeIds = new Set<string>();
+  const groupsByFrom = new Map<string, JsonRecord>();
+  for (const edge of edges) {
+    const from = nodesForBundle.get(edge.from);
+    const to = nodesForBundle.get(edge.to);
+    if (!from || !to) continue;
+    const group = groupsByFrom.get(from.id) || { from, items: [] };
+    group.items.push({ edge, to });
+    groupsByFrom.set(from.id, group);
+    renderedNodeIds.add(from.id);
+    renderedNodeIds.add(to.id);
+  }
+  const standaloneNodes = Array.from(nodesForBundle.values()).filter(node => !renderedNodeIds.has(node.id));
+  return {
+    nodeCount: nodesForBundle.size,
+    edgeCount: edges.length,
+    groups: Array.from(groupsByFrom.values()),
+    standaloneNodes,
+  };
+}
+
+function buildWeightChanges(ids: {
+  selectedNodeIds: string[];
+  selectedEdgeIds: string[];
+  rejectedNodeIds: string[];
+  rejectedEdgeIds: string[];
+}, nodesById: Map<string, JsonRecord>, edgesById: Map<string, JsonRecord>): JsonRecord[] {
+  const rows: Array<JsonRecord | null> = [];
+  for (const id of ids.selectedNodeIds) rows.push(weightChange('node', 'selected', '+0.12', nodesById.get(id)));
+  for (const id of ids.selectedEdgeIds) rows.push(weightChange('edge', 'selected', '+0.08', edgesById.get(id)));
+  for (const id of ids.rejectedNodeIds) rows.push(weightChange('node', 'rejected', '-0.01', nodesById.get(id)));
+  for (const id of ids.rejectedEdgeIds) rows.push(weightChange('edge', 'rejected', '-0.03', edgesById.get(id)));
+  return rows.filter((row): row is JsonRecord => Boolean(row));
+}
+
+function weightChange(kind: string, reason: string, delta: string, item?: JsonRecord): JsonRecord | null {
+  if (!item) return null;
+  return {
+    kind,
+    reason,
+    delta,
+    id: item.id,
+    preview: item.preview || item.whyPreview || item.id,
+    effectiveWeight: item.effectiveWeight,
+    retrievable: item.retrievable,
+  };
+}
+
+function buildTimingSummary(timings: JsonRecord[], durationMs: number): JsonRecord {
+  const groups: Record<string, number> = { graph: 0, construct: 0, llm: 0, store: 0, other: 0 };
+  for (const timing of timings || []) {
+    const step = String(timing.step || '');
+    const duration = Number(timing.durationMs || 0);
+    if (!Number.isFinite(duration) || duration <= 0) continue;
+    if (step.startsWith('llm_')) groups.llm += duration;
+    else if (step.includes('graph')) groups.graph += duration;
+    else if (step.includes('construct') || step.includes('source_')) groups.construct += duration;
+    else if (step.includes('persist') || step.includes('load_') || step.includes('append')) groups.store += duration;
+    else groups.other += duration;
+  }
+  const total = Number(durationMs || timings.reduce((sum, item) => sum + Number(item.durationMs || 0), 0));
+  return {
+    durationMs: roundNumber(total),
+    groups: Object.entries(groups)
+      .filter(([, value]) => value > 0)
+      .map(([label, value]) => ({ label, durationMs: roundNumber(value) })),
+    top: [...(timings || [])]
+      .sort((a, b) => Number(b.durationMs || 0) - Number(a.durationMs || 0))
+      .slice(0, 5)
+      .map(item => ({ step: item.step, durationMs: roundNumber(Number(item.durationMs || 0)) })),
   };
 }
 
@@ -618,6 +776,8 @@ function pickStats(stats: JsonRecord): JsonRecord {
     'graphDisclosureCount',
     'energyInitial',
     'energyRemaining',
+    'durationMs',
+    'timingCount',
     'reasoner',
   ];
   return Object.fromEntries(keys.filter(key => Object.prototype.hasOwnProperty.call(stats, key)).map(key => [key, stats[key]]));

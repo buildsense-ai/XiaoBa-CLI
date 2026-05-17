@@ -35,6 +35,11 @@ test('GauzMem dashboard view summarizes graph, replay, and metabolism without le
     const toolRun = view.sessions[0].turns[0].runs.find((run: any) => run.runId === 'r_code');
     assert.equal(toolRun.stats.retrieveAlgorithm, 'frontier_loop_v0.2');
     assert.equal(toolRun.stats.graphFrontierSteps, 2);
+    assert.equal(toolRun.bundle.nodeCount >= 1, true);
+    assert.equal(toolRun.bundle.edgeCount, 1);
+    assert.equal(toolRun.path.disclosedEdges.length, 1);
+    assert.equal(toolRun.construct.createdEdges.length, 1);
+    assert.equal(toolRun.weightChanges.some((item: any) => item.kind === 'node' && item.delta === '+0.12'), true);
     assert.equal(toolRun.searchTrace[0].phase, 'source_construct');
     assert.equal(toolRun.searchTrace[0].constructReason, 'graph_no_unvisited_edge');
     assert.equal(view.graph.nodes.some((node: any) => node.id === 'n_python'), true);

@@ -101,6 +101,7 @@
       display: grid;
       grid-template-columns: repeat(12, 1fr);
       gap: 14px;
+      width: 100%;
     }
     .panel {
       background: var(--panel);
@@ -125,13 +126,25 @@
       font-size: 12px;
     }
     .panel-body { padding: 14px; }
-    .summary { grid-column: span 12; }
-    .replay { grid-column: span 5; }
-    .graph { grid-column: span 7; }
+    .summary { width: 100%; }
+    .replay { grid-column: span 12; }
+    .graph { grid-column: span 12; }
     .metabolism { grid-column: span 12; }
+    details.panel > summary.panel-head {
+      cursor: pointer;
+      list-style: none;
+      padding-bottom: 14px;
+    }
+    details.panel > summary.panel-head::-webkit-details-marker { display: none; }
+    details.panel:not([open]) > summary.panel-head {
+      padding-bottom: 14px;
+    }
+    details.panel[open] > summary.panel-head {
+      border-bottom: 1px solid var(--line);
+    }
     .stat-grid {
       display: grid;
-      grid-template-columns: repeat(8, 1fr);
+      grid-template-columns: repeat(5, 1fr);
       gap: 10px;
     }
     .stat {
@@ -213,35 +226,100 @@
       display: grid;
       gap: 8px;
     }
-    .run-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
+    .run-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
     }
-    .run-stats {
+    .run-metrics {
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 6px;
     }
-    .run-stat {
+    .metric {
       border: 1px solid var(--line);
       background: #f8fafc;
       border-radius: 8px;
-      padding: 7px 8px;
+      padding: 8px;
       min-width: 0;
     }
-    .run-stat .k {
+    .metric .k {
       color: var(--muted);
       font-size: 10px;
-      font-weight: 700;
+      font-weight: 760;
       margin-bottom: 4px;
+    }
+    .metric .v {
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 800;
+      line-height: 1.1;
+    }
+    .metric .hint {
+      color: var(--soft);
+      font-size: 10px;
+      margin-top: 5px;
+      overflow: hidden;
+      text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .run-stat .v {
+    .bundle {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+    .bundle-group {
+      display: grid;
+      gap: 6px;
+    }
+    .bundle-node {
+      font-size: 13px;
+      font-weight: 720;
+      line-height: 1.45;
+    }
+    .bundle-edge {
+      margin-left: 14px;
+      padding-left: 10px;
+      border-left: 2px solid var(--line2);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .bundle-edge b {
       color: var(--text);
-      font-size: 14px;
-      font-weight: 780;
-      line-height: 1.1;
+      font-weight: 690;
+    }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .run-detail {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .run-detail > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-weight: 760;
+      color: var(--text);
+    }
+    .run-detail > summary::-webkit-details-marker { display: none; }
+    .run-detail[open] > summary {
+      border-bottom: 1px solid var(--line);
+    }
+    .detail-body {
+      padding: 9px 10px 10px;
+      display: grid;
+      gap: 8px;
     }
     .trace {
       display: grid;
@@ -405,7 +483,7 @@
       .topbar, .panel-head { align-items: stretch; flex-direction: column; }
       .actions { justify-content: flex-start; }
       .stat-grid { grid-template-columns: repeat(2, 1fr); }
-      .control-row, .graph-lists, .run-grid, .run-stats, .bar-row, .trace-row { grid-template-columns: 1fr; }
+      .control-row, .graph-lists, .detail-grid, .run-metrics, .bar-row, .trace-row { grid-template-columns: 1fr; }
       #graph-svg { min-height: 320px; }
     }
   </style>
@@ -439,8 +517,8 @@
       <section class="panel replay">
         <div class="panel-head">
           <div>
-            <div class="panel-title">Session Replay</div>
-            <div class="panel-meta">每一轮 query、bundle、局部图</div>
+            <div class="panel-title">Recall Replay</div>
+            <div class="panel-meta">每一轮注入的 bundle、耗时、路径、构建与权重变化</div>
           </div>
         </div>
         <div class="panel-body">
@@ -452,14 +530,14 @@
         </div>
       </section>
 
-      <section class="panel graph">
-        <div class="panel-head">
+      <details class="panel graph">
+        <summary class="panel-head">
           <div>
             <div class="panel-title">Persistent Graph</div>
             <div class="panel-meta">长期保存的 evidence node 与 whyRelevant edge</div>
           </div>
           <input class="input" id="graph-filter" style="max-width:260px" placeholder="过滤 node / edge">
-        </div>
+        </summary>
         <div class="panel-body">
           <div class="graph-wrap"><svg id="graph-svg" viewBox="0 0 980 430" role="img" aria-label="GauzMem persistent graph"></svg></div>
           <div class="graph-lists">
@@ -473,11 +551,10 @@
             </div>
           </div>
         </div>
-      </section>
-    </section>
+      </details>
 
-    <section class="panel metabolism">
-      <div class="panel-head">
+      <details class="panel metabolism">
+      <summary class="panel-head">
         <div>
           <div class="panel-title">Metabolism Timeline</div>
           <div class="panel-meta">每天新增、选中、变淡、拒绝</div>
@@ -488,10 +565,11 @@
           <span class="chip amber">faded</span>
           <span class="chip red">rejected</span>
         </div>
-      </div>
+      </summary>
       <div class="panel-body">
         <div class="bars" id="metabolism-bars"></div>
       </div>
+      </details>
     </section>
   </main>
 
@@ -566,14 +644,11 @@
       document.getElementById('store-line').textContent = `${data.store?.exists ? 'store' : 'store 未创建'} · ${data.store?.root || '-'}`;
       document.getElementById('summary-meta').textContent = `last run ${fmtTime(summary.lastRunAt)} · generated ${fmtTime(data.generatedAt)}`;
       document.getElementById('summary-grid').innerHTML = [
-        stat('Nodes', summary.nodeCount || 0, `${summary.retrievableNodeCount || 0} retrievable`),
-        stat('Edges', summary.edgeCount || 0, `${summary.retrievableEdgeCount || 0} retrievable`),
         stat('Runs', summary.runCount || 0, `${summary.turnCount || 0} turns`),
-        stat('Active', summary.activeNodeCount || 0, 'node visibility'),
-        stat('Faint', summary.faintNodeCount || 0, 'node visibility'),
-        stat('Dormant', summary.dormantNodeCount || 0, 'node visibility'),
+        stat('Graph', `${summary.nodeCount || 0}/${summary.edgeCount || 0}`, 'nodes / edges'),
+        stat('Retrievable', `${summary.retrievableNodeCount || 0}/${summary.retrievableEdgeCount || 0}`, 'nodes / edges'),
+        stat('Selected', `${summary.selectedNodeEventCount || 0}/${summary.selectedEdgeEventCount || 0}`, 'nodes / edges'),
         stat('Retired', summary.retiredNodeCount || 0, 'below threshold'),
-        stat('Selected', (summary.selectedNodeEventCount || 0) + '/' + (summary.selectedEdgeEventCount || 0), 'node / edge events'),
       ].join('');
     }
 
@@ -621,7 +696,6 @@
           <div class="row">
             <span class="chip blue">passive ${escapeHtml(turn.passiveRunCount || 0)}</span>
             <span class="chip green">active ${escapeHtml(turn.activeRunCount || 0)}</span>
-            <span class="chip">turn ${escapeHtml(turn.turnId || '-')}</span>
           </div>
           ${runs.map(renderRun).join('')}
         </div>`;
@@ -629,42 +703,114 @@
     }
 
     function renderRun(run) {
-      const nodes = (run.nodes || []).slice(0, 5);
-      const edges = (run.edges || []).slice(0, 5);
       const stats = run.stats || {};
-      const trace = (run.searchTrace || []).slice(0, 8);
+      const bundle = run.bundle || {};
+      const construct = run.construct || {};
+      const path = run.path || {};
+      const trace = (run.searchTrace || []).slice(0, 12);
       return `<div class="run">
-        <div class="row">
-          <span class="chip blue">${escapeHtml(run.callType || 'passive')}</span>
-          <span class="chip amber">${escapeHtml(run.retrieveMode || 'unknown')}</span>
-          <span class="chip">${escapeHtml(run.runId || '-')}</span>
-        </div>
-        <div class="run-stats">
-          ${runStat('scanned', stats.docsScanned ?? 0, 'docs')}
-          ${runStat('source hits', stats.sourceHitCount ?? 0, 'raw matches')}
-          ${runStat('windows', stats.sourceWindowCount ?? 0, 'shown to LLM')}
-          ${runStat('evidence', stats.sourceEvidenceCount ?? stats.evidenceCount ?? 0, 'source nodes')}
-          ${runStat('graph seeds', `${stats.graphSeedCount ?? 0}/${stats.graphEdgeSeedCount ?? 0}`, 'node/edge')}
-          ${runStat('constructed', `${stats.constructedNodeCount ?? 0}/${stats.constructedEdgeCount ?? 0}`, 'node/edge')}
-          ${runStat('returned', `${run.evidenceIds?.length || 0}/${run.edges?.length || 0}`, 'node/edge')}
-          ${runStat('energy', `${stats.energyRemaining ?? '-'}/${stats.energyInitial ?? '-'}`, 'left/initial')}
-          ${runStat('mode', run.retrieveMode || 'unknown', 'retrieve')}
-          ${runStat('reasoner', stats.reasoner || '-', 'judge')}
-        </div>
-        ${trace.length ? `<div class="trace">${trace.map(renderTraceRow).join('')}</div>` : `<div class="item-meta">no search trace</div>`}
-        <div class="run-grid">
-          <div class="mini-list">
-            ${nodes.map(node => `<div class="mini-item"><b>${escapeHtml(node.id)}</b><br>${escapeHtml(node.preview || '')}</div>`).join('') || '<div class="mini-item">no evidence nodes</div>'}
+        <div class="run-head">
+          <div class="row">
+            <span class="chip blue">${escapeHtml(run.callType || 'passive')}</span>
+            <span class="chip amber">${escapeHtml(run.retrieveMode || 'unknown')}</span>
           </div>
-          <div class="mini-list">
-            ${edges.map(edge => `<div class="mini-item"><b>${escapeHtml(edge.mode)}</b><br>${escapeHtml(edge.whyPreview || '')}</div>`).join('') || '<div class="mini-item">no edges</div>'}
-          </div>
+          <div class="panel-meta">${escapeHtml(fmtTime(run.timestamp))}</div>
         </div>
+        <div class="run-metrics">
+          ${metric('time', fmtDuration(run.durationMs || stats.durationMs), timingHint(run.timingSummary))}
+          ${metric('bundle', `${bundle.nodeCount || 0}/${bundle.edgeCount || 0}`, 'nodes / edges')}
+          ${metric('graph', stats.graphFrontierSteps ?? 0, `${stats.graphSeedCount ?? 0}/${stats.graphEdgeSeedCount ?? 0} seeds`)}
+          ${metric('construct', `${stats.constructedNodeCount ?? 0}/${stats.constructedEdgeCount ?? 0}`, `${stats.sourceConstructCount ?? 0} steps`)}
+          ${metric('energy', `${stats.energyRemaining ?? '-'}/${stats.energyInitial ?? '-'}`, 'left / initial')}
+        </div>
+        ${renderBundle(bundle)}
+        ${detailBlock('Path', renderPath(path))}
+        ${detailBlock('Construct', renderConstruct(construct))}
+        ${detailBlock('Weights', renderWeights(run.weightChanges || []))}
+        ${detailBlock('Trace', trace.length ? `<div class="trace">${trace.map(renderTraceRow).join('')}</div>` : '<div class="item-meta">no search trace</div>')}
       </div>`;
     }
 
-    function runStat(label, value, hint) {
-      return `<div class="run-stat"><div class="k">${escapeHtml(label)}</div><div class="v">${escapeHtml(value)}</div><div class="item-meta">${escapeHtml(hint)}</div></div>`;
+    function metric(label, value, hint) {
+      return `<div class="metric"><div class="k">${escapeHtml(label)}</div><div class="v">${escapeHtml(value)}</div><div class="hint" title="${escapeHtml(hint || '')}">${escapeHtml(hint || '')}</div></div>`;
+    }
+
+    function renderBundle(bundle) {
+      const groups = bundle.groups || [];
+      const standalone = bundle.standaloneNodes || [];
+      if (!groups.length && !standalone.length) {
+        return '<div class="bundle"><div class="empty">没有注入明确记忆。</div></div>';
+      }
+      return `<div class="bundle">
+        ${groups.map(group => `<div class="bundle-group">
+          <div class="bundle-node">${escapeHtml(group.from?.preview || group.from?.id || '')}</div>
+          ${(group.items || []).map(item => `<div class="bundle-edge"><b>→ ${escapeHtml(item.to?.preview || item.to?.id || '')}</b><br>${escapeHtml(item.edge?.whyRelevant || item.edge?.whyPreview || '')}</div>`).join('')}
+        </div>`).join('')}
+        ${standalone.length ? `<div class="bundle-group">${standalone.map(node => `<div class="bundle-node">- ${escapeHtml(node.preview || node.id || '')}</div>`).join('')}</div>` : ''}
+      </div>`;
+    }
+
+    function detailBlock(label, content) {
+      return `<details class="run-detail"><summary>${escapeHtml(label)}</summary><div class="detail-body">${content}</div></details>`;
+    }
+
+    function renderPath(path) {
+      const seedNodes = path.graphSeedNodeIds || [];
+      const seedEdges = path.graphSeedEdgeIds || [];
+      return `<div class="detail-grid">
+        ${compactList('seeds', [`nodes ${seedNodes.length}`, `edges ${seedEdges.length}`])}
+        ${compactList('selected', [
+          ...((path.selectedNodes || []).slice(0, 6).map(node => node.preview || node.id)),
+          ...((path.selectedEdges || []).slice(0, 6).map(edge => `${shortText(edge.fromPreview || edge.from, 30)} → ${shortText(edge.toPreview || edge.to, 30)}`)),
+        ])}
+        ${compactList('disclosed', [
+          `${(path.disclosedNodes || []).length} nodes`,
+          `${(path.disclosedEdges || []).length} edges`,
+        ])}
+        ${compactList('rejected', [
+          ...((path.rejectedNodes || []).slice(0, 5).map(node => node.preview || node.id)),
+          ...((path.rejectedEdges || []).slice(0, 5).map(edge => edge.whyPreview || edge.id)),
+        ])}
+      </div>`;
+    }
+
+    function renderConstruct(construct) {
+      return `<div class="detail-grid">
+        ${compactList('created nodes', (construct.createdNodes || []).slice(0, 8).map(node => node.preview || node.id))}
+        ${compactList('created edges', (construct.createdEdges || []).slice(0, 8).map(edge => `${shortText(edge.fromPreview || edge.from, 32)} → ${shortText(edge.toPreview || edge.to, 32)}：${shortText(edge.whyPreview || edge.whyRelevant || '', 90)}`))}
+        ${compactList('entered bundle', (construct.selectedCreatedEdges || []).slice(0, 8).map(edge => edge.whyPreview || edge.id))}
+        ${compactList('persisted only', (construct.persistedOnlyEdges || []).slice(0, 8).map(edge => edge.whyPreview || edge.id))}
+      </div>`;
+    }
+
+    function renderWeights(items) {
+      if (!items.length) return '<div class="item-meta">no weight change</div>';
+      return `<div class="mini-list">${items.slice(0, 14).map(item => `<div class="mini-item">
+        <span class="chip ${item.reason === 'selected' ? 'green' : 'red'}">${escapeHtml(item.delta)} ${escapeHtml(item.kind)}</span>
+        <span class="item-meta">${escapeHtml(item.reason)} · effective ${escapeHtml(item.effectiveWeight ?? '-')} · ${escapeHtml(item.retrievable ? 'retrievable' : 'below threshold')}</span>
+        <div>${escapeHtml(shortText(item.preview || item.id, 160))}</div>
+      </div>`).join('')}</div>`;
+    }
+
+    function compactList(label, items) {
+      const values = (items || []).filter(Boolean);
+      return `<div class="mini-list">
+        <div class="item-meta">${escapeHtml(label)}</div>
+        ${values.length ? values.map(item => `<div class="mini-item">${escapeHtml(item)}</div>`).join('') : '<div class="mini-item">none</div>'}
+      </div>`;
+    }
+
+    function fmtDuration(value) {
+      const n = Number(value || 0);
+      if (!n) return '-';
+      if (n < 1000) return `${Math.round(n)}ms`;
+      return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}s`;
+    }
+
+    function timingHint(summary) {
+      const groups = summary?.groups || [];
+      if (!groups.length) return '';
+      return groups.slice(0, 3).map(item => `${item.label} ${fmtDuration(item.durationMs)}`).join(' · ');
     }
 
     function renderTraceRow(item) {
