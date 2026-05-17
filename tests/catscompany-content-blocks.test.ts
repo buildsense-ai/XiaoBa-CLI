@@ -7,6 +7,9 @@ function createProcessHarness() {
   const downloads: Array<{ url: string; fileName: string }> = [];
   const multimodalCalls: Array<{ text: string; attachments: any[] }> = [];
   const handledTurns: Array<{ userMessage: any; options: any }> = [];
+  const sentThinking: Array<{ text: string; metadata?: any }> = [];
+  const toolUses: Array<{ topic: string; toolUseId: string; name: string; input: any; metadata?: any }> = [];
+  const toolResults: Array<{ topic: string; toolUseId: string; content: string; isError?: boolean; metadata?: any }> = [];
 
   const session = {
     isBusy: () => false,
@@ -18,6 +21,7 @@ function createProcessHarness() {
 
   bot.sessionManager = {
     getOrCreate: () => session,
+    get: () => session,
   };
   bot.sender = {
     downloadFile: async (url: string, fileName: string) => {
@@ -28,6 +32,15 @@ function createProcessHarness() {
     reply: async () => undefined,
     sendFile: async () => undefined,
     sendText: async () => undefined,
+    sendThinking: async (_topic: string, text: string, metadata?: any) => {
+      sentThinking.push({ text, metadata });
+    },
+    sendToolUse: async (topic: string, toolUseId: string, name: string, input: any, metadata?: any) => {
+      toolUses.push({ topic, toolUseId, name, input, metadata });
+    },
+    sendToolResult: async (topic: string, toolUseId: string, content: string, isError?: boolean, metadata?: any) => {
+      toolResults.push({ topic, toolUseId, content, isError, metadata });
+    },
   };
   bot.pendingAnswers = new Map();
   bot.pendingAnswerBySession = new Map();
@@ -45,7 +58,7 @@ function createProcessHarness() {
     ];
   };
 
-  return { bot, downloads, multimodalCalls, handledTurns };
+  return { bot, downloads, multimodalCalls, handledTurns, sentThinking, toolUses, toolResults };
 }
 
 describe('CatsCo content blocks', () => {
@@ -185,5 +198,103 @@ describe('CatsCo content blocks', () => {
       /file type not allowed/,
     );
     assert.strictEqual(channel.hasOutbound, false);
+  });
+
+  test('interrupts active session on CatsCompany stream cancel event', () => {
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    let interrupted = 0;
+    bot.sessionManager = {
+      get: (key: string) => key === 'cc_user:usr1'
+        ? {
+          requestInterrupt: () => {
+            interrupted += 1;
+          },
+        }
+        : null,
+    };
+
+    bot.handleCancelMessage({
+      topic: 'p2p_1_2',
+      senderId: 'usr1',
+      text: '',
+      content: '',
+      type: 'stream_cancel',
+      metadata: { stream_event: 'cancel', control: 'interrupt' },
+      isGroup: false,
+      seq: 0,
+    });
+
+    assert.strictEqual(interrupted, 1);
+  });
+
+  test('subagent runtime events are sent as CatsCompany working metadata', async () => {
+    const { bot, sentThinking, toolUses, toolResults } = createProcessHarness();
+    const now = Date.now();
+    const info = {
+      id: 'sub-1',
+      skillName: 'explorer',
+      taskDescription: '扫描登录链路',
+      status: 'running',
+      createdAt: now,
+      progressLog: [],
+      outputFiles: [],
+    };
+
+    await bot.handleSubAgentRuntimeEvent('p2p_1_2', {
+      subAgentId: 'sub-1',
+      subAgentName: '子agent1',
+      type: 'agent_spawned',
+      timestamp: now,
+      summary: '派遣子agent1 扫描登录链路',
+    }, info);
+
+    assert.strictEqual(toolUses.length, 1);
+    assert.strictEqual(toolUses[0].toolUseId, 'subagent:sub-1');
+    assert.strictEqual(toolUses[0].name, '子agent1');
+    assert.strictEqual(toolUses[0].input.kind, 'subagent');
+    assert.strictEqual(toolUses[0].metadata.kind, 'subagent_event');
+    assert.strictEqual(toolUses[0].metadata.subagent_event_type, 'agent_spawned');
+
+    await bot.handleSubAgentRuntimeEvent('p2p_1_2', {
+      subAgentId: 'sub-1',
+      subAgentName: '子agent1',
+      type: 'agent_progress',
+      timestamp: now,
+      summary: '开始执行：扫描登录链路',
+    }, info);
+
+    assert.deepStrictEqual(sentThinking.map(item => item.text), ['[子agent1] 开始执行：扫描登录链路']);
+    assert.strictEqual(sentThinking[0].metadata.kind, 'subagent_event');
+
+    await bot.handleSubAgentRuntimeEvent('p2p_1_2', {
+      subAgentId: 'sub-1',
+      subAgentName: '子agent1',
+      type: 'agent_waiting',
+      timestamp: now,
+      summary: '等待主 agent 回复：需要确认范围',
+    }, info);
+
+    assert.deepStrictEqual(sentThinking.map(item => item.text), ['[子agent1] 开始执行：扫描登录链路']);
+
+    await bot.handleSubAgentRuntimeEvent('p2p_1_2', {
+      subAgentId: 'sub-1',
+      subAgentName: '子agent1',
+      type: 'agent_completed',
+      timestamp: now + 1,
+      summary: '完成',
+    }, {
+      ...info,
+      status: 'completed',
+      resultSummary: '登录链路正常',
+      outputFiles: ['logs/report.md'],
+    });
+
+    assert.strictEqual(toolResults.length, 1);
+    assert.strictEqual(toolResults[0].toolUseId, 'subagent:sub-1');
+    assert.strictEqual(toolResults[0].metadata.kind, 'subagent_event');
+    assert.strictEqual(toolResults[0].metadata.subagent_event_type, 'agent_completed');
+    assert.match(toolResults[0].content, /已完成/);
+    assert.match(toolResults[0].content, /登录链路正常/);
+    assert.match(toolResults[0].content, /logs\/report\.md/);
   });
 });
