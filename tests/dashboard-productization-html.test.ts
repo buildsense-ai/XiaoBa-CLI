@@ -150,3 +150,18 @@ test('CatsCo Chat preserves fallback tool metadata for WORKING rendering', () =>
   assert.match(workingBlock, /metadata\.status\|\|tool\.input\?\.status/);
   assert.match(workingBlock, /metadata\.step_count\?metadata\.step_count\+' 步'/);
 });
+
+test('dashboard supports hidden persistent font scaling shortcuts', () => {
+  assert.doesNotMatch(dashboardHtml, /id="font-scale-slider"/);
+  assert.doesNotMatch(dashboardHtml, /id="font-scale-value"/);
+  assert.doesNotMatch(dashboardHtml, /font-scale-control/);
+  assert.match(dashboardHtml, /DASHBOARD_FONT_SCALE_KEY = 'xiaoba\.dashboardFontScale'/);
+  assert.match(dashboardHtml, /function applyDashboardFontScale\(value, persist=true\)/);
+  assert.match(dashboardHtml, /document\.documentElement\.style\.fontSize=scale\+'%'/);
+  assert.match(dashboardHtml, /function handleDashboardFontScaleShortcut\(event\)/);
+  assert.match(dashboardHtml, /key==='\+' \|\| key==='=' \|\| key==='Add'/);
+  assert.match(dashboardHtml, /key==='-' \|\| key==='_'\s*\|\| key==='Subtract'/);
+  assert.match(dashboardHtml, /key==='0' \|\| key==='\)'/);
+  assert.match(dashboardHtml, /loadDashboardFontScale\(\);/);
+  assert.match(dashboardHtml, /document\.addEventListener\('keydown',handleDashboardFontScaleShortcut\)/);
+});
