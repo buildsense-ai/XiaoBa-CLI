@@ -31,9 +31,11 @@ export interface RunAgentTurnParams {
   input: string | ContentBlock[];
   messages: Message[];
   runtimeFeedback: string[];
+  runtimeObservationSource?: string;
   callbacks?: AgentTurnCallbacks;
   channel?: ChannelCallbacks;
   pendingUserInputProvider?: PendingUserInputProvider;
+  abortSignal?: AbortSignal;
   shouldContinue: () => boolean;
 }
 
@@ -64,7 +66,14 @@ export class AgentTurnController {
   constructor(private readonly options: AgentTurnControllerOptions) {}
 
   async run(params: RunAgentTurnParams): Promise<RunAgentTurnResult> {
-    params.messages.push({ role: 'user', content: params.input });
+    params.messages.push({
+      role: 'user',
+      content: params.input,
+      ...(params.runtimeObservationSource && {
+        __runtimeObservation: true,
+        runtimeObservationSource: params.runtimeObservationSource,
+      }),
+    });
 
     const turnContext = await this.options.turnContextBuilder.build({
       sessionKey: this.options.sessionKey,
@@ -77,6 +86,7 @@ export class AgentTurnController {
     const runner = this.createRunner({
       channel: params.channel,
       pendingUserInputProvider: params.pendingUserInputProvider,
+      abortSignal: params.abortSignal,
       shouldContinue: params.shouldContinue,
     });
 
@@ -93,6 +103,7 @@ export class AgentTurnController {
       result,
       tokens: { prompt: metrics.totalPromptTokens, completion: metrics.totalCompletionTokens },
       runtimeFeedback: turnContext.runtimeFeedbackForLog,
+      runtimeObservationSource: params.runtimeObservationSource,
     });
 
     return {
@@ -106,6 +117,7 @@ export class AgentTurnController {
   private createRunner(options: {
     channel?: ChannelCallbacks;
     pendingUserInputProvider?: PendingUserInputProvider;
+    abortSignal?: AbortSignal;
     shouldContinue: () => boolean;
   }): ConversationRunner {
     const surface = resolveSessionSurface(this.options.sessionKey, this.options.sessionType);
@@ -127,6 +139,11 @@ export class AgentTurnController {
           getCurrentDirectory: this.options.getCurrentDirectory,
           updateCurrentDirectory: this.options.updateCurrentDirectory,
           planRuntime: this.options.planRuntime,
+          runtimeServices: {
+            aiService: this.options.services.aiService,
+            skillManager: this.options.services.skillManager,
+          },
+          abortSignal: options.abortSignal,
           channel: options.channel,
         },
       },
@@ -136,6 +153,7 @@ export class AgentTurnController {
   private toRunnerCallbacks(callbacks?: AgentTurnCallbacks): RunnerCallbacks {
     return {
       onText: callbacks?.onText,
+      onThinking: callbacks?.onThinking,
       onToolStart: callbacks?.onToolStart,
       onToolEnd: callbacks?.onToolEnd,
       onToolDisplay: callbacks?.onToolDisplay,

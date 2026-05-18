@@ -65,6 +65,9 @@ export class PromptComposer {
       platform ? `当前平台：${platform}` : '',
       `当前日期：${today}`,
       'Current directory is provided in a transient message for each model request. Use that current directory for relative file and shell paths.',
+      'If the user asks you to inspect a project, repository, or source code, treat the current directory as the likely project root first.',
+      'Do not mistake Electron userData, AppData, logs, or cache directories for the source repository unless the user explicitly asks about those runtime files.',
+      'If the current directory does not appear to contain the requested product or service, do a small path check or ask for the correct repository instead of repeatedly scanning the wrong directory.',
     ].filter(Boolean).join('\n');
 
     return [basePrompt, runtimeInfo].filter(Boolean).join('\n\n');

@@ -16,7 +16,11 @@ export interface RuntimeFeedbackInput extends RuntimeFeedbackOptions {
 }
 
 /**
- * Turn-scoped inbox for runtime feedback that should be visible to the agent.
+ * Turn-scoped inbox for runtime observation that should be visible to the agent.
+ *
+ * The public type names still use "Feedback" for compatibility with existing
+ * adapters/tests, but the boundary is: runtime/platform facts in, transient
+ * model-visible observation out. It is not a user feedback feature.
  *
  * It owns buffering and dedupe only. Callers still decide when feedback is
  * consumed and where it is inserted into the provider input.

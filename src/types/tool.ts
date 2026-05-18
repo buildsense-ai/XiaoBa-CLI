@@ -1,5 +1,7 @@
 import { ContentBlock } from './index';
 import type { PlanRuntime, RuntimePlanSnapshot } from '../core/plan-runtime';
+import type { AIService } from '../utils/ai-service';
+import type { SkillManager } from '../skills/skill-manager';
 
 /**
  * 工具参数定义
@@ -111,6 +113,11 @@ export interface ChannelCallbacks {
 /** @deprecated Use ChannelCallbacks instead */
 export type FeishuChannelCallbacks = ChannelCallbacks;
 
+export interface RuntimeToolServices {
+  aiService: AIService;
+  skillManager: SkillManager;
+}
+
 /**
  * 工具执行上下文
  */
@@ -128,6 +135,10 @@ export interface ToolExecutionContext {
   planRuntime?: PlanRuntime;
   getCurrentDirectory?: () => string;
   updateCurrentDirectory?: (directory: string) => void;
+  /** 子智能体需要主 agent 补充信息时使用；仅 subagent runtime 注入 */
+  requestParentInput?: (question: string) => Promise<string>;
+  /** 当前 runtime 已创建的共享服务，供调度类工具复用，避免重复初始化 */
+  runtimeServices?: RuntimeToolServices;
   /** 平台通道回调（飞书/CatsCompany 等聊天会话时由平台层注入） */
   channel?: ChannelCallbacks;
 }

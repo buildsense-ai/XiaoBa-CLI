@@ -18,6 +18,10 @@ export interface MessageContext {
   text: string;
   content?: any;
   content_blocks?: unknown[];
+  type?: string;
+  msg_type?: string;
+  metadata?: Record<string, unknown>;
+  mode?: string;
   isGroup: boolean;
   from?: string;  // 原始 Cats 发送方字段，供兼容和排查使用
   seq?: number;   // Cats 服务端消息序号，用于排序和补充消息合并
@@ -168,17 +172,23 @@ export class CatsClient extends EventEmitter {
         text: typeof msg.data.content === 'string' ? msg.data.content : '',
         content: msg.data.content,
         content_blocks: Array.isArray(msg.data.content_blocks) ? msg.data.content_blocks : undefined,
+        type: typeof msg.data.type === 'string' ? msg.data.type : undefined,
+        msg_type: typeof msg.data.msg_type === 'string' ? msg.data.msg_type : undefined,
+        metadata: msg.data.metadata && typeof msg.data.metadata === 'object' ? msg.data.metadata : undefined,
+        mode: typeof msg.data.mode === 'string' ? msg.data.mode : undefined,
         isGroup: msg.data.topic?.startsWith('grp_') ?? false,
         seq: Number(msg.data.seq || 0),
       };
       this.emit('message', ctx);
     } else if (msg.pres) {
-      Logger.info(`[CatsCompany] 收到 presence: what=${msg.pres.what || '-'}, src=${msg.pres.src || '-'}`);
       if (msg.pres.what === 'friend_request') {
+        Logger.info(`[CatsCompany] 收到好友请求通知: src=${msg.pres.src || '-'}`);
         const fromUserId = msg.pres.src;
         if (fromUserId) {
           this.acceptFriendRequest(fromUserId).catch(console.error);
         }
+      } else if (msg.pres.what && msg.pres.what !== 'on' && msg.pres.what !== 'off') {
+        Logger.info(`[CatsCompany] 收到 presence: what=${msg.pres.what}, src=${msg.pres.src || '-'}`);
       }
     }
   }

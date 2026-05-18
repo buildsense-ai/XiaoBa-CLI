@@ -6,6 +6,20 @@ import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
 import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
+import {
+  buildExplicitPlanRequestHintIfUseful,
+  buildInitialDecisionHintIfUseful,
+  buildPlanSoftNudge,
+  buildSubagentSoftNudge,
+  nextPlanNudgeToolCount,
+  nextSubagentNudgeToolCount,
+  PLAN_TOOL_NAME,
+  RECORD_DECISION_TOOL_NAME,
+  shouldAddPlanSoftNudge,
+  shouldAddSubagentSoftNudge,
+  SUBAGENT_TOOL_NAME,
+  TRANSIENT_RUNNER_HINT_PREFIX,
+} from './runner-orchestration-policy';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -32,7 +46,6 @@ const DEFAULT_PROMPT_BUDGET = 120000;
 const ANTHROPIC_PROMPT_BUDGET = 200000;
 const MIN_MESSAGE_BUDGET = 2000;
 const OVERFLOW_REDUCTION_RATIO = 0.6;
-const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 const TRANSIENT_CURRENT_DIRECTORY_PREFIX = '[transient_current_directory]';
 
 /**
@@ -84,6 +97,8 @@ interface ToolExecutionRecord {
 
 /** ConversationRunner 构造选项 */
 export interface RunnerOptions {
+  /** Optional safety cap for autonomous tool loops. Undefined means no runner-level cap. */
+  maxTurns?: number;
   maxContextTokens?: number;
   /** false 时用 aiService.chat() 代替 chatStream()（默认 true） */
   stream?: boolean;
@@ -110,6 +125,7 @@ export class ConversationRunner {
   private enableCompression: boolean;
   private toolExecutionContext?: Partial<ToolExecutionContext>;
   private maxPromptTokens: number;
+  private maxTurns?: number;
   private sessionLabel: string;
   private pendingUserInputProvider?: PendingUserInputProvider;
 
@@ -134,6 +150,7 @@ export class ConversationRunner {
     this.enableCompression = options?.enableCompression ?? true;
     this.toolExecutionContext = options?.toolExecutionContext;
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
+    this.maxTurns = options?.maxTurns;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.sessionLabel = this.toolExecutionContext?.sessionId
@@ -161,11 +178,29 @@ export class ConversationRunner {
     let observationSinceLastOutbound = false;
     const deliveredOutboundFiles = new Set<string>();
     let turns = 0;
+    let executedToolCalls = 0;
+    let hasUpdatedPlan = false;
+    let hasSpawnedSubagent = false;
+    let hasRecordedDecision = false;
+    let hasShownInitialOrchestrationHint = false;
+    let planSoftNudgeCount = 0;
+    let subagentSoftNudgeCount = 0;
+    let nextPlanNudgeAt = nextPlanNudgeToolCount(0);
+    let nextSubagentNudgeAt = nextSubagentNudgeToolCount(0);
 
     while (true) {
       turns++;
       if (this.shouldContinue && !this.shouldContinue()) {
         break;
+      }
+      if (this.maxTurns && turns > this.maxTurns) {
+        Logger.warning(`[${this.sessionLabel}] 已达到最大推理轮次 ${this.maxTurns}，正在收束`);
+        return {
+          response: `已达到本次后台任务的轮次预算（${this.maxTurns} 轮），我先基于已完成的信息收束。`,
+          finalResponseVisible: true,
+          messages,
+          newMessages,
+        };
       }
 
       if (this.enableCompression) {
@@ -186,7 +221,29 @@ export class ConversationRunner {
       }
 
       const activeTools = allTools;
-      const requestMessages = this.buildProviderInputMessages(messages, nextTurnTransientHints);
+      const orchestrationHints: Message[] = [];
+      if (turns === 1 && !hasShownInitialOrchestrationHint) {
+        const explicitPlanHint = buildExplicitPlanRequestHintIfUseful(messages, activeTools);
+        const decisionHint = buildInitialDecisionHintIfUseful(messages, activeTools);
+        if (explicitPlanHint) orchestrationHints.push(explicitPlanHint);
+        if (decisionHint) orchestrationHints.push(decisionHint);
+        hasShownInitialOrchestrationHint = orchestrationHints.length > 0;
+      }
+      if (shouldAddPlanSoftNudge(activeTools, turns, executedToolCalls, hasUpdatedPlan || hasRecordedDecision, nextPlanNudgeAt)) {
+        orchestrationHints.push(buildPlanSoftNudge(turns, executedToolCalls, planSoftNudgeCount));
+        planSoftNudgeCount++;
+        nextPlanNudgeAt = nextPlanNudgeToolCount(executedToolCalls);
+      }
+      if (shouldAddSubagentSoftNudge(activeTools, turns, executedToolCalls, hasSpawnedSubagent || hasRecordedDecision, nextSubagentNudgeAt)) {
+        orchestrationHints.push(buildSubagentSoftNudge(turns, executedToolCalls, subagentSoftNudgeCount));
+        subagentSoftNudgeCount++;
+        nextSubagentNudgeAt = nextSubagentNudgeToolCount(executedToolCalls);
+      }
+
+      const requestMessages = this.buildProviderInputMessages(messages, [
+        ...nextTurnTransientHints,
+        ...orchestrationHints,
+      ]);
       nextTurnTransientHints = [];
       this.ensurePromptBudget(requestMessages, activeTools);
       this.logProviderMessagesForDebug(requestMessages, activeTools, turns);
@@ -311,6 +368,14 @@ export class ConversationRunner {
             this.toolExecutionContext || {},
             turns,
           );
+        executedToolCalls++;
+        if (toolName === PLAN_TOOL_NAME) {
+          hasUpdatedPlan = true;
+        } else if (toolName === SUBAGENT_TOOL_NAME) {
+          hasSpawnedSubagent = true;
+        } else if (toolName === RECORD_DECISION_TOOL_NAME) {
+          hasRecordedDecision = true;
+        }
         const toolDuration = Date.now() - toolStart;
         Metrics.recordToolCall(toolName, toolDuration);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);

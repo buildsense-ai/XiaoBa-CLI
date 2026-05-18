@@ -4,15 +4,19 @@ import { Message, ContentBlock } from '../types';
 import type {
   SessionLogEntry,
   SessionRuntimeLogEntry,
+  SessionSubAgentEventLogEntry,
   SessionToolCallLog,
   SessionTurnLogEntry,
 } from './session-log-schema';
+import type { SubAgentRuntimeEvent } from '../core/sub-agent-events';
+import type { SubAgentInfo } from '../core/sub-agent-session';
 
 export type {
   LegacySessionTurnLogEntry,
   ParsedSessionLogEntry,
   SessionLogEntry,
   SessionRuntimeLogEntry,
+  SessionSubAgentEventLogEntry,
   SessionToolCallLog,
   SessionTurnLogEntry,
 } from './session-log-schema';
@@ -23,6 +27,7 @@ const MAX_RUNTIME_FEEDBACK_LENGTH = Number(process.env.XIAOBA_SESSION_RUNTIME_FE
 
 export interface LogTurnOptions {
   runtimeFeedback?: string[];
+  runtimeObservationSource?: string;
 }
 
 /**
@@ -81,6 +86,7 @@ export class SessionTurnLogger {
         text: userText,
         ...(userImages.length > 0 && { images: userImages }),
         ...(runtimeFeedback.length > 0 && { runtime_feedback: runtimeFeedback }),
+        ...(options.runtimeObservationSource && { runtime_observation_source: options.runtimeObservationSource }),
       },
       assistant: {
         text: assistantText,
@@ -105,6 +111,28 @@ export class SessionTurnLogger {
       message,
     };
     this.appendLog(runtimeEntry);
+  }
+
+  logSubAgentEvent(event: SubAgentRuntimeEvent, info?: SubAgentInfo): void {
+    const entry: SessionSubAgentEventLogEntry = {
+      entry_type: 'subagent_event',
+      timestamp: new Date(event.timestamp).toISOString(),
+      session_id: this.sessionId,
+      session_type: this.sessionType,
+      subagent: {
+        id: event.subAgentId,
+        ...(event.subAgentName && { name: event.subAgentName }),
+        ...(info?.agentType && { type: info.agentType }),
+        ...(info?.status && { status: info.status }),
+        seq: event.seq,
+      },
+      event: {
+        type: event.type,
+        summary: this.truncate(event.summary, MAX_RUNTIME_FEEDBACK_LENGTH),
+        ...(event.payload && { payload: event.payload }),
+      },
+    };
+    this.appendLog(entry);
   }
 
   private extractText(content: string | ContentBlock[]): string {

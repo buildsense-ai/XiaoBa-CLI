@@ -13,6 +13,7 @@ export interface RecordTurnParams {
     completion: number;
   };
   runtimeFeedback?: string[];
+  runtimeObservationSource?: string;
 }
 
 /**
@@ -27,7 +28,10 @@ export class TurnLogRecorder {
       params.result.response || '',
       this.extractToolCalls(params.result.newMessages),
       params.tokens,
-      { runtimeFeedback: params.runtimeFeedback },
+      {
+        runtimeFeedback: params.runtimeFeedback,
+        runtimeObservationSource: params.runtimeObservationSource,
+      },
     );
   }
 

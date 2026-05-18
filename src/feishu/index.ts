@@ -35,6 +35,7 @@ interface QueuedMessage {
   userText: string;
   chatId: string;
   senderId: string;
+  source?: 'user' | 'subagent_feedback';
   runtimeFeedback?: RuntimeFeedbackInput[];
 }
 
@@ -354,7 +355,7 @@ export class FeishuBot {
         Logger.warning(`[${key}] 检测到用户中断请求，已请求中止当前回合`);
       }
       const queue = this.messageQueue.get(key) ?? [];
-      queue.push({ userText, chatId: msg.chatId, senderId: msg.senderId, runtimeFeedback });
+      queue.push({ userText, chatId: msg.chatId, senderId: msg.senderId, source: 'user', runtimeFeedback });
       this.messageQueue.set(key, queue);
       Logger.info(`[${key}] 主会话忙，消息已入队 (队列长度: ${queue.length})`);
       return;
@@ -389,44 +390,47 @@ export class FeishuBot {
     senderId: string,
     text: string,
   ): Promise<void> {
-    const MAX_RETRIES = 10;
-    const RETRY_DELAY_MS = 5000;
+    const session = this.sessionManager.getOrCreate(sessionKey);
 
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      if (attempt > 0) {
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-      }
-
-      const session = this.sessionManager.getOrCreate(sessionKey);
-
-      // 等待主会话空闲
-      if (session.isBusy()) {
-        Logger.info(`[${sessionKey}] 主会话忙，等待重试注入子智能体反馈 (${attempt + 1}/${MAX_RETRIES + 1})`);
-        continue;
-      }
-
-      const channel = this.buildChannel(chatId, {
-        sessionKey,
-        senderId,
-      });
-
-      try {
-        const result = await session.handleMessage(text, { channel });
-        if (result.text === BUSY_MESSAGE) {
-          Logger.info(`[${sessionKey}] 主会话竞态忙碌，将重试`);
-          continue;
-        }
-        if (result.text === ERROR_MESSAGE) {
-          await this.sender.reply(chatId, result.text);
-        }
-        await this.drainMessageQueue(sessionKey);
-        return;
-      } finally {
-        this.clearPendingAnswerBySession(sessionKey);
-      }
+    if (session.isBusy()) {
+      this.enqueueSubAgentFeedback(sessionKey, chatId, senderId, text);
+      Logger.info(`[${sessionKey}] 主会话忙，子智能体反馈已入队`);
+      return;
     }
 
-    Logger.warning(`[${sessionKey}] 子智能体反馈注入失败：主会话持续忙碌`);
+    const channel = this.buildChannel(chatId, {
+      sessionKey,
+      senderId,
+    });
+
+    try {
+      const result = await session.handleRuntimeObservation(text, {
+        channel,
+        source: 'subagent_result',
+      });
+      if (result.text === BUSY_MESSAGE) {
+        this.enqueueSubAgentFeedback(sessionKey, chatId, senderId, text);
+        Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
+        return;
+      }
+      if (result.text === ERROR_MESSAGE) {
+        await this.sender.reply(chatId, result.text);
+      }
+      await this.drainMessageQueue(sessionKey);
+    } finally {
+      this.clearPendingAnswerBySession(sessionKey);
+    }
+  }
+
+  private enqueueSubAgentFeedback(sessionKey: string, chatId: string, senderId: string, text: string): void {
+    const queue = this.messageQueue.get(sessionKey) ?? [];
+    queue.push({
+      userText: text,
+      chatId,
+      senderId,
+      source: 'subagent_feedback',
+    });
+    this.messageQueue.set(sessionKey, queue);
   }
 
   /**
@@ -436,27 +440,29 @@ export class FeishuBot {
     const queue = this.messageQueue.get(sessionKey);
     if (!queue || queue.length === 0) return;
 
-    // 一次性取出所有积压消息
-    const messages = queue.splice(0);
-    this.messageQueue.delete(sessionKey);
+    const msg = queue.shift()!;
+    if (queue.length === 0) {
+      this.messageQueue.delete(sessionKey);
+    }
 
-    // 合并为单条文本
-    const mergedText = messages.length === 1
-      ? messages[0].userText
-      : messages.map((m, i) => `[队列消息 ${i + 1}] ${m.userText}`).join('\n');
-    const runtimeFeedback = messages.flatMap(message => message.runtimeFeedback || []);
-
-    const last = messages[messages.length - 1];
     const session = this.sessionManager.getOrCreate(sessionKey);
-    const channel = this.buildChannel(last.chatId, {
+    const channel = this.buildChannel(msg.chatId, {
       sessionKey,
-      senderId: last.senderId,
+      senderId: msg.senderId,
     });
 
     try {
-      const result = await session.handleMessage(mergedText, { channel, runtimeFeedback });
+      const result = msg.source === 'subagent_feedback'
+        ? await session.handleRuntimeObservation(msg.userText, {
+          channel,
+          source: 'subagent_result',
+        })
+        : await session.handleMessage(msg.userText, {
+          channel,
+          runtimeFeedback: msg.runtimeFeedback,
+        });
       if (result.text === ERROR_MESSAGE) {
-        await this.sender.reply(last.chatId, result.text);
+        await this.sender.reply(msg.chatId, result.text);
       }
     } finally {
       this.clearPendingAnswerBySession(sessionKey);
@@ -545,7 +551,7 @@ export class FeishuBot {
 
     if (session.isBusy()) {
       const queue = this.messageQueue.get(sessionKey) ?? [];
-      queue.push({ userText: messageText, chatId: msg.chat_id, senderId: '' });
+      queue.push({ userText: messageText, chatId: msg.chat_id, senderId: '', source: 'user' });
       this.messageQueue.set(sessionKey, queue);
       return;
     }

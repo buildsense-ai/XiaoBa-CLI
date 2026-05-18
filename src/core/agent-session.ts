@@ -24,6 +24,7 @@ import { TurnContextBuilder } from './turn-context-builder';
 import { AgentTurnController } from './agent-turn-controller';
 import { SessionLifecycleManager } from './session-lifecycle-manager';
 import { PlanRuntime } from './plan-runtime';
+import { SubAgentManager } from './sub-agent-manager';
 import type { PendingUserInputProvider } from './conversation-runner';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
@@ -64,6 +65,11 @@ export interface HandleMessageOptions {
   pendingUserInputProvider?: PendingUserInputProvider;
 }
 
+export interface HandleRuntimeObservationOptions extends HandleMessageOptions {
+  /** 内部 observation 来源，例如 subagent_result */
+  source?: string;
+}
+
 /** 命令处理结果 */
 export interface CommandResult {
   handled: boolean;
@@ -75,6 +81,11 @@ export interface HandleMessageResult {
   visibleToUser: boolean;
   /** code mode 过程数据（thinking / tool_use / tool_result） */
   newMessages?: import('../types').Message[];
+}
+
+export interface SessionCleanupOptions {
+  stopSubAgents?: boolean;
+  subAgentStopReason?: string;
 }
 
 // ─── AgentSession 核心类 ────────────────────────────────
@@ -97,6 +108,7 @@ export class AgentSession {
   private systemPromptOverride?: SystemPromptProvider;
   /** 外部请求中断当前 run（例如用户在 busy 时发送"停止"） */
   private interruptRequested = false;
+  private activeAbortController: AbortController | null = null;
   lastActiveAt: number = Date.now();
   private sessionTurnLogger: SessionTurnLogger;
   private turnLogRecorder: TurnLogRecorder;
@@ -138,6 +150,21 @@ export class AgentSession {
       getCurrentDirectory: () => this.currentDirectory,
       updateCurrentDirectory: directory => this.updateCurrentDirectory(directory),
     });
+
+    const runtimeFeedbackInbox = this.runtimeFeedbackInbox;
+    const subAgentManager = SubAgentManager.getInstance();
+    subAgentManager.registerPlatformCallbacks(key, {
+      injectMessage: async (text: string) => {
+        runtimeFeedbackInbox.enqueue('subagent_feedback', text, {
+          maxLength: 2400,
+        });
+      },
+    });
+    if (typeof (subAgentManager as any).registerEventLogger === 'function') {
+      subAgentManager.registerEventLogger(key, (event, info) => {
+        this.sessionTurnLogger.logSubAgentEvent(event, info);
+      });
+    }
   }
 
   private resolveDefaultDirectory(): string {
@@ -285,6 +312,28 @@ export class AgentSession {
     text: string | import('../types').ContentBlock[],
     callbacksOrOptions?: SessionCallbacks | HandleMessageOptions,
   ): Promise<HandleMessageResult> {
+    return this.handleInput(text, callbacksOrOptions);
+  }
+
+  /**
+   * 处理 runtime observation（例如子 agent 完成结果）。
+   *
+   * 对外部模型 API 来说它仍是 role=user 的一轮输入；CatsCo 内部保留
+   * __runtimeObservation/runtimeObservationSource 标记，避免和真实用户追加消息混淆。
+   */
+  async handleRuntimeObservation(
+    text: string,
+    options: HandleRuntimeObservationOptions = {},
+  ): Promise<HandleMessageResult> {
+    const { source = 'runtime_observation', ...handleOptions } = options;
+    return this.handleInput(text, handleOptions, source);
+  }
+
+  private async handleInput(
+    text: string | import('../types').ContentBlock[],
+    callbacksOrOptions?: SessionCallbacks | HandleMessageOptions,
+    runtimeObservationSource?: string,
+  ): Promise<HandleMessageResult> {
     return this.withLogContext(async () => {
       // 兼容旧签名：如果传入的对象有 onText/onToolStart 等字段，视为 SessionCallbacks
       let callbacks: SessionCallbacks | undefined;
@@ -322,6 +371,7 @@ export class AgentSession {
 
       this.busy = true;
       this.interruptRequested = false;
+      this.activeAbortController = new AbortController();
       this.lastActiveAt = Date.now();
 
       this.messages = await this.contextWindowManager.compactIfNeeded(this.messages, {
@@ -335,9 +385,11 @@ export class AgentSession {
           input: text,
           messages: this.messages,
           runtimeFeedback,
+          runtimeObservationSource,
           callbacks,
           channel,
           pendingUserInputProvider,
+          abortSignal: this.activeAbortController.signal,
           shouldContinue: () => !this.interruptRequested,
         });
         this.messages = result.messages;
@@ -369,6 +421,7 @@ export class AgentSession {
       } finally {
         this.planRuntime.clear();
         this.busy = false;
+        this.activeAbortController = null;
       }
     });
   }
@@ -429,6 +482,7 @@ export class AgentSession {
   /** 重置会话状态（仅清内存，保留历史文件） */
   reset(): void {
     this.planRuntime.clear();
+    this.stopSubAgents('父会话 reset');
     this.messages = [];
     this.resetCurrentDirectory();
     const state = this.lifecycleManager.reset();
@@ -439,6 +493,7 @@ export class AgentSession {
   /** 清空历史（同时删除文件） */
   clear(): void {
     this.planRuntime.clear();
+    this.stopSubAgents('父会话 clear');
     this.messages = [];
     const state = this.lifecycleManager.clear();
     this.resetCurrentDirectory();
@@ -449,6 +504,7 @@ export class AgentSession {
   async summarizeAndDestroy(): Promise<boolean> {
     return this.withLogContext(async () => {
       this.planRuntime.clear();
+      this.stopSubAgents('父会话退出');
       if (this.messages.length === 0) return false;
       this.messages = [];
       return true;
@@ -456,8 +512,16 @@ export class AgentSession {
   }
 
   /** 过期或退出时清理内存（保存完整 context） */
-  async cleanup(): Promise<void> {
+  async cleanup(options: SessionCleanupOptions = {}): Promise<void> {
     return this.withLogContext(async () => {
+      if (options.stopSubAgents) {
+        this.stopSubAgents(options.subAgentStopReason || '父会话清理');
+      }
+      const subAgentManager = SubAgentManager.getInstance();
+      if (typeof (subAgentManager as any).unregisterEventLogger === 'function') {
+        subAgentManager.unregisterEventLogger(this.key);
+      }
+      subAgentManager.unregisterPlatformCallbacks(this.key);
       if (this.messages.length === 0) return;
 
       try {
@@ -480,8 +544,10 @@ export class AgentSession {
 
   /** 请求中断当前运行中的对话回合 */
   requestInterrupt(): void {
+    this.stopSubAgents('用户请求中止');
     if (!this.busy) return;
     this.interruptRequested = true;
+    this.activeAbortController?.abort();
   }
 
   /** 从 DB 恢复消息（进程重启后调用） */
@@ -495,6 +561,13 @@ export class AgentSession {
 
   private consumeRuntimeFeedback(inputs: RuntimeFeedbackInput[] = []): string[] {
     return this.runtimeFeedbackInbox.consume(inputs);
+  }
+
+  private stopSubAgents(reason: string): void {
+    const result = SubAgentManager.getInstance().stopAllForParent(this.key, reason);
+    if (result.stopped > 0) {
+      Logger.info(`[会话 ${this.key}] ${reason}，已停止 ${result.stopped} 个后台子任务`);
+    }
   }
 
   private enforceInjectedContextLimit(): void {

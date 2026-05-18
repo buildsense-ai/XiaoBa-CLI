@@ -124,7 +124,7 @@ export async function createRuntimeConfigSnapshot(
   const systemPrompt = await Promise.resolve(RuntimeFactory.createSystemPromptProvider(profile)());
   const tools = buildToolSnapshot(profile);
   const skills = await buildSkillSnapshot(options.loadSkills ?? profile.skills.enabled);
-  const logUpload = options.config?.logUpload;
+  const logUpload = options.config?.catscoLogUpload;
 
   return {
     generatedAt: (options.now ?? new Date()).toISOString(),
@@ -229,7 +229,7 @@ function resolveRuntimeProfileForSnapshot(options: {
       maxTokens: options.config?.maxTokens,
     },
     logging: {
-      uploadEnabled: options.config?.logUpload?.enabled,
+      uploadEnabled: options.config?.catscoLogUpload?.enabled,
     },
   });
 }

@@ -153,13 +153,17 @@ export class MessageSender {
     }
   }
 
-  async sendThinking(topic: string, thinking: string): Promise<void> {
-    await this.send(topic, 'thinking', thinking);
+  async sendThinking(topic: string, thinking: string, metadata?: any): Promise<void> {
+    await this.send(topic, 'thinking', thinking, metadata);
     Logger.info(`Thinking 已发送: ${thinking.slice(0, 50)}...`);
   }
 
-  async sendToolUse(topic: string, toolUseId: string, name: string, input: any): Promise<void> {
-    await this.send(topic, 'tool_use', name, { id: toolUseId, input });
+  async sendToolUse(topic: string, toolUseId: string, name: string, input: any, metadata?: any): Promise<void> {
+    await this.send(topic, 'tool_use', name, {
+      id: toolUseId,
+      input,
+      ...(metadata || {}),
+    });
     Logger.info(`Tool use 已发送: ${name}, id=${toolUseId}`);
   }
 
@@ -167,11 +171,13 @@ export class MessageSender {
     topic: string,
     toolUseId: string,
     content: string,
-    isError = false
+    isError = false,
+    metadata?: any
   ): Promise<void> {
     await this.send(topic, 'tool_result', content, {
       tool_use_id: toolUseId,
       is_error: isError,
+      ...(metadata || {}),
     });
     Logger.info(`Tool result 已发送: tool_use_id=${toolUseId}`);
   }

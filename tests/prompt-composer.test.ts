@@ -42,6 +42,9 @@ describe('PromptComposer', () => {
         '当前平台：feishu',
         '当前日期：2026-05-01',
         'Current directory is provided in a transient message for each model request. Use that current directory for relative file and shell paths.',
+        'If the user asks you to inspect a project, repository, or source code, treat the current directory as the likely project root first.',
+        'Do not mistake Electron userData, AppData, logs, or cache directories for the source repository unless the user explicitly asks about those runtime files.',
+        'If the current directory does not appear to contain the requested product or service, do a small path check or ask for the correct repository instead of repeatedly scanning the wrong directory.',
       ].join('\n'),
     ].join('\n\n'));
   });
@@ -62,6 +65,9 @@ describe('PromptComposer', () => {
       [
         '当前日期：2026-05-01',
         'Current directory is provided in a transient message for each model request. Use that current directory for relative file and shell paths.',
+        'If the user asks you to inspect a project, repository, or source code, treat the current directory as the likely project root first.',
+        'Do not mistake Electron userData, AppData, logs, or cache directories for the source repository unless the user explicitly asks about those runtime files.',
+        'If the current directory does not appear to contain the requested product or service, do a small path check or ask for the correct repository instead of repeatedly scanning the wrong directory.',
       ].join('\n'),
     ].join('\n\n'));
     assert.doesNotMatch(prompt, /Legacy behavior prompt/);
@@ -104,6 +110,7 @@ describe('PromptComposer', () => {
     assert.doesNotMatch(blankDisplayNamePrompt, /你在这个平台上的名字是/);
     assert.match(blankDisplayNamePrompt, /当前平台： feishu /);
     assert.match(blankDisplayNamePrompt, /Current directory is provided in a transient message/);
+    assert.match(blankDisplayNamePrompt, /Do not mistake Electron userData/);
   });
 
   test('PromptManager delegates to PromptComposer without changing output', async () => {
@@ -161,6 +168,7 @@ describe('PromptComposer', () => {
     assert.match(prompt, /你在这个平台上的名字是：Desk Bot/);
     assert.match(prompt, /当前平台：feishu/);
     assert.match(prompt, /Current directory is provided in a transient message/);
+    assert.match(prompt, /likely project root first/);
     assert.doesNotMatch(prompt.replace(/\\/g, '/'), /\/tmp\/xiaoba-runtime-profile/);
   });
 
@@ -180,6 +188,9 @@ describe('PromptComposer', () => {
       [
         '当前日期：2026-05-01',
         'Current directory is provided in a transient message for each model request. Use that current directory for relative file and shell paths.',
+        'If the user asks you to inspect a project, repository, or source code, treat the current directory as the likely project root first.',
+        'Do not mistake Electron userData, AppData, logs, or cache directories for the source repository unless the user explicitly asks about those runtime files.',
+        'If the current directory does not appear to contain the requested product or service, do a small path check or ask for the correct repository instead of repeatedly scanning the wrong directory.',
       ].join('\n'),
     ].join('\n\n'));
   });
@@ -205,6 +216,7 @@ describe('PromptComposer', () => {
     assert.match(prompt, /你在这个平台上的名字是：Desk Bot/);
     assert.match(prompt, /当前平台： feishu /);
     assert.match(prompt, /Current directory is provided in a transient message/);
+    assert.match(prompt, /logs, or cache directories/);
     assert.doesNotMatch(prompt.replace(/\\/g, '/'), /\/tmp\/xiaoba-runtime-profile/);
   });
 
