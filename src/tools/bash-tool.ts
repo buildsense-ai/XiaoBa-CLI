@@ -17,6 +17,7 @@ interface WrappedCommand {
   marker: string;
   cwdFilePath?: string;
   powershellScript?: string;
+  cmdScript?: string;
 }
 
 interface ShellOutput {
@@ -142,7 +143,7 @@ export class ShellTool implements Tool {
       const errorOutput = [
         parsedStderr.output,
         parsedStdout.output,
-        this.stripAnyDirectoryProbe(error.message),
+        this.formatExecutionError(error),
       ].filter(Boolean).join('\n').trim();
 
       Logger.error(`Command failed (elapsed: ${executionTime}ms)`);
@@ -167,6 +168,7 @@ export class ShellTool implements Tool {
         marker,
         cwdFilePath,
         powershellScript: this.buildPowerShellScript(command, cwdFilePath),
+        cmdScript: this.buildCmdScript(command, cwdFilePath),
       };
     }
 
@@ -188,6 +190,7 @@ export class ShellTool implements Tool {
       '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
       '$OutputEncoding = [System.Text.Encoding]::UTF8',
       '$ErrorActionPreference = "Stop"',
+      '$ProgressPreference = "SilentlyContinue"',
       '$env:PYTHONIOENCODING = "utf-8"',
       '$env:PYTHONUTF8 = "1"',
       '$__xiaoba_status = 0',
@@ -201,6 +204,17 @@ export class ShellTool implements Tool {
       `  (Get-Location).ProviderPath | Set-Content -LiteralPath '${escapedCwdFilePath}' -Encoding UTF8`,
       '}',
       'exit $__xiaoba_status',
+    ].join('\r\n');
+  }
+
+  private buildCmdScript(command: string, cwdFilePath: string): string {
+    return [
+      '@echo off',
+      'chcp 65001 >nul',
+      command,
+      'set "__XIAOBA_STATUS__=%ERRORLEVEL%"',
+      `cd > "${cwdFilePath.replace(/"/g, '""')}"`,
+      'exit /b %__XIAOBA_STATUS__%',
     ].join('\r\n');
   }
 
@@ -348,12 +362,91 @@ export class ShellTool implements Tool {
     env: NodeJS.ProcessEnv,
     timeout: number,
   ): Promise<ShellOutput> {
-    return execAsync(wrapped.command, {
-      cwd,
-      env,
-      encoding: 'utf-8',
-      timeout,
-      maxBuffer: 10 * 1024 * 1024,
+    const cmdScript = wrapped.cmdScript;
+    if (!cmdScript) {
+      return Promise.reject(new Error('Internal error: missing Windows cmd script'));
+    }
+
+    return new Promise((resolve, reject) => {
+      const child = spawn('cmd.exe', ['/d', '/q'], {
+        cwd,
+        env,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      let settled = false;
+      let timedOut = false;
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      const maxBuffer = 10 * 1024 * 1024;
+
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+
+      const fail = (error: any) => {
+        finish(() => {
+          try { child.kill(); } catch {}
+          error.stdout = this.stripCmdSessionNoise(this.decodeWindowsOutput(Buffer.concat(stdoutChunks)));
+          error.stderr = this.stripCmdSessionNoise(this.decodeWindowsOutput(Buffer.concat(stderrChunks)));
+          reject(error);
+        });
+      };
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        fail(new Error(`Command timed out after ${timeout}ms`));
+      }, timeout);
+
+      child.stdout?.on('data', (chunk: Buffer) => {
+        const buffer = Buffer.from(chunk);
+        stdoutBytes += buffer.length;
+        if (stdoutBytes > maxBuffer) {
+          fail(new Error(`stdout maxBuffer exceeded (${maxBuffer} bytes)`));
+          return;
+        }
+        stdoutChunks.push(buffer);
+      });
+
+      child.stderr?.on('data', (chunk: Buffer) => {
+        const buffer = Buffer.from(chunk);
+        stderrBytes += buffer.length;
+        if (stderrBytes > maxBuffer) {
+          fail(new Error(`stderr maxBuffer exceeded (${maxBuffer} bytes)`));
+          return;
+        }
+        stderrChunks.push(buffer);
+      });
+
+      child.on('error', (error: Error) => {
+        fail(error);
+      });
+
+      child.on('close', (code: number | null) => {
+        if (settled) return;
+        const stdout = this.stripCmdSessionNoise(this.decodeWindowsOutput(Buffer.concat(stdoutChunks)));
+        const stderr = this.stripCmdSessionNoise(this.decodeWindowsOutput(Buffer.concat(stderrChunks)));
+        finish(() => {
+          if (timedOut) return;
+          if (code === 0) {
+            resolve({ stdout, stderr });
+            return;
+          }
+          const error: any = new Error(`Command failed with exit code ${code}`);
+          error.code = code;
+          error.stdout = stdout;
+          error.stderr = stderr;
+          reject(error);
+        });
+      });
+
+      child.stdin.end(cmdScript + '\r\n');
     });
   }
 
@@ -381,6 +474,21 @@ export class ShellTool implements Tool {
 
   private countReplacementChars(value: string): number {
     return (value.match(/\uFFFD/g) || []).length;
+  }
+
+  private stripCmdSessionNoise(output: string): string {
+    return String(output || '')
+      .split(/\r?\n/)
+      .map(line => line.replace(/^[A-Za-z]:\\[^>\r\n]*>/, ''))
+      .filter(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return false;
+        if (/^Microsoft Windows \[/.test(trimmed)) return false;
+        if (/Microsoft Corporation/i.test(trimmed)) return false;
+        return true;
+      })
+      .join('\n')
+      .replace(/\n+$/, '');
   }
 
   private cleanupWrappedCommand(wrapped: WrappedCommand): void {
@@ -423,6 +531,19 @@ export class ShellTool implements Tool {
       .filter(line => !line.startsWith(CWD_MARKER_PREFIX))
       .join('\n')
       .replace(/\n+$/, '');
+  }
+
+  private formatExecutionError(error: any): string {
+    if (typeof error?.code === 'number') {
+      return `Command failed with exit code ${error.code}`;
+    }
+    if (error?.code) {
+      return `Command failed: ${error.code}`;
+    }
+    if (error?.signal) {
+      return `Command terminated by signal ${error.signal}`;
+    }
+    return this.stripAnyDirectoryProbe(String(error?.message || error || 'Command failed'));
   }
 
   private updateCurrentDirectory(directory: string | undefined, context: ToolExecutionContext): void {

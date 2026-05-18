@@ -40,7 +40,7 @@ describe('ShellTool current directory probe', () => {
     });
 
     assert.strictEqual(result.ok, true);
-    assert.strictEqual(currentDirectory, path.join(testRoot, 'sub'));
+    assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
     assert.ok(!(result.content as string).includes('__XIAOBA_CWD_MARKER__'));
   });
 
@@ -55,7 +55,7 @@ describe('ShellTool current directory probe', () => {
     });
 
     assert.strictEqual(result.ok, true);
-    assert.strictEqual(currentDirectory, path.join(testRoot, 'sub'));
+    assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
     assert.ok((result.content as string).includes('ok'));
     assert.ok(!(result.content as string).includes('__XIAOBA_CWD_MARKER__'));
   });
@@ -70,6 +70,9 @@ describe('ShellTool current directory probe', () => {
     assert.strictEqual(result.ok, false);
     assert.strictEqual(currentDirectory, testRoot);
     assert.ok(!result.message.includes('__XIAOBA_CWD_MARKER__'));
+    assert.ok(!result.message.includes('status=$?'));
+    assert.ok(!result.message.includes('printf'));
+    assert.ok(!result.message.includes('exit "$status"'));
   });
 
   test('successful cd is persisted even when a later command fails', async () => {
@@ -83,8 +86,11 @@ describe('ShellTool current directory probe', () => {
     });
 
     assert.strictEqual(result.ok, false);
-    assert.strictEqual(currentDirectory, path.join(testRoot, 'sub'));
+    assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
     assert.ok(!result.message.includes('__XIAOBA_CWD_MARKER__'));
+    assert.ok(!result.message.includes('status=$?'));
+    assert.ok(!result.message.includes('printf'));
+    assert.ok(!result.message.includes('exit "$status"'));
   });
 
   test('Windows PowerShell command output is decoded as UTF-8', {
@@ -127,7 +133,56 @@ describe('ShellTool current directory probe', () => {
 
     assert.strictEqual(result.ok, true);
     assert.ok((result.content as string).includes('visible-output'));
-    assert.strictEqual(currentDirectory, path.join(testRoot, 'sub'));
+    assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
+  });
+
+  test('Windows cmd fallback preserves cwd and strips session noise', {
+    skip: process.platform !== 'win32',
+  }, async () => {
+    const tool = new ShellTool();
+    (tool as any).executeWindowsPowerShellScript = async () => {
+      const error: any = new Error('spawn powershell.exe ENOENT');
+      error.code = 'ENOENT';
+      throw error;
+    };
+
+    const result = await tool.execute({ command: 'cd sub && echo ok' }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    assert.ok((result.content as string).includes('ok'));
+    assert.ok(!(result.content as string).includes('Microsoft Windows'));
+    assert.ok(!/[A-Z]:\\.*>/.test(result.content as string));
+    assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
+  });
+
+  test('Windows cmd fallback persists cwd even when a later command fails', {
+    skip: process.platform !== 'win32',
+  }, async () => {
+    const tool = new ShellTool();
+    (tool as any).executeWindowsPowerShellScript = async () => {
+      const error: any = new Error('spawn powershell.exe ENOENT');
+      error.code = 'ENOENT';
+      throw error;
+    };
+
+    const result = await tool.execute({ command: 'cd sub && definitely_missing_xiaoba_command' }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, false);
+    assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
+    assert.ok(!result.message.includes('__XIAOBA_STATUS__'));
+    assert.ok(!result.message.includes('cd >'));
+    assert.ok(!result.message.includes('exit /b'));
+    assert.ok(!/[A-Z]:\\.*>/.test(result.message));
   });
 
 });
+
+function assertSameDirectory(actual: string, expected: string): void {
+  assert.strictEqual(fs.realpathSync(actual), fs.realpathSync(expected));
+}
