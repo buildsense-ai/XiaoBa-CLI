@@ -158,7 +158,11 @@ test('dashboard supports hidden persistent font scaling shortcuts', () => {
   assert.match(dashboardHtml, /DASHBOARD_FONT_SCALE_KEY = 'xiaoba\.dashboardFontScale'/);
   assert.match(dashboardHtml, /function applyDashboardFontScale\(value, persist=true\)/);
   assert.match(dashboardHtml, /function dashboardFontScaleLimit\(\)/);
-  assert.match(dashboardHtml, /document\.body\.style\.zoom=effectiveScale \/ 100/);
+  assert.match(dashboardHtml, /--dashboard-ui-zoom: 1/);
+  assert.match(dashboardHtml, /\.sidebar \{\s*zoom: var\(--dashboard-ui-zoom\);/);
+  assert.match(dashboardHtml, /\.main-wrapper \{\s*zoom: var\(--dashboard-ui-zoom\);/);
+  assert.match(dashboardHtml, /document\.documentElement\.style\.setProperty\('--dashboard-ui-zoom', String\(effectiveScale \/ 100\)\)/);
+  assert.match(dashboardHtml, /document\.body\.style\.zoom=''/);
   assert.match(dashboardHtml, /function handleDashboardFontScaleShortcut\(event\)/);
   assert.match(dashboardHtml, /key==='\+' \|\| key==='=' \|\| key==='Add'/);
   assert.match(dashboardHtml, /key==='-' \|\| key==='_'\s*\|\| key==='Subtract'/);

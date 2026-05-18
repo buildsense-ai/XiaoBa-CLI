@@ -3644,6 +3644,7 @@
       --radius-sm: 10px;
       --radius-xs: 8px;
       --dashboard-page-gutter: clamp(24px, 2.6vw, 48px);
+      --dashboard-ui-zoom: 1;
     }
 
     html {
@@ -3658,6 +3659,7 @@
     }
 
     .sidebar {
+      zoom: var(--dashboard-ui-zoom);
       left: 0;
       top: 0;
       bottom: 0;
@@ -3748,6 +3750,7 @@
     }
 
     .main-wrapper {
+      zoom: var(--dashboard-ui-zoom);
       margin-left: 240px;
       padding: 32px var(--dashboard-page-gutter);
     }
@@ -6396,7 +6399,8 @@
       const effectiveScale=Math.min(scale, dashboardFontScaleLimit());
       document.documentElement.dataset.fontScale=String(scale);
       document.documentElement.dataset.effectiveFontScale=String(effectiveScale);
-      document.body.style.zoom=effectiveScale / 100;
+      document.documentElement.style.setProperty('--dashboard-ui-zoom', String(effectiveScale / 100));
+      document.body.style.zoom='';
       if(persist){
         try{localStorage.setItem(DASHBOARD_FONT_SCALE_KEY, String(scale));}catch(_e){}
       }
