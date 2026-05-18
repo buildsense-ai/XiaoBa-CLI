@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 
-export const DEFAULT_SKILLHUB_BASE_URL = 'https://logs.catsco.fun';
+export const DEFAULT_SKILLHUB_BASE_URL = 'https://logs.catsco.fun:9000';
 
 export interface SkillHubConfig {
   baseUrl: string;

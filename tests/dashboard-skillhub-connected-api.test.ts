@@ -78,7 +78,7 @@ describe('dashboard connected SkillHub API', () => {
 
   test('uses the official SkillHub cloud by default', () => {
     delete process.env.CATSCO_SKILLHUB_BASE_URL;
-    assert.equal(loadSkillHubConfig().baseUrl, 'https://logs.catsco.fun');
+    assert.equal(loadSkillHubConfig().baseUrl, 'https://logs.catsco.fun:9000');
   });
 
   async function startDashboard(): Promise<void> {
