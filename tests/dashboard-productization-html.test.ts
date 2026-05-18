@@ -151,9 +151,10 @@ test('CatsCo Chat preserves fallback tool metadata for WORKING rendering', () =>
   assert.match(workingBlock, /metadata\.step_count\?metadata\.step_count\+' 步'/);
 });
 
-test('dashboard exposes persistent font scaling controls and shortcuts', () => {
-  assert.match(dashboardHtml, /id="font-scale-slider"[^>]*min="85"[^>]*max="150"[^>]*oninput="setDashboardFontScale\(this\.value\)"/);
-  assert.match(dashboardHtml, /id="font-scale-value"/);
+test('dashboard supports hidden persistent font scaling shortcuts', () => {
+  assert.doesNotMatch(dashboardHtml, /id="font-scale-slider"/);
+  assert.doesNotMatch(dashboardHtml, /id="font-scale-value"/);
+  assert.doesNotMatch(dashboardHtml, /font-scale-control/);
   assert.match(dashboardHtml, /DASHBOARD_FONT_SCALE_KEY = 'xiaoba\.dashboardFontScale'/);
   assert.match(dashboardHtml, /function applyDashboardFontScale\(value, persist=true\)/);
   assert.match(dashboardHtml, /document\.documentElement\.style\.fontSize=scale\+'%'/);

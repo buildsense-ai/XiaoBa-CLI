@@ -3748,50 +3748,6 @@
       margin-top: 10px;
     }
 
-    .font-scale-control {
-      margin-top: 12px;
-      padding: 10px;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      background: var(--surface-muted);
-    }
-
-    .font-scale-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      color: var(--text2);
-      font-size: 12px;
-      font-weight: 800;
-      margin-bottom: 8px;
-    }
-
-    .font-scale-row output {
-      color: var(--text);
-      font-variant-numeric: tabular-nums;
-    }
-
-    .font-scale-slider {
-      width: 100%;
-      accent-color: var(--accent);
-      cursor: pointer;
-    }
-
-    .font-scale-control.mini {
-      display: none;
-      padding: 0;
-      border: 0;
-      background: transparent;
-    }
-
-    .font-scale-btn {
-      width: 100%;
-      min-height: 34px;
-      padding: 0;
-      border-radius: 8px;
-    }
-
     .main-wrapper {
       margin-left: 240px;
       padding: 32px var(--dashboard-page-gutter);
@@ -4256,14 +4212,6 @@
         min-height: calc(100vh - 32px);
       }
 
-      body.chat-active .font-scale-control {
-        display: none;
-      }
-
-      body.chat-active .font-scale-control.mini {
-        display: block;
-      }
-
       .sidebar {
         border-right: 0;
         border-bottom: 1px solid var(--border);
@@ -4302,7 +4250,6 @@
     .model-source-copy,
     .status-dot,
     .tag { font-size: 0.8125rem; }
-    .font-scale-row,
     .chat-muted,
     .chat-step-row,
     .chat-step-row strong,
@@ -4372,13 +4319,6 @@
         <span id="footer-platform">-</span><br/>
         <span id="footer-node">-</span>
         <button class="btn sidebar-update-btn" id="sidebar-update-btn" onclick="showUpdateModal(true)">检查更新</button>
-        <div class="font-scale-control">
-          <div class="font-scale-row"><span>字号</span><output id="font-scale-value">100%</output></div>
-          <input class="font-scale-slider" id="font-scale-slider" type="range" min="85" max="150" step="5" value="100" aria-label="调整字号" oninput="setDashboardFontScale(this.value)" />
-        </div>
-        <div class="font-scale-control mini">
-          <button class="btn font-scale-btn" type="button" onclick="cycleDashboardFontScale()" title="调整字号" aria-label="调整字号">A</button>
-        </div>
       </div>
     </div>
   </aside>
@@ -6416,15 +6356,6 @@
       const scale=normalizeDashboardFontScale(value);
       document.documentElement.style.fontSize=scale+'%';
       document.documentElement.dataset.fontScale=String(scale);
-      const slider=document.getElementById('font-scale-slider');
-      const output=document.getElementById('font-scale-value');
-      const mini=document.querySelector('.font-scale-btn');
-      if(slider)slider.value=String(scale);
-      if(output)output.textContent=scale+'%';
-      if(mini){
-        mini.title='调整字号：'+scale+'%';
-        mini.setAttribute('aria-label','调整字号：'+scale+'%');
-      }
       if(persist){
         try{localStorage.setItem(DASHBOARD_FONT_SCALE_KEY, String(scale));}catch(_e){}
       }
@@ -6437,19 +6368,9 @@
       return applyDashboardFontScale(stored||DASHBOARD_FONT_SCALE_DEFAULT, false);
     }
 
-    function setDashboardFontScale(value){
-      applyDashboardFontScale(value, true);
-    }
-
     function stepDashboardFontScale(direction){
       const current=normalizeDashboardFontScale(document.documentElement.dataset.fontScale||DASHBOARD_FONT_SCALE_DEFAULT);
       return applyDashboardFontScale(current + direction * DASHBOARD_FONT_SCALE_STEP, true);
-    }
-
-    function cycleDashboardFontScale(){
-      const current=normalizeDashboardFontScale(document.documentElement.dataset.fontScale||DASHBOARD_FONT_SCALE_DEFAULT);
-      const next=current>=140?DASHBOARD_FONT_SCALE_DEFAULT:current+10;
-      applyDashboardFontScale(next, true);
     }
 
     function handleDashboardFontScaleShortcut(event){
