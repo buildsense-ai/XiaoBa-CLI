@@ -3748,6 +3748,50 @@
       margin-top: 10px;
     }
 
+    .font-scale-control {
+      margin-top: 12px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface-muted);
+    }
+
+    .font-scale-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--text2);
+      font-size: 12px;
+      font-weight: 800;
+      margin-bottom: 8px;
+    }
+
+    .font-scale-row output {
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .font-scale-slider {
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .font-scale-control.mini {
+      display: none;
+      padding: 0;
+      border: 0;
+      background: transparent;
+    }
+
+    .font-scale-btn {
+      width: 100%;
+      min-height: 34px;
+      padding: 0;
+      border-radius: 8px;
+    }
+
     .main-wrapper {
       margin-left: 240px;
       padding: 32px var(--dashboard-page-gutter);
@@ -4212,6 +4256,14 @@
         min-height: calc(100vh - 32px);
       }
 
+      body.chat-active .font-scale-control {
+        display: none;
+      }
+
+      body.chat-active .font-scale-control.mini {
+        display: block;
+      }
+
       .sidebar {
         border-right: 0;
         border-bottom: 1px solid var(--border);
@@ -4232,6 +4284,58 @@
         width: min(292px, calc(100vw - 24px));
       }
     }
+
+    .sidebar-brand-text { font-size: 0.9375rem; }
+    .sidebar-brand-ver,
+    .sidebar-footer-info,
+    .chat-code-label { font-size: 0.6875rem; }
+    .nav-item,
+    .btn,
+    .config-input,
+    .config-select,
+    .runtime-note,
+    .runtime-field-label,
+    .runtime-field-value,
+    .settings-meta,
+    .settings-step-title,
+    .profile-summary-value,
+    .model-source-copy,
+    .status-dot,
+    .tag { font-size: 0.8125rem; }
+    .font-scale-row,
+    .chat-muted,
+    .chat-step-row,
+    .chat-step-row strong,
+    .chat-status-row,
+    .chat-status-row strong,
+    .readiness-summary,
+    .readiness-check,
+    .skill-meta,
+    .skill-desc,
+    .skill-files,
+    .status-card .label,
+    .run-summary-label { font-size: 0.75rem; }
+    .section-title,
+    .section-header h2 { font-size: 1.375rem; }
+    .run-summary-title { font-size: 1.5rem; }
+    .status-card .value,
+    .overview-card .ov-value { font-size: 1.25rem; }
+    .svc-name,
+    .chat-connect h3,
+    .chat-window-title { font-size: 1rem; }
+    .readiness-title,
+    .settings-setup-title,
+    .model-source-title,
+    .config-group-title { font-size: 0.9375rem; }
+    .chat-message { font-size: 1rem; }
+    .chat-message-meta,
+    .chat-upload-info small { font-size: 0.75rem; }
+    .chat-markdown h1 { font-size: 1.25rem; }
+    .chat-markdown h2 { font-size: 1.125rem; }
+    .chat-markdown h3 { font-size: 1rem; }
+    .chat-markdown pre code { font-size: 0.8125rem; }
+    .chat-markdown table { font-size: 0.875rem; }
+    .chat-input-bar textarea { font-size: 0.9375rem; }
 
   </style>
 </head>
@@ -4268,6 +4372,13 @@
         <span id="footer-platform">-</span><br/>
         <span id="footer-node">-</span>
         <button class="btn sidebar-update-btn" id="sidebar-update-btn" onclick="showUpdateModal(true)">检查更新</button>
+        <div class="font-scale-control">
+          <div class="font-scale-row"><span>字号</span><output id="font-scale-value">100%</output></div>
+          <input class="font-scale-slider" id="font-scale-slider" type="range" min="85" max="150" step="5" value="100" aria-label="调整字号" oninput="setDashboardFontScale(this.value)" />
+        </div>
+        <div class="font-scale-control mini">
+          <button class="btn font-scale-btn" type="button" onclick="cycleDashboardFontScale()" title="调整字号" aria-label="调整字号">A</button>
+        </div>
       </div>
     </div>
   </aside>
@@ -4666,6 +4777,11 @@
     const PET_PROFILE_KEY = 'xiaoba.petProfile';
     const PET_PROCESS_KEY = 'xiaoba.petProcess';
     const PET_POSITION_KEY = 'xiaoba.petPosition';
+    const DASHBOARD_FONT_SCALE_KEY = 'xiaoba.dashboardFontScale';
+    const DASHBOARD_FONT_SCALE_MIN = 85;
+    const DASHBOARD_FONT_SCALE_MAX = 150;
+    const DASHBOARD_FONT_SCALE_STEP = 5;
+    const DASHBOARD_FONT_SCALE_DEFAULT = 100;
     const petUnlocks = [
       { level: 2, title: '专注表情', meta: '更多 thinking 动态' },
       { level: 4, title: 'CatsCo 皮肤', meta: '浅色工作台主题' },
@@ -6289,6 +6405,72 @@
       try{const r=await fetch(API+'/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(updates)});const d=await r.json();if(d.ok){const s=document.getElementById('config-saved');s.classList.add('show');setTimeout(()=>s.classList.remove('show'),2000);}}catch(e){alert('保存失败: '+e.message);}
     }
 
+    function normalizeDashboardFontScale(value){
+      const numeric=Number(value);
+      const safe=Number.isFinite(numeric)?numeric:DASHBOARD_FONT_SCALE_DEFAULT;
+      const stepped=Math.round(safe/DASHBOARD_FONT_SCALE_STEP)*DASHBOARD_FONT_SCALE_STEP;
+      return Math.min(DASHBOARD_FONT_SCALE_MAX, Math.max(DASHBOARD_FONT_SCALE_MIN, stepped));
+    }
+
+    function applyDashboardFontScale(value, persist=true){
+      const scale=normalizeDashboardFontScale(value);
+      document.documentElement.style.fontSize=scale+'%';
+      document.documentElement.dataset.fontScale=String(scale);
+      const slider=document.getElementById('font-scale-slider');
+      const output=document.getElementById('font-scale-value');
+      const mini=document.querySelector('.font-scale-btn');
+      if(slider)slider.value=String(scale);
+      if(output)output.textContent=scale+'%';
+      if(mini){
+        mini.title='调整字号：'+scale+'%';
+        mini.setAttribute('aria-label','调整字号：'+scale+'%');
+      }
+      if(persist){
+        try{localStorage.setItem(DASHBOARD_FONT_SCALE_KEY, String(scale));}catch(_e){}
+      }
+      return scale;
+    }
+
+    function loadDashboardFontScale(){
+      let stored='';
+      try{stored=localStorage.getItem(DASHBOARD_FONT_SCALE_KEY)||'';}catch(_e){}
+      return applyDashboardFontScale(stored||DASHBOARD_FONT_SCALE_DEFAULT, false);
+    }
+
+    function setDashboardFontScale(value){
+      applyDashboardFontScale(value, true);
+    }
+
+    function stepDashboardFontScale(direction){
+      const current=normalizeDashboardFontScale(document.documentElement.dataset.fontScale||DASHBOARD_FONT_SCALE_DEFAULT);
+      return applyDashboardFontScale(current + direction * DASHBOARD_FONT_SCALE_STEP, true);
+    }
+
+    function cycleDashboardFontScale(){
+      const current=normalizeDashboardFontScale(document.documentElement.dataset.fontScale||DASHBOARD_FONT_SCALE_DEFAULT);
+      const next=current>=140?DASHBOARD_FONT_SCALE_DEFAULT:current+10;
+      applyDashboardFontScale(next, true);
+    }
+
+    function handleDashboardFontScaleShortcut(event){
+      if(!event.ctrlKey || event.altKey || event.metaKey)return;
+      const key=event.key;
+      if(key==='+' || key==='=' || key==='Add'){
+        event.preventDefault();
+        stepDashboardFontScale(1);
+        return;
+      }
+      if(key==='-' || key==='_' || key==='Subtract'){
+        event.preventDefault();
+        stepDashboardFontScale(-1);
+        return;
+      }
+      if(key==='0' || key===')'){
+        event.preventDefault();
+        applyDashboardFontScale(DASHBOARD_FONT_SCALE_DEFAULT, true);
+      }
+    }
+
     // === CatsCo Chat ===
     function escapeHtml(value){
       return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
@@ -7636,6 +7818,7 @@
     }
 
     // Init
+    loadDashboardFontScale();
     preloadPetFrames();renderPetProfile();renderPetProcess();initFloatingPetDrag();setPetState('idle');
     setupEnvConfigLazyLoad();fetchStatus();fetchSkills();fetchDashboardSettings();fetchRuntimeConfig();fetchUpdateStatus(true);fetchCatsStatus();
     if(document.getElementById('page-chat')?.classList.contains('active') && !catsPollTimer) catsPollTimer = setInterval(fetchCatsStatus, 5000);
@@ -7655,6 +7838,7 @@
     catsMessageInput.addEventListener('focus',()=>setPetState('typing', { message:'准备输入' }));
     catsMessageInput.addEventListener('blur',()=>{if(!catsMessageInput.value.trim()) setPetAutoBaseline(petAutoBaseline);});
     setupCatsAttachmentInputs();
+    document.addEventListener('keydown',handleDashboardFontScaleShortcut);
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeLogs();closeUpdateModal();closeCatsMediaPreview();}});
     document.addEventListener('click',e=>{const shell=document.getElementById('floating-pet');if(shell && !shell.contains(e.target)) closeFloatingPetMenu();});
   </script>
