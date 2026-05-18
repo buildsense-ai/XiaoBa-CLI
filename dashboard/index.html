@@ -1293,6 +1293,53 @@
 
     .modal-overlay.show { display: flex; }
 
+    /* 机器人选择弹窗 */
+    .bot-list {
+      padding: 16px;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    .bot-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: background 0.15s;
+      margin-bottom: 8px;
+      background: rgba(255,255,255,0.5);
+    }
+    .bot-item:hover { background: rgba(255,255,255,0.8); }
+    .bot-item.current { background: rgba(46,204,113,0.15); }
+    .bot-info { flex: 1; }
+    .bot-name { font-weight: 600; font-size: 14px; }
+    .bot-username { font-size: 12px; color: #888; }
+    .current-badge { 
+      background: var(--green); 
+      color: white; 
+      padding: 4px 12px; 
+      border-radius: 20px; 
+      font-size: 12px;
+    }
+    .btn-sm {
+      padding: 6px 14px;
+      font-size: 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: white;
+      cursor: pointer;
+    }
+    .btn-sm:hover { background: var(--bg-light); }
+    .close-btn {
+      background: none;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      color: #888;
+    }
+    .close-btn:hover { color: #333; }
+
     .modal {
       border-radius: 26px;
       width: min(920px, 100%);
@@ -6626,6 +6673,109 @@
       renderCatsChecklist(stage);
       updateCatsChatGate(stage);
       updateCatsLayoutState(stage);
+    }
+
+    // ==================== 机器人管理 ====================
+
+    /**
+     * 显示机器人选择弹窗
+     */
+    async function showBotSelector() {
+      const modal = document.getElementById('bot-selector-modal') || createBotSelectorModal();
+      modal.style.display = 'flex';
+
+      const listEl = document.getElementById('bot-list');
+      listEl.innerHTML = '<div class="loading">加载中...</div>';
+
+      try {
+        const resp = await fetch(API + '/api/cats/bots');
+        const data = await resp.json();
+
+        if (!data.ok || !data.bots?.length) {
+          listEl.innerHTML = '<div class="empty">暂无可用机器人</div>';
+          return;
+        }
+
+        listEl.innerHTML = data.bots.map(bot => `
+          <div class="bot-item ${bot.isCurrent ? 'current' : ''}" onclick="switchToBot('${bot.uid}', '${escapeHtml(bot.display_name)}')">
+            <div class="bot-info">
+              <div class="bot-name">${escapeHtml(bot.display_name)}</div>
+              <div class="bot-username">@${escapeHtml(bot.username)}</div>
+            </div>
+            ${bot.isCurrent ? '<span class="current-badge">当前</span>' : '<button class="btn-sm">切换</button>'}
+          </div>
+        `).join('');
+      } catch (e) {
+        listEl.innerHTML = '<div class="error">加载失败: ' + escapeHtml(e.message) + '</div>';
+      }
+    }
+
+    /**
+     * 切换到指定机器人
+     */
+    async function switchToBot(botUid, botName) {
+      if (!confirm(`确定切换到机器人 "${botName}" 吗？`)) return;
+
+      const btn = event.target;
+      btn.disabled = true;
+      btn.textContent = '切换中...';
+
+      try {
+        const resp = await fetch(API + '/api/cats/switch-bot', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ botUid })
+        });
+        const data = await resp.json();
+
+        if (data.ok) {
+          catsState.botUid = botUid;
+          catsState.botName = botName;
+          catsState.topicId = `p2p_${catsState.user?.uid || ''}_${botUid}`;
+          catsState.service = data.service;
+          renderCatsStatus();
+          closeBotSelector();
+          setCatsAction(data.message || `已切换到 ${botName}`);
+          pulsePetState('success', '切换成功', 1800);
+        } else {
+          setCatsAction('切换失败: ' + (data.error || '未知错误'), true);
+        }
+      } catch (e) {
+        setCatsAction('切换失败: ' + e.message, true);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    /**
+     * 关闭机器人选择弹窗
+     */
+    function closeBotSelector() {
+      const modal = document.getElementById('bot-selector-modal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    /**
+     * 创建机器人选择弹窗 DOM
+     */
+    function createBotSelectorModal() {
+      const modal = document.createElement('div');
+      modal.id = 'bot-selector-modal';
+      modal.className = 'modal-overlay';
+      modal.innerHTML = `
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>选择机器人</h3>
+            <button class="close-btn" onclick="closeBotSelector()">×</button>
+          </div>
+          <div id="bot-list" class="bot-list"></div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeBotSelector();
+      });
+      return modal;
     }
 
     async function sendCatsCode(){

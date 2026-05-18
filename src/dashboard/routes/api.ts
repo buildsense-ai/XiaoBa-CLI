@@ -1224,6 +1224,141 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
     }
   });
 
+  // ==================== 机器人管理 ====================
+
+  /**
+   * 获取机器人列表
+   * GET /api/cats/bots
+   */
+  router.get('/cats/bots', async (_req, res) => {
+    try {
+      const state = getCatsAuthState();
+      if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
+
+      const data = await catsRequest('GET', state.httpBaseUrl, '/api/bots', undefined, state.token);
+      const bots = Array.isArray(data?.bots) ? data.bots : [];
+      const currentBotUid = state.botUid || '';
+
+      const formattedBots = bots.map((bot: any) => ({
+        uid: String(bot.id || bot.uid || ''),
+        username: String(bot.username || ''),
+        display_name: String(bot.display_name || bot.username || ''),
+        api_key: '',
+        isCurrent: String(bot.id || bot.uid || '') === currentBotUid,
+      }));
+
+      res.json({ ok: true, bots: formattedBots, currentBotUid });
+    } catch (e: any) {
+      res.status(e.status || 500).json({ error: e.message });
+    }
+  });
+
+  /**
+   * 切换机器人
+   * POST /api/cats/switch-bot
+   */
+  router.post('/cats/switch-bot', async (req, res) => {
+    try {
+      const state = getCatsAuthState();
+      if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
+
+      const botUid = String(req.body?.botUid || '').trim();
+      if (!botUid) return res.status(400).json({ error: 'botUid is required' });
+
+      const data = await catsRequest('GET', state.httpBaseUrl, '/api/bots', undefined, state.token);
+      const bots = Array.isArray(data?.bots) ? data.bots : [];
+      const targetBot = bots.find((bot: any) => String(bot.id || bot.uid || '') === botUid);
+
+      if (!targetBot) return res.status(404).json({ error: 'Bot not found' });
+
+      let apiKey = '';
+      try {
+        const keyResponse = await catsRequest('GET', state.httpBaseUrl, `/api/bots/api-key?uid=${encodeURIComponent(botUid)}`, undefined, state.token);
+        apiKey = String(keyResponse.api_key || '');
+      } catch { /* ignore */ }
+
+      const botName = String(targetBot.display_name || targetBot.username || 'Bot');
+
+      const updated = writeEnvUpdates({
+        CATSCO_BOT_UID: botUid,
+        CATSCO_API_KEY: apiKey,
+        CATSCOMPANY_BOT_UID: botUid,
+        CATSCOMPANY_API_KEY: apiKey,
+      });
+
+      let service = serviceManager.getService('catscompany');
+      if (service && service.status === 'running') {
+        serviceManager.stop('catscompany');
+        service = serviceManager.start('catscompany');
+      }
+
+      res.json({
+        ok: true,
+        updated,
+        bot: { uid: botUid, username: targetBot.username || '', display_name: botName },
+        service: service || null,
+        message: `已切换到机器人 "${botName}"`,
+      });
+    } catch (e: any) {
+      res.status(e.status || 500).json({ error: e.message });
+    }
+  });
+
+  /**
+   * 获取设备列表
+   * GET /api/cats/devices
+   */
+  router.get('/cats/devices', async (_req, res) => {
+    try {
+      const state = getCatsAuthState();
+      if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
+
+      res.json({
+        ok: true,
+        devices: [{ id: 'current', name: '当前设备', platform: 'desktop', isOnline: true, isCurrent: true }],
+      });
+    } catch (e: any) {
+      res.status(e.status || 500).json({ error: e.message });
+    }
+  });
+
+  /**
+   * 获取本地配置
+   * GET /api/cats/config
+   */
+  router.get('/cats/config', async (_req, res) => {
+    try {
+      const state = getCatsAuthState();
+      res.json({
+        ok: true,
+        version: 2,
+        hasAccount: Boolean(state.token && state.uid),
+        hasBot: Boolean(state.botUid && state.apiKey),
+        account: state.uid ? { uid: state.uid, username: state.username || '', displayName: state.displayName || state.username || '' } : null,
+        currentBot: state.botUid ? { uid: state.botUid, name: 'Bot' } : null,
+        preferences: { autoConnect: true, switchConfirmEnabled: true },
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  /**
+   * 更新偏好设置
+   * PUT /api/cats/config/preferences
+   */
+  router.put('/cats/config/preferences', async (req, res) => {
+    try {
+      const preferences = req.body || {};
+      res.json({
+        ok: true,
+        preferences: { autoConnect: preferences.autoConnect ?? true, switchConfirmEnabled: preferences.switchConfirmEnabled ?? true },
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ==================== 日志和报告 ====================
   // 注释：以下功能需要 report-generator 和 log-uploader 模块，暂时禁用
 
