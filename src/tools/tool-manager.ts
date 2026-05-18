@@ -6,6 +6,7 @@ import { ShellTool } from './bash-tool';
 import { EditTool } from './edit-tool';
 import { GlobTool } from './glob-tool';
 import { GrepTool } from './grep-tool';
+import { CommonDirectoryTool } from './common-directory-tool';
 import { SkillTool } from './skill-tool';
 import { SendFileTool } from './send-file-tool';
 import { SendTextTool } from './send-text-tool';
@@ -79,6 +80,7 @@ export class ToolManager implements ToolExecutor {
       new EditTool(),
       new GlobTool(),
       new GrepTool(),
+      new CommonDirectoryTool(),
       new ShellTool(),
       new SendTextTool(),
       new SendFileTool(),
