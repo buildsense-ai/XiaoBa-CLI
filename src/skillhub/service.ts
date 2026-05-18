@@ -86,9 +86,23 @@ export class SkillHubService {
   }
 
   applyDeveloper(input: any): Promise<any> {
+    const namespace = String(input.namespace || '').trim();
+    const contact = String(input.contact || '').trim();
+    if (!namespace) {
+      const error: any = new Error('申请开发者需要填写命名空间。');
+      error.status = 400;
+      throw error;
+    }
+    if (!contact) {
+      const error: any = new Error('申请开发者需要填写联系方式。');
+      error.status = 400;
+      throw error;
+    }
     return this.client.applyDeveloper({
+      namespace,
       displayName: String(input.displayName || '').trim(),
-      homepageUrl: String(input.homepageUrl || '').trim(),
+      contact,
+      websiteUrl: String(input.websiteUrl || input.homepageUrl || '').trim(),
       reason: String(input.reason || '').trim(),
     });
   }

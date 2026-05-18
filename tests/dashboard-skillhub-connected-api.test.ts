@@ -7,6 +7,7 @@ import * as path from 'path';
 import express from 'express';
 import type { Server } from 'http';
 import { createApiRouter } from '../src/dashboard/routes/api';
+import { loadSkillHubConfig } from '../src/skillhub/config';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS, SkillHubTrustedRootKey } from '../src/skillhub/trusted-keys';
 
 describe('dashboard connected SkillHub API', () => {
@@ -53,6 +54,18 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(status.body.authenticated, true);
     assert.equal(status.body.trustReady, true);
 
+    const application = await post('/api/skillhub/developer/apply', {
+      displayName: '合同团队',
+      namespace: 'contract-team',
+      contact: 'dev@example.com',
+      websiteUrl: 'https://example.com',
+      reason: '发布合同审查和文档处理类 Skill。',
+    });
+    assert.equal(application.status, 201);
+    assert.equal(application.body.application.namespace, 'contract-team');
+    assert.equal(application.body.application.contact, 'dev@example.com');
+    assert.equal(application.body.application.websiteUrl, 'https://example.com');
+
     const search = await get('/api/skillhub/search?q=合同');
     assert.equal(search.status, 200);
     assert.equal(search.body.skills[0].skillId, fixture.entry.skillId);
@@ -61,6 +74,11 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(install.status, 200);
     assert.equal(install.body.ok, true);
     assert.equal(fs.existsSync(path.join(install.body.skill.path, 'SKILL.md')), true);
+  });
+
+  test('uses the official SkillHub cloud by default', () => {
+    delete process.env.CATSCO_SKILLHUB_BASE_URL;
+    assert.equal(loadSkillHubConfig().baseUrl, 'https://logs.catsco.fun');
   });
 
   async function startDashboard(): Promise<void> {
@@ -81,6 +99,23 @@ describe('dashboard connected SkillHub API', () => {
     app.get('/api/auth/me', (req, res) => {
       assert.match(req.header('cookie') || '', /catsco_session=dashboard-session/);
       res.json({ user: fixture.user, roles: ['user'], permissions: [] });
+    });
+    app.post('/api/developer-applications', (req, res) => {
+      assert.deepEqual(req.body, {
+        displayName: '合同团队',
+        namespace: 'contract-team',
+        contact: 'dev@example.com',
+        websiteUrl: 'https://example.com',
+        reason: '发布合同审查和文档处理类 Skill。',
+      });
+      res.status(201).json({
+        application: {
+          id: 'devapp_1',
+          userId: fixture.user.id,
+          status: 'pending',
+          ...req.body,
+        },
+      });
     });
     app.get('/api/skills', (_req, res) => res.json({ skills: [fixture.entry] }));
     app.get('/api/skills/:skillId', (_req, res) => res.json({ skill: fixture.entry, versions: [fixture.entry] }));

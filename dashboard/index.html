@@ -4621,6 +4621,10 @@
           <div class="settings-meta" style="margin-bottom:14px">普通账号申请通过后，云端会给账号增加 developer 角色。</div>
           <div class="chat-form-row" style="margin-bottom:10px">
             <input class="config-input" id="skillhub-apply-name" placeholder="开发者显示名称" />
+            <input class="config-input" id="skillhub-apply-namespace" placeholder="命名空间，例如 contract-team" />
+          </div>
+          <div class="chat-form-row" style="margin-bottom:10px">
+            <input class="config-input" id="skillhub-apply-contact" placeholder="联系邮箱 / 微信 / 电话" />
             <input class="config-input" id="skillhub-apply-homepage" placeholder="主页或组织链接（可选）" />
           </div>
           <textarea class="config-input" id="skillhub-apply-reason" rows="3" placeholder="简单说明你要发布哪些类型的 Skill"></textarea>
@@ -5575,7 +5579,9 @@
       try {
         const payload = {
           displayName: document.getElementById('skillhub-apply-name')?.value.trim(),
-          homepageUrl: document.getElementById('skillhub-apply-homepage')?.value.trim(),
+          namespace: document.getElementById('skillhub-apply-namespace')?.value.trim(),
+          contact: document.getElementById('skillhub-apply-contact')?.value.trim(),
+          websiteUrl: document.getElementById('skillhub-apply-homepage')?.value.trim(),
           reason: document.getElementById('skillhub-apply-reason')?.value.trim(),
         };
         await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/apply', {
