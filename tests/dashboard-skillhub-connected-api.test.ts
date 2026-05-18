@@ -76,6 +76,24 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(fs.existsSync(path.join(install.body.skill.path, 'SKILL.md')), true);
   });
 
+  test('searches and installs public SkillHub skills without login', async () => {
+    const fixture = createFixture();
+    CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS.push(fixture.rootTrust);
+    await startCloud(fixture);
+    process.env.CATSCO_SKILLHUB_BASE_URL = cloudBaseUrl;
+    await startDashboard();
+
+    const search = await get('/api/skillhub/search?q=合同');
+    assert.equal(search.status, 200);
+    assert.equal(search.body.skills[0].skillId, fixture.entry.skillId);
+    assert.equal(fs.existsSync(path.join(testRoot, 'data/skillhub/session.json')), false);
+
+    const install = await post('/api/skillhub/install', { skillId: fixture.entry.skillId });
+    assert.equal(install.status, 200);
+    assert.equal(install.body.ok, true);
+    assert.equal(fs.existsSync(path.join(install.body.skill.path, 'SKILL.md')), true);
+  });
+
   test('uses the official SkillHub cloud by default', () => {
     delete process.env.CATSCO_SKILLHUB_BASE_URL;
     assert.equal(loadSkillHubConfig().baseUrl, 'https://logs.catsco.fun:9000');

@@ -4567,13 +4567,9 @@
           <div class="settings-heading">
             <div class="settings-kicker">SkillHub</div>
             <div class="section-title" style="margin-bottom:0">Skills</div>
-            <div class="settings-meta">登录后可搜索云端已审核 Skill，Agent 会自动下载、验签并安装。</div>
+            <div class="settings-meta">公开 Skill 无需登录即可搜索和安装；登录后可申请开发者权限并提交 Skill。</div>
           </div>
           <button class="btn" onclick="refreshSkillHubPage()">刷新</button>
-        </div>
-
-        <div class="config-section" id="skillhub-account-card">
-          <div class="loading">正在检查 SkillHub 登录状态...</div>
         </div>
 
         <details class="config-section" open>
@@ -4586,7 +4582,7 @@
               <input class="config-input" id="skillhub-search-input" placeholder="搜索合同审查、PPT、工程量清单..." onkeydown="if(event.key==='Enter')searchSkillHub()" />
               <button class="btn btn-primary" onclick="searchSkillHub()">搜索</button>
             </div>
-            <div class="skills-grid" id="skillhub-registry-grid"><div class="loading">登录后可搜索 SkillHub。</div></div>
+            <div class="skills-grid" id="skillhub-registry-grid"><div class="loading">搜索云端已审核 Skill。</div></div>
           </div>
         </details>
 
@@ -4610,6 +4606,10 @@
             <div class="settings-meta">申请开发者权限、生成 skill.json、提交 Skill 到云端审核。</div>
           </div>
           <button class="btn" onclick="fetchSkillHubDeveloper()">刷新</button>
+        </div>
+
+        <div class="config-section" id="skillhub-account-card">
+          <div class="loading">正在检查 SkillHub 登录状态...</div>
         </div>
 
         <div class="config-section" id="skillhub-developer-status">
@@ -5395,8 +5395,8 @@
     }
 
     async function refreshSkillHubPage() {
-      await Promise.all([fetchSkills(), fetchSkillHubStatus()]);
-      if (skillHubState.authenticated) await searchSkillHub('', true);
+      await Promise.allSettled([fetchSkills(), fetchSkillHubStatus()]);
+      await searchSkillHub('', true);
     }
 
     async function fetchSkillHubStatus() {
@@ -5419,8 +5419,7 @@
         card.innerHTML =
           '<div class="settings-setup-head"><div><div class="settings-setup-title">已登录 SkillHub</div><div class="settings-setup-copy">'+escapeHtml(user.displayName || user.email || 'CatsCo 用户')+' · '+escapeHtml((skillHubState.roles || ['user']).join(', '))+'</div></div><span class="tag green">connected</span></div>'+
           '<div class="config-actions" style="margin-top:14px">'+
-          '<button class="btn btn-primary" onclick="searchSkillHub()">搜索技能</button>'+
-          '<button class="btn" onclick="switchPage(\'developer\')">'+(developer?'打开开发者中心':'申请成为开发者')+'</button>'+
+          '<button class="btn" onclick="fetchSkillHubDeveloper()">刷新开发者状态</button>'+
           '<button class="btn" onclick="logoutSkillHub()">退出登录</button>'+
           '</div>'+
           (!skillHubState.trustReady?'<div class="runtime-note warning" style="margin-top:12px">当前 Agent 构建还没有内置 SkillHub root public key。正式发布前需要运行 trust-root 脚本写入官方 root 公钥。</div>':'');
@@ -5428,7 +5427,7 @@
       }
 
       card.innerHTML =
-        '<div class="settings-setup-head"><div><div class="settings-setup-title">登录 SkillHub</div><div class="settings-setup-copy">登录后，Agent 会自动保存 session cookie，并在安装时自动校验包签名。</div></div><span class="tag warm">login</span></div>'+
+        '<div class="settings-setup-head"><div><div class="settings-setup-title">登录 SkillHub</div><div class="settings-setup-copy">公开 Skill 可直接搜索和安装；登录用于申请开发者权限、提交 Skill 和查看个人提交记录。</div></div><span class="tag warm">login</span></div>'+
         '<div class="chat-form-row" style="margin-top:14px;margin-bottom:10px">'+
         '<input class="config-input" id="skillhub-login-email" placeholder="邮箱" />'+
         '<input class="config-input" id="skillhub-login-password" type="password" placeholder="密码" />'+
@@ -5480,8 +5479,7 @@
         await parseSimpleResponse(await fetch(API + '/api/skillhub/auth/logout', { method:'POST' }));
         skillHubState = { authenticated:false, roles:[], permissions:[], installed:[] };
         renderSkillHubAccount();
-        const grid = document.getElementById('skillhub-registry-grid');
-        if (grid) grid.innerHTML = '<div class="loading">登录后可搜索 SkillHub。</div>';
+        await searchSkillHub('', true);
       } catch (e) {
         alert('退出失败：' + (e.message || String(e)));
       }
@@ -5562,7 +5560,7 @@
       if (statusBox) {
         statusBox.innerHTML = authenticated
           ? '<div class="settings-setup-head"><div><div class="settings-setup-title">'+(developer?'开发者权限已启用':'当前账号还不是开发者')+'</div><div class="settings-setup-copy">'+escapeHtml(data.user?.displayName || data.user?.email || 'CatsCo 用户')+' · '+escapeHtml(roles.join(', ') || 'user')+'</div></div><span class="tag '+(developer?'green':'warm')+'">'+(developer?'developer':'user')+'</span></div>'
-          : '<div class="runtime-note warning">请先到 Skills 页面登录 SkillHub，然后再申请开发者权限。</div>';
+          : '<div class="runtime-note warning">请先在本页登录 SkillHub，然后再申请开发者权限。</div>';
       }
       if (applyBox) applyBox.style.display = authenticated && !developer ? 'block' : 'none';
       if (consoleBox) consoleBox.style.display = developer ? 'block' : 'none';
