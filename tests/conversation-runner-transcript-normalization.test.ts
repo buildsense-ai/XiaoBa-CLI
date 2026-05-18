@@ -153,6 +153,66 @@ test('runner normalizes send_text tool into assistant transcript without tool_re
   );
 });
 
+test('runner injects current directory before the active request context without becoming the final message', async () => {
+  const responses = [
+    makeToolResponse(makeToolCall('call_read', 'read_file', { file_path: 'notes.txt' })),
+    makeFinalResponse('done'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'read_file',
+      description: 'read file',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string' },
+        },
+        required: ['file_path'],
+      },
+    }],
+    { read_file: 'file contents' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, {
+    stream: true,
+    enableCompression: false,
+    toolExecutionContext: {
+      workingDirectory: 'C:\\Users\\test\\workspace',
+      getCurrentDirectory: () => 'C:\\Users\\test\\workspace',
+    },
+  });
+
+  await runner.run([{ role: 'user', content: 'read notes' }]);
+
+  const firstCallMessages = mock.getReceivedMessages()[0];
+  assert.match(String(firstCallMessages[0].content), /^\[transient_current_directory\]/);
+  assert.equal(firstCallMessages[0].role, 'user');
+  assert.equal(firstCallMessages[1].role, 'user');
+  assert.equal(firstCallMessages[1].content, 'read notes');
+
+  const secondCallMessages = mock.getReceivedMessages()[1];
+  const cwdIndex = secondCallMessages.findIndex(
+    message => typeof message.content === 'string'
+      && message.content.startsWith('[transient_current_directory]'),
+  );
+  const assistantToolIndex = secondCallMessages.findIndex(
+    message => message.role === 'assistant'
+      && message.tool_calls?.some(toolCall => toolCall.id === 'call_read'),
+  );
+
+  assert.equal(cwdIndex, assistantToolIndex - 1);
+  assert.equal(secondCallMessages[assistantToolIndex + 1].role, 'tool');
+  assert.match(
+    String(secondCallMessages[cwdIndex].content),
+    /^\[transient_current_directory\]\nRuntime context only\. Not a user request\. Do not answer\.\ncwd: C:\\Users\\test\\workspace\nUse only for relative file paths\.$/,
+  );
+  assert.equal(
+    secondCallMessages[secondCallMessages.length - 1].role,
+    'tool',
+    'after a tool exchange, the tool_result should remain the final message instead of the cwd hint',
+  );
+});
+
 test('runner does not persist assistant draft content when send_text already delivered the same turn', async () => {
   const responses = [
     {
@@ -315,7 +375,12 @@ test('runner pauses only when pause_turn is called explicitly', async () => {
   );
 });
 
-test('runner continues after an outbound file and blocks duplicate file sends in the same run', async () => {
+test('runner records outbound file sends as normal tool_result transcript for later turns', async () => {
+  const sentFileResult = [
+    'File sent to current chat.',
+    'Path: C:\\Users\\test\\Desktop\\report.docx',
+    'Name: report.docx',
+  ].join('\n');
   const responses = [
     makeToolResponse(makeToolCall('call_file', 'send_file', {
       file_path: 'C:\\Users\\test\\Desktop\\report.docx',
@@ -325,7 +390,7 @@ test('runner continues after an outbound file and blocks duplicate file sends in
       file_path: 'C:\\Users\\test\\Desktop\\report.docx',
       file_name: 'report.docx',
     })),
-    makeFinalResponse('已发送 report.docx。'),
+    makeFinalResponse('sent report.docx'),
   ];
   const mock = createMockAI(responses);
   const toolExecutor = new MockToolExecutor(
@@ -344,13 +409,7 @@ test('runner continues after an outbound file and blocks duplicate file sends in
         },
       },
     ],
-    {
-      send_file: [
-        'File sent to current chat.',
-        'Path: C:\\Users\\test\\Desktop\\report.docx',
-        'Name: report.docx',
-      ].join('\n'),
-    },
+    { send_file: sentFileResult },
   );
 
   const runner = new ConversationRunner(mock.aiService, toolExecutor, {
@@ -366,33 +425,68 @@ test('runner continues after an outbound file and blocks duplicate file sends in
   );
   assert.equal(
     toolExecutor.getExecutionCount('send_file'),
-    1,
-    'duplicate send_file calls for the same file should not execute the upload again',
+    2,
+    'send_file calls should execute normally; repeated sends are handled by model-visible tool results',
   );
-  const thirdCallMessages = mock.getReceivedMessages()[2];
-  assert.ok(
-    thirdCallMessages.some(
-      message => message.role === 'tool'
-        && typeof message.content === 'string'
-        && message.content.includes('already sent earlier in the current agent run'),
-    ),
-    'the model should see a tool_result explaining that the duplicate send was blocked',
+
+  const secondCallMessages = mock.getReceivedMessages()[1];
+  const secondAssistantIndex = secondCallMessages.findIndex(
+    message => message.role === 'assistant'
+      && message.tool_calls?.some(toolCall => toolCall.id === 'call_file'),
   );
-  assert.equal(result.response, '已发送 report.docx。');
+  assert.notEqual(secondAssistantIndex, -1);
   assert.deepEqual(
-    result.messages
-      .filter(message => message.role !== 'tool')
-      .map(message => ({ role: message.role, content: message.content })),
+    secondCallMessages[secondAssistantIndex + 1],
+    {
+      role: 'tool',
+      content: sentFileResult,
+      tool_call_id: 'call_file',
+      name: 'send_file',
+    },
+    'the model should see send_file as a normal tool_result immediately after its assistant tool_call',
+  );
+
+  const thirdCallMessages = mock.getReceivedMessages()[2];
+  const thirdToolResults = thirdCallMessages.filter(
+    message => message.role === 'tool' && message.name === 'send_file',
+  );
+  assert.equal(thirdToolResults.length, 2);
+  assert.deepEqual(
+    thirdToolResults.map(message => message.tool_call_id),
+    ['call_file', 'call_file_again'],
+    'each successful send_file call should have its own legal tool_result',
+  );
+  assert.ok(
+    !thirdCallMessages.some(
+      message => typeof message.content === 'string' && message.content.includes('[outbound_file_sent]'),
+    ),
+    'send_file should not inject assistant state markers into provider input',
+  );
+  assert.equal(result.response, 'sent report.docx');
+  assert.deepEqual(
+    result.messages.map(message => ({
+      role: message.role,
+      content: message.content,
+      tool_call_id: message.tool_call_id,
+      name: message.name,
+    })),
     [
-      { role: 'user', content: 'send the desktop docx' },
-      { role: 'assistant', content: 'report.docx' },
-      { role: 'assistant', content: null },
-      { role: 'assistant', content: '已发送 report.docx。' },
+      { role: 'user', content: 'send the desktop docx', tool_call_id: undefined, name: undefined },
+      { role: 'assistant', content: null, tool_call_id: undefined, name: undefined },
+      { role: 'tool', content: sentFileResult, tool_call_id: 'call_file', name: 'send_file' },
+      { role: 'assistant', content: null, tool_call_id: undefined, name: undefined },
+      { role: 'tool', content: sentFileResult, tool_call_id: 'call_file_again', name: 'send_file' },
+      { role: 'assistant', content: 'sent report.docx', tool_call_id: undefined, name: undefined },
     ],
   );
 });
 
-test('runner keeps legal transcript order for duplicate send_file calls in the same assistant response', async () => {
+test('runner keeps repeated send_file calls in the same assistant response as legal tool_results', async () => {
+  const sentFileResult = [
+    'File sent to current chat.',
+    'Path: C:\\Users\\test\\Desktop\\report.docx',
+    'Name: report.docx',
+  ].join('\n');
   const responses = [
     {
       content: null,
@@ -431,13 +525,7 @@ test('runner keeps legal transcript order for duplicate send_file calls in the s
         },
       },
     ],
-    {
-      send_file: [
-        'File sent to current chat.',
-        'Path: C:\\Users\\test\\Desktop\\report.docx',
-        'Name: report.docx',
-      ].join('\n'),
-    },
+    { send_file: sentFileResult },
   );
 
   const runner = new ConversationRunner(mock.aiService, toolExecutor, {
@@ -446,21 +534,40 @@ test('runner keeps legal transcript order for duplicate send_file calls in the s
   });
   await runner.run([{ role: 'user', content: 'send the desktop docx twice' }]);
 
-  assert.equal(toolExecutor.getExecutionCount('send_file'), 1);
+  assert.equal(toolExecutor.getExecutionCount('send_file'), 2);
   const secondCallMessages = mock.getReceivedMessages()[1];
-  const assistantIndex = secondCallMessages.findIndex(message => message.role === 'assistant' && Boolean(message.tool_calls?.length));
-  const firstToolIndex = secondCallMessages.findIndex(message => message.role === 'tool' && message.tool_call_id === 'call_file_1');
-  const secondToolIndex = secondCallMessages.findIndex(message => message.role === 'tool' && message.tool_call_id === 'call_file_2');
-  const outboundAssistantBetween = secondCallMessages
-    .slice(assistantIndex + 1, firstToolIndex)
-    .some(message => message.role === 'assistant');
-
-  assert.ok(assistantIndex >= 0);
-  assert.equal(secondCallMessages[assistantIndex].tool_calls?.length, 2);
-  assert.equal(firstToolIndex, assistantIndex + 1);
-  assert.equal(secondToolIndex, assistantIndex + 2);
-  assert.equal(outboundAssistantBetween, false);
-  assert.match(String(secondCallMessages[secondToolIndex].content), /already sent earlier/);
+  const assistantIndex = secondCallMessages.findIndex(
+    message => message.role === 'assistant' && message.tool_calls?.length === 2,
+  );
+  assert.notEqual(assistantIndex, -1);
+  assert.deepEqual(
+    secondCallMessages[assistantIndex].tool_calls?.map(toolCall => toolCall.id),
+    ['call_file_1', 'call_file_2'],
+  );
+  assert.deepEqual(
+    secondCallMessages.slice(assistantIndex + 1, assistantIndex + 3),
+    [
+      {
+        role: 'tool',
+        content: sentFileResult,
+        tool_call_id: 'call_file_1',
+        name: 'send_file',
+      },
+      {
+        role: 'tool',
+        content: sentFileResult,
+        tool_call_id: 'call_file_2',
+        name: 'send_file',
+      },
+    ],
+    'each send_file result should immediately follow the assistant message that requested it',
+  );
+  assert.ok(
+    !secondCallMessages.some(
+      message => typeof message.content === 'string' && message.content.includes('[outbound_file_sent]'),
+    ),
+    'send_file should not inject assistant state markers for repeated sends',
+  );
 });
 
 test('runner does not locally retry failed outbound file sends unless the failure is rate limited', async () => {
