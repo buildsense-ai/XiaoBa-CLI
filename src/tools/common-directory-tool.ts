@@ -1,0 +1,244 @@
+import { execFileSync } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
+
+export type CommonDirectoryKind =
+  | 'desktop'
+  | 'downloads'
+  | 'documents'
+  | 'pictures'
+  | 'videos'
+  | 'music'
+  | 'home'
+  | 'temp';
+
+interface DirectoryResolution {
+  kind: CommonDirectoryKind;
+  path: string;
+  source: string;
+  exists: boolean;
+  platform: NodeJS.Platform;
+}
+
+const DIRECTORY_ALIASES: Record<string, CommonDirectoryKind> = {
+  desktop: 'desktop',
+  mydesktop: 'desktop',
+  desktopfolder: 'desktop',
+  '\u684c\u9762': 'desktop',
+
+  downloads: 'downloads',
+  download: 'downloads',
+  mydownloads: 'downloads',
+  downloadsfolder: 'downloads',
+  downloadfolder: 'downloads',
+  '\u4e0b\u8f7d': 'downloads',
+  '\u4e0b\u8f7d\u6587\u4ef6\u5939': 'downloads',
+
+  documents: 'documents',
+  document: 'documents',
+  docs: 'documents',
+  mydocuments: 'documents',
+  documentsfolder: 'documents',
+  '\u6587\u6863': 'documents',
+
+  pictures: 'pictures',
+  picture: 'pictures',
+  photos: 'pictures',
+  photo: 'pictures',
+  images: 'pictures',
+  image: 'pictures',
+  mypictures: 'pictures',
+  picturesfolder: 'pictures',
+  '\u56fe\u7247': 'pictures',
+  '\u7167\u7247': 'pictures',
+
+  videos: 'videos',
+  video: 'videos',
+  movies: 'videos',
+  movie: 'videos',
+  myvideos: 'videos',
+  videosfolder: 'videos',
+  '\u89c6\u9891': 'videos',
+
+  music: 'music',
+  mymusic: 'music',
+  musicfolder: 'music',
+  '\u97f3\u4e50': 'music',
+
+  home: 'home',
+  user: 'home',
+  userhome: 'home',
+  homedir: 'home',
+  '\u7528\u6237\u76ee\u5f55': 'home',
+  '\u4e3b\u76ee\u5f55': 'home',
+
+  temp: 'temp',
+  tmp: 'temp',
+  '\u4e34\u65f6\u76ee\u5f55': 'temp',
+  '\u4e34\u65f6\u6587\u4ef6\u5939': 'temp',
+};
+
+const WINDOWS_REGISTRY_VALUES: Partial<Record<CommonDirectoryKind, string>> = {
+  desktop: 'Desktop',
+  downloads: '{374DE290-123F-4565-9164-39C4925E467B}',
+  documents: 'Personal',
+  pictures: 'My Pictures',
+  videos: 'My Video',
+  music: 'My Music',
+};
+
+const STANDARD_SUBDIRECTORIES: Record<Exclude<CommonDirectoryKind, 'home' | 'temp'>, string> = {
+  desktop: 'Desktop',
+  downloads: 'Downloads',
+  documents: 'Documents',
+  pictures: 'Pictures',
+  videos: process.platform === 'darwin' ? 'Movies' : 'Videos',
+  music: 'Music',
+};
+
+const XDG_KEYS: Partial<Record<CommonDirectoryKind, string>> = {
+  desktop: 'XDG_DESKTOP_DIR',
+  downloads: 'XDG_DOWNLOAD_DIR',
+  documents: 'XDG_DOCUMENTS_DIR',
+  pictures: 'XDG_PICTURES_DIR',
+  videos: 'XDG_VIDEOS_DIR',
+  music: 'XDG_MUSIC_DIR',
+};
+
+export function normalizeCommonDirectory(input: string): CommonDirectoryKind | null {
+  const normalized = input.trim().toLowerCase().replace(/[\s_-]+/g, '');
+  return DIRECTORY_ALIASES[normalized] ?? null;
+}
+
+export function resolveCommonDirectory(kind: CommonDirectoryKind): DirectoryResolution {
+  if (kind === 'home') {
+    return buildResolution(kind, os.homedir(), 'os_homedir');
+  }
+  if (kind === 'temp') {
+    return buildResolution(kind, os.tmpdir(), 'os_tmpdir');
+  }
+
+  if (process.platform === 'win32') {
+    const registryPath = readWindowsKnownFolder(kind);
+    if (registryPath) {
+      return buildResolution(kind, registryPath, 'windows_user_shell_folders');
+    }
+  }
+
+  if (process.platform === 'linux') {
+    const xdgPath = readLinuxXdgUserDir(kind);
+    if (xdgPath) {
+      return buildResolution(kind, xdgPath, 'linux_xdg_user_dirs');
+    }
+  }
+
+  return buildResolution(kind, path.join(os.homedir(), STANDARD_SUBDIRECTORIES[kind]), 'home_fallback');
+}
+
+export class CommonDirectoryTool implements Tool {
+  definition: ToolDefinition = {
+    name: 'resolve_common_directory',
+    description: [
+      'Resolve a common user directory to the real local path for the current operating system.',
+      'Use this before accessing files when the user refers to a common OS directory by natural language, such as Desktop, Downloads, Documents, or their Chinese names.',
+      'Do not guess paths like C:\\Users\\...\\Desktop, ~/Desktop, or /Users/.../Downloads before calling this tool.',
+      'This tool returns one best path using OS-level directory settings when available.',
+      'It does not search arbitrary project folders, app-specific folders, browser-specific download folders, or semantic folders such as company projects or chat files.',
+    ].join('\n'),
+    parameters: {
+      type: 'object',
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Common directory to resolve. Supported: desktop, downloads, documents, pictures, videos, music, home, temp. Chinese aliases such as desktop/downloads/documents are also accepted.',
+        },
+      },
+      required: ['directory'],
+    },
+  };
+
+  async execute(args: any, _context: ToolExecutionContext): Promise<ToolExecutionResult> {
+    const input = typeof args?.directory === 'string' ? args.directory : '';
+    const kind = normalizeCommonDirectory(input);
+    if (!kind) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_TOOL_ARGUMENTS',
+        message: `Unknown common directory: ${input || '(empty)'}\nSupported: desktop, downloads, documents, pictures, videos, music, home, temp`,
+      };
+    }
+
+    const result = resolveCommonDirectory(kind);
+    return {
+      ok: true,
+      content: [
+        'Resolved common directory:',
+        `kind: ${result.kind}`,
+        `path: ${result.path}`,
+        `source: ${result.source}`,
+        `exists: ${result.exists}`,
+        `platform: ${result.platform}`,
+        '',
+        'Use this exact path as the base directory for follow-up file operations.',
+      ].join('\n'),
+    };
+  }
+}
+
+function buildResolution(kind: CommonDirectoryKind, directoryPath: string, source: string): DirectoryResolution {
+  const resolvedPath = path.resolve(directoryPath);
+  return {
+    kind,
+    path: resolvedPath,
+    source,
+    exists: fs.existsSync(resolvedPath),
+    platform: process.platform,
+  };
+}
+
+function readWindowsKnownFolder(kind: CommonDirectoryKind): string | null {
+  const valueName = WINDOWS_REGISTRY_VALUES[kind];
+  if (!valueName) return null;
+
+  const command = [
+    '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8',
+    '$key = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders"',
+    `$value = (Get-ItemProperty -LiteralPath $key -Name '${valueName}' -ErrorAction SilentlyContinue).'${valueName}'`,
+    'if ($value) { [Environment]::ExpandEnvironmentVariables([string]$value) }',
+  ].join('; ');
+
+  try {
+    const output = execFileSync('powershell.exe', ['-NoProfile', '-Command', command], {
+      encoding: 'utf8',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return output || null;
+  } catch {
+    return null;
+  }
+}
+
+function readLinuxXdgUserDir(kind: CommonDirectoryKind): string | null {
+  const key = XDG_KEYS[kind];
+  if (!key) return null;
+
+  const configPath = path.join(os.homedir(), '.config', 'user-dirs.dirs');
+  if (!fs.existsSync(configPath)) return null;
+
+  try {
+    const content = fs.readFileSync(configPath, 'utf8');
+    const match = content.match(new RegExp(`^${key}=(?:"([^"]*)"|'([^']*)'|([^\\n#]*))`, 'm'));
+    const rawValue = match?.[1] ?? match?.[2] ?? match?.[3];
+    if (!rawValue) return null;
+    const expanded = rawValue
+      .trim()
+      .replace(/^\$HOME(?=\/|$)/, os.homedir())
+      .replace(/^\$\{HOME\}(?=\/|$)/, os.homedir());
+    return expanded || null;
+  } catch {
+    return null;
+  }
+}

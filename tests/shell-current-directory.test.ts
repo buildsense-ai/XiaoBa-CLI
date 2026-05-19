@@ -40,19 +40,22 @@ describe('ShellTool current directory probe', () => {
     });
 
     assert.strictEqual(result.ok, true);
-    assert.strictEqual(currentDirectory, path.join(testRoot, 'sub'));
+    assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
     assert.ok(!(result.content as string).includes('__XIAOBA_CWD_MARKER__'));
   });
 
   test('successful cd at the start of a compound command persists the final directory', async () => {
     const tool = new ShellTool();
-    const result = await tool.execute({ command: 'cd sub && echo ok' }, {
+    const command = process.platform === 'win32'
+      ? 'Set-Location sub; Write-Output ok'
+      : 'cd sub && echo ok';
+    const result = await tool.execute({ command }, {
       ...context,
       workingDirectory: currentDirectory,
     });
 
     assert.strictEqual(result.ok, true);
-    assert.strictEqual(currentDirectory, path.join(testRoot, 'sub'));
+    assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
     assert.ok((result.content as string).includes('ok'));
     assert.ok(!(result.content as string).includes('__XIAOBA_CWD_MARKER__'));
   });
@@ -67,12 +70,15 @@ describe('ShellTool current directory probe', () => {
     assert.strictEqual(result.ok, false);
     assert.strictEqual(currentDirectory, testRoot);
     assert.ok(!result.message.includes('__XIAOBA_CWD_MARKER__'));
+    assert.ok(!result.message.includes('status=$?'));
+    assert.ok(!result.message.includes('printf'));
+    assert.ok(!result.message.includes('exit "$status"'));
   });
 
   test('successful cd is persisted even when a later command fails', async () => {
     const tool = new ShellTool();
     const failingCommand = process.platform === 'win32'
-      ? 'cd sub && definitely_missing_xiaoba_command'
+      ? 'Set-Location sub; definitely_missing_xiaoba_command'
       : 'cd sub && definitely_missing_xiaoba_command';
     const result = await tool.execute({ command: failingCommand }, {
       ...context,
@@ -80,22 +86,103 @@ describe('ShellTool current directory probe', () => {
     });
 
     assert.strictEqual(result.ok, false);
-    assert.strictEqual(currentDirectory, path.join(testRoot, 'sub'));
+    assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
     assert.ok(!result.message.includes('__XIAOBA_CWD_MARKER__'));
+    assert.ok(!result.message.includes('status=$?'));
+    assert.ok(!result.message.includes('printf'));
+    assert.ok(!result.message.includes('exit "$status"'));
   });
 
-  test('Windows for loop keeps cmd command-line percent syntax', {
+  test('Windows PowerShell command output is decoded as UTF-8', {
     skip: process.platform !== 'win32',
   }, async () => {
-    fs.writeFileSync(path.join(testRoot, 'loop-target.txt'), 'ok');
     const tool = new ShellTool();
-    const result = await tool.execute({ command: 'for %f in (*.txt) do @echo %f' }, {
+    const result = await tool.execute({ command: 'Write-Output "\u4e2d\u6587\u8f93\u51fa"' }, {
       ...context,
       workingDirectory: currentDirectory,
     });
 
     assert.strictEqual(result.ok, true);
-    assert.ok((result.content as string).includes('loop-target.txt'));
+    assert.ok((result.content as string).includes('\u4e2d\u6587\u8f93\u51fa'));
+  });
+
+  test('Windows PowerShell lists names without cmd banner or prompt pollution', {
+    skip: process.platform !== 'win32',
+  }, async () => {
+    fs.writeFileSync(path.join(testRoot, 'visible-file.txt'), 'ok');
+    const tool = new ShellTool();
+    const result = await tool.execute({ command: 'Get-ChildItem -Name' }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    assert.ok((result.content as string).includes('visible-file.txt'));
+    assert.ok(!(result.content as string).includes('Microsoft Windows'));
+    assert.ok(!(result.content as string).includes('__XIAOBA_CWD_MARKER__'));
+  });
+
+  test('Windows PowerShell cwd survives prompt changes', {
+    skip: process.platform !== 'win32',
+  }, async () => {
+    const tool = new ShellTool();
+    const result = await tool.execute({ command: 'Set-Location sub; function prompt { "USER> " }; Write-Output visible-output' }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    assert.ok((result.content as string).includes('visible-output'));
+    assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
+  });
+
+  test('Windows cmd fallback preserves cwd and strips session noise', {
+    skip: process.platform !== 'win32',
+  }, async () => {
+    const tool = new ShellTool();
+    (tool as any).executeWindowsPowerShellScript = async () => {
+      const error: any = new Error('spawn powershell.exe ENOENT');
+      error.code = 'ENOENT';
+      throw error;
+    };
+
+    const result = await tool.execute({ command: 'cd sub && echo ok' }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    assert.ok((result.content as string).includes('ok'));
+    assert.ok(!(result.content as string).includes('Microsoft Windows'));
+    assert.ok(!/[A-Z]:\\.*>/.test(result.content as string));
+    assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
+  });
+
+  test('Windows cmd fallback persists cwd even when a later command fails', {
+    skip: process.platform !== 'win32',
+  }, async () => {
+    const tool = new ShellTool();
+    (tool as any).executeWindowsPowerShellScript = async () => {
+      const error: any = new Error('spawn powershell.exe ENOENT');
+      error.code = 'ENOENT';
+      throw error;
+    };
+
+    const result = await tool.execute({ command: 'cd sub && definitely_missing_xiaoba_command' }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, false);
+    assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
+    assert.ok(!result.message.includes('__XIAOBA_STATUS__'));
+    assert.ok(!result.message.includes('cd >'));
+    assert.ok(!result.message.includes('exit /b'));
+    assert.ok(!/[A-Z]:\\.*>/.test(result.message));
   });
 
 });
+
+function assertSameDirectory(actual: string, expected: string): void {
+  assert.strictEqual(fs.realpathSync(actual), fs.realpathSync(expected));
+}

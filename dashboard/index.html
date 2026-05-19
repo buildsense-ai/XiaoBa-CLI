@@ -2861,9 +2861,7 @@
 
     .chat-timeline-inner {
       width: 100%;
-      max-width: 1120px;
-      margin: 0 auto;
-      padding: 18px 24px 24px;
+      padding: 20px clamp(24px, 3vw, 56px) 28px;
       display: flex;
       flex-direction: column;
       gap: 2px;
@@ -2874,7 +2872,7 @@
       gap: 14px;
       max-width: 100%;
       padding: 10px 18px;
-      font-size: 15px;
+      font-size: 16px;
       line-height: 1.62;
       word-break: break-word;
       color: #d8dbe2;
@@ -2935,12 +2933,12 @@
       display: flex;
       flex-direction: column;
       align-items: flex-start;
-      max-width: min(1040px, calc(100% - 50px));
+      max-width: min(1360px, calc(100% - 50px));
     }
 
     .chat-message.mine .chat-message-body {
       align-items: flex-end;
-      max-width: min(760px, 86%);
+      max-width: min(920px, 78%);
     }
 
     .chat-message-content {
@@ -2998,9 +2996,9 @@
       line-height: 1.3;
     }
 
-    .chat-markdown h1 { font-size: 18px; }
-    .chat-markdown h2 { font-size: 16px; }
-    .chat-markdown h3 { font-size: 15px; }
+    .chat-markdown h1 { font-size: 20px; }
+    .chat-markdown h2 { font-size: 18px; }
+    .chat-markdown h3 { font-size: 16px; }
 
     .chat-markdown ul,
     .chat-markdown ol {
@@ -3043,7 +3041,7 @@
       background: transparent;
       padding: 0;
       color: inherit;
-      font-size: 12px;
+      font-size: 13px;
       line-height: 1.55;
     }
 
@@ -3077,7 +3075,7 @@
       width: 100%;
       min-width: 360px;
       border-collapse: collapse;
-      font-size: 13px;
+      font-size: 14px;
       line-height: 1.45;
     }
 
@@ -3678,6 +3676,8 @@
       --radius: 12px;
       --radius-sm: 10px;
       --radius-xs: 8px;
+      --dashboard-content-max: 1680px;
+      --dashboard-page-gutter: clamp(24px, 2.6vw, 48px);
     }
 
     html {
@@ -3783,11 +3783,11 @@
 
     .main-wrapper {
       margin-left: 240px;
-      padding: 32px 24px;
+      padding: 32px var(--dashboard-page-gutter);
     }
 
     .page-content {
-      width: min(1120px, 100%);
+      width: min(var(--dashboard-content-max), 100%);
       margin: 0 auto;
       padding: 0 0 32px;
     }
@@ -4266,6 +4266,57 @@
       }
     }
 
+    .sidebar-brand-text { font-size: 0.9375rem; }
+    .sidebar-brand-ver,
+    .sidebar-footer-info,
+    .chat-code-label { font-size: 0.6875rem; }
+    .nav-item,
+    .btn,
+    .config-input,
+    .config-select,
+    .runtime-note,
+    .runtime-field-label,
+    .runtime-field-value,
+    .settings-meta,
+    .settings-step-title,
+    .profile-summary-value,
+    .model-source-copy,
+    .status-dot,
+    .tag { font-size: 0.8125rem; }
+    .chat-muted,
+    .chat-step-row,
+    .chat-step-row strong,
+    .chat-status-row,
+    .chat-status-row strong,
+    .readiness-summary,
+    .readiness-check,
+    .skill-meta,
+    .skill-desc,
+    .skill-files,
+    .status-card .label,
+    .run-summary-label { font-size: 0.75rem; }
+    .section-title,
+    .section-header h2 { font-size: 1.375rem; }
+    .run-summary-title { font-size: 1.5rem; }
+    .status-card .value,
+    .overview-card .ov-value { font-size: 1.25rem; }
+    .svc-name,
+    .chat-connect h3,
+    .chat-window-title { font-size: 1rem; }
+    .readiness-title,
+    .settings-setup-title,
+    .model-source-title,
+    .config-group-title { font-size: 0.9375rem; }
+    .chat-message { font-size: 1rem; }
+    .chat-message-meta,
+    .chat-upload-info small { font-size: 0.75rem; }
+    .chat-markdown h1 { font-size: 1.25rem; }
+    .chat-markdown h2 { font-size: 1.125rem; }
+    .chat-markdown h3 { font-size: 1rem; }
+    .chat-markdown pre code { font-size: 0.8125rem; }
+    .chat-markdown table { font-size: 0.875rem; }
+    .chat-input-bar textarea { font-size: 0.9375rem; }
+
   </style>
 </head>
 <body class="chat-active">
@@ -4275,7 +4326,7 @@
       <div class="sidebar-brand-icon"><img src="cat-icon.png" style="width:100%;height:100%;object-fit:contain;border-radius:inherit" alt="CatsCo"></div>
       <div>
         <div class="sidebar-brand-text">CatsCo</div>
-        <div class="sidebar-brand-ver">v1.1.4</div>
+        <div class="sidebar-brand-ver">v1.1.5</div>
       </div>
     </div>
     <nav class="sidebar-nav">
@@ -4794,6 +4845,11 @@
     const PET_PROFILE_KEY = 'xiaoba.petProfile';
     const PET_PROCESS_KEY = 'xiaoba.petProcess';
     const PET_POSITION_KEY = 'xiaoba.petPosition';
+    const DASHBOARD_FONT_SCALE_KEY = 'xiaoba.dashboardFontScale';
+    const DASHBOARD_FONT_SCALE_MIN = 85;
+    const DASHBOARD_FONT_SCALE_MAX = 150;
+    const DASHBOARD_FONT_SCALE_STEP = 5;
+    const DASHBOARD_FONT_SCALE_DEFAULT = 100;
     const petUnlocks = [
       { level: 2, title: '专注表情', meta: '更多 thinking 动态' },
       { level: 4, title: 'CatsCo 皮肤', meta: '浅色工作台主题' },
@@ -6700,6 +6756,53 @@
       try{const r=await fetch(API+'/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(updates)});const d=await r.json();if(d.ok){const s=document.getElementById('config-saved');s.classList.add('show');setTimeout(()=>s.classList.remove('show'),2000);}}catch(e){alert('保存失败: '+e.message);}
     }
 
+    function normalizeDashboardFontScale(value){
+      const numeric=Number(value);
+      const safe=Number.isFinite(numeric)?numeric:DASHBOARD_FONT_SCALE_DEFAULT;
+      const stepped=Math.round(safe/DASHBOARD_FONT_SCALE_STEP)*DASHBOARD_FONT_SCALE_STEP;
+      return Math.min(DASHBOARD_FONT_SCALE_MAX, Math.max(DASHBOARD_FONT_SCALE_MIN, stepped));
+    }
+
+    function applyDashboardFontScale(value, persist=true){
+      const scale=normalizeDashboardFontScale(value);
+      document.documentElement.style.fontSize=scale+'%';
+      document.documentElement.dataset.fontScale=String(scale);
+      if(persist){
+        try{localStorage.setItem(DASHBOARD_FONT_SCALE_KEY, String(scale));}catch(_e){}
+      }
+      return scale;
+    }
+
+    function loadDashboardFontScale(){
+      let stored='';
+      try{stored=localStorage.getItem(DASHBOARD_FONT_SCALE_KEY)||'';}catch(_e){}
+      return applyDashboardFontScale(stored||DASHBOARD_FONT_SCALE_DEFAULT, false);
+    }
+
+    function stepDashboardFontScale(direction){
+      const current=normalizeDashboardFontScale(document.documentElement.dataset.fontScale||DASHBOARD_FONT_SCALE_DEFAULT);
+      return applyDashboardFontScale(current + direction * DASHBOARD_FONT_SCALE_STEP, true);
+    }
+
+    function handleDashboardFontScaleShortcut(event){
+      if(!event.ctrlKey || event.altKey || event.metaKey)return;
+      const key=event.key;
+      if(key==='+' || key==='=' || key==='Add'){
+        event.preventDefault();
+        stepDashboardFontScale(1);
+        return;
+      }
+      if(key==='-' || key==='_' || key==='Subtract'){
+        event.preventDefault();
+        stepDashboardFontScale(-1);
+        return;
+      }
+      if(key==='0' || key===')'){
+        event.preventDefault();
+        applyDashboardFontScale(DASHBOARD_FONT_SCALE_DEFAULT, true);
+      }
+    }
+
     // === CatsCo Chat ===
     function escapeHtml(value){
       return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
@@ -8053,6 +8156,7 @@
     }
 
     // Init
+    loadDashboardFontScale();
     preloadPetFrames();renderPetProfile();renderPetProcess();initFloatingPetDrag();setPetState('idle');
     setupEnvConfigLazyLoad();fetchStatus();fetchSkills();fetchSkillHubStatus();fetchDashboardSettings();fetchRuntimeConfig();fetchUpdateStatus(true);fetchCatsStatus();
     if(document.getElementById('page-chat')?.classList.contains('active') && !catsPollTimer) catsPollTimer = setInterval(fetchCatsStatus, 5000);
@@ -8073,6 +8177,7 @@
     catsMessageInput.addEventListener('blur',()=>{if(!catsMessageInput.value.trim()) setPetAutoBaseline(petAutoBaseline);});
     setupCatsAttachmentInputs();
     document.getElementById('skillhub-registry-grid')?.addEventListener('click', handleSkillHubInstallClick);
+    document.addEventListener('keydown',handleDashboardFontScaleShortcut);
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeLogs();closeUpdateModal();closeCatsMediaPreview();}});
     document.addEventListener('click',e=>{const shell=document.getElementById('floating-pet');if(shell && !shell.contains(e.target)) closeFloatingPetMenu();});
   </script>

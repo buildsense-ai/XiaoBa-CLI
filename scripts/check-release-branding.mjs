@@ -55,7 +55,11 @@ assertIncludes('electron tray tooltip', readText('electron/main.js'), "tray.setT
 assertIncludes('GitHub release title', readText('.github/workflows/release.yml'), 'name: CatsCo ${{ github.ref_name }}');
 assertIncludes('Windows install shortcut', readText('install.ps1'), 'CatsCo Dashboard');
 assertIncludes('Unix install launcher', readText('install.sh'), 'CatsCo Dashboard');
-assertIncludes('default workspace prompt', readText('src/runtime/prompt-composer.ts'), '~/catsco-workspace/');
+assertIncludes(
+  'runtime current-directory prompt',
+  readText('src/runtime/prompt-composer.ts'),
+  'Current directory is provided in a transient message',
+);
 
 const filesToScan = [
   'package.json',
