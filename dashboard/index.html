@@ -5414,7 +5414,10 @@
       if (!baseUrl || !version || !platform) return "";
 
       if (platform === "win32") return `${baseUrl}/CatsCo-${version}-win.exe`;
-      if (platform === "darwin") return `${baseUrl}/CatsCo-${version}-mac.dmg`;
+      if (platform === "darwin") {
+        const arch = appStatusSnapshot.arch || "";
+        return arch ? `${baseUrl}/CatsCo-${version}-mac-${arch}.dmg` : "";
+      }
       if (platform === "linux") return `${baseUrl}/CatsCo-${version}-linux.AppImage`;
       return "";
     }

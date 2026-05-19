@@ -352,6 +352,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       version: APP_VERSION,
       hostname: os.hostname(),
       platform: os.platform(),
+      arch: os.arch(),
       nodeVersion: process.version,
       model: config.model,
       provider: config.provider,
