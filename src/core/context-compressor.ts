@@ -290,6 +290,11 @@ export function parseCompactSummary(raw: string): string {
   return match ? match[1].trim() : raw.trim();
 }
 
+export interface CompactOptions {
+  customInstructions?: string;
+  signal?: AbortSignal;
+}
+
 // ─── ContextCompressor ──────────────────────────────────────
 
 /**
@@ -352,8 +357,11 @@ export class ContextCompressor {
    */
   async compact(
     messages: Message[],
-    customInstructions?: string,
+    optionsOrCustomInstructions?: string | CompactOptions,
   ): Promise<Message[]> {
+    const options: CompactOptions = typeof optionsOrCustomInstructions === 'string'
+      ? { customInstructions: optionsOrCustomInstructions }
+      : (optionsOrCustomInstructions || {});
     const before = estimateMessagesTokens(messages);
 
     const system = messages.filter(m => m.role === 'system');
@@ -370,7 +378,7 @@ export class ContextCompressor {
       const summaryMessages: Message[] = [
         {
           role: 'system',
-          content: buildCompactSystemPrompt(customInstructions),
+          content: buildCompactSystemPrompt(options.customInstructions),
         },
         {
           role: 'user',
@@ -385,7 +393,8 @@ export class ContextCompressor {
         undefined, // 不需要 tools
         {
           onText: (text) => { fullContent += text; },
-        }
+        },
+        { signal: options.signal },
       );
       const rawSummary = fullContent;
 

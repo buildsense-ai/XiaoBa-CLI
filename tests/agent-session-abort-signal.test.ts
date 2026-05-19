@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { AgentSession, ERROR_MESSAGE } from '../src/core/agent-session';
+import { AgentSession } from '../src/core/agent-session';
 
 test('AgentSession requestInterrupt aborts an in-flight model request', async () => {
   let observedSignal: AbortSignal | undefined;
@@ -24,7 +24,7 @@ test('AgentSession requestInterrupt aborts an in-flight model request', async ()
   const result = await runPromise;
 
   assert.equal(observedSignal?.aborted, true);
-  assert.equal(result.text, ERROR_MESSAGE);
+  assert.equal(result.text, '已停止当前请求。');
 });
 
 function buildMockServices(overrides: any = {}): any {

@@ -11,6 +11,7 @@ export interface ContextWindowManagerOptions {
 export interface CompactIfNeededOptions {
   sessionKey: string;
   reason?: string;
+  signal?: AbortSignal;
 }
 
 /**
@@ -40,7 +41,7 @@ export class ContextWindowManager {
     Logger.info(`[${options.sessionKey}] ${reason}上下文即将压缩: ${usage.usedTokens}/${usage.maxTokens} tokens (${usage.usagePercent}%)`);
 
     try {
-      const compacted = await this.compressor.compact(durable);
+      const compacted = await this.compressor.compact(durable, { signal: options.signal });
       const result = [...compacted, ...transient];
       Logger.info(`[${options.sessionKey}] 压缩完成，当前消息数: ${result.length}`);
       return result;

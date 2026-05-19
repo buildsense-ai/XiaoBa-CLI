@@ -6747,6 +6747,12 @@
       return uid && topic ? uid+'|'+topic : '';
     }
 
+    function isCatsMessageRequestCurrent(ownerKey, topicId){
+      return ownerKey
+        && ownerKey===catsMessageOwnerKey(catsState)
+        && String(topicId||'')===String(catsState.topicId||'');
+    }
+
     function resetCatsMessageCache(ownerKey=''){
       catsMessagesCache=[];
       catsMessagesHasOlder=true;
@@ -7733,8 +7739,8 @@
       updatePetFromCatsMessages(messages);
     }
 
-    async function fetchCatsMessagesPage(offset, limit=CATS_MESSAGES_PAGE_SIZE){
-      return parseCatsResponse(await fetch(API+'/api/cats/messages?topic='+encodeURIComponent(catsState.topicId)+'&limit='+encodeURIComponent(limit)+'&offset='+encodeURIComponent(offset)));
+    async function fetchCatsMessagesPage(offset, limit=CATS_MESSAGES_PAGE_SIZE, topicId=catsState.topicId){
+      return parseCatsResponse(await fetch(API+'/api/cats/messages?topic='+encodeURIComponent(topicId)+'&limit='+encodeURIComponent(limit)+'&offset='+encodeURIComponent(offset)));
     }
 
     async function loadCatsMessages(showErrors=true, options={}){
@@ -7751,14 +7757,17 @@
       if(!catsState.topicId)return;
       if(catsMessagesLoading)return;
       catsMessagesLoading=true;
+      const requestOwnerKey=ownerKey;
+      const requestTopicId=catsState.topicId;
       try{
-        if(catsMessagesTopicId!==catsState.topicId){
-          catsMessagesTopicId=catsState.topicId;
+        if(catsMessagesTopicId!==requestTopicId){
+          catsMessagesTopicId=requestTopicId;
           catsMessagesCache=[];
           catsMessagesHasOlder=true;
           options=Object.assign({}, options, {reset:true, forceBottom:true});
         }
-        const data=await fetchCatsMessagesPage(0);
+        const data=await fetchCatsMessagesPage(0, CATS_MESSAGES_PAGE_SIZE, requestTopicId);
+        if(!isCatsMessageRequestCurrent(requestOwnerKey, requestTopicId))return;
         const incoming=data.messages||[];
         if(options.reset || !catsMessagesCache.length){
           catsMessagesCache=incoming;
@@ -7780,10 +7789,16 @@
 
     async function loadOlderCatsMessages(){
       if(!catsState.topicId || catsMessagesLoadingOlder || !catsMessagesHasOlder || !catsMessagesCache.length)return;
+      const requestOwnerKey=catsMessageOwnerKey(catsState);
+      const requestTopicId=catsState.topicId;
       catsMessagesLoadingOlder=true;
       renderCatsMessages(catsMessagesCache, {preserveViewport:true});
       try{
-        const data=await fetchCatsMessagesPage(catsMessagesCache.length);
+        const data=await fetchCatsMessagesPage(catsMessagesCache.length, CATS_MESSAGES_PAGE_SIZE, requestTopicId);
+        if(!isCatsMessageRequestCurrent(requestOwnerKey, requestTopicId)){
+          catsMessagesLoadingOlder=false;
+          return;
+        }
         const incoming=data.messages||[];
         if(incoming.length<CATS_MESSAGES_PAGE_SIZE)catsMessagesHasOlder=false;
         if(incoming.length){

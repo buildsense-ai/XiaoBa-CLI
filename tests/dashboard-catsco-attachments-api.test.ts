@@ -82,6 +82,8 @@ describe('dashboard CatsCo attachment API', () => {
 
     process.env.CATSCO_HTTP_BASE_URL = serverUrl(catsServer);
     process.env.CATSCO_USER_TOKEN = 'user-token';
+    process.env.CATSCO_USER_UID = '1';
+    process.env.CATSCO_BOT_UID = '2';
     process.env.CATSCO_API_KEY = 'agent-key';
 
     const dashboardApp = express();
@@ -163,6 +165,59 @@ describe('dashboard CatsCo attachment API', () => {
     assert.equal(data.error, 'topic does not belong to the current CatsCo account');
   });
 
+  test('rejects text sends for a topic outside the current account', async () => {
+    process.env.CATSCO_USER_TOKEN = 'user-token';
+    process.env.CATSCO_USER_UID = '38';
+    process.env.CATSCO_BOT_UID = '110';
+
+    const dashboardApp = express();
+    dashboardApp.use(express.json());
+    dashboardApp.use('/api', createApiRouter({ getAll: () => [] } as any));
+    dashboardServer = await listen(dashboardApp);
+
+    const response = await fetch(`${serverUrl(dashboardServer)}/api/cats/messages/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        topic_id: 'p2p_1_110',
+        content: 'hello',
+      }),
+    });
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 403);
+    assert.equal(data.error, 'topic does not belong to the current CatsCo account');
+  });
+
+  test('rejects file sends for a topic outside the current account before consuming file grants', async () => {
+    process.env.CATSCO_USER_TOKEN = 'user-token';
+    process.env.CATSCO_USER_UID = '38';
+    process.env.CATSCO_BOT_UID = '110';
+
+    const dashboardApp = express();
+    dashboardApp.use(express.json());
+    dashboardApp.use('/api', createApiRouter({ getAll: () => [] } as any));
+    dashboardServer = await listen(dashboardApp);
+
+    const filePath = path.join(testRoot, 'report.pdf');
+    fs.writeFileSync(filePath, 'hello world');
+    const grant = createLocalFileGrant(filePath);
+
+    const response = await fetch(`${serverUrl(dashboardServer)}/api/cats/messages/send-file`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        topic_id: 'p2p_1_110',
+        file_token: grant.token,
+      }),
+    });
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 403);
+    assert.equal(data.error, 'topic does not belong to the current CatsCo account');
+    assert.equal(consumeLocalFileGrant(grant.token).name, 'report.pdf');
+  });
+
   test('local file grants are one-time tokens', () => {
     const filePath = path.join(testRoot, 'one-time.txt');
     fs.writeFileSync(filePath, 'hello world');
@@ -218,6 +273,8 @@ describe('dashboard CatsCo attachment API', () => {
 
     process.env.CATSCO_HTTP_BASE_URL = serverUrl(catsServer);
     process.env.CATSCO_USER_TOKEN = 'user-token';
+    process.env.CATSCO_USER_UID = '1';
+    process.env.CATSCO_BOT_UID = '2';
     process.env.CATSCO_API_KEY = 'agent-key';
 
     const dashboardApp = express();
@@ -262,6 +319,8 @@ describe('dashboard CatsCo attachment API', () => {
 
     process.env.CATSCO_HTTP_BASE_URL = serverUrl(catsServer);
     process.env.CATSCO_USER_TOKEN = 'user-token';
+    process.env.CATSCO_USER_UID = '1';
+    process.env.CATSCO_BOT_UID = '2';
     process.env.CATSCO_API_KEY = 'agent-key';
 
     const dashboardApp = express();

@@ -75,6 +75,22 @@ function p2pTopicId(uid1: string | number, uid2: string | number): string {
   return `p2p_${left}_${right}`;
 }
 
+function httpError(message: string, status: number): Error {
+  const error = new Error(message);
+  (error as any).status = status;
+  return error;
+}
+
+function assertCurrentCatsTopic(state: CatsAuthState, topicId: string): void {
+  const expectedTopic = state.uid && state.botUid ? p2pTopicId(state.uid, state.botUid) : '';
+  if (!expectedTopic) {
+    throw httpError('CatsCo account binding is incomplete', 409);
+  }
+  if (topicId !== expectedTopic) {
+    throw httpError('topic does not belong to the current CatsCo account', 403);
+  }
+}
+
 function hostLabel(value: string): string {
   try {
     return new URL(value).host || value;
@@ -169,62 +185,62 @@ export function getCatsAuthState(overrides: Record<string, unknown> = {}): CatsA
   return {
     token: firstNonEmpty(
       overrides.token,
-      env.CATSCO_USER_TOKEN,
       process.env.CATSCO_USER_TOKEN,
-      env.CATSCOMPANY_USER_TOKEN,
+      env.CATSCO_USER_TOKEN,
       process.env.CATSCOMPANY_USER_TOKEN,
+      env.CATSCOMPANY_USER_TOKEN,
     ),
     uid: firstNonEmpty(
       overrides.uid,
-      env.CATSCO_USER_UID,
       process.env.CATSCO_USER_UID,
-      env.CATSCOMPANY_USER_UID,
+      env.CATSCO_USER_UID,
       process.env.CATSCOMPANY_USER_UID,
+      env.CATSCOMPANY_USER_UID,
     ),
     username: firstNonEmpty(
-      env.CATSCO_USER_NAME,
       process.env.CATSCO_USER_NAME,
-      env.CATSCOMPANY_USER_NAME,
+      env.CATSCO_USER_NAME,
       process.env.CATSCOMPANY_USER_NAME,
+      env.CATSCOMPANY_USER_NAME,
     ),
     displayName: firstNonEmpty(
-      env.CATSCO_USER_DISPLAY_NAME,
       process.env.CATSCO_USER_DISPLAY_NAME,
-      env.CATSCOMPANY_USER_DISPLAY_NAME,
+      env.CATSCO_USER_DISPLAY_NAME,
       process.env.CATSCOMPANY_USER_DISPLAY_NAME,
+      env.CATSCOMPANY_USER_DISPLAY_NAME,
     ),
     httpBaseUrl: normalizeBaseUrl(
       firstNonEmpty(
         overrides.httpBaseUrl,
-        env.CATSCO_HTTP_BASE_URL,
         process.env.CATSCO_HTTP_BASE_URL,
-        env.CATSCOMPANY_HTTP_BASE_URL,
+        env.CATSCO_HTTP_BASE_URL,
         process.env.CATSCOMPANY_HTTP_BASE_URL,
+        env.CATSCOMPANY_HTTP_BASE_URL,
       ),
       DEFAULT_CATSCO_HTTP_BASE_URL,
     ),
     serverUrl: normalizeBaseUrl(
       firstNonEmpty(
         overrides.serverUrl,
-        env.CATSCO_SERVER_URL,
         process.env.CATSCO_SERVER_URL,
-        env.CATSCOMPANY_SERVER_URL,
+        env.CATSCO_SERVER_URL,
         process.env.CATSCOMPANY_SERVER_URL,
+        env.CATSCOMPANY_SERVER_URL,
       ),
       DEFAULT_CATSCO_WS_URL,
     ),
     botUid: firstNonEmpty(
       overrides.botUid,
-      env.CATSCO_BOT_UID,
       process.env.CATSCO_BOT_UID,
-      env.CATSCOMPANY_BOT_UID,
+      env.CATSCO_BOT_UID,
       process.env.CATSCOMPANY_BOT_UID,
+      env.CATSCOMPANY_BOT_UID,
     ),
     apiKey: firstNonEmpty(
-      env.CATSCO_API_KEY,
       process.env.CATSCO_API_KEY,
-      env.CATSCOMPANY_API_KEY,
+      env.CATSCO_API_KEY,
       process.env.CATSCOMPANY_API_KEY,
+      env.CATSCOMPANY_API_KEY,
     ),
   };
 }
@@ -1096,10 +1112,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
       const topic = String(req.query.topic || '').trim();
       if (!topic) return res.status(400).json({ error: 'topic required' });
-      const expectedTopic = state.uid && state.botUid ? p2pTopicId(state.uid, state.botUid) : '';
-      if (expectedTopic && topic !== expectedTopic) {
-        return res.status(403).json({ error: 'topic does not belong to the current CatsCo account' });
-      }
+      assertCurrentCatsTopic(state, topic);
       const limit = String(req.query.limit || '50');
       const offset = String(req.query.offset || '0');
       const data = await catsRequest('GET', state.httpBaseUrl, `/api/messages?topic_id=${encodeURIComponent(topic)}&limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}&latest=1`, undefined, state.token);
@@ -1116,6 +1129,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const topicId = String(req.body?.topic_id || '').trim();
       const content = String(req.body?.content || '').trim();
       if (!topicId || !content) return res.status(400).json({ error: 'topic_id and content are required' });
+      assertCurrentCatsTopic(state, topicId);
       const data = await catsRequest('POST', state.httpBaseUrl, '/api/messages/send', {
         topic_id: topicId,
         type: 'text',
@@ -1135,6 +1149,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const topicId = String(req.body?.topic_id || '').trim();
       const fileToken = String(req.body?.file_token || '').trim();
       if (!topicId || !fileToken) return res.status(400).json({ error: 'topic_id and file_token are required' });
+      assertCurrentCatsTopic(state, topicId);
 
       const grant = consumeLocalFileGrant(fileToken);
       const stat = validateLocalFileGrant(grant);

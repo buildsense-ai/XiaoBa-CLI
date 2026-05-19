@@ -124,11 +124,12 @@ test('CatsCo Chat preserves scroll position while reading history', () => {
   assert.match(dashboardHtml, /function updateCatsMessageScrollIntent\(\)/);
   assert.match(dashboardHtml, /function handleCatsMessagesScroll\(\)/);
   assert.match(dashboardHtml, /function catsMessageOwnerKey\(state\)/);
+  assert.match(dashboardHtml, /function isCatsMessageRequestCurrent\(ownerKey, topicId\)/);
   assert.match(dashboardHtml, /function resetCatsMessageCache\(ownerKey=''\)/);
   assert.match(dashboardHtml, /登录 CatsCo 后查看当前账号消息/);
   assert.match(dashboardHtml, /function scrollCatsMessagesToBottom\(box\)/);
   assert.match(dashboardHtml, /function loadOlderCatsMessages\(\)/);
-  assert.match(dashboardHtml, /fetchCatsMessagesPage\(catsMessagesCache\.length\)/);
+  assert.match(dashboardHtml, /fetchCatsMessagesPage\(catsMessagesCache\.length, CATS_MESSAGES_PAGE_SIZE, requestTopicId\)/);
   assert.match(dashboardHtml, /addEventListener\('scroll', handleCatsMessagesScroll, \{ passive: true \}\)/);
 
   const renderBlock = dashboardHtml.match(/function renderCatsMessages\(messages, options=\{\}\)\{[\s\S]*?async function fetchCatsMessagesPage/)?.[0] || '';

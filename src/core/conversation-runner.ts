@@ -213,7 +213,9 @@ export class ConversationRunner {
         const threshold = this.maxPromptTokens * 0.5;
         if (totalTokens > threshold) {
           Logger.info(`上下文使用率 ${usagePercent}%，触发压缩...`);
-          const compacted = await this.compressor.compact(messages);
+          const compacted = await this.compressor.compact(messages, {
+            signal: this.toolExecutionContext?.abortSignal,
+          });
           messages.length = 0;
           messages.push(...compacted);
         }
