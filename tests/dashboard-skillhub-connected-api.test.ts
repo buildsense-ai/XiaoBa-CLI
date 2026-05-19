@@ -16,6 +16,7 @@ describe('dashboard connected SkillHub API', () => {
   let originalEnv: string | undefined;
   let dashboardServer: Server | undefined;
   let cloudServer: Server | undefined;
+  let maliciousServer: Server | undefined;
   let dashboardBaseUrl: string;
   let cloudBaseUrl: string;
 
@@ -28,8 +29,18 @@ describe('dashboard connected SkillHub API', () => {
   });
 
   afterEach(async () => {
-    if (dashboardServer) await close(dashboardServer);
-    if (cloudServer) await close(cloudServer);
+    if (dashboardServer) {
+      await close(dashboardServer);
+      dashboardServer = undefined;
+    }
+    if (cloudServer) {
+      await close(cloudServer);
+      cloudServer = undefined;
+    }
+    if (maliciousServer) {
+      await close(maliciousServer);
+      maliciousServer = undefined;
+    }
     process.chdir(originalCwd);
     if (originalEnv === undefined) delete process.env.CATSCO_SKILLHUB_BASE_URL;
     else process.env.CATSCO_SKILLHUB_BASE_URL = originalEnv;
@@ -99,6 +110,38 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(loadSkillHubConfig().baseUrl, 'https://logs.catsco.fun:9000');
   });
 
+  test('ignores request-supplied SkillHub baseUrl overrides', async () => {
+    const fixture = createFixture();
+    await startCloud(fixture);
+    process.env.CATSCO_SKILLHUB_BASE_URL = cloudBaseUrl;
+    const malicious = await startMaliciousSkillHub();
+    await startDashboard();
+
+    const login = await post('/api/skillhub/auth/login', {
+      email: 'demo@example.com',
+      password: 'passw0rd!!',
+      baseUrl: malicious.baseUrl,
+    });
+    assert.equal(login.status, 200);
+    assert.equal(login.body.authenticated, true);
+    assert.equal(malicious.hits(), 0);
+
+    const status = await get(`/api/skillhub/status?baseUrl=${encodeURIComponent(malicious.baseUrl)}`);
+    assert.equal(status.status, 200);
+    assert.equal(status.body.baseUrl, cloudBaseUrl);
+    assert.equal(malicious.hits(), 0);
+
+    const session = JSON.parse(fs.readFileSync(path.join(testRoot, 'data/skillhub/session.json'), 'utf8'));
+    assert.equal(session.baseUrl, cloudBaseUrl);
+  });
+
+  test('SkillHub install buttons do not embed registry data in inline handlers', () => {
+    const html = fs.readFileSync(path.join(originalCwd, 'dashboard/index.html'), 'utf8');
+    assert.match(html, /data-skillhub-install="true"/);
+    assert.match(html, /addEventListener\('click', handleSkillHubInstallClick\)/);
+    assert.doesNotMatch(html, /onclick="installSkillHubSkill/);
+  });
+
   async function startDashboard(): Promise<void> {
     const app = express();
     app.use(express.json({ limit: '25mb' }));
@@ -110,7 +153,8 @@ describe('dashboard connected SkillHub API', () => {
   async function startCloud(fixture: ReturnType<typeof createFixture>): Promise<void> {
     const app = express();
     app.use(express.json());
-    app.post('/api/auth/login', (_req, res) => {
+    app.post('/api/auth/login', (req, res) => {
+      assert.deepEqual(req.body, { email: 'demo@example.com', password: 'passw0rd!!' });
       res.setHeader('Set-Cookie', 'catsco_session=dashboard-session; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800');
       res.json({ user: fixture.user, roles: ['user'], permissions: [] });
     });
@@ -141,6 +185,19 @@ describe('dashboard connected SkillHub API', () => {
     app.get('/api/skills/:skillId/versions/:version/download', (_req, res) => res.type('application/octet-stream').send(fixture.packageBytes));
     cloudServer = await listen(app);
     cloudBaseUrl = serverBaseUrl(cloudServer);
+  }
+
+  async function startMaliciousSkillHub(): Promise<{ baseUrl: string; hits: () => number }> {
+    let hits = 0;
+    const app = express();
+    app.use(express.json());
+    app.use((_req, res) => {
+      hits += 1;
+      res.setHeader('Set-Cookie', 'catsco_session=malicious-session; Path=/; HttpOnly; Max-Age=604800');
+      res.status(418).json({ error: 'malicious SkillHub should not be contacted' });
+    });
+    maliciousServer = await listen(app);
+    return { baseUrl: serverBaseUrl(maliciousServer), hits: () => hits };
   }
 
   async function get(route: string): Promise<{ status: number; body: any }> {

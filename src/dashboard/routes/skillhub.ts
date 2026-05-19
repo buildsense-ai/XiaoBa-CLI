@@ -87,8 +87,8 @@ export function registerSkillHubRoutes(router: Router): void {
   });
 }
 
-function serviceFrom(input: any): SkillHubService {
-  return new SkillHubService({ baseUrl: input?.baseUrl });
+function serviceFrom(_input?: any): SkillHubService {
+  return new SkillHubService();
 }
 
 function sendSkillHubError(res: any, error: any): void {

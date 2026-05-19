@@ -48,4 +48,3 @@ export const CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS: SkillHubTrustedRootKey[] = [
 
 fs.writeFileSync(target, content, 'utf8');
 console.log(`Updated ${path.relative(rootDir, target)} with ${keyId}`);
-

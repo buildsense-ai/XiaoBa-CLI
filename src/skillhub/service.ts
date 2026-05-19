@@ -39,7 +39,10 @@ export class SkillHubService {
   }
 
   login(input: { email: string; password: string }): Promise<SkillHubAuthState> {
-    return this.client.login(input);
+    return this.client.login({
+      email: input.email,
+      password: input.password,
+    });
   }
 
   logout(): Promise<{ ok: true }> {

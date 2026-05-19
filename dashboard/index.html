@@ -5509,17 +5509,32 @@
       }
       const installedIds = new Set((skillHubState.installed || []).map(item => item.skillId + '@' + item.version));
       grid.innerHTML = items.map(item => {
-        const key = item.skillId + '@' + item.latestVersion;
+        const skillId = String(item.skillId || '');
+        const latestVersion = String(item.latestVersion || '');
+        const key = skillId + '@' + latestVersion;
         const installed = installedIds.has(key);
         const tags = [...(item.categories || []), ...(item.tags || [])].slice(0, 4).map(tag => '<span class="tag">'+escapeHtml(tag)+'</span>').join('');
+        const installAttrs = installed || !skillId
+          ? 'disabled'
+          : 'data-skillhub-install="true" data-skill-id="'+escapeHtml(skillId)+'" data-version="'+escapeHtml(latestVersion)+'"';
         return '<div class="skill-card">'+
-          '<div class="skill-name">'+escapeHtml(item.displayName || item.name || item.skillId)+' <span class="tag green">SkillHub</span></div>'+
+          '<div class="skill-name">'+escapeHtml(item.displayName || item.name || skillId)+' <span class="tag green">SkillHub</span></div>'+
           '<div class="skill-desc">'+escapeHtml(item.description || '')+'</div>'+
-          '<div class="skill-meta">'+tags+'<span class="tag">v'+escapeHtml(item.latestVersion || '-')+'</span><span class="tag">'+escapeHtml(item.riskLevel || 'low')+'</span></div>'+
+          '<div class="skill-meta">'+tags+'<span class="tag">v'+escapeHtml(latestVersion || '-')+'</span><span class="tag">'+escapeHtml(item.riskLevel || 'low')+'</span></div>'+
           '<div class="skill-files">'+escapeHtml((item.triggerExamples || []).slice(0, 3).join('；'))+'</div>'+
-          '<div class="skill-actions"><button class="btn btn-primary" '+(installed?'disabled':'onclick="installSkillHubSkill(\''+skillJsArg(item.skillId)+'\',\''+skillJsArg(item.latestVersion)+'\')"')+'>'+(installed?'已安装':'安装')+'</button></div>'+
+          '<div class="skill-actions"><button class="btn btn-primary" '+installAttrs+'>'+(installed?'已安装':'安装')+'</button></div>'+
         '</div>';
       }).join('');
+    }
+
+    function handleSkillHubInstallClick(event) {
+      const button = event.target?.closest?.('[data-skillhub-install]');
+      if (!button || button.disabled) return;
+      event.preventDefault();
+      const skillId = button.dataset.skillId || '';
+      const version = button.dataset.version || '';
+      if (!skillId) return;
+      installSkillHubSkill(skillId, version || undefined);
     }
 
     async function installSkillHubSkill(skillId, version) {
@@ -8057,6 +8072,7 @@
     catsMessageInput.addEventListener('focus',()=>setPetState('typing', { message:'准备输入' }));
     catsMessageInput.addEventListener('blur',()=>{if(!catsMessageInput.value.trim()) setPetAutoBaseline(petAutoBaseline);});
     setupCatsAttachmentInputs();
+    document.getElementById('skillhub-registry-grid')?.addEventListener('click', handleSkillHubInstallClick);
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeLogs();closeUpdateModal();closeCatsMediaPreview();}});
     document.addEventListener('click',e=>{const shell=document.getElementById('floating-pet');if(shell && !shell.contains(e.target)) closeFloatingPetMenu();});
   </script>
