@@ -4,7 +4,7 @@ import * as dotenv from 'dotenv';
 
 const DEFAULT_API_BASE_URL = 'https://logs.catsco.fun:8000';
 const DEFAULT_LOOKBACK_HOURS = 24;
-const DEFAULT_INTERVAL_MINUTES = 360;
+const DEFAULT_INTERVAL_MINUTES = 1440;
 const DEFAULT_MAX_FAILURES = 100;
 const DEFAULT_MAX_SESSIONS = 30;
 const DEFAULT_MAX_ENTRIES_PER_SESSION = 200;
