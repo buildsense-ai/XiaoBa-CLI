@@ -62,11 +62,17 @@ export class ConfigManager {
 
   static getConfig(): ChatConfig {
     this.ensureConfigDir();
-    return this.mergeConfig(this.getDefaultConfig(), this.loadUserConfigFile());
+    return this.mergeConfig(
+      this.mergeConfig(this.getDefaultConfig(), this.loadUserConfigFile()),
+      this.getExplicitModelEnvConfig(),
+    );
   }
 
   static getConfigReadonly(): ChatConfig {
-    return this.mergeConfig(this.getDefaultConfig(), this.loadUserConfigFile());
+    return this.mergeConfig(
+      this.mergeConfig(this.getDefaultConfig(), this.loadUserConfigFile()),
+      this.getExplicitModelEnvConfig(),
+    );
   }
 
   static saveConfig(config: ChatConfig): void {
@@ -76,7 +82,7 @@ export class ConfigManager {
   }
 
   static getDefaultConfig(): ChatConfig {
-    const apiUrl = process.env.GAUZ_LLM_API_BASE || 'https://api.openai.com/v1/chat/completions';
+    const apiUrl = process.env.GAUZ_LLM_API_BASE || 'https://api.openai.com/v1';
     const model = process.env.GAUZ_LLM_MODEL || 'gpt-3.5-turbo';
 
     // 自动检测 provider
@@ -108,5 +114,28 @@ export class ConfigManager {
         intervalMinutes: parseInt(process.env.CATSCO_LOG_UPLOAD_INTERVAL_MINUTES || '30'),
       },
     };
+  }
+
+  private static getExplicitModelEnvConfig(): Partial<ChatConfig> {
+    const override: Partial<ChatConfig> = {};
+    const provider = process.env.GAUZ_LLM_PROVIDER?.trim();
+    const apiUrl = process.env.GAUZ_LLM_API_BASE?.trim();
+    const apiKey = process.env.GAUZ_LLM_API_KEY?.trim();
+    const model = process.env.GAUZ_LLM_MODEL?.trim();
+
+    if (provider === 'openai' || provider === 'anthropic') {
+      override.provider = provider;
+    }
+    if (apiUrl) {
+      override.apiUrl = apiUrl;
+    }
+    if (apiKey) {
+      override.apiKey = apiKey;
+    }
+    if (model) {
+      override.model = model;
+    }
+
+    return override;
   }
 }

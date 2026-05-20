@@ -127,6 +127,43 @@ test('ConfigManager merges env-backed LLM config with partial user config file',
   assert.equal(config.catscompany.apiKey, 'cc_test_key');
 });
 
+test('ConfigManager lets explicit env LLM settings override legacy user config', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-config-env-priority-'));
+  const homeDir = path.join(tempRoot, 'home');
+  const configDir = path.join(homeDir, '.xiaoba');
+  const envFile = path.join(tempRoot, '.env');
+
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(
+    envFile,
+    [
+      'GAUZ_LLM_PROVIDER=openai',
+      'GAUZ_LLM_API_BASE=https://api.deepseek.com',
+      'GAUZ_LLM_MODEL=deepseek-v4-flash',
+      'GAUZ_LLM_API_KEY=test-key',
+    ].join('\n'),
+  );
+  fs.writeFileSync(
+    path.join(configDir, 'config.json'),
+    JSON.stringify({
+      provider: 'anthropic',
+      apiUrl: 'https://api.deepseek.com/anthropic',
+      model: 'legacy-model',
+      catscompany: {
+        serverUrl: 'ws://example.com/v0/channels',
+      },
+    }),
+  );
+
+  const { config } = runConfigProbe(homeDir, envFile);
+
+  assert.equal(config.provider, 'openai');
+  assert.equal(config.apiUrl, 'https://api.deepseek.com');
+  assert.equal(config.model, 'deepseek-v4-flash');
+  assert.equal(config.apiKey, 'test-key');
+  assert.equal(config.catscompany.serverUrl, 'ws://example.com/v0/channels');
+});
+
 test('ConfigManager readonly config does not create user config directory', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-config-readonly-'));
   const homeDir = path.join(tempRoot, 'home');

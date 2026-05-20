@@ -105,6 +105,14 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.doesNotMatch(dashboardHtml, /末尾 \+/);
 });
 
+test('custom model save refreshes readiness before Chat remains locked', () => {
+  assert.match(
+    dashboardHtml,
+    /fetchDashboardSettings\(\),fetchStatus\(\),fetchRuntimeConfig\(\),fetchReadiness\(\),fetchCatsStatus\(\)/,
+  );
+  assert.match(dashboardHtml, /已保存，正在刷新启动状态/);
+});
+
 test('CatsCo Chat preserves scroll position while reading history', () => {
   assert.match(dashboardHtml, /let catsScrollPinnedToBottom = true/);
   assert.match(dashboardHtml, /const CATS_SCROLL_BOTTOM_THRESHOLD = 80/);
