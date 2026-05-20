@@ -3,6 +3,7 @@ import { Message, ChatConfig, ChatResponse, ContentBlock } from '../types';
 import { ToolDefinition } from '../types/tool';
 import { AIProvider, StreamCallbacks } from './provider';
 import { ContextDebugLogger } from '../utils/context-debug-logger';
+import { normalizeOpenAIChatCompletionsUrl } from './openai-url';
 
 /**
  * OpenAI Provider
@@ -11,6 +12,7 @@ import { ContextDebugLogger } from '../utils/context-debug-logger';
  */
 export class OpenAIProvider implements AIProvider {
   private apiUrl: string;
+  private chatCompletionsUrl: string;
   private apiKey: string;
   private model: string;
   private temperature: number;
@@ -18,6 +20,7 @@ export class OpenAIProvider implements AIProvider {
 
   constructor(config: ChatConfig) {
     this.apiUrl = config.apiUrl!;
+    this.chatCompletionsUrl = normalizeOpenAIChatCompletionsUrl(this.apiUrl);
     this.apiKey = config.apiKey!;
     this.model = config.model || 'gpt-4o';
     this.temperature = config.temperature ?? 0.7;
@@ -107,10 +110,10 @@ export class OpenAIProvider implements AIProvider {
   async chat(messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse> {
     const body = this.buildRequestBody(messages, tools, false);
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
-      apiUrl: this.apiUrl,
+      apiUrl: this.chatCompletionsUrl,
       body,
     });
-    const response = await axios.post(this.apiUrl, body, { headers: this.headers });
+    const response = await axios.post(this.chatCompletionsUrl, body, { headers: this.headers });
     const message = response.data.choices[0].message;
     const usage = response.data.usage;
 
@@ -136,11 +139,11 @@ export class OpenAIProvider implements AIProvider {
     const body = this.buildRequestBody(messages, tools, true);
 
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
-      apiUrl: this.apiUrl,
+      apiUrl: this.chatCompletionsUrl,
       body,
     });
 
-    const response = await axios.post(this.apiUrl, body, {
+    const response = await axios.post(this.chatCompletionsUrl, body, {
       headers: this.headers,
       responseType: 'stream',
     });

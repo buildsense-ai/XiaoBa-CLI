@@ -71,7 +71,7 @@ export const DASHBOARD_SETTING_DEFINITIONS: DashboardSettingDefinition[] = [
     id: 'model.apiBase',
     group: 'model',
     label: 'API 地址',
-    description: '主模型 API base URL。',
+    description: '主模型 API Base URL，兼容 OpenAI SDK 风格，也可填写 chat/completions 完整地址。',
     envKey: 'GAUZ_LLM_API_BASE',
     type: 'url',
     required: true,

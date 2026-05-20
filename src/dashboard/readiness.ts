@@ -63,7 +63,7 @@ export interface DashboardReadinessOptions {
   now?: Date;
 }
 
-const DEFAULT_MODEL_API_BASE = 'https://api.openai.com/v1/chat/completions';
+const DEFAULT_MODEL_API_BASE = 'https://api.openai.com/v1';
 const DEFAULT_MODEL_NAME = 'gpt-3.5-turbo';
 const SUPPORTED_PROVIDERS = new Set(['openai', 'anthropic']);
 type SupportedProvider = 'openai' | 'anthropic';

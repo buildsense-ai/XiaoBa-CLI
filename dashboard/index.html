@@ -6064,7 +6064,11 @@
         if(clearInput && secretUpdate.action==='clear')clearInput.checked=false;
         const saved=document.getElementById('model-source-saved');
         if(saved){saved.classList.add('show');setTimeout(()=>saved.classList.remove('show'),2000);}
-        if(!auto)await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchRuntimeConfig()]);
+        if(!auto){
+          setModelSourceStatus('已保存，正在刷新启动状态...','muted');
+          await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchRuntimeConfig(),fetchReadiness(),fetchCatsStatus()]);
+          setModelSourceStatus('已保存。新 session 或下一次启动 connector 后生效。','success');
+        }
       }catch(e){
         setModelSourceStatus('保存失败：'+(e.message||String(e)),'error');
       }finally{
