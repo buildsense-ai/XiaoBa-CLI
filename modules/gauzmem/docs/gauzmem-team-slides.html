@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GauzMem Team Brief</title>
+  <style>
+    :root {
+      --ink: #17202a;
+      --muted: #667085;
+      --line: #d8dee8;
+      --paper: #f7f8fb;
+      --panel: #ffffff;
+      --blue: #2563eb;
+      --green: #11845b;
+      --amber: #b7791f;
+      --red: #b42318;
+      --violet: #6d28d9;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.42;
+    }
+
+    .deck { scroll-snap-type: y mandatory; }
+
+    .slide {
+      min-height: 100vh;
+      padding: 48px 6vw 42px;
+      display: grid;
+      align-content: center;
+      gap: 24px;
+      border-bottom: 1px solid var(--line);
+      scroll-snap-align: start;
+      background: var(--panel);
+    }
+
+    .slide:nth-child(2n) { background: #fbfcff; }
+
+    .topline {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    h1, h2, h3, p { margin: 0; }
+
+    h1 {
+      max-width: 980px;
+      font-size: clamp(42px, 7vw, 78px);
+      line-height: .98;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      max-width: 980px;
+      font-size: clamp(30px, 4.1vw, 50px);
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 940px;
+      font-size: clamp(19px, 2vw, 28px);
+      color: #344054;
+    }
+
+    .note {
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .status {
+      display: inline-flex;
+      width: fit-content;
+      border-radius: 999px;
+      padding: 5px 11px;
+      font-size: 13px;
+      font-weight: 800;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+
+    .current { color: var(--green); }
+    .planned { color: var(--violet); }
+    .risk { color: var(--amber); }
+
+    .split {
+      display: grid;
+      grid-template-columns: minmax(0, .95fr) minmax(360px, 1.05fr);
+      gap: 38px;
+      align-items: center;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 18px;
+      min-height: 112px;
+    }
+
+    .card h3 { margin-bottom: 8px; }
+
+    .term-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .term {
+      border-left: 5px solid var(--blue);
+      background: #fff;
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    .term.green { border-left-color: var(--green); }
+    .term.amber { border-left-color: var(--amber); }
+    .term.violet { border-left-color: var(--violet); }
+
+    .line-flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    .step {
+      position: relative;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 16px;
+      min-height: 120px;
+    }
+
+    .step::after {
+      content: "->";
+      position: absolute;
+      top: 42px;
+      right: -18px;
+      color: var(--muted);
+      font-weight: 900;
+    }
+
+    .step:last-child::after { display: none; }
+
+    .swimlane {
+      display: grid;
+      grid-template-columns: 1fr 1.15fr 1fr;
+      gap: 16px;
+      align-items: stretch;
+    }
+
+    .lane {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 18px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .mini {
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      padding: 12px;
+      background: #f8fafc;
+      color: #344054;
+      font-size: 14px;
+    }
+
+    .edge-demo {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 90px minmax(0, 1fr);
+      gap: 18px;
+      align-items: center;
+    }
+
+    .evidence {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 18px;
+      min-height: 134px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .edge {
+      color: var(--green);
+      font-weight: 900;
+      text-align: center;
+      display: grid;
+      gap: 8px;
+    }
+
+    .edge::before {
+      content: "";
+      height: 2px;
+      background: var(--green);
+      display: block;
+    }
+
+    .tag {
+      display: inline-flex;
+      width: fit-content;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 10px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .quote {
+      border-left: 4px solid var(--blue);
+      background: #f8fafc;
+      padding: 16px 18px;
+      border-radius: 8px;
+      font-size: 20px;
+      color: #344054;
+    }
+
+    .table-wrap {
+      width: 100%;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 760px;
+      font-size: 15px;
+    }
+
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--line);
+      padding: 13px 15px;
+    }
+
+    th {
+      background: #f5f7fb;
+      color: #344054;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    .code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 14px;
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 8px;
+      padding: 18px;
+      white-space: pre-wrap;
+    }
+
+    .footer {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 920px) {
+      .slide { padding: 36px 22px; }
+      .split, .grid-2, .grid-3, .term-grid, .line-flow, .swimlane, .edge-demo {
+        grid-template-columns: 1fr;
+      }
+      .step::after { display: none; }
+      h2 { font-size: clamp(28px, 8vw, 40px); }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck">
+    <section class="slide">
+      <div class="topline">
+        <span>GauzMem team brief</span>
+        <span>0.2 core + 0.3 proposal</span>
+      </div>
+      <h1>GauzMem：让 agent 不只是搜索，而是会联想。</h1>
+      <p class="lead">0.2 已完成 query-driven memory core。0.3 先做 manual / offline dreaming prototype；长期方向是让图在真实请求之外继续生长。</p>
+      <p class="footer">目标听众：第一次参与 GauzMem 的团队成员。</p>
+    </section>
+
+    <section class="slide">
+      <div class="topline"><span>为什么做</span><span>记忆不是更大的检索框</span></div>
+      <div class="split">
+        <div>
+          <h2>关键词和 grep 很强；缺的是“应该想到”。</h2>
+          <p class="lead">大型项目里，agent 往往能解决眼前问题，却不知道已有模块、旧约束、旧偏好和当前任务有关。</p>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <h3>普通搜索</h3>
+            <p class="note">命中关键词，读上下文，再继续搜。</p>
+          </div>
+          <div class="card">
+            <h3>GauzMem</h3>
+            <p class="note">记录 evidence 之间为什么值得互相联想到。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="topline"><span>先对齐词</span><span>六个基础对象</span></div>
+      <h2>先记住这六个对象，后面的图就能读懂。</h2>
+      <div class="term-grid">
+        <div class="term">
+          <h3>source</h3>
+          <p class="note">XiaoBa session log 或已注册 attachment text。</p>
+        </div>
+        <div class="term green">
+          <h3>evidence node</h3>
+          <p class="note">从 source 抽出的 exact quote，不是模型摘要。</p>
+        </div>
+        <div class="term amber">
+          <h3>whyRelevant edge</h3>
+          <p class="note">0.2 的 edge type 是 localAssociation；whyRelevant 是边上的说明文本，不是事实本身。</p>
+        </div>
+        <div class="term violet">
+          <h3>run</h3>
+          <p class="note">0.2: retrieve / tool search / sweep。0.3 planned: dream episode。</p>
+        </div>
+        <div class="term">
+          <h3>bundle</h3>
+          <p class="note">临时注入 agent 的自然语言记忆线索。</p>
+        </div>
+        <div class="term green">
+          <h3>state</h3>
+          <p class="note">权重、可见性、tick、selected / rejected / decay 记录。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="topline"><span>核心不变量</span><span>最重要的一句话</span></div>
+      <h2>Retrieve 决定“对当前问题是否有用”；Construct 只修本地联想路。</h2>
+      <div class="grid-3">
+        <div class="card">
+          <h3>retrieve</h3>
+          <p class="note">读 graph 候选，判断哪些 evidence 能帮助 root query。</p>
+        </div>
+        <div class="card">
+          <h3>construct</h3>
+          <p class="note">对 frontier 搜 source，抽 exact quote，写 localAssociation edge。</p>
+        </div>
+        <div class="card">
+          <h3>root relevance</h3>
+          <p class="note">判断线索是否进入本轮 bundle，并记录 selected / rejected。</p>
+        </div>
+      </div>
+      <div class="edge-demo">
+        <div class="evidence">
+          <span class="tag">construct</span>
+          <h3>找到 source evidence</h3>
+          <p class="note">局部搜索、exact quote、写 localAssociation edge。</p>
+        </div>
+        <div class="edge">local road</div>
+        <div class="evidence">
+          <span class="tag">retrieve</span>
+          <h3>判断 root relevance</h3>
+          <p class="note">只有被选中的 evidence / edge 才进入 bundle 并强化。</p>
+        </div>
+      </div>
+      <p class="quote">这条边说明“值得联想到”，但是否用于当前问题，由 root relevance 决定。</p>
+    </section>
+
+    <section class="slide">
+      <div class="topline"><span>0.2 当前架构</span><span>已实现</span></div>
+      <h2>XiaoBa 只发 query / event；GauzMem sidecar 负责记忆内部状态。</h2>
+      <div class="swimlane">
+        <div class="lane">
+          <span class="status current">XiaoBa runtime</span>
+          <div class="mini">pre-turn -> /v1/retrieve</div>
+          <div class="mini">active tool -> /v1/tool/search</div>
+          <div class="mini">post-turn -> /v1/events/turn</div>
+        </div>
+        <div class="lane">
+          <span class="status current">GauzMem core</span>
+          <div class="mini">scan graph -> judge -> bundle</div>
+          <div class="mini">construct: grep source -> exact evidence</div>
+          <div class="mini">MiniMax reasoner or deterministic fallback</div>
+          <div class="mini">/v1/metabolism/sweep</div>
+        </div>
+        <div class="lane">
+          <span class="status current">JSONL store</span>
+          <div class="mini">append nodes / edges</div>
+          <div class="mini">append node_state / edge_state</div>
+          <div class="mini">append runs / events / turn metadata</div>
+        </div>
+      </div>
+      <p class="footer">部署约束：sidecar 持有 storeRoot、LLM key、source roots 和 callType 策略；caller 只提交本轮意图。</p>
+    </section>
+
+    <section class="slide">
+      <div class="topline"><span>一次典型 recall</span><span>end-to-end</span></div>
+      <h2>从用户问题到临时 bundle，0.2 通常先走 graph，再按需 construct。</h2>
+      <div class="line-flow">
+        <div class="step">
+          <h3>1. query</h3>
+          <p class="note">例如：我现在更偏好什么语言？</p>
+        </div>
+        <div class="step">
+          <h3>2. graph first</h3>
+          <p class="note">先扫已有 node / edge，披露局部子图。</p>
+        </div>
+        <div class="step">
+          <h3>3. judge</h3>
+          <p class="note">root relevance 选中或拒绝 evidence。</p>
+        </div>
+        <div class="step">
+          <h3>4. construct if needed</h3>
+          <p class="note">图不够时才搜 source。root 冷启动写 standalone node；node-local construct 写 edge。</p>
+        </div>
+        <div class="step">
+          <h3>5. bundle</h3>
+          <p class="note">只把被选中的线索临时注入 agent。</p>
+        </div>
+      </div>
+      <p class="footer">这不是每轮必经的线性流程。Construct 触发条件包括冷启动、graph seed 未选中、没有新增有效 route、当前 selected graph 不足且有 source roots。</p>
+    </section>
+
+    <section class="slide">
+      <div class="topline"><span>图里的边</span><span>example</span></div>
+      <h2>两个 evidence 不相似，也可能应该互相联想到。</h2>
+      <div class="edge-demo">
+        <div class="evidence">
+          <span class="tag">node</span>
+          <h3>一年前，用户说自己喜欢 C。</h3>
+          <p class="note">source-backed quote</p>
+        </div>
+        <div class="edge">whyRelevant</div>
+        <div class="evidence">
+          <span class="tag">node</span>
+          <h3>最近，用户说现在更喜欢 Python。</h3>
+          <p class="note">source-backed quote</p>
+        </div>
+      </div>
+      <p class="quote">用户的代码语言偏好发生更新；近期 Python 偏好更该被优先参考。</p>
+    </section>
+
+    <section class="slide">
+      <div class="topline"><span>Agent 看到什么</span><span>prompt stays small</span></div>
+      <div class="split">
+        <div>
+          <h2>给 agent 的是记忆线索，不是调试记录。</h2>
+          <p class="lead">sourceRef、runId、权重、trace 留在 JSONL 和 dashboard。上下文里只放可读 evidence 与 whyRelevant。</p>
+          <p class="note">store 保留 exact quote；bundle 只做轻量排版，不新增事实、不暴露 IDs。</p>
+        </div>
+        <div class="code">[gauzmem_recall]
+相关记忆线索：
+
+- 最近，用户说现在更喜欢 Python。
+  可能联想到：
+  - 一年前，用户说自己喜欢 C：
+    用户的代码语言偏好发生更新；近期 Python 偏好更该被优先参考。
+[/gauzmem_recall]</div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="topline"><span>0.2 代谢</span><span>已实现</span></div>
+      <h2>遗忘按 agent 的认知 tick 发生，不按墙上时间。</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>信号</th>
+              <th>当前含义</th>
+              <th>注意</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>selected</td>
+              <td>真实 query 中被 root relevance 选中。</td>
+              <td>强强化，增加普通 selectedCount。</td>
+            </tr>
+            <tr>
+              <td>rejected</td>
+              <td>root relevance 判断无关或误导。</td>
+              <td>降权，尤其是 edge。</td>
+            </tr>
+            <tr>
+              <td>effectiveWeight</td>
+              <td>运行时根据 weight、selectedCount、lastTouchedTick 计算。</td>
+              <td>不直接改 numeric weight。</td>
+            </tr>
+            <tr>
+              <td>sweep</td>
+              <td>显式物化 active -> faint 或 faint -> dormant。</td>
+              <td>写 decayed event，dashboard 可复盘。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="topline"><span>0.3 假设</span><span>planned</span></div>
+      <div class="split">
+        <div>
+          <span class="status planned">Proposal</span>
+          <h2>如果只靠真实 query，联想图可能长得太慢。</h2>
+          <p class="lead">0.3 先做手动 / 同步的 dream prototype：从已有 evidence 自我发问，验证能否提前补出有用联想边。</p>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <h3>要验证</h3>
+            <p class="note">后续真实 query 是否更快命中相关线索。</p>
+          </div>
+          <div class="card">
+            <h3>要防止</h3>
+            <p class="note">内部梦境自我强化，污染真实 recall。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="topline"><span>0.3 dream episode</span><span>planned</span></div>
+      <h2>Dreaming 仍然做 root relevance；否则就是盲目建图。</h2>
+      <div class="line-flow">
+        <div class="step">
+          <h3>1. seed</h3>
+          <p class="note">选 retrievable、non-dormant、低度或最近的 evidence node。</p>
+        </div>
+        <div class="step">
+          <h3>2. question</h3>
+          <p class="note">生成短问题作为 dream root，不把问题当 evidence。</p>
+        </div>
+        <div class="step">
+          <h3>3. retrieve</h3>
+          <p class="note">用 initialNodeIds 激活 seed，bundleTarget=internal。</p>
+        </div>
+        <div class="step">
+          <h3>4. construct</h3>
+          <p class="note">只写 dream-discovered source evidence。</p>
+        </div>
+        <div class="step">
+          <h3>5. state</h3>
+          <p class="note">dream_selected 弱强化，不进 prompt，不增加普通 selectedCount。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="topline"><span>0.3 边界</span><span>planned</span></div>
+      <h2>第一版 dreaming 要保守：手动、同步、可复盘。</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>做</th>
+              <th>暂不做</th>
+              <th>原因</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>CLI / API 手动触发 dream。</td>
+              <td>自动后台 daemon。</td>
+              <td>先看污染、成本和收益。</td>
+            </tr>
+            <tr>
+              <td>从 retrievable non-dormant node 选 seed。</td>
+              <td>dormant recovery。</td>
+              <td>复活策略需要单独设计。</td>
+            </tr>
+            <tr>
+              <td>dream_created 低初始权重。</td>
+              <td>从 dream-created node 继续 dream。</td>
+              <td>避免内部图自我膨胀。</td>
+            </tr>
+            <tr>
+              <td>Dreaming 独立 dashboard 区域。</td>
+              <td>混进 Recall Replay。</td>
+              <td>区分用户会话和内部 episode。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="footer">安全规则：dream-created 是梦境中发现的 source evidence，不是生成摘要；whyRelevant 是联想说明，不是事实声明。</p>
+    </section>
+
+    <section class="slide">
+      <div class="topline"><span>交付拆分</span><span>first PRs</span></div>
+      <h2>这些是实现入口，不是新概念；建议按依赖顺序推进。</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>方向</th>
+              <th>第一批改动</th>
+              <th>验收方式</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1. Core</td>
+              <td>initialNodeIds、bundleTarget、dream state profile。</td>
+              <td>initialNodeIds 只激活起点；bundleTarget=internal 不返回 prompt bundle；dream_selected 不增加普通 selectedCount。</td>
+            </tr>
+            <tr>
+              <td>2. Dream policy</td>
+              <td>seed picker、generateDreamQuestions、dry-run plan。</td>
+              <td>同一 store 能输出稳定 seeds/questions；dry-run 不写 nodes/edges/state。</td>
+            </tr>
+            <tr>
+              <td>3. API / CLI / UI</td>
+              <td>POST /v1/dream、gauzmem dream、dashboard Dreaming 区域。</td>
+              <td>dream runs 进独立区域；不混进用户 Recall Replay。</td>
+            </tr>
+            <tr>
+              <td>4. Evaluation</td>
+              <td>dream 前后真实 query 对比。</td>
+              <td>命中率、无关 bundle 率、成本、图增长都有记录。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="footer">0.3 成功标准：dream 长出的边，后续真实 query 能命中，并减少 agent 主动搜索成本。</p>
+    </section>
+  </main>
+</body>
+</html>
