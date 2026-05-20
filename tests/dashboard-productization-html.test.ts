@@ -157,11 +157,25 @@ test('dashboard supports hidden persistent font scaling shortcuts', () => {
   assert.doesNotMatch(dashboardHtml, /font-scale-control/);
   assert.match(dashboardHtml, /DASHBOARD_FONT_SCALE_KEY = 'xiaoba\.dashboardFontScale'/);
   assert.match(dashboardHtml, /function applyDashboardFontScale\(value, persist=true\)/);
-  assert.match(dashboardHtml, /document\.documentElement\.style\.fontSize=scale\+'%'/);
+  assert.match(dashboardHtml, /function dashboardFontScaleLimit\(\)/);
+  assert.match(dashboardHtml, /--dashboard-ui-zoom: 1/);
+  assert.match(dashboardHtml, /\.sidebar \{\s*zoom: var\(--dashboard-ui-zoom\);/);
+  assert.match(dashboardHtml, /\.main-wrapper \{\s*zoom: var\(--dashboard-ui-zoom\);/);
+  assert.match(dashboardHtml, /document\.documentElement\.style\.setProperty\('--dashboard-ui-zoom', String\(effectiveScale \/ 100\)\)/);
+  assert.match(dashboardHtml, /document\.body\.style\.zoom=''/);
   assert.match(dashboardHtml, /function handleDashboardFontScaleShortcut\(event\)/);
   assert.match(dashboardHtml, /key==='\+' \|\| key==='=' \|\| key==='Add'/);
   assert.match(dashboardHtml, /key==='-' \|\| key==='_'\s*\|\| key==='Subtract'/);
   assert.match(dashboardHtml, /key==='0' \|\| key==='\)'/);
   assert.match(dashboardHtml, /loadDashboardFontScale\(\);/);
   assert.match(dashboardHtml, /document\.addEventListener\('keydown',handleDashboardFontScaleShortcut\)/);
+  assert.match(dashboardHtml, /window\.addEventListener\('resize',refreshDashboardFontScaleForViewport\)/);
+});
+
+test('dashboard non-chat pages use the full available work area', () => {
+  assert.doesNotMatch(dashboardHtml, /--dashboard-content-max/);
+  assert.match(dashboardHtml, /\.page-content \{\s*width: 100%;\s*max-width: none;\s*margin: 0;/);
+  assert.match(dashboardHtml, /body:not\(\.chat-active\) \.sidebar \{\s*position: static;\s*width: 100%;\s*min-height: auto;/);
+  assert.match(dashboardHtml, /body:not\(\.chat-active\) \.main-wrapper \{\s*margin-left: 0;/);
+  assert.match(dashboardHtml, /@media \(max-width: 780px\) \{\s*body:not\(\.chat-active\) \.companion-hero,/);
 });
