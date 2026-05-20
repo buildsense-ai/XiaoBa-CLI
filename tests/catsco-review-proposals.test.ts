@@ -53,8 +53,13 @@ describe('catsco review proposals', () => {
       assert.ok(fs.existsSync(bundle.files.findings));
       assert.ok(fs.existsSync(bundle.files.promptSuggestions));
       assert.ok(fs.existsSync(bundle.files.skillSuggestions));
+      assert.ok(fs.existsSync(bundle.files.codeSuggestions));
       assert.ok(fs.existsSync(bundle.files.evalCases));
+      assert.equal(path.basename(bundle.files.rawReviewData), 'raw_review_data.server_redacted.local.json');
       assert.match(fs.readFileSync(bundle.files.skillSuggestions, 'utf-8'), /Candidate skill work/);
+      assert.doesNotMatch(fs.readFileSync(bundle.files.findings, 'utf-8'), /unknown tool: report_builder/);
+      assert.doesNotMatch(fs.readFileSync(bundle.files.evalCases, 'utf-8'), /unknown tool: report_builder/);
+      assert.match(fs.readFileSync(bundle.files.rawReviewData, 'utf-8'), /"summary"/);
       assert.equal(fs.existsSync(path.join(root, 'prompts')), false);
       assert.equal(fs.existsSync(path.join(root, 'skills')), false);
     } finally {

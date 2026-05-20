@@ -5,6 +5,7 @@ import { execFileSync } from 'child_process';
 export interface ReviewGitOptions {
   targetRepo: string;
   proposalSourceDir: string;
+  includeFiles?: string[];
   runId: string;
   prBaseBranch: string;
   gitRemote: string;
@@ -34,7 +35,7 @@ export function runReviewGitWorkflow(options: ReviewGitOptions): ReviewGitResult
     throw new Error(`Review proposal directory already exists: ${repoProposalDir}`);
   }
   fs.mkdirSync(path.dirname(repoProposalDir), { recursive: true });
-  fs.cpSync(options.proposalSourceDir, repoProposalDir, { recursive: true });
+  copyProposalFiles(options.proposalSourceDir, repoProposalDir, options.includeFiles);
 
   const result: ReviewGitResult = { repoProposalDir, branch };
 
@@ -71,6 +72,24 @@ export function runReviewGitWorkflow(options: ReviewGitOptions): ReviewGitResult
 function assertGitRepo(repo: string): void {
   if (!fs.existsSync(path.join(repo, '.git'))) {
     throw new Error(`CATSCO_REVIEW_TARGET_REPO is not a Git repository: ${repo}`);
+  }
+}
+
+function copyProposalFiles(sourceDir: string, targetDir: string, includeFiles?: string[]): void {
+  fs.mkdirSync(targetDir, { recursive: true });
+  const fileNames = includeFiles && includeFiles.length > 0
+    ? includeFiles
+    : fs.readdirSync(sourceDir).filter(name => fs.statSync(path.join(sourceDir, name)).isFile());
+
+  for (const fileName of fileNames) {
+    if (fileName.includes('/') || fileName.includes('\\') || fileName === '..' || fileName.includes('..')) {
+      throw new Error(`Unsafe proposal file name: ${fileName}`);
+    }
+    const sourcePath = path.join(sourceDir, fileName);
+    if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) {
+      throw new Error(`Proposal file does not exist: ${sourcePath}`);
+    }
+    fs.copyFileSync(sourcePath, path.join(targetDir, fileName));
   }
 }
 

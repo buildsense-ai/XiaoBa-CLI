@@ -4,6 +4,7 @@ import * as dotenv from 'dotenv';
 
 const DEFAULT_API_BASE_URL = 'https://logs.catsco.fun:8000';
 const DEFAULT_LOOKBACK_HOURS = 24;
+const DEFAULT_INTERVAL_MINUTES = 360;
 const DEFAULT_MAX_FAILURES = 100;
 const DEFAULT_MAX_SESSIONS = 30;
 const DEFAULT_MAX_ENTRIES_PER_SESSION = 200;
@@ -15,6 +16,7 @@ export interface CatscoReviewAgentConfig {
   reviewToken?: string;
   outputDir: string;
   lookbackHours: number;
+  intervalMinutes: number;
   maxFailures: number;
   maxSessions: number;
   maxEntriesPerSession: number;
@@ -116,6 +118,7 @@ export function getCatscoReviewAgentConfig(
       'data/catsco-review-agent/runs',
     ),
     lookbackHours: readNumber(runtimeEnv, 'CATSCO_REVIEW_LOOKBACK_HOURS', DEFAULT_LOOKBACK_HOURS, 1),
+    intervalMinutes: readNumber(runtimeEnv, 'CATSCO_REVIEW_INTERVAL_MINUTES', DEFAULT_INTERVAL_MINUTES, 1),
     maxFailures: readNumber(runtimeEnv, 'CATSCO_REVIEW_MAX_FAILURES', DEFAULT_MAX_FAILURES, 1),
     maxSessions: readNumber(runtimeEnv, 'CATSCO_REVIEW_MAX_SESSIONS', DEFAULT_MAX_SESSIONS, 1),
     maxEntriesPerSession: readNumber(

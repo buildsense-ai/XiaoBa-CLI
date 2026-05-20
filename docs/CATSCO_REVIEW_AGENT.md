@@ -46,6 +46,7 @@ CATSCO_REVIEW_API_BASE_URL=https://logs.catsco.fun:8000
 CATSCO_REVIEW_TOKEN=<plaintext Review Token from Cloud Server A>
 CATSCO_REVIEW_OUTPUT_DIR=data/catsco-review-agent/runs
 CATSCO_REVIEW_LOOKBACK_HOURS=24
+CATSCO_REVIEW_INTERVAL_MINUTES=360
 CATSCO_REVIEW_MAX_FAILURES=100
 CATSCO_REVIEW_MAX_SESSIONS=30
 CATSCO_REVIEW_MAX_ENTRIES_PER_SESSION=200
@@ -74,6 +75,16 @@ Generate local proposal files only:
 catsco review run-once
 ```
 
+Run periodically on the cloud computer in proposal-only mode:
+
+```bash
+catsco review daemon
+```
+
+`daemon` ignores PR/commit flags and writes local proposal files only. Use Windows Task Scheduler or a process manager to keep it running, or schedule `catsco review run-once` directly.
+
+Each run uses a fixed `uploaded_from`/`uploaded_to` window and paginates failures, sessions, entries, and turns. This prevents a long-running review from chasing newly uploaded logs forever and keeps each proposal tied to a reproducible review window.
+
 Generate proposal files and commit them to a review branch:
 
 ```bash
@@ -96,8 +107,9 @@ report.md
 findings.json
 prompt_suggestions.md
 skill_suggestions.md
+code_suggestions.md
 eval_cases.jsonl
-raw_review_data.redacted.json
+raw_review_data.server_redacted.local.json
 ```
 
 When Git mode is enabled, those files are copied to:
@@ -106,10 +118,29 @@ When Git mode is enabled, those files are copied to:
 .catsco-review/proposals/<run_id>/
 ```
 
+Git/PR mode copies only `report.md`, `findings.json`, `prompt_suggestions.md`, `skill_suggestions.md`, `code_suggestions.md`, and `eval_cases.jsonl`. `raw_review_data.server_redacted.local.json` stays local and must not be committed.
+
+Public proposal files contain pattern summaries and synthetic eval inputs. Detailed server-redacted review data remains local for manual inspection.
+
 ## Safety Model
 
 - The Review Agent uses a separate Review Token, not the log-upload token.
 - It reads only redacted review data.
 - It does not modify production prompt or skill files by default.
 - PR mode commits proposal artifacts only.
+- Scheduled daemon mode never creates branches, commits, pushes, or PRs.
+- Raw review data is kept out of Git/PR output.
+- API client calls use bounded response sizes, timeouts, and retry only transient 429/5xx failures.
 - Release remains a separate human-approved step.
+
+## Analysis Workflow
+
+The Review Agent treats large log volume as a signal extraction problem:
+
+1. Fetch only redacted Review API data for the fixed review window.
+2. Drop known noise such as health checks and scheduled-run completion messages.
+3. Normalize ids, timestamps, numbers, and paths into stable pattern keys.
+4. Cluster evidence by category and pattern key, then rank by severity, impact score, frequency, affected sessions, and tools involved.
+5. Route each pattern to a proposal lane: prompt, skill, tool/code, config, reliability, observability, or eval.
+6. Generate public proposals with summarized evidence and synthetic eval cases.
+7. Keep raw server-redacted data local for the human reviewer.

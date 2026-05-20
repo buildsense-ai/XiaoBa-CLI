@@ -27,6 +27,12 @@ catsco review health
 catsco review run-once
 ```
 
+如需定期运行，只允许 proposal-only 模式：
+
+```bash
+catsco review daemon
+```
+
 如需生成 PR：
 
 ```bash
@@ -35,6 +41,11 @@ catsco review run-once --create-branch --commit --create-pr
 
 ## 分析重点
 
+- 先降噪，再聚类，再排序：忽略健康检查、计划任务完成、proposal 路径等背景噪声。
+- 用稳定指纹归并同类问题：隐藏 id、时间、数字和路径后，再按错误模式聚合。
+- 按影响面排序：优先看跨 session、跨工具、重复出现、影响权限/工具执行/网络稳定性的模式。
+- 为每个高优先级模式形成 root-cause 假设，但不要把假设写成已证实结论。
+- 将建议分流到 prompt、skill、tool/code、config、reliability、observability 或 eval。
 - 缺少 skill 或工具路由错误
 - 工具调用失败、参数错误、不可恢复异常
 - 权限、认证、token 或 connector 缺失
@@ -42,6 +53,7 @@ catsco review run-once --create-branch --commit --create-pr
 - 网络超时、重试策略缺失
 - 长耗时流程没有进度提示
 - token 使用量异常偏高
+- Review API 只返回部分明细、分页异常或详情拉取失败
 
 ## 输出要求
 
@@ -52,4 +64,6 @@ catsco review run-once --create-branch --commit --create-pr
 - 是否创建了分支、commit、PR
 - 人工审核时应优先看的文件
 
+PR/commit 只允许包含公开提案文件：`report.md`、`findings.json`、`prompt_suggestions.md`、`skill_suggestions.md`、`code_suggestions.md`、`eval_cases.jsonl`。
 不要把完整日志内容贴到对话里，只概括脱敏后的模式和建议。
+不要把 `raw_review_data.server_redacted.local.json` 加入 PR 或提交。

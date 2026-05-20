@@ -8,6 +8,7 @@ export type ReviewFindingCategory =
   | 'network_or_timeout'
   | 'latency'
   | 'token_usage'
+  | 'review_data_quality'
   | 'general_failure';
 
 export type ReviewFindingSeverity = 'high' | 'medium' | 'low';
@@ -18,6 +19,12 @@ export interface ReviewFinding {
   title: string;
   count: number;
   affectedSessions: string[];
+  impactScore?: number;
+  patternKey?: string;
+  primarySignal?: string;
+  proposalType?: 'prompt' | 'skill' | 'tool' | 'eval' | 'config' | 'reliability' | 'observability';
+  toolNames?: string[];
+  eventCategories?: string[];
   evidence: string[];
   suggestedActions: string[];
 }
@@ -33,7 +40,12 @@ const KEYWORDS: Record<Exclude<ReviewFindingCategory, 'latency' | 'token_usage' 
     '权限',
     '认证',
     '登录',
-    'token',
+    'invalid token',
+    'missing token',
+    'token missing',
+    'token expired',
+    'expired token',
+    'review token',
   ],
   missing_skill_or_tool: [
     'unknown tool',
@@ -78,15 +90,31 @@ const KEYWORDS: Record<Exclude<ReviewFindingCategory, 'latency' | 'token_usage' 
     '网络',
     '连接失败',
   ],
+  review_data_quality: [
+    'review_fetch_error',
+    'could not fetch session entries',
+    'could not fetch session turns',
+    'review agent could not fetch',
+  ],
 };
 
 interface FindingDraft {
   category: ReviewFindingCategory;
   title: string;
+  patternKey: string;
   count: number;
   affectedSessions: Set<string>;
+  toolNames: Set<string>;
+  eventCategories: Set<string>;
   evidence: string[];
 }
+
+const NOISE_PATTERNS = [
+  'no pending stable session logs',
+  'review agent scheduled run complete',
+  'review api connected',
+  'proposal directory:',
+];
 
 export function classifyReviewText(text: string): ReviewFindingCategory {
   const lowered = text.toLowerCase();
@@ -99,7 +127,7 @@ export function classifyReviewText(text: string): ReviewFindingCategory {
 }
 
 export function analyzeReviewData(reviewData: ReviewData): ReviewFinding[] {
-  const drafts = new Map<ReviewFindingCategory, FindingDraft>();
+  const drafts = new Map<string, FindingDraft>();
 
   for (const failure of reviewData.failures || []) {
     addTextFinding(drafts, failure.message || '', failure.session_record_id || undefined, failure);
@@ -120,13 +148,14 @@ export function analyzeReviewData(reviewData: ReviewData): ReviewFinding[] {
     .sort((a, b) => {
       const severityRank = { high: 0, medium: 1, low: 2 };
       return severityRank[a.severity] - severityRank[b.severity]
+        || (b.impactScore || 0) - (a.impactScore || 0)
         || b.count - a.count
-        || a.category.localeCompare(b.category);
+        || a.title.localeCompare(b.title);
     });
 }
 
 function analyzeEntries(
-  drafts: Map<ReviewFindingCategory, FindingDraft>,
+  drafts: Map<string, FindingDraft>,
   sessionRecordId: string,
   entries: ReviewEntry[],
 ): void {
@@ -137,16 +166,18 @@ function analyzeEntries(
       addTextFinding(drafts, message, sessionRecordId, entry);
     }
     if (entry.duration_ms != null && Number(entry.duration_ms) >= 15000) {
-      const draft = ensureDraft(drafts, 'latency');
+      const draft = ensureDraft(drafts, 'latency', signatureForText(`${entry.tool_name || entry.event_category || 'operation'} slow`));
       draft.count += 1;
       draft.affectedSessions.add(sessionRecordId);
+      if (entry.tool_name) draft.toolNames.add(entry.tool_name);
+      if (entry.event_category) draft.eventCategories.add(entry.event_category);
       pushEvidence(draft, compactText(`${entry.tool_name || entry.event_category || 'operation'} took ${entry.duration_ms}ms`));
     }
   }
 }
 
 function analyzeTurns(
-  drafts: Map<ReviewFindingCategory, FindingDraft>,
+  drafts: Map<string, FindingDraft>,
   sessionRecordId: string,
   turns: ReviewTurn[],
 ): void {
@@ -154,7 +185,7 @@ function analyzeTurns(
     const combined = `${turn.user_text || ''}\n${turn.assistant_text || ''}`;
     const category = classifyReviewText(combined);
     if (category === 'prompt_confusion') {
-      const draft = ensureDraft(drafts, category);
+      const draft = ensureDraft(drafts, category, signatureForText(combined));
       draft.count += 1;
       draft.affectedSessions.add(sessionRecordId);
       pushEvidence(draft, compactText(combined));
@@ -163,13 +194,13 @@ function analyzeTurns(
 }
 
 function analyzeSessionMetrics(
-  drafts: Map<ReviewFindingCategory, FindingDraft>,
+  drafts: Map<string, FindingDraft>,
   sessions: ReviewSession[],
   sessionEntries: Record<string, ReviewEntry[]>,
 ): void {
   for (const session of sessions) {
     if (Number(session.total_tokens || 0) >= 12000) {
-      const draft = ensureDraft(drafts, 'token_usage');
+      const draft = ensureDraft(drafts, 'token_usage', signatureForText(`${session.session_type} high token usage`));
       draft.count += 1;
       draft.affectedSessions.add(session.session_record_id);
       pushEvidence(draft, `Session exceeded token threshold: ${session.session_record_id}`);
@@ -177,52 +208,67 @@ function analyzeSessionMetrics(
 
     const entries = sessionEntries[session.session_record_id] || [];
     if (entries.length === 0 && session.entry_count > 0) {
-      const draft = ensureDraft(drafts, 'general_failure');
+      const draft = ensureDraft(drafts, 'general_failure', 'unfetched-session-details');
       pushEvidence(draft, `Session ${session.session_record_id} has entries on server but none were fetched by the review window.`);
     }
   }
 }
 
 function addTextFinding(
-  drafts: Map<ReviewFindingCategory, FindingDraft>,
+  drafts: Map<string, FindingDraft>,
   message: string,
   sessionRecordId?: string,
   fallback?: ReviewFailure | ReviewEntry,
 ): void {
   const evidence = compactText(message || JSON.stringify(fallback || {}));
-  if (!evidence) return;
+  if (!evidence || isNoiseEvidence(evidence)) return;
 
   const category = classifyReviewText(evidence);
-  const draft = ensureDraft(drafts, category);
+  const draft = ensureDraft(drafts, category, signatureForText(evidence));
   draft.count += 1;
   if (sessionRecordId) {
     draft.affectedSessions.add(sessionRecordId);
   }
+  const toolName = (fallback as ReviewEntry | undefined)?.tool_name;
+  const eventCategory = (fallback as ReviewEntry | ReviewFailure | undefined)?.event_category;
+  if (toolName) draft.toolNames.add(toolName);
+  if (eventCategory) draft.eventCategories.add(eventCategory);
   pushEvidence(draft, evidence);
 }
 
-function ensureDraft(drafts: Map<ReviewFindingCategory, FindingDraft>, category: ReviewFindingCategory): FindingDraft {
-  const existing = drafts.get(category);
+function ensureDraft(drafts: Map<string, FindingDraft>, category: ReviewFindingCategory, patternKey: string): FindingDraft {
+  const draftKey = `${category}:${patternKey}`;
+  const existing = drafts.get(draftKey);
   if (existing) return existing;
 
   const next: FindingDraft = {
     category,
-    title: titleForCategory(category),
+    title: titleForCategory(category, patternKey),
+    patternKey,
     count: 0,
     affectedSessions: new Set<string>(),
+    toolNames: new Set<string>(),
+    eventCategories: new Set<string>(),
     evidence: [],
   };
-  drafts.set(category, next);
+  drafts.set(draftKey, next);
   return next;
 }
 
 function finalizeDraft(draft: FindingDraft): ReviewFinding {
+  const impactScore = impactScoreForDraft(draft);
   return {
     category: draft.category,
-    severity: severityForCategory(draft.category, draft.count),
+    severity: severityForCategory(draft.category, draft.count, draft.affectedSessions.size, impactScore),
     title: draft.title,
     count: draft.count,
     affectedSessions: Array.from(draft.affectedSessions).sort(),
+    impactScore,
+    patternKey: draft.patternKey,
+    primarySignal: draft.evidence[0],
+    proposalType: proposalTypeForCategory(draft.category),
+    toolNames: Array.from(draft.toolNames).sort(),
+    eventCategories: Array.from(draft.eventCategories).sort(),
     evidence: draft.evidence.slice(0, 10),
     suggestedActions: actionsForCategory(draft.category),
   };
@@ -239,7 +285,48 @@ function compactText(text: string, limit = 280): string {
   return compact.length > limit ? `${compact.slice(0, limit - 3)}...` : compact;
 }
 
-export function severityForCategory(category: ReviewFindingCategory, count: number): ReviewFindingSeverity {
+function isNoiseEvidence(evidence: string): boolean {
+  const lowered = evidence.toLowerCase();
+  return NOISE_PATTERNS.some(pattern => lowered.includes(pattern));
+}
+
+function signatureForText(text: string): string {
+  const normalized = compactText(text, 500)
+    .toLowerCase()
+    .replace(/\b[0-9a-f]{8,}\b/g, '<id>')
+    .replace(/\b\d{4}-\d{2}-\d{2}[t\s]\d{2}:\d{2}:\d{2}(?:\.\d+z?)?\b/g, '<time>')
+    .replace(/\b\d+\b/g, '<num>')
+    .replace(/[a-z]:\\[^\s]+/gi, '<path>')
+    .replace(/\/[^\s]+/g, '<path>')
+    .replace(/[^a-z0-9_\-\u4e00-\u9fa5<> ]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return normalized
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 14)
+    .join('-') || 'unknown';
+}
+
+function impactScoreForDraft(draft: FindingDraft): number {
+  const severityWeight = draft.category === 'permission_or_auth' || draft.category === 'tool_failure' ? 20 : 10;
+  return severityWeight
+    + draft.count * 3
+    + draft.affectedSessions.size * 5
+    + draft.toolNames.size * 2
+    + Math.min(draft.evidence.length, 10);
+}
+
+export function severityForCategory(
+  category: ReviewFindingCategory,
+  count: number,
+  affectedSessionCount: number = 0,
+  impactScore: number = 0,
+): ReviewFindingSeverity {
+  if (impactScore >= 60 || affectedSessionCount >= 8) {
+    return 'high';
+  }
   if ((category === 'permission_or_auth' || category === 'tool_failure') && count >= 5) {
     return 'high';
   }
@@ -252,8 +339,8 @@ export function severityForCategory(category: ReviewFindingCategory, count: numb
   return 'low';
 }
 
-export function titleForCategory(category: ReviewFindingCategory): string {
-  return {
+export function titleForCategory(category: ReviewFindingCategory, patternKey?: string): string {
+  const base = {
     permission_or_auth: 'Permission or authentication failures',
     missing_skill_or_tool: 'Missing skill or missing tool routing',
     tool_failure: 'Tool execution failures',
@@ -261,8 +348,21 @@ export function titleForCategory(category: ReviewFindingCategory): string {
     network_or_timeout: 'Network or timeout instability',
     latency: 'Long-running calls need progress or optimization',
     token_usage: 'High token usage sessions',
+    review_data_quality: 'Review data quality or observability gaps',
     general_failure: 'General unresolved failures',
   }[category];
+  return patternKey && patternKey !== 'unknown' ? `${base}: ${patternKey}` : base;
+}
+
+function proposalTypeForCategory(category: ReviewFindingCategory): ReviewFinding['proposalType'] {
+  if (category === 'prompt_confusion') return 'prompt';
+  if (category === 'missing_skill_or_tool') return 'skill';
+  if (category === 'permission_or_auth') return 'config';
+  if (category === 'tool_failure') return 'tool';
+  if (category === 'network_or_timeout' || category === 'latency') return 'reliability';
+  if (category === 'token_usage') return 'prompt';
+  if (category === 'review_data_quality') return 'observability';
+  return 'eval';
 }
 
 export function actionsForCategory(category: ReviewFindingCategory): string[] {
@@ -312,6 +412,13 @@ export function actionsForCategory(category: ReviewFindingCategory): string[] {
       'Trim retrieved context before model calls.',
       'Summarize long logs before passing them to the model.',
       'Add an eval to detect unnecessarily long answers.',
+    ];
+  }
+  if (category === 'review_data_quality') {
+    return [
+      'Improve Review API/detail fetch observability so partial data is visible without blocking the run.',
+      'Record sanitized fetch failure counters by endpoint and session.',
+      'Add a regression test for partial review data collection.',
     ];
   }
   return [

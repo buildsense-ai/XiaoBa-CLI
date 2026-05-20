@@ -10,6 +10,7 @@ export interface ReviewProposalBundle {
     findings: string;
     promptSuggestions: string;
     skillSuggestions: string;
+    codeSuggestions: string;
     evalCases: string;
     rawReviewData: string;
   };
@@ -37,15 +38,18 @@ export function writeReviewProposalBundle(input: {
     findings: path.join(runDir, 'findings.json'),
     promptSuggestions: path.join(runDir, 'prompt_suggestions.md'),
     skillSuggestions: path.join(runDir, 'skill_suggestions.md'),
+    codeSuggestions: path.join(runDir, 'code_suggestions.md'),
     evalCases: path.join(runDir, 'eval_cases.jsonl'),
-    rawReviewData: path.join(runDir, 'raw_review_data.redacted.json'),
+    rawReviewData: path.join(runDir, 'raw_review_data.server_redacted.local.json'),
   };
 
-  fs.writeFileSync(files.report, renderReviewReport(input.runId, input.reviewData, input.findings), 'utf-8');
-  fs.writeFileSync(files.findings, `${JSON.stringify(input.findings, null, 2)}\n`, 'utf-8');
-  fs.writeFileSync(files.promptSuggestions, renderPromptSuggestions(input.findings), 'utf-8');
-  fs.writeFileSync(files.skillSuggestions, renderSkillSuggestions(input.findings), 'utf-8');
-  fs.writeFileSync(files.evalCases, renderEvalCases(input.findings), 'utf-8');
+  const publicFindings = input.findings.map(toPublicFinding);
+  fs.writeFileSync(files.report, renderReviewReport(input.runId, input.reviewData, publicFindings), 'utf-8');
+  fs.writeFileSync(files.findings, `${JSON.stringify(publicFindings, null, 2)}\n`, 'utf-8');
+  fs.writeFileSync(files.promptSuggestions, renderPromptSuggestions(publicFindings), 'utf-8');
+  fs.writeFileSync(files.skillSuggestions, renderSkillSuggestions(publicFindings), 'utf-8');
+  fs.writeFileSync(files.codeSuggestions, renderCodeSuggestions(publicFindings), 'utf-8');
+  fs.writeFileSync(files.evalCases, renderEvalCases(publicFindings), 'utf-8');
   fs.writeFileSync(files.rawReviewData, `${JSON.stringify(input.reviewData, null, 2)}\n`, 'utf-8');
 
   return { runDir, files };
@@ -76,15 +80,32 @@ function renderReviewReport(runId: string, reviewData: ReviewData, findings: Rev
     lines.push('No recurring issue pattern was detected in this run.', '');
   }
 
+  const topFindings = findings.slice(0, 5);
+  if (topFindings.length > 0) {
+    lines.push('## Top Priorities', '');
+    for (const finding of topFindings) {
+      lines.push(
+        `- ${severityLabel(finding.severity)} ${finding.title} `
+        + `(impact=${finding.impactScore || 0}, type=${finding.proposalType || 'eval'}, count=${finding.count})`,
+      );
+    }
+    lines.push('');
+  }
+
   for (const finding of findings) {
     lines.push(
       `### ${severityLabel(finding.severity)} ${finding.title}`,
       '',
       `- Category: \`${finding.category}\``,
+      `- Proposal type: \`${finding.proposalType || 'eval'}\``,
+      `- Impact score: \`${finding.impactScore || 0}\``,
+      `- Pattern key: \`${finding.patternKey || 'unknown'}\``,
       `- Count: \`${finding.count}\``,
       `- Affected sessions: \`${finding.affectedSessions.length}\``,
+      `- Tool names: \`${(finding.toolNames || []).join(', ') || 'none'}\``,
+      `- Event categories: \`${(finding.eventCategories || []).join(', ') || 'none'}\``,
       '',
-      'Evidence:',
+      'Evidence summary:',
     );
     if (finding.evidence.length > 0) {
       lines.push(...finding.evidence.slice(0, 5).map(item => `- ${item}`));
@@ -130,6 +151,8 @@ function renderPromptSuggestions(findings: ReviewFinding[]): string {
       '',
       'Why:',
       `- Seen \`${finding.count}\` time(s) in the reviewed window.`,
+      `- Impact score: \`${finding.impactScore || 0}\``,
+      `- Pattern key: \`${finding.patternKey || 'unknown'}\``,
       '',
     );
   }
@@ -158,6 +181,9 @@ function renderSkillSuggestions(findings: ReviewFinding[]): string {
       '',
       `- Category: \`${finding.category}\``,
       `- Frequency: \`${finding.count}\``,
+      `- Impact score: \`${finding.impactScore || 0}\``,
+      `- Pattern key: \`${finding.patternKey || 'unknown'}\``,
+      `- Tool names: \`${(finding.toolNames || []).join(', ') || 'none'}\``,
       '- Candidate skill work:',
       ...candidateSkillWork(finding.category).map(item => `  - ${item}`),
       '',
@@ -174,18 +200,151 @@ function renderSkillSuggestions(findings: ReviewFinding[]): string {
   return `${lines.join('\n')}\n`;
 }
 
+function renderCodeSuggestions(findings: ReviewFinding[]): string {
+  const lines = [
+    '# Engineering Suggestions',
+    '',
+    'These are engineering design notes, not patches. A human should decide whether to open a production code PR.',
+    '',
+  ];
+
+  for (const finding of findings) {
+    if (!['tool', 'config', 'reliability', 'observability'].includes(finding.proposalType || '')) {
+      continue;
+    }
+    lines.push(
+      `## ${finding.title}`,
+      '',
+      `- Category: \`${finding.category}\``,
+      `- Proposal type: \`${finding.proposalType || 'eval'}\``,
+      `- Impact score: \`${finding.impactScore || 0}\``,
+      `- Pattern key: \`${finding.patternKey || 'unknown'}\``,
+      `- Likely owner: \`${likelyOwner(finding)}\``,
+      '- Minimum engineering direction:',
+      ...candidateEngineeringWork(finding).map(item => `  - ${item}`),
+      '',
+      '- Suggested tests:',
+      ...candidateEngineeringTests(finding).map(item => `  - ${item}`),
+      '',
+    );
+  }
+
+  if (lines.length === 4) {
+    lines.push('No engineering-specific changes suggested in this run.', '');
+  }
+
+  return `${lines.join('\n')}\n`;
+}
+
 function renderEvalCases(findings: ReviewFinding[]): string {
   return findings.map(finding => JSON.stringify({
-    name: `review_agent_${finding.category}`,
+    name: `review_agent_${finding.category}_${shortHash(finding.patternKey || 'unknown')}`,
     category: finding.category,
     severity: finding.severity,
+    impact_score: finding.impactScore || 0,
+    proposal_type: finding.proposalType || 'eval',
+    pattern_key: finding.patternKey || 'unknown',
     source: 'catsco_review_agent',
-    input: finding.evidence[0]
-      ? `Handle a redacted session where this issue appears: ${finding.evidence[0]}`
-      : `Handle a task related to ${finding.category}.`,
+    input: syntheticEvalInput(finding),
     expected_behavior: expectedEvalBehavior(finding.category),
-    evidence: finding.evidence.slice(0, 3),
+    evidence_summary: finding.evidence.slice(0, 3),
   })).join('\n') + (findings.length ? '\n' : '');
+}
+
+function toPublicFinding(finding: ReviewFinding): ReviewFinding {
+  return {
+    ...finding,
+    primarySignal: finding.patternKey || finding.primarySignal,
+    evidence: summarizeEvidenceForPublicOutput(finding),
+  };
+}
+
+function summarizeEvidenceForPublicOutput(finding: ReviewFinding): string[] {
+  const parts = [
+    `Pattern \`${finding.patternKey || 'unknown'}\` appeared ${finding.count} time(s).`,
+    `Affected sessions: ${finding.affectedSessions.length}.`,
+  ];
+  if ((finding.toolNames || []).length > 0) {
+    parts.push(`Tools involved: ${(finding.toolNames || []).slice(0, 5).join(', ')}.`);
+  }
+  if ((finding.eventCategories || []).length > 0) {
+    parts.push(`Events involved: ${(finding.eventCategories || []).slice(0, 5).join(', ')}.`);
+  }
+  return parts.map(redactProposalText);
+}
+
+function syntheticEvalInput(finding: ReviewFinding): string {
+  if (finding.category === 'permission_or_auth') {
+    return 'A user asks the agent to perform a protected operation, but the required account authorization is missing or expired.';
+  }
+  if (finding.category === 'missing_skill_or_tool') {
+    return 'A user asks for a recurring task type that the current agent repeatedly fails to route to an available skill or tool.';
+  }
+  if (finding.category === 'tool_failure') {
+    return 'A tool call fails with a recurring sanitized failure pattern. The agent must validate inputs and choose a safe recovery path.';
+  }
+  if (finding.category === 'prompt_confusion') {
+    return 'A user request is ambiguous enough that acting immediately could solve the wrong problem.';
+  }
+  if (finding.category === 'network_or_timeout') {
+    return 'A remote dependency times out or returns a transient service failure during an otherwise recoverable workflow.';
+  }
+  if (finding.category === 'latency') {
+    return 'A workflow takes noticeably longer than expected and needs progress updates or narrower retrieval.';
+  }
+  if (finding.category === 'token_usage') {
+    return 'A session approaches the context budget because too much irrelevant context is included.';
+  }
+  if (finding.category === 'review_data_quality') {
+    return 'A review run receives partial detail data from the logging API and must preserve useful findings without fabricating missing evidence.';
+  }
+  return `A recurring sanitized review pattern appears: ${finding.patternKey || finding.category}.`;
+}
+
+function likelyOwner(finding: ReviewFinding): string {
+  if (finding.proposalType === 'config') return 'configuration/readiness';
+  if (finding.proposalType === 'reliability') return 'runtime/tool reliability';
+  if (finding.proposalType === 'tool') return (finding.toolNames || [])[0] || 'tooling';
+  if (finding.proposalType === 'observability') return 'logging/observability';
+  return 'agent behavior';
+}
+
+function candidateEngineeringWork(finding: ReviewFinding): string[] {
+  if (finding.proposalType === 'config') {
+    return [
+      'Add a preflight/readiness check for the missing credential or connector state.',
+      'Return a user-safe recovery instruction without exposing token values.',
+    ];
+  }
+  if (finding.proposalType === 'reliability') {
+    return [
+      'Add timeout-specific retry or fallback behavior for idempotent operations.',
+      'Record bounded, sanitized failure metadata for future review cycles.',
+    ];
+  }
+  if (finding.proposalType === 'tool') {
+    return [
+      'Validate required tool arguments before execution.',
+      'Add a typed failure result for the recurring error pattern.',
+    ];
+  }
+  return [
+    'Improve structured logging so future review runs can separate signal from noise.',
+    'Add a regression test once the owner confirms the expected behavior.',
+  ];
+}
+
+function candidateEngineeringTests(finding: ReviewFinding): string[] {
+  if (finding.proposalType === 'config') {
+    return ['Unit test missing credential preflight and user-safe error text.'];
+  }
+  if (finding.proposalType === 'reliability') {
+    return ['Unit test retry/fallback behavior for timeout, 429, and 5xx responses.'];
+  }
+  if (finding.proposalType === 'tool') {
+    return ['Unit test argument validation and controlled tool failure result.'];
+  }
+  return ['Add an eval or integration test that reproduces the sanitized pattern.'];
 }
 
 function severityLabel(severity: string): string {
@@ -287,6 +446,27 @@ function expectedEvalBehavior(category: ReviewFindingCategory): string {
     network_or_timeout: 'Retry safe transient failures and preserve progress context.',
     latency: 'Give progress updates and avoid unnecessary repeated long-running calls.',
     token_usage: 'Reduce irrelevant context while preserving answer quality.',
+    review_data_quality: 'Preserve partial review results, report bounded diagnostics, and avoid treating missing detail data as an agent behavior defect.',
     general_failure: 'Resolve the issue without exposing private log data.',
   }[category];
+}
+
+function shortHash(value: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0').slice(0, 8);
+}
+
+function redactProposalText(value: string): string {
+  return String(value)
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(/catslog_(?:tok|review)_[A-Za-z0-9._~+/=-]+/g, 'catslog_[REDACTED]')
+    .replace(/sk-[A-Za-z0-9]{12,}/g, 'sk-[REDACTED]')
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[EMAIL_REDACTED]')
+    .replace(/\b1[3-9]\d{9}\b/g, '[PHONE_REDACTED]')
+    .replace(/[A-Za-z]:\\[^\s]+/g, '[PATH_REDACTED]')
+    .replace(/\/home\/[^/\s]+/g, '/home/[USER_REDACTED]');
 }

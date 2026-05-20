@@ -10,6 +10,8 @@ describe('catsco review analyzer', () => {
     assert.equal(classifyReviewText('tool failed with traceback'), 'tool_failure');
     assert.equal(classifyReviewText('用户反复澄清，Agent 没理解'), 'prompt_confusion');
     assert.equal(classifyReviewText('connection timeout'), 'network_or_timeout');
+    assert.equal(classifyReviewText('token usage is high'), 'general_failure');
+    assert.equal(classifyReviewText('review_fetch_error: could not fetch session entries'), 'review_data_quality');
   });
 
   test('finds failures, latency, prompt confusion, and token usage', () => {
@@ -87,5 +89,49 @@ describe('catsco review analyzer', () => {
     assert.ok(categories.includes('latency'));
     assert.ok(categories.includes('prompt_confusion'));
     assert.ok(categories.includes('token_usage'));
+  });
+
+  test('groups repeated failures by normalized pattern and ranks by impact', () => {
+    const data: ReviewData = {
+      summary: {
+        upload_count: 2,
+        parsed_upload_count: 2,
+        failed_upload_count: 0,
+        session_count: 2,
+        turn_count: 0,
+        ai_call_count: 0,
+        tool_call_count: 2,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+      },
+      failures: [
+        {
+          failure_type: 'log_entry',
+          upload_id: 'upload-1',
+          session_record_id: 'session-1',
+          event_category: 'tool_result',
+          message: 'tool failed with HTTP 500 for request 12345',
+        },
+        {
+          failure_type: 'log_entry',
+          upload_id: 'upload-2',
+          session_record_id: 'session-2',
+          event_category: 'tool_result',
+          message: 'tool failed with HTTP 500 for request 67890',
+        },
+      ],
+      sessions: [],
+      sessionEntries: {},
+      sessionTurns: {},
+    };
+
+    const findings = analyzeReviewData(data);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].count, 2);
+    assert.deepEqual(findings[0].affectedSessions, ['session-1', 'session-2']);
+    assert.match(findings[0].patternKey || '', /<num>/);
+    assert.equal(findings[0].proposalType, 'tool');
+    assert.ok((findings[0].impactScore || 0) > findings[0].count);
   });
 });
