@@ -3643,8 +3643,8 @@
       --radius: 12px;
       --radius-sm: 10px;
       --radius-xs: 8px;
-      --dashboard-content-max: 1680px;
       --dashboard-page-gutter: clamp(24px, 2.6vw, 48px);
+      --dashboard-ui-zoom: 1;
     }
 
     html {
@@ -3659,6 +3659,7 @@
     }
 
     .sidebar {
+      zoom: var(--dashboard-ui-zoom);
       left: 0;
       top: 0;
       bottom: 0;
@@ -3749,13 +3750,15 @@
     }
 
     .main-wrapper {
+      zoom: var(--dashboard-ui-zoom);
       margin-left: 240px;
       padding: 32px var(--dashboard-page-gutter);
     }
 
     .page-content {
-      width: min(var(--dashboard-content-max), 100%);
-      margin: 0 auto;
+      width: 100%;
+      max-width: none;
+      margin: 0;
       padding: 0 0 32px;
     }
 
@@ -4175,6 +4178,14 @@
       background: var(--surface-muted);
     }
 
+    @media (max-width: 780px) {
+      body:not(.chat-active) .companion-hero,
+      body:not(.chat-active) .companion-metrics,
+      body:not(.chat-active) .companion-unlocks {
+        grid-template-columns: 1fr;
+      }
+    }
+
     @media (max-width: 900px) {
       .sidebar {
         width: 68px;
@@ -4186,6 +4197,31 @@
     }
 
     @media (max-width: 640px) {
+      body:not(.chat-active) {
+        display: block;
+      }
+
+      body:not(.chat-active) .sidebar {
+        position: static;
+        width: 100%;
+        min-height: auto;
+        padding: 12px;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      body:not(.chat-active) .main-wrapper {
+        margin-left: 0;
+        padding: 16px 12px;
+      }
+
+      body:not(.chat-active) .page-content {
+        width: 100%;
+        max-width: none;
+        margin: 0;
+        min-height: auto;
+      }
+
       body.chat-active .sidebar {
         position: fixed;
         left: 0;
@@ -6352,10 +6388,19 @@
       return Math.min(DASHBOARD_FONT_SCALE_MAX, Math.max(DASHBOARD_FONT_SCALE_MIN, stepped));
     }
 
+    function dashboardFontScaleLimit(){
+      if(window.matchMedia('(max-width: 640px)').matches)return 120;
+      if(window.matchMedia('(max-width: 900px)').matches)return 135;
+      return DASHBOARD_FONT_SCALE_MAX;
+    }
+
     function applyDashboardFontScale(value, persist=true){
       const scale=normalizeDashboardFontScale(value);
-      document.documentElement.style.fontSize=scale+'%';
+      const effectiveScale=Math.min(scale, dashboardFontScaleLimit());
       document.documentElement.dataset.fontScale=String(scale);
+      document.documentElement.dataset.effectiveFontScale=String(effectiveScale);
+      document.documentElement.style.setProperty('--dashboard-ui-zoom', String(effectiveScale / 100));
+      document.body.style.zoom='';
       if(persist){
         try{localStorage.setItem(DASHBOARD_FONT_SCALE_KEY, String(scale));}catch(_e){}
       }
@@ -6390,6 +6435,10 @@
         event.preventDefault();
         applyDashboardFontScale(DASHBOARD_FONT_SCALE_DEFAULT, true);
       }
+    }
+
+    function refreshDashboardFontScaleForViewport(){
+      applyDashboardFontScale(document.documentElement.dataset.fontScale||DASHBOARD_FONT_SCALE_DEFAULT, false);
     }
 
     // === CatsCo Chat ===
@@ -7760,6 +7809,7 @@
     catsMessageInput.addEventListener('blur',()=>{if(!catsMessageInput.value.trim()) setPetAutoBaseline(petAutoBaseline);});
     setupCatsAttachmentInputs();
     document.addEventListener('keydown',handleDashboardFontScaleShortcut);
+    window.addEventListener('resize',refreshDashboardFontScaleForViewport);
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeLogs();closeUpdateModal();closeCatsMediaPreview();}});
     document.addEventListener('click',e=>{const shell=document.getElementById('floating-pet');if(shell && !shell.contains(e.target)) closeFloatingPetMenu();});
   </script>
