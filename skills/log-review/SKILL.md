@@ -27,6 +27,15 @@ catsco review health
 catsco review run-once
 ```
 
+当用户是在问一个开放问题，而不是要固定 proposal 报告时，优先使用通用日志问答：
+
+```bash
+catsco review ask "这个老师主要用 Agent 做什么？"
+catsco review chat --user-key <review-user-key>
+```
+
+`ask` 和 `chat` 只读云端 Review API 数据，不创建 PR。它们会从 summary、failures、sessions、entries、turns、usage metrics 和 analyzer findings 里构造脱敏证据包，再按用户问题灵活回答。`chat` 可以理解最近几轮追问，但结论仍必须落回当前加载的日志窗口。
+
 如需定期运行，只允许 proposal-only 模式：
 
 ```bash
@@ -48,9 +57,12 @@ catsco review run-once --create-branch --commit --create-pr
 
 ## 分析重点
 
+- 不要把能力限制成几个预设报表；开放问题优先走证据检索和问答，再决定是否需要 proposal。
 - 先降噪，再聚类，再排序：忽略健康检查、计划任务完成、proposal 路径等背景噪声。
 - 用稳定指纹归并同类问题：隐藏 id、时间、数字和路径后，再按错误模式聚合。
 - 按影响面排序：优先看跨 session、跨工具、重复出现、影响权限/工具执行/网络稳定性的模式。
+- 回答开放问题时，基于日志证据区分事实和推断；证据不足时说明缺少什么，不编造。
+- 对中文问题做宽松关键词匹配：不要只依赖固定主题词，保留能命中具体业务词的证据。
 - 为每个高优先级模式形成 root-cause 假设，但不要把假设写成已证实结论。
 - 将建议分流到 prompt、skill、tool/code、config、reliability、observability 或 eval。
 - 缺少 skill 或工具路由错误

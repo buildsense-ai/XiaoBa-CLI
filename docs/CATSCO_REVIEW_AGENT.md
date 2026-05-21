@@ -2,7 +2,7 @@
 
 Review Agent is not a separate agent process. It is XiaoBa-CLI running in a review role on the cloud computer.
 
-It pulls redacted data from Cloud Server A, finds repeated issue patterns, generates proposal files, and can optionally create a GitHub PR. Production prompt, skill, tool, and release changes still require human review.
+It pulls redacted data from Cloud Server A, answers flexible natural-language questions from log evidence, finds repeated issue patterns, generates proposal files, and can optionally create a GitHub PR. Production prompt, skill, tool, and release changes still require human review.
 
 ## Architecture
 
@@ -15,7 +15,7 @@ Cloud Computer
   XiaoBa-CLI review command
         |
         v
-Proposal files
+Flexible log Q&A or proposal files
   .catsco-review/proposals/<run_id>/
         |
         v
@@ -76,6 +76,22 @@ Generate local proposal files only:
 ```bash
 catsco review run-once
 ```
+
+Ask arbitrary questions over the fetched review-log window:
+
+```bash
+catsco review ask "这个老师最近主要用 Agent 做什么？"
+catsco review ask "哪些问题导致了最长耗时？" --lookback-hours 72
+```
+
+Start an interactive chat over one loaded log window:
+
+```bash
+catsco review chat
+catsco review chat --user-key <review-user-key>
+```
+
+`ask` and `chat` are read-only. They fetch the same Review API data as `run-once`, build a redacted evidence pack, and answer from that evidence instead of a fixed report template. `chat` keeps recent Q&A context so follow-up questions can refer to the previous question, but every answer must still be grounded in the loaded log window.
 
 Generate local proposal and usage files for one redacted user/device:
 
@@ -149,12 +165,14 @@ Public proposal files contain pattern summaries and synthetic eval inputs. Detai
 The Review Agent treats large log volume as a signal extraction problem:
 
 1. Fetch only redacted Review API data for the fixed review window.
-2. Drop known noise such as health checks and scheduled-run completion messages.
-3. Normalize ids, timestamps, numbers, and paths into stable pattern keys.
-4. Cluster evidence by category and pattern key, then rank by severity, impact score, frequency, affected sessions, and tools involved.
-5. Route each pattern to a proposal lane: prompt, skill, tool/code, config, reliability, observability, or eval.
-6. Generate public proposals with summarized evidence and synthetic eval cases.
-7. Keep raw server-redacted data local for the human reviewer.
+2. Convert summaries, failures, sessions, entries, turns, usage metrics, and analyzer findings into a bounded evidence pack.
+3. For Q&A, score evidence against the user's question with Chinese keyword expansion, stable refs, and recent chat context for follow-ups.
+4. For proposals, drop known noise such as health checks and scheduled-run completion messages.
+5. Normalize ids, timestamps, numbers, and paths into stable pattern keys.
+6. Cluster evidence by category and pattern key, then rank by severity, impact score, frequency, affected sessions, and tools involved.
+7. Route each pattern to a proposal lane: prompt, skill, tool/code, config, reliability, observability, or eval.
+8. Generate public proposals with summarized evidence and synthetic eval cases.
+9. Keep raw server-redacted data local for the human reviewer.
 
 ## Usage Analysis
 
@@ -164,3 +182,5 @@ Each run also writes local-only usage outputs:
 - `usage_metrics.json`: structured metrics for local inspection or downstream dashboards.
 
 Usage reports intentionally do not include raw teacher questions or assistant answers. They use topic labels and hashed question references. To analyze a specific teacher, use the redacted `user_key` or `device_key` from Review API output and keep any real-name mapping outside Git.
+
+For questions that do need the underlying wording, use `catsco review ask` or `catsco review chat`. These commands pass only a bounded, second-pass-redacted evidence pack to the model and print the answer locally; they do not add raw questions or answers to PR artifacts.

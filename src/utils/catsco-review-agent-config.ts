@@ -105,15 +105,14 @@ export function getCatscoReviewAgentConfig(
   };
 
   const apiBaseUrl = normalizeBaseUrl(
-    readEnv(runtimeEnv, 'CATSCO_REVIEW_API_BASE_URL', 'CATSCO_LOG_API_BASE_URL', 'CATSLOG_API_BASE_URL')
-      || DEFAULT_API_BASE_URL,
+    readEnv(runtimeEnv, 'CATSCO_REVIEW_API_BASE_URL') || DEFAULT_API_BASE_URL,
   );
   const targetRepoRaw = readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_REPO');
 
   return {
     enabled: readBoolean(runtimeEnv, 'CATSCO_REVIEW_ENABLED', true),
     apiBaseUrl,
-    reviewToken: readEnv(runtimeEnv, 'CATSCO_REVIEW_TOKEN', 'CATSLOG_REVIEW_TOKEN'),
+    reviewToken: readEnv(runtimeEnv, 'CATSCO_REVIEW_TOKEN'),
     outputDir: resolveFromWorkingDirectory(
       workingDirectory,
       readEnv(runtimeEnv, 'CATSCO_REVIEW_OUTPUT_DIR'),

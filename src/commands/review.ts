@@ -1,3 +1,4 @@
+import * as readline from 'readline';
 import { Command } from 'commander';
 import { Logger } from '../utils/logger';
 import {
@@ -5,7 +6,15 @@ import {
   validateCatscoReviewAgentConfig,
 } from '../utils/catsco-review-agent-config';
 import { CatscoReviewAgentClient } from '../utils/catsco-review-agent-client';
-import { runCatscoReviewAgent } from '../utils/catsco-review-runner';
+import { analyzeReviewData } from '../utils/catsco-review-analyzer';
+import { analyzeUsageData } from '../utils/catsco-review-usage-analyzer';
+import {
+  answerReviewQuestion,
+  ReviewQuestionChatTurn,
+  ReviewQuestionContext,
+} from '../utils/catsco-review-question-answerer';
+import { AIService } from '../utils/ai-service';
+import { fetchReviewData, runCatscoReviewAgent } from '../utils/catsco-review-runner';
 
 export function registerReviewCommand(program: Command): void {
   const review = program
@@ -34,6 +43,31 @@ export function registerReviewCommand(program: Command): void {
     .option('--create-pr', 'Push branch and create a GitHub PR with gh')
     .action(async (options) => {
       await reviewRunOnceCommand(options);
+    });
+
+  review
+    .command('ask')
+    .description('Ask a flexible natural-language question over Cloud Server A review logs')
+    .argument('<question...>', 'Question to answer from review logs')
+    .option('--cwd <path>', 'Working directory for .env lookup', process.cwd())
+    .option('--lookback-hours <hours>', 'Review window in hours')
+    .option('--user-key <key>', 'Limit log retrieval to one redacted Review API user_key')
+    .option('--device-key <key>', 'Limit log retrieval to one redacted Review API device_key')
+    .option('--max-evidence-items <count>', 'Maximum evidence items passed to the model')
+    .action(async (questionParts: string[], options) => {
+      await reviewAskCommand(questionParts.join(' '), options);
+    });
+
+  review
+    .command('chat')
+    .description('Start an interactive Review Agent chat over one fetched review-log window')
+    .option('--cwd <path>', 'Working directory for .env lookup', process.cwd())
+    .option('--lookback-hours <hours>', 'Review window in hours')
+    .option('--user-key <key>', 'Limit log retrieval to one redacted Review API user_key')
+    .option('--device-key <key>', 'Limit log retrieval to one redacted Review API device_key')
+    .option('--max-evidence-items <count>', 'Maximum evidence items passed to the model per question')
+    .action(async (options) => {
+      await reviewChatCommand(options);
     });
 
   review
@@ -106,6 +140,113 @@ async function reviewRunOnceCommand(options: {
     Logger.error(error.message);
     process.exitCode = 1;
   }
+}
+
+async function reviewAskCommand(question: string, options: {
+  cwd: string;
+  lookbackHours?: string;
+  userKey?: string;
+  deviceKey?: string;
+  maxEvidenceItems?: string;
+}): Promise<void> {
+  try {
+    const context = await loadReviewQuestionContext(options);
+    const answer = await answerReviewQuestion(question, context, new AIService(), {
+      maxEvidenceItems: parsePositiveInteger(options.maxEvidenceItems),
+    });
+    console.log(`\n${answer}\n`);
+  } catch (error: any) {
+    Logger.error(error.message);
+    process.exitCode = 1;
+  }
+}
+
+async function reviewChatCommand(options: {
+  cwd: string;
+  lookbackHours?: string;
+  userKey?: string;
+  deviceKey?: string;
+  maxEvidenceItems?: string;
+}): Promise<void> {
+  let context: ReviewQuestionContext;
+  try {
+    context = await loadReviewQuestionContext(options);
+  } catch (error: any) {
+    Logger.error(error.message);
+    process.exitCode = 1;
+    return;
+  }
+
+  Logger.success('Review Agent log window loaded. Ask questions about the fetched review logs.');
+  Logger.info('Type /exit to quit. This chat answers from the loaded review window, not live-updating logs.');
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: 'review> ',
+  });
+
+  const maxEvidenceItems = parsePositiveInteger(options.maxEvidenceItems);
+  const aiService = new AIService();
+  const history: ReviewQuestionChatTurn[] = [];
+
+  rl.prompt();
+  rl.on('line', async (line) => {
+    const question = line.trim();
+    if (!question) {
+      rl.prompt();
+      return;
+    }
+    if (question === '/exit' || question === 'exit' || question === 'quit') {
+      rl.close();
+      return;
+    }
+    try {
+      const answer = await answerReviewQuestion(question, context, aiService, {
+        maxEvidenceItems,
+        conversationHistory: history,
+      });
+      console.log(`\n${answer}\n`);
+      history.push({ question, answer });
+      if (history.length > 6) history.shift();
+    } catch (error: any) {
+      Logger.error(error.message);
+    }
+    rl.prompt();
+  });
+}
+
+async function loadReviewQuestionContext(options: {
+  cwd: string;
+  lookbackHours?: string;
+  userKey?: string;
+  deviceKey?: string;
+}): Promise<ReviewQuestionContext> {
+  const config = getCatscoReviewAgentConfig(options.cwd);
+  validateCatscoReviewAgentConfig(config);
+  if (!config.enabled) {
+    throw new Error('CatsCo Review Agent is disabled. Set CATSCO_REVIEW_ENABLED=true to run it.');
+  }
+
+  const lookbackHours = parsePositiveInteger(options.lookbackHours) || config.lookbackHours;
+  const uploadedTo = new Date().toISOString();
+  const uploadedFrom = new Date(Date.parse(uploadedTo) - lookbackHours * 60 * 60 * 1000).toISOString();
+  const targetUserKey = options.userKey || config.targetUserKey;
+  const targetDeviceKey = options.deviceKey || config.targetDeviceKey;
+  const client = new CatscoReviewAgentClient(config.apiBaseUrl, config.reviewToken || '');
+  const reviewData = await fetchReviewData(client, {
+    uploadedFrom,
+    uploadedTo,
+    maxFailures: config.maxFailures,
+    maxSessions: config.maxSessions,
+    maxEntriesPerSession: config.maxEntriesPerSession,
+    maxTurnsPerSession: config.maxTurnsPerSession,
+    targetUserKey,
+    targetDeviceKey,
+  });
+  const findings = analyzeReviewData(reviewData);
+  const usageAnalysis = analyzeUsageData(reviewData, { targetUserKey, targetDeviceKey });
+  return { reviewData, findings, usageAnalysis };
 }
 
 async function reviewDaemonCommand(options: {
