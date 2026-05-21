@@ -77,21 +77,21 @@ Generate local proposal files only:
 catsco review run-once
 ```
 
-Ask arbitrary questions over the fetched review-log window:
+Ask arbitrary questions over a fetched log time range:
 
 ```bash
 catsco review ask "这个老师最近主要用 Agent 做什么？"
 catsco review ask "哪些问题导致了最长耗时？" --lookback-hours 72
 ```
 
-Start an interactive chat over one loaded log window:
+Start an interactive chat over one loaded log time range:
 
 ```bash
 catsco review chat
 catsco review chat --user-key <review-user-key>
 ```
 
-`ask` and `chat` are read-only. They fetch the same Review API data as `run-once`, build a redacted evidence pack, and answer from that evidence instead of a fixed report template. `chat` keeps recent Q&A context so follow-up questions can refer to the previous question, but every answer must still be grounded in the loaded log window.
+`ask` and `chat` are read-only. They fetch the same Review API data as `run-once`, build a redacted evidence pack, and answer from that evidence instead of a fixed report template. Here, "loaded" means the command has pulled logs for a fixed time range such as the last 24 hours; it does not mean a separate Agent conversation window. `chat` keeps recent Q&A context so follow-up questions can refer to the previous question, but every answer must still be grounded in the loaded log time range.
 
 Generate local proposal and usage files for one redacted user/device:
 

@@ -60,7 +60,7 @@ export function registerReviewCommand(program: Command): void {
 
   review
     .command('chat')
-    .description('Start an interactive Review Agent chat over one fetched review-log window')
+    .description('Start an interactive Review Agent chat over one fetched review-log time range')
     .option('--cwd <path>', 'Working directory for .env lookup', process.cwd())
     .option('--lookback-hours <hours>', 'Review window in hours')
     .option('--user-key <key>', 'Limit log retrieval to one redacted Review API user_key')
@@ -177,8 +177,8 @@ async function reviewChatCommand(options: {
     return;
   }
 
-  Logger.success('Review Agent log window loaded. Ask questions about the fetched review logs.');
-  Logger.info('Type /exit to quit. This chat answers from the loaded review window, not live-updating logs.');
+  Logger.success('Review Agent review-log time range loaded. Ask questions about the fetched review logs.');
+  Logger.info('Type /exit to quit. This chat answers from the loaded log time range, not live-updating logs.');
 
   const rl = readline.createInterface({
     input: process.stdin,
