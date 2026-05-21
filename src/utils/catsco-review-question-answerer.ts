@@ -230,6 +230,14 @@ function usageEvidence(usage: ReviewUsageAnalysis): ReviewQuestionEvidenceItem {
   const tools = usage.toolUsage.slice(0, 20).map(tool => (
     `${tool.name}: calls=${tool.count}, sessions=${tool.sessionCount}, users=${tool.userCount}`
   ));
+  const segments = [
+    `org_types=${namedUsageCounts(usage.segments?.orgTypes) || 'none'}`,
+    `org_keys=${namedUsageCounts(usage.segments?.orgKeys) || 'none'}`,
+    `user_roles=${namedUsageCounts(usage.segments?.userRoles) || 'none'}`,
+    `device_roles=${namedUsageCounts(usage.segments?.deviceRoles) || 'none'}`,
+    `channels=${namedUsageCounts(usage.segments?.channelTypes) || 'none'}`,
+    `workspaces=${namedUsageCounts(usage.segments?.workspaceKeys) || 'none'}`,
+  ];
   return {
     id: 'usage',
     kind: 'usage',
@@ -247,10 +255,17 @@ function usageEvidence(usage: ReviewUsageAnalysis): ReviewQuestionEvidenceItem {
       'Top tools:',
       ...tools,
       '',
+      'Segments:',
+      ...segments,
+      '',
       'By day:',
       ...usage.timeBuckets.byDay.slice(-30).map(bucket => `${bucket.bucket}: sessions=${bucket.sessionCount}, turns=${bucket.turnCount}`),
     ].join('\n')),
   };
+}
+
+function namedUsageCounts(values?: Array<{ name: string; count: number }>): string {
+  return (values || []).slice(0, 10).map(item => `${item.name}:${item.count}`).join('|');
 }
 
 function findingEvidence(findings: ReviewFinding[]): ReviewQuestionEvidenceItem[] {
@@ -302,9 +317,13 @@ function sessionEvidence(sessions: ReviewSession[]): ReviewQuestionEvidenceItem[
       user_key: session.user_key,
       device_key: session.device_key,
       session_key: session.session_key,
+      org_type: session.org_type,
+      user_role: session.user_role,
+      channel_type: session.channel_type,
     },
     text: sanitizeForReviewAnswer([
       `Session user_key=${session.user_key} device_key=${session.device_key} session_key=${session.session_key} type=${session.session_type}`,
+      `context org_key=${session.org_key || 'unknown'} org_type=${session.org_type || 'unknown'} user_role=${session.user_role || 'unknown'} device_role=${session.device_role || 'unknown'} channel=${session.channel_type || 'unknown'} workspace=${session.workspace_key || 'unknown'}`,
       `started_at=${session.started_at || 'unknown'} ended_at=${session.ended_at || 'unknown'} created_at=${session.created_at}`,
       `entries=${session.entry_count} turns=${session.turn_count} ai_calls=${session.ai_call_count} tool_calls=${session.tool_call_count} tokens=${session.total_tokens}`,
       `summary_status=${session.summary_status}`,
@@ -350,9 +369,13 @@ function turnEvidence(reviewData: ReviewData): ReviewQuestionEvidenceItem[] {
         score: 0,
         refs: {
           session_record_id: sessionRecordId,
-          user_key: session?.user_key,
-          device_key: session?.device_key,
-          session_key: session?.session_key,
+          user_key: session?.user_key || turn.user_key,
+          device_key: session?.device_key || turn.device_key,
+          session_key: session?.session_key || turn.session_key,
+          session_type: session?.session_type || turn.session_type,
+          org_type: session?.org_type || turn.org_type,
+          user_role: session?.user_role || turn.user_role,
+          channel_type: session?.channel_type || turn.channel_type,
           turn_record_id: turn.turn_record_id,
           turn_no: turn.turn_no,
         },
@@ -373,8 +396,19 @@ function entryText(entry: ReviewEntry, sessionRecordId: string, session?: Review
 }
 
 function turnText(turn: ReviewTurn, sessionRecordId: string, session?: ReviewSession): string {
+  const userKey = session?.user_key || turn.user_key || 'unknown';
+  const deviceKey = session?.device_key || turn.device_key || 'unknown';
+  const sessionKey = session?.session_key || turn.session_key || 'unknown';
+  const sessionType = session?.session_type || turn.session_type || 'unknown';
+  const orgKey = session?.org_key || turn.org_key || 'unknown';
+  const orgType = session?.org_type || turn.org_type || 'unknown';
+  const userRole = session?.user_role || turn.user_role || 'unknown';
+  const deviceRole = session?.device_role || turn.device_role || 'unknown';
+  const channelType = session?.channel_type || turn.channel_type || 'unknown';
+  const workspaceKey = session?.workspace_key || turn.workspace_key || 'unknown';
   return [
-    `Turn session_record_id=${sessionRecordId} user_key=${session?.user_key || 'unknown'} session_key=${session?.session_key || 'unknown'} turn_no=${turn.turn_no}`,
+    `Turn session_record_id=${sessionRecordId} user_key=${userKey} device_key=${deviceKey} session_key=${sessionKey} type=${sessionType} turn_no=${turn.turn_no}`,
+    `context org_key=${orgKey} org_type=${orgType} user_role=${userRole} device_role=${deviceRole} channel=${channelType} workspace=${workspaceKey}`,
     `timestamp=${turn.timestamp || 'unknown'} tokens prompt=${turn.prompt_tokens ?? 'unknown'} completion=${turn.completion_tokens ?? 'unknown'} total=${turn.total_tokens ?? 'unknown'}`,
     `user_text=${turn.user_text || ''}`,
     `assistant_text=${turn.assistant_text || ''}`,

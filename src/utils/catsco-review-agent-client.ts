@@ -34,6 +34,37 @@ export interface ReviewFailure {
   message?: string | null;
 }
 
+export interface ReviewTargetFilters {
+  userId?: string;
+  deviceId?: string;
+  deviceName?: string;
+  userKey?: string;
+  deviceKey?: string;
+  sessionId?: string;
+  sessionKey?: string;
+  sessionType?: string;
+  orgKey?: string;
+  orgType?: string;
+  userRole?: string;
+  deviceRole?: string;
+  channelType?: string;
+  workspaceKey?: string;
+}
+
+export interface ReviewContextFields {
+  session_record_id?: string | null;
+  user_key?: string | null;
+  device_key?: string | null;
+  session_key?: string | null;
+  session_type?: string | null;
+  org_key?: string | null;
+  org_type?: string | null;
+  user_role?: string | null;
+  device_role?: string | null;
+  channel_type?: string | null;
+  workspace_key?: string | null;
+}
+
 export interface ReviewSession {
   session_record_id: string;
   upload_id: string;
@@ -41,6 +72,12 @@ export interface ReviewSession {
   device_key: string;
   session_key: string;
   session_type: string;
+  org_key?: string | null;
+  org_type?: string | null;
+  user_role?: string | null;
+  device_role?: string | null;
+  channel_type?: string | null;
+  workspace_key?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
   entry_count: number;
@@ -71,7 +108,7 @@ export interface ReviewEntry {
   total_tokens?: number | null;
 }
 
-export interface ReviewTurn {
+export interface ReviewTurn extends ReviewContextFields {
   turn_record_id: string;
   turn_no: number;
   timestamp?: string | null;
@@ -89,11 +126,6 @@ export interface ReviewData {
   sessions: ReviewSession[];
   sessionEntries: Record<string, ReviewEntry[]>;
   sessionTurns: Record<string, ReviewTurn[]>;
-}
-
-export interface ReviewSessionFilters {
-  userKey?: string;
-  deviceKey?: string;
 }
 
 export interface CatscoReviewAgentClientOptions {
@@ -121,8 +153,12 @@ export class CatscoReviewAgentClient {
     return this.get('/catsco/review/health');
   }
 
-  async summary(uploadedFrom?: string, uploadedTo?: string): Promise<ReviewSummary> {
-    return this.get('/catsco/review/summary', { uploaded_from: uploadedFrom, uploaded_to: uploadedTo });
+  async summary(uploadedFrom?: string, uploadedTo?: string, filters: ReviewTargetFilters = {}): Promise<ReviewSummary> {
+    return this.get('/catsco/review/summary', {
+      uploaded_from: uploadedFrom,
+      uploaded_to: uploadedTo,
+      ...reviewFilterParams(filters),
+    });
   }
 
   async failures(
@@ -130,8 +166,15 @@ export class CatscoReviewAgentClient {
     uploadedFrom?: string,
     offset: number = 0,
     uploadedTo?: string,
+    filters: ReviewTargetFilters = {},
   ): Promise<{ page: ReviewPage; failures: ReviewFailure[] }> {
-    return this.get('/catsco/review/failures', { limit, offset, uploaded_from: uploadedFrom, uploaded_to: uploadedTo });
+    return this.get('/catsco/review/failures', {
+      limit,
+      offset,
+      uploaded_from: uploadedFrom,
+      uploaded_to: uploadedTo,
+      ...reviewFilterParams(filters),
+    });
   }
 
   async sessions(
@@ -139,15 +182,30 @@ export class CatscoReviewAgentClient {
     uploadedFrom?: string,
     offset: number = 0,
     uploadedTo?: string,
-    filters: ReviewSessionFilters = {},
+    filters: ReviewTargetFilters = {},
   ): Promise<{ page: ReviewPage; sessions: ReviewSession[] }> {
     return this.get('/catsco/review/sessions', {
       limit,
       offset,
       uploaded_from: uploadedFrom,
       uploaded_to: uploadedTo,
-      user_key: filters.userKey,
-      device_key: filters.deviceKey,
+      ...reviewFilterParams(filters),
+    });
+  }
+
+  async reviewTurns(
+    limit: number,
+    uploadedFrom?: string,
+    offset: number = 0,
+    uploadedTo?: string,
+    filters: ReviewTargetFilters = {},
+  ): Promise<{ page: ReviewPage; turns: ReviewTurn[] }> {
+    return this.get('/catsco/review/turns', {
+      limit,
+      offset,
+      uploaded_from: uploadedFrom,
+      uploaded_to: uploadedTo,
+      ...reviewFilterParams(filters),
     });
   }
 
@@ -202,7 +260,7 @@ export class CatscoReviewAgentClient {
         : `CatsCo Review API failed: HTTP ${response.status}`);
     }
 
-    return data as T;
+    return stripReviewRawIdentifierFields(data) as T;
   }
 
   private async fetchTextWithRetry(url: URL): Promise<{ response: Response; text: string }> {
@@ -254,6 +312,33 @@ export class CatscoReviewAgentClient {
   }
 }
 
+const REVIEW_RAW_IDENTIFIER_FIELDS = new Set([
+  'user_id',
+  'device_id',
+  'device_name',
+  'session_id',
+  'userId',
+  'deviceId',
+  'deviceName',
+  'sessionId',
+]);
+
+function stripReviewRawIdentifierFields(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stripReviewRawIdentifierFields);
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+
+  const stripped: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (REVIEW_RAW_IDENTIFIER_FIELDS.has(key)) continue;
+    stripped[key] = stripReviewRawIdentifierFields(child);
+  }
+  return stripped;
+}
+
 function isRetryableStatus(status: number): boolean {
   return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
 }
@@ -271,6 +356,25 @@ function retryDelayMs(response: Response, attempt: number): number {
     }
   }
   return 500 * (attempt + 1);
+}
+
+function reviewFilterParams(filters: ReviewTargetFilters): Record<string, unknown> {
+  return {
+    user_id: filters.userId,
+    device_id: filters.deviceId,
+    device_name: filters.deviceName,
+    user_key: filters.userKey,
+    device_key: filters.deviceKey,
+    session_id: filters.sessionId,
+    session_key: filters.sessionKey,
+    session_type: filters.sessionType,
+    org_key: filters.orgKey,
+    org_type: filters.orgType,
+    user_role: filters.userRole,
+    device_role: filters.deviceRole,
+    channel_type: filters.channelType,
+    workspace_key: filters.workspaceKey,
+  };
 }
 
 function sleep(ms: number): Promise<void> {

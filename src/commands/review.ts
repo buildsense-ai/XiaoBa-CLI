@@ -19,6 +19,23 @@ import {
 import { AIService } from '../utils/ai-service';
 import { runCatscoReviewAgent } from '../utils/catsco-review-runner';
 
+interface ReviewTargetCliOptions {
+  userId?: string;
+  deviceId?: string;
+  deviceName?: string;
+  userKey?: string;
+  deviceKey?: string;
+  sessionId?: string;
+  sessionKey?: string;
+  sessionType?: string;
+  orgKey?: string;
+  orgType?: string;
+  userRole?: string;
+  deviceRole?: string;
+  channelType?: string;
+  workspaceKey?: string;
+}
+
 export function registerReviewCommand(program: Command): void {
   const review = program
     .command('review')
@@ -40,6 +57,18 @@ export function registerReviewCommand(program: Command): void {
     .option('--output-dir <path>', 'Proposal output directory')
     .option('--user-key <key>', 'Limit usage analysis to one redacted Review API user_key')
     .option('--device-key <key>', 'Limit usage analysis to one redacted Review API device_key')
+    .option('--user-id <id>', 'Limit usage analysis by raw server user_id; used only as a Review API filter')
+    .option('--device-id <id>', 'Limit usage analysis by raw server device_id; used only as a Review API filter')
+    .option('--device-name <name>', 'Limit usage analysis by raw server device_name; used only as a Review API filter')
+    .option('--session-id <id>', 'Limit usage analysis by raw server session_id; used only as a Review API filter')
+    .option('--session-key <key>', 'Limit usage analysis to one redacted Review API session_key')
+    .option('--session-type <type>', 'Limit usage analysis to one session_type')
+    .option('--org-key <key>', 'Limit usage analysis to one org_key')
+    .option('--org-type <type>', 'Limit usage analysis to one org_type, such as school')
+    .option('--user-role <role>', 'Limit usage analysis to one user_role')
+    .option('--device-role <role>', 'Limit usage analysis to one device_role')
+    .option('--channel-type <type>', 'Limit usage analysis to one channel_type')
+    .option('--workspace-key <key>', 'Limit usage analysis to one workspace_key')
     .option('--target-repo <path>', 'Git repo where proposal files should be copied')
     .option('--create-branch', 'Create a review-agent/proposals-* branch')
     .option('--commit', 'Commit proposal files in the target repo')
@@ -56,10 +85,23 @@ export function registerReviewCommand(program: Command): void {
     .option('--lookback-hours <hours>', 'Review window in hours')
     .option('--user-key <key>', 'Limit log retrieval to one redacted Review API user_key')
     .option('--device-key <key>', 'Limit log retrieval to one redacted Review API device_key')
+    .option('--user-id <id>', 'Limit log retrieval by raw server user_id; used only as a Review API filter')
+    .option('--device-id <id>', 'Limit log retrieval by raw server device_id; used only as a Review API filter')
+    .option('--device-name <name>', 'Limit log retrieval by raw server device_name; used only as a Review API filter')
+    .option('--session-id <id>', 'Limit log retrieval by raw server session_id; used only as a Review API filter')
+    .option('--session-key <key>', 'Limit log retrieval to one redacted Review API session_key')
+    .option('--session-type <type>', 'Limit log retrieval to one session_type')
+    .option('--org-key <key>', 'Limit log retrieval to one org_key')
+    .option('--org-type <type>', 'Limit log retrieval to one org_type, such as school')
+    .option('--user-role <role>', 'Limit log retrieval to one user_role')
+    .option('--device-role <role>', 'Limit log retrieval to one device_role')
+    .option('--channel-type <type>', 'Limit log retrieval to one channel_type')
+    .option('--workspace-key <key>', 'Limit log retrieval to one workspace_key')
     .option('--max-evidence-items <count>', 'Maximum evidence items passed to the model')
     .option('--max-evidence-chars <count>', 'Maximum evidence characters passed to the model')
     .option('--max-sessions <count>', 'Maximum sessions to fetch for this question')
     .option('--max-turns-per-session <count>', 'Maximum turns to fetch per session')
+    .option('--max-target-turns <count>', 'Maximum top-level turns to fetch when a target filter is used')
     .action(async (questionParts: string[], options) => {
       await reviewAskCommand(questionParts.join(' '), options);
     });
@@ -71,10 +113,23 @@ export function registerReviewCommand(program: Command): void {
     .option('--lookback-hours <hours>', 'Review window in hours')
     .option('--user-key <key>', 'Limit log retrieval to one redacted Review API user_key')
     .option('--device-key <key>', 'Limit log retrieval to one redacted Review API device_key')
+    .option('--user-id <id>', 'Limit log retrieval by raw server user_id; used only as a Review API filter')
+    .option('--device-id <id>', 'Limit log retrieval by raw server device_id; used only as a Review API filter')
+    .option('--device-name <name>', 'Limit log retrieval by raw server device_name; used only as a Review API filter')
+    .option('--session-id <id>', 'Limit log retrieval by raw server session_id; used only as a Review API filter')
+    .option('--session-key <key>', 'Limit log retrieval to one redacted Review API session_key')
+    .option('--session-type <type>', 'Limit log retrieval to one session_type')
+    .option('--org-key <key>', 'Limit log retrieval to one org_key')
+    .option('--org-type <type>', 'Limit log retrieval to one org_type, such as school')
+    .option('--user-role <role>', 'Limit log retrieval to one user_role')
+    .option('--device-role <role>', 'Limit log retrieval to one device_role')
+    .option('--channel-type <type>', 'Limit log retrieval to one channel_type')
+    .option('--workspace-key <key>', 'Limit log retrieval to one workspace_key')
     .option('--max-evidence-items <count>', 'Maximum evidence items passed to the model per question')
     .option('--max-evidence-chars <count>', 'Maximum evidence characters passed to the model per question')
     .option('--max-sessions <count>', 'Maximum sessions to fetch per question')
     .option('--max-turns-per-session <count>', 'Maximum turns to fetch per session')
+    .option('--max-target-turns <count>', 'Maximum top-level turns to fetch when a target filter is used')
     .option('--fixed-range', 'Fetch logs once at startup instead of refreshing before every question')
     .action(async (options) => {
       await reviewChatCommand(options);
@@ -89,6 +144,18 @@ export function registerReviewCommand(program: Command): void {
     .option('--output-dir <path>', 'Proposal output directory')
     .option('--user-key <key>', 'Limit usage analysis to one redacted Review API user_key')
     .option('--device-key <key>', 'Limit usage analysis to one redacted Review API device_key')
+    .option('--user-id <id>', 'Limit usage analysis by raw server user_id; used only as a Review API filter')
+    .option('--device-id <id>', 'Limit usage analysis by raw server device_id; used only as a Review API filter')
+    .option('--device-name <name>', 'Limit usage analysis by raw server device_name; used only as a Review API filter')
+    .option('--session-id <id>', 'Limit usage analysis by raw server session_id; used only as a Review API filter')
+    .option('--session-key <key>', 'Limit usage analysis to one redacted Review API session_key')
+    .option('--session-type <type>', 'Limit usage analysis to one session_type')
+    .option('--org-key <key>', 'Limit usage analysis to one org_key')
+    .option('--org-type <type>', 'Limit usage analysis to one org_type, such as school')
+    .option('--user-role <role>', 'Limit usage analysis to one user_role')
+    .option('--device-role <role>', 'Limit usage analysis to one device_role')
+    .option('--channel-type <type>', 'Limit usage analysis to one channel_type')
+    .option('--workspace-key <key>', 'Limit usage analysis to one workspace_key')
     .action(async (options) => {
       await reviewDaemonCommand(options);
     });
@@ -111,20 +178,17 @@ async function reviewRunOnceCommand(options: {
   cwd: string;
   lookbackHours?: string;
   outputDir?: string;
-  userKey?: string;
-  deviceKey?: string;
   targetRepo?: string;
   createBranch?: boolean;
   commit?: boolean;
   createPr?: boolean;
-}): Promise<void> {
+} & ReviewTargetCliOptions): Promise<void> {
   try {
     const config = getCatscoReviewAgentConfig(options.cwd);
     const result = await runCatscoReviewAgent(config, {
       lookbackHours: parsePositiveInteger(options.lookbackHours),
       outputDir: options.outputDir,
-      targetUserKey: options.userKey,
-      targetDeviceKey: options.deviceKey,
+      ...reviewTargetOptionsFromCli(options),
       targetRepo: options.targetRepo,
       createBranch: options.createBranch,
       commitChanges: options.commit,
@@ -155,13 +219,12 @@ async function reviewRunOnceCommand(options: {
 async function reviewAskCommand(question: string, options: {
   cwd: string;
   lookbackHours?: string;
-  userKey?: string;
-  deviceKey?: string;
   maxEvidenceItems?: string;
   maxEvidenceChars?: string;
   maxSessions?: string;
   maxTurnsPerSession?: string;
-}): Promise<void> {
+  maxTargetTurns?: string;
+} & ReviewTargetCliOptions): Promise<void> {
   try {
     const context = await loadReviewQuestionContext(reviewQuestionOptionsFromCli(options));
     const answer = await answerReviewQuestion(question, context, new AIService(), {
@@ -178,14 +241,13 @@ async function reviewAskCommand(question: string, options: {
 async function reviewChatCommand(options: {
   cwd: string;
   lookbackHours?: string;
-  userKey?: string;
-  deviceKey?: string;
   maxEvidenceItems?: string;
   maxEvidenceChars?: string;
   maxSessions?: string;
   maxTurnsPerSession?: string;
+  maxTargetTurns?: string;
   fixedRange?: boolean;
-}): Promise<void> {
+} & ReviewTargetCliOptions): Promise<void> {
   const fixedRange = Boolean(options.fixedRange);
   let fixedContext: ReviewQuestionContext | undefined;
 
@@ -257,11 +319,10 @@ async function handleReviewChatQuestion(question: string, input: {
   options: {
     cwd: string;
     lookbackHours?: string;
-    userKey?: string;
-    deviceKey?: string;
     maxSessions?: string;
     maxTurnsPerSession?: string;
-  };
+    maxTargetTurns?: string;
+  } & ReviewTargetCliOptions;
   rl: readline.Interface;
   isClosed: () => boolean;
 }): Promise<void> {
@@ -296,18 +357,17 @@ async function handleReviewChatQuestion(question: string, input: {
 function reviewQuestionOptionsFromCli(options: {
   cwd: string;
   lookbackHours?: string;
-  userKey?: string;
-  deviceKey?: string;
   maxSessions?: string;
   maxTurnsPerSession?: string;
-}): LoadReviewQuestionContextOptions {
+  maxTargetTurns?: string;
+} & ReviewTargetCliOptions): LoadReviewQuestionContextOptions {
   return {
     cwd: options.cwd,
     lookbackHours: parsePositiveInteger(options.lookbackHours),
-    targetUserKey: options.userKey,
-    targetDeviceKey: options.deviceKey,
+    ...reviewTargetOptionsFromCli(options),
     maxSessions: parsePositiveInteger(options.maxSessions),
     maxTurnsPerSession: parsePositiveInteger(options.maxTurnsPerSession),
+    maxTargetTurns: parsePositiveInteger(options.maxTargetTurns),
   };
 }
 
@@ -316,9 +376,7 @@ async function reviewDaemonCommand(options: {
   intervalMinutes?: string;
   lookbackHours?: string;
   outputDir?: string;
-  userKey?: string;
-  deviceKey?: string;
-}): Promise<void> {
+} & ReviewTargetCliOptions): Promise<void> {
   const config = getCatscoReviewAgentConfig(options.cwd);
   try {
     validateCatscoReviewAgentConfig(config);
@@ -350,8 +408,7 @@ async function reviewDaemonCommand(options: {
       const result = await runCatscoReviewAgent(config, {
         lookbackHours: parsePositiveInteger(options.lookbackHours),
         outputDir: options.outputDir,
-        targetUserKey: options.userKey,
-        targetDeviceKey: options.deviceKey,
+        ...reviewTargetOptionsFromCli(options),
         createBranch: false,
         commitChanges: false,
         createGithubPr: false,
@@ -371,6 +428,30 @@ async function reviewDaemonCommand(options: {
       wakeSleep = undefined;
     }
   }
+}
+
+function reviewTargetOptionsFromCli(options: ReviewTargetCliOptions) {
+  return {
+    targetUserId: stringOrUndefined(options.userId),
+    targetDeviceId: stringOrUndefined(options.deviceId),
+    targetDeviceName: stringOrUndefined(options.deviceName),
+    targetUserKey: stringOrUndefined(options.userKey),
+    targetDeviceKey: stringOrUndefined(options.deviceKey),
+    targetSessionId: stringOrUndefined(options.sessionId),
+    targetSessionKey: stringOrUndefined(options.sessionKey),
+    targetSessionType: stringOrUndefined(options.sessionType),
+    targetOrgKey: stringOrUndefined(options.orgKey),
+    targetOrgType: stringOrUndefined(options.orgType),
+    targetUserRole: stringOrUndefined(options.userRole),
+    targetDeviceRole: stringOrUndefined(options.deviceRole),
+    targetChannelType: stringOrUndefined(options.channelType),
+    targetWorkspaceKey: stringOrUndefined(options.workspaceKey),
+  };
+}
+
+function stringOrUndefined(value?: string): string | undefined {
+  const text = String(value || '').trim();
+  return text || undefined;
 }
 
 function parsePositiveInteger(raw?: string): number | undefined {

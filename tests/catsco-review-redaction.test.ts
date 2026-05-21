@@ -12,6 +12,8 @@ describe('catsco review redaction', () => {
       '路径 E:\\Dirty Work\\XiaoBa-CLI\\server\\log.txt',
       'UNC \\\\server\\share name\\folder\\file.txt',
       'URL https://logs.catsco.fun:8000/private?a=1',
+      'user_id=catsco_116 device_id=device-raw device_name=教务处电脑 session_id=session-raw',
+      '{"user_id":"catsco_117","device_name":"老师电脑","session_id":"session-json"}',
     ].join('\n'));
 
     assert.match(redacted, /Bearer \[REDACTED\]/);
@@ -22,8 +24,12 @@ describe('catsco review redaction', () => {
     assert.match(redacted, /\[CONTACT_REDACTED\]/);
     assert.match(redacted, /\[PATH_REDACTED\]/);
     assert.match(redacted, /\[URL_REDACTED\]/);
+    assert.match(redacted, /\[RAW_ID_REDACTED\]/);
     assert.doesNotMatch(redacted, /Dirty Work/);
     assert.doesNotMatch(redacted, /teacher@example\.com/);
     assert.doesNotMatch(redacted, /110101199003071234/);
+    assert.doesNotMatch(redacted, /catsco_116/);
+    assert.doesNotMatch(redacted, /教务处电脑/);
+    assert.doesNotMatch(redacted, /session-json/);
   });
 });

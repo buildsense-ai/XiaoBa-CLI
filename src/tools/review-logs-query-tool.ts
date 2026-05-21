@@ -36,6 +36,54 @@ export class ReviewLogsQueryTool implements Tool {
           type: 'string',
           description: '可选。只分析某个 Review API 返回的匿名 device_key。',
         },
+        user_id: {
+          type: 'string',
+          description: '可选。按云端原始 user_id 过滤；仅作为查询条件，不写入回答证据。',
+        },
+        device_id: {
+          type: 'string',
+          description: '可选。按云端原始 device_id 过滤；仅作为查询条件，不写入回答证据。',
+        },
+        device_name: {
+          type: 'string',
+          description: '可选。按云端原始 device_name 过滤；仅作为查询条件，不写入回答证据。',
+        },
+        session_id: {
+          type: 'string',
+          description: '可选。按云端原始 session_id 过滤；仅作为查询条件，不写入回答证据。',
+        },
+        session_key: {
+          type: 'string',
+          description: '可选。只分析某个 Review API 返回的匿名 session_key。',
+        },
+        session_type: {
+          type: 'string',
+          description: '可选。只分析某类 session_type。',
+        },
+        org_key: {
+          type: 'string',
+          description: '可选。只分析某个 org_key，例如某个学校或客户。',
+        },
+        org_type: {
+          type: 'string',
+          description: '可选。只分析某类组织，例如 school。',
+        },
+        user_role: {
+          type: 'string',
+          description: '可选。只分析某类 user_role。',
+        },
+        device_role: {
+          type: 'string',
+          description: '可选。只分析某类 device_role。',
+        },
+        channel_type: {
+          type: 'string',
+          description: '可选。只分析某类 channel_type。',
+        },
+        workspace_key: {
+          type: 'string',
+          description: '可选。只分析某个 workspace_key。',
+        },
         max_evidence_items: {
           type: 'number',
           description: '可选。传给模型的最大证据条数。',
@@ -51,6 +99,10 @@ export class ReviewLogsQueryTool implements Tool {
         max_turns_per_session: {
           type: 'number',
           description: '可选。每个 session 最多拉取多少个 turn。',
+        },
+        max_target_turns: {
+          type: 'number',
+          description: '可选。使用目标过滤时最多拉取多少条顶层 turns。',
         },
       },
       required: ['question'],
@@ -71,10 +123,23 @@ export class ReviewLogsQueryTool implements Tool {
       const reviewContext = await loadReviewQuestionContext({
         cwd: context.workingDirectory || process.cwd(),
         lookbackHours: readPositiveInteger(args?.lookback_hours),
+        targetUserId: stringOrUndefined(args?.user_id),
+        targetDeviceId: stringOrUndefined(args?.device_id),
+        targetDeviceName: stringOrUndefined(args?.device_name),
         targetUserKey: stringOrUndefined(args?.user_key),
         targetDeviceKey: stringOrUndefined(args?.device_key),
+        targetSessionId: stringOrUndefined(args?.session_id),
+        targetSessionKey: stringOrUndefined(args?.session_key),
+        targetSessionType: stringOrUndefined(args?.session_type),
+        targetOrgKey: stringOrUndefined(args?.org_key),
+        targetOrgType: stringOrUndefined(args?.org_type),
+        targetUserRole: stringOrUndefined(args?.user_role),
+        targetDeviceRole: stringOrUndefined(args?.device_role),
+        targetChannelType: stringOrUndefined(args?.channel_type),
+        targetWorkspaceKey: stringOrUndefined(args?.workspace_key),
         maxSessions: readPositiveInteger(args?.max_sessions),
         maxTurnsPerSession: readPositiveInteger(args?.max_turns_per_session),
+        maxTargetTurns: readPositiveInteger(args?.max_target_turns),
       });
       const aiService = context.runtimeServices?.aiService || new AIService();
       const answer = await answerReviewQuestion(question, reviewContext, aiService, {

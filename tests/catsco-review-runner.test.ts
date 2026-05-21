@@ -16,6 +16,7 @@ describe('catsco review runner', () => {
       maxSessions: 10,
       maxEntriesPerSession: 10,
       maxTurnsPerSession: 10,
+      maxTargetTurns: 100,
       prBaseBranch: 'main',
       gitRemote: 'origin',
       createBranch: false,
@@ -227,30 +228,36 @@ describe('catsco review runner', () => {
     assert.deepEqual(failureOffsets, [0]);
   });
 
-  test('passes target user/device filters to sessions and filters failures to matched sessions', async () => {
-    let capturedFilters: any;
+  test('passes target filters consistently and uses top-level turns for targeted analysis', async () => {
+    const capturedFilters: Record<string, any> = {};
     const data = await fetchReviewData({
-      summary: async () => ({
-        upload_count: 10,
-        parsed_upload_count: 10,
+      summary: async (_uploadedFrom: string, _uploadedTo?: string, filters?: any) => {
+        capturedFilters.summary = filters;
+        return ({
+        upload_count: 1,
+        parsed_upload_count: 1,
         failed_upload_count: 0,
-        session_count: 10,
-        turn_count: 0,
-        ai_call_count: 0,
+        session_count: 1,
+        turn_count: 1,
+        ai_call_count: 1,
         tool_call_count: 0,
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-      }),
-      failures: async () => ({
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        total_tokens: 15,
+        });
+      },
+      failures: async (_limit: number, _uploadedFrom: string, _offset: number, _uploadedTo?: string, filters?: any) => {
+        capturedFilters.failures = filters;
+        return ({
         page: { limit: 10, offset: 0, count: 2, has_more: false },
         failures: [
           { failure_type: 'log_entry', upload_id: 'u1', session_record_id: 'session-1', event_category: 'runtime', message: 'error one' },
           { failure_type: 'log_entry', upload_id: 'u2', session_record_id: 'session-2', event_category: 'runtime', message: 'error two' },
         ],
-      }),
+        });
+      },
       sessions: async (_limit: number, _uploadedFrom: string, _offset: number, _uploadedTo?: string, filters?: any) => {
-        capturedFilters = filters;
+        capturedFilters.sessions = filters;
         return {
           page: { limit: 10, offset: 0, count: 1, has_more: false },
           sessions: [{
@@ -260,14 +267,17 @@ describe('catsco review runner', () => {
             device_key: 'device-key',
             session_key: 'session-key',
             session_type: 'chat',
+            org_type: 'school',
+            user_role: 'teacher',
+            channel_type: 'desktop',
             entry_count: 0,
             runtime_count: 0,
-            turn_count: 0,
-            ai_call_count: 0,
+            turn_count: 1,
+            ai_call_count: 1,
             tool_call_count: 0,
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
             summary_status: 'ready',
             created_at: '2026-05-20 00:00:00',
           }],
@@ -275,19 +285,63 @@ describe('catsco review runner', () => {
       },
       entries: async () => ({ page: { limit: 10, offset: 0, count: 0 }, entries: [] }),
       turns: async () => ({ page: { limit: 10, offset: 0, count: 0 }, turns: [] }),
+      reviewTurns: async (_limit: number, _uploadedFrom: string, _offset: number, _uploadedTo?: string, filters?: any) => {
+        capturedFilters.reviewTurns = filters;
+        return {
+          page: { limit: 10, offset: 0, count: 2, has_more: false },
+          turns: [
+            {
+              session_record_id: 'session-1',
+              turn_record_id: 'turn-1',
+              turn_no: 1,
+              user_key: 'teacher-key',
+              device_key: 'device-key',
+              session_key: 'session-key',
+              session_type: 'chat',
+              org_type: 'school',
+              user_role: 'teacher',
+              channel_type: 'desktop',
+              user_text: '老师问奖学金名单怎么整理',
+              assistant_text: '可以按公示格式整理。',
+            },
+            {
+              session_record_id: 'session-2',
+              turn_record_id: 'turn-2',
+              turn_no: 1,
+              user_key: 'other-key',
+              device_key: 'other-device',
+              session_key: 'other-session',
+              user_text: '其他用户干扰数据',
+            },
+          ],
+        };
+      },
     } as any, {
       uploadedFrom: '2026-05-20T00:00:00Z',
       maxFailures: 10,
       maxSessions: 10,
       maxEntriesPerSession: 10,
       maxTurnsPerSession: 10,
+      maxTargetTurns: 50,
       targetUserKey: 'teacher-key',
       targetDeviceKey: 'device-key',
+      targetFilters: {
+        userId: 'catsco_116',
+        userKey: 'teacher-key',
+        deviceKey: 'device-key',
+        orgType: 'school',
+      },
     });
 
-    assert.deepEqual(capturedFilters, { userKey: 'teacher-key', deviceKey: 'device-key' });
+    const expectedFilters = { userId: 'catsco_116', userKey: 'teacher-key', deviceKey: 'device-key', orgType: 'school' };
+    assert.deepEqual(capturedFilters.summary, expectedFilters);
+    assert.deepEqual(capturedFilters.failures, expectedFilters);
+    assert.deepEqual(capturedFilters.sessions, expectedFilters);
+    assert.deepEqual(capturedFilters.reviewTurns, expectedFilters);
     assert.equal(data.failures.length, 1);
     assert.equal(data.failures[0].session_record_id, 'session-1');
     assert.equal(data.summary.session_count, 1);
+    assert.deepEqual((data.sessionTurns['session-1'] || []).map(turn => turn.turn_record_id), ['turn-1']);
+    assert.equal(data.sessionTurns['session-2'], undefined);
   });
 });

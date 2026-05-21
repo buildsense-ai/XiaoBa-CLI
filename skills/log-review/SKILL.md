@@ -33,12 +33,17 @@ catsco review run-once
 review_logs_query
 catsco review ask "这个老师主要用 Agent 做什么？"
 catsco review chat --user-key <review-user-key>
+catsco review ask "学校用户最近一周主要用 Agent 做什么？" --org-type school
+catsco review ask "这个老师的使用情况" --user-id <server-user-id>
+catsco review ask "这台教务处电脑最近主要问什么？" --device-name "教务处电脑"
 catsco review chat --fixed-range
 ```
 
 在原 Agent 对话里，优先让 Agent 调用内置工具 `review_logs_query`；`catsco review ask/chat` 主要用于终端调试或运维。`review_logs_query`、`ask` 和 `chat` 只读云端 Review API 数据，不创建 PR。它们会从 summary、failures、sessions、entries、turns、usage metrics 和 analyzer findings 里构造脱敏证据包，再按用户问题灵活回答。`review_logs_query` 和 `ask` 每次运行都会拉取截至当前时刻的日志；`chat` 默认也会在每个问题前刷新一次日志，让新上传的日志可以进入后续回答。只有需要复盘同一批证据、保证每个回答完全可复现时，才使用 `--fixed-range`。
 
 这里的时间范围由 `--lookback-hours` 或 `CATSCO_REVIEW_LOOKBACK_HOURS` 控制，默认是最近一周，也就是 168 小时，不是另开一个 Agent 对话窗口。要看更久历史可以增大 lookback，同时注意 max sessions / max turns 等上限。
+
+定向分析可以使用 `user_key/device_key/session_key/org_key/org_type/user_role/device_role/channel_type/workspace_key`。如果用户只知道云端原始 `user_id/device_id/device_name/session_id`，这些值只能作为 Review API 查询过滤条件使用；不要把它们写进 proposal、文档或回答证据。回答里优先引用稳定 key 和安全的组织/角色/渠道上下文。
 
 如需定期运行，只允许 proposal-only 模式：
 
@@ -51,6 +56,7 @@ catsco review daemon
 ```bash
 catsco review run-once --user-key <review-user-key>
 catsco review run-once --device-key <review-device-key>
+catsco review run-once --org-type school
 ```
 
 如需生成 PR：

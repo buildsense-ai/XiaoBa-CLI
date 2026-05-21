@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { analyzeReviewData, ReviewFinding } from './catsco-review-analyzer';
-import { CatscoReviewAgentClient, ReviewData, ReviewPage } from './catsco-review-agent-client';
+import { CatscoReviewAgentClient, ReviewData, ReviewPage, ReviewTargetFilters, ReviewTurn } from './catsco-review-agent-client';
 import { CatscoReviewAgentConfig, validateCatscoReviewAgentConfig } from './catsco-review-agent-config';
 import { runReviewGitWorkflow, ReviewGitResult } from './catsco-review-gitops';
 import { makeReviewRunId, ReviewProposalBundle, writeReviewProposalBundle } from './catsco-review-proposals';
@@ -30,8 +30,21 @@ export interface ReviewRunOptions {
   createBranch?: boolean;
   commitChanges?: boolean;
   createGithubPr?: boolean;
+  targetUserId?: string;
+  targetDeviceId?: string;
+  targetDeviceName?: string;
   targetUserKey?: string;
   targetDeviceKey?: string;
+  targetSessionId?: string;
+  targetSessionKey?: string;
+  targetSessionType?: string;
+  targetOrgKey?: string;
+  targetOrgType?: string;
+  targetUserRole?: string;
+  targetDeviceRole?: string;
+  targetChannelType?: string;
+  targetWorkspaceKey?: string;
+  targetFilters?: ReviewTargetFilters;
 }
 
 export interface ReviewRunResult {
@@ -60,8 +73,7 @@ export async function runCatscoReviewAgent(
   const runId = makeReviewRunId();
   const outputDir = options.outputDir || config.outputDir;
   const client = new CatscoReviewAgentClient(config.apiBaseUrl, config.reviewToken || '');
-  const targetUserKey = options.targetUserKey || config.targetUserKey;
-  const targetDeviceKey = options.targetDeviceKey || config.targetDeviceKey;
+  const targetFilters = reviewTargetFiltersFromConfig(config, options);
 
   const reviewData = await fetchReviewData(client, {
     uploadedFrom,
@@ -70,11 +82,14 @@ export async function runCatscoReviewAgent(
     maxSessions: config.maxSessions,
     maxEntriesPerSession: config.maxEntriesPerSession,
     maxTurnsPerSession: config.maxTurnsPerSession,
-    targetUserKey,
-    targetDeviceKey,
+    maxTargetTurns: config.maxTargetTurns,
+    targetFilters,
   });
   const findings = analyzeReviewData(reviewData);
-  const usageAnalysis = analyzeUsageData(reviewData, { targetUserKey, targetDeviceKey });
+  const usageAnalysis = analyzeUsageData(reviewData, {
+    targetUserKey: targetFilters.userKey,
+    targetDeviceKey: targetFilters.deviceKey,
+  });
   const proposalBundle = writeReviewProposalBundle({
     outputDir,
     runId,
@@ -124,42 +139,64 @@ export async function fetchReviewData(
     maxSessions: number;
     maxEntriesPerSession: number;
     maxTurnsPerSession: number;
+    maxTargetTurns?: number;
     targetUserKey?: string;
     targetDeviceKey?: string;
+    targetFilters?: ReviewTargetFilters;
   },
 ): Promise<ReviewData> {
+  const targetFilters = compactReviewTargetFilters({
+    ...options.targetFilters,
+    userKey: options.targetFilters?.userKey ?? options.targetUserKey,
+    deviceKey: options.targetFilters?.deviceKey ?? options.targetDeviceKey,
+  });
+  const hasTargetFilter = hasReviewTargetFilter(targetFilters);
   const [apiSummary, rawFailures, sessions] = await Promise.all([
-    client.summary(options.uploadedFrom, options.uploadedTo),
+    client.summary(options.uploadedFrom, options.uploadedTo, targetFilters),
     fetchPagedReviewItems(
       options.maxFailures,
       PAGE_LIMITS.failures,
-      (limit, offset) => client.failures(limit, options.uploadedFrom, offset, options.uploadedTo),
+      (limit, offset) => client.failures(limit, options.uploadedFrom, offset, options.uploadedTo, targetFilters),
       response => response.failures,
       item => `${item.failure_type}:${item.entry_id || item.upload_id}:${item.session_record_id || ''}`,
     ),
     fetchPagedReviewItems(
       options.maxSessions,
       PAGE_LIMITS.sessions,
-      (limit, offset) => client.sessions(limit, options.uploadedFrom, offset, options.uploadedTo, {
-        userKey: options.targetUserKey,
-        deviceKey: options.targetDeviceKey,
-      }),
+      (limit, offset) => client.sessions(limit, options.uploadedFrom, offset, options.uploadedTo, targetFilters),
       response => response.sessions,
       item => item.session_record_id,
     ),
   ]);
 
   const sessionIds = new Set(sessions.map(session => session.session_record_id));
-  const hasTargetFilter = Boolean(options.targetUserKey || options.targetDeviceKey);
   const failures = hasTargetFilter
-    ? rawFailures.filter(failure => failure.session_record_id && sessionIds.has(failure.session_record_id))
+    ? rawFailures.filter(failure => Boolean(failure.session_record_id && sessionIds.has(failure.session_record_id)))
     : rawFailures;
-  const summary = hasTargetFilter
-    ? summarizeFilteredReviewData(apiSummary, sessions, failures, options.uploadedFrom, options.uploadedTo)
-    : apiSummary;
+  const summary = apiSummary;
+  const targetTurns = hasTargetFilter
+    ? await fetchPagedReviewItems(
+      Math.max(1, options.maxTargetTurns || targetTurnLimit(options.maxSessions, options.maxTurnsPerSession)),
+      PAGE_LIMITS.turns,
+      (limit, offset) => client.reviewTurns(limit, options.uploadedFrom, offset, options.uploadedTo, targetFilters),
+      response => response.turns,
+      item => item.turn_record_id,
+    )
+    : undefined;
+  const targetTurnsBySession = targetTurns
+    ? groupReviewTurnsBySession(targetTurns.filter(turn => {
+      const sessionRecordId = String(turn.session_record_id || '');
+      if (!sessionRecordId) return false;
+      if (sessionIds.size === 0) return false;
+      return sessionIds.has(sessionRecordId);
+    }))
+    : {};
 
   const sessionEntries: ReviewData['sessionEntries'] = {};
   const sessionTurns: ReviewData['sessionTurns'] = {};
+  for (const [sessionRecordId, turns] of Object.entries(targetTurnsBySession)) {
+    sessionTurns[sessionRecordId] = turns;
+  }
 
   for (const session of sessions) {
     const sessionRecordId = session.session_record_id;
@@ -171,7 +208,9 @@ export async function fetchReviewData(
         response => response.entries,
         item => item.entry_id,
       ),
-      fetchPagedReviewItems(
+      hasTargetFilter
+        ? Promise.resolve(sessionTurns[sessionRecordId] || [])
+        : fetchPagedReviewItems(
         options.maxTurnsPerSession,
         PAGE_LIMITS.turns,
         (limit, offset) => client.turns(sessionRecordId, limit, offset),
@@ -207,30 +246,53 @@ export async function fetchReviewData(
   };
 }
 
-function summarizeFilteredReviewData(
-  baseSummary: ReviewData['summary'],
-  sessions: ReviewData['sessions'],
-  failures: ReviewData['failures'],
-  uploadedFrom: string,
-  uploadedTo?: string,
-): ReviewData['summary'] {
-  const uploadIds = new Set<string>();
-  for (const session of sessions) uploadIds.add(session.upload_id);
-  for (const failure of failures) uploadIds.add(failure.upload_id);
-  return {
-    uploaded_from: baseSummary.uploaded_from || uploadedFrom,
-    uploaded_to: baseSummary.uploaded_to || uploadedTo,
-    upload_count: uploadIds.size,
-    parsed_upload_count: new Set(sessions.map(session => session.upload_id)).size,
-    failed_upload_count: new Set(failures.filter(failure => failure.failure_type === 'parse_failure').map(failure => failure.upload_id)).size,
-    session_count: sessions.length,
-    turn_count: sessions.reduce((sum, session) => sum + Number(session.turn_count || 0), 0),
-    ai_call_count: sessions.reduce((sum, session) => sum + Number(session.ai_call_count || 0), 0),
-    tool_call_count: sessions.reduce((sum, session) => sum + Number(session.tool_call_count || 0), 0),
-    prompt_tokens: sessions.reduce((sum, session) => sum + Number(session.prompt_tokens || 0), 0),
-    completion_tokens: sessions.reduce((sum, session) => sum + Number(session.completion_tokens || 0), 0),
-    total_tokens: sessions.reduce((sum, session) => sum + Number(session.total_tokens || 0), 0),
-  };
+export function reviewTargetFiltersFromConfig(
+  config: CatscoReviewAgentConfig,
+  options: ReviewRunOptions = {},
+): ReviewTargetFilters {
+  return compactReviewTargetFilters({
+    userId: options.targetFilters?.userId ?? options.targetUserId ?? config.targetUserId,
+    deviceId: options.targetFilters?.deviceId ?? options.targetDeviceId ?? config.targetDeviceId,
+    deviceName: options.targetFilters?.deviceName ?? options.targetDeviceName ?? config.targetDeviceName,
+    userKey: options.targetFilters?.userKey ?? options.targetUserKey ?? config.targetUserKey,
+    deviceKey: options.targetFilters?.deviceKey ?? options.targetDeviceKey ?? config.targetDeviceKey,
+    sessionId: options.targetFilters?.sessionId ?? options.targetSessionId ?? config.targetSessionId,
+    sessionKey: options.targetFilters?.sessionKey ?? options.targetSessionKey ?? config.targetSessionKey,
+    sessionType: options.targetFilters?.sessionType ?? options.targetSessionType ?? config.targetSessionType,
+    orgKey: options.targetFilters?.orgKey ?? options.targetOrgKey ?? config.targetOrgKey,
+    orgType: options.targetFilters?.orgType ?? options.targetOrgType ?? config.targetOrgType,
+    userRole: options.targetFilters?.userRole ?? options.targetUserRole ?? config.targetUserRole,
+    deviceRole: options.targetFilters?.deviceRole ?? options.targetDeviceRole ?? config.targetDeviceRole,
+    channelType: options.targetFilters?.channelType ?? options.targetChannelType ?? config.targetChannelType,
+    workspaceKey: options.targetFilters?.workspaceKey ?? options.targetWorkspaceKey ?? config.targetWorkspaceKey,
+  });
+}
+
+export function compactReviewTargetFilters(filters: ReviewTargetFilters = {}): ReviewTargetFilters {
+  const compact: ReviewTargetFilters = {};
+  for (const [key, value] of Object.entries(filters) as Array<[keyof ReviewTargetFilters, string | undefined]>) {
+    const text = String(value || '').trim();
+    if (text) compact[key] = text;
+  }
+  return compact;
+}
+
+export function hasReviewTargetFilter(filters: ReviewTargetFilters = {}): boolean {
+  return Object.values(filters).some(value => Boolean(String(value || '').trim()));
+}
+
+function targetTurnLimit(maxSessions: number, maxTurnsPerSession: number): number {
+  return Math.max(1, maxSessions) * Math.max(1, maxTurnsPerSession);
+}
+
+function groupReviewTurnsBySession(turns: ReviewTurn[]): Record<string, ReviewTurn[]> {
+  const grouped: Record<string, ReviewTurn[]> = {};
+  for (const turn of turns) {
+    const sessionRecordId = turn.session_record_id || `unknown-${turn.turn_record_id}`;
+    grouped[sessionRecordId] ||= [];
+    grouped[sessionRecordId].push(turn);
+  }
+  return grouped;
 }
 
 async function fetchPagedReviewItems<TResponse extends { page: ReviewPage }, TItem>(

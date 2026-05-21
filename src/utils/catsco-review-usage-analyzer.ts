@@ -43,6 +43,14 @@ export interface ReviewUsageAnalysis {
   };
   toolUsage: ReviewUsageToolSummary[];
   sessionTypes: ReviewUsageNamedCount[];
+  segments: {
+    orgKeys: ReviewUsageNamedCount[];
+    orgTypes: ReviewUsageNamedCount[];
+    userRoles: ReviewUsageNamedCount[];
+    deviceRoles: ReviewUsageNamedCount[];
+    channelTypes: ReviewUsageNamedCount[];
+    workspaceKeys: ReviewUsageNamedCount[];
+  };
   questionSamples: ReviewUsageQuestionSample[];
 }
 
@@ -130,6 +138,13 @@ interface MutableToolUsage {
   userKeys: Set<string>;
 }
 
+interface UsageSessionContext {
+  session_record_id: string;
+  user_key?: string | null;
+  device_key?: string | null;
+  session_key?: string | null;
+}
+
 const TOPIC_LABELS: Record<UsageTopicId, string> = {
   grades_or_exams: '成绩/考试/评分',
   course_schedule: '课表/排课/教室',
@@ -170,6 +185,12 @@ export function analyzeUsageData(
   const hourBuckets = new Map<string, ReviewUsageTimeBucket>();
   const weekdayBuckets = new Map<string, ReviewUsageTimeBucket>();
   const sessionTypes = new Map<string, number>();
+  const orgKeys = new Map<string, number>();
+  const orgTypes = new Map<string, number>();
+  const userRoles = new Map<string, number>();
+  const deviceRoles = new Map<string, number>();
+  const channelTypes = new Map<string, number>();
+  const workspaceKeys = new Map<string, number>();
   const questionSamples: ReviewUsageQuestionSample[] = [];
   const allDeviceKeys = new Set<string>();
   const allActiveDays = new Set<string>();
@@ -185,6 +206,12 @@ export function analyzeUsageData(
     allDeviceKeys.add(session.device_key || 'unknown');
 
     incrementMap(sessionTypes, session.session_type || 'unknown', 1);
+    incrementKnownMap(orgKeys, session.org_key);
+    incrementKnownMap(orgTypes, session.org_type);
+    incrementKnownMap(userRoles, session.user_role);
+    incrementKnownMap(deviceRoles, session.device_role);
+    incrementKnownMap(channelTypes, session.channel_type);
+    incrementKnownMap(workspaceKeys, session.workspace_key);
     updateUserTime(user, session);
     updateTimeBuckets(dayBuckets, hourBuckets, weekdayBuckets, session);
     const sessionDay = dayKey(session.started_at || session.created_at);
@@ -196,8 +223,11 @@ export function analyzeUsageData(
 
   for (const [sessionRecordId, turns] of Object.entries(reviewData.sessionTurns || {})) {
     const session = sessionById.get(sessionRecordId);
-    if (!session) continue;
-    const user = ensureUser(users, session.user_key || 'unknown');
+    const sessionContext = session || sessionContextFromTurn(sessionRecordId, turns[0]);
+    const user = ensureUser(users, sessionContext.user_key || 'unknown');
+    user.sessionIds.add(sessionRecordId);
+    user.deviceKeys.add(sessionContext.device_key || 'unknown');
+    allDeviceKeys.add(sessionContext.device_key || 'unknown');
     user.loadedTurnCount += turns.length;
     loadedTurnCount += turns.length;
 
@@ -205,15 +235,15 @@ export function analyzeUsageData(
       const text = turn.user_text || '';
       if (!text.trim()) continue;
       const topic = classifyUsageTopic(text, extractTurnToolNames(turn));
-      recordTopic(topics, topic, session, questionHash(text));
+      recordTopic(topics, topic, sessionContext, questionHash(text));
       incrementMap(user.topics, topic, 1);
       if (questionSamples.length < 50) {
         questionSamples.push({
           topic,
           label: TOPIC_LABELS[topic],
           questionHash: questionHash(text),
-          userKey: session.user_key || 'unknown',
-          sessionKey: session.session_key || 'unknown',
+          userKey: sessionContext.user_key || 'unknown',
+          sessionKey: sessionContext.session_key || 'unknown',
           turnNo: turn.turn_no,
           timestamp: turn.timestamp,
         });
@@ -277,6 +307,14 @@ export function analyzeUsageData(
       }))
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
     sessionTypes: namedCounts(sessionTypes),
+    segments: {
+      orgKeys: namedCounts(orgKeys),
+      orgTypes: namedCounts(orgTypes),
+      userRoles: namedCounts(userRoles),
+      deviceRoles: namedCounts(deviceRoles),
+      channelTypes: namedCounts(channelTypes),
+      workspaceKeys: namedCounts(workspaceKeys),
+    },
     questionSamples,
   };
 }
@@ -341,7 +379,7 @@ function addBucket(map: Map<string, ReviewUsageTimeBucket>, bucket: string, turn
 function recordTopic(
   topics: Map<UsageTopicId, MutableTopicUsage>,
   topic: UsageTopicId,
-  session: ReviewSession,
+  session: UsageSessionContext,
   hash: string,
 ): void {
   const existing = topics.get(topic) || {
@@ -372,6 +410,15 @@ function recordTool(tools: Map<string, MutableToolUsage>, name: string, session:
   existing.sessionIds.add(session.session_record_id);
   existing.userKeys.add(session.user_key || 'unknown');
   tools.set(name, existing);
+}
+
+function sessionContextFromTurn(sessionRecordId: string, turn?: ReviewTurn): UsageSessionContext {
+  return {
+    session_record_id: sessionRecordId,
+    user_key: turn?.user_key || 'unknown',
+    device_key: turn?.device_key || 'unknown',
+    session_key: turn?.session_key || sessionRecordId,
+  };
 }
 
 function finalizeUser(user: MutableUserUsage): ReviewUsageUserSummary {
@@ -472,6 +519,12 @@ function parseReviewDate(value?: string | null): Date | undefined {
 
 function incrementMap(map: Map<string, number>, key: string, amount: number): void {
   map.set(key, (map.get(key) || 0) + amount);
+}
+
+function incrementKnownMap(map: Map<string, number>, value?: string | null): void {
+  const key = String(value || '').trim();
+  if (!key) return;
+  incrementMap(map, key, 1);
 }
 
 function round(value: number): number {

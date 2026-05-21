@@ -18,6 +18,12 @@ skills/**/secrets.*
 data/
 logs/
 files/
+**/catsco-review-agent/runs/**/raw_review_data.server_redacted.local.json
+**/catsco-review-agent/runs/**/usage_metrics.json
+**/catsco-review-agent/runs/**/usage_report.md
+.catsco-review/**/raw_review_data.server_redacted.local.json
+.catsco-review/**/usage_metrics.json
+.catsco-review/**/usage_report.md
 
 # 临时文件
 *.tmp

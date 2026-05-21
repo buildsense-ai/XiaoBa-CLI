@@ -9,6 +9,7 @@ const DEFAULT_MAX_FAILURES = 100;
 const DEFAULT_MAX_SESSIONS = 30;
 const DEFAULT_MAX_ENTRIES_PER_SESSION = 200;
 const DEFAULT_MAX_TURNS_PER_SESSION = 80;
+const DEFAULT_MAX_TARGET_TURNS = 500;
 
 export interface CatscoReviewAgentConfig {
   enabled: boolean;
@@ -21,8 +22,21 @@ export interface CatscoReviewAgentConfig {
   maxSessions: number;
   maxEntriesPerSession: number;
   maxTurnsPerSession: number;
+  maxTargetTurns: number;
+  targetUserId?: string;
+  targetDeviceId?: string;
+  targetDeviceName?: string;
   targetUserKey?: string;
   targetDeviceKey?: string;
+  targetSessionId?: string;
+  targetSessionKey?: string;
+  targetSessionType?: string;
+  targetOrgKey?: string;
+  targetOrgType?: string;
+  targetUserRole?: string;
+  targetDeviceRole?: string;
+  targetChannelType?: string;
+  targetWorkspaceKey?: string;
   targetRepo?: string;
   prBaseBranch: string;
   gitRemote: string;
@@ -134,8 +148,21 @@ export function getCatscoReviewAgentConfig(
       DEFAULT_MAX_TURNS_PER_SESSION,
       1,
     ),
+    maxTargetTurns: readNumber(runtimeEnv, 'CATSCO_REVIEW_MAX_TARGET_TURNS', DEFAULT_MAX_TARGET_TURNS, 1),
+    targetUserId: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_USER_ID'),
+    targetDeviceId: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_DEVICE_ID'),
+    targetDeviceName: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_DEVICE_NAME'),
     targetUserKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_USER_KEY'),
     targetDeviceKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_DEVICE_KEY'),
+    targetSessionId: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_SESSION_ID'),
+    targetSessionKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_SESSION_KEY'),
+    targetSessionType: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_SESSION_TYPE'),
+    targetOrgKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_ORG_KEY'),
+    targetOrgType: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_ORG_TYPE'),
+    targetUserRole: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_USER_ROLE'),
+    targetDeviceRole: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_DEVICE_ROLE'),
+    targetChannelType: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_CHANNEL_TYPE'),
+    targetWorkspaceKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_WORKSPACE_KEY'),
     targetRepo: targetRepoRaw ? resolveFromWorkingDirectory(workingDirectory, targetRepoRaw, workingDirectory) : undefined,
     prBaseBranch: readEnv(runtimeEnv, 'CATSCO_REVIEW_PR_BASE_BRANCH') || 'main',
     gitRemote: readEnv(runtimeEnv, 'CATSCO_REVIEW_GIT_REMOTE') || 'origin',

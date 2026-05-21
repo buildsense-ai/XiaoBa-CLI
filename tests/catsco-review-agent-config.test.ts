@@ -20,8 +20,21 @@ describe('catsco review agent config', () => {
           'CATSCO_REVIEW_TARGET_REPO=.',
           'CATSCO_REVIEW_LOOKBACK_HOURS=12',
           'CATSCO_REVIEW_INTERVAL_MINUTES=30',
+          'CATSCO_REVIEW_MAX_TARGET_TURNS=123',
+          'CATSCO_REVIEW_TARGET_USER_ID=catsco_116',
+          'CATSCO_REVIEW_TARGET_DEVICE_ID=device-raw',
+          'CATSCO_REVIEW_TARGET_DEVICE_NAME=教务处电脑',
           'CATSCO_REVIEW_TARGET_USER_KEY=user-a',
           'CATSCO_REVIEW_TARGET_DEVICE_KEY=device-a',
+          'CATSCO_REVIEW_TARGET_SESSION_ID=session-raw',
+          'CATSCO_REVIEW_TARGET_SESSION_KEY=session-a',
+          'CATSCO_REVIEW_TARGET_SESSION_TYPE=chat',
+          'CATSCO_REVIEW_TARGET_ORG_KEY=school-a',
+          'CATSCO_REVIEW_TARGET_ORG_TYPE=school',
+          'CATSCO_REVIEW_TARGET_USER_ROLE=teacher',
+          'CATSCO_REVIEW_TARGET_DEVICE_ROLE=office',
+          'CATSCO_REVIEW_TARGET_CHANNEL_TYPE=desktop',
+          'CATSCO_REVIEW_TARGET_WORKSPACE_KEY=workspace-a',
           'CATSCO_REVIEW_CREATE_BRANCH=true',
           '',
         ].join('\n'),
@@ -33,8 +46,21 @@ describe('catsco review agent config', () => {
       assert.equal(config.reviewToken, 'review-token');
       assert.equal(config.lookbackHours, 12);
       assert.equal(config.intervalMinutes, 30);
+      assert.equal(config.maxTargetTurns, 123);
+      assert.equal(config.targetUserId, 'catsco_116');
+      assert.equal(config.targetDeviceId, 'device-raw');
+      assert.equal(config.targetDeviceName, '教务处电脑');
       assert.equal(config.targetUserKey, 'user-a');
       assert.equal(config.targetDeviceKey, 'device-a');
+      assert.equal(config.targetSessionId, 'session-raw');
+      assert.equal(config.targetSessionKey, 'session-a');
+      assert.equal(config.targetSessionType, 'chat');
+      assert.equal(config.targetOrgKey, 'school-a');
+      assert.equal(config.targetOrgType, 'school');
+      assert.equal(config.targetUserRole, 'teacher');
+      assert.equal(config.targetDeviceRole, 'office');
+      assert.equal(config.targetChannelType, 'desktop');
+      assert.equal(config.targetWorkspaceKey, 'workspace-a');
       assert.equal(config.createBranch, true);
       assert.equal(config.targetRepo, root);
       assert.doesNotThrow(() => validateCatscoReviewAgentConfig(config));

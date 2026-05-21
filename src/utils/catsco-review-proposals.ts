@@ -76,6 +76,9 @@ function renderUsageReport(runId: string, usage: ReviewUsageAnalysis): string {
     `- Uploaded to: \`${usage.window.uploadedTo || 'not set'}\``,
     `- Target user key: \`${usage.target.userKey || 'all'}\``,
     `- Target device key: \`${usage.target.deviceKey || 'all'}\``,
+    `- Org types: \`${namedUsageCounts(usage.segments?.orgTypes) || 'not set'}\``,
+    `- User roles: \`${namedUsageCounts(usage.segments?.userRoles) || 'not set'}\``,
+    `- Channels: \`${namedUsageCounts(usage.segments?.channelTypes) || 'not set'}\``,
     '',
     '## Frequency',
     '',
@@ -153,6 +156,10 @@ function renderUsageReport(runId: string, usage: ReviewUsageAnalysis): string {
   );
 
   return `${lines.join('\n')}\n`;
+}
+
+function namedUsageCounts(values?: Array<{ name: string; count: number }>): string {
+  return (values || []).slice(0, 10).map(item => `${item.name}:${item.count}`).join(', ');
 }
 
 function renderReviewReport(runId: string, reviewData: ReviewData, findings: ReviewFinding[]): string {

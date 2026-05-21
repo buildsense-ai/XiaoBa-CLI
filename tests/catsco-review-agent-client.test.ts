@@ -53,25 +53,58 @@ describe('catsco review agent client', () => {
     assert.equal(paths[1], '/catsco/review/sessions/session%2Fa%20b/turns');
   });
 
-  test('sends user and device filters for sessions', async () => {
-    let capturedUrl = '';
+  test('sends target filters for sessions and top-level turns', async () => {
+    const capturedUrls: string[] = [];
     globalThis.fetch = (async (input: any) => {
-      capturedUrl = String(input);
+      capturedUrls.push(String(input));
+      const url = new URL(String(input));
       return new Response(JSON.stringify({
         page: { limit: 10, offset: 0, count: 0 },
-        sessions: [],
+        sessions: url.pathname.endsWith('/sessions') ? [] : undefined,
+        turns: url.pathname.endsWith('/turns') ? [] : undefined,
       }), { status: 200 });
     }) as any;
 
     const client = new CatscoReviewAgentClient('https://logs.example.test:8000', 'review-token');
-    await client.sessions(10, '2026-05-20T00:00:00Z', 0, '2026-05-21T00:00:00Z', {
+    const filters = {
+      userId: 'catsco_116',
+      deviceId: 'device-raw',
+      deviceName: '教务处电脑',
       userKey: 'user-a',
       deviceKey: 'device-a',
-    });
+      sessionId: 'session-raw',
+      sessionKey: 'session-a',
+      sessionType: 'chat',
+      orgKey: 'school-a',
+      orgType: 'school',
+      userRole: 'teacher',
+      deviceRole: 'office',
+      channelType: 'desktop',
+      workspaceKey: 'workspace-a',
+    };
+    await client.sessions(10, '2026-05-20T00:00:00Z', 0, '2026-05-21T00:00:00Z', filters);
+    await client.reviewTurns(10, '2026-05-20T00:00:00Z', 0, '2026-05-21T00:00:00Z', filters);
 
-    const url = new URL(capturedUrl);
+    const url = new URL(capturedUrls[0]);
+    const turnsUrl = new URL(capturedUrls[1]);
+    assert.equal(url.pathname, '/catsco/review/sessions');
+    assert.equal(turnsUrl.pathname, '/catsco/review/turns');
+    assert.equal(url.searchParams.get('user_id'), 'catsco_116');
+    assert.equal(url.searchParams.get('device_id'), 'device-raw');
+    assert.equal(url.searchParams.get('device_name'), '教务处电脑');
     assert.equal(url.searchParams.get('user_key'), 'user-a');
     assert.equal(url.searchParams.get('device_key'), 'device-a');
+    assert.equal(url.searchParams.get('session_id'), 'session-raw');
+    assert.equal(url.searchParams.get('session_key'), 'session-a');
+    assert.equal(url.searchParams.get('session_type'), 'chat');
+    assert.equal(url.searchParams.get('org_key'), 'school-a');
+    assert.equal(url.searchParams.get('org_type'), 'school');
+    assert.equal(url.searchParams.get('user_role'), 'teacher');
+    assert.equal(url.searchParams.get('device_role'), 'office');
+    assert.equal(url.searchParams.get('channel_type'), 'desktop');
+    assert.equal(url.searchParams.get('workspace_key'), 'workspace-a');
+    assert.equal(turnsUrl.searchParams.get('user_id'), 'catsco_116');
+    assert.equal(turnsUrl.searchParams.get('workspace_key'), 'workspace-a');
   });
 
   test('surfaces API error detail without leaking token', async () => {
@@ -90,6 +123,33 @@ describe('catsco review agent client', () => {
         return true;
       },
     );
+  });
+
+  test('strips raw identifier fields from Review API responses', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      page: { limit: 10, offset: 0, count: 1 },
+      turns: [{
+        session_record_id: 'session-record',
+        turn_record_id: 'turn-1',
+        turn_no: 1,
+        user_id: 'catsco_116',
+        device_id: 'device-raw',
+        device_name: '教务处电脑',
+        session_id: 'session-raw',
+        user_key: 'user-key',
+        nested: { user_id: 'catsco_117' },
+      }],
+    }), { status: 200 })) as any;
+
+    const client = new CatscoReviewAgentClient('https://logs.example.test:8000', 'review-token');
+    const response = await client.reviewTurns(10);
+    const turn = response.turns[0] as any;
+    assert.equal(turn.user_id, undefined);
+    assert.equal(turn.device_id, undefined);
+    assert.equal(turn.device_name, undefined);
+    assert.equal(turn.session_id, undefined);
+    assert.equal(turn.nested.user_id, undefined);
+    assert.equal(turn.user_key, 'user-key');
   });
 
   test('rejects successful non-json responses', async () => {

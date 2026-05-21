@@ -23,10 +23,14 @@ describe('review_logs_query tool', () => {
       ].join('\n'), 'utf-8');
 
       let summaryCalled = false;
+      let promptText = '';
+      const capturedParams: Record<string, string | null> = {};
       globalThis.fetch = (async (input: any) => {
         const url = new URL(String(input));
         if (url.pathname === '/catsco/review/summary') {
           summaryCalled = true;
+          capturedParams.summaryUserId = url.searchParams.get('user_id');
+          capturedParams.summaryOrgType = url.searchParams.get('org_type');
           return jsonResponse({
             upload_count: 1,
             parsed_upload_count: 1,
@@ -44,9 +48,31 @@ describe('review_logs_query tool', () => {
           return jsonResponse({ page: { limit: 100, offset: 0, count: 0, has_more: false }, failures: [] });
         }
         if (url.pathname === '/catsco/review/sessions') {
+          capturedParams.sessionsUserId = url.searchParams.get('user_id');
+          capturedParams.sessionsOrgType = url.searchParams.get('org_type');
           return jsonResponse({
             page: { limit: 100, offset: 0, count: 1, has_more: false },
             sessions: [sessionFixture()],
+          });
+        }
+        if (url.pathname === '/catsco/review/turns') {
+          capturedParams.turnsUserId = url.searchParams.get('user_id');
+          capturedParams.turnsOrgType = url.searchParams.get('org_type');
+          return jsonResponse({
+            page: { limit: 100, offset: 0, count: 1, has_more: false },
+            turns: [{
+              session_record_id: 'session-1',
+              turn_record_id: 'turn-1',
+              turn_no: 1,
+              user_key: 'teacher-key',
+              device_key: 'device-key',
+              session_key: 'session-key',
+              org_type: 'school',
+              user_role: 'teacher',
+              channel_type: 'desktop',
+              user_text: '老师问奖学金名单怎么整理 user_id=catsco_116',
+              assistant_text: '可以按公示格式整理。',
+            }],
           });
         }
         if (url.pathname.endsWith('/entries')) {
@@ -69,17 +95,23 @@ describe('review_logs_query tool', () => {
       const tool = new ReviewLogsQueryTool();
       const result = await tool.execute({
         question: '老师主要问了什么？',
+        user_id: 'catsco_116',
+        org_type: 'school',
         max_evidence_items: 5,
+        max_target_turns: 100,
       }, {
         workingDirectory: root,
         conversationHistory: [],
         runtimeServices: {
           aiService: {
-            chat: async (messages: any[]) => ({
-              content: messages.map(message => String(message.content)).join('\n').includes('奖学金名单')
+            chat: async (messages: any[]) => {
+              promptText = messages.map(message => String(message.content)).join('\n');
+              return ({
+              content: promptText.includes('奖学金名单')
                 ? '基于日志：老师询问奖学金名单整理。'
                 : '没有证据',
-            }),
+              });
+            },
           },
           skillManager: {} as any,
         },
@@ -88,6 +120,13 @@ describe('review_logs_query tool', () => {
       assert.equal(result.ok, true);
       assert.match(String(result.content), /奖学金名单/);
       assert.equal(summaryCalled, true);
+      assert.equal(capturedParams.summaryUserId, 'catsco_116');
+      assert.equal(capturedParams.sessionsUserId, 'catsco_116');
+      assert.equal(capturedParams.turnsUserId, 'catsco_116');
+      assert.equal(capturedParams.summaryOrgType, 'school');
+      assert.equal(capturedParams.sessionsOrgType, 'school');
+      assert.equal(capturedParams.turnsOrgType, 'school');
+      assert.doesNotMatch(promptText, /catsco_116/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

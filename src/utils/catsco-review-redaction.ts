@@ -3,6 +3,8 @@ export function redactReviewText(value: unknown, maxLength?: number): string {
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
     .replace(/catslog_(?:tok|review)_[A-Za-z0-9._~+/=-]+/gi, 'catslog_[REDACTED]')
     .replace(/sk-[A-Za-z0-9]{12,}/g, 'sk-[REDACTED]')
+    .replace(/\bcatsco_\d+\b/gi, '[USER_ID_REDACTED]')
+    .replace(/(["']?(?:user_id|device_id|device_name|session_id)["']?\s*[:=]\s*)(["'])?[^"',}\]\r\n]+(["'])?/gi, '$1[RAW_ID_REDACTED]')
     .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[EMAIL_REDACTED]')
     .replace(/\b1[3-9]\d{9}\b/g, '[PHONE_REDACTED]')
     .replace(/\b\d{17}[\dXx]\b/g, '[ID_REDACTED]')
