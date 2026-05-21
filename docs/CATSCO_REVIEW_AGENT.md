@@ -51,6 +51,8 @@ CATSCO_REVIEW_MAX_FAILURES=100
 CATSCO_REVIEW_MAX_SESSIONS=30
 CATSCO_REVIEW_MAX_ENTRIES_PER_SESSION=200
 CATSCO_REVIEW_MAX_TURNS_PER_SESSION=80
+CATSCO_REVIEW_TARGET_USER_KEY=
+CATSCO_REVIEW_TARGET_DEVICE_KEY=
 CATSCO_REVIEW_TARGET_REPO=C:\Catsco\XiaoBa-CLI
 CATSCO_REVIEW_PR_BASE_BRANCH=main
 CATSCO_REVIEW_GIT_REMOTE=myfork
@@ -73,6 +75,13 @@ Generate local proposal files only:
 
 ```bash
 catsco review run-once
+```
+
+Generate local proposal and usage files for one redacted user/device:
+
+```bash
+catsco review run-once --user-key <review-user-key>
+catsco review run-once --device-key <review-device-key>
 ```
 
 Run periodically on the cloud computer in proposal-only mode:
@@ -109,6 +118,8 @@ prompt_suggestions.md
 skill_suggestions.md
 code_suggestions.md
 eval_cases.jsonl
+usage_report.md
+usage_metrics.json
 raw_review_data.server_redacted.local.json
 ```
 
@@ -118,7 +129,7 @@ When Git mode is enabled, those files are copied to:
 .catsco-review/proposals/<run_id>/
 ```
 
-Git/PR mode copies only `report.md`, `findings.json`, `prompt_suggestions.md`, `skill_suggestions.md`, `code_suggestions.md`, and `eval_cases.jsonl`. `raw_review_data.server_redacted.local.json` stays local and must not be committed.
+Git/PR mode copies only `report.md`, `findings.json`, `prompt_suggestions.md`, `skill_suggestions.md`, `code_suggestions.md`, and `eval_cases.jsonl`. `usage_report.md`, `usage_metrics.json`, and `raw_review_data.server_redacted.local.json` stay local and must not be committed.
 
 Public proposal files contain pattern summaries and synthetic eval inputs. Detailed server-redacted review data remains local for manual inspection.
 
@@ -129,7 +140,7 @@ Public proposal files contain pattern summaries and synthetic eval inputs. Detai
 - It does not modify production prompt or skill files by default.
 - PR mode commits proposal artifacts only.
 - Scheduled daemon mode never creates branches, commits, pushes, or PRs.
-- Raw review data is kept out of Git/PR output.
+- Raw review data and user-level usage reports are kept out of Git/PR output.
 - API client calls use bounded response sizes, timeouts, and retry only transient 429/5xx failures.
 - Release remains a separate human-approved step.
 
@@ -144,3 +155,12 @@ The Review Agent treats large log volume as a signal extraction problem:
 5. Route each pattern to a proposal lane: prompt, skill, tool/code, config, reliability, observability, or eval.
 6. Generate public proposals with summarized evidence and synthetic eval cases.
 7. Keep raw server-redacted data local for the human reviewer.
+
+## Usage Analysis
+
+Each run also writes local-only usage outputs:
+
+- `usage_report.md`: frequency, main usage topics, tool usage, and time distribution.
+- `usage_metrics.json`: structured metrics for local inspection or downstream dashboards.
+
+Usage reports intentionally do not include raw teacher questions or assistant answers. They use topic labels and hashed question references. To analyze a specific teacher, use the redacted `user_key` or `device_key` from Review API output and keep any real-name mapping outside Git.

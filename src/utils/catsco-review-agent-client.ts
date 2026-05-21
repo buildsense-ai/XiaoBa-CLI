@@ -89,6 +89,11 @@ export interface ReviewData {
   sessionTurns: Record<string, ReviewTurn[]>;
 }
 
+export interface ReviewSessionFilters {
+  userKey?: string;
+  deviceKey?: string;
+}
+
 export interface CatscoReviewAgentClientOptions {
   timeoutMs?: number;
   maxRetries?: number;
@@ -132,8 +137,16 @@ export class CatscoReviewAgentClient {
     uploadedFrom?: string,
     offset: number = 0,
     uploadedTo?: string,
+    filters: ReviewSessionFilters = {},
   ): Promise<{ page: ReviewPage; sessions: ReviewSession[] }> {
-    return this.get('/catsco/review/sessions', { limit, offset, uploaded_from: uploadedFrom, uploaded_to: uploadedTo });
+    return this.get('/catsco/review/sessions', {
+      limit,
+      offset,
+      uploaded_from: uploadedFrom,
+      uploaded_to: uploadedTo,
+      user_key: filters.userKey,
+      device_key: filters.deviceKey,
+    });
   }
 
   async entries(

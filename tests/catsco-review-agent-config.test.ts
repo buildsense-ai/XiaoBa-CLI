@@ -20,6 +20,8 @@ describe('catsco review agent config', () => {
           'CATSCO_REVIEW_TARGET_REPO=.',
           'CATSCO_REVIEW_LOOKBACK_HOURS=12',
           'CATSCO_REVIEW_INTERVAL_MINUTES=30',
+          'CATSCO_REVIEW_TARGET_USER_KEY=user-a',
+          'CATSCO_REVIEW_TARGET_DEVICE_KEY=device-a',
           'CATSCO_REVIEW_CREATE_BRANCH=true',
           '',
         ].join('\n'),
@@ -31,6 +33,8 @@ describe('catsco review agent config', () => {
       assert.equal(config.reviewToken, 'review-token');
       assert.equal(config.lookbackHours, 12);
       assert.equal(config.intervalMinutes, 30);
+      assert.equal(config.targetUserKey, 'user-a');
+      assert.equal(config.targetDeviceKey, 'device-a');
       assert.equal(config.createBranch, true);
       assert.equal(config.targetRepo, root);
       assert.doesNotThrow(() => validateCatscoReviewAgentConfig(config));

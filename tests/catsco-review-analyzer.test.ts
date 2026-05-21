@@ -130,7 +130,8 @@ describe('catsco review analyzer', () => {
     assert.equal(findings.length, 1);
     assert.equal(findings[0].count, 2);
     assert.deepEqual(findings[0].affectedSessions, ['session-1', 'session-2']);
-    assert.match(findings[0].patternKey || '', /<num>/);
+    assert.match(findings[0].patternKey || '', /^sig_[0-9a-f]{12}$/);
+    assert.doesNotMatch(findings[0].title, /request/);
     assert.equal(findings[0].proposalType, 'tool');
     assert.ok((findings[0].impactScore || 0) > findings[0].count);
   });

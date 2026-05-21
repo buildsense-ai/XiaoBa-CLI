@@ -26,6 +26,8 @@ export function registerReviewCommand(program: Command): void {
     .option('--cwd <path>', 'Working directory for .env lookup', process.cwd())
     .option('--lookback-hours <hours>', 'Review window in hours')
     .option('--output-dir <path>', 'Proposal output directory')
+    .option('--user-key <key>', 'Limit usage analysis to one redacted Review API user_key')
+    .option('--device-key <key>', 'Limit usage analysis to one redacted Review API device_key')
     .option('--target-repo <path>', 'Git repo where proposal files should be copied')
     .option('--create-branch', 'Create a review-agent/proposals-* branch')
     .option('--commit', 'Commit proposal files in the target repo')
@@ -41,6 +43,8 @@ export function registerReviewCommand(program: Command): void {
     .option('--interval-minutes <minutes>', 'Run interval in minutes')
     .option('--lookback-hours <hours>', 'Review window in hours')
     .option('--output-dir <path>', 'Proposal output directory')
+    .option('--user-key <key>', 'Limit usage analysis to one redacted Review API user_key')
+    .option('--device-key <key>', 'Limit usage analysis to one redacted Review API device_key')
     .action(async (options) => {
       await reviewDaemonCommand(options);
     });
@@ -63,6 +67,8 @@ async function reviewRunOnceCommand(options: {
   cwd: string;
   lookbackHours?: string;
   outputDir?: string;
+  userKey?: string;
+  deviceKey?: string;
   targetRepo?: string;
   createBranch?: boolean;
   commit?: boolean;
@@ -73,6 +79,8 @@ async function reviewRunOnceCommand(options: {
     const result = await runCatscoReviewAgent(config, {
       lookbackHours: parsePositiveInteger(options.lookbackHours),
       outputDir: options.outputDir,
+      targetUserKey: options.userKey,
+      targetDeviceKey: options.deviceKey,
       targetRepo: options.targetRepo,
       createBranch: options.createBranch,
       commitChanges: options.commit,
@@ -81,6 +89,7 @@ async function reviewRunOnceCommand(options: {
 
     Logger.success(`Review Agent run complete: ${result.runId}`);
     Logger.info(`Proposal directory: ${result.proposalBundle.runDir}`);
+    Logger.info(`Usage report: ${result.proposalBundle.files.usageReport}`);
     Logger.info(`Findings: ${result.findings.length}`);
     for (const finding of result.findings.slice(0, 5)) {
       Logger.info(`- [${finding.severity}] ${finding.title} (${finding.count})`);
@@ -104,6 +113,8 @@ async function reviewDaemonCommand(options: {
   intervalMinutes?: string;
   lookbackHours?: string;
   outputDir?: string;
+  userKey?: string;
+  deviceKey?: string;
 }): Promise<void> {
   const config = getCatscoReviewAgentConfig(options.cwd);
   try {
@@ -134,12 +145,15 @@ async function reviewDaemonCommand(options: {
       const result = await runCatscoReviewAgent(config, {
         lookbackHours: parsePositiveInteger(options.lookbackHours),
         outputDir: options.outputDir,
+        targetUserKey: options.userKey,
+        targetDeviceKey: options.deviceKey,
         createBranch: false,
         commitChanges: false,
         createGithubPr: false,
       });
       Logger.success(`Review Agent scheduled run complete: ${result.runId}`);
       Logger.info(`Proposal directory: ${result.proposalBundle.runDir}`);
+      Logger.info(`Usage report: ${result.proposalBundle.files.usageReport}`);
       Logger.info(`Findings: ${result.findings.length}`);
     } catch (error: any) {
       Logger.error(`Review Agent scheduled run failed: ${error.message}`);

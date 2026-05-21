@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import type { ReviewData, ReviewEntry, ReviewFailure, ReviewSession, ReviewTurn } from './catsco-review-agent-client';
 
 export type ReviewFindingCategory =
@@ -302,11 +303,8 @@ function signatureForText(text: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 
-  return normalized
-    .split(' ')
-    .filter(Boolean)
-    .slice(0, 14)
-    .join('-') || 'unknown';
+  if (!normalized) return 'sig_unknown';
+  return `sig_${createHash('sha256').update(normalized).digest('hex').slice(0, 12)}`;
 }
 
 function impactScoreForDraft(draft: FindingDraft): number {

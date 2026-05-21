@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ReviewData } from './catsco-review-agent-client';
 import type { ReviewFinding, ReviewFindingCategory } from './catsco-review-analyzer';
+import type { ReviewUsageAnalysis } from './catsco-review-usage-analyzer';
 
 export interface ReviewProposalBundle {
   runDir: string;
@@ -12,6 +13,8 @@ export interface ReviewProposalBundle {
     skillSuggestions: string;
     codeSuggestions: string;
     evalCases: string;
+    usageReport: string;
+    usageMetrics: string;
     rawReviewData: string;
   };
 }
@@ -29,6 +32,7 @@ export function writeReviewProposalBundle(input: {
   runId: string;
   reviewData: ReviewData;
   findings: ReviewFinding[];
+  usageAnalysis: ReviewUsageAnalysis;
 }): ReviewProposalBundle {
   const runDir = path.join(input.outputDir, input.runId);
   fs.mkdirSync(runDir, { recursive: true });
@@ -40,6 +44,8 @@ export function writeReviewProposalBundle(input: {
     skillSuggestions: path.join(runDir, 'skill_suggestions.md'),
     codeSuggestions: path.join(runDir, 'code_suggestions.md'),
     evalCases: path.join(runDir, 'eval_cases.jsonl'),
+    usageReport: path.join(runDir, 'usage_report.md'),
+    usageMetrics: path.join(runDir, 'usage_metrics.json'),
     rawReviewData: path.join(runDir, 'raw_review_data.server_redacted.local.json'),
   };
 
@@ -50,9 +56,102 @@ export function writeReviewProposalBundle(input: {
   fs.writeFileSync(files.skillSuggestions, renderSkillSuggestions(publicFindings), 'utf-8');
   fs.writeFileSync(files.codeSuggestions, renderCodeSuggestions(publicFindings), 'utf-8');
   fs.writeFileSync(files.evalCases, renderEvalCases(publicFindings), 'utf-8');
+  fs.writeFileSync(files.usageReport, renderUsageReport(input.runId, input.usageAnalysis), 'utf-8');
+  fs.writeFileSync(files.usageMetrics, `${JSON.stringify(input.usageAnalysis, null, 2)}\n`, 'utf-8');
   fs.writeFileSync(files.rawReviewData, `${JSON.stringify(input.reviewData, null, 2)}\n`, 'utf-8');
 
   return { runDir, files };
+}
+
+function renderUsageReport(runId: string, usage: ReviewUsageAnalysis): string {
+  const lines = [
+    `# CatsCo Usage Report ${runId}`,
+    '',
+    'This report summarizes redacted, structured Review API data. It intentionally uses topic labels and hashed question references instead of raw teacher or student text.',
+    '',
+    '## Scope',
+    '',
+    `- Uploaded from: \`${usage.window.uploadedFrom || 'not set'}\``,
+    `- Uploaded to: \`${usage.window.uploadedTo || 'not set'}\``,
+    `- Target user key: \`${usage.target.userKey || 'all'}\``,
+    `- Target device key: \`${usage.target.deviceKey || 'all'}\``,
+    '',
+    '## Frequency',
+    '',
+    `- Users: \`${usage.totals.userCount}\``,
+    `- Devices: \`${usage.totals.deviceCount}\``,
+    `- Sessions: \`${usage.totals.sessionCount}\``,
+    `- Active days: \`${usage.totals.activeDays}\``,
+    `- Turns: \`${usage.totals.turnCount}\``,
+    `- Loaded turns for topic analysis: \`${usage.totals.loadedTurnCount}\``,
+    `- Average turns per session: \`${usage.totals.averageTurnsPerSession}\``,
+    `- Tool calls: \`${usage.totals.toolCallCount}\``,
+    '',
+    '## Main Uses',
+    '',
+  ];
+
+  if (usage.topics.length === 0) {
+    lines.push('No user question topics were available in the reviewed window.', '');
+  } else {
+    for (const topic of usage.topics.slice(0, 10)) {
+      lines.push(`- ${topic.label}: \`${topic.count}\` question(s), \`${topic.sessionCount}\` session(s)`);
+    }
+    lines.push('');
+  }
+
+  lines.push('## Top Users', '');
+  if (usage.users.length === 0) {
+    lines.push('No user-level usage was available.', '');
+  } else {
+    for (const user of usage.users.slice(0, 10)) {
+      const topTopics = user.topTopics.slice(0, 3).map(item => `${item.name}=${item.count}`).join(', ') || 'none';
+      lines.push(
+        `- \`${user.userKey}\`: sessions=\`${user.sessionCount}\`, turns=\`${user.turnCount}\`, `
+        + `active_days=\`${user.activeDays}\`, top_topics=\`${topTopics}\``,
+      );
+    }
+    lines.push('');
+  }
+
+  lines.push('## Tool Usage', '');
+  if (usage.toolUsage.length === 0) {
+    lines.push('No tool usage was captured in the reviewed window.', '');
+  } else {
+    for (const tool of usage.toolUsage.slice(0, 10)) {
+      lines.push(`- \`${tool.name}\`: \`${tool.count}\` call(s), \`${tool.sessionCount}\` session(s)`);
+    }
+    lines.push('');
+  }
+
+  lines.push('## Time Distribution', '', '### By Day', '');
+  if (usage.timeBuckets.byDay.length === 0) {
+    lines.push('- No timestamped sessions were available.');
+  } else {
+    for (const bucket of usage.timeBuckets.byDay.slice(-14)) {
+      lines.push(`- \`${bucket.bucket}\`: sessions=\`${bucket.sessionCount}\`, turns=\`${bucket.turnCount}\``);
+    }
+  }
+  lines.push('', '### By Hour UTC', '');
+  if (usage.timeBuckets.byHour.length === 0) {
+    lines.push('- No timestamped sessions were available.');
+  } else {
+    for (const bucket of usage.timeBuckets.byHour) {
+      lines.push(`- \`${bucket.bucket}:00\`: sessions=\`${bucket.sessionCount}\`, turns=\`${bucket.turnCount}\``);
+    }
+  }
+
+  lines.push(
+    '',
+    '## Privacy Notes',
+    '',
+    '- This report does not include raw teacher questions or assistant answers.',
+    '- `questionHash` values in `usage_metrics.json` are for grouping only and should not be treated as content.',
+    '- For a named teacher report, configure a target `user_key` or `device_key` and keep the mapping outside Git.',
+    '',
+  );
+
+  return `${lines.join('\n')}\n`;
 }
 
 function renderReviewReport(runId: string, reviewData: ReviewData, findings: ReviewFinding[]): string {

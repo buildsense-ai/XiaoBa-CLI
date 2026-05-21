@@ -226,4 +226,68 @@ describe('catsco review runner', () => {
     assert.equal(data.failures.length, 200);
     assert.deepEqual(failureOffsets, [0]);
   });
+
+  test('passes target user/device filters to sessions and filters failures to matched sessions', async () => {
+    let capturedFilters: any;
+    const data = await fetchReviewData({
+      summary: async () => ({
+        upload_count: 10,
+        parsed_upload_count: 10,
+        failed_upload_count: 0,
+        session_count: 10,
+        turn_count: 0,
+        ai_call_count: 0,
+        tool_call_count: 0,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+      }),
+      failures: async () => ({
+        page: { limit: 10, offset: 0, count: 2, has_more: false },
+        failures: [
+          { failure_type: 'log_entry', upload_id: 'u1', session_record_id: 'session-1', event_category: 'runtime', message: 'error one' },
+          { failure_type: 'log_entry', upload_id: 'u2', session_record_id: 'session-2', event_category: 'runtime', message: 'error two' },
+        ],
+      }),
+      sessions: async (_limit: number, _uploadedFrom: string, _offset: number, _uploadedTo?: string, filters?: any) => {
+        capturedFilters = filters;
+        return {
+          page: { limit: 10, offset: 0, count: 1, has_more: false },
+          sessions: [{
+            session_record_id: 'session-1',
+            upload_id: 'u1',
+            user_key: 'teacher-key',
+            device_key: 'device-key',
+            session_key: 'session-key',
+            session_type: 'chat',
+            entry_count: 0,
+            runtime_count: 0,
+            turn_count: 0,
+            ai_call_count: 0,
+            tool_call_count: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            summary_status: 'ready',
+            created_at: '2026-05-20 00:00:00',
+          }],
+        };
+      },
+      entries: async () => ({ page: { limit: 10, offset: 0, count: 0 }, entries: [] }),
+      turns: async () => ({ page: { limit: 10, offset: 0, count: 0 }, turns: [] }),
+    } as any, {
+      uploadedFrom: '2026-05-20T00:00:00Z',
+      maxFailures: 10,
+      maxSessions: 10,
+      maxEntriesPerSession: 10,
+      maxTurnsPerSession: 10,
+      targetUserKey: 'teacher-key',
+      targetDeviceKey: 'device-key',
+    });
+
+    assert.deepEqual(capturedFilters, { userKey: 'teacher-key', deviceKey: 'device-key' });
+    assert.equal(data.failures.length, 1);
+    assert.equal(data.failures[0].session_record_id, 'session-1');
+    assert.equal(data.summary.session_count, 1);
+  });
 });

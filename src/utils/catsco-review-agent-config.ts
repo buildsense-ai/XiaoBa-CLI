@@ -21,6 +21,8 @@ export interface CatscoReviewAgentConfig {
   maxSessions: number;
   maxEntriesPerSession: number;
   maxTurnsPerSession: number;
+  targetUserKey?: string;
+  targetDeviceKey?: string;
   targetRepo?: string;
   prBaseBranch: string;
   gitRemote: string;
@@ -133,6 +135,8 @@ export function getCatscoReviewAgentConfig(
       DEFAULT_MAX_TURNS_PER_SESSION,
       1,
     ),
+    targetUserKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_USER_KEY'),
+    targetDeviceKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_DEVICE_KEY'),
     targetRepo: targetRepoRaw ? resolveFromWorkingDirectory(workingDirectory, targetRepoRaw, workingDirectory) : undefined,
     prBaseBranch: readEnv(runtimeEnv, 'CATSCO_REVIEW_PR_BASE_BRANCH') || 'main',
     gitRemote: readEnv(runtimeEnv, 'CATSCO_REVIEW_GIT_REMOTE') || 'origin',

@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { writeReviewProposalBundle } from '../src/utils/catsco-review-proposals';
+import { analyzeUsageData } from '../src/utils/catsco-review-usage-analyzer';
 import type { ReviewData } from '../src/utils/catsco-review-agent-client';
 import type { ReviewFinding } from '../src/utils/catsco-review-analyzer';
 
@@ -25,9 +26,35 @@ describe('catsco review proposals', () => {
           total_tokens: 2,
         },
         failures: [],
-        sessions: [],
+        sessions: [{
+          session_record_id: 'session-1',
+          upload_id: 'upload-1',
+          user_key: 'teacher-key',
+          device_key: 'device-key',
+          session_key: 'session-key',
+          session_type: 'chat',
+          started_at: '2026-05-20 00:00:00',
+          entry_count: 0,
+          runtime_count: 0,
+          turn_count: 1,
+          ai_call_count: 1,
+          tool_call_count: 0,
+          prompt_tokens: 1,
+          completion_tokens: 1,
+          total_tokens: 2,
+          summary_status: 'ready',
+          created_at: '2026-05-20 00:00:00',
+        }],
         sessionEntries: {},
-        sessionTurns: {},
+        sessionTurns: {
+          'session-1': [{
+            turn_record_id: 'turn-1',
+            turn_no: 1,
+            timestamp: '2026-05-20 00:00:00',
+            user_text: '帮我统计张三同学的成绩，手机号 13812345678',
+            assistant_text: '可以',
+          }],
+        },
       };
       const findings: ReviewFinding[] = [
         {
@@ -46,6 +73,7 @@ describe('catsco review proposals', () => {
         runId: '20260520-120000',
         reviewData,
         findings,
+        usageAnalysis: analyzeUsageData(reviewData, { targetUserKey: 'teacher-key' }),
       });
 
       assert.equal(path.basename(bundle.runDir), '20260520-120000');
@@ -55,10 +83,14 @@ describe('catsco review proposals', () => {
       assert.ok(fs.existsSync(bundle.files.skillSuggestions));
       assert.ok(fs.existsSync(bundle.files.codeSuggestions));
       assert.ok(fs.existsSync(bundle.files.evalCases));
+      assert.ok(fs.existsSync(bundle.files.usageReport));
+      assert.ok(fs.existsSync(bundle.files.usageMetrics));
       assert.equal(path.basename(bundle.files.rawReviewData), 'raw_review_data.server_redacted.local.json');
       assert.match(fs.readFileSync(bundle.files.skillSuggestions, 'utf-8'), /Candidate skill work/);
       assert.doesNotMatch(fs.readFileSync(bundle.files.findings, 'utf-8'), /unknown tool: report_builder/);
       assert.doesNotMatch(fs.readFileSync(bundle.files.evalCases, 'utf-8'), /unknown tool: report_builder/);
+      assert.doesNotMatch(fs.readFileSync(bundle.files.usageReport, 'utf-8'), /张三|13812345678/);
+      assert.doesNotMatch(fs.readFileSync(bundle.files.usageMetrics, 'utf-8'), /张三|13812345678/);
       assert.match(fs.readFileSync(bundle.files.rawReviewData, 'utf-8'), /"summary"/);
       assert.equal(fs.existsSync(path.join(root, 'prompts')), false);
       assert.equal(fs.existsSync(path.join(root, 'skills')), false);

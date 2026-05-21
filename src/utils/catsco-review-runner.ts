@@ -4,6 +4,7 @@ import { CatscoReviewAgentClient, ReviewData, ReviewPage } from './catsco-review
 import { CatscoReviewAgentConfig, validateCatscoReviewAgentConfig } from './catsco-review-agent-config';
 import { runReviewGitWorkflow, ReviewGitResult } from './catsco-review-gitops';
 import { makeReviewRunId, ReviewProposalBundle, writeReviewProposalBundle } from './catsco-review-proposals';
+import { analyzeUsageData, ReviewUsageAnalysis } from './catsco-review-usage-analyzer';
 
 const REVIEW_GIT_PROPOSAL_FILES = [
   'report.md',
@@ -28,6 +29,8 @@ export interface ReviewRunOptions {
   createBranch?: boolean;
   commitChanges?: boolean;
   createGithubPr?: boolean;
+  targetUserKey?: string;
+  targetDeviceKey?: string;
 }
 
 export interface ReviewRunResult {
@@ -36,6 +39,7 @@ export interface ReviewRunResult {
   uploadedTo: string;
   reviewData: ReviewData;
   findings: ReviewFinding[];
+  usageAnalysis: ReviewUsageAnalysis;
   proposalBundle: ReviewProposalBundle;
   git?: ReviewGitResult;
 }
@@ -55,6 +59,8 @@ export async function runCatscoReviewAgent(
   const runId = makeReviewRunId();
   const outputDir = options.outputDir || config.outputDir;
   const client = new CatscoReviewAgentClient(config.apiBaseUrl, config.reviewToken || '');
+  const targetUserKey = options.targetUserKey || config.targetUserKey;
+  const targetDeviceKey = options.targetDeviceKey || config.targetDeviceKey;
 
   const reviewData = await fetchReviewData(client, {
     uploadedFrom,
@@ -63,13 +69,17 @@ export async function runCatscoReviewAgent(
     maxSessions: config.maxSessions,
     maxEntriesPerSession: config.maxEntriesPerSession,
     maxTurnsPerSession: config.maxTurnsPerSession,
+    targetUserKey,
+    targetDeviceKey,
   });
   const findings = analyzeReviewData(reviewData);
+  const usageAnalysis = analyzeUsageData(reviewData, { targetUserKey, targetDeviceKey });
   const proposalBundle = writeReviewProposalBundle({
     outputDir,
     runId,
     reviewData,
     findings,
+    usageAnalysis,
   });
 
   const targetRepo = options.targetRepo || config.targetRepo;
@@ -98,6 +108,7 @@ export async function runCatscoReviewAgent(
     uploadedTo,
     reviewData,
     findings,
+    usageAnalysis,
     proposalBundle,
     git,
   };
@@ -112,9 +123,11 @@ export async function fetchReviewData(
     maxSessions: number;
     maxEntriesPerSession: number;
     maxTurnsPerSession: number;
+    targetUserKey?: string;
+    targetDeviceKey?: string;
   },
 ): Promise<ReviewData> {
-  const [summary, failures, sessions] = await Promise.all([
+  const [apiSummary, rawFailures, sessions] = await Promise.all([
     client.summary(options.uploadedFrom, options.uploadedTo),
     fetchPagedReviewItems(
       options.maxFailures,
@@ -126,11 +139,23 @@ export async function fetchReviewData(
     fetchPagedReviewItems(
       options.maxSessions,
       PAGE_LIMITS.sessions,
-      (limit, offset) => client.sessions(limit, options.uploadedFrom, offset, options.uploadedTo),
+      (limit, offset) => client.sessions(limit, options.uploadedFrom, offset, options.uploadedTo, {
+        userKey: options.targetUserKey,
+        deviceKey: options.targetDeviceKey,
+      }),
       response => response.sessions,
       item => item.session_record_id,
     ),
   ]);
+
+  const sessionIds = new Set(sessions.map(session => session.session_record_id));
+  const hasTargetFilter = Boolean(options.targetUserKey || options.targetDeviceKey);
+  const failures = hasTargetFilter
+    ? rawFailures.filter(failure => failure.session_record_id && sessionIds.has(failure.session_record_id))
+    : rawFailures;
+  const summary = hasTargetFilter
+    ? summarizeFilteredReviewData(apiSummary, sessions, failures, options.uploadedFrom, options.uploadedTo)
+    : apiSummary;
 
   const sessionEntries: ReviewData['sessionEntries'] = {};
   const sessionTurns: ReviewData['sessionTurns'] = {};
@@ -178,6 +203,32 @@ export async function fetchReviewData(
     sessions,
     sessionEntries,
     sessionTurns,
+  };
+}
+
+function summarizeFilteredReviewData(
+  baseSummary: ReviewData['summary'],
+  sessions: ReviewData['sessions'],
+  failures: ReviewData['failures'],
+  uploadedFrom: string,
+  uploadedTo?: string,
+): ReviewData['summary'] {
+  const uploadIds = new Set<string>();
+  for (const session of sessions) uploadIds.add(session.upload_id);
+  for (const failure of failures) uploadIds.add(failure.upload_id);
+  return {
+    uploaded_from: baseSummary.uploaded_from || uploadedFrom,
+    uploaded_to: baseSummary.uploaded_to || uploadedTo,
+    upload_count: uploadIds.size,
+    parsed_upload_count: new Set(sessions.map(session => session.upload_id)).size,
+    failed_upload_count: new Set(failures.filter(failure => failure.failure_type === 'parse_failure').map(failure => failure.upload_id)).size,
+    session_count: sessions.length,
+    turn_count: sessions.reduce((sum, session) => sum + Number(session.turn_count || 0), 0),
+    ai_call_count: sessions.reduce((sum, session) => sum + Number(session.ai_call_count || 0), 0),
+    tool_call_count: sessions.reduce((sum, session) => sum + Number(session.tool_call_count || 0), 0),
+    prompt_tokens: sessions.reduce((sum, session) => sum + Number(session.prompt_tokens || 0), 0),
+    completion_tokens: sessions.reduce((sum, session) => sum + Number(session.completion_tokens || 0), 0),
+    total_tokens: sessions.reduce((sum, session) => sum + Number(session.total_tokens || 0), 0),
   };
 }
 

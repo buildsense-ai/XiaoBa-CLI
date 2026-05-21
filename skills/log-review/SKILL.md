@@ -33,6 +33,13 @@ catsco review run-once
 catsco review daemon
 ```
 
+如需分析某个匿名老师/设备的使用情况，使用 Review API 返回的 `user_key` 或 `device_key`：
+
+```bash
+catsco review run-once --user-key <review-user-key>
+catsco review run-once --device-key <review-device-key>
+```
+
 如需生成 PR：
 
 ```bash
@@ -65,5 +72,6 @@ catsco review run-once --create-branch --commit --create-pr
 - 人工审核时应优先看的文件
 
 PR/commit 只允许包含公开提案文件：`report.md`、`findings.json`、`prompt_suggestions.md`、`skill_suggestions.md`、`code_suggestions.md`、`eval_cases.jsonl`。
+`usage_report.md` 和 `usage_metrics.json` 只留本地，不加入 PR；它们只输出主题、频率、趋势和哈希引用，不输出老师原话。
 不要把完整日志内容贴到对话里，只概括脱敏后的模式和建议。
 不要把 `raw_review_data.server_redacted.local.json` 加入 PR 或提交。

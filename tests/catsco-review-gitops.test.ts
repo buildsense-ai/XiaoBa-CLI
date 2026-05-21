@@ -22,6 +22,8 @@ describe('catsco review gitops', () => {
       fs.writeFileSync(path.join(source, 'skill_suggestions.md'), '# skill\n', 'utf-8');
       fs.writeFileSync(path.join(source, 'code_suggestions.md'), '# code\n', 'utf-8');
       fs.writeFileSync(path.join(source, 'eval_cases.jsonl'), '', 'utf-8');
+      fs.writeFileSync(path.join(source, 'usage_report.md'), '# usage\n', 'utf-8');
+      fs.writeFileSync(path.join(source, 'usage_metrics.json'), '{"user_key":"teacher-key"}\n', 'utf-8');
       fs.writeFileSync(path.join(source, 'raw_review_data.server_redacted.local.json'), '{"turns":["private-ish"]}\n', 'utf-8');
 
       const result = runReviewGitWorkflow({
@@ -45,6 +47,8 @@ describe('catsco review gitops', () => {
 
       assert.equal(fs.existsSync(path.join(result.repoProposalDir, 'report.md')), true);
       assert.equal(fs.existsSync(path.join(result.repoProposalDir, 'code_suggestions.md')), true);
+      assert.equal(fs.existsSync(path.join(result.repoProposalDir, 'usage_report.md')), false);
+      assert.equal(fs.existsSync(path.join(result.repoProposalDir, 'usage_metrics.json')), false);
       assert.equal(fs.existsSync(path.join(result.repoProposalDir, 'raw_review_data.server_redacted.local.json')), false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

@@ -53,6 +53,27 @@ describe('catsco review agent client', () => {
     assert.equal(paths[1], '/catsco/review/sessions/session%2Fa%20b/turns');
   });
 
+  test('sends user and device filters for sessions', async () => {
+    let capturedUrl = '';
+    globalThis.fetch = (async (input: any) => {
+      capturedUrl = String(input);
+      return new Response(JSON.stringify({
+        page: { limit: 10, offset: 0, count: 0 },
+        sessions: [],
+      }), { status: 200 });
+    }) as any;
+
+    const client = new CatscoReviewAgentClient('https://logs.example.test:8000', 'review-token');
+    await client.sessions(10, '2026-05-20T00:00:00Z', 0, '2026-05-21T00:00:00Z', {
+      userKey: 'user-a',
+      deviceKey: 'device-a',
+    });
+
+    const url = new URL(capturedUrl);
+    assert.equal(url.searchParams.get('user_key'), 'user-a');
+    assert.equal(url.searchParams.get('device_key'), 'device-a');
+  });
+
   test('surfaces API error detail without leaking token', async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({ detail: 'not allowed' }), { status: 401 })) as any;
 
