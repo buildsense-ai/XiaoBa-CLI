@@ -63,6 +63,8 @@ CATSCO_REVIEW_CREATE_GITHUB_PR=false
 
 Use the Tailscale address or internal DNS name for `CATSCO_REVIEW_API_BASE_URL` if Cloud Server A is private.
 
+Review API access requires `CATSCO_REVIEW_TOKEN`. Natural-language Q&A also requires the normal XiaoBa-CLI model configuration such as `GAUZ_LLM_PROVIDER`, `GAUZ_LLM_API_BASE`, `GAUZ_LLM_API_KEY`, and `GAUZ_LLM_MODEL`.
+
 ## Commands
 
 Health check:
@@ -77,14 +79,17 @@ Generate local proposal files only:
 catsco review run-once
 ```
 
+In the normal XiaoBa-CLI Agent conversation, the Agent can use the built-in `review_logs_query` tool when the user asks log-related questions. This is the preferred path for daily use because the Review capability stays inside the original Agent instead of becoming a separate chat surface.
+
 Ask arbitrary questions over the latest logs in a selected time range:
 
 ```bash
 catsco review ask "这个老师最近主要用 Agent 做什么？"
 catsco review ask "哪些问题导致了最长耗时？" --lookback-hours 72
+catsco review ask "这一周所有老师主要问了什么？" --max-sessions 100 --max-turns-per-session 120
 ```
 
-Start an interactive chat that refreshes logs before each question:
+Start a terminal debug chat that refreshes logs before each question:
 
 ```bash
 catsco review chat
@@ -92,7 +97,7 @@ catsco review chat --user-key <review-user-key>
 catsco review chat --fixed-range
 ```
 
-`ask` and `chat` are read-only. They fetch the same Review API data as `run-once`, build a redacted evidence pack, and answer from that evidence instead of a fixed report template. `ask` pulls logs up to the current moment every time it runs. `chat` also refreshes the latest logs before each question by default, so newly uploaded logs can affect later answers. Use `--fixed-range` only when you need a reproducible investigation where every answer is grounded in the exact same fetched data.
+`review_logs_query`, `ask`, and `chat` are read-only. They fetch the same Review API data as `run-once`, build a redacted evidence pack, and answer from that evidence instead of a fixed report template. `review_logs_query` and `ask` pull logs up to the current moment every time they run. `chat` is mainly a terminal debugging mode and also refreshes the latest logs before each question by default, so newly uploaded logs can affect later answers. Use `--fixed-range` only when you need a reproducible investigation where every answer is grounded in the exact same fetched data.
 
 The time range is controlled by `--lookback-hours` or `CATSCO_REVIEW_LOOKBACK_HOURS`. The default is the latest 168 hours, not a separate Agent conversation window. Increase the lookback value for older history, while keeping the max result limits high enough for the question.
 

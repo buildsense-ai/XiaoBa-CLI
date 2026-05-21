@@ -11,6 +11,7 @@ describe('ToolManager', () => {
       manager.getToolDefinitions().map(definition => definition.name),
       DEFAULT_TOOL_NAMES,
     );
+    assert.notEqual(manager.getTool('review_logs_query'), undefined);
   });
 
   test('registers only enabled default tools when an enabled list is provided', async () => {

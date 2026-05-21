@@ -5,6 +5,7 @@ import { CatscoReviewAgentConfig, validateCatscoReviewAgentConfig } from './cats
 import { runReviewGitWorkflow, ReviewGitResult } from './catsco-review-gitops';
 import { makeReviewRunId, ReviewProposalBundle, writeReviewProposalBundle } from './catsco-review-proposals';
 import { analyzeUsageData, ReviewUsageAnalysis } from './catsco-review-usage-analyzer';
+import { redactReviewText } from './catsco-review-redaction';
 
 const REVIEW_GIT_PROPOSAL_FILES = [
   'report.md',
@@ -279,12 +280,7 @@ function reviewFetchErrorEntry(sessionRecordId: string, error: any) {
 }
 
 function sanitizeReviewErrorMessage(message: string): string {
-  return String(message || '')
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
-    .replace(/catslog_(?:tok|review)_[A-Za-z0-9._~+/=-]+/g, 'catslog_[REDACTED]')
-    .replace(/[A-Za-z]:\\[^\s]+/g, '[PATH_REDACTED]')
-    .replace(/\/home\/[^/\s]+/g, '/home/[USER_REDACTED]')
-    .slice(0, 500);
+  return redactReviewText(message, 500);
 }
 
 export function reviewOutputRelativePath(filePath: string, baseDir: string): string {

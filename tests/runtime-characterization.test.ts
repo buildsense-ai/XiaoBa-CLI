@@ -65,6 +65,7 @@ describe('runtime characterization', () => {
         'record_decision',
         'resolve_common_directory',
         'resume_subagent',
+        'review_logs_query',
         'send_file',
         'send_text',
         'skill',

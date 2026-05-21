@@ -6,15 +6,18 @@ import {
   validateCatscoReviewAgentConfig,
 } from '../utils/catsco-review-agent-config';
 import { CatscoReviewAgentClient } from '../utils/catsco-review-agent-client';
-import { analyzeReviewData } from '../utils/catsco-review-analyzer';
-import { analyzeUsageData } from '../utils/catsco-review-usage-analyzer';
 import {
   answerReviewQuestion,
   ReviewQuestionChatTurn,
   ReviewQuestionContext,
 } from '../utils/catsco-review-question-answerer';
+import {
+  loadReviewQuestionContext,
+  LoadReviewQuestionContextOptions,
+  validateReviewQuestionConfig,
+} from '../utils/catsco-review-question-context';
 import { AIService } from '../utils/ai-service';
-import { fetchReviewData, runCatscoReviewAgent } from '../utils/catsco-review-runner';
+import { runCatscoReviewAgent } from '../utils/catsco-review-runner';
 
 export function registerReviewCommand(program: Command): void {
   const review = program
@@ -54,6 +57,8 @@ export function registerReviewCommand(program: Command): void {
     .option('--user-key <key>', 'Limit log retrieval to one redacted Review API user_key')
     .option('--device-key <key>', 'Limit log retrieval to one redacted Review API device_key')
     .option('--max-evidence-items <count>', 'Maximum evidence items passed to the model')
+    .option('--max-sessions <count>', 'Maximum sessions to fetch for this question')
+    .option('--max-turns-per-session <count>', 'Maximum turns to fetch per session')
     .action(async (questionParts: string[], options) => {
       await reviewAskCommand(questionParts.join(' '), options);
     });
@@ -66,6 +71,8 @@ export function registerReviewCommand(program: Command): void {
     .option('--user-key <key>', 'Limit log retrieval to one redacted Review API user_key')
     .option('--device-key <key>', 'Limit log retrieval to one redacted Review API device_key')
     .option('--max-evidence-items <count>', 'Maximum evidence items passed to the model per question')
+    .option('--max-sessions <count>', 'Maximum sessions to fetch per question')
+    .option('--max-turns-per-session <count>', 'Maximum turns to fetch per session')
     .option('--fixed-range', 'Fetch logs once at startup instead of refreshing before every question')
     .action(async (options) => {
       await reviewChatCommand(options);
@@ -149,9 +156,11 @@ async function reviewAskCommand(question: string, options: {
   userKey?: string;
   deviceKey?: string;
   maxEvidenceItems?: string;
+  maxSessions?: string;
+  maxTurnsPerSession?: string;
 }): Promise<void> {
   try {
-    const context = await loadReviewQuestionContext(options);
+    const context = await loadReviewQuestionContext(reviewQuestionOptionsFromCli(options));
     const answer = await answerReviewQuestion(question, context, new AIService(), {
       maxEvidenceItems: parsePositiveInteger(options.maxEvidenceItems),
     });
@@ -168,6 +177,8 @@ async function reviewChatCommand(options: {
   userKey?: string;
   deviceKey?: string;
   maxEvidenceItems?: string;
+  maxSessions?: string;
+  maxTurnsPerSession?: string;
   fixedRange?: boolean;
 }): Promise<void> {
   const fixedRange = Boolean(options.fixedRange);
@@ -175,7 +186,7 @@ async function reviewChatCommand(options: {
 
   if (fixedRange) {
     try {
-      fixedContext = await loadReviewQuestionContext(options);
+      fixedContext = await loadReviewQuestionContext(reviewQuestionOptionsFromCli(options));
     } catch (error: any) {
       Logger.error(error.message);
       process.exitCode = 1;
@@ -204,73 +215,91 @@ async function reviewChatCommand(options: {
   const maxEvidenceItems = parsePositiveInteger(options.maxEvidenceItems);
   const aiService = new AIService();
   const history: ReviewQuestionChatTurn[] = [];
+  let closed = false;
+  let queue = Promise.resolve();
 
   rl.prompt();
-  rl.on('line', async (line) => {
+  rl.on('close', () => {
+    closed = true;
+  });
+  rl.on('line', (line) => {
     const question = line.trim();
-    if (!question) {
-      rl.prompt();
-      return;
-    }
-    if (question === '/exit' || question === 'exit' || question === 'quit') {
-      rl.close();
-      return;
-    }
-    try {
-      const context = fixedContext || (await loadReviewQuestionContext(options));
-      const answer = await answerReviewQuestion(question, context, aiService, {
+    queue = queue
+      .then(() => handleReviewChatQuestion(question, {
+        aiService,
+        fixedContext,
+        history,
         maxEvidenceItems,
-        conversationHistory: history,
+        options,
+        rl,
+        isClosed: () => closed,
+      }))
+      .catch((error: any) => {
+        Logger.error(error.message);
+        if (!closed) rl.prompt();
       });
-      console.log(`\n${answer}\n`);
-      history.push({ question, answer });
-      if (history.length > 6) history.shift();
-    } catch (error: any) {
-      Logger.error(error.message);
-    }
-    rl.prompt();
   });
 }
 
-async function loadReviewQuestionContext(options: {
+async function handleReviewChatQuestion(question: string, input: {
+  aiService: AIService;
+  fixedContext?: ReviewQuestionContext;
+  history: ReviewQuestionChatTurn[];
+  maxEvidenceItems?: number;
+  options: {
+    cwd: string;
+    lookbackHours?: string;
+    userKey?: string;
+    deviceKey?: string;
+    maxSessions?: string;
+    maxTurnsPerSession?: string;
+  };
+  rl: readline.Interface;
+  isClosed: () => boolean;
+}): Promise<void> {
+  if (input.isClosed()) return;
+
+  if (!question) {
+    input.rl.prompt();
+    return;
+  }
+  if (question === '/exit' || question === 'exit' || question === 'quit') {
+    input.rl.close();
+    return;
+  }
+  try {
+    const context = input.fixedContext || (await loadReviewQuestionContext(reviewQuestionOptionsFromCli(input.options)));
+    const answer = await answerReviewQuestion(question, context, input.aiService, {
+      maxEvidenceItems: input.maxEvidenceItems,
+      conversationHistory: input.history,
+    });
+    console.log(`\n${answer}\n`);
+    input.history.push({ question, answer });
+    if (input.history.length > 6) input.history.shift();
+  } catch (error: any) {
+    Logger.error(error.message);
+  }
+  if (!input.isClosed()) {
+    input.rl.prompt();
+  }
+}
+
+function reviewQuestionOptionsFromCli(options: {
   cwd: string;
   lookbackHours?: string;
   userKey?: string;
   deviceKey?: string;
-}): Promise<ReviewQuestionContext> {
-  const config = getCatscoReviewAgentConfig(options.cwd);
-  validateCatscoReviewAgentConfig(config);
-  if (!config.enabled) {
-    throw new Error('CatsCo Review Agent is disabled. Set CATSCO_REVIEW_ENABLED=true to run it.');
-  }
-
-  const lookbackHours = parsePositiveInteger(options.lookbackHours) || config.lookbackHours;
-  const uploadedTo = new Date().toISOString();
-  const uploadedFrom = new Date(Date.parse(uploadedTo) - lookbackHours * 60 * 60 * 1000).toISOString();
-  const targetUserKey = options.userKey || config.targetUserKey;
-  const targetDeviceKey = options.deviceKey || config.targetDeviceKey;
-  const client = new CatscoReviewAgentClient(config.apiBaseUrl, config.reviewToken || '');
-  const reviewData = await fetchReviewData(client, {
-    uploadedFrom,
-    uploadedTo,
-    maxFailures: config.maxFailures,
-    maxSessions: config.maxSessions,
-    maxEntriesPerSession: config.maxEntriesPerSession,
-    maxTurnsPerSession: config.maxTurnsPerSession,
-    targetUserKey,
-    targetDeviceKey,
-  });
-  const findings = analyzeReviewData(reviewData);
-  const usageAnalysis = analyzeUsageData(reviewData, { targetUserKey, targetDeviceKey });
-  return { reviewData, findings, usageAnalysis };
-}
-
-function validateReviewQuestionConfig(cwd: string): void {
-  const config = getCatscoReviewAgentConfig(cwd);
-  validateCatscoReviewAgentConfig(config);
-  if (!config.enabled) {
-    throw new Error('CatsCo Review Agent is disabled. Set CATSCO_REVIEW_ENABLED=true to run it.');
-  }
+  maxSessions?: string;
+  maxTurnsPerSession?: string;
+}): LoadReviewQuestionContextOptions {
+  return {
+    cwd: options.cwd,
+    lookbackHours: parsePositiveInteger(options.lookbackHours),
+    targetUserKey: options.userKey,
+    targetDeviceKey: options.deviceKey,
+    maxSessions: parsePositiveInteger(options.maxSessions),
+    maxTurnsPerSession: parsePositiveInteger(options.maxTurnsPerSession),
+  };
 }
 
 async function reviewDaemonCommand(options: {
@@ -295,9 +324,11 @@ async function reviewDaemonCommand(options: {
 
   const intervalMinutes = parsePositiveInteger(options.intervalMinutes) || config.intervalMinutes;
   let stopped = false;
+  let wakeSleep: (() => void) | undefined;
 
   const stop = () => {
     stopped = true;
+    wakeSleep?.();
     Logger.info('Review Agent daemon stopping after the current cycle.');
   };
   process.once('SIGINT', stop);
@@ -325,7 +356,10 @@ async function reviewDaemonCommand(options: {
     }
 
     if (!stopped) {
-      await sleep(intervalMinutes * 60 * 1000);
+      await sleep(intervalMinutes * 60 * 1000, wake => {
+        wakeSleep = wake;
+      });
+      wakeSleep = undefined;
     }
   }
 }
@@ -336,6 +370,17 @@ function parsePositiveInteger(raw?: string): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function sleep(ms: number, registerWake?: (wake: () => void) => void): Promise<void> {
+  return new Promise(resolve => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    timer = setTimeout(finish, ms);
+    registerWake?.(finish);
+  });
 }

@@ -75,7 +75,9 @@ describe('catsco review agent client', () => {
   });
 
   test('surfaces API error detail without leaking token', async () => {
-    globalThis.fetch = (async () => new Response(JSON.stringify({ detail: 'not allowed' }), { status: 401 })) as any;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      detail: 'not allowed Bearer catslog_review_secret at E:\\Dirty Work\\XiaoBa-CLI\\log.txt',
+    }), { status: 401 })) as any;
 
     const client = new CatscoReviewAgentClient('https://logs.example.test:8000', 'secret-review-token');
     await assert.rejects(
@@ -83,9 +85,18 @@ describe('catsco review agent client', () => {
       (error: any) => {
         assert.match(error.message, /not allowed/);
         assert.equal(error.message.includes('secret-review-token'), false);
+        assert.equal(error.message.includes('catslog_review_secret'), false);
+        assert.equal(error.message.includes('Dirty Work'), false);
         return true;
       },
     );
+  });
+
+  test('rejects successful non-json responses', async () => {
+    globalThis.fetch = (async () => new Response('not json', { status: 200 })) as any;
+
+    const client = new CatscoReviewAgentClient('https://logs.example.test:8000', 'review-token');
+    await assert.rejects(() => client.summary(), /invalid JSON/);
   });
 
   test('retries transient failures and respects response size guard', async () => {

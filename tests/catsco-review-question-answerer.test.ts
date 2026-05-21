@@ -27,7 +27,20 @@ describe('catsco review question answerer', () => {
     const serialized = JSON.stringify(pack);
     assert.match(serialized, /成绩/);
     assert.doesNotMatch(serialized, /13812345678/);
+    assert.doesNotMatch(serialized, /110101199003071234/);
+    assert.doesNotMatch(serialized, /张三/);
+    assert.doesNotMatch(serialized, /Dirty Work/);
     assert.match(serialized, /\[PHONE_REDACTED\]/);
+    assert.match(serialized, /\[ID_REDACTED\]/);
+    assert.match(serialized, /\[STUDENT_REDACTED\]/);
+    assert.match(serialized, /\[PATH_REDACTED\]/);
+    assert.equal(pack.summary.possibly_truncated, false);
+
+    const cappedPack = buildReviewQuestionEvidencePack('这个老师主要问了什么，使用频率如何？', context, {
+      maxEvidenceItems: 2,
+    });
+    assert.equal(cappedPack.summary.possibly_truncated, true);
+    assert.equal(cappedPack.summary.selected_evidence_items, 2);
   });
 
   test('asks the model with review evidence only', async () => {
@@ -122,7 +135,7 @@ function reviewDataFixture(): ReviewData {
         turn_record_id: 'turn-1',
         turn_no: 1,
         timestamp: '2026-05-20 08:00:00',
-        user_text: '帮我统计张三同学考试成绩，手机号 13812345678',
+        user_text: '帮我统计张三同学考试成绩，手机号 13812345678，身份证 110101199003071234，路径 E:\\Dirty Work\\XiaoBa-CLI\\成绩.xlsx',
         assistant_text: '我可以帮你整理成绩统计表。',
       }, {
         turn_record_id: 'turn-2',

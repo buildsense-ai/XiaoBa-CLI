@@ -1,3 +1,5 @@
+import { redactReviewText } from './catsco-review-redaction';
+
 export interface ReviewPage {
   limit: number;
   offset: number;
@@ -180,35 +182,30 @@ export class CatscoReviewAgentClient {
       }
     }
 
-    const response = await this.fetchWithRetry(url);
-
-    const contentLength = Number(response.headers.get('content-length') || 0);
-    if (contentLength > this.maxResponseBytes) {
-      throw new Error(`CatsCo Review API response is too large: ${contentLength} bytes`);
-    }
-
-    const text = await response.text();
-    if (text.length > this.maxResponseBytes) {
-      throw new Error(`CatsCo Review API response is too large: ${text.length} bytes`);
-    }
+    const { response, text } = await this.fetchTextWithRetry(url);
     let data: any = {};
     if (text) {
       try {
         data = JSON.parse(text);
       } catch {
+        if (response.ok) {
+          throw new Error('CatsCo Review API returned invalid JSON');
+        }
         data = { raw: text };
       }
     }
 
     if (!response.ok) {
       const detail = data?.detail || data?.error || data?.message || data?.raw;
-      throw new Error(detail ? `CatsCo Review API failed: ${detail}` : `CatsCo Review API failed: HTTP ${response.status}`);
+      throw new Error(detail
+        ? `CatsCo Review API failed: ${redactReviewText(detail, 500)}`
+        : `CatsCo Review API failed: HTTP ${response.status}`);
     }
 
     return data as T;
   }
 
-  private async fetchWithRetry(url: URL): Promise<Response> {
+  private async fetchTextWithRetry(url: URL): Promise<{ response: Response; text: string }> {
     let lastError: any;
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
@@ -222,13 +219,27 @@ export class CatscoReviewAgentClient {
             Authorization: `Bearer ${this.reviewToken}`,
           },
         });
+
+        const contentLength = Number(response.headers.get('content-length') || 0);
+        if (contentLength > this.maxResponseBytes) {
+          clearTimeout(timer);
+          throw new Error(`CatsCo Review API response is too large: ${contentLength} bytes`);
+        }
+
+        const text = await response.text();
         clearTimeout(timer);
+        if (text.length > this.maxResponseBytes) {
+          throw new Error(`CatsCo Review API response is too large: ${text.length} bytes`);
+        }
         if (!isRetryableStatus(response.status) || attempt >= this.maxRetries) {
-          return response;
+          return { response, text };
         }
         await sleep(retryDelayMs(response, attempt));
       } catch (error: any) {
         clearTimeout(timer);
+        if (String(error?.message || '').includes('response is too large')) {
+          throw error;
+        }
         lastError = error?.name === 'AbortError'
           ? new Error(`CatsCo Review API timed out after ${this.timeoutMs}ms`)
           : error;

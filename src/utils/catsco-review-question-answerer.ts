@@ -3,6 +3,7 @@ import { AIService } from './ai-service';
 import type { ReviewData, ReviewEntry, ReviewFailure, ReviewSession, ReviewTurn } from './catsco-review-agent-client';
 import type { ReviewFinding } from './catsco-review-analyzer';
 import type { ReviewUsageAnalysis } from './catsco-review-usage-analyzer';
+import { redactReviewText } from './catsco-review-redaction';
 
 export interface ReviewQuestionContext {
   reviewData: ReviewData;
@@ -76,12 +77,15 @@ export function buildReviewQuestionEvidencePack(
       ...item,
       score: scoreEvidence(scoringQuestion || question, queryTerms, item),
     }))
-    .sort((a, b) => b.score - a.score || kindRank(a.kind) - kindRank(b.kind))
-    .slice(0, maxEvidenceItems);
+    .sort((a, b) => b.score - a.score || kindRank(a.kind) - kindRank(b.kind));
+  const topTurns = scored
+    .filter(item => item.kind === 'turn')
+    .slice(0, Math.min(10, Math.max(1, Math.floor(maxEvidenceItems * 0.3))));
+  const ranked = dedupeEvidenceItems([...topTurns, ...scored]).slice(0, maxEvidenceItems);
 
   const selected: ReviewQuestionEvidenceItem[] = [];
   let chars = 0;
-  for (const item of scored) {
+  for (const item of ranked) {
     const itemChars = item.text.length;
     if (selected.length > 0 && chars + itemChars > maxEvidenceChars) {
       continue;
@@ -102,6 +106,19 @@ export function buildReviewQuestionEvidencePack(
       users: context.usageAnalysis.totals.userCount,
       active_days: context.usageAnalysis.totals.activeDays,
       findings: context.findings.length,
+      loaded_sessions: (context.reviewData.sessions || []).length,
+      total_sessions_reported: context.reviewData.summary?.session_count || 0,
+      loaded_turns: Object.values(context.reviewData.sessionTurns || {}).reduce((sum, turns) => sum + (turns || []).length, 0),
+      total_turns_reported: context.reviewData.summary?.turn_count || 0,
+      available_evidence_items: candidates.length,
+      ranked_evidence_items: ranked.length,
+      selected_evidence_items: selected.length,
+      dropped_evidence_items: Math.max(0, candidates.length - selected.length),
+      evidence_characters: chars,
+      evidence_limit_characters: maxEvidenceChars,
+      possibly_truncated: candidates.length > selected.length
+        || (context.reviewData.summary?.session_count || 0) > (context.reviewData.sessions || []).length
+        || (context.reviewData.summary?.turn_count || 0) > Object.values(context.reviewData.sessionTurns || {}).reduce((sum, turns) => sum + (turns || []).length, 0),
     },
     evidence: selected,
   };
@@ -115,6 +132,8 @@ export function buildReviewQuestionMessages(evidencePack: ReviewQuestionEvidence
         'You are CatsCo Review Agent answering questions from redacted structured log evidence.',
         'Answer flexibly based on the user question; do not limit yourself to a fixed report schema.',
         'Use only the provided evidence. If the evidence is insufficient, say what is missing.',
+        'Conversation history can come from earlier log refreshes; treat the current evidence block as authoritative.',
+        'State the loaded evidence scope when answering questions about frequency, totals, trends, or coverage.',
         'Separate facts from inferences. Mention concrete counts, windows, user_keys, session_keys, and tool names when useful.',
         'Do not reveal secrets, tokens, phone numbers, email addresses, private paths, or raw identifiers beyond redacted/stable keys already present.',
         'Prefer Chinese unless the user asks otherwise.',
@@ -146,6 +165,17 @@ export function buildReviewQuestionMessages(evidencePack: ReviewQuestionEvidence
       ].join('\n'),
     },
   ];
+}
+
+function dedupeEvidenceItems(items: ReviewQuestionEvidenceItem[]): ReviewQuestionEvidenceItem[] {
+  const seen = new Set<string>();
+  const deduped: ReviewQuestionEvidenceItem[] = [];
+  for (const item of items) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    deduped.push(item);
+  }
+  return deduped;
 }
 
 function summaryEvidence(reviewData: ReviewData): ReviewQuestionEvidenceItem {
@@ -385,15 +415,7 @@ function sanitizeConversationHistory(history: ReviewQuestionChatTurn[]): ReviewQ
 }
 
 function sanitizeForReviewAnswer(value: string): string {
-  return String(value || '')
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
-    .replace(/catslog_(?:tok|review)_[A-Za-z0-9._~+/=-]+/g, 'catslog_[REDACTED]')
-    .replace(/sk-[A-Za-z0-9]{12,}/g, 'sk-[REDACTED]')
-    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[EMAIL_REDACTED]')
-    .replace(/\b1[3-9]\d{9}\b/g, '[PHONE_REDACTED]')
-    .replace(/[A-Za-z]:\\[^\s]+/g, '[PATH_REDACTED]')
-    .replace(/\/home\/[^/\s]+/g, '/home/[USER_REDACTED]')
-    .slice(0, 4000);
+  return redactReviewText(value, 4000);
 }
 
 function baseKindScore(kind: ReviewQuestionEvidenceItem['kind']): number {

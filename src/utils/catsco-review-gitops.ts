@@ -23,6 +23,9 @@ export interface ReviewGitResult {
 
 export function runReviewGitWorkflow(options: ReviewGitOptions): ReviewGitResult {
   const repo = path.resolve(options.targetRepo);
+  if (options.createGithubPr && !options.createBranch) {
+    throw new Error('Creating a GitHub PR requires createBranch=true so proposals are never pushed to the current branch.');
+  }
   assertGitRepo(repo);
   assertTrackedWorktreeClean(repo);
 

@@ -54,4 +54,30 @@ describe('catsco review gitops', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('requires a proposal branch before creating a GitHub PR', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-review-gitops-'));
+    const source = path.join(root, 'source');
+    const repo = path.join(root, 'repo');
+    try {
+      fs.mkdirSync(source, { recursive: true });
+      fs.mkdirSync(repo, { recursive: true });
+      execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' });
+      fs.writeFileSync(path.join(source, 'report.md'), '# report\n', 'utf-8');
+
+      assert.throws(() => runReviewGitWorkflow({
+        targetRepo: repo,
+        proposalSourceDir: source,
+        includeFiles: ['report.md'],
+        runId: '20260520-120001',
+        prBaseBranch: 'main',
+        gitRemote: 'origin',
+        createBranch: false,
+        commitChanges: false,
+        createGithubPr: true,
+      }), /requires createBranch=true/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

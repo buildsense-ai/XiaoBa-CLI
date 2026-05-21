@@ -3,6 +3,7 @@ import * as path from 'path';
 import type { ReviewData } from './catsco-review-agent-client';
 import type { ReviewFinding, ReviewFindingCategory } from './catsco-review-analyzer';
 import type { ReviewUsageAnalysis } from './catsco-review-usage-analyzer';
+import { redactReviewText } from './catsco-review-redaction';
 
 export interface ReviewProposalBundle {
   runDir: string;
@@ -560,12 +561,5 @@ function shortHash(value: string): string {
 }
 
 function redactProposalText(value: string): string {
-  return String(value)
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
-    .replace(/catslog_(?:tok|review)_[A-Za-z0-9._~+/=-]+/g, 'catslog_[REDACTED]')
-    .replace(/sk-[A-Za-z0-9]{12,}/g, 'sk-[REDACTED]')
-    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[EMAIL_REDACTED]')
-    .replace(/\b1[3-9]\d{9}\b/g, '[PHONE_REDACTED]')
-    .replace(/[A-Za-z]:\\[^\s]+/g, '[PATH_REDACTED]')
-    .replace(/\/home\/[^/\s]+/g, '/home/[USER_REDACTED]');
+  return redactReviewText(value);
 }
