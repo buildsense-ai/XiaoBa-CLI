@@ -60,12 +60,13 @@ export function registerReviewCommand(program: Command): void {
 
   review
     .command('chat')
-    .description('Start an interactive Review Agent chat over one fetched review-log time range')
+    .description('Start an interactive Review Agent chat over the latest review logs')
     .option('--cwd <path>', 'Working directory for .env lookup', process.cwd())
     .option('--lookback-hours <hours>', 'Review window in hours')
     .option('--user-key <key>', 'Limit log retrieval to one redacted Review API user_key')
     .option('--device-key <key>', 'Limit log retrieval to one redacted Review API device_key')
     .option('--max-evidence-items <count>', 'Maximum evidence items passed to the model per question')
+    .option('--fixed-range', 'Fetch logs once at startup instead of refreshing before every question')
     .action(async (options) => {
       await reviewChatCommand(options);
     });
@@ -167,18 +168,32 @@ async function reviewChatCommand(options: {
   userKey?: string;
   deviceKey?: string;
   maxEvidenceItems?: string;
+  fixedRange?: boolean;
 }): Promise<void> {
-  let context: ReviewQuestionContext;
-  try {
-    context = await loadReviewQuestionContext(options);
-  } catch (error: any) {
-    Logger.error(error.message);
-    process.exitCode = 1;
-    return;
-  }
+  const fixedRange = Boolean(options.fixedRange);
+  let fixedContext: ReviewQuestionContext | undefined;
 
-  Logger.success('Review Agent review-log time range loaded. Ask questions about the fetched review logs.');
-  Logger.info('Type /exit to quit. This chat answers from the loaded log time range, not live-updating logs.');
+  if (fixedRange) {
+    try {
+      fixedContext = await loadReviewQuestionContext(options);
+    } catch (error: any) {
+      Logger.error(error.message);
+      process.exitCode = 1;
+      return;
+    }
+    Logger.success('Review Agent review-log time range loaded. Ask questions about the fetched review logs.');
+    Logger.info('Type /exit to quit. Fixed-range mode answers from the startup log time range.');
+  } else {
+    try {
+      validateReviewQuestionConfig(options.cwd);
+    } catch (error: any) {
+      Logger.error(error.message);
+      process.exitCode = 1;
+      return;
+    }
+    Logger.success('Review Agent chat ready. Each question refreshes the latest review logs for the selected lookback range.');
+    Logger.info('Type /exit to quit. Use --fixed-range when you need every answer grounded in the exact same fetched data.');
+  }
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -202,6 +217,7 @@ async function reviewChatCommand(options: {
       return;
     }
     try {
+      const context = fixedContext || (await loadReviewQuestionContext(options));
       const answer = await answerReviewQuestion(question, context, aiService, {
         maxEvidenceItems,
         conversationHistory: history,
@@ -247,6 +263,14 @@ async function loadReviewQuestionContext(options: {
   const findings = analyzeReviewData(reviewData);
   const usageAnalysis = analyzeUsageData(reviewData, { targetUserKey, targetDeviceKey });
   return { reviewData, findings, usageAnalysis };
+}
+
+function validateReviewQuestionConfig(cwd: string): void {
+  const config = getCatscoReviewAgentConfig(cwd);
+  validateCatscoReviewAgentConfig(config);
+  if (!config.enabled) {
+    throw new Error('CatsCo Review Agent is disabled. Set CATSCO_REVIEW_ENABLED=true to run it.');
+  }
 }
 
 async function reviewDaemonCommand(options: {

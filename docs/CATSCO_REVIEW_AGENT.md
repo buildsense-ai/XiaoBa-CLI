@@ -45,7 +45,7 @@ CATSCO_REVIEW_ENABLED=true
 CATSCO_REVIEW_API_BASE_URL=https://logs.catsco.fun:8000
 CATSCO_REVIEW_TOKEN=<plaintext Review Token from Cloud Server A>
 CATSCO_REVIEW_OUTPUT_DIR=data/catsco-review-agent/runs
-CATSCO_REVIEW_LOOKBACK_HOURS=24
+CATSCO_REVIEW_LOOKBACK_HOURS=168
 CATSCO_REVIEW_INTERVAL_MINUTES=1440
 CATSCO_REVIEW_MAX_FAILURES=100
 CATSCO_REVIEW_MAX_SESSIONS=30
@@ -77,21 +77,24 @@ Generate local proposal files only:
 catsco review run-once
 ```
 
-Ask arbitrary questions over a fetched log time range:
+Ask arbitrary questions over the latest logs in a selected time range:
 
 ```bash
 catsco review ask "这个老师最近主要用 Agent 做什么？"
 catsco review ask "哪些问题导致了最长耗时？" --lookback-hours 72
 ```
 
-Start an interactive chat over one loaded log time range:
+Start an interactive chat that refreshes logs before each question:
 
 ```bash
 catsco review chat
 catsco review chat --user-key <review-user-key>
+catsco review chat --fixed-range
 ```
 
-`ask` and `chat` are read-only. They fetch the same Review API data as `run-once`, build a redacted evidence pack, and answer from that evidence instead of a fixed report template. Here, "loaded" means the command has pulled logs for a fixed time range such as the last 24 hours; it does not mean a separate Agent conversation window. `chat` keeps recent Q&A context so follow-up questions can refer to the previous question, but every answer must still be grounded in the loaded log time range.
+`ask` and `chat` are read-only. They fetch the same Review API data as `run-once`, build a redacted evidence pack, and answer from that evidence instead of a fixed report template. `ask` pulls logs up to the current moment every time it runs. `chat` also refreshes the latest logs before each question by default, so newly uploaded logs can affect later answers. Use `--fixed-range` only when you need a reproducible investigation where every answer is grounded in the exact same fetched data.
+
+The time range is controlled by `--lookback-hours` or `CATSCO_REVIEW_LOOKBACK_HOURS`. The default is the latest 168 hours, not a separate Agent conversation window. Increase the lookback value for older history, while keeping the max result limits high enough for the question.
 
 Generate local proposal and usage files for one redacted user/device:
 
@@ -164,9 +167,9 @@ Public proposal files contain pattern summaries and synthetic eval inputs. Detai
 
 The Review Agent treats large log volume as a signal extraction problem:
 
-1. Fetch only redacted Review API data for the fixed review window.
+1. Fetch only redacted Review API data for the selected review time range.
 2. Convert summaries, failures, sessions, entries, turns, usage metrics, and analyzer findings into a bounded evidence pack.
-3. For Q&A, score evidence against the user's question with Chinese keyword expansion, stable refs, and recent chat context for follow-ups.
+3. For Q&A, refresh the latest selected time range per question by default, then score evidence against the user's question with Chinese keyword expansion, stable refs, and recent chat context for follow-ups.
 4. For proposals, drop known noise such as health checks and scheduled-run completion messages.
 5. Normalize ids, timestamps, numbers, and paths into stable pattern keys.
 6. Cluster evidence by category and pattern key, then rank by severity, impact score, frequency, affected sessions, and tools involved.

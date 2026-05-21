@@ -56,4 +56,17 @@ describe('catsco review agent config', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('uses one week as the default review lookback', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-review-config-'));
+    try {
+      const config = getCatscoReviewAgentConfig(root, {
+        CATSCO_REVIEW_TOKEN: 'review-token',
+      });
+      assert.equal(config.lookbackHours, 168);
+      assert.doesNotThrow(() => validateCatscoReviewAgentConfig(config));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

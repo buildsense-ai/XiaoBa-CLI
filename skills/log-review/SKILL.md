@@ -32,9 +32,12 @@ catsco review run-once
 ```bash
 catsco review ask "这个老师主要用 Agent 做什么？"
 catsco review chat --user-key <review-user-key>
+catsco review chat --fixed-range
 ```
 
-`ask` 和 `chat` 只读云端 Review API 数据，不创建 PR。它们会从 summary、failures、sessions、entries、turns、usage metrics 和 analyzer findings 里构造脱敏证据包，再按用户问题灵活回答。这里的“加载”是指拉取一个固定日志时间段，比如最近 24 小时，不是另开一个 Agent 对话窗口。`chat` 可以理解最近几轮追问，但结论仍必须落回当前加载的日志时间段。
+`ask` 和 `chat` 只读云端 Review API 数据，不创建 PR。它们会从 summary、failures、sessions、entries、turns、usage metrics 和 analyzer findings 里构造脱敏证据包，再按用户问题灵活回答。`ask` 每次运行都会拉取截至当前时刻的日志；`chat` 默认也会在每个问题前刷新一次日志，让新上传的日志可以进入后续回答。只有需要复盘同一批证据、保证每个回答完全可复现时，才使用 `--fixed-range`。
+
+这里的时间范围由 `--lookback-hours` 或 `CATSCO_REVIEW_LOOKBACK_HOURS` 控制，默认是最近一周，也就是 168 小时，不是另开一个 Agent 对话窗口。要看更久历史可以增大 lookback，同时注意 max sessions / max turns 等上限。
 
 如需定期运行，只允许 proposal-only 模式：
 
