@@ -40,6 +40,10 @@ export class ReviewLogsQueryTool implements Tool {
           type: 'number',
           description: '可选。传给模型的最大证据条数。',
         },
+        max_evidence_chars: {
+          type: 'number',
+          description: '可选。传给模型的最大证据字符数；大范围分析时可提高。',
+        },
         max_sessions: {
           type: 'number',
           description: '可选。最多拉取多少个 session；问题需要覆盖更多日志时可提高。',
@@ -75,6 +79,7 @@ export class ReviewLogsQueryTool implements Tool {
       const aiService = context.runtimeServices?.aiService || new AIService();
       const answer = await answerReviewQuestion(question, reviewContext, aiService, {
         maxEvidenceItems: readPositiveInteger(args?.max_evidence_items),
+        maxEvidenceChars: readPositiveInteger(args?.max_evidence_chars),
       });
       return { ok: true, content: answer || '没有从已加载的 Review 日志证据中得到回答。' };
     } catch (error: any) {

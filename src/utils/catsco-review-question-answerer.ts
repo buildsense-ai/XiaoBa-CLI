@@ -48,7 +48,9 @@ export async function answerReviewQuestion(
 ): Promise<string> {
   const evidencePack = buildReviewQuestionEvidencePack(question, context, options);
   const response = await aiService.chat(buildReviewQuestionMessages(evidencePack));
-  return response.content || '';
+  return [formatReviewQuestionScope(evidencePack), response.content || '']
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 export function buildReviewQuestionEvidencePack(
@@ -110,12 +112,21 @@ export function buildReviewQuestionEvidencePack(
       total_sessions_reported: context.reviewData.summary?.session_count || 0,
       loaded_turns: Object.values(context.reviewData.sessionTurns || {}).reduce((sum, turns) => sum + (turns || []).length, 0),
       total_turns_reported: context.reviewData.summary?.turn_count || 0,
+      loaded_session_coverage_ratio: ratio(
+        (context.reviewData.sessions || []).length,
+        context.reviewData.summary?.session_count || 0,
+      ),
+      loaded_turn_coverage_ratio: ratio(
+        Object.values(context.reviewData.sessionTurns || {}).reduce((sum, turns) => sum + (turns || []).length, 0),
+        context.reviewData.summary?.turn_count || 0,
+      ),
       available_evidence_items: candidates.length,
       ranked_evidence_items: ranked.length,
       selected_evidence_items: selected.length,
       dropped_evidence_items: Math.max(0, candidates.length - selected.length),
       evidence_characters: chars,
       evidence_limit_characters: maxEvidenceChars,
+      evidence_selection_note: 'Evidence items below are a ranked selected subset for the current question, not all loaded logs.',
       possibly_truncated: candidates.length > selected.length
         || (context.reviewData.summary?.session_count || 0) > (context.reviewData.sessions || []).length
         || (context.reviewData.summary?.turn_count || 0) > Object.values(context.reviewData.sessionTurns || {}).reduce((sum, turns) => sum + (turns || []).length, 0),
@@ -134,6 +145,8 @@ export function buildReviewQuestionMessages(evidencePack: ReviewQuestionEvidence
         'Use only the provided evidence. If the evidence is insufficient, say what is missing.',
         'Conversation history can come from earlier log refreshes; treat the current evidence block as authoritative.',
         'State the loaded evidence scope when answering questions about frequency, totals, trends, or coverage.',
+        'Never describe the selected evidence items as all logs. If possibly_truncated is true, conclusions must be framed as based on the loaded/selected subset.',
+        'If the user asks about an organization, role, or customer segment that is not explicitly present in the evidence, say it is not identifiable from this evidence instead of inferring it from a few examples.',
         'Separate facts from inferences. Mention concrete counts, windows, user_keys, session_keys, and tool names when useful.',
         'Do not reveal secrets, tokens, phone numbers, email addresses, private paths, or raw identifiers beyond redacted/stable keys already present.',
         'Prefer Chinese unless the user asks otherwise.',
@@ -165,6 +178,19 @@ export function buildReviewQuestionMessages(evidencePack: ReviewQuestionEvidence
       ].join('\n'),
     },
   ];
+}
+
+function formatReviewQuestionScope(evidencePack: ReviewQuestionEvidencePack): string {
+  const summary = evidencePack.summary as Record<string, any>;
+  const truncated = summary.possibly_truncated ? '是' : '否';
+  return [
+    '证据覆盖说明：',
+    `- 上传窗口：${summary.uploaded_from || '未知'} 至 ${summary.uploaded_to || '未知'}`,
+    `- 已加载会话：${summary.loaded_sessions ?? 0}/${summary.total_sessions_reported ?? 0}；已加载轮次：${summary.loaded_turns ?? 0}/${summary.total_turns_reported ?? 0}`,
+    `- 候选证据：${summary.available_evidence_items ?? 0}；本次传给模型的证据：${summary.selected_evidence_items ?? 0}`,
+    `- 是否可能截断：${truncated}`,
+    '- 下面回答只代表本次已加载并选中的脱敏证据，不等同于云端全部日志。',
+  ].join('\n');
 }
 
 function dedupeEvidenceItems(items: ReviewQuestionEvidenceItem[]): ReviewQuestionEvidenceItem[] {
@@ -210,7 +236,7 @@ function usageEvidence(usage: ReviewUsageAnalysis): ReviewQuestionEvidenceItem {
     score: 0,
     refs: {},
     text: sanitizeForReviewAnswer([
-      `Usage totals: users=${usage.totals.userCount}, devices=${usage.totals.deviceCount}, sessions=${usage.totals.sessionCount}, active_days=${usage.totals.activeDays}, turns=${usage.totals.turnCount}, loaded_turns=${usage.totals.loadedTurnCount}, avg_turns_per_session=${usage.totals.averageTurnsPerSession}, tool_calls=${usage.totals.toolCallCount}`,
+      `Loaded usage totals: users=${usage.totals.userCount}, devices=${usage.totals.deviceCount}, sessions=${usage.totals.sessionCount}, active_days=${usage.totals.activeDays}, turns=${usage.totals.turnCount}, loaded_turns=${usage.totals.loadedTurnCount}, avg_turns_per_session=${usage.totals.averageTurnsPerSession}, tool_calls=${usage.totals.toolCallCount}`,
       '',
       'Top users:',
       ...users,
@@ -416,6 +442,11 @@ function sanitizeConversationHistory(history: ReviewQuestionChatTurn[]): ReviewQ
 
 function sanitizeForReviewAnswer(value: string): string {
   return redactReviewText(value, 4000);
+}
+
+function ratio(value: number, total: number): number {
+  if (!total) return value ? 1 : 0;
+  return Math.round((value / total) * 1000) / 1000;
 }
 
 function baseKindScore(kind: ReviewQuestionEvidenceItem['kind']): number {

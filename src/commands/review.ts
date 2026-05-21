@@ -57,6 +57,7 @@ export function registerReviewCommand(program: Command): void {
     .option('--user-key <key>', 'Limit log retrieval to one redacted Review API user_key')
     .option('--device-key <key>', 'Limit log retrieval to one redacted Review API device_key')
     .option('--max-evidence-items <count>', 'Maximum evidence items passed to the model')
+    .option('--max-evidence-chars <count>', 'Maximum evidence characters passed to the model')
     .option('--max-sessions <count>', 'Maximum sessions to fetch for this question')
     .option('--max-turns-per-session <count>', 'Maximum turns to fetch per session')
     .action(async (questionParts: string[], options) => {
@@ -71,6 +72,7 @@ export function registerReviewCommand(program: Command): void {
     .option('--user-key <key>', 'Limit log retrieval to one redacted Review API user_key')
     .option('--device-key <key>', 'Limit log retrieval to one redacted Review API device_key')
     .option('--max-evidence-items <count>', 'Maximum evidence items passed to the model per question')
+    .option('--max-evidence-chars <count>', 'Maximum evidence characters passed to the model per question')
     .option('--max-sessions <count>', 'Maximum sessions to fetch per question')
     .option('--max-turns-per-session <count>', 'Maximum turns to fetch per session')
     .option('--fixed-range', 'Fetch logs once at startup instead of refreshing before every question')
@@ -156,6 +158,7 @@ async function reviewAskCommand(question: string, options: {
   userKey?: string;
   deviceKey?: string;
   maxEvidenceItems?: string;
+  maxEvidenceChars?: string;
   maxSessions?: string;
   maxTurnsPerSession?: string;
 }): Promise<void> {
@@ -163,6 +166,7 @@ async function reviewAskCommand(question: string, options: {
     const context = await loadReviewQuestionContext(reviewQuestionOptionsFromCli(options));
     const answer = await answerReviewQuestion(question, context, new AIService(), {
       maxEvidenceItems: parsePositiveInteger(options.maxEvidenceItems),
+      maxEvidenceChars: parsePositiveInteger(options.maxEvidenceChars),
     });
     console.log(`\n${answer}\n`);
   } catch (error: any) {
@@ -177,6 +181,7 @@ async function reviewChatCommand(options: {
   userKey?: string;
   deviceKey?: string;
   maxEvidenceItems?: string;
+  maxEvidenceChars?: string;
   maxSessions?: string;
   maxTurnsPerSession?: string;
   fixedRange?: boolean;
@@ -213,6 +218,7 @@ async function reviewChatCommand(options: {
   });
 
   const maxEvidenceItems = parsePositiveInteger(options.maxEvidenceItems);
+  const maxEvidenceChars = parsePositiveInteger(options.maxEvidenceChars);
   const aiService = new AIService();
   const history: ReviewQuestionChatTurn[] = [];
   let closed = false;
@@ -230,6 +236,7 @@ async function reviewChatCommand(options: {
         fixedContext,
         history,
         maxEvidenceItems,
+        maxEvidenceChars,
         options,
         rl,
         isClosed: () => closed,
@@ -246,6 +253,7 @@ async function handleReviewChatQuestion(question: string, input: {
   fixedContext?: ReviewQuestionContext;
   history: ReviewQuestionChatTurn[];
   maxEvidenceItems?: number;
+  maxEvidenceChars?: number;
   options: {
     cwd: string;
     lookbackHours?: string;
@@ -271,6 +279,7 @@ async function handleReviewChatQuestion(question: string, input: {
     const context = input.fixedContext || (await loadReviewQuestionContext(reviewQuestionOptionsFromCli(input.options)));
     const answer = await answerReviewQuestion(question, context, input.aiService, {
       maxEvidenceItems: input.maxEvidenceItems,
+      maxEvidenceChars: input.maxEvidenceChars,
       conversationHistory: input.history,
     });
     console.log(`\n${answer}\n`);
