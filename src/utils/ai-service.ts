@@ -1,7 +1,7 @@
 import { Message, ChatConfig, ChatResponse } from '../types';
 import { ConfigManager } from './config';
 import { ToolDefinition } from '../types/tool';
-import { AIProvider, StreamCallbacks } from '../providers/provider';
+import { AIProvider, AIRequestOptions, StreamCallbacks } from '../providers/provider';
 import { AnthropicProvider } from '../providers/anthropic-provider';
 import { OpenAIProvider } from '../providers/openai-provider';
 import { Logger } from './logger';
@@ -68,13 +68,13 @@ export class AIService {
   /**
    * 普通调用（非流式），带自动重试
    */
-  async chat(messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse> {
+  async chat(messages: Message[], tools?: ToolDefinition[], options: AIRequestOptions = {}): Promise<ChatResponse> {
     if (!this.config.apiKey) {
       throw new Error('API密钥未配置。请先运行: catsco config');
     }
 
     try {
-      return await this.withRetry(() => this.provider.chat(messages, tools));
+      return await this.withRetry(() => this.provider.chat(messages, tools, options), undefined, options.signal);
     } catch (error: any) {
       throw this.wrapError(error);
     }
@@ -85,7 +85,12 @@ export class AIService {
    * 默认不重试，避免部分 token 已输出后出现重复文本。
    * 如需强制开启重试，可设置 GAUZ_STREAM_RETRY=true（需自行保证幂等）。
    */
-  async chatStream(messages: Message[], tools?: ToolDefinition[], callbacks?: StreamCallbacks): Promise<ChatResponse> {
+  async chatStream(
+    messages: Message[],
+    tools?: ToolDefinition[],
+    callbacks?: StreamCallbacks,
+    options: AIRequestOptions = {},
+  ): Promise<ChatResponse> {
     if (!this.config.apiKey) {
       throw new Error('API密钥未配置。请先运行: catsco config');
     }
@@ -96,11 +101,13 @@ export class AIService {
     try {
       if (allowStreamRetry) {
         return await this.withRetry(
-          () => this.provider.chatStream(messages, tools, providerCallbacks),
-          callbacks
+          () => this.provider.chatStream(messages, tools, providerCallbacks, options),
+          callbacks,
+          options.signal,
         );
       }
-      return await this.provider.chatStream(messages, tools, providerCallbacks);
+      this.throwIfAborted(options.signal);
+      return await this.provider.chatStream(messages, tools, providerCallbacks, options);
     } catch (error: any) {
       const wrapped = this.wrapError(error);
       callbacks?.onError?.(wrapped);
@@ -123,6 +130,10 @@ export class AIService {
    * 统一错误处理
    */
   private wrapError(error: any): Error {
+    if (this.isAbortError(error)) {
+      return this.createAbortError();
+    }
+
     const provider = this.config.provider;
     const model = this.config.model;
 
@@ -148,6 +159,10 @@ export class AIService {
    * 判断错误是否可重试
    */
   private isRetryable(error: any): boolean {
+    if (this.isAbortError(error)) {
+      return false;
+    }
+
     // HTTP 状态码可重试
     const status = this.extractStatus(error);
     if (status && RETRYABLE_STATUS_CODES.has(status)) {
@@ -199,14 +214,19 @@ export class AIService {
   /**
    * 带指数退避的重试包装器
    */
-  private async withRetry<T>(fn: () => Promise<T>, callbacks?: StreamCallbacks): Promise<T> {
+  private async withRetry<T>(fn: () => Promise<T>, callbacks?: StreamCallbacks, signal?: AbortSignal): Promise<T> {
     let lastError: any;
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
+        this.throwIfAborted(signal);
         return await fn();
       } catch (error: any) {
         lastError = error;
+
+        if (this.isAbortError(error) || signal?.aborted) {
+          throw this.createAbortError();
+        }
 
         if (attempt >= MAX_RETRIES || !this.isRetryable(error)) {
           throw error;
@@ -229,10 +249,46 @@ export class AIService {
           + `[${this.config.provider}/${this.config.model || 'default'}]`
         );
 
-        await new Promise(resolve => setTimeout(resolve, delay));
+        await this.sleepWithAbort(delay, signal);
       }
     }
 
     throw lastError;
+  }
+
+  private throwIfAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+      throw this.createAbortError();
+    }
+  }
+
+  private sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+    if (!signal) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+    this.throwIfAborted(signal);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(this.createAbortError());
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
+  private isAbortError(error: any): boolean {
+    return error?.name === 'AbortError'
+      || error?.code === 'ERR_CANCELED'
+      || /aborted|aborterror|canceled|cancelled/i.test(String(error?.message || ''));
+  }
+
+  private createAbortError(): Error {
+    const err = new Error('请求已取消');
+    err.name = 'AbortError';
+    return err;
   }
 }

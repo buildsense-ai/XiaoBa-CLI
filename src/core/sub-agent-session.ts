@@ -189,6 +189,15 @@ export class SubAgentSession {
       }
     }
 
+    if (this.stopped) {
+      this.status = 'stopped';
+      this.completedAt = Date.now();
+      this.resultSummary = '任务已停止';
+      this.emitTerminalEvent('agent_stopped', `任务已停止：${this.taskDescription}`);
+      Logger.info(`[SubAgent ${this.id}] 已停止: ${this.taskDescription}`);
+      return;
+    }
+
     // 最终失败
     this.status = this.stopped ? 'stopped' : 'failed';
     this.completedAt = Date.now();

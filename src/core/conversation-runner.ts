@@ -219,7 +219,9 @@ export class ConversationRunner {
         const threshold = this.maxPromptTokens * 0.5;
         if (totalTokens > threshold) {
           Logger.info(`上下文使用率 ${usagePercent}%，触发压缩...`);
-          const compacted = await this.compressor.compact(messages);
+          const compacted = await this.compressor.compact(messages, {
+            signal: this.toolExecutionContext?.abortSignal,
+          });
           messages.length = 0;
           messages.push(...compacted);
         }
@@ -939,15 +941,18 @@ export class ConversationRunner {
     activeTools: ToolDefinition[],
     callbacks?: RunnerCallbacks,
   ) {
+    const requestOptions = {
+      signal: this.toolExecutionContext?.abortSignal,
+    };
     try {
       if (this.stream) {
         const streamCallbacks: StreamCallbacks = {
           onText: (text) => callbacks?.onText?.(text),
           onRetry: (attempt, maxRetries) => callbacks?.onRetry?.(attempt, maxRetries),
         };
-        return await this.aiService.chatStream(messages, activeTools, streamCallbacks);
+        return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
       }
-      return await this.aiService.chat(messages, activeTools);
+      return await this.aiService.chat(messages, activeTools, requestOptions);
     } catch (error: any) {
       if (!this.isPromptTooLongError(error)) {
         throw error;
@@ -961,9 +966,9 @@ export class ConversationRunner {
         const streamCallbacks: StreamCallbacks = {
           onText: (text) => callbacks?.onText?.(text),
         };
-        return await this.aiService.chatStream(messages, activeTools, streamCallbacks);
+        return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
       }
-      return await this.aiService.chat(messages, activeTools);
+      return await this.aiService.chat(messages, activeTools, requestOptions);
     }
   }
 

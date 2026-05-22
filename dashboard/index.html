@@ -2383,6 +2383,19 @@
       justify-content: flex-end;
     }
 
+    .update-actions #update-check-btn {
+      border-color: rgba(59, 130, 246, 0.42);
+      background: rgba(59, 130, 246, 0.12);
+      color: #1d4ed8;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+    }
+
+    .update-actions #update-check-btn:hover:not(:disabled) {
+      border-color: rgba(59, 130, 246, 0.58);
+      background: rgba(59, 130, 246, 0.18);
+      box-shadow: 0 12px 24px rgba(59, 130, 246, 0.16);
+    }
+
     #update-modal .modal {
       width: min(540px, 100%);
       max-height: min(70vh, 620px);
@@ -2406,13 +2419,15 @@
       min-height: 36px;
       font-size: 12px;
       font-weight: 700;
-      background: rgba(255,255,255,0.12);
-      border: 1px solid rgba(255,255,255,0.16);
-      color: #e8ebff;
+      background: linear-gradient(135deg, rgba(59,130,246,0.92), rgba(96,165,250,0.82));
+      border: 1px solid rgba(147,197,253,0.5);
+      color: #ffffff;
+      box-shadow: 0 12px 28px rgba(59, 130, 246, 0.22), inset 0 1px 0 rgba(255,255,255,0.28);
     }
 
     .sidebar-update-btn:hover {
-      background: rgba(255,255,255,0.2);
+      background: linear-gradient(135deg, rgba(37,99,235,0.98), rgba(59,130,246,0.92));
+      box-shadow: 0 16px 34px rgba(59, 130, 246, 0.30), inset 0 1px 0 rgba(255,255,255,0.34);
       transform: none;
     }
 
@@ -3252,6 +3267,19 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
 
+    .chat-history-note {
+      margin: 4px auto 18px;
+      width: fit-content;
+      max-width: 100%;
+      padding: 5px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.08);
+      color: var(--text3);
+      background: rgba(255,255,255,0.035);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
     .chat-runtime-plan {
       margin: 8px 0 4px;
       border: 1px solid var(--border-light);
@@ -3530,6 +3558,8 @@
 
     .chat-input-bar textarea:focus {
       border: 0;
+      background: transparent;
+      color: #f8fafc;
       box-shadow: none;
     }
 
@@ -4773,9 +4803,17 @@
     let catsNextAction = 'none';
     let catsPollTimer = null;
     let catsScrollPinnedToBottom = true;
+    let catsMessagesCache = [];
+    let catsMessagesHasOlder = true;
+    let catsMessagesLoading = false;
+    let catsMessagesLoadingOlder = false;
+    let catsMessagesTopicId = '';
+    let catsMessagesOwnerKey = '';
     let catsConnectCollapsed = true;
     let catsConnectManualOverride = false;
+    const CATS_MESSAGES_PAGE_SIZE = 50;
     const CATS_SCROLL_BOTTOM_THRESHOLD = 80;
+    const CATS_SCROLL_TOP_THRESHOLD = 96;
     let catsAttachmentQueue = [];
     let catsAttachmentSeq = 0;
     const CATS_ATTACHMENT_BROWSER_MESSAGE = '普通浏览器不能直接上传本地附件；请在 CatsCo 桌面客户端使用 + 选择文件，或把文件路径作为文字说明发给 Agent。';
@@ -6753,10 +6791,50 @@
       if(details)details.open=true;
     }
 
+    function catsMessageOwnerKey(state){
+      const uid=String(state?.user?.uid||'').trim();
+      const topic=String(state?.topicId||'').trim();
+      return uid && topic ? uid+'|'+topic : '';
+    }
+
+    function isCatsMessageRequestCurrent(ownerKey, topicId){
+      return ownerKey
+        && ownerKey===catsMessageOwnerKey(catsState)
+        && String(topicId||'')===String(catsState.topicId||'');
+    }
+
+    function resetCatsMessageCache(ownerKey=''){
+      catsMessagesCache=[];
+      catsMessagesHasOlder=true;
+      catsMessagesLoading=false;
+      catsMessagesLoadingOlder=false;
+      catsMessagesTopicId='';
+      catsMessagesOwnerKey=ownerKey;
+      catsScrollPinnedToBottom=true;
+    }
+
+    function showCatsMessagePlaceholder(text){
+      const box=document.getElementById('cats-messages');
+      if(box)box.innerHTML='<div class="loading">'+escapeHtml(text)+'</div>';
+      catsWorkingActive=false;
+      applyPetBaseline();
+    }
+
     async function fetchCatsStatus(){
       try{
+        const previousOwnerKey=catsMessagesOwnerKey;
         const data=await parseCatsResponse(await fetch(API+'/api/cats/status'));
         catsState=data||{};
+        const nextOwnerKey=catsMessageOwnerKey(catsState);
+        if(!nextOwnerKey){
+          resetCatsMessageCache();
+          showCatsMessagePlaceholder('登录 CatsCo 后查看当前账号消息');
+        }else if(previousOwnerKey && previousOwnerKey!==nextOwnerKey){
+          resetCatsMessageCache(nextOwnerKey);
+          showCatsMessagePlaceholder('正在加载当前账号消息...');
+        }else if(!previousOwnerKey){
+          catsMessagesOwnerKey=nextOwnerKey;
+        }
         renderCatsStatus();
         if((dashboardSettingsSnapshot.fields||[]).length && !shouldDeferModelSourceRender())renderModelSource(dashboardSettingsSnapshot);
         if(catsState.topicId) loadCatsMessages(false);
@@ -6989,7 +7067,7 @@
         setCatsAction('已连接。可以直接开始对话。');
         pulsePetState('success', '已连接', 2200);
         fetchStatus();
-        await loadCatsMessages(true);
+        await loadCatsMessages(true, {reset:true, forceBottom:true});
       }catch(e){
         setCatsAction('绑定失败：'+e.message,true);
       }finally{
@@ -7003,6 +7081,7 @@
         await parseCatsResponse(await fetch(API+'/api/cats/auth/logout',{method:'POST'}));
         catsState={};
         catsWorkingActive=false;
+        resetCatsMessageCache();
         lastCatsMessageSignature='';
         catsScrollPinnedToBottom=true;
         document.getElementById('cats-account').value='';
@@ -7019,7 +7098,7 @@
 
     function extractCatsMessageText(message){
       if(!message)return '';
-      if((message.type||message.msg_type)==='runtime_plan')return '';
+      if(catsMessageType(message)==='runtime_plan')return '';
       if(typeof message.content==='string')return message.content;
       if(Array.isArray(message.content_blocks)){
         return message.content_blocks.map(b=>b.text||b.content||'').filter(Boolean).join('\n');
@@ -7193,6 +7272,55 @@
       return null;
     }
 
+    function parseCatsRuntimePlanValue(value){
+      const parsed=parseCatsContent(value);
+      if(!parsed || typeof parsed!=='object')return null;
+      const steps=Array.isArray(parsed.steps)?parsed.steps:null;
+      if(!steps)return null;
+      const looksLikePlan=steps.every(step=>
+        step && typeof step==='object' &&
+        typeof step.text==='string' &&
+        (!step.status || ['pending','in_progress','completed'].includes(String(step.status)))
+      );
+      if(!looksLikePlan)return null;
+      if(parsed.runtime_plan || parsed.revision!=null || parsed.updatedAt!=null || parsed.updated_at!=null)return parsed;
+      return null;
+    }
+
+    function catsMessageKey(message){
+      if(!message)return '';
+      if(message.id!=null)return 'id:'+message.id;
+      if(message.seq_id!=null)return 'seq:'+message.seq_id;
+      const created=message.created_at||'';
+      const from=message.from_uid||message.from||'';
+      const content=typeof message.content==='string'?message.content:JSON.stringify(message.content||'');
+      return 'fallback:'+catsStableHash([created,from,content].join('|'));
+    }
+
+    function isCatsMessageMine(message){
+      const uid=String(catsState.user?.uid||'');
+      const from=String(message?.from_uid || message?.from || '');
+      return Boolean(uid && (from===uid || from===('usr'+uid)));
+    }
+
+    function mergeCatsMessages(existing,incoming){
+      const map=new Map();
+      (existing||[]).forEach(message=>{
+        const key=catsMessageKey(message);
+        if(key)map.set(key,message);
+      });
+      (incoming||[]).forEach(message=>{
+        const key=catsMessageKey(message);
+        if(key)map.set(key,message);
+      });
+      return [...map.values()].sort((a,b)=>{
+        const ta=Date.parse(a.created_at||'')||0;
+        const tb=Date.parse(b.created_at||'')||0;
+        if(ta!==tb)return ta-tb;
+        return Number(a.id||a.seq_id||0)-Number(b.id||b.seq_id||0);
+      });
+    }
+
     function normalizeMediaUrl(url){
       if(!url)return '';
       if(/^https?:\/\//i.test(url))return url;
@@ -7258,25 +7386,19 @@
     }
 
     function catsMessageType(message){
-      const type=message?.type||'';
-      if(type)return type;
-      const msgType=message?.msg_type||'';
-      return CATS_WORKING_TYPES.has(msgType)?msgType:'';
+      const type=String(message?.type||'');
+      const msgType=String(message?.msg_type||'');
+      const metadata=message?.metadata||{};
+      if(type==='runtime_plan' || msgType==='runtime_plan' || metadata.runtime_plan)return 'runtime_plan';
+      if(!isCatsMessageMine(message) && parseCatsRuntimePlanValue(message?.content))return 'runtime_plan';
+      if(type && type!=='text')return type;
+      if(CATS_WORKING_TYPES.has(msgType))return msgType;
+      return type || msgType || '';
     }
 
     function catsRuntimePlanSnapshot(message){
       if(catsMessageType(message)!=='runtime_plan')return null;
-      const content=message?.content;
-      if(content && typeof content==='object')return content;
-      if(typeof content==='string'){
-        try{
-          const parsed=JSON.parse(content);
-          return parsed && typeof parsed==='object'?parsed:null;
-        }catch(_e){
-          return null;
-        }
-      }
-      return null;
+      return parseCatsRuntimePlanValue(message?.content || message?.metadata?.snapshot);
     }
 
     function catsRuntimePlanKey(message,snapshot){
@@ -7303,7 +7425,8 @@
       const steps=Array.isArray(snapshot?.steps)?snapshot.steps:[];
       if(!steps.length)return '';
       const key=catsRuntimePlanKey(message,snapshot);
-      const open=catsRuntimePlanOpenState.has(key)?catsRuntimePlanOpenState.get(key):true;
+      const allDone=steps.every(step=>step?.status==='completed');
+      const open=catsRuntimePlanOpenState.has(key)?catsRuntimePlanOpenState.get(key):!allDone;
       const done=steps.filter(step=>step?.status==='completed').length;
       const statusLabels={pending:'待处理',in_progress:'进行中',completed:'已完成'};
       const body=steps.map(step=>{
@@ -7636,6 +7759,14 @@
       catsScrollPinnedToBottom=isCatsMessageScrollNearBottom(box);
     }
 
+    function handleCatsMessagesScroll(){
+      const box=document.getElementById('cats-messages');
+      updateCatsMessageScrollIntent();
+      if(box && box.scrollTop<=CATS_SCROLL_TOP_THRESHOLD){
+        loadOlderCatsMessages();
+      }
+    }
+
     function scrollCatsMessagesToBottom(box){
       if(!box)return;
       box.scrollTop=box.scrollHeight;
@@ -7645,14 +7776,37 @@
     function groupCatsTimelineMessages(messages, uid){
       const groups=[];
       let currentWorking=null;
+      let pendingRuntimePlan=null;
       let prevSender='';
       let prevTime=0;
+      const flushWorking=()=>{
+        if(currentWorking){
+          groups.push(currentWorking);
+          currentWorking=null;
+        }
+      };
+      const flushRuntimePlan=()=>{
+        if(pendingRuntimePlan){
+          groups.push(pendingRuntimePlan);
+          pendingRuntimePlan=null;
+        }
+      };
       (messages||[]).forEach(message=>{
-        if(isCatsRuntimePlanClearMessage(message))return;
+        if(isCatsRuntimePlanClearMessage(message)){
+          pendingRuntimePlan=null;
+          return;
+        }
         const from=String(message.from_uid || message.from || '');
         const created=message.created_at?new Date(message.created_at):null;
         const time=created && !Number.isNaN(created.getTime()) ? created.getTime() : Date.now();
         const consecutive=prevSender===from && time-prevTime < 5*60*1000;
+        if(isCatsRuntimePlanMessage(message)){
+          flushWorking();
+          pendingRuntimePlan={type:'runtime_plan', message, from, isConsecutive:consecutive};
+          prevSender=from;
+          prevTime=time;
+          return;
+        }
         if(isCatsWorkingMessage(message)){
           if(!currentWorking){
             currentWorking={type:'working', messages:[], from, isConsecutive:consecutive};
@@ -7662,15 +7816,14 @@
           prevTime=time;
           return;
         }
-        if(currentWorking){
-          groups.push(currentWorking);
-          currentWorking=null;
-        }
+        flushRuntimePlan();
+        flushWorking();
         groups.push({type:'text', message, from, isConsecutive:consecutive});
         prevSender=from;
         prevTime=time;
       });
-      if(currentWorking)groups.push(currentWorking);
+      flushRuntimePlan();
+      flushWorking();
       return groups;
     }
 
@@ -7699,10 +7852,13 @@
       '</div>';
     }
 
-    function renderCatsMessages(messages){
+    function renderCatsMessages(messages, options={}){
       const box=document.getElementById('cats-messages');
       const uid=String(catsState.user?.uid||'');
-      const shouldStickToBottom=catsScrollPinnedToBottom || !box.scrollHeight || isCatsMessageScrollNearBottom(box);
+      const oldScrollTop=box.scrollTop;
+      const oldScrollHeight=box.scrollHeight;
+      const preserveViewport=Boolean(options.preserveViewport);
+      const shouldStickToBottom=Boolean(options.forceBottom) || (!preserveViewport && (catsScrollPinnedToBottom || !box.scrollHeight || isCatsMessageScrollNearBottom(box)));
       const openDetails=captureCatsOpenDetails(box);
       const workingScrollPositions=captureCatsWorkingScrollPositions(box);
       if(!messages || !messages.length){
@@ -7711,27 +7867,102 @@
       }
       const groups=groupCatsTimelineMessages(messages, uid);
       const html=groups.map(group=>{
+        if(group.type==='runtime_plan'){
+          return renderCatsMessageShell(group.message, renderCatsRuntimePlan(group.message), {isConsecutive:group.isConsecutive});
+        }
         if(group.type==='working'){
           const first=group.messages[0]||{};
           return renderCatsMessageShell(first, renderCatsWorkingMessagesBody(group.messages), {working:true, isConsecutive:group.isConsecutive});
         }
         return renderCatsMessageShell(group.message, renderCatsMessageBody(group.message), {isConsecutive:group.isConsecutive});
       }).join('');
-      box.innerHTML='<div class="chat-timeline-inner">'+html+'</div>';
+      const historyNote=catsMessagesLoadingOlder
+        ? '<div class="chat-history-note">正在加载更早消息...</div>'
+        : (!catsMessagesHasOlder?'<div class="chat-history-note">已到最早消息</div>':'');
+      box.innerHTML='<div class="chat-timeline-inner">'+historyNote+html+'</div>';
       restoreCatsOpenDetails(box, openDetails);
       restoreCatsWorkingScrollPositions(box, workingScrollPositions);
-      if(shouldStickToBottom)scrollCatsMessagesToBottom(box);
+      if(preserveViewport){
+        const delta=options.prepended ? box.scrollHeight-oldScrollHeight : 0;
+        box.scrollTop=Math.max(0, oldScrollTop+delta);
+        catsScrollPinnedToBottom=isCatsMessageScrollNearBottom(box);
+      }else if(shouldStickToBottom){
+        scrollCatsMessagesToBottom(box);
+      }
       updatePetFromCatsMessages(messages);
     }
 
-    async function loadCatsMessages(showErrors=true){
+    async function fetchCatsMessagesPage(offset, limit=CATS_MESSAGES_PAGE_SIZE, topicId=catsState.topicId){
+      return parseCatsResponse(await fetch(API+'/api/cats/messages?topic='+encodeURIComponent(topicId)+'&limit='+encodeURIComponent(limit)+'&offset='+encodeURIComponent(offset)));
+    }
+
+    async function loadCatsMessages(showErrors=true, options={}){
+      const ownerKey=catsMessageOwnerKey(catsState);
+      if(!ownerKey){
+        resetCatsMessageCache();
+        showCatsMessagePlaceholder('登录 CatsCo 后查看当前账号消息');
+        return;
+      }
+      if(catsMessagesOwnerKey!==ownerKey){
+        resetCatsMessageCache(ownerKey);
+        options=Object.assign({}, options, {reset:true, forceBottom:true});
+      }
       if(!catsState.topicId)return;
+      if(catsMessagesLoading)return;
+      catsMessagesLoading=true;
+      const requestOwnerKey=ownerKey;
+      const requestTopicId=catsState.topicId;
       try{
-        const data=await parseCatsResponse(await fetch(API+'/api/cats/messages?topic='+encodeURIComponent(catsState.topicId)+'&limit=50&offset=0'));
-        renderCatsMessages(data.messages||[]);
+        if(catsMessagesTopicId!==requestTopicId){
+          catsMessagesTopicId=requestTopicId;
+          catsMessagesCache=[];
+          catsMessagesHasOlder=true;
+          options=Object.assign({}, options, {reset:true, forceBottom:true});
+        }
+        const data=await fetchCatsMessagesPage(0, CATS_MESSAGES_PAGE_SIZE, requestTopicId);
+        if(!isCatsMessageRequestCurrent(requestOwnerKey, requestTopicId))return;
+        const incoming=data.messages||[];
+        if(options.reset || !catsMessagesCache.length){
+          catsMessagesCache=incoming;
+          catsMessagesHasOlder=incoming.length>=CATS_MESSAGES_PAGE_SIZE;
+        }else{
+          catsMessagesCache=mergeCatsMessages(catsMessagesCache,incoming);
+        }
+        renderCatsMessages(catsMessagesCache, {
+          forceBottom: Boolean(options.forceBottom),
+          preserveViewport: Boolean(options.preserveViewport) || (!catsScrollPinnedToBottom && !options.forceBottom),
+        });
         if(showErrors) pulsePetState('success','消息已刷新',1400);
       }catch(e){
         if(showErrors)setCatsAction('加载消息失败：'+e.message,true);
+      }finally{
+        catsMessagesLoading=false;
+      }
+    }
+
+    async function loadOlderCatsMessages(){
+      if(!catsState.topicId || catsMessagesLoadingOlder || !catsMessagesHasOlder || !catsMessagesCache.length)return;
+      const requestOwnerKey=catsMessageOwnerKey(catsState);
+      const requestTopicId=catsState.topicId;
+      catsMessagesLoadingOlder=true;
+      renderCatsMessages(catsMessagesCache, {preserveViewport:true});
+      try{
+        const data=await fetchCatsMessagesPage(catsMessagesCache.length, CATS_MESSAGES_PAGE_SIZE, requestTopicId);
+        if(!isCatsMessageRequestCurrent(requestOwnerKey, requestTopicId)){
+          catsMessagesLoadingOlder=false;
+          return;
+        }
+        const incoming=data.messages||[];
+        if(incoming.length<CATS_MESSAGES_PAGE_SIZE)catsMessagesHasOlder=false;
+        if(incoming.length){
+          catsMessagesCache=mergeCatsMessages(incoming,catsMessagesCache);
+        }
+        catsMessagesLoadingOlder=false;
+        renderCatsMessages(catsMessagesCache, {preserveViewport:true, prepended:incoming.length>0});
+      }catch(e){
+        setCatsAction('加载更早消息失败：'+e.message,true);
+        catsMessagesLoadingOlder=false;
+        renderCatsMessages(catsMessagesCache, {preserveViewport:true});
       }
     }
 
@@ -7904,7 +8135,7 @@
         catsScrollPinnedToBottom=true;
         if(failed)setCatsAction(failed+' 个附件发送失败，请重新选择文件或检查 CatsCo 连接。',true);
         else pulsePetState('success', '已发送', 1800);
-        await loadCatsMessages(true);
+        await loadCatsMessages(true, {forceBottom:true});
       }catch(e){
         setCatsAction('发送失败：'+e.message,true);
       }finally{
@@ -7951,7 +8182,7 @@
     if(document.getElementById('page-chat')?.classList.contains('active') && !catsPollTimer) catsPollTimer = setInterval(fetchCatsStatus, 5000);
     setInterval(fetchStatus,5000);setInterval(fetchSkills,30000);setInterval(()=>fetchUpdateStatus(true),5000);
     const catsMessagesBox = document.getElementById('cats-messages');
-    catsMessagesBox.addEventListener('scroll', updateCatsMessageScrollIntent, { passive: true });
+    catsMessagesBox.addEventListener('scroll', handleCatsMessagesScroll, { passive: true });
     const catsMessageInput = document.getElementById('cats-message-input');
     catsMessageInput.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendCatsMessage();}});
     catsMessageInput.addEventListener('paste',e=>{

@@ -267,6 +267,7 @@ export class AgentSession {
       this.messages = await this.contextWindowManager.compactIfNeeded(this.messages, {
         sessionKey: this.key,
         reason: '恢复后',
+        signal: this.activeAbortController?.signal,
       });
     }
 
@@ -377,6 +378,7 @@ export class AgentSession {
       this.messages = await this.contextWindowManager.compactIfNeeded(this.messages, {
         sessionKey: this.key,
         reason: '处理前',
+        signal: this.activeAbortController.signal,
       });
 
       try {
@@ -396,6 +398,13 @@ export class AgentSession {
         this.lifecycleManager.saveContext(this.messages);
         return result;
       } catch (err: any) {
+        if (this.isAbortError(err) || this.interruptRequested || this.activeAbortController.signal.aborted) {
+          Logger.info(`[会话 ${this.key}] 当前请求已取消`);
+          this.messages = this.turnContextBuilder.removeTransientMessages(this.messages);
+          this.lifecycleManager.saveContext(this.messages);
+          return { text: '已停止当前请求。', visibleToUser: true };
+        }
+
         // 不删除用户消息，而是添加一个错误回复，保持上下文连贯
         // 这样用户说"继续"时可以接上
         Logger.error(`[会话 ${this.key}] 处理失败: ${err.message}`);
@@ -575,6 +584,12 @@ export class AgentSession {
     if (injectedCount <= AgentSession.MAX_INJECTED_CONTEXT) return;
     const idx = this.messages.findIndex(m => m.__injected);
     if (idx >= 0) this.messages.splice(idx, 1);
+  }
+
+  private isAbortError(error: any): boolean {
+    return error?.name === 'AbortError'
+      || error?.code === 'ERR_CANCELED'
+      || /请求已取消|aborted|aborterror|canceled|cancelled/i.test(String(error?.message || ''));
   }
 
 }

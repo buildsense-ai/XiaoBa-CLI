@@ -74,6 +74,47 @@ test('AIService does not surface transient stream errors when retry succeeds', a
   assert.deepStrictEqual(chunks, ['ok']);
 });
 
+test('AIService passes AbortSignal to chatStream provider calls', async () => {
+  const service = createTestService();
+  const controller = new AbortController();
+  let capturedSignal: AbortSignal | undefined;
+  const finalResponse: ChatResponse = { content: 'ok' };
+  (service as any).provider = {
+    chat: async () => ({ content: null }),
+    chatStream: async (_messages: unknown, _tools: unknown, _callbacks?: StreamCallbacks, options?: { signal?: AbortSignal }) => {
+      capturedSignal = options?.signal;
+      return finalResponse;
+    },
+  };
+
+  const result = await service.chatStream([], undefined, undefined, { signal: controller.signal });
+  assert.equal(result, finalResponse);
+  assert.equal(capturedSignal, controller.signal);
+});
+
+test('AIService cancels before provider call when signal is already aborted', async () => {
+  const service = createTestService();
+  const controller = new AbortController();
+  let called = false;
+  (service as any).provider = {
+    chat: async () => {
+      called = true;
+      return { content: null };
+    },
+    chatStream: async () => {
+      called = true;
+      return { content: null };
+    },
+  };
+
+  controller.abort();
+  await assert.rejects(
+    () => service.chat([], undefined, { signal: controller.signal }),
+    /请求已取消/,
+  );
+  assert.equal(called, false);
+});
+
 function createTestService(): AIService {
   return new AIService({
     provider: 'openai',

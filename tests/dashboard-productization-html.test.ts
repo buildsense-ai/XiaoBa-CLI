@@ -115,16 +115,41 @@ test('custom model save refreshes readiness before Chat remains locked', () => {
 
 test('CatsCo Chat preserves scroll position while reading history', () => {
   assert.match(dashboardHtml, /let catsScrollPinnedToBottom = true/);
+  assert.match(dashboardHtml, /let catsMessagesCache = \[\]/);
+  assert.match(dashboardHtml, /let catsMessagesOwnerKey = ''/);
+  assert.match(dashboardHtml, /const CATS_MESSAGES_PAGE_SIZE = 50/);
   assert.match(dashboardHtml, /const CATS_SCROLL_BOTTOM_THRESHOLD = 80/);
+  assert.match(dashboardHtml, /const CATS_SCROLL_TOP_THRESHOLD = 96/);
   assert.match(dashboardHtml, /function isCatsMessageScrollNearBottom\(box\)/);
   assert.match(dashboardHtml, /function updateCatsMessageScrollIntent\(\)/);
+  assert.match(dashboardHtml, /function handleCatsMessagesScroll\(\)/);
+  assert.match(dashboardHtml, /function catsMessageOwnerKey\(state\)/);
+  assert.match(dashboardHtml, /function isCatsMessageRequestCurrent\(ownerKey, topicId\)/);
+  assert.match(dashboardHtml, /function resetCatsMessageCache\(ownerKey=''\)/);
+  assert.match(dashboardHtml, /登录 CatsCo 后查看当前账号消息/);
   assert.match(dashboardHtml, /function scrollCatsMessagesToBottom\(box\)/);
-  assert.match(dashboardHtml, /addEventListener\('scroll', updateCatsMessageScrollIntent, \{ passive: true \}\)/);
+  assert.match(dashboardHtml, /function loadOlderCatsMessages\(\)/);
+  assert.match(dashboardHtml, /fetchCatsMessagesPage\(catsMessagesCache\.length, CATS_MESSAGES_PAGE_SIZE, requestTopicId\)/);
+  assert.match(dashboardHtml, /addEventListener\('scroll', handleCatsMessagesScroll, \{ passive: true \}\)/);
 
-  const renderBlock = dashboardHtml.match(/function renderCatsMessages\(messages\)\{[\s\S]*?async function loadCatsMessages/)?.[0] || '';
+  const renderBlock = dashboardHtml.match(/function renderCatsMessages\(messages, options=\{\}\)\{[\s\S]*?async function fetchCatsMessagesPage/)?.[0] || '';
   assert.match(renderBlock, /const shouldStickToBottom=/);
-  assert.match(renderBlock, /if\(shouldStickToBottom\)scrollCatsMessagesToBottom\(box\)/);
+  assert.match(renderBlock, /const preserveViewport=Boolean\(options\.preserveViewport\)/);
+  assert.match(renderBlock, /box\.scrollTop=Math\.max\(0, oldScrollTop\+delta\)/);
+  assert.match(renderBlock, /else if\(shouldStickToBottom\)\{\s*scrollCatsMessagesToBottom\(box\)/);
   assert.doesNotMatch(renderBlock, /box\.scrollTop=box\.scrollHeight;\s*updatePetFromCatsMessages/);
+});
+
+test('CatsCo Chat recognizes persisted runtime plan snapshots instead of rendering raw JSON', () => {
+  assert.match(dashboardHtml, /function parseCatsRuntimePlanValue\(value\)/);
+  assert.match(dashboardHtml, /parsed\.revision!=null/);
+  assert.match(dashboardHtml, /function isCatsMessageMine\(message\)/);
+  assert.match(dashboardHtml, /!isCatsMessageMine\(message\) && parseCatsRuntimePlanValue\(message\?\.content\)/);
+  assert.match(dashboardHtml, /parseCatsRuntimePlanValue\(message\?\.content\)/);
+  assert.match(dashboardHtml, /const flushRuntimePlan=\(\)=>/);
+  assert.match(dashboardHtml, /pendingRuntimePlan=\{type:'runtime_plan'/);
+  assert.match(dashboardHtml, /group\.type==='runtime_plan'/);
+  assert.match(dashboardHtml, /renderCatsMessageShell\(group\.message, renderCatsRuntimePlan\(group\.message\)/);
 });
 
 test('CatsCo Chat composer supports local attachments', () => {
@@ -146,6 +171,13 @@ test('CatsCo Chat composer supports local attachments', () => {
   assert.doesNotMatch(dashboardHtml, /queueCatsPaths/);
   assert.match(dashboardHtml, /catsMessageInput\.addEventListener\('paste'/);
   assert.match(dashboardHtml, /\/api\/cats\/messages\/send-file/);
+});
+
+test('CatsCo Chat composer keeps focused text readable on dark input surface', () => {
+  assert.match(
+    dashboardHtml,
+    /\.chat-input-bar textarea:focus \{[\s\S]*?background: transparent;[\s\S]*?color: #f8fafc;[\s\S]*?box-shadow: none;[\s\S]*?\}/,
+  );
 });
 
 test('CatsCo Chat preserves fallback tool metadata for WORKING rendering', () => {
