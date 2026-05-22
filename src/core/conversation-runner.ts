@@ -411,6 +411,9 @@ export class ConversationRunner {
           && !result.errorCode
         ) {
           hasDeliveredMessageOutThisRun = true;
+          if (outboundFileKey) {
+            deliveredOutboundFiles.add(outboundFileKey);
+          }
         }
 
         const toolContent = result.content;
@@ -446,6 +449,8 @@ export class ConversationRunner {
           if (content) {
             if (lastOutboundContent === content && !observationSinceLastOutbound) {
               nextTurnTransientHints = [this.buildDuplicateOutboundHint(content)];
+            } else if (transcriptMode === 'outbound_file') {
+              nextTurnTransientHints = [this.buildOutboundFileDeliveredHint(record)];
             }
             lastOutboundContent = content;
             observationSinceLastOutbound = false;
@@ -790,7 +795,7 @@ export class ConversationRunner {
       return false;
     }
 
-    return transcriptMode === 'outbound_message';
+    return transcriptMode === 'outbound_message' || transcriptMode === 'outbound_file';
   }
 
   private buildOutboundAssistantMessage(
@@ -814,6 +819,17 @@ export class ConversationRunner {
       return {
         role: 'assistant',
         content: text,
+      };
+    }
+
+    if (transcriptMode === 'outbound_file') {
+      const fileName = typeof args.file_name === 'string' ? args.file_name.trim() : '';
+      if (!fileName) {
+        return null;
+      }
+      return {
+        role: 'assistant',
+        content: fileName,
       };
     }
 
@@ -850,6 +866,68 @@ export class ConversationRunner {
     return {
       role: 'system',
       content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n你刚刚连续发送了与上一条相同的内容：“${content}”。如果这是用户真正需要的重复确认，可以继续；否则请避免无意义重复，必要时调用 pause_turn 收束。`,
+    };
+  }
+
+  private buildOutboundFileDeliveredHint(record: ToolExecutionRecord): Message {
+    let args: Record<string, unknown> = {};
+    try {
+      args = JSON.parse(record.toolCall.function.arguments || '{}');
+    } catch {}
+
+    const fileName = typeof args.file_name === 'string' ? args.file_name.trim() : '';
+    const filePath = typeof args.file_path === 'string' ? args.file_path.trim() : '';
+    const details = [
+      fileName ? `File name: ${fileName}` : '',
+      filePath ? `File path: ${filePath}` : '',
+    ].filter(Boolean).join('\n');
+
+    return {
+      role: 'system',
+      content: [
+        TRANSIENT_RUNNER_HINT_PREFIX,
+        'The previous send_file call already sent the file to the current chat successfully.',
+        details,
+        'Do not call send_file again for the same file unless the user explicitly asks to resend it.',
+        'Now continue normally and give the user a short confirmation or any necessary next-step note.',
+      ].filter(Boolean).join('\n'),
+    };
+  }
+
+  private buildOutboundFileKey(toolCall: ToolCall): string | null {
+    try {
+      const args = JSON.parse(toolCall.function.arguments || '{}');
+      const filePath = typeof args.file_path === 'string' ? args.file_path.trim() : '';
+      const fileName = typeof args.file_name === 'string' ? args.file_name.trim() : '';
+      if (!filePath && !fileName) return null;
+      return `${filePath}\n${fileName}`.toLowerCase();
+    } catch {
+      return null;
+    }
+  }
+
+  private buildDuplicateOutboundFileResult(toolCall: ToolCall): ToolResult {
+    let args: Record<string, unknown> = {};
+    try {
+      args = JSON.parse(toolCall.function.arguments || '{}');
+    } catch {}
+
+    const filePath = typeof args.file_path === 'string' ? args.file_path.trim() : '';
+    const fileName = typeof args.file_name === 'string' ? args.file_name.trim() : '';
+
+    return {
+      tool_call_id: toolCall.id,
+      role: 'tool',
+      name: toolCall.function.name,
+      ok: false,
+      errorCode: 'DUPLICATE_OUTBOUND_FILE',
+      retryable: false,
+      content: [
+        'This file was already sent earlier in the current agent run.',
+        filePath ? `Path: ${filePath}` : '',
+        fileName ? `Name: ${fileName}` : '',
+        'Do not call send_file again for the same file. Give the user a short confirmation instead.',
+      ].filter(Boolean).join('\n'),
     };
   }
 

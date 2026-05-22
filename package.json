@@ -32,6 +32,7 @@
     "electron:build:mac:arm64": "npm run build && node scripts/prepare-runtime.mjs darwin arm64 && electron-builder --config electron-builder.config.cjs --mac --arm64 --publish never",
     "release:check": "node scripts/check-release-branding.mjs",
     "release:verify-version": "node scripts/verify-release-version.js",
+    "skillhub:trust-root": "node scripts/update-skillhub-root-key.mjs",
     "version:sync": "node scripts/inject-version.js"
   },
   "keywords": [
