@@ -24,8 +24,20 @@ describe('catsco review agent config', () => {
           'CATSCO_REVIEW_TARGET_USER_ID=catsco_116',
           'CATSCO_REVIEW_TARGET_DEVICE_ID=device-raw',
           'CATSCO_REVIEW_TARGET_DEVICE_NAME=教务处电脑',
+          'CATSCO_REVIEW_TARGET_BOT_ID=bot-raw',
+          'CATSCO_REVIEW_TARGET_PERSON_ID=person-raw',
+          'CATSCO_REVIEW_TARGET_ACTOR_EXTERNAL_USER_ID=actor-external-raw',
+          'CATSCO_REVIEW_TARGET_ACTOR_CATSCO_USER_ID=actor-catsco-raw',
+          'CATSCO_REVIEW_TARGET_ACTOR_WEIXIN_USER_ID=actor-weixin-raw',
+          'CATSCO_REVIEW_TARGET_ACTOR_FEISHU_USER_ID=actor-feishu-raw',
           'CATSCO_REVIEW_TARGET_USER_KEY=user-a',
           'CATSCO_REVIEW_TARGET_DEVICE_KEY=device-a',
+          'CATSCO_REVIEW_TARGET_BOT_KEY=bot-a',
+          'CATSCO_REVIEW_TARGET_PERSON_KEY=person-a',
+          'CATSCO_REVIEW_TARGET_ACTOR_KEY=actor-a',
+          'CATSCO_REVIEW_TARGET_ACTOR_CATSCO_USER_KEY=actor-catsco-a',
+          'CATSCO_REVIEW_TARGET_ACTOR_WEIXIN_USER_KEY=actor-weixin-a',
+          'CATSCO_REVIEW_TARGET_ACTOR_FEISHU_USER_KEY=actor-feishu-a',
           'CATSCO_REVIEW_TARGET_SESSION_ID=session-raw',
           'CATSCO_REVIEW_TARGET_SESSION_KEY=session-a',
           'CATSCO_REVIEW_TARGET_SESSION_TYPE=chat',
@@ -50,8 +62,20 @@ describe('catsco review agent config', () => {
       assert.equal(config.targetUserId, 'catsco_116');
       assert.equal(config.targetDeviceId, 'device-raw');
       assert.equal(config.targetDeviceName, '教务处电脑');
+      assert.equal(config.targetBotId, 'bot-raw');
+      assert.equal(config.targetPersonId, 'person-raw');
+      assert.equal(config.targetActorExternalUserId, 'actor-external-raw');
+      assert.equal(config.targetActorCatscoUserId, 'actor-catsco-raw');
+      assert.equal(config.targetActorWeixinUserId, 'actor-weixin-raw');
+      assert.equal(config.targetActorFeishuUserId, 'actor-feishu-raw');
       assert.equal(config.targetUserKey, 'user-a');
       assert.equal(config.targetDeviceKey, 'device-a');
+      assert.equal(config.targetBotKey, 'bot-a');
+      assert.equal(config.targetPersonKey, 'person-a');
+      assert.equal(config.targetActorKey, 'actor-a');
+      assert.equal(config.targetActorCatscoUserKey, 'actor-catsco-a');
+      assert.equal(config.targetActorWeixinUserKey, 'actor-weixin-a');
+      assert.equal(config.targetActorFeishuUserKey, 'actor-feishu-a');
       assert.equal(config.targetSessionId, 'session-raw');
       assert.equal(config.targetSessionKey, 'session-a');
       assert.equal(config.targetSessionType, 'chat');

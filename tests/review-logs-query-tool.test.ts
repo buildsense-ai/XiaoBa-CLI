@@ -30,6 +30,9 @@ describe('review_logs_query tool', () => {
         if (url.pathname === '/catsco/review/summary') {
           summaryCalled = true;
           capturedParams.summaryUserId = url.searchParams.get('user_id');
+          capturedParams.summaryPersonId = url.searchParams.get('person_id');
+          capturedParams.summaryActorKey = url.searchParams.get('actor_key');
+          capturedParams.summaryBotKey = url.searchParams.get('bot_key');
           capturedParams.summaryOrgType = url.searchParams.get('org_type');
           return jsonResponse({
             upload_count: 1,
@@ -49,6 +52,9 @@ describe('review_logs_query tool', () => {
         }
         if (url.pathname === '/catsco/review/sessions') {
           capturedParams.sessionsUserId = url.searchParams.get('user_id');
+          capturedParams.sessionsPersonId = url.searchParams.get('person_id');
+          capturedParams.sessionsActorKey = url.searchParams.get('actor_key');
+          capturedParams.sessionsBotKey = url.searchParams.get('bot_key');
           capturedParams.sessionsOrgType = url.searchParams.get('org_type');
           return jsonResponse({
             page: { limit: 100, offset: 0, count: 1, has_more: false },
@@ -57,6 +63,9 @@ describe('review_logs_query tool', () => {
         }
         if (url.pathname === '/catsco/review/turns') {
           capturedParams.turnsUserId = url.searchParams.get('user_id');
+          capturedParams.turnsPersonId = url.searchParams.get('person_id');
+          capturedParams.turnsActorKey = url.searchParams.get('actor_key');
+          capturedParams.turnsBotKey = url.searchParams.get('bot_key');
           capturedParams.turnsOrgType = url.searchParams.get('org_type');
           return jsonResponse({
             page: { limit: 100, offset: 0, count: 1, has_more: false },
@@ -66,6 +75,11 @@ describe('review_logs_query tool', () => {
               turn_no: 1,
               user_key: 'teacher-key',
               device_key: 'device-key',
+              bot_key: 'bot-key',
+              person_key: 'person-key',
+              actor_key: 'actor-key',
+              actor_weixin_user_key: 'actor-weixin-key',
+              person_id: 'person-raw',
               session_key: 'session-key',
               org_type: 'school',
               user_role: 'teacher',
@@ -96,6 +110,9 @@ describe('review_logs_query tool', () => {
       const result = await tool.execute({
         question: '老师主要问了什么？',
         user_id: 'catsco_116',
+        person_id: 'person-raw',
+        actor_key: 'actor-key',
+        bot_key: 'bot-key',
         org_type: 'school',
         max_evidence_items: 5,
         max_target_turns: 100,
@@ -123,10 +140,22 @@ describe('review_logs_query tool', () => {
       assert.equal(capturedParams.summaryUserId, 'catsco_116');
       assert.equal(capturedParams.sessionsUserId, 'catsco_116');
       assert.equal(capturedParams.turnsUserId, 'catsco_116');
+      assert.equal(capturedParams.summaryPersonId, 'person-raw');
+      assert.equal(capturedParams.sessionsPersonId, 'person-raw');
+      assert.equal(capturedParams.turnsPersonId, 'person-raw');
+      assert.equal(capturedParams.summaryActorKey, 'actor-key');
+      assert.equal(capturedParams.sessionsActorKey, 'actor-key');
+      assert.equal(capturedParams.turnsActorKey, 'actor-key');
+      assert.equal(capturedParams.summaryBotKey, 'bot-key');
+      assert.equal(capturedParams.sessionsBotKey, 'bot-key');
+      assert.equal(capturedParams.turnsBotKey, 'bot-key');
       assert.equal(capturedParams.summaryOrgType, 'school');
       assert.equal(capturedParams.sessionsOrgType, 'school');
       assert.equal(capturedParams.turnsOrgType, 'school');
       assert.doesNotMatch(promptText, /catsco_116/);
+      assert.doesNotMatch(promptText, /person-raw/);
+      assert.match(promptText, /actor-key/);
+      assert.match(promptText, /bot-key/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -143,6 +172,9 @@ function sessionFixture() {
     upload_id: 'upload-1',
     user_key: 'teacher-key',
     device_key: 'device-key',
+    bot_key: 'bot-key',
+    person_key: 'person-key',
+    actor_key: 'actor-key',
     session_key: 'session-key',
     session_type: 'chat',
     entry_count: 0,

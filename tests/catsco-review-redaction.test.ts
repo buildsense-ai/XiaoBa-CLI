@@ -13,7 +13,9 @@ describe('catsco review redaction', () => {
       'UNC \\\\server\\share name\\folder\\file.txt',
       'URL https://logs.catsco.fun:8000/private?a=1',
       'user_id=catsco_116 device_id=device-raw device_name=教务处电脑 session_id=session-raw',
-      '{"user_id":"catsco_117","device_name":"老师电脑","session_id":"session-json"}',
+      'bot_id=bot-raw person_id=person-raw actor_external_user_id=actor-external actor_weixin_user_id=wx-raw',
+      'from_user_id=from-raw to_user_id=to-raw raw_actor_id=actor-raw',
+      '{"user_id":"catsco_117","device_name":"老师电脑","session_id":"session-json","actor_catsco_user_id":"catsco-platform-raw"}',
     ].join('\n'));
 
     assert.match(redacted, /Bearer \[REDACTED\]/);
@@ -31,5 +33,6 @@ describe('catsco review redaction', () => {
     assert.doesNotMatch(redacted, /catsco_116/);
     assert.doesNotMatch(redacted, /教务处电脑/);
     assert.doesNotMatch(redacted, /session-json/);
+    assert.doesNotMatch(redacted, /bot-raw|person-raw|actor-external|wx-raw|from-raw|to-raw|catsco-platform-raw/);
   });
 });

@@ -22,10 +22,16 @@ export interface ReviewUsageAnalysis {
   target: {
     userKey?: string;
     deviceKey?: string;
+    botKey?: string;
+    personKey?: string;
+    actorKey?: string;
   };
   totals: {
     userCount: number;
     deviceCount: number;
+    botCount: number;
+    personCount: number;
+    actorCount: number;
     sessionCount: number;
     activeDays: number;
     turnCount: number;
@@ -35,6 +41,7 @@ export interface ReviewUsageAnalysis {
     averageTurnsPerSession: number;
   };
   users: ReviewUsageUserSummary[];
+  actors: ReviewUsageActorSummary[];
   topics: ReviewUsageTopicSummary[];
   timeBuckets: {
     byDay: ReviewUsageTimeBucket[];
@@ -46,12 +53,34 @@ export interface ReviewUsageAnalysis {
   segments: {
     orgKeys: ReviewUsageNamedCount[];
     orgTypes: ReviewUsageNamedCount[];
+    botKeys: ReviewUsageNamedCount[];
+    personKeys: ReviewUsageNamedCount[];
+    actorKeys: ReviewUsageNamedCount[];
+    actorCatscoUserKeys: ReviewUsageNamedCount[];
+    actorWeixinUserKeys: ReviewUsageNamedCount[];
+    actorFeishuUserKeys: ReviewUsageNamedCount[];
     userRoles: ReviewUsageNamedCount[];
     deviceRoles: ReviewUsageNamedCount[];
     channelTypes: ReviewUsageNamedCount[];
     workspaceKeys: ReviewUsageNamedCount[];
   };
   questionSamples: ReviewUsageQuestionSample[];
+}
+
+export interface ReviewUsageActorSummary {
+  actorKey: string;
+  personKeys: ReviewUsageNamedCount[];
+  botKeys: ReviewUsageNamedCount[];
+  sessionCount: number;
+  activeDays: number;
+  firstSeenAt?: string;
+  lastSeenAt?: string;
+  turnCount: number;
+  loadedTurnCount: number;
+  toolCallCount: number;
+  totalTokens: number;
+  topTopics: ReviewUsageNamedCount[];
+  topTools: ReviewUsageNamedCount[];
 }
 
 export interface ReviewUsageUserSummary {
@@ -90,6 +119,7 @@ export interface ReviewUsageToolSummary {
   count: number;
   sessionCount: number;
   userCount: number;
+  actorCount: number;
 }
 
 export interface ReviewUsageNamedCount {
@@ -102,6 +132,9 @@ export interface ReviewUsageQuestionSample {
   label: string;
   questionHash: string;
   userKey: string;
+  botKey?: string;
+  personKey?: string;
+  actorKey?: string;
   sessionKey: string;
   turnNo: number;
   timestamp?: string | null;
@@ -122,11 +155,30 @@ interface MutableUserUsage {
   tools: Map<string, number>;
 }
 
+interface MutableActorUsage {
+  actorKey: string;
+  personKeys: Map<string, number>;
+  botKeys: Map<string, number>;
+  sessionIds: Set<string>;
+  activeDays: Set<string>;
+  firstSeenAt?: string;
+  lastSeenAt?: string;
+  turnCount: number;
+  loadedTurnCount: number;
+  toolCallCount: number;
+  totalTokens: number;
+  topics: Map<string, number>;
+  tools: Map<string, number>;
+}
+
 interface MutableTopicUsage {
   topic: UsageTopicId;
   label: string;
   count: number;
   userKeys: Set<string>;
+  actorKeys: Set<string>;
+  personKeys: Set<string>;
+  botKeys: Set<string>;
   sessionIds: Set<string>;
   questionHashes: string[];
 }
@@ -136,12 +188,21 @@ interface MutableToolUsage {
   count: number;
   sessionIds: Set<string>;
   userKeys: Set<string>;
+  actorKeys: Set<string>;
+  personKeys: Set<string>;
+  botKeys: Set<string>;
 }
 
 interface UsageSessionContext {
   session_record_id: string;
   user_key?: string | null;
   device_key?: string | null;
+  bot_key?: string | null;
+  person_key?: string | null;
+  actor_key?: string | null;
+  actor_catsco_user_key?: string | null;
+  actor_weixin_user_key?: string | null;
+  actor_feishu_user_key?: string | null;
   session_key?: string | null;
 }
 
@@ -174,11 +235,18 @@ const TOPIC_KEYWORDS: Array<[UsageTopicId, string[]]> = [
 
 export function analyzeUsageData(
   reviewData: ReviewData,
-  options: { targetUserKey?: string; targetDeviceKey?: string } = {},
+  options: {
+    targetUserKey?: string;
+    targetDeviceKey?: string;
+    targetBotKey?: string;
+    targetPersonKey?: string;
+    targetActorKey?: string;
+  } = {},
 ): ReviewUsageAnalysis {
   const sessions = reviewData.sessions || [];
   const sessionById = new Map(sessions.map(session => [session.session_record_id, session]));
   const users = new Map<string, MutableUserUsage>();
+  const actors = new Map<string, MutableActorUsage>();
   const topics = new Map<UsageTopicId, MutableTopicUsage>();
   const tools = new Map<string, MutableToolUsage>();
   const dayBuckets = new Map<string, ReviewUsageTimeBucket>();
@@ -187,43 +255,74 @@ export function analyzeUsageData(
   const sessionTypes = new Map<string, number>();
   const orgKeys = new Map<string, number>();
   const orgTypes = new Map<string, number>();
+  const botKeys = new Map<string, number>();
+  const personKeys = new Map<string, number>();
+  const actorKeys = new Map<string, number>();
+  const actorCatscoUserKeys = new Map<string, number>();
+  const actorWeixinUserKeys = new Map<string, number>();
+  const actorFeishuUserKeys = new Map<string, number>();
   const userRoles = new Map<string, number>();
   const deviceRoles = new Map<string, number>();
   const channelTypes = new Map<string, number>();
   const workspaceKeys = new Map<string, number>();
   const questionSamples: ReviewUsageQuestionSample[] = [];
   const allDeviceKeys = new Set<string>();
+  const allBotKeys = new Set<string>();
+  const allPersonKeys = new Set<string>();
+  const allActorKeys = new Set<string>();
   const allActiveDays = new Set<string>();
   let loadedTurnCount = 0;
 
   for (const session of sessions) {
+    const sessionContext = sessionContextFromSession(session);
     const user = ensureUser(users, session.user_key || 'unknown');
+    const actor = ensureActor(actors, resolveActorKey(sessionContext));
     user.deviceKeys.add(session.device_key || 'unknown');
     user.sessionIds.add(session.session_record_id);
     user.turnCount += Number(session.turn_count || 0);
     user.toolCallCount += Number(session.tool_call_count || 0);
     user.totalTokens += Number(session.total_tokens || 0);
+    actor.sessionIds.add(session.session_record_id);
+    actor.turnCount += Number(session.turn_count || 0);
+    actor.toolCallCount += Number(session.tool_call_count || 0);
+    actor.totalTokens += Number(session.total_tokens || 0);
     allDeviceKeys.add(session.device_key || 'unknown');
+    addKnownSet(allBotKeys, sessionContext.bot_key);
+    addKnownSet(allPersonKeys, sessionContext.person_key);
+    addKnownSet(allActorKeys, knownActorKey(sessionContext));
+    incrementKnownMap(actor.personKeys, sessionContext.person_key);
+    incrementKnownMap(actor.botKeys, sessionContext.bot_key);
 
     incrementMap(sessionTypes, session.session_type || 'unknown', 1);
     incrementKnownMap(orgKeys, session.org_key);
     incrementKnownMap(orgTypes, session.org_type);
+    incrementIdentitySegments({
+      context: sessionContext,
+      botKeys,
+      personKeys,
+      actorKeys,
+      actorCatscoUserKeys,
+      actorWeixinUserKeys,
+      actorFeishuUserKeys,
+    });
     incrementKnownMap(userRoles, session.user_role);
     incrementKnownMap(deviceRoles, session.device_role);
     incrementKnownMap(channelTypes, session.channel_type);
     incrementKnownMap(workspaceKeys, session.workspace_key);
     updateUserTime(user, session);
+    updateActorTime(actor, session);
     updateTimeBuckets(dayBuckets, hourBuckets, weekdayBuckets, session);
     const sessionDay = dayKey(session.started_at || session.created_at);
     if (sessionDay) {
       user.activeDays.add(sessionDay);
+      actor.activeDays.add(sessionDay);
       allActiveDays.add(sessionDay);
     }
   }
 
   for (const [sessionRecordId, turns] of Object.entries(reviewData.sessionTurns || {})) {
     const session = sessionById.get(sessionRecordId);
-    const sessionContext = session || sessionContextFromTurn(sessionRecordId, turns[0]);
+    const sessionContext = session ? sessionContextFromSession(session) : sessionContextFromTurn(sessionRecordId, turns[0]);
     const user = ensureUser(users, sessionContext.user_key || 'unknown');
     user.sessionIds.add(sessionRecordId);
     user.deviceKeys.add(sessionContext.device_key || 'unknown');
@@ -232,18 +331,43 @@ export function analyzeUsageData(
     loadedTurnCount += turns.length;
 
     for (const turn of turns) {
+      const turnContext = mergeTurnContext(sessionContext, turn);
+      const actor = ensureActor(actors, resolveActorKey(turnContext));
+      actor.sessionIds.add(sessionRecordId);
+      actor.loadedTurnCount += 1;
+      addKnownSet(allBotKeys, turnContext.bot_key);
+      addKnownSet(allPersonKeys, turnContext.person_key);
+      addKnownSet(allActorKeys, knownActorKey(turnContext));
+      incrementKnownMap(actor.personKeys, turnContext.person_key);
+      incrementKnownMap(actor.botKeys, turnContext.bot_key);
+      incrementIdentitySegments({
+        context: turnContext,
+        botKeys,
+        personKeys,
+        actorKeys,
+        actorCatscoUserKeys,
+        actorWeixinUserKeys,
+        actorFeishuUserKeys,
+      });
+      const turnDay = dayKey(turn.timestamp);
+      if (turnDay) actor.activeDays.add(turnDay);
+
       const text = turn.user_text || '';
       if (!text.trim()) continue;
       const topic = classifyUsageTopic(text, extractTurnToolNames(turn));
-      recordTopic(topics, topic, sessionContext, questionHash(text));
+      recordTopic(topics, topic, turnContext, questionHash(text));
       incrementMap(user.topics, topic, 1);
+      incrementMap(actor.topics, topic, 1);
       if (questionSamples.length < 50) {
         questionSamples.push({
           topic,
           label: TOPIC_LABELS[topic],
           questionHash: questionHash(text),
-          userKey: sessionContext.user_key || 'unknown',
-          sessionKey: sessionContext.session_key || 'unknown',
+          userKey: turnContext.user_key || 'unknown',
+          botKey: stringOrUndefined(turnContext.bot_key),
+          personKey: stringOrUndefined(turnContext.person_key),
+          actorKey: stringOrUndefined(knownActorKey(turnContext)),
+          sessionKey: turnContext.session_key || 'unknown',
           turnNo: turn.turn_no,
           timestamp: turn.timestamp,
         });
@@ -254,12 +378,15 @@ export function analyzeUsageData(
   for (const [sessionRecordId, entries] of Object.entries(reviewData.sessionEntries || {})) {
     const session = sessionById.get(sessionRecordId);
     if (!session) continue;
+    const sessionContext = sessionContextFromSession(session);
     const user = ensureUser(users, session.user_key || 'unknown');
+    const actor = ensureActor(actors, resolveActorKey(sessionContext));
     for (const entry of entries) {
       const toolName = normalizeToolName(entry);
       if (!toolName) continue;
-      recordTool(tools, toolName, session);
+      recordTool(tools, toolName, sessionContext);
       incrementMap(user.tools, toolName, 1);
+      incrementMap(actor.tools, toolName, 1);
     }
   }
 
@@ -275,10 +402,16 @@ export function analyzeUsageData(
     target: {
       userKey: options.targetUserKey,
       deviceKey: options.targetDeviceKey,
+      botKey: options.targetBotKey,
+      personKey: options.targetPersonKey,
+      actorKey: options.targetActorKey,
     },
     totals: {
       userCount: users.size,
       deviceCount: allDeviceKeys.size,
+      botCount: allBotKeys.size,
+      personCount: allPersonKeys.size,
+      actorCount: allActorKeys.size,
       sessionCount: sessions.length,
       activeDays: allActiveDays.size,
       turnCount: totalTurns,
@@ -290,6 +423,9 @@ export function analyzeUsageData(
     users: Array.from(users.values())
       .map(finalizeUser)
       .sort((a, b) => b.sessionCount - a.sessionCount || b.turnCount - a.turnCount || a.userKey.localeCompare(b.userKey)),
+    actors: Array.from(actors.values())
+      .map(finalizeActor)
+      .sort((a, b) => b.sessionCount - a.sessionCount || b.loadedTurnCount - a.loadedTurnCount || a.actorKey.localeCompare(b.actorKey)),
     topics: Array.from(topics.values())
       .map(finalizeTopic)
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label)),
@@ -304,12 +440,19 @@ export function analyzeUsageData(
         count: tool.count,
         sessionCount: tool.sessionIds.size,
         userCount: tool.userKeys.size,
+        actorCount: tool.actorKeys.size,
       }))
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
     sessionTypes: namedCounts(sessionTypes),
     segments: {
       orgKeys: namedCounts(orgKeys),
       orgTypes: namedCounts(orgTypes),
+      botKeys: namedCounts(botKeys),
+      personKeys: namedCounts(personKeys),
+      actorKeys: namedCounts(actorKeys),
+      actorCatscoUserKeys: namedCounts(actorCatscoUserKeys),
+      actorWeixinUserKeys: namedCounts(actorWeixinUserKeys),
+      actorFeishuUserKeys: namedCounts(actorFeishuUserKeys),
       userRoles: namedCounts(userRoles),
       deviceRoles: namedCounts(deviceRoles),
       channelTypes: namedCounts(channelTypes),
@@ -348,11 +491,38 @@ function ensureUser(users: Map<string, MutableUserUsage>, userKey: string): Muta
   return next;
 }
 
+function ensureActor(actors: Map<string, MutableActorUsage>, actorKey: string): MutableActorUsage {
+  const existing = actors.get(actorKey);
+  if (existing) return existing;
+  const next: MutableActorUsage = {
+    actorKey,
+    personKeys: new Map<string, number>(),
+    botKeys: new Map<string, number>(),
+    sessionIds: new Set<string>(),
+    activeDays: new Set<string>(),
+    turnCount: 0,
+    loadedTurnCount: 0,
+    toolCallCount: 0,
+    totalTokens: 0,
+    topics: new Map<string, number>(),
+    tools: new Map<string, number>(),
+  };
+  actors.set(actorKey, next);
+  return next;
+}
+
 function updateUserTime(user: MutableUserUsage, session: ReviewSession): void {
   const timestamp = normalizeTimestamp(session.started_at || session.created_at);
   if (!timestamp) return;
   if (!user.firstSeenAt || timestamp < user.firstSeenAt) user.firstSeenAt = timestamp;
   if (!user.lastSeenAt || timestamp > user.lastSeenAt) user.lastSeenAt = timestamp;
+}
+
+function updateActorTime(actor: MutableActorUsage, session: ReviewSession): void {
+  const timestamp = normalizeTimestamp(session.started_at || session.created_at);
+  if (!timestamp) return;
+  if (!actor.firstSeenAt || timestamp < actor.firstSeenAt) actor.firstSeenAt = timestamp;
+  if (!actor.lastSeenAt || timestamp > actor.lastSeenAt) actor.lastSeenAt = timestamp;
 }
 
 function updateTimeBuckets(
@@ -387,11 +557,17 @@ function recordTopic(
     label: TOPIC_LABELS[topic],
     count: 0,
     userKeys: new Set<string>(),
+    actorKeys: new Set<string>(),
+    personKeys: new Set<string>(),
+    botKeys: new Set<string>(),
     sessionIds: new Set<string>(),
     questionHashes: [],
   };
   existing.count += 1;
   existing.userKeys.add(session.user_key || 'unknown');
+  existing.actorKeys.add(resolveActorKey(session));
+  addKnownSet(existing.personKeys, session.person_key);
+  addKnownSet(existing.botKeys, session.bot_key);
   existing.sessionIds.add(session.session_record_id);
   if (existing.questionHashes.length < 8 && !existing.questionHashes.includes(hash)) {
     existing.questionHashes.push(hash);
@@ -399,17 +575,38 @@ function recordTopic(
   topics.set(topic, existing);
 }
 
-function recordTool(tools: Map<string, MutableToolUsage>, name: string, session: ReviewSession): void {
+function recordTool(tools: Map<string, MutableToolUsage>, name: string, session: UsageSessionContext): void {
   const existing = tools.get(name) || {
     name,
     count: 0,
     sessionIds: new Set<string>(),
     userKeys: new Set<string>(),
+    actorKeys: new Set<string>(),
+    personKeys: new Set<string>(),
+    botKeys: new Set<string>(),
   };
   existing.count += 1;
   existing.sessionIds.add(session.session_record_id);
   existing.userKeys.add(session.user_key || 'unknown');
+  existing.actorKeys.add(resolveActorKey(session));
+  addKnownSet(existing.personKeys, session.person_key);
+  addKnownSet(existing.botKeys, session.bot_key);
   tools.set(name, existing);
+}
+
+function sessionContextFromSession(session: ReviewSession): UsageSessionContext {
+  return {
+    session_record_id: session.session_record_id,
+    user_key: session.user_key || 'unknown',
+    device_key: session.device_key || 'unknown',
+    bot_key: session.bot_key,
+    person_key: session.person_key,
+    actor_key: session.actor_key,
+    actor_catsco_user_key: session.actor_catsco_user_key,
+    actor_weixin_user_key: session.actor_weixin_user_key,
+    actor_feishu_user_key: session.actor_feishu_user_key,
+    session_key: session.session_key || session.session_record_id,
+  };
 }
 
 function sessionContextFromTurn(sessionRecordId: string, turn?: ReviewTurn): UsageSessionContext {
@@ -417,7 +614,28 @@ function sessionContextFromTurn(sessionRecordId: string, turn?: ReviewTurn): Usa
     session_record_id: sessionRecordId,
     user_key: turn?.user_key || 'unknown',
     device_key: turn?.device_key || 'unknown',
+    bot_key: turn?.bot_key,
+    person_key: turn?.person_key,
+    actor_key: turn?.actor_key,
+    actor_catsco_user_key: turn?.actor_catsco_user_key,
+    actor_weixin_user_key: turn?.actor_weixin_user_key,
+    actor_feishu_user_key: turn?.actor_feishu_user_key,
     session_key: turn?.session_key || sessionRecordId,
+  };
+}
+
+function mergeTurnContext(base: UsageSessionContext, turn: ReviewTurn): UsageSessionContext {
+  return {
+    session_record_id: base.session_record_id,
+    user_key: turn.user_key || base.user_key,
+    device_key: turn.device_key || base.device_key,
+    bot_key: turn.bot_key || base.bot_key,
+    person_key: turn.person_key || base.person_key,
+    actor_key: turn.actor_key || base.actor_key,
+    actor_catsco_user_key: turn.actor_catsco_user_key || base.actor_catsco_user_key,
+    actor_weixin_user_key: turn.actor_weixin_user_key || base.actor_weixin_user_key,
+    actor_feishu_user_key: turn.actor_feishu_user_key || base.actor_feishu_user_key,
+    session_key: turn.session_key || base.session_key,
   };
 }
 
@@ -436,6 +654,24 @@ function finalizeUser(user: MutableUserUsage): ReviewUsageUserSummary {
     averageTurnsPerSession: user.sessionIds.size ? round(user.turnCount / user.sessionIds.size) : 0,
     topTopics: namedCounts(user.topics, topic => TOPIC_LABELS[topic as UsageTopicId] || topic),
     topTools: namedCounts(user.tools),
+  };
+}
+
+function finalizeActor(actor: MutableActorUsage): ReviewUsageActorSummary {
+  return {
+    actorKey: actor.actorKey,
+    personKeys: namedCounts(actor.personKeys),
+    botKeys: namedCounts(actor.botKeys),
+    sessionCount: actor.sessionIds.size,
+    activeDays: actor.activeDays.size,
+    firstSeenAt: actor.firstSeenAt,
+    lastSeenAt: actor.lastSeenAt,
+    turnCount: actor.turnCount,
+    loadedTurnCount: actor.loadedTurnCount,
+    toolCallCount: actor.toolCallCount,
+    totalTokens: actor.totalTokens,
+    topTopics: namedCounts(actor.topics, topic => TOPIC_LABELS[topic as UsageTopicId] || topic),
+    topTools: namedCounts(actor.tools),
   };
 }
 
@@ -517,6 +753,42 @@ function parseReviewDate(value?: string | null): Date | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
+function incrementIdentitySegments(input: {
+  context: UsageSessionContext;
+  botKeys: Map<string, number>;
+  personKeys: Map<string, number>;
+  actorKeys: Map<string, number>;
+  actorCatscoUserKeys: Map<string, number>;
+  actorWeixinUserKeys: Map<string, number>;
+  actorFeishuUserKeys: Map<string, number>;
+}): void {
+  incrementKnownMap(input.botKeys, input.context.bot_key);
+  incrementKnownMap(input.personKeys, input.context.person_key);
+  incrementKnownMap(input.actorKeys, knownActorKey(input.context));
+  incrementKnownMap(input.actorCatscoUserKeys, input.context.actor_catsco_user_key);
+  incrementKnownMap(input.actorWeixinUserKeys, input.context.actor_weixin_user_key);
+  incrementKnownMap(input.actorFeishuUserKeys, input.context.actor_feishu_user_key);
+}
+
+function resolveActorKey(context: UsageSessionContext): string {
+  return stringOrUndefined(knownActorKey(context))
+    || stringOrUndefined(context.person_key)
+    || stringOrUndefined(context.user_key)
+    || 'unknown';
+}
+
+function knownActorKey(context: UsageSessionContext): string | undefined {
+  return stringOrUndefined(context.actor_key)
+    || stringOrUndefined(context.actor_catsco_user_key)
+    || stringOrUndefined(context.actor_weixin_user_key)
+    || stringOrUndefined(context.actor_feishu_user_key);
+}
+
+function addKnownSet(set: Set<string>, value?: string | null): void {
+  const text = stringOrUndefined(value);
+  if (text) set.add(text);
+}
+
 function incrementMap(map: Map<string, number>, key: string, amount: number): void {
   map.set(key, (map.get(key) || 0) + amount);
 }
@@ -525,6 +797,11 @@ function incrementKnownMap(map: Map<string, number>, value?: string | null): voi
   const key = String(value || '').trim();
   if (!key) return;
   incrementMap(map, key, 1);
+}
+
+function stringOrUndefined(value?: string | null): string | undefined {
+  const text = String(value || '').trim();
+  return text || undefined;
 }
 
 function round(value: number): number {

@@ -48,6 +48,54 @@ export class ReviewLogsQueryTool implements Tool {
           type: 'string',
           description: '可选。按云端原始 device_name 过滤；仅作为查询条件，不写入回答证据。',
         },
+        bot_key: {
+          type: 'string',
+          description: '可选。只分析某个 Review API 返回的匿名 bot_key。',
+        },
+        person_key: {
+          type: 'string',
+          description: '可选。只分析某个 Review API 返回的匿名 person_key。',
+        },
+        actor_key: {
+          type: 'string',
+          description: '可选。只分析某个 Review API 返回的匿名 actor_key。',
+        },
+        actor_catsco_user_key: {
+          type: 'string',
+          description: '可选。只分析某个 Review API 返回的匿名 actor_catsco_user_key。',
+        },
+        actor_weixin_user_key: {
+          type: 'string',
+          description: '可选。只分析某个 Review API 返回的匿名 actor_weixin_user_key。',
+        },
+        actor_feishu_user_key: {
+          type: 'string',
+          description: '可选。只分析某个 Review API 返回的匿名 actor_feishu_user_key。',
+        },
+        bot_id: {
+          type: 'string',
+          description: '可选。按云端原始 bot_id 过滤；仅作为查询条件，不写入回答证据。',
+        },
+        person_id: {
+          type: 'string',
+          description: '可选。按云端原始 person_id 过滤；仅作为查询条件，不写入回答证据。',
+        },
+        actor_external_user_id: {
+          type: 'string',
+          description: '可选。按云端原始 actor_external_user_id 过滤；仅作为查询条件，不写入回答证据。',
+        },
+        actor_catsco_user_id: {
+          type: 'string',
+          description: '可选。按云端原始 actor_catsco_user_id 过滤；仅作为查询条件，不写入回答证据。',
+        },
+        actor_weixin_user_id: {
+          type: 'string',
+          description: '可选。按云端原始 actor_weixin_user_id 过滤；仅作为查询条件，不写入回答证据。',
+        },
+        actor_feishu_user_id: {
+          type: 'string',
+          description: '可选。按云端原始 actor_feishu_user_id 过滤；仅作为查询条件，不写入回答证据。',
+        },
         session_id: {
           type: 'string',
           description: '可选。按云端原始 session_id 过滤；仅作为查询条件，不写入回答证据。',
@@ -126,8 +174,20 @@ export class ReviewLogsQueryTool implements Tool {
         targetUserId: stringOrUndefined(args?.user_id),
         targetDeviceId: stringOrUndefined(args?.device_id),
         targetDeviceName: stringOrUndefined(args?.device_name),
+        targetBotId: stringOrUndefined(args?.bot_id),
+        targetPersonId: stringOrUndefined(args?.person_id),
+        targetActorExternalUserId: stringOrUndefined(args?.actor_external_user_id),
+        targetActorCatscoUserId: stringOrUndefined(args?.actor_catsco_user_id),
+        targetActorWeixinUserId: stringOrUndefined(args?.actor_weixin_user_id),
+        targetActorFeishuUserId: stringOrUndefined(args?.actor_feishu_user_id),
         targetUserKey: stringOrUndefined(args?.user_key),
         targetDeviceKey: stringOrUndefined(args?.device_key),
+        targetBotKey: stringOrUndefined(args?.bot_key),
+        targetPersonKey: stringOrUndefined(args?.person_key),
+        targetActorKey: stringOrUndefined(args?.actor_key),
+        targetActorCatscoUserKey: stringOrUndefined(args?.actor_catsco_user_key),
+        targetActorWeixinUserKey: stringOrUndefined(args?.actor_weixin_user_key),
+        targetActorFeishuUserKey: stringOrUndefined(args?.actor_feishu_user_key),
         targetSessionId: stringOrUndefined(args?.session_id),
         targetSessionKey: stringOrUndefined(args?.session_key),
         targetSessionType: stringOrUndefined(args?.session_type),

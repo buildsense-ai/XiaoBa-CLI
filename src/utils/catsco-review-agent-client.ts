@@ -38,8 +38,20 @@ export interface ReviewTargetFilters {
   userId?: string;
   deviceId?: string;
   deviceName?: string;
+  botId?: string;
+  personId?: string;
+  actorExternalUserId?: string;
+  actorCatscoUserId?: string;
+  actorWeixinUserId?: string;
+  actorFeishuUserId?: string;
   userKey?: string;
   deviceKey?: string;
+  botKey?: string;
+  personKey?: string;
+  actorKey?: string;
+  actorCatscoUserKey?: string;
+  actorWeixinUserKey?: string;
+  actorFeishuUserKey?: string;
   sessionId?: string;
   sessionKey?: string;
   sessionType?: string;
@@ -55,6 +67,12 @@ export interface ReviewContextFields {
   session_record_id?: string | null;
   user_key?: string | null;
   device_key?: string | null;
+  bot_key?: string | null;
+  person_key?: string | null;
+  actor_key?: string | null;
+  actor_catsco_user_key?: string | null;
+  actor_weixin_user_key?: string | null;
+  actor_feishu_user_key?: string | null;
   session_key?: string | null;
   session_type?: string | null;
   org_key?: string | null;
@@ -70,6 +88,12 @@ export interface ReviewSession {
   upload_id: string;
   user_key: string;
   device_key: string;
+  bot_key?: string | null;
+  person_key?: string | null;
+  actor_key?: string | null;
+  actor_catsco_user_key?: string | null;
+  actor_weixin_user_key?: string | null;
+  actor_feishu_user_key?: string | null;
   session_key: string;
   session_type: string;
   org_key?: string | null;
@@ -92,7 +116,7 @@ export interface ReviewSession {
   created_at: string;
 }
 
-export interface ReviewEntry {
+export interface ReviewEntry extends ReviewContextFields {
   entry_id: string;
   line_no: number;
   entry_type: string;
@@ -317,10 +341,32 @@ const REVIEW_RAW_IDENTIFIER_FIELDS = new Set([
   'device_id',
   'device_name',
   'session_id',
+  'bot_id',
+  'person_id',
+  'actor_external_user_id',
+  'actor_catsco_user_id',
+  'actor_weixin_user_id',
+  'actor_feishu_user_id',
+  'actor_id',
+  'raw_actor_id',
+  'sender_id',
+  'from_user_id',
+  'to_user_id',
   'userId',
   'deviceId',
   'deviceName',
   'sessionId',
+  'botId',
+  'personId',
+  'actorExternalUserId',
+  'actorCatscoUserId',
+  'actorWeixinUserId',
+  'actorFeishuUserId',
+  'actorId',
+  'rawActorId',
+  'senderId',
+  'fromUserId',
+  'toUserId',
 ]);
 
 function stripReviewRawIdentifierFields(value: unknown): unknown {
@@ -363,8 +409,20 @@ function reviewFilterParams(filters: ReviewTargetFilters): Record<string, unknow
     user_id: filters.userId,
     device_id: filters.deviceId,
     device_name: filters.deviceName,
+    bot_id: filters.botId,
+    person_id: filters.personId,
+    actor_external_user_id: filters.actorExternalUserId,
+    actor_catsco_user_id: filters.actorCatscoUserId,
+    actor_weixin_user_id: filters.actorWeixinUserId,
+    actor_feishu_user_id: filters.actorFeishuUserId,
     user_key: filters.userKey,
     device_key: filters.deviceKey,
+    bot_key: filters.botKey,
+    person_key: filters.personKey,
+    actor_key: filters.actorKey,
+    actor_catsco_user_key: filters.actorCatscoUserKey,
+    actor_weixin_user_key: filters.actorWeixinUserKey,
+    actor_feishu_user_key: filters.actorFeishuUserKey,
     session_id: filters.sessionId,
     session_key: filters.sessionKey,
     session_type: filters.sessionType,

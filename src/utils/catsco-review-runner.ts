@@ -33,8 +33,20 @@ export interface ReviewRunOptions {
   targetUserId?: string;
   targetDeviceId?: string;
   targetDeviceName?: string;
+  targetBotId?: string;
+  targetPersonId?: string;
+  targetActorExternalUserId?: string;
+  targetActorCatscoUserId?: string;
+  targetActorWeixinUserId?: string;
+  targetActorFeishuUserId?: string;
   targetUserKey?: string;
   targetDeviceKey?: string;
+  targetBotKey?: string;
+  targetPersonKey?: string;
+  targetActorKey?: string;
+  targetActorCatscoUserKey?: string;
+  targetActorWeixinUserKey?: string;
+  targetActorFeishuUserKey?: string;
   targetSessionId?: string;
   targetSessionKey?: string;
   targetSessionType?: string;
@@ -89,6 +101,9 @@ export async function runCatscoReviewAgent(
   const usageAnalysis = analyzeUsageData(reviewData, {
     targetUserKey: targetFilters.userKey,
     targetDeviceKey: targetFilters.deviceKey,
+    targetBotKey: targetFilters.botKey,
+    targetPersonKey: targetFilters.personKey,
+    targetActorKey: targetFilters.actorKey,
   });
   const proposalBundle = writeReviewProposalBundle({
     outputDir,
@@ -254,8 +269,20 @@ export function reviewTargetFiltersFromConfig(
     userId: options.targetFilters?.userId ?? options.targetUserId ?? config.targetUserId,
     deviceId: options.targetFilters?.deviceId ?? options.targetDeviceId ?? config.targetDeviceId,
     deviceName: options.targetFilters?.deviceName ?? options.targetDeviceName ?? config.targetDeviceName,
+    botId: options.targetFilters?.botId ?? options.targetBotId ?? config.targetBotId,
+    personId: options.targetFilters?.personId ?? options.targetPersonId ?? config.targetPersonId,
+    actorExternalUserId: options.targetFilters?.actorExternalUserId ?? options.targetActorExternalUserId ?? config.targetActorExternalUserId,
+    actorCatscoUserId: options.targetFilters?.actorCatscoUserId ?? options.targetActorCatscoUserId ?? config.targetActorCatscoUserId,
+    actorWeixinUserId: options.targetFilters?.actorWeixinUserId ?? options.targetActorWeixinUserId ?? config.targetActorWeixinUserId,
+    actorFeishuUserId: options.targetFilters?.actorFeishuUserId ?? options.targetActorFeishuUserId ?? config.targetActorFeishuUserId,
     userKey: options.targetFilters?.userKey ?? options.targetUserKey ?? config.targetUserKey,
     deviceKey: options.targetFilters?.deviceKey ?? options.targetDeviceKey ?? config.targetDeviceKey,
+    botKey: options.targetFilters?.botKey ?? options.targetBotKey ?? config.targetBotKey,
+    personKey: options.targetFilters?.personKey ?? options.targetPersonKey ?? config.targetPersonKey,
+    actorKey: options.targetFilters?.actorKey ?? options.targetActorKey ?? config.targetActorKey,
+    actorCatscoUserKey: options.targetFilters?.actorCatscoUserKey ?? options.targetActorCatscoUserKey ?? config.targetActorCatscoUserKey,
+    actorWeixinUserKey: options.targetFilters?.actorWeixinUserKey ?? options.targetActorWeixinUserKey ?? config.targetActorWeixinUserKey,
+    actorFeishuUserKey: options.targetFilters?.actorFeishuUserKey ?? options.targetActorFeishuUserKey ?? config.targetActorFeishuUserKey,
     sessionId: options.targetFilters?.sessionId ?? options.targetSessionId ?? config.targetSessionId,
     sessionKey: options.targetFilters?.sessionKey ?? options.targetSessionKey ?? config.targetSessionKey,
     sessionType: options.targetFilters?.sessionType ?? options.targetSessionType ?? config.targetSessionType,

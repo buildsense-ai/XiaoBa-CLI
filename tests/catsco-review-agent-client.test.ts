@@ -70,8 +70,20 @@ describe('catsco review agent client', () => {
       userId: 'catsco_116',
       deviceId: 'device-raw',
       deviceName: '教务处电脑',
+      botId: 'bot-raw',
+      personId: 'person-raw',
+      actorExternalUserId: 'actor-external-raw',
+      actorCatscoUserId: 'actor-catsco-raw',
+      actorWeixinUserId: 'actor-weixin-raw',
+      actorFeishuUserId: 'actor-feishu-raw',
       userKey: 'user-a',
       deviceKey: 'device-a',
+      botKey: 'bot-a',
+      personKey: 'person-a',
+      actorKey: 'actor-a',
+      actorCatscoUserKey: 'actor-catsco-a',
+      actorWeixinUserKey: 'actor-weixin-a',
+      actorFeishuUserKey: 'actor-feishu-a',
       sessionId: 'session-raw',
       sessionKey: 'session-a',
       sessionType: 'chat',
@@ -92,8 +104,20 @@ describe('catsco review agent client', () => {
     assert.equal(url.searchParams.get('user_id'), 'catsco_116');
     assert.equal(url.searchParams.get('device_id'), 'device-raw');
     assert.equal(url.searchParams.get('device_name'), '教务处电脑');
+    assert.equal(url.searchParams.get('bot_id'), 'bot-raw');
+    assert.equal(url.searchParams.get('person_id'), 'person-raw');
+    assert.equal(url.searchParams.get('actor_external_user_id'), 'actor-external-raw');
+    assert.equal(url.searchParams.get('actor_catsco_user_id'), 'actor-catsco-raw');
+    assert.equal(url.searchParams.get('actor_weixin_user_id'), 'actor-weixin-raw');
+    assert.equal(url.searchParams.get('actor_feishu_user_id'), 'actor-feishu-raw');
     assert.equal(url.searchParams.get('user_key'), 'user-a');
     assert.equal(url.searchParams.get('device_key'), 'device-a');
+    assert.equal(url.searchParams.get('bot_key'), 'bot-a');
+    assert.equal(url.searchParams.get('person_key'), 'person-a');
+    assert.equal(url.searchParams.get('actor_key'), 'actor-a');
+    assert.equal(url.searchParams.get('actor_catsco_user_key'), 'actor-catsco-a');
+    assert.equal(url.searchParams.get('actor_weixin_user_key'), 'actor-weixin-a');
+    assert.equal(url.searchParams.get('actor_feishu_user_key'), 'actor-feishu-a');
     assert.equal(url.searchParams.get('session_id'), 'session-raw');
     assert.equal(url.searchParams.get('session_key'), 'session-a');
     assert.equal(url.searchParams.get('session_type'), 'chat');
@@ -104,6 +128,8 @@ describe('catsco review agent client', () => {
     assert.equal(url.searchParams.get('channel_type'), 'desktop');
     assert.equal(url.searchParams.get('workspace_key'), 'workspace-a');
     assert.equal(turnsUrl.searchParams.get('user_id'), 'catsco_116');
+    assert.equal(turnsUrl.searchParams.get('person_key'), 'person-a');
+    assert.equal(turnsUrl.searchParams.get('actor_key'), 'actor-a');
     assert.equal(turnsUrl.searchParams.get('workspace_key'), 'workspace-a');
   });
 
@@ -136,8 +162,20 @@ describe('catsco review agent client', () => {
         device_id: 'device-raw',
         device_name: '教务处电脑',
         session_id: 'session-raw',
+        bot_id: 'bot-raw',
+        person_id: 'person-raw',
+        actor_external_user_id: 'actor-external-raw',
+        actor_catsco_user_id: 'actor-catsco-raw',
+        actor_weixin_user_id: 'actor-weixin-raw',
+        actor_feishu_user_id: 'actor-feishu-raw',
+        actor_id: 'actor-raw',
+        raw_actor_id: 'raw-actor',
         user_key: 'user-key',
-        nested: { user_id: 'catsco_117' },
+        bot_key: 'bot-key',
+        person_key: 'person-key',
+        actor_key: 'actor-key',
+        actor_weixin_user_key: 'actor-weixin-key',
+        nested: { user_id: 'catsco_117', actorWeixinUserId: 'weixin-raw', person_key: 'person-key-nested' },
       }],
     }), { status: 200 })) as any;
 
@@ -148,8 +186,22 @@ describe('catsco review agent client', () => {
     assert.equal(turn.device_id, undefined);
     assert.equal(turn.device_name, undefined);
     assert.equal(turn.session_id, undefined);
+    assert.equal(turn.bot_id, undefined);
+    assert.equal(turn.person_id, undefined);
+    assert.equal(turn.actor_external_user_id, undefined);
+    assert.equal(turn.actor_catsco_user_id, undefined);
+    assert.equal(turn.actor_weixin_user_id, undefined);
+    assert.equal(turn.actor_feishu_user_id, undefined);
+    assert.equal(turn.actor_id, undefined);
+    assert.equal(turn.raw_actor_id, undefined);
     assert.equal(turn.nested.user_id, undefined);
+    assert.equal(turn.nested.actorWeixinUserId, undefined);
     assert.equal(turn.user_key, 'user-key');
+    assert.equal(turn.bot_key, 'bot-key');
+    assert.equal(turn.person_key, 'person-key');
+    assert.equal(turn.actor_key, 'actor-key');
+    assert.equal(turn.actor_weixin_user_key, 'actor-weixin-key');
+    assert.equal(turn.nested.person_key, 'person-key-nested');
   });
 
   test('rejects successful non-json responses', async () => {

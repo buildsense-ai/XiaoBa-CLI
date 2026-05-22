@@ -22,12 +22,19 @@ describe('catsco review question answerer', () => {
     });
 
     assert.equal(pack.summary.sessions, 1);
+    assert.equal(pack.summary.bots, 1);
+    assert.equal(pack.summary.people, 1);
+    assert.equal(pack.summary.actors, 1);
     assert.ok(pack.evidence.some(item => item.kind === 'usage'));
     assert.ok(pack.evidence.some(item => item.kind === 'turn'));
     const serialized = JSON.stringify(pack);
     assert.match(serialized, /成绩/);
+    assert.match(serialized, /actor-teacher/);
+    assert.match(serialized, /person-teacher/);
+    assert.match(serialized, /bot-school/);
     assert.doesNotMatch(serialized, /13812345678/);
     assert.doesNotMatch(serialized, /110101199003071234/);
+    assert.doesNotMatch(serialized, /actor-external-raw/);
     assert.doesNotMatch(serialized, /张三/);
     assert.doesNotMatch(serialized, /Dirty Work/);
     assert.match(serialized, /\[PHONE_REDACTED\]/);
@@ -106,6 +113,10 @@ function reviewDataFixture(): ReviewData {
       upload_id: 'upload-1',
       user_key: 'teacher-key',
       device_key: 'device-key',
+      bot_key: 'bot-school',
+      person_key: 'person-teacher',
+      actor_key: 'actor-teacher',
+      actor_weixin_user_key: 'actor-weixin-teacher',
       session_key: 'session-key',
       session_type: 'chat',
       started_at: '2026-05-20 08:00:00',
@@ -127,7 +138,7 @@ function reviewDataFixture(): ReviewData {
         entry_type: 'tool_call',
         event_category: 'tool',
         tool_name: 'read_file',
-        message: 'tool succeeded',
+        message: 'tool succeeded actor_external_user_id=actor-external-raw',
       }],
     },
     sessionTurns: {
@@ -135,12 +146,19 @@ function reviewDataFixture(): ReviewData {
         turn_record_id: 'turn-1',
         turn_no: 1,
         timestamp: '2026-05-20 08:00:00',
-        user_text: '帮我统计张三同学考试成绩，手机号 13812345678，身份证 110101199003071234，路径 E:\\Dirty Work\\XiaoBa-CLI\\成绩.xlsx',
+        bot_key: 'bot-school',
+        person_key: 'person-teacher',
+        actor_key: 'actor-teacher',
+        actor_weixin_user_key: 'actor-weixin-teacher',
+        user_text: '帮我统计张三同学考试成绩，手机号 13812345678，身份证 110101199003071234，路径 E:\\Dirty Work\\XiaoBa-CLI\\成绩.xlsx actor_external_user_id=actor-external-raw',
         assistant_text: '我可以帮你整理成绩统计表。',
       }, {
         turn_record_id: 'turn-2',
         turn_no: 2,
         timestamp: '2026-05-20 08:10:00',
+        bot_key: 'bot-school',
+        person_key: 'person-teacher',
+        actor_key: 'actor-teacher',
         user_text: '帮我整理奖学金名单公示材料',
         assistant_text: '可以，我会帮你按公示格式整理。',
       }],

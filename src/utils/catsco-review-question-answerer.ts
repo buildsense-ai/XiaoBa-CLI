@@ -1,6 +1,13 @@
 import type { Message } from '../types';
 import { AIService } from './ai-service';
-import type { ReviewData, ReviewEntry, ReviewFailure, ReviewSession, ReviewTurn } from './catsco-review-agent-client';
+import type {
+  ReviewContextFields,
+  ReviewData,
+  ReviewEntry,
+  ReviewFailure,
+  ReviewSession,
+  ReviewTurn,
+} from './catsco-review-agent-client';
 import type { ReviewFinding } from './catsco-review-analyzer';
 import type { ReviewUsageAnalysis } from './catsco-review-usage-analyzer';
 import { redactReviewText } from './catsco-review-redaction';
@@ -106,6 +113,9 @@ export function buildReviewQuestionEvidencePack(
       sessions: context.reviewData.summary?.session_count || 0,
       turns: context.reviewData.summary?.turn_count || 0,
       users: context.usageAnalysis.totals.userCount,
+      bots: context.usageAnalysis.totals.botCount,
+      people: context.usageAnalysis.totals.personCount,
+      actors: context.usageAnalysis.totals.actorCount,
       active_days: context.usageAnalysis.totals.activeDays,
       findings: context.findings.length,
       loaded_sessions: (context.reviewData.sessions || []).length,
@@ -147,7 +157,7 @@ export function buildReviewQuestionMessages(evidencePack: ReviewQuestionEvidence
         'State the loaded evidence scope when answering questions about frequency, totals, trends, or coverage.',
         'Never describe the selected evidence items as all logs. If possibly_truncated is true, conclusions must be framed as based on the loaded/selected subset.',
         'If the user asks about an organization, role, or customer segment that is not explicitly present in the evidence, say it is not identifiable from this evidence instead of inferring it from a few examples.',
-        'Separate facts from inferences. Mention concrete counts, windows, user_keys, session_keys, and tool names when useful.',
+        'Separate facts from inferences. Mention concrete counts, windows, user_keys, device_keys, bot_keys, person_keys, actor_keys, session_keys, and tool names when useful.',
         'Do not reveal secrets, tokens, phone numbers, email addresses, private paths, or raw identifiers beyond redacted/stable keys already present.',
         'Prefer Chinese unless the user asks otherwise.',
       ].join('\n'),
@@ -155,7 +165,7 @@ export function buildReviewQuestionMessages(evidencePack: ReviewQuestionEvidence
     {
       role: 'user',
       content: [
-        `问题：${evidencePack.question}`,
+        `问题：${sanitizeForReviewAnswer(evidencePack.question).slice(0, 2000)}`,
         '',
         '请基于下面的日志证据回答。证据来自 Cloud Server A 的 /catsco/review/* Review API，已经过客户端二次脱敏和截断。',
         '',
@@ -171,8 +181,8 @@ export function buildReviewQuestionMessages(evidencePack: ReviewQuestionEvidence
         evidencePack.conversationHistory.length > 0 ? '' : '',
         '证据：',
         evidencePack.evidence.map((item, index) => [
-          `### Evidence ${index + 1}: ${item.kind} / ${item.id} / score=${item.score}`,
-          `refs=${JSON.stringify(item.refs)}`,
+          `### Evidence ${index + 1}: ${item.kind} / ${sanitizeForReviewAnswer(item.id).slice(0, 200)} / score=${item.score}`,
+          `refs=${JSON.stringify(sanitizeReviewRefs(item.refs))}`,
           item.text,
         ].join('\n')).join('\n\n'),
       ].join('\n'),
@@ -224,6 +234,9 @@ function usageEvidence(usage: ReviewUsageAnalysis): ReviewQuestionEvidenceItem {
   const users = usage.users.slice(0, 20).map(user => (
     `${user.userKey}: sessions=${user.sessionCount}, turns=${user.turnCount}, active_days=${user.activeDays}, top_topics=${user.topTopics.slice(0, 5).map(item => `${item.name}:${item.count}`).join('|') || 'none'}`
   ));
+  const actors = (usage.actors || []).slice(0, 20).map(actor => (
+    `${actor.actorKey}: sessions=${actor.sessionCount}, turns=${actor.turnCount}, loaded_turns=${actor.loadedTurnCount}, active_days=${actor.activeDays}, person_keys=${namedUsageCounts(actor.personKeys) || 'none'}, bot_keys=${namedUsageCounts(actor.botKeys) || 'none'}, top_topics=${actor.topTopics.slice(0, 5).map(item => `${item.name}:${item.count}`).join('|') || 'none'}`
+  ));
   const topics = usage.topics.slice(0, 20).map(topic => (
     `${topic.label}: count=${topic.count}, users=${topic.userCount}, sessions=${topic.sessionCount}, hashes=${topic.questionHashes.join('|')}`
   ));
@@ -231,8 +244,15 @@ function usageEvidence(usage: ReviewUsageAnalysis): ReviewQuestionEvidenceItem {
     `${tool.name}: calls=${tool.count}, sessions=${tool.sessionCount}, users=${tool.userCount}`
   ));
   const segments = [
+    `target user_key=${usage.target?.userKey || 'all'} device_key=${usage.target?.deviceKey || 'all'} bot_key=${usage.target?.botKey || 'all'} person_key=${usage.target?.personKey || 'all'} actor_key=${usage.target?.actorKey || 'all'}`,
     `org_types=${namedUsageCounts(usage.segments?.orgTypes) || 'none'}`,
     `org_keys=${namedUsageCounts(usage.segments?.orgKeys) || 'none'}`,
+    `bot_keys=${namedUsageCounts(usage.segments?.botKeys) || 'none'}`,
+    `person_keys=${namedUsageCounts(usage.segments?.personKeys) || 'none'}`,
+    `actor_keys=${namedUsageCounts(usage.segments?.actorKeys) || 'none'}`,
+    `actor_catsco_user_keys=${namedUsageCounts(usage.segments?.actorCatscoUserKeys) || 'none'}`,
+    `actor_weixin_user_keys=${namedUsageCounts(usage.segments?.actorWeixinUserKeys) || 'none'}`,
+    `actor_feishu_user_keys=${namedUsageCounts(usage.segments?.actorFeishuUserKeys) || 'none'}`,
     `user_roles=${namedUsageCounts(usage.segments?.userRoles) || 'none'}`,
     `device_roles=${namedUsageCounts(usage.segments?.deviceRoles) || 'none'}`,
     `channels=${namedUsageCounts(usage.segments?.channelTypes) || 'none'}`,
@@ -245,9 +265,13 @@ function usageEvidence(usage: ReviewUsageAnalysis): ReviewQuestionEvidenceItem {
     refs: {},
     text: sanitizeForReviewAnswer([
       `Loaded usage totals: users=${usage.totals.userCount}, devices=${usage.totals.deviceCount}, sessions=${usage.totals.sessionCount}, active_days=${usage.totals.activeDays}, turns=${usage.totals.turnCount}, loaded_turns=${usage.totals.loadedTurnCount}, avg_turns_per_session=${usage.totals.averageTurnsPerSession}, tool_calls=${usage.totals.toolCallCount}`,
+      `Identity totals: bots=${usage.totals.botCount}, people=${usage.totals.personCount}, actors=${usage.totals.actorCount}`,
       '',
       'Top users:',
       ...users,
+      '',
+      'Top actors:',
+      ...actors,
       '',
       'Top topics:',
       ...topics,
@@ -316,6 +340,12 @@ function sessionEvidence(sessions: ReviewSession[]): ReviewQuestionEvidenceItem[
       session_record_id: session.session_record_id,
       user_key: session.user_key,
       device_key: session.device_key,
+      bot_key: session.bot_key,
+      person_key: session.person_key,
+      actor_key: session.actor_key,
+      actor_catsco_user_key: session.actor_catsco_user_key,
+      actor_weixin_user_key: session.actor_weixin_user_key,
+      actor_feishu_user_key: session.actor_feishu_user_key,
       session_key: session.session_key,
       org_type: session.org_type,
       user_role: session.user_role,
@@ -323,6 +353,7 @@ function sessionEvidence(sessions: ReviewSession[]): ReviewQuestionEvidenceItem[
     },
     text: sanitizeForReviewAnswer([
       `Session user_key=${session.user_key} device_key=${session.device_key} session_key=${session.session_key} type=${session.session_type}`,
+      identityContextText(session),
       `context org_key=${session.org_key || 'unknown'} org_type=${session.org_type || 'unknown'} user_role=${session.user_role || 'unknown'} device_role=${session.device_role || 'unknown'} channel=${session.channel_type || 'unknown'} workspace=${session.workspace_key || 'unknown'}`,
       `started_at=${session.started_at || 'unknown'} ended_at=${session.ended_at || 'unknown'} created_at=${session.created_at}`,
       `entries=${session.entry_count} turns=${session.turn_count} ai_calls=${session.ai_call_count} tool_calls=${session.tool_call_count} tokens=${session.total_tokens}`,
@@ -345,6 +376,7 @@ function entryEvidence(reviewData: ReviewData): ReviewQuestionEvidenceItem[] {
           session_record_id: sessionRecordId,
           user_key: session?.user_key,
           device_key: session?.device_key,
+          ...identityRefs(entry, session),
           entry_id: entry.entry_id,
           line_no: entry.line_no,
           tool_name: entry.tool_name,
@@ -371,6 +403,7 @@ function turnEvidence(reviewData: ReviewData): ReviewQuestionEvidenceItem[] {
           session_record_id: sessionRecordId,
           user_key: session?.user_key || turn.user_key,
           device_key: session?.device_key || turn.device_key,
+          ...identityRefs(turn, session),
           session_key: session?.session_key || turn.session_key,
           session_type: session?.session_type || turn.session_type,
           org_type: session?.org_type || turn.org_type,
@@ -389,6 +422,7 @@ function turnEvidence(reviewData: ReviewData): ReviewQuestionEvidenceItem[] {
 function entryText(entry: ReviewEntry, sessionRecordId: string, session?: ReviewSession): string {
   return [
     `Entry session_record_id=${sessionRecordId} user_key=${session?.user_key || 'unknown'} line=${entry.line_no} type=${entry.entry_type}`,
+    identityContextText(entry, session),
     `timestamp=${entry.timestamp || 'unknown'} level=${entry.level || 'unknown'} event=${entry.event_category} tool=${entry.tool_name || 'none'} duration_ms=${entry.duration_ms ?? 'unknown'}`,
     `tokens prompt=${entry.prompt_tokens ?? 'unknown'} completion=${entry.completion_tokens ?? 'unknown'} total=${entry.total_tokens ?? 'unknown'}`,
     `message=${entry.message || ''}`,
@@ -408,12 +442,46 @@ function turnText(turn: ReviewTurn, sessionRecordId: string, session?: ReviewSes
   const workspaceKey = session?.workspace_key || turn.workspace_key || 'unknown';
   return [
     `Turn session_record_id=${sessionRecordId} user_key=${userKey} device_key=${deviceKey} session_key=${sessionKey} type=${sessionType} turn_no=${turn.turn_no}`,
+    identityContextText(turn, session),
     `context org_key=${orgKey} org_type=${orgType} user_role=${userRole} device_role=${deviceRole} channel=${channelType} workspace=${workspaceKey}`,
     `timestamp=${turn.timestamp || 'unknown'} tokens prompt=${turn.prompt_tokens ?? 'unknown'} completion=${turn.completion_tokens ?? 'unknown'} total=${turn.total_tokens ?? 'unknown'}`,
     `user_text=${turn.user_text || ''}`,
     `assistant_text=${turn.assistant_text || ''}`,
     `tool_calls=${turn.tool_calls_json || ''}`,
   ].join('\n');
+}
+
+function identityRefs(primary?: ReviewContextFields, session?: ReviewSession): Record<string, string | null | undefined> {
+  return {
+    bot_key: pickIdentityField('bot_key', primary, session),
+    person_key: pickIdentityField('person_key', primary, session),
+    actor_key: pickIdentityField('actor_key', primary, session),
+    actor_catsco_user_key: pickIdentityField('actor_catsco_user_key', primary, session),
+    actor_weixin_user_key: pickIdentityField('actor_weixin_user_key', primary, session),
+    actor_feishu_user_key: pickIdentityField('actor_feishu_user_key', primary, session),
+  };
+}
+
+function identityContextText(primary?: ReviewContextFields, session?: ReviewSession): string {
+  const refs = identityRefs(primary, session);
+  return [
+    `identity bot_key=${refs.bot_key || 'unknown'} person_key=${refs.person_key || 'unknown'} actor_key=${refs.actor_key || 'unknown'}`,
+    `actor_provider_keys catsco=${refs.actor_catsco_user_key || 'unknown'} weixin=${refs.actor_weixin_user_key || 'unknown'} feishu=${refs.actor_feishu_user_key || 'unknown'}`,
+  ].join('\n');
+}
+
+function pickIdentityField(
+  key: keyof Pick<ReviewContextFields,
+    | 'bot_key'
+    | 'person_key'
+    | 'actor_key'
+    | 'actor_catsco_user_key'
+    | 'actor_weixin_user_key'
+    | 'actor_feishu_user_key'>,
+  primary?: ReviewContextFields,
+  session?: ReviewSession,
+): string | null | undefined {
+  return primary?.[key] || session?.[key];
 }
 
 function scoreEvidence(question: string, queryTerms: string[], item: ReviewQuestionEvidenceItem): number {
@@ -472,6 +540,18 @@ function sanitizeConversationHistory(history: ReviewQuestionChatTurn[]): ReviewQ
     question: sanitizeForReviewAnswer(turn.question).slice(0, 1000),
     answer: sanitizeForReviewAnswer(turn.answer).slice(0, 2000),
   }));
+}
+
+function sanitizeReviewRefs(refs: Record<string, string | number | null | undefined>): Record<string, string | number | null | undefined> {
+  const sanitized: Record<string, string | number | null | undefined> = {};
+  for (const [key, value] of Object.entries(refs)) {
+    if (typeof value === 'string') {
+      sanitized[key] = sanitizeForReviewAnswer(value).slice(0, 240);
+    } else {
+      sanitized[key] = value;
+    }
+  }
+  return sanitized;
 }
 
 function sanitizeForReviewAnswer(value: string): string {

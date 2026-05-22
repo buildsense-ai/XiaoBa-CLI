@@ -76,7 +76,13 @@ function renderUsageReport(runId: string, usage: ReviewUsageAnalysis): string {
     `- Uploaded to: \`${usage.window.uploadedTo || 'not set'}\``,
     `- Target user key: \`${usage.target.userKey || 'all'}\``,
     `- Target device key: \`${usage.target.deviceKey || 'all'}\``,
+    `- Target bot key: \`${usage.target.botKey || 'all'}\``,
+    `- Target person key: \`${usage.target.personKey || 'all'}\``,
+    `- Target actor key: \`${usage.target.actorKey || 'all'}\``,
     `- Org types: \`${namedUsageCounts(usage.segments?.orgTypes) || 'not set'}\``,
+    `- Bot keys: \`${namedUsageCounts(usage.segments?.botKeys) || 'not set'}\``,
+    `- Person keys: \`${namedUsageCounts(usage.segments?.personKeys) || 'not set'}\``,
+    `- Actor keys: \`${namedUsageCounts(usage.segments?.actorKeys) || 'not set'}\``,
     `- User roles: \`${namedUsageCounts(usage.segments?.userRoles) || 'not set'}\``,
     `- Channels: \`${namedUsageCounts(usage.segments?.channelTypes) || 'not set'}\``,
     '',
@@ -84,6 +90,9 @@ function renderUsageReport(runId: string, usage: ReviewUsageAnalysis): string {
     '',
     `- Users: \`${usage.totals.userCount}\``,
     `- Devices: \`${usage.totals.deviceCount}\``,
+    `- Bots: \`${usage.totals.botCount}\``,
+    `- People: \`${usage.totals.personCount}\``,
+    `- Actors: \`${usage.totals.actorCount}\``,
     `- Sessions: \`${usage.totals.sessionCount}\``,
     `- Active days: \`${usage.totals.activeDays}\``,
     `- Turns: \`${usage.totals.turnCount}\``,
@@ -113,6 +122,22 @@ function renderUsageReport(runId: string, usage: ReviewUsageAnalysis): string {
       lines.push(
         `- \`${user.userKey}\`: sessions=\`${user.sessionCount}\`, turns=\`${user.turnCount}\`, `
         + `active_days=\`${user.activeDays}\`, top_topics=\`${topTopics}\``,
+      );
+    }
+    lines.push('');
+  }
+
+  lines.push('## Top Actors', '');
+  if ((usage.actors || []).length === 0) {
+    lines.push('No actor-level usage was available.', '');
+  } else {
+    for (const actor of usage.actors.slice(0, 10)) {
+      const topTopics = actor.topTopics.slice(0, 3).map(item => `${item.name}=${item.count}`).join(', ') || 'none';
+      const people = namedUsageCounts(actor.personKeys) || 'none';
+      const bots = namedUsageCounts(actor.botKeys) || 'none';
+      lines.push(
+        `- \`${actor.actorKey}\`: sessions=\`${actor.sessionCount}\`, loaded_turns=\`${actor.loadedTurnCount}\`, `
+        + `person_keys=\`${people}\`, bot_keys=\`${bots}\`, top_topics=\`${topTopics}\``,
       );
     }
     lines.push('');
@@ -151,7 +176,7 @@ function renderUsageReport(runId: string, usage: ReviewUsageAnalysis): string {
     '',
     '- This report does not include raw teacher questions or assistant answers.',
     '- `questionHash` values in `usage_metrics.json` are for grouping only and should not be treated as content.',
-    '- For a named teacher report, configure a target `user_key` or `device_key` and keep the mapping outside Git.',
+    '- For a named teacher, bot, or group-member report, configure a target `person_key`, `actor_key`, `bot_key`, `user_key`, or `device_key` and keep the mapping outside Git.',
     '',
   );
 
@@ -362,6 +387,7 @@ function toPublicFinding(finding: ReviewFinding): ReviewFinding {
   return {
     ...finding,
     primarySignal: finding.patternKey || finding.primarySignal,
+    affectedSessions: finding.affectedSessions.map(sessionId => `session_${shortHash(sessionId)}`),
     evidence: summarizeEvidenceForPublicOutput(finding),
   };
 }

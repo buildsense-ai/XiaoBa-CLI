@@ -31,6 +31,9 @@ describe('catsco review proposals', () => {
           upload_id: 'upload-1',
           user_key: 'teacher-key',
           device_key: 'device-key',
+          bot_key: 'bot-school',
+          person_key: 'person-teacher',
+          actor_key: 'actor-teacher',
           session_key: 'session-key',
           session_type: 'chat',
           started_at: '2026-05-20 00:00:00',
@@ -51,6 +54,9 @@ describe('catsco review proposals', () => {
             turn_record_id: 'turn-1',
             turn_no: 1,
             timestamp: '2026-05-20 00:00:00',
+            bot_key: 'bot-school',
+            person_key: 'person-teacher',
+            actor_key: 'actor-teacher',
             user_text: '帮我统计张三同学的成绩，手机号 13812345678',
             assistant_text: '可以',
           }],
@@ -88,8 +94,10 @@ describe('catsco review proposals', () => {
       assert.equal(path.basename(bundle.files.rawReviewData), 'raw_review_data.server_redacted.local.json');
       assert.match(fs.readFileSync(bundle.files.skillSuggestions, 'utf-8'), /Candidate skill work/);
       assert.doesNotMatch(fs.readFileSync(bundle.files.findings, 'utf-8'), /unknown tool: report_builder/);
+      assert.doesNotMatch(fs.readFileSync(bundle.files.findings, 'utf-8'), /"session-1"/);
       assert.doesNotMatch(fs.readFileSync(bundle.files.evalCases, 'utf-8'), /unknown tool: report_builder/);
       assert.doesNotMatch(fs.readFileSync(bundle.files.usageReport, 'utf-8'), /张三|13812345678/);
+      assert.match(fs.readFileSync(bundle.files.usageReport, 'utf-8'), /actor-teacher/);
       assert.doesNotMatch(fs.readFileSync(bundle.files.usageMetrics, 'utf-8'), /张三|13812345678/);
       assert.match(fs.readFileSync(bundle.files.rawReviewData, 'utf-8'), /"summary"/);
       assert.equal(fs.existsSync(path.join(root, 'prompts')), false);

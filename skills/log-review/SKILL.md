@@ -36,6 +36,8 @@ catsco review chat --user-key <review-user-key>
 catsco review ask "学校用户最近一周主要用 Agent 做什么？" --org-type school
 catsco review ask "这个老师的使用情况" --user-id <server-user-id>
 catsco review ask "这台教务处电脑最近主要问什么？" --device-name "教务处电脑"
+catsco review ask "这个真实人的使用情况" --person-key <review-person-key>
+catsco review ask "这个群成员和机器人之间发生了什么？" --actor-key <review-actor-key> --bot-key <review-bot-key>
 catsco review chat --fixed-range
 ```
 
@@ -43,7 +45,7 @@ catsco review chat --fixed-range
 
 这里的时间范围由 `--lookback-hours` 或 `CATSCO_REVIEW_LOOKBACK_HOURS` 控制，默认是最近一周，也就是 168 小时，不是另开一个 Agent 对话窗口。要看更久历史可以增大 lookback，同时注意 max sessions / max turns 等上限。
 
-定向分析可以使用 `user_key/device_key/session_key/org_key/org_type/user_role/device_role/channel_type/workspace_key`。如果用户只知道云端原始 `user_id/device_id/device_name/session_id`，这些值只能作为 Review API 查询过滤条件使用；不要把它们写进 proposal、文档或回答证据。回答里优先引用稳定 key 和安全的组织/角色/渠道上下文。
+定向分析可以使用 `user_key/device_key/bot_key/person_key/actor_key/actor_catsco_user_key/actor_weixin_user_key/actor_feishu_user_key/session_key/org_key/org_type/user_role/device_role/channel_type/workspace_key`。如果用户只知道云端原始 `user_id/device_id/device_name/bot_id/person_id/actor_external_user_id/actor_catsco_user_id/actor_weixin_user_id/actor_feishu_user_id/session_id`，这些值只能作为 Review API 查询过滤条件使用；不要把它们写进 proposal、文档或回答证据。回答里优先引用稳定 key 和安全的组织/角色/渠道上下文。
 
 如需定期运行，只允许 proposal-only 模式：
 
@@ -56,6 +58,9 @@ catsco review daemon
 ```bash
 catsco review run-once --user-key <review-user-key>
 catsco review run-once --device-key <review-device-key>
+catsco review run-once --bot-key <review-bot-key>
+catsco review run-once --person-key <review-person-key>
+catsco review run-once --actor-key <review-actor-key>
 catsco review run-once --org-type school
 ```
 

@@ -56,8 +56,20 @@ CATSCO_REVIEW_MAX_TARGET_TURNS=500
 CATSCO_REVIEW_TARGET_USER_ID=
 CATSCO_REVIEW_TARGET_DEVICE_ID=
 CATSCO_REVIEW_TARGET_DEVICE_NAME=
+CATSCO_REVIEW_TARGET_BOT_ID=
+CATSCO_REVIEW_TARGET_PERSON_ID=
+CATSCO_REVIEW_TARGET_ACTOR_EXTERNAL_USER_ID=
+CATSCO_REVIEW_TARGET_ACTOR_CATSCO_USER_ID=
+CATSCO_REVIEW_TARGET_ACTOR_WEIXIN_USER_ID=
+CATSCO_REVIEW_TARGET_ACTOR_FEISHU_USER_ID=
 CATSCO_REVIEW_TARGET_USER_KEY=
 CATSCO_REVIEW_TARGET_DEVICE_KEY=
+CATSCO_REVIEW_TARGET_BOT_KEY=
+CATSCO_REVIEW_TARGET_PERSON_KEY=
+CATSCO_REVIEW_TARGET_ACTOR_KEY=
+CATSCO_REVIEW_TARGET_ACTOR_CATSCO_USER_KEY=
+CATSCO_REVIEW_TARGET_ACTOR_WEIXIN_USER_KEY=
+CATSCO_REVIEW_TARGET_ACTOR_FEISHU_USER_KEY=
 CATSCO_REVIEW_TARGET_SESSION_ID=
 CATSCO_REVIEW_TARGET_SESSION_KEY=
 CATSCO_REVIEW_TARGET_SESSION_TYPE=
@@ -104,6 +116,8 @@ catsco review ask "这一周所有老师主要问了什么？" --max-sessions 10
 catsco review ask "学校用户最近一周主要用 Agent 做什么？" --org-type school
 catsco review ask "这个老师的使用情况" --user-id <server-user-id> --max-target-turns 800
 catsco review ask "这台教务处电脑最近主要问什么？" --device-name "教务处电脑"
+catsco review ask "这个真实人的使用情况" --person-key <review-person-key>
+catsco review ask "这个群成员和机器人的对话情况" --actor-key <review-actor-key> --bot-key <review-bot-key>
 ```
 
 Start a terminal debug chat that refreshes logs before each question:
@@ -111,6 +125,8 @@ Start a terminal debug chat that refreshes logs before each question:
 ```bash
 catsco review chat
 catsco review chat --user-key <review-user-key>
+catsco review chat --person-key <review-person-key>
+catsco review chat --actor-key <review-actor-key>
 catsco review chat --org-key <school-or-customer-key>
 catsco review chat --fixed-range
 ```
@@ -119,13 +135,16 @@ catsco review chat --fixed-range
 
 The time range is controlled by `--lookback-hours` or `CATSCO_REVIEW_LOOKBACK_HOURS`. The default is the latest 168 hours, not a separate Agent conversation window. Increase the lookback value for older history, while keeping the max result limits high enough for the question.
 
-Target filters can be configured in `.env` or passed on the command line. Stable keys (`user_key`, `device_key`, `session_key`) are preferred for repeatable analysis. Raw server identifiers (`user_id`, `device_id`, `device_name`, `session_id`) are supported only as Review API filters so you can target a known teacher, computer, or session; the client strips those raw fields from API responses and redacts raw identifier patterns before evidence is sent to the model.
+Target filters can be configured in `.env` or passed on the command line. Stable keys (`user_key`, `device_key`, `bot_key`, `person_key`, `actor_key`, provider actor keys, and `session_key`) are preferred for repeatable analysis. Raw server identifiers (`user_id`, `device_id`, `device_name`, `bot_id`, `person_id`, `actor_external_user_id`, provider actor user ids, and `session_id`) are supported only as Review API filters so you can target a known uploader, computer, bot, real person, platform account, or session; the client strips those raw fields from API responses and redacts raw identifier patterns before evidence is sent to the model.
 
 Generate local proposal and usage files for one redacted user/device:
 
 ```bash
 catsco review run-once --user-key <review-user-key>
 catsco review run-once --device-key <review-device-key>
+catsco review run-once --bot-key <review-bot-key>
+catsco review run-once --person-key <review-person-key>
+catsco review run-once --actor-key <review-actor-key>
 catsco review run-once --org-type school
 catsco review run-once --user-id <server-user-id>
 ```
@@ -187,7 +206,7 @@ Public proposal files contain pattern summaries and synthetic eval inputs. Detai
 - PR mode commits proposal artifacts only.
 - Scheduled daemon mode never creates branches, commits, pushes, or PRs.
 - Raw review data and user-level usage reports are kept out of Git/PR output.
-- Raw `user_id`, `device_id`, `device_name`, and `session_id` values are query filters only; Review Agent evidence uses stable keys plus safe org/role/channel context.
+- Raw `user_id`, `device_id`, `device_name`, `bot_id`, `person_id`, `actor_external_user_id`, provider actor user ids, and `session_id` values are query filters only; Review Agent evidence uses stable keys plus safe org/role/channel context.
 - API client calls use bounded response sizes, timeouts, and retry only transient 429/5xx failures.
 - Release remains a separate human-approved step.
 
@@ -212,6 +231,6 @@ Each run also writes local-only usage outputs:
 - `usage_report.md`: frequency, main usage topics, tool usage, and time distribution.
 - `usage_metrics.json`: structured metrics for local inspection or downstream dashboards.
 
-Usage reports intentionally do not include raw teacher questions or assistant answers. They use topic labels and hashed question references. To analyze a specific teacher, prefer the redacted `user_key` or `device_key` from Review API output and keep any real-name mapping outside Git. If you only know a server `user_id` or `device_name`, use it as a temporary filter, then rely on the returned stable keys in the answer.
+Usage reports intentionally do not include raw teacher questions or assistant answers. They use topic labels and hashed question references. To analyze a specific teacher, bot, real person, or group member, prefer the redacted `person_key`, `actor_key`, `bot_key`, `user_key`, or `device_key` from Review API output and keep any real-name mapping outside Git. If you only know a server `user_id`, `device_name`, `person_id`, `bot_id`, or platform account id, use it as a temporary filter, then rely on the returned stable keys in the answer.
 
 For questions that do need the underlying wording, use `catsco review ask` or `catsco review chat`. These commands pass only a bounded, second-pass-redacted evidence pack to the model and print the answer locally; they do not add raw questions or answers to PR artifacts.

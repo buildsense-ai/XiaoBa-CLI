@@ -1,10 +1,27 @@
 export function redactReviewText(value: unknown, maxLength?: number): string {
+  const rawIdentityFieldPattern = [
+    'user_id',
+    'device_id',
+    'device_name',
+    'session_id',
+    'bot_id',
+    'person_id',
+    'actor_id',
+    'raw_actor_id',
+    'sender_id',
+    'from_user_id',
+    'to_user_id',
+    'actor_external_user_id',
+    'actor_catsco_user_id',
+    'actor_weixin_user_id',
+    'actor_feishu_user_id',
+  ].join('|');
   const text = String(value ?? '')
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
     .replace(/catslog_(?:tok|review)_[A-Za-z0-9._~+/=-]+/gi, 'catslog_[REDACTED]')
     .replace(/sk-[A-Za-z0-9]{12,}/g, 'sk-[REDACTED]')
     .replace(/\bcatsco_\d+\b/gi, '[USER_ID_REDACTED]')
-    .replace(/(["']?(?:user_id|device_id|device_name|session_id)["']?\s*[:=]\s*)(["'])?[^"',}\]\r\n]+(["'])?/gi, '$1[RAW_ID_REDACTED]')
+    .replace(new RegExp(`(["']?(?:${rawIdentityFieldPattern})["']?\\s*[:=]\\s*)(["'])?[^"',}\\]\\r\\n]+(["'])?`, 'gi'), '$1[RAW_ID_REDACTED]')
     .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[EMAIL_REDACTED]')
     .replace(/\b1[3-9]\d{9}\b/g, '[PHONE_REDACTED]')
     .replace(/\b\d{17}[\dXx]\b/g, '[ID_REDACTED]')

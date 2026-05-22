@@ -34,6 +34,9 @@ describe('catsco review usage analyzer', () => {
           upload_id: 'upload-1',
           user_key: 'teacher-a',
           device_key: 'device-a',
+          bot_key: 'bot-school',
+          person_key: 'person-teacher-a',
+          actor_key: 'actor-teacher-a',
           session_key: 'session-a',
           session_type: 'chat',
           started_at: '2026-05-20 08:00:00',
@@ -53,6 +56,9 @@ describe('catsco review usage analyzer', () => {
           upload_id: 'upload-1',
           user_key: 'teacher-a',
           device_key: 'device-a',
+          bot_key: 'bot-school',
+          person_key: 'person-teacher-a',
+          actor_key: 'actor-teacher-a',
           session_key: 'session-b',
           session_type: 'chat',
           started_at: '2026-05-21 09:00:00',
@@ -90,12 +96,18 @@ describe('catsco review usage analyzer', () => {
             turn_record_id: 'turn-1',
             turn_no: 1,
             timestamp: '2026-05-20 08:00:00',
+            bot_key: 'bot-school',
+            person_key: 'person-teacher-a',
+            actor_key: 'actor-teacher-a',
             user_text: '帮我统计张三同学考试成绩',
           },
           {
             turn_record_id: 'turn-2',
             turn_no: 2,
             timestamp: '2026-05-20 08:10:00',
+            bot_key: 'bot-school',
+            person_key: 'person-teacher-a',
+            actor_key: 'actor-teacher-a',
             user_text: '写一条教务处通知',
           },
         ],
@@ -103,21 +115,38 @@ describe('catsco review usage analyzer', () => {
           turn_record_id: 'turn-3',
           turn_no: 1,
           timestamp: '2026-05-21 09:00:00',
+          bot_key: 'bot-school',
+          person_key: 'person-teacher-a',
+          actor_key: 'actor-teacher-a',
           user_text: '整理 Excel 表格数据',
         }],
       },
     };
 
-    const usage = analyzeUsageData(data, { targetUserKey: 'teacher-a' });
+    const usage = analyzeUsageData(data, {
+      targetUserKey: 'teacher-a',
+      targetBotKey: 'bot-school',
+      targetPersonKey: 'person-teacher-a',
+      targetActorKey: 'actor-teacher-a',
+    });
     assert.equal(usage.totals.userCount, 1);
+    assert.equal(usage.totals.botCount, 1);
+    assert.equal(usage.totals.personCount, 1);
+    assert.equal(usage.totals.actorCount, 1);
     assert.equal(usage.totals.sessionCount, 2);
     assert.equal(usage.totals.activeDays, 2);
     assert.equal(usage.totals.turnCount, 3);
     assert.equal(usage.users[0].averageTurnsPerSession, 1.5);
+    assert.equal(usage.actors[0].actorKey, 'actor-teacher-a');
+    assert.equal(usage.actors[0].loadedTurnCount, 3);
+    assert.deepEqual(usage.segments.botKeys, [{ name: 'bot-school', count: 5 }]);
+    assert.deepEqual(usage.segments.personKeys, [{ name: 'person-teacher-a', count: 5 }]);
+    assert.deepEqual(usage.segments.actorKeys, [{ name: 'actor-teacher-a', count: 5 }]);
     assert.deepEqual(usage.toolUsage.map(tool => tool.name), ['read_file', 'write_file']);
     assert.ok(usage.topics.some(topic => topic.topic === 'grades_or_exams'));
     assert.ok(usage.topics.some(topic => topic.topic === 'notices_or_messages'));
     assert.equal(usage.questionSamples[0].questionHash.startsWith('q_'), true);
+    assert.equal(usage.questionSamples[0].actorKey, 'actor-teacher-a');
     assert.equal(JSON.stringify(usage).includes('张三'), false);
   });
 });

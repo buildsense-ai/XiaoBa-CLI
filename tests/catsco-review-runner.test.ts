@@ -265,6 +265,9 @@ describe('catsco review runner', () => {
             upload_id: 'u1',
             user_key: 'teacher-key',
             device_key: 'device-key',
+            bot_key: 'bot-key',
+            person_key: 'person-key',
+            actor_key: 'actor-key',
             session_key: 'session-key',
             session_type: 'chat',
             org_type: 'school',
@@ -296,6 +299,9 @@ describe('catsco review runner', () => {
               turn_no: 1,
               user_key: 'teacher-key',
               device_key: 'device-key',
+              bot_key: 'bot-key',
+              person_key: 'person-key',
+              actor_key: 'actor-key',
               session_key: 'session-key',
               session_type: 'chat',
               org_type: 'school',
@@ -327,13 +333,30 @@ describe('catsco review runner', () => {
       targetDeviceKey: 'device-key',
       targetFilters: {
         userId: 'catsco_116',
+        botId: 'bot-raw',
+        personId: 'person-raw',
+        actorExternalUserId: 'actor-external-raw',
         userKey: 'teacher-key',
         deviceKey: 'device-key',
+        botKey: 'bot-key',
+        personKey: 'person-key',
+        actorKey: 'actor-key',
         orgType: 'school',
       },
     });
 
-    const expectedFilters = { userId: 'catsco_116', userKey: 'teacher-key', deviceKey: 'device-key', orgType: 'school' };
+    const expectedFilters = {
+      userId: 'catsco_116',
+      botId: 'bot-raw',
+      personId: 'person-raw',
+      actorExternalUserId: 'actor-external-raw',
+      userKey: 'teacher-key',
+      deviceKey: 'device-key',
+      botKey: 'bot-key',
+      personKey: 'person-key',
+      actorKey: 'actor-key',
+      orgType: 'school',
+    };
     assert.deepEqual(capturedFilters.summary, expectedFilters);
     assert.deepEqual(capturedFilters.failures, expectedFilters);
     assert.deepEqual(capturedFilters.sessions, expectedFilters);

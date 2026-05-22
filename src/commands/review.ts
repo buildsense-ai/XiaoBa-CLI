@@ -23,8 +23,20 @@ interface ReviewTargetCliOptions {
   userId?: string;
   deviceId?: string;
   deviceName?: string;
+  botId?: string;
+  personId?: string;
+  actorExternalUserId?: string;
+  actorCatscoUserId?: string;
+  actorWeixinUserId?: string;
+  actorFeishuUserId?: string;
   userKey?: string;
   deviceKey?: string;
+  botKey?: string;
+  personKey?: string;
+  actorKey?: string;
+  actorCatscoUserKey?: string;
+  actorWeixinUserKey?: string;
+  actorFeishuUserKey?: string;
   sessionId?: string;
   sessionKey?: string;
   sessionType?: string;
@@ -60,6 +72,18 @@ export function registerReviewCommand(program: Command): void {
     .option('--user-id <id>', 'Limit usage analysis by raw server user_id; used only as a Review API filter')
     .option('--device-id <id>', 'Limit usage analysis by raw server device_id; used only as a Review API filter')
     .option('--device-name <name>', 'Limit usage analysis by raw server device_name; used only as a Review API filter')
+    .option('--bot-key <key>', 'Limit usage analysis to one redacted Review API bot_key')
+    .option('--person-key <key>', 'Limit usage analysis to one redacted Review API person_key')
+    .option('--actor-key <key>', 'Limit usage analysis to one redacted Review API actor_key')
+    .option('--actor-catsco-user-key <key>', 'Limit usage analysis to one redacted Review API actor_catsco_user_key')
+    .option('--actor-weixin-user-key <key>', 'Limit usage analysis to one redacted Review API actor_weixin_user_key')
+    .option('--actor-feishu-user-key <key>', 'Limit usage analysis to one redacted Review API actor_feishu_user_key')
+    .option('--bot-id <id>', 'Limit usage analysis by raw server bot_id; used only as a Review API filter')
+    .option('--person-id <id>', 'Limit usage analysis by raw server person_id; used only as a Review API filter')
+    .option('--actor-external-user-id <id>', 'Limit usage analysis by raw server actor_external_user_id; used only as a Review API filter')
+    .option('--actor-catsco-user-id <id>', 'Limit usage analysis by raw server actor_catsco_user_id; used only as a Review API filter')
+    .option('--actor-weixin-user-id <id>', 'Limit usage analysis by raw server actor_weixin_user_id; used only as a Review API filter')
+    .option('--actor-feishu-user-id <id>', 'Limit usage analysis by raw server actor_feishu_user_id; used only as a Review API filter')
     .option('--session-id <id>', 'Limit usage analysis by raw server session_id; used only as a Review API filter')
     .option('--session-key <key>', 'Limit usage analysis to one redacted Review API session_key')
     .option('--session-type <type>', 'Limit usage analysis to one session_type')
@@ -88,6 +112,18 @@ export function registerReviewCommand(program: Command): void {
     .option('--user-id <id>', 'Limit log retrieval by raw server user_id; used only as a Review API filter')
     .option('--device-id <id>', 'Limit log retrieval by raw server device_id; used only as a Review API filter')
     .option('--device-name <name>', 'Limit log retrieval by raw server device_name; used only as a Review API filter')
+    .option('--bot-key <key>', 'Limit log retrieval to one redacted Review API bot_key')
+    .option('--person-key <key>', 'Limit log retrieval to one redacted Review API person_key')
+    .option('--actor-key <key>', 'Limit log retrieval to one redacted Review API actor_key')
+    .option('--actor-catsco-user-key <key>', 'Limit log retrieval to one redacted Review API actor_catsco_user_key')
+    .option('--actor-weixin-user-key <key>', 'Limit log retrieval to one redacted Review API actor_weixin_user_key')
+    .option('--actor-feishu-user-key <key>', 'Limit log retrieval to one redacted Review API actor_feishu_user_key')
+    .option('--bot-id <id>', 'Limit log retrieval by raw server bot_id; used only as a Review API filter')
+    .option('--person-id <id>', 'Limit log retrieval by raw server person_id; used only as a Review API filter')
+    .option('--actor-external-user-id <id>', 'Limit log retrieval by raw server actor_external_user_id; used only as a Review API filter')
+    .option('--actor-catsco-user-id <id>', 'Limit log retrieval by raw server actor_catsco_user_id; used only as a Review API filter')
+    .option('--actor-weixin-user-id <id>', 'Limit log retrieval by raw server actor_weixin_user_id; used only as a Review API filter')
+    .option('--actor-feishu-user-id <id>', 'Limit log retrieval by raw server actor_feishu_user_id; used only as a Review API filter')
     .option('--session-id <id>', 'Limit log retrieval by raw server session_id; used only as a Review API filter')
     .option('--session-key <key>', 'Limit log retrieval to one redacted Review API session_key')
     .option('--session-type <type>', 'Limit log retrieval to one session_type')
@@ -116,6 +152,18 @@ export function registerReviewCommand(program: Command): void {
     .option('--user-id <id>', 'Limit log retrieval by raw server user_id; used only as a Review API filter')
     .option('--device-id <id>', 'Limit log retrieval by raw server device_id; used only as a Review API filter')
     .option('--device-name <name>', 'Limit log retrieval by raw server device_name; used only as a Review API filter')
+    .option('--bot-key <key>', 'Limit log retrieval to one redacted Review API bot_key')
+    .option('--person-key <key>', 'Limit log retrieval to one redacted Review API person_key')
+    .option('--actor-key <key>', 'Limit log retrieval to one redacted Review API actor_key')
+    .option('--actor-catsco-user-key <key>', 'Limit log retrieval to one redacted Review API actor_catsco_user_key')
+    .option('--actor-weixin-user-key <key>', 'Limit log retrieval to one redacted Review API actor_weixin_user_key')
+    .option('--actor-feishu-user-key <key>', 'Limit log retrieval to one redacted Review API actor_feishu_user_key')
+    .option('--bot-id <id>', 'Limit log retrieval by raw server bot_id; used only as a Review API filter')
+    .option('--person-id <id>', 'Limit log retrieval by raw server person_id; used only as a Review API filter')
+    .option('--actor-external-user-id <id>', 'Limit log retrieval by raw server actor_external_user_id; used only as a Review API filter')
+    .option('--actor-catsco-user-id <id>', 'Limit log retrieval by raw server actor_catsco_user_id; used only as a Review API filter')
+    .option('--actor-weixin-user-id <id>', 'Limit log retrieval by raw server actor_weixin_user_id; used only as a Review API filter')
+    .option('--actor-feishu-user-id <id>', 'Limit log retrieval by raw server actor_feishu_user_id; used only as a Review API filter')
     .option('--session-id <id>', 'Limit log retrieval by raw server session_id; used only as a Review API filter')
     .option('--session-key <key>', 'Limit log retrieval to one redacted Review API session_key')
     .option('--session-type <type>', 'Limit log retrieval to one session_type')
@@ -147,6 +195,18 @@ export function registerReviewCommand(program: Command): void {
     .option('--user-id <id>', 'Limit usage analysis by raw server user_id; used only as a Review API filter')
     .option('--device-id <id>', 'Limit usage analysis by raw server device_id; used only as a Review API filter')
     .option('--device-name <name>', 'Limit usage analysis by raw server device_name; used only as a Review API filter')
+    .option('--bot-key <key>', 'Limit usage analysis to one redacted Review API bot_key')
+    .option('--person-key <key>', 'Limit usage analysis to one redacted Review API person_key')
+    .option('--actor-key <key>', 'Limit usage analysis to one redacted Review API actor_key')
+    .option('--actor-catsco-user-key <key>', 'Limit usage analysis to one redacted Review API actor_catsco_user_key')
+    .option('--actor-weixin-user-key <key>', 'Limit usage analysis to one redacted Review API actor_weixin_user_key')
+    .option('--actor-feishu-user-key <key>', 'Limit usage analysis to one redacted Review API actor_feishu_user_key')
+    .option('--bot-id <id>', 'Limit usage analysis by raw server bot_id; used only as a Review API filter')
+    .option('--person-id <id>', 'Limit usage analysis by raw server person_id; used only as a Review API filter')
+    .option('--actor-external-user-id <id>', 'Limit usage analysis by raw server actor_external_user_id; used only as a Review API filter')
+    .option('--actor-catsco-user-id <id>', 'Limit usage analysis by raw server actor_catsco_user_id; used only as a Review API filter')
+    .option('--actor-weixin-user-id <id>', 'Limit usage analysis by raw server actor_weixin_user_id; used only as a Review API filter')
+    .option('--actor-feishu-user-id <id>', 'Limit usage analysis by raw server actor_feishu_user_id; used only as a Review API filter')
     .option('--session-id <id>', 'Limit usage analysis by raw server session_id; used only as a Review API filter')
     .option('--session-key <key>', 'Limit usage analysis to one redacted Review API session_key')
     .option('--session-type <type>', 'Limit usage analysis to one session_type')
@@ -435,8 +495,20 @@ function reviewTargetOptionsFromCli(options: ReviewTargetCliOptions) {
     targetUserId: stringOrUndefined(options.userId),
     targetDeviceId: stringOrUndefined(options.deviceId),
     targetDeviceName: stringOrUndefined(options.deviceName),
+    targetBotId: stringOrUndefined(options.botId),
+    targetPersonId: stringOrUndefined(options.personId),
+    targetActorExternalUserId: stringOrUndefined(options.actorExternalUserId),
+    targetActorCatscoUserId: stringOrUndefined(options.actorCatscoUserId),
+    targetActorWeixinUserId: stringOrUndefined(options.actorWeixinUserId),
+    targetActorFeishuUserId: stringOrUndefined(options.actorFeishuUserId),
     targetUserKey: stringOrUndefined(options.userKey),
     targetDeviceKey: stringOrUndefined(options.deviceKey),
+    targetBotKey: stringOrUndefined(options.botKey),
+    targetPersonKey: stringOrUndefined(options.personKey),
+    targetActorKey: stringOrUndefined(options.actorKey),
+    targetActorCatscoUserKey: stringOrUndefined(options.actorCatscoUserKey),
+    targetActorWeixinUserKey: stringOrUndefined(options.actorWeixinUserKey),
+    targetActorFeishuUserKey: stringOrUndefined(options.actorFeishuUserKey),
     targetSessionId: stringOrUndefined(options.sessionId),
     targetSessionKey: stringOrUndefined(options.sessionKey),
     targetSessionType: stringOrUndefined(options.sessionType),

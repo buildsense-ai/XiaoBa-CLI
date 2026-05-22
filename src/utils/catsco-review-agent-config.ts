@@ -26,8 +26,20 @@ export interface CatscoReviewAgentConfig {
   targetUserId?: string;
   targetDeviceId?: string;
   targetDeviceName?: string;
+  targetBotId?: string;
+  targetPersonId?: string;
+  targetActorExternalUserId?: string;
+  targetActorCatscoUserId?: string;
+  targetActorWeixinUserId?: string;
+  targetActorFeishuUserId?: string;
   targetUserKey?: string;
   targetDeviceKey?: string;
+  targetBotKey?: string;
+  targetPersonKey?: string;
+  targetActorKey?: string;
+  targetActorCatscoUserKey?: string;
+  targetActorWeixinUserKey?: string;
+  targetActorFeishuUserKey?: string;
   targetSessionId?: string;
   targetSessionKey?: string;
   targetSessionType?: string;
@@ -152,8 +164,20 @@ export function getCatscoReviewAgentConfig(
     targetUserId: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_USER_ID'),
     targetDeviceId: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_DEVICE_ID'),
     targetDeviceName: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_DEVICE_NAME'),
+    targetBotId: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_BOT_ID'),
+    targetPersonId: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_PERSON_ID'),
+    targetActorExternalUserId: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_ACTOR_EXTERNAL_USER_ID'),
+    targetActorCatscoUserId: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_ACTOR_CATSCO_USER_ID'),
+    targetActorWeixinUserId: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_ACTOR_WEIXIN_USER_ID'),
+    targetActorFeishuUserId: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_ACTOR_FEISHU_USER_ID'),
     targetUserKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_USER_KEY'),
     targetDeviceKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_DEVICE_KEY'),
+    targetBotKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_BOT_KEY'),
+    targetPersonKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_PERSON_KEY'),
+    targetActorKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_ACTOR_KEY'),
+    targetActorCatscoUserKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_ACTOR_CATSCO_USER_KEY'),
+    targetActorWeixinUserKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_ACTOR_WEIXIN_USER_KEY'),
+    targetActorFeishuUserKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_ACTOR_FEISHU_USER_KEY'),
     targetSessionId: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_SESSION_ID'),
     targetSessionKey: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_SESSION_KEY'),
     targetSessionType: readEnv(runtimeEnv, 'CATSCO_REVIEW_TARGET_SESSION_TYPE'),
