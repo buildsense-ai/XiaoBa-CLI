@@ -154,8 +154,8 @@
       "target": [
         "dmg"
       ],
-      "icon": "build-resources/icon.png",
-      "artifactName": "${productName}-${version}-mac.${ext}"
+      "icon": "build-resources/icons/icon.icns",
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     },
     "win": {
       "target": [
