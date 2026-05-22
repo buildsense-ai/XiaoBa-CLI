@@ -30,6 +30,7 @@ import {
 } from '../../runtime/runtime-profile-editor';
 import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/upload';
 import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-grants';
+import { registerSkillHubRoutes } from './skillhub';
 // import { ReportGenerator } from '../../utils/report-generator';
 // import { LogUploader } from '../../utils/log-uploader';
 
@@ -357,6 +358,7 @@ function persistCatsUserSession(state: CatsAuthState, login: any): void {
 
 export function createApiRouter(serviceManager: ServiceManager, updateController?: UpdateController): Router {
   const router = Router();
+  registerSkillHubRoutes(router);
 
   // ==================== 总览 ====================
 
@@ -1284,6 +1286,7 @@ function getSkillFiles(skillFilePath: string): string[] {
 }
 
 function skillToDashboardPayload(skill: Skill): any {
+  const installInfo = getSkillHubInstallInfo(skill.filePath);
   return {
     name: skill.metadata.name,
     description: skill.metadata.description,
@@ -1292,8 +1295,19 @@ function skillToDashboardPayload(skill: Skill): any {
     path: skill.filePath,
     files: getSkillFiles(skill.filePath),
     enabled: true,
+    skillHub: installInfo,
     ...getSkillManagementInfo(skill.filePath),
   };
+}
+
+function getSkillHubInstallInfo(skillFilePath: string): any {
+  try {
+    const markerPath = path.join(path.dirname(skillFilePath), '.xiaoba-skillhub-install.json');
+    if (!fs.existsSync(markerPath)) return null;
+    return JSON.parse(fs.readFileSync(markerPath, 'utf-8'));
+  } catch {
+    return null;
+  }
 }
 
 function getSkillManagementInfo(skillFilePath: string): SkillManagementInfo {

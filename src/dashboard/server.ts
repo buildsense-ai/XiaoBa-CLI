@@ -28,7 +28,7 @@ export async function startDashboard(
   const projectRoot = controllers.projectRoot || (envPackaged ? process.env.XIAOBA_APP_ROOT : undefined) || process.cwd();
   const serviceManager = new ServiceManager(projectRoot);
 
-  app.use(express.json());
+  app.use(express.json({ limit: '25mb' }));
 
   // API routes
   app.use('/api', createApiRouter(serviceManager, controllers.updateController));
