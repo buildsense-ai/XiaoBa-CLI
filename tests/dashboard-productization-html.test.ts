@@ -16,9 +16,12 @@ test('dashboard settings page uses model source before Runtime Profile', () => {
   assert.match(dashboardHtml, /\/api\/settings/);
   assert.match(dashboardHtml, /id="settings-setup-panel"/);
   assert.match(dashboardHtml, /先完成关键配置/);
-  assert.match(dashboardHtml, /CatsCo 托管模型/);
-  assert.match(dashboardHtml, /自定义模型（当前需要）/);
-  assert.match(dashboardHtml, /托管模型目录和用量服务还没有接入当前本地版本/);
+  assert.match(dashboardHtml, /CatsCo 中转模型/);
+  assert.match(dashboardHtml, /自定义模型（手动配置）/);
+  assert.match(dashboardHtml, /启用 CatsCo 中转/);
+  assert.match(dashboardHtml, /默认推荐 Anthropic-compatible/);
+  assert.match(dashboardHtml, /function enableCatsRelayModel\(protocol, options=\{\}\)/);
+  assert.match(dashboardHtml, /\/api\/cats\/relay\/model-config\/apply/);
   assert.match(dashboardHtml, /访问凭证只保存 presence，不会回显/);
   assert.match(dashboardHtml, /保存自定义模型设置？访问凭证会写入本地 \.env，仅用于本机 runtime。/);
   assert.match(dashboardHtml, /Runtime Profile 状态/);

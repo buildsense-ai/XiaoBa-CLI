@@ -160,13 +160,16 @@ function buildModelSection(
   const customReady = checks
     .filter(check => check.id.startsWith('model.custom.'))
     .every(check => check.status === 'pass');
+  const relayReady = checks.some(check => check.id === 'model.managed.relay' && check.status === 'pass');
   return {
     id: 'model',
     label: '模型来源',
     status,
-    summary: customReady
-      ? '当前使用自定义模型启动本地 agent；CatsCo 托管模型等待后端接入'
-      : 'CatsCo 托管模型尚未接入；当前需要配置自定义模型',
+    summary: relayReady
+      ? '当前使用 CatsCo 中转模型启动本地 agent'
+      : customReady
+      ? '当前使用自定义模型启动本地 agent；也可以一键切换 CatsCo 中转'
+      : '当前需要配置模型来源，可登录 CatsCo 后启用中转模型',
     checks,
     action: status === 'ready' ? undefined : { label: '打开设置', target: 'settings' },
   };
@@ -182,20 +185,27 @@ function buildModelChecks(
   const apiKey = firstNonEmpty(env.GAUZ_LLM_API_KEY, config.apiKey);
   const catsCoToken = firstNonEmpty(env.CATSCO_USER_TOKEN, env.CATSCOMPANY_USER_TOKEN);
   const catsCoUserUid = firstNonEmpty(env.CATSCO_USER_UID, env.CATSCOMPANY_USER_UID);
+  const relayConfigured = isCatsRelayModelConfigured(provider, apiBase, model, apiKey);
 
   return [
-    catsCoToken && catsCoUserUid
-      ? failCheck(
-        'model.managed.backend',
-        'CatsCo 托管模型',
-        'CatsCo 托管模型后端尚未接入；当前请使用自定义模型',
-        'warning',
-        { label: '打开设置', target: 'settings' },
+    relayConfigured
+      ? passCheck(
+        'model.managed.relay',
+        'CatsCo 中转模型',
+        `已启用 CatsCo 中转：${provider} / ${model}`,
       )
-      : failCheck(
+      : catsCoToken && catsCoUserUid
+        ? failCheck(
+          'model.managed.relay',
+          'CatsCo 中转模型',
+          '已登录 CatsCo，可在设置里一键启用 CatsCo 中转模型',
+          'warning',
+          { label: '打开设置', target: 'settings' },
+        )
+        : failCheck(
         'model.managed.account',
-        'CatsCo 托管模型',
-        '登录 CatsCo 后才可使用托管模型；当前请使用自定义模型',
+        'CatsCo 中转模型',
+        '登录 CatsCo 后才可使用中转模型；当前请使用自定义模型',
         'warning',
         { label: '打开 CatsCo', target: 'catsco' },
       ),
@@ -509,6 +519,23 @@ function resolveModelApiBase(env: NodeJS.ProcessEnv, config: ChatConfig): string
 
 function resolveModelName(env: NodeJS.ProcessEnv, config: ChatConfig): string {
   return firstNonEmpty(env.GAUZ_LLM_MODEL, config.model) || DEFAULT_MODEL_NAME;
+}
+
+function isCatsRelayModelConfigured(
+  provider: string,
+  apiBase: string,
+  model: string,
+  apiKey?: string,
+): boolean {
+  if (!apiKey || !model) return false;
+  if (provider !== 'anthropic' && provider !== 'openai') return false;
+
+  try {
+    const parsed = new URL(apiBase);
+    return parsed.hostname.toLowerCase() === 'relay.catsco.cc';
+  } catch {
+    return apiBase.toLowerCase().includes('relay.catsco.cc');
+  }
 }
 
 function summarizeRuntimeValidationIssue(issue: { path: string; message: string }): string {

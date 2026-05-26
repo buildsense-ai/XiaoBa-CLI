@@ -20,6 +20,10 @@ describe('dashboard typed settings API', () => {
     'GAUZ_LLM_MODEL',
     'CATSCO_HTTP_BASE_URL',
     'CATSCO_SERVER_URL',
+    'CATSCO_USER_TOKEN',
+    'CATSCO_USER_UID',
+    'CATSCO_USER_NAME',
+    'CATSCO_USER_DISPLAY_NAME',
   ];
   const originalEnv: Record<string, string | undefined> = {};
 
@@ -279,6 +283,244 @@ describe('dashboard typed settings API', () => {
     assert.equal(backupWriteResponse.status, 400);
     assert.match(backupWrite.error, /Unknown config key/);
     assert.equal(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8').includes('new-backup-secret'), false);
+  });
+
+  test('POST /cats/relay/model-config/apply creates a relay key and writes Anthropic settings', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    let createCount = 0;
+
+    catsApp.get('/api/relay/config', (req, res) => {
+      assert.equal(req.headers.authorization, 'Bearer user-token');
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'MiniMax-M2.7',
+        self_service_enabled: true,
+        endpoints: [
+          { protocol: 'OpenAI-compatible', base_url: 'https://relay.catsco.cc/v1' },
+          { protocol: 'Anthropic-compatible', base_url: 'https://relay.catsco.cc/anthropic' },
+        ],
+      });
+    });
+    catsApp.get('/api/relay/key', (_req, res) => {
+      res.json({ configured: true });
+    });
+    catsApp.post('/api/relay/key', (req, res) => {
+      createCount += 1;
+      assert.equal(req.body.name, 'CatsCo user 38');
+      res.json({
+        configured: true,
+        key: {
+          id: 'vk-test',
+          name: req.body.name,
+          prefix: 'sk-bf-d0',
+          state: 'active',
+          key: 'sk-bf-secret-created-once',
+        },
+      });
+    });
+    const catsServer = await listen(catsApp);
+    const address = catsServer.address();
+    if (!address || typeof address === 'string') throw new Error('cats server did not bind');
+
+    try {
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: 'evil-token-ignored',
+          httpBaseUrl: 'http://127.0.0.1:1',
+        }),
+      });
+      const text = await response.text();
+      const data = JSON.parse(text) as any;
+      const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+      assert.equal(response.status, 200, text);
+      assert.equal(data.ok, true);
+      assert.equal(data.provider, 'anthropic');
+      assert.equal(data.apiBase, 'https://relay.catsco.cc/anthropic');
+      assert.equal(data.model, 'MiniMax-M2.7');
+      assert.equal(data.createdKey, true);
+      assert.equal(data.key.key, undefined);
+      assert.equal(text.includes('sk-bf-secret-created-once'), false);
+      assert.equal(createCount, 1);
+      assert.equal(parsed.GAUZ_LLM_PROVIDER, 'anthropic');
+      assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
+      assert.equal(parsed.GAUZ_LLM_MODEL, 'MiniMax-M2.7');
+      assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-secret-created-once');
+      assert.equal(process.env.GAUZ_LLM_PROVIDER, 'anthropic');
+
+      const customResponse = await fetch(`${baseUrl}/api/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: {
+            'model.provider': 'openai',
+            'model.apiBase': 'https://api.deepseek.com/v1',
+            'model.model': 'deepseek-chat',
+            'model.apiKey': { action: 'replace', value: 'sk-custom-model-key' },
+          },
+        }),
+      });
+      assert.equal(customResponse.status, 200);
+      const switched = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+      assert.equal(switched.GAUZ_LLM_PROVIDER, 'openai');
+      assert.equal(switched.GAUZ_LLM_API_BASE, 'https://api.deepseek.com/v1');
+      assert.equal(switched.GAUZ_LLM_MODEL, 'deepseek-chat');
+      assert.equal(switched.GAUZ_LLM_API_KEY, 'sk-custom-model-key');
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
+  test('POST /cats/relay/model-config/apply writes OpenAI-compatible relay settings', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    catsApp.get('/api/relay/config', (req, res) => {
+      assert.equal(req.headers.authorization, 'Bearer user-token');
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'MiniMax-M2.7',
+        self_service_enabled: true,
+        endpoints: [
+          { protocol: 'OpenAI-compatible', base_url: 'https://relay.catsco.cc/v1' },
+          { protocol: 'Anthropic-compatible', base_url: 'https://relay.catsco.cc/anthropic' },
+        ],
+      });
+    });
+    catsApp.get('/api/relay/key', (_req, res) => {
+      res.json({ configured: false });
+    });
+    catsApp.post('/api/relay/key', (_req, res) => {
+      res.json({
+        key: {
+          id: 'vk-openai',
+          name: 'CatsCo user 38',
+          prefix: 'sk-bf-o1',
+          state: 'active',
+          key: 'sk-bf-openai-compatible',
+        },
+      });
+    });
+    const catsServer = await listen(catsApp);
+    const address = catsServer.address();
+    if (!address || typeof address === 'string') throw new Error('cats server did not bind');
+
+    try {
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocol: 'openai' }),
+      });
+      const text = await response.text();
+      const data = JSON.parse(text) as any;
+      const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+      assert.equal(response.status, 200, text);
+      assert.equal(data.provider, 'openai');
+      assert.equal(data.apiBase, 'https://relay.catsco.cc/v1');
+      assert.equal(parsed.GAUZ_LLM_PROVIDER, 'openai');
+      assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/v1');
+      assert.equal(parsed.GAUZ_LLM_MODEL, 'MiniMax-M2.7');
+      assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-openai-compatible');
+      assert.equal(text.includes('sk-bf-openai-compatible'), false);
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
+  test('POST /cats/relay/model-config/apply sanitizes upstream error payloads', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    catsApp.get('/api/relay/config', (_req, res) => {
+      res.status(500).json({
+        error: 'upstream failure',
+        key: 'sk-bf-should-not-leak',
+        token: 'user-token-should-not-leak',
+        reason: 'test-only',
+      });
+    });
+    const catsServer = await listen(catsApp);
+    const address = catsServer.address();
+    if (!address || typeof address === 'string') throw new Error('cats server did not bind');
+
+    try {
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocol: 'anthropic' }),
+      });
+      const text = await response.text();
+      const data = JSON.parse(text) as any;
+
+      assert.equal(response.status, 500);
+      assert.equal(data.error, 'upstream failure');
+      assert.deepStrictEqual(data.data, { error: 'upstream failure', reason: 'test-only' });
+      assert.equal(text.includes('sk-bf-should-not-leak'), false);
+      assert.equal(text.includes('user-token-should-not-leak'), false);
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
+  test('POST /cats/relay/model-config/apply refuses to overwrite existing relay key without rotation', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    catsApp.get('/api/relay/config', (_req, res) => {
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'MiniMax-M2.7',
+        self_service_enabled: true,
+        endpoints: [{ protocol: 'Anthropic-compatible', base_url: 'https://relay.catsco.cc/anthropic' }],
+      });
+    });
+    catsApp.get('/api/relay/key', (_req, res) => {
+      res.json({
+        configured: true,
+        key: {
+          id: 'vk-existing',
+          name: 'existing',
+          prefix: 'sk-bf-old',
+          state: 'active',
+        },
+      });
+    });
+    const catsServer = await listen(catsApp);
+    const address = catsServer.address();
+    if (!address || typeof address === 'string') throw new Error('cats server did not bind');
+
+    try {
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocol: 'anthropic' }),
+      });
+      const data = await response.json() as any;
+
+      assert.equal(response.status, 409);
+      assert.equal(data.action, 'rotate_required');
+      assert.equal(data.key.prefix, 'sk-bf-old');
+      assert.equal(fs.existsSync(path.join(testRoot, '.env')), false);
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
   });
 });
 

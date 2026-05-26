@@ -2465,6 +2465,7 @@
       border-radius: 18px;
       box-shadow: var(--shadow-sm), var(--glow);
       overflow: hidden;
+      min-height: 0;
     }
 
     .chat-connect {
@@ -2473,9 +2474,13 @@
       gap: 12px;
       align-content: start;
       min-width: 0;
+      height: 100%;
+      min-height: 0;
       max-height: 100%;
       overflow-x: hidden;
       overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
       transition: padding 0.18s ease;
     }
 
@@ -2773,7 +2778,7 @@
       border: 1px solid var(--border-light);
       border-radius: 8px;
       background: rgba(255,255,255,0.54);
-      overflow: hidden;
+      overflow: visible;
     }
 
     .chat-diagnostics summary {
@@ -2800,6 +2805,7 @@
       margin-top: 0;
       border-radius: 8px;
       background: rgba(247, 249, 252, 0.9);
+      overflow: visible;
     }
 
     .chat-connect.needs-auth,
@@ -2826,7 +2832,13 @@
     .chat-advanced-body {
       display: grid;
       gap: 10px;
-      padding: 0 12px 12px;
+      padding: 0 12px 14px;
+    }
+
+    .chat-advanced-body .config-input {
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
     }
 
     .chat-advanced-note {
@@ -4644,7 +4656,7 @@
           <div class="settings-heading">
             <div class="settings-kicker">Settings</div>
             <div class="section-title" style="margin-bottom:0">模型来源与 Runtime Profile</div>
-            <div class="settings-meta">优先使用 CatsCo 托管模型；自定义模型和本地环境变量保留在高级区域。</div>
+            <div class="settings-meta">优先使用 CatsCo 中转模型；自定义模型和本地环境变量保留在高级区域。</div>
           </div>
           <button class="btn" onclick="refreshSettingsPage()">刷新</button>
         </div>
@@ -6205,7 +6217,7 @@
         ? firstReadinessProblem(runtimeSection)||runtimeSection.summary
         : '仅在要改显示名、工作目录或工具开关时需要打开';
       const next = modelSection?.status==='blocked'
-        ? '先补齐模型来源；当前托管模型未接入前，自定义模型是启动本地 agent 的必要配置。'
+        ? '先补齐模型来源；可登录 CatsCo 启用中转模型，或手动填写自定义模型。'
         : catscoSection?.status==='blocked'
           ? '模型已就绪后，继续登录并绑定 CatsCo Chat。'
           : catscoSection?.status==='warning'
@@ -6326,16 +6338,19 @@
       }
       const user=catsState.user||{};
       const catsConnected=isCatsLoggedIn();
-      const managedStatus=catsConnected?'待后端接入':'需要登录';
-      const managedTone=catsConnected?'warm':'gray';
-      const managedCopy=catsConnected
-        ? 'CatsCo 已登录。托管模型目录和用量服务还没有接入当前本地版本，当前请使用自定义模型启动本地 agent。'
-        : '登录 CatsCo 后，后续将直接使用 CatsCo 提供的模型目录。当前版本需要先在高级区配置自定义模型。';
       const keyField=settingField('model.apiKey');
       const credentialMeta=keyField.present
         ? '已配置访问凭证'
         : '未配置访问凭证';
       const apiBaseValue=settingValue('model.apiBase');
+      const relayConfigured=isCatsRelayModelGateway(apiBaseValue)&&keyField.present;
+      const managedStatus=relayConfigured?'已启用':catsConnected?'可启用':'需要登录';
+      const managedTone=relayConfigured?'green':catsConnected?'warm':'gray';
+      const managedCopy=relayConfigured
+        ? '当前已使用 CatsCo 中转模型。默认推荐 Anthropic-compatible，和 CatsCo runtime 的工具调用链路更贴近。'
+        : catsConnected
+          ? '已登录 CatsCo。可以一键生成或复用你的中转 Key，并写入本机模型配置；也可以继续使用下方自定义模型。'
+          : '登录 CatsCo 后，可以一键启用 CatsCo 中转模型。当前版本仍可先在高级区配置自定义模型。';
       const hideInternalGateway=isInternalModelGateway(apiBaseValue);
       const apiBaseDisplayValue=hideInternalGateway?'':apiBaseValue;
       const apiBasePlaceholder=hideInternalGateway?'已配置 CatsCo 内部兼容网关（隐藏）':'https://example.com/v1/messages';
@@ -6349,26 +6364,29 @@
           </span>
         </div>
         <div class="config-group-body model-source-layout">
-          <div class="runtime-note">普通用户优先确认这里：托管模型后端接入前，自定义模型是当前可运行路径；保存后影响新 session 或下一次启动的 connector。</div>
+          <div class="runtime-note">普通用户优先确认这里：推荐启用 CatsCo 中转模型；也可以手动填写第三方自定义模型。保存后影响新 session 或下一次启动的 connector。</div>
           <div class="model-source-grid">
             <div class="model-source-card primary">
               <div class="model-source-head">
                 <div>
-                  <div class="model-source-title">CatsCo 托管模型</div>
+                  <div class="model-source-title">CatsCo 中转模型</div>
                   <div class="model-source-copy">${managedCopy}</div>
                 </div>
                 ${runtimeTag(managedStatus, managedTone)}
               </div>
               <div class="model-source-actions">
                 <button class="btn" onclick="switchPage('chat')">${catsConnected?'查看 CatsCo 连接':'登录 CatsCo'}</button>
+                <button class="btn btn-primary" ${catsConnected?'':'disabled'} onclick="enableCatsRelayModel('anthropic')">启用 CatsCo 中转</button>
+                <button class="btn" ${catsConnected?'':'disabled'} onclick="enableCatsRelayModel('openai')">改用 OpenAI 兼容</button>
               </div>
+              <div id="relay-model-status" style="color:var(--text2);font-size:13px;margin-top:10px">${relayConfigured?'当前中转配置已写入本机。':'启用后会写入本机 .env，保存后新 session 或下一次启动 connector 生效。'}</div>
             </div>
             <details class="model-source-card warning" id="custom-model-settings"${customModelSettingsOpen?' open':''}>
               <summary>
                 <div class="model-source-head">
                   <div>
-                    <div class="model-source-title">自定义模型（当前需要）</div>
-                    <div class="model-source-copy">托管模型未接入前，启动本地 agent 需要这里的模型地址、模型名称和访问凭证。修改会自动保存，访问凭证只保存 presence，不会回显。</div>
+                    <div class="model-source-title">自定义模型（手动配置）</div>
+                    <div class="model-source-copy">手动接入第三方模型时填写这里的模型地址、模型名称和访问凭证。修改会自动保存，访问凭证只保存 presence，不会回显。</div>
                   </div>
                   ${runtimeTag(credentialMeta, keyField.present?'green':'red')}
                 </div>
@@ -6406,8 +6424,23 @@
       }
     }
 
+    function isCatsRelayModelGateway(value){
+      try{
+        return new URL(value).hostname.toLowerCase()==='relay.catsco.cc';
+      }catch(_e){
+        return String(value||'').toLowerCase().includes('relay.catsco.cc');
+      }
+    }
+
     function setModelSourceStatus(message, tone){
       const status=document.getElementById('model-source-status');
+      if(!status)return;
+      status.style.color=tone==='error'?'var(--red)':tone==='success'?'var(--green)':'var(--text2)';
+      status.textContent=message;
+    }
+
+    function setRelayModelStatus(message, tone){
+      const status=document.getElementById('relay-model-status');
       if(!status)return;
       status.style.color=tone==='error'?'var(--red)':tone==='success'?'var(--green)':'var(--text2)';
       status.textContent=message;
@@ -6448,6 +6481,39 @@
         model:settings['model.model'],
         secretAction:secret.action,
       });
+    }
+
+    async function enableCatsRelayModel(protocol, options={}){
+      if(!isCatsLoggedIn()){
+        switchPage('chat');
+        return;
+      }
+      const selectedProtocol=protocol==='openai'?'openai':'anthropic';
+      const label=selectedProtocol==='openai'?'OpenAI-compatible':'Anthropic-compatible';
+      try{
+        setRelayModelStatus('正在启用 CatsCo 中转模型（'+label+'）...','muted');
+        const r=await fetch(API+'/api/cats/relay/model-config/apply',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            protocol:selectedProtocol,
+            rotateExisting:Boolean(options.rotateExisting),
+          })
+        });
+        const data=await r.json();
+        if(r.status===409&&data.action==='rotate_required'){
+          const ok=confirm('你的 CatsCo 中转 Key 已存在，但明文不会再次返回。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');
+          if(ok)return enableCatsRelayModel(selectedProtocol,{rotateExisting:true});
+          setRelayModelStatus('已取消。你也可以在 CatsCompany 中转站页面复制现有配置后手动填写。','muted');
+          return;
+        }
+        if(!r.ok||data.error)throw new Error(data.error||'启用中转失败');
+        await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchRuntimeConfig(),fetchReadiness(),fetchCatsStatus()]);
+        setRelayModelStatus(data.message||('已启用 CatsCo 中转模型：'+label),'success');
+        setModelSourceStatus('已写入 CatsCo 中转模型配置。新 session 或下一次启动 connector 后生效。','success');
+      }catch(e){
+        setRelayModelStatus('启用失败：'+(e.message||String(e)),'error');
+      }
     }
 
     function bindCustomModelAutoSave(){
@@ -6496,17 +6562,21 @@
       }
       const sensitive=secretUpdate.action!=='keep';
       const message=sensitive
-        ? '保存自定义模型设置？访问凭证会写入本地 .env，仅用于本机 runtime。保存后新 session 或下一次启动的 connector 生效。'
-        : '保存自定义模型设置？保存后新 session 或下一次启动的 connector 生效。';
+        ? '保存自定义模型设置？访问凭证会写入本地 .env，仅用于本机 runtime。若 CatsCo agent 正在运行，会请求重启以使用新配置。'
+        : '保存自定义模型设置？若 CatsCo agent 正在运行，会请求重启以使用新配置。';
       if(!auto && !confirm(message))return;
       try{
         customModelAutoSaveInFlight=true;
         setModelSourceStatus(auto?'自动保存中...':'保存中...','muted');
-        const r=await fetch(API+'/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        const requestPayload={...payload,restartConnector:!auto};
+        const r=await fetch(API+'/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestPayload)});
         const d=await r.json();
         if(!r.ok||d.error)throw new Error(d.error||'保存失败');
         customModelAutoSaveLastSignature=signature;
-        setModelSourceStatus((auto?'已自动保存。':'已保存。')+'新 session 或下一次启动 connector 后生效。','success');
+        const appliedMessage=!auto&&d.connectorRestarted
+          ? '已保存，并已请求重启 CatsCo agent 使用新配置。'
+          : (auto?'已自动保存。':'已保存。')+'新 session 或下一次启动 connector 后生效。';
+        setModelSourceStatus(appliedMessage,'success');
         const secretInput=document.getElementById('model-secret-setting');
         const clearInput=document.getElementById('model-secret-clear-setting');
         if(secretInput && secretUpdate.action==='replace'){
@@ -6519,7 +6589,7 @@
         if(!auto){
           setModelSourceStatus('已保存，正在刷新启动状态...','muted');
           await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchRuntimeConfig(),fetchReadiness(),fetchCatsStatus()]);
-          setModelSourceStatus('已保存。新 session 或下一次启动 connector 后生效。','success');
+          setModelSourceStatus(d.connectorRestarted?'已保存，并已请求重启 CatsCo agent 使用新配置。':'已保存。新 session 或下一次启动 connector 后生效。','success');
         }
       }catch(e){
         setModelSourceStatus('保存失败：'+(e.message||String(e)),'error');

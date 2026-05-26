@@ -151,7 +151,7 @@ describe('dashboard readiness and service preflight API', () => {
     assert.equal(preflight.status, 'warning');
     assert.equal(preflight.canStart, true);
     assert.deepStrictEqual(preflight.blockingChecks, []);
-    assert.equal(preflight.warningChecks.includes('model.managed.backend'), true);
+    assert.equal(preflight.warningChecks.includes('model.managed.relay'), true);
     assert.equal(preflightText.includes('sk-readiness-secret'), false);
     assert.equal(preflightText.includes('catsco-agent-secret'), false);
     assert.equal(preflightText.includes(testRoot), false);

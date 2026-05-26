@@ -63,6 +63,8 @@ interface CatsRequestOptions {
   timeoutMs?: number;
 }
 
+type RelayModelProtocol = 'anthropic' | 'openai';
+
 function normalizeBaseUrl(value: unknown, fallback: string): string {
   const text = String(value || '').trim().replace(/\/+$/, '');
   return text || fallback;
@@ -339,6 +341,146 @@ async function catsApiKeyRequest(
   return data;
 }
 
+function normalizeRelayModelProtocol(value: unknown): RelayModelProtocol {
+  const text = String(value || '').trim().toLowerCase();
+  return text === 'openai' ? 'openai' : 'anthropic';
+}
+
+function relayProviderForProtocol(protocol: RelayModelProtocol): 'anthropic' | 'openai' {
+  return protocol === 'openai' ? 'openai' : 'anthropic';
+}
+
+function relayEndpointForProtocol(config: any, protocol: RelayModelProtocol): string {
+  const endpoints = Array.isArray(config?.endpoints) ? config.endpoints : [];
+  const endpoint = endpoints.find((item: any) => {
+    const label = String(item?.protocol || '').toLowerCase();
+    return protocol === 'openai' ? label.includes('openai') : label.includes('anthropic');
+  });
+  const baseUrl = normalizeBaseUrl(config?.base_url, 'https://relay.catsco.cc');
+  const fallback = protocol === 'openai' ? `${baseUrl}/v1` : `${baseUrl}/anthropic`;
+  return normalizeBaseUrl(endpoint?.base_url, fallback);
+}
+
+function sanitizeRelayKeyInfo(key: any): any {
+  if (!key || typeof key !== 'object') return key || null;
+  const copy = { ...key };
+  delete copy.key;
+  return copy;
+}
+
+async function fetchCatsRelayConfig(state: CatsAuthState): Promise<any> {
+  return catsRequest('GET', state.httpBaseUrl, '/api/relay/config', undefined, state.token);
+}
+
+async function fetchCatsRelayKey(state: CatsAuthState): Promise<any> {
+  return catsRequest('GET', state.httpBaseUrl, '/api/relay/key', undefined, state.token);
+}
+
+async function ensureCatsRelayPlainKey(
+  state: CatsAuthState,
+  options: { rotateExisting?: boolean } = {},
+): Promise<{ response: any; plainKey: string; created: boolean; rotated: boolean }> {
+  const current = await fetchCatsRelayKey(state);
+  const currentKey = current?.key;
+  const active = currentKey && String(currentKey.state || 'active') === 'active';
+  const currentPlainKey = String(currentKey?.key || '').trim();
+
+  if (active && currentPlainKey) {
+    return { response: current, plainKey: currentPlainKey, created: false, rotated: false };
+  }
+
+  if (active && !options.rotateExisting) {
+    throw httpError(
+      '已有 CatsCo 中转 Key，但明文不会再次返回。请确认是否重新生成后再启用中转模型。',
+      409,
+    );
+  }
+
+  const next = active
+    ? await catsRequest('POST', state.httpBaseUrl, '/api/relay/key/rotate', {}, state.token)
+    : await catsRequest('POST', state.httpBaseUrl, '/api/relay/key', {
+      name: state.displayName || state.username || (state.uid ? `CatsCo user ${state.uid}` : 'CatsCo desktop'),
+    }, state.token);
+  const plainKey = String(next?.key?.key || '').trim();
+  if (!plainKey) {
+    throw httpError('CatsCo 中转 Key 创建成功但没有返回明文，请在 CatsCompany 中转站页面复制。', 502);
+  }
+
+  return {
+    response: next,
+    plainKey,
+    created: !active,
+    rotated: active,
+  };
+}
+
+function sanitizeCatsErrorData(data: unknown): unknown {
+  if (!data || typeof data !== 'object') return undefined;
+  const safe: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+    const lower = key.toLowerCase();
+    if (
+      lower.includes('key')
+      || lower.includes('token')
+      || lower.includes('secret')
+      || lower.includes('authorization')
+      || lower.includes('password')
+    ) {
+      continue;
+    }
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      safe[key] = value;
+    }
+  }
+  return Object.keys(safe).length > 0 ? safe : undefined;
+}
+
+function sanitizeCatsErrorMessage(value: unknown): string {
+  return String(value || '请求失败')
+    .replace(/cats_svc_[A-Za-z0-9_-]+/g, '[redacted-token]')
+    .replace(/sk-[A-Za-z0-9_-]{8,}/g, '[redacted-key]')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted-token]');
+}
+
+function catsErrorResponse(error: any): { status: number; body: Record<string, unknown> } {
+  const body: Record<string, unknown> = { error: sanitizeCatsErrorMessage(error.message) };
+  const data = sanitizeCatsErrorData(error.data);
+  if (data) body.data = data;
+  return { status: error.status || 500, body };
+}
+
+function restartCatsCompanyIfRunning(serviceManager: ServiceManager): {
+  wasRunning: boolean;
+  restartRequested: boolean;
+  restartError?: string;
+} {
+  const getService = typeof (serviceManager as any).getService === 'function'
+    ? serviceManager.getService.bind(serviceManager)
+    : undefined;
+  const restart = typeof (serviceManager as any).restart === 'function'
+    ? serviceManager.restart.bind(serviceManager)
+    : undefined;
+  if (!getService || !restart) {
+    return { wasRunning: false, restartRequested: false };
+  }
+
+  const service = getService('catscompany');
+  if (service?.status !== 'running') {
+    return { wasRunning: false, restartRequested: false };
+  }
+
+  try {
+    restart('catscompany');
+    return { wasRunning: true, restartRequested: true };
+  } catch (error: any) {
+    return {
+      wasRunning: true,
+      restartRequested: false,
+      restartError: error?.message || String(error),
+    };
+  }
+}
+
 function persistCatsUserSession(state: CatsAuthState, login: any): void {
   writeEnvUpdates({
     CATSCO_HTTP_BASE_URL: state.httpBaseUrl,
@@ -595,7 +737,17 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
 
   router.put('/settings', (req, res) => {
     try {
-      res.json(updateDashboardSettings(req.body, { runtimeRoot: process.cwd() }));
+      const result = updateDashboardSettings(req.body, { runtimeRoot: process.cwd() });
+      const changedModelSettings = result.updated.some(key => key.startsWith('GAUZ_LLM_'))
+        || result.cleared.some(key => key.startsWith('GAUZ_LLM_'));
+      const restartInfo = req.body?.restartConnector === true && changedModelSettings
+        ? restartCatsCompanyIfRunning(serviceManager)
+        : { wasRunning: false, restartRequested: false };
+      res.json({
+        ...result,
+        connectorRestarted: restartInfo.restartRequested,
+        restartError: restartInfo.restartError,
+      });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
@@ -1095,6 +1247,111 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       });
     } catch (e: any) {
       res.status(e.status || 500).json({ error: e.message, data: e.data });
+    }
+  });
+
+  router.get('/cats/relay/model-config', async (req, res) => {
+    try {
+      const state = getCatsAuthState();
+      if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
+
+      const protocol = normalizeRelayModelProtocol(req.query.protocol);
+      const config = await fetchCatsRelayConfig(state);
+      const keyResponse = config?.self_service_enabled ? await fetchCatsRelayKey(state) : { key: null };
+      const apiBase = relayEndpointForProtocol(config, protocol);
+      const provider = relayProviderForProtocol(protocol);
+      const model = String(config?.default_model || 'MiniMax-M2.7').trim() || 'MiniMax-M2.7';
+      const currentConfig = ConfigManager.getConfigReadonly();
+      const currentApiBase = String(currentConfig.apiUrl || '').replace(/\/+$/, '');
+
+      res.json({
+        ok: true,
+        protocol,
+        provider,
+        apiBase,
+        model,
+        configured: Boolean(
+          currentConfig.apiKey
+          && currentConfig.provider === provider
+          && currentApiBase === apiBase
+          && currentConfig.model === model
+        ),
+        relay: {
+          baseUrl: config?.base_url,
+          docsUrl: config?.docs_url,
+          selfServiceEnabled: Boolean(config?.self_service_enabled),
+        },
+        key: sanitizeRelayKeyInfo(keyResponse?.key),
+      });
+    } catch (e: any) {
+      const payload = catsErrorResponse(e);
+      res.status(payload.status).json(payload.body);
+    }
+  });
+
+  router.post('/cats/relay/model-config/apply', async (req, res) => {
+    try {
+      const state = getCatsAuthState();
+      if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
+
+      const protocol = normalizeRelayModelProtocol(req.body?.protocol);
+      const config = await fetchCatsRelayConfig(state);
+      if (config?.self_service_enabled === false) {
+        return res.status(503).json({ error: 'CatsCo 中转自助 Key 尚未启用' });
+      }
+
+      let ensured;
+      try {
+        ensured = await ensureCatsRelayPlainKey(state, {
+          rotateExisting: req.body?.rotateExisting === true,
+        });
+      } catch (error: any) {
+        if (error?.status === 409) {
+          return res.status(409).json({
+            error: error.message,
+            action: 'rotate_required',
+            protocol,
+            key: sanitizeRelayKeyInfo((await fetchCatsRelayKey(state))?.key),
+          });
+        }
+        throw error;
+      }
+
+      const apiBase = relayEndpointForProtocol(config, protocol);
+      const provider = relayProviderForProtocol(protocol);
+      const model = String(config?.default_model || 'MiniMax-M2.7').trim() || 'MiniMax-M2.7';
+      const settingsResult = updateDashboardSettings({
+        settings: {
+          'model.provider': provider,
+          'model.apiBase': apiBase,
+          'model.model': model,
+          'model.apiKey': { action: 'replace', value: ensured.plainKey },
+        },
+      }, { runtimeRoot: process.cwd() });
+      const restartInfo = restartCatsCompanyIfRunning(serviceManager);
+
+      res.json({
+        ok: true,
+        protocol,
+        provider,
+        apiBase,
+        model,
+        updated: settingsResult.updated,
+        key: sanitizeRelayKeyInfo(ensured.response?.key),
+        createdKey: ensured.created,
+        rotatedKey: ensured.rotated,
+        restartRequired: restartInfo.wasRunning && !restartInfo.restartRequested,
+        connectorRestarted: restartInfo.restartRequested,
+        restartError: restartInfo.restartError,
+        message: restartInfo.restartRequested
+          ? '已启用 CatsCo 中转模型，并已请求重启 CatsCo agent 以使用新配置。'
+          : restartInfo.wasRunning
+          ? '已启用 CatsCo 中转模型；但 CatsCo agent 自动重启失败，请手动重启后使用新配置。'
+          : '已启用 CatsCo 中转模型；下次启动 connector 会使用新配置。',
+      });
+    } catch (e: any) {
+      const payload = catsErrorResponse(e);
+      res.status(payload.status).json(payload.body);
     }
   });
 
