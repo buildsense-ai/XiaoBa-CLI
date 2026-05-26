@@ -6,6 +6,10 @@ export type RuntimeSurface = 'cli' | 'feishu' | 'catscompany' | 'weixin' | 'agen
 
 export interface RuntimePromptProfile {
   source: 'prompt-manager';
+  file?: string;
+  contextFiles?: string[];
+  runtimeInfo?: boolean;
+  surfaceInfo?: boolean;
   displayName?: string;
   platform?: string;
 }
@@ -23,6 +27,10 @@ export interface RuntimeLoggingProfile {
   uploadEnabled?: boolean;
 }
 
+export interface RuntimeBrandingProfile {
+  enabled: boolean;
+}
+
 export interface RuntimeModelProfile extends Partial<Pick<ChatConfig,
   'provider' | 'apiUrl' | 'model' | 'temperature' | 'maxTokens'
 >> {}
@@ -37,6 +45,7 @@ export interface RuntimeProfile {
   tools: RuntimeToolProfile;
   skills: RuntimeSkillProfile;
   logging: RuntimeLoggingProfile;
+  branding: RuntimeBrandingProfile;
 }
 
 export const DEFAULT_RUNTIME_TOOL_NAMES = [...DEFAULT_TOOL_NAMES];
@@ -77,6 +86,9 @@ export function resolveDefaultRuntimeProfile(
     model: options.model ?? {},
     prompt: {
       source: 'prompt-manager',
+      file: undefined,
+      contextFiles: [],
+      surfaceInfo: true,
       displayName: envDisplayName || undefined,
       platform,
     },
@@ -89,6 +101,9 @@ export function resolveDefaultRuntimeProfile(
     logging: {
       sessionEvents: options.logging?.sessionEvents ?? true,
       uploadEnabled: options.logging?.uploadEnabled,
+    },
+    branding: {
+      enabled: true,
     },
   };
 }

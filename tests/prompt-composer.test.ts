@@ -84,6 +84,52 @@ describe('PromptComposer', () => {
     assert.match(prompt, /^Fallback prompt\n\n当前日期：2026-05-01/);
   });
 
+  test('loads an alternate prompt file from a runtime profile', () => {
+    writePrompt('system-prompt.md', 'Default base prompt');
+    writePrompt('signal-catcher-system-prompt.md', 'Signal Catcher base prompt');
+    const profile = resolveDefaultRuntimeProfile({
+      surface: 'cli',
+      workingDirectory: '/tmp/xiaoba-runtime-profile',
+      env: {},
+    });
+    profile.prompt.file = 'signal-catcher-system-prompt.md';
+
+    const prompt = PromptComposer.composeSystemPromptFromProfile({
+      promptsDir: testRoot,
+      defaultSystemPrompt: 'Fallback prompt',
+      profile,
+      now: new Date('2026-05-01T12:00:00.000Z'),
+    });
+
+    assert.match(prompt, /^Signal Catcher base prompt\n\n当前日期：2026-05-01/);
+    assert.doesNotMatch(prompt, /Default base prompt/);
+  });
+
+  test('can disable runtime info for immersive roleplay prompts', () => {
+    writePrompt('signal-catcher-system-prompt.md', 'Signal Catcher base prompt');
+    const profile = resolveDefaultRuntimeProfile({
+      surface: 'cli',
+      workingDirectory: '/tmp/xiaoba-runtime-profile',
+      env: {
+        CURRENT_AGENT_DISPLAY_NAME: 'Desk Bot',
+        CURRENT_PLATFORM: 'cli',
+      },
+    });
+    profile.prompt.file = 'signal-catcher-system-prompt.md';
+    profile.prompt.runtimeInfo = false;
+
+    const prompt = PromptComposer.composeSystemPromptFromProfile({
+      promptsDir: testRoot,
+      defaultSystemPrompt: 'Fallback prompt',
+      profile,
+      now: new Date('2026-05-01T12:00:00.000Z'),
+    });
+
+    assert.equal(prompt, 'Signal Catcher base prompt');
+    assert.doesNotMatch(prompt, /Current directory/);
+    assert.doesNotMatch(prompt, /当前日期/);
+  });
+
   test('PromptManager fallback default prompt is not hardcoded to XiaoBa identity', () => {
     delete require.cache[require.resolve('../src/utils/prompt-manager')];
     const { PromptManager } = require('../src/utils/prompt-manager');

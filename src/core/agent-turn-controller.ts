@@ -138,6 +138,7 @@ export class AgentTurnController {
           workingDirectory: this.options.getCurrentDirectory(),
           getCurrentDirectory: this.options.getCurrentDirectory,
           updateCurrentDirectory: this.options.updateCurrentDirectory,
+          includeCurrentDirectoryHint: this.options.services.toolManager.getToolCount() > 0,
           planRuntime: this.options.planRuntime,
           runtimeServices: {
             aiService: this.options.services.aiService,

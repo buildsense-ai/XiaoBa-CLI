@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createAdapterRuntime } from '../src/runtime/adapter-runtime';
+import { MessageSessionManager } from '../src/core/message-session-manager';
 
 describe('adapter runtime', () => {
   let testRoot: string;
@@ -73,6 +74,70 @@ describe('adapter runtime', () => {
       runtime.services.toolManager.getToolDefinitions().map(definition => definition.name),
       ['read_file'],
     );
+  });
+
+  test('does not load adapter skills when runtime profile disables skills', async () => {
+    const profilePath = path.join(testRoot, 'runtime-profile.json');
+    writeTestSkill('disabled-adapter-skill');
+    fs.writeFileSync(profilePath, JSON.stringify({
+      schemaVersion: 1,
+      profile: {
+        skills: { enabled: false },
+      },
+    }), 'utf-8');
+    process.env.XIAOBA_RUNTIME_PROFILE_PATH = profilePath;
+
+    const runtime = createAdapterRuntime({
+      surface: 'feishu',
+    });
+
+    await runtime.loadSkills();
+    await runtime.sessionManagerOptions.skillReloadHandler?.();
+
+    assert.equal(runtime.profile.skills.enabled, false);
+    assert.deepStrictEqual(runtime.services.skillManager.getAllSkills(), []);
+  });
+
+  test('adapter roleplay profile injects prompt context and can suppress surface prompt', async () => {
+    const profilePath = path.join(testRoot, 'runtime-profile.json');
+    const contextPath = path.join(testRoot, 'game-bible.md');
+    fs.writeFileSync(contextPath, '[transient_game_bible]\nAdapter roleplay rules', 'utf-8');
+    fs.writeFileSync(profilePath, JSON.stringify({
+      schemaVersion: 1,
+      profile: {
+        prompt: {
+          runtimeInfo: false,
+          surfaceInfo: false,
+          contextFiles: ['game-bible.md'],
+        },
+        tools: { enabled: [] },
+        skills: { enabled: false },
+      },
+    }), 'utf-8');
+
+    const runtime = createAdapterRuntime({
+      surface: 'catscompany',
+      profileConfigPath: profilePath,
+    });
+    const manager = new MessageSessionManager(
+      runtime.services,
+      'catscompany',
+      runtime.sessionManagerOptions,
+    );
+    manager.setContextInjector(runtime.injectSessionContext);
+
+    const session = manager.getOrCreate('cc_user:demo');
+    await session.init();
+    const messages = (session as any).messages;
+
+    assert.equal(runtime.sessionManagerOptions.includeSurfacePrompt, false);
+    assert.equal(messages[0].role, 'system');
+    assert.doesNotMatch(messages[0].content, /当前是 CatsCo 聊天会话/);
+    assert.equal(messages[1].role, 'user');
+    assert.match(messages[1].content, /^\[transient_context_file:game-bible\.md\]/);
+    assert.match(messages[1].content, /\[transient_game_bible\]\nAdapter roleplay rules/);
+
+    await manager.destroy();
   });
 
   test('fixed prompt mode snapshots identity and workingDirectory immediately', async () => {

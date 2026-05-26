@@ -7,12 +7,15 @@ import { configCommand } from './commands/config';
 import { registerSkillCommand } from './commands/skill';
 import { feishuCommand } from './commands/feishu';
 import { runtimeCommand } from './commands/runtime';
+import { resolveRuntimeProfileFromConfig } from './runtime/runtime-profile-config';
 import { APP_VERSION } from './version';
 
 function main() {
   const program = new Command();
 
-  Logger.brand();
+  if (shouldShowStartupBrand(process.argv)) {
+    Logger.brand();
+  }
 
   program
     .name('catsco')
@@ -24,6 +27,7 @@ function main() {
     .description('Start a CatsCo local chat session')
     .option('-i, --interactive', 'Enter interactive mode')
     .option('-m, --message <message>', 'Send a single message')
+    .option('--profile <path>', 'Use a runtime profile config file')
     .action(chatCommand);
 
   program
@@ -39,25 +43,28 @@ function main() {
   program
     .command('catscompany')
     .description('Start the CatsCo agent connector (legacy alias)')
-    .action(async () => {
+    .option('--profile <path>', 'Use a runtime profile config file')
+    .action(async (options) => {
       const { catscompanyCommand } = await import('./commands/catscompany');
-      await catscompanyCommand();
+      await catscompanyCommand(options);
     });
 
   program
     .command('connect')
     .description('Start the CatsCo webapp connector')
-    .action(async () => {
+    .option('--profile <path>', 'Use a runtime profile config file')
+    .action(async (options) => {
       const { catscompanyCommand } = await import('./commands/catscompany');
-      await catscompanyCommand();
+      await catscompanyCommand(options);
     });
 
   program
     .command('catsco')
     .description('Start the CatsCo webapp connector (compatibility alias)')
-    .action(async () => {
+    .option('--profile <path>', 'Use a runtime profile config file')
+    .action(async (options) => {
       const { catscompanyCommand } = await import('./commands/catscompany');
-      await catscompanyCommand();
+      await catscompanyCommand(options);
     });
 
   program
@@ -92,3 +99,30 @@ function main() {
 }
 
 main();
+
+function shouldShowStartupBrand(argv: string[]): boolean {
+  try {
+    const profilePath = readOptionValue(argv, '--profile');
+    const { profile } = resolveRuntimeProfileFromConfig({
+      configPath: profilePath,
+      workingDirectory: process.cwd(),
+    });
+    return profile.branding.enabled !== false;
+  } catch {
+    return true;
+  }
+}
+
+function readOptionValue(argv: string[], longName: string): string | undefined {
+  const prefix = `${longName}=`;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === longName) {
+      return argv[index + 1];
+    }
+    if (arg.startsWith(prefix)) {
+      return arg.slice(prefix.length);
+    }
+  }
+  return undefined;
+}

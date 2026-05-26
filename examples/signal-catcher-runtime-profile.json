@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "profile": {
+    "id": "signal-catcher-roleplay",
+    "displayName": "信号捕手DM",
+    "surface": "catscompany",
+    "prompt": {
+      "file": "signal-catcher-system-prompt.md",
+      "runtimeInfo": false,
+      "surfaceInfo": false,
+      "contextFiles": [
+        "../prompts/signal-catcher-game-bible.md"
+      ]
+    },
+    "tools": {
+      "enabled": []
+    },
+    "skills": {
+      "enabled": false
+    },
+    "logging": {
+      "sessionEvents": true,
+      "uploadEnabled": false
+    },
+    "branding": {
+      "enabled": false
+    }
+  }
+}

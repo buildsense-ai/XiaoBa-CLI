@@ -4,6 +4,11 @@ import { CatsCompanyBot } from '../catscompany';
 import { CatsCompanyConfig } from '../catscompany/types';
 import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/runtime-command-support';
 import { ChatConfig } from '../types';
+import { resolveRuntimeProfileFromConfig } from '../runtime/runtime-profile-config';
+
+export interface CatsCompanyCommandOptions {
+  profile?: string;
+}
 
 export interface CatsCoCommandConfigResolution {
   config?: CatsCompanyConfig;
@@ -52,9 +57,16 @@ export function resolveCatsCoCommandConfig(
  * CLI 命令：catsco connect / catsco catscompany / xiaoba catscompany
  * 启动 CatsCompany WebSocket connector
  */
-export async function catscompanyCommand(): Promise<void> {
+export async function catscompanyCommand(options: CatsCompanyCommandOptions = {}): Promise<void> {
   const config = ConfigManager.getConfig();
   const resolved = resolveCatsCoCommandConfig(config);
+  const runtimeProfile = resolveRuntimeProfileFromConfig({
+    configPath: options.profile,
+    surface: 'catscompany',
+    workingDirectory: process.cwd(),
+  }).profile;
+  const runtimeSupportEnabled = runtimeProfile.logging.uploadEnabled !== false;
+  let runtimeSupportStarted = false;
 
   if (!resolved.config) {
     Logger.error('CatsCo 配置缺失。请设置环境变量 CATSCO_SERVER_URL 和 CATSCO_API_KEY，');
@@ -63,11 +75,17 @@ export async function catscompanyCommand(): Promise<void> {
     process.exit(1);
   }
 
-  const bot = new CatsCompanyBot(resolved.config);
+  const botConfig: CatsCompanyConfig = {
+    ...resolved.config,
+    runtimeProfilePath: options.profile,
+  };
+  const bot = new CatsCompanyBot(botConfig);
 
   // 优雅退出
   const shutdown = async () => {
-    await stopRuntimeCommandSupport();
+    if (runtimeSupportStarted) {
+      await stopRuntimeCommandSupport();
+    }
     await bot.destroy();
     process.exit(0);
   };
@@ -75,5 +93,8 @@ export async function catscompanyCommand(): Promise<void> {
   process.on('SIGTERM', shutdown);
 
   await bot.start();
-  await startRuntimeCommandSupport();
+  if (runtimeSupportEnabled) {
+    await startRuntimeCommandSupport();
+    runtimeSupportStarted = true;
+  }
 }

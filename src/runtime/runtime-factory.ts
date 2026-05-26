@@ -6,6 +6,8 @@ import { Logger } from '../utils/logger';
 import { PromptManager } from '../utils/prompt-manager';
 import { PromptComposer } from './prompt-composer';
 import { composeSessionSystemPromptProvider } from '../core/session-system-prompt';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   RuntimeProfile,
   assertValidRuntimeProfile,
@@ -39,6 +41,10 @@ export class RuntimeFactory {
       sessionKey,
       sessionType,
     ));
+    if (!profile.skills.enabled) {
+      session.setSkillReloadHandler(async () => {});
+    }
+    this.injectPromptContextFiles(session, profile);
 
     return {
       profile,
@@ -88,7 +94,11 @@ export class RuntimeFactory {
   ): SystemPromptProvider {
     return composeSessionSystemPromptProvider(
       this.createSystemPromptProvider(profile),
-      { sessionKey, sessionType },
+      {
+        sessionKey,
+        sessionType,
+        includeSurfacePrompt: profile.prompt.surfaceInfo !== false,
+      },
     );
   }
 
@@ -111,10 +121,31 @@ export class RuntimeFactory {
       surface: profile.surface,
       workingDirectory: profile.workingDirectory,
       model: { ...profile.model },
-      prompt: { ...profile.prompt },
-      tools: { enabled: [...profile.tools.enabled] },
-      skills: { ...profile.skills },
-      logging: { ...profile.logging },
-    };
+    prompt: { ...profile.prompt },
+    tools: { enabled: [...profile.tools.enabled] },
+    skills: { ...profile.skills },
+    logging: { ...profile.logging },
+    branding: { ...profile.branding },
+  };
+}
+
+  static injectPromptContextFiles(session: AgentSession, profile: RuntimeProfile): void {
+    const contextFiles = profile.prompt.contextFiles || [];
+    for (const contextFile of contextFiles) {
+      const resolvedPath = path.resolve(contextFile);
+      try {
+        const content = fs.readFileSync(resolvedPath, 'utf-8').trim();
+        if (!content) continue;
+        session.injectContext([
+          `[transient_context_file:${path.basename(resolvedPath)}]`,
+          `Source: ${resolvedPath}`,
+          'Runtime context only. Use as scenario/rule context, not as a user request.',
+          '',
+          content,
+        ].join('\n'));
+      } catch (error: any) {
+        Logger.warning(`Prompt context file skipped: ${resolvedPath} (${error.message})`);
+      }
+    }
   }
 }

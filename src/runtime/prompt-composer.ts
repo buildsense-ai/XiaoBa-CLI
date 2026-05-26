@@ -5,6 +5,8 @@ import { RuntimeProfile } from './runtime-profile';
 export interface ComposeSystemPromptOptions {
   promptsDir: string;
   defaultSystemPrompt: string;
+  promptFile?: string;
+  runtimeInfo?: boolean;
   env?: NodeJS.ProcessEnv;
   now?: Date;
 }
@@ -30,6 +32,8 @@ export class PromptComposer {
     return this.composeSystemPromptParts({
       promptsDir: options.promptsDir,
       defaultSystemPrompt: options.defaultSystemPrompt,
+      promptFile: options.promptFile,
+      runtimeInfo: options.runtimeInfo,
       displayName,
       platform,
       now,
@@ -40,6 +44,8 @@ export class PromptComposer {
     return this.composeSystemPromptParts({
       promptsDir: options.promptsDir,
       defaultSystemPrompt: options.defaultSystemPrompt,
+      promptFile: options.profile.prompt.file,
+      runtimeInfo: options.profile.prompt.runtimeInfo,
       displayName: (options.profile.prompt.displayName || '').trim(),
       platform: options.profile.prompt.platform || '',
       workspacePath: options.profile.workingDirectory,
@@ -50,15 +56,24 @@ export class PromptComposer {
   private static composeSystemPromptParts(options: {
     promptsDir: string;
     defaultSystemPrompt: string;
+    promptFile?: string;
+    runtimeInfo?: boolean;
     displayName: string;
     platform: string;
     workspacePath?: string;
     now: Date;
   }): string {
-    const basePrompt = this.getBaseSystemPrompt(options.promptsDir, options.defaultSystemPrompt).trim();
+    const basePrompt = this.getBaseSystemPrompt(
+      options.promptsDir,
+      options.defaultSystemPrompt,
+      options.promptFile,
+    ).trim();
     const displayName = options.displayName;
     const platform = options.platform;
     const today = options.now.toISOString().slice(0, 10);
+    if (options.runtimeInfo === false) {
+      return basePrompt;
+    }
 
     const runtimeInfo = [
       displayName ? `你在这个平台上的名字是：${displayName}` : '',
@@ -73,11 +88,28 @@ export class PromptComposer {
     return [basePrompt, runtimeInfo].filter(Boolean).join('\n\n');
   }
 
-  static getBaseSystemPrompt(promptsDir: string, defaultSystemPrompt: string): string {
+  static getBaseSystemPrompt(
+    promptsDir: string,
+    defaultSystemPrompt: string,
+    promptFile = 'system-prompt.md',
+  ): string {
     try {
-      return fs.readFileSync(path.join(promptsDir, 'system-prompt.md'), 'utf-8');
+      return fs.readFileSync(resolvePromptFile(promptsDir, promptFile), 'utf-8');
     } catch {
       return defaultSystemPrompt;
     }
   }
+}
+
+function resolvePromptFile(promptsDir: string, promptFile: string): string {
+  const normalizedFile = (promptFile || 'system-prompt.md').trim() || 'system-prompt.md';
+  const resolvedPromptsDir = path.resolve(promptsDir);
+  const resolvedFile = path.resolve(resolvedPromptsDir, normalizedFile);
+  const relative = path.relative(resolvedPromptsDir, resolvedFile);
+
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(`Prompt file must be inside prompts directory: ${normalizedFile}`);
+  }
+
+  return resolvedFile;
 }

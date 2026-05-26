@@ -55,6 +55,7 @@ export class WeixinBot {
       'weixin',
       runtime.sessionManagerOptions,
     );
+    this.sessionManager.setContextInjector(runtime.injectSessionContext);
     this.loadState();
   }
 

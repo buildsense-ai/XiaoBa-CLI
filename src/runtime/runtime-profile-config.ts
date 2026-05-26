@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   ResolveRuntimeProfileOptions,
+  RuntimeBrandingProfile,
   RuntimeLoggingProfile,
   RuntimeModelProfile,
   RuntimeProfile,
@@ -20,6 +21,10 @@ export interface RuntimeProfileFileModelConfig extends Pick<RuntimeModelProfile,
 > {}
 
 export interface RuntimeProfileFilePromptConfig {
+  file?: string;
+  contextFiles?: string[];
+  runtimeInfo?: boolean;
+  surfaceInfo?: boolean;
   displayName?: string;
   platform?: string;
 }
@@ -32,6 +37,8 @@ export interface RuntimeProfileFileSkillConfig {
   enabled?: boolean;
 }
 
+export interface RuntimeProfileFileBrandingConfig extends Partial<RuntimeBrandingProfile> {}
+
 export interface RuntimeProfileFileConfig {
   id?: string;
   displayName?: string;
@@ -42,6 +49,7 @@ export interface RuntimeProfileFileConfig {
   tools?: RuntimeProfileFileToolConfig;
   skills?: RuntimeProfileFileSkillConfig;
   logging?: Partial<RuntimeLoggingProfile>;
+  branding?: RuntimeProfileFileBrandingConfig;
 }
 
 export interface RuntimeProfileConfigFile {
@@ -171,6 +179,7 @@ export function applyRuntimeProfileFileConfig(
     tools: { enabled: [...baseProfile.tools.enabled] },
     skills: { ...baseProfile.skills },
     logging: { ...baseProfile.logging },
+    branding: { ...baseProfile.branding },
   };
 
   const hasConfigId = isNonEmptyString(config.id);
@@ -195,6 +204,19 @@ export function applyRuntimeProfileFileConfig(
     };
   }
   if (config.prompt) {
+    if (isNonEmptyString(config.prompt.file)) {
+      profile.prompt.file = config.prompt.file.trim();
+    }
+    if (config.prompt.contextFiles) {
+      profile.prompt.contextFiles = config.prompt.contextFiles
+        .map(item => resolvePath(item, options.configDir, options.homeDir));
+    }
+    if (typeof config.prompt.runtimeInfo === 'boolean') {
+      profile.prompt.runtimeInfo = config.prompt.runtimeInfo;
+    }
+    if (typeof config.prompt.surfaceInfo === 'boolean') {
+      profile.prompt.surfaceInfo = config.prompt.surfaceInfo;
+    }
     if (isNonEmptyString(config.prompt.displayName)) {
       profile.prompt.displayName = config.prompt.displayName.trim();
     }
@@ -213,6 +235,9 @@ export function applyRuntimeProfileFileConfig(
       ...profile.logging,
       ...config.logging,
     };
+  }
+  if (typeof config.branding?.enabled === 'boolean') {
+    profile.branding.enabled = config.branding.enabled;
   }
 
   if (options.surfaceOverride) {
@@ -279,6 +304,7 @@ function parseRuntimeProfileConfig(raw: unknown): {
   copyTools(profile, profileConfig, issues);
   copySkills(profile, profileConfig, issues);
   copyLogging(profile, profileConfig, issues);
+  copyBranding(profile, profileConfig, issues);
 
   return {
     schemaVersion,
@@ -355,6 +381,10 @@ function copyPrompt(
   }
 
   const prompt: RuntimeProfileFilePromptConfig = {};
+  copyString(source.prompt, prompt as Record<string, unknown>, 'file', 'profile.prompt.file', issues);
+  copyStringArray(source.prompt, prompt as Record<string, unknown>, 'contextFiles', 'profile.prompt.contextFiles', issues);
+  copyBoolean(source.prompt, prompt as Record<string, unknown>, 'runtimeInfo', 'profile.prompt.runtimeInfo', issues);
+  copyBoolean(source.prompt, prompt as Record<string, unknown>, 'surfaceInfo', 'profile.prompt.surfaceInfo', issues);
   copyString(source.prompt, prompt as Record<string, unknown>, 'displayName', 'profile.prompt.displayName', issues);
   copyString(source.prompt, prompt as Record<string, unknown>, 'platform', 'profile.prompt.platform', issues);
   target.prompt = prompt;
@@ -390,6 +420,30 @@ function copyTools(
   target.tools = { enabled };
 }
 
+function copyStringArray(
+  source: Record<string, unknown>,
+  target: Record<string, unknown>,
+  key: string,
+  issuePath: string,
+  issues: RuntimeProfileConfigIssue[],
+): void {
+  if (source[key] === undefined) return;
+  if (!Array.isArray(source[key])) {
+    issues.push({ path: issuePath, message: 'Expected string array' });
+    return;
+  }
+
+  const values: string[] = [];
+  source[key].forEach((value, index) => {
+    if (typeof value !== 'string') {
+      issues.push({ path: `${issuePath}[${index}]`, message: 'Expected string' });
+      return;
+    }
+    values.push(value);
+  });
+  target[key] = values;
+}
+
 function copySkills(
   source: Record<string, unknown>,
   target: RuntimeProfileFileConfig,
@@ -422,6 +476,22 @@ function copyLogging(
   copyBoolean(source.logging, logging as Record<string, unknown>, 'sessionEvents', 'profile.logging.sessionEvents', issues);
   copyBoolean(source.logging, logging as Record<string, unknown>, 'uploadEnabled', 'profile.logging.uploadEnabled', issues);
   target.logging = logging;
+}
+
+function copyBranding(
+  source: Record<string, unknown>,
+  target: RuntimeProfileFileConfig,
+  issues: RuntimeProfileConfigIssue[],
+): void {
+  if (source.branding === undefined) return;
+  if (!isRecord(source.branding)) {
+    issues.push({ path: 'profile.branding', message: 'branding must be an object' });
+    return;
+  }
+
+  const branding: RuntimeProfileFileBrandingConfig = {};
+  copyBoolean(source.branding, branding as Record<string, unknown>, 'enabled', 'profile.branding.enabled', issues);
+  target.branding = branding;
 }
 
 function copyNumber(

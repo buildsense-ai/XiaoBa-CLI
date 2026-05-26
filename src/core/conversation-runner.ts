@@ -699,6 +699,10 @@ export class ConversationRunner {
   }
 
   private buildCurrentDirectoryHint(): Message | null {
+    if (this.toolExecutionContext?.includeCurrentDirectoryHint === false) {
+      return null;
+    }
+
     const currentDirectory = this.toolExecutionContext?.getCurrentDirectory?.()
       || this.toolExecutionContext?.workingDirectory;
     if (!currentDirectory) return null;

@@ -1,4 +1,5 @@
 import {
+  AgentSession,
   AgentServices,
   SystemPromptProvider,
 } from '../core/agent-session';
@@ -18,6 +19,7 @@ export interface AdapterRuntimeOptions {
   surface: RuntimeSurface;
   sessionTTL?: number;
   workingDirectory?: string;
+  profileConfigPath?: string;
   promptSnapshotMode?: AdapterPromptSnapshotMode;
   skillLoadMode?: AdapterSkillLoadMode;
 }
@@ -26,6 +28,7 @@ export interface AdapterRuntimeBundle {
   profile: RuntimeProfile;
   services: AgentServices;
   sessionManagerOptions: MessageSessionManagerOptions;
+  injectSessionContext: (session: AgentSession) => void;
   loadSkills: () => Promise<void>;
 }
 
@@ -33,6 +36,7 @@ export function createAdapterRuntime(options: AdapterRuntimeOptions): AdapterRun
   const { profile } = resolveRuntimeProfileFromConfig({
     surface: options.surface,
     workingDirectory: options.workingDirectory ?? process.cwd(),
+    configPath: options.profileConfigPath,
   });
   const services = RuntimeFactory.createServicesSync(profile);
   const systemPromptProviderFactory = createPromptProviderFactory(
@@ -46,9 +50,15 @@ export function createAdapterRuntime(options: AdapterRuntimeOptions): AdapterRun
     sessionManagerOptions: {
       ttl: options.sessionTTL,
       systemPromptProviderFactory,
-      skillReloadHandler: createSkillLoader(services, options.skillLoadMode ?? 'warn'),
+      includeSurfacePrompt: profile.prompt.surfaceInfo !== false,
+      skillReloadHandler: profile.skills.enabled
+        ? createSkillLoader(services, options.skillLoadMode ?? 'warn')
+        : async () => {},
     },
-    loadSkills: createSkillLoader(services, options.skillLoadMode ?? 'warn'),
+    injectSessionContext: (session) => RuntimeFactory.injectPromptContextFiles(session, profile),
+    loadSkills: profile.skills.enabled
+      ? createSkillLoader(services, options.skillLoadMode ?? 'warn')
+      : async () => {},
   };
 }
 
@@ -84,5 +94,6 @@ function createPromptProviderFactory(
     tools: { enabled: [...profile.tools.enabled] },
     skills: { ...profile.skills },
     logging: { ...profile.logging },
+    branding: { ...profile.branding },
   });
 }

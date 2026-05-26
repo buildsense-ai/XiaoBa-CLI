@@ -9,14 +9,22 @@ import { RuntimeFactory } from '../runtime/runtime-factory';
 import { resolveRuntimeProfileFromConfig } from '../runtime/runtime-profile-config';
 
 export async function chatCommand(options: CommandOptions): Promise<void> {
+  const resolvedProfile = resolveRuntimeProfileFromConfig({
+    configPath: options.profile,
+    surface: 'cli',
+    workingDirectory: process.cwd(),
+  }).profile;
+  const runtimeSupportEnabled = resolvedProfile.logging.uploadEnabled !== false;
+  let runtimeSupportStarted = false;
+
   Logger.openLogFile('cli', undefined, true);
-  await startRuntimeCommandSupport();
+  if (runtimeSupportEnabled) {
+    await startRuntimeCommandSupport();
+    runtimeSupportStarted = true;
+  }
 
   const runtime = await RuntimeFactory.createSession({
-    profile: resolveRuntimeProfileFromConfig({
-      surface: 'cli',
-      workingDirectory: process.cwd(),
-    }).profile,
+    profile: resolvedProfile,
     sessionKey: 'cli',
     sessionType: 'cli',
     loadSkills: false,
@@ -37,13 +45,15 @@ export async function chatCommand(options: CommandOptions): Promise<void> {
   // 单条消息模式
   if (options.message) {
     await sendSingleMessage(session, options.message);
-    await stopRuntimeCommandSupport();
+    if (runtimeSupportStarted) {
+      await stopRuntimeCommandSupport();
+    }
     Logger.closeLogFile();
     return;
   }
 
   // 交互式对话模式（默认）
-  await interactiveChat(session);
+  await interactiveChat(session, runtimeSupportStarted, resolvedProfile.branding.enabled !== false);
 }
 
 /**
@@ -106,7 +116,11 @@ async function sendSingleMessage(
   }
 }
 
-async function interactiveChat(session: AgentSession): Promise<void> {
+async function interactiveChat(
+  session: AgentSession,
+  runtimeSupportStarted: boolean,
+  showIntro: boolean,
+): Promise<void> {
   // 保存原始的 process.exit 函数
   const originalExit = process.exit.bind(process);
   let isExiting = false;
@@ -124,7 +138,9 @@ async function interactiveChat(session: AgentSession): Promise<void> {
     const cleanup = async () => {
       try {
         await session.cleanup();
-        await stopRuntimeCommandSupport();
+        if (runtimeSupportStarted) {
+          await stopRuntimeCommandSupport();
+        }
         Logger.info('已保存对话历史');
         console.log(styles.text('再见！期待下次与你对话。\n'));
       } finally {
@@ -142,15 +158,17 @@ async function interactiveChat(session: AgentSession): Promise<void> {
   // 使用 prependListener 确保我们的处理器优先执行
   process.prependListener('SIGINT', () => gracefulExit(0));
 
-  console.log(
-    styles.text('开始对话吧！输入消息后按回车发送。\n输入 ') +
-    styles.highlight('/exit') + styles.text(' 退出对话，输入 ') +
-    styles.highlight('/stop') + styles.text(' 暂停会话，输入 ') +
-    styles.highlight('/clear') + styles.text(' 清空历史，输入 ') +
-    styles.highlight('/clear --all') + styles.text(' 清空历史并删除文件，输入 ') +
-    styles.highlight('/skills') + styles.text(' 查看可用技能。\n输入 ') +
-    styles.highlight('/history') + styles.text(' 查看历史信息。\n'),
-  );
+  if (showIntro) {
+    console.log(
+      styles.text('开始对话吧！输入消息后按回车发送。\n输入 ') +
+      styles.highlight('/exit') + styles.text(' 退出对话，输入 ') +
+      styles.highlight('/stop') + styles.text(' 暂停会话，输入 ') +
+      styles.highlight('/clear') + styles.text(' 清空历史，输入 ') +
+      styles.highlight('/clear --all') + styles.text(' 清空历史并删除文件，输入 ') +
+      styles.highlight('/skills') + styles.text(' 查看可用技能。\n输入 ') +
+      styles.highlight('/history') + styles.text(' 查看历史信息。\n'),
+    );
+  }
 
   // 创建 readline 接口
   const rl = readline.createInterface({
@@ -181,7 +199,9 @@ async function interactiveChat(session: AgentSession): Promise<void> {
         }
         isExiting = true;
         rl.close();
-        await stopRuntimeCommandSupport();
+        if (runtimeSupportStarted) {
+          await stopRuntimeCommandSupport();
+        }
         Logger.closeLogFile();
         originalExit(0);
         return;
@@ -218,7 +238,9 @@ async function interactiveChat(session: AgentSession): Promise<void> {
     // 处理退出命令（向后兼容）
     if (message.toLowerCase() === 'exit' || message.toLowerCase() === 'quit') {
       await session.summarizeAndDestroy();
-      await stopRuntimeCommandSupport();
+      if (runtimeSupportStarted) {
+        await stopRuntimeCommandSupport();
+      }
       console.log('\n' + styles.text('再见！期待下次与你对话。') + '\n');
       isExiting = true;
       rl.close();

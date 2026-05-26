@@ -65,10 +65,11 @@ function compactCatsSubAgentSummary(text: string, maxLength = 4000): string {
   return `${normalized.slice(0, maxLength)}\n\n[内容较长，已截断；完整内容请查看本地日志]`;
 }
 
-export function createCatsCompanyRuntime(sessionTTL?: number): AdapterRuntimeBundle {
+export function createCatsCompanyRuntime(sessionTTL?: number, profileConfigPath?: string): AdapterRuntimeBundle {
   return createAdapterRuntime({
     surface: 'catscompany',
     sessionTTL,
+    profileConfigPath,
     promptSnapshotMode: 'mutable-identity',
   });
 }
@@ -108,7 +109,7 @@ export class CatsCompanyBot {
 
     this.sender = new MessageSender(this.bot, config.httpBaseUrl, config.apiKey);
 
-    const runtime = createCatsCompanyRuntime(config.sessionTTL);
+    const runtime = createCatsCompanyRuntime(config.sessionTTL, config.runtimeProfilePath);
     this.runtime = runtime;
     this.runtimeProfile = runtime.profile;
     this.agentServices = runtime.services;
@@ -122,6 +123,7 @@ export class CatsCompanyBot {
       'catscompany',
       runtime.sessionManagerOptions,
     );
+    this.sessionManager.setContextInjector(runtime.injectSessionContext);
   }
 
   /**

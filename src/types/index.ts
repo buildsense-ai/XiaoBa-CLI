@@ -82,6 +82,7 @@ export interface CommandOptions {
   interactive?: boolean;
   message?: string;
   config?: string;
+  profile?: string;
   skill?: string;
 }
 

@@ -9,6 +9,7 @@ const DEFAULT_SESSION_TTL = 60 * 60 * 1000;
 export interface MessageSessionManagerOptions {
   ttl?: number;
   systemPromptProviderFactory?: (sessionKey: string) => SystemPromptProvider;
+  includeSurfacePrompt?: boolean;
   skillReloadHandler?: () => Promise<void>;
 }
 
@@ -30,6 +31,7 @@ export class MessageSessionManager {
   private contextInjector: ((session: AgentSession) => void) | null = null;
   private sessionType: string;
   private systemPromptProviderFactory?: (sessionKey: string) => SystemPromptProvider;
+  private includeSurfacePrompt?: boolean;
   private skillReloadHandler?: () => Promise<void>;
 
   constructor(
@@ -43,6 +45,7 @@ export class MessageSessionManager {
       : ttlOrOptions;
     this.ttl = options?.ttl ?? DEFAULT_SESSION_TTL;
     this.systemPromptProviderFactory = options?.systemPromptProviderFactory;
+    this.includeSurfacePrompt = options?.includeSurfacePrompt;
     this.skillReloadHandler = options?.skillReloadHandler;
     MessageSessionManager.managers.set(sessionType, this);
     this.startCleanup();
@@ -77,7 +80,11 @@ export class MessageSessionManager {
       if (this.systemPromptProviderFactory) {
         session.setSystemPromptProvider(composeSessionSystemPromptProvider(
           this.systemPromptProviderFactory(key),
-          { sessionKey: key, sessionType: this.sessionType },
+          {
+            sessionKey: key,
+            sessionType: this.sessionType,
+            includeSurfacePrompt: this.includeSurfacePrompt,
+          },
         ));
       }
       if (this.skillReloadHandler) {

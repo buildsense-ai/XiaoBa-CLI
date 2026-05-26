@@ -158,12 +158,19 @@ export class FeishuBot {
       runtime.sessionManagerOptions,
     );
 
+    const contextInjectors = [runtime.injectSessionContext];
+
     // H1: 注入同事档案到 session
     const teammateCtx = buildTeammateContext(teammates);
     if (teammateCtx) {
-      this.sessionManager.setContextInjector(session => session.injectContext(teammateCtx));
+      contextInjectors.push(session => session.injectContext(teammateCtx));
       Logger.info(`已加载同事档案: ${teammates.map(t => t.name).join(', ')}`);
     }
+    this.sessionManager.setContextInjector(session => {
+      for (const injector of contextInjectors) {
+        injector(session);
+      }
+    });
   }
 
   /**

@@ -10,6 +10,8 @@ export interface CatsCompanyConfig {
   httpBaseUrl?: string;
   /** 会话过期时间（毫秒），默认 30 分钟 */
   sessionTTL?: number;
+  /** Runtime profile config path used by this connector process. */
+  runtimeProfilePath?: string;
 }
 
 /**

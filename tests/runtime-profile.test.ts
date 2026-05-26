@@ -42,12 +42,16 @@ describe('RuntimeProfile', () => {
     assert.deepStrictEqual(profile.model, {});
     assert.deepStrictEqual(profile.prompt, {
       source: 'prompt-manager',
+      file: undefined,
+      contextFiles: [],
+      surfaceInfo: true,
       displayName: undefined,
       platform: undefined,
     });
     assert.deepStrictEqual(profile.tools.enabled, getCurrentToolManagerNames());
     assert.equal(profile.skills.enabled, true);
     assert.equal(profile.logging.sessionEvents, true);
+    assert.equal(profile.branding.enabled, true);
   });
 
   test('uses runtime identity and surface from env without mutating process env', () => {
@@ -171,6 +175,12 @@ describe('RuntimeProfile', () => {
           model: 'profile-model',
           temperature: 0.2,
         },
+        prompt: {
+          file: 'signal-catcher-system-prompt.md',
+          runtimeInfo: false,
+          surfaceInfo: false,
+          contextFiles: ['../prompts/signal-catcher-game-bible.md'],
+        },
         tools: {
           enabled: ['read_file', 'execute_shell'],
         },
@@ -180,6 +190,9 @@ describe('RuntimeProfile', () => {
         logging: {
           sessionEvents: false,
           uploadEnabled: true,
+        },
+        branding: {
+          enabled: false,
         },
       },
     }), 'utf-8');
@@ -202,6 +215,12 @@ describe('RuntimeProfile', () => {
     assert.equal(resolved.profile.workingDirectory, workspace);
     assert.equal(resolved.profile.prompt.displayName, 'Profile Bot');
     assert.equal(resolved.profile.prompt.platform, '飞书');
+    assert.equal(resolved.profile.prompt.file, 'signal-catcher-system-prompt.md');
+    assert.equal(resolved.profile.prompt.runtimeInfo, false);
+    assert.equal(resolved.profile.prompt.surfaceInfo, false);
+    assert.deepStrictEqual(resolved.profile.prompt.contextFiles, [
+      path.join(testRoot, 'prompts', 'signal-catcher-game-bible.md'),
+    ]);
     assert.deepStrictEqual(resolved.profile.model, {
       provider: 'openai',
       model: 'profile-model',
@@ -212,6 +231,9 @@ describe('RuntimeProfile', () => {
     assert.deepStrictEqual(resolved.profile.logging, {
       sessionEvents: false,
       uploadEnabled: true,
+    });
+    assert.deepStrictEqual(resolved.profile.branding, {
+      enabled: false,
     });
   });
 
@@ -286,6 +308,30 @@ describe('RuntimeProfile', () => {
       }),
       path.join(testRoot, 'home', '.xiaoba', 'runtime-profile.json'),
     );
+  });
+
+  test('example signal catcher profile resolves to no-tool no-skill roleplay mode', () => {
+    const profilePath = path.join(originalCwd, 'examples', 'signal-catcher-runtime-profile.json');
+    const resolved = resolveRuntimeProfileFromConfig({
+      configPath: profilePath,
+      runtimeRoot: originalCwd,
+      surface: 'cli',
+      env: {},
+    });
+
+    assert.equal(resolved.config.loaded, true);
+    assert.deepStrictEqual(resolved.config.issues, []);
+    assert.equal(resolved.profile.id, 'signal-catcher-roleplay');
+    assert.equal(resolved.profile.prompt.file, 'signal-catcher-system-prompt.md');
+    assert.equal(resolved.profile.prompt.runtimeInfo, false);
+    assert.equal(resolved.profile.prompt.surfaceInfo, false);
+    assert.deepStrictEqual(resolved.profile.prompt.contextFiles, [
+      path.join(originalCwd, 'prompts', 'signal-catcher-game-bible.md'),
+    ]);
+    assert.deepStrictEqual(resolved.profile.tools.enabled, []);
+    assert.equal(resolved.profile.skills.enabled, false);
+    assert.equal(resolved.profile.logging.uploadEnabled, false);
+    assert.equal(resolved.profile.branding.enabled, false);
   });
 });
 

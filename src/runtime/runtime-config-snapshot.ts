@@ -192,6 +192,7 @@ function sanitizeProfileForSnapshot(profile: RuntimeProfile): RuntimeProfile {
     tools: { enabled: [...profile.tools.enabled] },
     skills: { ...profile.skills },
     logging: { ...profile.logging },
+    branding: { ...profile.branding },
   };
 }
 

@@ -238,6 +238,88 @@ describe('RuntimeFactory', () => {
     assert.equal(services.toolManager.getTool('write_file'), undefined);
   });
 
+  test('supports no-tool no-skill prompt-context roleplay sessions', async () => {
+    const contextFile = path.join(testRoot, 'game-bible.md');
+    fs.writeFileSync(contextFile, '[transient_game_bible]\nRoleplay rules', 'utf-8');
+    const profile = resolveDefaultRuntimeProfile({
+      surface: 'cli',
+      workingDirectory: testRoot,
+      tools: [],
+      skillsEnabled: false,
+    });
+    profile.prompt.contextFiles = [contextFile];
+
+    const runtime = await RuntimeFactory.createSession({
+      profile,
+      sessionKey: 'cli',
+      sessionType: 'cli',
+    });
+
+    assert.equal(runtime.services.toolManager.getToolCount(), 0);
+    assert.equal(runtime.services.skillManager.getAllSkills().length, 0);
+    await runtime.session.init();
+    const messages = (runtime.session as any).messages;
+    assert.equal(messages[0].role, 'system');
+    assert.equal(messages[1].role, 'user');
+    assert.match(messages[1].content, /^\[transient_context_file:game-bible\.md\]/);
+    assert.match(messages[1].content, /\[transient_game_bible\]\nRoleplay rules/);
+  });
+
+  test('no-tool sessions do not inject current-directory hints into model turns', async () => {
+    const profile = resolveDefaultRuntimeProfile({
+      surface: 'cli',
+      workingDirectory: testRoot,
+      tools: [],
+      skillsEnabled: false,
+    });
+    const runtime = await RuntimeFactory.createSession({
+      profile,
+      sessionKey: 'cli',
+      sessionType: 'cli',
+    });
+    const calls: any[] = [];
+    (runtime.services.aiService as any).chatStream = async (messages: any[]) => {
+      calls.push(messages);
+      return { content: 'done' };
+    };
+
+    await runtime.session.handleMessage('开始游戏');
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].some((message: any) => (
+      typeof message.content === 'string'
+      && message.content.startsWith('[transient_current_directory]')
+    )), false);
+  });
+
+  test('skill-disabled sessions do not reload or inject skills during turns', async () => {
+    writeTestSkill('disabled-skill');
+    const profile = resolveDefaultRuntimeProfile({
+      surface: 'cli',
+      workingDirectory: testRoot,
+      tools: [],
+      skillsEnabled: false,
+    });
+    const runtime = await RuntimeFactory.createSession({
+      profile,
+      sessionKey: 'cli',
+      sessionType: 'cli',
+    });
+    const calls: any[] = [];
+    (runtime.services.aiService as any).chatStream = async (messages: any[]) => {
+      calls.push(messages);
+      return { content: 'done' };
+    };
+
+    await runtime.session.handleMessage('开始游戏');
+
+    assert.equal(runtime.services.skillManager.getAllSkills().length, 0);
+    assert.equal(calls[0].some((message: any) => (
+      typeof message.content === 'string'
+      && message.content.startsWith('[transient_skills_list]')
+    )), false);
+  });
+
   test('rejects invalid profile tool names before creating services', () => {
     const profile = resolveDefaultRuntimeProfile({
       surface: 'cli',

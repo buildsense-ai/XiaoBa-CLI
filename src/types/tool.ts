@@ -135,6 +135,7 @@ export interface ToolExecutionContext {
   planRuntime?: PlanRuntime;
   getCurrentDirectory?: () => string;
   updateCurrentDirectory?: (directory: string) => void;
+  includeCurrentDirectoryHint?: boolean;
   /** 子智能体需要主 agent 补充信息时使用；仅 subagent runtime 注入 */
   requestParentInput?: (question: string) => Promise<string>;
   /** 当前 runtime 已创建的共享服务，供调度类工具复用，避免重复初始化 */
