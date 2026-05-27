@@ -154,17 +154,29 @@ export class SkillHubService {
     }
 
     const localPath = path.dirname(skill.filePath);
-    const submission = await this.createSubmission({
-      localPath,
-      name: skill.metadata.name,
-      displayName: skill.metadata.name,
-      version: readLocalSkillVersion(localPath) || '1.0.0',
-      description: skill.metadata.description,
-      keywords: [skill.metadata.name, ...splitWords(skill.metadata.description)].slice(0, 8),
-      triggerExamples: skill.metadata.argumentHint ? [`/${skill.metadata.name} ${skill.metadata.argumentHint}`] : [`/${skill.metadata.name}`],
-      minAgentVersion: '0.0.0',
-      platforms: '',
+    const files = collectSkillSourceFiles(localPath);
+    if (!files.length) {
+      const error: any = new Error('Local skill package has no shareable files.');
+      error.status = 400;
+      error.code = 'skillhub.local_skill_empty';
+      throw error;
+    }
+    const submission = await this.client.quickShare({
+      manifest: {
+        name: skill.metadata.name,
+        displayName: skill.metadata.name,
+        version: readLocalSkillVersion(localPath) || '1.0.0',
+        description: skill.metadata.description,
+        keywords: [skill.metadata.name, ...splitWords(skill.metadata.description)].slice(0, 8),
+        triggerExamples: skill.metadata.argumentHint ? [`/${skill.metadata.name} ${skill.metadata.argumentHint}`] : [`/${skill.metadata.name}`],
+        minAgentVersion: '0.0.0',
+        platforms: [],
+      },
       notes: String(input.notes || 'Quick shared from local XiaoBa Skills.'),
+      source: {
+        type: 'files',
+        files,
+      },
     });
 
     return {

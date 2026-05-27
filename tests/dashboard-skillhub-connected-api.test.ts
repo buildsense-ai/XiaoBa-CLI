@@ -127,10 +127,11 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(share.status, 201);
     assert.equal(share.body.ok, true);
     assert.equal(share.body.skill.name, 'quick-demo');
-    assert.equal(share.body.submission.manifest.name, 'quick-demo');
-    assert.equal(share.body.submission.manifest.runtime.minAgentVersion, '0.0.0');
-    assert.equal(share.body.submission.manifest.runtime.platforms, undefined);
-    assert.equal(share.body.submission.source.files.some((file: any) => file.path === 'SKILL.md'), true);
+    assert.equal(share.body.submission.request.quickShare, true);
+    assert.equal(share.body.submission.request.manifest.name, 'quick-demo');
+    assert.equal(share.body.submission.request.manifest.minAgentVersion, '0.0.0');
+    assert.deepEqual(share.body.submission.request.manifest.platforms, []);
+    assert.equal(share.body.submission.request.source.files.some((file: any) => file.path === 'SKILL.md'), true);
   });
 
   test('uses the official SkillHub cloud by default', () => {
@@ -214,6 +215,7 @@ describe('dashboard connected SkillHub API', () => {
           status: 'scan_pending',
           manifest: req.body.manifest,
           source: req.body.source,
+          request: req.body,
         },
       });
     });

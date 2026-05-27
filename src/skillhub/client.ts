@@ -143,6 +143,13 @@ export class SkillHubClient {
     return this.request('POST', '/api/developer/submissions', input);
   }
 
+  async quickShare(input: any): Promise<any> {
+    return this.request('POST', '/api/developer/submissions', {
+      ...input,
+      quickShare: true,
+    });
+  }
+
   private async request<T>(method: string, apiPath: string, body?: unknown): Promise<T> {
     const response = await this.fetchRaw(method, apiPath, body);
     const text = await response.text();
