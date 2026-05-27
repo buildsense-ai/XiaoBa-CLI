@@ -830,6 +830,93 @@ describe('subagent runtime events', () => {
     }
   });
 
+  test('manager resolves unique short subagent id prefixes', () => {
+    const manager = SubAgentManager.getInstance();
+    const parentSessionKey = `test-parent:${Date.now()}:short-id`;
+    const subAgentId = 'sub-de0f25a1-291d-425c-9e34-c3ca17b8a9c3';
+    let resumedAnswer = '';
+    const fakeSession = {
+      status: 'waiting_for_input',
+      resume(answer: string) {
+        resumedAnswer = answer;
+        this.status = 'running';
+        return true;
+      },
+      getInfo() {
+        return {
+          id: subAgentId,
+          agentType: 'explorer',
+          skillName: 'explorer',
+          toolScope: 'read_only',
+          allowedTools: ['read_file', 'ask_parent'],
+          taskDescription: 'github search',
+          status: this.status,
+          createdAt: Date.now(),
+          progressLog: [],
+          pendingQuestion: this.status === 'waiting_for_input' ? 'need github data' : undefined,
+          pendingQuestionSince: Date.now(),
+          outputFiles: [],
+        };
+      },
+    };
+
+    (manager as any).subAgents.set(subAgentId, fakeSession);
+    (manager as any).parentMap.set(subAgentId, parentSessionKey);
+    (manager as any).displayNameByAgent.set(subAgentId, '子agent1');
+
+    try {
+      assert.equal(manager.getInfoForParent(parentSessionKey, 'sub-de0f25a1')?.id, subAgentId);
+      assert.equal(manager.resumeForParent(parentSessionKey, 'sub-de0f25a1', 'search results'), 'resumed');
+      assert.equal(resumedAnswer, 'search results');
+      assert.equal(fakeSession.status, 'running');
+    } finally {
+      (manager as any).subAgents.delete(subAgentId);
+      (manager as any).parentMap.delete(subAgentId);
+      (manager as any).displayNameByAgent.delete(subAgentId);
+    }
+  });
+
+  test('manager does not resolve ambiguous short subagent id prefixes', () => {
+    const manager = SubAgentManager.getInstance();
+    const parentSessionKey = `test-parent:${Date.now()}:ambiguous-short-id`;
+    const ids = [
+      'sub-abcdef01-1111-425c-9e34-c3ca17b8a9c3',
+      'sub-abcdef01-2222-425c-9e34-c3ca17b8a9c3',
+    ];
+    const makeSession = (id: string) => ({
+      status: 'running',
+      getInfo() {
+        return {
+          id,
+          agentType: 'explorer',
+          skillName: 'explorer',
+          toolScope: 'read_only',
+          allowedTools: ['read_file'],
+          taskDescription: 'ambiguous',
+          status: this.status,
+          createdAt: Date.now(),
+          progressLog: [],
+          outputFiles: [],
+        };
+      },
+    });
+
+    for (const id of ids) {
+      (manager as any).subAgents.set(id, makeSession(id));
+      (manager as any).parentMap.set(id, parentSessionKey);
+    }
+
+    try {
+      assert.equal(manager.getInfoForParent(parentSessionKey, 'sub-abcdef01'), undefined);
+      assert.equal(manager.stopForParent(parentSessionKey, 'sub-abcdef01'), 'not_found');
+    } finally {
+      for (const id of ids) {
+        (manager as any).subAgents.delete(id);
+        (manager as any).parentMap.delete(id);
+      }
+    }
+  });
+
   test('manager stops all active subagents for a parent episode', () => {
     const manager = SubAgentManager.getInstance();
     const parentSessionKey = `test-parent:${Date.now()}:stop-all`;
