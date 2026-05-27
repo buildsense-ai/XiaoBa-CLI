@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { PathResolver } from '../utils/path-resolver';
 import type { SkillHubPackageVerificationResult } from './package-verifier';
-import type { SkillHubPackageInstallMarker, SkillHubRegistryEntry } from './types';
+import type { SkillHubRegistryEntry } from './types';
 
 export interface InstallVerifiedSkillHubPackageOptions {
   verification: SkillHubPackageVerificationResult;
@@ -24,7 +24,11 @@ export class SkillHubInstallError extends Error {
   }
 }
 
-const INSTALL_MARKER = '.xiaoba-skillhub-install.json';
+const PACKAGE_METADATA_FILES = new Set([
+  'skill.json',
+  'REVIEW.json',
+  'SBOM.json',
+]);
 
 export function installVerifiedSkillHubPackage(
   options: InstallVerifiedSkillHubPackageOptions,
@@ -34,7 +38,7 @@ export function installVerifiedSkillHubPackage(
   const manifest = packageObject.payload.manifest as any;
   const skillId = String(manifest.id || registryEntry.skillId || '').trim();
   const version = String(manifest.version || registryEntry.latestVersion || '').trim();
-  const installName = slugForInstallDir(String(manifest.name || registryEntry.name || skillId));
+  const installName = slugForInstallDir(skillId);
   if (!skillId || !version || !installName) {
     throw new SkillHubInstallError('SkillHub package manifest is missing id, name, or version.', 'MANIFEST_INCOMPLETE');
   }
@@ -48,57 +52,30 @@ export function installVerifiedSkillHubPackage(
   PathResolver.ensureDir(skillsRoot);
   const targetDir = safeJoin(skillsRoot, installName);
   const tempDir = safeJoin(skillsRoot, `.skillhub-install-${process.pid}-${Date.now()}`);
-  const backupDir = safeJoin(skillsRoot, `.skillhub-backup-${installName}-${process.pid}-${Date.now()}`);
-  const marker: SkillHubPackageInstallMarker = {
-    source: 'skillhub',
-    skillId,
-    name: String(manifest.displayName || registryEntry.displayName || registryEntry.name || manifest.name || skillId),
-    version,
-    packageChecksumSha256: registryEntry.checksumSha256,
-    signature: registryEntry.signature,
-    packageUrl: registryEntry.packageUrl,
-    installedAt: new Date().toISOString(),
-  };
 
   try {
+    if (fs.existsSync(targetDir)) {
+      throw new SkillHubInstallError('同名 Skill 目录已存在，请先删除本地目录后再安装。', 'TARGET_CONFLICT');
+    }
     fs.mkdirSync(tempDir, { recursive: true });
     for (const file of packageObject.payload.files) {
+      if (PACKAGE_METADATA_FILES.has(String(file.path || ''))) continue;
       const destination = safeJoin(tempDir, file.path);
       fs.mkdirSync(path.dirname(destination), { recursive: true });
       fs.writeFileSync(destination, Buffer.from(file.contentBase64, 'base64'));
     }
-    fs.writeFileSync(path.join(tempDir, INSTALL_MARKER), `${JSON.stringify(marker, null, 2)}\n`, 'utf-8');
-
-    if (fs.existsSync(targetDir)) {
-      if (!isExistingSkillHubInstall(targetDir, skillId)) {
-        throw new SkillHubInstallError('同名 Skill 已存在，且不是来自 SkillHub 的同一个 Skill。', 'TARGET_CONFLICT');
-      }
-      fs.renameSync(targetDir, backupDir);
-    }
 
     fs.renameSync(tempDir, targetDir);
-    if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true, force: true });
-    return { skillId, name: marker.name, version, path: targetDir };
+    return {
+      skillId,
+      name: String(manifest.displayName || registryEntry.displayName || registryEntry.name || manifest.name || skillId),
+      version,
+      path: targetDir,
+    };
   } catch (error: any) {
     if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
-    if (!fs.existsSync(targetDir) && fs.existsSync(backupDir)) {
-      fs.renameSync(backupDir, targetDir);
-    } else if (fs.existsSync(backupDir)) {
-      fs.rmSync(backupDir, { recursive: true, force: true });
-    }
     if (error instanceof SkillHubInstallError) throw error;
     throw new SkillHubInstallError(error?.message || String(error), 'INSTALL_FAILED');
-  }
-}
-
-function isExistingSkillHubInstall(targetDir: string, skillId: string): boolean {
-  const markerPath = path.join(targetDir, INSTALL_MARKER);
-  if (!fs.existsSync(markerPath)) return false;
-  try {
-    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf-8')) as SkillHubPackageInstallMarker;
-    return marker.source === 'skillhub' && marker.skillId === skillId;
-  } catch {
-    return false;
   }
 }
 

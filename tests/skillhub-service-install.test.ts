@@ -51,9 +51,12 @@ describe('SkillHub connected install service', () => {
     const install = await new SkillHubService().install(fixture.entry.skillId);
 
     assert.equal(install.ok, true);
+    assert.equal(path.basename(install.skill.path), fixture.entry.skillId);
     assert.equal(fs.existsSync(path.join(install.skill.path, 'SKILL.md')), true);
-    assert.equal(fs.existsSync(path.join(install.skill.path, 'skill.json')), true);
-    assert.equal(fs.existsSync(path.join(install.skill.path, '.xiaoba-skillhub-install.json')), true);
+    assert.equal(fs.existsSync(path.join(install.skill.path, 'skill.json')), false);
+    assert.equal(fs.existsSync(path.join(install.skill.path, 'REVIEW.json')), false);
+    assert.equal(fs.existsSync(path.join(install.skill.path, 'SBOM.json')), false);
+    assert.equal(fs.existsSync(path.join(install.skill.path, '.xiaoba-skillhub-install.json')), false);
   });
 
   test('does not write files when package checksum verification fails', async () => {
@@ -138,6 +141,8 @@ function createFixture() {
         version: '1.0.0',
         description: '审查合同条款并识别常见风险。',
       }, null, 2)),
+      file('REVIEW.json', JSON.stringify({ riskLevel: 'low' }, null, 2)),
+      file('SBOM.json', JSON.stringify({ files: [] }, null, 2)),
     ],
   };
   const signature = sign(payload, signingPrivateKeyPem, 'signing-test');

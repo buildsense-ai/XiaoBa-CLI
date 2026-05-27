@@ -5543,11 +5543,25 @@
       if (!skillName) return;
       if (!confirm('Share this local Skill to SkillHub?\n\n' + skillName)) return;
       try {
-        const data = await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/share-local-skill', {
+        let data = await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/share-local-skill', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({ skillName }),
         }));
+        if (data.requiresConfirmation) {
+          const latest = data.latestVersion ? ('\nLatest version: ' + data.latestVersion) : '';
+          if (!confirm('A SkillHub skill with the same name already exists, but the local content is different.' + latest + '\n\nPublish this as a new patch version?')) return;
+          data = await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/share-local-skill', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ skillName, confirmVersionPublish: true }),
+          }));
+        }
+        if (data.existing) {
+          alert('SkillHub already has this exact Skill content: ' + (data.latestVersion || skillName));
+          await searchSkillHub(skillName, true);
+          return;
+        }
         const submission = data.submission || {};
         alert('SkillHub share submitted: ' + (submission.id || submission.submissionId || skillName));
         await fetchSkillHubDeveloper();

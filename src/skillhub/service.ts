@@ -173,6 +173,7 @@ export class SkillHubService {
         platforms: [],
       },
       notes: String(input.notes || 'Quick shared from local XiaoBa Skills.'),
+      confirmVersionPublish: input.confirmVersionPublish === true || input.confirmPublish === true,
       source: {
         type: 'files',
         files,
@@ -187,6 +188,10 @@ export class SkillHubService {
         path: localPath,
       },
       submission: submission?.submission || submission,
+      existing: submission?.existing,
+      requiresConfirmation: submission?.requiresConfirmation,
+      latestVersion: submission?.latestVersion,
+      contentHash: submission?.contentHash,
     };
   }
 
@@ -215,12 +220,6 @@ const SOURCE_SKIP_DIRS = new Set([
   '.venv',
   'venv',
 ]);
-const SOURCE_SKIP_FILES = new Set([
-  '.xiaoba-bundled-skill.json',
-  '.xiaoba-skillhub-install.json',
-  'SBOM.json',
-  'REVIEW.json',
-]);
 const MAX_SOURCE_FILES = 200;
 const MAX_SOURCE_TOTAL_BYTES = 20 * 1024 * 1024;
 const MAX_SOURCE_SINGLE_FILE_BYTES = 2 * 1024 * 1024;
@@ -241,7 +240,6 @@ function collectSkillSourceFiles(localPath: string): Array<{ path: string; conte
     total += fileStat.size;
     if (total > MAX_SOURCE_TOTAL_BYTES) break;
     const relative = path.relative(baseDir, filePath).replace(/\\/g, '/');
-    if (SOURCE_SKIP_FILES.has(relative)) continue;
     if (!isSafePackagePath(relative)) continue;
     result.push({
       path: relative,
@@ -398,18 +396,5 @@ function getUserDataSkillsPath(): string {
 }
 
 function listInstalledSkillHubSkills(): SkillHubPackageInstallMarker[] {
-  const skillsRoot = PathResolver.getSkillsPath();
-  if (!fs.existsSync(skillsRoot)) return [];
-  const result: SkillHubPackageInstallMarker[] = [];
-  for (const entry of fs.readdirSync(skillsRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const markerPath = path.join(skillsRoot, entry.name, '.xiaoba-skillhub-install.json');
-    if (!fs.existsSync(markerPath)) continue;
-    try {
-      result.push(JSON.parse(fs.readFileSync(markerPath, 'utf-8')) as SkillHubPackageInstallMarker);
-    } catch {
-      // Ignore invalid markers so one broken install does not break the Skills page.
-    }
-  }
-  return result;
+  return [];
 }

@@ -20,6 +20,10 @@ export class ShareSkillHubSkillTool implements Tool {
           type: 'string',
           description: 'Optional short note for the SkillHub submission.',
         },
+        confirmPublish: {
+          type: 'boolean',
+          description: 'Set true only after the user confirms publishing a new patch version for same-name changed content.',
+        },
       },
       required: ['skillName'],
     },
@@ -40,8 +44,32 @@ export class ShareSkillHubSkillTool implements Tool {
       const result = await service.shareLocalSkill({
         skillName,
         notes: args?.notes,
+        confirmPublish: args?.confirmPublish === true,
       });
       const submission = result?.submission || {};
+      if (result?.requiresConfirmation) {
+        return {
+          ok: true,
+          content: [
+            'SkillHub share needs user confirmation.',
+            `Skill: ${result?.skill?.name || skillName}`,
+            `Path: ${result?.skill?.path || ''}`,
+            result?.latestVersion ? `Latest version: ${result.latestVersion}` : '',
+            'A SkillHub skill with the same name already exists, but the local content is different.',
+            'Ask the user to confirm publishing a new patch version before calling this tool again with confirmPublish=true.',
+          ].filter(Boolean).join('\n'),
+        };
+      }
+      if (result?.existing) {
+        return {
+          ok: true,
+          content: [
+            'SkillHub already has this exact Skill content.',
+            `Skill: ${result?.skill?.name || skillName}`,
+            result?.latestVersion ? `Version: ${result.latestVersion}` : '',
+          ].filter(Boolean).join('\n'),
+        };
+      }
       const submissionId = submission.id || submission.submissionId || 'unknown';
       return {
         ok: true,

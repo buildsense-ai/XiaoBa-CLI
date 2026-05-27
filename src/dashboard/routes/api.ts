@@ -1629,13 +1629,7 @@ function skillToDashboardPayload(skill: Skill): any {
 }
 
 function getSkillHubInstallInfo(skillFilePath: string): any {
-  try {
-    const markerPath = path.join(path.dirname(skillFilePath), '.xiaoba-skillhub-install.json');
-    if (!fs.existsSync(markerPath)) return null;
-    return JSON.parse(fs.readFileSync(markerPath, 'utf-8'));
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 function getSkillManagementInfo(skillFilePath: string): SkillManagementInfo {
