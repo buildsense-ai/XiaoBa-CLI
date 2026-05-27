@@ -5514,7 +5514,7 @@
       } else {
         actions.push('<button class="btn" onclick="toggleSkill(\''+name+'\',' +(sk.enabled!==false)+')">'+(sk.enabled===false?'启用':'禁用')+'</button>');
       }
-      if (sk.source === 'user') {
+      if (sk.canShare) {
         actions.push('<button class="btn btn-primary" onclick="shareLocalSkillToSkillHub(\''+name+'\')">Share</button>');
       }
       if (sk.canDelete) {

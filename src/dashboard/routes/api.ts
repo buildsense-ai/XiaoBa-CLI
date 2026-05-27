@@ -46,6 +46,7 @@ interface SkillManagementInfo {
   protected: boolean;
   canDisable: boolean;
   canDelete: boolean;
+  canShare: boolean;
 }
 
 interface CatsAuthState {
@@ -1653,6 +1654,7 @@ function getSkillManagementInfo(skillFilePath: string): SkillManagementInfo {
     protected: source === 'system',
     canDisable: source !== 'system',
     canDelete: source === 'user',
+    canShare: source !== 'system',
   };
 }
 
