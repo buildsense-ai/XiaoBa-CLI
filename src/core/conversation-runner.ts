@@ -286,15 +286,7 @@ export class ConversationRunner {
             continue;
           }
 
-          const finalAssistantMessage: Message = { role: 'assistant', content: EMPTY_MAX_TOKENS_MESSAGE };
-          messages.push(finalAssistantMessage);
-          newMessages.push(finalAssistantMessage);
-          return {
-            response: EMPTY_MAX_TOKENS_MESSAGE,
-            finalResponseVisible: true,
-            messages,
-            newMessages,
-          };
+          response = { ...response, content: EMPTY_MAX_TOKENS_MESSAGE, toolCalls: [] };
         }
 
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(response.content || '', 300)}`);

@@ -275,6 +275,44 @@ test('runner does not return raw no-reply when empty max_tokens recovery fails',
   assert.equal(result.messages[result.messages.length - 1]?.content, result.response);
 });
 
+test('runner sends empty max_tokens fallback through message surface channel', async () => {
+  const responses: ChatResponse[] = [
+    {
+      content: null,
+      toolCalls: [],
+      stopReason: 'max_tokens',
+      usage: { promptTokens: 100, completionTokens: 8192, totalTokens: 8292 },
+    },
+    {
+      content: null,
+      toolCalls: [],
+      stopReason: 'max_tokens',
+      usage: { promptTokens: 100, completionTokens: 8192, totalTokens: 8292 },
+    },
+  ];
+  const sent: Array<{ chatId: string; text: string }> = [];
+  const mock = createMockAI(responses);
+  const runner = new ConversationRunner(mock.aiService, new MockToolExecutor([], {}), {
+    stream: true,
+    enableCompression: false,
+    toolExecutionContext: {
+      surface: 'feishu',
+      channel: {
+        chatId: 'chat_1',
+        reply: async (chatId: string, text: string) => {
+          sent.push({ chatId, text });
+        },
+        sendFile: async () => {},
+      },
+    },
+  });
+
+  const result = await runner.run([{ role: 'user', content: '继续包装 skill' }]);
+
+  assert.match(result.response, /模型这轮输出达到了 max_tokens 上限/);
+  assert.deepEqual(sent, [{ chatId: 'chat_1', text: result.response }]);
+});
+
 test('runner does not persist assistant draft content when send_text already delivered the same turn', async () => {
   const responses = [
     {
