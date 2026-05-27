@@ -1,4 +1,4 @@
-import { Message, ContentBlock } from '../types';
+import { Message, ContentBlock, ChatResponse } from '../types';
 import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { StreamCallbacks } from '../providers/provider';
@@ -47,6 +47,8 @@ const ANTHROPIC_PROMPT_BUDGET = 200000;
 const MIN_MESSAGE_BUDGET = 2000;
 const OVERFLOW_REDUCTION_RATIO = 0.6;
 const TRANSIENT_CURRENT_DIRECTORY_PREFIX = '[transient_current_directory]';
+const MAX_EMPTY_MAX_TOKEN_RECOVERIES = 1;
+const EMPTY_MAX_TOKENS_MESSAGE = '模型这轮输出达到了 max_tokens 上限，但没有生成可见回复或工具调用。已保留当前上下文；请回复“继续”，我会从刚才的位置继续推进。';
 
 /**
  * 对话运行回调
@@ -186,6 +188,7 @@ export class ConversationRunner {
     let subagentSoftNudgeCount = 0;
     let nextPlanNudgeAt = nextPlanNudgeToolCount(0);
     let nextSubagentNudgeAt = nextSubagentNudgeToolCount(0);
+    let emptyMaxTokenRecoveries = 0;
 
     while (true) {
       turns++;
@@ -275,6 +278,25 @@ export class ConversationRunner {
       }
 
       if (!response.toolCalls || response.toolCalls.length === 0) {
+        if (this.isEmptyMaxTokensResponse(response)) {
+          Logger.warning(`[${this.sessionLabel}Turn ${turns}] 模型输出达到 max_tokens 且没有可见内容或工具调用`);
+          if (emptyMaxTokenRecoveries < MAX_EMPTY_MAX_TOKEN_RECOVERIES) {
+            emptyMaxTokenRecoveries++;
+            nextTurnTransientHints = [this.buildEmptyMaxTokensRecoveryHint()];
+            continue;
+          }
+
+          const finalAssistantMessage: Message = { role: 'assistant', content: EMPTY_MAX_TOKENS_MESSAGE };
+          messages.push(finalAssistantMessage);
+          newMessages.push(finalAssistantMessage);
+          return {
+            response: EMPTY_MAX_TOKENS_MESSAGE,
+            finalResponseVisible: true,
+            messages,
+            newMessages,
+          };
+        }
+
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(response.content || '', 300)}`);
 
         if (response.content) {
@@ -797,6 +819,25 @@ export class ConversationRunner {
     return {
       role: 'system',
       content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n你刚刚连续发送了与上一条相同的内容：“${content}”。如果这是用户真正需要的重复确认，可以继续；否则请避免无意义重复，必要时调用 pause_turn 收束。`,
+    };
+  }
+
+  private isEmptyMaxTokensResponse(response: ChatResponse): boolean {
+    const stopReason = String(response.stopReason || '').toLowerCase();
+    const content = typeof response.content === 'string' ? response.content.trim() : '';
+    return !content
+      && (!response.toolCalls || response.toolCalls.length === 0)
+      && (stopReason === 'max_tokens' || stopReason === 'length');
+  }
+
+  private buildEmptyMaxTokensRecoveryHint(): Message {
+    return {
+      role: 'system',
+      content: [
+        TRANSIENT_RUNNER_HINT_PREFIX,
+        '上一轮模型响应因为输出 max_tokens 上限被截断，而且没有生成可见文本或工具调用。',
+        '不要继续展开隐藏推理。请立即二选一：调用下一步必要工具，或输出简短可见回复说明当前进展和下一步。',
+      ].join('\n'),
     };
   }
 

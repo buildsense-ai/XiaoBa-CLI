@@ -41,4 +41,29 @@ describe('AnthropicProvider runtime feedback boundary', () => {
     assert.equal(JSON.stringify(transformed).includes('runtimeObservationSource'), false);
     assert.equal(JSON.stringify(transformed).includes('must not leak'), false);
   });
+
+  test('preserves stop reason and joins multiple text blocks', () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/anthropic/v1/messages',
+      model: 'MiniMax-M2.7',
+    });
+
+    const result = (provider as any).parseResponse({
+      content: [
+        { type: 'text', text: 'hello ' },
+        { type: 'text', text: 'world' },
+      ],
+      stop_reason: 'max_tokens',
+      usage: {
+        input_tokens: 10,
+        output_tokens: 20,
+      },
+    });
+
+    assert.equal(result.content, 'hello world');
+    assert.equal(result.stopReason, 'max_tokens');
+    assert.equal(result.usage.totalTokens, 30);
+    assert.equal((provider as any).maxTokens, 32768);
+  });
 });
