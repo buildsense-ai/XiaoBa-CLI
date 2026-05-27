@@ -361,11 +361,39 @@ function relayEndpointForProtocol(config: any, protocol: RelayModelProtocol): st
   return normalizeBaseUrl(endpoint?.base_url, fallback);
 }
 
+function isCatsRelayApiBase(value: unknown): boolean {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  try {
+    return new URL(text).hostname.toLowerCase() === 'relay.catsco.cc';
+  } catch {
+    return text.toLowerCase().includes('relay.catsco.cc');
+  }
+}
+
 function sanitizeRelayKeyInfo(key: any): any {
   if (!key || typeof key !== 'object') return key || null;
-  const copy = { ...key };
-  delete copy.key;
-  return copy;
+  const safe: Record<string, unknown> = {};
+  for (const field of [
+    'id',
+    'name',
+    'prefix',
+    'state',
+    'created_at',
+    'createdAt',
+    'updated_at',
+    'updatedAt',
+    'revoked_at',
+    'revokedAt',
+    'last_used_at',
+    'lastUsedAt',
+  ]) {
+    const value = key[field];
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null) {
+      safe[field] = value;
+    }
+  }
+  return safe;
 }
 
 async function fetchCatsRelayConfig(state: CatsAuthState): Promise<any> {
@@ -387,6 +415,11 @@ async function ensureCatsRelayPlainKey(
 
   if (active && currentPlainKey) {
     return { response: current, plainKey: currentPlainKey, created: false, rotated: false };
+  }
+
+  const reusableLocalKey = active ? findReusableLocalRelayKey(currentKey) : undefined;
+  if (reusableLocalKey) {
+    return { response: current, plainKey: reusableLocalKey, created: false, rotated: false };
   }
 
   if (active && !options.rotateExisting) {
@@ -412,6 +445,31 @@ async function ensureCatsRelayPlainKey(
     created: !active,
     rotated: active,
   };
+}
+
+function findReusableLocalRelayKey(currentKey: any): string | undefined {
+  const fileEnv = readEnvFile();
+  const currentConfig = ConfigManager.getConfigReadonly();
+  const apiKey = firstNonEmpty(
+    process.env.GAUZ_LLM_API_KEY,
+    fileEnv.GAUZ_LLM_API_KEY,
+    currentConfig.apiKey,
+  );
+  const apiBase = firstNonEmpty(
+    process.env.GAUZ_LLM_API_BASE,
+    fileEnv.GAUZ_LLM_API_BASE,
+    currentConfig.apiUrl,
+  );
+  if (!apiKey || !isCatsRelayApiBase(apiBase)) {
+    return undefined;
+  }
+
+  const prefix = String(currentKey?.prefix || '').trim();
+  if (prefix && !apiKey.startsWith(prefix)) {
+    return undefined;
+  }
+
+  return apiKey;
 }
 
 function sanitizeCatsErrorData(data: unknown): unknown {

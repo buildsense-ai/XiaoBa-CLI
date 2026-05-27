@@ -316,6 +316,8 @@ describe('dashboard typed settings API', () => {
           prefix: 'sk-bf-d0',
           state: 'active',
           key: 'sk-bf-secret-created-once',
+          api_key: 'sk-bf-secondary-secret',
+          secret: 'relay-secret-value',
         },
       });
     });
@@ -347,7 +349,11 @@ describe('dashboard typed settings API', () => {
       assert.equal(data.model, 'MiniMax-M2.7');
       assert.equal(data.createdKey, true);
       assert.equal(data.key.key, undefined);
+      assert.equal(data.key.api_key, undefined);
+      assert.equal(data.key.secret, undefined);
       assert.equal(text.includes('sk-bf-secret-created-once'), false);
+      assert.equal(text.includes('sk-bf-secondary-secret'), false);
+      assert.equal(text.includes('relay-secret-value'), false);
       assert.equal(createCount, 1);
       assert.equal(parsed.GAUZ_LLM_PROVIDER, 'anthropic');
       assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
@@ -471,6 +477,85 @@ describe('dashboard typed settings API', () => {
       assert.deepStrictEqual(data.data, { error: 'upstream failure', reason: 'test-only' });
       assert.equal(text.includes('sk-bf-should-not-leak'), false);
       assert.equal(text.includes('user-token-should-not-leak'), false);
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
+  test('POST /cats/relay/model-config/apply reuses local relay key when switching protocols', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    let createCalled = false;
+    let rotateCalled = false;
+
+    catsApp.get('/api/relay/config', (_req, res) => {
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'MiniMax-M2.7',
+        self_service_enabled: true,
+        endpoints: [
+          { protocol: 'OpenAI-compatible', base_url: 'https://relay.catsco.cc/v1' },
+          { protocol: 'Anthropic-compatible', base_url: 'https://relay.catsco.cc/anthropic' },
+        ],
+      });
+    });
+    catsApp.get('/api/relay/key', (_req, res) => {
+      res.json({
+        configured: true,
+        key: {
+          id: 'vk-existing',
+          name: 'existing',
+          prefix: 'sk-bf-old',
+          state: 'active',
+        },
+      });
+    });
+    catsApp.post('/api/relay/key', (_req, res) => {
+      createCalled = true;
+      res.status(500).json({ error: 'create should not be called' });
+    });
+    catsApp.post('/api/relay/key/rotate', (_req, res) => {
+      rotateCalled = true;
+      res.status(500).json({ error: 'rotate should not be called' });
+    });
+    const catsServer = await listen(catsApp);
+    const address = catsServer.address();
+    if (!address || typeof address === 'string') throw new Error('cats server did not bind');
+
+    try {
+      fs.writeFileSync(path.join(testRoot, '.env'), [
+        'GAUZ_LLM_PROVIDER=anthropic',
+        'GAUZ_LLM_API_BASE=https://relay.catsco.cc/anthropic',
+        'GAUZ_LLM_API_KEY=sk-bf-old-local-secret',
+        'GAUZ_LLM_MODEL=MiniMax-M2.7',
+        '',
+      ].join('\n'));
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocol: 'openai' }),
+      });
+      const text = await response.text();
+      const data = JSON.parse(text) as any;
+      const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+      assert.equal(response.status, 200, text);
+      assert.equal(data.provider, 'openai');
+      assert.equal(data.apiBase, 'https://relay.catsco.cc/v1');
+      assert.equal(data.createdKey, false);
+      assert.equal(data.rotatedKey, false);
+      assert.equal(data.key.prefix, 'sk-bf-old');
+      assert.equal(createCalled, false);
+      assert.equal(rotateCalled, false);
+      assert.equal(parsed.GAUZ_LLM_PROVIDER, 'openai');
+      assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/v1');
+      assert.equal(parsed.GAUZ_LLM_MODEL, 'MiniMax-M2.7');
+      assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-old-local-secret');
+      assert.equal(text.includes('sk-bf-old-local-secret'), false);
     } finally {
       await new Promise<void>(resolve => catsServer.close(() => resolve()));
     }
