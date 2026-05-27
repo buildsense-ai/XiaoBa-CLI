@@ -215,6 +215,12 @@ const SOURCE_SKIP_DIRS = new Set([
   '.venv',
   'venv',
 ]);
+const SOURCE_SKIP_FILES = new Set([
+  '.xiaoba-bundled-skill.json',
+  '.xiaoba-skillhub-install.json',
+  'SBOM.json',
+  'REVIEW.json',
+]);
 const MAX_SOURCE_FILES = 200;
 const MAX_SOURCE_TOTAL_BYTES = 20 * 1024 * 1024;
 const MAX_SOURCE_SINGLE_FILE_BYTES = 2 * 1024 * 1024;
@@ -235,6 +241,7 @@ function collectSkillSourceFiles(localPath: string): Array<{ path: string; conte
     total += fileStat.size;
     if (total > MAX_SOURCE_TOTAL_BYTES) break;
     const relative = path.relative(baseDir, filePath).replace(/\\/g, '/');
+    if (SOURCE_SKIP_FILES.has(relative)) continue;
     if (!isSafePackagePath(relative)) continue;
     result.push({
       path: relative,
