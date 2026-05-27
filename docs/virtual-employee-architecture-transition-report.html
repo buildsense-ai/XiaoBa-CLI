@@ -1,0 +1,2016 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CatsCo 虚拟员工架构转型报告</title>
+  <style>
+    :root {
+      --ink: #17202a;
+      --muted: #607080;
+      --line: #d8e0e6;
+      --soft: #f5f7f9;
+      --panel: #ffffff;
+      --green: #1f8a5b;
+      --green-soft: #e7f5ee;
+      --blue: #2f6fbd;
+      --blue-soft: #eaf1fb;
+      --red: #b7474a;
+      --red-soft: #faecec;
+      --amber: #9b6b16;
+      --amber-soft: #fff4d9;
+      --violet: #6b5aa6;
+      --violet-soft: #f0edf8;
+      --shadow: 0 18px 45px rgba(23, 32, 42, 0.08);
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: #eef2f5;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.58;
+      letter-spacing: 0;
+    }
+
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .side {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 26px 22px;
+      background: #18212b;
+      color: #eef4f7;
+      overflow: auto;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: #2c7d5f;
+      font-weight: 800;
+      color: #fff;
+    }
+
+    .brand-title {
+      font-weight: 760;
+      font-size: 16px;
+      line-height: 1.2;
+    }
+
+    .brand-sub {
+      color: #aab8c2;
+      font-size: 12px;
+      margin-top: 2px;
+    }
+
+    .nav-label {
+      color: #91a3b0;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin: 18px 0 8px;
+    }
+
+    .nav a {
+      display: block;
+      padding: 8px 10px;
+      border-radius: 6px;
+      color: #dce7ed;
+      font-size: 14px;
+    }
+
+    .nav a:hover {
+      background: rgba(255, 255, 255, 0.08);
+      text-decoration: none;
+    }
+
+    .side-note {
+      margin-top: 26px;
+      padding: 12px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.07);
+      color: #c9d6dd;
+      font-size: 12px;
+    }
+
+    main {
+      padding: 34px 42px 70px;
+      min-width: 0;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+      gap: 28px;
+      align-items: stretch;
+      padding: 34px;
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: var(--shadow);
+      border: 1px solid var(--line);
+    }
+
+    .kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--green);
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    .kicker::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    h1, h2, h3 {
+      letter-spacing: 0;
+      line-height: 1.2;
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 42px;
+      max-width: 880px;
+    }
+
+    .hero-copy {
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 17px;
+      max-width: 780px;
+    }
+
+    .hero-claim {
+      margin-top: 24px;
+      padding: 16px 18px;
+      border-left: 4px solid var(--green);
+      background: var(--green-soft);
+      border-radius: 6px;
+      font-weight: 650;
+    }
+
+    .hero-visual {
+      min-height: 330px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background:
+        linear-gradient(90deg, rgba(24, 33, 43, 0.04) 1px, transparent 1px),
+        linear-gradient(rgba(24, 33, 43, 0.04) 1px, transparent 1px),
+        #f8fafb;
+      background-size: 24px 24px;
+      padding: 22px;
+      display: grid;
+      align-content: center;
+      gap: 14px;
+    }
+
+    .org-box,
+    .agent-box,
+    .human-box {
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #fff;
+      padding: 13px 14px;
+      box-shadow: 0 8px 18px rgba(23, 32, 42, 0.05);
+    }
+
+    .org-box { border-color: #b9d8ca; background: #f4fbf7; }
+    .agent-box { border-color: #cad7ee; background: #f7faff; }
+    .human-box { border-color: #e2d2ae; background: #fffaf0; }
+
+    .box-title {
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    .box-main {
+      font-weight: 760;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .arrow-down {
+      text-align: center;
+      color: var(--muted);
+      font-size: 20px;
+      line-height: 1;
+    }
+
+    section {
+      margin-top: 26px;
+      padding: 30px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: 0 12px 30px rgba(23, 32, 42, 0.045);
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 22px;
+      align-items: flex-start;
+      margin-bottom: 22px;
+    }
+
+    .section-title {
+      font-size: 28px;
+    }
+
+    .section-intro {
+      margin: 8px 0 0;
+      color: var(--muted);
+      max-width: 820px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      white-space: nowrap;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      padding: 6px 10px;
+      color: var(--muted);
+      background: var(--soft);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .three-col,
+    .two-col,
+    .four-col {
+      display: grid;
+      gap: 16px;
+    }
+
+    .three-col { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .two-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .four-col { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      background: #fff;
+      min-width: 0;
+    }
+
+    .panel h3 {
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+
+    .panel p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      overflow-wrap: anywhere;
+    }
+
+    .panel.good { background: var(--green-soft); border-color: #b9d8ca; }
+    .panel.warn { background: var(--amber-soft); border-color: #ecd38d; }
+    .panel.blue { background: var(--blue-soft); border-color: #c5d7f1; }
+    .panel.violet { background: var(--violet-soft); border-color: #d7cfee; }
+    .panel.red { background: var(--red-soft); border-color: #edc6c8; }
+
+    .mini-label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 800;
+      margin-bottom: 8px;
+    }
+
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+
+    .compare-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .compare-head {
+      padding: 15px 18px;
+      font-weight: 760;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .compare-card.current .compare-head { background: var(--amber-soft); color: var(--amber); }
+    .compare-card.target .compare-head { background: var(--green-soft); color: var(--green); }
+
+    .stack {
+      padding: 18px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .stack-item {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 12px;
+      border-radius: 8px;
+      background: var(--soft);
+      border: 1px solid var(--line);
+      min-width: 0;
+    }
+
+    .num {
+      flex: 0 0 auto;
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      background: #18212b;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 760;
+    }
+
+    .stack-title {
+      font-weight: 720;
+      margin-bottom: 2px;
+    }
+
+    .stack-copy {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(130px, 1fr));
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .flow-node {
+      position: relative;
+      min-height: 108px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      min-width: 0;
+    }
+
+    .flow-node:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      top: 42px;
+      right: -15px;
+      z-index: 2;
+      width: 20px;
+      height: 20px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: #18212b;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .node-k {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+      margin-bottom: 6px;
+    }
+
+    .node-t {
+      font-weight: 760;
+    }
+
+    .node-d {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 6px;
+    }
+
+    .lane {
+      display: grid;
+      grid-template-columns: 180px repeat(5, minmax(120px, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+      align-items: stretch;
+    }
+
+    .lane-title {
+      display: flex;
+      align-items: center;
+      padding: 13px;
+      border-radius: 8px;
+      background: #18212b;
+      color: #fff;
+      font-weight: 760;
+    }
+
+    .lane-step {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 13px;
+      background: #fff;
+      min-height: 94px;
+      min-width: 0;
+    }
+
+    .lane-step strong {
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    .lane-step span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .entity-map {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .entity {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 15px;
+      background: #fff;
+      min-height: 130px;
+      min-width: 0;
+    }
+
+    .entity .tag {
+      display: inline-flex;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: var(--soft);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 760;
+      margin-bottom: 10px;
+    }
+
+    .entity h3 {
+      font-size: 16px;
+      margin-bottom: 8px;
+    }
+
+    .entity ul {
+      padding-left: 18px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .code-block {
+      margin: 14px 0 0;
+      padding: 16px;
+      border-radius: 8px;
+      background: #111923;
+      color: #e6edf3;
+      overflow: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .roadmap {
+      position: relative;
+      display: grid;
+      gap: 12px;
+    }
+
+    .phase {
+      display: grid;
+      grid-template-columns: 110px minmax(0, 1fr);
+      gap: 14px;
+      align-items: start;
+    }
+
+    .phase-id {
+      border-radius: 8px;
+      padding: 11px 12px;
+      background: #18212b;
+      color: #fff;
+      font-weight: 760;
+      text-align: center;
+    }
+
+    .phase-body {
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .phase-body strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .phase-body span {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+
+    th, td {
+      padding: 12px 13px;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      font-size: 14px;
+    }
+
+    th {
+      background: var(--soft);
+      color: #344657;
+      font-weight: 760;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    .callout {
+      margin-top: 18px;
+      padding: 16px 18px;
+      border-radius: 8px;
+      border: 1px solid #b9d8ca;
+      background: var(--green-soft);
+    }
+
+    .callout strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .change-grid {
+      display: grid;
+      gap: 18px;
+    }
+
+    .change-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      overflow: hidden;
+    }
+
+    .change-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 15px 18px;
+      border-bottom: 1px solid var(--line);
+      background: #f8fafb;
+    }
+
+    .change-title h3 {
+      font-size: 18px;
+      margin: 0;
+    }
+
+    .change-title span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+      white-space: nowrap;
+    }
+
+    .before-after {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(150px, 0.42fr) minmax(0, 1fr);
+      gap: 14px;
+      padding: 18px;
+      align-items: stretch;
+    }
+
+    .ba-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fff;
+      min-width: 0;
+    }
+
+    .ba-panel.before {
+      background: var(--amber-soft);
+      border-color: #ecd38d;
+    }
+
+    .ba-panel.after {
+      background: var(--green-soft);
+      border-color: #b9d8ca;
+    }
+
+    .ba-label {
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--muted);
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .ba-line {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      margin: 8px 0;
+      min-width: 0;
+    }
+
+    .ba-line.wrap {
+      flex-wrap: wrap;
+    }
+
+    .ba-node {
+      padding: 7px 9px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: #fff;
+      font-size: 13px;
+      font-weight: 690;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .ba-node.dark {
+      background: #18212b;
+      color: #fff;
+      border-color: #18212b;
+    }
+
+    .ba-node.blue {
+      background: var(--blue-soft);
+      border-color: #c5d7f1;
+      color: #244e82;
+    }
+
+    .ba-node.violet {
+      background: var(--violet-soft);
+      border-color: #d7cfee;
+      color: #4d3e85;
+    }
+
+    .ba-node.red {
+      background: var(--red-soft);
+      border-color: #edc6c8;
+      color: #8b3033;
+    }
+
+    .ba-arrow {
+      color: var(--muted);
+      font-weight: 800;
+      flex: 0 0 auto;
+    }
+
+    .ba-note {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .delta {
+      display: grid;
+      align-content: center;
+      justify-items: center;
+      text-align: center;
+      padding: 12px;
+      border-radius: 8px;
+      background: var(--soft);
+      border: 1px dashed #bcc8d2;
+      color: #425466;
+      font-size: 13px;
+      font-weight: 650;
+      min-width: 0;
+    }
+
+    .delta strong {
+      display: block;
+      color: var(--ink);
+      font-size: 15px;
+      margin-bottom: 6px;
+    }
+
+    .demo-grid {
+      display: grid;
+      gap: 18px;
+    }
+
+    .demo-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      overflow: hidden;
+    }
+
+    .demo-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: center;
+      padding: 15px 18px;
+      background: #f8fafb;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .demo-head h3 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .demo-head span {
+      font-size: 12px;
+      font-weight: 760;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .demo-flow {
+      display: grid;
+      grid-template-columns: minmax(190px, 0.7fr) minmax(0, 1fr) minmax(0, 1.1fr);
+      gap: 14px;
+      padding: 18px;
+    }
+
+    .demo-panel {
+      min-width: 0;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      padding: 14px;
+      background: #fff;
+    }
+
+    .demo-panel.input {
+      background: var(--blue-soft);
+      border-color: #c5d7f1;
+    }
+
+    .demo-panel.before {
+      background: var(--amber-soft);
+      border-color: #ecd38d;
+    }
+
+    .demo-panel.after {
+      background: var(--green-soft);
+      border-color: #b9d8ca;
+    }
+
+    .demo-title {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .demo-msg {
+      display: grid;
+      gap: 8px;
+    }
+
+    .demo-chip {
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      max-width: 100%;
+      padding: 7px 9px;
+      border-radius: 6px;
+      background: #fff;
+      border: 1px solid var(--line);
+      font-size: 13px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .demo-text {
+      color: #3f5264;
+      font-size: 14px;
+      line-height: 1.55;
+      margin-top: 8px;
+    }
+
+    .demo-code {
+      margin: 10px 0 0;
+      padding: 12px;
+      border-radius: 8px;
+      background: #111923;
+      color: #e6edf3;
+      overflow: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .risk-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .risk {
+      padding: 15px;
+      border-radius: 8px;
+      border: 1px solid #ecd38d;
+      background: var(--amber-soft);
+    }
+
+    .risk strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--amber);
+    }
+
+    .risk span {
+      color: #665437;
+      font-size: 14px;
+    }
+
+    .footer {
+      margin-top: 28px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    @media (max-width: 1100px) {
+      .shell { grid-template-columns: 1fr; }
+      .side {
+        position: static;
+        height: auto;
+      }
+      .nav {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 4px;
+      }
+      main { padding: 24px; }
+      .hero, .compare, .two-col { grid-template-columns: 1fr; }
+      .three-col, .four-col, .entity-map { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .flow { grid-template-columns: 1fr; }
+      .flow-node:not(:last-child)::after {
+        top: auto;
+        right: 50%;
+        bottom: -15px;
+        transform: translateX(50%) rotate(90deg);
+      }
+      .lane { grid-template-columns: 1fr; }
+      .before-after { grid-template-columns: 1fr; }
+      .demo-flow { grid-template-columns: 1fr; }
+      .delta { min-height: 74px; }
+    }
+
+    @media (max-width: 720px) {
+      main { padding: 16px; }
+      section, .hero { padding: 20px; }
+      h1 { font-size: 32px; }
+      .section-title { font-size: 23px; }
+      .section-head { display: block; }
+      .three-col, .four-col, .entity-map, .risk-grid { grid-template-columns: 1fr; }
+      .phase { grid-template-columns: 1fr; }
+      .nav { grid-template-columns: 1fr; }
+    }
+
+    @media print {
+      body { background: #fff; }
+      .shell { display: block; }
+      .side { display: none; }
+      main { padding: 0; }
+      section, .hero { break-inside: avoid; box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="side">
+      <div class="brand">
+        <div class="brand-mark">C</div>
+        <div>
+          <div class="brand-title">CatsCo 虚拟员工</div>
+          <div class="brand-sub">架构转型中文报告</div>
+        </div>
+      </div>
+      <div class="nav-label">阅读路径</div>
+      <nav class="nav">
+        <a href="#thesis">核心判断</a>
+        <a href="#current">当前代码现实</a>
+        <a href="#target">目标体验</a>
+        <a href="#journeys">用户路径</a>
+        <a href="#model">数据模型</a>
+        <a href="#runtime">运行时数据流</a>
+        <a href="#changes">前后对照图</a>
+        <a href="#demo">Session Demo</a>
+        <a href="#device">本地电脑授权</a>
+        <a href="#migration">迁移路线</a>
+        <a href="#reply-policy">Reply Policy</a>
+        <a href="#key-management">密钥路线</a>
+        <a href="#risks">关键风险</a>
+        <a href="#next">下一步</a>
+      </nav>
+      <div class="side-note">
+        本报告是 <a href="./virtual-employee-architecture-transition.md">virtual-employee-architecture-transition.md</a> 的中文可视化版本。重点是帮助理解重构方向，不是最终 API 规范。
+      </div>
+    </aside>
+
+    <main>
+      <header class="hero" id="thesis">
+        <div>
+          <div class="kicker">核心重构视角</div>
+          <h1>CatsCo 不只是装在电脑里的个人助手，而是组织可以部署和培养的虚拟员工。</h1>
+          <p class="hero-copy">
+            对用户来说，它仍然像一个强大的个人专家：直接聊天、独立处理、不阻塞别人。对系统来说，它必须有组织身份、岗位边界、稳定身体、工具链、长期记忆、权限和审计。
+          </p>
+          <div class="hero-claim">
+            个人助手是“服务对象为 1”的特例。真正的目标形态是：一个虚拟员工同时服务整个组织的人，每个人都有独立 session，但能力和世界模型沉淀在同一个 agent 身上。
+          </div>
+        </div>
+        <div class="hero-visual" aria-label="组织虚拟员工示意图">
+          <div class="org-box">
+            <div class="box-title">组织</div>
+            <div class="box-main">学校 / 企业 / 团队</div>
+          </div>
+          <div class="arrow-down">↓</div>
+          <div class="hero-grid">
+            <div class="agent-box">
+              <div class="box-title">虚拟员工</div>
+              <div class="box-main">Dev Agent</div>
+            </div>
+            <div class="agent-box">
+              <div class="box-title">虚拟员工</div>
+              <div class="box-main">Review Agent</div>
+            </div>
+          </div>
+          <div class="arrow-down">↓</div>
+          <div class="hero-grid">
+            <div class="human-box">
+              <div class="box-title">成员 A</div>
+              <div class="box-main">独立会话</div>
+            </div>
+            <div class="human-box">
+              <div class="box-title">成员 B</div>
+              <div class="box-main">独立会话</div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <section>
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">三个概念的区别</h2>
+            <p class="section-intro">重构最重要的不是“本地还是云端”，而是谁是主体、记忆归谁、凭证归谁、组织能否长期沉淀能力。</p>
+          </div>
+          <span class="badge">产品定义</span>
+        </div>
+        <div class="three-col">
+          <div class="panel warn">
+            <div class="mini-label">Personal Assistant</div>
+            <h3>个人助手</h3>
+            <p>主体是个人用户。记忆、偏好和本地资料围绕这个人展开。适合单人效率，但组织无法稳定复用。</p>
+          </div>
+          <div class="panel blue">
+            <div class="mini-label">Cloud Bot</div>
+            <h3>云端机器人</h3>
+            <p>主体是触发器或任务。适合自动执行，但通常缺少岗位身份、长期经验和多人协作语境。</p>
+          </div>
+          <div class="panel good">
+            <div class="mini-label">Virtual Employee</div>
+            <h3>虚拟员工</h3>
+            <p>主体是 agent 自己。它属于组织，有岗位、身体、工具、凭证、记忆和交付标准，可以多人协作调用。</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="current">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">当前代码现实</h2>
+            <p class="section-intro">现有代码已经有多 session、CatsCo Web connector、runtime profile、GauzMem、local file grant 等基础；这个分支已经完成 body 绑定安全、平台联系人入口、TopicContext 和消息身份 metadata 的 beta 第一版。但产品形态仍然更接近“本地单 agent + beta 平台关系”，还不是完整的组织虚拟员工系统。</p>
+          </div>
+          <span class="badge">代码审视</span>
+        </div>
+
+        <div class="compare">
+          <div class="compare-card current">
+            <div class="compare-head">当前形态：本地单体 assistant</div>
+            <div class="stack">
+              <div class="stack-item"><div class="num">1</div><div><div class="stack-title">本机 dashboard</div><div class="stack-copy">登录一个 CatsCo 用户，管理一套本地配置。</div></div></div>
+              <div class="stack-item"><div class="num">2</div><div><div class="stack-title">一个当前 bot/body</div><div class="stack-copy">`catsco.json` 已是 CatsCo 身份和 body 绑定权威，`.env` 仍作为 connector mirror。</div></div></div>
+              <div class="stack-item"><div class="num">3</div><div><div class="stack-title">固定 connector</div><div class="stack-copy">`ServiceManager` 只有 `catscompany`、`feishu`、`weixin` 三个固定服务。</div></div></div>
+              <div class="stack-item"><div class="num">4</div><div><div class="stack-title">session key 仍兼容旧渠道</div><div class="stack-copy">物理 key 还是 `cc_user:*` / `cc_group:*`，但 turn/prompt/tool/log 已带 identity sidecar。</div></div></div>
+            </div>
+          </div>
+          <div class="compare-card target">
+            <div class="compare-head">目标形态：组织虚拟员工</div>
+            <div class="stack">
+              <div class="stack-item"><div class="num">1</div><div><div class="stack-title">组织可部署多个虚拟员工</div><div class="stack-copy">Dev、Review、财务、校务等是不同独立实例。</div></div></div>
+              <div class="stack-item"><div class="num">2</div><div><div class="stack-title">一个进程就是一个身体</div><div class="stack-copy">一个 CatsCo/XiaoBa 进程只承载一个 agent body。</div></div></div>
+              <div class="stack-item"><div class="num">3</div><div><div class="stack-title">每条消息有身份</div><div class="stack-copy">包含 org、agent、actor、channel、topic、permissions。</div></div></div>
+              <div class="stack-item"><div class="num">4</div><div><div class="stack-title">记忆和能力沉淀在 agent</div><div class="stack-copy">多人独立 session，但共享岗位经验和世界模型。</div></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout">
+          <strong>当前配置边界：</strong>
+          `.xiaoba/catsco.json` 现在负责 CatsCo 登录、bot 绑定、device/body/install id、endpoint 和偏好；`.env` 继续承载模型 key、飞书、微信等旧 connector secret，也继续作为启动兼容 mirror。也就是说，CatsCo 身份已经收敛，所有 secret 还没有、也不应该一次性塞进同一个 JSON。
+        </div>
+
+        <div class="two-col" style="margin-top:16px">
+          <div class="panel warn">
+            <h3>CatsCompany 平台现状</h3>
+            <p>当前 bot 仍然是 `users(account_type=bot)` + `bot_config.api_key`，但平台分支已经有 active body lease、body status、`/api/agents`、`/api/agents/open`、`topic_contexts` 和消息 metadata 持久化。也就是说，平台已经能让成员找到 agent、打开会话，并让后续消息带服务端生成的身份上下文。</p>
+          </div>
+          <div class="panel red">
+            <h3>下一步平台深化</h3>
+            <p>下一步不再是 body status，而是把 beta 关系升级成组织关系：谁能看到哪个虚拟员工、谁能邀请成员、谁是 owner/member/viewer、权限快照如何随 topic 保存。当前的 friend/public 只是可用桥接。</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="target">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">目标体验</h2>
+            <p class="section-intro">普通用户不需要理解 agent body、connector、session key。他们只需要像找一个专家同事一样，登录、找到虚拟员工、聊天、授权资料。</p>
+          </div>
+          <span class="badge">用户视角</span>
+        </div>
+        <div class="flow">
+          <div class="flow-node panel blue">
+            <div class="node-k">Step 1</div>
+            <div class="node-t">登录 CatsCo</div>
+            <div class="node-d">用户用自己的账号进入组织空间。</div>
+          </div>
+          <div class="flow-node panel">
+            <div class="node-k">Step 2</div>
+            <div class="node-t">找到虚拟员工</div>
+            <div class="node-d">看到 Dev Agent、Review Agent、AI 校务专员等。</div>
+          </div>
+          <div class="flow-node panel good">
+            <div class="node-k">Step 3</div>
+            <div class="node-t">独立聊天</div>
+            <div class="node-d">每个人独立 session，不阻塞其他人。</div>
+          </div>
+          <div class="flow-node panel violet">
+            <div class="node-k">Step 4</div>
+            <div class="node-t">选择设备并授权</div>
+            <div class="node-d">从 CatsCo actor 的设备清单里选择电脑/SSH/网盘，再授权文件、目录或能力。</div>
+          </div>
+          <div class="flow-node panel">
+            <div class="node-k">Step 5</div>
+            <div class="node-t">组织沉淀能力</div>
+            <div class="node-d">流程、skills、记忆、交付标准持续增长。</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="journeys">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">四条关键操作路径</h2>
+            <p class="section-intro">同一个系统需要同时覆盖身体看板操作、成员聊天、外部通道绑定和本地资料授权。看板操作者通过 CatsCo 聊天时，和其他成员一样都是 actor/user。</p>
+          </div>
+          <span class="badge">体验流程</span>
+        </div>
+
+        <div class="lane">
+          <div class="lane-title">部署/看板操作</div>
+          <div class="lane-step"><strong>打开看板</strong><span>本地电脑、云 VM 或容器上的 body console。</span></div>
+          <div class="lane-step"><strong>确认当前虚拟员工</strong><span>创建/绑定当前 agent 身份；岗位模板只是 profile 初始化。</span></div>
+          <div class="lane-step"><strong>锁定身体</strong><span>一个进程、一个 profile、一个 CatsCo Bot 身份。</span></div>
+          <div class="lane-step"><strong>启动通道</strong><span>CatsCo、微信、飞书、API 连接到这个 agent。</span></div>
+          <div class="lane-step"><strong>查看健康</strong><span>日志、skills、凭证、记忆。</span></div>
+        </div>
+
+        <div class="lane">
+          <div class="lane-title">成员聊天</div>
+          <div class="lane-step"><strong>个人登录</strong><span>带 user_id 和组织角色。</span></div>
+          <div class="lane-step"><strong>找到虚拟员工</strong><span>添加或打开可访问的虚拟员工。</span></div>
+          <div class="lane-step"><strong>发送消息</strong><span>消息带 actor 和权限快照。</span></div>
+          <div class="lane-step"><strong>独立处理</strong><span>只阻塞自己的 session。</span></div>
+          <div class="lane-step"><strong>收到交付</strong><span>文本、文件、工具进度和审计。</span></div>
+        </div>
+
+        <div class="lane">
+          <div class="lane-title">通道绑定</div>
+          <div class="lane-step"><strong>从 CatsCo 出发</strong><span>在 CatsCo 账号里绑定微信、飞书等外部通道。</span></div>
+          <div class="lane-step"><strong>扫码或授权</strong><span>微信 openid / 飞书 user id 绑定到 CatsCo actor。</span></div>
+          <div class="lane-step"><strong>选择默认虚拟员工</strong><span>或在通道消息里指定要找谁。</span></div>
+          <div class="lane-step"><strong>外部通道发消息</strong><span>仍进入同一个 CatsCo actor 权限模型。</span></div>
+          <div class="lane-step"><strong>保持连续性</strong><span>兼容 context_token、cursor 和 channel seq。</span></div>
+        </div>
+
+        <div class="lane">
+          <div class="lane-title">本地资料授权</div>
+          <div class="lane-step"><strong>agent 请求</strong><span>说明需要哪个文件或目录。</span></div>
+          <div class="lane-step"><strong>用户批准</strong><span>上传、目录授权或 SSH。</span></div>
+          <div class="lane-step"><strong>生成 grant</strong><span>带范围、过期时间、能力。</span></div>
+          <div class="lane-step"><strong>受限操作</strong><span>只能通过 grant 工具访问。</span></div>
+          <div class="lane-step"><strong>可撤销</strong><span>撤销后工具 fail closed。</span></div>
+        </div>
+      </section>
+
+      <section id="model">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">目标数据模型</h2>
+            <p class="section-intro">这个模型不是为了增加角色，而是为了把不同层级说清楚：CatsCo actor 是说话的人，VirtualEmployee 是被叫到的虚拟员工，AgentBody 是它运行的进程/设备，ChannelBinding 把微信/飞书等外部 ID 绑定回 CatsCo actor，UserDevice 是这个 actor 名下可授权的设备，ConversationSession 是 actor/topic 和 agent 的独立对话，SessionProvenance 是每轮消息的来源记录，DeviceGrant 是临时资料授权。GauzMem 可以以后再接这份 provenance。</p>
+          </div>
+          <span class="badge">数据结构</span>
+        </div>
+
+        <div class="entity-map">
+          <div class="entity">
+            <span class="tag">Identity</span>
+            <h3>Organization</h3>
+            <ul><li>orgId</li><li>组织类型</li><li>成员和权限边界</li></ul>
+          </div>
+          <div class="entity">
+            <span class="tag">Identity</span>
+            <h3>HumanUser</h3>
+            <ul><li>userId</li><li>角色和权限</li><li>CatsCo actor 身份</li></ul>
+          </div>
+          <div class="entity">
+            <span class="tag">Agent</span>
+            <h3>VirtualEmployee</h3>
+            <ul><li>agentId</li><li>岗位角色</li><li>记忆和 skill policy</li></ul>
+          </div>
+          <div class="entity">
+            <span class="tag">Body</span>
+            <h3>AgentBody</h3>
+            <ul><li>bodyId / installationId</li><li>云 VM / 本地 / 容器</li><li>runtime profile</li></ul>
+          </div>
+          <div class="entity">
+            <span class="tag">Channel</span>
+            <h3>ChannelBinding</h3>
+            <ul><li>微信 / 飞书 / API</li><li>externalUserId</li><li>绑定回 CatsCo actor</li></ul>
+          </div>
+          <div class="entity">
+            <span class="tag">Device</span>
+            <h3>UserDevice</h3>
+            <ul><li>deviceId</li><li>归属 CatsCo actor</li><li>在线状态和能力</li></ul>
+          </div>
+          <div class="entity">
+            <span class="tag">Session</span>
+            <h3>ConversationSession</h3>
+            <ul><li>sessionId</li><li>agent + actor + topic</li><li>p2p / group / task</li></ul>
+          </div>
+          <div class="entity">
+            <span class="tag">Access</span>
+            <h3>DeviceGrant</h3>
+            <ul><li>grantId</li><li>绑定 userDeviceId</li><li>范围、过期和审计</li></ul>
+          </div>
+          <div class="entity">
+            <span class="tag">Session</span>
+            <h3>SessionProvenance</h3>
+            <ul><li>actor / agent</li><li>channel / topic</li><li>turn source</li><li>log / prompt / tool context</li></ul>
+          </div>
+        </div>
+
+        <div class="callout">
+          <strong>解释：</strong>
+          部署者只有在打开 body console 时是“看板操作者”；一旦通过 CatsCo/微信/飞书聊天，他仍然只是一个 actor。短期实现里 VirtualEmployee、AgentBody、CatsCo Bot credential 可以都落在同一个本地 profile 里，但概念上必须分开，才能避免复制一个 `CATSCO_API_KEY` 就让两台设备冒充同一个虚拟员工。
+        </div>
+
+        <div class="code-block">MessageEnvelope = {
+  orgId,
+  agentId,
+  bodyId,
+  actorUserId,
+  actorDisplayName,
+  channel,             // catsco / wechat / feishu / api
+  channelBindingId,
+  externalChannelUserId,
+  topicId,
+  sessionId,
+  permissionsSnapshot,
+  attachments,
+  channelSeq / externalMessageId
+}</div>
+
+        <div class="callout">
+          <strong>session key 的判断：</strong>
+          `cc_user:*`、`cc_group:*` 这类旧 key 可以继续作为物理存储和 busy queue key；真正必须新增的是 MessageEnvelope/metadata sidecar。LLM 需要在 prompt 里看到 actor/agent/channel 上下文，但系统路由、记忆、审计不能只靠 prompt 文本。
+        </div>
+      </section>
+
+      <section id="runtime">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">运行时数据流</h2>
+            <p class="section-intro">现在 connector 直接把渠道 ID 转成 session key。目标是从 CatsCo actor 身份出发，把 CatsCo Webapp、微信、飞书等入口统一成 MessageEnvelope，再由 SessionRouter 决定 session，最后把 identity 传进工具、日志和记忆。</p>
+          </div>
+          <span class="badge">系统流转</span>
+        </div>
+
+        <div class="flow">
+          <div class="flow-node panel blue">
+            <div class="node-k">Transport</div>
+            <div class="node-t">CatsCo / WeChat / Feishu</div>
+            <div class="node-d">只负责接收渠道消息和原始 metadata。</div>
+          </div>
+          <div class="flow-node panel">
+            <div class="node-k">Normalize</div>
+            <div class="node-t">IdentityResolver</div>
+            <div class="node-d">把外部 channel id 映射回 CatsCo actor，再解析 org、agent、permissions。</div>
+          </div>
+          <div class="flow-node panel good">
+            <div class="node-k">Route</div>
+            <div class="node-t">SessionRouter</div>
+            <div class="node-d">生成或查找 ConversationSession。</div>
+          </div>
+          <div class="flow-node panel violet">
+            <div class="node-k">Run</div>
+            <div class="node-t">AgentSession</div>
+            <div class="node-d">独立上下文、busy queue、currentDirectory。</div>
+          </div>
+          <div class="flow-node panel">
+            <div class="node-k">Act</div>
+            <div class="node-t">ToolContext</div>
+            <div class="node-d">工具拿到 actor、agent、grant、memory scope。</div>
+          </div>
+        </div>
+
+        <div class="two-col" style="margin-top:16px">
+          <div class="panel warn">
+            <h3>当前关键问题</h3>
+            <p>`Metrics`、`.env`、`process.env.CURRENT_AGENT_DISPLAY_NAME`、固定 service name 等仍是进程级共享状态。多用户 session 虽然隔离，但多个虚拟员工不能安全共进程。CatsCompany 已有 beta TopicContext 和消息 metadata，但还没有正式的组织成员、agent access、角色权限和权限快照表。</p>
+          </div>
+          <div class="panel good">
+            <h3>目标不变量</h3>
+            <p>任何一个 turn 都不能修改会影响另一个 turn 的身份、凭证、metrics、工作目录或记忆 retrieve 上下文的全局状态；身份/provenance 要结构化保存，而不是只塞进提示词。</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="changes">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">关键调整前后对照图</h2>
+            <p class="section-intro">这里把每个改动拆成一张小图：左边是现在的链路，右边是目标链路，中间是这一步真正改变的东西。</p>
+          </div>
+          <span class="badge">看图理解</span>
+        </div>
+
+        <div class="change-grid">
+          <div class="change-card">
+            <div class="change-title">
+              <h3>1. 同一个 bot 不能被两台电脑同时继承</h3>
+              <span>解决重复回复</span>
+            </div>
+            <div class="before-after">
+              <div class="ba-panel before">
+                <div class="ba-label">调整前</div>
+                <div class="ba-line wrap">
+                  <span class="ba-node">Bot UID</span><span class="ba-arrow">→</span><span class="ba-node">CATSCO_API_KEY</span>
+                </div>
+                <div class="ba-line wrap">
+                  <span class="ba-node red">电脑 A 进程</span><span class="ba-node red">电脑 B 进程</span>
+                </div>
+                <div class="ba-note">两个进程都能用同一个 key 连接 CatsCompany；平台会把同一条消息发给两个连接。</div>
+              </div>
+              <div class="delta"><strong>改动</strong>给 bot 增加 body lease；运行时凭证不再只等于 API key。</div>
+              <div class="ba-panel after">
+                <div class="ba-label">调整后</div>
+                <div class="ba-line wrap">
+                  <span class="ba-node">Bot / VirtualEmployee</span><span class="ba-arrow">→</span><span class="ba-node dark">Active Body Lease</span>
+                </div>
+                <div class="ba-line wrap">
+                  <span class="ba-node blue">bodyId</span><span class="ba-arrow">→</span><span class="ba-node">当前进程</span>
+                </div>
+                <div class="ba-note">人的多设备仍允许；bot runtime 只允许一个 active body 收消息和发运行时动作。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="change-card">
+            <div class="change-title">
+              <h3>2. Dashboard 登录只登录，不自动绑定机器人</h3>
+              <span>解决抢占和误绑定</span>
+            </div>
+            <div class="before-after">
+              <div class="ba-panel before">
+                <div class="ba-label">调整前</div>
+                <div class="ba-line wrap">
+                  <span class="ba-node">登录</span><span class="ba-arrow">→</span><span class="ba-node">setupCatsBot()</span><span class="ba-arrow">→</span><span class="ba-node red">找不到就创建</span>
+                </div>
+                <div class="ba-line wrap">
+                  <span class="ba-node red">写 .env</span><span class="ba-arrow">→</span><span class="ba-node red">启动 connector</span>
+                </div>
+                <div class="ba-note">用户没有机会确认“当前设备到底要成为哪个虚拟员工的身体”。</div>
+              </div>
+              <div class="delta"><strong>改动</strong>把一个大按钮拆成四个明确状态。</div>
+              <div class="ba-panel after">
+                <div class="ba-label">调整后</div>
+                <div class="ba-line wrap">
+                  <span class="ba-node">登录 CatsCo</span><span class="ba-arrow">→</span><span class="ba-node">创建/选择 bot</span>
+                </div>
+                <div class="ba-line wrap">
+                  <span class="ba-node blue">claim 当前 body</span><span class="ba-arrow">→</span><span class="ba-node">启动 connector</span>
+                </div>
+                <div class="ba-note">Dashboard 是 body console：先确认这台机器是谁的身体，再启动通道。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="change-card">
+            <div class="change-title">
+              <h3>3. 每条消息先标清楚：谁、找谁、从哪里来</h3>
+              <span>解决身份混淆</span>
+            </div>
+            <div class="before-after">
+              <div class="ba-panel before">
+                <div class="ba-label">调整前</div>
+                <div class="ba-line wrap">
+                  <span class="ba-node">CatsCo 消息</span><span class="ba-arrow">→</span><span class="ba-node">senderId</span><span class="ba-arrow">→</span><span class="ba-node red">cc_user:&lt;senderId&gt;</span>
+                </div>
+                <div class="ba-note">session 是独立的，但 agent 只知道一个渠道 ID，不知道组织、agent、actor、权限和通道来源。</div>
+              </div>
+              <div class="delta"><strong>改动</strong>旧 session key 先保留，但身份放进结构化 envelope。</div>
+              <div class="ba-panel after">
+                <div class="ba-label">调整后</div>
+                <div class="ba-line wrap">
+                  <span class="ba-node">渠道消息</span><span class="ba-arrow">→</span><span class="ba-node dark">MessageEnvelope</span>
+                </div>
+                <div class="ba-line wrap">
+                  <span class="ba-node blue">actor</span><span class="ba-node blue">agent</span><span class="ba-node blue">body</span><span class="ba-node blue">channel</span><span class="ba-node blue">topic</span>
+                </div>
+                <div class="ba-note">LLM 看得到必要身份；工具、日志、记忆和审计也拿到同一份结构化信息。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="change-card">
+            <div class="change-title">
+              <h3>4. 微信/飞书只是 CatsCo 账号的聊天入口</h3>
+              <span>统一用户身份</span>
+            </div>
+            <div class="before-after">
+              <div class="ba-panel before">
+                <div class="ba-label">调整前</div>
+                <div class="ba-line wrap">
+                  <span class="ba-node">CatsCo uid</span><span class="ba-node">WeChat openid</span><span class="ba-node">Feishu user id</span>
+                </div>
+                <div class="ba-note">三个入口像三个人，记忆和会话很容易按渠道分裂。</div>
+              </div>
+              <div class="delta"><strong>改动</strong>所有外部身份先回到 CatsCo actor。</div>
+              <div class="ba-panel after">
+                <div class="ba-label">调整后</div>
+                <div class="ba-line wrap">
+                  <span class="ba-node">WeChat openid</span><span class="ba-arrow">→</span><span class="ba-node dark">ChannelBinding</span><span class="ba-arrow">→</span><span class="ba-node blue">CatsCo actor</span>
+                </div>
+                <div class="ba-line wrap">
+                  <span class="ba-node">Feishu user id</span><span class="ba-arrow">→</span><span class="ba-node dark">ChannelBinding</span><span class="ba-arrow">→</span><span class="ba-node blue">CatsCo actor</span>
+                </div>
+                <div class="ba-note">微信只是“这个 CatsCo 用户的另一个聊天入口”，不是另一个用户。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="change-card">
+            <div class="change-title">
+              <h3>5. Session 不只存文本，还要记录每轮来源</h3>
+              <span>先做 session，GauzMem 后接</span>
+            </div>
+            <div class="before-after">
+              <div class="ba-panel before">
+                <div class="ba-label">调整前</div>
+                <div class="ba-line wrap">
+                  <span class="ba-node">user/assistant 文本</span><span class="ba-arrow">→</span><span class="ba-node">raw session key</span>
+                </div>
+                <div class="ba-note">session 能恢复对话，但日志和模型上下文不稳定知道“这一轮是谁、从哪个通道来的”。</div>
+              </div>
+              <div class="delta"><strong>改动</strong>每个 turn 都带 identity snapshot；旧 key 继续保留。</div>
+              <div class="ba-panel after">
+                <div class="ba-label">调整后</div>
+                <div class="ba-line wrap">
+                  <span class="ba-node dark">SessionTurn</span><span class="ba-arrow">→</span><span class="ba-node blue">SessionProvenance</span>
+                </div>
+                <div class="ba-line wrap">
+                  <span class="ba-node">actor</span><span class="ba-node">agent</span><span class="ba-node">body</span><span class="ba-node">channel</span><span class="ba-node">topic</span>
+                </div>
+                <div class="ba-note">这是 session 管理先行的一步；GauzMem 以后直接消费这份来源信息。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="change-card">
+            <div class="change-title">
+              <h3>6. 本地资料先分清来源，再决定怎么访问</h3>
+              <span>避免把附件当电脑文件库</span>
+            </div>
+            <div class="before-after">
+              <div class="ba-panel before">
+                <div class="ba-label">调整前</div>
+                <div class="ba-line wrap">
+                  <span class="ba-node">workingDirectory</span><span class="ba-node">tmp/downloads</span><span class="ba-node">用户说的本地文件</span>
+                </div>
+                <div class="ba-note">这些都可能表现成“一个路径”，但权限含义完全不同。</div>
+              </div>
+              <div class="delta"><strong>改动</strong>先把来源分类；复杂安全后置，但控制口提前放好。</div>
+              <div class="ba-panel after">
+                <div class="ba-label">调整后</div>
+                <div class="ba-line wrap">
+                  <span class="ba-node blue">body 自有文件系统</span>
+                  <span class="ba-node violet">聊天附件缓存</span>
+                  <span class="ba-node dark">DeviceGrant / SSH</span>
+                </div>
+                <div class="ba-note">云端 body 可以工作；人的电脑资料要上传、授权目录或 SSH 化。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="change-card">
+            <div class="change-title">
+              <h3>7. CatsCompany 管身份关系，Agent 进程负责干活</h3>
+              <span>不是纯 CLI 重构</span>
+            </div>
+            <div class="before-after">
+              <div class="ba-panel before">
+                <div class="ba-label">调整前</div>
+                <div class="ba-line wrap">
+                  <span class="ba-node red">CLI .env</span><span class="ba-arrow">≈</span><span class="ba-node">bot 身份</span><span class="ba-arrow">≈</span><span class="ba-node">运行身体</span>
+                </div>
+                <div class="ba-note">谁能拿到 key，谁就能“成为”这个 bot。</div>
+              </div>
+              <div class="delta"><strong>改动</strong>CatsCompany 管事实，CLI 跑身体。</div>
+              <div class="ba-panel after">
+                <div class="ba-label">调整后</div>
+                <div class="ba-line wrap">
+                  <span class="ba-node dark">CatsCompany</span><span class="ba-arrow">管理</span><span class="ba-node blue">actor / bot / body lease / channel binding</span>
+                </div>
+                <div class="ba-line wrap">
+                  <span class="ba-node dark">CatsCo Agent</span><span class="ba-arrow">执行</span><span class="ba-node blue">skills / tools / memory / delivery</span>
+                </div>
+                <div class="ba-note">平台负责“谁是谁、谁能连谁”；CLI 负责“这个虚拟员工怎么干活”。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="demo">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">Session 前后 Demo</h2>
+            <p class="section-intro">下面不是新的抽象模型，而是同一条消息在旧逻辑和调整后逻辑里的实际形态。第一步只做 session provenance，不改 legacy session key，也不接 GauzMem。</p>
+          </div>
+          <span class="badge">跑一遍</span>
+        </div>
+
+        <div class="demo-grid">
+          <div class="demo-card">
+            <div class="demo-head">
+              <h3>Demo 1：Alice 私聊 Dev Agent</h3>
+              <span>p2p session</span>
+            </div>
+            <div class="demo-flow">
+              <div class="demo-panel input">
+                <div class="demo-title">输入消息</div>
+                <div class="demo-msg">
+                  <span class="demo-chip">topic: p2p_usr7_bot42</span>
+                  <span class="demo-chip">from: usr7</span>
+                  <span class="demo-chip">seq: 91</span>
+                </div>
+                <div class="demo-text">Alice: “帮我看一下这个 PR 的测试失败。”</div>
+              </div>
+              <div class="demo-panel before">
+                <div class="demo-title">调整前</div>
+                <div class="demo-msg">
+                  <span class="demo-chip">sessionKey = cc_user:usr7</span>
+                  <span class="demo-chip">prompt 主要看到用户文本</span>
+                  <span class="demo-chip">log 只有 session_id/session_type</span>
+                </div>
+                <pre class="demo-code">{
+  "session_id": "cc_user:usr7",
+  "session_type": "catscompany",
+  "user": { "text": "帮我看一下这个 PR 的测试失败。" }
+}</pre>
+              </div>
+              <div class="demo-panel after">
+                <div class="demo-title">调整后</div>
+                <div class="demo-msg">
+                  <span class="demo-chip">legacy key 仍是 cc_user:usr7</span>
+                  <span class="demo-chip">turn 带 SessionIdentitySnapshot</span>
+                  <span class="demo-chip">prompt / tool / log 都拿同一份身份</span>
+                </div>
+                <pre class="demo-code">{
+  "sessionId": "cc_user:usr7",
+  "channel": "catsco",
+  "actor": { "actorUserId": "usr7" },
+  "agent": { "agentId": "bot42", "bodyId": "body-mac" },
+  "topic": { "topicId": "p2p_usr7_bot42", "topicType": "p2p", "channelSeq": 91 }
+}</pre>
+                <div class="demo-text">`bodyId` 是“这个 agent 当前运行身体”的 ID；现在会随本地绑定写入 `catsco.json`，并在 bot WebSocket 连接时交给平台做 active body lease。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="demo-card">
+            <div class="demo-head">
+              <h3>Demo 2：Alice 和 Bob 在同一个群里连续补充</h3>
+              <span>group + busy queue</span>
+            </div>
+            <div class="demo-flow">
+              <div class="demo-panel input">
+                <div class="demo-title">输入消息</div>
+                <div class="demo-msg">
+                  <span class="demo-chip">topic: grp_school_ops</span>
+                  <span class="demo-chip">Alice seq: 12</span>
+                  <span class="demo-chip">Bob seq: 13</span>
+                </div>
+                <div class="demo-text">Alice: “先查一下报销规则。”<br>Bob: “同时看一下工资表模板。”</div>
+              </div>
+              <div class="demo-panel before">
+                <div class="demo-title">调整前</div>
+                <div class="demo-msg">
+                  <span class="demo-chip">两个消息都进 cc_group:grp_school_ops</span>
+                  <span class="demo-chip">队列只保留 senderId/topic/text</span>
+                  <span class="demo-chip">合并后靠文本提示区分人</span>
+                </div>
+                <pre class="demo-code">[
+  "1. usr7: 先查一下报销规则。",
+  "2. usr8: 同时看一下工资表模板。"
+]</pre>
+              </div>
+              <div class="demo-panel after">
+                <div class="demo-title">调整后</div>
+                <div class="demo-msg">
+                  <span class="demo-chip">group key 不变</span>
+                  <span class="demo-chip">队列结构里每条消息都有自己的 actor</span>
+                  <span class="demo-chip">后续可做群聊权限/审计</span>
+                </div>
+                <pre class="demo-code">[
+  { "sessionId": "cc_group:grp_school_ops", "actor": { "actorUserId": "usr7" }, "topic": { "channelSeq": 12 } },
+  { "sessionId": "cc_group:grp_school_ops", "actor": { "actorUserId": "usr8" }, "topic": { "channelSeq": 13 } }
+]</pre>
+                <div class="demo-text">当前第一步已补齐 busy queue：如果多条消息被合并进同一次模型调用，会在 pending user message 前插入 transient identity context，列出每条补充消息的 actor/topic/seq。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="demo-card">
+            <div class="demo-head">
+              <h3>Demo 3：子 agent 完成任务后回传结果</h3>
+              <span>runtime observation</span>
+            </div>
+            <div class="demo-flow">
+              <div class="demo-panel input">
+                <div class="demo-title">输入事件</div>
+                <div class="demo-msg">
+                  <span class="demo-chip">parent session: cc_user:usr7</span>
+                  <span class="demo-chip">source: subagent_result</span>
+                </div>
+                <div class="demo-text">Review 子 agent: “我检查完日志，发现失败来自缺失环境变量。”</div>
+              </div>
+              <div class="demo-panel before">
+                <div class="demo-title">调整前</div>
+                <div class="demo-msg">
+                  <span class="demo-chip">沿用原 session/topic/senderId</span>
+                  <span class="demo-chip">容易看起来像用户补充消息</span>
+                </div>
+                <pre class="demo-code">{
+  "session_id": "cc_user:usr7",
+  "user": { "text": "我检查完日志..." }
+}</pre>
+              </div>
+              <div class="demo-panel after">
+                <div class="demo-title">调整后</div>
+                <div class="demo-msg">
+                  <span class="demo-chip">actor = internal:subagent_result</span>
+                  <span class="demo-chip">runtimeObservationSource = subagent_result</span>
+                  <span class="demo-chip">不会冒充 Alice</span>
+                </div>
+                <pre class="demo-code">{
+  "sessionId": "cc_user:usr7",
+  "actor": { "actorUserId": "internal:subagent_result" },
+  "channel": "catsco",
+  "topic": { "topicId": "p2p_usr7_bot42", "topicType": "p2p" }
+}</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout">
+          <strong>模型实际看到什么：</strong>
+          对 OpenAI 兼容接口和 Anthropic 接口，它都是一条临时 `user` note，插在最后一条真实 user message 前。这样 Anthropic 不会把它提升到顶部 system prompt，模型会在最新 query 附近看到它。turn 结束后这条 transient identity 会从 durable session history 里移除，但 turn log、session state、tool context 会保留结构化对象。
+          <pre class="demo-code">[
+  { "role": "system", "content": "长期系统提示词..." },
+  { "role": "user", "content": "[transient_session_identity]\n当前对话身份上下文：\n- session: cc_user:usr7\n- channel: catsco\n- actor: Alice / usr7\n- agent: Dev Agent / bot42 / body=body-mac\n- topic: p2p / p2p_usr7_bot42\n- message_seq: 91\n处理本轮请求时，以当前 actor/session 为准；不要把不同 actor 的个人需求互相混淆。" },
+  { "role": "user", "content": "帮我看一下这个 PR 的测试失败。" }
+]</pre>
+        </div>
+      </section>
+
+      <section id="device">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">本地电脑访问不是默认能力</h2>
+            <p class="section-intro">云端虚拟员工可以像“住在你电脑里”一样处理资料，但前提是用户明确授权。更准确的说法是：用户电脑不是 agent body，而是相对 agent body 的“个人云盘/资料盘”。agent 在云端身体里思考、运行工具、沉淀 session；用户设备只通过轻量连接器提供已授权的文件和能力。</p>
+          </div>
+          <span class="badge">权限边界</span>
+        </div>
+        <div class="callout">
+          <strong>云盘视角：</strong>
+          把用户电脑变成稳定资料入口，比把完整 agent 跑在用户电脑上简单很多。本地轻量应用只需要登录、心跳、声明能力、列文件、读写已授权范围、上传/下载流、撤销授权；模型调用、复杂工具链、长期记忆、任务处理都留在 agent body。
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>来源</th>
+              <th>今天的例子</th>
+              <th>目标规则</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>agent body 自有文件系统</td>
+              <td>云 VM workspace、本地 runtime workingDirectory</td>
+              <td>常规文件工具可访问，但受 body policy 限制。</td>
+            </tr>
+            <tr>
+              <td>聊天附件缓存</td>
+              <td>CatsCo/微信附件下载到 `tmp/downloads` 或 `files/weixin`</td>
+              <td>只能按附件 provenance 读取，不能当作用户一般文件库。</td>
+            </tr>
+            <tr>
+              <td>用户授权设备路径</td>
+              <td>用户选择本地文件、授权目录、SSH 主机</td>
+              <td>必须先落到 UserDevice，再通过 DeviceGrant 工具访问，记录审计，可撤销。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="callout">
+          <strong>新的融合点：</strong>
+          ChannelBinding 只解决“微信/飞书里说话的人是谁”；DeviceRegistry 解决“这个 CatsCo actor 有哪些可授权设备”；DeviceGrant 解决“当前 agent 能在某台设备上访问什么范围”。所以微信里说“去我电脑拿文件”时，agent 应该先查 actor 的设备清单，而不是默认访问 agent body 的文件系统。
+        </div>
+
+        <div class="callout">
+          <strong>不是硬编码意图流程：</strong>
+          不应该写成“用户说去我电脑就固定调用 A/B/C”的规则。更合理的是把边界写清楚：system prompt 告诉 agent “你的 body 文件系统”和“用户设备”是两类来源；工具描述提供 `list_user_devices`、`request_device_grant`、`read_device_file` 等能力；平台和工具层只负责校验 actor、device、grant 是否匹配。语义判断交给 agent，边界执行交给工具。
+        </div>
+
+        <div class="flow-row" style="margin-top:16px">
+          <div class="flow-node panel">
+            <div class="node-k">Actor</div>
+            <div class="node-t">CatsCo user</div>
+            <div class="node-d">微信 openid / 飞书 user id 先绑定回 CatsCo actor。</div>
+          </div>
+          <div class="flow-node panel good">
+            <div class="node-k">DeviceRegistry</div>
+            <div class="node-t">UserDevice list</div>
+            <div class="node-d">列出 MacBook、办公室 Windows、SSH host、网盘等设备和在线状态。</div>
+          </div>
+          <div class="flow-node panel violet">
+            <div class="node-k">Grant</div>
+            <div class="node-t">DeviceGrant</div>
+            <div class="node-d">用户批准某台设备上的文件、目录、SSH 或桌面能力。</div>
+          </div>
+          <div class="flow-node panel">
+            <div class="node-k">Tool</div>
+            <div class="node-t">受限访问</div>
+            <div class="node-d">agent 只能通过 grant 工具访问，不能把“你的电脑”当成本机路径。</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="migration">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">迁移路线</h2>
+            <p class="section-intro">不要先重写 UI，也不要第一步就改所有 session key。当前第一条安全主线已经完成到 beta baseline：Dashboard 登录和 bot 绑定拆开，CatsCo 消息和 busy queue 都能带结构化 identity，平台也已经有 active body lease、agent roster、open-chat API、TopicContext 和 message metadata。复制同一个 bot API key 不再应该让两台设备同时回复，成员也已经能从 WebApp 找到并联系同一个虚拟员工。</p>
+          </div>
+          <span class="badge">分阶段实施</span>
+        </div>
+        <div class="roadmap">
+          <div class="phase"><div class="phase-id">Phase 0</div><div class="phase-body"><strong>冻结 legacy 行为</strong><span>记录 `cc_user:*`、`cc_group:*`、`user:*`、`group:*`，补 characterization tests。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 1 · Beta baseline done</div><div class="phase-body"><strong>Body 绑定安全</strong><span>登录、建/选 bot、绑定当前 body、启动 connector 已在 CLI 拆开；平台 WebSocket 已加 active body lease。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 2 · CLI done</div><div class="phase-body"><strong>引入 MessageEnvelope</strong><span>CatsCo runtime 已认得 agent/body/actor/channel/topic，storage 仍保留旧 key。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 3 · CLI done</div><div class="phase-body"><strong>Session metadata 双写</strong><span>SessionStore、turn log、prompt transient context、tool context 已写入结构化身份侧写；GauzMem 暂不改。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 4 · Beta baseline done</div><div class="phase-body"><strong>解决配置权威</strong><span>本地 typed config、runtime resolver、preflight-before-write、失败回滚、安全重启、device-scoped legacy setup、env-only 降级已完成；beta 阶段不做旧 `.env` 迁移。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 5</div><div class="phase-body"><strong>Agent Registry</strong><span>先一虚拟员工一进程/一 profile path，避免共享状态污染。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 6A · Done</div><div class="phase-body"><strong>Body 状态可见</strong><span>平台已提供 owner-auth body status 查询；Dashboard 已显示本机是否是 active body，body 冲突或账号/owner 不匹配时阻断聊天，旧平台/网络失败保持 non-blocking unknown。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 6B/6C · First slices done</div><div class="phase-body"><strong>联系人入口 + TopicContext</strong><span>平台新增 `/api/agents` 和 `/api/agents/open`，WebApp 以 AI Teammates 展示可访问 agent；打开 agent 会写入 `topic_contexts`，消息发送时由服务端基于 TopicContext 生成并持久化 `metadata.catsco_identity`。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 7</div><div class="phase-body"><strong>通道绑定</strong><span>从 CatsCo actor 出发绑定微信/飞书，再把 transport 逐步平台化。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 8</div><div class="phase-body"><strong>DeviceRegistry + DeviceGrant</strong><span>账号设备清单、在线状态、能力声明、上传/附件缓存、本地路径和 SSH 授权；用户设备像 agent body 的个人云盘，轻量连接器只管资料存取和 grant，不跑完整 agent。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 9</div><div class="phase-body"><strong>Actor-aware GauzMem</strong><span>统一 agent 记忆，默认 actor/session aware，必要时可跨 actor relevance。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 10</div><div class="phase-body"><strong>多虚拟员工协作</strong><span>agent roster、handoff、review agent、跨 agent 审计。</span></div></div>
+        </div>
+      </section>
+
+      <section id="reply-policy">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">单独需求：群聊寻址与回复策略</h2>
+            <p class="section-intro">Session identity 第一阶段已经完成；Reply Policy 先只作为独立需求记录，不进入当前代码路径。Session identity 解决“谁说的”；Reply Policy 以后再解决“这条消息是否该启动 agent，以及是否该公开回复”。</p>
+          </div>
+          <span class="badge">Backlog</span>
+        </div>
+
+        <div class="callout">
+          <strong>当前进度（2026-05-27）：</strong>
+          已完成前置依赖：CatsCo 每轮消息带 SessionIdentitySnapshot，prompt/tool/log 可见；busy queue 合并消息会保留每条 actor/topic/seq；Dashboard 登录和 bot 绑定已拆成显式步骤；平台消息现在也有服务端 TopicContext 和 metadata provenance。Reply Policy 代码实现仍暂缓，避免现阶段引入 hard-coded 群聊寻址规则。这个需求保留为后续 agent-to-agent / 群聊协作的单独 backlog。
+        </div>
+
+        <div class="two-col">
+          <div class="panel warn">
+            <h3>当前问题</h3>
+            <p>群聊里任何消息都可能被当成 query。agent-to-agent 群聊还可能互相触发回复循环。只靠模型自己决定“不回复”不稳定，因为 ReAct agent 往往用最终 message content 结束循环，而部分模型也不一定稳定使用 `send_text`。</p>
+          </div>
+          <div class="panel good">
+            <h3>目标边界</h3>
+            <p>在进入 `AgentSession.handleMessage()` 前先做 addressing/reply gate。无关消息不启动完整 agent loop；相关但无需公开回复的消息进入 observation；只有明确需要回复时才允许 final assistant content 或 `send_text` 发出去。</p>
+          </div>
+        </div>
+
+        <div class="callout">
+          <strong>实现原则：</strong>
+          这里不应该变成复杂关键词路由。未来如果要做，也应优先依赖平台 metadata 里的 mention、reply_to、assigned_agent、sender_kind 等硬信号；文本 @ 名称最多作为兼容 fallback。复杂语义可以交给轻量 LLM judge，但不要在当前阶段为了一个未来场景扩大主线改动。
+        </div>
+
+        <table style="margin-top:16px">
+          <thead>
+            <tr>
+              <th>场景</th>
+              <th>默认决策</th>
+              <th>触发完整处理的条件</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>私聊</td>
+              <td>handle_and_reply</td>
+              <td>默认认为用户就是在找这个 agent。</td>
+            </tr>
+            <tr>
+              <td>群聊普通消息</td>
+              <td>ignore 或 observe</td>
+              <td>@ 当前 agent、reply_to 当前 agent、显式分配任务、命中 watch topic。</td>
+            </tr>
+            <tr>
+              <td>其他 agent 发言</td>
+              <td>observe</td>
+              <td>明确 handoff、任务链路指定当前 agent 接手、或者直接提问当前 agent。</td>
+            </tr>
+            <tr>
+              <td>相关但无需公开回复</td>
+              <td>handle_silent</td>
+              <td>作为 runtime observation 进入 session，但不允许默认 final message 外发。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="code-block">type ReplyPolicyDecision =
+  | { action: "ignore"; reason: string }
+  | { action: "observe"; reason: string; recordPassive?: boolean }
+  | { action: "handle"; replyMode: "silent" | "may_reply" | "must_reply"; reason: string };</div>
+
+        <table style="margin-top:16px">
+          <thead>
+            <tr>
+              <th>下一步任务</th>
+              <th>说明</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>AddressingContext</td>
+              <td>从 message metadata 中提取 mentions、reply_to、senderKind、activeTaskIds、watch topic。</td>
+              <td>暂缓：需求已记录，当前代码不实现。</td>
+            </tr>
+            <tr>
+              <td>Reply gate</td>
+              <td>在 CatsCo/微信/飞书 adapter 调 `AgentSession.handleMessage()` 前判断 ignore / observe / handle。</td>
+              <td>暂缓：等 agent-to-agent / 群聊协作进入主线再做。</td>
+            </tr>
+            <tr>
+              <td>Reply mode enforcement</td>
+              <td>`silent` 不允许默认 final content 外发；`may_reply/must_reply` 才能公开回复或调用 `send_text`。</td>
+              <td>待做：不在当前阶段落代码。</td>
+            </tr>
+            <tr>
+              <td>Loop tests</td>
+              <td>覆盖群聊普通消息、@ 当前 agent、其他 agent 发言、handoff、无关消息不启动完整 loop。</td>
+              <td>待做：随未来 gate 一起补。</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="key-management">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">配置与密钥管理路线</h2>
+            <p class="section-intro">不要把 `.xiaoba/catsco.json` 变成所有 secret 的大杂烩。它当前只负责“这个本地进程是谁、绑定哪个 CatsCo bot、bodyId 是什么”。模型凭证、飞书、微信仍在旧路径里，后续分阶段迁。</p>
+          </div>
+          <span class="badge">Key Tracking</span>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>配置/密钥</th>
+              <th>当前存放</th>
+              <th>当前含义</th>
+              <th>未来方向</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>CatsCo 登录 token</td>
+              <td>`.xiaoba/catsco.json`，并镜像到 `.env`</td>
+              <td>说明当前 body console 登录的是哪个 CatsCo 用户。</td>
+              <td>继续由 CatsCo 本地配置管理，后续可换成更安全的本地 secret storage。</td>
+            </tr>
+            <tr>
+              <td>CatsCo bot API key</td>
+              <td>`.xiaoba/catsco.json`，并镜像到 `.env`</td>
+              <td>说明这个进程要连接哪个 CatsCo bot；必须配合 bodyId 和平台 lease 才可信。</td>
+              <td>后续可替换成 scoped body token，避免长期暴露 bot API key。</td>
+            </tr>
+            <tr>
+              <td>deviceId / bodyId / installationId</td>
+              <td>`.xiaoba/catsco.json`，并镜像到 `.env`</td>
+              <td>说明这台机器是哪个虚拟员工身体。</td>
+              <td>进入平台 AgentBody 状态，可被用户和管理员查看。</td>
+            </tr>
+            <tr>
+              <td>自定义大模型 key</td>
+              <td>当前仍是 `.env` 的 `GAUZ_LLM_*`</td>
+              <td>托管模型未接入前，本地 agent 仍靠用户手动配置模型。</td>
+              <td>仅在用户选择“自定义模型”时保存；不要混进 CatsCo 身份配置。</td>
+            </tr>
+            <tr>
+              <td>CatsCo 托管模型额度</td>
+              <td>当前 XiaoBa 侧尚未接完</td>
+              <td>当前 readiness 仍提示“托管模型后端尚未接入”。</td>
+              <td>本地只拿 CatsCo/body token 请求平台；平台按账号额度和策略调用模型。</td>
+            </tr>
+            <tr>
+              <td>Feishu App ID / Secret</td>
+              <td>当前仍是 `.env` 或旧 `~/.xiaoba/config.json`</td>
+              <td>飞书 connector 独立读取，不属于 CatsCo agent channel binding。</td>
+              <td>变成 CatsCo agent 的一个 channel；secret 存平台或 body-local secret store。</td>
+            </tr>
+            <tr>
+              <td>Weixin Token</td>
+              <td>当前仍是 `.env` 的 `WEIXIN_TOKEN`</td>
+              <td>微信 connector 独立读取。</td>
+              <td>变成 CatsCo agent 的一个 channel；WeChat openid 绑定回 CatsCo actor。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="roadmap" style="margin-top:16px">
+          <div class="phase"><div class="phase-id">现在阶段</div><div class="phase-body"><strong>身份归 CatsCo config，旧 secret 先留原处</strong><span>`catsco.json` 只管 CatsCo 登录、bot 绑定、bodyId；`.env` 继续承载模型 key、Feishu、Weixin 等旧配置。不要为 beta 迁移旧 key 制造额外复杂度。</span></div></div>
+          <div class="phase"><div class="phase-id">下一阶段</div><div class="phase-body"><strong>模型来源重构</strong><span>如果选择 CatsCo 托管模型，本地不需要第三方大模型 API key；如果选择自定义模型，才在本地保存用户自己的模型地址、模型名和 key。</span></div></div>
+          <div class="phase"><div class="phase-id">再下一阶段</div><div class="phase-body"><strong>通道绑定重构</strong><span>Feishu / Weixin 不再只是本地 token，而是 CatsCo agent 的 channel；外部 user id / openid 绑定回 CatsCo actor，消息进入同一套身份和 session 体系。</span></div></div>
+        </div>
+
+        <div class="callout">
+          <strong>给 reviewer 的判断标准：</strong>
+          `catsco.json` 是“这个进程是谁”的配置，不是“所有 secret 的保险箱”。旧 `.env` 不能马上全废，因为模型、飞书、微信现在还在用它；等托管模型和通道绑定接完，`.env` 才能逐步降级成高级兼容入口。
+        </div>
+      </section>
+
+      <section id="risks">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">最容易返工的风险</h2>
+            <p class="section-intro">这些点如果处理顺序错了，会导致看似完成了 UI，底层仍然是单人 assistant 模型。</p>
+          </div>
+          <span class="badge">风险控制</span>
+        </div>
+        <div class="risk-grid">
+          <div class="risk"><strong>不能贸然先改 session key</strong><span>restore、logs、subagent callbacks、busy queue 都依赖旧 key。先 identity sidecar，再双写。</span></div>
+          <div class="risk"><strong>不能让 legacy setup 回退成隐藏绑定</strong><span>Dashboard 已经走显式 create/select/bind；`/api/cats/setup` 只应作为受限兼容入口，后续可以返回 409/410 引导旧调用方迁到显式绑定。</span></div>
+          <div class="risk"><strong>平台不能缺席</strong><span>第一版 active body lease 已完成，但目前仍是 WebSocket 单服务内存锁；多实例部署时还要升级成 Redis/DB 共享 lease，并把 body 状态展示给用户。</span></div>
+          <div class="risk"><strong>微信/飞书不是平行身份</strong><span>外部 channel id 必须绑定回 CatsCo actor。当前 WeChat connector 还持有 `get_updates_buf` 和 `context_token`，身份绑定要先做，transport 所有权后迁。</span></div>
+          <div class="risk"><strong>安全不要喧宾夺主</strong><span>读写工具、shell、send_file 的严格权限可以后置。现在先把 actor/grant/body 字段放进上下文，留下未来控制口。</span></div>
+          <div class="risk"><strong>多虚拟员工不宜先共进程</strong><span>AIService、ToolManager、SkillManager、env、profile 仍可能共享。初期一 agent body 一进程更稳。</span></div>
+          <div class="risk"><strong>GauzMem 后接，不和第一步绑死</strong><span>当前先把 session/turn provenance 做清楚；图记忆以后从这份结构化来源信息里取 actor/session awareness。</span></div>
+        </div>
+      </section>
+
+      <section id="next">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">当前进度与下一阶段</h2>
+            <p class="section-intro">当前阶段已经从“防止同一个虚拟员工被两台设备同时冒充”推进到“成员能在 CatsCo WebApp 找到同一个虚拟员工，并让每条消息带平台身份上下文”。现在完成的是 beta 关系模型，不是最终组织权限系统。</p>
+          </div>
+          <span class="badge">Phase 6C Slice Done</span>
+        </div>
+        <div class="two-col">
+          <div class="panel good">
+            <h3>已完成</h3>
+            <p>Dashboard 登录和 bot 绑定拆开；本地写入 device/body/install id；CatsCo turn、tool context、turn log、runtime state、busy queue 都带结构化 identity；新增 `.xiaoba/catsco.json` 作为 CatsCo 本地 typed config；`resolveCatsCoRuntimeConfig()` 已成为 Dashboard status、readiness/preflight、ServiceManager 启动、settings、`catscompany` 命令的共同解析入口；bind/setup/switch 会先用 proposed bot credentials 做 preflight，再写本地配置，connector 启动失败会恢复旧 config、旧 `.env` 和进程内 env；local currentBot 记录 `boundByUserUid`、`boundAt` 和 `bindingSource`；env-only bot 不代表 `bodyConfigured/chatReady`；CatsCompany 平台已加入 bot body lease，bot WebSocket 必须带 bodyId，同一 bot 不允许两个不同 body 同时在线；平台现在也能让 owner 查询 active body 状态，Dashboard 会显示 online/offline/conflict/auth_error/unknown。conflict 和 auth_error 会阻断聊天并引导重新选择 agent，旧平台或网络失败仍作为 non-blocking unknown。CatsCo WebApp 也有了第一版 `/api/agents` roster 和 `/api/agents/open`，把 owned bots、accepted bot friends、enabled public bots 作为 AI Teammates 展示，并由平台准备 P2P topic；打开 agent 时会保存 `topic_contexts`，里面记录 actor/agent/topic/permission 快照；消息发送时服务端会优先基于 TopicContext 覆盖生成 `metadata.catsco_identity`，MySQL/Postgres 会保存 metadata，历史消息会返回 metadata，XiaoBa connector 会把这份身份映射进现有 SessionIdentitySnapshot。</p>
+          </div>
+          <div class="panel">
+            <h3>下一步</h3>
+            <p>不再优先做旧 `.env` 迁移。Body 状态可见、WebApp agent roster、open-chat API、TopicContext、消息身份 metadata 端到端第一版已经完成。下一步应该把 beta roster 升级成真正的组织联系人模型：org-scoped roster、成员邀请/access state 和更正式的权限快照。之后再做微信/飞书绑定、用户设备清单和授权。</p>
+          </div>
+        </div>
+        <div class="callout">
+          <strong>路线调整：</strong>
+          平台 lease、body status、WebApp AI Teammates roster、open-chat API、TopicContext 和消息身份 metadata 都已经完成第一版。当前 lease 是单 CatsCompany server 进程内存态，当前 roster 也只是 owned bots + accepted bot friends + enabled public bots，不是最终组织权限系统；但 beta 已经从“防止重复身体”推进到“成员能自然找到、打开并带身份上下文联系同一个虚拟员工”。
+        </div>
+        <table style="margin-top:16px">
+          <thead>
+            <tr>
+              <th>模块</th>
+              <th>当前状态</th>
+              <th>下一步 / 暂不做</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Body 状态</td>
+              <td>已完成第一版：平台能告诉 owner 这个虚拟员工现在是否在线、在哪个身体上跑、有没有被另一个身体占用，或当前账号是否不该管理这个 agent。</td>
+              <td>先不做完整分布式 lease，除非平台已经多实例部署；旧平台/网络拿不到状态时不阻断 beta 使用。</td>
+            </tr>
+            <tr>
+              <td>组织联系人入口</td>
+              <td>已完成第一版：成员登录 CatsCo 后能在 AI Teammates 里看到自己可访问的 agent，点击后由平台确认权限、准备 P2P topic，并写入 TopicContext。</td>
+              <td>当前先复用 owned bot、accepted bot friend 和 enabled public bot；真正 org roster、成员邀请、角色权限还没做。</td>
+            </tr>
+            <tr>
+              <td>TopicContext + 消息身份</td>
+              <td>已完成第一版：`topic_contexts` 保存 actor/agent/topic/permission 快照；消息发送时服务端优先基于 TopicContext 生成 `metadata.catsco_identity`，并持久化到历史消息。</td>
+              <td>下一步把 permissions 从 JSON 快照升级成更正式的 org role / agent access / channel binding 权限模型；先不迁移 GauzMem 图记忆。</td>
+            </tr>
+            <tr>
+              <td>验证真实协作场景</td>
+              <td>测试两个人同时找同一个 agent、同一用户开多个任务、重复 body 被拒绝并能看懂原因。</td>
+              <td>先不做复杂 Reply Policy 和 agent-to-agent 群聊。</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <div class="footer">
+        生成自 docs/virtual-employee-architecture-transition.md。静态 HTML，无外部资源依赖。
+      </div>
+    </main>
+  </div>
+</body>
+</html>

@@ -9,7 +9,9 @@ import { SubAgentManager } from '../core/sub-agent-manager';
 import type { SubAgentInfo } from '../core/sub-agent-session';
 import { ChannelCallbacks } from '../types/tool';
 import { ContentBlock } from '../types';
+import type { SessionIdentitySnapshot } from '../types/session-identity';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
+import type { PendingUserInputEnvelope } from '../core/conversation-runner';
 import { randomUUID } from 'crypto';
 import { ConfigManager } from '../utils/config';
 import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
@@ -43,6 +45,7 @@ interface QueuedMessage {
   seq: number;
   receivedAt: number;
   source?: 'user' | 'subagent_feedback';
+  sessionIdentity?: SessionIdentitySnapshot;
   runtimeFeedback?: RuntimeFeedbackInput[];
 }
 
@@ -103,6 +106,8 @@ export class CatsCompanyBot {
     this.bot = new CatsClient({
       serverUrl: config.serverUrl,
       apiKey: config.apiKey,
+      bodyId: config.bodyId,
+      installationId: config.installationId,
       httpBaseUrl: config.httpBaseUrl,
     });
 
@@ -203,6 +208,156 @@ export class CatsCompanyBot {
     return channel;
   }
 
+  private buildSessionKey(msg: ParsedCatsMessage): string {
+    return msg.chatType === 'group'
+      ? `cc_group:${msg.topic}`
+      : `cc_user:${msg.senderId}`;
+  }
+
+  private buildSessionIdentity(
+    msg: ParsedCatsMessage,
+    sessionKey: string,
+    options: { internalSource?: string } = {},
+  ): SessionIdentitySnapshot {
+    const metadata = msg.metadata || {};
+    const catscoIdentity = this.recordValue(metadata, ['catsco_identity']);
+    const identityRecord = this.asRecord(catscoIdentity);
+    const actorRecord = this.asRecord(this.recordValue(identityRecord, ['actor']));
+    const agentRecord = this.asRecord(this.recordValue(identityRecord, ['agent']));
+    const topicRecord = this.asRecord(this.recordValue(identityRecord, ['topic']));
+    const permissionsRecord = this.asRecord(this.recordValue(identityRecord, ['permissions']));
+    const displayName = this.firstMetadataString(metadata, [
+      'actorDisplayName',
+      'sender_display_name',
+      'senderDisplayName',
+      'sender_name',
+      'from_name',
+    ]) || this.firstRecordString(actorRecord, ['display_name', 'displayName', 'name', 'username']);
+    const botDisplayName = this.runtimeProfile?.displayName
+      || process.env.CURRENT_AGENT_DISPLAY_NAME
+      || this.firstRecordString(agentRecord, ['display_name', 'displayName', 'name', 'username'])
+      || undefined;
+    const agentId = this.normalizeCatscoUserId(this.recordValue(agentRecord, ['agent_id', 'agentId', 'user_id', 'userId']))
+      || this.botUid
+      || process.env.CATSCO_BOT_UID
+      || process.env.CATSCOMPANY_BOT_UID
+      || undefined;
+    const bodyId = this.firstRecordString(agentRecord, ['body_id', 'bodyId'])
+      || process.env.CATSCO_BODY_ID
+      || process.env.CATSCO_INSTALLATION_ID
+      || process.env.CATSCO_DEVICE_ID
+      || process.env.XIAOBA_DEVICE_ID
+      || undefined;
+    const actorUserId = this.normalizeCatscoUserId(this.recordValue(actorRecord, ['user_id', 'userId', 'actorUserId']))
+      || msg.senderId;
+    const externalUserId = this.normalizeCatscoUserId(this.recordValue(actorRecord, ['external_user_id', 'externalUserId']))
+      || msg.senderId;
+    const topicType = this.firstRecordString(topicRecord, ['type', 'topic_type', 'topicType']) || msg.chatType;
+    const topicId = this.firstRecordString(topicRecord, ['topic_id', 'topicId']) || msg.topic;
+    const channelSeq = this.firstRecordNumber(topicRecord, ['channel_seq', 'channelSeq', 'seq']);
+    const externalMessageId = msg.seq > 0
+      ? `${msg.topic}:${msg.seq}`
+      : undefined;
+
+    return {
+      schemaVersion: 1,
+      sessionId: sessionKey,
+      legacySessionKey: sessionKey,
+      sessionType: 'catscompany',
+      channel: 'catsco',
+      actor: options.internalSource
+        ? {
+          actorUserId: `internal:${options.internalSource}`,
+          actorDisplayName: options.internalSource,
+        }
+        : {
+          actorUserId,
+          actorDisplayName: displayName,
+          externalUserId,
+        },
+      agent: {
+        agentId,
+        agentDisplayName: botDisplayName,
+        bodyId,
+        orgId: this.firstRecordString(agentRecord, ['org_id', 'orgId']) || process.env.CATSCO_ORG_ID || undefined,
+      },
+      topic: {
+        topicId,
+        topicType,
+        externalMessageId,
+        ...((channelSeq ?? msg.seq) > 0 && { channelSeq: channelSeq ?? msg.seq }),
+      },
+      ...(permissionsRecord && { permissionsSnapshot: permissionsRecord }),
+      receivedAt: new Date().toISOString(),
+    };
+  }
+
+  private firstMetadataString(metadata: Record<string, unknown>, keys: string[]): string | undefined {
+    for (const key of keys) {
+      const value = metadata[key];
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+    return undefined;
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    return value as Record<string, unknown>;
+  }
+
+  private recordValue(record: Record<string, unknown> | undefined, keys: string[]): unknown {
+    if (!record) return undefined;
+    for (const key of keys) {
+      if (record[key] !== undefined && record[key] !== null) {
+        return record[key];
+      }
+    }
+    return undefined;
+  }
+
+  private firstRecordString(record: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+    const value = this.recordValue(record, keys);
+    if (value === undefined || value === null) return undefined;
+    const text = String(value).trim();
+    return text || undefined;
+  }
+
+  private firstRecordNumber(record: Record<string, unknown> | undefined, keys: string[]): number | undefined {
+    const value = this.recordValue(record, keys);
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return undefined;
+  }
+
+  private normalizeCatscoUserId(value: unknown): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    const text = String(value).trim();
+    if (!text) return undefined;
+    if (/^\d+$/.test(text)) return `usr${text}`;
+    return text;
+  }
+
+  private buildInternalSessionIdentity(
+    sessionKey: string,
+    topic: string,
+    senderId: string,
+    internalSource: string,
+  ): SessionIdentitySnapshot {
+    return this.buildSessionIdentity({
+      topic,
+      chatType: sessionKey.startsWith('cc_group:') ? 'group' : 'p2p',
+      senderId,
+      seq: 0,
+      text: '',
+      rawContent: null,
+    }, sessionKey, { internalSource });
+  }
+
   // ─── 消息处理 ─────────────────────────────────────────
 
   /**
@@ -220,9 +375,7 @@ export class CatsCompanyBot {
     // 过滤 bot 自己发出的消息，防止循环
     if (this.botUid && msg.senderId === this.botUid) return;
 
-    const key = msg.chatType === 'group'
-      ? `cc_group:${msg.topic}`
-      : `cc_user:${msg.senderId}`;
+    const key = this.buildSessionKey(msg);
 
     // ── 拦截：如果当前 session 正在等待回答，按 sender 精确匹配 ──
     const pendingId = this.pendingAnswerBySession.get(key);
@@ -249,6 +402,7 @@ export class CatsCompanyBot {
   }
 
   private async processParsedMessage(msg: ParsedCatsMessage, key: string): Promise<void> {
+    const sessionIdentity = this.buildSessionIdentity(msg, key);
     const session = this.sessionManager.getOrCreate(key);
 
     // 注册持久化回调到 SubAgentManager
@@ -263,9 +417,10 @@ export class CatsCompanyBot {
     } as any);
 
     // 处理斜杠命令
-    if (typeof msg.text === 'string' && msg.text.startsWith('/')) {
-      const parts = msg.text.slice(1).split(/\s+/);
-      const command = parts[0];
+    const commandText = typeof msg.text === 'string' ? msg.text.trimStart() : '';
+    if (commandText.startsWith('/')) {
+      const parts = commandText.slice(1).trim().split(/\s+/).filter(Boolean);
+      const command = parts[0] || '';
       const args = parts.slice(1);
 
       const result = await session.handleCommand(command, args);
@@ -332,6 +487,7 @@ export class CatsCompanyBot {
         seq: msg.seq,
         receivedAt: Date.now(),
         source: 'user',
+        sessionIdentity,
         runtimeFeedback,
       });
       this.messageQueue.set(key, queue);
@@ -351,6 +507,7 @@ export class CatsCompanyBot {
     try {
       const result = await session.handleMessage(userMessage, {
         channel,
+        sessionIdentity,
         runtimeFeedback,
         pendingUserInputProvider: () => this.consumeQueuedUserInput(key),
         callbacks: {
@@ -586,6 +743,7 @@ export class CatsCompanyBot {
       seq: ctx.seq ?? 0,
       text: mergedText || (files.length > 0 ? files.map(item => `[${item.type === 'image' ? '图片' : '文件'}] ${item.fileName}`).join('\n') : ''),
       rawContent: ctx.content,
+      metadata: ctx.metadata,
       file: files[0],
       files,
     };
@@ -601,9 +759,10 @@ export class CatsCompanyBot {
     text: string,
   ): Promise<void> {
     const session = this.sessionManager.getOrCreate(sessionKey);
+    const sessionIdentity = this.buildInternalSessionIdentity(sessionKey, topic, senderId, 'subagent_result');
 
     if (session.isBusy()) {
-      this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text);
+      this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, sessionIdentity);
       Logger.info(`[${sessionKey}] 主会话忙，子智能体反馈已入队`);
       return;
     }
@@ -617,9 +776,10 @@ export class CatsCompanyBot {
       const result = await session.handleRuntimeObservation(text, {
         channel,
         source: 'subagent_result',
+        sessionIdentity,
       });
       if (result.text === BUSY_MESSAGE) {
-        this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text);
+        this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, sessionIdentity);
         Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
         return;
       }
@@ -636,7 +796,13 @@ export class CatsCompanyBot {
     }
   }
 
-  private enqueueSubAgentFeedback(sessionKey: string, topic: string, senderId: string, text: string): void {
+  private enqueueSubAgentFeedback(
+    sessionKey: string,
+    topic: string,
+    senderId: string,
+    text: string,
+    sessionIdentity?: SessionIdentitySnapshot,
+  ): void {
     const queue = this.messageQueue.get(sessionKey) ?? [];
     queue.push({
       userMessage: text,
@@ -645,6 +811,7 @@ export class CatsCompanyBot {
       seq: 0,
       receivedAt: Date.now(),
       source: 'subagent_feedback',
+      sessionIdentity,
     });
     this.messageQueue.set(sessionKey, queue);
   }
@@ -772,9 +939,11 @@ export class CatsCompanyBot {
         ? await session.handleRuntimeObservation(msg.userMessage as string, {
           channel,
           source: 'subagent_result',
+          sessionIdentity: msg.sessionIdentity,
         })
         : await session.handleMessage(msg.userMessage, {
           channel,
+          sessionIdentity: msg.sessionIdentity,
           runtimeFeedback: msg.runtimeFeedback,
           pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey),
         });
@@ -799,7 +968,7 @@ export class CatsCompanyBot {
     await this.drainMessageQueue(sessionKey);
   }
 
-  private consumeQueuedUserInput(sessionKey: string): string | ContentBlock[] | null {
+  private consumeQueuedUserInput(sessionKey: string): PendingUserInputEnvelope | null {
     const queue = this.messageQueue.get(sessionKey);
     if (!queue || queue.length === 0) return null;
 
@@ -818,7 +987,51 @@ export class CatsCompanyBot {
     });
 
     Logger.info(`[${sessionKey}] 合并 ${messages.length} 条处理期间新到的用户消息`);
-    return this.mergeQueuedMessages(messages);
+    return {
+      content: this.mergeQueuedMessages(messages),
+      ...(messages.length === 1 && messages[0].sessionIdentity
+        ? { sessionIdentity: messages[0].sessionIdentity }
+        : { transientContext: this.formatQueuedMessagesIdentityContext(messages) }),
+    };
+  }
+
+  private formatQueuedMessagesIdentityContext(messages: QueuedMessage[]): string {
+    const lines = [
+      '[transient_session_identity]',
+      `queued_message_count: ${messages.length}`,
+      'These messages arrived while the agent was busy. Treat each listed actor/topic as the source of the matching queued message.',
+    ];
+
+    for (const [index, item] of messages.entries()) {
+      const identity = item.sessionIdentity;
+      if (!identity) {
+        lines.push(`- message ${index + 1}: actor=${item.senderId}; topic=${item.topic}; seq=${item.seq || 'unknown'}`);
+        continue;
+      }
+      const actorIdentity = identity.actor || {};
+      const topicIdentity = identity.topic || {};
+      const agentIdentity = identity.agent || {};
+      const actor = [
+        actorIdentity.actorDisplayName,
+        actorIdentity.actorUserId,
+        actorIdentity.externalUserId && actorIdentity.externalUserId !== actorIdentity.actorUserId
+          ? `external=${actorIdentity.externalUserId}`
+          : '',
+      ].filter(Boolean).join(' / ');
+      const topic = [
+        topicIdentity.topicType,
+        topicIdentity.topicId,
+        topicIdentity.channelSeq ? `seq=${topicIdentity.channelSeq}` : '',
+      ].filter(Boolean).join(' / ');
+      const agent = [
+        agentIdentity.agentDisplayName,
+        agentIdentity.agentId,
+        agentIdentity.bodyId ? `body=${agentIdentity.bodyId}` : '',
+      ].filter(Boolean).join(' / ');
+      lines.push(`- message ${index + 1}: actor=${actor}; channel=${identity.channel}; topic=${topic}; agent=${agent}`);
+    }
+
+    return lines.join('\n');
   }
 
   private mergeQueuedMessages(messages: QueuedMessage[]): string | ContentBlock[] {

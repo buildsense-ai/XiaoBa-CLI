@@ -1,0 +1,1346 @@
+{
+  "version": "2026-05-22.v1",
+  "hard": [
+    {
+      "id": "HC-0001",
+      "type": "no_time_overlap",
+      "severity": "hard",
+      "scope": {
+        "entity": "teacher"
+      },
+      "params": {},
+      "description_zh": "同一教师同一时间只能上一节课"
+    },
+    {
+      "id": "HC-0002",
+      "type": "no_time_overlap",
+      "severity": "hard",
+      "scope": {
+        "entity": "class"
+      },
+      "params": {},
+      "description_zh": "同一班级同一时间只能上一节课"
+    },
+    {
+      "id": "HC-0003",
+      "type": "no_time_overlap",
+      "severity": "hard",
+      "scope": {
+        "entity": "room"
+      },
+      "params": {},
+      "description_zh": "同一教室或场地同一时间只能被一个班使用"
+    },
+    {
+      "id": "HC-0004",
+      "type": "teacher_no_cross_campus",
+      "severity": "hard",
+      "scope": {
+        "entity": "teacher"
+      },
+      "params": {},
+      "description_zh": "教师排课不得跨校区"
+    },
+    {
+      "id": "HC-0005",
+      "type": "weekly_periods_match_curriculum",
+      "severity": "hard",
+      "scope": {
+        "entity": "class_subject"
+      },
+      "params": {},
+      "description_zh": "每个班每门课程周课时必须满足课程计划"
+    },
+    {
+      "id": "HC-0006",
+      "type": "respect_grade_day_profile",
+      "severity": "hard",
+      "scope": {
+        "entity": "class"
+      },
+      "params": {
+        "profiles": [
+          "primary_lower_30",
+          "primary_upper_35",
+          "junior_40"
+        ]
+      },
+      "description_zh": "各年级只能使用对应日课时模板"
+    },
+    {
+      "id": "HC-0007",
+      "type": "respect_room_compatibility",
+      "severity": "hard",
+      "scope": {
+        "entity": "room"
+      },
+      "params": {},
+      "description_zh": "需要专用场地的课程必须排入兼容教室或场地"
+    },
+    {
+      "id": "HC-0008",
+      "type": "fixed_flag_ceremony",
+      "severity": "hard",
+      "scope": {
+        "entity": "school"
+      },
+      "params": {
+        "subject_id": "flag_ceremony",
+        "day": "mon",
+        "period": "p1",
+        "applies_to_class_ids": [
+          "P1-C01",
+          "P1-C02",
+          "P1-C03",
+          "P1-C04",
+          "P1-C05",
+          "P1-C06",
+          "P2-C01",
+          "P2-C02",
+          "P2-C03",
+          "P2-C04",
+          "P2-C05",
+          "P2-C06",
+          "P3-C01",
+          "P3-C02",
+          "P3-C03",
+          "P3-C04",
+          "P3-C05",
+          "P3-C06",
+          "P4-C01",
+          "P4-C02",
+          "P4-C03",
+          "P4-C04",
+          "P4-C05",
+          "P4-C06",
+          "P5-C01",
+          "P5-C02",
+          "P5-C03",
+          "P5-C04",
+          "P5-C05",
+          "P5-C06",
+          "P6-C01",
+          "P6-C02",
+          "P6-C03",
+          "P6-C04",
+          "P6-C05",
+          "P6-C06",
+          "J1-C01",
+          "J1-C02",
+          "J1-C03",
+          "J1-C04",
+          "J1-C05",
+          "J1-C06"
+        ]
+      },
+      "description_zh": "全校周一第1节固定升旗/晨会"
+    },
+    {
+      "id": "HC-0016",
+      "type": "curriculum_forbidden_weekdays",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P1",
+        "subject_id": "english"
+      },
+      "params": {
+        "weekdays": [
+          "mon"
+        ]
+      },
+      "description_zh": "低段周一不排英语，避免开周负担过重"
+    },
+    {
+      "id": "HC-0019",
+      "type": "curriculum_fixed_slot",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P1",
+        "subject_id": "class_meeting"
+      },
+      "params": {
+        "day": "fri",
+        "period": "p5"
+      },
+      "description_zh": "低段班会固定周五第5节"
+    },
+    {
+      "id": "HC-0022",
+      "type": "curriculum_forbidden_weekdays",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P2",
+        "subject_id": "english"
+      },
+      "params": {
+        "weekdays": [
+          "mon"
+        ]
+      },
+      "description_zh": "低段周一不排英语，避免开周负担过重"
+    },
+    {
+      "id": "HC-0025",
+      "type": "curriculum_fixed_slot",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P2",
+        "subject_id": "class_meeting"
+      },
+      "params": {
+        "day": "fri",
+        "period": "p5"
+      },
+      "description_zh": "低段班会固定周五第5节"
+    },
+    {
+      "id": "HC-0029",
+      "type": "curriculum_forbidden_weekdays",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P3",
+        "subject_id": "science"
+      },
+      "params": {
+        "weekdays": [
+          "fri"
+        ]
+      },
+      "description_zh": "三四年级科学周五不排，留给校本活动与实验室维护"
+    },
+    {
+      "id": "HC-0032",
+      "type": "curriculum_forbidden_weekdays",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P3",
+        "subject_id": "it"
+      },
+      "params": {
+        "weekdays": [
+          "wed"
+        ]
+      },
+      "description_zh": "周三机房统一维护，不排信息科技"
+    },
+    {
+      "id": "HC-0033",
+      "type": "curriculum_fixed_slot",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P3",
+        "subject_id": "class_meeting"
+      },
+      "params": {
+        "day": "fri",
+        "period": "p6"
+      },
+      "description_zh": "三至六年级班会固定周五第6节"
+    },
+    {
+      "id": "HC-0034",
+      "type": "curriculum_min_gap_days",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P3",
+        "subject_id": "reading"
+      },
+      "params": {
+        "min_gap_days": 1
+      },
+      "description_zh": "两节阅读课至少隔一天"
+    },
+    {
+      "id": "HC-0035",
+      "type": "required_consecutive_periods",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P3",
+        "subject_id": "comprehensive_practice"
+      },
+      "params": {
+        "mode": "required",
+        "session_count": 1,
+        "length": 2
+      },
+      "description_zh": "P3 综合实践需要连堂"
+    },
+    {
+      "id": "HC-0039",
+      "type": "curriculum_forbidden_weekdays",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P4",
+        "subject_id": "science"
+      },
+      "params": {
+        "weekdays": [
+          "fri"
+        ]
+      },
+      "description_zh": "三四年级科学周五不排，留给校本活动与实验室维护"
+    },
+    {
+      "id": "HC-0042",
+      "type": "curriculum_forbidden_weekdays",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P4",
+        "subject_id": "it"
+      },
+      "params": {
+        "weekdays": [
+          "wed"
+        ]
+      },
+      "description_zh": "周三机房统一维护，不排信息科技"
+    },
+    {
+      "id": "HC-0043",
+      "type": "curriculum_fixed_slot",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P4",
+        "subject_id": "class_meeting"
+      },
+      "params": {
+        "day": "fri",
+        "period": "p6"
+      },
+      "description_zh": "三至六年级班会固定周五第6节"
+    },
+    {
+      "id": "HC-0044",
+      "type": "curriculum_min_gap_days",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P4",
+        "subject_id": "reading"
+      },
+      "params": {
+        "min_gap_days": 1
+      },
+      "description_zh": "两节阅读课至少隔一天"
+    },
+    {
+      "id": "HC-0045",
+      "type": "required_consecutive_periods",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P4",
+        "subject_id": "comprehensive_practice"
+      },
+      "params": {
+        "mode": "required",
+        "session_count": 1,
+        "length": 2
+      },
+      "description_zh": "P4 综合实践需要连堂"
+    },
+    {
+      "id": "HC-0049",
+      "type": "required_consecutive_periods",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P5",
+        "subject_id": "science"
+      },
+      "params": {
+        "mode": "required",
+        "session_count": 1,
+        "length": 2
+      },
+      "description_zh": "P5 科学需要连堂"
+    },
+    {
+      "id": "HC-0052",
+      "type": "curriculum_forbidden_weekdays",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P5",
+        "subject_id": "it"
+      },
+      "params": {
+        "weekdays": [
+          "wed"
+        ]
+      },
+      "description_zh": "周三机房统一维护，不排信息科技"
+    },
+    {
+      "id": "HC-0053",
+      "type": "curriculum_fixed_slot",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P5",
+        "subject_id": "class_meeting"
+      },
+      "params": {
+        "day": "fri",
+        "period": "p6"
+      },
+      "description_zh": "三至六年级班会固定周五第6节"
+    },
+    {
+      "id": "HC-0054",
+      "type": "curriculum_min_gap_days",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P5",
+        "subject_id": "reading"
+      },
+      "params": {
+        "min_gap_days": 1
+      },
+      "description_zh": "两节阅读课至少隔一天"
+    },
+    {
+      "id": "HC-0055",
+      "type": "required_consecutive_periods",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P5",
+        "subject_id": "comprehensive_practice"
+      },
+      "params": {
+        "mode": "required",
+        "session_count": 1,
+        "length": 2
+      },
+      "description_zh": "P5 综合实践需要连堂"
+    },
+    {
+      "id": "HC-0059",
+      "type": "required_consecutive_periods",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P6",
+        "subject_id": "science"
+      },
+      "params": {
+        "mode": "required",
+        "session_count": 1,
+        "length": 2
+      },
+      "description_zh": "P6 科学需要连堂"
+    },
+    {
+      "id": "HC-0062",
+      "type": "curriculum_forbidden_weekdays",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P6",
+        "subject_id": "it"
+      },
+      "params": {
+        "weekdays": [
+          "wed"
+        ]
+      },
+      "description_zh": "周三机房统一维护，不排信息科技"
+    },
+    {
+      "id": "HC-0063",
+      "type": "curriculum_fixed_slot",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P6",
+        "subject_id": "class_meeting"
+      },
+      "params": {
+        "day": "fri",
+        "period": "p6"
+      },
+      "description_zh": "三至六年级班会固定周五第6节"
+    },
+    {
+      "id": "HC-0064",
+      "type": "curriculum_min_gap_days",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P6",
+        "subject_id": "reading"
+      },
+      "params": {
+        "min_gap_days": 1
+      },
+      "description_zh": "两节阅读课至少隔一天"
+    },
+    {
+      "id": "HC-0065",
+      "type": "required_consecutive_periods",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "P6",
+        "subject_id": "comprehensive_practice"
+      },
+      "params": {
+        "mode": "required",
+        "session_count": 1,
+        "length": 2
+      },
+      "description_zh": "P6 综合实践需要连堂"
+    },
+    {
+      "id": "HC-0069",
+      "type": "curriculum_forbidden_weekdays",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "J1",
+        "subject_id": "biology"
+      },
+      "params": {
+        "weekdays": [
+          "mon"
+        ]
+      },
+      "description_zh": "初一生物实验准备周一不开放"
+    },
+    {
+      "id": "HC-0070",
+      "type": "required_consecutive_periods",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "J1",
+        "subject_id": "biology"
+      },
+      "params": {
+        "mode": "required",
+        "session_count": 1,
+        "length": 2
+      },
+      "description_zh": "J1 生物需要连堂"
+    },
+    {
+      "id": "HC-0073",
+      "type": "curriculum_fixed_slot",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "J1",
+        "subject_id": "class_meeting"
+      },
+      "params": {
+        "day": "fri",
+        "period": "p7"
+      },
+      "description_zh": "初一班会固定周五第7节"
+    },
+    {
+      "id": "HC-0074",
+      "type": "curriculum_min_gap_days",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "J1",
+        "subject_id": "reading"
+      },
+      "params": {
+        "min_gap_days": 1
+      },
+      "description_zh": "两节阅读课至少隔一天"
+    },
+    {
+      "id": "HC-0075",
+      "type": "required_consecutive_periods",
+      "severity": "hard",
+      "scope": {
+        "grade_id": "J1",
+        "subject_id": "comprehensive_practice"
+      },
+      "params": {
+        "mode": "required",
+        "session_count": 1,
+        "length": 2
+      },
+      "description_zh": "J1 综合实践需要连堂"
+    },
+    {
+      "id": "HC-0076",
+      "type": "teacher_unavailable",
+      "severity": "hard",
+      "scope": {
+        "teacher_id": "T-E-ENG-02",
+        "teacher_name_zh": "郭书瑶老师"
+      },
+      "params": {
+        "unavailable_weekdays": [],
+        "unavailable_slots": [
+          {
+            "day": "tue",
+            "periods": [
+              "p1",
+              "p2",
+              "p3",
+              "p4"
+            ],
+            "reason_zh": "半天外出培训"
+          }
+        ]
+      },
+      "description_zh": "郭书瑶老师存在不可排时间"
+    },
+    {
+      "id": "HC-0077",
+      "type": "teacher_unavailable",
+      "severity": "hard",
+      "scope": {
+        "teacher_id": "T-E-SCI-01",
+        "teacher_name_zh": "韩俊杰老师"
+      },
+      "params": {
+        "unavailable_weekdays": [],
+        "unavailable_slots": [
+          {
+            "day": "wed",
+            "periods": [
+              "p7"
+            ],
+            "reason_zh": "低段科学组例会"
+          }
+        ]
+      },
+      "description_zh": "韩俊杰老师存在不可排时间"
+    },
+    {
+      "id": "HC-0078",
+      "type": "teacher_unavailable",
+      "severity": "hard",
+      "scope": {
+        "teacher_id": "T-E-PE-03",
+        "teacher_name_zh": "程一宁老师"
+      },
+      "params": {
+        "unavailable_weekdays": [
+          {
+            "day": "thu",
+            "reason_zh": "区体育教研活动"
+          }
+        ],
+        "unavailable_slots": []
+      },
+      "description_zh": "程一宁老师存在不可排时间"
+    },
+    {
+      "id": "HC-0079",
+      "type": "teacher_unavailable",
+      "severity": "hard",
+      "scope": {
+        "teacher_id": "T-W-CHI-05",
+        "teacher_name_zh": "黄书瑶老师"
+      },
+      "params": {
+        "unavailable_weekdays": [],
+        "unavailable_slots": [
+          {
+            "day": "mon",
+            "periods": [
+              "p7",
+              "p8"
+            ],
+            "reason_zh": "初小衔接教研"
+          }
+        ]
+      },
+      "description_zh": "黄书瑶老师存在不可排时间"
+    },
+    {
+      "id": "HC-0080",
+      "type": "teacher_unavailable",
+      "severity": "hard",
+      "scope": {
+        "teacher_id": "T-W-MAT-04",
+        "teacher_name_zh": "马文博老师"
+      },
+      "params": {
+        "unavailable_weekdays": [
+          {
+            "day": "fri",
+            "reason_zh": "名师工作室活动"
+          }
+        ],
+        "unavailable_slots": []
+      },
+      "description_zh": "马文博老师存在不可排时间"
+    },
+    {
+      "id": "HC-0081",
+      "type": "teacher_unavailable",
+      "severity": "hard",
+      "scope": {
+        "teacher_id": "T-W-BIO-02",
+        "teacher_name_zh": "刘雨桐老师"
+      },
+      "params": {
+        "unavailable_weekdays": [],
+        "unavailable_slots": [
+          {
+            "day": "thu",
+            "periods": [
+              "p5",
+              "p6",
+              "p7",
+              "p8"
+            ],
+            "reason_zh": "实验材料采购"
+          }
+        ]
+      },
+      "description_zh": "刘雨桐老师存在不可排时间"
+    },
+    {
+      "id": "HC-0082",
+      "type": "teacher_unavailable",
+      "severity": "hard",
+      "scope": {
+        "teacher_id": "T-W-GEO-01",
+        "teacher_name_zh": "黄梓涵老师"
+      },
+      "params": {
+        "unavailable_weekdays": [
+          {
+            "day": "wed",
+            "reason_zh": "区地理教研"
+          }
+        ],
+        "unavailable_slots": []
+      },
+      "description_zh": "黄梓涵老师存在不可排时间"
+    },
+    {
+      "id": "HC-0083",
+      "type": "room_unavailable",
+      "severity": "hard",
+      "scope": {
+        "room_id": "R-E-COMP-02",
+        "room_name_zh": "东校区计算机教室2"
+      },
+      "params": {
+        "unavailable_slots": [
+          {
+            "day": "fri",
+            "periods": [
+              "p1",
+              "p2",
+              "p3",
+              "p4"
+            ],
+            "reason_zh": "设备巡检"
+          }
+        ]
+      },
+      "description_zh": "东校区计算机教室2存在不可用时段"
+    },
+    {
+      "id": "HC-0084",
+      "type": "grade_teacher_meeting",
+      "severity": "hard",
+      "scope": {
+        "campus_id": "east",
+        "subject_id": "chinese"
+      },
+      "params": {
+        "day": "wed",
+        "periods": [
+          "p7"
+        ],
+        "teacher_ids": [
+          "T-E-CHI-01",
+          "T-E-CHI-02",
+          "T-E-CHI-03",
+          "T-E-CHI-04",
+          "T-E-CHI-05",
+          "T-E-CHI-06",
+          "T-E-CHI-07",
+          "T-E-CHI-08",
+          "T-E-CHI-09"
+        ]
+      },
+      "description_zh": "东校区语文组周三第7节固定教研"
+    },
+    {
+      "id": "HC-0085",
+      "type": "junior_subject_meeting",
+      "severity": "hard",
+      "scope": {
+        "campus_id": "west",
+        "stage": "junior"
+      },
+      "params": {
+        "day": "tue",
+        "periods": [
+          "p8"
+        ],
+        "subject_ids": [
+          "history",
+          "geography",
+          "biology"
+        ],
+        "teacher_ids": [
+          "T-W-BIO-01",
+          "T-W-BIO-02",
+          "T-W-BIO-03",
+          "T-W-HIS-01",
+          "T-W-HIS-02",
+          "T-W-GEO-01",
+          "T-W-GEO-02"
+        ]
+      },
+      "description_zh": "初中文综/理综相关教师周二第8节教研"
+    }
+  ],
+  "soft": [
+    {
+      "id": "SC-0009",
+      "type": "teacher_max_consecutive_periods",
+      "severity": "soft",
+      "scope": {
+        "entity": "teacher"
+      },
+      "params": {
+        "max_consecutive_periods": 3
+      },
+      "description_zh": "教师尽量不要连续上课超过3节",
+      "weight": 3
+    },
+    {
+      "id": "SC-0010",
+      "type": "teacher_daily_load_balance",
+      "severity": "soft",
+      "scope": {
+        "entity": "teacher"
+      },
+      "params": {
+        "preferred_max_daily_periods": 5
+      },
+      "description_zh": "教师日课时尽量均衡",
+      "weight": 2
+    },
+    {
+      "id": "SC-0011",
+      "type": "core_subject_morning_preference",
+      "severity": "soft",
+      "scope": {
+        "subject_ids": [
+          "chinese",
+          "math",
+          "english"
+        ]
+      },
+      "params": {
+        "preferred_segments": [
+          "morning"
+        ]
+      },
+      "description_zh": "语数英尽量排在上午",
+      "weight": 4
+    },
+    {
+      "id": "SC-0012",
+      "type": "avoid_after_lunch_for_pe",
+      "severity": "soft",
+      "scope": {
+        "subject_id": "pe"
+      },
+      "params": {
+        "avoid_periods": [
+          "p5"
+        ]
+      },
+      "description_zh": "体育尽量避开午饭后第一节",
+      "weight": 2
+    },
+    {
+      "id": "SC-0013",
+      "type": "same_grade_parallel_subject",
+      "severity": "soft",
+      "scope": {
+        "entity": "grade_subject"
+      },
+      "params": {
+        "subject_ids": [
+          "it",
+          "science",
+          "biology"
+        ],
+        "target_parallel_ratio": 0.5
+      },
+      "description_zh": "同年级专用教室课尽量平行排，便于资源调度和进度统一",
+      "weight": 1
+    },
+    {
+      "id": "SC-0014",
+      "type": "curriculum_prefer_morning",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P1",
+        "subject_id": "chinese"
+      },
+      "params": {
+        "target_ratio": 0.75
+      },
+      "description_zh": "低段语文尽量放上午",
+      "weight": 4
+    },
+    {
+      "id": "SC-0015",
+      "type": "curriculum_prefer_morning",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P1",
+        "subject_id": "math"
+      },
+      "params": {
+        "target_ratio": 0.8
+      },
+      "description_zh": "低段数学尽量放上午",
+      "weight": 4
+    },
+    {
+      "id": "SC-0017",
+      "type": "curriculum_spread_across_week",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P1",
+        "subject_id": "pe"
+      },
+      "params": {
+        "min_gap_days": 1
+      },
+      "description_zh": "体育尽量隔天分布",
+      "weight": 3
+    },
+    {
+      "id": "SC-0018",
+      "type": "curriculum_avoid_periods",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P1",
+        "subject_id": "pe"
+      },
+      "params": {
+        "periods": [
+          "p5"
+        ]
+      },
+      "description_zh": "午饭后第一节尽量不排体育",
+      "weight": 2
+    },
+    {
+      "id": "SC-0020",
+      "type": "curriculum_prefer_morning",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P2",
+        "subject_id": "chinese"
+      },
+      "params": {
+        "target_ratio": 0.75
+      },
+      "description_zh": "低段语文尽量放上午",
+      "weight": 4
+    },
+    {
+      "id": "SC-0021",
+      "type": "curriculum_prefer_morning",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P2",
+        "subject_id": "math"
+      },
+      "params": {
+        "target_ratio": 0.8
+      },
+      "description_zh": "低段数学尽量放上午",
+      "weight": 4
+    },
+    {
+      "id": "SC-0023",
+      "type": "curriculum_spread_across_week",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P2",
+        "subject_id": "pe"
+      },
+      "params": {
+        "min_gap_days": 1
+      },
+      "description_zh": "体育尽量隔天分布",
+      "weight": 3
+    },
+    {
+      "id": "SC-0024",
+      "type": "curriculum_avoid_periods",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P2",
+        "subject_id": "pe"
+      },
+      "params": {
+        "periods": [
+          "p5"
+        ]
+      },
+      "description_zh": "午饭后第一节尽量不排体育",
+      "weight": 2
+    },
+    {
+      "id": "SC-0026",
+      "type": "curriculum_prefer_morning",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P3",
+        "subject_id": "chinese"
+      },
+      "params": {
+        "target_ratio": 0.7
+      },
+      "description_zh": "语文尽量上午",
+      "weight": 4
+    },
+    {
+      "id": "SC-0027",
+      "type": "curriculum_prefer_morning",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P3",
+        "subject_id": "math"
+      },
+      "params": {
+        "target_ratio": 0.75
+      },
+      "description_zh": "数学尽量上午",
+      "weight": 4
+    },
+    {
+      "id": "SC-0028",
+      "type": "curriculum_spread_across_week",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P3",
+        "subject_id": "english"
+      },
+      "params": {
+        "min_gap_days": 1
+      },
+      "description_zh": "英语尽量分散",
+      "weight": 2
+    },
+    {
+      "id": "SC-0030",
+      "type": "curriculum_spread_across_week",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P3",
+        "subject_id": "pe"
+      },
+      "params": {
+        "min_gap_days": 1
+      },
+      "description_zh": "体育尽量隔天",
+      "weight": 3
+    },
+    {
+      "id": "SC-0031",
+      "type": "curriculum_avoid_periods",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P3",
+        "subject_id": "pe"
+      },
+      "params": {
+        "periods": [
+          "p5"
+        ]
+      },
+      "description_zh": "午饭后第一节尽量不排体育",
+      "weight": 2
+    },
+    {
+      "id": "SC-0036",
+      "type": "curriculum_prefer_morning",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P4",
+        "subject_id": "chinese"
+      },
+      "params": {
+        "target_ratio": 0.7
+      },
+      "description_zh": "语文尽量上午",
+      "weight": 4
+    },
+    {
+      "id": "SC-0037",
+      "type": "curriculum_prefer_morning",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P4",
+        "subject_id": "math"
+      },
+      "params": {
+        "target_ratio": 0.75
+      },
+      "description_zh": "数学尽量上午",
+      "weight": 4
+    },
+    {
+      "id": "SC-0038",
+      "type": "curriculum_spread_across_week",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P4",
+        "subject_id": "english"
+      },
+      "params": {
+        "min_gap_days": 1
+      },
+      "description_zh": "英语尽量分散",
+      "weight": 2
+    },
+    {
+      "id": "SC-0040",
+      "type": "curriculum_spread_across_week",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P4",
+        "subject_id": "pe"
+      },
+      "params": {
+        "min_gap_days": 1
+      },
+      "description_zh": "体育尽量隔天",
+      "weight": 3
+    },
+    {
+      "id": "SC-0041",
+      "type": "curriculum_avoid_periods",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P4",
+        "subject_id": "pe"
+      },
+      "params": {
+        "periods": [
+          "p5"
+        ]
+      },
+      "description_zh": "午饭后第一节尽量不排体育",
+      "weight": 2
+    },
+    {
+      "id": "SC-0046",
+      "type": "curriculum_prefer_morning",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P5",
+        "subject_id": "chinese"
+      },
+      "params": {
+        "target_ratio": 0.65
+      },
+      "description_zh": "语文尽量上午",
+      "weight": 4
+    },
+    {
+      "id": "SC-0047",
+      "type": "curriculum_biweekly_double_period",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P5",
+        "subject_id": "chinese"
+      },
+      "params": {
+        "length": 2
+      },
+      "description_zh": "作文课隔周连堂优先",
+      "weight": 2
+    },
+    {
+      "id": "SC-0048",
+      "type": "curriculum_prefer_morning",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P5",
+        "subject_id": "math"
+      },
+      "params": {
+        "target_ratio": 0.75
+      },
+      "description_zh": "数学尽量上午",
+      "weight": 4
+    },
+    {
+      "id": "SC-0050",
+      "type": "curriculum_spread_across_week",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P5",
+        "subject_id": "pe"
+      },
+      "params": {
+        "min_gap_days": 1
+      },
+      "description_zh": "体育尽量隔天",
+      "weight": 3
+    },
+    {
+      "id": "SC-0051",
+      "type": "curriculum_avoid_periods",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P5",
+        "subject_id": "pe"
+      },
+      "params": {
+        "periods": [
+          "p5"
+        ]
+      },
+      "description_zh": "午饭后第一节尽量不排体育",
+      "weight": 2
+    },
+    {
+      "id": "SC-0056",
+      "type": "curriculum_prefer_morning",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P6",
+        "subject_id": "chinese"
+      },
+      "params": {
+        "target_ratio": 0.65
+      },
+      "description_zh": "语文尽量上午",
+      "weight": 4
+    },
+    {
+      "id": "SC-0057",
+      "type": "curriculum_biweekly_double_period",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P6",
+        "subject_id": "chinese"
+      },
+      "params": {
+        "length": 2
+      },
+      "description_zh": "作文课隔周连堂优先",
+      "weight": 2
+    },
+    {
+      "id": "SC-0058",
+      "type": "curriculum_prefer_morning",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P6",
+        "subject_id": "math"
+      },
+      "params": {
+        "target_ratio": 0.75
+      },
+      "description_zh": "数学尽量上午",
+      "weight": 4
+    },
+    {
+      "id": "SC-0060",
+      "type": "curriculum_spread_across_week",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P6",
+        "subject_id": "pe"
+      },
+      "params": {
+        "min_gap_days": 1
+      },
+      "description_zh": "体育尽量隔天",
+      "weight": 3
+    },
+    {
+      "id": "SC-0061",
+      "type": "curriculum_avoid_periods",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "P6",
+        "subject_id": "pe"
+      },
+      "params": {
+        "periods": [
+          "p5"
+        ]
+      },
+      "description_zh": "午饭后第一节尽量不排体育",
+      "weight": 2
+    },
+    {
+      "id": "SC-0066",
+      "type": "curriculum_prefer_morning",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "J1",
+        "subject_id": "chinese"
+      },
+      "params": {
+        "target_ratio": 0.65
+      },
+      "description_zh": "语文尽量上午",
+      "weight": 4
+    },
+    {
+      "id": "SC-0067",
+      "type": "curriculum_prefer_morning",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "J1",
+        "subject_id": "math"
+      },
+      "params": {
+        "target_ratio": 0.7
+      },
+      "description_zh": "数学尽量上午",
+      "weight": 4
+    },
+    {
+      "id": "SC-0068",
+      "type": "curriculum_spread_across_week",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "J1",
+        "subject_id": "english"
+      },
+      "params": {
+        "min_gap_days": 1
+      },
+      "description_zh": "英语尽量分散",
+      "weight": 3
+    },
+    {
+      "id": "SC-0071",
+      "type": "curriculum_spread_across_week",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "J1",
+        "subject_id": "pe"
+      },
+      "params": {
+        "min_gap_days": 1
+      },
+      "description_zh": "体育尽量隔天",
+      "weight": 3
+    },
+    {
+      "id": "SC-0072",
+      "type": "curriculum_avoid_periods",
+      "severity": "soft",
+      "scope": {
+        "grade_id": "J1",
+        "subject_id": "pe"
+      },
+      "params": {
+        "periods": [
+          "p5"
+        ]
+      },
+      "description_zh": "午饭后第一节尽量不排体育",
+      "weight": 2
+    }
+  ]
+}

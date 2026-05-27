@@ -1,0 +1,164 @@
+{
+  "week_pattern": "five_day_school_week",
+  "days": [
+    {
+      "id": "mon",
+      "order": 1,
+      "name_zh": "周一"
+    },
+    {
+      "id": "tue",
+      "order": 2,
+      "name_zh": "周二"
+    },
+    {
+      "id": "wed",
+      "order": 3,
+      "name_zh": "周三"
+    },
+    {
+      "id": "thu",
+      "order": 4,
+      "name_zh": "周四"
+    },
+    {
+      "id": "fri",
+      "order": 5,
+      "name_zh": "周五"
+    }
+  ],
+  "periods": [
+    {
+      "id": "p1",
+      "order": 1,
+      "name_zh": "第1节",
+      "start": "08:20",
+      "end": "09:00",
+      "segment": "morning"
+    },
+    {
+      "id": "p2",
+      "order": 2,
+      "name_zh": "第2节",
+      "start": "09:10",
+      "end": "09:50",
+      "segment": "morning"
+    },
+    {
+      "id": "p3",
+      "order": 3,
+      "name_zh": "第3节",
+      "start": "10:20",
+      "end": "11:00",
+      "segment": "morning"
+    },
+    {
+      "id": "p4",
+      "order": 4,
+      "name_zh": "第4节",
+      "start": "11:10",
+      "end": "11:50",
+      "segment": "morning"
+    },
+    {
+      "id": "p5",
+      "order": 5,
+      "name_zh": "第5节",
+      "start": "13:30",
+      "end": "14:10",
+      "segment": "afternoon",
+      "after_lunch": true
+    },
+    {
+      "id": "p6",
+      "order": 6,
+      "name_zh": "第6节",
+      "start": "14:20",
+      "end": "15:00",
+      "segment": "afternoon"
+    },
+    {
+      "id": "p7",
+      "order": 7,
+      "name_zh": "第7节",
+      "start": "15:25",
+      "end": "16:05",
+      "segment": "afternoon"
+    },
+    {
+      "id": "p8",
+      "order": 8,
+      "name_zh": "第8节",
+      "start": "16:15",
+      "end": "16:55",
+      "segment": "after_school"
+    }
+  ],
+  "grade_day_profiles": [
+    {
+      "id": "primary_lower_30",
+      "name_zh": "小学低段30课时",
+      "allowed_periods": [
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+        "p6"
+      ],
+      "weekly_periods": 30,
+      "max_daily_periods": 6
+    },
+    {
+      "id": "primary_upper_35",
+      "name_zh": "小学中高段35课时",
+      "allowed_periods": [
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+        "p6",
+        "p7"
+      ],
+      "weekly_periods": 35,
+      "max_daily_periods": 7
+    },
+    {
+      "id": "junior_40",
+      "name_zh": "初中40课时",
+      "allowed_periods": [
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+        "p6",
+        "p7",
+        "p8"
+      ],
+      "weekly_periods": 40,
+      "max_daily_periods": 8
+    }
+  ],
+  "common_breaks": [
+    {
+      "id": "morning_exercise",
+      "name_zh": "大课间",
+      "after_period": "p2",
+      "duration_minutes": 25
+    },
+    {
+      "id": "eye_exercise_pm",
+      "name_zh": "眼保健操",
+      "after_period": "p6",
+      "duration_minutes": 10
+    },
+    {
+      "id": "lunch",
+      "name_zh": "午餐与午休",
+      "after_period": "p4",
+      "duration_minutes": 100
+    }
+  ]
+}

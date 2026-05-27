@@ -29,14 +29,14 @@ import {
   saveRuntimeProfileEdit,
 } from '../../runtime/runtime-profile-editor';
 import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/upload';
+import { createCatsCoLocalConfigService } from '../../catscompany/local-config';
+import { resolveCatsCoRuntimeConfig } from '../../catscompany/runtime-config';
 import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-grants';
 import { buildGauzMemDashboardView } from '../gauzmem-view';
 import { registerSkillHubRoutes } from './skillhub';
 // import { ReportGenerator } from '../../utils/report-generator';
 // import { LogUploader } from '../../utils/log-uploader';
 
-const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cc';
-const DEFAULT_CATSCO_WS_URL = 'wss://app.catsco.cc/v0/channels';
 const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
 const SYSTEM_SKILL_DIRS = new Set<string>();
 
@@ -60,14 +60,55 @@ interface CatsAuthState {
   apiKey?: string;
 }
 
+interface CatsBotBindingInput {
+  userUid: string;
+  username?: string;
+  displayName?: string;
+  botUid: string;
+  botName?: string;
+  botUsername?: string;
+  apiKey: string;
+  bindingSource?: string;
+}
+
 interface CatsRequestOptions {
   timeoutMs?: number;
 }
 
-function normalizeBaseUrl(value: unknown, fallback: string): string {
-  const text = String(value || '').trim().replace(/\/+$/, '');
-  return text || fallback;
+interface CatsBotBodyStatus {
+  state: 'not_configured' | 'online' | 'offline' | 'conflict' | 'auth_error' | 'unknown';
+  active: boolean;
+  localBodyId?: string;
+  platformBodyId?: string;
+  connectedAt?: string;
+  checkedAt?: string;
+  error?: string;
 }
+
+const CATSCO_RUNTIME_ENV_KEYS = [
+  'CATSCO_HTTP_BASE_URL',
+  'CATSCO_SERVER_URL',
+  'CATSCO_USER_TOKEN',
+  'CATSCO_USER_UID',
+  'CATSCO_USER_NAME',
+  'CATSCO_USER_DISPLAY_NAME',
+  'CATSCO_BOT_UID',
+  'CATSCO_API_KEY',
+  'CATSCO_DEVICE_ID',
+  'CATSCO_BODY_ID',
+  'CATSCO_INSTALLATION_ID',
+  'CATSCOMPANY_HTTP_BASE_URL',
+  'CATSCOMPANY_SERVER_URL',
+  'CATSCOMPANY_USER_TOKEN',
+  'CATSCOMPANY_USER_UID',
+  'CATSCOMPANY_USER_NAME',
+  'CATSCOMPANY_USER_DISPLAY_NAME',
+  'CATSCOMPANY_BOT_UID',
+  'CATSCOMPANY_API_KEY',
+  'CATSCOMPANY_DEVICE_ID',
+  'CATSCOMPANY_BODY_ID',
+  'CATSCOMPANY_INSTALLATION_ID',
+] as const;
 
 function p2pTopicId(uid1: string | number, uid2: string | number): string {
   const a = Number(uid1);
@@ -126,125 +167,16 @@ function createCatsNetworkError(error: any, httpBaseUrl: string): Error {
   return wrapped;
 }
 
-function readEnvFile(): Record<string, string> {
-  const envPath = path.join(process.cwd(), '.env');
-  if (!fs.existsSync(envPath)) return {};
-  return dotenv.parse(fs.readFileSync(envPath, 'utf-8'));
+function sanitizeCatsUsernamePart(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
 }
 
-function firstNonEmpty(...values: unknown[]): string | undefined {
-  for (const value of values) {
-    const text = String(value || '').trim();
-    if (text) return text;
-  }
-  return undefined;
-}
-
-function writeEnvUpdates(updates: Record<string, string | undefined>): string[] {
-  const envPath = path.join(process.cwd(), '.env');
-  let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
-  const updatedKeys: string[] = [];
-
-  for (const [key, value] of Object.entries(updates)) {
-    if (typeof value !== 'string' || value.length === 0) continue;
-    const escaped = value.replace(/\n/g, '\\n');
-    const line = `${key}=${escaped}`;
-    const regex = new RegExp(`^${key}=.*$`, 'm');
-    if (regex.test(content)) {
-      content = content.replace(regex, line);
-    } else {
-      content += `${content.endsWith('\n') || content.length === 0 ? '' : '\n'}${line}\n`;
-    }
-    process.env[key] = value;
-    updatedKeys.push(key);
-  }
-
-  fs.writeFileSync(envPath, content);
-  return updatedKeys;
-}
-
-function removeEnvKeys(keys: string[]): string[] {
-  const envPath = path.join(process.cwd(), '.env');
-  if (!fs.existsSync(envPath)) return [];
-  let content = fs.readFileSync(envPath, 'utf-8');
-  const removed: string[] = [];
-
-  for (const key of keys) {
-    const regex = new RegExp(`^${key}=.*(?:\\r?\\n|$)`, 'm');
-    if (regex.test(content)) {
-      content = content.replace(regex, '');
-      delete process.env[key];
-      removed.push(key);
-    }
-  }
-
-  fs.writeFileSync(envPath, content);
-  return removed;
+function ensureCatsDeviceId(): string {
+  return createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).ensureDeviceId();
 }
 
 export function getCatsAuthState(overrides: Record<string, unknown> = {}): CatsAuthState {
-  const env = readEnvFile();
-  return {
-    token: firstNonEmpty(
-      overrides.token,
-      process.env.CATSCO_USER_TOKEN,
-      env.CATSCO_USER_TOKEN,
-      process.env.CATSCOMPANY_USER_TOKEN,
-      env.CATSCOMPANY_USER_TOKEN,
-    ),
-    uid: firstNonEmpty(
-      overrides.uid,
-      process.env.CATSCO_USER_UID,
-      env.CATSCO_USER_UID,
-      process.env.CATSCOMPANY_USER_UID,
-      env.CATSCOMPANY_USER_UID,
-    ),
-    username: firstNonEmpty(
-      process.env.CATSCO_USER_NAME,
-      env.CATSCO_USER_NAME,
-      process.env.CATSCOMPANY_USER_NAME,
-      env.CATSCOMPANY_USER_NAME,
-    ),
-    displayName: firstNonEmpty(
-      process.env.CATSCO_USER_DISPLAY_NAME,
-      env.CATSCO_USER_DISPLAY_NAME,
-      process.env.CATSCOMPANY_USER_DISPLAY_NAME,
-      env.CATSCOMPANY_USER_DISPLAY_NAME,
-    ),
-    httpBaseUrl: normalizeBaseUrl(
-      firstNonEmpty(
-        overrides.httpBaseUrl,
-        process.env.CATSCO_HTTP_BASE_URL,
-        env.CATSCO_HTTP_BASE_URL,
-        process.env.CATSCOMPANY_HTTP_BASE_URL,
-        env.CATSCOMPANY_HTTP_BASE_URL,
-      ),
-      DEFAULT_CATSCO_HTTP_BASE_URL,
-    ),
-    serverUrl: normalizeBaseUrl(
-      firstNonEmpty(
-        overrides.serverUrl,
-        process.env.CATSCO_SERVER_URL,
-        env.CATSCO_SERVER_URL,
-        process.env.CATSCOMPANY_SERVER_URL,
-        env.CATSCOMPANY_SERVER_URL,
-      ),
-      DEFAULT_CATSCO_WS_URL,
-    ),
-    botUid: firstNonEmpty(
-      overrides.botUid,
-      process.env.CATSCO_BOT_UID,
-      env.CATSCO_BOT_UID,
-      process.env.CATSCOMPANY_BOT_UID,
-      env.CATSCOMPANY_BOT_UID,
-    ),
-    apiKey: firstNonEmpty(
-      process.env.CATSCO_API_KEY,
-      env.CATSCO_API_KEY,
-      process.env.CATSCOMPANY_API_KEY,
-      env.CATSCOMPANY_API_KEY,
-    ),
-  };
+  return createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).getAuthState(overrides);
 }
 
 async function catsRequest(
@@ -340,21 +272,249 @@ async function catsApiKeyRequest(
   return data;
 }
 
+async function getCatsBotBodyStatus(
+  state: CatsAuthState,
+  botUid: string | undefined,
+  localBodyId: string | undefined,
+): Promise<CatsBotBodyStatus> {
+  const normalizedBotUid = String(botUid || '').trim();
+  const normalizedLocalBodyId = String(localBodyId || '').trim();
+  if (!state.token || !normalizedBotUid || !normalizedLocalBodyId) {
+    return {
+      state: 'not_configured',
+      active: false,
+      localBodyId: normalizedLocalBodyId || undefined,
+    };
+  }
+
+  try {
+    const data = await catsRequest(
+      'GET',
+      state.httpBaseUrl,
+      `/api/bots/body-status?uid=${encodeURIComponent(normalizedBotUid)}`,
+      undefined,
+      state.token,
+      { timeoutMs: 2500 },
+    );
+    const platformBodyId = String(data?.body_id || data?.bodyId || '').trim();
+    const active = Boolean(data?.active);
+    const stateValue: CatsBotBodyStatus['state'] = active
+      ? (platformBodyId && platformBodyId !== normalizedLocalBodyId ? 'conflict' : 'online')
+      : 'offline';
+    return {
+      state: stateValue,
+      active,
+      localBodyId: normalizedLocalBodyId,
+      platformBodyId: platformBodyId || undefined,
+      connectedAt: typeof data?.connected_at === 'string' ? data.connected_at : undefined,
+      checkedAt: new Date().toISOString(),
+    };
+  } catch (error: any) {
+    const status = Number(error?.status || 0);
+    if (status === 401 || status === 403) {
+      return {
+        state: 'auth_error',
+        active: false,
+        localBodyId: normalizedLocalBodyId,
+        checkedAt: new Date().toISOString(),
+        error: status === 403
+          ? '当前 CatsCo 账号不是这个 bot 的 owner，请重新选择或绑定 agent'
+          : 'CatsCo 登录态无法查询这个 bot 的 body 状态，请重新登录',
+      };
+    }
+    return {
+      state: 'unknown',
+      active: false,
+      localBodyId: normalizedLocalBodyId,
+      checkedAt: new Date().toISOString(),
+      error: String(error?.message || 'unable to query CatsCo body status'),
+    };
+  }
+}
+
 function persistCatsUserSession(state: CatsAuthState, login: any): void {
-  writeEnvUpdates({
-    CATSCO_HTTP_BASE_URL: state.httpBaseUrl,
-    CATSCO_SERVER_URL: state.serverUrl,
-    CATSCO_USER_TOKEN: login.token,
-    CATSCO_USER_UID: String(login.uid || ''),
-    CATSCO_USER_NAME: login.username || '',
-    CATSCO_USER_DISPLAY_NAME: login.display_name || login.username || '',
-    CATSCOMPANY_HTTP_BASE_URL: state.httpBaseUrl,
-    CATSCOMPANY_SERVER_URL: state.serverUrl,
-    CATSCOMPANY_USER_TOKEN: login.token,
-    CATSCOMPANY_USER_UID: String(login.uid || ''),
-    CATSCOMPANY_USER_NAME: login.username || '',
-    CATSCOMPANY_USER_DISPLAY_NAME: login.display_name || login.username || '',
+  createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).persistAccountSession(state, login);
+}
+
+async function getCatsBotApiKey(state: CatsAuthState, botUid: string, bot?: any): Promise<string> {
+  let apiKey = String(bot?.api_key || '');
+  if (!apiKey) {
+    const keyResponse = await catsRequest('GET', state.httpBaseUrl, `/api/bots/api-key?uid=${encodeURIComponent(botUid)}`, undefined, state.token);
+    apiKey = String(keyResponse.api_key || '');
+  }
+  if (!apiKey) throw httpError('CatsCo bot api key missing', 500);
+  return apiKey;
+}
+
+async function ensureCatsFriendBinding(
+  state: CatsAuthState,
+  userUid: string,
+  botUid: string,
+  apiKey: string,
+): Promise<string[]> {
+  const warnings: string[] = [];
+  try {
+    await catsRequest('POST', state.httpBaseUrl, '/api/friends/request', {
+      user_id: Number(botUid),
+      message: 'Connect CatsCo desktop agent',
+    }, state.token);
+  } catch (friendRequestError: any) {
+    const msg = String(friendRequestError?.message || '');
+    if (!/duplicate|already|exists/i.test(msg)) {
+      warnings.push(`friend request: ${msg}`);
+    }
+  }
+  try {
+    await catsApiKeyRequest('POST', state.httpBaseUrl, '/api/friends/accept', apiKey, {
+      user_id: Number(userUid),
+    });
+  } catch (friendAcceptError: any) {
+    const msg = String(friendAcceptError?.message || '');
+    if (!/duplicate|already|exists/i.test(msg)) {
+      warnings.push(`friend accept: ${msg}`);
+    }
+  }
+  return warnings;
+}
+
+function chmodOwnerOnly(filePath: string): void {
+  if (process.platform === 'win32') return;
+  try {
+    fs.chmodSync(filePath, 0o600);
+  } catch {
+    // Best-effort permission hardening only.
+  }
+}
+
+function snapshotFile(filePath: string): { exists: boolean; content?: string } {
+  return fs.existsSync(filePath)
+    ? { exists: true, content: fs.readFileSync(filePath, 'utf-8') }
+    : { exists: false };
+}
+
+function restoreFile(filePath: string, snapshot: { exists: boolean; content?: string }): void {
+  if (!snapshot.exists) {
+    fs.rmSync(filePath, { force: true });
+    return;
+  }
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, snapshot.content || '', { encoding: 'utf-8', mode: 0o600 });
+  chmodOwnerOnly(filePath);
+}
+
+function createCatsCoLocalConfigRollback(): () => void {
+  const runtimeRoot = process.cwd();
+  const service = createCatsCoLocalConfigService({ runtimeRoot });
+  const configPath = service.getConfigPath();
+  const envPath = path.join(runtimeRoot, '.env');
+  const configSnapshot = snapshotFile(configPath);
+  const envSnapshot = snapshotFile(envPath);
+  const processEnvSnapshot = new Map<string, string | undefined>(
+    CATSCO_RUNTIME_ENV_KEYS.map(key => [key, process.env[key]]),
+  );
+
+  return () => {
+    restoreFile(configPath, configSnapshot);
+    restoreFile(envPath, envSnapshot);
+    for (const [key, value] of processEnvSnapshot) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  };
+}
+
+function getCatsCompanyBindingPreflight(
+  serviceManager: ServiceManager,
+  state: CatsAuthState,
+  input: CatsBotBindingInput,
+): any {
+  const service = serviceManager.getService('catscompany');
+  if (!service) return undefined;
+  return getServicePreflight(serviceManager, 'catscompany', {
+    runtimeRoot: process.cwd(),
+    config: ConfigManager.getConfigReadonly(),
+    catsCoOverrides: {
+      token: state.token,
+      uid: input.userUid,
+      username: input.username || state.username,
+      displayName: input.displayName || state.displayName,
+      httpBaseUrl: state.httpBaseUrl,
+      serverUrl: state.serverUrl,
+      botUid: input.botUid,
+      apiKey: input.apiKey,
+    },
   });
+}
+
+function assertCatsCompanyPreflightCanStart(preflight: any): void {
+  if (!preflight || preflight.status !== 'blocked') return;
+  const error = httpError('CatsCo connector preflight blocked', 400) as any;
+  error.data = { preflight };
+  throw error;
+}
+
+async function startCatsCompanyConnectorIfReady(
+  serviceManager: ServiceManager,
+  options: { restartIfRunning?: boolean; preflight?: any } = {},
+): Promise<{ service: any; preflight: any }> {
+  let service = serviceManager.getService('catscompany');
+  let preflight = options.preflight;
+  if (service) {
+    preflight = preflight || getServicePreflight(serviceManager, 'catscompany', {
+      runtimeRoot: process.cwd(),
+      config: ConfigManager.getConfigReadonly(),
+    });
+    if (preflight.status === 'blocked') {
+      return { service, preflight };
+    }
+  }
+  if (service && service.status === 'running' && options.restartIfRunning) {
+    const manager = serviceManager as ServiceManager & {
+      restartAndWait?: (name: string) => Promise<any>;
+    };
+    service = typeof manager.restartAndWait === 'function'
+      ? await manager.restartAndWait('catscompany')
+      : serviceManager.restart('catscompany');
+    return { service, preflight };
+  }
+  if (service && service.status !== 'running') {
+    service = serviceManager.start('catscompany');
+  }
+  return { service, preflight };
+}
+
+function writeCatsBotBinding(state: CatsAuthState, input: CatsBotBindingInput): string[] {
+  return createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).writeBotBinding(state, input);
+}
+
+async function commitCatsBotBindingAndStartConnector(
+  serviceManager: ServiceManager,
+  state: CatsAuthState,
+  input: CatsBotBindingInput,
+): Promise<{ updated: string[]; warnings: string[]; service: any; preflight: any }> {
+  const preflight = getCatsCompanyBindingPreflight(serviceManager, state, input);
+  assertCatsCompanyPreflightCanStart(preflight);
+  const rollback = createCatsCoLocalConfigRollback();
+  try {
+    const warnings = await ensureCatsFriendBinding(state, input.userUid, input.botUid, input.apiKey);
+    const updated = writeCatsBotBinding(state, input);
+    const { service, preflight: startPreflight } = await startCatsCompanyConnectorIfReady(serviceManager, {
+      restartIfRunning: true,
+      preflight,
+    });
+    return {
+      updated,
+      warnings,
+      service,
+      preflight: startPreflight,
+    };
+  } catch (error) {
+    rollback();
+    throw error;
+  }
 }
 
 export function createApiRouter(serviceManager: ServiceManager, updateController?: UpdateController): Router {
@@ -888,6 +1048,10 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
   router.get('/cats/status', async (_req, res) => {
     const state = getCatsAuthState();
     const service = serviceManager.getService('catscompany');
+    const runtimeConfig = resolveCatsCoRuntimeConfig({
+      runtimeRoot: process.cwd(),
+      config: ConfigManager.getConfigReadonly(),
+    });
     const tokenPresent = Boolean(state.token);
     let connected = false;
     let authStatus: 'missing' | 'valid' | 'invalid' | 'unchecked' = tokenPresent ? 'unchecked' : 'missing';
@@ -928,18 +1092,36 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         }
       }
     }
+    const localBodyId = runtimeConfig.localConfig.device?.bodyId || '';
+    const bodyStatus = connected
+      ? await getCatsBotBodyStatus(state, runtimeConfig.auth.botUid, localBodyId)
+      : {
+        state: 'not_configured',
+        active: false,
+        localBodyId: localBodyId || undefined,
+      } satisfies CatsBotBodyStatus;
+    const bodyStatusBlocksChat = bodyStatus.state === 'conflict' || bodyStatus.state === 'auth_error';
 
     res.json({
       connected,
-      configured: connected && Boolean(state.apiKey && state.serverUrl),
+      configured: connected && runtimeConfig.bodyConfigured,
+      accountConnected: connected,
+      bodyConfigured: runtimeConfig.bodyConfigured,
+      bodyId: localBodyId || null,
+      bodyStatus,
+      connectorReady: runtimeConfig.connectorReady,
+      connectorRunning: service?.status === 'running',
+      chatReady: connected && runtimeConfig.bodyConfigured && !bodyStatusBlocksChat,
+      requiresBotRebind: runtimeConfig.unconfirmedBotBinding,
       tokenPresent,
       authStatus,
       authError,
       user,
-      botUid: state.botUid || null,
-      topicId: connected && user?.uid && state.botUid ? p2pTopicId(user.uid, state.botUid) : '',
+      botUid: runtimeConfig.auth.botUid || null,
+      topicId: connected && user?.uid && runtimeConfig.auth.botUid ? p2pTopicId(user.uid, runtimeConfig.auth.botUid) : '',
       httpBaseUrl: state.httpBaseUrl,
       serverUrl: state.serverUrl,
+      configConflicts: runtimeConfig.conflicts.map(conflict => conflict.field),
       service: service || null,
     });
   });
@@ -1014,16 +1196,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
   });
 
   router.post('/cats/auth/logout', (_req, res) => {
-    const removed = removeEnvKeys([
-      'CATSCO_USER_TOKEN',
-      'CATSCO_USER_UID',
-      'CATSCO_USER_NAME',
-      'CATSCO_USER_DISPLAY_NAME',
-      'CATSCOMPANY_USER_TOKEN',
-      'CATSCOMPANY_USER_UID',
-      'CATSCOMPANY_USER_NAME',
-      'CATSCOMPANY_USER_DISPLAY_NAME',
-    ]);
+    const removed = createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).clearAccount();
     res.json({ ok: true, removed });
   });
 
@@ -1036,17 +1209,22 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const userUid = String(me.uid || state.uid || '');
       if (!userUid) return res.status(500).json({ error: 'CatsCo user uid missing' });
 
+      const explicitBotUid = String(req.body?.botUid || '').trim();
+      if (explicitBotUid) {
+        return res.status(409).json({
+          error: 'Legacy setup no longer accepts botUid; use /api/cats/bind-bot',
+        });
+      }
+
+      const deviceId = ensureCatsDeviceId();
+      const deviceName = String(req.body?.deviceName || os.hostname() || 'current-device').trim();
       const botsResponse = await catsRequest('GET', state.httpBaseUrl, '/api/bots', undefined, state.token);
       const bots = Array.isArray(botsResponse?.bots) ? botsResponse.bots : [];
-      const preferredUsername = String(req.body?.botUsername || `catsco_${userUid}`).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
-      const preferredName = String(req.body?.botDisplayName || 'CatsCo').trim() || 'CatsCo';
-      const legacyUsername = `xiaoba_${userUid}`;
-      const legacyName = 'XiaoBa';
-      let bot = bots.find((item: any) => String(item.id || item.uid) === String(state.botUid || ''))
-        || bots.find((item: any) => String(item.username || '') === preferredUsername)
-        || bots.find((item: any) => String(item.display_name || '') === preferredName)
-        || bots.find((item: any) => String(item.username || '') === legacyUsername)
-        || bots.find((item: any) => String(item.display_name || '') === legacyName);
+      const preferredUsernameBase = String(req.body?.botUsername || `catsco_${userUid}_${deviceId}`).trim();
+      const preferredUsername = sanitizeCatsUsernamePart(preferredUsernameBase)
+        || `catsco_${sanitizeCatsUsernamePart(userUid)}_${sanitizeCatsUsernamePart(deviceId)}`;
+      const preferredName = String(req.body?.botDisplayName || `CatsCo (${deviceName})`).trim() || `CatsCo (${deviceName})`;
+      let bot = bots.find((item: any) => String(item.username || '') === preferredUsername);
 
       if (!bot) {
         const created = await catsRequest('POST', state.httpBaseUrl, '/api/bots', {
@@ -1065,66 +1243,17 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const botUid = String(bot.id || bot.uid || '');
       if (!botUid) return res.status(500).json({ error: 'CatsCo bot uid missing' });
 
-      let apiKey = String(bot.api_key || '');
-      if (!apiKey) {
-        const keyResponse = await catsRequest('GET', state.httpBaseUrl, `/api/bots/api-key?uid=${encodeURIComponent(botUid)}`, undefined, state.token);
-        apiKey = String(keyResponse.api_key || '');
-      }
-      if (!apiKey) return res.status(500).json({ error: 'CatsCo bot api key missing' });
-
-      const warnings: string[] = [];
-      try {
-        await catsRequest('POST', state.httpBaseUrl, '/api/friends/request', {
-          user_id: Number(botUid),
-          message: 'Connect CatsCo desktop agent',
-        }, state.token);
-      } catch (friendRequestError: any) {
-        const msg = String(friendRequestError?.message || '');
-        if (!/duplicate|already|exists/i.test(msg)) {
-          warnings.push(`friend request: ${msg}`);
-        }
-      }
-      try {
-        await catsApiKeyRequest('POST', state.httpBaseUrl, '/api/friends/accept', apiKey, {
-          user_id: Number(userUid),
-        });
-      } catch (friendAcceptError: any) {
-        const msg = String(friendAcceptError?.message || '');
-        if (!/duplicate|already|exists/i.test(msg)) {
-          warnings.push(`friend accept: ${msg}`);
-        }
-      }
-
-      const updated = writeEnvUpdates({
-        CATSCO_HTTP_BASE_URL: state.httpBaseUrl,
-        CATSCO_SERVER_URL: state.serverUrl,
-        CATSCO_USER_TOKEN: state.token,
-        CATSCO_USER_UID: userUid,
-        CATSCO_USER_NAME: me.username || state.username || '',
-        CATSCO_USER_DISPLAY_NAME: me.display_name || me.username || state.displayName || '',
-        CATSCO_BOT_UID: botUid,
-        CATSCO_API_KEY: apiKey,
-        CATSCOMPANY_HTTP_BASE_URL: state.httpBaseUrl,
-        CATSCOMPANY_SERVER_URL: state.serverUrl,
-        CATSCOMPANY_USER_TOKEN: state.token,
-        CATSCOMPANY_USER_UID: userUid,
-        CATSCOMPANY_USER_NAME: me.username || state.username || '',
-        CATSCOMPANY_USER_DISPLAY_NAME: me.display_name || me.username || state.displayName || '',
-        CATSCOMPANY_BOT_UID: botUid,
-        CATSCOMPANY_API_KEY: apiKey,
+      const apiKey = await getCatsBotApiKey(state, botUid, bot);
+      const { updated, warnings, service, preflight } = await commitCatsBotBindingAndStartConnector(serviceManager, state, {
+        userUid,
+        username: me.username || state.username || '',
+        displayName: me.display_name || me.username || state.displayName || '',
+        botUid,
+        botName: bot.display_name || preferredName,
+        botUsername: bot.username || preferredUsername,
+        apiKey,
+        bindingSource: 'legacy-setup',
       });
-
-      let service = serviceManager.getService('catscompany');
-      let preflight;
-      if (service && service.status !== 'running') {
-        preflight = getServicePreflight(serviceManager, 'catscompany', {
-          runtimeRoot: process.cwd(),
-          config: ConfigManager.getConfigReadonly(),
-        });
-        if (preflight.status !== 'blocked') {
-          service = serviceManager.start('catscompany');
-        }
-      }
 
       res.json({
         ok: true,
@@ -1276,16 +1405,113 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
   });
 
   /**
+   * 显式创建机器人，但不隐式绑定当前设备。
+   * POST /api/cats/create-bot
+   */
+  router.post('/cats/create-bot', async (req, res) => {
+    try {
+      const state = getCatsAuthState(req.body || {});
+      if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
+
+      const me = await catsRequest('GET', state.httpBaseUrl, '/api/me', undefined, state.token);
+      const userUid = String(me.uid || state.uid || '');
+      if (!userUid) return res.status(500).json({ error: 'CatsCo user uid missing' });
+
+      const deviceId = ensureCatsDeviceId();
+      const deviceName = String(req.body?.deviceName || os.hostname() || 'current-device').trim();
+      const displayName = String(req.body?.botDisplayName || `CatsCo (${deviceName})`).trim() || `CatsCo (${deviceName})`;
+      const usernameBase = String(req.body?.botUsername || `catsco_${userUid}_${deviceId}`).trim();
+      const username = sanitizeCatsUsernamePart(usernameBase) || `catsco_${userUid}_${deviceId.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+
+      const created = await catsRequest('POST', state.httpBaseUrl, '/api/bots', {
+        username,
+        display_name: displayName,
+      }, state.token);
+
+      res.json({
+        ok: true,
+        deviceId,
+        bot: {
+          uid: String(created.uid || created.id || ''),
+          username: created.username || username,
+          display_name: created.display_name || displayName,
+          hasApiKey: Boolean(created.api_key),
+        },
+      });
+    } catch (e: any) {
+      res.status(e.status || 500).json({ error: e.message, data: e.data });
+    }
+  });
+
+  /**
+   * 显式绑定已有机器人到当前设备/进程，并启动 connector。
+   * POST /api/cats/bind-bot
+   */
+  router.post('/cats/bind-bot', async (req, res) => {
+    try {
+      const state = getCatsAuthState(req.body || {});
+      if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
+
+      const botUid = String(req.body?.botUid || '').trim();
+      if (!botUid) return res.status(400).json({ error: 'botUid is required' });
+
+      const me = await catsRequest('GET', state.httpBaseUrl, '/api/me', undefined, state.token);
+      const userUid = String(me.uid || state.uid || '');
+      if (!userUid) return res.status(500).json({ error: 'CatsCo user uid missing' });
+
+      const data = await catsRequest('GET', state.httpBaseUrl, '/api/bots', undefined, state.token);
+      const bots = Array.isArray(data?.bots) ? data.bots : [];
+      const targetBot = bots.find((bot: any) => String(bot.id || bot.uid || '') === botUid);
+      if (!targetBot) return res.status(404).json({ error: 'Bot not found' });
+
+      const apiKey = await getCatsBotApiKey(state, botUid, targetBot);
+      const { updated, warnings, service, preflight } = await commitCatsBotBindingAndStartConnector(serviceManager, state, {
+        userUid,
+        username: me.username || state.username || '',
+        displayName: me.display_name || me.username || state.displayName || '',
+        botUid,
+        botName: targetBot.display_name || targetBot.username || 'Bot',
+        botUsername: targetBot.username || '',
+        apiKey,
+        bindingSource: 'explicit-bind',
+      });
+      const botName = String(targetBot.display_name || targetBot.username || 'Bot');
+
+      res.json({
+        ok: true,
+        updated,
+        user: {
+          uid: userUid,
+          username: me.username || state.username || '',
+          display_name: me.display_name || me.username || state.displayName || '',
+        },
+        bot: { uid: botUid, username: targetBot.username || '', display_name: botName },
+        topicId: p2pTopicId(userUid, botUid),
+        service,
+        preflight,
+        warnings: warnings.length > 0 ? warnings : undefined,
+        message: `已绑定机器人 "${botName}"`,
+      });
+    } catch (e: any) {
+      res.status(e.status || 500).json({ error: e.message, data: e.data });
+    }
+  });
+
+  /**
    * 切换机器人
    * POST /api/cats/switch-bot
    */
   router.post('/cats/switch-bot', async (req, res) => {
     try {
-      const state = getCatsAuthState();
+      const state = getCatsAuthState(req.body || {});
       if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
 
       const botUid = String(req.body?.botUid || '').trim();
       if (!botUid) return res.status(400).json({ error: 'botUid is required' });
+
+      const me = await catsRequest('GET', state.httpBaseUrl, '/api/me', undefined, state.token);
+      const userUid = String(me.uid || state.uid || '');
+      if (!userUid) return res.status(500).json({ error: 'CatsCo user uid missing' });
 
       const data = await catsRequest('GET', state.httpBaseUrl, '/api/bots', undefined, state.token);
       const bots = Array.isArray(data?.bots) ? data.bots : [];
@@ -1293,32 +1519,32 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
 
       if (!targetBot) return res.status(404).json({ error: 'Bot not found' });
 
-      let apiKey = '';
-      try {
-        const keyResponse = await catsRequest('GET', state.httpBaseUrl, `/api/bots/api-key?uid=${encodeURIComponent(botUid)}`, undefined, state.token);
-        apiKey = String(keyResponse.api_key || '');
-      } catch { /* ignore */ }
-
-      const botName = String(targetBot.display_name || targetBot.username || 'Bot');
-
-      const updated = writeEnvUpdates({
-        CATSCO_BOT_UID: botUid,
-        CATSCO_API_KEY: apiKey,
-        CATSCOMPANY_BOT_UID: botUid,
-        CATSCOMPANY_API_KEY: apiKey,
+      const apiKey = await getCatsBotApiKey(state, botUid, targetBot);
+      const { updated, warnings, service, preflight } = await commitCatsBotBindingAndStartConnector(serviceManager, state, {
+        userUid,
+        username: me.username || state.username || '',
+        displayName: me.display_name || me.username || state.displayName || '',
+        botUid,
+        botName: targetBot.display_name || targetBot.username || 'Bot',
+        botUsername: targetBot.username || '',
+        apiKey,
+        bindingSource: 'explicit-switch',
       });
-
-      let service = serviceManager.getService('catscompany');
-      if (service && service.status === 'running') {
-        serviceManager.stop('catscompany');
-        service = serviceManager.start('catscompany');
-      }
+      const botName = String(targetBot.display_name || targetBot.username || 'Bot');
 
       res.json({
         ok: true,
         updated,
+        user: {
+          uid: userUid,
+          username: me.username || state.username || '',
+          display_name: me.display_name || me.username || state.displayName || '',
+        },
         bot: { uid: botUid, username: targetBot.username || '', display_name: botName },
+        topicId: p2pTopicId(userUid, botUid),
         service: service || null,
+        preflight,
+        warnings: warnings.length > 0 ? warnings : undefined,
         message: `已切换到机器人 "${botName}"`,
       });
     } catch (e: any) {
@@ -1350,16 +1576,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
    */
   router.get('/cats/config', async (_req, res) => {
     try {
-      const state = getCatsAuthState();
-      res.json({
-        ok: true,
-        version: 2,
-        hasAccount: Boolean(state.token && state.uid),
-        hasBot: Boolean(state.botUid && state.apiKey),
-        account: state.uid ? { uid: state.uid, username: state.username || '', displayName: state.displayName || state.username || '' } : null,
-        currentBot: state.botUid ? { uid: state.botUid, name: 'Bot' } : null,
-        preferences: { autoConnect: true, switchConfirmEnabled: true },
-      });
+      res.json(createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).toDashboardConfigPayload());
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -1371,10 +1588,10 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
    */
   router.put('/cats/config/preferences', async (req, res) => {
     try {
-      const preferences = req.body || {};
+      const preferences = createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).updatePreferences(req.body || {});
       res.json({
         ok: true,
-        preferences: { autoConnect: preferences.autoConnect ?? true, switchConfirmEnabled: preferences.switchConfirmEnabled ?? true },
+        preferences,
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });

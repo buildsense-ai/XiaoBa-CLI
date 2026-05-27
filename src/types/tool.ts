@@ -2,6 +2,7 @@ import { ContentBlock } from './index';
 import type { PlanRuntime, RuntimePlanSnapshot } from '../core/plan-runtime';
 import type { AIService } from '../utils/ai-service';
 import type { SkillManager } from '../skills/skill-manager';
+import type { SessionIdentitySnapshot } from './session-identity';
 
 /**
  * 工具参数定义
@@ -129,6 +130,8 @@ export interface ToolExecutionContext {
   workspaceRoot?: string;
   conversationHistory: any[];
   sessionId?: string;
+  /** Structured identity/provenance for the current session turn. */
+  sessionIdentity?: SessionIdentitySnapshot;
   surface?: ToolSurface;
   permissionProfile?: ToolPermissionProfile;
   runId?: string;

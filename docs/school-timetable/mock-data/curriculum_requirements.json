@@ -1,0 +1,2067 @@
+[
+  {
+    "id": "REQ-P1-flag_ceremony",
+    "grade_id": "P1",
+    "subject_id": "flag_ceremony",
+    "weekly_periods": 1,
+    "room_type": "assembly_ground",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P1-chinese",
+    "grade_id": "P1",
+    "subject_id": "chinese",
+    "weekly_periods": 8,
+    "room_type": "homeroom",
+    "min_distinct_days": 5,
+    "max_per_day": 2,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "prefer_morning",
+        "severity": "soft",
+        "weight": 4,
+        "params": {
+          "target_ratio": 0.75
+        },
+        "reason_zh": "低段语文尽量放上午"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P1-math",
+    "grade_id": "P1",
+    "subject_id": "math",
+    "weekly_periods": 5,
+    "room_type": "homeroom",
+    "min_distinct_days": 5,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "prefer_morning",
+        "severity": "soft",
+        "weight": 4,
+        "params": {
+          "target_ratio": 0.8
+        },
+        "reason_zh": "低段数学尽量放上午"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P1-english",
+    "grade_id": "P1",
+    "subject_id": "english",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "forbidden_weekdays",
+        "severity": "hard",
+        "params": {
+          "weekdays": [
+            "mon"
+          ]
+        },
+        "reason_zh": "低段周一不排英语，避免开周负担过重"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P1-morality",
+    "grade_id": "P1",
+    "subject_id": "morality",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P1-science",
+    "grade_id": "P1",
+    "subject_id": "science",
+    "weekly_periods": 1,
+    "room_type": "science_lab",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P1-pe",
+    "grade_id": "P1",
+    "subject_id": "pe",
+    "weekly_periods": 4,
+    "room_type": "sports_space",
+    "min_distinct_days": 4,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "spread_across_week",
+        "severity": "soft",
+        "weight": 3,
+        "params": {
+          "min_gap_days": 1
+        },
+        "reason_zh": "体育尽量隔天分布"
+      },
+      {
+        "type": "avoid_periods",
+        "severity": "soft",
+        "weight": 2,
+        "params": {
+          "periods": [
+            "p5"
+          ]
+        },
+        "reason_zh": "午饭后第一节尽量不排体育"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P1-music",
+    "grade_id": "P1",
+    "subject_id": "music",
+    "weekly_periods": 2,
+    "room_type": "music_room",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P1-art",
+    "grade_id": "P1",
+    "subject_id": "art",
+    "weekly_periods": 2,
+    "room_type": "art_room",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P1-labor",
+    "grade_id": "P1",
+    "subject_id": "labor",
+    "weekly_periods": 1,
+    "room_type": "labor_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P1-class_meeting",
+    "grade_id": "P1",
+    "subject_id": "class_meeting",
+    "weekly_periods": 1,
+    "room_type": "homeroom",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "fixed_slot",
+        "severity": "hard",
+        "params": {
+          "day": "fri",
+          "period": "p5"
+        },
+        "reason_zh": "低段班会固定周五第5节"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P1-reading",
+    "grade_id": "P1",
+    "subject_id": "reading",
+    "weekly_periods": 1,
+    "room_type": "homeroom",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P2-flag_ceremony",
+    "grade_id": "P2",
+    "subject_id": "flag_ceremony",
+    "weekly_periods": 1,
+    "room_type": "assembly_ground",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P2-chinese",
+    "grade_id": "P2",
+    "subject_id": "chinese",
+    "weekly_periods": 8,
+    "room_type": "homeroom",
+    "min_distinct_days": 5,
+    "max_per_day": 2,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "prefer_morning",
+        "severity": "soft",
+        "weight": 4,
+        "params": {
+          "target_ratio": 0.75
+        },
+        "reason_zh": "低段语文尽量放上午"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P2-math",
+    "grade_id": "P2",
+    "subject_id": "math",
+    "weekly_periods": 5,
+    "room_type": "homeroom",
+    "min_distinct_days": 5,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "prefer_morning",
+        "severity": "soft",
+        "weight": 4,
+        "params": {
+          "target_ratio": 0.8
+        },
+        "reason_zh": "低段数学尽量放上午"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P2-english",
+    "grade_id": "P2",
+    "subject_id": "english",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "forbidden_weekdays",
+        "severity": "hard",
+        "params": {
+          "weekdays": [
+            "mon"
+          ]
+        },
+        "reason_zh": "低段周一不排英语，避免开周负担过重"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P2-morality",
+    "grade_id": "P2",
+    "subject_id": "morality",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P2-science",
+    "grade_id": "P2",
+    "subject_id": "science",
+    "weekly_periods": 1,
+    "room_type": "science_lab",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P2-pe",
+    "grade_id": "P2",
+    "subject_id": "pe",
+    "weekly_periods": 4,
+    "room_type": "sports_space",
+    "min_distinct_days": 4,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "spread_across_week",
+        "severity": "soft",
+        "weight": 3,
+        "params": {
+          "min_gap_days": 1
+        },
+        "reason_zh": "体育尽量隔天分布"
+      },
+      {
+        "type": "avoid_periods",
+        "severity": "soft",
+        "weight": 2,
+        "params": {
+          "periods": [
+            "p5"
+          ]
+        },
+        "reason_zh": "午饭后第一节尽量不排体育"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P2-music",
+    "grade_id": "P2",
+    "subject_id": "music",
+    "weekly_periods": 2,
+    "room_type": "music_room",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P2-art",
+    "grade_id": "P2",
+    "subject_id": "art",
+    "weekly_periods": 2,
+    "room_type": "art_room",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P2-labor",
+    "grade_id": "P2",
+    "subject_id": "labor",
+    "weekly_periods": 1,
+    "room_type": "labor_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P2-class_meeting",
+    "grade_id": "P2",
+    "subject_id": "class_meeting",
+    "weekly_periods": 1,
+    "room_type": "homeroom",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "fixed_slot",
+        "severity": "hard",
+        "params": {
+          "day": "fri",
+          "period": "p5"
+        },
+        "reason_zh": "低段班会固定周五第5节"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P2-reading",
+    "grade_id": "P2",
+    "subject_id": "reading",
+    "weekly_periods": 1,
+    "room_type": "homeroom",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P3-flag_ceremony",
+    "grade_id": "P3",
+    "subject_id": "flag_ceremony",
+    "weekly_periods": 1,
+    "room_type": "assembly_ground",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P3-chinese",
+    "grade_id": "P3",
+    "subject_id": "chinese",
+    "weekly_periods": 7,
+    "room_type": "homeroom",
+    "min_distinct_days": 5,
+    "max_per_day": 2,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "prefer_morning",
+        "severity": "soft",
+        "weight": 4,
+        "params": {
+          "target_ratio": 0.7
+        },
+        "reason_zh": "语文尽量上午"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P3-math",
+    "grade_id": "P3",
+    "subject_id": "math",
+    "weekly_periods": 5,
+    "room_type": "homeroom",
+    "min_distinct_days": 5,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "prefer_morning",
+        "severity": "soft",
+        "weight": 4,
+        "params": {
+          "target_ratio": 0.75
+        },
+        "reason_zh": "数学尽量上午"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P3-english",
+    "grade_id": "P3",
+    "subject_id": "english",
+    "weekly_periods": 4,
+    "room_type": "homeroom",
+    "min_distinct_days": 4,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "spread_across_week",
+        "severity": "soft",
+        "weight": 2,
+        "params": {
+          "min_gap_days": 1
+        },
+        "reason_zh": "英语尽量分散"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P3-morality",
+    "grade_id": "P3",
+    "subject_id": "morality",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P3-science",
+    "grade_id": "P3",
+    "subject_id": "science",
+    "weekly_periods": 2,
+    "room_type": "science_lab",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "forbidden_weekdays",
+        "severity": "hard",
+        "params": {
+          "weekdays": [
+            "fri"
+          ]
+        },
+        "reason_zh": "三四年级科学周五不排，留给校本活动与实验室维护"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P3-pe",
+    "grade_id": "P3",
+    "subject_id": "pe",
+    "weekly_periods": 3,
+    "room_type": "sports_space",
+    "min_distinct_days": 3,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "spread_across_week",
+        "severity": "soft",
+        "weight": 3,
+        "params": {
+          "min_gap_days": 1
+        },
+        "reason_zh": "体育尽量隔天"
+      },
+      {
+        "type": "avoid_periods",
+        "severity": "soft",
+        "weight": 2,
+        "params": {
+          "periods": [
+            "p5"
+          ]
+        },
+        "reason_zh": "午饭后第一节尽量不排体育"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P3-music",
+    "grade_id": "P3",
+    "subject_id": "music",
+    "weekly_periods": 2,
+    "room_type": "music_room",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P3-art",
+    "grade_id": "P3",
+    "subject_id": "art",
+    "weekly_periods": 2,
+    "room_type": "art_room",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P3-it",
+    "grade_id": "P3",
+    "subject_id": "it",
+    "weekly_periods": 1,
+    "room_type": "computer_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "forbidden_weekdays",
+        "severity": "hard",
+        "params": {
+          "weekdays": [
+            "wed"
+          ]
+        },
+        "reason_zh": "周三机房统一维护，不排信息科技"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P3-labor",
+    "grade_id": "P3",
+    "subject_id": "labor",
+    "weekly_periods": 1,
+    "room_type": "labor_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P3-class_meeting",
+    "grade_id": "P3",
+    "subject_id": "class_meeting",
+    "weekly_periods": 1,
+    "room_type": "homeroom",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "fixed_slot",
+        "severity": "hard",
+        "params": {
+          "day": "fri",
+          "period": "p6"
+        },
+        "reason_zh": "三至六年级班会固定周五第6节"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P3-reading",
+    "grade_id": "P3",
+    "subject_id": "reading",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "min_gap_days",
+        "severity": "hard",
+        "params": {
+          "min_gap_days": 1
+        },
+        "reason_zh": "两节阅读课至少隔一天"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P3-comprehensive_practice",
+    "grade_id": "P3",
+    "subject_id": "comprehensive_practice",
+    "weekly_periods": 2,
+    "room_type": "maker_space",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "required",
+      "session_count": 1,
+      "length": 2
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": "综合实践按一次连堂排课"
+  },
+  {
+    "id": "REQ-P4-flag_ceremony",
+    "grade_id": "P4",
+    "subject_id": "flag_ceremony",
+    "weekly_periods": 1,
+    "room_type": "assembly_ground",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P4-chinese",
+    "grade_id": "P4",
+    "subject_id": "chinese",
+    "weekly_periods": 7,
+    "room_type": "homeroom",
+    "min_distinct_days": 5,
+    "max_per_day": 2,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "prefer_morning",
+        "severity": "soft",
+        "weight": 4,
+        "params": {
+          "target_ratio": 0.7
+        },
+        "reason_zh": "语文尽量上午"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P4-math",
+    "grade_id": "P4",
+    "subject_id": "math",
+    "weekly_periods": 5,
+    "room_type": "homeroom",
+    "min_distinct_days": 5,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "prefer_morning",
+        "severity": "soft",
+        "weight": 4,
+        "params": {
+          "target_ratio": 0.75
+        },
+        "reason_zh": "数学尽量上午"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P4-english",
+    "grade_id": "P4",
+    "subject_id": "english",
+    "weekly_periods": 4,
+    "room_type": "homeroom",
+    "min_distinct_days": 4,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "spread_across_week",
+        "severity": "soft",
+        "weight": 2,
+        "params": {
+          "min_gap_days": 1
+        },
+        "reason_zh": "英语尽量分散"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P4-morality",
+    "grade_id": "P4",
+    "subject_id": "morality",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P4-science",
+    "grade_id": "P4",
+    "subject_id": "science",
+    "weekly_periods": 2,
+    "room_type": "science_lab",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "forbidden_weekdays",
+        "severity": "hard",
+        "params": {
+          "weekdays": [
+            "fri"
+          ]
+        },
+        "reason_zh": "三四年级科学周五不排，留给校本活动与实验室维护"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P4-pe",
+    "grade_id": "P4",
+    "subject_id": "pe",
+    "weekly_periods": 3,
+    "room_type": "sports_space",
+    "min_distinct_days": 3,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "spread_across_week",
+        "severity": "soft",
+        "weight": 3,
+        "params": {
+          "min_gap_days": 1
+        },
+        "reason_zh": "体育尽量隔天"
+      },
+      {
+        "type": "avoid_periods",
+        "severity": "soft",
+        "weight": 2,
+        "params": {
+          "periods": [
+            "p5"
+          ]
+        },
+        "reason_zh": "午饭后第一节尽量不排体育"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P4-music",
+    "grade_id": "P4",
+    "subject_id": "music",
+    "weekly_periods": 2,
+    "room_type": "music_room",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P4-art",
+    "grade_id": "P4",
+    "subject_id": "art",
+    "weekly_periods": 2,
+    "room_type": "art_room",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P4-it",
+    "grade_id": "P4",
+    "subject_id": "it",
+    "weekly_periods": 1,
+    "room_type": "computer_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "forbidden_weekdays",
+        "severity": "hard",
+        "params": {
+          "weekdays": [
+            "wed"
+          ]
+        },
+        "reason_zh": "周三机房统一维护，不排信息科技"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P4-labor",
+    "grade_id": "P4",
+    "subject_id": "labor",
+    "weekly_periods": 1,
+    "room_type": "labor_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P4-class_meeting",
+    "grade_id": "P4",
+    "subject_id": "class_meeting",
+    "weekly_periods": 1,
+    "room_type": "homeroom",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "fixed_slot",
+        "severity": "hard",
+        "params": {
+          "day": "fri",
+          "period": "p6"
+        },
+        "reason_zh": "三至六年级班会固定周五第6节"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P4-reading",
+    "grade_id": "P4",
+    "subject_id": "reading",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "min_gap_days",
+        "severity": "hard",
+        "params": {
+          "min_gap_days": 1
+        },
+        "reason_zh": "两节阅读课至少隔一天"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P4-comprehensive_practice",
+    "grade_id": "P4",
+    "subject_id": "comprehensive_practice",
+    "weekly_periods": 2,
+    "room_type": "maker_space",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "required",
+      "session_count": 1,
+      "length": 2
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": "综合实践按一次连堂排课"
+  },
+  {
+    "id": "REQ-P5-flag_ceremony",
+    "grade_id": "P5",
+    "subject_id": "flag_ceremony",
+    "weekly_periods": 1,
+    "room_type": "assembly_ground",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P5-chinese",
+    "grade_id": "P5",
+    "subject_id": "chinese",
+    "weekly_periods": 6,
+    "room_type": "homeroom",
+    "min_distinct_days": 5,
+    "max_per_day": 2,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "prefer_morning",
+        "severity": "soft",
+        "weight": 4,
+        "params": {
+          "target_ratio": 0.65
+        },
+        "reason_zh": "语文尽量上午"
+      },
+      {
+        "type": "biweekly_double_period",
+        "severity": "soft",
+        "weight": 2,
+        "params": {
+          "length": 2
+        },
+        "reason_zh": "作文课隔周连堂优先"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P5-math",
+    "grade_id": "P5",
+    "subject_id": "math",
+    "weekly_periods": 5,
+    "room_type": "homeroom",
+    "min_distinct_days": 5,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "prefer_morning",
+        "severity": "soft",
+        "weight": 4,
+        "params": {
+          "target_ratio": 0.75
+        },
+        "reason_zh": "数学尽量上午"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P5-english",
+    "grade_id": "P5",
+    "subject_id": "english",
+    "weekly_periods": 4,
+    "room_type": "homeroom",
+    "min_distinct_days": 4,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P5-morality",
+    "grade_id": "P5",
+    "subject_id": "morality",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P5-science",
+    "grade_id": "P5",
+    "subject_id": "science",
+    "weekly_periods": 3,
+    "room_type": "science_lab",
+    "min_distinct_days": 3,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "required",
+      "session_count": 1,
+      "length": 2
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": "高段科学每周一次实验连堂"
+  },
+  {
+    "id": "REQ-P5-pe",
+    "grade_id": "P5",
+    "subject_id": "pe",
+    "weekly_periods": 3,
+    "room_type": "sports_space",
+    "min_distinct_days": 3,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "spread_across_week",
+        "severity": "soft",
+        "weight": 3,
+        "params": {
+          "min_gap_days": 1
+        },
+        "reason_zh": "体育尽量隔天"
+      },
+      {
+        "type": "avoid_periods",
+        "severity": "soft",
+        "weight": 2,
+        "params": {
+          "periods": [
+            "p5"
+          ]
+        },
+        "reason_zh": "午饭后第一节尽量不排体育"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P5-music",
+    "grade_id": "P5",
+    "subject_id": "music",
+    "weekly_periods": 1,
+    "room_type": "music_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P5-art",
+    "grade_id": "P5",
+    "subject_id": "art",
+    "weekly_periods": 2,
+    "room_type": "art_room",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P5-it",
+    "grade_id": "P5",
+    "subject_id": "it",
+    "weekly_periods": 1,
+    "room_type": "computer_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "forbidden_weekdays",
+        "severity": "hard",
+        "params": {
+          "weekdays": [
+            "wed"
+          ]
+        },
+        "reason_zh": "周三机房统一维护，不排信息科技"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P5-labor",
+    "grade_id": "P5",
+    "subject_id": "labor",
+    "weekly_periods": 1,
+    "room_type": "labor_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P5-class_meeting",
+    "grade_id": "P5",
+    "subject_id": "class_meeting",
+    "weekly_periods": 1,
+    "room_type": "homeroom",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "fixed_slot",
+        "severity": "hard",
+        "params": {
+          "day": "fri",
+          "period": "p6"
+        },
+        "reason_zh": "三至六年级班会固定周五第6节"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P5-reading",
+    "grade_id": "P5",
+    "subject_id": "reading",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "min_gap_days",
+        "severity": "hard",
+        "params": {
+          "min_gap_days": 1
+        },
+        "reason_zh": "两节阅读课至少隔一天"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P5-comprehensive_practice",
+    "grade_id": "P5",
+    "subject_id": "comprehensive_practice",
+    "weekly_periods": 2,
+    "room_type": "maker_space",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "required",
+      "session_count": 1,
+      "length": 2
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": "综合实践按一次连堂排课"
+  },
+  {
+    "id": "REQ-P5-school_based",
+    "grade_id": "P5",
+    "subject_id": "school_based",
+    "weekly_periods": 1,
+    "room_type": "homeroom",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P6-flag_ceremony",
+    "grade_id": "P6",
+    "subject_id": "flag_ceremony",
+    "weekly_periods": 1,
+    "room_type": "assembly_ground",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P6-chinese",
+    "grade_id": "P6",
+    "subject_id": "chinese",
+    "weekly_periods": 6,
+    "room_type": "homeroom",
+    "min_distinct_days": 5,
+    "max_per_day": 2,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "prefer_morning",
+        "severity": "soft",
+        "weight": 4,
+        "params": {
+          "target_ratio": 0.65
+        },
+        "reason_zh": "语文尽量上午"
+      },
+      {
+        "type": "biweekly_double_period",
+        "severity": "soft",
+        "weight": 2,
+        "params": {
+          "length": 2
+        },
+        "reason_zh": "作文课隔周连堂优先"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P6-math",
+    "grade_id": "P6",
+    "subject_id": "math",
+    "weekly_periods": 5,
+    "room_type": "homeroom",
+    "min_distinct_days": 5,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "prefer_morning",
+        "severity": "soft",
+        "weight": 4,
+        "params": {
+          "target_ratio": 0.75
+        },
+        "reason_zh": "数学尽量上午"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P6-english",
+    "grade_id": "P6",
+    "subject_id": "english",
+    "weekly_periods": 4,
+    "room_type": "homeroom",
+    "min_distinct_days": 4,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P6-morality",
+    "grade_id": "P6",
+    "subject_id": "morality",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P6-science",
+    "grade_id": "P6",
+    "subject_id": "science",
+    "weekly_periods": 3,
+    "room_type": "science_lab",
+    "min_distinct_days": 3,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "required",
+      "session_count": 1,
+      "length": 2
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": "高段科学每周一次实验连堂"
+  },
+  {
+    "id": "REQ-P6-pe",
+    "grade_id": "P6",
+    "subject_id": "pe",
+    "weekly_periods": 3,
+    "room_type": "sports_space",
+    "min_distinct_days": 3,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "spread_across_week",
+        "severity": "soft",
+        "weight": 3,
+        "params": {
+          "min_gap_days": 1
+        },
+        "reason_zh": "体育尽量隔天"
+      },
+      {
+        "type": "avoid_periods",
+        "severity": "soft",
+        "weight": 2,
+        "params": {
+          "periods": [
+            "p5"
+          ]
+        },
+        "reason_zh": "午饭后第一节尽量不排体育"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P6-music",
+    "grade_id": "P6",
+    "subject_id": "music",
+    "weekly_periods": 1,
+    "room_type": "music_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P6-art",
+    "grade_id": "P6",
+    "subject_id": "art",
+    "weekly_periods": 2,
+    "room_type": "art_room",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P6-it",
+    "grade_id": "P6",
+    "subject_id": "it",
+    "weekly_periods": 1,
+    "room_type": "computer_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "forbidden_weekdays",
+        "severity": "hard",
+        "params": {
+          "weekdays": [
+            "wed"
+          ]
+        },
+        "reason_zh": "周三机房统一维护，不排信息科技"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P6-labor",
+    "grade_id": "P6",
+    "subject_id": "labor",
+    "weekly_periods": 1,
+    "room_type": "labor_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P6-class_meeting",
+    "grade_id": "P6",
+    "subject_id": "class_meeting",
+    "weekly_periods": 1,
+    "room_type": "homeroom",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "fixed_slot",
+        "severity": "hard",
+        "params": {
+          "day": "fri",
+          "period": "p6"
+        },
+        "reason_zh": "三至六年级班会固定周五第6节"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P6-reading",
+    "grade_id": "P6",
+    "subject_id": "reading",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "min_gap_days",
+        "severity": "hard",
+        "params": {
+          "min_gap_days": 1
+        },
+        "reason_zh": "两节阅读课至少隔一天"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-P6-comprehensive_practice",
+    "grade_id": "P6",
+    "subject_id": "comprehensive_practice",
+    "weekly_periods": 2,
+    "room_type": "maker_space",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "required",
+      "session_count": 1,
+      "length": 2
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": "综合实践按一次连堂排课"
+  },
+  {
+    "id": "REQ-P6-school_based",
+    "grade_id": "P6",
+    "subject_id": "school_based",
+    "weekly_periods": 1,
+    "room_type": "homeroom",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-flag_ceremony",
+    "grade_id": "J1",
+    "subject_id": "flag_ceremony",
+    "weekly_periods": 1,
+    "room_type": "assembly_ground",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-chinese",
+    "grade_id": "J1",
+    "subject_id": "chinese",
+    "weekly_periods": 5,
+    "room_type": "homeroom",
+    "min_distinct_days": 5,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "prefer_morning",
+        "severity": "soft",
+        "weight": 4,
+        "params": {
+          "target_ratio": 0.65
+        },
+        "reason_zh": "语文尽量上午"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-math",
+    "grade_id": "J1",
+    "subject_id": "math",
+    "weekly_periods": 5,
+    "room_type": "homeroom",
+    "min_distinct_days": 5,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "prefer_morning",
+        "severity": "soft",
+        "weight": 4,
+        "params": {
+          "target_ratio": 0.7
+        },
+        "reason_zh": "数学尽量上午"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-english",
+    "grade_id": "J1",
+    "subject_id": "english",
+    "weekly_periods": 5,
+    "room_type": "homeroom",
+    "min_distinct_days": 5,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "spread_across_week",
+        "severity": "soft",
+        "weight": 3,
+        "params": {
+          "min_gap_days": 1
+        },
+        "reason_zh": "英语尽量分散"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-morality",
+    "grade_id": "J1",
+    "subject_id": "morality",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-history",
+    "grade_id": "J1",
+    "subject_id": "history",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-geography",
+    "grade_id": "J1",
+    "subject_id": "geography",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-biology",
+    "grade_id": "J1",
+    "subject_id": "biology",
+    "weekly_periods": 3,
+    "room_type": "biology_lab",
+    "min_distinct_days": 3,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "required",
+      "session_count": 1,
+      "length": 2
+    },
+    "hard_constraints": [
+      {
+        "type": "forbidden_weekdays",
+        "severity": "hard",
+        "params": {
+          "weekdays": [
+            "mon"
+          ]
+        },
+        "reason_zh": "初一生物实验准备周一不开放"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-pe",
+    "grade_id": "J1",
+    "subject_id": "pe",
+    "weekly_periods": 3,
+    "room_type": "sports_space",
+    "min_distinct_days": 3,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [
+      {
+        "type": "spread_across_week",
+        "severity": "soft",
+        "weight": 3,
+        "params": {
+          "min_gap_days": 1
+        },
+        "reason_zh": "体育尽量隔天"
+      },
+      {
+        "type": "avoid_periods",
+        "severity": "soft",
+        "weight": 2,
+        "params": {
+          "periods": [
+            "p5"
+          ]
+        },
+        "reason_zh": "午饭后第一节尽量不排体育"
+      }
+    ],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-music",
+    "grade_id": "J1",
+    "subject_id": "music",
+    "weekly_periods": 1,
+    "room_type": "music_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-art",
+    "grade_id": "J1",
+    "subject_id": "art",
+    "weekly_periods": 1,
+    "room_type": "art_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-it",
+    "grade_id": "J1",
+    "subject_id": "it",
+    "weekly_periods": 1,
+    "room_type": "computer_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-labor",
+    "grade_id": "J1",
+    "subject_id": "labor",
+    "weekly_periods": 1,
+    "room_type": "labor_room",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-class_meeting",
+    "grade_id": "J1",
+    "subject_id": "class_meeting",
+    "weekly_periods": 1,
+    "room_type": "homeroom",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "fixed_slot",
+        "severity": "hard",
+        "params": {
+          "day": "fri",
+          "period": "p7"
+        },
+        "reason_zh": "初一班会固定周五第7节"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-reading",
+    "grade_id": "J1",
+    "subject_id": "reading",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [
+      {
+        "type": "min_gap_days",
+        "severity": "hard",
+        "params": {
+          "min_gap_days": 1
+        },
+        "reason_zh": "两节阅读课至少隔一天"
+      }
+    ],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-comprehensive_practice",
+    "grade_id": "J1",
+    "subject_id": "comprehensive_practice",
+    "weekly_periods": 2,
+    "room_type": "maker_space",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "required",
+      "session_count": 1,
+      "length": 2
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-school_based",
+    "grade_id": "J1",
+    "subject_id": "school_based",
+    "weekly_periods": 2,
+    "room_type": "homeroom",
+    "min_distinct_days": 2,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  },
+  {
+    "id": "REQ-J1-self_study",
+    "grade_id": "J1",
+    "subject_id": "self_study",
+    "weekly_periods": 1,
+    "room_type": "homeroom",
+    "min_distinct_days": 1,
+    "max_per_day": 1,
+    "consecutive_policy": {
+      "mode": "none"
+    },
+    "hard_constraints": [],
+    "soft_constraints": [],
+    "notes_zh": ""
+  }
+]

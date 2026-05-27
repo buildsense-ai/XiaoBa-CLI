@@ -1,0 +1,1132 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>广大附 AI 助手试点与教育智能体建设汇报</title>
+    <style>
+      :root {
+        --paper: #f7f8f5;
+        --paper-2: #eef3ef;
+        --ink: #1b2520;
+        --muted: #637069;
+        --line: #d9e1da;
+        --green: #087a59;
+        --green-2: #dff0e8;
+        --coral: #e56b4a;
+        --coral-2: #f8e8df;
+        --gold: #d5a021;
+        --gold-2: #f3e8be;
+        --dark: #14211b;
+        --white: #fff;
+        --shadow: 0 24px 60px rgba(27, 37, 32, 0.14);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        background: #dfe5df;
+        color: var(--ink);
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      }
+
+      body {
+        min-height: 100vh;
+      }
+
+      .deck {
+        display: grid;
+        gap: 36px;
+        padding: 36px;
+        justify-items: center;
+      }
+
+      .slide {
+        position: relative;
+        width: min(1280px, calc(100vw - 72px));
+        aspect-ratio: 16 / 9;
+        overflow: hidden;
+        background: var(--paper);
+        box-shadow: var(--shadow);
+        padding: 54px 64px;
+      }
+
+      .slide.dark {
+        background: var(--dark);
+        color: var(--white);
+      }
+
+      .slide::after {
+        content: attr(data-page);
+        position: absolute;
+        right: 60px;
+        bottom: 34px;
+        font-size: 14px;
+        color: #7d8a82;
+      }
+
+      .slide.dark::after {
+        color: #9aaca2;
+      }
+
+      .kicker {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        color: var(--green);
+        font-weight: 800;
+        font-size: 15px;
+        margin-bottom: 22px;
+      }
+
+      .kicker::before {
+        content: "";
+        width: 30px;
+        height: 3px;
+        background: currentColor;
+      }
+
+      .kicker.coral {
+        color: var(--coral);
+      }
+
+      .kicker.gold {
+        color: var(--gold);
+      }
+
+      h1,
+      h2,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        max-width: 980px;
+        font-size: 42px;
+        line-height: 1.14;
+        letter-spacing: 0;
+      }
+
+      .subtitle {
+        max-width: 900px;
+        margin-top: 18px;
+        font-size: 20px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+
+      .dark .subtitle {
+        color: #c7d3cb;
+      }
+
+      .footer {
+        position: absolute;
+        left: 64px;
+        bottom: 34px;
+        width: 980px;
+        padding-top: 12px;
+        border-top: 1px solid rgba(125, 138, 130, 0.35);
+        font-size: 11px;
+        color: #7d8a82;
+      }
+
+      .dark .footer {
+        color: #9aaca2;
+        border-color: rgba(199, 211, 203, 0.24);
+      }
+
+      .cover-title {
+        margin-top: 28px;
+        max-width: 880px;
+        font-size: 58px;
+        line-height: 1.12;
+      }
+
+      .cover-subtitle {
+        margin-top: 26px;
+        max-width: 850px;
+        font-size: 23px;
+        line-height: 1.45;
+        color: #c7d3cb;
+      }
+
+      .stage-rail {
+        position: absolute;
+        left: 72px;
+        right: 150px;
+        bottom: 150px;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 42px;
+        padding-top: 34px;
+        border-top: 1px solid rgba(199, 211, 203, 0.32);
+      }
+
+      .stage-no {
+        color: var(--gold);
+        font-weight: 800;
+        font-size: 16px;
+      }
+
+      .stage-head {
+        margin-top: 14px;
+        color: var(--white);
+        font-size: 24px;
+        font-weight: 800;
+      }
+
+      .stage-body {
+        margin-top: 8px;
+        color: #b9c7bf;
+        font-size: 16px;
+        line-height: 1.4;
+      }
+
+      .proof-grid {
+        margin-top: 46px;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 24px;
+      }
+
+      .proof-card {
+        min-height: 160px;
+        padding: 22px 24px;
+        background: var(--white);
+        border: 1px solid var(--line);
+        border-left: 6px solid var(--green);
+      }
+
+      .proof-card:nth-child(2) {
+        border-left-color: var(--coral);
+      }
+
+      .proof-card:nth-child(3) {
+        border-left-color: var(--gold);
+      }
+
+      .proof-card h2 {
+        font-size: 22px;
+        line-height: 1.2;
+      }
+
+      .proof-card p {
+        margin-top: 18px;
+        color: var(--muted);
+        font-size: 17px;
+        line-height: 1.45;
+      }
+
+      .callout {
+        position: absolute;
+        left: 64px;
+        right: 180px;
+        bottom: 112px;
+        display: grid;
+        grid-template-columns: 120px 1fr;
+        gap: 22px;
+        padding: 20px 24px;
+        background: var(--green-2);
+        border: 1px solid #cfe1d4;
+      }
+
+      .callout strong {
+        color: var(--green);
+      }
+
+      .callout p {
+        font-size: 20px;
+        line-height: 1.45;
+      }
+
+      .scenario-map {
+        margin-top: 44px;
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 18px;
+      }
+
+      .scenario {
+        min-height: 246px;
+        padding: 24px 22px;
+        background: var(--white);
+        border: 1px solid var(--line);
+        border-top: 8px solid var(--green);
+      }
+
+      .scenario:nth-child(2),
+      .scenario:nth-child(5) {
+        border-top-color: var(--coral);
+      }
+
+      .scenario:nth-child(3) {
+        border-top-color: var(--gold);
+      }
+
+      .scenario h2 {
+        font-size: 23px;
+      }
+
+      .scenario ul {
+        margin: 28px 0 0;
+        padding: 0;
+        list-style: none;
+        color: var(--muted);
+        font-size: 17px;
+        line-height: 1.7;
+      }
+
+      .bottom-claim {
+        position: absolute;
+        left: 84px;
+        right: 150px;
+        bottom: 108px;
+        font-size: 23px;
+        line-height: 1.45;
+        font-weight: 800;
+      }
+
+      .workflow {
+        margin-top: 40px;
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 16px;
+        align-items: center;
+      }
+
+      .workflow-step {
+        height: 44px;
+        display: grid;
+        place-items: center;
+        background: var(--green-2);
+        color: var(--green);
+        font-weight: 800;
+        font-size: 16px;
+      }
+
+      .workflow-step:first-child {
+        background: var(--green);
+        color: var(--white);
+      }
+
+      .demo-layout {
+        margin-top: 34px;
+        display: grid;
+        grid-template-columns: 1fr 300px;
+        gap: 34px;
+        align-items: stretch;
+      }
+
+      .screenshot-frame {
+        height: 270px;
+        padding: 12px;
+        background: var(--white);
+        border: 1px solid var(--line);
+      }
+
+      .screenshot-frame img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: top left;
+        display: block;
+      }
+
+      .skill-proof {
+        height: 270px;
+        padding: 34px 32px;
+        background: var(--dark);
+        color: var(--white);
+      }
+
+      .skill-proof h2 {
+        font-size: 28px;
+        line-height: 1.25;
+      }
+
+      .skill-proof ul {
+        margin: 34px 0 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 14px;
+        color: #d8e6dd;
+        font-size: 20px;
+      }
+
+      .skill-proof li::before {
+        content: "";
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        margin-right: 14px;
+        background: var(--gold);
+        vertical-align: middle;
+      }
+
+      .compare {
+        margin-top: 48px;
+        display: grid;
+        grid-template-columns: 420px 160px 420px;
+        gap: 28px;
+        align-items: center;
+      }
+
+      .compare-box {
+        min-height: 274px;
+        padding: 34px;
+        background: var(--white);
+        border: 1px solid var(--line);
+      }
+
+      .compare-box.green {
+        background: var(--green-2);
+      }
+
+      .compare-box h2 {
+        color: var(--green);
+        font-size: 24px;
+      }
+
+      .compare-box:first-child h2 {
+        color: var(--ink);
+      }
+
+      .compare-box ul {
+        margin: 28px 0 0;
+        padding: 0;
+        list-style: none;
+        color: var(--muted);
+        font-size: 17px;
+        line-height: 1.8;
+      }
+
+      .compare-box li::before {
+        content: "";
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        margin-right: 10px;
+        background: var(--green);
+        vertical-align: middle;
+      }
+
+      .arrow {
+        height: 4px;
+        background: var(--gold);
+        position: relative;
+      }
+
+      .arrow-label {
+        text-align: center;
+        margin-bottom: 20px;
+        color: var(--gold);
+        font-size: 22px;
+        font-weight: 800;
+      }
+
+      .agent-hub {
+        position: relative;
+        margin-top: 44px;
+        height: 340px;
+      }
+
+      .hub-center {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 330px;
+        height: 132px;
+        transform: translate(-50%, -50%);
+        display: grid;
+        place-items: center;
+        background: var(--dark);
+        color: var(--white);
+        font-size: 34px;
+        line-height: 1.25;
+        font-weight: 900;
+        text-align: center;
+      }
+
+      .hub-node {
+        position: absolute;
+        width: 290px;
+        height: 122px;
+        padding: 24px;
+        background: var(--white);
+        border: 1px solid var(--line);
+        border-left: 6px solid var(--green);
+      }
+
+      .hub-node h2 {
+        font-size: 20px;
+      }
+
+      .hub-node p {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.45;
+      }
+
+      .hub-node.n1 {
+        left: 46px;
+        top: 24px;
+      }
+
+      .hub-node.n2 {
+        right: 46px;
+        top: 24px;
+        border-left-color: var(--coral);
+      }
+
+      .hub-node.n3 {
+        left: 46px;
+        bottom: 24px;
+        border-left-color: var(--gold);
+      }
+
+      .hub-node.n4 {
+        right: 46px;
+        bottom: 24px;
+      }
+
+      .value-stack {
+        margin-top: 56px;
+        display: grid;
+        gap: 20px;
+        width: 860px;
+      }
+
+      .value-row {
+        min-height: 78px;
+        display: grid;
+        grid-template-columns: 160px 1fr;
+        align-items: center;
+        padding: 0 34px;
+        background: var(--coral-2);
+      }
+
+      .value-row:nth-child(2) {
+        margin-left: 42px;
+        background: var(--gold-2);
+      }
+
+      .value-row:nth-child(3) {
+        margin-left: 84px;
+        background: var(--green-2);
+      }
+
+      .value-row h2 {
+        font-size: 24px;
+        color: var(--green);
+      }
+
+      .value-row:first-child h2 {
+        color: var(--coral);
+      }
+
+      .value-row:nth-child(2) h2 {
+        color: #a67a0b;
+      }
+
+      .value-row p {
+        font-size: 19px;
+      }
+
+      .asset-note {
+        position: absolute;
+        right: 120px;
+        top: 316px;
+        width: 236px;
+        height: 250px;
+        padding: 38px 30px;
+        background: var(--dark);
+        color: var(--white);
+        display: grid;
+        align-content: center;
+      }
+
+      .asset-note h2 {
+        font-size: 24px;
+        line-height: 1.25;
+      }
+
+      .asset-note p {
+        margin-top: 24px;
+        color: #c7d3cb;
+        font-size: 16px;
+        line-height: 1.5;
+      }
+
+      .policy-grid {
+        margin-top: 44px;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 20px;
+      }
+
+      .policy-card {
+        min-height: 246px;
+        padding: 26px;
+        background: var(--white);
+        border: 1px solid var(--line);
+        border-left: 6px solid var(--green);
+      }
+
+      .policy-card:nth-child(2) {
+        border-left-color: var(--coral);
+      }
+
+      .policy-card:nth-child(3) {
+        border-left-color: var(--gold);
+      }
+
+      .policy-card h2 {
+        font-size: 21px;
+        line-height: 1.25;
+      }
+
+      .policy-card p {
+        margin-top: 16px;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.5;
+      }
+
+      .policy-callout {
+        position: absolute;
+        left: 156px;
+        right: 156px;
+        bottom: 104px;
+        padding: 18px 24px;
+        background: var(--green-2);
+        text-align: center;
+        font-weight: 800;
+        font-size: 20px;
+      }
+
+      .path {
+        margin-top: 72px;
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 18px;
+      }
+
+      .path-step {
+        min-height: 104px;
+        display: grid;
+        align-content: center;
+        justify-items: center;
+        padding: 18px 14px;
+        border: 1px solid var(--line);
+        background: var(--white);
+        text-align: center;
+      }
+
+      .path-step:nth-child(-n + 2) {
+        background: var(--green-2);
+      }
+
+      .path-step h2 {
+        color: var(--green);
+        font-size: 18px;
+      }
+
+      .path-step p {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.35;
+      }
+
+      .dark-band {
+        position: absolute;
+        left: 152px;
+        right: 152px;
+        bottom: 126px;
+        padding: 24px 34px;
+        background: var(--dark);
+        color: var(--white);
+        text-align: center;
+        font-size: 22px;
+        line-height: 1.4;
+        font-weight: 800;
+      }
+
+      .decision {
+        margin-top: 52px;
+        display: grid;
+        grid-template-columns: 360px 610px;
+        gap: 70px;
+        align-items: start;
+      }
+
+      .price-card {
+        min-height: 230px;
+        padding: 34px;
+        background: #23332a;
+        color: var(--white);
+      }
+
+      .price-card .label {
+        color: var(--gold);
+        font-weight: 800;
+        font-size: 18px;
+      }
+
+      .price {
+        margin-top: 34px;
+        font-size: 38px;
+        line-height: 1.1;
+        font-weight: 900;
+      }
+
+      .price-card p {
+        margin-top: 22px;
+        color: #c7d3cb;
+        font-size: 16px;
+        line-height: 1.45;
+      }
+
+      .ask-card {
+        padding: 34px 40px;
+        background: var(--paper);
+        color: var(--ink);
+      }
+
+      .ask-card h2 {
+        font-size: 24px;
+      }
+
+      .ask-card ul {
+        margin: 24px 0 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 13px;
+        font-size: 18px;
+      }
+
+      .ask-card li::before {
+        content: "";
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        margin-right: 12px;
+        background: var(--gold);
+        vertical-align: middle;
+      }
+
+      .closing-line {
+        position: absolute;
+        left: 72px;
+        right: 120px;
+        bottom: 82px;
+        font-size: 24px;
+        line-height: 1.35;
+        font-weight: 900;
+        color: var(--white);
+      }
+
+      .present-toolbar {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        z-index: 20;
+        display: flex;
+        gap: 8px;
+        padding: 8px;
+        background: rgba(20, 33, 27, 0.82);
+        backdrop-filter: blur(10px);
+        border-radius: 999px;
+        opacity: 0.12;
+        transition: opacity 0.18s ease;
+      }
+
+      .present-toolbar:hover {
+        opacity: 1;
+      }
+
+      .present-toolbar button {
+        width: 36px;
+        height: 36px;
+        border: 0;
+        border-radius: 50%;
+        background: var(--paper);
+        color: var(--ink);
+        font-weight: 900;
+        cursor: pointer;
+      }
+
+      @media (max-width: 900px) {
+        .deck {
+          padding: 16px;
+          gap: 20px;
+        }
+
+        .slide {
+          width: calc(100vw - 32px);
+          padding: 36px;
+        }
+      }
+
+      @media print {
+        body {
+          background: white;
+        }
+
+        .deck {
+          padding: 0;
+          gap: 0;
+        }
+
+        .slide {
+          width: 100vw;
+          height: 56.25vw;
+          box-shadow: none;
+          page-break-after: always;
+        }
+
+        .present-toolbar {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="deck" id="deck">
+      <section class="slide dark" data-page="01">
+        <h1 class="cover-title">广大附 AI 助手试点阶段汇报<br />与教育智能体建设方案</h1>
+        <p class="cover-subtitle">从老师个人 AI 助手，到学校级校园智能助手，再到 AI 示范校园成果</p>
+        <div class="stage-rail">
+          <div>
+            <div class="stage-no">01</div>
+            <div class="stage-head">试点已成立</div>
+            <div class="stage-body">AI 已进入老师真实工作</div>
+          </div>
+          <div>
+            <div class="stage-no">02</div>
+            <div class="stage-head">第二阶段交付</div>
+            <div class="stage-body">建设“广大附教育智能体”</div>
+          </div>
+          <div>
+            <div class="stage-no">03</div>
+            <div class="stage-head">示范校园成果</div>
+            <div class="stage-body">沉淀可展示、可申报材料</div>
+          </div>
+        </div>
+        <div class="footer">2026.05.28 · AI 教育智能体建设沟通材料</div>
+      </section>
+
+      <section class="slide" data-page="02">
+        <div class="kicker">第一阶段试点</div>
+        <h1>AI 已开始进入老师真实工作流</h1>
+        <p class="subtitle">第一阶段的关键成果不是安装了工具，而是老师开始用 AI 处理真实任务。</p>
+        <div class="proof-grid">
+          <article class="proof-card">
+            <h2>总务处</h2>
+            <p>盘点、物料、合同、Excel 台账。适合做成可视化和可导出的稳定流程。</p>
+          </article>
+          <article class="proof-card">
+            <h2>教务处</h2>
+            <p>排课、调课、冲突检查、结果导出。复杂度高，最能体现可复用流程能力。</p>
+          </article>
+          <article class="proof-card">
+            <h2>校办</h2>
+            <p>会议纪要、通知、汇报材料、制度文件。高频、标准化、容易形成模板。</p>
+          </article>
+        </div>
+        <div class="callout">
+          <strong>试点结论</strong>
+          <p>试点显示，AI 已经开始参与文档、表格、资料整理和部门流程。下一阶段可以把真实使用、典型案例和部门场景沉淀为学校成果。</p>
+        </div>
+        <div class="footer">AI 教育智能体建设沟通材料</div>
+      </section>
+
+      <section class="slide" data-page="03">
+        <div class="kicker coral">场景洞察</div>
+        <h1>真正的价值，是处理学校反复发生的复杂工作</h1>
+        <p class="subtitle">文档类需求是入口；首批聚焦更适合形成学校级沉淀的重点场景。</p>
+        <div class="scenario-map">
+          <article class="scenario">
+            <h2>教务</h2>
+            <ul>
+              <li>排课 / 调课</li>
+              <li>冲突检查</li>
+              <li>结果导出</li>
+            </ul>
+          </article>
+          <article class="scenario">
+            <h2>总务</h2>
+            <ul>
+              <li>物料盘点</li>
+              <li>合同台账</li>
+              <li>Excel 输出</li>
+            </ul>
+          </article>
+          <article class="scenario">
+            <h2>校办</h2>
+            <ul>
+              <li>会议纪要</li>
+              <li>通知公告</li>
+              <li>汇报材料</li>
+            </ul>
+          </article>
+          <article class="scenario">
+            <h2>教学</h2>
+            <ul>
+              <li>备课辅助</li>
+              <li>复习重点</li>
+              <li>成绩分析</li>
+            </ul>
+          </article>
+          <article class="scenario">
+            <h2>资料库</h2>
+            <ul>
+              <li>微信群资料</li>
+              <li>历史模板</li>
+              <li>快速检索</li>
+            </ul>
+          </article>
+        </div>
+        <p class="bottom-claim">前期需求池覆盖文档归档、会议记录、表格整理、消息分发、图片归档等；第二阶段优先把共性强、组织价值高的场景沉淀为学校能力。</p>
+        <div class="footer">AI 教育智能体建设沟通材料</div>
+      </section>
+
+      <section class="slide" data-page="04">
+        <div class="kicker">能力展示</div>
+        <h1>排课能力展示：AI 可以处理复杂学校流程</h1>
+        <p class="subtitle">已基于学校正式材料完成可演示版本，正在与老师做最后校准；排课能力将作为下一阶段重点场景继续打磨。</p>
+        <div class="workflow">
+          <div class="workflow-step">真实材料</div>
+          <div class="workflow-step">规则识别</div>
+          <div class="workflow-step">生成课表</div>
+          <div class="workflow-step">冲突检查</div>
+          <div class="workflow-step">局部调整</div>
+          <div class="workflow-step">结果导出</div>
+        </div>
+        <div class="demo-layout">
+          <div class="screenshot-frame">
+            <img src="../assets/timetable-demo-slide-crop.png" alt="排课可视化工作台截图" />
+          </div>
+          <aside class="skill-proof">
+            <h2>能力重点</h2>
+            <ul>
+              <li>读取真实材料</li>
+              <li>检查排课冲突</li>
+              <li>支持局部调整</li>
+              <li>导出结果文件</li>
+            </ul>
+          </aside>
+        </div>
+        <div class="footer">AI 教育智能体建设沟通材料</div>
+      </section>
+
+      <section class="slide" data-page="05">
+        <div class="kicker gold">产品判断</div>
+        <h1>个人助手验证需求，学校级智能体沉淀能力</h1>
+        <p class="subtitle">第一阶段验证了真实需求，下一阶段把共性流程沉淀为学校统一能力。</p>
+        <div class="compare">
+          <article class="compare-box">
+            <h2>每位老师的个人 AI 助手</h2>
+            <ul>
+              <li>直接进入个人电脑</li>
+              <li>适合启动试点</li>
+              <li>体验接近个人助手</li>
+              <li>但经验容易分散</li>
+            </ul>
+          </article>
+          <div>
+            <div class="arrow-label">升级</div>
+            <div class="arrow"></div>
+          </div>
+          <article class="compare-box green">
+            <h2>广大附教育智能体</h2>
+            <ul>
+              <li>云端 24 小时在线</li>
+              <li>多人独立会话</li>
+              <li>沉淀学校资料和流程能力</li>
+              <li>形成组织级 AI 资产</li>
+            </ul>
+          </article>
+        </div>
+        <p class="bottom-claim">本地能力仍保留：老师需要处理本机文件时，可通过上传、授权或本地连接让云端智能体访问材料。</p>
+        <div class="footer">AI 教育智能体建设沟通材料</div>
+      </section>
+
+      <section class="slide" data-page="06">
+        <div class="kicker">第二阶段交付</div>
+        <h1>建设 24 小时在线的“广大附教育智能体”</h1>
+        <p class="subtitle">45 天内形成可用版本、首批重点场景和展示材料，为持续迭代奠定基础。</p>
+        <div class="agent-hub">
+          <div class="hub-center">广大附<br />教育智能体</div>
+          <article class="hub-node n1">
+            <h2>统一入口</h2>
+            <p>老师、教务、总务、校办可用</p>
+          </article>
+          <article class="hub-node n2">
+            <h2>资料库初版</h2>
+            <p>文件归档、检索、问答、引用</p>
+          </article>
+          <article class="hub-node n3">
+            <h2>重点场景深化</h2>
+            <p>排课辅助、总务台账，形成真实案例</p>
+          </article>
+          <article class="hub-node n4">
+            <h2>通用办公支持</h2>
+            <p>文档、会议纪要、资料检索，并沉淀成果材料</p>
+          </article>
+        </div>
+        <div class="footer">AI 教育智能体建设沟通材料</div>
+      </section>
+
+      <section class="slide" data-page="07">
+        <div class="kicker coral">学校价值</div>
+        <h1>对老师像助手，对学校是可持续积累的智能资产</h1>
+        <p class="subtitle">同一个入口，对不同层级产生不同价值。</p>
+        <div class="value-stack">
+          <article class="value-row">
+            <h2>老师</h2>
+            <p>处理文档、表格、通知、课件、备课、材料整理</p>
+          </article>
+          <article class="value-row">
+            <h2>部门</h2>
+            <p>沉淀流程、模板、台账、协作方式和可复用能力</p>
+          </article>
+          <article class="value-row">
+            <h2>学校</h2>
+            <p>形成资料库、校本经验、教师案例和 AI 示范成果</p>
+          </article>
+        </div>
+        <aside class="asset-note">
+          <h2>越用越有价值</h2>
+          <p>资料、流程、模板、案例和技能不再散落在个人电脑和聊天记录里，而是沉淀为学校资产。</p>
+        </aside>
+        <div class="footer">AI 教育智能体建设沟通材料</div>
+      </section>
+
+      <section class="slide" data-page="08">
+        <div class="kicker">政策窗口</div>
+        <h1>教育智能体建设对齐政策场景与成果申报</h1>
+        <p class="subtitle">下一阶段同步沉淀真实场景、使用数据和展示材料，为后续案例征集、场景示范和典型应用储备成果。</p>
+        <div class="policy-grid">
+          <article class="policy-card">
+            <h2>案例征集</h2>
+            <p>广州市教师数字素养实践活动已设置学校全面深化应用案例、用 AI/创 AI/护 AI 案例、融合创新教学案例。</p>
+          </article>
+          <article class="policy-card">
+            <h2>场景示范</h2>
+            <p>广州 2026 年 AI+教育教学应用场景发布目标不少于 30 个，2026-2028 年不少于 100 个。</p>
+          </article>
+          <article class="policy-card">
+            <h2>典型应用</h2>
+            <p>广东全域场景应用强调“场域—场景—典型应用”，后续省级典型应用超市会持续培育案例。</p>
+          </article>
+        </div>
+        <div class="policy-callout">对广大附的机会：以真实使用为基础，形成可展示、可评估、可复制的 AI 教育融合成果。</div>
+        <div class="footer">来源：广州市教育局 2026 教师数字素养实践活动通知；广州市人工智能产业 2026 工作要点；广东省教育厅全域场景应用指南政策解读。</div>
+      </section>
+
+      <section class="slide" data-page="09">
+        <div class="kicker gold">示范路径</div>
+        <h1>从试点学校，到 AI 示范校园成果</h1>
+        <p class="subtitle">示范成果来自真实使用、真实场景和可复盘材料的持续积累。</p>
+        <div class="path">
+          <article class="path-step">
+            <h2>真实使用</h2>
+            <p>老师和部门持续使用</p>
+          </article>
+          <article class="path-step">
+            <h2>教育智能体</h2>
+            <p>云端主体与资料库</p>
+          </article>
+          <article class="path-step">
+            <h2>重点场景</h2>
+            <p>排课 / 总务 / 资料库</p>
+          </article>
+          <article class="path-step">
+            <h2>案例沉淀</h2>
+            <p>教师/部门/学校案例</p>
+          </article>
+          <article class="path-step">
+            <h2>材料包</h2>
+            <p>方案、报告、截图、数据</p>
+          </article>
+          <article class="path-step">
+            <h2>窗口匹配</h2>
+            <p>案例征集 / 场景示范 / 典型应用</p>
+          </article>
+        </div>
+        <div class="dark-band">建议学校指定项目负责人，开放首批真实材料，组织关键老师反馈；项目团队负责技术建设、场景落地、成果整理和窗口跟踪。</div>
+        <div class="footer">AI 教育智能体建设沟通材料</div>
+      </section>
+
+      <section class="slide dark" data-page="10">
+        <h1>建议启动第二阶段建设</h1>
+        <p class="cover-subtitle">把第一阶段试点升级为正式的“广大附教育智能体”建设项目。</p>
+        <div class="decision">
+          <article class="price-card">
+            <div class="label">标准服务</div>
+            <div class="price">48,000 元 / 季度</div>
+            <p>具体服务周期与支持方式可在合作文件中确认。</p>
+          </article>
+          <article class="ask-card">
+            <h2>建议确认三项启动条件</h2>
+            <ul>
+              <li>是否进入第二阶段建设</li>
+              <li>是否指定校内项目对接人</li>
+              <li>是否确定排课、总务台账、资料库为首批场景</li>
+            </ul>
+          </article>
+        </div>
+        <p class="closing-line">前期试点已经验证基础可行性，下一阶段重点是将分散能力沉淀为学校可持续使用的智能资产。</p>
+      </section>
+    </main>
+
+    <div class="present-toolbar" aria-label="演示控制">
+      <button type="button" id="prev" aria-label="上一页">‹</button>
+      <button type="button" id="next" aria-label="下一页">›</button>
+    </div>
+
+    <script>
+      const slides = Array.from(document.querySelectorAll(".slide"));
+      let current = 0;
+
+      function go(index) {
+        current = Math.max(0, Math.min(slides.length - 1, index));
+        slides[current].scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+
+      document.getElementById("prev").addEventListener("click", () => go(current - 1));
+      document.getElementById("next").addEventListener("click", () => go(current + 1));
+      document.addEventListener("keydown", (event) => {
+        if (["ArrowRight", "PageDown", " "].includes(event.key)) {
+          event.preventDefault();
+          go(current + 1);
+        }
+        if (["ArrowLeft", "PageUp"].includes(event.key)) {
+          event.preventDefault();
+          go(current - 1);
+        }
+        if (event.key === "Home") go(0);
+        if (event.key === "End") go(slides.length - 1);
+      });
+
+      const observer = new IntersectionObserver(
+        (entries) => {
+          const visible = entries
+            .filter((entry) => entry.isIntersecting)
+            .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+          if (visible) current = slides.indexOf(visible.target);
+        },
+        { threshold: [0.35, 0.6, 0.85] },
+      );
+      slides.forEach((slide) => observer.observe(slide));
+    </script>
+  </body>
+</html>

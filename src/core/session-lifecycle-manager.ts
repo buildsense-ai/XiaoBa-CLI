@@ -1,4 +1,5 @@
 import { Message } from '../types';
+import type { SessionIdentitySnapshot } from '../types/session-identity';
 import { Logger } from '../utils/logger';
 import { SessionStore } from '../utils/session-store';
 import { RuntimeFeedbackInbox } from './runtime-feedback-inbox';
@@ -77,6 +78,10 @@ export class SessionLifecycleManager {
 
   saveCurrentDirectory(currentDirectory: string): void {
     this.sessionStore.saveRuntimeState(this.options.sessionKey, { currentDirectory });
+  }
+
+  saveSessionIdentity(sessionIdentity: SessionIdentitySnapshot): void {
+    this.sessionStore.saveRuntimeState(this.options.sessionKey, { sessionIdentity });
   }
 
   persistAndClear(messages: Message[]): PersistAndClearResult {

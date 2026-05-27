@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Message } from '../types';
 import { Logger } from './logger';
+import type { SessionIdentitySnapshot } from '../types/session-identity';
 
 const SESSIONS_DIR = path.resolve(process.cwd(), 'data', 'sessions');
 const SESSION_STATE_DIR = path.resolve(process.cwd(), 'data', 'session-state');
@@ -24,6 +25,7 @@ function stateFilePath(key: string): string {
 
 export interface SessionRuntimeState {
   currentDirectory?: string;
+  sessionIdentity?: SessionIdentitySnapshot;
   updatedAt?: string;
 }
 
@@ -100,7 +102,9 @@ export class SessionStore {
   saveRuntimeState(sessionKey: string, state: SessionRuntimeState): void {
     try {
       if (!fs.existsSync(SESSION_STATE_DIR)) fs.mkdirSync(SESSION_STATE_DIR, { recursive: true });
+      const previous = this.loadRuntimeState(sessionKey);
       fs.writeFileSync(stateFilePath(sessionKey), JSON.stringify({
+        ...previous,
         ...state,
         updatedAt: new Date().toISOString(),
       }, null, 2), 'utf-8');

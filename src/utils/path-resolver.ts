@@ -9,7 +9,7 @@ export class PathResolver {
    * 获取统一的 skills 目录（项目根目录的 skills 文件夹）
    */
   static getSkillsPath(): string {
-    return path.join(process.cwd(), 'skills');
+    return path.join(this.preferPublicDarwinVarPath(process.cwd()), 'skills');
   }
 
   /**
@@ -47,5 +47,12 @@ export class PathResolver {
     }
 
     return results;
+  }
+
+  private static preferPublicDarwinVarPath(value: string): string {
+    if (process.platform !== 'darwin') return value;
+    const privateVarPrefix = '/private/var/';
+    if (!value.startsWith(privateVarPrefix)) return value;
+    return `/var/${value.slice(privateVarPrefix.length)}`;
   }
 }

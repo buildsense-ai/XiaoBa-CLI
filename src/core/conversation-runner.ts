@@ -6,6 +6,8 @@ import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
 import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
+import type { SessionIdentitySnapshot } from '../types/session-identity';
+import { formatSessionIdentityForPrompt } from '../types/session-identity';
 import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
@@ -83,12 +85,21 @@ export interface RunResult {
   gauzMemRuns?: Array<Record<string, unknown>>;
 }
 
+export type PendingUserInputContent = string | ContentBlock[];
+
+export interface PendingUserInputEnvelope {
+  content: PendingUserInputContent;
+  sessionIdentity?: SessionIdentitySnapshot;
+  transientContext?: string;
+}
+
+export type PendingUserInput = PendingUserInputContent | PendingUserInputEnvelope;
+
 export type PendingUserInputProvider = () =>
-  | string
-  | ContentBlock[]
+  | PendingUserInput
   | null
   | undefined
-  | Promise<string | ContentBlock[] | null | undefined>;
+  | Promise<PendingUserInput | null | undefined>;
 
 interface ToolExecutionRecord {
   toolCall: ToolCall;
@@ -179,7 +190,6 @@ export class ConversationRunner {
     let hasDeliveredMessageOutThisRun = false;
     let lastOutboundContent: string | null = null;
     let observationSinceLastOutbound = false;
-    const deliveredOutboundFiles = new Set<string>();
     const gauzMemRunIds: string[] = [];
     const gauzMemRuns: Array<Record<string, unknown>> = [];
     let turns = 0;
@@ -373,22 +383,17 @@ export class ConversationRunner {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${argsForLog}`);
         const activeToolNames = allTools.map(tool => tool.name);
         const toolStart = Date.now();
-        const outboundFileKey = transcriptMode === 'outbound_file'
-          ? this.buildOutboundFileKey(toolCall)
-          : null;
-        const result = outboundFileKey && deliveredOutboundFiles.has(outboundFileKey)
-          ? this.buildDuplicateOutboundFileResult(toolCall)
-          : await this.executeToolWithRetry(
-            toolCall,
-            messages,
-            {
-              ...this.toolExecutionContext,
-              toolCallId: toolCall.id,
-              gauzMemRunIds,
-              gauzMemRuns,
-            },
-            turns,
-          );
+        const result = await this.executeToolWithRetry(
+          toolCall,
+          messages,
+          {
+            ...this.toolExecutionContext,
+            toolCallId: toolCall.id,
+            gauzMemRunIds,
+            gauzMemRuns,
+          },
+          turns,
+        );
         executedToolCalls++;
         if (toolName === PLAN_TOOL_NAME) {
           hasUpdatedPlan = true;
@@ -411,9 +416,6 @@ export class ConversationRunner {
           && !result.errorCode
         ) {
           hasDeliveredMessageOutThisRun = true;
-          if (outboundFileKey) {
-            deliveredOutboundFiles.add(outboundFileKey);
-          }
         }
 
         const toolContent = result.content;
@@ -449,8 +451,6 @@ export class ConversationRunner {
           if (content) {
             if (lastOutboundContent === content && !observationSinceLastOutbound) {
               nextTurnTransientHints = [this.buildDuplicateOutboundHint(content)];
-            } else if (transcriptMode === 'outbound_file') {
-              nextTurnTransientHints = [this.buildOutboundFileDeliveredHint(record)];
             }
             lastOutboundContent = content;
             observationSinceLastOutbound = false;
@@ -495,22 +495,46 @@ export class ConversationRunner {
   ): Promise<boolean> {
     if (!this.pendingUserInputProvider) return false;
 
-    const pending = await this.pendingUserInputProvider();
+    const pending = this.normalizePendingUserInput(await this.pendingUserInputProvider());
     if (!pending) return false;
 
-    const userMessage: Message = { role: 'user', content: pending };
+    const transientMessage = this.buildPendingIdentityMessage(pending);
+    if (transientMessage) {
+      messages.push(transientMessage);
+    }
+
+    const userMessage: Message = { role: 'user', content: pending.content };
     messages.push(userMessage);
     newMessages.push(userMessage);
 
-    const preview = typeof pending === 'string'
-      ? pending
-      : pending.map(block => block.type === 'text' ? block.text : '[image]').join('');
+    const preview = typeof pending.content === 'string'
+      ? pending.content
+      : pending.content.map(block => block.type === 'text' ? block.text : '[image]').join('');
     Logger.info(
       `[${this.sessionLabel}Turn ${turns}] 已合并处理期间新到的用户消息: ` +
       ConversationRunner.truncateForLog(preview, 240)
     );
 
     return true;
+  }
+
+  private normalizePendingUserInput(input: PendingUserInput | null | undefined): PendingUserInputEnvelope | null {
+    if (!input) return null;
+    if (typeof input === 'string' || Array.isArray(input)) {
+      return { content: input };
+    }
+    if (!input.content) return null;
+    return input;
+  }
+
+  private buildPendingIdentityMessage(input: PendingUserInputEnvelope): Message | null {
+    const content = input.transientContext || formatSessionIdentityForPrompt(input.sessionIdentity);
+    if (!content) return null;
+    return {
+      role: 'user',
+      content,
+      __transient: true,
+    };
   }
 
   /**
@@ -795,7 +819,7 @@ export class ConversationRunner {
       return false;
     }
 
-    return transcriptMode === 'outbound_message' || transcriptMode === 'outbound_file';
+    return transcriptMode === 'outbound_message';
   }
 
   private buildOutboundAssistantMessage(
@@ -819,17 +843,6 @@ export class ConversationRunner {
       return {
         role: 'assistant',
         content: text,
-      };
-    }
-
-    if (transcriptMode === 'outbound_file') {
-      const fileName = typeof args.file_name === 'string' ? args.file_name.trim() : '';
-      if (!fileName) {
-        return null;
-      }
-      return {
-        role: 'assistant',
-        content: fileName,
       };
     }
 
@@ -866,68 +879,6 @@ export class ConversationRunner {
     return {
       role: 'system',
       content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n你刚刚连续发送了与上一条相同的内容：“${content}”。如果这是用户真正需要的重复确认，可以继续；否则请避免无意义重复，必要时调用 pause_turn 收束。`,
-    };
-  }
-
-  private buildOutboundFileDeliveredHint(record: ToolExecutionRecord): Message {
-    let args: Record<string, unknown> = {};
-    try {
-      args = JSON.parse(record.toolCall.function.arguments || '{}');
-    } catch {}
-
-    const fileName = typeof args.file_name === 'string' ? args.file_name.trim() : '';
-    const filePath = typeof args.file_path === 'string' ? args.file_path.trim() : '';
-    const details = [
-      fileName ? `File name: ${fileName}` : '',
-      filePath ? `File path: ${filePath}` : '',
-    ].filter(Boolean).join('\n');
-
-    return {
-      role: 'system',
-      content: [
-        TRANSIENT_RUNNER_HINT_PREFIX,
-        'The previous send_file call already sent the file to the current chat successfully.',
-        details,
-        'Do not call send_file again for the same file unless the user explicitly asks to resend it.',
-        'Now continue normally and give the user a short confirmation or any necessary next-step note.',
-      ].filter(Boolean).join('\n'),
-    };
-  }
-
-  private buildOutboundFileKey(toolCall: ToolCall): string | null {
-    try {
-      const args = JSON.parse(toolCall.function.arguments || '{}');
-      const filePath = typeof args.file_path === 'string' ? args.file_path.trim() : '';
-      const fileName = typeof args.file_name === 'string' ? args.file_name.trim() : '';
-      if (!filePath && !fileName) return null;
-      return `${filePath}\n${fileName}`.toLowerCase();
-    } catch {
-      return null;
-    }
-  }
-
-  private buildDuplicateOutboundFileResult(toolCall: ToolCall): ToolResult {
-    let args: Record<string, unknown> = {};
-    try {
-      args = JSON.parse(toolCall.function.arguments || '{}');
-    } catch {}
-
-    const filePath = typeof args.file_path === 'string' ? args.file_path.trim() : '';
-    const fileName = typeof args.file_name === 'string' ? args.file_name.trim() : '';
-
-    return {
-      tool_call_id: toolCall.id,
-      role: 'tool',
-      name: toolCall.function.name,
-      ok: false,
-      errorCode: 'DUPLICATE_OUTBOUND_FILE',
-      retryable: false,
-      content: [
-        'This file was already sent earlier in the current agent run.',
-        filePath ? `Path: ${filePath}` : '',
-        fileName ? `Name: ${fileName}` : '',
-        'Do not call send_file again for the same file. Give the user a short confirmation instead.',
-      ].filter(Boolean).join('\n'),
     };
   }
 

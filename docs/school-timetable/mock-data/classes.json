@@ -1,0 +1,422 @@
+[
+  {
+    "id": "P1-C01",
+    "name_zh": "小学一年级1班",
+    "grade_id": "P1",
+    "campus_id": "east",
+    "student_count": 40,
+    "homeroom_id": "R-E-P1-C01",
+    "advisor_teacher_id": "T-E-CHI-01",
+    "notes": []
+  },
+  {
+    "id": "P1-C02",
+    "name_zh": "小学一年级2班",
+    "grade_id": "P1",
+    "campus_id": "east",
+    "student_count": 41,
+    "homeroom_id": "R-E-P1-C02",
+    "advisor_teacher_id": "T-E-CHI-02",
+    "notes": []
+  },
+  {
+    "id": "P1-C03",
+    "name_zh": "小学一年级3班",
+    "grade_id": "P1",
+    "campus_id": "east",
+    "student_count": 42,
+    "homeroom_id": "R-E-P1-C03",
+    "advisor_teacher_id": "T-E-CHI-03",
+    "notes": []
+  },
+  {
+    "id": "P1-C04",
+    "name_zh": "小学一年级4班",
+    "grade_id": "P1",
+    "campus_id": "east",
+    "student_count": 43,
+    "homeroom_id": "R-E-P1-C04",
+    "advisor_teacher_id": "T-E-CHI-04",
+    "notes": []
+  },
+  {
+    "id": "P1-C05",
+    "name_zh": "小学一年级5班",
+    "grade_id": "P1",
+    "campus_id": "east",
+    "student_count": 38,
+    "homeroom_id": "R-E-P1-C05",
+    "advisor_teacher_id": "T-E-CHI-05",
+    "notes": []
+  },
+  {
+    "id": "P1-C06",
+    "name_zh": "小学一年级6班",
+    "grade_id": "P1",
+    "campus_id": "east",
+    "student_count": 39,
+    "homeroom_id": "R-E-P1-C06",
+    "advisor_teacher_id": "T-E-CHI-06",
+    "notes": []
+  },
+  {
+    "id": "P2-C01",
+    "name_zh": "小学二年级1班",
+    "grade_id": "P2",
+    "campus_id": "east",
+    "student_count": 41,
+    "homeroom_id": "R-E-P2-C01",
+    "advisor_teacher_id": "T-E-CHI-07",
+    "notes": []
+  },
+  {
+    "id": "P2-C02",
+    "name_zh": "小学二年级2班",
+    "grade_id": "P2",
+    "campus_id": "east",
+    "student_count": 42,
+    "homeroom_id": "R-E-P2-C02",
+    "advisor_teacher_id": "T-E-CHI-08",
+    "notes": []
+  },
+  {
+    "id": "P2-C03",
+    "name_zh": "小学二年级3班",
+    "grade_id": "P2",
+    "campus_id": "east",
+    "student_count": 43,
+    "homeroom_id": "R-E-P2-C03",
+    "advisor_teacher_id": "T-E-CHI-09",
+    "notes": []
+  },
+  {
+    "id": "P2-C04",
+    "name_zh": "小学二年级4班",
+    "grade_id": "P2",
+    "campus_id": "east",
+    "student_count": 38,
+    "homeroom_id": "R-E-P2-C04",
+    "advisor_teacher_id": "T-E-CHI-01",
+    "notes": []
+  },
+  {
+    "id": "P2-C05",
+    "name_zh": "小学二年级5班",
+    "grade_id": "P2",
+    "campus_id": "east",
+    "student_count": 39,
+    "homeroom_id": "R-E-P2-C05",
+    "advisor_teacher_id": "T-E-CHI-02",
+    "notes": []
+  },
+  {
+    "id": "P2-C06",
+    "name_zh": "小学二年级6班",
+    "grade_id": "P2",
+    "campus_id": "east",
+    "student_count": 40,
+    "homeroom_id": "R-E-P2-C06",
+    "advisor_teacher_id": "T-E-CHI-03",
+    "notes": []
+  },
+  {
+    "id": "P3-C01",
+    "name_zh": "小学三年级1班",
+    "grade_id": "P3",
+    "campus_id": "east",
+    "student_count": 42,
+    "homeroom_id": "R-E-P3-C01",
+    "advisor_teacher_id": "T-E-CHI-04",
+    "notes": []
+  },
+  {
+    "id": "P3-C02",
+    "name_zh": "小学三年级2班",
+    "grade_id": "P3",
+    "campus_id": "east",
+    "student_count": 43,
+    "homeroom_id": "R-E-P3-C02",
+    "advisor_teacher_id": "T-E-CHI-05",
+    "notes": []
+  },
+  {
+    "id": "P3-C03",
+    "name_zh": "小学三年级3班",
+    "grade_id": "P3",
+    "campus_id": "east",
+    "student_count": 38,
+    "homeroom_id": "R-E-P3-C03",
+    "advisor_teacher_id": "T-E-CHI-06",
+    "notes": []
+  },
+  {
+    "id": "P3-C04",
+    "name_zh": "小学三年级4班",
+    "grade_id": "P3",
+    "campus_id": "east",
+    "student_count": 39,
+    "homeroom_id": "R-E-P3-C04",
+    "advisor_teacher_id": "T-E-CHI-07",
+    "notes": []
+  },
+  {
+    "id": "P3-C05",
+    "name_zh": "小学三年级5班",
+    "grade_id": "P3",
+    "campus_id": "east",
+    "student_count": 40,
+    "homeroom_id": "R-E-P3-C05",
+    "advisor_teacher_id": "T-E-CHI-08",
+    "notes": []
+  },
+  {
+    "id": "P3-C06",
+    "name_zh": "小学三年级6班",
+    "grade_id": "P3",
+    "campus_id": "east",
+    "student_count": 41,
+    "homeroom_id": "R-E-P3-C06",
+    "advisor_teacher_id": "T-E-CHI-09",
+    "notes": []
+  },
+  {
+    "id": "P4-C01",
+    "name_zh": "小学四年级1班",
+    "grade_id": "P4",
+    "campus_id": "west",
+    "student_count": 43,
+    "homeroom_id": "R-W-P4-C01",
+    "advisor_teacher_id": "T-W-CHI-01",
+    "notes": []
+  },
+  {
+    "id": "P4-C02",
+    "name_zh": "小学四年级2班",
+    "grade_id": "P4",
+    "campus_id": "west",
+    "student_count": 38,
+    "homeroom_id": "R-W-P4-C02",
+    "advisor_teacher_id": "T-W-CHI-02",
+    "notes": []
+  },
+  {
+    "id": "P4-C03",
+    "name_zh": "小学四年级3班",
+    "grade_id": "P4",
+    "campus_id": "west",
+    "student_count": 39,
+    "homeroom_id": "R-W-P4-C03",
+    "advisor_teacher_id": "T-W-CHI-03",
+    "notes": []
+  },
+  {
+    "id": "P4-C04",
+    "name_zh": "小学四年级4班",
+    "grade_id": "P4",
+    "campus_id": "west",
+    "student_count": 40,
+    "homeroom_id": "R-W-P4-C04",
+    "advisor_teacher_id": "T-W-CHI-04",
+    "notes": []
+  },
+  {
+    "id": "P4-C05",
+    "name_zh": "小学四年级5班",
+    "grade_id": "P4",
+    "campus_id": "west",
+    "student_count": 41,
+    "homeroom_id": "R-W-P4-C05",
+    "advisor_teacher_id": "T-W-CHI-05",
+    "notes": []
+  },
+  {
+    "id": "P4-C06",
+    "name_zh": "小学四年级6班",
+    "grade_id": "P4",
+    "campus_id": "west",
+    "student_count": 42,
+    "homeroom_id": "R-W-P4-C06",
+    "advisor_teacher_id": "T-W-CHI-06",
+    "notes": []
+  },
+  {
+    "id": "P5-C01",
+    "name_zh": "小学五年级1班",
+    "grade_id": "P5",
+    "campus_id": "west",
+    "student_count": 38,
+    "homeroom_id": "R-W-P5-C01",
+    "advisor_teacher_id": "T-W-CHI-07",
+    "notes": []
+  },
+  {
+    "id": "P5-C02",
+    "name_zh": "小学五年级2班",
+    "grade_id": "P5",
+    "campus_id": "west",
+    "student_count": 39,
+    "homeroom_id": "R-W-P5-C02",
+    "advisor_teacher_id": "T-W-CHI-08",
+    "notes": []
+  },
+  {
+    "id": "P5-C03",
+    "name_zh": "小学五年级3班",
+    "grade_id": "P5",
+    "campus_id": "west",
+    "student_count": 40,
+    "homeroom_id": "R-W-P5-C03",
+    "advisor_teacher_id": "T-W-CHI-09",
+    "notes": []
+  },
+  {
+    "id": "P5-C04",
+    "name_zh": "小学五年级4班",
+    "grade_id": "P5",
+    "campus_id": "west",
+    "student_count": 41,
+    "homeroom_id": "R-W-P5-C04",
+    "advisor_teacher_id": "T-W-CHI-10",
+    "notes": []
+  },
+  {
+    "id": "P5-C05",
+    "name_zh": "小学五年级5班",
+    "grade_id": "P5",
+    "campus_id": "west",
+    "student_count": 42,
+    "homeroom_id": "R-W-P5-C05",
+    "advisor_teacher_id": "T-W-CHI-11",
+    "notes": []
+  },
+  {
+    "id": "P5-C06",
+    "name_zh": "小学五年级6班",
+    "grade_id": "P5",
+    "campus_id": "west",
+    "student_count": 43,
+    "homeroom_id": "R-W-P5-C06",
+    "advisor_teacher_id": "T-W-CHI-12",
+    "notes": []
+  },
+  {
+    "id": "P6-C01",
+    "name_zh": "小学六年级1班",
+    "grade_id": "P6",
+    "campus_id": "west",
+    "student_count": 39,
+    "homeroom_id": "R-W-P6-C01",
+    "advisor_teacher_id": "T-W-CHI-07",
+    "notes": []
+  },
+  {
+    "id": "P6-C02",
+    "name_zh": "小学六年级2班",
+    "grade_id": "P6",
+    "campus_id": "west",
+    "student_count": 40,
+    "homeroom_id": "R-W-P6-C02",
+    "advisor_teacher_id": "T-W-CHI-08",
+    "notes": []
+  },
+  {
+    "id": "P6-C03",
+    "name_zh": "小学六年级3班",
+    "grade_id": "P6",
+    "campus_id": "west",
+    "student_count": 41,
+    "homeroom_id": "R-W-P6-C03",
+    "advisor_teacher_id": "T-W-CHI-09",
+    "notes": []
+  },
+  {
+    "id": "P6-C04",
+    "name_zh": "小学六年级4班",
+    "grade_id": "P6",
+    "campus_id": "west",
+    "student_count": 42,
+    "homeroom_id": "R-W-P6-C04",
+    "advisor_teacher_id": "T-W-CHI-10",
+    "notes": []
+  },
+  {
+    "id": "P6-C05",
+    "name_zh": "小学六年级5班",
+    "grade_id": "P6",
+    "campus_id": "west",
+    "student_count": 43,
+    "homeroom_id": "R-W-P6-C05",
+    "advisor_teacher_id": "T-W-CHI-11",
+    "notes": []
+  },
+  {
+    "id": "P6-C06",
+    "name_zh": "小学六年级6班",
+    "grade_id": "P6",
+    "campus_id": "west",
+    "student_count": 38,
+    "homeroom_id": "R-W-P6-C06",
+    "advisor_teacher_id": "T-W-CHI-12",
+    "notes": []
+  },
+  {
+    "id": "J1-C01",
+    "name_zh": "初中一年级1班",
+    "grade_id": "J1",
+    "campus_id": "west",
+    "student_count": 46,
+    "homeroom_id": "R-W-J1-C01",
+    "advisor_teacher_id": "T-W-CHI-01",
+    "notes": []
+  },
+  {
+    "id": "J1-C02",
+    "name_zh": "初中一年级2班",
+    "grade_id": "J1",
+    "campus_id": "west",
+    "student_count": 47,
+    "homeroom_id": "R-W-J1-C02",
+    "advisor_teacher_id": "T-W-CHI-02",
+    "notes": []
+  },
+  {
+    "id": "J1-C03",
+    "name_zh": "初中一年级3班",
+    "grade_id": "J1",
+    "campus_id": "west",
+    "student_count": 44,
+    "homeroom_id": "R-W-J1-C03",
+    "advisor_teacher_id": "T-W-CHI-03",
+    "notes": []
+  },
+  {
+    "id": "J1-C04",
+    "name_zh": "初中一年级4班",
+    "grade_id": "J1",
+    "campus_id": "west",
+    "student_count": 45,
+    "homeroom_id": "R-W-J1-C04",
+    "advisor_teacher_id": "T-W-CHI-04",
+    "notes": []
+  },
+  {
+    "id": "J1-C05",
+    "name_zh": "初中一年级5班",
+    "grade_id": "J1",
+    "campus_id": "west",
+    "student_count": 46,
+    "homeroom_id": "R-W-J1-C05",
+    "advisor_teacher_id": "T-W-CHI-05",
+    "notes": []
+  },
+  {
+    "id": "J1-C06",
+    "name_zh": "初中一年级6班",
+    "grade_id": "J1",
+    "campus_id": "west",
+    "student_count": 47,
+    "homeroom_id": "R-W-J1-C06",
+    "advisor_teacher_id": "T-W-CHI-06",
+    "notes": []
+  }
+]

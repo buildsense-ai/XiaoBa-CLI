@@ -1,0 +1,260 @@
+[
+  {
+    "id": "flag_ceremony",
+    "name_zh": "升旗/晨会",
+    "category": "activity",
+    "default_room_type": "assembly_ground",
+    "requires_teacher": false,
+    "special_room_required": false,
+    "special_room_preferred": false,
+    "advisor_preferred": false,
+    "fixed_event": true,
+    "preferred_segments": [],
+    "avoid_periods": []
+  },
+  {
+    "id": "chinese",
+    "name_zh": "语文",
+    "category": "core",
+    "default_room_type": "homeroom",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": false,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [
+      "morning"
+    ],
+    "avoid_periods": []
+  },
+  {
+    "id": "math",
+    "name_zh": "数学",
+    "category": "core",
+    "default_room_type": "homeroom",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": false,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [
+      "morning"
+    ],
+    "avoid_periods": []
+  },
+  {
+    "id": "english",
+    "name_zh": "英语",
+    "category": "core",
+    "default_room_type": "homeroom",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": false,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [
+      "morning"
+    ],
+    "avoid_periods": []
+  },
+  {
+    "id": "morality",
+    "name_zh": "道德与法治",
+    "category": "humanities",
+    "default_room_type": "homeroom",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": false,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [],
+    "avoid_periods": []
+  },
+  {
+    "id": "science",
+    "name_zh": "科学",
+    "category": "science",
+    "default_room_type": "science_lab",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": true,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [],
+    "avoid_periods": []
+  },
+  {
+    "id": "biology",
+    "name_zh": "生物",
+    "category": "science",
+    "default_room_type": "biology_lab",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": true,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [],
+    "avoid_periods": []
+  },
+  {
+    "id": "history",
+    "name_zh": "历史",
+    "category": "humanities",
+    "default_room_type": "homeroom",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": false,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [],
+    "avoid_periods": []
+  },
+  {
+    "id": "geography",
+    "name_zh": "地理",
+    "category": "humanities",
+    "default_room_type": "homeroom",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": false,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [],
+    "avoid_periods": []
+  },
+  {
+    "id": "pe",
+    "name_zh": "体育",
+    "category": "physical",
+    "default_room_type": "sports_space",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": false,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [
+      "morning",
+      "afternoon"
+    ],
+    "avoid_periods": [
+      "p5"
+    ]
+  },
+  {
+    "id": "music",
+    "name_zh": "音乐",
+    "category": "arts",
+    "default_room_type": "music_room",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": true,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [],
+    "avoid_periods": []
+  },
+  {
+    "id": "art",
+    "name_zh": "美术",
+    "category": "arts",
+    "default_room_type": "art_room",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": true,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [],
+    "avoid_periods": []
+  },
+  {
+    "id": "it",
+    "name_zh": "信息科技",
+    "category": "technology",
+    "default_room_type": "computer_room",
+    "requires_teacher": true,
+    "special_room_required": true,
+    "special_room_preferred": false,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [],
+    "avoid_periods": []
+  },
+  {
+    "id": "labor",
+    "name_zh": "劳动",
+    "category": "practice",
+    "default_room_type": "labor_room",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": true,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [],
+    "avoid_periods": []
+  },
+  {
+    "id": "class_meeting",
+    "name_zh": "班会",
+    "category": "activity",
+    "default_room_type": "homeroom",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": false,
+    "advisor_preferred": true,
+    "fixed_event": false,
+    "preferred_segments": [],
+    "avoid_periods": []
+  },
+  {
+    "id": "reading",
+    "name_zh": "阅读",
+    "category": "activity",
+    "default_room_type": "homeroom",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": false,
+    "advisor_preferred": true,
+    "fixed_event": false,
+    "preferred_segments": [],
+    "avoid_periods": []
+  },
+  {
+    "id": "comprehensive_practice",
+    "name_zh": "综合实践",
+    "category": "practice",
+    "default_room_type": "maker_space",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": true,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [],
+    "avoid_periods": []
+  },
+  {
+    "id": "school_based",
+    "name_zh": "校本课程",
+    "category": "activity",
+    "default_room_type": "homeroom",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": false,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [],
+    "avoid_periods": []
+  },
+  {
+    "id": "self_study",
+    "name_zh": "自习/作业整理",
+    "category": "activity",
+    "default_room_type": "homeroom",
+    "requires_teacher": true,
+    "special_room_required": false,
+    "special_room_preferred": false,
+    "advisor_preferred": false,
+    "fixed_event": false,
+    "preferred_segments": [],
+    "avoid_periods": []
+  }
+]

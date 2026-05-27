@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CatsCo 校园智能助手战略长文论述版</title>
+  <style>
+    :root {
+      --ink: #17202a;
+      --muted: #5d6c78;
+      --line: #dce3e8;
+      --paper: #ffffff;
+      --bg: #eef3f5;
+      --soft: #f6f8fa;
+      --green: #1f7a5c;
+      --green-soft: #e7f4ee;
+      --blue: #2d69b3;
+      --blue-soft: #eaf1fb;
+      --amber: #956615;
+      --amber-soft: #fff3d6;
+      --radius: 8px;
+      --max: 960px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.78;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: var(--blue);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .page {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 40px 22px 72px;
+    }
+
+    header,
+    section {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper);
+      box-shadow: 0 16px 40px rgba(23, 32, 42, 0.08);
+    }
+
+    header {
+      padding: 36px;
+    }
+
+    section {
+      margin-top: 24px;
+      padding: 32px 36px;
+    }
+
+    .kicker {
+      color: var(--green);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1,
+    h2,
+    h3 {
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      margin-top: 10px;
+      font-size: 40px;
+    }
+
+    h2 {
+      font-size: 27px;
+    }
+
+    h3 {
+      margin-top: 22px;
+      font-size: 18px;
+    }
+
+    .lead {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .toc {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 24px;
+    }
+
+    .toc a {
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--soft);
+      color: var(--ink);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .summary {
+      margin-top: 22px;
+      padding: 16px 18px;
+      border-left: 4px solid var(--green);
+      border-radius: 6px;
+      background: var(--green-soft);
+      font-size: 17px;
+      font-weight: 800;
+    }
+
+    .note {
+      margin-top: 20px;
+      padding: 15px 17px;
+      border-left: 4px solid var(--amber);
+      border-radius: 6px;
+      background: var(--amber-soft);
+    }
+
+    .prose {
+      display: grid;
+      gap: 15px;
+      margin-top: 18px;
+    }
+
+    .prose p {
+      color: #273641;
+      font-size: 16px;
+    }
+
+    .quote {
+      margin-top: 22px;
+      padding: 18px 20px;
+      border: 1px solid rgba(45, 105, 179, 0.28);
+      border-radius: var(--radius);
+      background: var(--blue-soft);
+      color: #183d66;
+      font-size: 18px;
+      font-weight: 800;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 22px;
+    }
+
+    .card {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--soft);
+    }
+
+    .card strong {
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .card span {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .footer {
+      margin-top: 30px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    @media (max-width: 720px) {
+      .page {
+        padding: 18px 14px 48px;
+      }
+
+      header,
+      section {
+        padding: 24px;
+      }
+
+      h1 {
+        font-size: 30px;
+      }
+
+      h2 {
+        font-size: 23px;
+      }
+
+      .toc,
+      .cards {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media print {
+      @page {
+        size: A4 portrait;
+        margin: 18mm;
+      }
+
+      * {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      body {
+        background: #fff;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .page {
+        max-width: none;
+        padding: 0;
+      }
+
+      header,
+      section {
+        box-shadow: none;
+        border-color: #cfd8df;
+      }
+
+      header {
+        min-height: 230mm;
+        padding: 18mm;
+      }
+
+      section {
+        margin-top: 0;
+        padding: 0;
+        border: 0;
+        break-before: page;
+      }
+
+      h1 {
+        font-size: 30px;
+      }
+
+      h2 {
+        font-size: 21px;
+      }
+
+      h3 {
+        font-size: 15px;
+      }
+
+      .lead {
+        font-size: 15px;
+      }
+
+      .prose p,
+      .card span {
+        font-size: 11.5px;
+      }
+
+      .summary,
+      .quote,
+      .note,
+      .card {
+        break-inside: avoid;
+      }
+
+      .toc,
+      .cards {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <div class="kicker">内部母稿 · 长文论述版 · 2026-05-27</div>
+      <h1>从个人 AI 助手到学校级校园智能助手</h1>
+      <p class="lead">
+        这份文档保留完整文字论述，用来沉淀战略判断和叙事逻辑。它不是汇报页，也不是执行清单，而是解释我们为什么从 XiaoBa-CLI / CatsCo Agent 的个人助手试点，走向学校级“校园智能助手”和“广大附教育智能体”的思想母稿。
+      </p>
+      <div class="summary">
+        一句话判断：CatsCo Agent 的长期价值，不是成为每个人电脑里的私人助手，而是成为学校共同使用、持续培养、不断积累能力的校园智能助手；个人助手只是它服务一个人时的表现形态。
+      </div>
+      <nav class="toc" aria-label="目录">
+        <a href="#s1">1. 核心判断</a>
+        <a href="#s2">2. 试点带来的真实认识</a>
+        <a href="#s3">3. 为什么不能停留在每台电脑一个助手</a>
+        <a href="#s4">4. 校园智能助手到底是什么</a>
+        <a href="#s5">5. 政策与示范校园机会</a>
+        <a href="#s6">6. 共创广大附教育智能体</a>
+        <a href="#s7">7. 场景选择与优先级</a>
+        <a href="#s8">8. 服务形态和商业边界</a>
+      </nav>
+    </header>
+
+    <section id="s1">
+      <h2>1. 核心判断</h2>
+      <div class="prose">
+        <p>
+          我们一开始把 XiaoBa-CLI，也就是后续的 CatsCo Agent，理解成一个安装在个人电脑里的 AI 助手。这个判断并没有错。对于单个老师、单个员工、单台电脑来说，AI 助手确实可以直接进入本地工作环境，读取文件、编辑材料、操作浏览器、调用工具，像一个住在电脑里的智能操作系统。
+        </p>
+        <p>
+          但在学校试点过程中，我们逐渐意识到：如果从组织角度看，长期价值并不在于“每个老师各自拥有一个独立 AI 助手”，而在于学校拥有一个可以持续成长、被多人协作调用、逐步沉淀学校经验和工作流程的智能体。
+        </p>
+        <p>
+          个人助手是这个模型的一个特例。当它只服务一个人时，看起来就是个人电脑里的 AI 助手；但当它服务一所学校、一个部门、一个组织时，它更像一个“虚拟员工”或“校园智能助手”。它有自己的身份、岗位定位、记忆、工具链、工作流程和交付标准。不同老师、行政人员、管理者都可以通过独立会话和它协作，但它沉淀的是学校级能力，而不是某一个人的私人经验。
+        </p>
+        <p>
+          这个判断并不否定个人助手。相反，个人助手是最自然、最容易启动的第一阶段。它贴近老师电脑，能直接处理本地文件，也能让老师快速感受到 AI 进入真实工作的价值。问题只在于：当服务对象从一个人变成一所学校时，如果仍然把产品理解为“每台电脑一个孤立助手”，学校就很难获得组织级能力。
+        </p>
+      </div>
+      <div class="quote">
+        我们不是要给每个老师复制一个孤立的 AI，而是要帮助学校培养一个可持续成长的校园智能助手。
+      </div>
+    </section>
+
+    <section id="s2">
+      <h2>2. 试点带来的真实认识</h2>
+      <div class="prose">
+        <p>
+          当前试点首先在总务处、教务处和校办展开。这些部门老师既承担行政和教务工作，也有授课任务。试点学校是一所重点小学，目前正在建设初中部，现阶段只有初一，同时有两个校区。这个背景很重要，因为学校在未来两三年会持续面对新学段建设、教师流动、跨校区安排、课程资源调整等问题。
+        </p>
+        <p>
+          试点首先验证了一件基础但重要的事：老师愿意让 AI 进入真实工作流程。尤其是年轻老师，对 AI 助手有较强尝试意愿，愿意把会议纪要、PPT 制作、材料整理、视频剪辑辅助、日常文档编辑等任务交给 AI 处理。
+        </p>
+        <p>
+          这些场景未必是最有壁垒的标志性场景，但它们证明了 AI 助手能够以低门槛方式进入老师的日常办公环境。相比传统 AI 网页工具，本地 AI 助手更接近老师真实的办公现场，不只是回答问题，而是可以围绕文件、材料和具体任务完成工作。
+        </p>
+        <p>
+          更重要的是，试点逐渐暴露出一批学校场景中真正有价值的任务。这些任务不一定每天发生，但每次发生都耗时、复杂、重要，并且会在每个学期或每个学年重复出现。例如排课表、学生成绩报告、期中期末考试分析、班级情况分析、入学申请背景调查和验证、基于教材的备课辅助、复习重点整理、总务盘点、合同台账、学校资料库等。
+        </p>
+        <p>
+          学校不是由一个每天高频发生的大任务构成，而是由一组周期性、重复性、耗时明显的任务构成。每个任务单独看，可能一学期只发生一两次；但十个这样的任务叠加起来，就占满了学校一整个学期里大量重要但琐碎的工作。
+        </p>
+      </div>
+      <div class="note">
+        对学校 AI 场景的判断，不能只看 query 数量。很多最值得做的任务不是高日常频率，而是低频、高单次价值、强周期复现。
+      </div>
+    </section>
+
+    <section id="s3">
+      <h2>3. 为什么不能停留在每台电脑一个助手</h2>
+      <div class="prose">
+        <p>
+          本地个人助手是有效形态，但“每台电脑一个孤立 agent”不适合作为学校级服务的长期主架构。真正的问题不是本地部署不成立，而是当服务对象变成一所学校、多个部门、多个校区时，孤立部署会遇到运维、沉淀、协作和权限上的边界。
+        </p>
+        <p>
+          第一个边界是规模化运维困难。老师的电脑型号、Windows 版本、硬件配置、系统权限、安全软件、浏览器环境都不一致。有些电脑性能较弱，有些系统权限受限，有些安全软件会拦截脚本、自动化、浏览器控制、文件访问和后台运行。
+        </p>
+        <p>
+          与此同时，很多 agent 能力依赖浏览器自动化、Chromium、Node/Python 运行环境、开源依赖和模型 API。在学校普通办公网络和普通老师电脑上，这些依赖可能因为网络慢、连接境外源困难、权限不足或系统配置问题而变得不稳定。学校规模越大，版本升级、日志排查、依赖修复和权限处理就越容易变成逐台电脑维护。
+        </p>
+        <p>
+          第二个边界是组织能力难以沉淀。每个老师电脑里的 AI 助手都有自己的会话、文件、配置和使用习惯，但这些经验很难自然沉淀为学校级能力。一个老师调出来的好模板、一个部门形成的好流程、一次排课或成绩分析中的经验，如果只留在个人电脑或个人会话中，其他老师和部门很难复用。
+        </p>
+        <p>
+          第三个边界是协作、身份和权限难以统一。学校里的很多工作本来就是跨部门、跨人员、跨校区完成的。排课涉及教务、老师、班级、教室、校区和课程资源；成绩分析涉及班级、年级、学科、考试数据和管理层；总务盘点涉及合同、物料、审批和台账。学校级服务必须知道当前是谁在使用、属于哪个部门、有什么权限、能访问哪些资料、哪些操作需要确认。
+        </p>
+      </div>
+      <div class="quote">
+        下一阶段不是放弃本地能力，而是重新定义本地能力的位置：云端有稳定的学校级智能体主体，本地保留按需授权接入能力。
+      </div>
+    </section>
+
+    <section id="s4">
+      <h2>4. 校园智能助手到底是什么</h2>
+      <div class="prose">
+        <p>
+          “校园智能助手”是教育场景下更容易被学校理解和接受的产品表达。它的底层，其实是一个虚拟员工：有自己的身份、运行环境、记忆、工具链、技能体系、权限边界和交付标准。只是面向学校时，我们不需要一开始强调“虚拟员工”这个抽象概念，而应该让校长、老师和各部门负责人理解：学校正在拥有一个可以长期培养的智能工作伙伴。
+        </p>
+        <p>
+          它不是一个普通聊天机器人。普通聊天机器人主要解决问答和内容生成问题，用户每次把材料带进去，再把结果搬出来。校园智能助手则应该贴近学校真实工作流：能理解学校已有资料、常用模板、部门分工、学期节奏和具体任务，也能在授权后处理文件、表格、图片、合同、课表、成绩数据和历史材料。
+        </p>
+        <p>
+          它也不是每位老师各自拥有的孤立 AI。老师使用它时，体验仍然应该像个人助手：打开 CatsCo、微信或其他入口，直接说自己要做什么，拥有自己的独立会话，不被别人阻塞。但在系统和组织层面，它沉淀的是学校级能力。一个部门沉淀出来的好流程、一个老师调出来的好模板、一次排课或成绩分析形成的经验，都有机会成为整个学校后续可以复用的能力。
+        </p>
+        <p>
+          初期，校园智能助手应该是一个统一入口，而不是一开始就拆成很多角色。学校里的真实需求还在不断浮现，过早拆分成教务助手、行政助手、总务助手、招生助手，容易把产品做成一组静态模块。更合理的路径是：先让一个校园智能助手覆盖学校高频和高价值工作，随着使用数据、交付案例和流程经验不断积累，再从沉淀中分化出更专业的智能专员。
+        </p>
+      </div>
+      <div class="cards">
+        <div class="card">
+          <strong>对老师</strong>
+          <span>它仍然像个人助手，能听懂任务、拿到资料、处理文件、输出结果。</span>
+        </div>
+        <div class="card">
+          <strong>对学校</strong>
+          <span>它是一个不断沉淀资料、模板、流程、规则和 skills 的组织智能资产。</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="s5">
+      <h2>5. 政策与示范校园机会</h2>
+      <div class="prose">
+        <p>
+          对外汇报不能只讲产品和效率。校长买单时，不只会看老师是否觉得好用，也会判断这件事能不能成为学校顺应政策趋势、形成示范成果、提升治理能力的抓手。如果只讲“提高效率”，价值容易被压成普通工具；如果能讲清楚它如何对应教育数字化、教师智能助手、智慧校园、教育治理和可复制应用场景，合作就更容易从一次试用升级成学校级共建。
+        </p>
+        <p>
+          需要特别区分两类 AI 教育应用：第一类是学生学习人工智能、AI 课程和跨学科教学；第二类是学校治理与教师办公中的 AI 应用。当前 CatsCo 校园智能助手的主赛道是第二类，即服务老师、教务、总务、校办和管理层的真实工作流。但这条线也会反向支撑第一类，因为老师在真实工作中使用 AI、沉淀案例和提升数字素养，本身就是学校开展 AI 教育和形成示范成果的重要基础。
+        </p>
+        <p>
+          因此，当前试点可以被重新理解为一个两阶段过程。第一阶段，我们把学校作为个人 AI 助手进入真实教育工作场景的试点，让 AI 真正融入老师日常办公、教学准备、资料整理、行政协同和部门任务中。这一阶段的价值，是验证老师是否愿意用、哪些工作真实耗时、哪些任务可以交付、哪些场景值得沉淀。
+        </p>
+        <p>
+          第二阶段，我们不是简单扩大安装数量，而是和学校一起构建校园教育智能体，把前一阶段沉淀出来的高价值场景、资料、流程和使用案例组织起来，形成学校级智能应用能力。这个阶段对学校的赋能点，不只是“老师更省时间”，而是帮助学校争取成为广州市、广东省 AI 教育真实落地的试点示范学校：有真实使用、有典型场景、有教师案例、有校本知识库、有可展示成果，也有安全、授权和人工复核边界。
+        </p>
+      </div>
+      <div class="note">
+        正式对外材料必须引用官方原文和准确政策名称。当前长文只沉淀方向：教师减负、智慧校园、AI+教育、助管助教、示范区校、可复制案例。
+      </div>
+    </section>
+
+    <section id="s6">
+      <h2>6. 共创广大附教育智能体</h2>
+      <div class="prose">
+        <p>
+          现在已经完成的是第一阶段：给每一位试点老师部署个人助手。这个阶段最重要的价值，不是证明我们可以安装一个工具，而是证明 AI 可以进入老师真实的日常工作。老师可以用它写通知、整理材料、做会议纪要、准备课件、处理表格、辅助备课，也可以在教务、总务、校办等部门任务中尝试让 AI 参与具体工作。
+        </p>
+        <p>
+          这个阶段的成果应该被清楚表达为：AI 已经不是停留在演示和培训里，而是开始进入老师和部门的真实工作现场。它验证了老师愿意用，也让我们看到了学校真正值得沉淀的场景：排课、资料库、总务台账、成绩分析、备课复习、入学材料核验等。
+        </p>
+        <p>
+          因此，“共创合作”的核心定义应该是：我们和学校一起，把当前个人助手试点升级为一个云端的学校级教育智能体。对广大附来说，它可以被命名为“广大附教育智能体”。它 24 小时在线，通过不同入口为老师、教务、总务、校办和管理层提供服务；每个人有自己的独立会话，但学校级资料、流程、模板和 skills 会持续沉淀到这个智能体里。
+        </p>
+        <p>
+          这里的“共创”不是一个泛泛的合作口号，而是一个非常具体的落地承诺：学校提供真实场景、组织支持、资料边界和反馈机制；我们提供智能体建设、场景梳理、基础运行、教师培训、skill 沉淀、成果整理和申报方案准备。校长只需要认可方向、确定牵头人和配合机制，后续大量申请、立项、材料、方案和汇报准备工作，可以由我们承担。
+        </p>
+      </div>
+      <div class="quote">
+        共创的杀手锏不是便宜，也不是功能多，而是帮助学校把 AI 真实使用、校园智能体建设和示范校园申报连接成一条完整路径。
+      </div>
+    </section>
+
+    <section id="s7">
+      <h2>7. 场景选择与优先级</h2>
+      <div class="prose">
+        <p>
+          做学校服务时，最容易误判的是把“高频”理解成“每天都有人问”。日常文案、会议纪要、PPT 大纲确实容易启动使用，也能让老师快速产生好感，但如果只停留在这些场景，产品很容易被理解成普通 AI 写作工具，付费价值也会被压低。
+        </p>
+        <p>
+          学校真正消耗人的地方，往往是一批周期性重任务。它们不一定每天发生，但每次都需要多人协作、反复核对、整理资料、生成正式结果，而且每学期或每学年都会回来。排课、考试成绩分析、总务盘点、招生材料核验、阶段汇报、资料归档，都是这种类型。它们更适合变成学校级 skills，因为每做一次，规则、模板和检查方法都能比上一次更成熟。
+        </p>
+        <p>
+          因此，第一阶段不建议平均铺开所有功能。更稳的做法是选 2-3 个标志性场景做深，同时保留日常文档能力作为入口。当前建议把 P0 主线统一为：排课、总务台账、学校资料库。排课代表教务复杂任务，总务台账代表行政运营交付，资料库代表长期复用基础。成绩分析、备课复习、入学材料核验可以作为 P1 补充场景，随着资料和流程成熟逐步推进。
+        </p>
+      </div>
+      <div class="cards">
+        <div class="card">
+          <strong>P0 主线</strong>
+          <span>学校资料库、排课 / 调课、总务盘点与合同台账。</span>
+        </div>
+        <div class="card">
+          <strong>P1 补充</strong>
+          <span>成绩分析、备课复习、入学材料核验辅助。</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="s8">
+      <h2>8. 服务形态和商业边界</h2>
+      <div class="prose">
+        <p>
+          面向学校的低门槛合作，不应表述为一个全校无限使用的基础 SaaS 套餐，而应表述为“共创启动包”。它的合理区间可以是每季度 3-5 万元，但这个价格不是按 token 定价，也不是承诺做完所有复杂场景，而是让学校以低门槛启动一个校园智能助手共创项目。
+        </p>
+        <p>
+          共创启动包覆盖的是基础运行、核心试点用户、基础资料库、老师培训、季度复盘和轻量 skill 沉淀。它应该有明确边界：1-2 个重点部门，1 个主场景 + 1 个轻量辅助场景，指定资料范围，限定培训、支持和交付物。这样它才是短周期、低风险、可验收的试点服务，而不是低价无限服务包。
+        </p>
+        <p>
+          排课、总务台账、成绩分析、入学材料核验、系统接入、复杂资料治理这些任务，消耗的是大量场景理解、资料清洗、规则梳理、测试复核和交付人天，不应该被放进启动包里无限承诺。它们更适合按专项服务收费：按场景复杂度、资料量、人天、复核要求和交付物定义价格。
+        </p>
+        <p>
+          对学校来说，共创启动包的意义是降低首次决策门槛。校长不需要一开始批准一个大规模平台项目，而是可以先用一个季度验证：老师是否愿意用，部门是否能形成真实交付，学校是否能看到资料沉淀和示范成果，下一阶段是否值得继续共建。
+        </p>
+        <p>
+          对我们来说，前几所学校的启动包不一定追求高毛利，而是换取正式合作关系、真实场景、持续反馈和示范案例。只有把标准流程、标准培训、资料库初始化方法、skill 培养方法和成果报告沉淀下来，后续服务才会从项目型交付逐渐变成可规模化产品。
+        </p>
+      </div>
+      <div class="note">
+        对外采购口径应是低金额、短周期、边界清晰、独立验收，降低首次合作决策成本；不能表达为规避招采或绕开学校内控。
+      </div>
+    </section>
+
+    <div class="footer">
+      CatsCo 校园智能助手战略长文论述版 / 2026-05-27 · 对应精简母版：
+      <a href="./campus-intelligent-assistant-strategy-master.html">campus-intelligent-assistant-strategy-master.html</a>
+    </div>
+  </main>
+</body>
+</html>

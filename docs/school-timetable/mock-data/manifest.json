@@ -1,0 +1,82 @@
+{
+  "dataset_id": "mock-nine-year-school-001",
+  "dataset_version": "2026-05-22.v1",
+  "generated_on": "2026-05-22",
+  "files": [
+    {
+      "filename": "school.json",
+      "description_zh": "学校与数据集元信息"
+    },
+    {
+      "filename": "campuses.json",
+      "description_zh": "两个校区及年级分布"
+    },
+    {
+      "filename": "calendar.json",
+      "description_zh": "周历、节次、年级日课时模板"
+    },
+    {
+      "filename": "grades.json",
+      "description_zh": "7个年级定义"
+    },
+    {
+      "filename": "classes.json",
+      "description_zh": "42个班级、人数、班主任、行政班教室"
+    },
+    {
+      "filename": "subjects.json",
+      "description_zh": "课程/活动科目定义"
+    },
+    {
+      "filename": "rooms.json",
+      "description_zh": "普通教室与专用场地"
+    },
+    {
+      "filename": "teachers.json",
+      "description_zh": "教师、任教资质、校区、可用性、周课时上限"
+    },
+    {
+      "filename": "curriculum_requirements.json",
+      "description_zh": "每个年级每门课周课时、禁排日、连堂、隔天等课程计划条件"
+    },
+    {
+      "filename": "teacher_assignments.json",
+      "description_zh": "任课关系：教师-班级-科目-周课时"
+    },
+    {
+      "filename": "constraints.json",
+      "description_zh": "规范化硬约束和软约束"
+    },
+    {
+      "filename": "runtime_constraint_changes.json",
+      "description_zh": "运行中新增的临时约束"
+    },
+    {
+      "filename": "infeasible_scenarios.json",
+      "description_zh": "故意不可行的冲突案例"
+    },
+    {
+      "filename": "validation_expectations.json",
+      "description_zh": "数据集期望计数和基础校验规则"
+    }
+  ],
+  "counts": {
+    "campuses": 2,
+    "grades": 7,
+    "classes": 42,
+    "subjects": 19,
+    "rooms": 79,
+    "teachers": 108,
+    "curriculum_requirements": 100,
+    "teacher_assignments": 558,
+    "hard_constraints": 47,
+    "soft_constraints": 38
+  },
+  "recommended_agent_loop_zh": [
+    "先用基础 JSON 生成初始课表。",
+    "输出所有硬约束违规；硬违规必须修复或解释为不可行。",
+    "再输出软约束扣分清单，按权重排序。",
+    "应用 runtime_constraint_changes.json 中的增量约束，重复检查与局部修复。",
+    "遇到 infeasible_scenarios.json 这类绝对矛盾时，输出最小冲突集合和原因。"
+  ]
+}

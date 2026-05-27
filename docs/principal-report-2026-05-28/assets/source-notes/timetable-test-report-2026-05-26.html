@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>排课系统测试报告 - timetable-scheduling</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+        
+        .container { max-width: 1400px; margin: 0 auto; }
+        
+        /* 封面 */
+        .cover { background: white; border-radius: 24px; padding: 60px; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.3); margin-bottom: 30px; }
+        .cover h1 { font-size: 3em; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 20px; }
+        .cover .subtitle { font-size: 1.5em; color: #666; margin-bottom: 30px; }
+        .cover .meta { color: #999; font-size: 0.9em; }
+        
+        .stats { display: flex; justify-content: center; gap: 60px; margin-top: 40px; }
+        .stat { text-align: center; }
+        .stat-num { font-size: 3em; font-weight: bold; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .stat-label { color: #666; font-size: 1.1em; }
+        
+        /* 导航 */
+        .nav { background: white; padding: 20px 40px; border-radius: 16px; margin-bottom: 30px; display: flex; gap: 20px; flex-wrap: wrap; box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
+        .nav a { color: #667eea; text-decoration: none; padding: 10px 20px; border-radius: 8px; font-weight: 500; transition: all 0.3s; }
+        .nav a:hover { background: #667eea; color: white; }
+        
+        /* 卡片 */
+        .card { background: white; border-radius: 20px; padding: 40px; margin-bottom: 30px; box-shadow: 0 10px 40px rgba(0,0,0,0.1); }
+        .card h2 { color: #667eea; border-bottom: 3px solid #667eea; padding-bottom: 15px; margin-bottom: 25px; font-size: 1.8em; display: flex; align-items: center; gap: 10px; }
+        .card h3 { color: #764ba2; margin: 25px 0 15px; font-size: 1.3em; }
+        
+        /* 测试结果 */
+        .test-result { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+        .test-item { background: #f8f9fa; padding: 20px; border-radius: 12px; display: flex; align-items: center; gap: 15px; }
+        .test-item.pass { border-left: 4px solid #52c41a; }
+        .test-item.warn { border-left: 4px solid #faad14; }
+        .test-item.fail { border-left: 4px solid #ff4d4f; }
+        .test-icon { font-size: 2em; }
+        .test-info h4 { color: #333; margin-bottom: 5px; }
+        .test-info p { color: #666; font-size: 0.9em; }
+        
+        /* 课表 */
+        .timetable { width: 100%; border-collapse: collapse; font-size: 0.85em; margin: 20px 0; }
+        .timetable th, .timetable td { border: 2px solid #e8e8e8; padding: 10px; text-align: center; }
+        .timetable th { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; font-size: 1em; }
+        .timetable td { min-height: 90px; vertical-align: top; background: white; }
+        .timetable .period { background: #f0f0f0; font-weight: bold; color: #667eea; width: 60px; }
+        .timetable .lesson { font-size: 0.9em; line-height: 1.5; }
+        .timetable .room { color: #999; font-size: 0.75em; }
+        .timetable .pe { background: #e6f7ff !important; }
+        .timetable .art { background: #fff7e6 !important; }
+        .timetable .tech { background: #f6ffed !important; }
+        .timetable .activity { background: #fff1f0 !important; }
+        .timetable .special { background: #f9f0ff !important; }
+        .timetable .science { background: #f0f5ff !important; }
+        
+        /* 教师课表 */
+        .teacher-table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        .teacher-table th, .teacher-table td { border: 1px solid #e8e8e8; padding: 12px; text-align: left; }
+        .teacher-table th { background: #764ba2; color: white; }
+        .teacher-table tr:nth-child(even) { background: #f8f9fa; }
+        
+        /* 冲突框 */
+        .conflict-box { background: #fff1f0; border-radius: 12px; padding: 20px; margin: 15px 0; border-left: 4px solid #ff4d4f; }
+        .conflict-box h4 { color: #cf1322; margin-bottom: 10px; }
+        .conflict-box p { color: #666; margin: 5px 0; }
+        
+        /* 问题卡片 */
+        .issue { background: #fffbe6; border-radius: 12px; padding: 25px; margin: 20px 0; border-left: 5px solid #faad14; }
+        .issue.high { background: #fff1f0; border-left-color: #ff4d4f; }
+        .issue h4 { color: #d48806; margin-bottom: 10px; font-size: 1.2em; }
+        .issue.high h4 { color: #cf1322; }
+        .issue .severity { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 0.8em; margin-left: 10px; }
+        .issue .severity.high { background: #ff4d4f; color: white; }
+        .issue .severity.med { background: #faad14; color: white; }
+        .issue .severity.low { background: #52c41a; color: white; }
+        .issue pre { background: #2f2f2f; color: #52c41a; padding: 15px; border-radius: 8px; font-family: Consolas, monospace; font-size: 0.85em; overflow-x: auto; margin: 15px 0; }
+        .issue .suggestion { background: #f6ffed; padding: 15px; border-radius: 8px; margin-top: 15px; }
+        .issue .suggestion strong { color: #52c41a; }
+        
+        /* 图例 */
+        .legend { display: flex; gap: 20px; flex-wrap: wrap; margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 8px; }
+        .legend-item { display: flex; align-items: center; gap: 8px; }
+        .legend-color { width: 24px; height: 24px; border-radius: 4px; }
+        
+        /* 对比 */
+        .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin: 20px 0; }
+        .compare-item { background: #f8f9fa; padding: 25px; border-radius: 12px; }
+        .compare-item h4 { color: #667eea; margin-bottom: 15px; font-size: 1.2em; }
+        .compare-item .num { font-size: 2.5em; font-weight: bold; color: #764ba2; }
+        
+        /* 表格 */
+        .data-table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        .data-table th, .data-table td { border: 1px solid #e8e8e8; padding: 12px 15px; text-align: left; }
+        .data-table th { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .data-table tr:nth-child(even) { background: #f8f9fa; }
+        
+        /* Footer */
+        .footer { text-align: center; padding: 40px; color: rgba(255,255,255,0.8); }
+        .footer p { margin: 5px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        
+        <!-- 封面 -->
+        <div class="cover">
+            <h1>📅 排课系统测试报告</h1>
+            <p class="subtitle">timetable-scheduling Skill 完整测试</p>
+            <p class="meta">测试时间: 2026-05-26 | 测试人员: CatsCo AI</p>
+            
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-num">11</div>
+                    <div class="stat-label">测试项目</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-num" style="color: #52c41a;">10</div>
+                    <div class="stat-label">通过</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-num" style="color: #ff4d4f;">7</div>
+                    <div class="stat-label">发现问题</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-num">90.9%</div>
+                    <div class="stat-label">通过率</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 导航 -->
+        <div class="nav">
+            <a href="#test-results">📊 测试结果</a>
+            <a href="#timetable">📅 课表展示</a>
+            <a href="#conflicts">⚠️ 冲突分析</a>
+            <a href="#issues">🔴 问题清单</a>
+            <a href="#files">📁 文件清单</a>
+        </div>
+        
+        <!-- 测试结果 -->
+        <div class="card" id="test-results">
+            <h2>📊 测试结果概览</h2>
+            <div class="test-result">
+                <div class="test-item pass">
+                    <div class="test-icon">✅</div>
+                    <div class="test-info"><h4>1. 初始状态查看</h4><p>state show 正常显示</p></div>
+                </div>
+                <div class="test-item pass">
+                    <div class="test-icon">✅</div>
+                    <div class="test-info"><h4>2. 导入资料包</h4><p>import-package 成功</p></div>
+                </div>
+                <div class="test-item pass">
+                    <div class="test-icon">✅</div>
+                    <div class="test-info"><h4>3. 冲突检测</h4><p>validate 检测正常</p></div>
+                </div>
+                <div class="test-item pass">
+                    <div class="test-icon">✅</div>
+                    <div class="test-info"><h4>4. 班级课表</h4><p>show 查询正常</p></div>
+                </div>
+                <div class="test-item pass">
+                    <div class="test-icon">✅</div>
+                    <div class="test-info"><h4>5. 教师课表</h4><p>teacher 查询正常</p></div>
+                </div>
+                <div class="test-item pass">
+                    <div class="test-icon">✅</div>
+                    <div class="test-info"><h4>6. 规则添加</h4><p>rule add 记录成功</p></div>
+                </div>
+                <div class="test-item pass">
+                    <div class="test-icon">✅</div>
+                    <div class="test-info"><h4>7. 移动课程</h4><p>move --force 成功</p></div>
+                </div>
+                <div class="test-item pass">
+                    <div class="test-icon">✅</div>
+                    <div class="test-info"><h4>8. 交换课程</h4><p>swap 交换成功</p></div>
+                </div>
+                <div class="test-item warn">
+                    <div class="test-icon">⚠️</div>
+                    <div class="test-info"><h4>9. 结构化资料</h4><p>data patch 模式限制</p></div>
+                </div>
+                <div class="test-item pass">
+                    <div class="test-icon">✅</div>
+                    <div class="test-info"><h4>10. 生成课表</h4><p>solve 正常</p></div>
+                </div>
+                <div class="test-item pass">
+                    <div class="test-icon">✅</div>
+                    <div class="test-info"><h4>11. 重新生成</h4><p>resolve-imported 成功</p></div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 班级课表 -->
+        <div class="card" id="timetable">
+            <h2>📅 班级课表 - 七年级(1)</h2>
+            <div class="legend">
+                <span style="font-weight: bold; margin-right: 10px;">图例:</span>
+                <div class="legend-item"><div class="legend-color" style="background:#e6f7ff;"></div> 体育</div>
+                <div class="legend-item"><div class="legend-color" style="background:#fff7e6;"></div> 音乐/美术</div>
+                <div class="legend-item"><div class="legend-color" style="background:#f6ffed;"></div> 信息科技</div>
+                <div class="legend-item"><div class="legend-color" style="background:#fff1f0;"></div> 班会/活动</div>
+                <div class="legend-item"><div class="legend-color" style="background:#f9f0ff;"></div> 舞蹈/心理</div>
+                <div class="legend-item"><div class="legend-color" style="background:#f0f5ff;"></div> 科学(物化生)</div>
+            </div>
+            <table class="timetable"><thead><tr><th>节次</th><th>周一</th><th>周二</th><th>周三</th><th>周四</th><th>周五</th></tr></thead><tbody><tr><td class="period">第1节</td><td class="activity"><div class="lesson">班队会<br><small>李晓丽</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">语文<br><small>金婷</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">数学<br><small>卢志敏</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">语文<br><small>金婷</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">英语<br><small>黄梓琪</small><br><small class="room">本班教室</small></div></td></tr><tr><td class="period">第2节</td><td ><div class="lesson">英语<br><small>黄梓琪</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">课外阅读<br><small>黄梓琪</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">语文<br><small>金婷</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">语文<br><small>金婷</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">数学<br><small>卢志敏</small><br><small class="room">本班教室</small></div></td></tr><tr><td class="period">第3节</td><td ><div class="lesson">道德与法治<br><small>刘耀炜</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">历史<br><small>李晓丽</small><br><small class="room">本班教室</small></div></td><td class="pe"><div class="lesson">体育与健康<br><small>徐天飏</small><br><small class="room">操场</small></div></td><td ><div class="lesson">数学<br><small>卢志敏</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">语文<br><small>金婷</small><br><small class="room">本班教室</small></div></td></tr><tr><td class="period">第4节</td><td ><div class="lesson">数学<br><small>卢志敏</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">劳动<br><small>卢志敏</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">英语沙龙<br><small>黄梓琪</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">英语<br><small>黄梓琪</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">综合实践活动<br><small>梁苏健</small><br><small class="room">本班教室</small></div></td></tr><tr><td class="period">第5节</td><td ><div class="lesson">语文<br><small>金婷</small><br><small class="room">本班教室</small></div></td><td class="science"><div class="lesson">生物<br><small>阮音音</small><br><small class="room">实验室</small></div></td><td ><div class="lesson">英语<br><small>黄梓琪</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">地理<br><small>张文雅</small><br><small class="room">本班教室</small></div></td><td class="pe"><div class="lesson">体育与健康<br><small>徐天飏</small><br><small class="room">操场</small></div></td></tr><tr><td class="period">第6节</td><td class="art"><div class="lesson">音乐<br><small>刘柯辰</small><br><small class="room">本班教室</small></div></td><td class="pe"><div class="lesson">军事体育<br><small>卓钟庆</small><br><small class="room">操场</small></div></td><td ><div class="lesson">道德与法治<br><small>刘耀炜</small><br><small class="room">本班教室</small></div></td><td class="art"><div class="lesson">美术<br><small>刘芳芳</small><br><small class="room">本班教室</small></div></td><td class="special"><div class="lesson">舞蹈 / 心理健康教育<br><small>刘柯辰、庄轩羽</small><br><small class="room">本班教室</small></div></td></tr><tr><td class="period">第7节</td><td class="pe"><div class="lesson">体育与健康<br><small>徐天飏</small><br><small class="room">操场</small></div></td><td ><div class="lesson">数学<br><small>卢志敏</small><br><small class="room">本班教室</small></div></td><td class="science"><div class="lesson">生物<br><small>阮音音</small><br><small class="room">实验室</small></div></td><td class="pe"><div class="lesson">体育与健康<br><small>徐天飏</small><br><small class="room">操场</small></div></td><td ><div class="lesson">历史<br><small>李晓丽</small><br><small class="room">本班教室</small></div></td></tr><tr><td class="period">第8节</td><td ><div class="lesson">地理<br><small>张文雅</small><br><small class="room">本班教室</small></div></td><td class="art"><div class="lesson">美术<br><small>刘芳芳</small><br><small class="room">本班教室</small></div></td><td ><div class="lesson">听说<br><small>选修社团1</small><br><small class="room">本班教室</small></div></td><td class="tech"><div class="lesson">信息科技<br><small>吴欣楠</small><br><small class="room">机房A</small></div></td><td ><div class="lesson">听说<br><small>选修社团1</small><br><small class="room">本班教室</small></div></td></tr></tbody></table>
+        </div>
+        
+        <!-- 教师课表 -->
+        <div class="card">
+            <h2>👩‍🏫 教师课表 - 金婷老师</h2>
+            <p style="margin-bottom: 15px;">共 <strong style="color: #667eea; font-size: 1.2em;">12</strong> 节课 | 教授七年级(1)和七年级(6)语文</p>
+            <table class="teacher-table"><thead><tr><th>时间</th><th>班级</th><th>科目</th><th>教室</th></tr></thead><tbody><tr><td>周一 第3节</td><td>七年级(6)</td><td>语文</td><td>本班教室</td></tr><tr><td>周一 第5节</td><td>七年级(1)</td><td>语文</td><td>本班教室</td></tr><tr><td>周二 第1节</td><td>七年级(1)</td><td>语文</td><td>本班教室</td></tr><tr><td>周二 第3节</td><td>七年级(6)</td><td>语文</td><td>本班教室</td></tr><tr><td>周二 第4节</td><td>七年级(6)</td><td>语文</td><td>本班教室</td></tr><tr><td>周三 第2节</td><td>七年级(1)</td><td>语文</td><td>本班教室</td></tr><tr><td>周三 第4节</td><td>七年级(6)</td><td>语文</td><td>本班教室</td></tr><tr><td>周四 第1节</td><td>七年级(1)</td><td>语文</td><td>本班教室</td></tr><tr><td>周四 第2节</td><td>七年级(1)</td><td>语文</td><td>本班教室</td></tr><tr><td>周四 第4节</td><td>七年级(6)</td><td>语文</td><td>本班教室</td></tr><tr><td>周五 第1节</td><td>七年级(6)</td><td>语文</td><td>本班教室</td></tr><tr><td>周五 第3节</td><td>七年级(1)</td><td>语文</td><td>本班教室</td></tr></tbody></table>
+        </div>
+        
+        <!-- 冲突分析 -->
+        <div class="card" id="conflicts">
+            <h2>⚠️ 冲突分析</h2>
+            
+            <h3>导入后 vs 重新生成后 对比</h3>
+            <div class="compare">
+                <div class="compare-item">
+                    <h4>📥 导入后 (imported_schedule)</h4>
+                    <div class="num">2</div>
+                    <p>个冲突</p>
+                    <ul style="margin-top: 15px; padding-left: 20px;">
+                        <li>周五第6节: 刘柯辰/庄轩羽 (七年级1/3)</li>
+                        <li>周四第8节: 庄轩羽/刘柯辰 (七年级4/6)</li>
+                    </ul>
+                </div>
+                <div class="compare-item">
+                    <h4>🔄 重新生成后 (derived_solver)</h4>
+                    <div class="num">4</div>
+                    <p>个冲突 ⚠️ 增加</p>
+                    <ul style="margin-top: 15px; padding-left: 20px;">
+                        <li>周五第5节: 刘柯辰 (七年级1音乐 + 七年级2心育)</li>
+                        <li>周五第6节: 刘柯辰/庄轩羽 (七年级1/3)</li>
+                        <li>周四第8节: 庄轩羽/刘柯辰 (七年级4/6)</li>
+                        <li><strong style="color: #ff4d4f;">周四第8节: 刘柯辰同时带3个班 ⚠️</strong></li>
+                    </ul>
+                </div>
+            </div>
+            
+            <h3>重新生成统计</h3>
+            <table class="data-table">
+                <tr><td><strong>普通课程</strong></td><td><strong>228</strong> 节</td></tr>
+                <tr><td><strong>固定活动</strong></td><td><strong>12</strong> 节</td></tr>
+                <tr><td><strong>待审核活动</strong></td><td><strong>6</strong> 节</td></tr>
+                <tr><td><strong>反推课程</strong></td><td><strong>102</strong> 门</td></tr>
+                <tr><td><strong>保留原位</strong></td><td><strong>41</strong> 节</td></tr>
+                <tr><td><strong>变更位置</strong></td><td><strong>199</strong> 节</td></tr>
+            </table>
+        </div>
+        
+        <!-- 问题清单 -->
+        <div class="card" id="issues">
+            <h2>🔴 问题清单</h2>
+            
+            <div class="issue high">
+                <h4>问题1: `--help` 被安全策略拦截 <span class="severity high">中优先级</span></h4>
+                <p><strong>现象:</strong> 执行 `--help` 返回错误信息，而不是显示帮助文档</p>
+                <pre>$ skill_cli --help
+{
+  "ok": false,
+  "message": "--help 不能通过老师端排课助手执行。",
+  "status": "failed"
+}</pre>
+                <p><strong>影响:</strong> 用户无法查看可用命令列表，影响可用性</p>
+                <div class="suggestion">
+                    <strong>建议:</strong> 在白名单中加入 `help` 命令，或在 SKILL.md 中提供命令参考文档
+                </div>
+            </div>
+            
+            <div class="issue high">
+                <h4>问题2: `rule add` 效果不明确 <span class="severity high">高优先级</span></h4>
+                <p><strong>现象:</strong> 执行规则添加后返回 `ignored_rules`，让用户困惑</p>
+                <pre>命令: rule add "金婷老师周三下午有教研"
+结果: "ignored_rules": ["金婷老师周三下午不排课..."]</pre>
+                <p><strong>影响:</strong> 用户不清楚规则是否被保存，不知道如何让规则生效</p>
+                <div class="suggestion">
+                    <strong>建议:</strong> 将 `ignored_rules` 改为 "暂存规则（重新生成课表后生效）"，并提示执行 `resolve-imported`
+                </div>
+            </div>
+            
+            <div class="issue high">
+                <h4>问题3: `resolve-imported` 后冲突数量增加 <span class="severity high">中优先级</span></h4>
+                <p><strong>现象:</strong> 导入后2个冲突 → 重新生成后4个冲突</p>
+                <p><strong>问题:</strong> 刘柯辰在周四第8节同时带3个班（音乐+舞蹈+心理）</p>
+                <div class="suggestion">
+                    <strong>建议:</strong> 确认这是算法优化结果还是 bug，需要进一步验证
+                </div>
+            </div>
+            
+            <div class="issue">
+                <h4>问题4: 初始状态显示已有数据 <span class="severity low">低优先级</span></h4>
+                <p><strong>现象:</strong> 刚部署的系统显示 `source_mode: "imported_schedule"`，有6个班级数据</p>
+                <div class="suggestion">
+                    <strong>建议:</strong> 添加提示 "当前显示的是上次保存的课表"
+                </div>
+            </div>
+            
+            <div class="issue">
+                <h4>问题5: `data patch` 提示不够清晰 <span class="severity low">低优先级</span></h4>
+                <p><strong>现象:</strong> 返回 "当前课表来自资料包；为了避免写入后看不见，请先决定..."</p>
+                <div class="suggestion">
+                    <strong>建议:</strong> 改为用户友好描述，提供明确的二选一选项
+                </div>
+            </div>
+            
+            <div class="issue">
+                <h4>问题6: `move` 默认不覆盖已有课程 <span class="severity low">低优先级</span></h4>
+                <p><strong>现象:</strong> 不加 `--force` 时失败</p>
+                <div class="suggestion">
+                    <strong>建议:</strong> 错误提示改为 "目标位置已有课程，如需覆盖请加 --force"
+                </div>
+            </div>
+            
+            <div class="issue">
+                <h4>问题7: 截图记录方式 <span class="severity low">说明</span></h4>
+                <p><strong>现象:</strong> CLI 环境限制，截图以 txt 文件保存</p>
+                <p><strong>说明:</strong> 本报告已用 HTML 可视化呈现关键结果</p>
+            </div>
+        </div>
+        
+        <!-- 修复建议 -->
+        <div class="card">
+            <h2>🔧 修复优先级</h2>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>优先级</th>
+                        <th>问题</th>
+                        <th>修复方案</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="background: #fff1f0;">
+                        <td><strong style="color: #ff4d4f;">🔴 高</strong></td>
+                        <td>问题2: rule add 提示</td>
+                        <td>将 `ignored_rules` 改为 "暂存规则" 并提示如何生效</td>
+                    </tr>
+                    <tr style="background: #fffbe6;">
+                        <td><strong style="color: #faad14;">🟡 中</strong></td>
+                        <td>问题1: --help 拦截</td>
+                        <td>白名单加入 `help` 命令</td>
+                    </tr>
+                    <tr style="background: #fffbe6;">
+                        <td><strong style="color: #faad14;">🟡 中</strong></td>
+                        <td>问题3: 冲突增加</td>
+                        <td>确认 resolve-imported 算法逻辑</td>
+                    </tr>
+                    <tr style="background: #f6ffed;">
+                        <td><strong style="color: #52c41a;">🟢 低</strong></td>
+                        <td>问题4/5/6</td>
+                        <td>体验优化，后续迭代</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- 文件清单 -->
+        <div class="card" id="files">
+            <h2>📁 生成文件清单</h2>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>文件类型</th>
+                        <th>路径</th>
+                        <th>说明</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>📊 HTML 报告</td>
+                        <td><code>D:\skill-test-timetableeports	est_report.html</code></td>
+                        <td>本报告（可视化版本）</td>
+                    </tr>
+                    <tr>
+                        <td>📋 问题清单</td>
+                        <td><code>D:\skill-test-timetableeports\问题清单.md</code></td>
+                        <td>问题清单 Markdown 版</td>
+                    </tr>
+                    <tr>
+                        <td>📝 详细报告</td>
+                        <td><code>D:\skill-test-timetableeports	est_report.md</code></td>
+                        <td>详细测试报告</td>
+                    </tr>
+                    <tr>
+                        <td>📁 截图目录</td>
+                        <td><code>D:\skill-test-timetable\screenshots\</code></td>
+                        <td>11个测试截图文件</td>
+                    </tr>
+                    <tr>
+                        <td>🗂️ 测试数据</td>
+                        <td><code>D:\skill-test-timetable	est_data\</code></td>
+                        <td>测试用的 patch 示例</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- Footer -->
+        <div class="footer">
+            <p>排课系统 (timetable-scheduling) 测试报告</p>
+            <p>测试通过率: 90.9% (10/11) | 生成时间: 2026-05-26</p>
+        </div>
+    </div>
+</body>
+</html>

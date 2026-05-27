@@ -1,0 +1,1 @@
+"""AI timetable demo application."""

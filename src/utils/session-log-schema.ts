@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import type { SessionIdentitySnapshot } from '../types/session-identity';
 
 export interface SessionToolCallLog {
   id: string;
@@ -14,6 +15,7 @@ export interface SessionTurnLogEntry {
   timestamp: string;
   session_id: string;
   session_type: string;
+  identity?: SessionIdentitySnapshot;
   user: {
     text: string;
     images?: string[];

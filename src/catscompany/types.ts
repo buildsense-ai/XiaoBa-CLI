@@ -6,6 +6,10 @@ export interface CatsCompanyConfig {
   serverUrl: string;
   /** Bot API Key，如 "cc_8_abc123..." */
   apiKey: string;
+  /** 当前 CatsCo agent 运行身体/设备 ID，用于平台侧防止同一 bot 被多台设备同时继承。 */
+  bodyId?: string;
+  /** 当前安装实例 ID，默认与 bodyId 一致。 */
+  installationId?: string;
   /** HTTP 基础地址（用于文件上传），默认从 serverUrl 推导 */
   httpBaseUrl?: string;
   /** 会话过期时间（毫秒），默认 30 分钟 */
@@ -28,6 +32,8 @@ export interface ParsedCatsMessage {
   text: string;
   /** 原始 content（可能是 string 或 RichContent） */
   rawContent: unknown;
+  /** 原始消息 metadata，用于逐步补齐 actor/channel provenance。 */
+  metadata?: Record<string, unknown>;
   /** 文件附件信息（rich content file/image 时存在） */
   file?: CatsFileInfo;
   /** 同一条消息里的全部附件（content_blocks 或 rich content） */

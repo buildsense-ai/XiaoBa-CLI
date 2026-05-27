@@ -1,0 +1,1711 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CatsCo 校园智能助手内部战略母版</title>
+  <style>
+    :root {
+      --ink: #17202a;
+      --muted: #5e6f7d;
+      --faint: #8795a1;
+      --line: #dce3e8;
+      --paper: #ffffff;
+      --bg: #eef3f5;
+      --soft: #f6f8fa;
+      --green: #1f7a5c;
+      --green-soft: #e7f4ee;
+      --blue: #2d69b3;
+      --blue-soft: #eaf1fb;
+      --amber: #956615;
+      --amber-soft: #fff3d6;
+      --red: #a84b4b;
+      --red-soft: #f9eded;
+      --violet: #6557a8;
+      --violet-soft: #f0eef9;
+      --radius: 8px;
+      --shadow: 0 16px 40px rgba(23, 32, 42, 0.08);
+      --max: 1180px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.68;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: var(--blue);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .side {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      padding: 26px 22px;
+      background: #18232d;
+      color: #edf5f7;
+    }
+
+    .brand {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 28px;
+    }
+
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: var(--radius);
+      background: var(--green);
+      color: #fff;
+      font-weight: 800;
+    }
+
+    .brand-title {
+      font-size: 16px;
+      line-height: 1.25;
+      font-weight: 760;
+    }
+
+    .brand-sub {
+      margin-top: 2px;
+      color: #b9c8cf;
+      font-size: 12px;
+    }
+
+    .nav-label {
+      margin: 20px 0 8px;
+      color: #91a4af;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .nav a {
+      display: block;
+      padding: 8px 10px;
+      border-radius: 6px;
+      color: #dce8ed;
+      font-size: 14px;
+    }
+
+    .nav a:hover {
+      background: rgba(255, 255, 255, 0.08);
+      text-decoration: none;
+    }
+
+    .side-note {
+      margin-top: 26px;
+      padding: 12px;
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.07);
+      color: #c6d4da;
+      font-size: 12px;
+    }
+
+    main {
+      min-width: 0;
+      padding: 34px 42px 72px;
+    }
+
+    .content {
+      max-width: var(--max);
+      margin: 0 auto;
+    }
+
+    .hero,
+    section {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+      gap: 28px;
+      align-items: stretch;
+      padding: 34px;
+    }
+
+    .kicker {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 12px;
+      color: var(--green);
+      font-size: 13px;
+      font-weight: 760;
+    }
+
+    .kicker::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--green);
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1,
+    h2,
+    h3 {
+      line-height: 1.22;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      max-width: 850px;
+      font-size: 40px;
+    }
+
+    h2 {
+      font-size: 28px;
+    }
+
+    h3 {
+      font-size: 18px;
+    }
+
+    .lead {
+      margin-top: 18px;
+      max-width: 820px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .claim {
+      margin-top: 24px;
+      padding: 16px 18px;
+      border-left: 4px solid var(--green);
+      border-radius: 6px;
+      background: var(--green-soft);
+      font-weight: 700;
+    }
+
+    .hero-panel {
+      display: grid;
+      gap: 12px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--soft);
+    }
+
+    .signal-box {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+    }
+
+    .signal-box.org {
+      border-color: rgba(45, 105, 179, 0.28);
+      background: var(--blue-soft);
+    }
+
+    .signal-box.agent {
+      border-color: rgba(31, 122, 92, 0.28);
+      background: var(--green-soft);
+    }
+
+    .signal-box.user {
+      border-color: rgba(101, 87, 168, 0.24);
+      background: var(--violet-soft);
+    }
+
+    .box-label,
+    .mini-label,
+    .step-num {
+      color: var(--faint);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .box-main {
+      margin-top: 4px;
+      font-size: 18px;
+      font-weight: 760;
+    }
+
+    .arrow {
+      color: var(--faint);
+      text-align: center;
+      font-weight: 800;
+    }
+
+    .mini-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    section {
+      margin-top: 24px;
+      padding: 30px;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      align-items: flex-start;
+      margin-bottom: 20px;
+    }
+
+    .section-intro {
+      margin-top: 10px;
+      max-width: 860px;
+      color: var(--muted);
+    }
+
+    .badge {
+      flex: 0 0 auto;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: var(--soft);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+    }
+
+    .prose {
+      display: grid;
+      gap: 14px;
+    }
+
+    .prose p {
+      color: #26343f;
+    }
+
+    .chapter-summary {
+      margin-bottom: 20px;
+      padding: 16px 18px;
+      border-left: 4px solid var(--blue);
+      border-radius: 6px;
+      background: var(--blue-soft);
+      font-size: 17px;
+      font-weight: 760;
+    }
+
+    .callout {
+      margin-top: 20px;
+      padding: 16px 18px;
+      border-left: 4px solid var(--green);
+      border-radius: 6px;
+      background: var(--green-soft);
+    }
+
+    .callout.warn {
+      border-left-color: var(--amber);
+      background: var(--amber-soft);
+    }
+
+    .callout.red {
+      border-left-color: var(--red);
+      background: var(--red-soft);
+    }
+
+    .cards,
+    .two-col,
+    .three-col,
+    .chapter-map,
+    .scenario-grid,
+    .comparison,
+    .path {
+      display: grid;
+      gap: 14px;
+    }
+
+    .two-col {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .three-col,
+    .chapter-map,
+    .scenario-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .card,
+    .chapter-step,
+    .scenario,
+    .compare-card,
+    .path-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--soft);
+    }
+
+    .card {
+      padding: 18px;
+    }
+
+    .card h3 {
+      margin-top: 6px;
+    }
+
+    .card p,
+    .scenario span,
+    .compare-item span,
+    .step-copy,
+    .path-card p {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .card.green {
+      border-color: rgba(31, 122, 92, 0.25);
+      background: var(--green-soft);
+    }
+
+    .card.blue {
+      border-color: rgba(45, 105, 179, 0.25);
+      background: var(--blue-soft);
+    }
+
+    .card.amber {
+      border-color: rgba(149, 102, 21, 0.25);
+      background: var(--amber-soft);
+    }
+
+    .card.violet {
+      border-color: rgba(101, 87, 168, 0.25);
+      background: var(--violet-soft);
+    }
+
+    .card.red {
+      border-color: rgba(168, 75, 75, 0.25);
+      background: var(--red-soft);
+    }
+
+    .chapter-step {
+      padding: 16px;
+      background: #fff;
+    }
+
+    .step-title {
+      margin-top: 6px;
+      font-weight: 800;
+    }
+
+    .comparison {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      margin-top: 22px;
+    }
+
+    .compare-head {
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      font-weight: 800;
+    }
+
+    .compare-body {
+      display: grid;
+      gap: 12px;
+      padding: 16px;
+    }
+
+    .compare-item {
+      display: grid;
+      gap: 2px;
+    }
+
+    .compare-card.school {
+      border-color: rgba(31, 122, 92, 0.25);
+      background: var(--green-soft);
+    }
+
+    .compare-card.local {
+      border-color: rgba(149, 102, 21, 0.25);
+      background: var(--amber-soft);
+    }
+
+    .scenario {
+      padding: 16px;
+      background: #fff;
+    }
+
+    .scenario strong {
+      display: block;
+    }
+
+    .quote {
+      margin-top: 22px;
+      padding: 18px 20px;
+      border: 1px solid rgba(31, 122, 92, 0.28);
+      border-radius: var(--radius);
+      background: var(--green-soft);
+      color: #143f31;
+      font-size: 18px;
+      font-weight: 800;
+    }
+
+    .path {
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      align-items: stretch;
+      margin-top: 22px;
+    }
+
+    .path-card {
+      padding: 16px;
+      background: #fff;
+    }
+
+    .path-arrow {
+      display: grid;
+      place-items: center;
+      color: var(--faint);
+      font-weight: 800;
+    }
+
+    .data-table {
+      width: 100%;
+      margin-top: 22px;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      font-size: 14px;
+    }
+
+    .data-table th,
+    .data-table td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .data-table th {
+      background: var(--soft);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .data-table tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .footer {
+      margin: 32px 0 0;
+      color: var(--faint);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    @media (max-width: 980px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .side {
+        position: static;
+        height: auto;
+      }
+
+      main {
+        padding: 22px;
+      }
+
+      .hero,
+      .two-col,
+      .three-col,
+      .chapter-map,
+      .scenario-grid,
+      .comparison,
+      .path {
+        grid-template-columns: 1fr;
+      }
+
+      .path-arrow {
+        transform: rotate(90deg);
+      }
+    }
+
+    @media (max-width: 640px) {
+      main {
+        padding: 14px;
+      }
+
+      .hero,
+      section {
+        padding: 22px;
+      }
+
+      h1 {
+        font-size: 30px;
+      }
+
+      h2 {
+        font-size: 23px;
+      }
+
+      .section-head,
+      .mini-grid {
+        display: block;
+      }
+
+      .mini-grid .signal-box + .signal-box {
+        margin-top: 12px;
+      }
+
+      .badge {
+        display: inline-block;
+        margin-top: 12px;
+      }
+    }
+
+    @media print {
+      @page {
+        size: A4 landscape;
+        margin: 12mm;
+      }
+
+      * {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      body {
+        background: #fff;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .layout {
+        display: block;
+      }
+
+      .side {
+        display: none;
+      }
+
+      main {
+        padding: 0;
+      }
+
+      .content {
+        max-width: none;
+      }
+
+      .hero,
+      section {
+        box-shadow: none;
+        border-color: #cfd8df;
+      }
+
+      .hero {
+        min-height: 170mm;
+      }
+
+      section {
+        margin-top: 0;
+        padding: 8mm;
+        break-before: page;
+      }
+
+      .section-head,
+      .chapter-summary,
+      .card,
+      .chapter-step,
+      .scenario,
+      .compare-card,
+      .path-card,
+      .quote,
+      .callout,
+      tr {
+        break-inside: avoid;
+      }
+
+      h1 {
+        font-size: 32px;
+      }
+
+      h2 {
+        font-size: 23px;
+      }
+
+      h3 {
+        font-size: 15px;
+      }
+
+      .lead,
+      .chapter-summary {
+        font-size: 15px;
+      }
+
+      .prose p,
+      .card p,
+      .scenario span,
+      .compare-item span,
+      .step-copy,
+      .path-card p,
+      .data-table {
+        font-size: 11px;
+      }
+
+      .data-table th,
+      .data-table td {
+        padding: 7px 8px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="side">
+      <div class="brand">
+        <div class="brand-mark">C</div>
+        <div>
+          <div class="brand-title">CatsCo 校园智能助手</div>
+          <div class="brand-sub">内部战略母版</div>
+        </div>
+      </div>
+
+      <div class="nav-label">文档导航</div>
+      <nav class="nav">
+        <a href="#overview">母版定位</a>
+        <a href="#chapter-plan">阅读路线</a>
+        <a href="#chapter-1">1. 核心判断</a>
+        <a href="#chapter-2">2. 试点验证</a>
+        <a href="#chapter-3">3. 政策机会</a>
+        <a href="#chapter-4">4. 共创目标</a>
+        <a href="#chapter-5">5. 目标形态</a>
+        <a href="#chapter-6">6. 使用闭环</a>
+        <a href="#chapter-7">7. 首批场景</a>
+        <a href="#chapter-8">8. 服务边界</a>
+        <a href="#chapter-9">9. 90 天路线</a>
+        <a href="#appendix-cost">A. 成本模型</a>
+        <a href="#appendix-architecture">B. 架构原则</a>
+        <a href="#appendix-compliance">C. 合规口径</a>
+      </nav>
+
+      <div class="side-note">
+        本文件是精简母版。完整文字论述另见
+        <a href="./campus-intelligent-assistant-strategy-longform.html">战略长文论述版</a>；
+        技术细节另见
+        <a href="./virtual-employee-architecture-transition-report.html">虚拟员工架构转型报告</a>。
+      </div>
+    </aside>
+
+    <main>
+      <div class="content">
+        <header class="hero" id="overview">
+          <div>
+            <div class="kicker">内部母版 · 2026-05-27</div>
+            <h1>从个人 AI 助手到学校级校园智能助手</h1>
+            <p class="lead">
+              这份母版只回答一个核心问题：学校试点之后，CatsCo Agent 为什么不应停留在“给每位老师装一个个人助手”，而应升级为学校共同拥有、多人可用、持续沉淀能力的校园智能助手。
+            </p>
+            <div class="claim">
+              核心主线：个人助手试点证明 AI 能进入老师真实工作；下一阶段要共创“广大附教育智能体”；更高目标是把真实使用、典型场景和学校成果整理成 AI 示范校园方案。
+            </div>
+          </div>
+
+          <div class="hero-panel" aria-label="校园智能助手示意">
+            <div class="signal-box org">
+              <div class="box-label">当前验证</div>
+              <div class="box-main">个人助手进入老师日常工作</div>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="signal-box agent">
+              <div class="box-label">下一阶段</div>
+              <div class="box-main">广大附教育智能体</div>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="mini-grid">
+              <div class="signal-box user">
+                <div class="box-label">学校价值</div>
+                <div class="box-main">沉淀资料、流程和 skills</div>
+              </div>
+              <div class="signal-box user">
+                <div class="box-label">校长价值</div>
+                <div class="box-main">AI 示范校园抓手</div>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <section id="chapter-plan">
+          <div class="section-head">
+            <div>
+              <h2>阅读路线</h2>
+              <p class="section-intro">
+                主文按“战略判断、学校机会、产品形态、落地合作”推进。成本、架构和合规不再打断主线，放在附录作为内部决策依据。
+              </p>
+            </div>
+            <span class="badge">结构</span>
+          </div>
+
+          <div class="chapter-map">
+            <div class="chapter-step">
+              <div class="step-num">Part 1</div>
+              <div class="step-title">为什么升级</div>
+              <div class="step-copy">核心判断、试点事实、政策窗口和示范校园机会。</div>
+            </div>
+            <div class="chapter-step">
+              <div class="step-num">Part 2</div>
+              <div class="step-title">升级成什么</div>
+              <div class="step-copy">广大附教育智能体、校园智能助手、使用闭环和首批场景。</div>
+            </div>
+            <div class="chapter-step">
+              <div class="step-num">Part 3</div>
+              <div class="step-title">怎么合作</div>
+              <div class="step-copy">共创启动包、专项服务边界、90 天路线和验收方式。</div>
+            </div>
+          </div>
+
+          <div class="callout">
+            <strong>概念关系：</strong>
+            CatsCo Agent 是底层 agent 能力平台；个人助手是它服务一个人时的形态；虚拟员工是它服务组织时的抽象模型；校园智能助手是虚拟员工在学校场景下的产品表达；“广大附教育智能体”是这套能力在当前学校共创项目中的具体实例；AI 示范校园是项目成熟后的对外成果目标。
+          </div>
+        </section>
+
+        <section id="chapter-1">
+          <div class="section-head">
+            <div>
+              <h2>第 1 章：核心判断</h2>
+              <p class="section-intro">
+                个人助手不是错误路线，但它只是 CatsCo Agent 服务一个人时的表现形态。学校级服务的长期价值在组织能力沉淀。
+              </p>
+            </div>
+            <span class="badge">战略判断</span>
+          </div>
+
+          <div class="chapter-summary">
+            我们不是要给每个老师复制一个孤立 AI，而是要帮助学校培养一个可持续成长、多人可用、不断沉淀经验的校园智能助手。
+          </div>
+
+          <div class="prose">
+            <p>
+              最初的 XiaoBa-CLI / CatsCo Agent 是安装在个人电脑里的 AI 助手。这个判断成立：它能读写本地文件、操作浏览器、处理文档和表格，体验像一个住在电脑里的智能操作系统。
+            </p>
+            <p>
+              学校试点之后，核心判断发生了升级。对组织来说，长期价值不在于每位老师各自拥有一个独立世界模型，而在于学校拥有一个共同使用、持续培养、逐步理解学校流程和资料的智能体。
+            </p>
+            <p>
+              同一个 agent 部署在本地，就是服务个人的助手；部署为学校级主体，就是服务组织的虚拟员工。差异不在于能不能访问本地环境，而在于它的记忆、skills、流程和交付标准沉淀给谁。
+            </p>
+          </div>
+
+          <div class="comparison" aria-label="个人助手和校园智能助手对比">
+            <div class="compare-card local">
+              <div class="compare-head">个人助手</div>
+              <div class="compare-body">
+                <div class="compare-item">
+                  <strong>服务主体</strong>
+                  <span>围绕一个人、一台设备、一个人的文件和工作习惯。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>核心价值</strong>
+                  <span>贴近本地现场，提升个人效率，适合直接处理本机材料。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>主要边界</strong>
+                  <span>经验沉淀在个人侧，组织难复用，离职、换岗和交接时容易断裂。</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="compare-card school">
+              <div class="compare-head">校园智能助手</div>
+              <div class="compare-body">
+                <div class="compare-item">
+                  <strong>服务主体</strong>
+                  <span>围绕一所学校、多个部门、多个用户和学校级工作流程。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>核心价值</strong>
+                  <span>多人独立会话，统一沉淀资料库、模板、流程、规则和 skills。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>长期结果</strong>
+                  <span>学校拥有一个可持续培养的智能工作伙伴，而不是一批孤立账号。</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="quote">
+            CatsCo Agent 的长期价值，不是成为每个人电脑里的私人助手，而是成为学校共同使用、持续培养、不断积累能力的校园智能助手；个人助手只是它服务一个人时的特例。
+          </div>
+        </section>
+
+        <section id="chapter-2">
+          <div class="section-head">
+            <div>
+              <h2>第 2 章：当前试点验证了什么</h2>
+              <p class="section-intro">
+                当前试点的价值，不是证明“AI 可以写文案”，而是证明 AI 已经能进入老师和部门的真实工作现场。
+              </p>
+            </div>
+            <span class="badge">试点事实</span>
+          </div>
+
+          <div class="cards three-col">
+            <div class="card green">
+              <div class="mini-label">试点范围</div>
+              <h3>总务处、教务处、校办</h3>
+              <p>这些部门老师既承担行政和教务工作，也有授课任务，能代表学校真实复合型工作。</p>
+            </div>
+            <div class="card blue">
+              <div class="mini-label">学校背景</div>
+              <h3>重点小学扩建初中部</h3>
+              <p>学校正在建设初中部，现阶段只有初一，同时存在两个校区，过渡期复杂度高。</p>
+            </div>
+            <div class="card amber">
+              <div class="mini-label">试点结论</div>
+              <h3>老师愿意把任务交给 AI</h3>
+              <p>文档、会议纪要、PPT、材料整理、视频剪辑辅助等任务已经形成实际使用入口。</p>
+            </div>
+          </div>
+
+          <div class="prose" style="margin-top:22px">
+            <p>
+              试点首先证明了老师愿意尝试 AI，并且愿意让 AI 进入具体任务。日常文档编辑、会议纪要、PPT、材料整理和视频剪辑辅助不是最有壁垒的场景，但它们完成了最重要的第一步：让 AI 从演示进入真实办公。
+            </p>
+            <p>
+              试点同时暴露出更有价值的学校任务。这些任务不一定每天发生，但每次都耗时、复杂、重要，并且每学期或每学年稳定重复。学校就是被一组这样的周期性重任务填满：排课、成绩分析、班级报告、总务盘点、入学材料核验、教材备课、资料归档、阶段汇报。
+            </p>
+          </div>
+
+          <div class="scenario-grid" aria-label="学校核心需求">
+            <div class="scenario">
+              <strong>排课 / 调课</strong>
+              <span>两个校区、新学段建设、教师流动和课程资源调整，会让排课在未来两三年持续高价值。</span>
+            </div>
+            <div class="scenario">
+              <strong>成绩报告与班级分析</strong>
+              <span>期中期末后稳定发生，既服务老师复盘，也服务年级组和管理层汇报。</span>
+            </div>
+            <div class="scenario">
+              <strong>总务盘点与合同台账</strong>
+              <span>物料、设备、合同、凭证可以形成结构化 Excel、可视化和异常提示。</span>
+            </div>
+            <div class="scenario">
+              <strong>入学材料核验辅助</strong>
+              <span>涉及户口、房产、学位有效性等材料核对，适合做清单、疑点提示和人工复核摘要。</span>
+            </div>
+            <div class="scenario">
+              <strong>备课与复习资料</strong>
+              <span>基于教材、历史课件和班级薄弱点，辅助老师准备复习重点和课堂材料。</span>
+            </div>
+            <div class="scenario">
+              <strong>学校资料库</strong>
+              <span>微信群、QQ群、个人电脑和历史文件夹里的资料需要索引、检索、副本保存和复用。</span>
+            </div>
+          </div>
+
+          <div class="callout warn">
+            <strong>对“高频”的重新定义：</strong>
+            学校高价值需求不一定是每天都发生的 query，而是一组每学期固定出现、单次耗时大、流程可复用的任务。十个这样的任务叠加起来，就是学校最真实的效率痛点。
+          </div>
+        </section>
+
+        <section id="chapter-3">
+          <div class="section-head">
+            <div>
+              <h2>第 3 章：政策机会</h2>
+              <p class="section-intro">
+                对外汇报不能只讲效率。校长需要看到这件事与教育数字化、AI+教育、智慧校园和示范推广同向。
+              </p>
+            </div>
+            <span class="badge">政策共振</span>
+          </div>
+
+          <div class="chapter-summary">
+            对外表达应从“我们做了一个 AI 工具”升级为：以教师真实工作为切口，探索人智协同办公、学校治理提质、校本知识沉淀和可复制的 AI 教育落地场景。
+          </div>
+
+          <div class="cards three-col">
+            <div class="card blue">
+              <div class="mini-label">国家层面</div>
+              <h3>教育数字化与 AI+教育</h3>
+              <p>关键词：智慧校园、教师智能助手、教师减负、教育治理、科学决策、安全可控。</p>
+            </div>
+            <div class="card green">
+              <div class="mini-label">广东层面</div>
+              <h3>从理念走向场景</h3>
+              <p>关键词：助教、助学、助研、助管、助评、助育，以及基础教育人工智能全域场景应用。</p>
+            </div>
+            <div class="card violet">
+              <div class="mini-label">广州层面</div>
+              <h3>平台体系与示范推广</h3>
+              <p>关键词：人工智能与教育融合创新、资源融通、智能搜索、网络学习空间、示范区校和可复制案例。</p>
+            </div>
+          </div>
+
+          <div class="prose" style="margin-top:22px">
+            <p>
+              当前个人助手试点可以被定义为第一阶段：让 AI 真实融入老师日常工作，验证使用意愿、任务类型、资料形态和可交付场景。
+            </p>
+            <p>
+              下一阶段的校园教育智能体，则可以被定义为第二阶段：把真实使用沉淀成学校级智能应用能力。这个阶段不只是帮助老师省时间，而是帮助学校形成有场景、有案例、有资料库、有安全边界、有成果汇报的 AI 示范校园建设抓手。
+            </p>
+          </div>
+
+          <div class="comparison" aria-label="政策价值和风险边界">
+            <div class="compare-card school">
+              <div class="compare-head">适合对外强调</div>
+              <div class="compare-body">
+                <div class="compare-item">
+                  <strong>教师减负与数字素养提升</strong>
+                  <span>文档、备课、资料整理、成绩分析和复盘报告，对应教师智能助手和数字化赋能教师发展。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>学校治理提质</strong>
+                  <span>排课、总务台账、流程材料、资料库和管理汇报，对应助管、智慧校园和科学决策。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>校本知识资产沉淀</strong>
+                  <span>学校资料库、模板库、流程库和案例库，对应资源融通、智能搜索和示范成果。</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="compare-card local">
+              <div class="compare-head">必须谨慎避免</div>
+              <div class="compare-body">
+                <div class="compare-item">
+                  <strong>不说替代教师或行政人员</strong>
+                  <span>对外口径应是辅助、协同、减负、提质，不替代人的专业判断和管理责任。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>不说自动决策敏感事项</strong>
+                  <span>招生资格、学生评价、资助、处分、分班等事项只能做辅助核查和人工复核。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>不说全量抓取数据</strong>
+                  <span>必须强调授权、权限、审计、数据边界和关键结论人工确认。</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="chapter-4">
+          <div class="section-head">
+            <div>
+              <h2>第 4 章：共创目标，建设“广大附教育智能体”</h2>
+              <p class="section-intro">
+                月底汇报的重点不是宣称学校级智能体已经完成，而是把当前试点自然升级成共创项目。
+              </p>
+            </div>
+            <span class="badge">共创主线</span>
+          </div>
+
+          <div class="chapter-summary">
+            当前已经验证 AI 可以通过个人助手进入老师真实工作。下一阶段建议与学校共创云端 24 小时在线的“广大附教育智能体”，服务老师和部门，并把真实使用、典型场景和学校成果整理成 AI 示范校园建设方案。
+          </div>
+
+          <div class="path" aria-label="共创落地三阶段">
+            <div class="path-card">
+              <h3>阶段一：个人助手试点</h3>
+              <p>给试点老师部署个人助手，证明 AI 能进入真实工作流，收集需求、日志、反馈和高价值场景。</p>
+            </div>
+            <div class="path-arrow">→</div>
+            <div class="path-card">
+              <h3>阶段二：广大附教育智能体</h3>
+              <p>建设学校级云端智能体，提供独立会话、学校资料库、基础工具链和逐步生长的 skills。</p>
+            </div>
+            <div class="path-arrow">→</div>
+            <div class="path-card">
+              <h3>阶段三：AI 示范校园</h3>
+              <p>把使用数据、典型场景、教师案例、校本知识库和治理成果整理成可汇报、可申请、可展示的方案。</p>
+            </div>
+          </div>
+
+          <div class="prose" style="margin-top:22px">
+            <p>
+              “共创”不是泛泛的合作口号，而是一个具体承诺：学校提供真实场景、组织支持、资料边界和反馈机制；我们提供智能体建设、场景梳理、基础运行、教师培训、skill 沉淀、成果整理和申报方案准备。
+            </p>
+            <p>
+              对校长来说，项目价值不只是买一个 AI 工具，而是把学校已有试点转化成广东 / 广州 AI 教育落地示范校园的建设抓手。校长只需要认可方向、确定牵头人和配合机制，后续方案、材料、场景、成果和申报准备由我们承担主要工作。
+            </p>
+          </div>
+
+          <table class="data-table" aria-label="共创合作分工">
+            <thead>
+              <tr>
+                <th>共创事项</th>
+                <th>学校侧</th>
+                <th>我们侧</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>确定目标</strong></td>
+                <td>认可“广大附教育智能体”和 AI 示范校园方向，明确牵头部门。</td>
+                <td>整理项目定位、政策依据、阶段目标、学校价值和实施路线。</td>
+              </tr>
+              <tr>
+                <td><strong>选择场景</strong></td>
+                <td>从教务、总务、校办和教师使用中选择 2-3 个优先场景。</td>
+                <td>拆解输入资料、处理流程、交付物、验收标准和风险边界。</td>
+              </tr>
+              <tr>
+                <td><strong>建设智能体</strong></td>
+                <td>确认用户范围、入口方式、资料授权和数据边界。</td>
+                <td>部署学校级智能体，建立独立 session、资料库、工具链、日志和权限机制。</td>
+              </tr>
+              <tr>
+                <td><strong>形成成果</strong></td>
+                <td>提供学校背景、试点反馈、典型老师和必要提交支持。</td>
+                <td>输出阶段报告、典型案例、示范方案、预算建议和验收指标。</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="quote">
+            共创的杀手锏不是便宜，也不是功能多，而是把 AI 真实使用、校园智能体建设和示范校园申报连接成一条完整路径。
+          </div>
+        </section>
+
+        <section id="chapter-5">
+          <div class="section-head">
+            <div>
+              <h2>第 5 章：目标形态，校园智能助手是什么</h2>
+              <p class="section-intro">
+                面向学校，它叫校园智能助手；底层抽象，是一个有身份、记忆、工具链、权限和交付标准的虚拟员工。
+              </p>
+            </div>
+            <span class="badge">产品定义</span>
+          </div>
+
+          <div class="chapter-summary">
+            对老师，它像一个更强的个人助手；对学校，它是不断沉淀资料、流程、模板和 skills 的组织智能资产。
+          </div>
+
+          <div class="comparison" aria-label="校园智能助手边界">
+            <div class="compare-card local">
+              <div class="compare-head">它不应该只是</div>
+              <div class="compare-body">
+                <div class="compare-item">
+                  <strong>网页聊天框</strong>
+                  <span>只回答问题，文件和结果仍由老师来回搬运。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>单机工具集合</strong>
+                  <span>能力绑定在某台电脑上，难以让整个学校复用。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>固定脚本项目</strong>
+                  <span>只能完成预设动作，无法随着学校流程和资料持续成长。</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="compare-card school">
+              <div class="compare-head">它应该成为</div>
+              <div class="compare-body">
+                <div class="compare-item">
+                  <strong>学校共同拥有的智能体</strong>
+                  <span>服务老师、教务、校办、总务和管理者，能力沉淀在学校侧。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>多人可用的专家同事</strong>
+                  <span>每个人有独立 session，但共享学校级知识、流程、模板和 skills。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>持续成长的组织资产</strong>
+                  <span>越来越理解学校材料、部门分工、学期节奏和交付标准。</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="cards three-col" style="margin-top:22px">
+            <div class="card green">
+              <div class="mini-label">Identity</div>
+              <h3>学校身份</h3>
+              <p>它不是某位老师的私人账号，而是学校部署和培养的智能助手。</p>
+            </div>
+            <div class="card blue">
+              <div class="mini-label">Memory</div>
+              <h3>长期记忆</h3>
+              <p>沉淀资料、流程、模板、历史任务和交付习惯。</p>
+            </div>
+            <div class="card violet">
+              <div class="mini-label">Skills</div>
+              <h3>专业技能</h3>
+              <p>排课、成绩分析、总务盘点、资料检索、备课辅助逐步形成稳定 skills。</p>
+            </div>
+            <div class="card amber">
+              <div class="mini-label">Sessions</div>
+              <h3>独立会话</h3>
+              <p>不同老师同时做不同事，任务上下文隔离，不互相阻塞。</p>
+            </div>
+            <div class="card">
+              <div class="mini-label">Access</div>
+              <h3>资料接入</h3>
+              <p>上传文件、学校资料库、聊天附件和本地设备授权都可以成为资料来源。</p>
+            </div>
+            <div class="card red">
+              <div class="mini-label">Accountability</div>
+              <h3>权限审计</h3>
+              <p>谁发起任务、访问什么资料、产出什么结果，必须可追踪。</p>
+            </div>
+          </div>
+
+          <div class="callout">
+            <strong>分化原则：</strong>
+            初期先做一个统一校园智能助手，不急着拆成很多角色。等排课、总务、招生、资料库等方向在真实使用中成熟，再自然分化为教务智能专员、总务智能专员、招生 / 学籍智能专员等。
+          </div>
+        </section>
+
+        <section id="chapter-6">
+          <div class="section-head">
+            <div>
+              <h2>第 6 章：使用闭环</h2>
+              <p class="section-intro">
+                用户体验要像个人助手一样简单，但背后要能沉淀学校能力。
+              </p>
+            </div>
+            <span class="badge">体验路径</span>
+          </div>
+
+          <div class="chapter-summary">
+            老师只需要进入熟悉入口，说出任务，授权必要资料，收到可编辑、可交付的结果；学校则在确认后的模板、字段、规则和流程中积累能力。
+          </div>
+
+          <div class="cards three-col">
+            <div class="card green">
+              <div class="mini-label">Step 1</div>
+              <h3>进入入口</h3>
+              <p>CatsCo WebApp、微信、飞书或学校入口都可以，系统识别当前用户、学校和角色。</p>
+            </div>
+            <div class="card blue">
+              <div class="mini-label">Step 2</div>
+              <h3>说明任务</h3>
+              <p>用户描述要做什么，助手追问目标、格式、约束、截止时间和资料来源。</p>
+            </div>
+            <div class="card violet">
+              <div class="mini-label">Step 3</div>
+              <h3>授权资料</h3>
+              <p>上传文件、选择资料库材料，或临时授权本地目录、图片、表格、合同和课表。</p>
+            </div>
+            <div class="card amber">
+              <div class="mini-label">Step 4</div>
+              <h3>处理校验</h3>
+              <p>生成可检查的中间结果，例如冲突清单、字段抽取、统计表、提纲或草稿。</p>
+            </div>
+            <div class="card">
+              <div class="mini-label">Step 5</div>
+              <h3>确认交付</h3>
+              <p>输出 Word、Excel、PPT、图表、台账、报告、检查清单等可编辑文件。</p>
+            </div>
+            <div class="card red">
+              <div class="mini-label">Step 6</div>
+              <h3>沉淀能力</h3>
+              <p>经用户确认的模板、字段、规则、检查方式和流程经验进入学校能力库。</p>
+            </div>
+          </div>
+
+          <div class="callout warn">
+            <strong>沉淀边界：</strong>
+            临时材料服务当前任务，个人会话保持隔离；只有被确认、适合复用的模板、规则、字段、检查方法和流程经验，才进入学校级资料库或 skill 优化。
+          </div>
+        </section>
+
+        <section id="chapter-7">
+          <div class="section-head">
+            <div>
+              <h2>第 7 章：首批场景</h2>
+              <p class="section-intro">
+                不平均铺开所有功能。先用日常文档建立入口，再用 2-3 个标志性重任务证明学校级价值。
+              </p>
+            </div>
+            <span class="badge">场景优先级</span>
+          </div>
+
+          <div class="chapter-summary">
+            近期建议以“学校资料库 + 排课 / 调课 + 总务盘点与台账”为 P0 主线。成绩分析、备课复习、入学材料核验作为 P1 补充，随资料和流程成熟逐步推进。
+          </div>
+
+          <div class="comparison" aria-label="场景优先级">
+            <div class="compare-card school">
+              <div class="compare-head">P0：优先打透</div>
+              <div class="compare-body">
+                <div class="compare-item">
+                  <strong>学校资料库</strong>
+                  <span>先做重点目录、资料副本、索引和检索，不追求一开始完美结构化。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>排课 / 调课</strong>
+                  <span>跨校区、新学段和教师流动让它持续高价值，适合形成标志性教务场景。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>总务盘点 / 合同台账</strong>
+                  <span>资料输入输出清楚，适合做 Excel、可视化、异常提示和成果展示。</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="compare-card local">
+              <div class="compare-head">P1：逐步扩展</div>
+              <div class="compare-body">
+                <div class="compare-item">
+                  <strong>成绩分析 / 班级报告</strong>
+                  <span>考试后稳定发生，服务老师、班主任、年级组和管理层。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>备课 / 复习资料</strong>
+                  <span>老师感知强、门槛低，适合作为日常使用入口和教学资料沉淀方向。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>入学材料核验辅助</strong>
+                  <span>低频但耗时，适合成熟后做成专项服务，只做辅助核查和人工复核摘要。</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <table class="data-table" aria-label="场景选择标准">
+            <thead>
+              <tr>
+                <th>选择标准</th>
+                <th>含义</th>
+                <th>为什么重要</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>单次工作量大</strong></td>
+                <td>一次任务能节省明显人力，减少核对、沟通和返工。</td>
+                <td>校长和部门负责人容易感知价值。</td>
+              </tr>
+              <tr>
+                <td><strong>流程可重复</strong></td>
+                <td>每学期或每学年回来，输入、步骤和输出相对稳定。</td>
+                <td>适合沉淀成学校 skills。</td>
+              </tr>
+              <tr>
+                <td><strong>结果可交付</strong></td>
+                <td>能输出课表、Excel、报告、PPT、通知、清单等文件。</td>
+                <td>便于验收和对外展示。</td>
+              </tr>
+              <tr>
+                <td><strong>经验可沉淀</strong></td>
+                <td>完成一次后，规则、字段、模板和检查方法能被复用。</td>
+                <td>避免每次都像临时外包。</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="chapter-8">
+          <div class="section-head">
+            <div>
+              <h2>第 8 章：服务边界与定价假设</h2>
+              <p class="section-intro">
+                3-5 万元 / 季度更适合定义为“共创启动包”，不是全校无限使用的基础 SaaS 套餐。
+              </p>
+            </div>
+            <span class="badge">商业边界</span>
+          </div>
+
+          <div class="chapter-summary">
+            共创启动包卖的是“学校开始培养自己的校园智能助手”。专项服务卖的是“我们深度参与某个学校场景，把它做成可交付、可复用、可展示的能力”。
+          </div>
+
+          <div class="cards three-col">
+            <div class="card green">
+              <div class="mini-label">Starter</div>
+              <h3>共创启动包</h3>
+              <p>3-5 万元 / 季度。覆盖基础运行、核心试点用户、基础资料库、培训、复盘和轻量 skill 沉淀。</p>
+            </div>
+            <div class="card blue">
+              <div class="mini-label">Project</div>
+              <h3>专项服务</h3>
+              <p>排课、总务台账、成绩分析、入学核验、资料治理、系统接入等按场景和交付深度收费。</p>
+            </div>
+            <div class="card violet">
+              <div class="mini-label">Growth</div>
+              <h3>能力生长</h3>
+              <p>老师可以学会训练 agent，沉淀轻量 skill；需要我们深度开发配置的能力另行定义。</p>
+            </div>
+          </div>
+
+          <table class="data-table" aria-label="共创启动包边界">
+            <thead>
+              <tr>
+                <th>项目</th>
+                <th>建议包含</th>
+                <th>不应默认包含</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>用户范围</strong></td>
+                <td>核心试点老师、1-2 个重点部门、明确牵头人。</td>
+                <td>全校无限用户、所有部门无限支持。</td>
+              </tr>
+              <tr>
+                <td><strong>场景范围</strong></td>
+                <td>1 个主场景 + 1 个轻量辅助场景，边界独立验收。</td>
+                <td>排课、总务、成绩、招生、系统接入全部打包承诺。</td>
+              </tr>
+              <tr>
+                <td><strong>资料库范围</strong></td>
+                <td>指定部门或指定目录，做可检索索引、资料副本和基础问答。</td>
+                <td>全校历史资料一次性治理、群文件全量清洗、所有扫描件 OCR。</td>
+              </tr>
+              <tr>
+                <td><strong>培训支持</strong></td>
+                <td>1-2 场老师培训，季度复盘，典型案例整理。</td>
+                <td>无限驻校、无限人工代工、完整课题或申报材料深度撰写。</td>
+              </tr>
+              <tr>
+                <td><strong>交付物</strong></td>
+                <td>使用报告、案例摘要、资料库 MVP、场景交付物、下一阶段建议。</td>
+                <td>自动决策结果、全流程替代人工审核、无边界定制开发。</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="callout warn">
+            <strong>采购表达：</strong>
+            对外可以说低金额、短周期、边界清晰、独立验收，有助于降低首次合作决策成本；不要表达为“规避招采”。具体采购路径仍由学校根据财务、采购和内控口径确认。
+          </div>
+        </section>
+
+        <section id="chapter-9">
+          <div class="section-head">
+            <div>
+              <h2>第 9 章：90 天共创落地路线</h2>
+              <p class="section-intro">
+                月底汇报后，最现实的目标是签署共创合作，用 90 天完成从个人助手试点到学校级智能体 MVP 的升级。
+              </p>
+            </div>
+            <span class="badge">落地路线</span>
+          </div>
+
+          <table class="data-table" aria-label="90 天共创路线">
+            <thead>
+              <tr>
+                <th>阶段</th>
+                <th>核心任务</th>
+                <th>主要交付</th>
+                <th>学校需要配合</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>第 1 个月：试点复盘与场景定稿</strong></td>
+                <td>整理个人助手试点日志、老师反馈、部门需求；确定 1 个主场景和 1 个辅助场景。</td>
+                <td>试点成果报告、场景清单、共创方案、数据和资料边界。</td>
+                <td>确认牵头人、试点老师名单、场景负责人和资料范围。</td>
+              </tr>
+              <tr>
+                <td><strong>第 2 个月：云端智能体 MVP</strong></td>
+                <td>部署“广大附教育智能体”，建立独立 session、基础资料库、入口和日志机制。</td>
+                <td>智能体 MVP、资料库 MVP、老师培训、首批可用任务模板。</td>
+                <td>组织核心用户使用，提供资料样本和反馈。</td>
+              </tr>
+              <tr>
+                <td><strong>第 3 个月：标志性场景交付</strong></td>
+                <td>围绕主场景完成一次真实交付，沉淀模板、规则、检查清单和复盘报告。</td>
+                <td>场景交付物、季度复盘、典型案例、示范校园申请 / 立项方案初稿。</td>
+                <td>确认结果、提供校方反馈，决定下一阶段专项服务。</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="cards three-col" style="margin-top:22px">
+            <div class="card green">
+              <div class="mini-label">月底汇报</div>
+              <h3>证明试点成功</h3>
+              <p>AI 已进入老师真实工作，学校出现了可沉淀、可复用、可展示的核心需求。</p>
+            </div>
+            <div class="card blue">
+              <div class="mini-label">下一步合作</div>
+              <h3>签署共创启动包</h3>
+              <p>以 3-5 万元 / 季度启动，边界清晰、交付可验收、风险可控。</p>
+            </div>
+            <div class="card violet">
+              <div class="mini-label">更高目标</div>
+              <h3>准备示范校园方案</h3>
+              <p>把真实使用、场景成果、教师案例和资料库建设整理成对上汇报材料。</p>
+            </div>
+          </div>
+
+          <div class="quote">
+            月底汇报的核心不是“我们已经完成学校级智能体”，而是“个人助手试点已经验证真实需求，下一阶段可以共创广大附教育智能体，并同步准备 AI 示范校园建设方案”。
+          </div>
+        </section>
+
+        <section id="appendix-cost">
+          <div class="section-head">
+            <div>
+              <h2>附录 A：成本模型</h2>
+              <p class="section-intro">
+                成本模型用于内部经营判断，不直接作为对外报价。重点是把 AI 资源成本和学校交付成本分开。
+              </p>
+            </div>
+            <span class="badge">内部测算</span>
+          </div>
+
+          <div class="chapter-summary">
+            token 成本通常不是学校级服务的主要成本。真正决定毛利的是场景交付、资料整理、人工复核、客户成功和成果包装。
+          </div>
+
+          <div class="quote">
+            单校月度经营成本 = AI 资源成本 + 学校交付成本 + 客户成功 / 运维成本 + 合规与风险复核成本 + 基础云资源成本。
+          </div>
+
+          <table class="data-table" aria-label="AI 资源成本假设">
+            <thead>
+              <tr>
+                <th>任务类型</th>
+                <th>典型任务</th>
+                <th>单次 AI 直接成本假设</th>
+                <th>经营含义</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>轻任务</strong></td>
+                <td>通知润色、摘要、短问答、格式调整</td>
+                <td>约 0.02-0.12 元</td>
+                <td>高频入口，成本压力低。</td>
+              </tr>
+              <tr>
+                <td><strong>中任务</strong></td>
+                <td>会议纪要、PPT 大纲、备课材料、复习重点</td>
+                <td>约 0.3-1 元</td>
+                <td>适合形成老师使用习惯和案例。</td>
+              </tr>
+              <tr>
+                <td><strong>资料 / 表格任务</strong></td>
+                <td>资料整理、台账初稿、文件检索、表格归类</td>
+                <td>约 2-4 元</td>
+                <td>开始涉及文件解析、OCR 和工具调用。</td>
+              </tr>
+              <tr>
+                <td><strong>重任务</strong></td>
+                <td>排课辅助、成绩分析、总务盘点、入学材料核验</td>
+                <td>约 20-50 元，不含人工复核</td>
+                <td>应按专项交付管理，不放进低价无限包。</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="callout">
+            <strong>资源预算假设：</strong>
+            如果一所试点学校有 45 名普通老师、15 名积极老师、6 名核心部门用户，AI 直接资源成本大致可能在每月数百元级别。考虑高档模型、文件解析、OCR、工具调用和重试后，内部可先按每月 1000-3000 元做保守资源预算。
+          </div>
+
+          <table class="data-table" aria-label="场景交付人天假设">
+            <thead>
+              <tr>
+                <th>场景模块</th>
+                <th>首次交付人天假设</th>
+                <th>首期边界建议</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>学校资料库 MVP</strong></td>
+                <td>5-10 人天</td>
+                <td>重点目录 + 可检索索引，不承诺完整知识库。</td>
+              </tr>
+              <tr>
+                <td><strong>总务台账 MVP</strong></td>
+                <td>5-12 人天</td>
+                <td>限定一批资料或一个盘点主题，输出可检查台账。</td>
+              </tr>
+              <tr>
+                <td><strong>成绩分析模板</strong></td>
+                <td>4-8 人天</td>
+                <td>先做分析报告模板和辅助结论，不做自动终局评价。</td>
+              </tr>
+              <tr>
+                <td><strong>排课辅助 MVP</strong></td>
+                <td>8-20 人天</td>
+                <td>只承诺约束整理、冲突检查和辅助方案，不承诺全自动最终课表。</td>
+              </tr>
+              <tr>
+                <td><strong>入学材料核验辅助</strong></td>
+                <td>10-25 人天</td>
+                <td>只做材料检查、疑点提示和审核摘要，不做自动资格判定。</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="appendix-architecture">
+          <div class="section-head">
+            <div>
+              <h2>附录 B：架构原则</h2>
+              <p class="section-intro">
+                架构不在主文展开，只保留支持产品判断的原则。
+              </p>
+            </div>
+            <span class="badge">架构支撑</span>
+          </div>
+
+          <div class="chapter-summary">
+            核心原则：云端有稳定的学校级智能体主体，本地保留授权接入能力；用户通过独立会话协作，确认后的资料、模板、流程和 skills 沉淀在学校侧。
+          </div>
+
+          <div class="cards three-col">
+            <div class="card green">
+              <div class="mini-label">Layer 1</div>
+              <h3>组织与身份</h3>
+              <p>每条消息都要知道来自哪个学校、哪个用户、哪个部门或角色。</p>
+            </div>
+            <div class="card blue">
+              <div class="mini-label">Layer 2</div>
+              <h3>智能体主体</h3>
+              <p>校园智能助手有稳定运行环境、工具链、记忆、skills 和交付标准。</p>
+            </div>
+            <div class="card violet">
+              <div class="mini-label">Layer 3</div>
+              <h3>入口与会话</h3>
+              <p>CatsCo、微信、飞书、WebApp 都只是入口，底层回到同一身份和独立 session。</p>
+            </div>
+            <div class="card amber">
+              <div class="mini-label">Layer 4</div>
+              <h3>资料与设备授权</h3>
+              <p>上传文件、资料库、本地目录、扫描件、合同、表格和课表都有来源和授权范围。</p>
+            </div>
+            <div class="card">
+              <div class="mini-label">Layer 5</div>
+              <h3>技能与工作流</h3>
+              <p>排课、成绩分析、总务台账、资料检索、备课复习逐步沉淀为 skills。</p>
+            </div>
+            <div class="card red">
+              <div class="mini-label">Layer 6</div>
+              <h3>审计与沉淀</h3>
+              <p>谁发起任务、使用哪些资料、产出什么、哪些规则被确认，都应可追踪。</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="appendix-compliance">
+          <div class="section-head">
+            <div>
+              <h2>附录 C：政策与合规口径</h2>
+              <p class="section-intro">
+                对外材料需要使用官方原文链接和准确名称。当前母版只保留待引用方向和表达边界。
+              </p>
+            </div>
+            <span class="badge">表达边界</span>
+          </div>
+
+          <table class="data-table" aria-label="政策引用方向">
+            <thead>
+              <tr>
+                <th>层级</th>
+                <th>可准备的依据方向</th>
+                <th>汇报中对应价值</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>国家</strong></td>
+                <td>教育强国建设、加快推进教育数字化、数字化赋能教师发展、“人工智能+教育”等文件。</td>
+                <td>教师减负、智慧校园、教师智能助手、教育治理和安全可控。</td>
+              </tr>
+              <tr>
+                <td><strong>广东</strong></td>
+                <td>人工智能赋能基础教育行动、基础教育人工智能全域场景应用等方向。</td>
+                <td>助教、助管、助评、助研、教育数据和场景应用。</td>
+              </tr>
+              <tr>
+                <td><strong>广州</strong></td>
+                <td>中小学人工智能与教育融合创新、智慧教育平台、示范区校和网络学习空间建设等方向。</td>
+                <td>真实学校试点、资源融通、智能搜索、可复制案例和示范推广。</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="comparison" aria-label="合规边界">
+            <div class="compare-card school">
+              <div class="compare-head">推荐表达</div>
+              <div class="compare-body">
+                <div class="compare-item">
+                  <strong>辅助、协同、减负、提质</strong>
+                  <span>强调人智协同和人工复核，保留学校管理责任。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>真实场景试点</strong>
+                  <span>强调从老师和部门真实工作切入，形成可展示案例。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>数据边界清晰</strong>
+                  <span>强调授权访问、权限管理、审计记录和资料删除机制。</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="compare-card local">
+              <div class="compare-head">避免表达</div>
+              <div class="compare-body">
+                <div class="compare-item">
+                  <strong>自动替代教师判断</strong>
+                  <span>不能承诺替代教师、教务或学校管理者做最终决策。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>自动判定敏感资格</strong>
+                  <span>入学、学籍、成绩评价、分班等只能做辅助核查和疑点提示。</span>
+                </div>
+                <div class="compare-item">
+                  <strong>绕开采购或内控</strong>
+                  <span>只能说低门槛、短周期、独立验收，不能说规避招采。</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="footer">
+          CatsCo 校园智能助手内部战略母版 / 2026-05-27
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

@@ -13,6 +13,7 @@ import { TurnContextBuilder } from './turn-context-builder';
 import { TurnLogRecorder } from './turn-log-recorder';
 import { PlanRuntime } from './plan-runtime';
 import { GauzMemClient } from '../utils/gauzmem-client';
+import type { SessionIdentitySnapshot } from '../types/session-identity';
 
 export interface AgentTurnServices {
   aiService: AIService;
@@ -34,6 +35,7 @@ export interface RunAgentTurnParams {
   messages: Message[];
   runtimeFeedback: string[];
   runtimeObservationSource?: string;
+  sessionIdentity?: SessionIdentitySnapshot;
   callbacks?: AgentTurnCallbacks;
   channel?: ChannelCallbacks;
   pendingUserInputProvider?: PendingUserInputProvider;
@@ -82,12 +84,14 @@ export class AgentTurnController {
       sessionType: this.options.sessionType,
       durableMessages: params.messages,
       runtimeFeedback: params.runtimeFeedback,
+      sessionIdentity: params.sessionIdentity,
       skillRuntime: this.options.skillRuntime,
       planRuntime: this.options.planRuntime,
     });
 
     const runner = this.createRunner({
       channel: params.channel,
+      sessionIdentity: params.sessionIdentity,
       pendingUserInputProvider: params.pendingUserInputProvider,
       abortSignal: params.abortSignal,
       shouldContinue: params.shouldContinue,
@@ -107,6 +111,7 @@ export class AgentTurnController {
       tokens: { prompt: metrics.totalPromptTokens, completion: metrics.totalCompletionTokens },
       runtimeFeedback: turnContext.runtimeFeedbackForLog,
       runtimeObservationSource: params.runtimeObservationSource,
+      sessionIdentity: params.sessionIdentity,
     });
     await this.recordGauzMemTurnMetadata({
       input: params.input,
@@ -159,6 +164,7 @@ export class AgentTurnController {
 
   private createRunner(options: {
     channel?: ChannelCallbacks;
+    sessionIdentity?: SessionIdentitySnapshot;
     pendingUserInputProvider?: PendingUserInputProvider;
     abortSignal?: AbortSignal;
     shouldContinue: () => boolean;
@@ -175,6 +181,7 @@ export class AgentTurnController {
         enableCompression: false,
         toolExecutionContext: {
           sessionId: this.options.sessionKey,
+          sessionIdentity: options.sessionIdentity,
           surface,
           permissionProfile: 'strict',
           workspaceRoot: this.options.workspaceRoot,

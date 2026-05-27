@@ -106,6 +106,63 @@ describe('runtime feedback', () => {
     assert.match(turnEntries[0].user.runtime_feedback[0], /feishu\.file_download/);
   });
 
+  test('AgentSession injects session identity next to the latest user request as transient user context', async () => {
+    const { AgentSession } = loadAgentSessionModules();
+    let capturedMessages: any[] = [];
+
+    const session = new AgentSession('cc_user:usr7', buildMockServices({
+      aiService: {
+        async chatStream(messages: any[]) {
+          capturedMessages = messages.map(message => ({ ...message }));
+          return {
+            content: '已处理',
+            toolCalls: [],
+            usage: { promptTokens: 9, completionTokens: 3, totalTokens: 12 },
+          };
+        },
+      },
+    }), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    await session.handleMessage('帮我看一下这个 PR 的测试失败。', {
+      sessionIdentity: {
+        schemaVersion: 1,
+        sessionId: 'cc_user:usr7',
+        legacySessionKey: 'cc_user:usr7',
+        sessionType: 'catscompany',
+        channel: 'catsco',
+        actor: { actorUserId: 'usr7', actorDisplayName: 'Alice', externalUserId: 'usr7' },
+        agent: { agentId: 'bot42', agentDisplayName: 'Dev Agent', bodyId: 'body-mac-if-known' },
+        topic: { topicId: 'p2p_usr7_bot42', topicType: 'p2p', channelSeq: 91 },
+      },
+    });
+
+    const identityIndex = capturedMessages.findIndex(message =>
+      typeof message.content === 'string' && message.content.startsWith('[transient_session_identity]')
+    );
+    const userIndex = capturedMessages.findIndex(message => message.content === '帮我看一下这个 PR 的测试失败。');
+    assert.ok(identityIndex >= 0, 'session identity should be sent to the model');
+    assert.ok(identityIndex < userIndex, 'session identity should appear before the actual user request');
+    assert.equal(capturedMessages[identityIndex].role, 'user');
+    assert.match(capturedMessages[identityIndex].content, /actor: Alice \/ usr7/);
+    assert.match(capturedMessages[identityIndex].content, /agent: Dev Agent \/ bot42 \/ body=body-mac-if-known/);
+
+    const retainedMessages = (session as any).messages as any[];
+    assert.equal(retainedMessages.some(message =>
+      typeof message.content === 'string' && message.content.startsWith('[transient_session_identity]')
+    ), false);
+
+    const logPath = (session as any).sessionTurnLogger.getLogFilePath();
+    const turnEntry = fs.readFileSync(logPath, 'utf-8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line))
+      .find(entry => entry.entry_type === 'turn');
+    assert.equal(turnEntry.identity.actor.actorUserId, 'usr7');
+    assert.equal(turnEntry.identity.topic.channelSeq, 91);
+  });
+
   test('AgentSession records runtime observations without treating them as runtime feedback', async () => {
     const { AgentSession } = loadAgentSessionModules();
     let capturedMessages: any[] = [];

@@ -1,4 +1,5 @@
 import type { ContentBlock, Message } from '../types';
+import type { SessionIdentitySnapshot } from '../types/session-identity';
 import {
   SessionToolCallLog,
   SessionTurnLogger,
@@ -14,6 +15,7 @@ export interface RecordTurnParams {
   };
   runtimeFeedback?: string[];
   runtimeObservationSource?: string;
+  sessionIdentity?: SessionIdentitySnapshot;
 }
 
 /**
@@ -32,6 +34,7 @@ export class TurnLogRecorder {
       {
         runtimeFeedback: params.runtimeFeedback,
         runtimeObservationSource: params.runtimeObservationSource,
+        sessionIdentity: params.sessionIdentity,
       },
     );
   }

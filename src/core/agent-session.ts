@@ -26,6 +26,7 @@ import { SessionLifecycleManager } from './session-lifecycle-manager';
 import { PlanRuntime } from './plan-runtime';
 import { SubAgentManager } from './sub-agent-manager';
 import type { PendingUserInputProvider } from './conversation-runner';
+import type { SessionIdentitySnapshot } from '../types/session-identity';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
 
@@ -59,6 +60,8 @@ export interface HandleMessageOptions {
   callbacks?: SessionCallbacks;
   /** 平台通道回调，注入到 ToolExecutionContext 供工具使用 */
   channel?: ChannelCallbacks;
+  /** Structured identity/provenance for this turn. Does not replace the legacy session key yet. */
+  sessionIdentity?: SessionIdentitySnapshot;
   /** 当前 turn 专属、给 agent 可见的运行时反馈 */
   runtimeFeedback?: RuntimeFeedbackInput[];
   /** Pulls user messages that arrived while this session was busy. */
@@ -341,11 +344,13 @@ export class AgentSession {
       let channel: ChannelCallbacks | undefined;
       let runtimeFeedbackInputs: RuntimeFeedbackInput[] = [];
       let pendingUserInputProvider: PendingUserInputProvider | undefined;
+      let sessionIdentity: SessionIdentitySnapshot | undefined;
 
       if (callbacksOrOptions) {
         if (
           'channel' in callbacksOrOptions
           || 'callbacks' in callbacksOrOptions
+          || 'sessionIdentity' in callbacksOrOptions
           || 'runtimeFeedback' in callbacksOrOptions
           || 'pendingUserInputProvider' in callbacksOrOptions
         ) {
@@ -353,6 +358,7 @@ export class AgentSession {
           const opts = callbacksOrOptions as HandleMessageOptions;
           callbacks = opts.callbacks;
           channel = opts.channel;
+          sessionIdentity = opts.sessionIdentity;
           runtimeFeedbackInputs = opts.runtimeFeedback || [];
           pendingUserInputProvider = opts.pendingUserInputProvider;
         } else {
@@ -374,6 +380,9 @@ export class AgentSession {
       this.interruptRequested = false;
       this.activeAbortController = new AbortController();
       this.lastActiveAt = Date.now();
+      if (sessionIdentity) {
+        this.lifecycleManager.saveSessionIdentity(sessionIdentity);
+      }
 
       this.messages = await this.contextWindowManager.compactIfNeeded(this.messages, {
         sessionKey: this.key,
@@ -388,6 +397,7 @@ export class AgentSession {
           messages: this.messages,
           runtimeFeedback,
           runtimeObservationSource,
+          sessionIdentity,
           callbacks,
           channel,
           pendingUserInputProvider,

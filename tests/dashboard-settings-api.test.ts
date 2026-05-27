@@ -20,6 +20,10 @@ describe('dashboard typed settings API', () => {
     'GAUZ_LLM_MODEL',
     'CATSCO_HTTP_BASE_URL',
     'CATSCO_SERVER_URL',
+    'CATSCOMPANY_HTTP_BASE_URL',
+    'CATSCOMPANY_SERVER_URL',
+    'CATSCO_LOCAL_CONFIG_PATH',
+    'CATSCO_CONFIG_PATH',
   ];
   const originalEnv: Record<string, string | undefined> = {};
 
@@ -116,6 +120,52 @@ describe('dashboard typed settings API', () => {
     assert.equal(apiBase.value, 'https://model.example.test/v1/messages');
     assert.equal(text.includes('user:pass'), false);
     assert.equal(text.includes('token=secret'), false);
+  });
+
+  test('GET and PUT /settings use typed CatsCo local endpoint config', async () => {
+    fs.mkdirSync(path.join(testRoot, '.xiaoba'), { recursive: true });
+    fs.writeFileSync(path.join(testRoot, '.xiaoba', 'catsco.json'), JSON.stringify({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: 'https://typed.catsco.example',
+        serverUrl: 'wss://typed.catsco.example/v0/channels',
+      },
+    }), 'utf-8');
+    fs.writeFileSync(path.join(testRoot, '.env'), [
+      'CATSCO_HTTP_BASE_URL=https://env.catsco.example',
+      'CATSCO_SERVER_URL=wss://env.catsco.example/v0/channels',
+      '',
+    ].join('\n'));
+
+    const getResponse = await fetch(`${baseUrl}/api/settings`);
+    const getData = await getResponse.json() as any;
+    const httpBase = getData.fields.find((field: any) => field.id === 'catsco.httpBaseUrl');
+    const wsUrl = getData.fields.find((field: any) => field.id === 'catsco.wsUrl');
+    assert.equal(getResponse.status, 200);
+    assert.equal(httpBase.value, 'https://typed.catsco.example/');
+    assert.equal(wsUrl.value, 'wss://typed.catsco.example/v0/channels');
+
+    const putResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        settings: {
+          'catsco.httpBaseUrl': 'https://new.catsco.example',
+          'catsco.wsUrl': 'wss://new.catsco.example/v0/channels',
+        },
+      }),
+    });
+    const putData = await putResponse.json() as any;
+    const localConfig = JSON.parse(fs.readFileSync(path.join(testRoot, '.xiaoba', 'catsco.json'), 'utf-8'));
+    const env = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+    assert.equal(putResponse.status, 200);
+    assert.equal(putData.updated.includes('CATSCO_HTTP_BASE_URL'), true);
+    assert.equal(putData.updated.includes('CATSCO_SERVER_URL'), true);
+    assert.equal(localConfig.endpoints.httpBaseUrl, 'https://new.catsco.example');
+    assert.equal(localConfig.endpoints.serverUrl, 'wss://new.catsco.example/v0/channels');
+    assert.equal(env.CATSCO_HTTP_BASE_URL, 'https://new.catsco.example');
+    assert.equal(env.CATSCOMPANY_SERVER_URL, 'wss://new.catsco.example/v0/channels');
   });
 
   test('PUT /settings writes allowlisted model settings and refreshes process env', async () => {

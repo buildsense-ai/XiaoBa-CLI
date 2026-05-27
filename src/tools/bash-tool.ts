@@ -551,9 +551,27 @@ export class ShellTool implements Tool {
     const resolved = path.resolve(directory);
     try {
       if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return;
-      context.updateCurrentDirectory?.(resolved);
+      context.updateCurrentDirectory?.(this.preserveCurrentDirectoryAlias(resolved, context));
     } catch {
       return;
     }
+  }
+
+  private preserveCurrentDirectoryAlias(resolved: string, context: ToolExecutionContext): string {
+    const currentDirectory = context.getCurrentDirectory?.() || context.workingDirectory;
+    if (!currentDirectory || process.platform === 'win32') return resolved;
+
+    try {
+      const currentReal = fs.realpathSync(currentDirectory);
+      const resolvedReal = fs.realpathSync(resolved);
+      const relative = path.relative(currentReal, resolvedReal);
+      if (!relative || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+        return path.resolve(currentDirectory, relative);
+      }
+    } catch {
+      return resolved;
+    }
+
+    return resolved;
   }
 }

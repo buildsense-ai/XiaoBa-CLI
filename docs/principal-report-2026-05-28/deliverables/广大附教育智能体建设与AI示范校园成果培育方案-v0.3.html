@@ -1,0 +1,878 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>广大附教育智能体建设与 AI 示范校园成果培育方案</title>
+    <style>
+      :root {
+        --ink: #15221c;
+        --muted: #5f6d66;
+        --line: #dce4de;
+        --soft: #f5f7f4;
+        --paper: #ffffff;
+        --green: #0b7a58;
+        --green-soft: #e8f3ed;
+        --coral: #df6a4d;
+        --gold: #c99a23;
+        --dark: #14221b;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: #eef2ee;
+        color: var(--ink);
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+        line-height: 1.72;
+      }
+
+      a {
+        color: var(--green);
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      .page {
+        max-width: 1120px;
+        margin: 28px auto;
+        background: var(--paper);
+        box-shadow: 0 20px 70px rgba(20, 34, 27, 0.12);
+      }
+
+      .cover {
+        background: var(--dark);
+        color: #f7faf6;
+        padding: 64px 72px 56px;
+      }
+
+      .eyebrow {
+        color: #a6c9b7;
+        font-size: 14px;
+        letter-spacing: 0;
+        font-weight: 700;
+      }
+
+      .cover h1 {
+        margin: 18px 0 18px;
+        max-width: 780px;
+        font-size: 44px;
+        line-height: 1.18;
+        letter-spacing: 0;
+      }
+
+      .cover .sub {
+        max-width: 840px;
+        color: #c8d6ce;
+        font-size: 20px;
+      }
+
+      .cover-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 18px;
+        margin-top: 48px;
+      }
+
+      .cover-card {
+        border-top: 2px solid #62746a;
+        padding-top: 18px;
+      }
+
+      .cover-card strong {
+        display: block;
+        color: #f0c55b;
+        font-size: 14px;
+        margin-bottom: 8px;
+      }
+
+      .cover-card span {
+        display: block;
+        color: #eaf2ec;
+        font-size: 18px;
+        font-weight: 700;
+      }
+
+      .meta {
+        margin-top: 48px;
+        color: #91a39a;
+        font-size: 13px;
+      }
+
+      .content {
+        padding: 44px 72px 72px;
+      }
+
+      section {
+        margin: 0 0 48px;
+        padding-bottom: 42px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      section:last-child {
+        border-bottom: 0;
+      }
+
+      h2 {
+        margin: 0 0 18px;
+        font-size: 28px;
+        line-height: 1.25;
+        letter-spacing: 0;
+      }
+
+      h3 {
+        margin: 26px 0 10px;
+        font-size: 20px;
+        line-height: 1.35;
+      }
+
+      p {
+        margin: 0 0 12px;
+      }
+
+      .lead {
+        color: var(--muted);
+        font-size: 18px;
+        max-width: 880px;
+      }
+
+      .summary-box {
+        margin-top: 22px;
+        padding: 24px 28px;
+        background: var(--green-soft);
+        border-left: 5px solid var(--green);
+      }
+
+      .summary-box strong {
+        display: block;
+        margin-bottom: 8px;
+        color: var(--green);
+        font-size: 18px;
+      }
+
+      .grid-2 {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 18px;
+      }
+
+      .grid-3 {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 18px;
+      }
+
+      .card {
+        padding: 20px 22px;
+        border: 1px solid var(--line);
+        background: #fff;
+      }
+
+      .card h3 {
+        margin-top: 0;
+      }
+
+      .tag {
+        display: inline-block;
+        margin-bottom: 12px;
+        padding: 4px 10px;
+        background: var(--soft);
+        color: var(--green);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .list {
+        margin: 10px 0 0;
+        padding-left: 19px;
+      }
+
+      .list li {
+        margin: 6px 0;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 18px 0 8px;
+        table-layout: fixed;
+      }
+
+      th,
+      td {
+        border: 1px solid var(--line);
+        padding: 13px 14px;
+        vertical-align: top;
+        font-size: 14px;
+      }
+
+      th {
+        background: #f0f4f1;
+        color: var(--ink);
+        text-align: left;
+        font-weight: 800;
+      }
+
+      td {
+        color: #2b3731;
+      }
+
+      .source {
+        display: inline-block;
+        padding: 1px 6px;
+        border: 1px solid #c8d9cf;
+        background: #f3faf6;
+        color: var(--green);
+        font-size: 12px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .path {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 10px;
+        margin-top: 18px;
+      }
+
+      .step {
+        min-height: 112px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        background: var(--soft);
+      }
+
+      .step b {
+        display: block;
+        color: var(--green);
+        margin-bottom: 8px;
+      }
+
+      .timeline {
+        border-left: 3px solid var(--green);
+        margin: 22px 0 0 8px;
+        padding-left: 22px;
+      }
+
+      .timeline-item {
+        position: relative;
+        margin-bottom: 18px;
+        padding: 16px 18px;
+        background: #fff;
+        border: 1px solid var(--line);
+      }
+
+      .timeline-item::before {
+        content: "";
+        position: absolute;
+        left: -31px;
+        top: 22px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: var(--green);
+      }
+
+      .timeline-item h3 {
+        margin: 0 0 8px;
+      }
+
+      .note {
+        padding: 16px 18px;
+        background: #fff8e7;
+        border-left: 5px solid var(--gold);
+        color: #4a3c16;
+      }
+
+      .risk {
+        padding: 16px 18px;
+        background: #fbf0ec;
+        border-left: 5px solid var(--coral);
+      }
+
+      .footer-note {
+        margin-top: 24px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      @media (max-width: 860px) {
+        .page {
+          margin: 0;
+        }
+
+        .cover,
+        .content {
+          padding: 36px 24px;
+        }
+
+        .cover h1 {
+          font-size: 32px;
+        }
+
+        .cover-grid,
+        .grid-2,
+        .grid-3,
+        .path {
+          grid-template-columns: 1fr;
+        }
+
+        table {
+          display: block;
+          overflow-x: auto;
+          white-space: normal;
+        }
+      }
+
+      @media print {
+        body {
+          background: white;
+        }
+
+        .page {
+          margin: 0;
+          box-shadow: none;
+        }
+
+        section {
+          break-inside: avoid;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <article class="page">
+      <header class="cover">
+        <div class="eyebrow">咨询报告 · 供学校决策与项目启动使用</div>
+        <h1>广大附教育智能体建设与 AI 示范校园成果培育方案</h1>
+        <p class="sub">以教师真实工作场景为切口，建设学校级教育智能体，形成可运行、可展示、可评估、可申报的 AI 教育融合成果。</p>
+        <div class="cover-grid">
+          <div class="cover-card">
+            <strong>校内立项</strong>
+            <span>广大附教育智能体建设项目</span>
+          </div>
+          <div class="cover-card">
+            <strong>首期场景</strong>
+            <span>排课辅助、总务台账、学校资料库</span>
+          </div>
+          <div class="cover-card">
+            <strong>成果目标</strong>
+            <span>AI 示范校园成果培育与申报准备</span>
+          </div>
+        </div>
+        <div class="meta">报告日期：2026 年 5 月 28 日 · 政策依据核验至 2026 年 5 月 27 日</div>
+      </header>
+
+      <main class="content">
+        <section id="summary">
+          <h2>一、报告摘要</h2>
+          <p class="lead">前期试点已经验证，AI 可以进入老师与部门的真实工作流程。下一阶段建议学校不再只把 AI 作为个人工具试用，而是启动校内“广大附教育智能体建设项目”，把分散的使用经验沉淀为学校级能力。</p>
+          <div class="summary-box">
+            <strong>核心建议</strong>
+            <p>建议学校以教务排课、总务台账、学校资料库三个真实场景为首批抓手，先形成教育智能体首期试运行版本和首批场景成果；在持续服务过程中沉淀部门案例、使用数据、演示材料和政策窗口匹配清单，为区、市、省相关案例征集、应用场景发布和典型应用培育做好准备。</p>
+          </div>
+          <div class="grid-3" style="margin-top: 18px">
+            <div class="card">
+              <span class="tag">对老师</span>
+              <p>减少重复性文档、表格、检索、整理工作，让 AI 成为可调用的日常工作助手。</p>
+            </div>
+            <div class="card">
+              <span class="tag">对部门</span>
+              <p>把教务、总务、校办的流程、模板、台账和经验沉淀为可复用的工作能力。</p>
+            </div>
+            <div class="card">
+              <span class="tag">对学校</span>
+              <p>形成 AI 教育融合的真实场景、成果材料和对外展示基础，服务学校数字化品牌建设。</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="positioning">
+          <h2>二、项目定位与建设目标</h2>
+          <p class="lead">“广大附教育智能体”不是单点软件，也不是普通聊天机器人，而是服务教师工作、部门协同和学校治理的云端智能助手。它通过统一入口连接资料、流程、工具和人员，在授权范围内帮助老师和部门完成可复用工作。</p>
+
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 22%">项目要素</th>
+                <th>建议口径</th>
+                <th style="width: 30%">形成的学校成果</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>校内立项名称</td>
+                <td><strong>广大附教育智能体建设项目</strong></td>
+                <td>便于学校内部启动、分工和管理。</td>
+              </tr>
+              <tr>
+                <td>建设对象</td>
+                <td>面向老师、教务处、总务处、校办等角色的学校级 AI 工作助手。</td>
+                <td>形成统一入口、首批部门场景和学校资料库初版。</td>
+              </tr>
+              <tr>
+                <td>成果培育方向</td>
+                <td>AI 赋能教师工作、学校治理和资料沉淀的示范案例。</td>
+                <td>可用于区级展示、市级案例、AI+教育教学应用场景和省级典型应用方向的材料储备。</td>
+              </tr>
+              <tr>
+                <td>建设原则</td>
+                <td>真实场景先行、人工复核兜底、资料授权使用、成果持续沉淀。</td>
+                <td>降低项目风险，确保学校可控、可评估、可持续迭代。</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="note">
+            本项目以校内建设和成果培育为第一目标。外部称号、项目立项或成果入选，以主管部门后续通知、推荐程序和评审结果为准；项目团队负责持续跟踪政策窗口并协助学校准备相应材料。
+          </div>
+        </section>
+
+        <section id="policy">
+          <h2>三、政策依据与申报方向</h2>
+          <p class="lead">当前国家、省、市政策已经从“AI 课程普及”进一步走向“AI 赋能教学、教师发展、学校治理和场景示范”。本项目应按“校内立项先启动、真实场景先运行、成果材料滚动沉淀、政策窗口持续匹配”的路径推进。</p>
+
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 18%">政策/窗口</th>
+                <th style="width: 24%">当前状态</th>
+                <th>与本项目的对应关系</th>
+                <th style="width: 25%">建议准备成果</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>广州市教师数字素养提升实践活动 <span class="source">S1</span></td>
+                <td>广州市教育局已发布 2026 年活动通知，面向学校、教师和管理人员，强调国家智慧教育平台全面深化应用与人工智能赋能教育行动。</td>
+                <td>适合承接学校全面深化应用案例、教师用 AI/创 AI/护 AI 案例、融合创新应用案例。</td>
+                <td>学校案例、教师案例、活动组织情况、成果应用推广小结、演示截图和视频。</td>
+              </tr>
+              <tr>
+                <td>广州市中小学人工智能与教育融合创新若干措施 <span class="source">S2</span></td>
+                <td>广州市 2025-2027 年总牵引文件，覆盖通识教育、教学创新、师资队伍、协同机制、示范推广和保障体系。</td>
+                <td>为学校开展 AI 教育融合项目提供市级政策依据；“教育智能体”可落在教师工作、教研、治理、评价等方向。</td>
+                <td>校内建设方案、场景说明、教师培训记录、阶段成果报告。</td>
+              </tr>
+              <tr>
+                <td>广州 100 个助教/助学/助育/助研/助评/助管应用场景方向 <span class="source">S3</span></td>
+                <td>广州市教育局公开答复中明确提出汇聚生成式人工智能工具和教育智能体，打造 100 个应用场景，并推动 11 区学校与 AI 企业结对。</td>
+                <td>本项目的排课、总务台账、资料库可对应“助管、助研、教师发展、学校治理”等场景。</td>
+                <td>AI+教育教学应用场景书、真实使用数据、部门案例、场景演示材料。</td>
+              </tr>
+              <tr>
+                <td>广州市 AI+教育教学应用场景目标 <span class="source">S4</span></td>
+                <td>《广州市人工智能产业 2026 年工作要点》列出 AI+教育教学应用场景发布目标：2026 年不少于 30 个，2026-2028 年不少于 100 个。</td>
+                <td>为学校教育智能体场景化建设提供明确方向，但具体征集/发布方式需持续跟进主管部门通知。</td>
+                <td>场景名称、使用对象、业务流程、技术实现、学校收益、可复制推广说明。</td>
+              </tr>
+              <tr>
+                <td>广东基础教育人工智能全域场景应用指南 <span class="source">S5</span></td>
+                <td>广东省教育厅政策解读提出“场域—场景—典型应用”框架，覆盖四大场域和助教、助学、助研、助管、助评、助育六类场景，并提出典型应用培育方向。</td>
+                <td>本项目可以映射到人工智能赋能教师专业发展、教与学、学校治理和助管等场域。</td>
+                <td>典型应用材料、三年行动清单、年度项目台账、数据安全与伦理说明。</td>
+              </tr>
+              <tr>
+                <td>番禺区国家平台实验校与优秀案例路径 <span class="source">S6</span></td>
+                <td>番禺区已围绕国家中小学智慧教育平台全域应用形成实验校、优秀案例展示和“番禺标准”范式输出路径。</td>
+                <td>适合作为区级展示、推荐和案例沉淀的现实路径。</td>
+                <td>校本案例、课堂/部门实践材料、区级展示材料、可复制经验总结。</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="summary-box">
+            <strong>申报准备判断</strong>
+            <p>现阶段不宜把项目表述为“直接申请某个固定名称的 AI 示范学校”。更稳妥的路径是：先在校内启动教育智能体建设，形成真实场景和成果材料，再根据区、市、省不同窗口转化为学校全面深化应用案例、教师人工智能应用案例、AI+教育教学应用场景书和典型应用材料。</p>
+          </div>
+        </section>
+
+        <section id="scenarios">
+          <h2>四、首期建设场景</h2>
+          <p class="lead">首期建设应选择学校真实存在、部门感知明显、成果容易展示、后续可复制的场景。建议先聚焦三项：教务排课与调课辅助、总务盘点与合同台账、学校资料库与文件检索。</p>
+
+          <div class="grid-3">
+            <div class="card">
+              <span class="tag">场景一</span>
+              <h3>教务排课与调课辅助</h3>
+              <p><strong>目标：</strong>基于学校正式材料形成排课辅助流程能力，支持导入、规则识别、冲突检查、查询、局部调整和结果导出。</p>
+              <ul class="list">
+                <li>输入：班级、教师、课程、固定活动、规则约束。</li>
+                <li>输出：班级课表、教师课表、冲突清单、导出文件。</li>
+                <li>边界：AI 提供整理、校验和建议，最终排课由教务老师确认。</li>
+              </ul>
+            </div>
+            <div class="card">
+              <span class="tag">场景二</span>
+              <h3>总务盘点与合同台账</h3>
+              <p><strong>目标：</strong>把总务处盘点、物料、合同等资料结构化，形成可检索、可统计、可导出的管理台账。</p>
+              <ul class="list">
+                <li>输入：物料清单、合同文件、盘点记录、采购资料。</li>
+                <li>输出：结构化台账、统计视图、Excel 文件、异常提示。</li>
+                <li>边界：涉及财务和合同判断事项，由学校现行流程复核。</li>
+              </ul>
+            </div>
+            <div class="card">
+              <span class="tag">场景三</span>
+              <h3>学校资料库与文件检索</h3>
+              <p><strong>目标：</strong>把散落在部门电脑、群文件和历史材料中的高频文件沉淀为学校资料库初版。</p>
+              <ul class="list">
+                <li>输入：通知、模板、制度、会议纪要、历史材料。</li>
+                <li>输出：资料归档、自然语言检索、问答、引用来源。</li>
+                <li>边界：按部门授权访问，不做未经授权的全量抓取。</li>
+              </ul>
+            </div>
+          </div>
+
+          <h3>后续拓展场景</h3>
+          <p>成绩分析与班级报告、教师备课与复习资料辅助、家校沟通材料、入学材料核验等场景可在首期运行稳定后分批评估。涉及学生成绩、户籍、房产、入学资格等敏感资料的场景，应先明确学校授权、数据脱敏、人工复核和责任边界，再进入建设。</p>
+        </section>
+
+        <section id="delivery">
+          <h2>五、首期建设成果与季度复盘</h2>
+          <p class="lead">首期建设的目标不是替代学校所有既有系统，而是形成可用入口、首批场景、资料库初版和成果材料包，让学校能够判断项目价值并启动持续建设。AI 示范校园成果培育不设短期截止点，应随着真实使用、场景运行和政策窗口持续沉淀。</p>
+
+          <div class="timeline">
+            <div class="timeline-item">
+              <h3>启动确认</h3>
+              <p>确认校内项目负责人、参与部门、首批材料范围、数据授权边界和每周对齐机制。</p>
+              <p><strong>产出：</strong>项目启动清单、材料清单、角色分工表。</p>
+            </div>
+            <div class="timeline-item">
+              <h3>材料与流程梳理</h3>
+              <p>完成排课、总务、校办首批资料梳理，形成三个场景的流程说明和输出模板。</p>
+              <p><strong>产出：</strong>场景流程图、资料库目录、台账字段表。</p>
+            </div>
+            <div class="timeline-item">
+              <h3>试运行版本建设</h3>
+              <p>完成教育智能体入口、学校资料库初版、排课辅助演示版、总务台账样例。</p>
+              <p><strong>产出：</strong>可用入口、演示截图、样例输出文件。</p>
+            </div>
+            <div class="timeline-item">
+              <h3>老师反馈与场景校准</h3>
+              <p>组织关键老师试用，校准规则、模板、字段、资料检索质量和人工复核流程。</p>
+              <p><strong>产出：</strong>反馈记录、问题清单、迭代记录。</p>
+            </div>
+            <div class="timeline-item">
+              <h3>阶段成果沉淀</h3>
+              <p>形成阶段成果报告、演示视频、应用场景说明和政策窗口匹配表。</p>
+              <p><strong>产出：</strong>教育智能体试运行版本、三个首批场景成果、申报基础材料包。</p>
+            </div>
+          </div>
+
+          <h3>一个季度内建议形成的成果</h3>
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 28%">成果项</th>
+                <th>完成标准</th>
+                <th style="width: 30%">可用于哪些场景</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>3 个部门常态化试用</td>
+                <td>教务、总务、校办各形成至少 1 个稳定使用流程。</td>
+                <td>阶段汇报、优秀组织材料、校本案例。</td>
+              </tr>
+              <tr>
+                <td>3-5 个可复用工作流程</td>
+                <td>流程有输入材料、操作步骤、输出文件、人工复核标准。</td>
+                <td>AI+教育教学应用场景书、典型应用材料。</td>
+              </tr>
+              <tr>
+                <td>至少 3 个真实案例</td>
+                <td>教务、总务、校办各 1 个，包含前后对比、截图、老师反馈。</td>
+                <td>教师数字素养实践活动、区级案例展示。</td>
+              </tr>
+              <tr>
+                <td>学校资料库初版</td>
+                <td>形成首批目录、文件归档、检索问答和引用来源机制。</td>
+                <td>学校治理数字化、资料沉淀、校本知识库建设。</td>
+              </tr>
+              <tr>
+                <td>政策窗口匹配材料</td>
+                <td>形成窗口清单、材料清单、推荐路径和下一步跟进事项。</td>
+                <td>区、市、省案例、场景、典型应用储备。</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>阶段验收指标建议</h3>
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 22%">指标类别</th>
+                <th>建议记录内容</th>
+                <th style="width: 34%">验收意义</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>使用指标</td>
+                <td>参与部门数、核心老师数、任务次数、典型任务类型。</td>
+                <td>证明 AI 不是展示工具，而是进入真实部门工作。</td>
+              </tr>
+              <tr>
+                <td>场景指标</td>
+                <td>排课导入字段完整度、冲突识别数量、导出结果可用性；总务台账字段完整度；资料库文件数量与可追溯引用比例。</td>
+                <td>证明首批场景有业务深度，而不是停留在问答或文本生成。</td>
+              </tr>
+              <tr>
+                <td>效率指标</td>
+                <td>典型任务前后耗时对比、重复整理减少情况、人工复核时间变化。</td>
+                <td>用于教师减负、部门提效和阶段成果汇报。</td>
+              </tr>
+              <tr>
+                <td>安全指标</td>
+                <td>资料授权记录、敏感数据脱敏记录、人工复核记录、对外展示材料审批记录。</td>
+                <td>确保项目符合学校数据安全和责任边界要求。</td>
+              </tr>
+              <tr>
+                <td>成果指标</td>
+                <td>案例数量、场景书数量、演示视频、截图、阶段报告、政策窗口匹配表。</td>
+                <td>直接服务后续区、市、省案例征集、场景发布和典型应用储备。</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="path">
+          <h2>六、AI 示范校园成果培育路径</h2>
+          <p class="lead">AI 示范校园成果不是单独写出来的，而是从真实使用、真实场景和真实材料中持续积累。建议按以下路径推进。</p>
+          <div class="path">
+            <div class="step">
+              <b>1. 校内立项</b>
+              <span>启动“广大附教育智能体建设项目”，明确负责人和首批场景。</span>
+            </div>
+            <div class="step">
+              <b>2. 场景运行</b>
+              <span>排课、总务台账、资料库先形成可用和可展示成果。</span>
+            </div>
+            <div class="step">
+              <b>3. 案例沉淀</b>
+              <span>整理部门案例、教师反馈、使用数据、效率对比和演示视频。</span>
+            </div>
+            <div class="step">
+              <b>4. 窗口匹配</b>
+              <span>对接区、市、省相关案例征集、场景发布和典型应用方向。</span>
+            </div>
+            <div class="step">
+              <b>5. 示范推广</b>
+              <span>形成可展示、可评估、可复制的学校 AI 教育融合成果。</span>
+            </div>
+          </div>
+
+          <h3>建议形成的材料包</h3>
+          <div class="grid-2">
+            <div class="card">
+              <h3>建设与管理材料</h3>
+              <ul class="list">
+                <li>学校 AI 教育融合建设总方案。</li>
+                <li>广大附教育智能体建设说明。</li>
+                <li>首批应用场景书：排课、总务台账、资料库。</li>
+                <li>数据安全、隐私保护与人工复核机制说明。</li>
+                <li>校企协同共建与职责分工说明。</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3>成果与申报材料</h3>
+              <ul class="list">
+                <li>试点部门与老师使用案例。</li>
+                <li>演示视频、截图、导出文件样例。</li>
+                <li>老师反馈、效率对比和阶段复盘报告。</li>
+                <li>学校全面深化应用案例、教师人工智能应用案例。</li>
+                <li>AI+教育教学应用场景书和典型应用材料。</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section id="responsibility">
+          <h2>七、项目机制与职责分工</h2>
+          <p class="lead">学校不需要大规模增加管理负担，但需要明确负责人、开放首批真实材料、组织关键老师反馈，并确认数据与对外展示边界。</p>
+
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 20%">事项</th>
+                <th>学校侧建议职责</th>
+                <th>项目团队职责</th>
+                <th style="width: 22%">完成标准</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>项目启动</td>
+                <td>校领导确认启动方向，指定校内项目负责人。</td>
+                <td>提供启动清单、实施计划和材料模板。</td>
+                <td>形成项目启动记录和分工表。</td>
+              </tr>
+              <tr>
+                <td>教务排课场景</td>
+                <td>教务处提供排课资料、规则约束和人工审核反馈。</td>
+                <td>建设排课辅助流程能力，形成演示版和导出样例。</td>
+                <td>完成导入、校验、查询、调整建议和导出。</td>
+              </tr>
+              <tr>
+                <td>总务台账场景</td>
+                <td>总务处提供盘点、合同、物料样本，确认字段和输出模板。</td>
+                <td>完成资料结构化、台账模板和 Excel 输出。</td>
+                <td>形成 1 类真实资料样本的台账成果。</td>
+              </tr>
+              <tr>
+                <td>学校资料库</td>
+                <td>校办和相关部门提供首批通知、模板、制度、会议材料。</td>
+                <td>建设资料库初版，配置检索、问答和引用来源。</td>
+                <td>形成首批资料目录和可检索问答能力。</td>
+              </tr>
+              <tr>
+                <td>成果材料</td>
+                <td>确认可对外展示的案例、截图、数据和老师反馈口径。</td>
+                <td>整理阶段报告、案例材料、演示视频和窗口匹配表。</td>
+                <td>形成可用于展示和申报准备的材料包。</td>
+              </tr>
+              <tr>
+                <td>持续复盘</td>
+                <td>组织每周 30 分钟项目对齐，确认问题和优先级。</td>
+                <td>汇总反馈、迭代系统、更新问题清单。</td>
+                <td>形成周记录、迭代记录和季度复盘。</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="risk">
+          <h2>八、数据安全与项目边界</h2>
+          <p class="lead">为保证项目稳妥落地，本项目采用“授权使用、分级访问、人工复核、分阶段推进”的原则。</p>
+          <div class="grid-2">
+            <div class="risk">
+              <h3>数据边界</h3>
+              <p>涉及学生信息、成绩、户籍、房产、入学资格等敏感资料时，必须按学校授权范围使用，必要时进行脱敏处理；未经授权不进行全量抓取和跨部门访问。</p>
+            </div>
+            <div class="risk">
+              <h3>责任边界</h3>
+              <p>AI 提供整理、分析、校验和建议。涉及排课最终确认、入学资格、成绩评价、合同判断等事项，由学校按现行制度进行人工确认。</p>
+            </div>
+            <div class="risk">
+              <h3>政策边界</h3>
+              <p>外部展示、推荐、申报名称和时间安排，以主管部门通知为准；项目团队负责持续跟踪窗口并协助学校准备材料。</p>
+            </div>
+            <div class="risk">
+              <h3>建设边界</h3>
+              <p>首期建设目标是形成试运行版本和首批成果，不替代学校所有既有系统；后续根据使用反馈和学校优先级持续扩展。</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="decisions">
+          <h2>九、建议学校近期确认事项</h2>
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 30%">确认事项</th>
+                <th>建议内容</th>
+                <th style="width: 28%">确认后即可启动的工作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>是否启动第二阶段建设</td>
+                <td>将前期个人 AI 助手试点升级为“广大附教育智能体建设项目”。</td>
+                <td>启动云端教育智能体建设和首批场景配置。</td>
+              </tr>
+              <tr>
+                <td>是否指定校内项目负责人</td>
+                <td>建议由校办或信息化/教务相关负责人统筹，教务、总务、校办各指定业务老师参与。</td>
+                <td>形成项目周对齐机制和材料收集路径。</td>
+              </tr>
+              <tr>
+                <td>是否确认首批三场景</td>
+                <td>建议先聚焦排课辅助、总务台账、学校资料库。</td>
+                <td>进入首期建设交付。</td>
+              </tr>
+              <tr>
+                <td>是否授权首批材料使用</td>
+                <td>在学校认可范围内提供真实材料，必要时脱敏。</td>
+                <td>完成资料导入、流程配置和成果样例。</td>
+              </tr>
+              <tr>
+                <td>是否以 AI 示范校园成果为培育目标</td>
+                <td>以校内真实场景和阶段成果为基础，持续准备区、市、省相关展示和申报材料。</td>
+                <td>建立成果材料包和政策窗口跟踪清单。</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="sources">
+          <h2>十、官方来源与依据说明</h2>
+          <p class="lead">以下来源均为官方公开信息。本方案引用其政策方向、活动要求和目标口径，用于确定建设路径和成果准备方向。</p>
+
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 8%">编号</th>
+                <th>官方来源</th>
+                <th style="width: 18%">发布单位/时间</th>
+                <th style="width: 32%">本方案使用方式</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="source">S1</span></td>
+                <td><a href="https://jyj.gz.gov.cn/yw/tzgg/content/post_10781409.html">广州市教育局关于组织开展2026年广州市国家智慧教育平台全面深化应用教师数字素养提升实践活动的通知</a></td>
+                <td>广州市教育局<br />2026-04-22</td>
+                <td>作为学校案例、教师案例、活动组织与成果推广材料的近期模板。</td>
+              </tr>
+              <tr>
+                <td><span class="source">S2</span></td>
+                <td><a href="https://jyj.gz.gov.cn/yw/tzgg/content/post_10240793.html">关于深化广州市中小学人工智能与教育融合创新的若干措施（2025-2027年）</a></td>
+                <td>广州市教育局<br />2025-04-28</td>
+                <td>作为广州市 AI 教育融合创新的总牵引依据。</td>
+              </tr>
+              <tr>
+                <td><span class="source">S3</span></td>
+                <td><a href="https://jyj.gz.gov.cn/gk/zfxxgkml/qt/rddbjyhzxta/content/post_10345199.html">广州市教育局关于市十六届人大五次会议第20252264号代表建议答复的函</a></td>
+                <td>广州市教育局<br />2025-07-07</td>
+                <td>作为教育智能体、100 个应用场景、校企结对和成果推广方向依据。</td>
+              </tr>
+              <tr>
+                <td><span class="source">S4</span></td>
+                <td><a href="https://fgw.gz.gov.cn/gkmlpt/content/10/10805/post_10805794.html">广州市人工智能产业发展办公室关于印发《广州市人工智能产业2026年工作要点》的通知</a></td>
+                <td>广州市人工智能产业发展办公室<br />2026-05-11</td>
+                <td>作为 AI+教育教学场景发布目标和场景化建设方向依据。</td>
+              </tr>
+              <tr>
+                <td><span class="source">S5</span></td>
+                <td><a href="https://edu.gd.gov.cn/zwgknew/zcjd/content/post_4834000.html">《广东省基础教育人工智能全域场景应用指南》的政策解读</a></td>
+                <td>广东省教育厅<br />2025-12-24</td>
+                <td>作为“场域—场景—典型应用”、六助场景和典型应用培育方向依据。</td>
+              </tr>
+              <tr>
+                <td><span class="source">S6</span></td>
+                <td><a href="https://www.panyu.gov.cn/zwgk/zfxxgkml/xxgkml/zwdt/bmdt/qjyj/content/post_10323617.html">番禺区举办国家中小学智慧教育平台应用优秀案例展示交流活动</a></td>
+                <td>广州市番禺区人民政府<br />2025-06-24</td>
+                <td>作为番禺区实验校、优秀案例展示和区域范式输出路径参考。</td>
+              </tr>
+              <tr>
+                <td><span class="source">S7</span></td>
+                <td><a href="https://jyj.gz.gov.cn/yw/tzgg/content/post_10711841.html">广州市教育局关于公布我市2025年国家中小学智慧教育平台全域应用实践活动优秀名单、教师人工智能应用优秀案例的通知</a></td>
+                <td>广州市教育局<br />2026-03-05</td>
+                <td>作为市级案例成果公布和后续材料准备方向参考。</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <p class="footer-note">说明：政策窗口、申报名称、推荐方式和申报时点会随主管部门通知变化。本方案用于学校启动建设和提前准备成果材料，后续申报应以最新正式通知为准。</p>
+        </section>
+      </main>
+    </article>
+  </body>
+</html>

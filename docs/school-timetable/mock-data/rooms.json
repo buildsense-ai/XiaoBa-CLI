@@ -1,0 +1,2696 @@
+[
+  {
+    "id": "R-E-P1-C01",
+    "name_zh": "小学一年级1班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P1-C01"
+  },
+  {
+    "id": "R-E-P1-C02",
+    "name_zh": "小学一年级2班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P1-C02"
+  },
+  {
+    "id": "R-E-P1-C03",
+    "name_zh": "小学一年级3班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P1-C03"
+  },
+  {
+    "id": "R-E-P1-C04",
+    "name_zh": "小学一年级4班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P1-C04"
+  },
+  {
+    "id": "R-E-P1-C05",
+    "name_zh": "小学一年级5班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P1-C05"
+  },
+  {
+    "id": "R-E-P1-C06",
+    "name_zh": "小学一年级6班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P1-C06"
+  },
+  {
+    "id": "R-E-P2-C01",
+    "name_zh": "小学二年级1班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P2-C01"
+  },
+  {
+    "id": "R-E-P2-C02",
+    "name_zh": "小学二年级2班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P2-C02"
+  },
+  {
+    "id": "R-E-P2-C03",
+    "name_zh": "小学二年级3班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P2-C03"
+  },
+  {
+    "id": "R-E-P2-C04",
+    "name_zh": "小学二年级4班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P2-C04"
+  },
+  {
+    "id": "R-E-P2-C05",
+    "name_zh": "小学二年级5班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P2-C05"
+  },
+  {
+    "id": "R-E-P2-C06",
+    "name_zh": "小学二年级6班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P2-C06"
+  },
+  {
+    "id": "R-E-P3-C01",
+    "name_zh": "小学三年级1班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P3-C01"
+  },
+  {
+    "id": "R-E-P3-C02",
+    "name_zh": "小学三年级2班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P3-C02"
+  },
+  {
+    "id": "R-E-P3-C03",
+    "name_zh": "小学三年级3班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P3-C03"
+  },
+  {
+    "id": "R-E-P3-C04",
+    "name_zh": "小学三年级4班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P3-C04"
+  },
+  {
+    "id": "R-E-P3-C05",
+    "name_zh": "小学三年级5班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P3-C05"
+  },
+  {
+    "id": "R-E-P3-C06",
+    "name_zh": "小学三年级6班教室",
+    "campus_id": "east",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P3-C06"
+  },
+  {
+    "id": "R-W-P4-C01",
+    "name_zh": "小学四年级1班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P4-C01"
+  },
+  {
+    "id": "R-W-P4-C02",
+    "name_zh": "小学四年级2班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P4-C02"
+  },
+  {
+    "id": "R-W-P4-C03",
+    "name_zh": "小学四年级3班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P4-C03"
+  },
+  {
+    "id": "R-W-P4-C04",
+    "name_zh": "小学四年级4班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P4-C04"
+  },
+  {
+    "id": "R-W-P4-C05",
+    "name_zh": "小学四年级5班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P4-C05"
+  },
+  {
+    "id": "R-W-P4-C06",
+    "name_zh": "小学四年级6班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P4-C06"
+  },
+  {
+    "id": "R-W-P5-C01",
+    "name_zh": "小学五年级1班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P5-C01"
+  },
+  {
+    "id": "R-W-P5-C02",
+    "name_zh": "小学五年级2班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P5-C02"
+  },
+  {
+    "id": "R-W-P5-C03",
+    "name_zh": "小学五年级3班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P5-C03"
+  },
+  {
+    "id": "R-W-P5-C04",
+    "name_zh": "小学五年级4班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P5-C04"
+  },
+  {
+    "id": "R-W-P5-C05",
+    "name_zh": "小学五年级5班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P5-C05"
+  },
+  {
+    "id": "R-W-P5-C06",
+    "name_zh": "小学五年级6班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P5-C06"
+  },
+  {
+    "id": "R-W-P6-C01",
+    "name_zh": "小学六年级1班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P6-C01"
+  },
+  {
+    "id": "R-W-P6-C02",
+    "name_zh": "小学六年级2班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P6-C02"
+  },
+  {
+    "id": "R-W-P6-C03",
+    "name_zh": "小学六年级3班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P6-C03"
+  },
+  {
+    "id": "R-W-P6-C04",
+    "name_zh": "小学六年级4班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P6-C04"
+  },
+  {
+    "id": "R-W-P6-C05",
+    "name_zh": "小学六年级5班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P6-C05"
+  },
+  {
+    "id": "R-W-P6-C06",
+    "name_zh": "小学六年级6班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "P6-C06"
+  },
+  {
+    "id": "R-W-J1-C01",
+    "name_zh": "初中一年级1班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 50,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "J1-C01"
+  },
+  {
+    "id": "R-W-J1-C02",
+    "name_zh": "初中一年级2班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 51,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "J1-C02"
+  },
+  {
+    "id": "R-W-J1-C03",
+    "name_zh": "初中一年级3班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "J1-C03"
+  },
+  {
+    "id": "R-W-J1-C04",
+    "name_zh": "初中一年级4班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 49,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "J1-C04"
+  },
+  {
+    "id": "R-W-J1-C05",
+    "name_zh": "初中一年级5班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 50,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "J1-C05"
+  },
+  {
+    "id": "R-W-J1-C06",
+    "name_zh": "初中一年级6班教室",
+    "campus_id": "west",
+    "room_type": "homeroom",
+    "capacity": 51,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "chinese",
+      "math",
+      "english",
+      "morality",
+      "history",
+      "geography",
+      "class_meeting",
+      "reading",
+      "school_based",
+      "self_study"
+    ],
+    "home_class_id": "J1-C06"
+  },
+  {
+    "id": "R-E-MUSIC-01",
+    "name_zh": "东校区音乐教室1",
+    "campus_id": "east",
+    "room_type": "music_room",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "music"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-E-MUSIC-02",
+    "name_zh": "东校区音乐教室2",
+    "campus_id": "east",
+    "room_type": "music_room",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "music"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-E-ART-01",
+    "name_zh": "东校区美术教室1",
+    "campus_id": "east",
+    "room_type": "art_room",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "art"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-E-ART-02",
+    "name_zh": "东校区美术教室2",
+    "campus_id": "east",
+    "room_type": "art_room",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "art"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-E-SCI-01",
+    "name_zh": "东校区科学实验室1",
+    "campus_id": "east",
+    "room_type": "science_lab",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "science"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-E-SCI-02",
+    "name_zh": "东校区科学实验室2",
+    "campus_id": "east",
+    "room_type": "science_lab",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "science"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-E-COMP-01",
+    "name_zh": "东校区计算机教室1",
+    "campus_id": "east",
+    "room_type": "computer_room",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "it"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-E-COMP-02",
+    "name_zh": "东校区计算机教室2",
+    "campus_id": "east",
+    "room_type": "computer_room",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [
+      {
+        "day": "fri",
+        "periods": [
+          "p1",
+          "p2",
+          "p3",
+          "p4"
+        ],
+        "reason_zh": "设备巡检"
+      }
+    ],
+    "compatible_subject_ids": [
+      "it"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-E-GYM-01",
+    "name_zh": "东校区风雨操场",
+    "campus_id": "east",
+    "room_type": "sports_space",
+    "capacity": 96,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "pe"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-E-FIELD-01",
+    "name_zh": "东校区操场A区",
+    "campus_id": "east",
+    "room_type": "sports_space",
+    "capacity": 80,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "pe",
+      "flag_ceremony"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-E-FIELD-02",
+    "name_zh": "东校区操场B区",
+    "campus_id": "east",
+    "room_type": "sports_space",
+    "capacity": 80,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "pe",
+      "flag_ceremony"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-E-MAKER-01",
+    "name_zh": "东校区创客教室",
+    "campus_id": "east",
+    "room_type": "maker_space",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "comprehensive_practice",
+      "labor"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-E-LABOR-01",
+    "name_zh": "东校区劳动教室",
+    "campus_id": "east",
+    "room_type": "labor_room",
+    "capacity": 48,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "labor",
+      "comprehensive_practice"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-E-ASM-01",
+    "name_zh": "东校区报告厅",
+    "campus_id": "east",
+    "room_type": "assembly_ground",
+    "capacity": 260,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "flag_ceremony",
+      "school_based"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-MUSIC-01",
+    "name_zh": "西校区音乐教室1",
+    "campus_id": "west",
+    "room_type": "music_room",
+    "capacity": 52,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "music"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-MUSIC-02",
+    "name_zh": "西校区音乐教室2",
+    "campus_id": "west",
+    "room_type": "music_room",
+    "capacity": 52,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "music"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-ART-01",
+    "name_zh": "西校区美术教室1",
+    "campus_id": "west",
+    "room_type": "art_room",
+    "capacity": 52,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "art"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-ART-02",
+    "name_zh": "西校区美术教室2",
+    "campus_id": "west",
+    "room_type": "art_room",
+    "capacity": 52,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "art"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-SCI-01",
+    "name_zh": "西校区科学实验室1",
+    "campus_id": "west",
+    "room_type": "science_lab",
+    "capacity": 52,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "science"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-SCI-02",
+    "name_zh": "西校区科学实验室2",
+    "campus_id": "west",
+    "room_type": "science_lab",
+    "capacity": 52,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "science"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-SCI-03",
+    "name_zh": "西校区科学实验室3",
+    "campus_id": "west",
+    "room_type": "science_lab",
+    "capacity": 52,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "science"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-BIO-01",
+    "name_zh": "西校区生物实验室1",
+    "campus_id": "west",
+    "room_type": "biology_lab",
+    "capacity": 52,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "biology"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-BIO-02",
+    "name_zh": "西校区生物实验室2",
+    "campus_id": "west",
+    "room_type": "biology_lab",
+    "capacity": 52,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "biology"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-COMP-01",
+    "name_zh": "西校区计算机教室1",
+    "campus_id": "west",
+    "room_type": "computer_room",
+    "capacity": 52,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "it"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-COMP-02",
+    "name_zh": "西校区计算机教室2",
+    "campus_id": "west",
+    "room_type": "computer_room",
+    "capacity": 52,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "it"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-COMP-03",
+    "name_zh": "西校区计算机教室3",
+    "campus_id": "west",
+    "room_type": "computer_room",
+    "capacity": 52,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "it"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-GYM-01",
+    "name_zh": "西校区体育馆1",
+    "campus_id": "west",
+    "room_type": "sports_space",
+    "capacity": 100,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "pe"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-GYM-02",
+    "name_zh": "西校区体育馆2",
+    "campus_id": "west",
+    "room_type": "sports_space",
+    "capacity": 100,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "pe"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-FIELD-01",
+    "name_zh": "西校区操场A区",
+    "campus_id": "west",
+    "room_type": "sports_space",
+    "capacity": 90,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "pe",
+      "flag_ceremony"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-FIELD-02",
+    "name_zh": "西校区操场B区",
+    "campus_id": "west",
+    "room_type": "sports_space",
+    "capacity": 90,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "pe",
+      "flag_ceremony"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-FIELD-03",
+    "name_zh": "西校区操场C区",
+    "campus_id": "west",
+    "room_type": "sports_space",
+    "capacity": 90,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "pe"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-FIELD-04",
+    "name_zh": "西校区操场D区",
+    "campus_id": "west",
+    "room_type": "sports_space",
+    "capacity": 90,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "pe"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-MAKER-01",
+    "name_zh": "西校区创客教室1",
+    "campus_id": "west",
+    "room_type": "maker_space",
+    "capacity": 52,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "comprehensive_practice",
+      "labor",
+      "school_based"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-MAKER-02",
+    "name_zh": "西校区创客教室2",
+    "campus_id": "west",
+    "room_type": "maker_space",
+    "capacity": 52,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "comprehensive_practice",
+      "labor",
+      "school_based"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-LABOR-01",
+    "name_zh": "西校区劳动教室",
+    "campus_id": "west",
+    "room_type": "labor_room",
+    "capacity": 52,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "labor",
+      "comprehensive_practice"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-LIB-01",
+    "name_zh": "西校区图书馆阅览室",
+    "campus_id": "west",
+    "room_type": "library",
+    "capacity": 80,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "reading",
+      "school_based"
+    ],
+    "home_class_id": null
+  },
+  {
+    "id": "R-W-ASM-01",
+    "name_zh": "西校区报告厅",
+    "campus_id": "west",
+    "room_type": "assembly_ground",
+    "capacity": 360,
+    "available_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri"
+    ],
+    "available_periods": [
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+      "p6",
+      "p7",
+      "p8"
+    ],
+    "unavailable_slots": [],
+    "compatible_subject_ids": [
+      "flag_ceremony",
+      "school_based"
+    ],
+    "home_class_id": null
+  }
+]

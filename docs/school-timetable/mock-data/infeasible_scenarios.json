@@ -1,0 +1,115 @@
+{
+  "version": "2026-05-22.v1",
+  "description_zh": "故意构造的不可行覆盖场景，用于验证系统能解释绝对矛盾，而不是无限调整。",
+  "scenarios": [
+    {
+      "id": "INF-001",
+      "severity": "hard",
+      "title_zh": "同一时间生物实验室容量不足",
+      "added_constraints": [
+        {
+          "type": "fixed_slot_for_all_classes",
+          "scope": {
+            "grade_id": "J1",
+            "subject_id": "biology",
+            "class_ids": [
+              "J1-C01",
+              "J1-C02",
+              "J1-C03",
+              "J1-C04",
+              "J1-C05",
+              "J1-C06"
+            ]
+          },
+          "params": {
+            "day": "wed",
+            "periods": [
+              "p3",
+              "p4"
+            ],
+            "room_type": "biology_lab"
+          }
+        }
+      ],
+      "expected_detection": [
+        "J1共有6个班同时需要生物实验室，但西校区只有2间生物实验室",
+        "基础课程计划又禁止初一生物周一，不影响本冲突的核心判定"
+      ]
+    },
+    {
+      "id": "INF-002",
+      "severity": "hard",
+      "title_zh": "固定班会与升旗冲突",
+      "added_constraints": [
+        {
+          "type": "fixed_slot",
+          "scope": {
+            "class_id": "P1-C01",
+            "subject_id": "class_meeting"
+          },
+          "params": {
+            "day": "mon",
+            "period": "p1"
+          }
+        }
+      ],
+      "expected_detection": [
+        "P1-C01周一第1节已被全校升旗/晨会硬占用",
+        "同一班级同一时间只能上一节课"
+      ]
+    },
+    {
+      "id": "INF-003",
+      "severity": "hard",
+      "title_zh": "课程计划把信息科技所有可排日期禁用",
+      "added_constraints": [
+        {
+          "type": "curriculum_forbidden_weekdays",
+          "scope": {
+            "grade_id": "P5",
+            "subject_id": "it"
+          },
+          "params": {
+            "weekdays": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ]
+          }
+        }
+      ],
+      "expected_detection": [
+        "P5信息科技每周必修1节",
+        "新增约束禁止周一至周五所有日期，导致可排时间窗为空"
+      ]
+    },
+    {
+      "id": "INF-004",
+      "severity": "hard",
+      "title_zh": "教师整周不可用但仍有固定任课",
+      "added_constraints": [
+        {
+          "type": "teacher_unavailable",
+          "scope": {
+            "teacher_id": "T-W-ENG-01"
+          },
+          "params": {
+            "unavailable_days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ]
+          }
+        }
+      ],
+      "expected_detection": [
+        "T-W-ENG-01仍承担固定英语任课",
+        "教师可用时段为空，无法满足任课任务"
+      ]
+    }
+  ]
+}

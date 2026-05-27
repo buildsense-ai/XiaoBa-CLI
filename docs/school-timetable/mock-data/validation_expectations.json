@@ -1,0 +1,24 @@
+{
+  "version": "2026-05-22.v1",
+  "expected_counts": {
+    "campuses": 2,
+    "grades": 7,
+    "classes": 42,
+    "subjects": 19,
+    "rooms": 79,
+    "teachers": 108,
+    "curriculum_requirements": 100,
+    "teacher_assignments": 558,
+    "hard_constraints": 47,
+    "soft_constraints": 38
+  },
+  "invariants": [
+    "classes.length === 42",
+    "每个年级6个班",
+    "各年级课程计划周课时总数等于对应 day_profile.weekly_periods",
+    "每个需要教师的 class-subject 都有 teacher_assignment",
+    "teacher_assignments 中教师 campus_id 与班级 campus_id 一致",
+    "teacher.assigned_weekly_periods <= teacher.max_weekly_periods",
+    "infeasible_scenarios.json 中的案例应被判定为不可行"
+  ]
+}

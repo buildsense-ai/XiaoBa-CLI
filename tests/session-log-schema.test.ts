@@ -30,6 +30,12 @@ describe('session-log-schema', () => {
       timestamp: '2026-05-01T08:00:00.000Z',
       session_id: 'user:current',
       session_type: 'chat',
+      identity: {
+        schemaVersion: 1,
+        sessionId: 'user:current',
+        channel: 'catsco',
+        actor: { actorUserId: 'usr1' },
+      },
       user: {
         text: 'current',
         runtime_feedback: ['[运行时反馈] runtime\n错误: failed'],
@@ -72,6 +78,7 @@ describe('session-log-schema', () => {
     assert.deepStrictEqual(entries.map(entry => isSessionTurnEntry(entry)), [true, false, true, false]);
     assert.deepStrictEqual((entries[0] as any).user.runtime_feedback, ['[运行时反馈] runtime\n错误: failed']);
     assert.equal((entries[0] as any).user.runtime_observation_source, 'subagent_result');
+    assert.equal((entries[0] as any).identity.actor.actorUserId, 'usr1');
   });
 
   test('resolves session id from content and falls back when content has no session id', () => {

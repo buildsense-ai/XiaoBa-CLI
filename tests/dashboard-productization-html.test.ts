@@ -92,6 +92,13 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /先完成模型来源/);
   assert.match(dashboardHtml, /Dashboard Chat 连接同一个 CatsCompany 网页会话/);
   assert.match(dashboardHtml, /CatsCompany connector/);
+  assert.match(dashboardHtml, /Agent Body/);
+  assert.match(dashboardHtml, /function formatCatsBodyStatus\(bodyStatus, configured\)/);
+  assert.match(dashboardHtml, /body-conflict/);
+  assert.match(dashboardHtml, /body-auth-error/);
+  assert.match(dashboardHtml, /catsNextAction==='bot-selector'/);
+  assert.match(dashboardHtml, /另一个设备正在运行这个 agent/);
+  assert.match(dashboardHtml, /当前账号不能管理这个 agent/);
   assert.match(dashboardHtml, /恢复 CatsCompany connector/);
   assert.match(dashboardHtml, /<details class="chat-diagnostics" id="cats-connection-details">/);
   assert.match(dashboardHtml, /<summary>高级 endpoint<\/summary>/);
@@ -103,6 +110,25 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /needs-readiness/);
   assert.match(dashboardHtml, /appReadinessLoaded/);
   assert.doesNotMatch(dashboardHtml, /末尾 \+/);
+});
+
+test('CatsCo login is separate from bot binding and connector startup', () => {
+  assert.match(dashboardHtml, /id="cats-auth-btn"[^>]*>登录<\/button>/);
+  assert.match(dashboardHtml, /id="cats-register-btn"[^>]*>创建并登录<\/button>/);
+  assert.match(dashboardHtml, /登录态已保存。请确认要绑定的 CatsCo agent，再手动启动 connector。/);
+  assert.match(dashboardHtml, /showBotSelector\(\)/);
+  assert.match(dashboardHtml, /createCatsBotAndBind\(this\)/);
+  assert.match(dashboardHtml, /\/api\/cats\/create-bot/);
+  assert.match(dashboardHtml, /\/api\/cats\/bind-bot/);
+  assert.match(dashboardHtml, /data-bind-bot/);
+  assert.match(dashboardHtml, /请选择已有机器人，或点击“绑定并启动”创建\/绑定当前 agent。/);
+  assert.doesNotMatch(
+    dashboardHtml,
+    /setCatsAction\('登录态已保存，正在绑定 CatsCo agent\.\.\.'\);\s*await setupCatsBot\(\);/,
+  );
+  assert.doesNotMatch(dashboardHtml, /fetch\(API \+ '\/api\/cats\/switch-bot'/);
+  assert.doesNotMatch(dashboardHtml, /fetch\(API\+'\/api\/cats\/setup'/);
+  assert.doesNotMatch(dashboardHtml, /onclick="bindCatsBot\('\$\{escapeJsString/);
 });
 
 test('custom model save refreshes readiness before Chat remains locked', () => {

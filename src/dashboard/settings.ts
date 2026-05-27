@@ -1,6 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
+import { createCatsCoLocalConfigService } from '../catscompany/local-config';
+import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 
 export type DashboardSettingType = 'enum' | 'string' | 'url' | 'secret';
 export type SecretSettingAction = 'keep' | 'replace' | 'clear';
@@ -128,12 +130,16 @@ export function getDashboardSettings(
   const runtimeRoot = path.resolve(options.runtimeRoot ?? process.cwd());
   const env = options.env ?? process.env;
   const fileEnv = readDashboardEnvFile(runtimeRoot);
+  const catsCoRuntime = resolveCatsCoRuntimeConfig({
+    runtimeRoot,
+    env: { ...env, ...fileEnv },
+  });
 
   return {
     runtimeRoot,
     generatedAt: (options.now ?? new Date()).toISOString(),
     fields: DASHBOARD_SETTING_DEFINITIONS.map(definition => {
-      const value = firstNonEmpty(fileEnv[definition.envKey], env[definition.envKey]);
+      const value = resolveDashboardSettingValue(definition, fileEnv, env, catsCoRuntime.auth);
       const common = {
         id: definition.id,
         group: definition.group,
@@ -169,6 +175,7 @@ export function updateDashboardSettings(
   const env = options.env ?? process.env;
   const updates = normalizeSettingsUpdatePayload(input);
   const envUpdates: Record<string, string | undefined> = {};
+  const catsCoEndpointUpdates: { httpBaseUrl?: string; serverUrl?: string } = {};
   const kept: string[] = [];
 
   for (const [id, rawValue] of Object.entries(updates)) {
@@ -183,10 +190,22 @@ export function updateDashboardSettings(
       continue;
     }
 
+    if (definition.id === 'catsco.httpBaseUrl') {
+      catsCoEndpointUpdates.httpBaseUrl = normalized.value || '';
+      continue;
+    }
+    if (definition.id === 'catsco.wsUrl') {
+      catsCoEndpointUpdates.serverUrl = normalized.value || '';
+      continue;
+    }
+
     envUpdates[normalized.envKey] = normalized.value;
   }
 
   const result = writeDashboardEnvUpdates(runtimeRoot, envUpdates);
+  const catsCoUpdated = Object.keys(catsCoEndpointUpdates).length > 0
+    ? createCatsCoLocalConfigService({ runtimeRoot, env }).updateEndpoints(catsCoEndpointUpdates)
+    : [];
   for (const [key, value] of Object.entries(envUpdates)) {
     if (value === undefined) {
       delete env[key];
@@ -197,10 +216,25 @@ export function updateDashboardSettings(
 
   return {
     ok: true,
-    updated: result.updated,
+    updated: [...result.updated, ...catsCoUpdated],
     cleared: result.cleared,
     kept,
   };
+}
+
+function resolveDashboardSettingValue(
+  definition: DashboardSettingDefinition,
+  fileEnv: Record<string, string>,
+  env: NodeJS.ProcessEnv,
+  catsCoAuth: { httpBaseUrl?: string; serverUrl?: string },
+): string | undefined {
+  if (definition.id === 'catsco.httpBaseUrl') {
+    return firstNonEmpty(catsCoAuth.httpBaseUrl, fileEnv[definition.envKey], env[definition.envKey]);
+  }
+  if (definition.id === 'catsco.wsUrl') {
+    return firstNonEmpty(catsCoAuth.serverUrl, fileEnv[definition.envKey], env[definition.envKey]);
+  }
+  return firstNonEmpty(fileEnv[definition.envKey], env[definition.envKey]);
 }
 
 export function readDashboardEnvFile(runtimeRoot: string = process.cwd()): Record<string, string> {
@@ -259,7 +293,14 @@ export function writeDashboardEnvUpdates(
   const content = nextLines
     .filter((line, index, list) => !(line === '' && index === list.length - 1))
     .join('\n');
-  fs.writeFileSync(envPath, content ? `${content}\n` : '', 'utf-8');
+  fs.writeFileSync(envPath, content ? `${content}\n` : '', { encoding: 'utf-8', mode: 0o600 });
+  if (process.platform !== 'win32') {
+    try {
+      fs.chmodSync(envPath, 0o600);
+    } catch {
+      // Best-effort permission hardening for existing files.
+    }
+  }
 
   return { updated, cleared };
 }

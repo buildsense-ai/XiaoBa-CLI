@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Cache-Control" content="no-store" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>课程表可视化工作台</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260526-1" />
+  </head>
+  <body>
+    <main class="workspace visual-workspace">
+      <aside class="panel insight-panel">
+        <header class="panel-header visual-header">
+          <div>
+            <h1>课程表工作台</h1>
+            <p class="muted">课程数据和调整由后台/CLI 维护，这里专注查看、校验和导出。</p>
+          </div>
+          <select id="schoolScope" aria-label="选择学段">
+            <option value="初中">初中</option>
+            <option value="小学">小学</option>
+          </select>
+        </header>
+
+        <section class="visual-status">
+          <span id="schoolTerm" class="status-chip">加载中</span>
+          <button id="rerunButton" class="primary-button">刷新课表</button>
+        </section>
+
+        <section>
+          <div class="section-title">
+            <h3>排课反馈</h3>
+          </div>
+          <div id="feedback" class="feedback">正在准备课程表。</div>
+        </section>
+
+        <section>
+          <div class="section-title">
+            <h3>缺失信息</h3>
+          </div>
+          <div id="missingInfo" class="info-list"></div>
+        </section>
+
+        <section>
+          <div class="section-title">
+            <h3>调整记录</h3>
+            <span id="ruleCount" class="count-pill">0 条</span>
+          </div>
+          <div id="appliedRules" class="applied-rules"></div>
+        </section>
+
+        <section>
+          <div class="section-title">
+            <h3>导出</h3>
+          </div>
+          <div class="export-row">
+            <select id="exportFormat" aria-label="选择导出格式">
+              <option value="excel">Excel 全部班级</option>
+              <option value="pdf">PDF 当前班级</option>
+              <option value="csv">CSV 当前班级</option>
+            </select>
+            <button id="exportButton" class="primary-button">导出</button>
+          </div>
+        </section>
+      </aside>
+
+      <section class="panel timetable-panel visual-timetable-panel">
+        <header class="timetable-header">
+          <div>
+            <h2>课表视图</h2>
+            <p id="statsText" class="muted">等待生成。</p>
+          </div>
+          <div class="toolbar">
+            <select id="classSelect" aria-label="选择班级"></select>
+          </div>
+        </header>
+
+        <section class="timeline" id="timeline"></section>
+        <section class="conflict-banner" id="conflictBanner">正在检查冲突。</section>
+        <section class="manual-tip" id="manualTip">后台或 CLI 调整后点击刷新，这里会展示最新结果。</section>
+        <section class="conflict-advice" id="conflictAdvice" hidden></section>
+
+        <section class="table-wrap">
+          <table class="timetable" id="timetable"></table>
+        </section>
+      </section>
+
+      <section class="legacy-controls" hidden>
+        <button id="applyClassSettingsButton">应用</button>
+        <div id="classSettingsList"></div>
+        <input id="excelInput" type="file" accept=".xlsx,.xls" />
+        <p id="uploadMessage"></p>
+        <button class="tab is-active" data-tab="teachers">教师</button>
+        <button class="tab" data-tab="rooms">教室</button>
+        <button class="tab" data-tab="courses">课程</button>
+        <button class="tab" data-tab="time">时间</button>
+        <button id="addDataButton">新增</button>
+        <section id="dataList"></section>
+        <section id="excelPreview" hidden></section>
+        <button id="clearRulesButton">清空</button>
+        <textarea id="ruleInput"></textarea>
+        <div id="ruleTemplates"></div>
+        <input id="conditionImageInput" type="file" accept="image/*" multiple />
+        <div id="imagePreviewList"></div>
+        <button id="solveButton">加入规则并排课</button>
+        <button id="demoRuleButton">放入示例规则</button>
+        <div id="ruleCards"></div>
+        <button id="manualModeButton" type="button" aria-pressed="false">隐藏兼容按钮</button>
+      </section>
+
+      <dialog id="dataModal" class="data-modal">
+        <form method="dialog" id="dataModalForm">
+          <header class="modal-header">
+            <h3 id="dataModalTitle">新增内容</h3>
+            <button type="button" id="closeDataModalButton" class="ghost-button">关闭</button>
+          </header>
+          <label class="form-field">
+            <span>资料类型</span>
+            <select id="dataModalType">
+              <option value="teachers">教师</option>
+              <option value="rooms">教室</option>
+              <option value="courses">课程</option>
+              <option value="time">时间</option>
+            </select>
+          </label>
+          <div id="dataModalFields" class="modal-fields"></div>
+          <footer class="modal-actions">
+            <button type="button" id="saveDataModalButton" class="primary-button">保存</button>
+            <button type="button" id="cancelDataModalButton" class="secondary-button">取消</button>
+          </footer>
+        </form>
+      </dialog>
+    </main>
+
+    <script src="/static/app.js?v=20260526-1"></script>
+  </body>
+</html>

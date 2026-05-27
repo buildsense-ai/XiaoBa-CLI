@@ -2,49 +2,27 @@ import { Logger } from '../utils/logger';
 import { ConfigManager } from '../utils/config';
 import { CatsCompanyBot } from '../catscompany';
 import { CatsCompanyConfig } from '../catscompany/types';
+import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/runtime-command-support';
 import { ChatConfig } from '../types';
 
 export interface CatsCoCommandConfigResolution {
   config?: CatsCompanyConfig;
-  missing: Array<'serverUrl' | 'apiKey'>;
-}
-
-function firstEnv(env: NodeJS.ProcessEnv, ...keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = env[key]?.trim();
-    if (value) return value;
-  }
-  return undefined;
+  missing: Array<'serverUrl' | 'apiKey' | 'bodyId'>;
 }
 
 export function resolveCatsCoCommandConfig(
   config: ChatConfig,
   env: NodeJS.ProcessEnv = process.env,
 ): CatsCoCommandConfigResolution {
-  const serverUrl = firstEnv(env, 'CATSCO_SERVER_URL', 'CATSCOMPANY_SERVER_URL')
-    || config.catscompany?.serverUrl;
-  const apiKey = firstEnv(env, 'CATSCO_API_KEY', 'CATSCOMPANY_API_KEY')
-    || config.catscompany?.apiKey;
-  const httpBaseUrl = firstEnv(env, 'CATSCO_HTTP_BASE_URL', 'CATSCOMPANY_HTTP_BASE_URL')
-    || config.catscompany?.httpBaseUrl;
-
-  const missing: CatsCoCommandConfigResolution['missing'] = [];
-  if (!serverUrl) missing.push('serverUrl');
-  if (!apiKey) missing.push('apiKey');
-
-  if (!serverUrl || !apiKey) {
-    return { missing };
-  }
-
+  const resolved = resolveCatsCoRuntimeConfig({
+    runtimeRoot: env.XIAOBA_RUNTIME_ROOT || process.cwd(),
+    env,
+    config,
+  });
   return {
-    missing: [],
-    config: {
-      serverUrl,
-      apiKey,
-      httpBaseUrl,
-      sessionTTL: config.catscompany?.sessionTTL,
-    },
+    missing: resolved.missing,
+    config: resolved.connector,
   };
 }
 

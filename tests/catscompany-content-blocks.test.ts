@@ -8,6 +8,8 @@ function createProcessHarness() {
   const multimodalCalls: Array<{ text: string; attachments: any[] }> = [];
   const handledTurns: Array<{ userMessage: any; options: any }> = [];
   const sentThinking: Array<{ text: string; metadata?: any }> = [];
+  const sentTexts: string[] = [];
+  const commands: Array<{ command: string; args: string[] }> = [];
   const toolUses: Array<{ topic: string; toolUseId: string; name: string; input: any; metadata?: any }> = [];
   const toolResults: Array<{ topic: string; toolUseId: string; content: string; isError?: boolean; metadata?: any }> = [];
 
@@ -16,6 +18,10 @@ function createProcessHarness() {
     handleMessage: async (userMessage: any, options: any) => {
       handledTurns.push({ userMessage, options });
       return { visibleToUser: false, text: '' };
+    },
+    handleCommand: async (command: string, args: string[]) => {
+      commands.push({ command, args });
+      return { handled: true, reply: '' };
     },
   };
 
@@ -31,7 +37,9 @@ function createProcessHarness() {
     sendTyping: () => undefined,
     reply: async () => undefined,
     sendFile: async () => undefined,
-    sendText: async () => undefined,
+    sendText: async (_topic: string, text: string) => {
+      sentTexts.push(text);
+    },
     sendThinking: async (_topic: string, text: string, metadata?: any) => {
       sentThinking.push({ text, metadata });
     },
@@ -47,6 +55,8 @@ function createProcessHarness() {
   bot.pendingAttachments = new Map();
   bot.pendingTextMessages = new Map();
   bot.messageQueue = new Map();
+  bot.botUid = 'bot42';
+  bot.runtimeProfile = { displayName: 'Dev Agent', prompt: { displayName: 'Dev Agent' } };
   bot.buildMultimodalMessage = async (text: string, attachments: any[]) => {
     multimodalCalls.push({ text, attachments });
     return [
@@ -58,7 +68,7 @@ function createProcessHarness() {
     ];
   };
 
-  return { bot, downloads, multimodalCalls, handledTurns, sentThinking, toolUses, toolResults };
+  return { bot, downloads, multimodalCalls, handledTurns, sentThinking, sentTexts, commands, toolUses, toolResults };
 }
 
 describe('CatsCo content blocks', () => {
@@ -69,6 +79,7 @@ describe('CatsCo content blocks', () => {
       topic: 'p2p_1_2',
       senderId: 'usr1',
       text: '帮我一起看这两张图',
+      metadata: { sender_display_name: 'Alice' },
       content: '帮我一起看这两张图',
       content_blocks: [
         { type: 'text', text: '帮我一起看这两张图' },
@@ -82,6 +93,7 @@ describe('CatsCo content blocks', () => {
     assert.ok(parsed);
     assert.strictEqual(parsed.text, '帮我一起看这两张图');
     assert.strictEqual(parsed.files.length, 2);
+    assert.deepStrictEqual(parsed.metadata, { sender_display_name: 'Alice' });
     assert.deepStrictEqual(parsed.files.map((file: any) => file.type), ['image', 'file']);
     assert.deepStrictEqual(parsed.files.map((file: any) => file.fileName), ['a.png', 'b.pdf']);
   });
@@ -181,6 +193,113 @@ describe('CatsCo content blocks', () => {
       { type: 'text', text: '[file] b.pdf -> C:\\tmp\\catsco-test\\b.pdf' },
     ]);
     assert.deepStrictEqual(handledTurns[0].options.runtimeFeedback, []);
+    assert.equal(handledTurns[0].options.sessionIdentity.sessionId, 'cc_user:usr1');
+    assert.equal(handledTurns[0].options.sessionIdentity.channel, 'catsco');
+    assert.equal(handledTurns[0].options.sessionIdentity.actor.actorUserId, 'usr1');
+    assert.equal(handledTurns[0].options.sessionIdentity.topic.topicId, 'p2p_1_2');
+    assert.equal(handledTurns[0].options.sessionIdentity.topic.channelSeq, 9);
+  });
+
+  test('maps platform catsco_identity metadata into session identity', async () => {
+    const { bot, handledTurns } = createProcessHarness();
+
+    await bot.processParsedMessage({
+      topic: 'p2p_7_42',
+      chatType: 'p2p',
+      senderId: 'usr7',
+      seq: 15,
+      text: '帮我看一下资料',
+      rawContent: '帮我看一下资料',
+      metadata: {
+        catsco_identity: {
+          actor: { user_id: 7, display_name: 'Alice' },
+          agent: { agent_id: 42, display_name: 'Dev Agent', body_id: 'body-mac', relation: 'member' },
+          topic: { topic_id: 'p2p_7_42', type: 'p2p', channel_seq: 15 },
+          permissions: { can_chat: true, source: 'server_canonical_message' },
+        },
+      },
+      files: [],
+    }, 'cc_user:usr7');
+
+    const identity = handledTurns[0].options.sessionIdentity;
+    assert.equal(identity.actor.actorUserId, 'usr7');
+    assert.equal(identity.actor.actorDisplayName, 'Alice');
+    assert.equal(identity.agent.agentId, 'usr42');
+    assert.equal(identity.agent.bodyId, 'body-mac');
+    assert.equal(identity.topic.topicId, 'p2p_7_42');
+    assert.equal(identity.topic.channelSeq, 15);
+    assert.equal(identity.permissionsSnapshot.source, 'server_canonical_message');
+  });
+
+  test('queued pending user input keeps per-message identity context', () => {
+    const { bot } = createProcessHarness();
+    bot.messageQueue.set('cc_group:grp_school_ops', [
+      {
+        userMessage: 'A 的补充',
+        topic: 'grp_school_ops',
+        senderId: 'usr7',
+        seq: 12,
+        receivedAt: 100,
+        source: 'user',
+        sessionIdentity: {
+          schemaVersion: 1,
+          sessionId: 'cc_group:grp_school_ops',
+          legacySessionKey: 'cc_group:grp_school_ops',
+          sessionType: 'catscompany',
+          channel: 'catsco',
+          actor: { actorUserId: 'usr7', actorDisplayName: 'Alice', externalUserId: 'usr7' },
+          agent: { agentId: 'bot42', agentDisplayName: 'Dev Agent', bodyId: 'device_mac' },
+          topic: { topicId: 'grp_school_ops', topicType: 'group', channelSeq: 12 },
+        },
+      },
+      {
+        userMessage: 'B 的补充',
+        topic: 'grp_school_ops',
+        senderId: 'usr8',
+        seq: 13,
+        receivedAt: 101,
+        source: 'user',
+        sessionIdentity: {
+          schemaVersion: 1,
+          sessionId: 'cc_group:grp_school_ops',
+          legacySessionKey: 'cc_group:grp_school_ops',
+          sessionType: 'catscompany',
+          channel: 'catsco',
+          actor: { actorUserId: 'usr8', actorDisplayName: 'Bob', externalUserId: 'usr8' },
+          agent: { agentId: 'bot42', agentDisplayName: 'Dev Agent', bodyId: 'device_mac' },
+          topic: { topicId: 'grp_school_ops', topicType: 'group', channelSeq: 13 },
+        },
+      },
+    ]);
+
+    const pending = (bot as any).consumeQueuedUserInput('cc_group:grp_school_ops');
+
+    assert.ok(pending);
+    assert.equal(typeof pending.content, 'string');
+    assert.match(pending.content, /1\. usr7: A 的补充/);
+    assert.match(pending.content, /2\. usr8: B 的补充/);
+    assert.match(pending.transientContext, /^\[transient_session_identity\]/);
+    assert.match(pending.transientContext, /actor=Alice \/ usr7/);
+    assert.match(pending.transientContext, /actor=Bob \/ usr8/);
+    assert.match(pending.transientContext, /seq=12/);
+    assert.match(pending.transientContext, /seq=13/);
+  });
+
+  test('slash command with leading whitespace is handled as a command', async () => {
+    const { bot, handledTurns, commands } = createProcessHarness();
+
+    await bot.processParsedMessage({
+      topic: 'grp_school_ops',
+      chatType: 'group',
+      senderId: 'usr1',
+      seq: 27,
+      text: '  /clear now',
+      rawContent: '  /clear now',
+      metadata: { sender_kind: 'human' },
+    }, 'cc_group:grp_school_ops');
+
+    assert.deepStrictEqual(commands, [{ command: 'clear', args: ['now'] }]);
+    assert.strictEqual(handledTurns.length, 0);
   });
 
   test('channel sendFile propagates upload failures to tool execution', async () => {

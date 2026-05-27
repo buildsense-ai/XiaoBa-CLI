@@ -1,0 +1,65 @@
+[
+  {
+    "id": "P1",
+    "name_zh": "小学一年级",
+    "stage": "primary",
+    "level": 1,
+    "campus_id": "east",
+    "day_profile_id": "primary_lower_30",
+    "class_count": 6
+  },
+  {
+    "id": "P2",
+    "name_zh": "小学二年级",
+    "stage": "primary",
+    "level": 2,
+    "campus_id": "east",
+    "day_profile_id": "primary_lower_30",
+    "class_count": 6
+  },
+  {
+    "id": "P3",
+    "name_zh": "小学三年级",
+    "stage": "primary",
+    "level": 3,
+    "campus_id": "east",
+    "day_profile_id": "primary_upper_35",
+    "class_count": 6
+  },
+  {
+    "id": "P4",
+    "name_zh": "小学四年级",
+    "stage": "primary",
+    "level": 4,
+    "campus_id": "west",
+    "day_profile_id": "primary_upper_35",
+    "class_count": 6
+  },
+  {
+    "id": "P5",
+    "name_zh": "小学五年级",
+    "stage": "primary",
+    "level": 5,
+    "campus_id": "west",
+    "day_profile_id": "primary_upper_35",
+    "class_count": 6
+  },
+  {
+    "id": "P6",
+    "name_zh": "小学六年级",
+    "stage": "primary",
+    "level": 6,
+    "campus_id": "west",
+    "day_profile_id": "primary_upper_35",
+    "class_count": 6
+  },
+  {
+    "id": "J1",
+    "name_zh": "初中一年级",
+    "stage": "junior",
+    "level": 7,
+    "campus_id": "west",
+    "day_profile_id": "junior_40",
+    "class_count": 6
+  }
+]

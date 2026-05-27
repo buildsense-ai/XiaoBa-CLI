@@ -1,0 +1,165 @@
+{
+  "version": "2026-05-22.v1",
+  "description_zh": "模拟真实学校运行中逐步补充的约束，用于测试 agentic 排课-检查-修复循环。",
+  "changes": [
+    {
+      "id": "CHG-W08-001",
+      "week_label_zh": "第8周",
+      "severity": "hard",
+      "type": "temporary_double_period_exam",
+      "scope": {
+        "grade_id": "P6",
+        "subject_id": "math",
+        "class_ids": [
+          "P6-C01",
+          "P6-C02",
+          "P6-C03",
+          "P6-C04",
+          "P6-C05",
+          "P6-C06"
+        ]
+      },
+      "params": {
+        "length": 2,
+        "allowed_days": [
+          "tue",
+          "wed",
+          "thu"
+        ],
+        "allowed_start_periods": [
+          "p2",
+          "p3",
+          "p6"
+        ],
+        "room_type": "homeroom"
+      },
+      "description_zh": "六年级数学第8周增加一次单元检测，需要每班一个连堂。"
+    },
+    {
+      "id": "CHG-W08-002",
+      "week_label_zh": "第8周",
+      "severity": "hard",
+      "type": "lab_exam_window",
+      "scope": {
+        "grade_id": "J1",
+        "subject_id": "biology",
+        "class_ids": [
+          "J1-C01",
+          "J1-C02",
+          "J1-C03",
+          "J1-C04",
+          "J1-C05",
+          "J1-C06"
+        ]
+      },
+      "params": {
+        "length": 2,
+        "allowed_days": [
+          "tue",
+          "thu",
+          "fri"
+        ],
+        "allowed_start_periods": [
+          "p3",
+          "p5"
+        ],
+        "room_ids": [
+          "R-W-BIO-01",
+          "R-W-BIO-02"
+        ]
+      },
+      "description_zh": "初一生物实验操作考查，需要在生物实验室连堂完成。"
+    },
+    {
+      "id": "CHG-W08-003",
+      "week_label_zh": "第8周",
+      "severity": "hard",
+      "type": "room_closure",
+      "scope": {
+        "room_id": "R-E-SCI-01"
+      },
+      "params": {
+        "closed_slots": [
+          {
+            "day": "tue",
+            "periods": [
+              "p1",
+              "p2",
+              "p3",
+              "p4",
+              "p5",
+              "p6",
+              "p7"
+            ]
+          },
+          {
+            "day": "wed",
+            "periods": [
+              "p1",
+              "p2",
+              "p3",
+              "p4",
+              "p5",
+              "p6",
+              "p7"
+            ]
+          }
+        ]
+      },
+      "description_zh": "东校区科学实验室1临时维修两天。"
+    },
+    {
+      "id": "CHG-W08-004",
+      "week_label_zh": "第8周",
+      "severity": "hard",
+      "type": "teacher_temporary_unavailable",
+      "scope": {
+        "teacher_id": "T-W-MAT-04"
+      },
+      "params": {
+        "unavailable_days": [
+          "tue"
+        ],
+        "reason_zh": "外出参加市级展示课"
+      },
+      "description_zh": "西校区数学教师临时周二全天不可排。"
+    },
+    {
+      "id": "CHG-W08-005",
+      "week_label_zh": "第8周",
+      "severity": "soft",
+      "type": "same_day_oral_assessment_preference",
+      "scope": {
+        "grade_id": "P3",
+        "subject_id": "chinese",
+        "class_ids": [
+          "P3-C01",
+          "P3-C02",
+          "P3-C03"
+        ]
+      },
+      "params": {
+        "preferred_day": "thu",
+        "preferred_periods": [
+          "p2",
+          "p3",
+          "p4"
+        ]
+      },
+      "description_zh": "三年级部分班级语文口语测评尽量安排在周四上午。"
+    },
+    {
+      "id": "CHG-W09-001",
+      "week_label_zh": "第9周",
+      "severity": "soft",
+      "type": "teacher_load_rebalance_request",
+      "scope": {
+        "teacher_id": "T-E-CHI-01"
+      },
+      "params": {
+        "preferred_max_daily_periods": 4
+      },
+      "description_zh": "班主任反馈连续课过多，希望下周日课时不超过4节。"
+    }
+  ]
+}

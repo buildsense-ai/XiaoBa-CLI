@@ -5,6 +5,10 @@ release/
 *.log
 turnLogs/
 __pycache__/
+.venv/
+.venv-*/
+venv/
+outputs/
 
 # 本地/用户安装的 skills 默认不进仓库；只显式保留内置基础 skills。
 skills/*
@@ -52,6 +56,7 @@ Thumbs.db
 .claude/
 .kiro/
 .playwright-mcp/
+.xiaoba/
 
 # 打包文件
 *.dmg

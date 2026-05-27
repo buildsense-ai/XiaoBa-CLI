@@ -1,0 +1,2487 @@
+[
+  {
+    "id": "T-E-CHI-01",
+    "name_zh": "王一宁老师",
+    "campus_id": "east",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 20,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-CHI-02",
+    "name_zh": "李欣然老师",
+    "campus_id": "east",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 20,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-CHI-03",
+    "name_zh": "张佳怡老师",
+    "campus_id": "east",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 20,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-CHI-04",
+    "name_zh": "刘子墨老师",
+    "campus_id": "east",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 20,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-CHI-05",
+    "name_zh": "陈景行老师",
+    "campus_id": "east",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 20,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-CHI-06",
+    "name_zh": "杨若溪老师",
+    "campus_id": "east",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 20,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-CHI-07",
+    "name_zh": "赵诗涵老师",
+    "campus_id": "east",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 20,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-CHI-08",
+    "name_zh": "黄思源老师",
+    "campus_id": "east",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 20,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-CHI-09",
+    "name_zh": "周睿哲老师",
+    "campus_id": "east",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 20,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-MAT-01",
+    "name_zh": "吴思远老师",
+    "campus_id": "east",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "school_based",
+      "self_study"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 15,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-MAT-02",
+    "name_zh": "徐昊然老师",
+    "campus_id": "east",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "school_based",
+      "self_study"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 15,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-MAT-03",
+    "name_zh": "孙静怡老师",
+    "campus_id": "east",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "school_based",
+      "self_study"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 15,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-MAT-04",
+    "name_zh": "胡浩然老师",
+    "campus_id": "east",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "school_based",
+      "self_study"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 15,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-MAT-05",
+    "name_zh": "朱子涵老师",
+    "campus_id": "east",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "school_based",
+      "self_study"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 10,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-MAT-06",
+    "name_zh": "高晨曦老师",
+    "campus_id": "east",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "school_based",
+      "self_study"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 10,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-MAT-07",
+    "name_zh": "林宇航老师",
+    "campus_id": "east",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "school_based",
+      "self_study"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 10,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-ENG-01",
+    "name_zh": "何泽宇老师",
+    "campus_id": "east",
+    "primary_subject_id": "english",
+    "qualified_subject_ids": [
+      "english"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 10,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-ENG-02",
+    "name_zh": "郭书瑶老师",
+    "campus_id": "east",
+    "primary_subject_id": "english",
+    "qualified_subject_ids": [
+      "english"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": [
+        {
+          "day": "tue",
+          "periods": [
+            "p1",
+            "p2",
+            "p3",
+            "p4"
+          ],
+          "reason_zh": "半天外出培训"
+        }
+      ]
+    },
+    "assigned_weekly_periods": 10,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-ENG-03",
+    "name_zh": "马嘉懿老师",
+    "campus_id": "east",
+    "primary_subject_id": "english",
+    "qualified_subject_ids": [
+      "english"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-ENG-04",
+    "name_zh": "罗奕辰老师",
+    "campus_id": "east",
+    "primary_subject_id": "english",
+    "qualified_subject_ids": [
+      "english"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 8,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-ENG-05",
+    "name_zh": "梁梦瑶老师",
+    "campus_id": "east",
+    "primary_subject_id": "english",
+    "qualified_subject_ids": [
+      "english"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 8,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-MOR-01",
+    "name_zh": "宋依诺老师",
+    "campus_id": "east",
+    "primary_subject_id": "morality",
+    "qualified_subject_ids": [
+      "morality",
+      "class_meeting"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-MOR-02",
+    "name_zh": "郑雅琪老师",
+    "campus_id": "east",
+    "primary_subject_id": "morality",
+    "qualified_subject_ids": [
+      "morality",
+      "class_meeting"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-MOR-03",
+    "name_zh": "谢雨桐老师",
+    "campus_id": "east",
+    "primary_subject_id": "morality",
+    "qualified_subject_ids": [
+      "morality",
+      "class_meeting"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-SCI-01",
+    "name_zh": "韩俊杰老师",
+    "campus_id": "east",
+    "primary_subject_id": "science",
+    "qualified_subject_ids": [
+      "science",
+      "comprehensive_practice",
+      "labor"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": [
+        {
+          "day": "wed",
+          "periods": [
+            "p7"
+          ],
+          "reason_zh": "低段科学组例会"
+        }
+      ]
+    },
+    "assigned_weekly_periods": 10,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-SCI-02",
+    "name_zh": "唐佳宁老师",
+    "campus_id": "east",
+    "primary_subject_id": "science",
+    "qualified_subject_ids": [
+      "science",
+      "comprehensive_practice",
+      "labor"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 8,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-SCI-03",
+    "name_zh": "冯明轩老师",
+    "campus_id": "east",
+    "primary_subject_id": "science",
+    "qualified_subject_ids": [
+      "science",
+      "comprehensive_practice",
+      "labor"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 9,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-SCI-04",
+    "name_zh": "于梓涵老师",
+    "campus_id": "east",
+    "primary_subject_id": "science",
+    "qualified_subject_ids": [
+      "science",
+      "comprehensive_practice",
+      "labor"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 8,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-PE-01",
+    "name_zh": "董文博老师",
+    "campus_id": "east",
+    "primary_subject_id": "pe",
+    "qualified_subject_ids": [
+      "pe"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-PE-02",
+    "name_zh": "萧心怡老师",
+    "campus_id": "east",
+    "primary_subject_id": "pe",
+    "qualified_subject_ids": [
+      "pe"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-PE-03",
+    "name_zh": "程一宁老师",
+    "campus_id": "east",
+    "primary_subject_id": "pe",
+    "qualified_subject_ids": [
+      "pe"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [
+        {
+          "day": "thu",
+          "reason_zh": "区体育教研活动"
+        }
+      ],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 14,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-PE-04",
+    "name_zh": "曹欣然老师",
+    "campus_id": "east",
+    "primary_subject_id": "pe",
+    "qualified_subject_ids": [
+      "pe"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 14,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-PE-05",
+    "name_zh": "袁佳怡老师",
+    "campus_id": "east",
+    "primary_subject_id": "pe",
+    "qualified_subject_ids": [
+      "pe"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 14,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-MUS-01",
+    "name_zh": "邓子墨老师",
+    "campus_id": "east",
+    "primary_subject_id": "music",
+    "qualified_subject_ids": [
+      "music"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-MUS-02",
+    "name_zh": "许景行老师",
+    "campus_id": "east",
+    "primary_subject_id": "music",
+    "qualified_subject_ids": [
+      "music"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-MUS-03",
+    "name_zh": "傅若溪老师",
+    "campus_id": "east",
+    "primary_subject_id": "music",
+    "qualified_subject_ids": [
+      "music"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-ART-01",
+    "name_zh": "沈诗涵老师",
+    "campus_id": "east",
+    "primary_subject_id": "art",
+    "qualified_subject_ids": [
+      "art"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-ART-02",
+    "name_zh": "曾思源老师",
+    "campus_id": "east",
+    "primary_subject_id": "art",
+    "qualified_subject_ids": [
+      "art"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-ART-03",
+    "name_zh": "彭睿哲老师",
+    "campus_id": "east",
+    "primary_subject_id": "art",
+    "qualified_subject_ids": [
+      "art"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-IT-01",
+    "name_zh": "吕思远老师",
+    "campus_id": "east",
+    "primary_subject_id": "it",
+    "qualified_subject_ids": [
+      "it"
+    ],
+    "eligible_grade_ids": [
+      "P3"
+    ],
+    "max_weekly_periods": 14,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 3,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-IT-02",
+    "name_zh": "王昊然老师",
+    "campus_id": "east",
+    "primary_subject_id": "it",
+    "qualified_subject_ids": [
+      "it"
+    ],
+    "eligible_grade_ids": [
+      "P3"
+    ],
+    "max_weekly_periods": 14,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 3,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-LAB-01",
+    "name_zh": "李静怡老师",
+    "campus_id": "east",
+    "primary_subject_id": "labor",
+    "qualified_subject_ids": [
+      "labor",
+      "comprehensive_practice"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 9,
+    "notes_zh": []
+  },
+  {
+    "id": "T-E-LAB-02",
+    "name_zh": "张浩然老师",
+    "campus_id": "east",
+    "primary_subject_id": "labor",
+    "qualified_subject_ids": [
+      "labor",
+      "comprehensive_practice"
+    ],
+    "eligible_grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 10,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-CHI-01",
+    "name_zh": "刘子涵老师",
+    "campus_id": "west",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 18,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-CHI-02",
+    "name_zh": "陈晨曦老师",
+    "campus_id": "west",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 18,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-CHI-03",
+    "name_zh": "杨宇航老师",
+    "campus_id": "west",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 18,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-CHI-04",
+    "name_zh": "赵泽宇老师",
+    "campus_id": "west",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 18,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-CHI-05",
+    "name_zh": "黄书瑶老师",
+    "campus_id": "west",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": [
+        {
+          "day": "mon",
+          "periods": [
+            "p7",
+            "p8"
+          ],
+          "reason_zh": "初小衔接教研"
+        }
+      ]
+    },
+    "assigned_weekly_periods": 18,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-CHI-06",
+    "name_zh": "周嘉懿老师",
+    "campus_id": "west",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 18,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-CHI-07",
+    "name_zh": "吴奕辰老师",
+    "campus_id": "west",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 18,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-CHI-08",
+    "name_zh": "徐梦瑶老师",
+    "campus_id": "west",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 18,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-CHI-09",
+    "name_zh": "孙依诺老师",
+    "campus_id": "west",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 18,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-CHI-10",
+    "name_zh": "胡雅琪老师",
+    "campus_id": "west",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 18,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-CHI-11",
+    "name_zh": "朱雨桐老师",
+    "campus_id": "west",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 18,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-CHI-12",
+    "name_zh": "高俊杰老师",
+    "campus_id": "west",
+    "primary_subject_id": "chinese",
+    "qualified_subject_ids": [
+      "chinese",
+      "reading",
+      "class_meeting",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 22,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 18,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MAT-01",
+    "name_zh": "林佳宁老师",
+    "campus_id": "west",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "self_study",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 15,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MAT-02",
+    "name_zh": "何明轩老师",
+    "campus_id": "west",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "self_study",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 15,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MAT-03",
+    "name_zh": "郭梓涵老师",
+    "campus_id": "west",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "self_study",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 15,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MAT-04",
+    "name_zh": "马文博老师",
+    "campus_id": "west",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "self_study",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [
+        {
+          "day": "fri",
+          "reason_zh": "名师工作室活动"
+        }
+      ],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 15,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MAT-05",
+    "name_zh": "罗心怡老师",
+    "campus_id": "west",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "self_study",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 15,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MAT-06",
+    "name_zh": "梁一宁老师",
+    "campus_id": "west",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "self_study",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 15,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MAT-07",
+    "name_zh": "宋欣然老师",
+    "campus_id": "west",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "self_study",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 16,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MAT-08",
+    "name_zh": "郑佳怡老师",
+    "campus_id": "west",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "self_study",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 15,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MAT-09",
+    "name_zh": "谢子墨老师",
+    "campus_id": "west",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "self_study",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 14,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MAT-10",
+    "name_zh": "韩景行老师",
+    "campus_id": "west",
+    "primary_subject_id": "math",
+    "qualified_subject_ids": [
+      "math",
+      "self_study",
+      "school_based"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 20,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 15,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-ENG-01",
+    "name_zh": "唐若溪老师",
+    "campus_id": "west",
+    "primary_subject_id": "english",
+    "qualified_subject_ids": [
+      "english"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-ENG-02",
+    "name_zh": "冯诗涵老师",
+    "campus_id": "west",
+    "primary_subject_id": "english",
+    "qualified_subject_ids": [
+      "english"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-ENG-03",
+    "name_zh": "于思源老师",
+    "campus_id": "west",
+    "primary_subject_id": "english",
+    "qualified_subject_ids": [
+      "english"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 13,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-ENG-04",
+    "name_zh": "董睿哲老师",
+    "campus_id": "west",
+    "primary_subject_id": "english",
+    "qualified_subject_ids": [
+      "english"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 13,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-ENG-05",
+    "name_zh": "萧思远老师",
+    "campus_id": "west",
+    "primary_subject_id": "english",
+    "qualified_subject_ids": [
+      "english"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 13,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-ENG-06",
+    "name_zh": "程昊然老师",
+    "campus_id": "west",
+    "primary_subject_id": "english",
+    "qualified_subject_ids": [
+      "english"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 13,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-ENG-07",
+    "name_zh": "曹静怡老师",
+    "campus_id": "west",
+    "primary_subject_id": "english",
+    "qualified_subject_ids": [
+      "english"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 13,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-ENG-08",
+    "name_zh": "袁浩然老师",
+    "campus_id": "west",
+    "primary_subject_id": "english",
+    "qualified_subject_ids": [
+      "english"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 13,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MOR-01",
+    "name_zh": "邓子涵老师",
+    "campus_id": "west",
+    "primary_subject_id": "morality",
+    "qualified_subject_ids": [
+      "morality",
+      "class_meeting"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MOR-02",
+    "name_zh": "许晨曦老师",
+    "campus_id": "west",
+    "primary_subject_id": "morality",
+    "qualified_subject_ids": [
+      "morality",
+      "class_meeting"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MOR-03",
+    "name_zh": "傅宇航老师",
+    "campus_id": "west",
+    "primary_subject_id": "morality",
+    "qualified_subject_ids": [
+      "morality",
+      "class_meeting"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MOR-04",
+    "name_zh": "沈泽宇老师",
+    "campus_id": "west",
+    "primary_subject_id": "morality",
+    "qualified_subject_ids": [
+      "morality",
+      "class_meeting"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-SCI-01",
+    "name_zh": "曾书瑶老师",
+    "campus_id": "west",
+    "primary_subject_id": "science",
+    "qualified_subject_ids": [
+      "science",
+      "comprehensive_practice",
+      "labor"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 13,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-SCI-02",
+    "name_zh": "彭嘉懿老师",
+    "campus_id": "west",
+    "primary_subject_id": "science",
+    "qualified_subject_ids": [
+      "science",
+      "comprehensive_practice",
+      "labor"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 10,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-SCI-03",
+    "name_zh": "吕奕辰老师",
+    "campus_id": "west",
+    "primary_subject_id": "science",
+    "qualified_subject_ids": [
+      "science",
+      "comprehensive_practice",
+      "labor"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 11,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-SCI-04",
+    "name_zh": "王梦瑶老师",
+    "campus_id": "west",
+    "primary_subject_id": "science",
+    "qualified_subject_ids": [
+      "science",
+      "comprehensive_practice",
+      "labor"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-SCI-05",
+    "name_zh": "李依诺老师",
+    "campus_id": "west",
+    "primary_subject_id": "science",
+    "qualified_subject_ids": [
+      "science",
+      "comprehensive_practice",
+      "labor"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 10,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-BIO-01",
+    "name_zh": "张雅琪老师",
+    "campus_id": "west",
+    "primary_subject_id": "biology",
+    "qualified_subject_ids": [
+      "biology"
+    ],
+    "eligible_grade_ids": [
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 6,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-BIO-02",
+    "name_zh": "刘雨桐老师",
+    "campus_id": "west",
+    "primary_subject_id": "biology",
+    "qualified_subject_ids": [
+      "biology"
+    ],
+    "eligible_grade_ids": [
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": [
+        {
+          "day": "thu",
+          "periods": [
+            "p5",
+            "p6",
+            "p7",
+            "p8"
+          ],
+          "reason_zh": "实验材料采购"
+        }
+      ]
+    },
+    "assigned_weekly_periods": 6,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-BIO-03",
+    "name_zh": "陈俊杰老师",
+    "campus_id": "west",
+    "primary_subject_id": "biology",
+    "qualified_subject_ids": [
+      "biology"
+    ],
+    "eligible_grade_ids": [
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 6,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-HIS-01",
+    "name_zh": "杨佳宁老师",
+    "campus_id": "west",
+    "primary_subject_id": "history",
+    "qualified_subject_ids": [
+      "history"
+    ],
+    "eligible_grade_ids": [
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 6,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-HIS-02",
+    "name_zh": "赵明轩老师",
+    "campus_id": "west",
+    "primary_subject_id": "history",
+    "qualified_subject_ids": [
+      "history"
+    ],
+    "eligible_grade_ids": [
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 6,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-GEO-01",
+    "name_zh": "黄梓涵老师",
+    "campus_id": "west",
+    "primary_subject_id": "geography",
+    "qualified_subject_ids": [
+      "geography"
+    ],
+    "eligible_grade_ids": [
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [
+        {
+          "day": "wed",
+          "reason_zh": "区地理教研"
+        }
+      ],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 6,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-GEO-02",
+    "name_zh": "周文博老师",
+    "campus_id": "west",
+    "primary_subject_id": "geography",
+    "qualified_subject_ids": [
+      "geography"
+    ],
+    "eligible_grade_ids": [
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 6,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-PE-01",
+    "name_zh": "吴心怡老师",
+    "campus_id": "west",
+    "primary_subject_id": "pe",
+    "qualified_subject_ids": [
+      "pe"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-PE-02",
+    "name_zh": "徐一宁老师",
+    "campus_id": "west",
+    "primary_subject_id": "pe",
+    "qualified_subject_ids": [
+      "pe"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-PE-03",
+    "name_zh": "孙欣然老师",
+    "campus_id": "west",
+    "primary_subject_id": "pe",
+    "qualified_subject_ids": [
+      "pe"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-PE-04",
+    "name_zh": "胡佳怡老师",
+    "campus_id": "west",
+    "primary_subject_id": "pe",
+    "qualified_subject_ids": [
+      "pe"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-PE-05",
+    "name_zh": "朱子墨老师",
+    "campus_id": "west",
+    "primary_subject_id": "pe",
+    "qualified_subject_ids": [
+      "pe"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-PE-06",
+    "name_zh": "高景行老师",
+    "campus_id": "west",
+    "primary_subject_id": "pe",
+    "qualified_subject_ids": [
+      "pe"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 12,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MUS-01",
+    "name_zh": "林若溪老师",
+    "campus_id": "west",
+    "primary_subject_id": "music",
+    "qualified_subject_ids": [
+      "music"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 10,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MUS-02",
+    "name_zh": "何诗涵老师",
+    "campus_id": "west",
+    "primary_subject_id": "music",
+    "qualified_subject_ids": [
+      "music"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 10,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-MUS-03",
+    "name_zh": "郭思源老师",
+    "campus_id": "west",
+    "primary_subject_id": "music",
+    "qualified_subject_ids": [
+      "music"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 10,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-ART-01",
+    "name_zh": "马睿哲老师",
+    "campus_id": "west",
+    "primary_subject_id": "art",
+    "qualified_subject_ids": [
+      "art"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 14,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-ART-02",
+    "name_zh": "罗思远老师",
+    "campus_id": "west",
+    "primary_subject_id": "art",
+    "qualified_subject_ids": [
+      "art"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 14,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-ART-03",
+    "name_zh": "梁昊然老师",
+    "campus_id": "west",
+    "primary_subject_id": "art",
+    "qualified_subject_ids": [
+      "art"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 14,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-IT-01",
+    "name_zh": "宋静怡老师",
+    "campus_id": "west",
+    "primary_subject_id": "it",
+    "qualified_subject_ids": [
+      "it"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 8,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-IT-02",
+    "name_zh": "郑浩然老师",
+    "campus_id": "west",
+    "primary_subject_id": "it",
+    "qualified_subject_ids": [
+      "it"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 8,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-IT-03",
+    "name_zh": "谢子涵老师",
+    "campus_id": "west",
+    "primary_subject_id": "it",
+    "qualified_subject_ids": [
+      "it"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 16,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 8,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-LAB-01",
+    "name_zh": "韩晨曦老师",
+    "campus_id": "west",
+    "primary_subject_id": "labor",
+    "qualified_subject_ids": [
+      "labor",
+      "comprehensive_practice"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 16,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-LAB-02",
+    "name_zh": "唐宇航老师",
+    "campus_id": "west",
+    "primary_subject_id": "labor",
+    "qualified_subject_ids": [
+      "labor",
+      "comprehensive_practice"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 17,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-LAB-03",
+    "name_zh": "冯泽宇老师",
+    "campus_id": "west",
+    "primary_subject_id": "labor",
+    "qualified_subject_ids": [
+      "labor",
+      "comprehensive_practice"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 16,
+    "notes_zh": []
+  },
+  {
+    "id": "T-W-LAB-04",
+    "name_zh": "于书瑶老师",
+    "campus_id": "west",
+    "primary_subject_id": "labor",
+    "qualified_subject_ids": [
+      "labor",
+      "comprehensive_practice"
+    ],
+    "eligible_grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ],
+    "max_weekly_periods": 18,
+    "availability": {
+      "unavailable_weekdays": [],
+      "unavailable_slots": []
+    },
+    "assigned_weekly_periods": 15,
+    "notes_zh": []
+  }
+]

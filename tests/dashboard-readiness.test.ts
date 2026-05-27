@@ -26,17 +26,23 @@ describe('dashboard readiness and service preflight API', () => {
     'CATSCO_USER_TOKEN',
     'CATSCO_USER_UID',
     'CATSCO_BOT_UID',
+    'CATSCO_BODY_ID',
+    'CATSCO_INSTALLATION_ID',
     'CATSCOMPANY_SERVER_URL',
     'CATSCOMPANY_HTTP_BASE_URL',
     'CATSCOMPANY_API_KEY',
     'CATSCOMPANY_USER_TOKEN',
     'CATSCOMPANY_USER_UID',
     'CATSCOMPANY_BOT_UID',
+    'CATSCOMPANY_BODY_ID',
+    'CATSCOMPANY_INSTALLATION_ID',
     'FEISHU_APP_ID',
     'FEISHU_APP_SECRET',
     'WEIXIN_TOKEN',
     'XIAOBA_CONFIG_PATH',
     'XIAOBA_RUNTIME_PROFILE_PATH',
+    'CATSCO_LOCAL_CONFIG_PATH',
+    'CATSCO_CONFIG_PATH',
   ];
   const originalEnv: Record<string, string | undefined> = {};
 
@@ -143,6 +149,30 @@ describe('dashboard readiness and service preflight API', () => {
       'CATSCO_USER_UID=100',
       'CATSCO_BOT_UID=200',
     ]);
+    fs.mkdirSync(path.join(testRoot, '.xiaoba'), { recursive: true });
+    fs.writeFileSync(path.join(testRoot, '.xiaoba', 'catsco.json'), JSON.stringify({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: 'https://app.catsco.cc',
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'user-token',
+        uid: '100',
+      },
+      currentBot: {
+        uid: '200',
+        name: 'Readiness Bot',
+        apiKey: 'catsco-agent-secret',
+        boundByUserUid: '100',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'device-readiness',
+        bodyId: 'body-readiness',
+        installationId: 'install-readiness',
+      },
+    }), 'utf-8');
 
     const preflightResponse = await fetch(`${baseUrl}/api/services/catscompany/preflight`, { method: 'POST' });
     const preflightText = await preflightResponse.text();
@@ -168,6 +198,70 @@ describe('dashboard readiness and service preflight API', () => {
     assert.equal(readinessText.includes('sk-readiness-secret'), false);
     assert.equal(readinessText.includes('catsco-agent-secret'), false);
     assert.equal(readinessText.includes(testRoot), false);
+  });
+
+  test('CatsCo readiness reads typed local config without legacy env mirror', async () => {
+    writeEnv([
+      'GAUZ_LLM_PROVIDER=anthropic',
+      'GAUZ_LLM_API_BASE=https://model.example.test/v1/messages',
+      'GAUZ_LLM_API_KEY=sk-readiness-secret',
+      'GAUZ_LLM_MODEL=MiniMax-M2.7-highspeed',
+    ]);
+    fs.mkdirSync(path.join(testRoot, '.xiaoba'), { recursive: true });
+    fs.writeFileSync(path.join(testRoot, '.xiaoba', 'catsco.json'), JSON.stringify({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: 'https://typed.catsco.example',
+        serverUrl: 'wss://typed.catsco.example/v0/channels',
+      },
+      account: {
+        token: 'typed-user-token',
+        uid: '100',
+      },
+      currentBot: {
+        uid: '200',
+        name: 'Typed Bot',
+        apiKey: 'typed-agent-secret',
+      },
+    }), 'utf-8');
+
+    const response = await fetch(`${baseUrl}/api/services/catscompany/preflight`, { method: 'POST' });
+    const text = await response.text();
+    const data = JSON.parse(text) as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.status, 'warning');
+    assert.equal(data.canStart, true);
+    assert.deepStrictEqual(data.blockingChecks, []);
+    assert.equal(text.includes('typed-user-token'), false);
+    assert.equal(text.includes('typed-agent-secret'), false);
+  });
+
+  test('CatsCo readiness downgrades env-only CatsCompany bot binding', async () => {
+    writeEnv([
+      'GAUZ_LLM_PROVIDER=anthropic',
+      'GAUZ_LLM_API_BASE=https://model.example.test/v1/messages',
+      'GAUZ_LLM_API_KEY=sk-readiness-secret',
+      'GAUZ_LLM_MODEL=MiniMax-M2.7-highspeed',
+      'CATSCOMPANY_HTTP_BASE_URL=https://app.catsco.cc',
+      'CATSCOMPANY_SERVER_URL=wss://app.catsco.cc/v0/channels',
+      'CATSCOMPANY_API_KEY=catsco-agent-secret',
+      'CATSCOMPANY_USER_TOKEN=user-token',
+      'CATSCOMPANY_USER_UID=100',
+      'CATSCOMPANY_BOT_UID=200',
+    ]);
+
+    const readinessResponse = await fetch(`${baseUrl}/api/readiness`);
+    const readinessText = await readinessResponse.text();
+    const readiness = JSON.parse(readinessText) as any;
+    const catsco = readiness.sections.find((section: any) => section.id === 'catsco');
+
+    assert.equal(readinessResponse.status, 200);
+    assert.equal(catsco.status, 'blocked');
+    assert.equal(catsco.checks.some((check: any) => check.id === 'catsco.account' && check.status === 'pass'), true);
+    assert.equal(catsco.checks.some((check: any) => check.id === 'catsco.binding' && check.status === 'fail'), true);
+    assert.equal(catsco.checks.some((check: any) => check.id === 'catsco.topic' && check.status === 'fail'), true);
+    assert.equal(readinessText.includes('catsco-agent-secret'), false);
   });
 
   test('Feishu and Weixin preflight block when connector credentials are missing', async () => {

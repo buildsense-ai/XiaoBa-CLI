@@ -1,0 +1,3983 @@
+{
+  "school_scope": "全部",
+  "class_counts": {
+    "一年级": 6,
+    "二年级": 6,
+    "三年级": 6,
+    "四年级": 5,
+    "五年级": 5,
+    "六年级": 5,
+    "七年级": 6,
+    "八年级": 0,
+    "九年级": 0
+  },
+  "teachers": [],
+  "rooms": [
+    {
+      "name": "本班教室",
+      "type": "普通教室",
+      "capacity": 999,
+      "notes": "每个班默认自己的教室"
+    },
+    {
+      "name": "机房A",
+      "type": "专用教室",
+      "capacity": 2,
+      "notes": "信息科技课使用"
+    },
+    {
+      "name": "实验室",
+      "type": "专用教室",
+      "capacity": 2,
+      "notes": "科学/生物活动可使用"
+    },
+    {
+      "name": "操场",
+      "type": "场地",
+      "capacity": 8,
+      "notes": "体育课多班同时上"
+    }
+  ],
+  "courses": [
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(2)",
+        "七年级(3)",
+        "七年级(4)",
+        "七年级(5)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "美术",
+      "weekly_hours": 2,
+      "teacher": "刘芳芳",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(2)",
+        "七年级(3)",
+        "七年级(4)",
+        "七年级(5)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "音乐",
+      "weekly_hours": 1,
+      "teacher": "刘柯辰",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(2)",
+        "七年级(3)",
+        "七年级(4)",
+        "七年级(5)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "舞蹈",
+      "weekly_hours": 1,
+      "teacher": "刘柯辰",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(2)",
+        "七年级(3)",
+        "七年级(4)",
+        "七年级(5)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "心理健康教育",
+      "weekly_hours": 1,
+      "teacher": "庄轩羽",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(2)",
+        "七年级(3)",
+        "七年级(4)",
+        "七年级(5)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "信息科技",
+      "weekly_hours": 1,
+      "teacher": "吴欣楠",
+      "room": "机房A"
+    },
+    {
+      "classes": [
+        "七年级(5)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "体育与健康",
+      "weekly_hours": 4,
+      "teacher": "司徒振传",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "七年级(4)",
+        "七年级(5)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "军事体育",
+      "weekly_hours": 1,
+      "teacher": "司徒振传",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(2)",
+        "七年级(3)"
+      ],
+      "grade": "七年级",
+      "subject": "军事体育",
+      "weekly_hours": 1,
+      "teacher": "卓钟庆",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(2)"
+      ],
+      "grade": "七年级",
+      "subject": "综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "梁苏健",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(3)",
+        "七年级(5)"
+      ],
+      "grade": "七年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "同奕雪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(4)"
+      ],
+      "grade": "七年级",
+      "subject": "英语",
+      "weekly_hours": 4,
+      "teacher": "黄梓琪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(4)"
+      ],
+      "grade": "七年级",
+      "subject": "班队会",
+      "weekly_hours": 1,
+      "teacher": "黄梓琪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(4)"
+      ],
+      "grade": "七年级",
+      "subject": "课外阅读",
+      "weekly_hours": 1,
+      "teacher": "黄梓琪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(4)"
+      ],
+      "grade": "七年级",
+      "subject": "英语沙龙",
+      "weekly_hours": 1,
+      "teacher": "黄梓琪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "金婷",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(2)",
+        "七年级(5)"
+      ],
+      "grade": "七年级",
+      "subject": "英语",
+      "weekly_hours": 4,
+      "teacher": "李婷",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(2)"
+      ],
+      "grade": "七年级",
+      "subject": "班队会",
+      "weekly_hours": 1,
+      "teacher": "李婷",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(2)",
+        "七年级(5)"
+      ],
+      "grade": "七年级",
+      "subject": "课外阅读",
+      "weekly_hours": 1,
+      "teacher": "李婷",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(2)",
+        "七年级(5)"
+      ],
+      "grade": "七年级",
+      "subject": "英语沙龙",
+      "weekly_hours": 1,
+      "teacher": "李婷",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(2)",
+        "七年级(3)",
+        "七年级(4)",
+        "七年级(5)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "历史",
+      "weekly_hours": 2,
+      "teacher": "李晓丽",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)"
+      ],
+      "grade": "七年级",
+      "subject": "班队会",
+      "weekly_hours": 1,
+      "teacher": "李晓丽",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(2)",
+        "七年级(3)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "梁静",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(3)"
+      ],
+      "grade": "七年级",
+      "subject": "综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "梁静",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(4)"
+      ],
+      "grade": "七年级",
+      "subject": "数学",
+      "weekly_hours": 5,
+      "teacher": "卢志敏",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(4)"
+      ],
+      "grade": "七年级",
+      "subject": "劳动",
+      "weekly_hours": 1,
+      "teacher": "卢志敏",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(4)"
+      ],
+      "grade": "七年级",
+      "subject": "综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "卢志敏",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(2)",
+        "七年级(3)",
+        "七年级(4)",
+        "七年级(5)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "生物",
+      "weekly_hours": 2,
+      "teacher": "阮音音",
+      "room": "实验室"
+    },
+    {
+      "classes": [
+        "七年级(5)"
+      ],
+      "grade": "七年级",
+      "subject": "班队会",
+      "weekly_hours": 1,
+      "teacher": "阮音音",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(3)",
+        "七年级(5)"
+      ],
+      "grade": "七年级",
+      "subject": "数学",
+      "weekly_hours": 5,
+      "teacher": "朱喆宁",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(3)",
+        "七年级(5)"
+      ],
+      "grade": "七年级",
+      "subject": "劳动",
+      "weekly_hours": 1,
+      "teacher": "朱喆宁",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(3)"
+      ],
+      "grade": "七年级",
+      "subject": "班队会",
+      "weekly_hours": 1,
+      "teacher": "朱喆宁",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(2)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "数学",
+      "weekly_hours": 5,
+      "teacher": "魏恩惠",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(2)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "劳动",
+      "weekly_hours": 1,
+      "teacher": "魏恩惠",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "班队会",
+      "weekly_hours": 1,
+      "teacher": "魏恩惠",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(2)",
+        "七年级(3)",
+        "七年级(4)"
+      ],
+      "grade": "七年级",
+      "subject": "体育与健康",
+      "weekly_hours": 4,
+      "teacher": "徐天飏",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "七年级(5)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "张文雅",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(2)",
+        "七年级(3)",
+        "七年级(4)",
+        "七年级(5)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "地理",
+      "weekly_hours": 2,
+      "teacher": "张文雅",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(3)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "英语",
+      "weekly_hours": 4,
+      "teacher": "陈冬梅",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(3)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "课外阅读",
+      "weekly_hours": 1,
+      "teacher": "陈冬梅",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(3)",
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "英语沙龙",
+      "weekly_hours": 1,
+      "teacher": "陈冬梅",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(2)",
+        "七年级(4)"
+      ],
+      "grade": "七年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "廖清清",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)",
+        "七年级(4)",
+        "七年级(5)"
+      ],
+      "grade": "七年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "刘耀炜",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(1)"
+      ],
+      "grade": "七年级",
+      "subject": "听说",
+      "weekly_hours": 2,
+      "teacher": "选修社团1",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(2)"
+      ],
+      "grade": "七年级",
+      "subject": "听说",
+      "weekly_hours": 2,
+      "teacher": "选修社团2",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(3)"
+      ],
+      "grade": "七年级",
+      "subject": "听说",
+      "weekly_hours": 2,
+      "teacher": "选修社团3",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(4)"
+      ],
+      "grade": "七年级",
+      "subject": "听说",
+      "weekly_hours": 2,
+      "teacher": "选修社团4",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(5)"
+      ],
+      "grade": "七年级",
+      "subject": "听说",
+      "weekly_hours": 2,
+      "teacher": "选修社团5",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "七年级(6)"
+      ],
+      "grade": "七年级",
+      "subject": "听说",
+      "weekly_hours": 2,
+      "teacher": "选修社团6",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(2)",
+        "一年级(3)",
+        "一年级(4)",
+        "一年级(5)"
+      ],
+      "grade": "一年级",
+      "subject": "趣味运动",
+      "weekly_hours": 1,
+      "teacher": "郎秀山",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "六年级(1)",
+        "六年级(2)",
+        "六年级(3)"
+      ],
+      "grade": "六年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "刘芳芳",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(2)"
+      ],
+      "grade": "一年级",
+      "subject": "体育与健康",
+      "weekly_hours": 1,
+      "teacher": "刘柯辰",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "六年级(1)",
+        "六年级(2)",
+        "六年级(3)",
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "音乐",
+      "weekly_hours": 1,
+      "teacher": "刘柯辰",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "英语戏剧",
+      "weekly_hours": 1,
+      "teacher": "刘柯辰",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(1)"
+      ],
+      "grade": "二年级",
+      "subject": "趣味运动",
+      "weekly_hours": 1,
+      "teacher": "刘柯辰",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "一年级(1)",
+        "一年级(2)",
+        "一年级(3)",
+        "一年级(4)",
+        "一年级(5)",
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "心理健康教育（1-3）",
+      "weekly_hours": 1,
+      "teacher": "庄轩羽",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(1)",
+        "二年级(2)",
+        "二年级(3)",
+        "二年级(4)",
+        "二年级(5)",
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "心理健康教育（1-3）",
+      "weekly_hours": 1,
+      "teacher": "庄轩羽",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "心理健康教育（4-6）",
+      "weekly_hours": 1,
+      "teacher": "庄轩羽",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(5)"
+      ],
+      "grade": "一年级",
+      "subject": "英语戏剧",
+      "weekly_hours": 1,
+      "teacher": "庄轩羽",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(2)"
+      ],
+      "grade": "二年级",
+      "subject": "英语戏剧",
+      "weekly_hours": 1,
+      "teacher": "庄轩羽",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "趣味运动",
+      "weekly_hours": 1,
+      "teacher": "庄轩羽",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "五年级(2)",
+        "五年级(4)",
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "信息科技",
+      "weekly_hours": 1,
+      "teacher": "吴欣楠",
+      "room": "机房A"
+    },
+    {
+      "classes": [
+        "六年级(1)",
+        "六年级(2)",
+        "六年级(3)",
+        "六年级(4)",
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "信息科技",
+      "weekly_hours": 1,
+      "teacher": "吴欣楠",
+      "room": "机房A"
+    },
+    {
+      "classes": [
+        "六年级(1)"
+      ],
+      "grade": "六年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "吴欣楠",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "一年级(2)",
+        "一年级(3)"
+      ],
+      "grade": "一年级",
+      "subject": "体育与健康",
+      "weekly_hours": 2,
+      "teacher": "司徒振传",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "一年级(3)"
+      ],
+      "grade": "一年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "司徒振传",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "司徒振传",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "一年级(1)"
+      ],
+      "grade": "一年级",
+      "subject": "体育与健康",
+      "weekly_hours": 3,
+      "teacher": "卓钟庆",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(3)"
+      ],
+      "grade": "二年级",
+      "subject": "体育与健康",
+      "weekly_hours": 4,
+      "teacher": "卓钟庆",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(4)"
+      ],
+      "grade": "二年级",
+      "subject": "体育与健康",
+      "weekly_hours": 3,
+      "teacher": "卓钟庆",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(3)"
+      ],
+      "grade": "二年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "卓钟庆",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(4)"
+      ],
+      "grade": "六年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "卓钟庆",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(3)",
+        "二年级(4)"
+      ],
+      "grade": "二年级",
+      "subject": "趣味运动",
+      "weekly_hours": 1,
+      "teacher": "卓钟庆",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "六年级(1)",
+        "六年级(2)",
+        "六年级(3)",
+        "六年级(4)"
+      ],
+      "grade": "六年级",
+      "subject": "心理健康教育（4-6）",
+      "weekly_hours": 1,
+      "teacher": "黄慧琴",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(1)"
+      ],
+      "grade": "三年级",
+      "subject": "体育与健康",
+      "weekly_hours": 1,
+      "teacher": "杜浩灵",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "三年级(1)",
+        "三年级(2)",
+        "三年级(3)",
+        "三年级(4)",
+        "三年级(5)",
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "心理健康教育（1-3）",
+      "weekly_hours": 1,
+      "teacher": "杜浩灵",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(1)",
+        "四年级(2)",
+        "四年级(3)",
+        "四年级(4)",
+        "四年级(5)"
+      ],
+      "grade": "四年级",
+      "subject": "心理健康教育（4-6）",
+      "weekly_hours": 1,
+      "teacher": "杜浩灵",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(1)",
+        "五年级(2)",
+        "五年级(3)",
+        "五年级(4)",
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "心理健康教育（4-6）",
+      "weekly_hours": 1,
+      "teacher": "杜浩灵",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(1)",
+        "三年级(3)"
+      ],
+      "grade": "三年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "杜浩灵",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(4)",
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "语文（书法）",
+      "weekly_hours": 1,
+      "teacher": "张怀俊",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(1)",
+        "一年级(2)",
+        "一年级(3)",
+        "一年级(4)",
+        "一年级(5)",
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "音乐",
+      "weekly_hours": 2,
+      "teacher": "袁毅",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(4)"
+      ],
+      "grade": "六年级",
+      "subject": "音乐",
+      "weekly_hours": 1,
+      "teacher": "袁毅",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(4)"
+      ],
+      "grade": "六年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "袁毅",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(1)"
+      ],
+      "grade": "五年级",
+      "subject": "数学",
+      "weekly_hours": 5,
+      "teacher": "黄灼林",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(2)"
+      ],
+      "grade": "一年级",
+      "subject": "语文",
+      "weekly_hours": 7,
+      "teacher": "冯笑梅",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(2)"
+      ],
+      "grade": "一年级",
+      "subject": "道德与法治",
+      "weekly_hours": 1,
+      "teacher": "冯笑梅",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(2)"
+      ],
+      "grade": "一年级",
+      "subject": "体育与健康",
+      "weekly_hours": 1,
+      "teacher": "冯笑梅",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "一年级(2)"
+      ],
+      "grade": "一年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "冯笑梅",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(2)"
+      ],
+      "grade": "一年级",
+      "subject": "数学游戏",
+      "weekly_hours": 1,
+      "teacher": "冯笑梅",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(2)"
+      ],
+      "grade": "一年级",
+      "subject": "书法启慧",
+      "weekly_hours": 1,
+      "teacher": "冯笑梅",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "语文",
+      "weekly_hours": 7,
+      "teacher": "周洁枝",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(2)"
+      ],
+      "grade": "四年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "刘杰",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(2)"
+      ],
+      "grade": "四年级",
+      "subject": "语文（书法）",
+      "weekly_hours": 1,
+      "teacher": "刘杰",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "刘杰",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(2)"
+      ],
+      "grade": "四年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "刘杰",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(2)"
+      ],
+      "grade": "四年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "刘杰",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(2)"
+      ],
+      "grade": "四年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "刘杰",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "五年级(4)"
+      ],
+      "grade": "五年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "冯洪妹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(4)"
+      ],
+      "grade": "五年级",
+      "subject": "语文（书法）",
+      "weekly_hours": 1,
+      "teacher": "冯洪妹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(4)"
+      ],
+      "grade": "五年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "冯洪妹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(4)"
+      ],
+      "grade": "五年级",
+      "subject": "体育与健康",
+      "weekly_hours": 1,
+      "teacher": "冯洪妹",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "五年级(4)"
+      ],
+      "grade": "五年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "冯洪妹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(4)"
+      ],
+      "grade": "五年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "冯洪妹",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "一年级(5)"
+      ],
+      "grade": "一年级",
+      "subject": "英语",
+      "weekly_hours": 2,
+      "teacher": "卓晖妹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(2)",
+        "六年级(3)",
+        "六年级(4)"
+      ],
+      "grade": "六年级",
+      "subject": "英语",
+      "weekly_hours": 3,
+      "teacher": "卓晖妹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(2)"
+      ],
+      "grade": "六年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "卓晖妹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(4)"
+      ],
+      "grade": "六年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "卓晖妹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(3)",
+        "六年级(4)"
+      ],
+      "grade": "六年级",
+      "subject": "体育活动（4-6）",
+      "weekly_hours": 1,
+      "teacher": "卓晖妹",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "六年级(3)"
+      ],
+      "grade": "六年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "卓晖妹",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "四年级(1)",
+        "四年级(3)"
+      ],
+      "grade": "四年级",
+      "subject": "数学",
+      "weekly_hours": 5,
+      "teacher": "陈咏仪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(1)"
+      ],
+      "grade": "四年级",
+      "subject": "体育与健康",
+      "weekly_hours": 1,
+      "teacher": "陈咏仪",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "三年级(2)",
+        "三年级(3)"
+      ],
+      "grade": "三年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "陈咏仪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(3)"
+      ],
+      "grade": "四年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "陈咏仪",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "三年级(3)",
+        "三年级(5)"
+      ],
+      "grade": "三年级",
+      "subject": "数学",
+      "weekly_hours": 5,
+      "teacher": "冯晓静",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(4)",
+        "二年级(5)",
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "英语",
+      "weekly_hours": 2,
+      "teacher": "冯华媚",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(3)",
+        "四年级(4)"
+      ],
+      "grade": "四年级",
+      "subject": "英语",
+      "weekly_hours": 3,
+      "teacher": "冯华媚",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(3)",
+        "四年级(4)"
+      ],
+      "grade": "四年级",
+      "subject": "体育活动（4-6）",
+      "weekly_hours": 1,
+      "teacher": "冯华媚",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(4)"
+      ],
+      "grade": "二年级",
+      "subject": "英语戏剧",
+      "weekly_hours": 1,
+      "teacher": "冯华媚",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(2)",
+        "四年级(4)",
+        "四年级(5)"
+      ],
+      "grade": "四年级",
+      "subject": "数学",
+      "weekly_hours": 5,
+      "teacher": "黄嘉琪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(2)",
+        "五年级(3)"
+      ],
+      "grade": "五年级",
+      "subject": "数学",
+      "weekly_hours": 5,
+      "teacher": "陈佳佳",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(1)",
+        "五年级(2)"
+      ],
+      "grade": "五年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "陈冠政",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(1)"
+      ],
+      "grade": "五年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "陈冠政",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(1)",
+        "二年级(2)"
+      ],
+      "grade": "二年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "卢焕姬",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(1)"
+      ],
+      "grade": "二年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "卢焕姬",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(5)"
+      ],
+      "grade": "三年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "邢晓晖",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(3)",
+        "三年级(5)"
+      ],
+      "grade": "三年级",
+      "subject": "语文（书法）",
+      "weekly_hours": 1,
+      "teacher": "邢晓晖",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(5)"
+      ],
+      "grade": "三年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "邢晓晖",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "道德与法治",
+      "weekly_hours": 1,
+      "teacher": "邢晓晖",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(5)"
+      ],
+      "grade": "三年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "邢晓晖",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(2)"
+      ],
+      "grade": "五年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "邢晓晖",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(5)"
+      ],
+      "grade": "三年级",
+      "subject": "课外阅读（1-3）",
+      "weekly_hours": 1,
+      "teacher": "邢晓晖",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(5)"
+      ],
+      "grade": "一年级",
+      "subject": "语文",
+      "weekly_hours": 7,
+      "teacher": "丘飞红",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(5)"
+      ],
+      "grade": "一年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "丘飞红",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(5)"
+      ],
+      "grade": "一年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "丘飞红",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(3)"
+      ],
+      "grade": "一年级",
+      "subject": "英语戏剧",
+      "weekly_hours": 1,
+      "teacher": "丘飞红",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(5)"
+      ],
+      "grade": "一年级",
+      "subject": "书法启慧",
+      "weekly_hours": 1,
+      "teacher": "丘飞红",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(5)",
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "李慧瑜",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "李慧瑜",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(2)",
+        "六年级(4)"
+      ],
+      "grade": "六年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "陈倩莹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(2)"
+      ],
+      "grade": "六年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "陈倩莹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(1)",
+        "二年级(2)"
+      ],
+      "grade": "二年级",
+      "subject": "数学",
+      "weekly_hours": 3,
+      "teacher": "邝嘉亮",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(1)"
+      ],
+      "grade": "二年级",
+      "subject": "书法启慧",
+      "weekly_hours": 1,
+      "teacher": "邝嘉亮",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(2)"
+      ],
+      "grade": "二年级",
+      "subject": "趣味运动",
+      "weekly_hours": 1,
+      "teacher": "邝嘉亮",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(5)",
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "数学",
+      "weekly_hours": 3,
+      "teacher": "何嘉慧",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(4)",
+        "二年级(5)",
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "何嘉慧",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(5)",
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "何嘉慧",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(3)",
+        "二年级(4)"
+      ],
+      "grade": "二年级",
+      "subject": "数学",
+      "weekly_hours": 3,
+      "teacher": "韩业华",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(3)",
+        "二年级(4)",
+        "二年级(5)",
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "科学",
+      "weekly_hours": 1,
+      "teacher": "韩业华",
+      "room": "实验室"
+    },
+    {
+      "classes": [
+        "二年级(4)"
+      ],
+      "grade": "二年级",
+      "subject": "体育与健康",
+      "weekly_hours": 1,
+      "teacher": "韩业华",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(3)"
+      ],
+      "grade": "二年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "韩业华",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(3)",
+        "二年级(4)"
+      ],
+      "grade": "二年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "韩业华",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "数学",
+      "weekly_hours": 5,
+      "teacher": "郭桂萍",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "郭桂萍",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "英语戏剧",
+      "weekly_hours": 1,
+      "teacher": "郭桂萍",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(5)"
+      ],
+      "grade": "二年级",
+      "subject": "趣味运动",
+      "weekly_hours": 1,
+      "teacher": "郭桂萍",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "六年级(1)",
+        "六年级(2)",
+        "六年级(3)"
+      ],
+      "grade": "六年级",
+      "subject": "数学",
+      "weekly_hours": 5,
+      "teacher": "钟秋盛",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(1)"
+      ],
+      "grade": "二年级",
+      "subject": "英语",
+      "weekly_hours": 2,
+      "teacher": "蒋梓彤",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(1)",
+        "三年级(2)",
+        "三年级(3)"
+      ],
+      "grade": "三年级",
+      "subject": "英语",
+      "weekly_hours": 2,
+      "teacher": "蒋梓彤",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(2)"
+      ],
+      "grade": "三年级",
+      "subject": "体育与健康",
+      "weekly_hours": 1,
+      "teacher": "蒋梓彤",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "三年级(3)"
+      ],
+      "grade": "三年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "蒋梓彤",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(1)"
+      ],
+      "grade": "三年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "蒋梓彤",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(2)"
+      ],
+      "grade": "三年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "蒋梓彤",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(1)"
+      ],
+      "grade": "二年级",
+      "subject": "数学游戏",
+      "weekly_hours": 1,
+      "teacher": "蒋梓彤",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(1)",
+        "五年级(2)"
+      ],
+      "grade": "五年级",
+      "subject": "英语",
+      "weekly_hours": 3,
+      "teacher": "陈秋婷",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(1)",
+        "五年级(2)"
+      ],
+      "grade": "五年级",
+      "subject": "体育活动（4-6）",
+      "weekly_hours": 1,
+      "teacher": "陈秋婷",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "英语",
+      "weekly_hours": 2,
+      "teacher": "梁栩茹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(4)",
+        "三年级(5)",
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "英语",
+      "weekly_hours": 2,
+      "teacher": "梁栩茹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(5)"
+      ],
+      "grade": "三年级",
+      "subject": "体育与健康",
+      "weekly_hours": 1,
+      "teacher": "梁栩茹",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "三年级(5)",
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "梁栩茹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(4)"
+      ],
+      "grade": "五年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "梁栩茹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(4)",
+        "三年级(5)",
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "梁栩茹",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "一年级(5)",
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "体育与健康",
+      "weekly_hours": 4,
+      "teacher": "张斌",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(1)",
+        "二年级(2)"
+      ],
+      "grade": "二年级",
+      "subject": "体育与健康",
+      "weekly_hours": 3,
+      "teacher": "张斌",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "六年级(1)"
+      ],
+      "grade": "六年级",
+      "subject": "体育与健康",
+      "weekly_hours": 3,
+      "teacher": "张斌",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "体育与健康",
+      "weekly_hours": 4,
+      "teacher": "郭锦洪",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "六年级(2)",
+        "六年级(3)",
+        "六年级(4)",
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "体育与健康",
+      "weekly_hours": 3,
+      "teacher": "郭锦洪",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "一年级(4)"
+      ],
+      "grade": "一年级",
+      "subject": "体育与健康",
+      "weekly_hours": 4,
+      "teacher": "林伟杰",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(5)"
+      ],
+      "grade": "二年级",
+      "subject": "体育与健康",
+      "weekly_hours": 4,
+      "teacher": "林伟杰",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "三年级(4)"
+      ],
+      "grade": "三年级",
+      "subject": "体育与健康",
+      "weekly_hours": 1,
+      "teacher": "林伟杰",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "体育与健康",
+      "weekly_hours": 2,
+      "teacher": "林伟杰",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "一年级(4)"
+      ],
+      "grade": "一年级",
+      "subject": "英语戏剧",
+      "weekly_hours": 1,
+      "teacher": "林伟杰",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(1)"
+      ],
+      "grade": "一年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "朱琳",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(2)",
+        "一年级(3)",
+        "一年级(4)",
+        "一年级(5)",
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "美术",
+      "weekly_hours": 2,
+      "teacher": "朱琳",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(1)",
+        "二年级(2)",
+        "二年级(3)",
+        "二年级(4)",
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "美术",
+      "weekly_hours": 2,
+      "teacher": "熊剑",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(5)"
+      ],
+      "grade": "二年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "熊剑",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(4)",
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "熊剑",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(2)"
+      ],
+      "grade": "一年级",
+      "subject": "英语戏剧",
+      "weekly_hours": 1,
+      "teacher": "熊剑",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(5)"
+      ],
+      "grade": "二年级",
+      "subject": "英语戏剧",
+      "weekly_hours": 1,
+      "teacher": "熊剑",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(1)",
+        "三年级(3)"
+      ],
+      "grade": "三年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "王苑珠",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(3)"
+      ],
+      "grade": "三年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "王苑珠",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(4)"
+      ],
+      "grade": "四年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "张丽萍",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(4)"
+      ],
+      "grade": "四年级",
+      "subject": "语文（书法）",
+      "weekly_hours": 1,
+      "teacher": "张丽萍",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(4)"
+      ],
+      "grade": "四年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "张丽萍",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(2)"
+      ],
+      "grade": "五年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "张丽萍",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(4)"
+      ],
+      "grade": "四年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "张丽萍",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(4)"
+      ],
+      "grade": "四年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "张丽萍",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "六年级(1)",
+        "六年级(3)"
+      ],
+      "grade": "六年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "彭冰娥",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(1)"
+      ],
+      "grade": "六年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "彭冰娥",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(2)"
+      ],
+      "grade": "二年级",
+      "subject": "英语",
+      "weekly_hours": 2,
+      "teacher": "吴月喜",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(1)",
+        "四年级(2)",
+        "四年级(5)"
+      ],
+      "grade": "四年级",
+      "subject": "英语",
+      "weekly_hours": 3,
+      "teacher": "吴月喜",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(1)",
+        "四年级(2)",
+        "四年级(5)"
+      ],
+      "grade": "四年级",
+      "subject": "体育活动（4-6）",
+      "weekly_hours": 1,
+      "teacher": "吴月喜",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "四年级(1)"
+      ],
+      "grade": "四年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "吴月喜",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "五年级(2)"
+      ],
+      "grade": "五年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "吴月喜",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "三年级(1)",
+        "三年级(2)",
+        "三年级(4)"
+      ],
+      "grade": "三年级",
+      "subject": "体育与健康",
+      "weekly_hours": 3,
+      "teacher": "潘金宏",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "三年级(3)"
+      ],
+      "grade": "三年级",
+      "subject": "体育与健康",
+      "weekly_hours": 4,
+      "teacher": "潘金宏",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "体育与健康",
+      "weekly_hours": 2,
+      "teacher": "潘金宏",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "六年级(4)"
+      ],
+      "grade": "六年级",
+      "subject": "数学",
+      "weekly_hours": 5,
+      "teacher": "陈敏婷",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(4)"
+      ],
+      "grade": "六年级",
+      "subject": "道德与法治",
+      "weekly_hours": 1,
+      "teacher": "陈敏婷",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(4)"
+      ],
+      "grade": "六年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "陈敏婷",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(4)"
+      ],
+      "grade": "二年级",
+      "subject": "数学游戏",
+      "weekly_hours": 1,
+      "teacher": "陈敏婷",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(3)"
+      ],
+      "grade": "二年级",
+      "subject": "英语",
+      "weekly_hours": 2,
+      "teacher": "王家玲",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(3)",
+        "五年级(4)",
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "英语",
+      "weekly_hours": 3,
+      "teacher": "王家玲",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "王家玲",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(3)",
+        "五年级(4)",
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "体育活动（4-6）",
+      "weekly_hours": 1,
+      "teacher": "王家玲",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "五年级(3)"
+      ],
+      "grade": "五年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "王家玲",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "一年级(2)"
+      ],
+      "grade": "一年级",
+      "subject": "道德与法治",
+      "weekly_hours": 1,
+      "teacher": "邓姗妮",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "邓姗妮",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(1)",
+        "二年级(2)",
+        "二年级(3)"
+      ],
+      "grade": "二年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "邓姗妮",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(2)"
+      ],
+      "grade": "二年级",
+      "subject": "体育与健康",
+      "weekly_hours": 1,
+      "teacher": "邓姗妮",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "邓姗妮",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(5)"
+      ],
+      "grade": "一年级",
+      "subject": "数学游戏",
+      "weekly_hours": 1,
+      "teacher": "邓姗妮",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "数学游戏",
+      "weekly_hours": 1,
+      "teacher": "邓姗妮",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "书法启慧",
+      "weekly_hours": 1,
+      "teacher": "邓姗妮",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(2)"
+      ],
+      "grade": "二年级",
+      "subject": "书法启慧",
+      "weekly_hours": 1,
+      "teacher": "邓姗妮",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(1)",
+        "三年级(2)",
+        "三年级(3)"
+      ],
+      "grade": "三年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "周楚欣",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(1)",
+        "四年级(2)",
+        "四年级(3)",
+        "四年级(4)",
+        "四年级(5)"
+      ],
+      "grade": "四年级",
+      "subject": "美术",
+      "weekly_hours": 2,
+      "teacher": "周楚欣",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(1)"
+      ],
+      "grade": "四年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "周楚欣",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(1)"
+      ],
+      "grade": "一年级",
+      "subject": "体育与健康",
+      "weekly_hours": 1,
+      "teacher": "梁静仪",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(1)"
+      ],
+      "grade": "二年级",
+      "subject": "体育与健康",
+      "weekly_hours": 1,
+      "teacher": "梁静仪",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "一年级(1)",
+        "一年级(2)",
+        "一年级(3)",
+        "一年级(4)",
+        "一年级(5)",
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "梁静仪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(4)",
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "梁静仪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(1)"
+      ],
+      "grade": "六年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "梁静仪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(1)",
+        "六年级(2)"
+      ],
+      "grade": "六年级",
+      "subject": "体育活动（4-6）",
+      "weekly_hours": 1,
+      "teacher": "梁静仪",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(1)",
+        "二年级(2)"
+      ],
+      "grade": "二年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "梁静仪",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "六年级(2)"
+      ],
+      "grade": "六年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "梁静仪",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(1)"
+      ],
+      "grade": "二年级",
+      "subject": "英语戏剧",
+      "weekly_hours": 1,
+      "teacher": "梁静仪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(1)"
+      ],
+      "grade": "一年级",
+      "subject": "书法启慧",
+      "weekly_hours": 1,
+      "teacher": "梁静仪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(2)",
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "李映雯",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "李映雯",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(5)"
+      ],
+      "grade": "四年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "陈红珊",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(5)"
+      ],
+      "grade": "四年级",
+      "subject": "语文（书法）",
+      "weekly_hours": 1,
+      "teacher": "陈红珊",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(5)"
+      ],
+      "grade": "四年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "陈红珊",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(1)"
+      ],
+      "grade": "五年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "陈红珊",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(5)"
+      ],
+      "grade": "四年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "陈红珊",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(5)"
+      ],
+      "grade": "四年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "陈红珊",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(1)",
+        "二年级(2)",
+        "二年级(3)",
+        "二年级(4)",
+        "二年级(5)",
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "音乐",
+      "weekly_hours": 2,
+      "teacher": "邓颂渟",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(2)"
+      ],
+      "grade": "二年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "邓颂渟",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(2)"
+      ],
+      "grade": "二年级",
+      "subject": "数学游戏",
+      "weekly_hours": 1,
+      "teacher": "邓颂渟",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(4)"
+      ],
+      "grade": "二年级",
+      "subject": "书法启慧",
+      "weekly_hours": 1,
+      "teacher": "邓颂渟",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(1)",
+        "四年级(2)",
+        "四年级(3)",
+        "四年级(4)",
+        "四年级(5)"
+      ],
+      "grade": "四年级",
+      "subject": "科学",
+      "weekly_hours": 2,
+      "teacher": "龚婉钰",
+      "room": "实验室"
+    },
+    {
+      "classes": [
+        "五年级(3)",
+        "五年级(4)"
+      ],
+      "grade": "五年级",
+      "subject": "科学",
+      "weekly_hours": 2,
+      "teacher": "龚婉钰",
+      "room": "实验室"
+    },
+    {
+      "classes": [
+        "一年级(1)",
+        "一年级(2)"
+      ],
+      "grade": "一年级",
+      "subject": "英语",
+      "weekly_hours": 2,
+      "teacher": "郭舒卉",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(5)"
+      ],
+      "grade": "二年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "郭舒卉",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(1)",
+        "二年级(2)",
+        "二年级(5)"
+      ],
+      "grade": "二年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "郭舒卉",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(1)",
+        "四年级(2)",
+        "四年级(3)",
+        "四年级(4)",
+        "四年级(5)"
+      ],
+      "grade": "四年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "郭舒卉",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(3)"
+      ],
+      "grade": "二年级",
+      "subject": "英语戏剧",
+      "weekly_hours": 1,
+      "teacher": "郭舒卉",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(5)"
+      ],
+      "grade": "二年级",
+      "subject": "数学游戏",
+      "weekly_hours": 1,
+      "teacher": "郭舒卉",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(5)"
+      ],
+      "grade": "二年级",
+      "subject": "书法启慧",
+      "weekly_hours": 1,
+      "teacher": "郭舒卉",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(4)"
+      ],
+      "grade": "三年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "黄楚仪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(4)"
+      ],
+      "grade": "三年级",
+      "subject": "语文（书法）",
+      "weekly_hours": 1,
+      "teacher": "黄楚仪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(4)"
+      ],
+      "grade": "三年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "黄楚仪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(4)"
+      ],
+      "grade": "三年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "黄楚仪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(4)"
+      ],
+      "grade": "三年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "黄楚仪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(3)",
+        "三年级(4)"
+      ],
+      "grade": "三年级",
+      "subject": "课外阅读（1-3）",
+      "weekly_hours": 1,
+      "teacher": "黄楚仪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(1)",
+        "三年级(4)"
+      ],
+      "grade": "三年级",
+      "subject": "数学",
+      "weekly_hours": 5,
+      "teacher": "黄嘉茵",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(1)",
+        "三年级(4)"
+      ],
+      "grade": "三年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "黄嘉茵",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(1)"
+      ],
+      "grade": "三年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "黄嘉茵",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(1)"
+      ],
+      "grade": "三年级",
+      "subject": "课外阅读（1-3）",
+      "weekly_hours": 1,
+      "teacher": "黄嘉茵",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(1)"
+      ],
+      "grade": "一年级",
+      "subject": "语文",
+      "weekly_hours": 7,
+      "teacher": "黄奇璇",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(1)"
+      ],
+      "grade": "一年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "黄奇璇",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(1)"
+      ],
+      "grade": "一年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "黄奇璇",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(1)"
+      ],
+      "grade": "一年级",
+      "subject": "英语戏剧",
+      "weekly_hours": 1,
+      "teacher": "黄奇璇",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(1)"
+      ],
+      "grade": "一年级",
+      "subject": "数学游戏",
+      "weekly_hours": 1,
+      "teacher": "黄奇璇",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(1)"
+      ],
+      "grade": "一年级",
+      "subject": "趣味运动",
+      "weekly_hours": 1,
+      "teacher": "黄奇璇",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "三年级(1)",
+        "三年级(2)",
+        "三年级(3)",
+        "三年级(4)",
+        "三年级(5)",
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "信息科技",
+      "weekly_hours": 1,
+      "teacher": "黎馨楹",
+      "room": "机房A"
+    },
+    {
+      "classes": [
+        "四年级(1)",
+        "四年级(2)",
+        "四年级(3)",
+        "四年级(4)",
+        "四年级(5)"
+      ],
+      "grade": "四年级",
+      "subject": "信息科技",
+      "weekly_hours": 1,
+      "teacher": "黎馨楹",
+      "room": "机房A"
+    },
+    {
+      "classes": [
+        "五年级(1)",
+        "五年级(3)"
+      ],
+      "grade": "五年级",
+      "subject": "信息科技",
+      "weekly_hours": 1,
+      "teacher": "黎馨楹",
+      "room": "机房A"
+    },
+    {
+      "classes": [
+        "五年级(3)"
+      ],
+      "grade": "五年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "黎馨楹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(3)"
+      ],
+      "grade": "五年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "黎馨楹",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(4)",
+        "四年级(5)"
+      ],
+      "grade": "四年级",
+      "subject": "体育与健康",
+      "weekly_hours": 3,
+      "teacher": "刘宇豪",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "五年级(1)",
+        "五年级(2)",
+        "五年级(3)"
+      ],
+      "grade": "五年级",
+      "subject": "体育与健康",
+      "weekly_hours": 3,
+      "teacher": "刘宇豪",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "五年级(2)"
+      ],
+      "grade": "五年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "刘宇豪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "卢瑶婷",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(1)"
+      ],
+      "grade": "一年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "卢瑶婷",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "卢瑶婷",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(2)",
+        "六年级(3)"
+      ],
+      "grade": "六年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "卢瑶婷",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "体育活动（4-6）",
+      "weekly_hours": 1,
+      "teacher": "卢瑶婷",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(3)",
+        "二年级(6)"
+      ],
+      "grade": "二年级",
+      "subject": "书法启慧",
+      "weekly_hours": 1,
+      "teacher": "卢瑶婷",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "趣味运动",
+      "weekly_hours": 1,
+      "teacher": "卢瑶婷",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "三年级(4)",
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "王熙玥",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(5)"
+      ],
+      "grade": "三年级",
+      "subject": "美术",
+      "weekly_hours": 2,
+      "teacher": "王熙玥",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(1)",
+        "五年级(2)",
+        "五年级(3)",
+        "五年级(4)",
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "美术",
+      "weekly_hours": 2,
+      "teacher": "王熙玥",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(1)"
+      ],
+      "grade": "五年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "王熙玥",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(1)"
+      ],
+      "grade": "五年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "王熙玥",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(3)",
+        "二年级(4)"
+      ],
+      "grade": "二年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "王杏",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(4)"
+      ],
+      "grade": "二年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "王杏",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(3)",
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "肖金清",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(3)",
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "语文（书法）",
+      "weekly_hours": 1,
+      "teacher": "肖金清",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(1)"
+      ],
+      "grade": "四年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "张洪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(1)"
+      ],
+      "grade": "四年级",
+      "subject": "语文（书法）",
+      "weekly_hours": 1,
+      "teacher": "张洪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(1)",
+        "三年级(3)"
+      ],
+      "grade": "三年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "张洪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(2)"
+      ],
+      "grade": "三年级",
+      "subject": "道德与法治",
+      "weekly_hours": 1,
+      "teacher": "张洪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(1)"
+      ],
+      "grade": "四年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "张洪",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(1)",
+        "六年级(2)",
+        "六年级(3)"
+      ],
+      "grade": "六年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "陈姿恩",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(4)",
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "道德与法治",
+      "weekly_hours": 1,
+      "teacher": "陈姿恩",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(3)"
+      ],
+      "grade": "六年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "陈姿恩",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(3)"
+      ],
+      "grade": "六年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "陈姿恩",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(3)"
+      ],
+      "grade": "四年级",
+      "subject": "语文",
+      "weekly_hours": 6,
+      "teacher": "孔诗贤",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(3)"
+      ],
+      "grade": "四年级",
+      "subject": "语文（书法）",
+      "weekly_hours": 1,
+      "teacher": "孔诗贤",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(3)"
+      ],
+      "grade": "四年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "孔诗贤",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(3)"
+      ],
+      "grade": "五年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "孔诗贤",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "孔诗贤",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(3)"
+      ],
+      "grade": "四年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "孔诗贤",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(1)",
+        "一年级(2)",
+        "一年级(3)"
+      ],
+      "grade": "一年级",
+      "subject": "数学",
+      "weekly_hours": 3,
+      "teacher": "朱臣凤",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(1)",
+        "一年级(2)",
+        "一年级(3)"
+      ],
+      "grade": "一年级",
+      "subject": "科学",
+      "weekly_hours": 1,
+      "teacher": "朱臣凤",
+      "room": "实验室"
+    },
+    {
+      "classes": [
+        "一年级(1)",
+        "一年级(3)"
+      ],
+      "grade": "一年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "朱臣凤",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "一年级(4)"
+      ],
+      "grade": "一年级",
+      "subject": "语文",
+      "weekly_hours": 7,
+      "teacher": "朱芷君",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(4)"
+      ],
+      "grade": "一年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "朱芷君",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(4)"
+      ],
+      "grade": "一年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "朱芷君",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(4)"
+      ],
+      "grade": "一年级",
+      "subject": "数学游戏",
+      "weekly_hours": 1,
+      "teacher": "朱芷君",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(3)",
+        "一年级(4)"
+      ],
+      "grade": "一年级",
+      "subject": "书法启慧",
+      "weekly_hours": 1,
+      "teacher": "朱芷君",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(4)",
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "数学",
+      "weekly_hours": 5,
+      "teacher": "陈美芳",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "道德与法治",
+      "weekly_hours": 1,
+      "teacher": "陈美芳",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "陈美芳",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "课外阅读（1-3）",
+      "weekly_hours": 1,
+      "teacher": "陈美芳",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "陈美芳",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "三年级(5)"
+      ],
+      "grade": "三年级",
+      "subject": "体育与健康",
+      "weekly_hours": 3,
+      "teacher": "严焯辉",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "四年级(1)"
+      ],
+      "grade": "四年级",
+      "subject": "体育与健康",
+      "weekly_hours": 2,
+      "teacher": "严焯辉",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "四年级(2)",
+        "四年级(3)"
+      ],
+      "grade": "四年级",
+      "subject": "体育与健康",
+      "weekly_hours": 3,
+      "teacher": "严焯辉",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "五年级(4)"
+      ],
+      "grade": "五年级",
+      "subject": "体育与健康",
+      "weekly_hours": 2,
+      "teacher": "严焯辉",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "体育与健康",
+      "weekly_hours": 3,
+      "teacher": "严焯辉",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "三年级(1)",
+        "三年级(2)",
+        "三年级(3)",
+        "三年级(4)",
+        "三年级(5)",
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "科学",
+      "weekly_hours": 2,
+      "teacher": "彭林林",
+      "room": "实验室"
+    },
+    {
+      "classes": [
+        "五年级(1)",
+        "五年级(2)"
+      ],
+      "grade": "五年级",
+      "subject": "科学",
+      "weekly_hours": 2,
+      "teacher": "彭林林",
+      "room": "实验室"
+    },
+    {
+      "classes": [
+        "二年级(1)",
+        "二年级(2)"
+      ],
+      "grade": "二年级",
+      "subject": "科学",
+      "weekly_hours": 1,
+      "teacher": "黎运燕",
+      "room": "实验室"
+    },
+    {
+      "classes": [
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "科学",
+      "weekly_hours": 2,
+      "teacher": "黎运燕",
+      "room": "实验室"
+    },
+    {
+      "classes": [
+        "六年级(1)",
+        "六年级(2)",
+        "六年级(3)",
+        "六年级(4)",
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "科学",
+      "weekly_hours": 2,
+      "teacher": "黎运燕",
+      "room": "实验室"
+    },
+    {
+      "classes": [
+        "一年级(3)"
+      ],
+      "grade": "一年级",
+      "subject": "数学游戏",
+      "weekly_hours": 1,
+      "teacher": "黎运燕",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(3)"
+      ],
+      "grade": "一年级",
+      "subject": "语文",
+      "weekly_hours": 7,
+      "teacher": "李洁",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(3)"
+      ],
+      "grade": "一年级",
+      "subject": "道德与法治",
+      "weekly_hours": 2,
+      "teacher": "李洁",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(3)"
+      ],
+      "grade": "一年级",
+      "subject": "体育与健康",
+      "weekly_hours": 2,
+      "teacher": "李洁",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "二年级(5)"
+      ],
+      "grade": "二年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "李洁",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(2)",
+        "一年级(5)"
+      ],
+      "grade": "一年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "李洁",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "一年级(3)",
+        "一年级(4)"
+      ],
+      "grade": "一年级",
+      "subject": "英语",
+      "weekly_hours": 2,
+      "teacher": "谭永青",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "道德与法治",
+      "weekly_hours": 1,
+      "teacher": "谭永青",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(1)",
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "英语",
+      "weekly_hours": 3,
+      "teacher": "邢萌萌",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(1)"
+      ],
+      "grade": "六年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "邢萌萌",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "劳动/综合实践活动",
+      "weekly_hours": 1,
+      "teacher": "邢萌萌",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(1)",
+        "二年级(2)",
+        "二年级(3)",
+        "二年级(5)"
+      ],
+      "grade": "二年级",
+      "subject": "语文（书法）",
+      "weekly_hours": 1,
+      "teacher": "顾仕",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(1)",
+        "三年级(2)",
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "语文（书法）",
+      "weekly_hours": 1,
+      "teacher": "顾仕",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(1)",
+        "五年级(2)"
+      ],
+      "grade": "五年级",
+      "subject": "语文（书法）",
+      "weekly_hours": 1,
+      "teacher": "顾仕",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "六年级(1)",
+        "六年级(2)",
+        "六年级(3)",
+        "六年级(4)",
+        "六年级(5)"
+      ],
+      "grade": "六年级",
+      "subject": "语文（书法）",
+      "weekly_hours": 1,
+      "teacher": "顾仕",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "数学游戏",
+      "weekly_hours": 1,
+      "teacher": "顾仕",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "二年级(3)"
+      ],
+      "grade": "二年级",
+      "subject": "数学游戏",
+      "weekly_hours": 1,
+      "teacher": "顾仕",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(4)",
+        "一年级(5)",
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "数学",
+      "weekly_hours": 3,
+      "teacher": "贾萍",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "一年级(4)",
+        "一年级(5)",
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "科学",
+      "weekly_hours": 1,
+      "teacher": "贾萍",
+      "room": "实验室"
+    },
+    {
+      "classes": [
+        "一年级(4)",
+        "一年级(6)"
+      ],
+      "grade": "一年级",
+      "subject": "体育活动",
+      "weekly_hours": 1,
+      "teacher": "贾萍",
+      "room": "操场"
+    },
+    {
+      "classes": [
+        "三年级(2)",
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "数学",
+      "weekly_hours": 5,
+      "teacher": "区洁文",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(2)"
+      ],
+      "grade": "三年级",
+      "subject": "道德与法治",
+      "weekly_hours": 1,
+      "teacher": "区洁文",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(2)"
+      ],
+      "grade": "三年级",
+      "subject": "美术",
+      "weekly_hours": 1,
+      "teacher": "区洁文",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(2)"
+      ],
+      "grade": "三年级",
+      "subject": "班队活动",
+      "weekly_hours": 1,
+      "teacher": "区洁文",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(2)"
+      ],
+      "grade": "三年级",
+      "subject": "课外阅读（1-3）",
+      "weekly_hours": 1,
+      "teacher": "区洁文",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "三年级(1)",
+        "三年级(2)",
+        "三年级(3)",
+        "三年级(4)",
+        "三年级(5)",
+        "三年级(6)"
+      ],
+      "grade": "三年级",
+      "subject": "音乐",
+      "weekly_hours": 1,
+      "teacher": "邹晓艳",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "四年级(1)",
+        "四年级(2)",
+        "四年级(3)",
+        "四年级(4)",
+        "四年级(5)"
+      ],
+      "grade": "四年级",
+      "subject": "音乐",
+      "weekly_hours": 1,
+      "teacher": "邹晓艳",
+      "room": "本班教室"
+    },
+    {
+      "classes": [
+        "五年级(1)",
+        "五年级(2)",
+        "五年级(3)",
+        "五年级(4)",
+        "五年级(5)"
+      ],
+      "grade": "五年级",
+      "subject": "音乐",
+      "weekly_hours": 1,
+      "teacher": "邹晓艳",
+      "room": "本班教室"
+    }
+  ],
+  "messages": [
+    "小学8点50上课",
+    "初中8点上课",
+    "七年级数学要连排两节考试",
+    "七年级语文周一第8节不能排",
+    "七年级数学周五第6-8节不能排",
+    "黄梓琪周四下午不能上课"
+  ],
+  "manual_changes": []
+}

@@ -107,6 +107,30 @@ describe('AgentSession lifecycle', () => {
     assert.equal(SessionStore.getInstance().loadRuntimeState('user:lifecycle-cwd').currentDirectory, defaultDir);
   });
 
+  test('runtime state preserves session identity when current directory changes', () => {
+    const { SessionStore } = loadSessionModules();
+    const store = SessionStore.getInstance();
+    store.saveRuntimeState('cc_user:identity-state', {
+      sessionIdentity: {
+        schemaVersion: 1,
+        sessionId: 'cc_user:identity-state',
+        legacySessionKey: 'cc_user:identity-state',
+        sessionType: 'catscompany',
+        channel: 'catsco',
+        actor: { actorUserId: 'usr1', externalUserId: 'usr1' },
+        topic: { topicId: 'p2p_1_2', topicType: 'p2p', channelSeq: 9 },
+      },
+    });
+    store.saveRuntimeState('cc_user:identity-state', {
+      currentDirectory: testRoot,
+    });
+
+    const state = store.loadRuntimeState('cc_user:identity-state');
+    assert.equal(state.currentDirectory, testRoot);
+    assert.equal(state.sessionIdentity?.actor?.actorUserId, 'usr1');
+    assert.equal(state.sessionIdentity?.topic?.channelSeq, 9);
+  });
+
   test('reset and clear discard pending runtime feedback', async () => {
     const { AgentSession } = loadSessionModules();
     const resetSession = new AgentSession('user:lifecycle-feedback-reset', buildMockServices(), 'feishu');

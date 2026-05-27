@@ -3,6 +3,7 @@ import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { EventEmitter } from 'node:events';
 import { ServiceManager } from '../src/dashboard/service-manager';
 
 describe('dashboard service manager', () => {
@@ -115,8 +116,63 @@ describe('dashboard service manager', () => {
       fs.rmSync(runtimeRoot, { recursive: true, force: true });
     }
   });
+
+  test('restartAndWait waits for the old process to exit before starting again', async () => {
+    const manager = new ServiceManager(process.cwd()) as any;
+    const proc = new FakeChildProcess();
+    const service = {
+      info: {
+        name: 'catscompany',
+        label: 'CatsCo agent',
+        command: process.execPath,
+        args: [],
+        status: 'running',
+        pid: proc.pid,
+        startedAt: Date.now(),
+      },
+      process: proc,
+      logs: [],
+    };
+    manager.services.set('catscompany', service);
+    const events: string[] = [];
+    manager.start = (name: string) => {
+      events.push(`start:${name}:${service.info.status}`);
+      service.info.status = 'running';
+      service.info.pid = 456;
+      return { ...service.info };
+    };
+
+    const restartPromise = manager.restartAndWait('catscompany', 2000);
+    events.push(`after-call:${service.info.status}`);
+    assert.deepStrictEqual(events, ['after-call:running']);
+    proc.exit(0);
+    const restarted = await restartPromise;
+
+    assert.equal(restarted.status, 'running');
+    assert.equal(restarted.pid, 456);
+    assert.deepStrictEqual(events, ['after-call:running', 'start:catscompany:running']);
+    assert.equal(proc.killSignals.includes('SIGTERM'), true);
+  });
 });
 
 function normalize(value: string): string {
   return value.split(path.sep).join('/');
+}
+
+class FakeChildProcess extends EventEmitter {
+  pid = 123;
+  killed = false;
+  killSignals: string[] = [];
+  stdout = new EventEmitter();
+  stderr = new EventEmitter();
+
+  kill(signal?: NodeJS.Signals): boolean {
+    this.killed = true;
+    this.killSignals.push(signal || 'SIGTERM');
+    return true;
+  }
+
+  exit(code: number): void {
+    this.emit('exit', code, null);
+  }
 }

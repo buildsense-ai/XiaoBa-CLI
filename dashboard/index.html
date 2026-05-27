@@ -1332,13 +1332,25 @@
       max-height: 400px;
       overflow-y: auto;
     }
+    .bot-selector-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .bot-selector-note {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
     .bot-item {
       display: flex;
       align-items: center;
       justify-content: space-between;
       padding: 12px 16px;
-      border-radius: 12px;
-      cursor: pointer;
+      border-radius: 8px;
       transition: background 0.15s;
       margin-bottom: 8px;
       background: rgba(255,255,255,0.5);
@@ -4617,7 +4629,8 @@
               <strong>已连接 CatsCo</strong>
               <div class="chat-muted" id="cats-connected-copy">可以直接开始对话。</div>
               <div class="chat-connected-actions">
-                <button class="btn btn-success" onclick="setupCatsBot()" id="cats-setup-btn">检查并启动</button>
+                <button class="btn btn-success" onclick="handleCatsSetupAction()" id="cats-setup-btn">绑定并启动</button>
+                <button class="btn" onclick="showBotSelector()">选择机器人</button>
                 <button class="btn" onclick="resetCatsAuth()">切换账号</button>
                 <button class="btn" onclick="toggleCatsAdvanced()">高级设置</button>
               </div>
@@ -4628,11 +4641,11 @@
                 <div class="chat-muted" id="cats-login-copy" style="margin-bottom:10px">使用 CatsCo webapp（CatsCompany）同一账号登录。</div>
                 <input class="config-input" id="cats-account" type="text" placeholder="邮箱或用户名" style="margin-bottom:10px" />
                 <input class="config-input" id="cats-password" type="password" placeholder="密码" />
-                <button class="btn btn-primary" onclick="submitCatsAuth()" id="cats-auth-btn" style="width:100%;margin-top:12px">登录并连接</button>
+                <button class="btn btn-primary" onclick="submitCatsAuth()" id="cats-auth-btn" style="width:100%;margin-top:12px">登录</button>
                 <div class="chat-secondary-action">还没有账号？ <button class="chat-link-button" onclick="setCatsAuthMode('register')">创建账号</button></div>
               </div>
               <div id="cats-register-fields" style="display:none">
-                <div class="chat-muted" style="margin-bottom:12px">创建账号后会自动登录并连接 CatsCo。</div>
+                <div class="chat-muted" style="margin-bottom:12px">创建账号后会自动登录；agent 绑定和 connector 启动需要下一步确认。</div>
                 <input class="config-input" id="cats-email" type="email" placeholder="邮箱地址" style="margin-bottom:10px" />
                 <div class="chat-form-row" style="margin-bottom:10px">
                   <input class="config-input" id="cats-code" type="text" placeholder="邮箱验证码" />
@@ -4640,7 +4653,7 @@
                 </div>
                 <input class="config-input" id="cats-username" type="text" placeholder="登录名称" style="margin-bottom:10px" />
                 <input class="config-input" id="cats-register-password" type="password" placeholder="设置密码" />
-                <button class="btn btn-primary" onclick="submitCatsAuth()" id="cats-register-btn" style="width:100%;margin-top:12px">创建并连接</button>
+                <button class="btn btn-primary" onclick="submitCatsAuth()" id="cats-register-btn" style="width:100%;margin-top:12px">创建并登录</button>
                 <div class="chat-secondary-action"><button class="chat-link-button" onclick="setCatsAuthMode('login')">返回登录</button></div>
               </div>
             </div>
@@ -7082,6 +7095,31 @@
           inputPlaceholder:'先完成 CatsCo 连接检查',
         };
       }
+      const bodyStatus=catsState.bodyStatus||{};
+      if(configured && bodyStatus.state==='conflict'){
+        return {
+          key:'body-conflict',
+          status:'blocked',
+          badge:'body',
+          title:'另一个设备正在运行这个 agent',
+          copy:'CatsCo 平台显示这个机器人当前已由另一个 body 连接。请停止那边的进程，或重新选择/创建当前设备自己的 agent。',
+          action:'bot-selector',
+          actionLabel:'选择机器人',
+          inputPlaceholder:'等待当前设备成为 active body',
+        };
+      }
+      if(configured && bodyStatus.state==='auth_error'){
+        return {
+          key:'body-auth-error',
+          status:'blocked',
+          badge:'body',
+          title:'当前账号不能管理这个 agent',
+          copy:bodyStatus.error||'CatsCo 平台拒绝查询这个 bot 的 body 状态。请确认当前账号和绑定的 agent 是否匹配。',
+          action:'bot-selector',
+          actionLabel:'重新选择',
+          inputPlaceholder:'先重新选择或绑定 CatsCo agent',
+        };
+      }
       if(!configured){
         return {
           key:'needs-binding',
@@ -7090,7 +7128,7 @@
           title:'绑定 CatsCo agent',
           copy:'账号已登录，需要创建或绑定本地 agent 在 CatsCo 中的身份。',
           action:'setup',
-          actionLabel:'绑定 agent',
+          actionLabel:'绑定并启动',
           inputPlaceholder:'先绑定 CatsCo agent',
         };
       }
@@ -7102,7 +7140,7 @@
           title:'启动 CatsCompany connector',
           copy:'账号和 agent 已绑定，启动后 CatsCompany 网页消息会进入本地 runtime。',
           action:'setup',
-          actionLabel:'检查并启动',
+          actionLabel:'启动 connector',
           inputPlaceholder:'先启动 CatsCompany connector',
         };
       }
@@ -7142,6 +7180,7 @@
       const accountMeta=connected
         ? (user.display_name||user.username||'已登录')
         : (catsState.authStatus==='invalid'?'登录态失效':'未登录');
+      const bodySummary=formatCatsBodyStatus(catsState.bodyStatus, configured);
       const modelSection=getReadinessSection('model');
       const modelStatus=modelSection
         ? (modelSection.status==='blocked'?'fail':modelSection.status==='warning'?'warning':'pass')
@@ -7150,6 +7189,7 @@
         {label:'模型来源', status:modelStatus, meta:modelSection?firstReadinessProblem(modelSection)||modelSection.summary:'等待 readiness'},
         {label:'CatsCo 账号', status:connected?'pass':'fail', meta:accountMeta},
         {label:'Agent 绑定', status:configured?'pass':'fail', meta:configured&&catsState.botUid?('uid '+catsState.botUid):'未绑定'},
+        {label:'Agent Body', status:bodySummary.level, meta:bodySummary.text},
         {label:'CatsCompany connector', status:running?'pass':(configured?'warning':'fail'), meta:running?'运行中':'未启动'},
         {label:'Chat 会话', status:topicReady?'pass':'fail', meta:topicReady?'已就绪':'等待 topic'},
       ];
@@ -7200,7 +7240,8 @@
 
     function runCatsNextAction(){
       if(catsNextAction==='settings')return switchPage('config');
-      if(catsNextAction==='setup')return setupCatsBot();
+      if(catsNextAction==='setup')return handleCatsSetupAction();
+      if(catsNextAction==='bot-selector')return showBotSelector();
       if(catsNextAction==='refresh')return loadCatsMessages(true);
       if(catsNextAction==='auth'){
         const input=document.getElementById('cats-account');
@@ -7295,6 +7336,30 @@
       if(connected && configured && running) panel.classList.remove('expanded');
     }
 
+    function formatCatsBodyStatus(bodyStatus, configured){
+      const status=bodyStatus||{};
+      const local=status.localBodyId||catsState.bodyId||'';
+      if(!configured){
+        return { level:'fail', text:'未绑定' };
+      }
+      if(status.state==='online'){
+        return { level:'pass', text:'本机 active body'+(local?' · '+local:'') };
+      }
+      if(status.state==='conflict'){
+        return { level:'fail', text:'另一台设备在线'+(status.platformBodyId?' · '+status.platformBodyId:'') };
+      }
+      if(status.state==='auth_error'){
+        return { level:'fail', text:status.error||'账号和 agent 绑定不匹配' };
+      }
+      if(status.state==='offline'){
+        return { level:'warning', text:'平台暂未看到在线 body'+(local?' · 本机 '+local:'') };
+      }
+      if(status.state==='unknown'){
+        return { level:'warning', text:status.error?'平台状态无法确认':'等待平台状态' };
+      }
+      return { level:'fail', text:local?('本机 '+local+'，尚未确认'):'尚未确认' };
+    }
+
     function renderCatsStatus(){
       const service=catsState.service||{};
       const user=catsState.user||{};
@@ -7306,9 +7371,13 @@
       const accountMeta=connected
         ? (user.display_name?escapeHtml(user.display_name):'已登录')
         : (catsState.authStatus==='invalid'?'登录态失效':'未登录');
+      const bodySummary=formatCatsBodyStatus(catsState.bodyStatus, configured);
       status.innerHTML=
         '<div class="chat-status-row"><span>账号</span><strong>'+accountMeta+'</strong></div>'+
         '<div class="chat-status-row"><span>CatsCo Agent</span><strong>'+(catsState.botUid?escapeHtml(catsState.botUid):'未绑定')+'</strong></div>'+
+        '<div class="chat-status-row"><span>Agent Body</span><strong style="color:'+(
+          bodySummary.level==='pass'?'var(--green)':bodySummary.level==='fail'?'var(--red)':'var(--orange)'
+        )+'">'+escapeHtml(bodySummary.text)+'</strong></div>'+
         '<div class="chat-status-row"><span>Topic</span><strong>'+(catsState.topicId?escapeHtml(catsState.topicId):'未就绪')+'</strong></div>'+
         '<div class="chat-status-row"><span>CatsCompany connector</span><strong style="color:'+(running?'var(--green)':'var(--orange)')+'">'+(running?'运行中':'未启动')+'</strong></div>';
 
@@ -7321,9 +7390,11 @@
       document.getElementById('cats-connected-card').style.display=connected?'block':'none';
       const loginCopy=document.getElementById('cats-login-copy');
       if(loginCopy)loginCopy.textContent=catsAuthHelpText();
+      const setupBtn=document.getElementById('cats-setup-btn');
+      if(setupBtn)setupBtn.textContent=configured?(running?'重新检查':'启动 connector'):'绑定并启动';
       document.getElementById('cats-connected-copy').textContent=configured
-        ? (running?'可以直接开始对话。':'账号和 agent 已绑定，点击“检查并启动”恢复 CatsCompany connector。')
-        : '账号已登录，点击“检查并启动”完成 CatsCo agent 绑定。';
+        ? (running?'可以直接开始对话。':'账号和 agent 已绑定，点击“启动 connector”恢复 CatsCompany connector。')
+        : '账号已登录。请选择已有机器人，或点击“绑定并启动”创建/绑定当前 agent。';
       renderCatsChecklist(stage);
       updateCatsChatGate(stage);
       updateCatsLayoutState(stage);
@@ -7346,58 +7417,126 @@
         const data = await resp.json();
 
         if (!data.ok || !data.bots?.length) {
-          listEl.innerHTML = '<div class="empty">暂无可用机器人</div>';
+          listEl.innerHTML = '<div class="empty">暂无可用机器人。可以为当前设备创建一个新的 CatsCo agent。</div>';
           return;
         }
 
         listEl.innerHTML = data.bots.map(bot => `
-          <div class="bot-item ${bot.isCurrent ? 'current' : ''}" onclick="switchToBot('${bot.uid}', '${escapeHtml(bot.display_name)}')">
+          <div class="bot-item ${bot.isCurrent ? 'current' : ''}">
             <div class="bot-info">
               <div class="bot-name">${escapeHtml(bot.display_name)}</div>
               <div class="bot-username">@${escapeHtml(bot.username)}</div>
             </div>
-            ${bot.isCurrent ? '<span class="current-badge">当前</span>' : '<button class="btn-sm">切换</button>'}
+            <button class="btn-sm" data-bind-bot data-bot-uid="${escapeHtml(bot.uid)}" data-bot-name="${escapeHtml(bot.display_name)}" data-current="${bot.isCurrent ? 'true' : 'false'}">
+              ${bot.isCurrent ? '重新绑定' : '绑定'}
+            </button>
           </div>
         `).join('');
+        listEl.querySelectorAll('[data-bind-bot]').forEach(button => {
+          button.addEventListener('click', () => {
+            bindCatsBot(button.dataset.botUid, button.dataset.botName, button, {
+              confirm: button.dataset.current !== 'true',
+            });
+          });
+        });
       } catch (e) {
         listEl.innerHTML = '<div class="error">加载失败: ' + escapeHtml(e.message) + '</div>';
       }
     }
 
     /**
-     * 切换到指定机器人
+     * 当前设备的默认名称，仅用于创建 bot 时给用户一个可读的初始名字。
      */
-    async function switchToBot(botUid, botName) {
-      if (!confirm(`确定切换到机器人 "${botName}" 吗？`)) return;
+    function catsDefaultDeviceName() {
+      const platform = String(navigator.platform || '').trim();
+      return platform || '当前设备';
+    }
 
-      const btn = event.target;
-      btn.disabled = true;
-      btn.textContent = '切换中...';
+    async function createCatsBotAndBind(button) {
+      const defaultName = `CatsCo (${catsDefaultDeviceName()})`;
+      const botDisplayName = prompt('为当前设备创建一个新的 CatsCo agent：', defaultName);
+      if (botDisplayName === null) return;
+      const btn = button || document.getElementById('cats-create-bot-btn');
+      const previousText = btn ? btn.textContent : '';
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '创建中...';
+      }
+      setCatsAction('正在创建新的 CatsCo agent...');
 
       try {
-        const resp = await fetch(API + '/api/cats/switch-bot', {
+        const created = await parseCatsResponse(await fetch(API + '/api/cats/create-bot', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ botUid })
+          body: JSON.stringify({
+            ...getCatsEndpointFields(),
+            deviceName: catsDefaultDeviceName(),
+            botDisplayName: String(botDisplayName || defaultName).trim() || defaultName,
+          }),
+        }));
+        await bindCatsBot(created.bot?.uid, created.bot?.display_name || botDisplayName || defaultName, btn, {
+          confirm: false,
+          restoreText: previousText || '创建新机器人',
         });
-        const data = await resp.json();
-
-        if (data.ok) {
-          catsState.botUid = botUid;
-          catsState.botName = botName;
-          catsState.topicId = `p2p_${catsState.user?.uid || ''}_${botUid}`;
-          catsState.service = data.service;
-          renderCatsStatus();
-          closeBotSelector();
-          setCatsAction(data.message || `已切换到 ${botName}`);
-          pulsePetState('success', '切换成功', 1800);
-        } else {
-          setCatsAction('切换失败: ' + (data.error || '未知错误'), true);
-        }
       } catch (e) {
-        setCatsAction('切换失败: ' + e.message, true);
+        setCatsAction('创建失败: ' + e.message, true);
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = previousText || '创建新机器人';
+        }
+      }
+    }
+
+    /**
+     * 绑定指定机器人到当前 CatsCo/XiaoBa 进程，并启动 connector。
+     */
+    async function bindCatsBot(botUid, botName, button, options) {
+      const name = botName || '未命名机器人';
+      if (!botUid) {
+        setCatsAction('绑定失败：缺少 bot uid', true);
+        return;
+      }
+      if (options?.confirm !== false && !confirm(`确定把当前设备上的 agent 绑定到 "${name}" 吗？`)) return;
+
+      const btn = button || document.getElementById('cats-setup-btn');
+      const previousText = btn ? btn.textContent : '';
+      const restoreText = options?.restoreText || previousText || '绑定';
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '绑定中...';
+      }
+      setCatsAction(`正在绑定 ${name} 并启动 CatsCompany connector...`);
+
+      try {
+        const data = await parseCatsResponse(await fetch(API + '/api/cats/bind-bot', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...getCatsEndpointFields(), botUid }),
+        }));
+        catsState = {
+          ...catsState,
+          ...data,
+          connected: true,
+          configured: true,
+          botUid: data.bot?.uid || botUid,
+          botName: data.bot?.display_name || name,
+          topicId: data.topicId,
+          user: data.user || catsState.user,
+          service: data.service,
+        };
+        renderCatsStatus();
+        closeBotSelector();
+        setCatsAction(data.message || `已绑定 ${name}。可以直接开始对话。`);
+        pulsePetState('success', '已绑定', 1800);
+        fetchStatus();
+        await loadCatsMessages(true, { reset: true, forceBottom: true });
+      } catch (e) {
+        setCatsAction('绑定失败: ' + e.message, true);
       } finally {
-        btn.disabled = false;
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = restoreText;
+        }
       }
     }
 
@@ -7422,6 +7561,10 @@
             <h3>选择机器人</h3>
             <button class="close-btn" onclick="closeBotSelector()">×</button>
           </div>
+          <div class="bot-selector-toolbar">
+            <div class="bot-selector-note">一个本地 CatsCo/XiaoBa 进程只绑定一个机器人身份。</div>
+            <button class="btn btn-success" id="cats-create-bot-btn" onclick="createCatsBotAndBind(this)">创建新机器人</button>
+          </div>
           <div id="bot-list" class="bot-list"></div>
         </div>
       `;
@@ -7430,6 +7573,32 @@
         if (e.target === modal) closeBotSelector();
       });
       return modal;
+    }
+
+    async function handleCatsSetupAction() {
+      if (!isCatsLoggedIn()) {
+        setCatsAction('请先登录 CatsCo。', true);
+        return;
+      }
+      const service = catsState.service || {};
+      if (!catsState.configured || !catsState.botUid) {
+        return showBotSelector();
+      }
+      const bodyStatus = catsState.bodyStatus || {};
+      if (bodyStatus.state === 'conflict') {
+        setCatsAction('当前 agent 正在另一台设备运行。请停止那边的进程，或重新选择/创建当前设备自己的 agent。', true);
+        return showBotSelector();
+      }
+      if (bodyStatus.state === 'auth_error') {
+        setCatsAction(bodyStatus.error || '当前账号不能管理这个 agent，请重新选择或绑定。', true);
+        return showBotSelector();
+      }
+      if (service.status === 'running') {
+        await fetchCatsStatus();
+        setCatsAction('CatsCompany connector 已在运行。');
+        return;
+      }
+      return bindCatsBot(catsState.botUid, catsState.botName || catsState.bot?.display_name || catsState.botUid, document.getElementById('cats-setup-btn'), { confirm: false });
     }
 
     async function sendCatsCode(){
@@ -7467,8 +7636,9 @@
         }
         document.getElementById('cats-password').value='';
         document.getElementById('cats-register-password').value='';
-        setCatsAction('登录态已保存，正在绑定 CatsCo agent...');
-        await setupCatsBot();
+        setCatsAction('登录态已保存。请确认要绑定的 CatsCo agent，再手动启动 connector。');
+        await fetchCatsStatus();
+        pulsePetState('success', '已登录', 1800);
       }catch(e){
         setCatsAction('连接失败：'+e.message,true);
       }finally{
@@ -7477,22 +7647,7 @@
     }
 
     async function setupCatsBot(){
-      const btn=document.getElementById('cats-setup-btn');
-      btn.disabled=true;
-      setCatsAction('正在绑定 bot 并启动 CatsCompany connector...');
-      try{
-        const data=await parseCatsResponse(await fetch(API+'/api/cats/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(getCatsEndpointFields())}));
-        catsState={...catsState,...data, connected:true, configured:true, botUid:data.bot?.uid||data.botUid, topicId:data.topicId, user:data.user, service:data.service};
-        renderCatsStatus();
-        setCatsAction('已连接。可以直接开始对话。');
-        pulsePetState('success', '已连接', 2200);
-        fetchStatus();
-        await loadCatsMessages(true, {reset:true, forceBottom:true});
-      }catch(e){
-        setCatsAction('绑定失败：'+e.message,true);
-      }finally{
-        btn.disabled=false;
-      }
+      return handleCatsSetupAction();
     }
 
     async function resetCatsAuth(){

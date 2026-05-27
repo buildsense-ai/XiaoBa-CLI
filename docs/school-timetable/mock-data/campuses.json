@@ -1,0 +1,25 @@
+[
+  {
+    "id": "east",
+    "name_zh": "东校区",
+    "stage_note_zh": "小学低中段校区",
+    "address_mock": "春晖路18号",
+    "grade_ids": [
+      "P1",
+      "P2",
+      "P3"
+    ]
+  },
+  {
+    "id": "west",
+    "name_zh": "西校区",
+    "stage_note_zh": "小学高段与初中校区",
+    "address_mock": "启明路66号",
+    "grade_ids": [
+      "P4",
+      "P5",
+      "P6",
+      "J1"
+    ]
+  }
+]

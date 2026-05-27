@@ -91,3 +91,4 @@ export interface CommandOptions {
 export * from './agent';
 export * from './tool';
 export * from './skill';
+export * from './session-identity';

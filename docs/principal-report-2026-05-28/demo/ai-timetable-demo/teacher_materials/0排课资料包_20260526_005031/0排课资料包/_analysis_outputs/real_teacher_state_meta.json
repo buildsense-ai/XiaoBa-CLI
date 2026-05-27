@@ -1,0 +1,139 @@
+{
+  "state_path": "D:\\ai-timetable-demo\\teacher_materials\\0排课资料包_20260526_005031\\0排课资料包\\_analysis_outputs\\real_teacher_state_for_cli.json",
+  "source_rows": 664,
+  "grouped_course_rows": 363,
+  "class_counts": {
+    "一年级": 6,
+    "二年级": 6,
+    "三年级": 6,
+    "四年级": 5,
+    "五年级": 5,
+    "六年级": 5,
+    "七年级": 6,
+    "八年级": 0,
+    "九年级": 0
+  },
+  "fractional_courses_ceil_to_1_slot_count": 78,
+  "fractional_examples": [
+    {
+      "class": "七年级(1)",
+      "subject": "舞蹈",
+      "teacher": "刘柯辰",
+      "hours": 0.5
+    },
+    {
+      "class": "七年级(2)",
+      "subject": "舞蹈",
+      "teacher": "刘柯辰",
+      "hours": 0.5
+    },
+    {
+      "class": "七年级(3)",
+      "subject": "舞蹈",
+      "teacher": "刘柯辰",
+      "hours": 0.5
+    },
+    {
+      "class": "七年级(4)",
+      "subject": "舞蹈",
+      "teacher": "刘柯辰",
+      "hours": 0.5
+    },
+    {
+      "class": "七年级(5)",
+      "subject": "舞蹈",
+      "teacher": "刘柯辰",
+      "hours": 0.5
+    },
+    {
+      "class": "七年级(6)",
+      "subject": "舞蹈",
+      "teacher": "刘柯辰",
+      "hours": 0.5
+    },
+    {
+      "class": "七年级(1)",
+      "subject": "心理健康教育",
+      "teacher": "庄轩羽",
+      "hours": 0.5
+    },
+    {
+      "class": "七年级(2)",
+      "subject": "心理健康教育",
+      "teacher": "庄轩羽",
+      "hours": 0.5
+    },
+    {
+      "class": "七年级(3)",
+      "subject": "心理健康教育",
+      "teacher": "庄轩羽",
+      "hours": 0.5
+    },
+    {
+      "class": "七年级(4)",
+      "subject": "心理健康教育",
+      "teacher": "庄轩羽",
+      "hours": 0.5
+    },
+    {
+      "class": "七年级(5)",
+      "subject": "心理健康教育",
+      "teacher": "庄轩羽",
+      "hours": 0.5
+    },
+    {
+      "class": "七年级(6)",
+      "subject": "心理健康教育",
+      "teacher": "庄轩羽",
+      "hours": 0.5
+    },
+    {
+      "class": "一年级(1)",
+      "subject": "心理健康教育（1-3）",
+      "teacher": "庄轩羽",
+      "hours": 0.5
+    },
+    {
+      "class": "一年级(2)",
+      "subject": "心理健康教育（1-3）",
+      "teacher": "庄轩羽",
+      "hours": 0.5
+    },
+    {
+      "class": "一年级(3)",
+      "subject": "心理健康教育（1-3）",
+      "teacher": "庄轩羽",
+      "hours": 0.5
+    },
+    {
+      "class": "一年级(4)",
+      "subject": "心理健康教育（1-3）",
+      "teacher": "庄轩羽",
+      "hours": 0.5
+    },
+    {
+      "class": "一年级(5)",
+      "subject": "心理健康教育（1-3）",
+      "teacher": "庄轩羽",
+      "hours": 0.5
+    },
+    {
+      "class": "一年级(6)",
+      "subject": "心理健康教育（1-3）",
+      "teacher": "庄轩羽",
+      "hours": 0.5
+    },
+    {
+      "class": "二年级(1)",
+      "subject": "心理健康教育（1-3）",
+      "teacher": "庄轩羽",
+      "hours": 0.5
+    },
+    {
+      "class": "二年级(2)",
+      "subject": "心理健康教育（1-3）",
+      "teacher": "庄轩羽",
+      "hours": 0.5
+    }
+  ]
+}

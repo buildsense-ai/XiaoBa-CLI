@@ -10,6 +10,7 @@ import type {
 } from './session-log-schema';
 import type { SubAgentRuntimeEvent } from '../core/sub-agent-events';
 import type { SubAgentInfo } from '../core/sub-agent-session';
+import type { SessionIdentitySnapshot } from '../types/session-identity';
 
 export type {
   LegacySessionTurnLogEntry,
@@ -28,6 +29,7 @@ const MAX_RUNTIME_FEEDBACK_LENGTH = Number(process.env.XIAOBA_SESSION_RUNTIME_FE
 export interface LogTurnOptions {
   runtimeFeedback?: string[];
   runtimeObservationSource?: string;
+  sessionIdentity?: SessionIdentitySnapshot;
 }
 
 /**
@@ -82,6 +84,7 @@ export class SessionTurnLogger {
       timestamp: new Date().toISOString(),
       session_id: this.sessionId,
       session_type: this.sessionType,
+      ...(options.sessionIdentity && { identity: options.sessionIdentity }),
       user: {
         text: userText,
         ...(userImages.length > 0 && { images: userImages }),

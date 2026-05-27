@@ -1,0 +1,13 @@
+{
+  "id": "mock-nine-year-school-001",
+  "name_zh": "启航实验学校（模拟）",
+  "dataset_version": "2026-05-22.v1",
+  "locale": "zh-CN",
+  "timezone": "Asia/Shanghai",
+  "description_zh": "两校区九年一贯制学校排课模拟数据：小学6个年级、每年级6个班，初中一年级6个班。",
+  "assumptions": [
+    "东校区承载小学一至三年级，西校区承载小学四至六年级和初中一年级。",
+    "教师默认不跨校区任课，跨校区约束作为硬约束提供。",
+    "基础数据尽量可排；overlays 中包含运行中新增约束和故意不可行案例。"
+  ]
+}
