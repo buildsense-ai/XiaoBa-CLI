@@ -1,5 +1,7 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import { Readable } from 'node:stream';
+import axios from 'axios';
 import { OpenAIProvider } from '../src/providers/openai-provider';
 import { Message } from '../src/types';
 
@@ -50,5 +52,71 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     assert.equal(JSON.stringify(body.messages).includes('__runtimeObservation'), false);
     assert.equal(JSON.stringify(body.messages).includes('runtimeObservationSource'), false);
     assert.equal(JSON.stringify(body.messages).includes('must not leak'), false);
+  });
+
+  test('preserves finish reason for non-stream responses', async () => {
+    const originalPost = axios.post;
+    (axios as any).post = async () => ({
+      data: {
+        choices: [{
+          finish_reason: 'length',
+          message: { content: 'ok' },
+        }],
+        usage: {
+          prompt_tokens: 1,
+          completion_tokens: 2,
+          total_tokens: 3,
+        },
+      },
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        apiKey: 'test-key',
+        apiUrl: 'https://example.test/v1/chat/completions',
+        model: 'test-model',
+      });
+
+      const result = await provider.chat([{ role: 'user', content: 'hello' }]);
+
+      assert.equal(result.content, 'ok');
+      assert.equal(result.stopReason, 'length');
+      assert.equal(result.usage?.totalTokens, 3);
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
+  test('preserves finish reason for stream responses', async () => {
+    const originalPost = axios.post;
+    (axios as any).post = async () => ({
+      data: Readable.from([
+        'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\n',
+        'data: [DONE]\n\n',
+      ]),
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        apiKey: 'test-key',
+        apiUrl: 'https://example.test/v1/chat/completions',
+        model: 'test-model',
+      });
+      const chunks: string[] = [];
+
+      const result = await provider.chatStream(
+        [{ role: 'user', content: 'hello' }],
+        undefined,
+        { onText: chunk => chunks.push(chunk) },
+      );
+
+      assert.equal(result.content, 'hello');
+      assert.equal(result.stopReason, 'stop');
+      assert.equal(result.usage?.totalTokens, 3);
+      assert.deepEqual(chunks, ['hel', 'lo']);
+    } finally {
+      (axios as any).post = originalPost;
+    }
   });
 });
