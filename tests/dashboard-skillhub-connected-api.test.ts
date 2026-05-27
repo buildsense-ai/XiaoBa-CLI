@@ -105,6 +105,34 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(fs.existsSync(path.join(install.body.skill.path, 'SKILL.md')), true);
   });
 
+  test('quick shares an installed local skill through SkillHub submissions', async () => {
+    fs.mkdirSync(path.join(testRoot, 'skills', 'quick-demo'), { recursive: true });
+    fs.writeFileSync(path.join(testRoot, 'skills', 'quick-demo', 'SKILL.md'), [
+      '---',
+      'name: quick-demo',
+      'description: Quick demo skill',
+      '---',
+      '',
+      '# Quick Demo',
+      '',
+    ].join('\n'));
+
+    const fixture = createFixture();
+    await startCloud(fixture);
+    process.env.CATSCO_SKILLHUB_BASE_URL = cloudBaseUrl;
+    await startDashboard();
+
+    await post('/api/skillhub/auth/login', { email: 'demo@example.com', password: 'passw0rd!!' });
+    const share = await post('/api/skillhub/developer/share-local-skill', { skillName: 'quick-demo' });
+    assert.equal(share.status, 201);
+    assert.equal(share.body.ok, true);
+    assert.equal(share.body.skill.name, 'quick-demo');
+    assert.equal(share.body.submission.manifest.name, 'quick-demo');
+    assert.equal(share.body.submission.manifest.runtime.minAgentVersion, '0.0.0');
+    assert.equal(share.body.submission.manifest.runtime.platforms, undefined);
+    assert.equal(share.body.submission.source.files.some((file: any) => file.path === 'SKILL.md'), true);
+  });
+
   test('uses the official SkillHub cloud by default', () => {
     delete process.env.CATSCO_SKILLHUB_BASE_URL;
     assert.equal(loadSkillHubConfig().baseUrl, 'https://logs.catsco.fun:9000');
@@ -176,6 +204,16 @@ describe('dashboard connected SkillHub API', () => {
           userId: fixture.user.id,
           status: 'pending',
           ...req.body,
+        },
+      });
+    });
+    app.post('/api/developer/submissions', (req, res) => {
+      res.status(201).json({
+        submission: {
+          id: 'sub_quick_1',
+          status: 'scan_pending',
+          manifest: req.body.manifest,
+          source: req.body.source,
         },
       });
     });

@@ -14,6 +14,7 @@ export const DEFAULT_TOOL_NAMES = [
   'resume_subagent',
   'update_plan',
   'record_decision',
+  'share_skillhub_skill',
   'skill',
 ] as const;
 

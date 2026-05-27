@@ -67,6 +67,7 @@ describe('runtime characterization', () => {
         'resume_subagent',
         'send_file',
         'send_text',
+        'share_skillhub_skill',
         'skill',
         'spawn_subagent',
         'stop_subagent',

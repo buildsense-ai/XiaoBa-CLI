@@ -16,6 +16,7 @@ import { StopSubagentTool } from './stop-subagent-tool';
 import { ResumeSubagentTool } from './resume-subagent-tool';
 import { UpdatePlanTool } from './update-plan-tool';
 import { RecordDecisionTool } from './record-decision-tool';
+import { ShareSkillHubSkillTool } from './share-skillhub-skill-tool';
 import { AskParentTool } from './ask-parent-tool';
 import { DEFAULT_TOOL_NAMES } from './default-tool-names';
 import { mergeToolExecutionContext } from '../utils/tool-context';
@@ -90,6 +91,7 @@ export class ToolManager implements ToolExecutor {
       new ResumeSubagentTool(),
       new UpdatePlanTool(),
       new RecordDecisionTool(),
+      new ShareSkillHubSkillTool(),
       new SkillTool(),
     ];
 

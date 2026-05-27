@@ -1,6 +1,8 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
-import { APP_VERSION } from '../version';
+import { SkillParser } from '../skills/skill-parser';
+import type { Skill } from '../types/skill';
 import { PathResolver } from '../utils/path-resolver';
 import { SkillHubClient } from './client';
 import { installVerifiedSkillHubPackage } from './package-installer';
@@ -52,8 +54,6 @@ export class SkillHubService {
   async search(query = '', options: { category?: string } = {}): Promise<SkillHubSearchResponse & { installed: SkillHubPackageInstallMarker[] }> {
     const response = await this.client.searchSkills(query, {
       category: options.category,
-      agentVersion: APP_VERSION,
-      platform: process.platform,
     });
     return {
       ...response,
@@ -133,6 +133,49 @@ export class SkillHubService {
         files,
       },
     });
+  }
+
+  async shareLocalSkill(input: any): Promise<any> {
+    const skillName = String(input.skillName || input.skill || input.name || '').trim();
+    if (!skillName) {
+      const error: any = new Error('skillName required');
+      error.status = 400;
+      error.code = 'skillhub.skill_name_required';
+      throw error;
+    }
+
+    const skill = findLocalSkill(skillName);
+    if (!skill) {
+      const available = listLocalSkillNames().join(', ');
+      const error: any = new Error(`Local skill not found: ${skillName}${available ? `. Available skills: ${available}` : ''}`);
+      error.status = 404;
+      error.code = 'skillhub.local_skill_not_found';
+      throw error;
+    }
+
+    const localPath = path.dirname(skill.filePath);
+    const submission = await this.createSubmission({
+      localPath,
+      name: skill.metadata.name,
+      displayName: skill.metadata.name,
+      version: readLocalSkillVersion(localPath) || '1.0.0',
+      description: skill.metadata.description,
+      keywords: [skill.metadata.name, ...splitWords(skill.metadata.description)].slice(0, 8),
+      triggerExamples: skill.metadata.argumentHint ? [`/${skill.metadata.name} ${skill.metadata.argumentHint}`] : [`/${skill.metadata.name}`],
+      minAgentVersion: '0.0.0',
+      platforms: '',
+      notes: String(input.notes || 'Quick shared from local XiaoBa Skills.'),
+    });
+
+    return {
+      ok: true,
+      skill: {
+        name: skill.metadata.name,
+        description: skill.metadata.description,
+        path: localPath,
+      },
+      submission: submission?.submission || submission,
+    };
   }
 
   private async resolveRegistryEntry(skillId: string, version?: string): Promise<SkillHubRegistryEntry> {
@@ -263,6 +306,76 @@ function splitList(value: any): string[] {
 function stringOrUndefined(value: any): string | undefined {
   const text = String(value || '').trim();
   return text || undefined;
+}
+
+function splitWords(text: string): string[] {
+  return String(text || '')
+    .split(/[\s,，。；;、/|]+/)
+    .map(item => item.trim())
+    .filter(item => item.length >= 2);
+}
+
+function readLocalSkillVersion(localPath: string): string | undefined {
+  for (const fileName of ['skill.json', '.xiaoba-bundled-skill.json']) {
+    const filePath = path.join(localPath, fileName);
+    if (!fs.existsSync(filePath)) continue;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      const version = stringOrUndefined(parsed.version);
+      if (version) return version;
+    } catch {
+      // Ignore optional metadata files that are not valid JSON.
+    }
+  }
+  return undefined;
+}
+
+function findLocalSkill(skillName: string): Skill | undefined {
+  for (const skillFile of listLocalSkillFiles()) {
+    try {
+      const skill = SkillParser.parse(skillFile);
+      const dirName = path.basename(path.dirname(skillFile));
+      if (skill.metadata.name === skillName || dirName === skillName) return skill;
+    } catch {
+      // Ignore broken local skills so one bad folder does not block sharing others.
+    }
+  }
+  return undefined;
+}
+
+function listLocalSkillNames(): string[] {
+  const names: string[] = [];
+  for (const skillFile of listLocalSkillFiles()) {
+    try {
+      names.push(SkillParser.parse(skillFile).metadata.name);
+    } catch {
+      names.push(path.basename(path.dirname(skillFile)));
+    }
+  }
+  return Array.from(new Set(names)).sort();
+}
+
+function listLocalSkillFiles(): string[] {
+  const roots = [
+    PathResolver.getSkillsPath(),
+    getUserDataSkillsPath(),
+  ];
+  const files: string[] = [];
+  for (const root of roots) {
+    if (!root || !fs.existsSync(root)) continue;
+    files.push(...PathResolver.findSkillFiles(root));
+  }
+  return Array.from(new Set(files));
+}
+
+function getUserDataSkillsPath(): string {
+  if (process.platform === 'win32') {
+    return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'xiaoba-cli', 'skills');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'xiaoba-cli', 'skills');
+  }
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'xiaoba-cli', 'skills');
 }
 
 function listInstalledSkillHubSkills(): SkillHubPackageInstallMarker[] {

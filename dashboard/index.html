@@ -5514,6 +5514,9 @@
       } else {
         actions.push('<button class="btn" onclick="toggleSkill(\''+name+'\',' +(sk.enabled!==false)+')">'+(sk.enabled===false?'启用':'禁用')+'</button>');
       }
+      if (sk.source === 'user') {
+        actions.push('<button class="btn btn-primary" onclick="shareLocalSkillToSkillHub(\''+name+'\')">Share</button>');
+      }
       if (sk.canDelete) {
         actions.push('<button class="btn btn-danger" onclick="deleteSkill(\''+name+'\')">卸载</button>');
       } else if (sk.source === 'bundled') {
@@ -5534,6 +5537,23 @@
       if (!g) return;
       if (!skills.length) { g.innerHTML = '<div class="loading">暂无 Skills</div>'; return; }
       g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">已禁用</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">用户调用</span>':'')+(sk.autoInvocable?'<span class="tag active">自动调用</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+renderSkillActionButtons(sk)+'</div>').join('');
+    }
+
+    async function shareLocalSkillToSkillHub(skillName) {
+      if (!skillName) return;
+      if (!confirm('Share this local Skill to SkillHub?\n\n' + skillName)) return;
+      try {
+        const data = await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/share-local-skill', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ skillName }),
+        }));
+        const submission = data.submission || {};
+        alert('SkillHub share submitted: ' + (submission.id || submission.submissionId || skillName));
+        await fetchSkillHubDeveloper();
+      } catch (e) {
+        alert('SkillHub share failed: ' + (e.message || String(e)));
+      }
     }
 
     async function refreshSkillHubPage() {

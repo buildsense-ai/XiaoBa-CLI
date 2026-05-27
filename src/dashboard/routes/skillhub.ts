@@ -85,6 +85,14 @@ export function registerSkillHubRoutes(router: Router): void {
       sendSkillHubError(res, error);
     }
   });
+
+  router.post('/skillhub/developer/share-local-skill', async (req, res) => {
+    try {
+      res.status(201).json(await serviceFrom(req.body).shareLocalSkill(req.body || {}));
+    } catch (error: any) {
+      sendSkillHubError(res, error);
+    }
+  });
 }
 
 function serviceFrom(_input?: any): SkillHubService {
