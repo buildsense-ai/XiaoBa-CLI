@@ -168,6 +168,78 @@ describe('AgentSession lifecycle', () => {
     );
   });
 
+  test('handleMessage preserves completed tool context when model relay times out', async () => {
+    const { AgentSession, SessionStore, MODEL_TIMEOUT_MESSAGE } = loadSessionModules();
+    let aiCalls = 0;
+    const toolCall = {
+      id: 'call_read',
+      type: 'function',
+      function: {
+        name: 'read_file',
+        arguments: JSON.stringify({ file_path: 'notes.txt' }),
+      },
+    };
+    const session = new AgentSession('catscompany:lifecycle-timeout-recovery', buildMockServices({
+      aiService: {
+        async chatStream() {
+          aiCalls++;
+          if (aiCalls === 1) {
+            return {
+              content: null,
+              toolCalls: [toolCall],
+              usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+            };
+          }
+          throw new Error('API错误 (504): 504 {"type":"error","error":{"type":"request_timed_out","message":"request timed out (default is 30 seconds)"}}');
+        },
+      },
+      toolManager: {
+        getToolDefinitions() {
+          return [{
+            name: 'read_file',
+            description: 'read file',
+            parameters: {
+              type: 'object',
+              properties: {
+                file_path: { type: 'string' },
+              },
+              required: ['file_path'],
+            },
+          }];
+        },
+        async executeTool() {
+          return {
+            tool_call_id: 'call_read',
+            role: 'tool',
+            name: 'read_file',
+            content: 'notes content',
+            ok: true,
+          };
+        },
+      },
+    }), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    const result = await session.handleMessage('read notes then continue');
+
+    assert.equal(result.text, MODEL_TIMEOUT_MESSAGE);
+    assert.equal(aiCalls, 2);
+
+    const retainedMessages = (session as any).messages as any[];
+    assert.equal(retainedMessages.some(message => message.content === 'notes content'), true);
+    assert.equal(retainedMessages.some(message =>
+      typeof message.content === 'string'
+      && message.content.includes('模型中转请求超时')
+    ), true);
+
+    const restored = SessionStore.getInstance().loadContext('catscompany:lifecycle-timeout-recovery');
+    assert.equal(restored.some(message => message.content === 'notes content'), true);
+    assert.equal(restored.some(message =>
+      typeof message.content === 'string'
+      && message.content.includes('避免重复已经完成的工具步骤')
+    ), true);
+  });
+
   test('cleanup persists without invoking hidden AI wakeup checks', async () => {
     const { AgentSession, SessionStore } = loadSessionModules();
     let aiCalls = 0;
@@ -234,6 +306,7 @@ function loadSessionModules(): any {
   }
   return {
     AgentSession: require('../src/core/agent-session').AgentSession,
+    MODEL_TIMEOUT_MESSAGE: require('../src/core/agent-session').MODEL_TIMEOUT_MESSAGE,
     SessionStore: require('../src/utils/session-store').SessionStore,
   };
 }

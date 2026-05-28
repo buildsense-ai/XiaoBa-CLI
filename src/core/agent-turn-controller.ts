@@ -46,6 +46,10 @@ export interface RunAgentTurnResult {
   messages: Message[];
 }
 
+export interface AgentTurnRunError extends Error {
+  partialMessages?: Message[];
+}
+
 export interface AgentTurnControllerOptions {
   sessionKey: string;
   sessionType?: string;
@@ -90,7 +94,17 @@ export class AgentTurnController {
       shouldContinue: params.shouldContinue,
     });
 
-    const result = await runner.run(turnContext.messages, this.toRunnerCallbacks(params.callbacks));
+    let result;
+    try {
+      result = await runner.run(turnContext.messages, this.toRunnerCallbacks(params.callbacks));
+    } catch (error: any) {
+      const partialMessages = this.options.turnContextBuilder.removeTransientMessages(turnContext.messages);
+      this.replaceBase64Images(partialMessages);
+      if (partialMessages.length > 0) {
+        (error as AgentTurnRunError).partialMessages = partialMessages;
+      }
+      throw error;
+    }
     const nextMessages = this.options.turnContextBuilder.removeTransientMessages(result.messages);
 
     const metrics = Metrics.getSummary();

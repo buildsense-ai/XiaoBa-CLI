@@ -49,6 +49,10 @@ export class StopSubagentTool implements Tool {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `无权停止子智能体 ${subagent_id}。它不属于当前会话。` };
     }
 
-    return { ok: false, errorCode: 'TOOL_NOT_FOUND', message: `未找到子智能体 ${subagent_id}。` };
+    return {
+      ok: false,
+      errorCode: 'TOOL_NOT_FOUND',
+      message: [`未找到子智能体 ${subagent_id}。`, manager.formatRefsForParent(sessionKey)].filter(Boolean).join('\n'),
+    };
   }
 }

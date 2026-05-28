@@ -33,7 +33,11 @@ export class CheckSubagentTool implements Tool {
     if (subagent_id) {
       const info = manager.getInfoForParent(sessionKey, subagent_id);
       if (!info) {
-        return { ok: false, errorCode: 'TOOL_NOT_FOUND', message: `未找到子智能体 ${subagent_id}` };
+        return {
+          ok: false,
+          errorCode: 'TOOL_NOT_FOUND',
+          message: [`未找到子智能体 ${subagent_id}。`, manager.formatRefsForParent(sessionKey)].filter(Boolean).join('\n'),
+        };
       }
       return { ok: true, content: this.formatInfo(info) };
     }

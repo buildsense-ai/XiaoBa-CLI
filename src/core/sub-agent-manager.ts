@@ -84,6 +84,7 @@ export class SubAgentManager {
   /** 完成后保留信息的时间（ms） */
   private static readonly RETENTION_MS = 30 * 60 * 1000;
   private static readonly PARENT_RESULT_MAX_CHARS = 1800;
+  private static readonly MIN_ID_PREFIX_LENGTH = 'sub-'.length + 4;
 
   private constructor() { }
 
@@ -351,6 +352,23 @@ export class SubAgentManager {
     return result;
   }
 
+  formatRefsForParent(parentSessionKey: string, limit = 6): string {
+    const all = this.listByParent(parentSessionKey);
+    const refs = all.slice(0, limit).map(info => {
+      const label = info.displayName ? `${info.displayName} (${info.id})` : info.id;
+      return `- ${label}: ${info.status}`;
+    });
+    if (refs.length === 0) return '';
+    const suffix = all.length > limit
+      ? `\n- ...还有 ${all.length - limit} 个`
+      : '';
+    return [
+      '当前会话可用子任务：',
+      refs.join('\n') + suffix,
+      '可使用完整 ID、唯一短前缀或展示名（如 子agent1）。',
+    ].join('\n');
+  }
+
   recordEvent(
     parentSessionKey: string,
     subAgentId: string,
@@ -497,11 +515,18 @@ export class SubAgentManager {
     const owner = this.parentMap.get(ref);
     if (owner) return ref;
 
+    let prefixMatch: string | undefined;
     for (const [id, ownerKey] of this.parentMap) {
       if (ownerKey !== parentSessionKey) continue;
       if (this.displayNameByAgent.get(id) === ref) return id;
+      if (ref.length >= SubAgentManager.MIN_ID_PREFIX_LENGTH && id.startsWith(ref)) {
+        if (prefixMatch && prefixMatch !== id) {
+          return undefined;
+        }
+        prefixMatch = id;
+      }
     }
-    return undefined;
+    return prefixMatch;
   }
 
   private logSubAgentEvent(

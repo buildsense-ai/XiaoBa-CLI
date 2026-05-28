@@ -21,7 +21,7 @@ import {
 } from './runtime-feedback-inbox';
 import { TurnLogRecorder } from './turn-log-recorder';
 import { TurnContextBuilder } from './turn-context-builder';
-import { AgentTurnController } from './agent-turn-controller';
+import { AgentTurnController, AgentTurnRunError } from './agent-turn-controller';
 import { SessionLifecycleManager } from './session-lifecycle-manager';
 import { PlanRuntime } from './plan-runtime';
 import { SubAgentManager } from './sub-agent-manager';
@@ -31,6 +31,7 @@ export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-fee
 
 export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
 export const ERROR_MESSAGE = '不好意思，刚才处理出了点问题，你再试一次？';
+export const MODEL_TIMEOUT_MESSAGE = '模型中转请求超时了，我已经保留本轮已完成的工具结果和上下文。你可以直接说“继续”，我会从这里接上。';
 
 // ─── 接口定义 ───────────────────────────────────────────
 
@@ -405,6 +406,11 @@ export class AgentSession {
           return { text: '已停止当前请求。', visibleToUser: true };
         }
 
+        const recoveredMessages = this.getPartialMessagesFromError(err);
+        if (recoveredMessages) {
+          this.messages = recoveredMessages;
+        }
+
         // 不删除用户消息，而是添加一个错误回复，保持上下文连贯
         // 这样用户说"继续"时可以接上
         Logger.error(`[会话 ${this.key}] 处理失败: ${err.message}`);
@@ -412,16 +418,19 @@ export class AgentSession {
         // 识别多模态相关错误
         const errorMsg = err.message || String(err);
         const isVisionError = errorMsg.match(/image|vision|multimodal|media_type|base64.*not supported/i);
+        const isModelTimeoutError = this.isModelTimeoutError(err);
 
         let errorReply = ERROR_MESSAGE;
         if (isVisionError) {
           errorReply = '当前模型不支持图片识别。请使用支持多模态的模型（如 Claude 3.5 Sonnet 或 GPT-4V），或者用文字描述图片内容。';
+        } else if (isModelTimeoutError) {
+          errorReply = MODEL_TIMEOUT_MESSAGE;
         }
 
         // 添加错误回复到上下文，保持对话连贯性
         this.messages.push({
           role: 'assistant',
-          content: `[处理失败: ${err.message}]`
+          content: this.formatErrorContextMessage(err, isModelTimeoutError),
         });
         this.messages = this.turnContextBuilder.removeTransientMessages(this.messages);
         this.lifecycleManager.saveContext(this.messages);
@@ -590,6 +599,42 @@ export class AgentSession {
     return error?.name === 'AbortError'
       || error?.code === 'ERR_CANCELED'
       || /请求已取消|aborted|aborterror|canceled|cancelled/i.test(String(error?.message || ''));
+  }
+
+  private getPartialMessagesFromError(error: AgentTurnRunError): Message[] | null {
+    const partialMessages = error?.partialMessages;
+    if (!Array.isArray(partialMessages) || partialMessages.length === 0) {
+      return null;
+    }
+    return this.turnContextBuilder.removeTransientMessages(partialMessages);
+  }
+
+  private isModelTimeoutError(error: any): boolean {
+    const text = String(error?.message || error || '');
+    return /API错误\s*\(504\)|request_timed_out|request timed out|default_request_timeout_in_seconds|upstream request timeout|gateway timeout/i.test(text);
+  }
+
+  private formatErrorContextMessage(error: any, isModelTimeoutError: boolean): string {
+    const detail = this.sanitizeErrorMessage(error?.message || String(error));
+    if (isModelTimeoutError) {
+      return `[处理中断: 模型中转请求超时。已保留本轮已完成的工具结果和上下文；如果用户要求继续，请基于当前上下文继续，避免重复已经完成的工具步骤。错误摘要: ${detail}]`;
+    }
+    return `[处理失败: ${detail}]`;
+  }
+
+  private sanitizeErrorMessage(message: string): string {
+    const normalized = String(message || 'unknown error')
+      .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [redacted]')
+      .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[redacted]')
+      .replace(/("?api_?key"?\s*[:=]\s*)"?[^"\s,}]+/gi, '$1[redacted]')
+      .replace(/("?authorization"?\s*[:=]\s*)"?[^"\s,}]+/gi, '$1[redacted]')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const maxLength = 600;
+    if (normalized.length <= maxLength) {
+      return normalized;
+    }
+    return `${normalized.slice(0, maxLength)}...(已截断)`;
   }
 
 }
