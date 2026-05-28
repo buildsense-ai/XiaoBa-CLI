@@ -465,11 +465,22 @@ function findReusableLocalRelayKey(currentKey: any): string | undefined {
   }
 
   const prefix = String(currentKey?.prefix || '').trim();
-  if (prefix && !apiKey.startsWith(prefix)) {
+  if (!prefix || !matchesRelayKeyPrefix(apiKey, prefix)) {
     return undefined;
   }
 
   return apiKey;
+}
+
+function matchesRelayKeyPrefix(apiKey: string, prefix: string): boolean {
+  const marker = '...';
+  const markerIndex = prefix.indexOf(marker);
+  if (markerIndex >= 0) {
+    const start = prefix.slice(0, markerIndex);
+    const end = prefix.slice(markerIndex + marker.length);
+    return (!start || apiKey.startsWith(start)) && (!end || apiKey.endsWith(end));
+  }
+  return apiKey.startsWith(prefix);
 }
 
 function sanitizeCatsErrorData(data: unknown): unknown {
