@@ -51,7 +51,7 @@ describe('SkillHub connected install service', () => {
     const install = await new SkillHubService().install(fixture.entry.skillId);
 
     assert.equal(install.ok, true);
-    assert.equal(path.basename(install.skill.path), fixture.entry.skillId);
+    assert.equal(install.skill.path, path.join(testRoot, 'skills', 'lin', 'contract-review'));
     assert.equal(fs.existsSync(path.join(install.skill.path, 'SKILL.md')), true);
     assert.equal(fs.existsSync(path.join(install.skill.path, 'skill.json')), false);
     assert.equal(fs.existsSync(path.join(install.skill.path, 'REVIEW.json')), false);
@@ -70,7 +70,7 @@ describe('SkillHub connected install service', () => {
       () => new SkillHubService().install(fixture.entry.skillId),
       /checksum mismatch/i,
     );
-    assert.equal(fs.existsSync(path.join(testRoot, 'skills', 'contract-review')), false);
+    assert.equal(fs.existsSync(path.join(testRoot, 'skills', 'lin', 'contract-review')), false);
   });
 
   async function startFixtureServer(fixture: ReturnType<typeof createFixture>): Promise<void> {
@@ -84,15 +84,15 @@ describe('SkillHub connected install service', () => {
       assert.match(req.header('cookie') || '', /catsco_session=test-session/);
       res.json({ user: { id: 'usr_1', email: 'demo@example.com', displayName: 'Demo' }, roles: ['user'], permissions: [] });
     });
-    app.get('/api/skills/:skillId', (req, res) => {
-      assert.equal(req.params.skillId, fixture.entry.skillId);
-      res.json({ skill: fixture.entry, versions: [fixture.entry] });
-    });
     app.get('/api/trust/public-keys', (_req, res) => {
       res.json(fixture.trust);
     });
-    app.get('/api/skills/:skillId/versions/:version/download', (_req, res) => {
+    app.get(/^\/api\/skills\/(.+)\/versions\/([^/]+)\/download$/, (_req, res) => {
       res.type('application/octet-stream').send(fixture.packageBytes);
+    });
+    app.get(/^\/api\/skills\/(.+)$/, (req, res) => {
+      assert.equal(req.params[0], fixture.entry.skillId);
+      res.json({ skill: fixture.entry, versions: [fixture.entry] });
     });
     server = await listen(app);
     const address = server.address();
@@ -125,7 +125,7 @@ function createFixture() {
   const payload = {
     packageSchemaVersion: '1.0.0',
     manifest: {
-      id: 'skill.contract-review',
+      id: 'lin/contract-review',
       name: 'contract-review',
       displayName: '合同审查助手',
       version: '1.0.0',
@@ -136,7 +136,7 @@ function createFixture() {
       file('SKILL.md', '---\nname: contract-review\ndescription: 审查合同条款并识别常见风险。\n---\n\n# 合同审查助手\n'),
       file('README.md', '# 合同审查助手\n'),
       file('skill.json', JSON.stringify({
-        id: 'skill.contract-review',
+        id: 'lin/contract-review',
         name: 'contract-review',
         version: '1.0.0',
         description: '审查合同条款并识别常见风险。',

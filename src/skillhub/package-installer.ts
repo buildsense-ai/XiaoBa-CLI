@@ -38,8 +38,8 @@ export function installVerifiedSkillHubPackage(
   const manifest = packageObject.payload.manifest as any;
   const skillId = String(manifest.id || registryEntry.skillId || '').trim();
   const version = String(manifest.version || registryEntry.latestVersion || '').trim();
-  const installName = slugForInstallDir(skillId);
-  if (!skillId || !version || !installName) {
+  const installPath = installPathFromSkillId(skillId);
+  if (!skillId || !version || !installPath) {
     throw new SkillHubInstallError('SkillHub package manifest is missing id, name, or version.', 'MANIFEST_INCOMPLETE');
   }
 
@@ -50,7 +50,7 @@ export function installVerifiedSkillHubPackage(
 
   const skillsRoot = path.resolve(PathResolver.getSkillsPath());
   PathResolver.ensureDir(skillsRoot);
-  const targetDir = safeJoin(skillsRoot, installName);
+  const targetDir = safeJoin(skillsRoot, installPath);
   const tempDir = safeJoin(skillsRoot, `.skillhub-install-${process.pid}-${Date.now()}`);
 
   try {
@@ -65,6 +65,7 @@ export function installVerifiedSkillHubPackage(
       fs.writeFileSync(destination, Buffer.from(file.contentBase64, 'base64'));
     }
 
+    fs.mkdirSync(path.dirname(targetDir), { recursive: true });
     fs.renameSync(tempDir, targetDir);
     return {
       skillId,
@@ -79,14 +80,18 @@ export function installVerifiedSkillHubPackage(
   }
 }
 
-function slugForInstallDir(value: string): string {
-  const ascii = value
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80);
-  if (ascii) return ascii;
-  return `skill-${Buffer.from(value).toString('hex').slice(0, 24)}`;
+function installPathFromSkillId(value: string): string {
+  const parts = String(value || '').split('/').map(part => part.trim()).filter(Boolean);
+  if (parts.length !== 2) {
+    throw new SkillHubInstallError('SkillHub package id must be namespace/skill.', 'MANIFEST_ID_INVALID');
+  }
+  if (!parts.every(part => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(part))) {
+    throw new SkillHubInstallError(`Unsafe SkillHub package id: ${value}`, 'MANIFEST_ID_INVALID');
+  }
+  if (parts[0] === PathResolver.BASE_SKILL_NAMESPACE) {
+    throw new SkillHubInstallError('SkillHub packages cannot install into _base.', 'MANIFEST_ID_INVALID');
+  }
+  return parts.join('/');
 }
 
 function safeJoin(root: string, relativePath: string): string {

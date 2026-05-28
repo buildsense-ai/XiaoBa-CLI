@@ -106,8 +106,8 @@ describe('dashboard connected SkillHub API', () => {
   });
 
   test('quick shares an installed local skill through SkillHub submissions', async () => {
-    fs.mkdirSync(path.join(testRoot, 'skills', 'quick-demo'), { recursive: true });
-    fs.writeFileSync(path.join(testRoot, 'skills', 'quick-demo', 'SKILL.md'), [
+    fs.mkdirSync(path.join(testRoot, 'skills', 'lin', 'quick-demo'), { recursive: true });
+    fs.writeFileSync(path.join(testRoot, 'skills', 'lin', 'quick-demo', 'SKILL.md'), [
       '---',
       'name: quick-demo',
       'description: Quick demo skill',
@@ -126,9 +126,13 @@ describe('dashboard connected SkillHub API', () => {
     const share = await post('/api/skillhub/developer/share-local-skill', { skillName: 'quick-demo' });
     assert.equal(share.status, 201);
     assert.equal(share.body.ok, true);
+    assert.equal(share.body.skill.id, 'lin/quick-demo');
+    assert.equal(share.body.skill.localId, 'lin/quick-demo');
     assert.equal(share.body.skill.name, 'quick-demo');
     assert.equal(share.body.submission.request.quickShare, true);
+    assert.equal(share.body.submission.request.manifest.id, 'quick-demo');
     assert.equal(share.body.submission.request.manifest.name, 'quick-demo');
+    assert.equal(share.body.submission.normalizedManifest.id, 'lin/quick-demo');
     assert.equal(share.body.submission.request.manifest.minAgentVersion, '0.0.0');
     assert.deepEqual(share.body.submission.request.manifest.platforms, []);
     assert.equal(share.body.submission.request.source.files.some((file: any) => file.path === 'SKILL.md'), true);
@@ -209,20 +213,26 @@ describe('dashboard connected SkillHub API', () => {
       });
     });
     app.post('/api/developer/submissions', (req, res) => {
+      const manifest = {
+        ...req.body.manifest,
+        id: `lin/${req.body.manifest.name}`,
+      };
       res.status(201).json({
+        skill: { skillId: manifest.id, name: manifest.name },
         submission: {
           id: 'sub_quick_1',
           status: 'scan_pending',
-          manifest: req.body.manifest,
+          manifest,
+          normalizedManifest: manifest,
           source: req.body.source,
           request: req.body,
         },
       });
     });
     app.get('/api/skills', (_req, res) => res.json({ skills: [fixture.entry] }));
-    app.get('/api/skills/:skillId', (_req, res) => res.json({ skill: fixture.entry, versions: [fixture.entry] }));
     app.get('/api/trust/public-keys', (_req, res) => res.json(fixture.trust));
-    app.get('/api/skills/:skillId/versions/:version/download', (_req, res) => res.type('application/octet-stream').send(fixture.packageBytes));
+    app.get(/^\/api\/skills\/(.+)\/versions\/([^/]+)\/download$/, (_req, res) => res.type('application/octet-stream').send(fixture.packageBytes));
+    app.get(/^\/api\/skills\/(.+)$/, (_req, res) => res.json({ skill: fixture.entry, versions: [fixture.entry] }));
     cloudServer = await listen(app);
     cloudBaseUrl = serverBaseUrl(cloudServer);
   }
@@ -275,7 +285,7 @@ function createFixture() {
   const payload = {
     packageSchemaVersion: '1.0.0',
     manifest: {
-      id: 'skill.contract-review',
+      id: 'lin/contract-review',
       name: 'contract-review',
       displayName: '合同审查助手',
       version: '1.0.0',
@@ -284,7 +294,7 @@ function createFixture() {
     },
     files: [
       file('SKILL.md', '---\nname: contract-review\ndescription: 审查合同条款并识别常见风险。\n---\n\n# 合同审查助手\n'),
-      file('skill.json', '{"id":"skill.contract-review","name":"contract-review","version":"1.0.0"}\n'),
+      file('skill.json', '{"id":"lin/contract-review","name":"contract-review","version":"1.0.0"}\n'),
     ],
   };
   const signature = sign(payload, signingPrivateKeyPem, 'signing-test');

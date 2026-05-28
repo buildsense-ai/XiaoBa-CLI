@@ -13,9 +13,9 @@ describe('skill tool direct content mode', () => {
     originalCwd = process.cwd();
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skill-tool-'));
     process.chdir(testRoot);
-    fs.mkdirSync(path.join(testRoot, 'skills', 'demo'), { recursive: true });
+    fs.mkdirSync(path.join(testRoot, 'skills', 'lin', 'demo'), { recursive: true });
     fs.writeFileSync(
-      path.join(testRoot, 'skills', 'demo', 'SKILL.md'),
+      path.join(testRoot, 'skills', 'lin', 'demo', 'SKILL.md'),
       [
         '---',
         'name: demo',
@@ -41,8 +41,8 @@ describe('skill tool direct content mode', () => {
     assert.equal(result.ok, true);
     assert.equal(typeof result.content, 'string');
     assert.match(String(result.content), /\[skill:demo\]/);
-    assert.match(String(result.content), new RegExp(`Skill file: ${escapeRegExp(path.join(testRoot, 'skills', 'demo', 'SKILL.md'))}`));
-    assert.match(String(result.content), new RegExp(`Skill directory: ${escapeRegExp(path.join(testRoot, 'skills', 'demo'))}`));
+    assert.match(String(result.content), new RegExp(`Skill file: ${escapeRegExp(path.join(testRoot, 'skills', 'lin', 'demo', 'SKILL.md'))}`));
+    assert.match(String(result.content), new RegExp(`Skill directory: ${escapeRegExp(path.join(testRoot, 'skills', 'lin', 'demo'))}`));
     assert.match(String(result.content), /Resolve relative paths mentioned in this skill relative to Skill directory\./);
     assert.match(String(result.content), /--- SKILL\.md ---/);
     assert.match(String(result.content), /Use demo from /);

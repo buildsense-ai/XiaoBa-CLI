@@ -144,8 +144,8 @@ export class SkillHubService {
       throw error;
     }
 
-    const skill = findLocalSkill(skillName);
-    if (!skill) {
+    const localSkill = findLocalShareableSkill(skillName);
+    if (!localSkill) {
       const available = listLocalSkillNames().join(', ');
       const error: any = new Error(`Local skill not found: ${skillName}${available ? `. Available skills: ${available}` : ''}`);
       error.status = 404;
@@ -153,6 +153,7 @@ export class SkillHubService {
       throw error;
     }
 
+    const { skill, skillId } = localSkill;
     const localPath = path.dirname(skill.filePath);
     const files = collectSkillSourceFiles(localPath);
     if (!files.length) {
@@ -163,9 +164,10 @@ export class SkillHubService {
     }
     const submission = await this.client.quickShare({
       manifest: {
+        id: skill.metadata.name,
         name: skill.metadata.name,
         displayName: skill.metadata.name,
-        version: readLocalSkillVersion(localPath) || '1.0.0',
+        version: '1.0.0',
         description: skill.metadata.description,
         keywords: [skill.metadata.name, ...splitWords(skill.metadata.description)].slice(0, 8),
         triggerExamples: skill.metadata.argumentHint ? [`/${skill.metadata.name} ${skill.metadata.argumentHint}`] : [`/${skill.metadata.name}`],
@@ -183,6 +185,8 @@ export class SkillHubService {
     return {
       ok: true,
       skill: {
+        id: submission?.skill?.skillId || submission?.submission?.normalizedManifest?.id || skill.metadata.name,
+        localId: skillId,
         name: skill.metadata.name,
         description: skill.metadata.description,
         path: localPath,
@@ -332,27 +336,17 @@ function splitWords(text: string): string[] {
     .filter(item => item.length >= 2);
 }
 
-function readLocalSkillVersion(localPath: string): string | undefined {
-  for (const fileName of ['skill.json', '.xiaoba-bundled-skill.json']) {
-    const filePath = path.join(localPath, fileName);
-    if (!fs.existsSync(filePath)) continue;
-    try {
-      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      const version = stringOrUndefined(parsed.version);
-      if (version) return version;
-    } catch {
-      // Ignore optional metadata files that are not valid JSON.
-    }
-  }
-  return undefined;
-}
-
-function findLocalSkill(skillName: string): Skill | undefined {
+function findLocalShareableSkill(skillName: string): { skill: Skill; skillId: string } | undefined {
   for (const skillFile of listLocalSkillFiles()) {
+    const root = findSkillRoot(skillFile);
+    if (!root || !PathResolver.isShareableSkillFile(skillFile, root)) continue;
     try {
       const skill = SkillParser.parse(skillFile);
+      const skillId = PathResolver.getSkillIdFromFile(skillFile, root);
       const dirName = path.basename(path.dirname(skillFile));
-      if (skill.metadata.name === skillName || dirName === skillName) return skill;
+      if (skill.metadata.name === skillName || dirName === skillName || skillId === skillName) {
+        return skillId ? { skill, skillId } : undefined;
+      }
     } catch {
       // Ignore broken local skills so one bad folder does not block sharing others.
     }
@@ -363,8 +357,12 @@ function findLocalSkill(skillName: string): Skill | undefined {
 function listLocalSkillNames(): string[] {
   const names: string[] = [];
   for (const skillFile of listLocalSkillFiles()) {
+    const root = findSkillRoot(skillFile);
+    if (!root || !PathResolver.isShareableSkillFile(skillFile, root)) continue;
     try {
-      names.push(SkillParser.parse(skillFile).metadata.name);
+      const skill = SkillParser.parse(skillFile);
+      const skillId = PathResolver.getSkillIdFromFile(skillFile, root);
+      names.push(skillId || skill.metadata.name);
     } catch {
       names.push(path.basename(path.dirname(skillFile)));
     }
@@ -383,6 +381,16 @@ function listLocalSkillFiles(): string[] {
     files.push(...PathResolver.findSkillFiles(root));
   }
   return Array.from(new Set(files));
+}
+
+function findSkillRoot(skillFilePath: string): string | undefined {
+  return [
+    PathResolver.getSkillsPath(),
+    getUserDataSkillsPath(),
+  ].find(root => {
+    const relative = path.relative(path.resolve(root), path.resolve(skillFilePath));
+    return relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+  });
 }
 
 function getUserDataSkillsPath(): string {

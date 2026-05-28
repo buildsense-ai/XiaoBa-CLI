@@ -5500,10 +5500,12 @@
     }
 
     function renderSkillSourceTag(sk) {
+      const id = displaySkillHubId({ skillId: sk.skillId, folder: sk.folder, name: sk.name });
+      const identity = id ? ' <span class="tag">ID '+escapeHtml(id)+'</span>' : '';
       if (sk.skillHub) return ' <span class="tag green" title="通过 SkillHub 验签安装">SkillHub</span>';
       if (sk.source === 'system') return ' <span class="tag" title="系统关键 Skill，不允许禁用或删除">系统</span>';
       if (sk.source === 'bundled') return ' <span class="tag" title="应用内置 Skill，可禁用但不直接删除">内置</span>';
-      return '';
+      return identity;
     }
 
     function renderSkillActionButtons(sk) {
@@ -5523,6 +5525,24 @@
         actions.push('<button class="btn" disabled title="内置 Skill 可禁用，不能直接删除">内置 Skill</button>');
       }
       return '<div class="skill-actions">'+actions.join('')+'</div>';
+    }
+
+    function runtimeSkillName(value) {
+      return String(value?.name || value?.displayName || value?.skillId || '').trim();
+    }
+
+    function displaySkillHubId(value) {
+      const skillId = String(value?.skillId || value?.folder || '').trim();
+      if (!skillId) return '';
+      return skillId;
+    }
+
+    function renderLocalSkillIdentity(sk) {
+      const id = displaySkillHubId({ skillId: sk.skillId, folder: sk.folder, name: sk.name });
+      const parts = [
+        id ? '<span class="tag">ID '+escapeHtml(id)+'</span>' : '',
+      ].filter(Boolean);
+      return '<div class="skill-meta">'+parts.join('')+'</div>';
     }
 
     function renderSkills(skills) {
@@ -5687,16 +5707,18 @@
       grid.innerHTML = items.map(item => {
         const skillId = String(item.skillId || '');
         const latestVersion = String(item.latestVersion || '');
+        const runtimeName = runtimeSkillName(item);
+        const displayId = displaySkillHubId(item);
         const key = skillId + '@' + latestVersion;
         const installed = installedIds.has(key);
-        const tags = [...(item.categories || []), ...(item.tags || [])].slice(0, 4).map(tag => '<span class="tag">'+escapeHtml(tag)+'</span>').join('');
+        const tags = '<span class="tag">ID '+escapeHtml(displayId || skillId || '-')+'</span>' + [...(item.categories || []), ...(item.tags || [])].slice(0, 4).map(tag => '<span class="tag">'+escapeHtml(tag)+'</span>').join('');
         const installAttrs = installed || !skillId
           ? 'disabled'
           : 'data-skillhub-install="true" data-skill-id="'+escapeHtml(skillId)+'" data-version="'+escapeHtml(latestVersion)+'"';
         return '<div class="skill-card">'+
           '<div class="skill-name">'+escapeHtml(item.displayName || item.name || skillId)+' <span class="tag green">SkillHub</span></div>'+
           '<div class="skill-desc">'+escapeHtml(item.description || '')+'</div>'+
-          '<div class="skill-meta">'+tags+'<span class="tag">v'+escapeHtml(latestVersion || '-')+'</span><span class="tag">'+escapeHtml(item.riskLevel || 'low')+'</span></div>'+
+          '<div class="skill-meta">'+tags+'<span class="tag">v'+escapeHtml(latestVersion || '-')+'</span></div>'+
           '<div class="skill-files">'+escapeHtml((item.triggerExamples || []).slice(0, 3).join('；'))+'</div>'+
           '<div class="skill-actions"><button class="btn btn-primary" '+installAttrs+'>'+(installed?'已安装':'安装')+'</button></div>'+
         '</div>';

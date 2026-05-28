@@ -87,13 +87,13 @@ export class SkillHubClient {
   }
 
   async getSkill(skillId: string): Promise<SkillHubSkillDetailResponse> {
-    return this.request<SkillHubSkillDetailResponse>('GET', `/api/skills/${encodeURIComponent(skillId)}`);
+    return this.request<SkillHubSkillDetailResponse>('GET', `/api/skills/${encodeSkillIdPath(skillId)}`);
   }
 
   async getVersion(skillId: string, version: string): Promise<SkillHubSkillDetailResponse> {
     return this.request<SkillHubSkillDetailResponse>(
       'GET',
-      `/api/skills/${encodeURIComponent(skillId)}/versions/${encodeURIComponent(version)}`,
+      `/api/skills/${encodeSkillIdPath(skillId)}/versions/${encodeURIComponent(version)}`,
     );
   }
 
@@ -102,7 +102,7 @@ export class SkillHubClient {
   }
 
   async downloadPackage(entry: SkillHubRegistryEntry): Promise<Buffer> {
-    const path = `/api/skills/${encodeURIComponent(entry.skillId)}/versions/${encodeURIComponent(entry.latestVersion)}/download`;
+    const path = `/api/skills/${encodeSkillIdPath(entry.skillId)}/versions/${encodeURIComponent(entry.latestVersion)}/download`;
     const response = await this.fetchRaw('GET', path);
     return Buffer.from(await response.arrayBuffer());
   }
@@ -203,6 +203,14 @@ export class SkillHubClient {
 
     return response;
   }
+}
+
+function encodeSkillIdPath(skillId: string): string {
+  return String(skillId || '')
+    .split('/')
+    .filter(Boolean)
+    .map(part => encodeURIComponent(part))
+    .join('/');
 }
 
 function withStatus(error: Error, status: number): Error {
