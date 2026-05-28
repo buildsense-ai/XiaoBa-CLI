@@ -7,14 +7,14 @@ export class ShareSkillHubSkillTool implements Tool {
     description: [
       'Share one installed local Skill to SkillHub for cloud publishing.',
       'Use this only after the user clearly names the local skill they want to share.',
-      'Input skillName should be the namespaced local Skill ID, for example lin/remotion.',
+      'Input skillName should be the local Skill name, for example remotion.',
     ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
         skillName: {
           type: 'string',
-          description: 'Namespaced local skill ID or unique local skill name to share.',
+          description: 'Local skill name or local skill folder name to share.',
         },
         notes: {
           type: 'string',

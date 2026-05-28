@@ -51,7 +51,7 @@ describe('SkillHub connected install service', () => {
     const install = await new SkillHubService().install(fixture.entry.skillId);
 
     assert.equal(install.ok, true);
-    assert.equal(install.skill.path, path.join(testRoot, 'skills', 'lin', 'contract-review'));
+    assert.equal(install.skill.path, path.join(testRoot, 'skills', 'contract-review'));
     assert.equal(fs.existsSync(path.join(install.skill.path, 'SKILL.md')), true);
     assert.equal(fs.existsSync(path.join(install.skill.path, 'skill.json')), false);
     assert.equal(fs.existsSync(path.join(install.skill.path, 'REVIEW.json')), false);
@@ -70,7 +70,7 @@ describe('SkillHub connected install service', () => {
       () => new SkillHubService().install(fixture.entry.skillId),
       /checksum mismatch/i,
     );
-    assert.equal(fs.existsSync(path.join(testRoot, 'skills', 'lin', 'contract-review')), false);
+    assert.equal(fs.existsSync(path.join(testRoot, 'skills', 'contract-review')), false);
   });
 
   async function startFixtureServer(fixture: ReturnType<typeof createFixture>): Promise<void> {

@@ -106,8 +106,8 @@ describe('dashboard connected SkillHub API', () => {
   });
 
   test('quick shares an installed local skill through SkillHub submissions', async () => {
-    fs.mkdirSync(path.join(testRoot, 'skills', 'lin', 'quick-demo'), { recursive: true });
-    fs.writeFileSync(path.join(testRoot, 'skills', 'lin', 'quick-demo', 'SKILL.md'), [
+    fs.mkdirSync(path.join(testRoot, 'skills', 'quick-demo'), { recursive: true });
+    fs.writeFileSync(path.join(testRoot, 'skills', 'quick-demo', 'SKILL.md'), [
       '---',
       'name: quick-demo',
       'description: Quick demo skill',
@@ -127,7 +127,6 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(share.status, 201);
     assert.equal(share.body.ok, true);
     assert.equal(share.body.skill.id, 'lin/quick-demo');
-    assert.equal(share.body.skill.localId, 'lin/quick-demo');
     assert.equal(share.body.skill.name, 'quick-demo');
     assert.equal(share.body.submission.request.quickShare, true);
     assert.equal(share.body.submission.request.manifest.id, 'quick-demo');
@@ -136,6 +135,10 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(share.body.submission.request.manifest.minAgentVersion, '0.0.0');
     assert.deepEqual(share.body.submission.request.manifest.platforms, []);
     assert.equal(share.body.submission.request.source.files.some((file: any) => file.path === 'SKILL.md'), true);
+    const skillText = fs.readFileSync(path.join(testRoot, 'skills', 'quick-demo', 'SKILL.md'), 'utf8');
+    assert.match(skillText, /skillhub_author:\s+["']?lin["']?/);
+    assert.match(skillText, /skillhub_version:\s+["']?1\.0\.0["']?/);
+    assert.match(skillText, /skillhub_uploaded_at:/);
   });
 
   test('uses the official SkillHub cloud by default', () => {
@@ -216,6 +219,11 @@ describe('dashboard connected SkillHub API', () => {
       const manifest = {
         ...req.body.manifest,
         id: `lin/${req.body.manifest.name}`,
+        skillHub: {
+          author: 'lin',
+          version: '1.0.0',
+          uploadedAt: '2026-05-28T00:00:00.000Z',
+        },
       };
       res.status(201).json({
         skill: { skillId: manifest.id, name: manifest.name },

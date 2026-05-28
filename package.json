@@ -32,7 +32,6 @@
     "release:check": "node scripts/check-release-branding.mjs",
     "release:verify-version": "node scripts/verify-release-version.js",
     "skillhub:trust-root": "node scripts/update-skillhub-root-key.mjs",
-    "skills:migrate-namespaces": "node scripts/migrate-skills-to-namespaces.mjs",
     "version:sync": "node scripts/inject-version.js"
   },
   "keywords": [
@@ -107,7 +106,7 @@
       "electron/**/*",
       "dashboard/**/*",
       "prompts/**/*",
-      "skills/_base/**/*",
+      "skills/**/*",
       "!skills/**/*.pyo",
       "!skills/**/*.pyc",
       "!skills/**/__pycache__/**",

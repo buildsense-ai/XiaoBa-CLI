@@ -31,6 +31,11 @@ import {
 import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/upload';
 import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-grants';
 import { registerSkillHubRoutes } from './skillhub';
+import { SkillHubService } from '../../skillhub/service';
+import {
+  computeLocalSkillContentHash,
+  readSkillHubLocalMetadata,
+} from '../../skillhub/local-skill-metadata';
 // import { ReportGenerator } from '../../utils/report-generator';
 // import { LogUploader } from '../../utils/log-uploader';
 
@@ -896,8 +901,8 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
     try {
       const manager = new SkillManager();
       await manager.loadSkills();
-      const active = manager.getAllSkills().map(skillToDashboardPayload);
-      const disabled = findAllDisabledSkills(PathResolver.getSkillsPath());
+      const active = await Promise.all(manager.getAllSkills().map(skillToDashboardPayload));
+      const disabled = await findAllDisabledSkills(PathResolver.getSkillsPath());
       res.json([...active, ...disabled]);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -908,7 +913,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
     try {
       const manager = new SkillManager();
       await manager.loadSkills();
-      res.json(manager.getAllSkills().map(skillToDashboardPayload));
+      res.json(await Promise.all(manager.getAllSkills().map(skillToDashboardPayload)));
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -1606,18 +1611,16 @@ function getSkillFiles(skillFilePath: string): string[] {
   } catch { return []; }
 }
 
-function skillToDashboardPayload(skill: Skill): any {
-  const installInfo = getSkillHubInstallInfo(skill.filePath);
+async function skillToDashboardPayload(skill: Skill): Promise<any> {
+  const installInfo = await getSkillHubInstallInfo(skill);
   const skillDir = path.dirname(skill.filePath);
   const skillsRoot = PathResolver.getSkillsPath();
-  const skillId = PathResolver.getSkillIdFromFile(skill.filePath, skillsRoot);
   return {
     name: skill.metadata.name,
     description: skill.metadata.description,
     argumentHint: skill.metadata.argumentHint || null,
     userInvocable: skill.metadata.userInvocable !== false,
     path: skill.filePath,
-    skillId,
     folder: path.basename(skillDir),
     relativePath: path.relative(skillsRoot, skillDir),
     files: getSkillFiles(skill.filePath),
@@ -1627,8 +1630,26 @@ function skillToDashboardPayload(skill: Skill): any {
   };
 }
 
-function getSkillHubInstallInfo(skillFilePath: string): any {
-  return null;
+async function getSkillHubInstallInfo(skill: Skill): Promise<any> {
+  const metadata = readSkillHubLocalMetadata(skill.filePath);
+  if (!metadata?.author || !metadata.version || !metadata.uploadedAt) return null;
+  const skillId = `${metadata.author}/${skill.metadata.name}`;
+  const info: any = {
+    author: metadata.author,
+    version: metadata.version,
+    uploadedAt: metadata.uploadedAt,
+    modified: 'unknown',
+  };
+  try {
+    const version = await new SkillHubService().getPublishedVersion(skillId, metadata.version);
+    if (version?.contentHash) {
+      const localHash = computeLocalSkillContentHash(path.dirname(skill.filePath));
+      info.modified = localHash === version.contentHash ? false : true;
+    }
+  } catch {
+    info.modified = 'unknown';
+  }
+  return info;
 }
 
 function getSkillManagementInfo(skillFilePath: string): SkillManagementInfo {
@@ -1636,20 +1657,16 @@ function getSkillManagementInfo(skillFilePath: string): SkillManagementInfo {
   const skillsRoot = PathResolver.getSkillsPath();
   const relative = path.relative(skillsRoot, dir);
   const parts = relative.split(path.sep).filter(Boolean);
-  const source: SkillSource = parts.some(part => SYSTEM_SKILL_DIRS.has(part))
-    ? 'system'
-    : PathResolver.isBaseSkillFile(skillFilePath, skillsRoot) || fs.existsSync(path.join(dir, BUNDLED_SKILL_MARKER))
-      ? 'bundled'
-      : 'user';
+  const source: SkillSource = parts.some(part => SYSTEM_SKILL_DIRS.has(part)) ? 'system' : 'user';
 
   return {
     source,
     protected: source === 'system',
     canDisable: source !== 'system',
     canDelete: source === 'user',
-      canShare: source === 'user' && PathResolver.isShareableSkillFile(skillFilePath, skillsRoot),
-    };
-  }
+    canShare: source === 'user',
+  };
+}
 
 function formatSkillDeleteBlockedMessage(management: SkillManagementInfo): string {
   if (management.source === 'system') {
@@ -1682,10 +1699,9 @@ function findAllDisabledSkills(basePath: string): any[] {
     results.push({
       name: nm ? nm[1].trim() : path.basename(path.dirname(disabledFile)),
       description: desc ? desc[1].trim() : '',
-        enabled: false,
-        path: disabledFile,
-        skillId: PathResolver.getSkillIdFromFile(disabledFile, PathResolver.getSkillsPath()),
-        folder: path.basename(path.dirname(disabledFile)),
+      enabled: false,
+      path: disabledFile,
+      folder: path.basename(path.dirname(disabledFile)),
       relativePath: path.relative(PathResolver.getSkillsPath(), path.dirname(disabledFile)),
       files: getSkillFiles(disabledFile),
       ...management,
@@ -1696,23 +1712,7 @@ function findAllDisabledSkills(basePath: string): any[] {
 
 function findStructuredDisabledSkillFiles(basePath: string): string[] {
   if (!fs.existsSync(basePath)) return [];
-  const root = path.resolve(basePath);
-  const results: string[] = [];
-  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const namespacePath = path.join(root, entry.name);
-    if (entry.name === PathResolver.BASE_SKILL_NAMESPACE) {
-      results.push(...findDisabledSkillFilesRecursive(namespacePath));
-      continue;
-    }
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(entry.name)) continue;
-    for (const skillEntry of fs.readdirSync(namespacePath, { withFileTypes: true })) {
-      if (!skillEntry.isDirectory() || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(skillEntry.name)) continue;
-      const disabledFile = path.join(namespacePath, skillEntry.name, 'SKILL.md.disabled');
-      if (fs.existsSync(disabledFile)) results.push(disabledFile);
-    }
-  }
-  return results;
+  return findDisabledSkillFilesRecursive(path.resolve(basePath));
 }
 
 function findDisabledSkillFilesRecursive(basePath: string): string[] {

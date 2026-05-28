@@ -63,5 +63,7 @@ export interface SkillHubPackageInstallMarker {
   installedAt: string;
 }
 
-export type SkillHubRegistryEntry = VerifierRegistryEntry;
+export type SkillHubRegistryEntry = VerifierRegistryEntry & {
+  contentHash?: string;
+};
 export type { SkillHubTrustResponse };

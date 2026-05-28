@@ -5,6 +5,9 @@ import { SkillParser } from '../skills/skill-parser';
 import type { Skill } from '../types/skill';
 import { PathResolver } from '../utils/path-resolver';
 import { SkillHubClient } from './client';
+import {
+  writeSkillHubLocalMetadata,
+} from './local-skill-metadata';
 import { installVerifiedSkillHubPackage } from './package-installer';
 import { verifySkillHubPackage } from './package-verifier';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS } from './trusted-keys';
@@ -153,7 +156,7 @@ export class SkillHubService {
       throw error;
     }
 
-    const { skill, skillId } = localSkill;
+    const { skill } = localSkill;
     const localPath = path.dirname(skill.filePath);
     const files = collectSkillSourceFiles(localPath);
     if (!files.length) {
@@ -181,12 +184,15 @@ export class SkillHubService {
         files,
       },
     });
+    const skillHubMetadata = skillHubMetadataFromShareResponse(submission);
+    if (skillHubMetadata) {
+      writeSkillHubLocalMetadata(skill.filePath, skillHubMetadata);
+    }
 
     return {
       ok: true,
       skill: {
         id: submission?.skill?.skillId || submission?.submission?.normalizedManifest?.id || skill.metadata.name,
-        localId: skillId,
         name: skill.metadata.name,
         description: skill.metadata.description,
         path: localPath,
@@ -197,6 +203,11 @@ export class SkillHubService {
       latestVersion: submission?.latestVersion,
       contentHash: submission?.contentHash,
     };
+  }
+
+  async getPublishedVersion(skillId: string, version: string): Promise<SkillHubRegistryEntry | undefined> {
+    const detail = await this.client.getVersion(skillId, version);
+    return detail.version || detail.skill;
   }
 
   private async resolveRegistryEntry(skillId: string, version?: string): Promise<SkillHubRegistryEntry> {
@@ -336,16 +347,13 @@ function splitWords(text: string): string[] {
     .filter(item => item.length >= 2);
 }
 
-function findLocalShareableSkill(skillName: string): { skill: Skill; skillId: string } | undefined {
+function findLocalShareableSkill(skillName: string): { skill: Skill } | undefined {
   for (const skillFile of listLocalSkillFiles()) {
-    const root = findSkillRoot(skillFile);
-    if (!root || !PathResolver.isShareableSkillFile(skillFile, root)) continue;
     try {
       const skill = SkillParser.parse(skillFile);
-      const skillId = PathResolver.getSkillIdFromFile(skillFile, root);
       const dirName = path.basename(path.dirname(skillFile));
-      if (skill.metadata.name === skillName || dirName === skillName || skillId === skillName) {
-        return skillId ? { skill, skillId } : undefined;
+      if (skill.metadata.name === skillName || dirName === skillName) {
+        return { skill };
       }
     } catch {
       // Ignore broken local skills so one bad folder does not block sharing others.
@@ -357,12 +365,9 @@ function findLocalShareableSkill(skillName: string): { skill: Skill; skillId: st
 function listLocalSkillNames(): string[] {
   const names: string[] = [];
   for (const skillFile of listLocalSkillFiles()) {
-    const root = findSkillRoot(skillFile);
-    if (!root || !PathResolver.isShareableSkillFile(skillFile, root)) continue;
     try {
       const skill = SkillParser.parse(skillFile);
-      const skillId = PathResolver.getSkillIdFromFile(skillFile, root);
-      names.push(skillId || skill.metadata.name);
+      names.push(skill.metadata.name);
     } catch {
       names.push(path.basename(path.dirname(skillFile)));
     }
@@ -391,6 +396,17 @@ function findSkillRoot(skillFilePath: string): string | undefined {
     const relative = path.relative(path.resolve(root), path.resolve(skillFilePath));
     return relative && !relative.startsWith('..') && !path.isAbsolute(relative);
   });
+}
+
+function skillHubMetadataFromShareResponse(response: any): { author: string; version: string; uploadedAt: string } | undefined {
+  const metadata = response?.skillHub || response?.submission?.skillHub || response?.submission?.normalizedManifest?.skillHub;
+  const author = String(metadata?.author || '').trim();
+  const version = String(metadata?.version || response?.latestVersion || response?.packageVersion?.latestVersion || '').trim();
+  const uploadedAt = String(metadata?.uploadedAt || metadata?.uploaded_at || response?.submission?.normalizedManifest?.skillhub_uploaded_at || '').trim();
+  if (author && version && uploadedAt) {
+    return { author, version, uploadedAt };
+  }
+  return undefined;
 }
 
 function getUserDataSkillsPath(): string {
