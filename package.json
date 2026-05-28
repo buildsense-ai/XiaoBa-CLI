@@ -109,6 +109,7 @@
       "skills/agent-browser/**/*",
       "skills/report/**/*",
       "skills/self-evolution/**/*",
+      "skills/log-review/**/*",
       "!skills/**/*.pyo",
       "!skills/**/*.pyc",
       "!skills/**/__pycache__/**",

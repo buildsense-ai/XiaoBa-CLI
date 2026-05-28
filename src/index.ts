@@ -8,6 +8,7 @@ import { registerSkillCommand } from './commands/skill';
 import { feishuCommand } from './commands/feishu';
 import { runtimeCommand } from './commands/runtime';
 import { APP_VERSION } from './version';
+import { registerReviewCommand } from './commands/review';
 
 function main() {
   const program = new Command();
@@ -83,6 +84,7 @@ function main() {
     .action(runtimeCommand);
 
   registerSkillCommand(program);
+  registerReviewCommand(program);
 
   program.action(() => {
     chatCommand({ interactive: true });
