@@ -5501,7 +5501,7 @@
 
     function renderSkillSourceTag(sk) {
       if (sk.skillHub) return ' <span class="tag green" title="SkillHub shared skill">SkillHub</span>';
-      if (sk.source === 'system') return ' <span class="tag" title="System skill">??</span>';
+      if (sk.source === 'system') return ' <span class="tag" title="System skill">system</span>';
       return '';
     }
 
@@ -5509,15 +5509,15 @@
       const name = skillJsArg(sk.name);
       const actions = [];
       if (sk.canDisable === false) {
-        actions.push('<button class="btn" disabled>????</button>');
+        actions.push('<button class="btn" disabled>Protected</button>');
       } else {
-        actions.push('<button class="btn" onclick="toggleSkill(\''+name+'\',' +(sk.enabled!==false)+')">'+(sk.enabled===false?'??':'??')+'</button>');
+        actions.push('<button class="btn" onclick="toggleSkill(\''+name+'\',' +(sk.enabled!==false)+')">'+(sk.enabled===false?'Enable':'Disable')+'</button>');
       }
       if (sk.canShare) {
         actions.push('<button class="btn btn-primary" onclick="shareLocalSkillToSkillHub(\''+name+'\')">Share</button>');
       }
       if (sk.canDelete) {
-        actions.push('<button class="btn btn-danger" onclick="deleteSkill(\''+name+'\')">??</button>');
+        actions.push('<button class="btn btn-danger" onclick="deleteSkill(\''+name+'\')">Delete</button>');
       }
       return '<div class="skill-actions">'+actions.join('')+'</div>';
     }
@@ -5541,15 +5541,15 @@
     function renderSkills(skills) {
       document.getElementById('skill-count').textContent = skills.length;
       const g = document.getElementById('skills-grid');
-      if (!skills.length) { g.innerHTML = '<div class="loading">?? Skills</div>'; return; }
-      g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">???</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">????</span>':'')+(sk.autoInvocable?'<span class="tag active">????</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+renderSkillHubLocalMeta(sk)+renderSkillGrowth(sk.name)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+'</div>').join('');
+      if (!skills.length) { g.innerHTML = '<div class="loading">No Skills</div>'; return; }
+      g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">disabled</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">user</span>':'')+(sk.autoInvocable?'<span class="tag active">auto</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+renderSkillHubLocalMeta(sk)+renderSkillGrowth(sk.name)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+'</div>').join('');
     }
 
     function renderLocalSkillStore(skills) {
       const g = document.getElementById('store-grid');
       if (!g) return;
-      if (!skills.length) { g.innerHTML = '<div class="loading">?? Skills</div>'; return; }
-      g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">???</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">????</span>':'')+(sk.autoInvocable?'<span class="tag active">????</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+renderSkillHubLocalMeta(sk)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+renderSkillActionButtons(sk)+'</div>').join('');
+      if (!skills.length) { g.innerHTML = '<div class="loading">No Skills</div>'; return; }
+      g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">disabled</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">user</span>':'')+(sk.autoInvocable?'<span class="tag active">auto</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+renderSkillHubLocalMeta(sk)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+renderSkillActionButtons(sk)+'</div>').join('');
     }
 
     async function shareLocalSkillToSkillHub(skillName) {
@@ -5693,18 +5693,16 @@
       const grid = document.getElementById('skillhub-registry-grid');
       if (!grid) return;
       if (!items.length) {
-        grid.innerHTML = '<div class="loading">没有找到匹配的 Skill。</div>';
+        grid.innerHTML = '<div class="loading">No matching Skills found.</div>';
         return;
       }
       const installedIds = new Set((skillHubState.installed || []).map(item => item.skillId + '@' + item.version));
       grid.innerHTML = items.map(item => {
         const skillId = String(item.skillId || '');
         const latestVersion = String(item.latestVersion || '');
-        const runtimeName = runtimeSkillName(item);
-        const displayId = displaySkillHubId(item);
         const key = skillId + '@' + latestVersion;
         const installed = installedIds.has(key);
-        const tags = '<span class="tag">ID '+escapeHtml(displayId || skillId || '-')+'</span>' + [...(item.categories || []), ...(item.tags || [])].slice(0, 4).map(tag => '<span class="tag">'+escapeHtml(tag)+'</span>').join('');
+        const tags = [item.author?.name ? '<span class="tag">author '+escapeHtml(item.author.name)+'</span>' : '', ...(item.categories || []), ...(item.tags || [])].slice(0, 5).map(tag => String(tag).startsWith('<span') ? tag : '<span class="tag">'+escapeHtml(tag)+'</span>').join('');
         const installAttrs = installed || !skillId
           ? 'disabled'
           : 'data-skillhub-install="true" data-skill-id="'+escapeHtml(skillId)+'" data-version="'+escapeHtml(latestVersion)+'"';
@@ -5712,8 +5710,8 @@
           '<div class="skill-name">'+escapeHtml(item.displayName || item.name || skillId)+' <span class="tag green">SkillHub</span></div>'+
           '<div class="skill-desc">'+escapeHtml(item.description || '')+'</div>'+
           '<div class="skill-meta">'+tags+'<span class="tag">v'+escapeHtml(latestVersion || '-')+'</span></div>'+
-          '<div class="skill-files">'+escapeHtml((item.triggerExamples || []).slice(0, 3).join('；'))+'</div>'+
-          '<div class="skill-actions"><button class="btn btn-primary" '+installAttrs+'>'+(installed?'已安装':'安装')+'</button></div>'+
+          '<div class="skill-files">'+escapeHtml((item.triggerExamples || []).slice(0, 3).join(', '))+'</div>'+
+          '<div class="skill-actions"><button class="btn btn-primary" '+installAttrs+'>'+(installed?'Installed':'Install')+'</button></div>'+
         '</div>';
       }).join('');
     }
@@ -5729,19 +5727,19 @@
     }
 
     async function installSkillHubSkill(skillId, version) {
-      pulsePetState('thinking', '正在安装 Skill...', 1600);
+      pulsePetState('thinking', 'Installing Skill...', 1600);
       try {
         const data = await parseSimpleResponse(await fetch(API + '/api/skillhub/install', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({ skillId, version }),
         }));
-        pulsePetState('success', 'Skill 已安装', 2200);
-        alert('安装完成：' + (data.skill?.name || skillId));
+        pulsePetState('success', 'Skill installed', 2200);
+        alert('Install complete: ' + (data.skill?.name || skillId));
         await refreshSkillHubPage();
       } catch (e) {
-        pulsePetState('error', '安装失败', 2600);
-        alert('安装失败：' + (e.message || String(e)));
+        pulsePetState('error', 'Install failed', 2600);
+        alert('Install failed: ' + (e.message || String(e)));
       }
     }
 
