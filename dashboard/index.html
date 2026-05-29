@@ -909,9 +909,9 @@
 
     .chat-relay-model-panel {
       display: grid;
-      gap: 10px;
-      margin-top: 14px;
-      padding-top: 14px;
+      gap: 8px;
+      margin-top: 10px;
+      padding-top: 10px;
       border-top: 1px solid rgba(132, 156, 185, 0.22);
     }
 
@@ -931,6 +931,19 @@
     .chat-relay-model-panel .relay-model-list {
       grid-template-columns: 1fr;
       margin-top: 0;
+    }
+
+    .chat-relay-model-panel .relay-model-choice {
+      min-height: 64px;
+      padding: 9px 10px;
+    }
+
+    .chat-relay-model-panel .relay-model-label {
+      font-size: 13px;
+    }
+
+    .chat-relay-model-panel .relay-model-meta {
+      font-size: 10px;
     }
 
     .model-source-form {
@@ -2686,6 +2699,16 @@
       justify-content: center;
     }
 
+    .chat-state-card.compact {
+      gap: 8px;
+      padding: 10px;
+    }
+
+    .chat-state-card.compact .chat-muted {
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
     .chat-state-card.ready {
       border-color: rgba(30,169,113,0.28);
       background: rgba(30,169,113,0.08);
@@ -2711,6 +2734,10 @@
       display: grid;
       grid-template-columns: 1fr;
       gap: 8px;
+    }
+
+    .chat-step-list.compact {
+      gap: 6px;
     }
 
     .chat-step-row {
@@ -3620,8 +3647,10 @@
     .chat-input-bar textarea {
       width: 100%;
       min-height: 40px;
-      max-height: 160px;
+      max-height: 220px;
       resize: none;
+      overflow-y: hidden;
+      scrollbar-gutter: stable;
       border: 0;
       box-shadow: none;
       background: transparent;
@@ -3727,6 +3756,9 @@
       }
       .chat-window {
         min-height: 560px;
+      }
+      .chat-input-bar textarea {
+        max-height: 180px;
       }
       body.chat-active .floating-pet {
         bottom: 86px;
@@ -4633,7 +4665,7 @@
             <div class="chat-connect-header">
               <div>
                 <h3>CatsCo 连接</h3>
-                <div class="chat-muted chat-connect-intro">Dashboard Chat 连接同一个 CatsCompany 网页会话；本地 agent 通过 CatsCompany connector 回复。</div>
+                <div class="chat-muted chat-connect-intro">连接 CatsCompany 网页会话，本地 agent 回复。</div>
               </div>
               <div class="chat-connect-controls">
                 <span class="status-dot stopped" id="cats-chat-state">checking</span>
@@ -4644,7 +4676,7 @@
             <div class="chat-state-card warning" id="cats-state-card">
               <div>
                 <div class="chat-state-title" id="cats-state-title">正在检查 CatsCo Chat</div>
-                <div class="chat-muted" id="cats-state-copy">检查模型来源、CatsCo 账号、agent 绑定和 CatsCompany connector。</div>
+                <div class="chat-muted" id="cats-state-copy">检查模型、账号和 connector。</div>
               </div>
               <button class="btn btn-primary" id="cats-state-action" onclick="runCatsNextAction()">查看</button>
             </div>
@@ -4660,7 +4692,6 @@
               <div class="chat-connected-actions">
                 <button class="btn btn-success" onclick="setupCatsBot()" id="cats-setup-btn">检查并启动</button>
                 <button class="btn" onclick="resetCatsAuth()">切换账号</button>
-                <button class="btn" onclick="toggleCatsAdvanced()">高级设置</button>
               </div>
             </div>
 
@@ -5410,7 +5441,7 @@
         document.querySelector('.sidebar-brand-ver').textContent = 'v' + (data.version || '-');
         renderStatus(data);
         renderServices(data.services || []);
-        fetchReadiness();
+        await fetchReadiness();
         document.getElementById('footer-platform').textContent = data.platform || '-';
         document.getElementById('footer-node').textContent = data.nodeVersion || '-';
         document.getElementById('topbar-status').textContent = '在线';
@@ -6439,10 +6470,10 @@
       const service=catsState.service||{};
       const configured=Boolean(catsState.configured);
       const activationCopy=service.status==='running'
-        ? '切换后会自动重启 connector 使用新模型。'
+        ? '切换后自动重启。'
         : configured
-          ? '切换后会尝试直接启动 connector。'
-          : '启动前先选模型，随后点击“检查并启动”。';
+          ? '切换后会尝试直接启动。'
+          : '先选模型，再检查启动。';
       if(!models.length){
         panel.innerHTML='<div class="runtime-note warning">CatsCo 中转暂未提供可用模型。</div>';
         return;
@@ -7184,19 +7215,30 @@
       if (text) pulsePetState(isError ? 'error' : 'thinking', isError ? '连接异常' : text, isError ? 2600 : 1200);
     }
 
+    function unlockCatsAuthFields(focusAccount=false){
+      ['cats-account','cats-password','cats-email','cats-code','cats-username','cats-register-password'].forEach(id=>{
+        const input=document.getElementById(id);
+        if(input)input.disabled=false;
+      });
+      ['cats-auth-btn','cats-register-btn','cats-code-btn'].forEach(id=>{
+        const button=document.getElementById(id);
+        if(button)button.disabled=false;
+      });
+      if(focusAccount){
+        setTimeout(()=>{
+          const account=document.getElementById('cats-account');
+          if(account && !account.disabled)account.focus();
+        }, 0);
+      }
+    }
+
     function setCatsAuthMode(mode){
       catsAuthMode=mode;
       document.getElementById('cats-login-fields').style.display=mode==='login'?'block':'none';
       document.getElementById('cats-register-fields').style.display=mode==='register'?'block':'none';
+      unlockCatsAuthFields(mode==='login');
       setCatsAction('');
       updateCatsLayoutState();
-    }
-
-    function toggleCatsAdvanced(){
-      const details=document.getElementById('cats-connection-details');
-      const advanced=document.getElementById('cats-advanced');
-      if(details)details.open=true;
-      if(advanced)advanced.open=!advanced.open;
     }
 
     function setCatsConnectCollapsed(collapsed, manual=false){
@@ -7263,7 +7305,7 @@
           status:'blocked',
           badge:'checking',
           title:'正在读取启动状态',
-          copy:appReadinessError||'等待模型来源和 CatsCo readiness 检查完成。',
+          copy:appReadinessError||'正在检查模型和连接状态。',
           action:'settings',
           actionLabel:'打开设置',
           inputPlaceholder:'等待启动状态检查',
@@ -7288,7 +7330,7 @@
           status:'blocked',
           badge:'blocked',
           title:'先完成模型来源',
-          copy:firstReadinessProblem(modelSection)||'需要配置自定义模型后，本地 agent 才能回复 CatsCo Chat。',
+          copy:firstReadinessProblem(modelSection)||'请选择可用模型来源。',
           action:'settings',
           actionLabel:'打开设置',
           inputPlaceholder:'先完成模型来源设置',
@@ -7300,7 +7342,7 @@
           status:'blocked',
           badge:'blocked',
           title:'完善 CatsCo 连接',
-          copy:firstReadinessProblem(catscoSection)||'CatsCo Chat readiness 未通过。',
+          copy:firstReadinessProblem(catscoSection)||'连接检查未通过。',
           action:'setup',
           actionLabel:'检查连接',
           inputPlaceholder:'先完成 CatsCo 连接检查',
@@ -7312,7 +7354,7 @@
           status:'blocked',
           badge:'bind',
           title:'绑定 CatsCo agent',
-          copy:'账号已登录，需要创建或绑定本地 agent 在 CatsCo 中的身份。',
+          copy:'登录已完成，需要绑定本地 agent。',
           action:'setup',
           actionLabel:'绑定 agent',
           inputPlaceholder:'先绑定 CatsCo agent',
@@ -7324,7 +7366,7 @@
           status:'warning',
           badge:'start',
           title:'启动 CatsCompany connector',
-          copy:'账号和 agent 已绑定，启动后 CatsCompany 网页消息会进入本地 runtime。',
+          copy:'已绑定，启动后接收网页消息。',
           action:'setup',
           actionLabel:'检查并启动',
           inputPlaceholder:'先启动 CatsCompany connector',
@@ -7336,7 +7378,7 @@
           status:'blocked',
           badge:'topic',
           title:'准备 Chat 会话',
-          copy:'账号和 agent 已就绪，但还没有拿到可对话的 topic。',
+          copy:'正在准备可对话会话。',
           action:'setup',
           actionLabel:'重新检查',
           inputPlaceholder:'先准备 Chat 会话',
@@ -7347,7 +7389,7 @@
         status:'ready',
         badge:'ready',
         title:'可以直接对话',
-        copy:'消息会发送到 CatsCompany 网页会话，本地 agent 通过 CatsCompany connector 回复。',
+        copy:'已连接网页会话，本地 agent 会回复。',
         action:'refresh',
         actionLabel:'刷新消息',
         inputPlaceholder:'输入消息，Enter 发送，Shift+Enter 换行',
@@ -7377,19 +7419,29 @@
         {label:'CatsCompany connector', status:running?'pass':(configured?'warning':'fail'), meta:running?'运行中':'未启动'},
         {label:'Chat 会话', status:topicReady?'pass':'fail', meta:topicReady?'已就绪':'等待 topic'},
       ];
-      list.innerHTML=steps.map(step=>
+      const visibleSteps=connected
+        ? steps.filter(step=>step.status==='fail')
+        : steps;
+      list.classList.toggle('compact', connected);
+      if(!visibleSteps.length){
+        list.innerHTML='';
+        return;
+      }
+      list.innerHTML=visibleSteps.map(step=>
         '<div class="chat-step-row '+step.status+'"><strong>'+escapeHtml(step.label)+'</strong><span>'+escapeHtml(step.meta||'')+'</span></div>'
       ).join('');
     }
 
     function updateCatsChatGate(stage){
       const state=document.getElementById('cats-chat-state');
+      const connected=isCatsLoggedIn();
+      const connectedCardOwnsAction=connected && (stage.action==='setup' || stage.action==='refresh');
       if(state){
         state.textContent=stage.badge;
         state.className='status-dot '+readinessStatusClass(stage.status);
       }
       const card=document.getElementById('cats-state-card');
-      if(card)card.className='chat-state-card '+stage.status;
+      if(card)card.className='chat-state-card '+stage.status+(connectedCardOwnsAction?' compact':'');
       const title=document.getElementById('cats-state-title');
       if(title)title.textContent=stage.title;
       const copy=document.getElementById('cats-state-copy');
@@ -7398,7 +7450,7 @@
       catsNextAction=stage.action;
       if(action){
         action.textContent=stage.actionLabel||'查看';
-        action.style.display=stage.action==='none'?'none':'inline-flex';
+        action.style.display=stage.action==='none'||connectedCardOwnsAction?'none':'inline-flex';
       }
       const details=document.getElementById('cats-details-summary');
       if(details)details.textContent=stage.key==='ready'?'ready':'needs attention';
@@ -7409,6 +7461,7 @@
       if(input){
         input.disabled=locked;
         input.placeholder=stage.inputPlaceholder||'连接 CatsCo 后开始对话';
+        autoResizeCatsMessageInput();
       }
       if(send)send.disabled=locked;
       if(attach){
@@ -7543,12 +7596,19 @@
       if(wsInput && !wsInput.value) wsInput.value=catsState.serverUrl||CATS_DEFAULT_WS_URL;
       document.getElementById('cats-topic-label').textContent=catsState.topicId?('Topic: '+catsState.topicId):'尚未绑定会话';
       document.getElementById('cats-auth-panel').style.display=connected?'none':'grid';
+      if(!connected)unlockCatsAuthFields(false);
       document.getElementById('cats-connected-card').style.display=connected?'block':'none';
       const loginCopy=document.getElementById('cats-login-copy');
       if(loginCopy)loginCopy.textContent=catsAuthHelpText();
       document.getElementById('cats-connected-copy').textContent=configured
-        ? (running?'可以直接开始对话。':'账号和 agent 已绑定，点击“检查并启动”恢复 CatsCompany connector。')
-        : '账号已登录，点击“检查并启动”完成 CatsCo agent 绑定。';
+        ? (running?'已就绪。':'已绑定，启动 connector 后可回复。')
+        : '登录已完成，绑定后可回复。';
+      const setupBtn=document.getElementById('cats-setup-btn');
+      if(setupBtn){
+        const showSetup=connected && stage.action==='setup';
+        setupBtn.style.display=showSetup?'inline-flex':'none';
+        setupBtn.textContent=!configured?'绑定并启动':running?'重新检查':'检查并启动';
+      }
       renderCatsRelayModelPanel();
       renderCatsChecklist(stage);
       updateCatsChatGate(stage);
@@ -7609,7 +7669,9 @@
         renderCatsStatus();
         setCatsAction('已连接。可以直接开始对话。');
         pulsePetState('success', '已连接', 2200);
-        fetchStatus();
+        await fetchStatus();
+        await fetchCatsStatus();
+        renderCatsStatus();
         await loadCatsMessages(true, {reset:true, forceBottom:true});
       }catch(e){
         setCatsAction('绑定失败：'+e.message,true);
@@ -7631,7 +7693,10 @@
         document.getElementById('cats-password').value='';
         document.getElementById('cats-messages').innerHTML='<div class="loading">连接 CatsCo 后开始对话</div>';
         setCatsAuthMode('login');
+        renderCatsStatus();
         await fetchCatsStatus();
+        setCatsAuthMode('login');
+        unlockCatsAuthFields(true);
         applyPetBaseline();
         setCatsAction('已清除本地登录态。');
       }catch(e){
@@ -8637,6 +8702,16 @@
       }
     }
 
+    function autoResizeCatsMessageInput(){
+      const input=document.getElementById('cats-message-input');
+      if(!input)return;
+      input.style.height='auto';
+      const maxHeight=window.matchMedia('(max-width: 760px)').matches?180:220;
+      const nextHeight=Math.min(Math.max(input.scrollHeight, 40), maxHeight);
+      input.style.height=nextHeight+'px';
+      input.style.overflowY=input.scrollHeight>maxHeight?'auto':'hidden';
+    }
+
     async function sendCatsMessage(){
       const input=document.getElementById('cats-message-input');
       const content=input.value.trim();
@@ -8664,6 +8739,7 @@
         if(content){
           await parseCatsResponse(await fetch(API+'/api/cats/messages/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({topic_id:catsState.topicId,content})}));
           input.value='';
+          autoResizeCatsMessageInput();
         }
         let failed=0;
         for(const item of sendable){
@@ -8735,13 +8811,14 @@
         setCatsAction(CATS_ATTACHMENT_BROWSER_MESSAGE, true);
       }
     });
-    catsMessageInput.addEventListener('input',()=>{if(catsMessageInput.value.trim()) setPetState('typing', { message:'输入中...' }); else setPetAutoBaseline(petAutoBaseline);});
+    catsMessageInput.addEventListener('input',()=>{autoResizeCatsMessageInput(); if(catsMessageInput.value.trim()) setPetState('typing', { message:'输入中...' }); else setPetAutoBaseline(petAutoBaseline);});
     catsMessageInput.addEventListener('focus',()=>setPetState('typing', { message:'准备输入' }));
     catsMessageInput.addEventListener('blur',()=>{if(!catsMessageInput.value.trim()) setPetAutoBaseline(petAutoBaseline);});
+    autoResizeCatsMessageInput();
     setupCatsAttachmentInputs();
     document.getElementById('skillhub-registry-grid')?.addEventListener('click', handleSkillHubInstallClick);
     document.addEventListener('keydown',handleDashboardFontScaleShortcut);
-    window.addEventListener('resize',refreshDashboardFontScaleForViewport);
+    window.addEventListener('resize',()=>{refreshDashboardFontScaleForViewport(); autoResizeCatsMessageInput();});
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeLogs();closeUpdateModal();closeCatsMediaPreview();}});
     document.addEventListener('click',e=>{const shell=document.getElementById('floating-pet');if(shell && !shell.contains(e.target)) closeFloatingPetMenu();});
   </script>
