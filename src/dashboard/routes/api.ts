@@ -10,6 +10,7 @@ import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { PathResolver } from '../../utils/path-resolver';
 import { APP_VERSION } from '../../version';
+import type { ChatConfig } from '../../types';
 import { createRuntimeConfigSnapshot } from '../../runtime/runtime-config-snapshot';
 import {
   getDashboardReadiness,
@@ -64,6 +65,19 @@ interface CatsRequestOptions {
 }
 
 type RelayModelProtocol = 'anthropic' | 'openai';
+
+interface RelayModelConfig {
+  id: string;
+  label: string;
+  model: string;
+  family?: string;
+  provider: 'anthropic' | 'openai';
+  protocol: string;
+  baseUrl: string;
+  enabled: boolean;
+  default: boolean;
+  quotaClass?: string;
+}
 
 function normalizeBaseUrl(value: unknown, fallback: string): string {
   const text = String(value || '').trim().replace(/\/+$/, '');
@@ -248,6 +262,22 @@ export function getCatsAuthState(overrides: Record<string, unknown> = {}): CatsA
   };
 }
 
+function getModelConfigReadonly(): Pick<ChatConfig, 'apiKey' | 'apiUrl' | 'model' | 'provider'> {
+  const config = ConfigManager.getConfigReadonly();
+  const env = readEnvFile();
+  const provider = firstNonEmpty(process.env.GAUZ_LLM_PROVIDER, env.GAUZ_LLM_PROVIDER, config.provider);
+  const apiUrl = firstNonEmpty(process.env.GAUZ_LLM_API_BASE, env.GAUZ_LLM_API_BASE, config.apiUrl);
+  const apiKey = firstNonEmpty(process.env.GAUZ_LLM_API_KEY, env.GAUZ_LLM_API_KEY, config.apiKey);
+  const model = firstNonEmpty(process.env.GAUZ_LLM_MODEL, env.GAUZ_LLM_MODEL, config.model);
+
+  return {
+    apiKey,
+    apiUrl,
+    model,
+    provider: provider === 'anthropic' || provider === 'openai' ? provider : config.provider,
+  };
+}
+
 async function catsRequest(
   method: string,
   httpBaseUrl: string,
@@ -346,8 +376,8 @@ function normalizeRelayModelProtocol(value: unknown): RelayModelProtocol {
   return text === 'openai' ? 'openai' : 'anthropic';
 }
 
-function relayProviderForProtocol(protocol: RelayModelProtocol): 'anthropic' | 'openai' {
-  return protocol === 'openai' ? 'openai' : 'anthropic';
+function normalizeRelayProvider(value: unknown): 'anthropic' | 'openai' {
+  return String(value || '').trim().toLowerCase() === 'openai' ? 'openai' : 'anthropic';
 }
 
 function relayEndpointForProtocol(config: any, protocol: RelayModelProtocol): string {
@@ -359,6 +389,137 @@ function relayEndpointForProtocol(config: any, protocol: RelayModelProtocol): st
   const baseUrl = normalizeBaseUrl(config?.base_url, 'https://relay.catsco.cc');
   const fallback = protocol === 'openai' ? `${baseUrl}/v1` : `${baseUrl}/anthropic`;
   return normalizeBaseUrl(endpoint?.base_url, fallback);
+}
+
+function canonicalRelayModelName(value: unknown): string {
+  const model = String(value || '').trim();
+  const key = model.toLowerCase();
+  if (key === 'deepseek-v4-flash') return 'deepseek-v4-flash';
+  if (key === 'glm-5.1') return 'glm-5.1';
+  return model;
+}
+
+function normalizeRelayModelConfig(item: any, config: any, index: number): RelayModelConfig | null {
+  const model = canonicalRelayModelName(item?.model);
+  if (!model) return null;
+  const provider: 'anthropic' = 'anthropic';
+  const protocol = 'Anthropic-compatible';
+  const baseUrl = relayEndpointForProtocol(config, 'anthropic');
+  return {
+    id: String(item?.id || model || `relay-model-${index}`).trim(),
+    label: String(item?.label || model).trim(),
+    model,
+    family: String(item?.family || '').trim() || undefined,
+    provider,
+    protocol,
+    baseUrl,
+    enabled: item?.enabled !== false,
+    default: item?.default === true,
+    quotaClass: String(item?.quota_class || item?.quotaClass || '').trim() || undefined,
+  };
+}
+
+function fallbackRelayModelCatalog(config: any): RelayModelConfig[] {
+  const baseUrl = relayEndpointForProtocol(config, 'anthropic');
+  return [
+    {
+      id: 'minimax-m2.7',
+      label: 'MiniMax M2.7',
+      model: 'MiniMax-M2.7',
+      family: 'minimax',
+      provider: 'anthropic',
+      protocol: 'Anthropic-compatible',
+      baseUrl,
+      enabled: true,
+      default: true,
+      quotaClass: 'standard',
+    },
+    {
+      id: 'deepseek-v4-flash',
+      label: 'DeepSeek V4 Flash',
+      model: 'deepseek-v4-flash',
+      family: 'deepseek',
+      provider: 'anthropic',
+      protocol: 'Anthropic-compatible',
+      baseUrl,
+      enabled: true,
+      default: false,
+      quotaClass: 'flash-low',
+    },
+    {
+      id: 'glm-5.1',
+      label: 'GLM 5.1',
+      model: 'glm-5.1',
+      family: 'glm',
+      provider: 'anthropic',
+      protocol: 'Anthropic-compatible',
+      baseUrl,
+      enabled: true,
+      default: false,
+      quotaClass: 'standard',
+    },
+  ];
+}
+
+function relayModelCatalog(config: any): RelayModelConfig[] {
+  const hasModelCatalog = Array.isArray(config?.models);
+  const rawModels = hasModelCatalog ? config.models : [];
+  const models = rawModels
+    .map((item: any, index: number) => normalizeRelayModelConfig(item, config, index))
+    .filter((item: RelayModelConfig | null): item is RelayModelConfig => Boolean(item && item.enabled));
+  if (models.length > 0) return markRelayDefaultModel(models, config);
+  if (hasModelCatalog) return [];
+  return markRelayDefaultModel(fallbackRelayModelCatalog(config), config);
+}
+
+function markRelayDefaultModel(models: RelayModelConfig[], config: any): RelayModelConfig[] {
+  const defaultModel = String(config?.default_model || '').trim().toLowerCase();
+  let defaultIndex = models.findIndex(model => model.default);
+  if (defaultModel) {
+    const matched = models.findIndex(model => (
+      model.model.toLowerCase() === defaultModel || model.id.toLowerCase() === defaultModel
+    ));
+    if (matched >= 0) defaultIndex = matched;
+  }
+  if (defaultIndex < 0) defaultIndex = 0;
+  return models.map((model, index) => ({ ...model, default: index === defaultIndex }));
+}
+
+function selectRelayModel(
+  config: any,
+  requested: unknown,
+  options: { strict?: boolean } = {},
+): RelayModelConfig {
+  const models = relayModelCatalog(config);
+  if (models.length === 0) {
+    throw httpError('CatsCo 中转暂未提供可用模型', 503);
+  }
+  const needle = String(requested || '').trim().toLowerCase();
+  if (needle) {
+    const matched = models.find(model => (
+      model.id.toLowerCase() === needle || model.model.toLowerCase() === needle
+    ));
+    if (matched) return matched;
+    if (options.strict) {
+      throw httpError(`未知 CatsCo 中转模型: ${requested}`, 400);
+    }
+  }
+  return models.find(model => model.default) || models[0];
+}
+
+function relayModelPayload(model: RelayModelConfig): Record<string, unknown> {
+  return {
+    id: model.id,
+    label: model.label,
+    model: model.model,
+    family: model.family,
+    provider: model.provider,
+    protocol: model.protocol,
+    base_url: model.baseUrl,
+    enabled: model.enabled,
+    default: model.default,
+    quota_class: model.quotaClass,
+  };
 }
 
 function isCatsRelayApiBase(value: unknown): boolean {
@@ -1324,21 +1485,28 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const state = getCatsAuthState();
       if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
 
-      const protocol = normalizeRelayModelProtocol(req.query.protocol);
       const config = await fetchCatsRelayConfig(state);
+      const currentConfig = getModelConfigReadonly();
+      const requestedModel = req.query.modelId || req.query.model;
+      const selectedModel = selectRelayModel(
+        config,
+        requestedModel || currentConfig.model,
+        { strict: Boolean(requestedModel) },
+      );
       const keyResponse = config?.self_service_enabled ? await fetchCatsRelayKey(state) : { key: null };
-      const apiBase = relayEndpointForProtocol(config, protocol);
-      const provider = relayProviderForProtocol(protocol);
-      const model = String(config?.default_model || 'MiniMax-M2.7').trim() || 'MiniMax-M2.7';
-      const currentConfig = ConfigManager.getConfigReadonly();
+      const apiBase = selectedModel.baseUrl;
+      const provider = selectedModel.provider;
+      const model = selectedModel.model;
       const currentApiBase = String(currentConfig.apiUrl || '').replace(/\/+$/, '');
 
       res.json({
         ok: true,
-        protocol,
+        protocol: normalizeRelayModelProtocol(selectedModel.provider),
         provider,
         apiBase,
         model,
+        selectedModel: relayModelPayload(selectedModel),
+        models: relayModelCatalog(config).map(relayModelPayload),
         configured: Boolean(
           currentConfig.apiKey
           && currentConfig.provider === provider
@@ -1363,8 +1531,9 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const state = getCatsAuthState();
       if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
 
-      const protocol = normalizeRelayModelProtocol(req.body?.protocol);
       const config = await fetchCatsRelayConfig(state);
+      const requestedModel = req.body?.modelId || req.body?.model;
+      const selectedModel = selectRelayModel(config, requestedModel, { strict: Boolean(requestedModel) });
       if (config?.self_service_enabled === false) {
         return res.status(503).json({ error: 'CatsCo 中转自助 Key 尚未启用' });
       }
@@ -1379,16 +1548,17 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
           return res.status(409).json({
             error: error.message,
             action: 'rotate_required',
-            protocol,
+            protocol: normalizeRelayModelProtocol(selectedModel.provider),
+            model: relayModelPayload(selectedModel),
             key: sanitizeRelayKeyInfo((await fetchCatsRelayKey(state))?.key),
           });
         }
         throw error;
       }
 
-      const apiBase = relayEndpointForProtocol(config, protocol);
-      const provider = relayProviderForProtocol(protocol);
-      const model = String(config?.default_model || 'MiniMax-M2.7').trim() || 'MiniMax-M2.7';
+      const apiBase = selectedModel.baseUrl;
+      const provider = selectedModel.provider;
+      const model = selectedModel.model;
       const settingsResult = updateDashboardSettings({
         settings: {
           'model.provider': provider,
@@ -1401,10 +1571,12 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
 
       res.json({
         ok: true,
-        protocol,
+        protocol: normalizeRelayModelProtocol(selectedModel.provider),
         provider,
         apiBase,
         model,
+        selectedModel: relayModelPayload(selectedModel),
+        models: relayModelCatalog(config).map(relayModelPayload),
         updated: settingsResult.updated,
         key: sanitizeRelayKeyInfo(ensured.response?.key),
         createdKey: ensured.created,

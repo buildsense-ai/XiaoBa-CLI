@@ -5,6 +5,7 @@ import { AIProvider, AIRequestOptions, StreamCallbacks } from '../providers/prov
 import { AnthropicProvider } from '../providers/anthropic-provider';
 import { OpenAIProvider } from '../providers/openai-provider';
 import { Logger } from './logger';
+import { isPrimaryModelToolCallingCapable } from './model-capabilities';
 
 /**
  * AI 服务 - 统一的 AI 调用入口
@@ -38,6 +39,10 @@ export class AIService {
     } else {
       return new OpenAIProvider(config);
     }
+  }
+
+  isToolCallingSupported(): boolean {
+    return isPrimaryModelToolCallingCapable(this.config);
   }
 
   /**

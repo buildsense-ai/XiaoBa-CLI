@@ -73,6 +73,49 @@ test('ConversationRunner reuses AbortSignal after prompt-too-long trim retry', a
   assert.deepEqual(observedSignals, [controller.signal, controller.signal]);
 });
 
+test('ConversationRunner omits tool definitions when the model config disables tools', async () => {
+  let observedTools: ToolDefinition[] | undefined;
+  const tool: ToolDefinition = {
+    name: 'read_file',
+    description: 'Read a file',
+    parameters: {
+      type: 'object',
+      properties: {},
+    },
+  };
+  const aiService = {
+    isToolCallingSupported() {
+      return false;
+    },
+    async chat(_messages: Message[], tools: ToolDefinition[]) {
+      observedTools = tools;
+      return {
+        content: 'done',
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      };
+    },
+  };
+  const toolExecutor: ToolExecutor = {
+    getToolDefinitions() {
+      return [tool];
+    },
+    async executeTool(toolCall: ToolCall): Promise<ToolResult> {
+      throw new Error(`unexpected tool call: ${toolCall.function.name}`);
+    },
+  };
+
+  const runner = new ConversationRunner(aiService as any, toolExecutor, {
+    stream: false,
+    enableCompression: false,
+  });
+
+  const result = await runner.run([{ role: 'user', content: 'hello' }]);
+
+  assert.equal(result.response, 'done');
+  assert.deepEqual(observedTools, []);
+});
+
 async function waitFor(predicate: () => boolean, maxAttempts = 50): Promise<void> {
   for (let i = 0; i < maxAttempts; i++) {
     if (predicate()) return;

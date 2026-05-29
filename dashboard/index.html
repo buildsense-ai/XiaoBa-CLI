@@ -856,6 +856,57 @@
       margin-top: 14px;
     }
 
+    .relay-model-list {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .relay-model-choice {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+      min-height: 88px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.6);
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .relay-model-choice.active {
+      border-color: rgba(34, 197, 94, 0.55);
+      background: rgba(34, 197, 94, 0.08);
+    }
+
+    .relay-model-choice:disabled {
+      cursor: not-allowed;
+      opacity: 0.58;
+    }
+
+    .relay-model-label {
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.25;
+    }
+
+    .relay-model-name {
+      color: var(--text2);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      overflow-wrap: anywhere;
+    }
+
+    .relay-model-meta {
+      align-self: end;
+      color: var(--text2);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
     .model-source-form {
       display: grid;
       gap: 10px;
@@ -2147,6 +2198,7 @@
 
       .profile-summary-grid,
       .settings-step-grid,
+      .relay-model-list,
       .model-source-grid,
       .runtime-field-row {
         grid-template-columns: 1fr;
@@ -4882,7 +4934,25 @@
   </div>
 
   <script>
-    const API = '';
+    const API = (() => {
+      try {
+        return window.location.protocol === 'file:' ? 'http://127.0.0.1:3800' : '';
+      } catch (_e) {
+        return '';
+      }
+    })();
+    function formatDashboardApiError(error, path){
+      const message=error&&error.message?String(error.message):String(error||'请求失败');
+      if(/failed to fetch|networkerror|load failed|fetch/i.test(message)){
+        let target=path||'/api';
+        try{
+          const origin=API || (window.location&&window.location.origin) || 'http://127.0.0.1:3800';
+          target=new URL(path||'/api', origin).toString();
+        }catch(_e){}
+        return `无法连接本地 CatsCo Dashboard API（${target}）。请刷新或重启 CatsCo 后再试。`;
+      }
+      return message;
+    }
     let appStatusSnapshot = {};
     let appReadinessSnapshot = {};
     let appReadinessLoaded = false;
@@ -6165,7 +6235,14 @@
     let customModelAutoSaveInFlight=false;
     let customModelAutoSaveQueued=false;
     let customModelAutoSaveLastSignature='';
+    let relayModelConfigSnapshot=null;
+    let relayModelConfigLoading=false;
     const CUSTOM_MODEL_AUTO_SAVE_DELAY=900;
+    const RELAY_FALLBACK_MODELS=[
+      {id:'minimax-m2.7',label:'MiniMax M2.7',model:'MiniMax-M2.7',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'standard',default:true},
+      {id:'deepseek-v4-flash',label:'DeepSeek V4 Flash',model:'deepseek-v4-flash',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'flash-low'},
+      {id:'glm-5.1',label:'GLM 5.1',model:'glm-5.1',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'standard'},
+    ];
     const settingsCollapseState={
       modelSource:false,
       runtimeStatus:true,
@@ -6257,6 +6334,7 @@
         dashboardSettingsSnapshot=data;
         renderSettingsSetupSummary();
         if(!shouldDeferModelSourceRender()) renderModelSource(data);
+        fetchRelayModelConfig();
       }catch(e){
         const p=document.getElementById('model-source-panel');
         if(p)p.innerHTML='<div class="runtime-note danger">模型来源加载失败：'+escapeHtml(e.message||String(e))+'</div>';
@@ -6276,6 +6354,48 @@
       const details=document.getElementById('custom-model-settings');
       if(!page || !details || !page.classList.contains('active'))return false;
       return details.open || details.contains(document.activeElement);
+    }
+
+    async function fetchRelayModelConfig(){
+      if(relayModelConfigLoading || !isCatsLoggedIn())return;
+      relayModelConfigLoading=true;
+      try{
+        const r=await fetch(API+'/api/cats/relay/model-config');
+        const data=await r.json().catch(()=>({}));
+        if(!r.ok||data.error)throw new Error(data.error||'中转模型目录加载失败');
+        relayModelConfigSnapshot=data;
+        if((dashboardSettingsSnapshot.fields||[]).length && !shouldDeferModelSourceRender())renderModelSource(dashboardSettingsSnapshot);
+      }catch(_e){
+        relayModelConfigSnapshot=null;
+      }finally{
+        relayModelConfigLoading=false;
+      }
+    }
+
+    function relayModelCatalog(){
+      if(Array.isArray(relayModelConfigSnapshot?.models)){
+        return relayModelConfigSnapshot.models.filter(model=>model && model.enabled!==false && model.model);
+      }
+      return RELAY_FALLBACK_MODELS;
+    }
+
+    function selectedRelayModelId(){
+      if(!isCatsRelayModelGateway(settingValue('model.apiBase')))return '';
+      const currentModel=(settingValue('model.model')||'').toLowerCase();
+      const models=relayModelCatalog();
+      const matched=currentModel?models.find(model=>String(model.model||'').toLowerCase()===currentModel):null;
+      return (matched||models.find(model=>model.default)||models[0]||{}).id||'';
+    }
+
+    function relayModelChoiceHtml(model, activeId, catsConnected){
+      const id=String(model.id||model.model||'');
+      const active=id===activeId;
+      const quota=model.quota_class==='flash-low'?'低额度 Flash':'标准额度';
+      return '<button class="relay-model-choice'+(active?' active':'')+'" type="button" data-relay-model-id="'+escapeHtml(id)+'" '+(catsConnected?'':'disabled')+' onclick="enableCatsRelayModelFromButton(this)">'
+        +'<span class="relay-model-label">'+escapeHtml(model.label||model.model||id)+'</span>'
+        +'<span class="relay-model-name">'+escapeHtml(model.model||id)+'</span>'
+        +'<span class="relay-model-meta">'+escapeHtml(quota)+' · Anthropic SDK</span>'
+        +'</button>';
     }
 
     function captureCustomModelDraft(){
@@ -6344,12 +6464,16 @@
         : '未配置访问凭证';
       const apiBaseValue=settingValue('model.apiBase');
       const relayConfigured=isCatsRelayModelGateway(apiBaseValue)&&keyField.present;
+      const relayModels=relayModelCatalog();
+      const relayHasModels=relayModels.length>0;
+      const relayActiveModelId=selectedRelayModelId();
+      const relayActiveModel=relayModels.find(model=>String(model.id||model.model||'')===relayActiveModelId)||relayModels[0]||{};
       const managedStatus=relayConfigured?'已启用':catsConnected?'可启用':'需要登录';
       const managedTone=relayConfigured?'green':catsConnected?'warm':'gray';
       const managedCopy=relayConfigured
-        ? '当前已使用 CatsCo 中转模型。默认推荐 Anthropic-compatible，和 CatsCo runtime 的工具调用链路更贴近。'
+        ? '当前已使用 CatsCo 中转模型。模型切换会沿用同一把中转 Key，并继续走 Anthropic SDK。'
         : catsConnected
-          ? '已登录 CatsCo。可以一键生成或复用你的中转 Key，并写入本机模型配置；也可以继续使用下方自定义模型。'
+          ? relayHasModels?'已登录 CatsCo。选择模型后会一键生成或复用你的中转 Key，并写入本机模型配置。':'CatsCo 中转暂未提供可用模型，请稍后重试。'
           : '登录 CatsCo 后，可以一键启用 CatsCo 中转模型。当前版本仍可先在高级区配置自定义模型。';
       const hideInternalGateway=isInternalModelGateway(apiBaseValue);
       const apiBaseDisplayValue=hideInternalGateway?'':apiBaseValue;
@@ -6376,10 +6500,12 @@
               </div>
               <div class="model-source-actions">
                 <button class="btn" onclick="switchPage('chat')">${catsConnected?'查看 CatsCo 连接':'登录 CatsCo'}</button>
-                <button class="btn btn-primary" ${catsConnected?'':'disabled'} onclick="enableCatsRelayModel('anthropic')">启用 CatsCo 中转</button>
-                <button class="btn" ${catsConnected?'':'disabled'} onclick="enableCatsRelayModel('openai')">改用 OpenAI 兼容</button>
+                <button class="btn btn-primary" data-relay-model-id="${escapeHtml(relayActiveModelId)}" ${(catsConnected&&relayHasModels)?'':'disabled'} onclick="enableCatsRelayModelFromButton(this)">${relayConfigured?'应用所选模型':'启用 CatsCo 中转'}</button>
               </div>
-              <div id="relay-model-status" style="color:var(--text2);font-size:13px;margin-top:10px">${relayConfigured?'当前中转配置已写入本机。':'启用后会写入本机 .env，保存后新 session 或下一次启动 connector 生效。'}</div>
+              ${relayHasModels?'<div class="relay-model-list">':'<div class="runtime-note warning" style="margin-top:12px">CatsCo 中转暂未提供可用模型。</div><div class="relay-model-list" style="display:none">'}
+                ${relayModels.map(model=>relayModelChoiceHtml(model, relayActiveModelId, catsConnected)).join('')}
+              </div>
+              <div id="relay-model-status" style="color:var(--text2);font-size:13px;margin-top:10px">${relayConfigured?'当前中转配置已写入本机：'+escapeHtml(relayActiveModel.model||settingValue('model.model')||''):'启用后会写入本机 .env，保存后新 session 或下一次启动 connector 生效。'}</div>
             </div>
             <details class="model-source-card warning" id="custom-model-settings"${customModelSettingsOpen?' open':''}>
               <summary>
@@ -6483,36 +6609,45 @@
       });
     }
 
-    async function enableCatsRelayModel(protocol, options={}){
+    function enableCatsRelayModelFromButton(button, options={}){
+      return enableCatsRelayModel(button?.dataset?.relayModelId || selectedRelayModelId(), options);
+    }
+
+    async function enableCatsRelayModel(modelId, options={}){
       if(!isCatsLoggedIn()){
         switchPage('chat');
         return;
       }
-      const selectedProtocol=protocol==='openai'?'openai':'anthropic';
-      const label=selectedProtocol==='openai'?'OpenAI-compatible':'Anthropic-compatible';
+      const selectedModelId=modelId||selectedRelayModelId();
+      const selectedModel=relayModelCatalog().find(model=>String(model.id||model.model||'')===selectedModelId)||relayModelCatalog()[0]||{};
+      if(!selectedModel.id&&!selectedModel.model){
+        setRelayModelStatus('启用失败：CatsCo 中转暂未提供可用模型。','error');
+        return;
+      }
+      const label=selectedModel.label||selectedModel.model||selectedModelId;
       try{
         setRelayModelStatus('正在启用 CatsCo 中转模型（'+label+'）...','muted');
         const r=await fetch(API+'/api/cats/relay/model-config/apply',{
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({
-            protocol:selectedProtocol,
+            modelId:selectedModelId,
             rotateExisting:Boolean(options.rotateExisting),
           })
         });
         const data=await r.json();
         if(r.status===409&&data.action==='rotate_required'){
           const ok=confirm('你的 CatsCo 中转 Key 已存在，但明文不会再次返回。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');
-          if(ok)return enableCatsRelayModel(selectedProtocol,{rotateExisting:true});
+          if(ok)return enableCatsRelayModel(selectedModelId,{rotateExisting:true});
           setRelayModelStatus('已取消。你也可以在 CatsCompany 中转站页面复制现有配置后手动填写。','muted');
           return;
         }
         if(!r.ok||data.error)throw new Error(data.error||'启用中转失败');
         await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchRuntimeConfig(),fetchReadiness(),fetchCatsStatus()]);
-        setRelayModelStatus(data.message||('已启用 CatsCo 中转模型：'+label),'success');
+        setRelayModelStatus(data.message||('已启用 CatsCo 中转模型：'+(data.selectedModel?.label||label)),'success');
         setModelSourceStatus('已写入 CatsCo 中转模型配置。新 session 或下一次启动 connector 后生效。','success');
       }catch(e){
-        setRelayModelStatus('启用失败：'+(e.message||String(e)),'error');
+        setRelayModelStatus('启用失败：'+formatDashboardApiError(e,'/api/cats/relay/model-config/apply'),'error');
       }
     }
 
@@ -6592,7 +6727,7 @@
           setModelSourceStatus(d.connectorRestarted?'已保存，并已请求重启 CatsCo agent 使用新配置。':'已保存。新 session 或下一次启动 connector 后生效。','success');
         }
       }catch(e){
-        setModelSourceStatus('保存失败：'+(e.message||String(e)),'error');
+        setModelSourceStatus('保存失败：'+formatDashboardApiError(e,'/api/settings'),'error');
       }finally{
         customModelAutoSaveInFlight=false;
         if(customModelAutoSaveQueued){

@@ -19,9 +19,15 @@ test('dashboard settings page uses model source before Runtime Profile', () => {
   assert.match(dashboardHtml, /CatsCo 中转模型/);
   assert.match(dashboardHtml, /自定义模型（手动配置）/);
   assert.match(dashboardHtml, /启用 CatsCo 中转/);
-  assert.match(dashboardHtml, /默认推荐 Anthropic-compatible/);
-  assert.match(dashboardHtml, /function enableCatsRelayModel\(protocol, options=\{\}\)/);
+  assert.match(dashboardHtml, /DeepSeek V4 Flash/);
+  assert.match(dashboardHtml, /GLM 5\.1/);
+  assert.match(dashboardHtml, /Anthropic SDK/);
+  assert.match(dashboardHtml, /function enableCatsRelayModel\(modelId, options=\{\}\)/);
+  assert.match(dashboardHtml, /data-relay-model-id/);
+  assert.match(dashboardHtml, /function enableCatsRelayModelFromButton\(button, options=\{\}\)/);
   assert.match(dashboardHtml, /\/api\/cats\/relay\/model-config\/apply/);
+  assert.match(dashboardHtml, /http:\/\/127\.0\.0\.1:3800/);
+  assert.match(dashboardHtml, /无法连接本地 CatsCo Dashboard API/);
   assert.match(dashboardHtml, /访问凭证只保存 presence，不会回显/);
   assert.match(dashboardHtml, /保存自定义模型设置？访问凭证会写入本地 \.env，仅用于本机 runtime。/);
   assert.match(dashboardHtml, /Runtime Profile 状态/);
@@ -33,6 +39,7 @@ test('dashboard settings page uses model source before Runtime Profile', () => {
   assert.match(dashboardHtml, /title==='CatsCo Chat'\?'未启动':'需处理'/);
   assert.doesNotMatch(dashboardHtml, /status==='warning'\?'注意'/);
   assert.match(dashboardHtml, /当前已运行 session 不会热更新/);
+  assert.doesNotMatch(dashboardHtml, /escapeJsString/);
   assert.doesNotMatch(dashboardHtml, /buildsense\.asia/i);
 });
 

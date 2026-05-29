@@ -427,7 +427,7 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadURL(`http://localhost:${DASHBOARD_PORT}`);
+  mainWindow.loadURL(`http://127.0.0.1:${DASHBOARD_PORT}`);
 
   mainWindow.on('close', (e) => {
     if (process.platform === 'darwin' && !app.isQuitting) {

@@ -170,6 +170,11 @@ export class ConversationRunner {
    */
   async run(messages: Message[], callbacks?: RunnerCallbacks): Promise<RunResult> {
     const allTools = this.toolExecutor.getToolDefinitions();
+    const supportsToolCalling = (this.aiService as any).isToolCallingSupported?.() !== false;
+    const activeTools = supportsToolCalling ? allTools : [];
+    if (activeTools.length === 0 && allTools.length > 0) {
+      Logger.warning(`[${this.sessionLabel}] 当前模型/中转暂不启用工具调用，已按纯文本模型运行`);
+    }
     const toolDefinitions = new Map(allTools.map(tool => [tool.name, tool]));
     const newMessages: Message[] = [];
     let nextTurnTransientHints: Message[] = [];
@@ -203,7 +208,7 @@ export class ConversationRunner {
       }
 
       if (this.enableCompression) {
-        const toolTokens = estimateToolsTokens(allTools);
+        const toolTokens = estimateToolsTokens(activeTools);
         const messageTokens = estimateMessagesTokens(messages);
         const totalTokens = messageTokens + toolTokens;
         const usagePercent = Math.round((totalTokens / this.maxPromptTokens) * 100);
@@ -221,7 +226,6 @@ export class ConversationRunner {
         }
       }
 
-      const activeTools = allTools;
       const orchestrationHints: Message[] = [];
       if (turns === 1 && !hasShownInitialOrchestrationHint) {
         const explicitPlanHint = buildExplicitPlanRequestHintIfUseful(messages, activeTools);

@@ -1,6 +1,9 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
-import { isPrimaryModelVisionCapable } from '../src/utils/model-capabilities';
+import {
+  isPrimaryModelToolCallingCapable,
+  isPrimaryModelVisionCapable,
+} from '../src/utils/model-capabilities';
 
 describe('model capabilities', () => {
   test('treats Claude and GPT vision-capable models as multimodal', () => {
@@ -24,6 +27,33 @@ describe('model capabilities', () => {
         model: 'MiniMax-M2.7',
       }),
       false,
+    );
+  });
+
+  test('keeps relay tool calling enabled for MiniMax, DeepSeek, and GLM', () => {
+    assert.strictEqual(
+      isPrimaryModelToolCallingCapable({
+        provider: 'anthropic',
+        apiUrl: 'https://relay.catsco.cc/anthropic',
+        model: 'deepseek-v4-flash',
+      }),
+      true,
+    );
+    assert.strictEqual(
+      isPrimaryModelToolCallingCapable({
+        provider: 'anthropic',
+        apiUrl: 'https://relay.catsco.cc/anthropic',
+        model: 'glm-5.1',
+      }),
+      true,
+    );
+    assert.strictEqual(
+      isPrimaryModelToolCallingCapable({
+        provider: 'anthropic',
+        apiUrl: 'https://relay.catsco.cc/anthropic',
+        model: 'MiniMax-M2.7',
+      }),
+      true,
     );
   });
 });
