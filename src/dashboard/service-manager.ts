@@ -212,6 +212,12 @@ export class ServiceManager extends EventEmitter {
     }
 
     if (name === 'catscompany') {
+      const catsCoLocalConfigPath = path.join(spawnCwd, '.xiaoba', 'catsco.json');
+      envVars = {
+        ...envVars,
+        CATSCO_LOCAL_CONFIG_PATH: catsCoLocalConfigPath,
+        CATSCO_CONFIG_PATH: catsCoLocalConfigPath,
+      };
       const catsCoRuntime = resolveCatsCoRuntimeConfig({
         runtimeRoot: spawnCwd,
         env: envVars,
@@ -219,6 +225,8 @@ export class ServiceManager extends EventEmitter {
       envVars = {
         ...envVars,
         ...catsCoRuntime.envOverlay,
+        CATSCO_LOCAL_CONFIG_PATH: catsCoLocalConfigPath,
+        CATSCO_CONFIG_PATH: catsCoLocalConfigPath,
       };
     }
 

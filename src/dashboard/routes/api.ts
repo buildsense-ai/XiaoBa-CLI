@@ -298,9 +298,10 @@ async function getCatsBotBodyStatus(
     );
     const platformBodyId = String(data?.body_id || data?.bodyId || '').trim();
     const active = Boolean(data?.active);
-    const stateValue: CatsBotBodyStatus['state'] = active
-      ? (platformBodyId && platformBodyId !== normalizedLocalBodyId ? 'conflict' : 'online')
-      : 'offline';
+    const bodyMismatch = Boolean(platformBodyId && platformBodyId !== normalizedLocalBodyId);
+    const stateValue: CatsBotBodyStatus['state'] = bodyMismatch
+      ? 'conflict'
+      : (active ? 'online' : 'offline');
     return {
       state: stateValue,
       active,
