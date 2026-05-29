@@ -3,6 +3,7 @@ import { Message, ChatConfig, ChatResponse, ContentBlock } from '../types';
 import { ToolDefinition } from '../types/tool';
 import { AIProvider, AIRequestOptions, StreamCallbacks } from './provider';
 import { ContextDebugLogger } from '../utils/context-debug-logger';
+import { resolveMaxTokens } from './output-limits';
 
 /**
  * Anthropic Provider
@@ -31,7 +32,7 @@ export class AnthropicProvider implements AIProvider {
     });
     this.model = config.model || 'claude-sonnet-4-20250514';
     this.temperature = config.temperature ?? 0.7;
-    this.maxTokens = config.maxTokens ?? 8192;
+    this.maxTokens = resolveMaxTokens(config);
   }
 
   /**
@@ -197,12 +198,12 @@ export class AnthropicProvider implements AIProvider {
    * 从 Anthropic 响应中提取统一格式
    */
   private parseResponse(response: Anthropic.Message): ChatResponse {
-    let textContent: string | null = null;
+    const textParts: string[] = [];
     let toolCalls: ChatResponse['toolCalls'] = undefined;
 
     for (const block of response.content) {
       if (block.type === 'text') {
-        textContent = block.text;
+        textParts.push(block.text);
       } else if (block.type === 'tool_use') {
         if (!toolCalls) toolCalls = [];
         toolCalls.push({
@@ -223,7 +224,12 @@ export class AnthropicProvider implements AIProvider {
       totalTokens: (response.usage.input_tokens ?? 0) + (response.usage.output_tokens ?? 0),
     } : undefined;
 
-    return { content: textContent, toolCalls, usage };
+    return {
+      content: textParts.length > 0 ? textParts.join('') : null,
+      toolCalls,
+      usage,
+      stopReason: response.stop_reason || undefined,
+    };
   }
 
   /**

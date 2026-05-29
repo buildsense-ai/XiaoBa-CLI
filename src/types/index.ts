@@ -76,6 +76,8 @@ export interface ChatResponse {
     };
   }>;
   usage?: TokenUsage;
+  /** Provider stop/finish reason, e.g. max_tokens/length/tool_use/stop. */
+  stopReason?: string;
 }
 
 export interface CommandOptions {

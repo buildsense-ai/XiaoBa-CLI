@@ -10,6 +10,7 @@ type CatsMessageType = 'thinking' | 'tool_use' | 'tool_result' | 'runtime_plan' 
 
 interface CatsSendBody {
   topic_id: string;
+  client_msg_id?: string;
   type: CatsMessageType;
   content: unknown;
   metadata?: any;
@@ -45,7 +46,10 @@ function describeCatsSendFailure(err: unknown): string {
       return `CatsCo 桌面端到 CatsCo 服务器的 WebSocket 链路不可用，可能是本机网络、代理、防火墙、服务器地址或连接重连中的问题。${err.message}`;
     }
     if (err.kind === 'timeout') {
-      return `WebSocket 消息已写出，但服务器确认超时。可能是服务器处理慢、网络抖动或连接半断开；为避免重复消息，不会自动改用 HTTP 重发。${err.message}`;
+      const retryNote = err.retryableWithHttp
+        ? '本次消息带有 client_msg_id，可安全使用 HTTP 兜底重试。'
+        : '当前服务端未确认支持消息去重，为避免重复消息，不会自动改用 HTTP 重发。';
+      return `WebSocket 消息已写出，但服务器确认超时。可能是服务器处理慢、网络抖动或连接半断开；${retryNote}${err.message}`;
     }
     if (err.kind === 'ack') {
       return describeAckFailure(err);
@@ -105,19 +109,28 @@ export class MessageSender {
   ): Promise<{ seq_id: number }> {
     const body: CatsSendBody = {
       topic_id: topic,
+      client_msg_id: buildClientMessageID(),
       type,
       content,
     };
-    if (metadata !== undefined) {
-      body.metadata = metadata;
-    }
+    body.metadata = {
+      ...(metadata || {}),
+      client_msg_id: body.client_msg_id,
+    };
 
     try {
       const seq = await this.bot.sendStructuredMessage(body);
       return { seq_id: seq };
     } catch (err: any) {
-      if (err instanceof CatsSendError && err.kind === 'transport') {
-        Logger.warning(`WebSocket 链路不可用，准备使用 HTTP 兜底发送（${describeMessage(body)}）：${describeCatsSendFailure(err)}`);
+      if (err instanceof CatsSendError && (err.kind === 'transport' || err.retryableWithHttp)) {
+        if (err.clientMsgID) {
+          body.client_msg_id = err.clientMsgID;
+          body.metadata = {
+            ...(body.metadata || {}),
+            client_msg_id: err.clientMsgID,
+          };
+        }
+        Logger.warning(`WebSocket 链路不可用或确认超时，准备使用 HTTP 兜底发送（${describeMessage(body)}）：${describeCatsSendFailure(err)}`);
         const result = await this.sendViaHttp(body);
         Logger.info(`HTTP 兜底发送成功（${describeMessage(body)}, seq_id=${result.seq_id}）`);
         return result;
@@ -287,4 +300,9 @@ export class MessageSender {
       return null;
     }
   }
+}
+
+function buildClientMessageID(): string {
+  const random = Math.random().toString(36).slice(2, 10);
+  return `catsco-${Date.now()}-${random}`;
 }

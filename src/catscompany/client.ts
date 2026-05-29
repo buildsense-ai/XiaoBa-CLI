@@ -1,6 +1,7 @@
 // CatsCo 服务器 WebSocket 客户端
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
+import crypto from 'crypto';
 import { Logger } from '../utils/logger';
 import { uploadCatsLocalFile, type UploadResult } from './upload';
 
@@ -30,6 +31,7 @@ export interface MessageContext {
 export interface CatsOutgoingMessage {
   topic_id?: string;
   topic?: string;
+  client_msg_id?: string;
   type?: string;
   msg_type?: string;
   content?: unknown;
@@ -44,6 +46,7 @@ interface PendingAck {
   resolve: (seq: number) => void;
   reject: (err: Error) => void;
   timer: NodeJS.Timeout;
+  clientMsgID?: string;
 }
 
 export type CatsSendErrorKind = 'transport' | 'ack' | 'timeout';
@@ -58,13 +61,19 @@ function maskSecret(value: string): string {
 }
 
 export class CatsSendError extends Error {
+  public readonly clientMsgID?: string;
+  public readonly retryableWithHttp: boolean;
+
   constructor(
     public readonly kind: CatsSendErrorKind,
     message: string,
-    public readonly code?: number
+    public readonly code?: number,
+    options: { clientMsgID?: string; retryableWithHttp?: boolean } = {}
   ) {
     super(message);
     this.name = 'CatsSendError';
+    this.clientMsgID = options.clientMsgID;
+    this.retryableWithHttp = options.retryableWithHttp ?? false;
   }
 }
 
@@ -92,6 +101,7 @@ export class CatsClient extends EventEmitter {
   private pongTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
   private subscribedTopics = new Set<string>();
+  private supportsClientMessageDedupe = false;
 
   public uid = '';
   public name = '';
@@ -104,6 +114,7 @@ export class CatsClient extends EventEmitter {
     if (this.ws) return;
 
     Logger.info(`[CatsCompany] 正在连接: ${this.config.serverUrl}, apiKey=${maskSecret(this.config.apiKey)}`);
+    this.supportsClientMessageDedupe = false;
     this.ws = new WebSocket(this.config.serverUrl, {
       headers: { 'X-API-Key': this.config.apiKey }
     });
@@ -125,9 +136,16 @@ export class CatsClient extends EventEmitter {
     });
 
     this.ws.on('error', (err: Error) => this.emit('error', err));
-    this.ws.on('close', () => {
+    this.ws.on('close', (code: number, reason: Buffer) => {
+      Logger.warning(`[CatsCompany] WebSocket 已关闭: code=${code}, reason=${reason.toString() || '-'}`);
       this.stopHeartbeat();
       this.ws = null;
+      this.rejectPendingAcks(new CatsSendError(
+        'timeout',
+        'WebSocket 在收到 CatsCompany 服务器确认前关闭',
+        undefined,
+        { retryableWithHttp: this.supportsClientMessageDedupe }
+      ));
       if (!this.closed) this.scheduleReconnect();
     });
   }
@@ -141,6 +159,11 @@ export class CatsClient extends EventEmitter {
           `[CatsCompany] 握手成功: uid=${this.uid}, name=${this.name}, ` +
           `protocol=${CATSCOMPANY_PROTOCOL_VERSION}, serverProtocol=${msg.ctrl.params?.ver || 'unknown'}`
         );
+        this.supportsClientMessageDedupe = Array.isArray(msg.ctrl.params?.features)
+          && msg.ctrl.params.features.includes('client_msg_id');
+        if (this.supportsClientMessageDedupe) {
+          Logger.info('[CatsCompany] 服务端支持 client_msg_id 幂等发送');
+        }
         this.emit('ready', { uid: this.uid, name: this.name });
         this.autoAcceptFriendRequests().catch(console.error);
         this.resubscribeTopics();
@@ -208,6 +231,7 @@ export class CatsClient extends EventEmitter {
       topic,
     };
 
+    if (payload.client_msg_id !== undefined) pub.client_msg_id = payload.client_msg_id;
     if (payload.content !== undefined) pub.content = payload.content;
     if (payload.content_blocks !== undefined) pub.content_blocks = payload.content_blocks;
     if (payload.metadata !== undefined) pub.metadata = payload.metadata;
@@ -222,18 +246,29 @@ export class CatsClient extends EventEmitter {
 
   async sendStructuredMessage(payload: CatsOutgoingMessage): Promise<number> {
     const msgId = `${++this.msgId}`;
-    const pub = this.buildPubMessage(msgId, payload);
+    const clientMsgID = payload.client_msg_id || buildClientMessageID();
+    const pub = this.buildPubMessage(msgId, {
+      ...payload,
+      client_msg_id: clientMsgID,
+      metadata: {
+        ...(payload.metadata || {}),
+        client_msg_id: clientMsgID,
+      },
+    });
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingAcks.delete(msgId);
+        this.forceReconnect('ack timeout');
         reject(new CatsSendError(
           'timeout',
-          'WebSocket 已发送消息，但 10 秒内没有收到 CatsCompany 服务器确认'
+          'WebSocket 已发送消息，但 10 秒内没有收到 CatsCompany 服务器确认',
+          undefined,
+          { clientMsgID, retryableWithHttp: this.supportsClientMessageDedupe }
         ));
       }, 10000);
 
-      this.pendingAcks.set(msgId, { resolve, reject, timer });
+      this.pendingAcks.set(msgId, { resolve, reject, timer, clientMsgID });
       try {
         this.sendOrThrow({ pub });
       } catch (err: any) {
@@ -331,6 +366,29 @@ export class CatsClient extends EventEmitter {
     }
   }
 
+  private rejectPendingAcks(err: CatsSendError): void {
+    for (const [msgId, pending] of this.pendingAcks.entries()) {
+      clearTimeout(pending.timer);
+      this.pendingAcks.delete(msgId);
+      pending.reject(new CatsSendError(
+        err.kind,
+        err.message,
+        err.code,
+        {
+          clientMsgID: pending.clientMsgID,
+          retryableWithHttp: err.retryableWithHttp,
+        }
+      ));
+    }
+  }
+
+  private forceReconnect(reason: string): void {
+    Logger.warning(`[CatsCompany] ${reason}，主动重建 WebSocket 连接`);
+    if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
+      this.ws.terminate();
+    }
+  }
+
   private startHeartbeat(): void {
     this.stopHeartbeat();
     this.pingTimer = setInterval(() => {
@@ -381,4 +439,11 @@ export class CatsClient extends EventEmitter {
     this.stopHeartbeat();
     this.ws?.close();
   }
+}
+
+function buildClientMessageID(): string {
+  if (typeof crypto.randomUUID === 'function') {
+    return `catsco-${crypto.randomUUID()}`;
+  }
+  return `catsco-${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
 }

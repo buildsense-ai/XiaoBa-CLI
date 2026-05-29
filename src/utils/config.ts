@@ -122,6 +122,10 @@ export class ConfigManager {
     const apiUrl = process.env.GAUZ_LLM_API_BASE?.trim();
     const apiKey = process.env.GAUZ_LLM_API_KEY?.trim();
     const model = process.env.GAUZ_LLM_MODEL?.trim();
+    const maxTokens = this.parsePositiveIntegerEnv(
+      process.env.GAUZ_LLM_MAX_OUTPUT_TOKENS,
+      process.env.GAUZ_LLM_MAX_TOKENS,
+    );
 
     if (provider === 'openai' || provider === 'anthropic') {
       override.provider = provider;
@@ -135,7 +139,22 @@ export class ConfigManager {
     if (model) {
       override.model = model;
     }
+    if (maxTokens !== undefined) {
+      override.maxTokens = maxTokens;
+    }
 
     return override;
+  }
+
+  private static parsePositiveIntegerEnv(...values: Array<string | undefined>): number | undefined {
+    for (const value of values) {
+      const text = value?.trim();
+      if (!text) continue;
+      const parsed = Number(text);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return Math.floor(parsed);
+      }
+    }
+    return undefined;
   }
 }

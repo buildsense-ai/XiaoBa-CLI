@@ -934,7 +934,7 @@ describe('dashboard typed settings API', () => {
         error: 'upstream failure',
         key: 'sk-bf-should-not-leak',
         token: 'user-token-should-not-leak',
-        reason: 'test-only',
+        reason: 'bad key sk-bf-should-not-leak in upstream message',
       });
     });
     const catsServer = await listen(catsApp);
@@ -956,7 +956,10 @@ describe('dashboard typed settings API', () => {
 
       assert.equal(response.status, 500);
       assert.equal(data.error, 'upstream failure');
-      assert.deepStrictEqual(data.data, { error: 'upstream failure', reason: 'test-only' });
+      assert.deepStrictEqual(data.data, {
+        error: 'upstream failure',
+        reason: 'bad key [redacted-key] in upstream message',
+      });
       assert.equal(text.includes('sk-bf-should-not-leak'), false);
       assert.equal(text.includes('user-token-should-not-leak'), false);
     } finally {

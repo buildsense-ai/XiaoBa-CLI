@@ -4,6 +4,7 @@ import { ToolDefinition } from '../types/tool';
 import { AIProvider, AIRequestOptions, StreamCallbacks } from './provider';
 import { ContextDebugLogger } from '../utils/context-debug-logger';
 import { normalizeOpenAIChatCompletionsUrl } from './openai-url';
+import { resolveMaxTokens } from './output-limits';
 
 /**
  * OpenAI Provider
@@ -24,7 +25,7 @@ export class OpenAIProvider implements AIProvider {
     this.apiKey = config.apiKey!;
     this.model = config.model || 'gpt-4o';
     this.temperature = config.temperature ?? 0.7;
-    this.maxTokens = config.maxTokens ?? 8192;
+    this.maxTokens = resolveMaxTokens(config);
   }
 
   /**
@@ -117,7 +118,8 @@ export class OpenAIProvider implements AIProvider {
       headers: this.headers,
       signal: options?.signal,
     });
-    const message = response.data.choices[0].message;
+    const choice = response.data.choices[0];
+    const message = choice.message;
     const usage = response.data.usage;
 
     ContextDebugLogger.dumpSdkBoundary('after', undefined, {
@@ -127,6 +129,7 @@ export class OpenAIProvider implements AIProvider {
     return {
       content: message.content || null,
       toolCalls: message.tool_calls,
+      stopReason: choice.finish_reason || undefined,
       usage: usage ? {
         promptTokens: usage.prompt_tokens ?? 0,
         completionTokens: usage.completion_tokens ?? 0,
@@ -162,6 +165,7 @@ export class OpenAIProvider implements AIProvider {
       const toolCallsMap = new Map<number, { id: string; type: 'function'; function: { name: string; arguments: string } }>();
       let buffer = '';
       let streamUsage: ChatResponse['usage'] = undefined;
+      let finishReason: string | undefined;
 
       const stream = response.data;
       const onAbort = () => {
@@ -187,6 +191,10 @@ export class OpenAIProvider implements AIProvider {
 
           try {
             const parsed = JSON.parse(data);
+            const choice = parsed.choices?.[0];
+            if (choice?.finish_reason) {
+              finishReason = choice.finish_reason;
+            }
 
             // 提取 usage（stream_options.include_usage 时在最后一个 chunk 返回）
             if (parsed.usage) {
@@ -197,7 +205,7 @@ export class OpenAIProvider implements AIProvider {
               };
             }
 
-            const delta = parsed.choices?.[0]?.delta;
+            const delta = choice?.delta;
             if (!delta) continue;
 
             // 文本内容
@@ -239,6 +247,7 @@ export class OpenAIProvider implements AIProvider {
           content: fullContent || null,
           toolCalls,
           usage: streamUsage,
+          stopReason: finishReason,
         };
 
         ContextDebugLogger.dumpSdkBoundary('after', undefined, {

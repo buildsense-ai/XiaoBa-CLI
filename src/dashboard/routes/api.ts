@@ -550,11 +550,23 @@ function sanitizeRelayKeyInfo(key: any): any {
     'lastUsedAt',
   ]) {
     const value = key[field];
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null) {
+    if (field === 'prefix' && typeof value === 'string') {
+      safe[field] = sanitizeRelayKeyPrefix(value);
+    } else if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null) {
       safe[field] = value;
     }
   }
   return safe;
+}
+
+function sanitizeRelayKeyPrefix(value: string): string {
+  const prefix = value.trim();
+  if (!prefix) return '';
+  if (prefix.includes('...')) return sanitizeCatsErrorMessage(prefix);
+  if (/^sk-[A-Za-z0-9_-]{12,}$/.test(prefix)) {
+    return `${prefix.slice(0, 8)}...${prefix.slice(-4)}`;
+  }
+  return sanitizeCatsErrorMessage(prefix);
 }
 
 async function fetchCatsRelayConfig(state: CatsAuthState): Promise<any> {
@@ -626,11 +638,23 @@ function findReusableLocalRelayKey(currentKey: any): string | undefined {
   }
 
   const prefix = String(currentKey?.prefix || '').trim();
-  if (!prefix || !matchesRelayKeyPrefix(apiKey, prefix)) {
+  if (!isReusableRelayKeyPrefix(prefix) || !matchesRelayKeyPrefix(apiKey, prefix)) {
     return undefined;
   }
 
   return apiKey;
+}
+
+function isReusableRelayKeyPrefix(prefix: string): boolean {
+  if (!prefix || /\s/.test(prefix)) return false;
+  const marker = '...';
+  const markerIndex = prefix.indexOf(marker);
+  if (markerIndex >= 0) {
+    const start = prefix.slice(0, markerIndex);
+    const end = prefix.slice(markerIndex + marker.length);
+    return /^sk-[A-Za-z0-9_-]{4,}$/.test(start) && /^[A-Za-z0-9_-]{4,}$/.test(end);
+  }
+  return /^sk-[A-Za-z0-9_-]{4,8}$/.test(prefix);
 }
 
 function matchesRelayKeyPrefix(apiKey: string, prefix: string): boolean {
@@ -639,7 +663,7 @@ function matchesRelayKeyPrefix(apiKey: string, prefix: string): boolean {
   if (markerIndex >= 0) {
     const start = prefix.slice(0, markerIndex);
     const end = prefix.slice(markerIndex + marker.length);
-    return (!start || apiKey.startsWith(start)) && (!end || apiKey.endsWith(end));
+    return apiKey.startsWith(start) && apiKey.endsWith(end);
   }
   return apiKey.startsWith(prefix);
 }
@@ -647,6 +671,7 @@ function matchesRelayKeyPrefix(apiKey: string, prefix: string): boolean {
 async function setupCatsRelayModelForDesktop(
   state: CatsAuthState,
   requestedModel: unknown,
+  options: { rotateExisting?: boolean } = {},
 ): Promise<Record<string, unknown>> {
   const config = await fetchCatsRelayConfig(state);
   if (config?.self_service_enabled === false) {
@@ -658,7 +683,9 @@ async function setupCatsRelayModelForDesktop(
   }
 
   const selectedModel = selectRelayModel(config, requestedModel, { strict: Boolean(requestedModel) });
-  const ensured = await ensureCatsRelayPlainKey(state);
+  const ensured = await ensureCatsRelayPlainKey(state, {
+    rotateExisting: options.rotateExisting,
+  });
   const settingsResult = updateDashboardSettings({
     settings: {
       'model.provider': selectedModel.provider,
@@ -696,7 +723,9 @@ function sanitizeCatsErrorData(data: unknown): unknown {
     ) {
       continue;
     }
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    if (typeof value === 'string') {
+      safe[key] = sanitizeCatsErrorMessage(value);
+    } else if (typeof value === 'number' || typeof value === 'boolean') {
       safe[key] = value;
     }
   }
@@ -737,12 +766,21 @@ function activateCatsCompanyConnector(
   const start = typeof (serviceManager as any).start === 'function'
     ? serviceManager.start.bind(serviceManager)
     : undefined;
-  if (!getService || !restart) {
+  if (!getService) {
     return { wasRunning: false, restartRequested: false, startRequested: false, startBlocked: false };
   }
 
   const service = getService('catscompany');
   if (service?.status === 'running') {
+    if (!restart) {
+      return {
+        wasRunning: true,
+        restartRequested: false,
+        startRequested: false,
+        startBlocked: false,
+        restartError: 'CatsCompany connector restart is unavailable',
+      };
+    }
     try {
       restart('catscompany');
       return { wasRunning: true, restartRequested: true, startRequested: false, startBlocked: false };
@@ -1528,29 +1566,74 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
           relayModelSetup = await setupCatsRelayModelForDesktop(
             relayState,
             req.body?.relayModelId || req.body?.modelId || req.body?.model,
+            {
+              rotateExisting: req.body?.rotateRelayKey === true || req.body?.rotateExisting === true,
+            },
           );
         } catch (relayError: any) {
           const message = sanitizeCatsErrorMessage(relayError?.message || relayError);
+          const status = relayError?.status || 500;
           relayModelSetup = {
             ok: false,
             error: message,
-            status: relayError?.status || 500,
-            action: relayError?.status === 409 ? 'rotate_required' : undefined,
+            status,
+            action: status === 409 ? 'rotate_required' : undefined,
           };
-          warnings.push(`relay model setup: ${message}`);
+          return res.status(status).json({
+            ok: false,
+            error: message,
+            action: status === 409 ? 'rotate_required' : undefined,
+            relayModelSetup,
+            updated,
+            user: {
+              uid: userUid,
+              username: me.username || state.username || '',
+              display_name: me.display_name || me.username || state.displayName || '',
+            },
+            bot: {
+              uid: botUid,
+              username: bot.username || preferredUsername,
+              display_name: bot.display_name || preferredName,
+            },
+            topicId: p2pTopicId(userUid, botUid),
+          });
         }
       }
 
-      let service = serviceManager.getService('catscompany');
+      const activation = activateCatsCompanyConnector(serviceManager, { startIfStopped: true });
+      const service = serviceManager.getService('catscompany');
       let preflight;
-      if (service && service.status !== 'running') {
+      if (activation.startBlocked) {
         preflight = getServicePreflight(serviceManager, 'catscompany', {
           runtimeRoot: process.cwd(),
           config: ConfigManager.getConfigReadonly(),
         });
-        if (preflight.status !== 'blocked') {
-          service = serviceManager.start('catscompany');
-        }
+      }
+      if (activation.restartError || activation.startError) {
+        return res.status(500).json({
+          ok: false,
+          error: sanitizeCatsErrorMessage(activation.restartError || activation.startError || 'CatsCompany connector restart failed'),
+          updated,
+          user: {
+            uid: userUid,
+            username: me.username || state.username || '',
+            display_name: me.display_name || me.username || state.displayName || '',
+          },
+          bot: {
+            uid: botUid,
+            username: bot.username || preferredUsername,
+            display_name: bot.display_name || preferredName,
+          },
+          topicId: p2pTopicId(userUid, botUid),
+          service,
+          preflight,
+          relayModelSetup,
+          connectorRestarted: activation.restartRequested,
+          connectorStarted: activation.startRequested,
+          connectorStartBlocked: activation.startBlocked,
+          restartError: activation.restartError,
+          startError: activation.startError,
+        });
       }
 
       res.json({
@@ -1570,10 +1653,15 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         service,
         preflight,
         relayModelSetup,
+        connectorRestarted: activation.restartRequested,
+        connectorStarted: activation.startRequested,
+        connectorStartBlocked: activation.startBlocked,
+        restartRequired: activation.wasRunning && !activation.restartRequested,
         warnings: warnings.length > 0 ? warnings : undefined,
       });
     } catch (e: any) {
-      res.status(e.status || 500).json({ error: e.message, data: e.data });
+      const payload = catsErrorResponse(e);
+      res.status(payload.status).json(payload.body);
     }
   });
 
