@@ -644,6 +644,44 @@ function matchesRelayKeyPrefix(apiKey: string, prefix: string): boolean {
   return apiKey.startsWith(prefix);
 }
 
+async function setupCatsRelayModelForDesktop(
+  state: CatsAuthState,
+  requestedModel: unknown,
+): Promise<Record<string, unknown>> {
+  const config = await fetchCatsRelayConfig(state);
+  if (config?.self_service_enabled === false) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: 'CatsCo 中转自助 Key 尚未启用',
+    };
+  }
+
+  const selectedModel = selectRelayModel(config, requestedModel, { strict: Boolean(requestedModel) });
+  const ensured = await ensureCatsRelayPlainKey(state);
+  const settingsResult = updateDashboardSettings({
+    settings: {
+      'model.provider': selectedModel.provider,
+      'model.apiBase': selectedModel.baseUrl,
+      'model.model': selectedModel.model,
+      'model.apiKey': { action: 'replace', value: ensured.plainKey },
+    },
+  }, { runtimeRoot: process.cwd() });
+
+  return {
+    ok: true,
+    protocol: normalizeRelayModelProtocol(selectedModel.provider),
+    provider: selectedModel.provider,
+    apiBase: selectedModel.baseUrl,
+    model: selectedModel.model,
+    selectedModel: relayModelPayload(selectedModel),
+    updated: settingsResult.updated,
+    key: sanitizeRelayKeyInfo(ensured.response?.key),
+    createdKey: ensured.created,
+    rotatedKey: ensured.rotated,
+  };
+}
+
 function sanitizeCatsErrorData(data: unknown): unknown {
   if (!data || typeof data !== 'object') return undefined;
   const safe: Record<string, unknown> = {};
@@ -1478,6 +1516,31 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         CATSCOMPANY_API_KEY: apiKey,
       });
 
+      const relayState: CatsAuthState = {
+        ...state,
+        uid: userUid,
+        username: me.username || state.username || '',
+        displayName: me.display_name || me.username || state.displayName || '',
+      };
+      let relayModelSetup: Record<string, unknown> | undefined;
+      if (req.body?.setupRelayModel !== false) {
+        try {
+          relayModelSetup = await setupCatsRelayModelForDesktop(
+            relayState,
+            req.body?.relayModelId || req.body?.modelId || req.body?.model,
+          );
+        } catch (relayError: any) {
+          const message = sanitizeCatsErrorMessage(relayError?.message || relayError);
+          relayModelSetup = {
+            ok: false,
+            error: message,
+            status: relayError?.status || 500,
+            action: relayError?.status === 409 ? 'rotate_required' : undefined,
+          };
+          warnings.push(`relay model setup: ${message}`);
+        }
+      }
+
       let service = serviceManager.getService('catscompany');
       let preflight;
       if (service && service.status !== 'running') {
@@ -1506,6 +1569,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         topicId: p2pTopicId(userUid, botUid),
         service,
         preflight,
+        relayModelSetup,
         warnings: warnings.length > 0 ? warnings : undefined,
       });
     } catch (e: any) {

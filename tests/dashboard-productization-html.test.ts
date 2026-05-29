@@ -141,6 +141,8 @@ test('custom model save refreshes readiness before Chat remains locked', () => {
 
 test('CatsCo Chat setup refreshes readiness before unlocking the composer', () => {
   const setupBlock = dashboardHtml.match(/async function setupCatsBot\(\)\{[\s\S]*?async function resetCatsAuth/)?.[0] || '';
+  assert.match(setupBlock, /setupRelayModel:true/);
+  assert.match(setupBlock, /relayModelId:selectedRelayModelId\(\)\|\|undefined/);
   assert.match(setupBlock, /await fetchStatus\(\)/);
   assert.match(setupBlock, /await fetchCatsStatus\(\)/);
   assert.match(setupBlock, /renderCatsStatus\(\)/);

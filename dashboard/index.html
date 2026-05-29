@@ -7650,7 +7650,7 @@
         }
         document.getElementById('cats-password').value='';
         document.getElementById('cats-register-password').value='';
-        setCatsAction('登录态已保存，正在绑定 CatsCo agent...');
+        setCatsAction('登录态已保存，正在配置中转模型并启动...');
         await setupCatsBot();
       }catch(e){
         setCatsAction('连接失败：'+e.message,true);
@@ -7662,9 +7662,13 @@
     async function setupCatsBot(){
       const btn=document.getElementById('cats-setup-btn');
       btn.disabled=true;
-      setCatsAction('正在绑定 bot 并启动 CatsCompany connector...');
+      setCatsAction('正在配置中转模型、绑定 agent 并启动 connector...');
       try{
-        const data=await parseCatsResponse(await fetch(API+'/api/cats/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(getCatsEndpointFields())}));
+        const data=await parseCatsResponse(await fetch(API+'/api/cats/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+          ...getCatsEndpointFields(),
+          setupRelayModel:true,
+          relayModelId:selectedRelayModelId()||undefined,
+        })}));
         catsState={...catsState,...data, connected:true, configured:true, botUid:data.bot?.uid||data.botUid, topicId:data.topicId, user:data.user, service:data.service};
         renderCatsStatus();
         setCatsAction('已连接。可以直接开始对话。');
