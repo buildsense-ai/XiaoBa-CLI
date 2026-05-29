@@ -67,7 +67,7 @@ export function computeLocalSkillContentHash(skillDir: string): string {
   const entries = walkSkillFiles(root)
     .map(filePath => {
       const relative = path.relative(root, filePath).replace(/\\/g, '/');
-      const buffer = canonicalSkillHashBuffer(relative, fs.readFileSync(filePath));
+      const buffer = skillHashBuffer(relative, fs.readFileSync(filePath));
       return {
         path: relative,
         size: buffer.length,
@@ -78,20 +78,9 @@ export function computeLocalSkillContentHash(skillDir: string): string {
   return sha256(Buffer.from(JSON.stringify(entries), 'utf8'));
 }
 
-function canonicalSkillHashBuffer(relativePath: string, buffer: Buffer): Buffer {
+function skillHashBuffer(relativePath: string, buffer: Buffer): Buffer {
   if (relativePath !== 'SKILL.md') return buffer;
-  return Buffer.from(stripSkillHubLocalMetadata(buffer.toString('utf8')), 'utf8');
-}
-
-function stripSkillHubLocalMetadata(markdown: string): string {
-  const text = String(markdown || '').replace(/\r\n/g, '\n');
-  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-  if (!match) return text;
-  const head = match[1]
-    .split(/\r?\n/)
-    .filter(line => !/^skillhub_(author|version|uploaded_at)\s*:/.test(line));
-  const body = text.slice(match[0].length);
-  return `---\n${head.join('\n')}\n---\n${body}`;
+  return Buffer.from(buffer.toString('utf8').replace(/\r\n/g, '\n'), 'utf8');
 }
 
 function fromMatterData(data: Record<string, any>): SkillHubLocalMetadata {

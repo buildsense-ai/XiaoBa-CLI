@@ -71,7 +71,7 @@ describe('SkillHub local metadata', () => {
     }
   });
 
-  test('ignores SkillHub frontmatter metadata in local content hash', () => {
+  test('includes SkillHub frontmatter metadata in local content hash', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skillhub-meta-hash-'));
     try {
       const skillDir = path.join(root, 'demo');
@@ -84,7 +84,7 @@ describe('SkillHub local metadata', () => {
         version: '9.9.9',
         uploadedAt: '2026-05-29T00:00:00.000Z',
       }));
-      assert.equal(computeLocalSkillContentHash(skillDir), before);
+      assert.notEqual(computeLocalSkillContentHash(skillDir), before);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
