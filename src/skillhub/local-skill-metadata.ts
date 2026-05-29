@@ -45,21 +45,20 @@ export function writeSkillHubLocalMetadata(skillFilePath: string, metadata: Requ
 }
 
 export function applySkillHubLocalMetadata(markdown: string, metadata: Required<SkillHubLocalMetadata>): string {
+  const text = String(markdown || '');
   const fields = {
     [SKILLHUB_METADATA_KEYS.author]: metadata.author,
     [SKILLHUB_METADATA_KEYS.version]: metadata.version,
     [SKILLHUB_METADATA_KEYS.uploadedAt]: metadata.uploadedAt,
   };
-  if (!String(markdown || '').startsWith('---\n')) {
-    return `---\n${frontmatterLines(fields)}---\n\n${markdown || ''}`;
+  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!match) {
+    return `---\n${frontmatterLines(fields)}---\n\n${text}`;
   }
-  const end = markdown.indexOf('\n---', 4);
-  if (end < 0) return `---\n${frontmatterLines(fields)}---\n\n${markdown || ''}`;
-  const head = markdown
-    .slice(4, end)
+  const head = match[1]
     .split(/\r?\n/)
     .filter(line => !/^skillhub_(author|version|uploaded_at)\s*:/.test(line));
-  const body = markdown.slice(end + 4).replace(/^\r?\n/, '');
+  const body = text.slice(match[0].length).replace(/^\r?\n/, '');
   return `---\n${[...head, ...frontmatterLines(fields).trimEnd().split('\n')].filter(Boolean).join('\n')}\n---\n\n${body}`;
 }
 
@@ -68,7 +67,7 @@ export function computeLocalSkillContentHash(skillDir: string): string {
   const entries = walkSkillFiles(root)
     .map(filePath => {
       const relative = path.relative(root, filePath).replace(/\\/g, '/');
-      const buffer = fs.readFileSync(filePath);
+      const buffer = canonicalSkillHashBuffer(relative, fs.readFileSync(filePath));
       return {
         path: relative,
         size: buffer.length,
@@ -77,6 +76,22 @@ export function computeLocalSkillContentHash(skillDir: string): string {
     })
     .sort((a, b) => a.path.localeCompare(b.path));
   return sha256(Buffer.from(JSON.stringify(entries), 'utf8'));
+}
+
+function canonicalSkillHashBuffer(relativePath: string, buffer: Buffer): Buffer {
+  if (relativePath !== 'SKILL.md') return buffer;
+  return Buffer.from(stripSkillHubLocalMetadata(buffer.toString('utf8')), 'utf8');
+}
+
+function stripSkillHubLocalMetadata(markdown: string): string {
+  const text = String(markdown || '').replace(/\r\n/g, '\n');
+  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!match) return text;
+  const head = match[1]
+    .split(/\r?\n/)
+    .filter(line => !/^skillhub_(author|version|uploaded_at)\s*:/.test(line));
+  const body = text.slice(match[0].length);
+  return `---\n${head.join('\n')}\n---\n${body}`;
 }
 
 function fromMatterData(data: Record<string, any>): SkillHubLocalMetadata {

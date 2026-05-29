@@ -31,6 +31,20 @@ describe('SkillHub local metadata', () => {
     assert.doesNotMatch(text, /content_hash/);
   });
 
+  test('merges metadata into CRLF frontmatter instead of prepending a second block', () => {
+    const text = applySkillHubLocalMetadata('---\r\nname: demo\r\ndescription: Demo skill\r\n---\r\n\r\n# Demo\r\n', {
+      author: 'lin',
+      version: '1.0.1',
+      uploadedAt: '2026-05-28T01:00:00.000Z',
+    });
+
+    assert.equal((text.match(/^---/gm) || []).length, 2);
+    assert.doesNotMatch(text, /^---[\s\S]*?---\n\n---/);
+    assert.match(text, /name: demo/);
+    assert.match(text, /skillhub_author: "lin"/);
+    assert.match(text, /skillhub_version: "1\.0\.1"/);
+  });
+
   test('reads metadata and ignores generated package files in local hash', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skillhub-meta-'));
     try {
@@ -52,6 +66,25 @@ describe('SkillHub local metadata', () => {
         version: '1.0.0',
         uploadedAt: '2026-05-28T00:00:00.000Z',
       });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('ignores SkillHub frontmatter metadata in local content hash', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skillhub-meta-hash-'));
+    try {
+      const skillDir = path.join(root, 'demo');
+      fs.mkdirSync(skillDir, { recursive: true });
+      const skillFile = path.join(skillDir, 'SKILL.md');
+      fs.writeFileSync(skillFile, '---\r\nname: demo\r\ndescription: Demo\r\n---\r\n\r\n# Demo\r\n');
+      const before = computeLocalSkillContentHash(skillDir);
+      fs.writeFileSync(skillFile, applySkillHubLocalMetadata(fs.readFileSync(skillFile, 'utf8'), {
+        author: 'lin',
+        version: '9.9.9',
+        uploadedAt: '2026-05-29T00:00:00.000Z',
+      }));
+      assert.equal(computeLocalSkillContentHash(skillDir), before);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -4955,6 +4955,7 @@
     let catsWorkingActive = false;
     let skillHubState = { authenticated:false, roles:[], permissions:[], installed:[] };
     let skillHubRegistryCache = [];
+    let localSkillsCache = [];
     let skillHubDraftManifest = null;
 
     function loadPetProfile() {
@@ -5357,8 +5358,9 @@
       try {
         const res = await fetch(API+'/api/skills-all');
         const skills = await res.json();
-        renderSkills(skills);
-        renderLocalSkillStore(skills);
+        localSkillsCache = Array.isArray(skills) ? skills : [];
+        renderSkills(localSkillsCache);
+        renderLocalSkillStore(localSkillsCache);
       } catch (e) { document.getElementById('skills-grid').innerHTML = '<div class="loading">无法加载</div>'; }
     }
 
@@ -5697,6 +5699,11 @@
         return;
       }
       const installedIds = new Set((skillHubState.installed || []).map(item => item.skillId + '@' + item.version));
+      for (const sk of localSkillsCache || []) {
+        if (sk.skillHub?.author && sk.skillHub?.version) {
+          installedIds.add(sk.skillHub.author + '/' + sk.name + '@' + sk.skillHub.version);
+        }
+      }
       grid.innerHTML = items.map(item => {
         const skillId = String(item.skillId || '');
         const latestVersion = String(item.latestVersion || '');
