@@ -18,12 +18,6 @@ const SKILLHUB_METADATA_KEYS = {
 const SOURCE_SKIP_DIRS = new Set([
   '.git',
   'node_modules',
-  'dist',
-  'build',
-  'release',
-  '__pycache__',
-  '.venv',
-  'venv',
 ]);
 
 const GENERATED_PACKAGE_FILES = new Set([

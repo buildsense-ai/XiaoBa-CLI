@@ -228,12 +228,6 @@ export class SkillHubService {
 const SOURCE_SKIP_DIRS = new Set([
   '.git',
   'node_modules',
-  'dist',
-  'build',
-  'release',
-  '__pycache__',
-  '.venv',
-  'venv',
 ]);
 const MAX_SOURCE_FILES = 200;
 const MAX_SOURCE_TOTAL_BYTES = 20 * 1024 * 1024;
