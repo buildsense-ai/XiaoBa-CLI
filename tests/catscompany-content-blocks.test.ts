@@ -7,6 +7,9 @@ function createProcessHarness() {
   const downloads: Array<{ url: string; fileName: string }> = [];
   const multimodalCalls: Array<{ text: string; attachments: any[] }> = [];
   const handledTurns: Array<{ userMessage: any; options: any }> = [];
+  const runtimeObservations: Array<{ text: string; options: any }> = [];
+  const sentTexts: Array<{ topic: string; text: string }> = [];
+  const replies: Array<{ topic: string; text: string }> = [];
   const sentThinking: Array<{ text: string; metadata?: any }> = [];
   const toolUses: Array<{ topic: string; toolUseId: string; name: string; input: any; metadata?: any }> = [];
   const toolResults: Array<{ topic: string; toolUseId: string; content: string; isError?: boolean; metadata?: any }> = [];
@@ -15,6 +18,10 @@ function createProcessHarness() {
     isBusy: () => false,
     handleMessage: async (userMessage: any, options: any) => {
       handledTurns.push({ userMessage, options });
+      return { visibleToUser: false, text: '' };
+    },
+    handleRuntimeObservation: async (text: string, options: any) => {
+      runtimeObservations.push({ text, options });
       return { visibleToUser: false, text: '' };
     },
   };
@@ -29,9 +36,13 @@ function createProcessHarness() {
       return `C:\\tmp\\catsco-test\\${fileName}`;
     },
     sendTyping: () => undefined,
-    reply: async () => undefined,
+    reply: async (topic: string, text: string) => {
+      replies.push({ topic, text });
+    },
     sendFile: async () => undefined,
-    sendText: async () => undefined,
+    sendText: async (topic: string, text: string) => {
+      sentTexts.push({ topic, text });
+    },
     sendThinking: async (_topic: string, text: string, metadata?: any) => {
       sentThinking.push({ text, metadata });
     },
@@ -58,7 +69,7 @@ function createProcessHarness() {
     ];
   };
 
-  return { bot, downloads, multimodalCalls, handledTurns, sentThinking, toolUses, toolResults };
+  return { bot, downloads, multimodalCalls, handledTurns, runtimeObservations, sentTexts, replies, sentThinking, toolUses, toolResults, session };
 }
 
 describe('CatsCo content blocks', () => {
@@ -296,5 +307,49 @@ describe('CatsCo content blocks', () => {
     assert.match(toolResults[0].content, /已完成/);
     assert.match(toolResults[0].content, /登录链路正常/);
     assert.match(toolResults[0].content, /logs\/report\.md/);
+  });
+
+  test('subagent feedback visible reply is sent back to CatsCompany', async () => {
+    const { bot, runtimeObservations, sentTexts, session } = createProcessHarness();
+    session.handleRuntimeObservation = async (text: string, options: any) => {
+      runtimeObservations.push({ text, options });
+      return { visibleToUser: true, text: '已根据子 agent 结果处理完。' };
+    };
+
+    await (bot as any).handleSubAgentFeedback(
+      'cc_user:usr38',
+      'p2p_38_110',
+      'usr38',
+      '[子agent1 已完成]\n结果摘要：审查完成',
+    );
+
+    assert.strictEqual(runtimeObservations.length, 1);
+    assert.strictEqual(runtimeObservations[0].options.source, 'subagent_result');
+    assert.deepStrictEqual(sentTexts, [
+      { topic: 'p2p_38_110', text: '已根据子 agent 结果处理完。' },
+    ]);
+  });
+
+  test('queued subagent error reply is not sent twice', async () => {
+    const { bot, sentTexts, replies, session } = createProcessHarness();
+    session.handleRuntimeObservation = async () => ({
+      visibleToUser: true,
+      text: '处理消息时出错: 子 agent 结果处理失败',
+    });
+    bot.messageQueue.set('cc_user:usr38', [{
+      userMessage: '[子agent1 已完成]\n结果摘要：审查完成',
+      topic: 'p2p_38_110',
+      senderId: 'usr38',
+      seq: 0,
+      receivedAt: Date.now(),
+      source: 'subagent_feedback',
+    }]);
+
+    await (bot as any).drainMessageQueue('cc_user:usr38');
+
+    assert.deepStrictEqual(sentTexts, []);
+    assert.deepStrictEqual(replies, [
+      { topic: 'p2p_38_110', text: '处理消息时出错: 子 agent 结果处理失败' },
+    ]);
   });
 });

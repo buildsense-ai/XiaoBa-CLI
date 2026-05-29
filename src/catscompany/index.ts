@@ -629,6 +629,12 @@ export class CatsCompanyBot {
         } catch (err: any) {
           Logger.warning(`错误消息发送失败: ${err.message}`);
         }
+      } else if (result.visibleToUser && result.text) {
+        try {
+          await this.sender.sendText(topic, result.text);
+        } catch (err: any) {
+          Logger.warning(`子智能体结果回复发送失败: ${err.message}`);
+        }
       }
       await this.drainMessageQueue(sessionKey);
     } finally {
@@ -778,18 +784,17 @@ export class CatsCompanyBot {
           runtimeFeedback: msg.runtimeFeedback,
           pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey),
         });
-      if (result.text !== BUSY_MESSAGE && result.visibleToUser && result.text) {
-        try {
-          await this.sender.sendText(msg.topic, result.text);
-        } catch (err: any) {
-          Logger.warning(`队列消息回复发送失败: ${err.message}`);
-        }
-      }
       if (result.text.startsWith('处理消息时出错:')) {
         try {
           await this.sender.reply(msg.topic, result.text);
         } catch (err: any) {
           Logger.warning(`错误消息发送失败: ${err.message}`);
+        }
+      } else if (result.text !== BUSY_MESSAGE && result.visibleToUser && result.text) {
+        try {
+          await this.sender.sendText(msg.topic, result.text);
+        } catch (err: any) {
+          Logger.warning(`队列消息回复发送失败: ${err.message}`);
         }
       }
     } finally {
