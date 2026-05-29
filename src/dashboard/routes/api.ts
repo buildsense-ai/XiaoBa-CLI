@@ -642,6 +642,9 @@ function findReusableLocalRelayKey(currentKey: any): string | undefined {
   if (!apiKey || !isCatsRelayApiBase(apiBase)) {
     return undefined;
   }
+  if (!isLocalRelayPlainKeyCandidate(apiKey)) {
+    return undefined;
+  }
 
   const prefix = String(currentKey?.prefix || '').trim();
   if (!isReusableRelayKeyPrefix(prefix) || !matchesRelayKeyPrefix(apiKey, prefix)) {
@@ -655,23 +658,23 @@ function isReusableRelayKeyPrefix(prefix: string): boolean {
   if (!prefix || /\s/.test(prefix)) return false;
   const marker = '...';
   const markerIndex = prefix.indexOf(marker);
-  if (markerIndex >= 0) {
-    const start = prefix.slice(0, markerIndex);
-    const end = prefix.slice(markerIndex + marker.length);
-    return /^sk-[A-Za-z0-9_-]{4,}$/.test(start) && /^[A-Za-z0-9_-]{4,}$/.test(end);
-  }
-  return /^sk-[A-Za-z0-9_-]{4,8}$/.test(prefix);
+  if (markerIndex < 0 || markerIndex !== prefix.lastIndexOf(marker)) return false;
+  const start = prefix.slice(0, markerIndex);
+  const end = prefix.slice(markerIndex + marker.length);
+  return /^sk-[A-Za-z0-9_-]+$/.test(start) && start.length >= 8 && /^[A-Za-z0-9_-]{4,}$/.test(end);
+}
+
+function isLocalRelayPlainKeyCandidate(apiKey: string): boolean {
+  return /^sk-[A-Za-z0-9_-]{12,}$/.test(apiKey) && !apiKey.includes('...');
 }
 
 function matchesRelayKeyPrefix(apiKey: string, prefix: string): boolean {
   const marker = '...';
   const markerIndex = prefix.indexOf(marker);
-  if (markerIndex >= 0) {
-    const start = prefix.slice(0, markerIndex);
-    const end = prefix.slice(markerIndex + marker.length);
-    return apiKey.startsWith(start) && apiKey.endsWith(end);
-  }
-  return apiKey.startsWith(prefix);
+  if (markerIndex < 0 || markerIndex !== prefix.lastIndexOf(marker)) return false;
+  const start = prefix.slice(0, markerIndex);
+  const end = prefix.slice(markerIndex + marker.length);
+  return Boolean(start && end && apiKey.startsWith(start) && apiKey.endsWith(end));
 }
 
 async function setupCatsRelayModelForDesktop(
@@ -742,7 +745,9 @@ function sanitizeCatsErrorMessage(value: unknown): string {
   return String(value || '请求失败')
     .replace(/cats_svc_[A-Za-z0-9_-]+/g, '[redacted-token]')
     .replace(/sk-[A-Za-z0-9_-]{8,}/g, '[redacted-key]')
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted-token]');
+    .replace(/\bAuthorization\s*[:=]\s*(?:[A-Za-z][A-Za-z0-9+.-]*\s+)?[^\s,;'"`<>]+/gi, 'Authorization: [redacted-token]')
+    .replace(/\b(?:Bearer|ApiKey|Token)\s+[A-Za-z0-9._~+/=-]+/gi, match => `${match.split(/\s+/)[0]} [redacted-token]`)
+    .replace(/(["']?)([A-Za-z0-9_.-]*(?:token|api[_-]?key|secret|password)[A-Za-z0-9_.-]*)\1\s*[:=]\s*["']?[^&\s,'"`<>}]+["']?/gi, '$1$2$1=[redacted-token]');
 }
 
 function catsErrorResponse(error: any): { status: number; body: Record<string, unknown> } {
@@ -1091,7 +1096,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       res.json({
         ...result,
         connectorRestarted: restartInfo.restartRequested,
-        restartError: restartInfo.restartError,
+        restartError: restartInfo.restartError ? sanitizeCatsErrorMessage(restartInfo.restartError) : undefined,
       });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
@@ -1630,8 +1635,8 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
           connectorRestarted: activation.restartRequested,
           connectorStarted: activation.startRequested,
           connectorStartBlocked: activation.startBlocked,
-          restartError: activation.restartError,
-          startError: activation.startError,
+          restartError: activation.restartError ? sanitizeCatsErrorMessage(activation.restartError) : undefined,
+          startError: activation.startError ? sanitizeCatsErrorMessage(activation.startError) : undefined,
         });
       }
 
@@ -1730,7 +1735,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       } catch (error: any) {
         if (error?.status === 409) {
           return res.status(409).json({
-            error: error.message,
+            error: sanitizeCatsErrorMessage(error.message),
             action: 'rotate_required',
             protocol: normalizeRelayModelProtocol(selectedModel.provider),
             model: relayModelPayload(selectedModel),
@@ -1771,8 +1776,8 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         connectorRestarted: restartInfo.restartRequested,
         connectorStarted: restartInfo.startRequested,
         connectorStartBlocked: restartInfo.startBlocked,
-        restartError: restartInfo.restartError,
-        startError: restartInfo.startError,
+        restartError: restartInfo.restartError ? sanitizeCatsErrorMessage(restartInfo.restartError) : undefined,
+        startError: restartInfo.startError ? sanitizeCatsErrorMessage(restartInfo.startError) : undefined,
         message: restartInfo.restartRequested
           ? '已启用 CatsCo 中转模型，并已请求重启 CatsCo agent 以使用新配置。'
           : restartInfo.startRequested

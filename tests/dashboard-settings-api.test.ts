@@ -935,6 +935,7 @@ describe('dashboard typed settings API', () => {
         key: 'sk-bf-should-not-leak',
         token: 'user-token-should-not-leak',
         reason: 'bad key sk-bf-should-not-leak in upstream message',
+        raw: 'Authorization: ApiKey cats_svc_should_not_leak token=secret-value refresh_token=refresh-secret CATSCO_USER_TOKEN=user-secret client_secret=client-secret x_api_key=api-secret',
       });
     });
     const catsServer = await listen(catsApp);
@@ -959,9 +960,70 @@ describe('dashboard typed settings API', () => {
       assert.deepStrictEqual(data.data, {
         error: 'upstream failure',
         reason: 'bad key [redacted-key] in upstream message',
+        raw: 'Authorization: [redacted-token] token=[redacted-token] refresh_token=[redacted-token] CATSCO_USER_TOKEN=[redacted-token] client_secret=[redacted-token] x_api_key=[redacted-token]',
       });
       assert.equal(text.includes('sk-bf-should-not-leak'), false);
       assert.equal(text.includes('user-token-should-not-leak'), false);
+      assert.equal(text.includes('cats_svc_should_not_leak'), false);
+      assert.equal(text.includes('secret-value'), false);
+      assert.equal(text.includes('refresh-secret'), false);
+      assert.equal(text.includes('client-secret'), false);
+      assert.equal(text.includes('api-secret'), false);
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
+  test('POST /cats/relay/model-config/apply sanitizes relay key rotation errors', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    catsApp.get('/api/relay/config', (_req, res) => {
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'MiniMax-M2.7',
+        self_service_enabled: true,
+        endpoints: [{ protocol: 'Anthropic-compatible', base_url: 'https://relay.catsco.cc/anthropic' }],
+      });
+    });
+    catsApp.get('/api/relay/key', (_req, res) => {
+      res.json({
+        configured: true,
+        key: {
+          id: 'vk-existing',
+          name: 'existing',
+          prefix: 'sk-bf-old...cret',
+          state: 'active',
+        },
+      });
+    });
+    catsApp.post('/api/relay/key/rotate', (_req, res) => {
+      res.status(409).json({
+        error: 'Authorization: ApiKey cats_svc_rotate_should_not_leak refresh_token=rotate-secret',
+      });
+    });
+    const catsServer = await listen(catsApp);
+    const address = catsServer.address();
+    if (!address || typeof address === 'string') throw new Error('cats server did not bind');
+
+    try {
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocol: 'anthropic', rotateExisting: true }),
+      });
+      const text = await response.text();
+      const data = JSON.parse(text) as any;
+
+      assert.equal(response.status, 409);
+      assert.equal(data.action, 'rotate_required');
+      assert.equal(data.error, 'Authorization: [redacted-token] refresh_token=[redacted-token]');
+      assert.equal(data.key.prefix, 'sk-bf-old...cret');
+      assert.equal(text.includes('cats_svc_rotate_should_not_leak'), false);
+      assert.equal(text.includes('rotate-secret'), false);
     } finally {
       await new Promise<void>(resolve => catsServer.close(() => resolve()));
     }
@@ -1068,6 +1130,73 @@ describe('dashboard typed settings API', () => {
     }
   });
 
+  test('POST /cats/relay/model-config/apply rejects masked local relay keys', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    let createCalled = false;
+    let rotateCalled = false;
+
+    catsApp.get('/api/relay/config', (_req, res) => {
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'MiniMax-M2.7',
+        self_service_enabled: true,
+        endpoints: [{ protocol: 'Anthropic-compatible', base_url: 'https://relay.catsco.cc/anthropic' }],
+      });
+    });
+    catsApp.get('/api/relay/key', (_req, res) => {
+      res.json({
+        configured: true,
+        key: {
+          id: 'vk-existing',
+          name: 'existing',
+          prefix: 'sk-bf-old...cret',
+          state: 'active',
+        },
+      });
+    });
+    catsApp.post('/api/relay/key', (_req, res) => {
+      createCalled = true;
+      res.status(500).json({ error: 'create should not be called' });
+    });
+    catsApp.post('/api/relay/key/rotate', (_req, res) => {
+      rotateCalled = true;
+      res.status(500).json({ error: 'rotate should not be called' });
+    });
+    const catsServer = await listen(catsApp);
+    const address = catsServer.address();
+    if (!address || typeof address === 'string') throw new Error('cats server did not bind');
+
+    try {
+      fs.writeFileSync(path.join(testRoot, '.env'), [
+        'GAUZ_LLM_PROVIDER=anthropic',
+        'GAUZ_LLM_API_BASE=https://relay.catsco.cc/anthropic',
+        'GAUZ_LLM_API_KEY=sk-bf-old...cret',
+        'GAUZ_LLM_MODEL=MiniMax-M2.7',
+        '',
+      ].join('\n'));
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocol: 'anthropic' }),
+      });
+      const data = await response.json() as any;
+      const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+      assert.equal(response.status, 409);
+      assert.equal(data.action, 'rotate_required');
+      assert.equal(createCalled, false);
+      assert.equal(rotateCalled, false);
+      assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-old...cret');
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
   test('POST /cats/relay/model-config/apply requires a verifiable relay key prefix before reusing local key', async () => {
     const catsApp = express();
     catsApp.use(express.json());
@@ -1088,6 +1217,7 @@ describe('dashboard typed settings API', () => {
         key: {
           id: 'vk-existing',
           name: 'existing',
+          prefix: 'sk-bf-old',
           state: 'active',
         },
       });
@@ -1126,7 +1256,7 @@ describe('dashboard typed settings API', () => {
 
       assert.equal(response.status, 409);
       assert.equal(data.action, 'rotate_required');
-      assert.equal(data.key.prefix, undefined);
+      assert.equal(data.key.prefix, 'sk-bf-old');
       assert.equal(createCalled, false);
       assert.equal(rotateCalled, false);
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-old-local-secret');
