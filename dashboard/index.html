@@ -5527,14 +5527,13 @@
     function renderSkillHubLocalMeta(sk) {
       if (!sk.skillHub) return '';
       const modified = sk.skillHub.modified === true
-        ? '<span class="tag warm">modified</span>'
+        ? '<span class="tag warm">local changes</span>'
         : sk.skillHub.modified === false
           ? '<span class="tag green">synced</span>'
-          : '<span class="tag">sync unknown</span>';
+          : '<span class="tag">not checked</span>';
       const parts = [
-        sk.skillHub.author ? '<span class="tag">author '+escapeHtml(sk.skillHub.author)+'</span>' : '',
-        sk.skillHub.version ? '<span class="tag">version '+escapeHtml(sk.skillHub.version)+'</span>' : '',
-        sk.skillHub.uploadedAt ? '<span class="tag">uploaded '+escapeHtml(sk.skillHub.uploadedAt)+'</span>' : '',
+        sk.skillHub.author ? '<span class="tag">by '+escapeHtml(sk.skillHub.author)+'</span>' : '',
+        sk.skillHub.version ? '<span class="tag">v'+escapeHtml(sk.skillHub.version)+'</span>' : '',
         modified,
       ].filter(Boolean);
       return '<div class="skill-meta">'+parts.join('')+'</div>';
@@ -5574,12 +5573,12 @@
         }
         if (data.existing) {
           alert('SkillHub already has this exact Skill content: ' + (data.latestVersion || skillName));
-          await searchSkillHub(skillName, true);
+          await refreshSkillHubPage();
           return;
         }
         const submission = data.submission || {};
         alert('SkillHub share submitted: ' + (submission.id || submission.submissionId || skillName));
-        await fetchSkillHubDeveloper();
+        await Promise.allSettled([fetchSkillHubDeveloper(), refreshSkillHubPage()]);
       } catch (e) {
         alert('SkillHub share failed: ' + (e.message || String(e)));
       }
@@ -5709,7 +5708,7 @@
         const latestVersion = String(item.latestVersion || '');
         const key = skillId + '@' + latestVersion;
         const installed = installedIds.has(key);
-        const tags = [item.author?.name ? '<span class="tag">author '+escapeHtml(item.author.name)+'</span>' : '', ...(item.categories || []), ...(item.tags || [])].slice(0, 5).map(tag => String(tag).startsWith('<span') ? tag : '<span class="tag">'+escapeHtml(tag)+'</span>').join('');
+        const tags = [item.author?.name ? '<span class="tag">by '+escapeHtml(item.author.name)+'</span>' : '', ...(item.categories || []), ...(item.tags || [])].slice(0, 5).map(tag => String(tag).startsWith('<span') ? tag : '<span class="tag">'+escapeHtml(tag)+'</span>').join('');
         const installAttrs = installed || !skillId
           ? 'disabled'
           : 'data-skillhub-install="true" data-skill-id="'+escapeHtml(skillId)+'" data-version="'+escapeHtml(latestVersion)+'"';
