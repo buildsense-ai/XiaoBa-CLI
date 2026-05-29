@@ -46,3 +46,8 @@ export function isPrimaryModelVisionCapable(config: Pick<ChatConfig, 'apiUrl' | 
 
   return includesAny(model, KNOWN_VISION_MODEL_PATTERNS);
 }
+
+export function isPrimaryModelToolCallingCapable(config: Pick<ChatConfig, 'apiUrl' | 'model' | 'provider'>): boolean {
+  void config;
+  return true;
+}

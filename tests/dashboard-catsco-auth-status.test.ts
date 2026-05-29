@@ -24,6 +24,10 @@ describe('dashboard CatsCo account status', () => {
     'CATSCO_USER_DISPLAY_NAME',
     'CATSCO_BOT_UID',
     'CATSCO_API_KEY',
+    'GAUZ_LLM_PROVIDER',
+    'GAUZ_LLM_API_BASE',
+    'GAUZ_LLM_API_KEY',
+    'GAUZ_LLM_MODEL',
     'CATSCOMPANY_HTTP_BASE_URL',
     'CATSCOMPANY_SERVER_URL',
     'CATSCOMPANY_USER_TOKEN',
@@ -173,6 +177,323 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(env.CATSCOMPANY_USER_UID, '77');
     assert.equal(env.CATSCO_USER_DISPLAY_NAME, 'Demo User');
     assert.equal(env.CATSCOMPANY_USER_DISPLAY_NAME, 'Demo User');
+  });
+
+  test('POST /cats/setup creates a relay key, writes model config, and starts connector for a new account', async () => {
+    if (dashboardServer) {
+      await close(dashboardServer);
+      dashboardServer = undefined;
+    }
+
+    const service = {
+      name: 'catscompany',
+      label: 'CatsCo agent',
+      command: process.execPath,
+      args: [],
+      status: 'stopped',
+    };
+    let startCalled = 0;
+    const dashboardApp = express();
+    dashboardApp.use(express.json());
+    dashboardApp.use('/api', createApiRouter({
+      getAll: () => [service],
+      getService: (name: string) => (name === 'catscompany' ? service : undefined),
+      start: (name: string) => {
+        assert.equal(name, 'catscompany');
+        startCalled += 1;
+        service.status = 'running';
+        return service;
+      },
+    } as any));
+    dashboardServer = await listen(dashboardApp);
+    dashboardBaseUrl = serverBaseUrl(dashboardServer);
+
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/me') {
+        assert.equal(req.header('authorization'), 'Bearer user-token');
+        return res.json({ uid: 88, username: 'fresh', display_name: 'Fresh User' });
+      }
+      if (req.path === '/api/bots' && req.method === 'GET') {
+        return res.json({ bots: [] });
+      }
+      if (req.path === '/api/bots' && req.method === 'POST') {
+        return res.json({
+          uid: 188,
+          username: req.body.username,
+          display_name: req.body.display_name,
+          api_key: 'cats-agent-key',
+        });
+      }
+      if (req.path === '/api/friends/request') {
+        return res.json({ ok: true });
+      }
+      if (req.path === '/api/friends/accept') {
+        assert.equal(req.header('authorization'), 'ApiKey cats-agent-key');
+        return res.json({ ok: true });
+      }
+      if (req.path === '/api/relay/config') {
+        return res.json({
+          base_url: 'https://relay.catsco.cc',
+          self_service_enabled: true,
+          models: [
+            {
+              id: 'minimax-m2.7',
+              label: 'MiniMax M2.7',
+              model: 'MiniMax-M2.7',
+              provider: 'anthropic',
+              protocol: 'Anthropic-compatible',
+              base_url: 'https://relay.catsco.cc/anthropic',
+              enabled: true,
+              default: true,
+            },
+            {
+              id: 'glm-5.1',
+              label: 'GLM 5.1',
+              model: 'glm-5.1',
+              provider: 'anthropic',
+              protocol: 'Anthropic-compatible',
+              base_url: 'https://relay.catsco.cc/anthropic',
+              enabled: true,
+            },
+          ],
+        });
+      }
+      if (req.path === '/api/relay/key' && req.method === 'GET') {
+        return res.json({ key: null });
+      }
+      if (req.path === '/api/relay/key' && req.method === 'POST') {
+        assert.equal(req.body.name, 'Fresh User');
+        return res.json({
+          key: {
+            id: 'relay-key-1',
+            name: req.body.name,
+            prefix: 'sk-bf-fr',
+            state: 'active',
+            key: 'sk-bf-fresh-secret',
+          },
+        });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    writeEnv([
+      `CATSCO_HTTP_BASE_URL=${catsBaseUrl}`,
+      'CATSCO_SERVER_URL=wss://app.catsco.cc/v0/channels',
+      'CATSCO_USER_TOKEN=user-token',
+      'CATSCO_USER_UID=88',
+      'CATSCO_USER_NAME=fresh',
+      'CATSCO_USER_DISPLAY_NAME=Fresh User',
+    ]);
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/setup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+        relayModelId: 'glm-5.1',
+      }),
+    });
+    const text = await response.text();
+    const data = JSON.parse(text) as any;
+    const env = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+    assert.equal(response.status, 200, text);
+    assert.equal(data.ok, true);
+    assert.equal(data.relayModelSetup.ok, true);
+    assert.equal(data.relayModelSetup.model, 'glm-5.1');
+    assert.equal(data.relayModelSetup.createdKey, true);
+    assert.equal(text.includes('sk-bf-fresh-secret'), false);
+    assert.equal(env.GAUZ_LLM_PROVIDER, 'anthropic');
+    assert.equal(env.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
+    assert.equal(env.GAUZ_LLM_MODEL, 'glm-5.1');
+    assert.equal(env.GAUZ_LLM_API_KEY, 'sk-bf-fresh-secret');
+    assert.equal(env.CATSCO_BOT_UID, '188');
+    assert.equal(env.CATSCO_API_KEY, 'cats-agent-key');
+    assert.equal(startCalled, 1);
+    assert.equal(data.service.status, 'running');
+  });
+
+  test('POST /cats/setup restarts a running connector after writing relay model config', async () => {
+    if (dashboardServer) {
+      await close(dashboardServer);
+      dashboardServer = undefined;
+    }
+
+    const service = {
+      name: 'catscompany',
+      label: 'CatsCo agent',
+      command: process.execPath,
+      args: [],
+      status: 'running',
+    };
+    let restartCalled = 0;
+    let startCalled = 0;
+    const dashboardApp = express();
+    dashboardApp.use(express.json());
+    dashboardApp.use('/api', createApiRouter({
+      getAll: () => [service],
+      getService: (name: string) => (name === 'catscompany' ? service : undefined),
+      start: () => {
+        startCalled += 1;
+        return service;
+      },
+      restart: (name: string) => {
+        assert.equal(name, 'catscompany');
+        restartCalled += 1;
+        service.status = 'running';
+        return service;
+      },
+    } as any));
+    dashboardServer = await listen(dashboardApp);
+    dashboardBaseUrl = serverBaseUrl(dashboardServer);
+
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/me') {
+        return res.json({ uid: 88, username: 'fresh', display_name: 'Fresh User' });
+      }
+      if (req.path === '/api/bots' && req.method === 'GET') {
+        return res.json({ bots: [{ uid: 188, username: 'catsco_88', display_name: 'CatsCo', api_key: 'cats-agent-key' }] });
+      }
+      if (req.path === '/api/friends/request' || req.path === '/api/friends/accept') {
+        return res.json({ ok: true });
+      }
+      if (req.path === '/api/relay/config') {
+        return res.json({
+          base_url: 'https://relay.catsco.cc',
+          self_service_enabled: true,
+          models: [{
+            id: 'minimax-m2.7',
+            label: 'MiniMax M2.7',
+            model: 'MiniMax-M2.7',
+            provider: 'anthropic',
+            protocol: 'Anthropic-compatible',
+            base_url: 'https://relay.catsco.cc/anthropic',
+            enabled: true,
+            default: true,
+          }],
+        });
+      }
+      if (req.path === '/api/relay/key' && req.method === 'GET') {
+        return res.json({ key: null });
+      }
+      if (req.path === '/api/relay/key' && req.method === 'POST') {
+        return res.json({ key: { id: 'relay-key-1', prefix: 'sk-bf-fr', state: 'active', key: 'sk-bf-fresh-secret' } });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    writeEnv([
+      `CATSCO_HTTP_BASE_URL=${catsBaseUrl}`,
+      'CATSCO_SERVER_URL=wss://app.catsco.cc/v0/channels',
+      'CATSCO_USER_TOKEN=user-token',
+      'CATSCO_USER_UID=88',
+      'CATSCO_USER_NAME=fresh',
+    ]);
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/setup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      }),
+    });
+    const text = await response.text();
+    const data = JSON.parse(text) as any;
+
+    assert.equal(response.status, 200, text);
+    assert.equal(data.connectorRestarted, true);
+    assert.equal(data.connectorStarted, false);
+    assert.equal(restartCalled, 1);
+    assert.equal(startCalled, 0);
+    assert.equal(text.includes('sk-bf-fresh-secret'), false);
+  });
+
+  test('POST /cats/setup stops before starting connector when relay key rotation is required', async () => {
+    if (dashboardServer) {
+      await close(dashboardServer);
+      dashboardServer = undefined;
+    }
+
+    const service = {
+      name: 'catscompany',
+      label: 'CatsCo agent',
+      command: process.execPath,
+      args: [],
+      status: 'stopped',
+    };
+    let startCalled = 0;
+    const dashboardApp = express();
+    dashboardApp.use(express.json());
+    dashboardApp.use('/api', createApiRouter({
+      getAll: () => [service],
+      getService: (name: string) => (name === 'catscompany' ? service : undefined),
+      start: () => {
+        startCalled += 1;
+        service.status = 'running';
+        return service;
+      },
+    } as any));
+    dashboardServer = await listen(dashboardApp);
+    dashboardBaseUrl = serverBaseUrl(dashboardServer);
+
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/me') {
+        return res.json({ uid: 88, username: 'fresh', display_name: 'Fresh User' });
+      }
+      if (req.path === '/api/bots' && req.method === 'GET') {
+        return res.json({ bots: [{ uid: 188, username: 'catsco_88', display_name: 'CatsCo', api_key: 'cats-agent-key' }] });
+      }
+      if (req.path === '/api/friends/request' || req.path === '/api/friends/accept') {
+        return res.json({ ok: true });
+      }
+      if (req.path === '/api/relay/config') {
+        return res.json({
+          base_url: 'https://relay.catsco.cc',
+          self_service_enabled: true,
+          models: [{
+            id: 'minimax-m2.7',
+            model: 'MiniMax-M2.7',
+            provider: 'anthropic',
+            protocol: 'Anthropic-compatible',
+            base_url: 'https://relay.catsco.cc/anthropic',
+            enabled: true,
+            default: true,
+          }],
+        });
+      }
+      if (req.path === '/api/relay/key' && req.method === 'GET') {
+        return res.json({ key: { id: 'relay-key-1', prefix: 'sk-bf-other', state: 'active' } });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    writeEnv([
+      `CATSCO_HTTP_BASE_URL=${catsBaseUrl}`,
+      'CATSCO_SERVER_URL=wss://app.catsco.cc/v0/channels',
+      'CATSCO_USER_TOKEN=user-token',
+      'CATSCO_USER_UID=88',
+      'GAUZ_LLM_PROVIDER=anthropic',
+      'GAUZ_LLM_API_BASE=https://relay.catsco.cc/anthropic',
+      'GAUZ_LLM_API_KEY=sk-bf-old-local-secret',
+      'GAUZ_LLM_MODEL=MiniMax-M2.7',
+    ]);
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/setup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      }),
+    });
+    const data = await response.json() as any;
+    const env = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+    assert.equal(response.status, 409);
+    assert.equal(data.action, 'rotate_required');
+    assert.equal(data.relayModelSetup.ok, false);
+    assert.equal(startCalled, 0);
+    assert.equal(service.status, 'stopped');
+    assert.equal(env.GAUZ_LLM_API_KEY, 'sk-bf-old-local-secret');
   });
 
   test('POST /cats/auth/login reports remote CatsCompany network failures clearly', async () => {

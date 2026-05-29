@@ -19,9 +19,19 @@ test('dashboard settings page uses model source before Runtime Profile', () => {
   assert.match(dashboardHtml, /CatsCo 中转模型/);
   assert.match(dashboardHtml, /自定义模型（手动配置）/);
   assert.match(dashboardHtml, /启用 CatsCo 中转/);
-  assert.match(dashboardHtml, /默认推荐 Anthropic-compatible/);
-  assert.match(dashboardHtml, /function enableCatsRelayModel\(protocol, options=\{\}\)/);
+  assert.match(dashboardHtml, /DeepSeek V4 Flash/);
+  assert.match(dashboardHtml, /GLM 5\.1/);
+  assert.match(dashboardHtml, /Anthropic SDK/);
+  assert.match(dashboardHtml, /function enableCatsRelayModel\(modelId, options=\{\}\)/);
+  assert.match(dashboardHtml, /let relayModelApplyInFlight=false/);
+  assert.match(dashboardHtml, /function setRelayModelApplyBusy\(busy\)/);
+  assert.match(dashboardHtml, /data-relay-model-id/);
+  assert.match(dashboardHtml, /data-relay-model-context/);
+  assert.match(dashboardHtml, /function enableCatsRelayModelFromButton\(button, options=\{\}\)/);
+  assert.match(dashboardHtml, /activateConnector:options\.activateConnector!==false/);
   assert.match(dashboardHtml, /\/api\/cats\/relay\/model-config\/apply/);
+  assert.match(dashboardHtml, /http:\/\/127\.0\.0\.1:3800/);
+  assert.match(dashboardHtml, /无法连接本地 CatsCo Dashboard API/);
   assert.match(dashboardHtml, /访问凭证只保存 presence，不会回显/);
   assert.match(dashboardHtml, /保存自定义模型设置？访问凭证会写入本地 \.env，仅用于本机 runtime。/);
   assert.match(dashboardHtml, /Runtime Profile 状态/);
@@ -33,12 +43,14 @@ test('dashboard settings page uses model source before Runtime Profile', () => {
   assert.match(dashboardHtml, /title==='CatsCo Chat'\?'未启动':'需处理'/);
   assert.doesNotMatch(dashboardHtml, /status==='warning'\?'注意'/);
   assert.match(dashboardHtml, /当前已运行 session 不会热更新/);
+  assert.doesNotMatch(dashboardHtml, /escapeJsString/);
   assert.doesNotMatch(dashboardHtml, /buildsense\.asia/i);
 });
 
 test('dashboard settings collapse state survives refresh-oriented rerenders', () => {
   assert.match(dashboardHtml, /const settingsCollapseState=\{/);
   assert.match(dashboardHtml, /function toggleSettingsGroup\(id, key\)/);
+  assert.match(dashboardHtml, /modelSource:true/);
   assert.match(dashboardHtml, /settingsCollapsedClass\('modelSource', false\)/);
   assert.match(dashboardHtml, /settingsCollapsedClass\('runtimeStatus', valid\)/);
   assert.match(dashboardHtml, /settingsCollapsedClass\('runtimeEditor', true\)/);
@@ -89,15 +101,30 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /id="cats-chat-state"/);
   assert.match(dashboardHtml, /id="cats-state-card"/);
   assert.match(dashboardHtml, /id="cats-checklist"/);
+  assert.match(dashboardHtml, /id="cats-relay-model-panel"/);
   assert.match(dashboardHtml, /function buildCatsChatStage\(\)/);
   assert.match(dashboardHtml, /function renderCatsChecklist\(stage\)/);
+  assert.match(dashboardHtml, /function renderCatsRelayModelPanel\(\)/);
   assert.match(dashboardHtml, /function runCatsNextAction\(\)/);
   assert.match(dashboardHtml, /先完成模型来源/);
-  assert.match(dashboardHtml, /Dashboard Chat 连接同一个 CatsCompany 网页会话/);
+  assert.match(dashboardHtml, /启动模型/);
+  assert.match(dashboardHtml, /切换后自动重启/);
+  assert.match(dashboardHtml, /先选模型，再检查启动/);
+  assert.match(dashboardHtml, /连接 CatsCompany 网页会话，本地 agent 回复/);
   assert.match(dashboardHtml, /CatsCompany connector/);
-  assert.match(dashboardHtml, /恢复 CatsCompany connector/);
+  assert.match(dashboardHtml, /已绑定，启动 connector 后可回复/);
   assert.match(dashboardHtml, /<details class="chat-diagnostics" id="cats-connection-details">/);
   assert.match(dashboardHtml, /<summary>高级 endpoint<\/summary>/);
+  assert.doesNotMatch(dashboardHtml, /toggleCatsAdvanced/);
+  assert.doesNotMatch(dashboardHtml, />高级设置<\/button>/);
+  assert.match(dashboardHtml, /function unlockCatsAuthFields\(focusAccount=false\)/);
+  assert.match(dashboardHtml, /if\(!connected\)unlockCatsAuthFields\(false\)/);
+  assert.match(dashboardHtml, /let catsStatusGeneration = 0/);
+  assert.match(dashboardHtml, /function invalidateCatsStatusRequests\(\)/);
+  assert.match(dashboardHtml, /function autoResizeCatsMessageInput\(\)/);
+  assert.match(dashboardHtml, /overflowY=input\.scrollHeight>maxHeight\?'auto':'hidden'/);
+  assert.match(dashboardHtml, /const connectedCardOwnsAction=connected && \(stage\.action==='setup' \|\| stage\.action==='refresh'\)/);
+  assert.match(dashboardHtml, /steps\.filter\(step=>step\.status==='fail'\)/);
   assert.match(dashboardHtml, /input\.disabled=locked/);
   assert.match(dashboardHtml, /send\.disabled=locked/);
   assert.match(dashboardHtml, /attach\.disabled=locked/);
@@ -114,6 +141,19 @@ test('custom model save refreshes readiness before Chat remains locked', () => {
     /fetchDashboardSettings\(\),fetchStatus\(\),fetchRuntimeConfig\(\),fetchReadiness\(\),fetchCatsStatus\(\)/,
   );
   assert.match(dashboardHtml, /已保存，正在刷新启动状态/);
+});
+
+test('CatsCo Chat setup refreshes readiness before unlocking the composer', () => {
+  const setupBlock = dashboardHtml.match(/async function setupCatsBot\(options=\{\}\)\{[\s\S]*?async function resetCatsAuth/)?.[0] || '';
+  assert.match(setupBlock, /setupRelayModel:true/);
+  assert.match(setupBlock, /relayModelId:selectedRelayModelId\(\)\|\|undefined/);
+  assert.match(setupBlock, /rotateRelayKey:Boolean\(options\.rotateRelayKey\)/);
+  assert.match(setupBlock, /e\.status===409 && e\.action==='rotate_required'/);
+  assert.match(setupBlock, /await fetchStatus\(\)/);
+  assert.match(setupBlock, /await fetchCatsStatus\(\)/);
+  assert.match(setupBlock, /renderCatsStatus\(\)/);
+  assert.match(setupBlock, /const stage=buildCatsChatStage\(\)/);
+  assert.match(setupBlock, /await loadCatsMessages\(true, \{reset:true, forceBottom:true\}\)/);
 });
 
 test('CatsCo Chat preserves scroll position while reading history', () => {
@@ -212,7 +252,7 @@ test('dashboard supports hidden persistent font scaling shortcuts', () => {
   assert.match(dashboardHtml, /key==='0' \|\| key==='\)'/);
   assert.match(dashboardHtml, /loadDashboardFontScale\(\);/);
   assert.match(dashboardHtml, /document\.addEventListener\('keydown',handleDashboardFontScaleShortcut\)/);
-  assert.match(dashboardHtml, /window\.addEventListener\('resize',refreshDashboardFontScaleForViewport\)/);
+  assert.match(dashboardHtml, /window\.addEventListener\('resize',\(\)=>\{refreshDashboardFontScaleForViewport\(\); autoResizeCatsMessageInput\(\);\}\)/);
 });
 
 test('dashboard non-chat pages use the full available work area', () => {

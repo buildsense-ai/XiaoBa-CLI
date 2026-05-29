@@ -10,6 +10,7 @@ import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { PathResolver } from '../../utils/path-resolver';
 import { APP_VERSION } from '../../version';
+import type { ChatConfig } from '../../types';
 import { createRuntimeConfigSnapshot } from '../../runtime/runtime-config-snapshot';
 import {
   getDashboardReadiness,
@@ -64,6 +65,19 @@ interface CatsRequestOptions {
 }
 
 type RelayModelProtocol = 'anthropic' | 'openai';
+
+interface RelayModelConfig {
+  id: string;
+  label: string;
+  model: string;
+  family?: string;
+  provider: 'anthropic' | 'openai';
+  protocol: string;
+  baseUrl: string;
+  enabled: boolean;
+  default: boolean;
+  quotaClass?: string;
+}
 
 function normalizeBaseUrl(value: unknown, fallback: string): string {
   const text = String(value || '').trim().replace(/\/+$/, '');
@@ -248,6 +262,22 @@ export function getCatsAuthState(overrides: Record<string, unknown> = {}): CatsA
   };
 }
 
+function getModelConfigReadonly(): Pick<ChatConfig, 'apiKey' | 'apiUrl' | 'model' | 'provider'> {
+  const config = ConfigManager.getConfigReadonly();
+  const env = readEnvFile();
+  const provider = firstNonEmpty(process.env.GAUZ_LLM_PROVIDER, env.GAUZ_LLM_PROVIDER, config.provider);
+  const apiUrl = firstNonEmpty(process.env.GAUZ_LLM_API_BASE, env.GAUZ_LLM_API_BASE, config.apiUrl);
+  const apiKey = firstNonEmpty(process.env.GAUZ_LLM_API_KEY, env.GAUZ_LLM_API_KEY, config.apiKey);
+  const model = firstNonEmpty(process.env.GAUZ_LLM_MODEL, env.GAUZ_LLM_MODEL, config.model);
+
+  return {
+    apiKey,
+    apiUrl,
+    model,
+    provider: provider === 'anthropic' || provider === 'openai' ? provider : config.provider,
+  };
+}
+
 async function catsRequest(
   method: string,
   httpBaseUrl: string,
@@ -346,8 +376,8 @@ function normalizeRelayModelProtocol(value: unknown): RelayModelProtocol {
   return text === 'openai' ? 'openai' : 'anthropic';
 }
 
-function relayProviderForProtocol(protocol: RelayModelProtocol): 'anthropic' | 'openai' {
-  return protocol === 'openai' ? 'openai' : 'anthropic';
+function normalizeRelayProvider(value: unknown): 'anthropic' | 'openai' {
+  return String(value || '').trim().toLowerCase() === 'openai' ? 'openai' : 'anthropic';
 }
 
 function relayEndpointForProtocol(config: any, protocol: RelayModelProtocol): string {
@@ -359,6 +389,137 @@ function relayEndpointForProtocol(config: any, protocol: RelayModelProtocol): st
   const baseUrl = normalizeBaseUrl(config?.base_url, 'https://relay.catsco.cc');
   const fallback = protocol === 'openai' ? `${baseUrl}/v1` : `${baseUrl}/anthropic`;
   return normalizeBaseUrl(endpoint?.base_url, fallback);
+}
+
+function canonicalRelayModelName(value: unknown): string {
+  const model = String(value || '').trim();
+  const key = model.toLowerCase();
+  if (key === 'deepseek-v4-flash') return 'deepseek-v4-flash';
+  if (key === 'glm-5.1') return 'glm-5.1';
+  return model;
+}
+
+function normalizeRelayModelConfig(item: any, config: any, index: number): RelayModelConfig | null {
+  const model = canonicalRelayModelName(item?.model);
+  if (!model) return null;
+  const provider: 'anthropic' = 'anthropic';
+  const protocol = 'Anthropic-compatible';
+  const baseUrl = relayEndpointForProtocol(config, 'anthropic');
+  return {
+    id: String(item?.id || model || `relay-model-${index}`).trim(),
+    label: String(item?.label || model).trim(),
+    model,
+    family: String(item?.family || '').trim() || undefined,
+    provider,
+    protocol,
+    baseUrl,
+    enabled: item?.enabled !== false,
+    default: item?.default === true,
+    quotaClass: String(item?.quota_class || item?.quotaClass || '').trim() || undefined,
+  };
+}
+
+function fallbackRelayModelCatalog(config: any): RelayModelConfig[] {
+  const baseUrl = relayEndpointForProtocol(config, 'anthropic');
+  return [
+    {
+      id: 'minimax-m2.7',
+      label: 'MiniMax M2.7',
+      model: 'MiniMax-M2.7',
+      family: 'minimax',
+      provider: 'anthropic',
+      protocol: 'Anthropic-compatible',
+      baseUrl,
+      enabled: true,
+      default: true,
+      quotaClass: 'standard',
+    },
+    {
+      id: 'deepseek-v4-flash',
+      label: 'DeepSeek V4 Flash',
+      model: 'deepseek-v4-flash',
+      family: 'deepseek',
+      provider: 'anthropic',
+      protocol: 'Anthropic-compatible',
+      baseUrl,
+      enabled: true,
+      default: false,
+      quotaClass: 'flash-low',
+    },
+    {
+      id: 'glm-5.1',
+      label: 'GLM 5.1',
+      model: 'glm-5.1',
+      family: 'glm',
+      provider: 'anthropic',
+      protocol: 'Anthropic-compatible',
+      baseUrl,
+      enabled: true,
+      default: false,
+      quotaClass: 'standard',
+    },
+  ];
+}
+
+function relayModelCatalog(config: any): RelayModelConfig[] {
+  const hasModelCatalog = Array.isArray(config?.models);
+  const rawModels = hasModelCatalog ? config.models : [];
+  const models = rawModels
+    .map((item: any, index: number) => normalizeRelayModelConfig(item, config, index))
+    .filter((item: RelayModelConfig | null): item is RelayModelConfig => Boolean(item && item.enabled));
+  if (models.length > 0) return markRelayDefaultModel(models, config);
+  if (hasModelCatalog) return [];
+  return markRelayDefaultModel(fallbackRelayModelCatalog(config), config);
+}
+
+function markRelayDefaultModel(models: RelayModelConfig[], config: any): RelayModelConfig[] {
+  const defaultModel = String(config?.default_model || '').trim().toLowerCase();
+  let defaultIndex = models.findIndex(model => model.default);
+  if (defaultModel) {
+    const matched = models.findIndex(model => (
+      model.model.toLowerCase() === defaultModel || model.id.toLowerCase() === defaultModel
+    ));
+    if (matched >= 0) defaultIndex = matched;
+  }
+  if (defaultIndex < 0) defaultIndex = 0;
+  return models.map((model, index) => ({ ...model, default: index === defaultIndex }));
+}
+
+function selectRelayModel(
+  config: any,
+  requested: unknown,
+  options: { strict?: boolean } = {},
+): RelayModelConfig {
+  const models = relayModelCatalog(config);
+  if (models.length === 0) {
+    throw httpError('CatsCo 中转暂未提供可用模型', 503);
+  }
+  const needle = String(requested || '').trim().toLowerCase();
+  if (needle) {
+    const matched = models.find(model => (
+      model.id.toLowerCase() === needle || model.model.toLowerCase() === needle
+    ));
+    if (matched) return matched;
+    if (options.strict) {
+      throw httpError(`未知 CatsCo 中转模型: ${requested}`, 400);
+    }
+  }
+  return models.find(model => model.default) || models[0];
+}
+
+function relayModelPayload(model: RelayModelConfig): Record<string, unknown> {
+  return {
+    id: model.id,
+    label: model.label,
+    model: model.model,
+    family: model.family,
+    provider: model.provider,
+    protocol: model.protocol,
+    base_url: model.baseUrl,
+    enabled: model.enabled,
+    default: model.default,
+    quota_class: model.quotaClass,
+  };
 }
 
 function isCatsRelayApiBase(value: unknown): boolean {
@@ -389,11 +550,23 @@ function sanitizeRelayKeyInfo(key: any): any {
     'lastUsedAt',
   ]) {
     const value = key[field];
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null) {
+    if (field === 'prefix' && typeof value === 'string') {
+      safe[field] = sanitizeRelayKeyPrefix(value);
+    } else if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null) {
       safe[field] = value;
     }
   }
   return safe;
+}
+
+function sanitizeRelayKeyPrefix(value: string): string {
+  const prefix = value.trim();
+  if (!prefix) return '';
+  if (prefix.includes('...')) return sanitizeCatsErrorMessage(prefix);
+  if (/^sk-[A-Za-z0-9_-]{12,}$/.test(prefix)) {
+    return `${prefix.slice(0, 8)}...${prefix.slice(-4)}`;
+  }
+  return sanitizeCatsErrorMessage(prefix);
 }
 
 async function fetchCatsRelayConfig(state: CatsAuthState): Promise<any> {
@@ -465,11 +638,23 @@ function findReusableLocalRelayKey(currentKey: any): string | undefined {
   }
 
   const prefix = String(currentKey?.prefix || '').trim();
-  if (!prefix || !matchesRelayKeyPrefix(apiKey, prefix)) {
+  if (!isReusableRelayKeyPrefix(prefix) || !matchesRelayKeyPrefix(apiKey, prefix)) {
     return undefined;
   }
 
   return apiKey;
+}
+
+function isReusableRelayKeyPrefix(prefix: string): boolean {
+  if (!prefix || /\s/.test(prefix)) return false;
+  const marker = '...';
+  const markerIndex = prefix.indexOf(marker);
+  if (markerIndex >= 0) {
+    const start = prefix.slice(0, markerIndex);
+    const end = prefix.slice(markerIndex + marker.length);
+    return /^sk-[A-Za-z0-9_-]{4,}$/.test(start) && /^[A-Za-z0-9_-]{4,}$/.test(end);
+  }
+  return /^sk-[A-Za-z0-9_-]{4,8}$/.test(prefix);
 }
 
 function matchesRelayKeyPrefix(apiKey: string, prefix: string): boolean {
@@ -478,9 +663,50 @@ function matchesRelayKeyPrefix(apiKey: string, prefix: string): boolean {
   if (markerIndex >= 0) {
     const start = prefix.slice(0, markerIndex);
     const end = prefix.slice(markerIndex + marker.length);
-    return (!start || apiKey.startsWith(start)) && (!end || apiKey.endsWith(end));
+    return apiKey.startsWith(start) && apiKey.endsWith(end);
   }
   return apiKey.startsWith(prefix);
+}
+
+async function setupCatsRelayModelForDesktop(
+  state: CatsAuthState,
+  requestedModel: unknown,
+  options: { rotateExisting?: boolean } = {},
+): Promise<Record<string, unknown>> {
+  const config = await fetchCatsRelayConfig(state);
+  if (config?.self_service_enabled === false) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: 'CatsCo 中转自助 Key 尚未启用',
+    };
+  }
+
+  const selectedModel = selectRelayModel(config, requestedModel, { strict: Boolean(requestedModel) });
+  const ensured = await ensureCatsRelayPlainKey(state, {
+    rotateExisting: options.rotateExisting,
+  });
+  const settingsResult = updateDashboardSettings({
+    settings: {
+      'model.provider': selectedModel.provider,
+      'model.apiBase': selectedModel.baseUrl,
+      'model.model': selectedModel.model,
+      'model.apiKey': { action: 'replace', value: ensured.plainKey },
+    },
+  }, { runtimeRoot: process.cwd() });
+
+  return {
+    ok: true,
+    protocol: normalizeRelayModelProtocol(selectedModel.provider),
+    provider: selectedModel.provider,
+    apiBase: selectedModel.baseUrl,
+    model: selectedModel.model,
+    selectedModel: relayModelPayload(selectedModel),
+    updated: settingsResult.updated,
+    key: sanitizeRelayKeyInfo(ensured.response?.key),
+    createdKey: ensured.created,
+    rotatedKey: ensured.rotated,
+  };
 }
 
 function sanitizeCatsErrorData(data: unknown): unknown {
@@ -497,7 +723,9 @@ function sanitizeCatsErrorData(data: unknown): unknown {
     ) {
       continue;
     }
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    if (typeof value === 'string') {
+      safe[key] = sanitizeCatsErrorMessage(value);
+    } else if (typeof value === 'number' || typeof value === 'boolean') {
       safe[key] = value;
     }
   }
@@ -518,10 +746,16 @@ function catsErrorResponse(error: any): { status: number; body: Record<string, u
   return { status: error.status || 500, body };
 }
 
-function restartCatsCompanyIfRunning(serviceManager: ServiceManager): {
+function activateCatsCompanyConnector(
+  serviceManager: ServiceManager,
+  options: { startIfStopped?: boolean } = {},
+): {
   wasRunning: boolean;
   restartRequested: boolean;
+  startRequested: boolean;
+  startBlocked: boolean;
   restartError?: string;
+  startError?: string;
 } {
   const getService = typeof (serviceManager as any).getService === 'function'
     ? serviceManager.getService.bind(serviceManager)
@@ -529,23 +763,59 @@ function restartCatsCompanyIfRunning(serviceManager: ServiceManager): {
   const restart = typeof (serviceManager as any).restart === 'function'
     ? serviceManager.restart.bind(serviceManager)
     : undefined;
-  if (!getService || !restart) {
-    return { wasRunning: false, restartRequested: false };
+  const start = typeof (serviceManager as any).start === 'function'
+    ? serviceManager.start.bind(serviceManager)
+    : undefined;
+  if (!getService) {
+    return { wasRunning: false, restartRequested: false, startRequested: false, startBlocked: false };
   }
 
   const service = getService('catscompany');
-  if (service?.status !== 'running') {
-    return { wasRunning: false, restartRequested: false };
+  if (service?.status === 'running') {
+    if (!restart) {
+      return {
+        wasRunning: true,
+        restartRequested: false,
+        startRequested: false,
+        startBlocked: false,
+        restartError: 'CatsCompany connector restart is unavailable',
+      };
+    }
+    try {
+      restart('catscompany');
+      return { wasRunning: true, restartRequested: true, startRequested: false, startBlocked: false };
+    } catch (error: any) {
+      return {
+        wasRunning: true,
+        restartRequested: false,
+        startRequested: false,
+        startBlocked: false,
+        restartError: error?.message || String(error),
+      };
+    }
+  }
+
+  if (!options.startIfStopped || !start || !service) {
+    return { wasRunning: false, restartRequested: false, startRequested: false, startBlocked: false };
   }
 
   try {
-    restart('catscompany');
-    return { wasRunning: true, restartRequested: true };
+    const preflight = getServicePreflight(serviceManager, 'catscompany', {
+      runtimeRoot: process.cwd(),
+      config: ConfigManager.getConfigReadonly(),
+    });
+    if (preflight.status === 'blocked') {
+      return { wasRunning: false, restartRequested: false, startRequested: false, startBlocked: true };
+    }
+    start('catscompany');
+    return { wasRunning: false, restartRequested: false, startRequested: true, startBlocked: false };
   } catch (error: any) {
     return {
-      wasRunning: true,
+      wasRunning: false,
       restartRequested: false,
-      restartError: error?.message || String(error),
+      startRequested: false,
+      startBlocked: false,
+      startError: error?.message || String(error),
     };
   }
 }
@@ -810,8 +1080,8 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const changedModelSettings = result.updated.some(key => key.startsWith('GAUZ_LLM_'))
         || result.cleared.some(key => key.startsWith('GAUZ_LLM_'));
       const restartInfo = req.body?.restartConnector === true && changedModelSettings
-        ? restartCatsCompanyIfRunning(serviceManager)
-        : { wasRunning: false, restartRequested: false };
+        ? activateCatsCompanyConnector(serviceManager)
+        : { wasRunning: false, restartRequested: false, startRequested: false, startBlocked: false };
       res.json({
         ...result,
         connectorRestarted: restartInfo.restartRequested,
@@ -1284,16 +1554,86 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         CATSCOMPANY_API_KEY: apiKey,
       });
 
-      let service = serviceManager.getService('catscompany');
+      const relayState: CatsAuthState = {
+        ...state,
+        uid: userUid,
+        username: me.username || state.username || '',
+        displayName: me.display_name || me.username || state.displayName || '',
+      };
+      let relayModelSetup: Record<string, unknown> | undefined;
+      if (req.body?.setupRelayModel !== false) {
+        try {
+          relayModelSetup = await setupCatsRelayModelForDesktop(
+            relayState,
+            req.body?.relayModelId || req.body?.modelId || req.body?.model,
+            {
+              rotateExisting: req.body?.rotateRelayKey === true || req.body?.rotateExisting === true,
+            },
+          );
+        } catch (relayError: any) {
+          const message = sanitizeCatsErrorMessage(relayError?.message || relayError);
+          const status = relayError?.status || 500;
+          relayModelSetup = {
+            ok: false,
+            error: message,
+            status,
+            action: status === 409 ? 'rotate_required' : undefined,
+          };
+          return res.status(status).json({
+            ok: false,
+            error: message,
+            action: status === 409 ? 'rotate_required' : undefined,
+            relayModelSetup,
+            updated,
+            user: {
+              uid: userUid,
+              username: me.username || state.username || '',
+              display_name: me.display_name || me.username || state.displayName || '',
+            },
+            bot: {
+              uid: botUid,
+              username: bot.username || preferredUsername,
+              display_name: bot.display_name || preferredName,
+            },
+            topicId: p2pTopicId(userUid, botUid),
+          });
+        }
+      }
+
+      const activation = activateCatsCompanyConnector(serviceManager, { startIfStopped: true });
+      const service = serviceManager.getService('catscompany');
       let preflight;
-      if (service && service.status !== 'running') {
+      if (activation.startBlocked) {
         preflight = getServicePreflight(serviceManager, 'catscompany', {
           runtimeRoot: process.cwd(),
           config: ConfigManager.getConfigReadonly(),
         });
-        if (preflight.status !== 'blocked') {
-          service = serviceManager.start('catscompany');
-        }
+      }
+      if (activation.restartError || activation.startError) {
+        return res.status(500).json({
+          ok: false,
+          error: sanitizeCatsErrorMessage(activation.restartError || activation.startError || 'CatsCompany connector restart failed'),
+          updated,
+          user: {
+            uid: userUid,
+            username: me.username || state.username || '',
+            display_name: me.display_name || me.username || state.displayName || '',
+          },
+          bot: {
+            uid: botUid,
+            username: bot.username || preferredUsername,
+            display_name: bot.display_name || preferredName,
+          },
+          topicId: p2pTopicId(userUid, botUid),
+          service,
+          preflight,
+          relayModelSetup,
+          connectorRestarted: activation.restartRequested,
+          connectorStarted: activation.startRequested,
+          connectorStartBlocked: activation.startBlocked,
+          restartError: activation.restartError,
+          startError: activation.startError,
+        });
       }
 
       res.json({
@@ -1312,10 +1652,16 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         topicId: p2pTopicId(userUid, botUid),
         service,
         preflight,
+        relayModelSetup,
+        connectorRestarted: activation.restartRequested,
+        connectorStarted: activation.startRequested,
+        connectorStartBlocked: activation.startBlocked,
+        restartRequired: activation.wasRunning && !activation.restartRequested,
         warnings: warnings.length > 0 ? warnings : undefined,
       });
     } catch (e: any) {
-      res.status(e.status || 500).json({ error: e.message, data: e.data });
+      const payload = catsErrorResponse(e);
+      res.status(payload.status).json(payload.body);
     }
   });
 
@@ -1324,21 +1670,28 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const state = getCatsAuthState();
       if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
 
-      const protocol = normalizeRelayModelProtocol(req.query.protocol);
       const config = await fetchCatsRelayConfig(state);
+      const currentConfig = getModelConfigReadonly();
+      const requestedModel = req.query.modelId || req.query.model;
+      const selectedModel = selectRelayModel(
+        config,
+        requestedModel || currentConfig.model,
+        { strict: Boolean(requestedModel) },
+      );
       const keyResponse = config?.self_service_enabled ? await fetchCatsRelayKey(state) : { key: null };
-      const apiBase = relayEndpointForProtocol(config, protocol);
-      const provider = relayProviderForProtocol(protocol);
-      const model = String(config?.default_model || 'MiniMax-M2.7').trim() || 'MiniMax-M2.7';
-      const currentConfig = ConfigManager.getConfigReadonly();
+      const apiBase = selectedModel.baseUrl;
+      const provider = selectedModel.provider;
+      const model = selectedModel.model;
       const currentApiBase = String(currentConfig.apiUrl || '').replace(/\/+$/, '');
 
       res.json({
         ok: true,
-        protocol,
+        protocol: normalizeRelayModelProtocol(selectedModel.provider),
         provider,
         apiBase,
         model,
+        selectedModel: relayModelPayload(selectedModel),
+        models: relayModelCatalog(config).map(relayModelPayload),
         configured: Boolean(
           currentConfig.apiKey
           && currentConfig.provider === provider
@@ -1363,8 +1716,9 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const state = getCatsAuthState();
       if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
 
-      const protocol = normalizeRelayModelProtocol(req.body?.protocol);
       const config = await fetchCatsRelayConfig(state);
+      const requestedModel = req.body?.modelId || req.body?.model;
+      const selectedModel = selectRelayModel(config, requestedModel, { strict: Boolean(requestedModel) });
       if (config?.self_service_enabled === false) {
         return res.status(503).json({ error: 'CatsCo 中转自助 Key 尚未启用' });
       }
@@ -1379,16 +1733,17 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
           return res.status(409).json({
             error: error.message,
             action: 'rotate_required',
-            protocol,
+            protocol: normalizeRelayModelProtocol(selectedModel.provider),
+            model: relayModelPayload(selectedModel),
             key: sanitizeRelayKeyInfo((await fetchCatsRelayKey(state))?.key),
           });
         }
         throw error;
       }
 
-      const apiBase = relayEndpointForProtocol(config, protocol);
-      const provider = relayProviderForProtocol(protocol);
-      const model = String(config?.default_model || 'MiniMax-M2.7').trim() || 'MiniMax-M2.7';
+      const apiBase = selectedModel.baseUrl;
+      const provider = selectedModel.provider;
+      const model = selectedModel.model;
       const settingsResult = updateDashboardSettings({
         settings: {
           'model.provider': provider,
@@ -1397,25 +1752,36 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
           'model.apiKey': { action: 'replace', value: ensured.plainKey },
         },
       }, { runtimeRoot: process.cwd() });
-      const restartInfo = restartCatsCompanyIfRunning(serviceManager);
+      const restartInfo = activateCatsCompanyConnector(serviceManager, {
+        startIfStopped: req.body?.activateConnector === true || req.body?.startConnector === true,
+      });
 
       res.json({
         ok: true,
-        protocol,
+        protocol: normalizeRelayModelProtocol(selectedModel.provider),
         provider,
         apiBase,
         model,
+        selectedModel: relayModelPayload(selectedModel),
+        models: relayModelCatalog(config).map(relayModelPayload),
         updated: settingsResult.updated,
         key: sanitizeRelayKeyInfo(ensured.response?.key),
         createdKey: ensured.created,
         rotatedKey: ensured.rotated,
         restartRequired: restartInfo.wasRunning && !restartInfo.restartRequested,
         connectorRestarted: restartInfo.restartRequested,
+        connectorStarted: restartInfo.startRequested,
+        connectorStartBlocked: restartInfo.startBlocked,
         restartError: restartInfo.restartError,
+        startError: restartInfo.startError,
         message: restartInfo.restartRequested
           ? '已启用 CatsCo 中转模型，并已请求重启 CatsCo agent 以使用新配置。'
+          : restartInfo.startRequested
+          ? '已启用 CatsCo 中转模型，并已启动 CatsCompany connector 使用新配置。'
           : restartInfo.wasRunning
           ? '已启用 CatsCo 中转模型；但 CatsCo agent 自动重启失败，请手动重启后使用新配置。'
+          : restartInfo.startBlocked
+          ? '已启用 CatsCo 中转模型；完成 CatsCo 连接后点击“检查并启动”即可使用新配置。'
           : '已启用 CatsCo 中转模型；下次启动 connector 会使用新配置。',
       });
     } catch (e: any) {
