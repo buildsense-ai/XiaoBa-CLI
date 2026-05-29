@@ -1075,11 +1075,11 @@
         <div class="two-col" style="margin-top:16px">
           <div class="panel warn">
             <h3>CatsCompany 平台现状</h3>
-            <p>当前 bot 仍然是 `users(account_type=bot)` + `bot_config.api_key`，但平台分支已经把 `bot_config.body_id` 作为持久绑定：首次 body 连接会绑定，之后不同 body 即使拿到同一个 API key 也会被拒绝。`/api/bots/body-status` 会把 active/bound body 暴露给 owner，Dashboard 可以据此判断 online/offline/conflict。</p>
+            <p>当前 bot 仍然是 `users(account_type=bot)` + `bot_config.api_key`，但平台分支已经把 `bot_config.body_id` 作为持久绑定：首次 body 连接会绑定，之后不同 body 即使拿到同一个 API key 也会被拒绝。`/api/bots/body-status` 会把 active/bound body 暴露给 owner，Dashboard 可以据此判断 online/offline/conflict。平台实时消息和历史补消息也会带 `metadata.catsco_identity`，让 bot 收到平台确认过的 actor/topic/agent/body 上下文。</p>
           </div>
           <div class="panel red">
             <h3>下一步平台深化</h3>
-            <p>下一步先部署和验证 body-status + 持久 body 绑定这条安全闭环。联系人入口、TopicContext、组织成员权限仍然重要，但要作为下一条独立主线推进，避免和 body 安全混在一个大改里。</p>
+            <p>下一步不再补 body 安全本身，而是在两个方向里选一个最小切片：要么先做 WebApp agent roster/open-chat，让组织成员能稳定找到虚拟员工；要么先做 ChannelBinding，把微信/飞书 openid/user id 绑定回 CatsCo actor。完整组织权限仍后置。</p>
           </div>
         </div>
       </section>
@@ -1737,20 +1737,20 @@
         <div class="section-head">
           <div>
             <h2 class="section-title">迁移路线</h2>
-            <p class="section-intro">不要先重写 UI，也不要第一步就改所有 session key。当前第一条安全主线已经完成到 beta baseline：Dashboard 登录和 bot 绑定拆开，CatsCo 消息和 busy queue 都能带结构化 identity，平台也已经有持久 body 绑定、active body lease 和 owner 可查的 body status。复制同一个 bot API key 不再应该让另一台设备继承这个机器人。</p>
+            <p class="section-intro">不要先重写 UI，也不要第一步就改所有 session key。当前第一条安全主线已经完成到 beta baseline：Dashboard 登录和 bot 绑定拆开，CatsCo 消息、历史补消息和 busy queue 都能带结构化 identity，平台也已经有持久 body 绑定、active body lease 和 owner 可查的 body status。复制同一个 bot API key 不再应该让另一台设备继承这个机器人。</p>
           </div>
           <span class="badge">分阶段实施</span>
         </div>
         <div class="roadmap">
           <div class="phase"><div class="phase-id">Phase 0</div><div class="phase-body"><strong>冻结 legacy 行为</strong><span>记录 `cc_user:*`、`cc_group:*`、`user:*`、`group:*`，补 characterization tests。</span></div></div>
           <div class="phase"><div class="phase-id">Phase 1 · Beta baseline done</div><div class="phase-body"><strong>Body 绑定安全</strong><span>登录、建/选 bot、绑定当前 body、启动 connector 已在 CLI 拆开；平台已加持久 `bot_config.body_id` 绑定和 active body lease。</span></div></div>
-          <div class="phase"><div class="phase-id">Phase 2 · CLI done</div><div class="phase-body"><strong>引入 MessageEnvelope</strong><span>CatsCo runtime 已认得 agent/body/actor/channel/topic，storage 仍保留旧 key。</span></div></div>
-          <div class="phase"><div class="phase-id">Phase 3 · CLI done</div><div class="phase-body"><strong>Session metadata 双写</strong><span>SessionStore、turn log、prompt transient context、tool context 已写入结构化身份侧写；GauzMem 暂不改。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 2 · Platform + CLI done</div><div class="phase-body"><strong>引入 MessageEnvelope</strong><span>CatsCo runtime 已认得 agent/body/actor/channel/topic；平台实时消息和历史补消息会补 canonical `catsco_identity`；storage 仍保留旧 key。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 3 · Platform + CLI done</div><div class="phase-body"><strong>Session metadata 双写</strong><span>SessionStore、turn log、prompt transient context、tool context 已写入结构化身份侧写；busy queue 保留每条消息 actor/topic/seq；GauzMem 暂不改。</span></div></div>
           <div class="phase"><div class="phase-id">Phase 4 · Beta baseline done</div><div class="phase-body"><strong>解决配置权威</strong><span>本地 typed config、runtime resolver、preflight-before-write、失败回滚、安全重启、device-scoped legacy setup、env-only 降级已完成；beta 阶段不做旧 `.env` 迁移。</span></div></div>
           <div class="phase"><div class="phase-id">Phase 5</div><div class="phase-body"><strong>Agent Registry</strong><span>先一虚拟员工一进程/一 profile path，避免共享状态污染。</span></div></div>
           <div class="phase"><div class="phase-id">Phase 6A · Done</div><div class="phase-body"><strong>Body 状态可见</strong><span>平台已提供 owner-auth body status 查询；Dashboard 已显示本机是否是 active body，body 冲突或账号/owner 不匹配时阻断聊天，旧平台/网络失败保持 non-blocking unknown。</span></div></div>
-          <div class="phase"><div class="phase-id">Phase 6B/6C · Design/experiment</div><div class="phase-body"><strong>联系人入口 + TopicContext</strong><span>这部分已有实验切片，但先暂缓进入最小闭环；等 body 安全部署验证后，再单独推进成员如何找到 agent、打开会话和写入身份上下文。</span></div></div>
-          <div class="phase"><div class="phase-id">Phase 7</div><div class="phase-body"><strong>通道绑定</strong><span>从 CatsCo actor 出发绑定微信/飞书，再把 transport 逐步平台化。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 6B/6C · Next candidate</div><div class="phase-body"><strong>联系人入口 + TopicContext</strong><span>这部分已有实验切片；下一步可先做 beta roster/open-chat，让成员稳定找到 agent，再逐步正式化组织入口。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 7 · Next candidate</div><div class="phase-body"><strong>通道绑定</strong><span>从 CatsCo actor 出发绑定微信/飞书，再把 transport 逐步平台化；它和 roster 可以并行设计，但代码上应分 PR 推进。</span></div></div>
           <div class="phase"><div class="phase-id">Phase 8</div><div class="phase-body"><strong>DeviceRegistry + DeviceGrant</strong><span>账号设备清单、在线状态、能力声明、上传/附件缓存、本地路径和 SSH 授权；用户设备像 agent body 的个人云盘，轻量连接器只管资料存取和 grant，不跑完整 agent。</span></div></div>
           <div class="phase"><div class="phase-id">Phase 9</div><div class="phase-body"><strong>Actor-aware GauzMem</strong><span>统一 agent 记忆，默认 actor/session aware，必要时可跨 actor relevance。</span></div></div>
           <div class="phase"><div class="phase-id">Phase 10</div><div class="phase-body"><strong>多虚拟员工协作</strong><span>agent roster、handoff、review agent、跨 agent 审计。</span></div></div>
@@ -1767,8 +1767,8 @@
         </div>
 
         <div class="callout">
-          <strong>当前进度（2026-05-27）：</strong>
-          已完成前置依赖：CatsCo 每轮消息带 SessionIdentitySnapshot，prompt/tool/log 可见；busy queue 合并消息会保留每条 actor/topic/seq；Dashboard 登录和 bot 绑定已拆成显式步骤；平台消息现在也有服务端 TopicContext 和 metadata provenance。Reply Policy 代码实现仍暂缓，避免现阶段引入 hard-coded 群聊寻址规则。这个需求保留为后续 agent-to-agent / 群聊协作的单独 backlog。
+          <strong>当前进度（2026-05-29）：</strong>
+          已完成前置依赖：CatsCo 每轮消息带 SessionIdentitySnapshot，prompt/tool/log 可见；busy queue 合并消息会保留每条 actor/topic/seq；Dashboard 登录和 bot 绑定已拆成显式步骤；平台实时消息和历史补消息都会补 canonical `catsco_identity`。Reply Policy 代码实现仍暂缓，避免现阶段引入 hard-coded 群聊寻址规则。这个需求保留为后续 agent-to-agent / 群聊协作的单独 backlog。
         </div>
 
         <div class="two-col">
@@ -1956,18 +1956,18 @@
         <div class="section-head">
           <div>
             <h2 class="section-title">当前进度与下一阶段</h2>
-            <p class="section-intro">当前阶段先把“一个 CatsCo/XiaoBa 进程就是一个 bot body”做实：本地进程有自己的 bodyId，平台持久绑定这个 bodyId，Dashboard 能看懂平台状态。成员如何在 WebApp 找到 agent、外部通道如何回到 CatsCo actor，是后续独立主线。</p>
+            <p class="section-intro">当前阶段已经把“一个 CatsCo/XiaoBa 进程就是一个 bot body”和“每条 CatsCo 消息有平台确认的 actor/topic/agent/body 身份”做成 beta 闭环。下一阶段要在“成员如何找到 agent”和“外部通道如何回到 CatsCo actor”之间选择一个最小切片继续推进。</p>
           </div>
           <span class="badge">Body Safety Baseline</span>
         </div>
         <div class="two-col">
           <div class="panel good">
             <h3>已完成</h3>
-            <p>Dashboard 登录和 bot 绑定拆开；本地写入 device/body/install id；`.xiaoba/catsco.json` 成为 CatsCo 登录、bot 绑定和 bodyId 的 typed config；`resolveCatsCoRuntimeConfig()` 已成为 Dashboard status、readiness/preflight、ServiceManager 启动、settings、`catscompany` 命令的共同解析入口；ServiceManager 启动 connector 时会强制使用当前 runtime cwd 下的 `.xiaoba/catsco.json`，不会被 bundled runtime 或残留 env 带偏；bind/setup/switch 会先 preflight，再写本地配置，connector 启动失败会回滚。平台侧 bot WebSocket 必须带 bodyId，首次连接会写入 `bot_config.body_id`，之后不同 body 即使拿到同一个 API key 也会被拒绝；在线状态还有 active body lease，owner 可通过 `/api/bots/body-status` 查询 bound/active body。Dashboard 会显示 online/offline/conflict/auth_error/unknown，conflict 和 auth_error 会阻断聊天，旧平台或网络失败仍作为 non-blocking unknown。</p>
+            <p>Dashboard 登录和 bot 绑定拆开；本地写入 device/body/install id；`.xiaoba/catsco.json` 成为 CatsCo 登录、bot 绑定和 bodyId 的 typed config；`resolveCatsCoRuntimeConfig()` 已成为 Dashboard status、readiness/preflight、ServiceManager 启动、settings、`catscompany` 命令的共同解析入口；ServiceManager 启动 connector 时会强制使用当前 runtime cwd 下的 `.xiaoba/catsco.json`，不会被 bundled runtime 或残留 env 带偏；bind/setup/switch 会先 preflight，再写本地配置，connector 启动失败会回滚。平台侧 bot WebSocket 必须带 bodyId，首次连接会写入 `bot_config.body_id`，之后不同 body 即使拿到同一个 API key 也会被拒绝；在线状态还有 active body lease，owner 可通过 `/api/bots/body-status` 查询 bound/active body。Dashboard 会显示 online/offline/conflict/auth_error/unknown，conflict 和 auth_error 会阻断聊天，旧平台或网络失败仍作为 non-blocking unknown。平台实时消息和历史补消息会补 `metadata.catsco_identity`，XiaoBa connector 会把它转成 SessionIdentitySnapshot 并注入 prompt/tool/log。</p>
           </div>
           <div class="panel">
             <h3>下一步</h3>
-            <p>下一步不是旧 `.env` 迁移，也不是先做完整组织权限。先把平台 body 绑定这条线部署到测试/生产，让 Dashboard 不再遇到 `/api/bots/body-status` 404，并验证同一个 API key 不能被第二台设备继承。之后再单独推进 WebApp agent roster、open-chat、TopicContext、微信/飞书绑定和用户设备清单。</p>
+            <p>下一步不是旧 `.env` 迁移，也不是先做完整组织权限。建议先选一个用户可感知的入口切片：如果目标是让组织成员马上能用，就做 WebApp agent roster/open-chat；如果目标是打通微信/飞书，就做 ChannelBinding，把外部 openid/user id 绑定回 CatsCo actor。两条线都依赖现在的 identity 基线，但不应该混在同一个大改里。</p>
           </div>
         </div>
         <div class="callout">
@@ -1986,17 +1986,17 @@
             <tr>
               <td>Body 状态</td>
               <td>已完成 beta 闭环：平台持久绑定 bot body，WebSocket 在线 lease 防重复连接，owner 可查 bound/active body。</td>
-              <td>部署平台代码后验证生产不再 404；多实例时再做 Redis/DB 共享在线 lease。</td>
+              <td>部署平台代码后做真实端到端验证；多实例时再做 Redis/DB 共享在线 lease。</td>
             </tr>
             <tr>
               <td>组织联系人入口</td>
               <td>已有实验切片，但不作为当前最小闭环。</td>
-              <td>等 body 安全部署验证后，单独决定是否用 owned/friend/public 作为 beta roster，还是直接做更正式的组织入口。</td>
+              <td>作为下一候选切片：先用 owned/friend/public 做 beta roster/open-chat，正式组织权限后置。</td>
             </tr>
             <tr>
               <td>TopicContext + 消息身份</td>
-              <td>已有实验切片；session identity 在 XiaoBa 侧已经可用。</td>
-              <td>后续和 agent roster 一起推进；先不迁移 GauzMem 图记忆。</td>
+              <td>平台 canonical `catsco_identity` 已覆盖实时消息和历史补消息；session identity 在 XiaoBa 侧已经可用。</td>
+              <td>后续如需 TopicContext 表，再和 agent roster/open-chat 一起推进；先不迁移 GauzMem 图记忆。</td>
             </tr>
             <tr>
               <td>验证真实协作场景</td>
