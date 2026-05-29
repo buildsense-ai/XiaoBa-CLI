@@ -24,7 +24,9 @@ test('dashboard settings page uses model source before Runtime Profile', () => {
   assert.match(dashboardHtml, /Anthropic SDK/);
   assert.match(dashboardHtml, /function enableCatsRelayModel\(modelId, options=\{\}\)/);
   assert.match(dashboardHtml, /data-relay-model-id/);
+  assert.match(dashboardHtml, /data-relay-model-context/);
   assert.match(dashboardHtml, /function enableCatsRelayModelFromButton\(button, options=\{\}\)/);
+  assert.match(dashboardHtml, /activateConnector:options\.activateConnector!==false/);
   assert.match(dashboardHtml, /\/api\/cats\/relay\/model-config\/apply/);
   assert.match(dashboardHtml, /http:\/\/127\.0\.0\.1:3800/);
   assert.match(dashboardHtml, /无法连接本地 CatsCo Dashboard API/);
@@ -46,6 +48,7 @@ test('dashboard settings page uses model source before Runtime Profile', () => {
 test('dashboard settings collapse state survives refresh-oriented rerenders', () => {
   assert.match(dashboardHtml, /const settingsCollapseState=\{/);
   assert.match(dashboardHtml, /function toggleSettingsGroup\(id, key\)/);
+  assert.match(dashboardHtml, /modelSource:true/);
   assert.match(dashboardHtml, /settingsCollapsedClass\('modelSource', false\)/);
   assert.match(dashboardHtml, /settingsCollapsedClass\('runtimeStatus', valid\)/);
   assert.match(dashboardHtml, /settingsCollapsedClass\('runtimeEditor', true\)/);
@@ -96,10 +99,15 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /id="cats-chat-state"/);
   assert.match(dashboardHtml, /id="cats-state-card"/);
   assert.match(dashboardHtml, /id="cats-checklist"/);
+  assert.match(dashboardHtml, /id="cats-relay-model-panel"/);
   assert.match(dashboardHtml, /function buildCatsChatStage\(\)/);
   assert.match(dashboardHtml, /function renderCatsChecklist\(stage\)/);
+  assert.match(dashboardHtml, /function renderCatsRelayModelPanel\(\)/);
   assert.match(dashboardHtml, /function runCatsNextAction\(\)/);
   assert.match(dashboardHtml, /先完成模型来源/);
+  assert.match(dashboardHtml, /启动模型/);
+  assert.match(dashboardHtml, /切换后会自动重启 connector 使用新模型/);
+  assert.match(dashboardHtml, /启动前先选模型，随后点击“检查并启动”/);
   assert.match(dashboardHtml, /Dashboard Chat 连接同一个 CatsCompany 网页会话/);
   assert.match(dashboardHtml, /CatsCompany connector/);
   assert.match(dashboardHtml, /恢复 CatsCompany connector/);

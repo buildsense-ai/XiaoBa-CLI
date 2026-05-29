@@ -907,6 +907,32 @@
       font-weight: 700;
     }
 
+    .chat-relay-model-panel {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(132, 156, 185, 0.22);
+    }
+
+    .chat-relay-model-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .chat-relay-model-title {
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .chat-relay-model-panel .relay-model-list {
+      grid-template-columns: 1fr;
+      margin-top: 0;
+    }
+
     .model-source-form {
       display: grid;
       gap: 10px;
@@ -4630,6 +4656,7 @@
             <div class="chat-connected-card" id="cats-connected-card">
               <strong>已连接 CatsCo</strong>
               <div class="chat-muted" id="cats-connected-copy">可以直接开始对话。</div>
+              <div class="chat-relay-model-panel" id="cats-relay-model-panel"></div>
               <div class="chat-connected-actions">
                 <button class="btn btn-success" onclick="setupCatsBot()" id="cats-setup-btn">检查并启动</button>
                 <button class="btn" onclick="resetCatsAuth()">切换账号</button>
@@ -6244,7 +6271,7 @@
       {id:'glm-5.1',label:'GLM 5.1',model:'glm-5.1',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'standard'},
     ];
     const settingsCollapseState={
-      modelSource:false,
+      modelSource:true,
       runtimeStatus:true,
       runtimeEditor:true,
     };
@@ -6365,6 +6392,7 @@
         if(!r.ok||data.error)throw new Error(data.error||'中转模型目录加载失败');
         relayModelConfigSnapshot=data;
         if((dashboardSettingsSnapshot.fields||[]).length && !shouldDeferModelSourceRender())renderModelSource(dashboardSettingsSnapshot);
+        if(document.getElementById('page-chat')?.classList.contains('active'))renderCatsStatus();
       }catch(_e){
         relayModelConfigSnapshot=null;
       }finally{
@@ -6387,15 +6415,43 @@
       return (matched||models.find(model=>model.default)||models[0]||{}).id||'';
     }
 
-    function relayModelChoiceHtml(model, activeId, catsConnected){
+    function relayModelChoiceHtml(model, activeId, catsConnected, context='settings'){
       const id=String(model.id||model.model||'');
       const active=id===activeId;
       const quota=model.quota_class==='flash-low'?'低额度 Flash':'标准额度';
-      return '<button class="relay-model-choice'+(active?' active':'')+'" type="button" data-relay-model-id="'+escapeHtml(id)+'" '+(catsConnected?'':'disabled')+' onclick="enableCatsRelayModelFromButton(this)">'
+      return '<button class="relay-model-choice'+(active?' active':'')+'" type="button" data-relay-model-id="'+escapeHtml(id)+'" data-relay-model-context="'+escapeHtml(context)+'" '+(catsConnected?'':'disabled')+' onclick="enableCatsRelayModelFromButton(this)">'
         +'<span class="relay-model-label">'+escapeHtml(model.label||model.model||id)+'</span>'
         +'<span class="relay-model-name">'+escapeHtml(model.model||id)+'</span>'
         +'<span class="relay-model-meta">'+escapeHtml(quota)+' · Anthropic SDK</span>'
         +'</button>';
+    }
+
+    function renderCatsRelayModelPanel(){
+      const panel=document.getElementById('cats-relay-model-panel');
+      if(!panel)return;
+      if(!isCatsLoggedIn()){
+        panel.innerHTML='';
+        return;
+      }
+      const models=relayModelCatalog();
+      const activeId=selectedRelayModelId();
+      const activeModel=models.find(model=>String(model.id||model.model||'')===activeId)||null;
+      const service=catsState.service||{};
+      const configured=Boolean(catsState.configured);
+      const activationCopy=service.status==='running'
+        ? '切换后会自动重启 connector 使用新模型。'
+        : configured
+          ? '切换后会尝试直接启动 connector。'
+          : '启动前先选模型，随后点击“检查并启动”。';
+      if(!models.length){
+        panel.innerHTML='<div class="runtime-note warning">CatsCo 中转暂未提供可用模型。</div>';
+        return;
+      }
+      panel.innerHTML='<div class="chat-relay-model-head"><div><div class="chat-relay-model-title">启动模型</div><div class="chat-muted">'+escapeHtml(activationCopy)+'</div></div>'
+        +(activeModel?'<span class="tag green">'+escapeHtml(activeModel.model||activeModel.label||'已选择')+'</span>':'<span class="tag warm">可选择</span>')
+        +'</div><div class="relay-model-list">'
+        +models.map(model=>relayModelChoiceHtml(model, activeId, true, 'chat')).join('')
+        +'</div>';
     }
 
     function captureCustomModelDraft(){
@@ -6572,6 +6628,11 @@
       status.textContent=message;
     }
 
+    function setRelayModelApplyStatus(message, tone, source='settings'){
+      setRelayModelStatus(message, tone);
+      if(source==='chat')setCatsAction(message, tone==='error');
+    }
+
     function buildCustomModelSettingsPayload(){
       const secret=document.getElementById('model-secret-setting').value;
       const clearSecret=document.getElementById('model-secret-clear-setting').checked;
@@ -6610,10 +6671,16 @@
     }
 
     function enableCatsRelayModelFromButton(button, options={}){
-      return enableCatsRelayModel(button?.dataset?.relayModelId || selectedRelayModelId(), options);
+      const context=button?.dataset?.relayModelContext || 'settings';
+      return enableCatsRelayModel(button?.dataset?.relayModelId || selectedRelayModelId(), {
+        activateConnector:true,
+        source:context,
+        ...options,
+      });
     }
 
     async function enableCatsRelayModel(modelId, options={}){
+      const source=options.source||'settings';
       if(!isCatsLoggedIn()){
         switchPage('chat');
         return;
@@ -6621,33 +6688,35 @@
       const selectedModelId=modelId||selectedRelayModelId();
       const selectedModel=relayModelCatalog().find(model=>String(model.id||model.model||'')===selectedModelId)||relayModelCatalog()[0]||{};
       if(!selectedModel.id&&!selectedModel.model){
-        setRelayModelStatus('启用失败：CatsCo 中转暂未提供可用模型。','error');
+        setRelayModelApplyStatus('启用失败：CatsCo 中转暂未提供可用模型。','error',source);
         return;
       }
       const label=selectedModel.label||selectedModel.model||selectedModelId;
       try{
-        setRelayModelStatus('正在启用 CatsCo 中转模型（'+label+'）...','muted');
+        setRelayModelApplyStatus('正在启用 CatsCo 中转模型（'+label+'）...','muted',source);
         const r=await fetch(API+'/api/cats/relay/model-config/apply',{
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({
             modelId:selectedModelId,
             rotateExisting:Boolean(options.rotateExisting),
+            activateConnector:options.activateConnector!==false,
           })
         });
         const data=await r.json();
         if(r.status===409&&data.action==='rotate_required'){
           const ok=confirm('你的 CatsCo 中转 Key 已存在，但明文不会再次返回。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');
-          if(ok)return enableCatsRelayModel(selectedModelId,{rotateExisting:true});
-          setRelayModelStatus('已取消。你也可以在 CatsCompany 中转站页面复制现有配置后手动填写。','muted');
+          if(ok)return enableCatsRelayModel(selectedModelId,{...options,rotateExisting:true});
+          setRelayModelApplyStatus('已取消。你也可以在 CatsCompany 中转站页面复制现有配置后手动填写。','muted',source);
           return;
         }
         if(!r.ok||data.error)throw new Error(data.error||'启用中转失败');
         await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchRuntimeConfig(),fetchReadiness(),fetchCatsStatus()]);
-        setRelayModelStatus(data.message||('已启用 CatsCo 中转模型：'+(data.selectedModel?.label||label)),'success');
-        setModelSourceStatus('已写入 CatsCo 中转模型配置。新 session 或下一次启动 connector 后生效。','success');
+        const successMessage=data.message||('已启用 CatsCo 中转模型：'+(data.selectedModel?.label||label));
+        setRelayModelApplyStatus(successMessage,'success',source);
+        setModelSourceStatus(data.connectorRestarted||data.connectorStarted?'已写入并已请求 connector 使用新配置。':'已写入 CatsCo 中转模型配置。','success');
       }catch(e){
-        setRelayModelStatus('启用失败：'+formatDashboardApiError(e,'/api/cats/relay/model-config/apply'),'error');
+        setRelayModelApplyStatus('启用失败：'+formatDashboardApiError(e,'/api/cats/relay/model-config/apply'),'error',source);
       }
     }
 
@@ -7412,6 +7481,7 @@
         }
         renderCatsStatus();
         if((dashboardSettingsSnapshot.fields||[]).length && !shouldDeferModelSourceRender())renderModelSource(dashboardSettingsSnapshot);
+        if(isCatsLoggedIn() && !relayModelConfigSnapshot)fetchRelayModelConfig();
         if(catsState.topicId) loadCatsMessages(false);
       }catch(e){
         document.getElementById('cats-status').innerHTML='<div class="chat-muted" style="color:var(--red)">状态加载失败：'+escapeHtml(e.message)+'</div>';
@@ -7479,6 +7549,7 @@
       document.getElementById('cats-connected-copy').textContent=configured
         ? (running?'可以直接开始对话。':'账号和 agent 已绑定，点击“检查并启动”恢复 CatsCompany connector。')
         : '账号已登录，点击“检查并启动”完成 CatsCo agent 绑定。';
+      renderCatsRelayModelPanel();
       renderCatsChecklist(stage);
       updateCatsChatGate(stage);
       updateCatsLayoutState(stage);

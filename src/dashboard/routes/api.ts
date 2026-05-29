@@ -679,10 +679,16 @@ function catsErrorResponse(error: any): { status: number; body: Record<string, u
   return { status: error.status || 500, body };
 }
 
-function restartCatsCompanyIfRunning(serviceManager: ServiceManager): {
+function activateCatsCompanyConnector(
+  serviceManager: ServiceManager,
+  options: { startIfStopped?: boolean } = {},
+): {
   wasRunning: boolean;
   restartRequested: boolean;
+  startRequested: boolean;
+  startBlocked: boolean;
   restartError?: string;
+  startError?: string;
 } {
   const getService = typeof (serviceManager as any).getService === 'function'
     ? serviceManager.getService.bind(serviceManager)
@@ -690,23 +696,50 @@ function restartCatsCompanyIfRunning(serviceManager: ServiceManager): {
   const restart = typeof (serviceManager as any).restart === 'function'
     ? serviceManager.restart.bind(serviceManager)
     : undefined;
+  const start = typeof (serviceManager as any).start === 'function'
+    ? serviceManager.start.bind(serviceManager)
+    : undefined;
   if (!getService || !restart) {
-    return { wasRunning: false, restartRequested: false };
+    return { wasRunning: false, restartRequested: false, startRequested: false, startBlocked: false };
   }
 
   const service = getService('catscompany');
-  if (service?.status !== 'running') {
-    return { wasRunning: false, restartRequested: false };
+  if (service?.status === 'running') {
+    try {
+      restart('catscompany');
+      return { wasRunning: true, restartRequested: true, startRequested: false, startBlocked: false };
+    } catch (error: any) {
+      return {
+        wasRunning: true,
+        restartRequested: false,
+        startRequested: false,
+        startBlocked: false,
+        restartError: error?.message || String(error),
+      };
+    }
+  }
+
+  if (!options.startIfStopped || !start || !service) {
+    return { wasRunning: false, restartRequested: false, startRequested: false, startBlocked: false };
   }
 
   try {
-    restart('catscompany');
-    return { wasRunning: true, restartRequested: true };
+    const preflight = getServicePreflight(serviceManager, 'catscompany', {
+      runtimeRoot: process.cwd(),
+      config: ConfigManager.getConfigReadonly(),
+    });
+    if (preflight.status === 'blocked') {
+      return { wasRunning: false, restartRequested: false, startRequested: false, startBlocked: true };
+    }
+    start('catscompany');
+    return { wasRunning: false, restartRequested: false, startRequested: true, startBlocked: false };
   } catch (error: any) {
     return {
-      wasRunning: true,
+      wasRunning: false,
       restartRequested: false,
-      restartError: error?.message || String(error),
+      startRequested: false,
+      startBlocked: false,
+      startError: error?.message || String(error),
     };
   }
 }
@@ -971,8 +1004,8 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const changedModelSettings = result.updated.some(key => key.startsWith('GAUZ_LLM_'))
         || result.cleared.some(key => key.startsWith('GAUZ_LLM_'));
       const restartInfo = req.body?.restartConnector === true && changedModelSettings
-        ? restartCatsCompanyIfRunning(serviceManager)
-        : { wasRunning: false, restartRequested: false };
+        ? activateCatsCompanyConnector(serviceManager)
+        : { wasRunning: false, restartRequested: false, startRequested: false, startBlocked: false };
       res.json({
         ...result,
         connectorRestarted: restartInfo.restartRequested,
@@ -1567,7 +1600,9 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
           'model.apiKey': { action: 'replace', value: ensured.plainKey },
         },
       }, { runtimeRoot: process.cwd() });
-      const restartInfo = restartCatsCompanyIfRunning(serviceManager);
+      const restartInfo = activateCatsCompanyConnector(serviceManager, {
+        startIfStopped: req.body?.activateConnector === true || req.body?.startConnector === true,
+      });
 
       res.json({
         ok: true,
@@ -1583,11 +1618,18 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         rotatedKey: ensured.rotated,
         restartRequired: restartInfo.wasRunning && !restartInfo.restartRequested,
         connectorRestarted: restartInfo.restartRequested,
+        connectorStarted: restartInfo.startRequested,
+        connectorStartBlocked: restartInfo.startBlocked,
         restartError: restartInfo.restartError,
+        startError: restartInfo.startError,
         message: restartInfo.restartRequested
           ? '已启用 CatsCo 中转模型，并已请求重启 CatsCo agent 以使用新配置。'
+          : restartInfo.startRequested
+          ? '已启用 CatsCo 中转模型，并已启动 CatsCompany connector 使用新配置。'
           : restartInfo.wasRunning
           ? '已启用 CatsCo 中转模型；但 CatsCo agent 自动重启失败，请手动重启后使用新配置。'
+          : restartInfo.startBlocked
+          ? '已启用 CatsCo 中转模型；完成 CatsCo 连接后点击“检查并启动”即可使用新配置。'
           : '已启用 CatsCo 中转模型；下次启动 connector 会使用新配置。',
       });
     } catch (e: any) {

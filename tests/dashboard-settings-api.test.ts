@@ -24,6 +24,12 @@ describe('dashboard typed settings API', () => {
     'CATSCO_USER_UID',
     'CATSCO_USER_NAME',
     'CATSCO_USER_DISPLAY_NAME',
+    'CATSCO_BOT_UID',
+    'CATSCO_API_KEY',
+    'CATSCO_SERVER_URL',
+    'CATSCOMPANY_BOT_UID',
+    'CATSCOMPANY_API_KEY',
+    'CATSCOMPANY_SERVER_URL',
   ];
   const originalEnv: Record<string, string | undefined> = {};
 
@@ -644,6 +650,111 @@ describe('dashboard typed settings API', () => {
       assert.equal(data.selectedModel.id, 'minimax-m2.7');
       assert.equal(parsed.GAUZ_LLM_MODEL, 'MiniMax-M2.7');
     } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
+  test('POST /cats/relay/model-config/apply starts a stopped connector when activation is requested', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    catsApp.get('/api/relay/config', (_req, res) => {
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'MiniMax-M2.7',
+        self_service_enabled: true,
+        endpoints: [
+          { protocol: 'Anthropic-compatible', base_url: 'https://relay.catsco.cc/anthropic' },
+        ],
+        models: [
+          {
+            id: 'glm-5.1',
+            label: 'GLM 5.1',
+            model: 'glm-5.1',
+            provider: 'anthropic',
+            enabled: true,
+            default: true,
+          },
+        ],
+      });
+    });
+    catsApp.get('/api/relay/key', (_req, res) => {
+      res.json({ configured: false });
+    });
+    catsApp.post('/api/relay/key', (_req, res) => {
+      res.json({
+        key: {
+          id: 'vk-glm',
+          name: 'CatsCo user 38',
+          prefix: 'sk-bf-gl',
+          state: 'active',
+          key: 'sk-bf-glm-secret',
+        },
+      });
+    });
+    const catsServer = await listen(catsApp);
+    const catsAddress = catsServer.address();
+    if (!catsAddress || typeof catsAddress === 'string') throw new Error('cats server did not bind');
+
+    const service = {
+      name: 'catscompany',
+      label: 'CatsCo agent',
+      command: process.execPath,
+      args: [],
+      status: 'stopped',
+    };
+    let startCalled = 0;
+    let restartCalled = 0;
+    const dashboardApp = express();
+    dashboardApp.use(express.json());
+    dashboardApp.use('/api', createApiRouter({
+      getAll: () => [service],
+      getService: (name: string) => (name === 'catscompany' ? service : undefined),
+      start: (name: string) => {
+        assert.equal(name, 'catscompany');
+        startCalled += 1;
+        service.status = 'running';
+        return service;
+      },
+      restart: (name: string) => {
+        assert.equal(name, 'catscompany');
+        restartCalled += 1;
+        return service;
+      },
+    } as any));
+    const dashboardServer = await listen(dashboardApp);
+    const dashboardAddress = dashboardServer.address();
+    if (!dashboardAddress || typeof dashboardAddress === 'string') throw new Error('dashboard server did not bind');
+    const dashboardBaseUrl = `http://127.0.0.1:${dashboardAddress.port}`;
+
+    try {
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_BOT_UID = '110';
+      process.env.CATSCO_API_KEY = 'cats_svc_test';
+      process.env.CATSCO_SERVER_URL = 'wss://app.catsco.cc/v0/channels';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${catsAddress.port}`;
+
+      const response = await fetch(`${dashboardBaseUrl}/api/cats/relay/model-config/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelId: 'glm-5.1', activateConnector: true }),
+      });
+      const text = await response.text();
+      const data = JSON.parse(text) as any;
+      const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+      assert.equal(response.status, 200, text);
+      assert.equal(data.model, 'glm-5.1');
+      assert.equal(data.connectorStarted, true);
+      assert.equal(data.connectorRestarted, false);
+      assert.equal(data.connectorStartBlocked, false);
+      assert.match(data.message, /已启动 CatsCompany connector/);
+      assert.equal(startCalled, 1);
+      assert.equal(restartCalled, 0);
+      assert.equal(parsed.GAUZ_LLM_MODEL, 'glm-5.1');
+      assert.equal(text.includes('sk-bf-glm-secret'), false);
+    } finally {
+      await new Promise<void>(resolve => dashboardServer.close(() => resolve()));
       await new Promise<void>(resolve => catsServer.close(() => resolve()));
     }
   });
