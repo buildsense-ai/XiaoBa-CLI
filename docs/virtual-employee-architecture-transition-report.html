@@ -1957,7 +1957,7 @@
         <div class="section-head">
           <div>
             <h2 class="section-title">当前进度与下一阶段</h2>
-            <p class="section-intro">当前阶段已经把“一个 CatsCo/XiaoBa 进程就是一个 bot body”、“每条 CatsCo 消息有平台确认的 actor/topic/agent/body 身份”，以及“成员能在 WebApp 找到并打开可访问 agent”做成 beta 闭环。下一阶段主要在 ChannelBinding、TopicContext 正式化、真实协作验证里继续收窄。</p>
+            <p class="section-intro">当前阶段已经把“一个 CatsCo/XiaoBa 进程就是一个 bot body”、“每条 CatsCo 消息有平台确认的 actor/topic/agent/body 身份”，以及“成员能在 WebApp 找到并打开可访问 agent”做成 beta 闭环。真实协作验证也开始落地：同一 agent 面对不同 actor 会打开不同 topic，owner 自己的 agent 会沉淀进 Conversations。下一阶段主要在 ChannelBinding、TopicContext 正式化和真实端到端试跑里继续收窄。</p>
           </div>
           <span class="badge">Body + Roster Baseline</span>
         </div>
@@ -1968,7 +1968,7 @@
           </div>
           <div class="panel">
             <h3>下一步</h3>
-            <p>下一步不是旧 `.env` 迁移，也不是先做完整组织权限。WebApp agent roster/open-chat 已先做成 beta 入口；接下来更自然的是做真实协作验证，并在 ChannelBinding（微信/飞书 openid/user id 回到 CatsCo actor）和 TopicContext 正式化之间选择一个更小的 PR 继续推进。</p>
+            <p>下一步不是旧 `.env` 迁移，也不是先做完整组织权限。WebApp agent roster/open-chat 已先做成 beta 入口；当前已补基础协作测试，接下来更自然的是做真实端到端试跑，并在 ChannelBinding（微信/飞书 openid/user id 回到 CatsCo actor）和 TopicContext 正式化之间选择一个更小的 PR 继续推进。</p>
           </div>
         </div>
         <div class="callout">
@@ -1991,8 +1991,8 @@
             </tr>
             <tr>
               <td>组织联系人入口</td>
-              <td>已完成 beta 切片：先用 owner/friend 关系生成 `/api/agents` 名单，WebApp 侧栏展示可访问 agent，点击时调用 `/api/agents/open` 打开会话。</td>
-              <td>暂不做完整组织权限；后续再补 organization/role/access 审计模型。</td>
+              <td>已完成 beta 切片：先用 owner/friend 关系生成 `/api/agents` 名单，WebApp 侧栏展示可访问 agent，点击时调用 `/api/agents/open` 打开会话；owner 拥有但未加好友的 agent 也会进入 Conversations。</td>
+              <td>暂不做完整组织权限；后续再补 organization/role/access 审计模型和 public bot 发现。</td>
             </tr>
             <tr>
               <td>TopicContext + 消息身份</td>
@@ -2001,8 +2001,8 @@
             </tr>
             <tr>
               <td>验证真实协作场景</td>
-              <td>测试两个人同时找同一个 agent、同一用户开多个任务、重复 body 被拒绝并能看懂原因。</td>
-              <td>先不做复杂 Reply Policy 和 agent-to-agent 群聊。</td>
+              <td>已补基础测试：两个 actor 打开同一个 agent 会得到各自独立 p2p topic；owner agent 会话刷新后可从 Conversations 找回；重复 body 拒绝已有平台测试覆盖。</td>
+              <td>下一步做真实端到端试跑：两个真实 CatsCo 用户、同一个在线 agent、并发消息、Dashboard/body 状态和用户可读错误。</td>
             </tr>
           </tbody>
         </table>
