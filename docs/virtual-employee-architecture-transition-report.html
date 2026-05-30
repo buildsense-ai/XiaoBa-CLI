@@ -1957,18 +1957,18 @@
         <div class="section-head">
           <div>
             <h2 class="section-title">当前进度与下一阶段</h2>
-            <p class="section-intro">当前阶段已经把“一个 CatsCo/XiaoBa 进程就是一个 bot body”、“每条 CatsCo 消息有平台确认的 actor/topic/agent/body 身份”，以及“成员能在 WebApp 找到并打开可访问 agent”做成 beta 闭环。真实协作验证也开始落地：同一 agent 面对不同 actor 会打开不同 topic，owner 自己的 agent 会沉淀进 Conversations。下一阶段主要在 ChannelBinding、TopicContext 正式化和真实端到端试跑里继续收窄。</p>
+            <p class="section-intro">当前阶段已经把“一个 CatsCo/XiaoBa 进程就是一个 bot body”、“每条 CatsCo 消息有平台确认的 actor/topic/agent/body 身份”，以及“成员能在 WebApp 找到并打开可访问 agent”做成 beta 闭环。真实协作验证也开始落地：同一 agent 面对不同 actor 会打开不同 topic，owner 自己的 agent 会沉淀进 Conversations；平台侧也补了一个本地 E2E 测试，模拟两个 actor 同时向同一个在线 agent 发消息。下一阶段主要在真实环境试跑、ChannelBinding 和 TopicContext 正式化里继续收窄。</p>
           </div>
           <span class="badge">Body + Roster Baseline</span>
         </div>
         <div class="two-col">
           <div class="panel good">
             <h3>已完成</h3>
-            <p>Dashboard 登录和 bot 绑定拆开；本地写入 device/body/install id；`.xiaoba/catsco.json` 成为 CatsCo 登录、bot 绑定和 bodyId 的 typed config；`resolveCatsCoRuntimeConfig()` 已成为 Dashboard status、readiness/preflight、ServiceManager 启动、settings、`catscompany` 命令的共同解析入口；ServiceManager 启动 connector 时会强制使用当前 runtime cwd 下的 `.xiaoba/catsco.json`，不会被 bundled runtime 或残留 env 带偏；bind/setup/switch 会先 preflight，再写本地配置，connector 启动失败会回滚。平台侧 bot WebSocket 必须带 bodyId，首次连接会写入 `bot_config.body_id`，之后不同 body 即使拿到同一个 API key 也会被拒绝；在线状态还有 active body lease，owner 可通过 `/api/bots/body-status` 查询 bound/active body。Dashboard 会显示 online/offline/conflict/auth_error/unknown，conflict 和 auth_error 会阻断聊天，旧平台或网络失败仍作为 non-blocking unknown。平台实时消息和历史补消息会补 `metadata.catsco_identity`，XiaoBa connector 会把它转成 SessionIdentitySnapshot 并注入 prompt/tool/log。CatsCompany WebApp 已有 beta agent roster/open-chat：平台返回当前用户可访问的 owner/friend bot，点击 agent 时平台确认权限并创建/返回 p2p topic。</p>
+            <p>Dashboard 登录和 bot 绑定拆开；本地写入 device/body/install id；`.xiaoba/catsco.json` 成为 CatsCo 登录、bot 绑定和 bodyId 的 typed config；`resolveCatsCoRuntimeConfig()` 已成为 Dashboard status、readiness/preflight、ServiceManager 启动、settings、`catscompany` 命令的共同解析入口；ServiceManager 启动 connector 时会强制使用当前 runtime cwd 下的 `.xiaoba/catsco.json`，不会被 bundled runtime 或残留 env 带偏；bind/setup/switch 会先 preflight，再写本地配置，connector 启动失败会回滚。平台侧 bot WebSocket 必须带 bodyId，首次连接会写入 `bot_config.body_id`，之后不同 body 即使拿到同一个 API key 也会被拒绝；在线状态还有 active body lease，owner 可通过 `/api/bots/body-status` 查询 bound/active body。Dashboard 会显示 online/offline/conflict/auth_error/unknown，conflict 和 auth_error 会阻断聊天，旧平台或网络失败仍作为 non-blocking unknown。平台实时消息和历史补消息会补 `metadata.catsco_identity`，XiaoBa connector 会把它转成 SessionIdentitySnapshot 并注入 prompt/tool/log。CatsCompany WebApp 已有 beta agent roster/open-chat：平台返回当前用户可访问的 owner/friend bot，点击 agent 时平台确认权限并创建/返回 p2p topic；消息发送路径也会复用同一套访问检查，避免用户构造 p2p topic 绕过 agent 入口。</p>
           </div>
           <div class="panel">
             <h3>下一步</h3>
-            <p>下一步不是旧 `.env` 迁移，也不是先做完整组织权限。WebApp agent roster/open-chat 已先做成 beta 入口；当前已补基础协作测试，接下来更自然的是做真实端到端试跑，并在 ChannelBinding（微信/飞书 openid/user id 回到 CatsCo actor）和 TopicContext 正式化之间选择一个更小的 PR 继续推进。</p>
+            <p>下一步不是旧 `.env` 迁移，也不是先做完整组织权限。WebApp agent roster/open-chat 已先做成 beta 入口；当前已补基础协作测试和真实试跑清单，接下来更自然的是先按 <a href="./virtual-employee-real-e2e-todo.md">真实端到端验证 TODO</a> 在 staging/真实账号里跑一遍，再在 ChannelBinding（微信/飞书 openid/user id 回到 CatsCo actor）和 TopicContext 正式化之间选择一个更小的 PR 继续推进。</p>
           </div>
         </div>
         <div class="callout">
@@ -1991,7 +1991,7 @@
             </tr>
             <tr>
               <td>组织联系人入口</td>
-              <td>已完成 beta 切片：先用 owner/friend 关系生成 `/api/agents` 名单，WebApp 侧栏展示可访问 agent，点击时调用 `/api/agents/open` 打开会话；owner 拥有但未加好友的 agent 也会进入 Conversations。</td>
+              <td>已完成 beta 切片：先用 owner/friend 关系生成 `/api/agents` 名单，WebApp 侧栏展示可访问 agent，点击时调用 `/api/agents/open` 打开会话；发送给 bot 的 p2p 消息会再次校验 owner/friend 可访问关系；owner 拥有但未加好友的 agent 也会进入 Conversations。</td>
               <td>暂不做完整组织权限；后续再补 organization/role/access 审计模型和 public bot 发现。</td>
             </tr>
             <tr>
@@ -2001,15 +2001,15 @@
             </tr>
             <tr>
               <td>验证真实协作场景</td>
-              <td>已补基础测试：两个 actor 打开同一个 agent 会得到各自独立 p2p topic；owner agent 会话刷新后可从 Conversations 找回；重复 body 拒绝已有平台测试覆盖。</td>
-              <td>下一步做真实端到端试跑：两个真实 CatsCo 用户、同一个在线 agent、并发消息、Dashboard/body 状态和用户可读错误。</td>
+              <td>已补基础测试：两个 actor 打开同一个 agent 会得到各自独立 p2p topic；两个 actor 同时向同一个在线 agent 发消息时，平台转发和持久保存的内容/actor/topic 不串；不可访问用户直接构造 agent p2p topic 会被拒绝；owner agent 会话刷新后可从 Conversations 找回；重复 body 拒绝已有平台测试覆盖。</td>
+              <td>真实场景验证清单已记录到 <a href="./virtual-employee-real-e2e-todo.md">virtual-employee-real-e2e-todo.md</a>：两个真实 CatsCo 用户、同一个在线 agent、并发消息、Dashboard/body 状态、历史补消息和用户可读错误。</td>
             </tr>
           </tbody>
         </table>
       </section>
 
       <div class="footer">
-        生成自 docs/virtual-employee-architecture-transition.md。静态 HTML，无外部资源依赖。
+        静态 HTML 报告，无外部资源依赖；真实试跑清单见 docs/virtual-employee-real-e2e-todo.md。
       </div>
     </main>
   </div>
