@@ -2550,6 +2550,262 @@
       min-height: 0;
     }
 
+    #page-timetable.active {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-height: 0;
+    }
+
+    #page-timetable .section-title {
+      display: none;
+    }
+
+    .timetable-shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 12px;
+      flex: 1;
+      height: auto;
+      min-height: 0;
+      align-items: stretch;
+    }
+
+    .chat-panel.timetable-agent-window {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      background: #151a21;
+      border-color: rgba(255,255,255,0.08);
+      box-shadow: 0 24px 70px rgba(10, 15, 24, 0.20);
+    }
+
+    .timetable-window-header {
+      min-height: 84px;
+      padding: 20px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      color: #f8fafc;
+    }
+
+    .timetable-window-title {
+      font-size: 18px;
+      line-height: 1.2;
+      margin-bottom: 8px;
+      font-weight: 800;
+    }
+
+    .timetable-topic {
+      color: #8aa6d9;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .timetable-window-body {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+      padding: 26px 36px 28px;
+      overflow: auto;
+      color: #f8fafc;
+    }
+
+    .timetable-early {
+      width: max-content;
+      margin: 0 auto 28px;
+      padding: 6px 13px;
+      border: 1px solid #303844;
+      border-radius: 999px;
+      color: #aebbd0;
+      font-size: 12px;
+    }
+
+    .timetable-user-message {
+      margin-left: auto;
+      max-width: 390px;
+      color: #fff;
+      text-align: right;
+    }
+
+    .timetable-message-time {
+      margin-bottom: 7px;
+      color: #bcd0ef;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .timetable-user-bubble {
+      display: inline-block;
+      border-radius: 13px;
+      padding: 10px 13px;
+      background: var(--accent);
+      line-height: 1.55;
+      text-align: left;
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .timetable-agent-message {
+      display: grid;
+      grid-template-columns: 38px minmax(0, 1fr);
+      gap: 12px;
+      max-width: 760px;
+      margin-top: 20px;
+    }
+
+    .timetable-avatar {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      color: #111827;
+      background: #c49118;
+      font-weight: 900;
+    }
+
+    .timetable-agent-name {
+      color: #a9c4ff;
+      font-size: 13px;
+      font-weight: 850;
+    }
+
+    .timetable-agent-copy {
+      margin-top: 8px;
+      font-size: 15px;
+      line-height: 1.75;
+    }
+
+    .timetable-chat-thread {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      min-width: 0;
+    }
+
+    .timetable-chat-thread .timetable-agent-message {
+      margin-top: 0;
+    }
+
+    .timetable-chat-thread .timetable-user-message {
+      margin-top: 0;
+    }
+
+    .timetable-stats {
+      max-width: 920px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+      margin: 18px 0 0 50px;
+    }
+
+    .timetable-stat {
+      border: 1px solid #303844;
+      border-radius: 12px;
+      padding: 12px;
+      background: #1b222c;
+    }
+
+    .timetable-stat-label {
+      color: #aebbd0;
+      font-size: 12px;
+      font-weight: 850;
+    }
+
+    .timetable-stat-value {
+      margin-top: 8px;
+      color: #fff;
+      font-size: 24px;
+      line-height: 1;
+      font-weight: 950;
+    }
+
+    .timetable-stat-note {
+      margin-top: 8px;
+      color: #8f9db3;
+      font-size: 12px;
+      line-height: 1.45;
+      font-weight: 650;
+    }
+
+    .timetable-quick-actions {
+      position: static;
+      margin: 22px 0 0 50px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .timetable-quick-actions .btn {
+      border-color: #354052;
+      background: #1b222c;
+      color: #c9d6ea;
+      font-size: 13px;
+      font-weight: 800;
+      border-radius: 999px;
+      min-height: 34px;
+      padding: 8px 12px;
+    }
+
+    .timetable-composer {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 70px;
+      gap: 14px;
+      padding: 0 20px 20px;
+      background: #151a21;
+    }
+
+    .timetable-attachment-tray {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-height: 0;
+    }
+
+    .timetable-attachment-tray[hidden] {
+      display: none;
+    }
+
+    .timetable-input-wrap {
+      min-height: 78px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 16px;
+      border: 1px solid #3a4351;
+      border-radius: 9px;
+      color: #8fa0bb;
+      background: #1b2028;
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .timetable-input-wrap textarea {
+      flex: 1;
+      min-height: 48px;
+      border: 0;
+      outline: 0;
+      resize: none;
+      color: #f8fafc;
+      background: transparent;
+      font: inherit;
+      padding: 14px 0 0;
+    }
+
+    .timetable-input-wrap textarea::placeholder {
+      color: #8fa0bb;
+    }
+
+    .timetable-send {
+      height: 60px;
+      align-self: end;
+      border-radius: 9px;
+    }
+
     .chat-panel {
       background: var(--surface-strong);
       border: 1px solid var(--border);
@@ -3923,6 +4179,53 @@
       font-size: 14px;
     }
 
+    .sidebar-brand-icon.school-brand-logo {
+      border-radius: 50%;
+      background: #8f2632;
+      border: 1px solid rgba(198, 153, 69, 0.55);
+      box-shadow: 0 8px 22px rgba(122, 37, 47, 0.18);
+    }
+
+    .sidebar-brand-icon.school-brand-logo img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      border-radius: 50%;
+    }
+
+    .nav-icon.school-nav-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 8px;
+      display: inline-grid;
+      place-items: center;
+      flex: 0 0 24px;
+      background: #fff4dc;
+      border: 1px solid rgba(194, 149, 61, 0.42);
+      color: #a42d3d;
+      font-size: 11px;
+      font-weight: 900;
+      line-height: 1;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.75);
+    }
+
+    .nav-icon.school-nav-icon::before {
+      content: attr(data-mark);
+    }
+
+    .nav-item.active {
+      background: #fff8ea;
+      border-color: rgba(196, 150, 61, 0.34);
+      color: #1f2232;
+    }
+
+    .nav-item.active .nav-icon.school-nav-icon {
+      background: #a42d3d;
+      border-color: #d5b263;
+      color: #f5d680;
+      box-shadow: 0 7px 14px rgba(164, 45, 61, 0.18), inset 0 1px 0 rgba(255,255,255,0.18);
+    }
+
     .sidebar-footer {
       border-top: 1px solid var(--border);
       padding: 14px 10px 8px;
@@ -4293,6 +4596,88 @@
       color: var(--text3);
     }
 
+    .companion-desktop-actions {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .companion-desktop-actions .btn {
+      min-height: 58px;
+      display: grid;
+      align-content: center;
+      gap: 3px;
+      justify-content: flex-start;
+      text-align: left;
+      border-radius: 10px;
+      white-space: normal;
+      line-height: 1.35;
+    }
+
+    .companion-desktop-actions .btn strong {
+      color: inherit;
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.25;
+      white-space: nowrap;
+    }
+
+    .companion-desktop-actions .btn span {
+      display: block;
+      color: var(--text3);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .companion-desktop-actions .btn-primary span {
+      color: rgba(255, 255, 255, 0.78);
+    }
+
+    .companion-desktop-note {
+      margin-top: -4px;
+      color: var(--text3);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    #focus-desktop-modal .modal {
+      width: min(560px, 100%);
+    }
+
+    #focus-desktop-modal .modal-body {
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.65;
+      white-space: normal;
+      word-break: normal;
+      color: var(--text2);
+    }
+
+    .focus-desktop-copy {
+      display: grid;
+      gap: 10px;
+    }
+
+    .focus-desktop-warning {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      width: fit-content;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(245, 201, 72, 0.14);
+      color: #8a5b00;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .focus-desktop-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
     .floating-pet-panel {
       position: absolute;
       right: 0;
@@ -4511,30 +4896,33 @@
   <!-- Sidebar -->
   <aside class="sidebar">
     <div class="sidebar-brand">
-      <div class="sidebar-brand-icon"><img src="cat-icon.png" style="width:100%;height:100%;object-fit:contain;border-radius:inherit" alt="CatsCo"></div>
+      <div class="sidebar-brand-icon school-brand-logo"><img src="education-logo.png" alt="校园 Xiaoba"></div>
       <div>
-        <div class="sidebar-brand-text">CatsCo</div>
+        <div class="sidebar-brand-text">校园 Xiaoba</div>
         <div class="sidebar-brand-ver">v1.1.5</div>
       </div>
     </div>
     <nav class="sidebar-nav">
       <a class="nav-item active" onclick="switchPage('chat')" data-page="chat">
-        <span class="nav-icon">@</span> <span>CatsCo</span>
+        <span class="school-nav-icon workbench nav-icon" data-mark="⌂"></span> <span>校园工作台</span>
       </a>
       <a class="nav-item" onclick="switchPage('services')" data-page="services">
-        <span class="nav-icon">&gt;</span> <span>机器人</span>
+        <span class="school-nav-icon assistant nav-icon" data-mark="AI"></span> <span>AI 助教</span>
+      </a>
+      <a class="nav-item" onclick="switchPage('timetable')" data-page="timetable">
+        <span class="school-nav-icon course nav-icon" data-mark="▦"></span> <span>课表中心</span>
       </a>
       <a class="nav-item" onclick="switchPage('config')" data-page="config">
-        <span class="nav-icon">~</span> <span>设置</span>
+        <span class="school-nav-icon settings nav-icon" data-mark="⚙"></span> <span>学校设置</span>
       </a>
       <a class="nav-item" onclick="switchPage('store')" data-page="store">
-        <span class="nav-icon">+</span> <span>Skills</span>
+        <span class="school-nav-icon skills nav-icon" data-mark="✎"></span> <span>教学技能</span>
       </a>
       <a class="nav-item" onclick="switchPage('developer')" data-page="developer">
-        <span class="nav-icon">{}</span> <span>开发者中心</span>
+        <span class="school-nav-icon admin nav-icon" data-mark="{}"></span> <span>管理中心</span>
       </a>
       <a class="nav-item" onclick="switchPage('companion')" data-page="companion">
-        <span class="nav-icon">*</span> <span>伙伴</span>
+        <span class="school-nav-icon companion nav-icon" data-mark="★"></span> <span>校园伙伴</span>
       </a>
     </nav>
     <div class="sidebar-footer">
@@ -4649,6 +5037,12 @@
               <button class="btn pet-action" data-pet-state="error" onclick="setPetState('error')">错误<span>4 帧循环</span></button>
             </div>
             <div class="pet-frame-strip" id="pet-frame-strip"></div>
+            <div class="companion-desktop-actions" id="companion-desktop-actions">
+              <button class="btn" type="button" onclick="enterDesktopPetMode()"><strong>桌面陪伴</strong><span>隐藏主窗口，小猫会在桌面上活动</span></button>
+              <button class="btn" type="button" onclick="minimizeDashboardToTray()"><strong>最小化到托盘</strong><span>保持后台运行，托盘点击可唤回</span></button>
+              <button class="btn btn-primary" type="button" onclick="openFocusDesktopConfirm()"><strong>清桌面</strong><span>确认后显示桌面，小猫留在桌面上</span></button>
+            </div>
+            <div class="companion-desktop-note" id="companion-desktop-note">这些桌面动作只在克隆版桌面壳里启用；浏览器预览不会执行系统操作。</div>
           </div>
         </div>
         <div style="margin-top:22px">
@@ -4755,6 +5149,62 @@
                 <textarea class="config-input" id="cats-message-input" placeholder="等待 CatsCo Chat 检查完成" disabled></textarea>
                 <button class="btn btn-primary" onclick="sendCatsMessage()" id="cats-send-btn" disabled>发送</button>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Page: Timetable Assistant -->
+      <div class="page" id="page-timetable">
+        <div class="section-title">课表中心</div>
+        <div class="timetable-shell">
+          <div class="chat-panel timetable-agent-window">
+            <div class="timetable-window-header">
+              <div>
+                <div class="timetable-window-title">课表中心</div>
+                <div class="timetable-topic">当前任务：还没有开始排课</div>
+              </div>
+              <button class="btn" type="button" onclick="fetchTimetableTasks()">刷新</button>
+            </div>
+
+            <div class="timetable-window-body">
+              <div class="timetable-early">已到最早消息</div>
+
+              <div class="timetable-chat-thread" id="timetable-chat-thread"></div>
+
+              <div class="timetable-stats">
+                <div class="timetable-stat">
+                  <div class="timetable-stat-label">任务状态</div>
+                  <div class="timetable-stat-value" id="timetable-status-value">未开始</div>
+                  <div class="timetable-stat-note" id="timetable-status-note">等待老师输入第一条排课要求</div>
+                </div>
+                <div class="timetable-stat">
+                  <div class="timetable-stat-label">已记录要求</div>
+                  <div class="timetable-stat-value" id="timetable-requirement-count">0</div>
+                  <div class="timetable-stat-note">来自老师输入和后续资料解析</div>
+                </div>
+                <div class="timetable-stat">
+                  <div class="timetable-stat-label">可视化结果</div>
+                  <div class="timetable-stat-value" id="timetable-artifact-count" style="color:#7ce3b2">0</div>
+                  <div class="timetable-stat-note">生成后的课表视图会显示在这里</div>
+                </div>
+              </div>
+
+              <div class="timetable-quick-actions">
+                <button class="btn" type="button" onclick="startNewTimetableTask()">新建课表任务</button>
+                <button class="btn" type="button" onclick="fillTimetablePrompt('我准备上传排课资料包，请先等待资料。')">上传排课资料</button>
+                <button class="btn" type="button" onclick="fillTimetablePrompt('请先整理当前排课条件')">整理排课条件</button>
+              </div>
+            </div>
+
+            <div class="timetable-composer">
+              <div class="timetable-attachment-tray" id="timetable-attachment-tray" hidden></div>
+              <div class="timetable-input-wrap">
+                <button class="btn chat-attach-btn" type="button" onclick="chooseTimetableFiles()" title="选择排课资料">+</button>
+                <input id="timetable-file-input" type="file" multiple hidden accept=".xlsx,.xls,.csv,.tsv,.pdf,.doc,.docx,.png,.jpg,.jpeg,.webp" />
+                <textarea id="timetable-message-input" placeholder="输入排课要求，或上传资料包 / Excel / 截图"></textarea>
+              </div>
+              <button class="btn btn-primary timetable-send" type="button" onclick="sendTimetableDraft()">发送</button>
             </div>
           </div>
         </div>
@@ -4902,6 +5352,26 @@
     </div>
   </div>
 
+  <div class="modal-overlay" id="focus-desktop-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>进入专注清桌面？</h3>
+        <button class="modal-close" onclick="closeFocusDesktopConfirm()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="focus-desktop-copy">
+          <p>这会最小化所有打开的窗口，让你直接看到桌面。</p>
+          <p>不会关闭程序或改动文件。小猫会留在桌面上，点它就能继续使用。</p>
+          <div class="focus-desktop-warning">每次都需要你确认后才执行</div>
+        </div>
+        <div class="focus-desktop-actions">
+          <button class="btn" type="button" onclick="closeFocusDesktopConfirm()">取消</button>
+          <button class="btn btn-primary" type="button" onclick="confirmFocusDesktop()">确认清桌面</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="floating-pet" id="floating-pet" aria-live="polite">
     <div class="floating-pet-bubble" id="floating-pet-bubble">待机中</div>
     <div class="floating-pet-panel" id="floating-pet-panel">
@@ -5015,7 +5485,7 @@
     let appReadinessSnapshot = {};
     let appReadinessLoaded = false;
     let appReadinessError = '';
-    const pageTitles = { services:'机器人', companion:'伙伴', chat:'CatsCo', config:'设置', store:'Skills', developer:'开发者中心' };
+    const pageTitles = { services:'AI 助教', companion:'校园伙伴', chat:'校园工作台', timetable:'课表中心', config:'学校设置', store:'教学技能', developer:'管理中心' };
     let catsAuthMode = 'login';
     let catsState = {};
     let catsNextAction = 'none';
@@ -5082,6 +5552,9 @@
     let petProcess = loadPetProcess();
     let lastCatsMessageSignature = '';
     let catsWorkingActive = false;
+    let timetableCurrentTask = null;
+    let timetableAttachmentQueue = [];
+    let timetableAttachmentSeq = 0;
     let skillHubState = { authenticated:false, roles:[], permissions:[], installed:[] };
     let skillHubRegistryCache = [];
     let localSkillsCache = [];
@@ -5410,6 +5883,48 @@
       if (shell) shell.classList.remove('open');
     }
 
+    function catsDesktopBridgeAvailable() {
+      return Boolean(window.catscoDesktop && typeof window.catscoDesktop.showDashboard === 'function');
+    }
+
+    async function enterDesktopPetMode() {
+      if (!catsDesktopBridgeAvailable() || typeof window.catscoDesktop.enterDesktopMode !== 'function') {
+        showPetBubble('请在克隆版桌面端使用');
+        return;
+      }
+      showPetBubble('我在桌面陪你');
+      await window.catscoDesktop.enterDesktopMode();
+    }
+
+    async function minimizeDashboardToTray() {
+      if (!catsDesktopBridgeAvailable() || typeof window.catscoDesktop.minimizeToTray !== 'function') {
+        showPetBubble('请在克隆版桌面端使用');
+        return;
+      }
+      showPetBubble('我会在托盘等你');
+      await window.catscoDesktop.minimizeToTray();
+    }
+
+    function openFocusDesktopConfirm() {
+      const modal = document.getElementById('focus-desktop-modal');
+      if (modal) modal.classList.add('show');
+    }
+
+    function closeFocusDesktopConfirm() {
+      const modal = document.getElementById('focus-desktop-modal');
+      if (modal) modal.classList.remove('show');
+    }
+
+    async function confirmFocusDesktop() {
+      closeFocusDesktopConfirm();
+      if (!catsDesktopBridgeAvailable() || typeof window.catscoDesktop.showDesktop !== 'function') {
+        showPetBubble('请在克隆版桌面端使用');
+        return;
+      }
+      showPetBubble('清桌面中');
+      await window.catscoDesktop.showDesktop();
+    }
+
     function switchPage(name) {
       document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
       document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -5418,7 +5933,7 @@
       const nav = document.querySelector('.nav-item[data-page="'+name+'"]');
       if (nav) nav.classList.add('active');
       document.body.classList.toggle('companion-active', name === 'companion');
-      document.body.classList.toggle('chat-active', name === 'chat');
+      document.body.classList.toggle('chat-active', name === 'chat' || name === 'timetable');
       const titleEl = document.getElementById('topbar-title');
       if (titleEl) titleEl.textContent = pageTitles[name] || name;
       if (name === 'chat') {
@@ -5432,6 +5947,287 @@
         refreshSkillHubPage();
       } else if (name === 'developer') {
         fetchSkillHubDeveloper();
+      } else if (name === 'timetable') {
+        fetchTimetableTasks();
+      }
+    }
+
+    function fillTimetablePrompt(text) {
+      const input = document.getElementById('timetable-message-input');
+      if (!input) return;
+      input.value = text || '';
+      input.focus();
+    }
+
+    function startNewTimetableTask() {
+      renderTimetableTask(null);
+      timetableAttachmentQueue = [];
+      renderTimetableAttachments();
+      fillTimetablePrompt('');
+    }
+
+    function chooseTimetableFiles() {
+      const input = document.getElementById('timetable-file-input');
+      if (input) HTMLInputElement.prototype.click.call(input);
+    }
+
+    function queueTimetableFiles(files) {
+      const list = Array.from(files || []).filter(Boolean);
+      if (!list.length) return;
+      timetableAttachmentQueue.push(...list.map(file => ({
+        id: ++timetableAttachmentSeq,
+        file,
+        name: file.name || '排课资料',
+        type: file.type || '',
+        size: file.size || 0,
+        status: 'queued',
+      })));
+      renderTimetableAttachments();
+      const input = document.getElementById('timetable-message-input');
+      if (input && !input.value.trim()) input.placeholder = '已选择资料，可以补充一句说明后发送';
+    }
+
+    function removeTimetableAttachment(id) {
+      timetableAttachmentQueue = timetableAttachmentQueue.filter(item => item.id !== id || item.status === 'uploading');
+      renderTimetableAttachments();
+    }
+
+    function renderTimetableAttachments() {
+      const tray = document.getElementById('timetable-attachment-tray');
+      if (!tray) return;
+      tray.hidden = timetableAttachmentQueue.length === 0;
+      tray.innerHTML = timetableAttachmentQueue.map(item => {
+        const cls = 'chat-upload-chip ' + (item.status === 'error' ? 'error' : item.status === 'uploading' ? 'sending' : 'queued');
+        const meta = [formatBytes(item.size), item.status === 'uploaded' ? '已上传' : item.status === 'uploading' ? '上传中' : '待发送'].filter(Boolean).join(' · ');
+        const remove = item.status === 'uploading' ? '' : '<button class="btn chat-upload-remove" type="button" onclick="removeTimetableAttachment('+item.id+')">移除</button>';
+        return '<div class="'+cls+'">'+
+          '<span class="chat-upload-icon">'+escapeHtml(catsAttachmentKind(item.name, item.type))+'</span>'+
+          '<span class="chat-upload-info"><strong>'+escapeHtml(item.name)+'</strong><small>'+escapeHtml(meta)+'</small></span>'+
+          remove+
+        '</div>';
+      }).join('');
+    }
+
+    function readTimetableFileAsBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = String(reader.result || '');
+          resolve(result.includes(',') ? result.split(',').pop() : result);
+        };
+        reader.onerror = () => reject(reader.error || new Error('文件读取失败'));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function uploadTimetableFiles() {
+      const pending = timetableAttachmentQueue.filter(item => item.file && item.status !== 'uploaded');
+      if (!pending.length) return [];
+      pending.forEach(item => { item.status = 'uploading'; });
+      renderTimetableAttachments();
+      try {
+        const files = [];
+        for (const item of pending) {
+          files.push({
+            name: item.name,
+            type: item.type,
+            size: item.size,
+            dataBase64: await readTimetableFileAsBase64(item.file),
+          });
+        }
+        const res = await fetch(API+'/api/timetable/uploads', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '排课资料上传失败');
+        pending.forEach((item, index) => {
+          item.status = 'uploaded';
+          item.upload = data.files[index];
+        });
+        renderTimetableAttachments();
+        return pending.map(item => item.upload).filter(Boolean);
+      } catch (e) {
+        pending.forEach(item => { item.status = 'error'; });
+        renderTimetableAttachments();
+        throw e;
+      }
+    }
+
+    function timetableStatusLabel(status) {
+      if (status === 'collecting_requirements') return '收集资料';
+      if (status === 'ready_to_validate') return '可检查';
+      if (status === 'validating') return '检查中';
+      if (status === 'ready_to_solve') return '可生成';
+      if (status === 'solving') return '生成中';
+      if (status === 'completed') return '已生成';
+      if (status === 'needs_review') return '待确认';
+      return '未开始';
+    }
+
+    function isTimetableRequirementText(text) {
+      const normalized = String(text || '').trim().replace(/\s+/g, '');
+      if (/^(你好|您好|hi|hello|哈喽|在吗|在不在)[。！!,.，？?]*$/i.test(normalized)) return false;
+      if (/^(谢谢|好的|收到|明白|ok|OK)[。！!,.，？?]*$/.test(normalized)) return false;
+      if (/^(导出|下载|查看|刷新|新建|检查)/.test(normalized)) return false;
+      return /排课|课表|年级|班级|教师|老师|课程|教室|第[一二三四五六七八九十\d]+节|周[一二三四五六日天]|上午|下午|晚自习|活动课|体育/.test(normalized);
+    }
+
+    function timetableRequirementList(task) {
+      const requirements = Array.isArray(task?.requirements) ? task.requirements : [];
+      return requirements.filter(item => isTimetableRequirementText(item.text || ''));
+    }
+
+    function timetableDisplayTitle(task) {
+      if (!task) return '当前任务：还没有开始排课';
+      const requirements = timetableRequirementList(task);
+      if (!requirements.length) return '当前任务：和排课助理对话中';
+      return '当前任务：' + (task.title || '排课任务');
+    }
+
+    function renderTimetableAgentMessage(copy) {
+      return '<div class="timetable-agent-message">'+
+        '<div class="timetable-avatar">排</div>'+
+        '<div>'+
+          '<div class="timetable-agent-name">排课助理</div>'+
+          '<div class="timetable-agent-copy">'+escapeHtml(copy)+'</div>'+
+        '</div>'+
+      '</div>';
+    }
+
+    function renderTimetableAttachmentList(attachments) {
+      const list = Array.isArray(attachments) ? attachments : [];
+      if (!list.length) return '';
+      return '<div class="chat-attachment-list">' + list.map(item => (
+        '<div class="chat-attachment">'+
+          '<span class="chat-attachment-icon">'+escapeHtml(catsAttachmentKind(item.name, item.type))+'</span>'+
+          '<span><div class="chat-attachment-name">'+escapeHtml(item.name || '排课资料')+'</div>'+
+          '<div class="chat-attachment-meta">'+escapeHtml(formatBytes(item.size || 0))+'</div></span>'+
+        '</div>'
+      )).join('') + '</div>';
+    }
+
+    function renderTimetableTeacherMessage(input) {
+      const content = typeof input === 'string' ? input : String(input?.content || '');
+      const attachments = typeof input === 'string' ? [] : input?.attachments;
+      return '<div class="timetable-user-message">'+
+        '<div class="timetable-message-time">老师</div>'+
+        '<div class="timetable-user-bubble">'+escapeHtml(content)+'</div>'+
+        renderTimetableAttachmentList(attachments)+
+      '</div>';
+    }
+
+    function timetableAssistantReply(task) {
+      if (!task) {
+        return '你好，我是排课助理。你可以像和教务同事说话一样，直接告诉我要排哪个年级、班级、教师限制，或者上传 Excel / 截图。';
+      }
+      const inputs = Array.isArray(task.inputs) ? task.inputs : [];
+      const latest = String(inputs[inputs.length - 1]?.content || '').trim();
+      const requirements = timetableRequirementList(task);
+      const missing = Array.isArray(task.missingInformation) ? task.missingInformation : [];
+      const artifacts = Array.isArray(task.artifacts) ? task.artifacts : [];
+      const normalized = latest.replace(/\s+/g, '');
+
+      if (/^(你好|您好|hi|hello|哈喽|在吗|在不在)[。！!,.，？?]*$/i.test(normalized)) {
+        return '你好，我在。你可以直接说“帮我排七年级下周课表”，也可以先上传教师名单、课程节数和作息时间。';
+      }
+      if (/^(导出|下载)/.test(normalized) && !artifacts.length) {
+        return '现在还没有可导出的课表。先把班级、教师、课程、作息时间这些资料补齐，我生成课表后会在这里直接显示并支持导出。';
+      }
+      if (/^检查/.test(normalized) && !requirements.length) {
+        return '可以检查冲突，不过我还没有拿到可检查的排课条件。你可以先上传资料，或者告诉我班级、教师和课程限制。';
+      }
+      if (!requirements.length) {
+        return missing[0] || '我在。你可以继续用自然语言告诉我排课目标，我会把真正的排课条件整理出来。';
+      }
+      return '已记录你的排课要求。' + (missing[0] ? missing[0] : '继续补充资料后，我会把内容整理成可检查的排课条件。');
+    }
+
+    function renderTimetableChat(task) {
+      const thread = document.getElementById('timetable-chat-thread');
+      if (!thread) return;
+      if (!task) {
+        thread.innerHTML = renderTimetableAgentMessage(timetableAssistantReply(null));
+        return;
+      }
+      const inputs = Array.isArray(task.inputs) ? task.inputs : [];
+      const teacherMessages = inputs.map(item => renderTimetableTeacherMessage(item)).join('');
+      thread.innerHTML = teacherMessages + renderTimetableAgentMessage(timetableAssistantReply(task));
+    }
+
+    function renderTimetableError(message) {
+      const thread = document.getElementById('timetable-chat-thread');
+      if (thread) thread.innerHTML = renderTimetableAgentMessage(message);
+    }
+
+    function renderTimetableTask(task) {
+      timetableCurrentTask = task || null;
+      const statusValue = document.getElementById('timetable-status-value');
+      const statusNote = document.getElementById('timetable-status-note');
+      const requirementCount = document.getElementById('timetable-requirement-count');
+      const artifactCount = document.getElementById('timetable-artifact-count');
+      const topic = document.querySelector('.timetable-topic');
+
+      if (!task) {
+        if (statusValue) statusValue.textContent = '未开始';
+        if (statusNote) statusNote.textContent = '等待老师输入第一条排课要求';
+        if (requirementCount) requirementCount.textContent = '0';
+        if (artifactCount) artifactCount.textContent = '0';
+        if (topic) topic.textContent = timetableDisplayTitle(null);
+        renderTimetableChat(null);
+        return;
+      }
+
+      const requirements = timetableRequirementList(task);
+      const artifacts = Array.isArray(task.artifacts) ? task.artifacts : [];
+
+      if (statusValue) statusValue.textContent = timetableStatusLabel(task.status);
+      if (statusNote) statusNote.textContent = requirements.length ? (task.title || '排课任务已创建') : '普通对话中，尚未形成排课条件';
+      if (requirementCount) requirementCount.textContent = String(requirements.length);
+      if (artifactCount) artifactCount.textContent = String(artifacts.length);
+      if (topic) topic.textContent = timetableDisplayTitle(task);
+      renderTimetableChat(task);
+    }
+
+    async function fetchTimetableTasks() {
+      try {
+        const res = await fetch(API+'/api/timetable/tasks');
+        const data = await res.json();
+        renderTimetableTask((data.tasks || [])[0] || null);
+      } catch (e) {
+        renderTimetableError('排课任务加载失败：' + (e.message || String(e)));
+      }
+    }
+
+    async function sendTimetableDraft() {
+      const input = document.getElementById('timetable-message-input');
+      if (!input) return;
+      const rawMessage = input.value.trim();
+      if (!rawMessage && !timetableAttachmentQueue.length) return;
+      const message = rawMessage || '已上传排课资料，请先帮我读取和整理。';
+      input.disabled = true;
+      try {
+        const attachments = await uploadTimetableFiles();
+        const endpoint = timetableCurrentTask
+          ? API+'/api/timetable/tasks/'+encodeURIComponent(timetableCurrentTask.id)+'/messages'
+          : API+'/api/timetable/tasks';
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message, attachments }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '排课任务保存失败');
+        input.value = '';
+        timetableAttachmentQueue = [];
+        renderTimetableAttachments();
+        renderTimetableTask(data.task);
+      } catch (e) {
+        renderTimetableError('排课任务保存失败：' + (e.message || String(e)));
+      } finally {
+        input.disabled = false;
+        input.focus();
       }
     }
 
@@ -8926,6 +9722,17 @@
     catsMessageInput.addEventListener('focus',()=>setPetState('typing', { message:'准备输入' }));
     catsMessageInput.addEventListener('blur',()=>{if(!catsMessageInput.value.trim()) setPetAutoBaseline(petAutoBaseline);});
     autoResizeCatsMessageInput();
+    const timetableMessageInput = document.getElementById('timetable-message-input');
+    if (timetableMessageInput) {
+      timetableMessageInput.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendTimetableDraft();}});
+    }
+    const timetableFileInput = document.getElementById('timetable-file-input');
+    if (timetableFileInput) {
+      timetableFileInput.addEventListener('change',e=>{
+        queueTimetableFiles(e.target.files);
+        e.target.value = '';
+      });
+    }
     setupCatsAttachmentInputs();
     document.getElementById('skillhub-registry-grid')?.addEventListener('click', handleSkillHubInstallClick);
     document.addEventListener('keydown',handleDashboardFontScaleShortcut);

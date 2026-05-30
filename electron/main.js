@@ -1,9 +1,19 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { spawn } = require('child_process');
+const {
+  buildDesktopPowerShellArgs,
+  resolveDashboardPort,
+  resolveDesktopPetBounds,
+  resolveDraggedDesktopPetBounds,
+  resolveUserDataPath,
+} = require(path.join(__dirname, '..', 'dist', 'electron', 'desktop-companion'));
 
-const DASHBOARD_PORT = 3800;
+const DASHBOARD_PORT = resolveDashboardPort(process.env, 3800);
+const USE_EXTERNAL_DASHBOARD = /^(1|true|yes)$/i.test(String(process.env.XIAOBA_DASHBOARD_EXTERNAL || ''));
 let mainWindow = null;
+let desktopPetWindow = null;
 let tray = null;
 let autoUpdater = null;
 const REFRESHABLE_BUNDLED_SKILLS = new Set([]);
@@ -236,6 +246,22 @@ function getRuntimeRoot() {
   return path.join(getAppRoot(), 'build-resources', 'runtime');
 }
 
+function configureUserDataPath() {
+  const currentPath = app.getPath('userData');
+  const requestedPath = resolveUserDataPath({
+    env: process.env,
+    appRoot: getAppRoot(),
+    defaultPath: currentPath,
+  });
+  if (!requestedPath || requestedPath === currentPath) return;
+
+  fs.mkdirSync(requestedPath, { recursive: true });
+  app.setPath('userData', requestedPath);
+  console.log('[desktop] userData:', requestedPath);
+}
+
+configureUserDataPath();
+
 
 
 /**
@@ -319,6 +345,10 @@ function syncBundledSkillDir(fs, skillName, src, dest, overwrite = false) {
 
 async function startServer() {
   const appRoot = getAppRoot();
+  if (USE_EXTERNAL_DASHBOARD) {
+    console.log(`[desktop] using external dashboard on port ${DASHBOARD_PORT}`);
+    return;
+  }
 
   // 闂佽崵濮崇粈浣规櫠娴犲鍋柛鈩冾殢閸熷懘鏌曟径鍫濃偓妤冪矙婵犲洦鐓熼柍鍝勶工閺嬫稓绱撳鍛ч柡浣哥Ч瀹曞ジ鎮㈢亸浣稿緧闂備礁鎲￠悧鏇㈠箠鎼淬劌绠栨俊銈呮噺閸嬨劑鏌嶉搹瑙勭erData闂佽瀛╃粙鎺曟懌闂佸搫鍊风欢姘跺箖娴犲惟闁挎洍鍋撻柣鎾存礋閺屸剝鎷呴崫鍕垫毉閻庤鎸风欢姘跺极?
   const userDataPath = app.getPath('userData');
@@ -411,6 +441,128 @@ async function startServer() {
   await startDashboard(DASHBOARD_PORT, { updateController, projectRoot: appRoot });
 }
 
+function showDashboardWindow() {
+  if (!mainWindow) {
+    createWindow();
+  }
+  if (desktopPetWindow) {
+    desktopPetWindow.hide();
+  }
+  if (mainWindow) {
+    mainWindow.show();
+    mainWindow.focus();
+  }
+}
+
+function hideDashboardWindow() {
+  if (mainWindow) {
+    mainWindow.hide();
+  }
+}
+
+function desktopPetBoundsForPrimaryDisplay() {
+  const workArea = screen.getPrimaryDisplay().workArea;
+  const bounds = resolveDesktopPetBounds({
+    display: { width: workArea.width, height: workArea.height },
+    window: { width: 220, height: 240 },
+  });
+  return {
+    ...bounds,
+    x: workArea.x + bounds.x,
+    y: workArea.y + bounds.y,
+  };
+}
+
+function createDesktopPetWindow() {
+  const bounds = desktopPetBoundsForPrimaryDisplay();
+
+  if (desktopPetWindow) {
+    desktopPetWindow.setBounds(bounds);
+    desktopPetWindow.showInactive();
+    return desktopPetWindow;
+  }
+
+  desktopPetWindow = new BrowserWindow({
+    ...bounds,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    hasShadow: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+
+  desktopPetWindow.loadFile(path.join(getAppRoot(), 'dashboard', 'desktop-pet.html'));
+  desktopPetWindow.on('closed', () => {
+    desktopPetWindow = null;
+  });
+  desktopPetWindow.showInactive();
+  return desktopPetWindow;
+}
+
+function isTrustedDashboardEvent(event) {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const frameUrl = event.senderFrame?.url || event.sender.getURL();
+  return owner === mainWindow && isTrustedDashboardUrl(frameUrl);
+}
+
+function isTrustedCompanionEvent(event) {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  if (owner === desktopPetWindow) return true;
+  return isTrustedDashboardEvent(event);
+}
+
+function isTrustedDesktopPetEvent(event) {
+  return BrowserWindow.fromWebContents(event.sender) === desktopPetWindow;
+}
+
+function moveDesktopPetWindow(deltaX, deltaY) {
+  if (!desktopPetWindow) return { ok: false, reason: 'NO_DESKTOP_PET' };
+  const bounds = desktopPetWindow.getBounds();
+  const workArea = screen.getDisplayMatching(bounds).workArea;
+  const next = resolveDraggedDesktopPetBounds({
+    current: {
+      x: bounds.x - workArea.x,
+      y: bounds.y - workArea.y,
+      width: bounds.width,
+      height: bounds.height,
+    },
+    display: { width: workArea.width, height: workArea.height },
+    delta: { x: Number(deltaX) || 0, y: Number(deltaY) || 0 },
+  });
+  const absoluteBounds = {
+    ...next,
+    x: workArea.x + next.x,
+    y: workArea.y + next.y,
+  };
+  desktopPetWindow.setBounds(absoluteBounds);
+  return { ok: true, bounds: absoluteBounds };
+}
+
+function runDesktopAction(action) {
+  if (process.platform !== 'win32') {
+    return Promise.resolve({ ok: false, reason: 'UNSUPPORTED_PLATFORM' });
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('powershell.exe', buildDesktopPowerShellArgs(action), {
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+    child.on('error', reject);
+    child.on('exit', (code) => {
+      if (code === 0) resolve({ ok: true });
+      else reject(new Error(`Desktop action failed with exit code ${code}`));
+    });
+  });
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -430,7 +582,7 @@ function createWindow() {
   mainWindow.loadURL(`http://127.0.0.1:${DASHBOARD_PORT}`);
 
   mainWindow.on('close', (e) => {
-    if (process.platform === 'darwin' && !app.isQuitting) {
+    if (!app.isQuitting) {
       e.preventDefault();
       mainWindow.hide();
     }
@@ -488,6 +640,38 @@ ipcMain.handle('catsco:select-files', async (event) => {
     .filter(Boolean);
 });
 
+ipcMain.handle('catsco:minimize-to-tray', async (event) => {
+  if (!isTrustedDashboardEvent(event)) return { ok: false, reason: 'UNTRUSTED_FRAME' };
+  hideDashboardWindow();
+  return { ok: true };
+});
+
+ipcMain.handle('catsco:enter-desktop-mode', async (event) => {
+  if (!isTrustedDashboardEvent(event)) return { ok: false, reason: 'UNTRUSTED_FRAME' };
+  hideDashboardWindow();
+  createDesktopPetWindow();
+  return { ok: true };
+});
+
+ipcMain.handle('catsco:show-dashboard', async (event) => {
+  if (!isTrustedCompanionEvent(event)) return { ok: false, reason: 'UNTRUSTED_FRAME' };
+  showDashboardWindow();
+  return { ok: true };
+});
+
+ipcMain.handle('catsco:move-desktop-pet', async (event, payload = {}) => {
+  if (!isTrustedDesktopPetEvent(event)) return { ok: false, reason: 'UNTRUSTED_FRAME' };
+  return moveDesktopPetWindow(payload.deltaX, payload.deltaY);
+});
+
+ipcMain.handle('catsco:show-desktop', async (event) => {
+  if (!isTrustedDashboardEvent(event)) return { ok: false, reason: 'UNTRUSTED_FRAME' };
+  hideDashboardWindow();
+  await runDesktopAction('minimize-all');
+  createDesktopPetWindow();
+  return { ok: true };
+});
+
 function createTray() {
   const icon = nativeImage.createFromDataURL(
     'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAABhSURBVFhH7c6xDQAgDASwkP2XZgEqCgrZwJ+u8Ov1vt+RM0EHHXTQQQcddNBBBx100EEHHXTQQQcddNBBBx100EEHHXTQQQcddNBBBx100EEHHXTQQQcddNBBBx3834kDK+kAIRUXPjcAAAAASUVORK5CYII='
@@ -496,8 +680,11 @@ function createTray() {
 
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Open CatsCo Dashboard', click: () => {
-      if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
-      else createWindow();
+      showDashboardWindow();
+    }},
+    { label: 'Show desktop companion', click: () => {
+      hideDashboardWindow();
+      createDesktopPetWindow();
     }},
     { type: 'separator' },
     { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); }} ,
@@ -506,8 +693,7 @@ function createTray() {
   tray.setToolTip('CatsCo Dashboard');
   tray.setContextMenu(contextMenu);
   tray.on('click', () => {
-    if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
-    else createWindow();
+    showDashboardWindow();
   });
 }
 
@@ -597,8 +783,7 @@ app.whenReady().then(async () => {
   }
 
   app.on('activate', () => {
-    if (mainWindow) mainWindow.show();
-    else createWindow();
+    showDashboardWindow();
   });
 });
 
