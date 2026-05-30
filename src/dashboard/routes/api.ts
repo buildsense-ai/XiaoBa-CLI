@@ -32,6 +32,7 @@ import {
 import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/upload';
 import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-grants';
 import { registerSkillHubRoutes } from './skillhub';
+import { TimetableStore } from '../timetable-store';
 import { SkillHubService } from '../../skillhub/service';
 import {
   computeLocalSkillContentHash,
@@ -845,6 +846,7 @@ function persistCatsUserSession(state: CatsAuthState, login: any): void {
 
 export function createApiRouter(serviceManager: ServiceManager, updateController?: UpdateController): Router {
   const router = Router();
+  const timetableStore = new TimetableStore(process.cwd());
   registerSkillHubRoutes(router);
 
   // ==================== 总览 ====================
@@ -884,6 +886,53 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       }));
     } catch (e: any) {
       res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.get('/timetable/tasks', (_req, res) => {
+    try {
+      res.json({ tasks: timetableStore.listTasks() });
+    } catch (e: any) {
+      res.status(e?.status || 500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.post('/timetable/tasks', (req, res) => {
+    try {
+      const task = timetableStore.createTask({
+        message: req.body?.message,
+        title: req.body?.title,
+        attachments: req.body?.attachments,
+      });
+      res.status(201).json({ ok: true, task });
+    } catch (e: any) {
+      res.status(e?.status || 500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.post('/timetable/uploads', (req, res) => {
+    try {
+      const files = timetableStore.saveUploads(req.body?.files);
+      res.status(201).json({ ok: true, files });
+    } catch (e: any) {
+      res.status(e?.status || 500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.get('/timetable/tasks/:id', (req, res) => {
+    try {
+      res.json({ task: timetableStore.getTask(req.params.id) });
+    } catch (e: any) {
+      res.status(e?.status || 500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.post('/timetable/tasks/:id/messages', (req, res) => {
+    try {
+      const task = timetableStore.appendTeacherMessage(req.params.id, req.body?.message, req.body?.attachments);
+      res.json({ ok: true, task });
+    } catch (e: any) {
+      res.status(e?.status || 500).json({ error: e?.message || String(e) });
     }
   });
 
