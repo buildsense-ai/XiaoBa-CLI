@@ -5,6 +5,7 @@ import * as dotenv from 'dotenv';
 import { EventEmitter } from 'events';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
+import { weixinBindingEnvOverlay } from './weixin-channel-binding';
 
 const isWindows = process.platform === 'win32';
 
@@ -225,6 +226,20 @@ export class ServiceManager extends EventEmitter {
       envVars = {
         ...envVars,
         ...catsCoRuntime.envOverlay,
+        CATSCO_LOCAL_CONFIG_PATH: catsCoLocalConfigPath,
+        CATSCO_CONFIG_PATH: catsCoLocalConfigPath,
+      };
+    }
+    if (name === 'weixin') {
+      const catsCoLocalConfigPath = path.join(spawnCwd, '.xiaoba', 'catsco.json');
+      const catsCoRuntime = resolveCatsCoRuntimeConfig({
+        runtimeRoot: spawnCwd,
+        env: envVars,
+      });
+      envVars = {
+        ...envVars,
+        ...catsCoRuntime.envOverlay,
+        ...weixinBindingEnvOverlay({ runtimeRoot: spawnCwd, env: envVars }),
         CATSCO_LOCAL_CONFIG_PATH: catsCoLocalConfigPath,
         CATSCO_CONFIG_PATH: catsCoLocalConfigPath,
       };

@@ -172,6 +172,28 @@
 - `User A` 和 `User B` 的 actor/topic 仍然不同。
 - 如果当前产品策略是不允许离线期间继续发给 agent，也要记录实际 UX，而不是把它当成 session identity 失败。
 
+### 11. 微信扫码绑定到当前 agent
+
+这一步验证的是“微信通道属于哪个 agent”，不是完整的“微信 openid 绑定 CatsCo actor”。
+
+步骤：
+
+1. 在 Dashboard 登录 CatsCo。
+2. 选择或创建测试 agent，并确认当前 body 已绑定。
+3. 打开设置里的微信高级配置。
+4. 点击“为当前 Agent 扫码绑定”。
+5. 用微信完成扫码授权。
+6. 启动 Weixin connector。
+
+预期：
+
+- 没有当前 CatsCo agent/body 时，Dashboard 不允许获取微信二维码。
+- 扫码弹窗明确显示“绑定到哪个 agent”。
+- 授权成功后，本地 `.env` 有 `WEIXIN_TOKEN` 和 `WEIXIN_BOUND_AGENT_*`。
+- 本地 `.xiaoba/channel-bindings.json` 记录了 agent uid、bodyId、绑定人和 token 摘要，但不保存明文 token。
+- Weixin connector 启动时拿到当前 agent/body/channel 上下文。
+- 如果扫码过程中切换了 agent，授权确认会失败并要求重新扫码。
+
 ## 通过标准
 
 | 检查项 | 通过标准 |
@@ -185,10 +207,11 @@
 | 历史补消息 | agent body 重启后拉回的历史消息仍然带正确身份 |
 | 刷新恢复 | 刷新后仍能找到 agent 或对应会话 |
 | 离线体验 | agent 离线时错误可理解，不误导用户 |
+| 微信 agent 绑定 | 微信扫码只能绑定到当前 agent；启动 Weixin connector 时不会丢失 agent/body 上下文 |
 
 ## 当前暂不验证
 
-- 微信/飞书 openid/user id 绑定回 CatsCo actor。
+- 微信/飞书 openid/user id 绑定回 CatsCo actor。当前只验证“微信 token 属于哪个 agent”。
 - 完整组织权限：owner/member/viewer、邀请、审计。
 - GauzMem 图记忆的跨用户检索策略。
 - 群聊 Reply Policy、agent-to-agent 防循环。
