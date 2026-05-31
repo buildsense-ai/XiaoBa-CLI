@@ -1751,8 +1751,9 @@
           <div class="phase"><div class="phase-id">Phase 6A · Done</div><div class="phase-body"><strong>Body 状态可见</strong><span>平台已提供 owner-auth body status 查询；Dashboard 已显示本机是否是 active body，body 冲突或账号/owner 不匹配时阻断聊天，旧平台/网络失败保持 non-blocking unknown。</span></div></div>
           <div class="phase"><div class="phase-id">Phase 6B · Platform beta done</div><div class="phase-body"><strong>WebApp agent roster/open-chat</strong><span>CatsCompany 已新增 `/api/agents` 和 `/api/agents/open`，WebApp 侧栏可展示 owner/friend 可访问 agent，点击时由平台确认并打开 p2p topic；正式组织权限后置。</span></div></div>
           <div class="phase"><div class="phase-id">Phase 6C · Next candidate</div><div class="phase-body"><strong>TopicContext 正式化</strong><span>当前先靠 canonical `catsco_identity` 和 session sidecar 自洽；如后续需要审计/权限快照，再把 topic context 从 JSON/metadata 提升为正式表。</span></div></div>
-          <div class="phase"><div class="phase-id">Phase 7A · CLI beta done</div><div class="phase-body"><strong>微信先绑定到当前 agent</strong><span>Dashboard 微信扫码前必须先有当前 CatsCo agent/body；确认后写 `.xiaoba/channel-bindings.json` 和 legacy `WEIXIN_TOKEN`，启动 Weixin connector 时带上 agent/body/channel 上下文。</span></div></div>
-          <div class="phase"><div class="phase-id">Phase 7B · Next candidate</div><div class="phase-body"><strong>外部身份绑定回 CatsCo actor</strong><span>后续再把 WeChat openid / Feishu user id 绑定回 CatsCo actor，并把 transport 所有权逐步平台化。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 7A · CLI beta done</div><div class="phase-body"><strong>微信先绑定到当前 agent body</strong><span>Dashboard 微信扫码前必须先有当前 CatsCo agent/body；确认后写 `.xiaoba/channel-bindings.json` 和 legacy `WEIXIN_TOKEN`，启动 Weixin connector 时带上 agent/body/channel 上下文。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 7B · Platform beta done</div><div class="phase-body"><strong>WebApp 可给 owned agent 绑定微信通道</strong><span>CatsCompany 已加 `/api/agents/channels` 和微信扫码 API，WebApp 侧栏 owner agent 行有二维码入口；平台记录 agent channel binding 和 token 摘要，API 不返回明文 token。body 自动同步 token 和 openid → CatsCo actor 仍后置。</span></div></div>
+          <div class="phase"><div class="phase-id">Phase 7C · Next candidate</div><div class="phase-body"><strong>外部身份绑定回 CatsCo actor</strong><span>后续再把 WeChat openid / Feishu user id 绑定回 CatsCo actor，并决定微信 transport 是由平台运行，还是由 agent body 拉取平台 channel secret 后本地运行。</span></div></div>
           <div class="phase"><div class="phase-id">Phase 8</div><div class="phase-body"><strong>DeviceRegistry + DeviceGrant</strong><span>账号设备清单、在线状态、能力声明、上传/附件缓存、本地路径和 SSH 授权；用户设备像 agent body 的个人云盘，轻量连接器只管资料存取和 grant，不跑完整 agent。</span></div></div>
           <div class="phase"><div class="phase-id">Phase 9</div><div class="phase-body"><strong>Actor-aware GauzMem</strong><span>统一 agent 记忆，默认 actor/session aware，必要时可跨 actor relevance。</span></div></div>
           <div class="phase"><div class="phase-id">Phase 10</div><div class="phase-body"><strong>多虚拟员工协作</strong><span>agent roster、handoff、review agent、跨 agent 审计。</span></div></div>
@@ -1916,22 +1917,22 @@
             </tr>
             <tr>
               <td>Weixin Token</td>
-              <td>`.env` 的 `WEIXIN_TOKEN`；绑定元数据在 `.xiaoba/channel-bindings.json`</td>
-              <td>扫码必须发生在当前 CatsCo agent/body 下；token 仍给旧 Weixin connector 用，元数据说明它属于哪个 agent。</td>
-              <td>下一步才把 WeChat openid 绑定回 CatsCo actor，并把微信 transport 从本地 token 逐步平台化。</td>
+              <td>本地路径：`.env` 的 `WEIXIN_TOKEN` + `.xiaoba/channel-bindings.json`；平台路径：`agent_channel_bindings` 保存 server-only token 和摘要。</td>
+              <td>本地扫码能直接启动 legacy Weixin connector；WebApp 扫码能把微信通道登记到某个 owned agent，但 body 尚未自动同步这个 token。</td>
+              <td>下一步要决定 body 从平台拉取 channel secret，或由平台直接运行微信 transport；同时把 WeChat openid 绑定回 CatsCo actor。</td>
             </tr>
           </tbody>
         </table>
 
         <div class="roadmap" style="margin-top:16px">
-          <div class="phase"><div class="phase-id">现在阶段</div><div class="phase-body"><strong>身份归 CatsCo config，旧 secret 先留原处</strong><span>`catsco.json` 只管 CatsCo 登录、bot 绑定、bodyId；`.env` 继续承载模型 key、Feishu、Weixin token 等旧配置。微信已额外记录 agent 绑定元数据，但 token 还没有迁出 `.env`。</span></div></div>
+          <div class="phase"><div class="phase-id">现在阶段</div><div class="phase-body"><strong>身份归 CatsCo config，旧 secret 先留原处</strong><span>`catsco.json` 只管 CatsCo 登录、bot 绑定、bodyId；`.env` 继续承载模型 key、Feishu、本地 Weixin token 等旧配置。平台也已能记录 Weixin agent channel binding，但还没有接 body 自动同步。</span></div></div>
           <div class="phase"><div class="phase-id">下一阶段</div><div class="phase-body"><strong>模型来源重构</strong><span>如果选择 CatsCo 托管模型，本地不需要第三方大模型 API key；如果选择自定义模型，才在本地保存用户自己的模型地址、模型名和 key。</span></div></div>
-          <div class="phase"><div class="phase-id">再下一阶段</div><div class="phase-body"><strong>通道绑定重构</strong><span>Feishu / Weixin 不再只是本地 token，而是 CatsCo agent 的 channel；外部 user id / openid 绑定回 CatsCo actor，消息进入同一套身份和 session 体系。微信已经先完成“扫码绑定到当前 agent”的本地第一步。</span></div></div>
+          <div class="phase"><div class="phase-id">再下一阶段</div><div class="phase-body"><strong>通道绑定重构</strong><span>Feishu / Weixin 不再只是本地 token，而是 CatsCo agent 的 channel；外部 user id / openid 绑定回 CatsCo actor，消息进入同一套身份和 session 体系。微信已经完成“本地绑定当前 agent body”和“WebApp 绑定 owned agent channel”两个 beta 入口。</span></div></div>
         </div>
 
         <div class="callout">
           <strong>给 reviewer 的判断标准：</strong>
-          `catsco.json` 是“这个进程是谁”的配置，不是“所有 secret 的保险箱”。旧 `.env` 不能马上全废，因为模型、飞书、微信 token 现在还在用它；当前微信只新增了“这个 token 绑定在哪个 agent/body”的元数据，等托管模型和完整通道绑定接完，`.env` 才能逐步降级成高级兼容入口。
+          `catsco.json` 是“这个进程是谁”的配置，不是“所有 secret 的保险箱”。旧 `.env` 不能马上全废，因为模型、飞书、本地微信 connector 现在还在用它；平台 `agent_channel_bindings` 也不是最终 secret vault，只是先让 WebApp 有“这个微信通道属于哪个 agent”的权威记录。等托管模型、body secret sync 和完整通道绑定接完，`.env` 才能逐步降级成高级兼容入口。
         </div>
       </section>
 
@@ -1958,18 +1959,18 @@
         <div class="section-head">
           <div>
             <h2 class="section-title">当前进度与下一阶段</h2>
-            <p class="section-intro">当前阶段已经把“一个 CatsCo/XiaoBa 进程就是一个 bot body”、“每条 CatsCo 消息有平台确认的 actor/topic/agent/body 身份”、“成员能在 WebApp 找到并打开可访问 agent”，以及“微信扫码必须绑定到当前 agent”做成 beta 闭环。真实协作验证也开始落地：同一 agent 面对不同 actor 会打开不同 topic，owner 自己的 agent 会沉淀进 Conversations；平台侧也补了一个本地 E2E 测试，模拟两个 actor 同时向同一个在线 agent 发消息。下一阶段主要在真实环境试跑、外部 openid/user id 绑定 CatsCo actor、TopicContext 正式化里继续收窄。</p>
+            <p class="section-intro">当前阶段已经把“一个 CatsCo/XiaoBa 进程就是一个 bot body”、“每条 CatsCo 消息有平台确认的 actor/topic/agent/body 身份”、“成员能在 WebApp 找到并打开可访问 agent”，以及“微信扫码必须绑定到具体 agent”做成 beta 闭环。这里分成两条路径：Dashboard 本地扫码让 legacy Weixin connector 能马上用；CatsCo WebApp 扫码让 owner 可以在平台上给某个 agent 记录微信通道。真实协作验证也开始落地：同一 agent 面对不同 actor 会打开不同 topic，owner 自己的 agent 会沉淀进 Conversations；平台侧也补了一个本地 E2E 测试，模拟两个 actor 同时向同一个在线 agent 发消息。下一阶段主要在 body 同步平台 channel secret、外部 openid/user id 绑定 CatsCo actor、TopicContext 正式化里继续收窄。</p>
           </div>
           <span class="badge">Body + Roster Baseline</span>
         </div>
         <div class="two-col">
           <div class="panel good">
             <h3>已完成</h3>
-            <p>Dashboard 登录和 bot 绑定拆开；本地写入 device/body/install id；`.xiaoba/catsco.json` 成为 CatsCo 登录、bot 绑定和 bodyId 的 typed config；`resolveCatsCoRuntimeConfig()` 已成为 Dashboard status、readiness/preflight、ServiceManager 启动、settings、`catscompany` 命令的共同解析入口；ServiceManager 启动 connector 时会强制使用当前 runtime cwd 下的 `.xiaoba/catsco.json`，不会被 bundled runtime 或残留 env 带偏；bind/setup/switch 会先 preflight，再写本地配置，connector 启动失败会回滚。平台侧 bot WebSocket 必须带 bodyId，首次连接会写入 `bot_config.body_id`，之后不同 body 即使拿到同一个 API key 也会被拒绝；在线状态还有 active body lease，owner 可通过 `/api/bots/body-status` 查询 bound/active body。Dashboard 会显示 online/offline/conflict/auth_error/unknown，conflict 和 auth_error 会阻断聊天，旧平台或网络失败仍作为 non-blocking unknown。平台实时消息和历史补消息会补 `metadata.catsco_identity`，XiaoBa connector 会把它转成 SessionIdentitySnapshot 并注入 prompt/tool/log。CatsCompany WebApp 已有 beta agent roster/open-chat：平台返回当前用户可访问的 owner/friend bot，点击 agent 时平台确认权限并创建/返回 p2p topic；消息发送路径也会复用同一套访问检查，避免用户构造 p2p topic 绕过 agent 入口。微信本地扫码也已收敛到当前 agent：没有当前 CatsCo agent/body 时不能扫码，扫码确认后写入 agent 绑定元数据，并在启动 Weixin connector 时注入当前 agent/body/channel 上下文。</p>
+            <p>Dashboard 登录和 bot 绑定拆开；本地写入 device/body/install id；`.xiaoba/catsco.json` 成为 CatsCo 登录、bot 绑定和 bodyId 的 typed config；`resolveCatsCoRuntimeConfig()` 已成为 Dashboard status、readiness/preflight、ServiceManager 启动、settings、`catscompany` 命令的共同解析入口；ServiceManager 启动 connector 时会强制使用当前 runtime cwd 下的 `.xiaoba/catsco.json`，不会被 bundled runtime 或残留 env 带偏；bind/setup/switch 会先 preflight，再写本地配置，connector 启动失败会回滚。平台侧 bot WebSocket 必须带 bodyId，首次连接会写入 `bot_config.body_id`，之后不同 body 即使拿到同一个 API key 也会被拒绝；在线状态还有 active body lease，owner 可通过 `/api/bots/body-status` 查询 bound/active body。Dashboard 会显示 online/offline/conflict/auth_error/unknown，conflict 和 auth_error 会阻断聊天，旧平台或网络失败仍作为 non-blocking unknown。平台实时消息和历史补消息会补 `metadata.catsco_identity`，XiaoBa connector 会把它转成 SessionIdentitySnapshot 并注入 prompt/tool/log。CatsCompany WebApp 已有 beta agent roster/open-chat：平台返回当前用户可访问的 owner/friend bot，点击 agent 时平台确认权限并创建/返回 p2p topic；消息发送路径也会复用同一套访问检查，避免用户构造 p2p topic 绕过 agent 入口。微信本地扫码也已收敛到当前 agent：没有当前 CatsCo agent/body 时不能扫码，扫码确认后写入 agent 绑定元数据，并在启动 Weixin connector 时注入当前 agent/body/channel 上下文。CatsCo WebApp 也已补平台入口：owner 在 Virtual Employees 列表里选择自己的 agent 后扫码，平台写入 `agent_channel_bindings`，只返回状态和 token 尾号，不把明文 token 下发给浏览器。</p>
           </div>
           <div class="panel">
             <h3>下一步</h3>
-            <p>下一步不是旧 `.env` 迁移，也不是先做完整组织权限。WebApp agent roster/open-chat 和微信本地 agent 绑定都已先做成 beta 入口；当前已补基础协作测试和真实试跑清单，接下来更自然的是先按 <a href="./virtual-employee-real-e2e-todo.md">真实端到端验证 TODO</a> 在 staging/真实账号里跑一遍，再在“微信/飞书外部身份绑定回 CatsCo actor”和 TopicContext 正式化之间选择一个更小的 PR 继续推进。</p>
+            <p>下一步不是旧 `.env` 迁移，也不是先做完整组织权限。WebApp agent roster/open-chat、本地微信 agent 绑定、平台微信 agent channel binding 都已先做成 beta 入口；当前更自然的下一步是把“平台保存的微信 channel secret 如何被运行中的 agent body 使用”打通，或者先做 WeChat openid / Feishu user id → CatsCo actor 绑定。前者解决“WebApp 扫码后 connector 能启动”，后者解决“微信里说话的人是谁”。</p>
           </div>
         </div>
         <div class="callout">
@@ -2003,7 +2004,12 @@
             <tr>
               <td>微信本地 agent 绑定</td>
               <td>已完成 beta 切片：Dashboard 获取微信二维码前会确认当前 CatsCo agent/body；扫码确认后保存 `WEIXIN_TOKEN`，同时把绑定元数据写入 `.xiaoba/channel-bindings.json`；启动 Weixin connector 时会带上当前 agent/body/channel 上下文；接口返回不泄露原始 token 或 token hash。</td>
-              <td>暂不做完整微信平台化；下一步才是 WeChat openid 绑定回 CatsCo actor、微信消息进入统一 MessageEnvelope、以及 transport 所有权从本地逐步迁到平台。</td>
+              <td>这条路径能让当前本地 legacy connector 继续工作；不要求平台保存或同步 token。</td>
+            </tr>
+            <tr>
+              <td>微信平台 agent channel binding</td>
+              <td>已完成 beta 切片：CatsCompany 新增 `agent_channel_bindings`、`/api/agents/channels`、微信二维码和状态 API；CatsCo WebApp 的 owner agent 行有二维码入口；平台保存 server-only token 和摘要，浏览器只看状态/尾号。</td>
+              <td>还未让 agent body 自动拉取平台 token，也还未把 WeChat openid 映射回 CatsCo actor；所以 WebApp 扫码目前是平台记录入口，不等于 legacy Weixin connector 已自动启动。</td>
             </tr>
             <tr>
               <td>验证真实协作场景</td>

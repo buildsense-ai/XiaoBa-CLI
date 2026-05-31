@@ -194,6 +194,28 @@
 - Weixin connector 启动时拿到当前 agent/body/channel 上下文。
 - 如果扫码过程中切换了 agent，授权确认会失败并要求重新扫码。
 
+### 12. CatsCo WebApp 绑定 agent 的微信通道
+
+这一步验证的是“在平台 UI 里选择某个 agent 再扫码”，不是“本地 connector 已经自动同步平台 token”。
+
+步骤：
+
+1. 部署包含 `agent_channel_bindings` 和 `/api/agents/channels/*` 的 CatsCompany。
+2. 用 agent owner 的 CatsCo 账号登录 WebApp。
+3. 在 Virtual Employees 列表里找到自己 owned 的 agent。
+4. 点击 agent 行上的二维码按钮。
+5. 确认弹窗显示当前 agent 名称，并展示微信二维码。
+6. 用微信完成扫码授权。
+7. 刷新或重新打开弹窗查看绑定状态。
+
+预期：
+
+- 只有 owner agent 行展示微信绑定按钮；friend agent 不能配置该 agent 的微信通道。
+- 弹窗明确显示“当前 agent”。
+- 授权成功后，平台 `agent_channel_bindings` 有 `agent_uid=该 agent`、`channel=weixin`、token 摘要和绑定人。
+- API 返回不包含明文 `bot_token` 或 token hash；浏览器只显示状态和 token 尾号。
+- 当前阶段不要求本地 Weixin connector 自动使用平台 token，这一项留给 body secret sync。
+
 ## 通过标准
 
 | 检查项 | 通过标准 |
@@ -208,10 +230,12 @@
 | 刷新恢复 | 刷新后仍能找到 agent 或对应会话 |
 | 离线体验 | agent 离线时错误可理解，不误导用户 |
 | 微信 agent 绑定 | 微信扫码只能绑定到当前 agent；启动 Weixin connector 时不会丢失 agent/body 上下文 |
+| WebApp 微信通道绑定 | owner 能在 WebApp 给指定 agent 扫码登记微信通道；friend 不能配置；API 不泄露 token |
 
 ## 当前暂不验证
 
-- 微信/飞书 openid/user id 绑定回 CatsCo actor。当前只验证“微信 token 属于哪个 agent”。
+- 微信/飞书 openid/user id 绑定回 CatsCo actor。当前只验证“微信 token 或 channel binding 属于哪个 agent”。
+- agent body 从平台自动同步 Weixin channel secret 并启动 legacy connector。
 - 完整组织权限：owner/member/viewer、邀请、审计。
 - GauzMem 图记忆的跨用户检索策略。
 - 群聊 Reply Policy、agent-to-agent 防循环。
