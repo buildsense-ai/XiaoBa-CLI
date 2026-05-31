@@ -274,6 +274,56 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.bodyStatus.platformBodyId, 'body-other');
   });
 
+  test('GET /cats/status marks a different bound offline platform body as conflict', async () => {
+    await startCatsServer((req, res) => {
+      assert.equal(req.header('authorization'), 'Bearer valid-user-token');
+      if (req.path === '/api/me') {
+        return res.json({ uid: 77, username: 'demo', display_name: 'Demo User' });
+      }
+      if (req.path === '/api/bots/body-status') {
+        return res.json({
+          bot_uid: 110,
+          active: false,
+          bound: true,
+          body_id: 'body-other',
+        });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    writeCatsLocalConfig({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'valid-user-token',
+        uid: '77',
+      },
+      currentBot: {
+        uid: '110',
+        name: 'CatsCo (Test Mac)',
+        apiKey: 'agent-api-key',
+        boundByUserUid: '77',
+        bindingSource: 'explicit-bind',
+      },
+      device: {
+        deviceId: 'body-local',
+        bodyId: 'body-local',
+        installationId: 'body-local',
+      },
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/status`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.bodyStatus.state, 'conflict');
+    assert.equal(data.bodyStatus.active, false);
+    assert.equal(data.bodyStatus.localBodyId, 'body-local');
+    assert.equal(data.bodyStatus.platformBodyId, 'body-other');
+  });
+
   test('GET /cats/status marks body status auth failures as blocking binding errors', async () => {
     await startCatsServer((req, res) => {
       assert.equal(req.header('authorization'), 'Bearer valid-user-token');

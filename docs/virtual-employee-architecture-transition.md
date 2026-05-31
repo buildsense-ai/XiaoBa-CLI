@@ -1176,13 +1176,13 @@ Current tracking table:
 | Custom model key | `.env` as `GAUZ_LLM_*` | Local agent still needs manual model config while managed model is not wired. | Only needed when user selects custom model; keep outside CatsCo identity config. |
 | CatsCo managed model quota | Not wired in XiaoBa yet | Dashboard currently says managed model backend is not connected. | Local runtime should call CatsCo with user/body token; platform calls model and charges quota. No third-party model key should be downloaded to local body. |
 | Feishu App ID / Secret | `.env` or legacy `~/.xiaoba/config.json` | Feishu connector reads credentials independently. | Become a CatsCo agent channel binding; secret stored on platform or body-local secret store depending on where connector runs. |
-| Weixin Token | `.env` as `WEIXIN_TOKEN` | Weixin connector reads token independently. | Become a CatsCo agent channel binding; WeChat openid maps back to CatsCo actor. |
+| Weixin Token | Local path: `.env` as `WEIXIN_TOKEN` plus `.xiaoba/channel-bindings.json`; platform path: `agent_channel_bindings` server-side token and token tail. | Local Dashboard binding can start the legacy Weixin connector; WebApp binding records which owned agent the channel belongs to, but body sync is not wired yet. | Decide whether body pulls the platform channel secret or platform owns Weixin transport; then map WeChat openid back to CatsCo actor. |
 
 Three-stage route:
 
-1. Current stage: `catsco.json` only manages CatsCo login, bot binding, and body identity. `.env` continues to carry custom model keys, Feishu, Weixin, and other old connector settings.
+1. Current stage: `catsco.json` only manages CatsCo login, bot binding, and body identity. `.env` continues to carry custom model keys, Feishu, local Weixin, and other old connector settings. Platform can also record Weixin agent channel bindings, but does not yet sync them into an agent body.
 2. Next stage: model-source refactor. If the user chooses CatsCo managed model, local runtime uses CatsCo/body token and does not need a third-party API key. If the user chooses custom model, local runtime keeps local model base URL, model name, and key.
-3. Following stage: channel-binding refactor. Feishu and Weixin stop being just local tokens. They become channels on a CatsCo agent, and external identities such as WeChat openid or Feishu user id bind back to a CatsCo actor.
+3. Following stage: channel-binding refactor. Feishu and Weixin stop being just local tokens. They become channels on a CatsCo agent, body/transport ownership is explicit, and external identities such as WeChat openid or Feishu user id bind back to a CatsCo actor.
 
 Reviewer note: do not evaluate the current split as "migration incomplete" by default. It is currently safer to keep `catsco.json` scoped to identity/body binding and avoid turning it into a catch-all secret vault before the managed-model and channel-binding product flows exist.
 
@@ -1206,6 +1206,8 @@ Status on 2026-05-27: first body-visibility slice is complete, and Phase 6B has 
 
 Phase 6B/6C first slices: CatsCompany now exposes `GET /api/agents` as the user-facing virtual employee roster and `POST /api/agents/open` as the safe open-chat path. The roster returns agents the current human user can contact, currently defined as owned bots, accepted bot friends, and enabled public bots. CatsCo WebApp sidebar and Directory use this roster as "AI Teammates". When the user opens an agent, the platform verifies access, creates/accepts the P2P shell when needed, creates the topic, and saves a server-side `topic_contexts` record with actor/agent/topic/permission context. WebApp message sends can still carry `metadata.catsco_identity`, but platform send paths now replace it with a server-authored identity envelope, prefer the saved `TopicContext`, persist message `metadata`, return it in history, and reject P2P topics where the sender is not a participant or lacks access to a private bot. XiaoBa consumes `metadata.catsco_identity` into the existing `SessionIdentitySnapshot`, so prompt transient context, turn logs, tool context, and runtime state can see the platform actor/agent/topic/permission context. Users can now open a virtual employee without seeing API keys or body ids. This is not the final org membership model yet; it is the beta bridge before org-scoped agent roster, roles, and permissions.
 
+Phase 7B first platform slice: CatsCompany now has `agent_channel_bindings` and owner-only `/api/agents/channels` plus Weixin QR/status APIs. CatsCo WebApp shows a QR-code action on owned agents in the Virtual Employees list. Scanning from WebApp records "this Weixin channel belongs to this agent" in platform state and keeps the raw token server-side; browser responses only expose status and token tail. This does not yet start the legacy local Weixin connector, because body secret sync is still a separate step.
+
 Important beta caveat: this lease/status is platform-process local. It prevents duplicate bodies inside one CatsCompany server process, but it is not a persisted/distributed `AgentBody` registry yet. If CatsCompany runs multiple server instances, this must move to Redis/DB-backed lease storage.
 
 Tasks on platform:
@@ -1216,6 +1218,7 @@ Tasks on platform:
 - Done first Phase 6B slice: add `/api/agents` roster for owned bots, accepted bot friends, and enabled public bots; add `/api/agents/open` to verify access, prepare P2P topic/friendship, and return session identity context; show it in CatsCo WebApp as AI teammates; include `metadata.catsco_identity` when sending messages from an opened agent chat.
 - Done metadata slice: add message `metadata` persistence/return path in MySQL/Postgres, generate server-authored `catsco_identity` at send time, and keep strict P2P sender/topic participation checks before saving or broadcasting.
 - Done first TopicContext slice: add `topic_contexts` table/store, write actor/agent/topic/permission context from `/api/agents/open`, and use that record as the preferred source when generating message identity metadata.
+- Done first Weixin channel binding slice: add `agent_channel_bindings`, owner-only `/api/agents/channels`, and WebApp QR flow for owned agents; API responses do not expose the raw Weixin token.
 - Add org-scoped agent roster.
 - Add first-class agent member/invite/contact relationship beyond raw friend requests.
 - Add first-class permission snapshots beyond the current beta TopicContext envelope.
@@ -1233,7 +1236,10 @@ Goal: move WeChat/Feishu from independent connector identities to CatsCo actor c
 
 Tasks:
 
-- First add a `ChannelBindingResolver`旁路校验 while the legacy connectors still own channel cursors such as `get_updates_buf` and `context_token`.
+- Done local first slice: Dashboard Weixin QR binding requires the current CatsCo agent/body and writes `.xiaoba/channel-bindings.json` plus legacy `WEIXIN_TOKEN`.
+- Done platform first slice: WebApp owner can choose an owned agent and scan Weixin QR; CatsCompany records the agent channel binding and server-side token.
+- Next: decide whether agent body pulls platform channel secret, or platform owns the Weixin transport.
+- Next: add `ChannelBindingResolver` while the legacy connectors still own channel cursors such as `get_updates_buf` and `context_token`.
 - Platform creates WeChat/Feishu binding flow for the logged-in CatsCo user.
 - Inbound WeChat/Feishu messages resolve to CatsCo `actor_user_id`.
 - Agent receives same envelope schema as CatsCo Web messages.
