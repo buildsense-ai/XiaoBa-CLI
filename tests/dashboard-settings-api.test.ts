@@ -233,6 +233,30 @@ describe('dashboard typed settings API', () => {
     assert.equal(parsed.CATSCO_RELAY_LLM_MODEL, 'MiniMax-M2.7');
   });
 
+  test('POST /model-source/custom/apply does not echo unsafe custom API base details', async () => {
+    fs.writeFileSync(path.join(testRoot, '.env'), [
+      'CATSCO_CUSTOM_LLM_PROVIDER=openai',
+      'CATSCO_CUSTOM_LLM_API_BASE=https://user:pass@api.deepseek.com/v1?token=secret#frag',
+      'CATSCO_CUSTOM_LLM_API_KEY=sk-custom-secret',
+      'CATSCO_CUSTOM_LLM_MODEL=deepseek-chat',
+      '',
+    ].join('\n'));
+
+    const response = await fetch(`${baseUrl}/api/model-source/custom/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activateConnector: false }),
+    });
+    const text = await response.text();
+    const data = JSON.parse(text) as any;
+
+    assert.equal(response.status, 200, text);
+    assert.equal(data.apiBase, 'https://api.deepseek.com/v1');
+    assert.equal(text.includes('user:pass'), false);
+    assert.equal(text.includes('token=secret'), false);
+    assert.equal(text.includes('sk-custom-secret'), false);
+  });
+
   test('saving custom settings with keep does not copy the relay key into custom startup', async () => {
     fs.writeFileSync(path.join(testRoot, '.env'), [
       'CATSCO_MODEL_SOURCE=relay',
@@ -272,6 +296,47 @@ describe('dashboard typed settings API', () => {
     assert.equal(parsed.CATSCO_CUSTOM_LLM_API_KEY, 'sk-custom-secret');
     assert.equal(parsed.CATSCO_RELAY_LLM_API_KEY, 'sk-bf-relay-secret');
     assert.equal(parsed.CATSCO_CUSTOM_LLM_MODEL, 'deepseek-chat-v2');
+  });
+
+  test('saving incomplete custom settings keeps active relay startup intact', async () => {
+    fs.writeFileSync(path.join(testRoot, '.env'), [
+      'CATSCO_MODEL_SOURCE=relay',
+      'GAUZ_LLM_PROVIDER=anthropic',
+      'GAUZ_LLM_API_BASE=https://relay.catsco.cc/anthropic',
+      'GAUZ_LLM_API_KEY=sk-bf-relay-secret',
+      'GAUZ_LLM_MODEL=MiniMax-M2.7',
+      'CATSCO_RELAY_LLM_PROVIDER=anthropic',
+      'CATSCO_RELAY_LLM_API_BASE=https://relay.catsco.cc/anthropic',
+      'CATSCO_RELAY_LLM_API_KEY=sk-bf-relay-secret',
+      'CATSCO_RELAY_LLM_MODEL=MiniMax-M2.7',
+      '',
+    ].join('\n'));
+
+    const response = await fetch(`${baseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        settings: {
+          'model.provider': 'openai',
+          'model.apiBase': 'https://api.deepseek.com/v1',
+          'model.model': 'deepseek-chat',
+          'model.apiKey': { action: 'keep' },
+        },
+      }),
+    });
+    const text = await response.text();
+    const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+    assert.equal(response.status, 200, text);
+    assert.equal(parsed.CATSCO_MODEL_SOURCE, 'relay');
+    assert.equal(parsed.GAUZ_LLM_PROVIDER, 'anthropic');
+    assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
+    assert.equal(parsed.GAUZ_LLM_MODEL, 'MiniMax-M2.7');
+    assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-relay-secret');
+    assert.equal(parsed.CATSCO_CUSTOM_LLM_PROVIDER, 'openai');
+    assert.equal(parsed.CATSCO_CUSTOM_LLM_API_BASE, 'https://api.deepseek.com/v1');
+    assert.equal(parsed.CATSCO_CUSTOM_LLM_MODEL, 'deepseek-chat');
+    assert.equal(parsed.CATSCO_CUSTOM_LLM_API_KEY, undefined);
   });
 
   test('PUT /settings supports secret keep and clear without round-tripping value', async () => {
@@ -400,6 +465,24 @@ describe('dashboard typed settings API', () => {
     assert.equal(backupWriteResponse.status, 400);
     assert.match(backupWrite.error, /Unknown config key/);
     assert.equal(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8').includes('new-backup-secret'), false);
+
+    fs.writeFileSync(path.join(testRoot, '.env'), [
+      'CATSCO_MODEL_SOURCE=relay',
+      'GAUZ_LLM_PROVIDER=openai',
+      'GAUZ_LLM_API_BASE=https://api.deepseek.com/v1',
+      'GAUZ_LLM_API_KEY=sk-custom-secret',
+      'GAUZ_LLM_MODEL=deepseek-chat',
+      'CATSCO_RELAY_LLM_PROVIDER=anthropic',
+      'CATSCO_RELAY_LLM_API_BASE=https://relay.catsco.cc/anthropic',
+      'CATSCO_RELAY_LLM_API_KEY=sk-bf-relay-secret',
+      'CATSCO_RELAY_LLM_MODEL=MiniMax-M2.7',
+      '',
+    ].join('\n'));
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`);
+    const settingsText = await settingsResponse.text();
+    const settings = JSON.parse(settingsText) as any;
+    assert.equal(settingsResponse.status, 200, settingsText);
+    assert.equal(settings.modelStartup.source, 'custom');
   });
 
   test('POST /cats/relay/model-config/apply creates a relay key and writes Anthropic settings', async () => {
@@ -476,6 +559,11 @@ describe('dashboard typed settings API', () => {
       assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
       assert.equal(parsed.GAUZ_LLM_MODEL, 'MiniMax-M2.7');
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-secret-created-once');
+      assert.equal(parsed.CATSCO_MODEL_SOURCE, 'relay');
+      assert.equal(parsed.CATSCO_RELAY_LLM_PROVIDER, 'anthropic');
+      assert.equal(parsed.CATSCO_RELAY_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
+      assert.equal(parsed.CATSCO_RELAY_LLM_MODEL, 'MiniMax-M2.7');
+      assert.equal(parsed.CATSCO_RELAY_LLM_API_KEY, 'sk-bf-secret-created-once');
       assert.equal(process.env.GAUZ_LLM_PROVIDER, 'anthropic');
 
       const customResponse = await fetch(`${baseUrl}/api/settings`, {
@@ -1236,6 +1324,116 @@ describe('dashboard typed settings API', () => {
       assert.equal(parsed.GAUZ_LLM_MODEL, 'deepseek-v4-flash');
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-old-local-secret');
       assert.equal(text.includes('sk-bf-old-local-secret'), false);
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
+  test('POST /cats/relay/model-config/apply reuses stored relay key while custom startup is active', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    let createCalled = false;
+    let rotateCalled = false;
+
+    catsApp.get('/api/relay/config', (_req, res) => {
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'MiniMax-M2.7',
+        self_service_enabled: true,
+        endpoints: [{ protocol: 'Anthropic-compatible', base_url: 'https://relay.catsco.cc/anthropic' }],
+        models: [
+          {
+            id: 'minimax-m2.7',
+            label: 'MiniMax M2.7',
+            model: 'MiniMax-M2.7',
+            provider: 'anthropic',
+            protocol: 'Anthropic-compatible',
+            base_url: 'https://relay.catsco.cc/anthropic',
+            enabled: true,
+            default: true,
+          },
+          {
+            id: 'glm-5.1',
+            label: 'GLM 5.1',
+            model: 'glm-5.1',
+            provider: 'anthropic',
+            protocol: 'Anthropic-compatible',
+            base_url: 'https://relay.catsco.cc/anthropic',
+            enabled: true,
+          },
+        ],
+      });
+    });
+    catsApp.get('/api/relay/key', (_req, res) => {
+      res.json({
+        configured: true,
+        key: {
+          id: 'vk-existing',
+          name: 'existing',
+          prefix: 'sk-bf-old...cret',
+          state: 'active',
+        },
+      });
+    });
+    catsApp.post('/api/relay/key', (_req, res) => {
+      createCalled = true;
+      res.status(500).json({ error: 'create should not be called' });
+    });
+    catsApp.post('/api/relay/key/rotate', (_req, res) => {
+      rotateCalled = true;
+      res.status(500).json({ error: 'rotate should not be called' });
+    });
+    const catsServer = await listen(catsApp);
+    const address = catsServer.address();
+    if (!address || typeof address === 'string') throw new Error('cats server did not bind');
+
+    try {
+      fs.writeFileSync(path.join(testRoot, '.env'), [
+        'CATSCO_MODEL_SOURCE=custom',
+        'GAUZ_LLM_PROVIDER=openai',
+        'GAUZ_LLM_API_BASE=https://api.deepseek.com/v1',
+        'GAUZ_LLM_API_KEY=sk-custom-secret',
+        'GAUZ_LLM_MODEL=deepseek-chat',
+        'CATSCO_CUSTOM_LLM_PROVIDER=openai',
+        'CATSCO_CUSTOM_LLM_API_BASE=https://api.deepseek.com/v1',
+        'CATSCO_CUSTOM_LLM_API_KEY=sk-custom-secret',
+        'CATSCO_CUSTOM_LLM_MODEL=deepseek-chat',
+        'CATSCO_RELAY_LLM_PROVIDER=anthropic',
+        'CATSCO_RELAY_LLM_API_BASE=https://relay.catsco.cc/anthropic',
+        'CATSCO_RELAY_LLM_API_KEY=sk-bf-old-local-secret',
+        'CATSCO_RELAY_LLM_MODEL=MiniMax-M2.7',
+        '',
+      ].join('\n'));
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelId: 'glm-5.1' }),
+      });
+      const text = await response.text();
+      const data = JSON.parse(text) as any;
+      const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+      assert.equal(response.status, 200, text);
+      assert.equal(data.model, 'glm-5.1');
+      assert.equal(data.createdKey, false);
+      assert.equal(data.rotatedKey, false);
+      assert.equal(createCalled, false);
+      assert.equal(rotateCalled, false);
+      assert.equal(parsed.CATSCO_MODEL_SOURCE, 'relay');
+      assert.equal(parsed.GAUZ_LLM_PROVIDER, 'anthropic');
+      assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
+      assert.equal(parsed.GAUZ_LLM_MODEL, 'glm-5.1');
+      assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-old-local-secret');
+      assert.equal(parsed.CATSCO_RELAY_LLM_MODEL, 'glm-5.1');
+      assert.equal(parsed.CATSCO_RELAY_LLM_API_KEY, 'sk-bf-old-local-secret');
+      assert.equal(parsed.CATSCO_CUSTOM_LLM_MODEL, 'deepseek-chat');
+      assert.equal(parsed.CATSCO_CUSTOM_LLM_API_KEY, 'sk-custom-secret');
+      assert.equal(text.includes('sk-bf-old-local-secret'), false);
+      assert.equal(text.includes('sk-custom-secret'), false);
     } finally {
       await new Promise<void>(resolve => catsServer.close(() => resolve()));
     }

@@ -4689,10 +4689,11 @@
               <div class="loading">加载中...</div>
             </div>
 
+            <div class="chat-relay-model-panel" id="cats-relay-model-panel"></div>
+
             <div class="chat-connected-card" id="cats-connected-card">
               <strong>已连接 CatsCo</strong>
               <div class="chat-muted" id="cats-connected-copy">可以直接开始对话。</div>
-              <div class="chat-relay-model-panel" id="cats-relay-model-panel"></div>
               <div class="chat-connected-actions">
                 <button class="btn btn-success" onclick="setupCatsBot()" id="cats-setup-btn">检查并启动</button>
                 <button class="btn" onclick="resetCatsAuth()">切换账号</button>
@@ -5035,6 +5036,8 @@
     let catsMessagesOwnerKey = '';
     let catsConnectCollapsed = true;
     let catsConnectManualOverride = false;
+    let pendingStartupSource = '';
+    let pendingRelayModelId = '';
     const CATS_MESSAGES_PAGE_SIZE = 50;
     const CATS_SCROLL_BOTTOM_THRESHOLD = 80;
     const CATS_SCROLL_TOP_THRESHOLD = 96;
@@ -6532,10 +6535,13 @@
 
     function isCustomStartupConfigured(){
       const custom=customStartupProfile();
-      return Boolean(custom.configured || (settingValue('model.apiBase') && settingValue('model.model') && settingField('model.apiKey').present));
+      const provider=custom.provider || settingValue('model.provider');
+      return Boolean(custom.configured || (provider && settingValue('model.apiBase') && settingValue('model.model') && settingField('model.apiKey').present));
     }
 
     function activeStartupSource(){
+      if(pendingStartupSource==='relay')return 'relay';
+      if(pendingStartupSource==='custom' && isCustomStartupConfigured())return 'custom';
       const startup=modelStartupSnapshot();
       if(startup.source==='relay' && (relayStartupProfile().configured || relayModelConfigSnapshot?.configured))return 'relay';
       if(startup.source==='custom' && isCustomStartupConfigured())return 'custom';
@@ -6545,6 +6551,7 @@
     }
 
     function selectedRelayModelId(){
+      if(pendingStartupSource==='relay' && pendingRelayModelId)return pendingRelayModelId;
       const configuredModel=relayModelConfigSnapshot?.configured ? relayModelConfigSnapshot?.selectedModel : null;
       if(configuredModel?.id)return configuredModel.id;
       const relayModel=relayStartupProfile().model;
@@ -6558,7 +6565,7 @@
       const id=String(model.id||model.model||'');
       const active=id===activeId;
       const quota=model.quota_class==='flash-low'?'低额度 Flash':'标准额度';
-      const disabled=!catsConnected || relayActionBusy();
+      const disabled=relayActionBusy() || (context!=='chat' && !catsConnected);
       return '<button class="relay-model-choice'+(active?' active':'')+'" type="button" data-relay-model-id="'+escapeHtml(id)+'" data-relay-model-context="'+escapeHtml(context)+'" '+(disabled?'disabled':'')+' onclick="enableCatsRelayModelFromButton(this)">'
         +'<span class="relay-model-label">'+escapeHtml(model.label||model.model||id)+'</span>'
         +'<span class="relay-model-name">'+escapeHtml(model.model||id)+'</span>'
@@ -6584,10 +6591,7 @@
     function renderCatsRelayModelPanel(){
       const panel=document.getElementById('cats-relay-model-panel');
       if(!panel)return;
-      if(!isCatsLoggedIn()){
-        panel.innerHTML='';
-        return;
-      }
+      const catsConnected=isCatsLoggedIn();
       const models=relayModelCatalog();
       const source=activeStartupSource();
       const relayActiveId=source==='relay'?selectedRelayModelId():'';
@@ -6601,7 +6605,7 @@
         ? '切换后自动重启。'
         : configured
           ? '切换后会尝试直接启动。'
-          : '先选模型，再检查启动。';
+          : catsConnected?'先选模型，再检查启动。':'先选模型，登录后自动接入。';
       if(!models.length){
         panel.innerHTML='<div class="chat-relay-model-head"><div><div class="chat-relay-model-title">启动模型</div><div class="chat-muted">'+escapeHtml(activationCopy)+'</div></div>'
           +(source==='custom'?'<span class="tag green">自定义</span>':'<span class="tag warm">可选择</span>')
@@ -6613,7 +6617,7 @@
         +(source==='custom'?'<span class="tag green">自定义</span>':activeModel?'<span class="tag green">'+escapeHtml(activeModel.model||activeModel.label||'已选择')+'</span>':'<span class="tag warm">可选择</span>')
         +'</div><div class="relay-model-list">'
         +customModelChoiceHtml(source==='custom','chat')
-        +models.map(model=>relayModelChoiceHtml(model, relayActiveId, true, 'chat')).join('')
+        +models.map(model=>relayModelChoiceHtml(model, relayActiveId, catsConnected, 'chat')).join('')
         +'</div>';
     }
 
@@ -6787,7 +6791,14 @@
     }
 
     function shouldSetupRelayOnCatsSetup(){
+      if(pendingStartupSource==='relay')return true;
+      if(pendingStartupSource==='custom' && hasCustomStartupModel())return false;
       return isRelayStartupActive() || !hasCustomStartupModel();
+    }
+
+    function relayModelIdForSetup(){
+      if(pendingStartupSource==='relay' && pendingRelayModelId)return pendingRelayModelId;
+      return selectedRelayModelId();
     }
 
     function setModelSourceStatus(message, tone){
@@ -6856,6 +6867,13 @@
 
     function enableCatsRelayModelFromButton(button, options={}){
       const context=button?.dataset?.relayModelContext || 'settings';
+      if(!isCatsLoggedIn() && context==='chat'){
+        pendingStartupSource='relay';
+        pendingRelayModelId=button?.dataset?.relayModelId || selectedRelayModelId();
+        renderCatsStatus();
+        setCatsAction('已选择 CatsCo 中转模型，登录后会自动接入。');
+        return;
+      }
       return enableCatsRelayModel(button?.dataset?.relayModelId || selectedRelayModelId(), {
         activateConnector:true,
         source:context,
@@ -6865,6 +6883,13 @@
 
     function enableCustomStartupModelFromButton(button, options={}){
       const context=button?.dataset?.customStartupContext || 'chat';
+      if(!isCatsLoggedIn() && isCustomStartupConfigured()){
+        pendingStartupSource='custom';
+        pendingRelayModelId='';
+        renderCatsStatus();
+        setCatsAction('已选择自定义模型，登录后会按当前自定义配置启动。');
+        return;
+      }
       return enableCustomStartupModel({
         activateConnector:true,
         source:context,
@@ -6947,6 +6972,17 @@
           return;
         }
         if(!r.ok||data.error)throw new Error(data.error||'启用中转失败');
+        if(data.selectedModel || Array.isArray(data.models)){
+          relayModelConfigSnapshot={
+            ...(relayModelConfigSnapshot||{}),
+            ...data,
+            configured:true,
+            selectedModel:data.selectedModel || relayModelConfigSnapshot?.selectedModel,
+            models:Array.isArray(data.models)?data.models:relayModelConfigSnapshot?.models,
+          };
+        }
+        pendingStartupSource='';
+        pendingRelayModelId='';
         await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchRuntimeConfig(),fetchReadiness(),fetchCatsStatus()]);
         const successMessage=data.message||('已启用 CatsCo 中转模型：'+(data.selectedModel?.label||label));
         setRelayModelApplyStatus(successMessage,'success',source);
@@ -6965,6 +7001,13 @@
         openCustomModelFromChat();
         return;
       }
+      if(!isCatsLoggedIn()){
+        pendingStartupSource='custom';
+        pendingRelayModelId='';
+        renderCatsStatus();
+        setCatsAction('已选择自定义模型，登录后会按当前自定义配置启动。');
+        return;
+      }
       if(relayActionBusy()){
         setRelayModelApplyStatus(catsSetupInFlight?'正在配置 CatsCo 连接，请稍候...':'模型切换正在进行，请稍候...','muted',source);
         return;
@@ -6981,6 +7024,8 @@
         });
         const data=await r.json().catch(()=>({}));
         if(!r.ok||data.error)throw new Error(data.error||'切换自定义模型失败');
+        pendingStartupSource='';
+        pendingRelayModelId='';
         await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchRuntimeConfig(),fetchReadiness(),fetchCatsStatus()]);
         const message=data.message||('已切换为自定义模型：'+(data.model||''));
         setRelayModelApplyStatus(message,'success',source);
@@ -7051,7 +7096,7 @@
         customModelAutoSaveLastSignature=signature;
         const appliedMessage=!auto&&d.connectorRestarted
           ? '已保存，并已请求重启 CatsCo agent 使用新配置。'
-          : (auto?'已自动保存并切换为自定义启动。':'已保存并切换为自定义启动。')+'新 session 或下一次启动 connector 后生效。';
+          : (auto?'已自动保存自定义配置。':'已保存自定义配置。')+'配置完整时会切换为自定义启动。';
         setModelSourceStatus(appliedMessage,'success');
         const secretInput=document.getElementById('model-secret-setting');
         const clearInput=document.getElementById('model-secret-clear-setting');
@@ -7065,7 +7110,7 @@
         if(!auto){
           setModelSourceStatus('已保存，正在刷新启动状态...','muted');
           await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchRuntimeConfig(),fetchReadiness(),fetchCatsStatus()]);
-          setModelSourceStatus(d.connectorRestarted?'已保存，并已请求重启 CatsCo agent 使用自定义模型。':'已保存并切换为自定义启动。新 session 或下一次启动 connector 后生效。','success');
+          setModelSourceStatus(d.connectorRestarted?'已保存，并已请求重启 CatsCo agent 使用自定义模型。':'已保存自定义配置。配置完整时会切换为自定义启动。','success');
         }
       }catch(e){
         setModelSourceStatus('保存失败：'+formatDashboardApiError(e,'/api/settings'),'error');
@@ -7949,9 +7994,11 @@
         const data=await parseCatsResponse(await fetch(API+'/api/cats/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
           ...getCatsEndpointFields(),
           setupRelayModel,
-          relayModelId:setupRelayModel ? (selectedRelayModelId()||undefined) : undefined,
+          relayModelId:setupRelayModel ? (relayModelIdForSetup()||undefined) : undefined,
           rotateRelayKey:Boolean(options.rotateRelayKey),
         })}));
+        pendingStartupSource='';
+        pendingRelayModelId='';
         catsState={...catsState,...data, connected:true, configured:true, botUid:data.bot?.uid||data.botUid, topicId:data.topicId, user:data.user, service:data.service};
         await fetchStatus();
         await fetchCatsStatus({priority:true});

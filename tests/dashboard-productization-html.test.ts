@@ -102,6 +102,9 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /id="cats-state-card"/);
   assert.match(dashboardHtml, /id="cats-checklist"/);
   assert.match(dashboardHtml, /id="cats-relay-model-panel"/);
+  assert.match(dashboardHtml, /let pendingStartupSource = ''/);
+  assert.match(dashboardHtml, /function relayModelIdForSetup\(\)/);
+  assert.match(dashboardHtml, /登录后会自动接入/);
   assert.match(dashboardHtml, /function buildCatsChatStage\(\)/);
   assert.match(dashboardHtml, /function renderCatsChecklist\(stage\)/);
   assert.match(dashboardHtml, /function renderCatsRelayModelPanel\(\)/);
@@ -153,7 +156,7 @@ test('CatsCo Chat setup refreshes readiness before unlocking the composer', () =
   const setupBlock = dashboardHtml.match(/async function setupCatsBot\(options=\{\}\)\{[\s\S]*?async function resetCatsAuth/)?.[0] || '';
   assert.match(setupBlock, /const setupRelayModel=shouldSetupRelayOnCatsSetup\(\)/);
   assert.match(setupBlock, /setupRelayModel,/);
-  assert.match(setupBlock, /relayModelId:setupRelayModel \? \(selectedRelayModelId\(\)\|\|undefined\) : undefined/);
+  assert.match(setupBlock, /relayModelId:setupRelayModel \? \(relayModelIdForSetup\(\)\|\|undefined\) : undefined/);
   assert.match(setupBlock, /rotateRelayKey:Boolean\(options\.rotateRelayKey\)/);
   assert.match(setupBlock, /setCatsSetupBusy\(true\)/);
   assert.match(setupBlock, /setCatsStatusMutationBusy\(true\)/);

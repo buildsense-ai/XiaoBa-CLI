@@ -600,6 +600,12 @@ function modelProfileFromStoredEnv(
   };
 }
 
+function storedModelSource(): 'relay' | 'custom' {
+  const fileEnv = readEnvFile();
+  const source = firstNonEmpty(process.env[MODEL_SOURCE_ENV_KEY], fileEnv[MODEL_SOURCE_ENV_KEY]);
+  return source === 'relay' ? 'relay' : 'custom';
+}
+
 function isCompleteModelProfile(profile: ModelLaunchProfile): boolean {
   return Boolean(profile.provider && profile.apiBase && profile.model && profile.apiKey);
 }
@@ -633,7 +639,22 @@ function requestedSecretAction(input: any): 'keep' | 'replace' | 'clear' {
   return 'keep';
 }
 
-function mirrorCurrentModelAsCustomStartup(input: any, previous: ModelLaunchProfile): void {
+function sanitizePublicUrl(value: unknown): string | undefined {
+  const text = String(value || '').trim();
+  if (!text) return undefined;
+  try {
+    const parsed = new URL(text);
+    parsed.username = '';
+    parsed.password = '';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function mirrorCurrentModelAsCustomStartup(input: any, previous: ModelLaunchProfile, previousSource: 'relay' | 'custom'): void {
   const current = modelProfileFromCurrentConfig();
   const secretAction = requestedSecretAction(input);
   const storedCustom = modelProfileFromStoredEnv(CUSTOM_MODEL_ENV_KEYS);
@@ -646,10 +667,20 @@ function mirrorCurrentModelAsCustomStartup(input: any, previous: ModelLaunchProf
     ...current,
     apiKey,
   };
+
+  if (!isCompleteModelProfile(custom) && (previousSource === 'relay' || isCatsRelayApiBase(previous.apiBase))) {
+    writeDashboardEnvAndProcess({
+      ...modelProfileUpdates(CUSTOM_MODEL_ENV_KEYS, custom),
+      ...modelProfileUpdates(EFFECTIVE_MODEL_ENV_KEYS, previous),
+      [MODEL_SOURCE_ENV_KEY]: 'relay',
+    });
+    return;
+  }
+
   writeDashboardEnvAndProcess({
     ...modelProfileUpdates(CUSTOM_MODEL_ENV_KEYS, custom),
     ...modelProfileUpdates(EFFECTIVE_MODEL_ENV_KEYS, custom),
-    [MODEL_SOURCE_ENV_KEY]: 'custom',
+    [MODEL_SOURCE_ENV_KEY]: isCompleteModelProfile(custom) || previousSource === 'custom' ? 'custom' : previousSource,
   });
 }
 
@@ -1234,11 +1265,12 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
   router.put('/settings', (req, res) => {
     try {
       const previousModel = modelProfileFromCurrentConfig();
+      const previousSource = storedModelSource();
       const result = updateDashboardSettings(req.body, { runtimeRoot: process.cwd() });
       const changedModelSettings = result.updated.some(key => key.startsWith('GAUZ_LLM_'))
         || result.cleared.some(key => key.startsWith('GAUZ_LLM_'));
       if (changedModelSettings) {
-        mirrorCurrentModelAsCustomStartup(req.body, previousModel);
+        mirrorCurrentModelAsCustomStartup(req.body, previousModel, previousSource);
       }
       const restartInfo = req.body?.restartConnector === true && changedModelSettings
         ? activateCatsCompanyConnector(serviceManager)
@@ -1263,7 +1295,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         ok: true,
         source: 'custom',
         provider: result.profile.provider,
-        apiBase: result.profile.apiBase,
+        apiBase: sanitizePublicUrl(result.profile.apiBase),
         model: result.profile.model,
         updated: result.updated,
         cleared: result.cleared,

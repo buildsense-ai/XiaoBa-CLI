@@ -316,6 +316,11 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(env.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
     assert.equal(env.GAUZ_LLM_MODEL, 'glm-5.1');
     assert.equal(env.GAUZ_LLM_API_KEY, 'sk-bf-fresh-secret');
+    assert.equal(env.CATSCO_MODEL_SOURCE, 'relay');
+    assert.equal(env.CATSCO_RELAY_LLM_PROVIDER, 'anthropic');
+    assert.equal(env.CATSCO_RELAY_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
+    assert.equal(env.CATSCO_RELAY_LLM_MODEL, 'glm-5.1');
+    assert.equal(env.CATSCO_RELAY_LLM_API_KEY, 'sk-bf-fresh-secret');
     assert.equal(env.CATSCO_BOT_UID, '188');
     assert.equal(env.CATSCO_API_KEY, 'cats-agent-key');
     assert.equal(startCalled, 1);
