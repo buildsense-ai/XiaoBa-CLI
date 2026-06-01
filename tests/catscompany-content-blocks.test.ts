@@ -193,6 +193,48 @@ describe('CatsCo content blocks', () => {
     assert.deepStrictEqual(handledTurns[0].options.runtimeFeedback, []);
   });
 
+  test('processes CatsCompany websocket content_blocks as one user turn', async () => {
+    const { bot, downloads, multimodalCalls, handledTurns } = createProcessHarness();
+
+    await (bot as any).onMessage({
+      topic: 'p2p_1_2',
+      senderId: 'usr1',
+      text: '[附件] a.png, b.pdf',
+      content: '[附件] a.png, b.pdf',
+      content_blocks: [
+        { type: 'text', text: '非 Dashboard 入口一起看这些附件' },
+        { type: 'image', payload: { url: '/uploads/images/a.png', name: 'a.png', size: 12 } },
+        { type: 'file', payload: { url: '/uploads/files/b.pdf', name: 'b.pdf', size: 34 } },
+      ],
+      isGroup: false,
+      seq: 10,
+    });
+
+    assert.deepStrictEqual(downloads, [
+      { url: '/uploads/images/a.png', fileName: 'a.png' },
+      { url: '/uploads/files/b.pdf', fileName: 'b.pdf' },
+    ]);
+    assert.strictEqual(multimodalCalls.length, 1);
+    assert.strictEqual(multimodalCalls[0].text, '非 Dashboard 入口一起看这些附件');
+    assert.deepStrictEqual(
+      multimodalCalls[0].attachments.map((attachment) => ({
+        fileName: attachment.fileName,
+        localPath: attachment.localPath,
+        type: attachment.type,
+      })),
+      [
+        { fileName: 'a.png', localPath: 'C:\\tmp\\catsco-test\\a.png', type: 'image' },
+        { fileName: 'b.pdf', localPath: 'C:\\tmp\\catsco-test\\b.pdf', type: 'file' },
+      ],
+    );
+    assert.strictEqual(handledTurns.length, 1);
+    assert.deepStrictEqual(handledTurns[0].userMessage, [
+      { type: 'text', text: '非 Dashboard 入口一起看这些附件' },
+      { type: 'text', text: '[image] a.png -> C:\\tmp\\catsco-test\\a.png' },
+      { type: 'text', text: '[file] b.pdf -> C:\\tmp\\catsco-test\\b.pdf' },
+    ]);
+  });
+
   test('plain text messages are processed immediately without attachment coalesce wait', async () => {
     const { bot, handledTurns } = createProcessHarness();
 
