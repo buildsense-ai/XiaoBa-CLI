@@ -20,6 +20,15 @@ describe('dashboard readiness and service preflight API', () => {
     'GAUZ_LLM_API_BASE',
     'GAUZ_LLM_API_KEY',
     'GAUZ_LLM_MODEL',
+    'CATSCO_MODEL_SOURCE',
+    'CATSCO_CUSTOM_LLM_PROVIDER',
+    'CATSCO_CUSTOM_LLM_API_BASE',
+    'CATSCO_CUSTOM_LLM_API_KEY',
+    'CATSCO_CUSTOM_LLM_MODEL',
+    'CATSCO_RELAY_LLM_PROVIDER',
+    'CATSCO_RELAY_LLM_API_BASE',
+    'CATSCO_RELAY_LLM_API_KEY',
+    'CATSCO_RELAY_LLM_MODEL',
     'CATSCO_SERVER_URL',
     'CATSCO_HTTP_BASE_URL',
     'CATSCO_API_KEY',
@@ -168,6 +177,43 @@ describe('dashboard readiness and service preflight API', () => {
     assert.equal(readinessText.includes('sk-readiness-secret'), false);
     assert.equal(readinessText.includes('catsco-agent-secret'), false);
     assert.equal(readinessText.includes(testRoot), false);
+  });
+
+  test('relay startup readiness does not require custom model fields', async () => {
+    writeEnv([
+      'GAUZ_LLM_PROVIDER=anthropic',
+      'GAUZ_LLM_API_BASE=https://relay.catsco.cc/anthropic',
+      'GAUZ_LLM_API_KEY=sk-bf-relay-secret',
+      'GAUZ_LLM_MODEL=MiniMax-M2.7',
+      'CATSCO_MODEL_SOURCE=relay',
+      'CATSCO_RELAY_LLM_PROVIDER=anthropic',
+      'CATSCO_RELAY_LLM_API_BASE=https://relay.catsco.cc/anthropic',
+      'CATSCO_RELAY_LLM_API_KEY=sk-bf-relay-secret',
+      'CATSCO_RELAY_LLM_MODEL=MiniMax-M2.7',
+      'CATSCO_HTTP_BASE_URL=https://app.catsco.cc',
+      'CATSCO_SERVER_URL=wss://app.catsco.cc/v0/channels',
+      'CATSCO_API_KEY=catsco-agent-secret',
+      'CATSCO_USER_TOKEN=user-token',
+      'CATSCO_USER_UID=100',
+      'CATSCO_BOT_UID=200',
+    ]);
+
+    const preflightResponse = await fetch(`${baseUrl}/api/services/catscompany/preflight`, { method: 'POST' });
+    const preflightText = await preflightResponse.text();
+    const preflight = JSON.parse(preflightText) as any;
+    assert.equal(preflightResponse.status, 200);
+    assert.equal(preflight.blockingChecks.includes('model.custom.credential'), false);
+    assert.deepStrictEqual(preflight.blockingChecks, []);
+
+    const readinessResponse = await fetch(`${baseUrl}/api/readiness`);
+    const readinessText = await readinessResponse.text();
+    const readiness = JSON.parse(readinessText) as any;
+    const model = readiness.sections.find((section: any) => section.id === 'model');
+    assert.equal(model.status, 'ready');
+    assert.equal(model.checks.some((check: any) => check.id === 'model.managed.relay' && check.status === 'pass'), true);
+    assert.equal(model.checks.some((check: any) => check.id.startsWith('model.custom.') && check.status === 'fail'), false);
+    assert.equal(preflightText.includes('sk-bf-relay-secret'), false);
+    assert.equal(readinessText.includes('sk-bf-relay-secret'), false);
   });
 
   test('Feishu and Weixin preflight block when connector credentials are missing', async () => {

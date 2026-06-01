@@ -33,7 +33,7 @@ test('dashboard settings page uses model source before Runtime Profile', () => {
   assert.match(dashboardHtml, /http:\/\/127\.0\.0\.1:3800/);
   assert.match(dashboardHtml, /无法连接本地 CatsCo Dashboard API/);
   assert.match(dashboardHtml, /访问凭证只保存 presence，不会回显/);
-  assert.match(dashboardHtml, /保存自定义模型设置？访问凭证会写入本地 \.env，仅用于本机 runtime。/);
+  assert.match(dashboardHtml, /保存并启用自定义模型？访问凭证会写入本地 \.env，仅用于本机 runtime。/);
   assert.match(dashboardHtml, /Runtime Profile 状态/);
   assert.match(dashboardHtml, /受控编辑/);
   assert.match(dashboardHtml, /config-group-title-main/);
@@ -151,8 +151,9 @@ test('custom model save refreshes readiness before Chat remains locked', () => {
 
 test('CatsCo Chat setup refreshes readiness before unlocking the composer', () => {
   const setupBlock = dashboardHtml.match(/async function setupCatsBot\(options=\{\}\)\{[\s\S]*?async function resetCatsAuth/)?.[0] || '';
-  assert.match(setupBlock, /setupRelayModel:true/);
-  assert.match(setupBlock, /relayModelId:selectedRelayModelId\(\)\|\|undefined/);
+  assert.match(setupBlock, /const setupRelayModel=shouldSetupRelayOnCatsSetup\(\)/);
+  assert.match(setupBlock, /setupRelayModel,/);
+  assert.match(setupBlock, /relayModelId:setupRelayModel \? \(selectedRelayModelId\(\)\|\|undefined\) : undefined/);
   assert.match(setupBlock, /rotateRelayKey:Boolean\(options\.rotateRelayKey\)/);
   assert.match(setupBlock, /setCatsSetupBusy\(true\)/);
   assert.match(setupBlock, /setCatsStatusMutationBusy\(true\)/);

@@ -85,6 +85,33 @@ interface RelayModelConfig {
   quotaClass?: string;
 }
 
+const MODEL_SOURCE_ENV_KEY = 'CATSCO_MODEL_SOURCE';
+const CUSTOM_MODEL_ENV_KEYS = {
+  provider: 'CATSCO_CUSTOM_LLM_PROVIDER',
+  apiBase: 'CATSCO_CUSTOM_LLM_API_BASE',
+  model: 'CATSCO_CUSTOM_LLM_MODEL',
+  apiKey: 'CATSCO_CUSTOM_LLM_API_KEY',
+} as const;
+const RELAY_MODEL_ENV_KEYS = {
+  provider: 'CATSCO_RELAY_LLM_PROVIDER',
+  apiBase: 'CATSCO_RELAY_LLM_API_BASE',
+  model: 'CATSCO_RELAY_LLM_MODEL',
+  apiKey: 'CATSCO_RELAY_LLM_API_KEY',
+} as const;
+const EFFECTIVE_MODEL_ENV_KEYS = {
+  provider: 'GAUZ_LLM_PROVIDER',
+  apiBase: 'GAUZ_LLM_API_BASE',
+  model: 'GAUZ_LLM_MODEL',
+  apiKey: 'GAUZ_LLM_API_KEY',
+} as const;
+
+interface ModelLaunchProfile {
+  provider?: 'anthropic' | 'openai';
+  apiBase?: string;
+  model?: string;
+  apiKey?: string;
+}
+
 function normalizeBaseUrl(value: unknown, fallback: string): string {
   const text = String(value || '').trim().replace(/\/+$/, '');
   return text || fallback;
@@ -538,6 +565,128 @@ function isCatsRelayApiBase(value: unknown): boolean {
   }
 }
 
+function writeDashboardEnvAndProcess(updates: Record<string, string | undefined>): { updated: string[]; cleared: string[] } {
+  const result = writeDashboardEnvUpdates(process.cwd(), updates);
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  return result;
+}
+
+function modelProfileFromCurrentConfig(): ModelLaunchProfile {
+  const config = getModelConfigReadonly();
+  return {
+    provider: config.provider,
+    apiBase: config.apiUrl,
+    model: config.model,
+    apiKey: config.apiKey,
+  };
+}
+
+function modelProfileFromStoredEnv(
+  keys: typeof CUSTOM_MODEL_ENV_KEYS | typeof RELAY_MODEL_ENV_KEYS | typeof EFFECTIVE_MODEL_ENV_KEYS,
+): ModelLaunchProfile {
+  const fileEnv = readEnvFile();
+  const provider = firstNonEmpty(process.env[keys.provider], fileEnv[keys.provider]);
+  return {
+    provider: provider === 'anthropic' || provider === 'openai' ? provider : undefined,
+    apiBase: firstNonEmpty(process.env[keys.apiBase], fileEnv[keys.apiBase]),
+    model: firstNonEmpty(process.env[keys.model], fileEnv[keys.model]),
+    apiKey: firstNonEmpty(process.env[keys.apiKey], fileEnv[keys.apiKey]),
+  };
+}
+
+function isCompleteModelProfile(profile: ModelLaunchProfile): boolean {
+  return Boolean(profile.provider && profile.apiBase && profile.model && profile.apiKey);
+}
+
+function modelProfileUpdates(
+  keys: typeof CUSTOM_MODEL_ENV_KEYS | typeof RELAY_MODEL_ENV_KEYS | typeof EFFECTIVE_MODEL_ENV_KEYS,
+  profile: ModelLaunchProfile,
+): Record<string, string | undefined> {
+  return {
+    [keys.provider]: profile.provider,
+    [keys.apiBase]: profile.apiBase,
+    [keys.model]: profile.model,
+    [keys.apiKey]: profile.apiKey,
+  };
+}
+
+function preserveCurrentCustomModelBeforeRelay(): string[] {
+  const current = modelProfileFromCurrentConfig();
+  if (isCatsRelayApiBase(current.apiBase)) return [];
+  if (!current.provider && !current.apiBase && !current.model && !current.apiKey) return [];
+
+  return writeDashboardEnvAndProcess(modelProfileUpdates(CUSTOM_MODEL_ENV_KEYS, current)).updated;
+}
+
+function requestedSecretAction(input: any): 'keep' | 'replace' | 'clear' {
+  const raw = input?.settings?.['model.apiKey'];
+  if (raw && typeof raw === 'object') {
+    const action = String(raw.action || '').trim();
+    if (action === 'replace' || action === 'clear' || action === 'keep') return action;
+  }
+  return 'keep';
+}
+
+function mirrorCurrentModelAsCustomStartup(input: any, previous: ModelLaunchProfile): void {
+  const current = modelProfileFromCurrentConfig();
+  const secretAction = requestedSecretAction(input);
+  const storedCustom = modelProfileFromStoredEnv(CUSTOM_MODEL_ENV_KEYS);
+  const apiKey = secretAction === 'clear'
+    ? undefined
+    : secretAction === 'keep'
+      ? storedCustom.apiKey || (isCatsRelayApiBase(previous.apiBase) ? undefined : previous.apiKey)
+      : current.apiKey;
+  const custom: ModelLaunchProfile = {
+    ...current,
+    apiKey,
+  };
+  writeDashboardEnvAndProcess({
+    ...modelProfileUpdates(CUSTOM_MODEL_ENV_KEYS, custom),
+    ...modelProfileUpdates(EFFECTIVE_MODEL_ENV_KEYS, custom),
+    [MODEL_SOURCE_ENV_KEY]: 'custom',
+  });
+}
+
+function writeCustomModelStartupConfig(): { profile: ModelLaunchProfile; updated: string[]; cleared: string[] } {
+  const profile = modelProfileFromStoredEnv(CUSTOM_MODEL_ENV_KEYS);
+  if (!isCompleteModelProfile(profile)) {
+    const error: any = new Error('请先在设置里保存完整的自定义模型地址、模型名称和访问凭证。');
+    error.status = 400;
+    error.reason = 'CUSTOM_MODEL_NOT_CONFIGURED';
+    throw error;
+  }
+  const result = writeDashboardEnvAndProcess({
+    ...modelProfileUpdates(EFFECTIVE_MODEL_ENV_KEYS, profile),
+    [MODEL_SOURCE_ENV_KEY]: 'custom',
+  });
+  return { profile, ...result };
+}
+
+function writeRelayModelStartupConfig(model: RelayModelConfig, apiKey: string): { updated: string[]; cleared: string[] } {
+  const preserved = preserveCurrentCustomModelBeforeRelay();
+  const profile: ModelLaunchProfile = {
+    provider: model.provider,
+    apiBase: model.baseUrl,
+    model: model.model,
+    apiKey,
+  };
+  const result = writeDashboardEnvAndProcess({
+    ...modelProfileUpdates(RELAY_MODEL_ENV_KEYS, profile),
+    ...modelProfileUpdates(EFFECTIVE_MODEL_ENV_KEYS, profile),
+    [MODEL_SOURCE_ENV_KEY]: 'relay',
+  });
+  return {
+    updated: [...preserved, ...result.updated],
+    cleared: result.cleared,
+  };
+}
+
 function sanitizeRelayKeyInfo(key: any): any {
   if (!key || typeof key !== 'object') return key || null;
   const safe: Record<string, unknown> = {};
@@ -630,11 +779,15 @@ function findReusableLocalRelayKey(currentKey: any): string | undefined {
   const fileEnv = readEnvFile();
   const currentConfig = ConfigManager.getConfigReadonly();
   const apiKey = firstNonEmpty(
+    process.env.CATSCO_RELAY_LLM_API_KEY,
+    fileEnv.CATSCO_RELAY_LLM_API_KEY,
     process.env.GAUZ_LLM_API_KEY,
     fileEnv.GAUZ_LLM_API_KEY,
     currentConfig.apiKey,
   );
   const apiBase = firstNonEmpty(
+    process.env.CATSCO_RELAY_LLM_API_BASE,
+    fileEnv.CATSCO_RELAY_LLM_API_BASE,
     process.env.GAUZ_LLM_API_BASE,
     fileEnv.GAUZ_LLM_API_BASE,
     currentConfig.apiUrl,
@@ -695,14 +848,7 @@ async function setupCatsRelayModelForDesktop(
   const ensured = await ensureCatsRelayPlainKey(state, {
     rotateExisting: options.rotateExisting,
   });
-  const settingsResult = updateDashboardSettings({
-    settings: {
-      'model.provider': selectedModel.provider,
-      'model.apiBase': selectedModel.baseUrl,
-      'model.model': selectedModel.model,
-      'model.apiKey': { action: 'replace', value: ensured.plainKey },
-    },
-  }, { runtimeRoot: process.cwd() });
+  const settingsResult = writeRelayModelStartupConfig(selectedModel, ensured.plainKey);
 
   return {
     ok: true,
@@ -1087,9 +1233,13 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
 
   router.put('/settings', (req, res) => {
     try {
+      const previousModel = modelProfileFromCurrentConfig();
       const result = updateDashboardSettings(req.body, { runtimeRoot: process.cwd() });
       const changedModelSettings = result.updated.some(key => key.startsWith('GAUZ_LLM_'))
         || result.cleared.some(key => key.startsWith('GAUZ_LLM_'));
+      if (changedModelSettings) {
+        mirrorCurrentModelAsCustomStartup(req.body, previousModel);
+      }
       const restartInfo = req.body?.restartConnector === true && changedModelSettings
         ? activateCatsCompanyConnector(serviceManager)
         : { wasRunning: false, restartRequested: false, startRequested: false, startBlocked: false };
@@ -1100,6 +1250,44 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
+    }
+  });
+
+  router.post('/model-source/custom/apply', (req, res) => {
+    try {
+      const result = writeCustomModelStartupConfig();
+      const activation = activateCatsCompanyConnector(serviceManager, {
+        startIfStopped: req.body?.activateConnector === true || req.body?.startConnector === true,
+      });
+      res.json({
+        ok: true,
+        source: 'custom',
+        provider: result.profile.provider,
+        apiBase: result.profile.apiBase,
+        model: result.profile.model,
+        updated: result.updated,
+        cleared: result.cleared,
+        restartRequired: activation.wasRunning && !activation.restartRequested,
+        connectorRestarted: activation.restartRequested,
+        connectorStarted: activation.startRequested,
+        connectorStartBlocked: activation.startBlocked,
+        restartError: activation.restartError ? sanitizeCatsErrorMessage(activation.restartError) : undefined,
+        startError: activation.startError ? sanitizeCatsErrorMessage(activation.startError) : undefined,
+        message: activation.restartRequested
+          ? '已切换为自定义模型，并已请求重启 CatsCo agent。'
+          : activation.startRequested
+          ? '已切换为自定义模型，并已启动 CatsCompany connector。'
+          : activation.wasRunning
+          ? '已切换为自定义模型；但 CatsCo agent 自动重启失败，请手动重启后使用新配置。'
+          : activation.startBlocked
+          ? '已切换为自定义模型；完成 CatsCo 连接后点击“检查并启动”即可使用新配置。'
+          : '已切换为自定义模型；下次启动 connector 会使用新配置。',
+      });
+    } catch (e: any) {
+      res.status(e.status || 400).json({
+        error: sanitizeCatsErrorMessage(e.message),
+        reason: e.reason,
+      });
     }
   });
 
@@ -1748,14 +1936,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const apiBase = selectedModel.baseUrl;
       const provider = selectedModel.provider;
       const model = selectedModel.model;
-      const settingsResult = updateDashboardSettings({
-        settings: {
-          'model.provider': provider,
-          'model.apiBase': apiBase,
-          'model.model': model,
-          'model.apiKey': { action: 'replace', value: ensured.plainKey },
-        },
-      }, { runtimeRoot: process.cwd() });
+      const settingsResult = writeRelayModelStartupConfig(selectedModel, ensured.plainKey);
       const restartInfo = activateCatsCompanyConnector(serviceManager, {
         startIfStopped: req.body?.activateConnector === true || req.body?.startConnector === true,
       });
