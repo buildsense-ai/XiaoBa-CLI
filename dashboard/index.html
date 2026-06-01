@@ -7677,18 +7677,6 @@
       const topicReady=connected && configured && Boolean(catsState.topicId);
       const modelSection=getReadinessSection('model');
       const catscoSection=getReadinessSection('catsco');
-      if(!appReadinessLoaded || !modelSection || !catscoSection){
-        return {
-          key:'needs-readiness',
-          status:'blocked',
-          badge:'checking',
-          title:'正在读取启动状态',
-          copy:appReadinessError||'正在检查模型和连接状态。',
-          action:'settings',
-          actionLabel:'打开设置',
-          inputPlaceholder:'等待启动状态检查',
-        };
-      }
       if(!connected){
         return {
           key:'needs-auth',
@@ -7699,6 +7687,18 @@
           action:'auth',
           actionLabel:'登录或注册',
           inputPlaceholder:'先登录 CatsCo',
+        };
+      }
+      if(!appReadinessLoaded || !modelSection || !catscoSection){
+        return {
+          key:'needs-readiness',
+          status:'blocked',
+          badge:'checking',
+          title:'正在读取启动状态',
+          copy:appReadinessError||'正在检查模型和连接状态。',
+          action:'settings',
+          actionLabel:'打开设置',
+          inputPlaceholder:'等待启动状态检查',
         };
       }
       const modelBlocked=modelSection?.status==='blocked';
@@ -7805,6 +7805,11 @@
       const service=catsState.service||{};
       const user=catsState.user||{};
       const connected=isCatsLoggedIn();
+      if(!connected){
+        list.classList.remove('compact');
+        list.innerHTML='';
+        return;
+      }
       const configured=Boolean(catsState.configured);
       const running=service.status==='running';
       const topicReady=connected && configured && Boolean(catsState.topicId);
@@ -7822,10 +7827,8 @@
         {label:'CatsCompany connector', status:running?'pass':(configured?'warning':'fail'), meta:running?'运行中':'未启动'},
         {label:'Chat 会话', status:topicReady?'pass':'fail', meta:topicReady?'已就绪':'等待 topic'},
       ];
-      const visibleSteps=connected
-        ? steps.filter(step=>step.status==='fail')
-        : steps;
-      list.classList.toggle('compact', connected);
+      const visibleSteps=steps.filter(step=>step.status==='fail');
+      list.classList.add('compact');
       if(!visibleSteps.length){
         list.innerHTML='';
         return;
@@ -8035,6 +8038,8 @@
         setupBtn.textContent=!configured?'绑定并启动':running?'重新检查':'检查并启动';
         setupBtn.disabled=relayActionBusy();
       }
+      const diagnostics=document.getElementById('cats-connection-details');
+      if(diagnostics)diagnostics.style.display=connected?'block':'none';
       renderCatsRelayModelPanel();
       renderCatsChecklist(stage);
       updateCatsChatGate(stage);
