@@ -6961,7 +6961,7 @@
             activateConnector:options.activateConnector!==false,
           })
         });
-        const data=await r.json();
+        const data=await r.json().catch(()=>({}));
         if(r.status===409&&data.action==='rotate_required'){
           const ok=confirm('你的 CatsCo 中转 Key 已存在，但明文不会再次返回。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');
           if(ok){
@@ -6972,7 +6972,7 @@
           setRelayModelApplyStatus('已取消。你也可以在 CatsCompany 中转站页面复制现有配置后手动填写。','muted',source);
           return;
         }
-        if(!r.ok||data.error)throw new Error(data.error||'启用中转失败');
+        if(!r.ok||data.error)throw new Error(data.error||data.message||('HTTP '+r.status));
         if(data.selectedModel || Array.isArray(data.models)){
           relayModelConfigSnapshot={
             ...(relayModelConfigSnapshot||{}),
