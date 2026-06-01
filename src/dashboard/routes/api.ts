@@ -91,6 +91,16 @@ interface CatsBotBodyStatus {
   error?: string;
 }
 
+interface CatsAgentAccessTarget {
+  userUid?: string;
+  username?: string;
+  label: string;
+  platformBody: { target_user_id: number } | { target_username: string };
+}
+
+type CatsAgentPermissionLevel = 'view' | 'use' | 'manage';
+type CatsAgentAccessStatus = 'pending_accept' | 'active' | 'blocked' | 'revoked';
+
 const CATSCO_RUNTIME_ENV_KEYS = [
   'CATSCO_HTTP_BASE_URL',
   'CATSCO_SERVER_URL',
@@ -425,6 +435,81 @@ async function ensureCatsFriendBinding(
     }
   }
   return warnings;
+}
+
+function parseCatsAgentAccessTarget(value: unknown): CatsAgentAccessTarget {
+  const text = String(value || '').trim();
+  if (!text) {
+    throw httpError('请输入同事的 CatsCo 用户编号或用户名', 400);
+  }
+  if (/^\d+$/.test(text)) {
+    return {
+      userUid: text,
+      label: text,
+      platformBody: { target_user_id: Number(text) },
+    };
+  }
+
+  const username = text.replace(/^@/, '').trim();
+  if (!/^[a-zA-Z0-9_.-]+$/.test(username)) {
+    throw httpError('用户名只能包含字母、数字、下划线、横线或点号', 400);
+  }
+  return {
+    username,
+    label: `@${username}`,
+    platformBody: { target_username: username },
+  };
+}
+
+function requireCurrentCatsAgentUid(state: CatsAuthState): string {
+  const botUid = String(state.botUid || '').trim();
+  if (!botUid) {
+    throw httpError('请先选择并绑定当前 Agent', 400);
+  }
+  return botUid;
+}
+
+function normalizeCatsAgentPermission(value: unknown): CatsAgentPermissionLevel {
+  const text = String(value || 'use').trim().toLowerCase();
+  if (text === 'view' || text === 'use' || text === 'manage') return text;
+  throw httpError('权限只能是 view、use 或 manage', 400);
+}
+
+function normalizeCatsAgentAccessStatus(value: unknown): CatsAgentAccessStatus {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text || text === 'pending' || text === 'invited') return 'pending_accept';
+  if (text === 'pending_accept' || text === 'active' || text === 'blocked' || text === 'revoked') return text;
+  throw httpError('状态只能是 pending_accept、active、blocked 或 revoked', 400);
+}
+
+function catsAgentAccessPath(botUid: string, suffix = ''): string {
+  return `/api/agents/${encodeURIComponent(botUid)}/access${suffix}`;
+}
+
+function normalizeCatsAgentAccessError(error: any, action: string, target?: CatsAgentAccessTarget): Error {
+  const status = Number(error?.status || 0);
+  if (status === 404 || status === 405) {
+    const wrapped = httpError(
+      `当前 CatsCo 平台还没有组织级虚拟员工访问管理接口，无法${action}。请先在平台侧部署 agent roster/access 接口。`,
+      501,
+    );
+    (wrapped as any).data = {
+      platformStatus: status,
+      requiredEndpoints: [
+        'GET /api/agents/:agent_uid/access',
+        'POST /api/agents/:agent_uid/access/invite',
+        'PATCH /api/agents/:agent_uid/access/:access_id',
+        'DELETE /api/agents/:agent_uid/access/:access_id',
+        'POST /api/agents/access/accept',
+      ],
+    };
+    return wrapped;
+  }
+
+  if (target?.username) {
+    error.message = `${error.message}。如果用户名无法解析，请改用用户编号。`;
+  }
+  return error;
 }
 
 function chmodOwnerOnly(filePath: string): void {
@@ -1668,6 +1753,194 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       });
     } catch (e: any) {
       res.status(e.status || 500).json({ error: e.message });
+    }
+  });
+
+  /**
+   * 读取当前 Agent 的组织级访问名单。
+   * 这条路不再借用好友关系，而是代理平台的 agent roster/access 接口。
+   * GET /api/cats/agent-access/overview
+   */
+  router.get('/cats/agent-access/overview', async (_req, res) => {
+    try {
+      const state = getCatsAuthState();
+      if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
+      const botUid = requireCurrentCatsAgentUid(state);
+
+      const data = await catsRequest(
+        'GET',
+        state.httpBaseUrl,
+        catsAgentAccessPath(botUid),
+        undefined,
+        state.token,
+        { timeoutMs: 5000 },
+      );
+
+      res.json({
+        ok: true,
+        mode: 'org_agent_access',
+        botUid,
+        access: Array.isArray(data?.access) ? data.access : [],
+        members: Array.isArray(data?.members) ? data.members : undefined,
+        invitations: Array.isArray(data?.invitations) ? data.invitations : undefined,
+        data,
+      });
+    } catch (e: any) {
+      const error = normalizeCatsAgentAccessError(e, '读取访问名单');
+      res.status((error as any).status || 500).json({ error: error.message, data: (error as any).data });
+    }
+  });
+
+  /**
+   * 管理员邀请组织成员使用当前 Agent。
+   * POST /api/cats/agent-access/invite
+   */
+  router.post('/cats/agent-access/invite', async (req, res) => {
+    let target: CatsAgentAccessTarget | undefined;
+    try {
+      const state = getCatsAuthState(req.body || {});
+      if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
+
+      target = parseCatsAgentAccessTarget(
+        req.body?.userRef || req.body?.userUid || req.body?.username || req.body?.user_id || req.body?.uid,
+      );
+      const botUid = requireCurrentCatsAgentUid(state);
+      const permission = normalizeCatsAgentPermission(req.body?.permissionLevel || req.body?.permission);
+
+      const data = await catsRequest('POST', state.httpBaseUrl, catsAgentAccessPath(botUid, '/invite'), {
+        ...target.platformBody,
+        permission,
+      }, state.token, { timeoutMs: 5000 });
+
+      res.json({
+        ok: true,
+        action: 'invite',
+        status: data?.status || 'pending_acceptance',
+        permission,
+        botUid,
+        userUid: target.userUid,
+        username: target.username,
+        targetUser: target.label,
+        data,
+        message: `已提交 ${target.label} 的虚拟员工访问邀请，状态以 CatsCo 平台访问名单为准。`,
+      });
+    } catch (e: any) {
+      const error = normalizeCatsAgentAccessError(e, '邀请成员', target);
+      res.status((error as any).status || 500).json({ error: error.message, data: (error as any).data });
+    }
+  });
+
+  /**
+   * 修改某个成员对当前 Agent 的访问状态或权限。
+   * PATCH /api/cats/agent-access/:accessId
+   */
+  router.patch('/cats/agent-access/:accessId', async (req, res) => {
+    try {
+      const state = getCatsAuthState(req.body || {});
+      if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
+      const botUid = requireCurrentCatsAgentUid(state);
+      const accessId = String(req.params.accessId || '').trim();
+      if (!accessId) return res.status(400).json({ error: 'accessId is required' });
+
+      const body: Record<string, unknown> = {};
+      if (req.body?.permissionLevel || req.body?.permission) {
+        body.permission = normalizeCatsAgentPermission(req.body?.permissionLevel || req.body?.permission);
+      }
+      if (req.body?.status || req.body?.state) {
+        body.status = normalizeCatsAgentAccessStatus(req.body?.status || req.body?.state);
+      }
+      if (Object.keys(body).length === 0) return res.status(400).json({ error: 'permission or status is required' });
+
+      const data = await catsRequest(
+        'PATCH',
+        state.httpBaseUrl,
+        catsAgentAccessPath(botUid, `/${encodeURIComponent(accessId)}`),
+        body,
+        state.token,
+        { timeoutMs: 5000 },
+      );
+
+      res.json({
+        ok: true,
+        action: 'update_access',
+        botUid,
+        accessId,
+        data,
+        message: '已更新虚拟员工访问权限。',
+      });
+    } catch (e: any) {
+      const error = normalizeCatsAgentAccessError(e, '更新访问权限');
+      res.status((error as any).status || 500).json({ error: error.message, data: (error as any).data });
+    }
+  });
+
+  /**
+   * 撤销某个成员对当前 Agent 的访问。
+   * DELETE /api/cats/agent-access/:accessId
+   */
+  router.delete('/cats/agent-access/:accessId', async (req, res) => {
+    try {
+      const state = getCatsAuthState(req.body || {});
+      if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
+      const botUid = requireCurrentCatsAgentUid(state);
+      const accessId = String(req.params.accessId || '').trim();
+      if (!accessId) return res.status(400).json({ error: 'accessId is required' });
+
+      const data = await catsRequest(
+        'DELETE',
+        state.httpBaseUrl,
+        catsAgentAccessPath(botUid, `/${encodeURIComponent(accessId)}`),
+        undefined,
+        state.token,
+        { timeoutMs: 5000 },
+      );
+
+      res.json({
+        ok: true,
+        action: 'revoke_access',
+        botUid,
+        accessId,
+        data,
+        message: '已撤销该成员的虚拟员工访问权限。',
+      });
+    } catch (e: any) {
+      const error = normalizeCatsAgentAccessError(e, '撤销访问权限');
+      res.status((error as any).status || 500).json({ error: error.message, data: (error as any).data });
+    }
+  });
+
+  /**
+   * 当前登录用户接受某个 Agent 的组织访问邀请。
+   * POST /api/cats/agent-access/accept-invite
+   */
+  router.post('/cats/agent-access/accept-invite', async (req, res) => {
+    let target: CatsAgentAccessTarget | undefined;
+    try {
+      const state = getCatsAuthState(req.body || {});
+      if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
+
+      target = parseCatsAgentAccessTarget(
+        req.body?.agentRef || req.body?.botUid || req.body?.username || req.body?.user_id || req.body?.uid,
+      );
+
+      const data = await catsRequest('POST', state.httpBaseUrl, '/api/agents/access/accept', {
+        agent_uid: target.userUid ? Number(target.userUid) : undefined,
+        agent_username: target.username,
+      }, state.token, { timeoutMs: 5000 });
+
+      res.json({
+        ok: true,
+        action: 'accept_invite',
+        status: data?.status || 'accepted',
+        agentUid: target.userUid,
+        agentUsername: target.username,
+        targetAgent: target.label,
+        data,
+        message: `已接受 Agent ${target.label} 的组织访问邀请；请刷新虚拟员工列表。`,
+      });
+    } catch (e: any) {
+      const error = normalizeCatsAgentAccessError(e, '接受邀请', target);
+      res.status((error as any).status || 500).json({ error: error.message, data: (error as any).data });
     }
   });
 

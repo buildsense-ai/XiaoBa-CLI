@@ -1747,6 +1747,44 @@
       margin-top: auto;
     }
 
+    .channel-access-form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .channel-access-input {
+      flex: 1 1 160px;
+      min-width: 0;
+      height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0 11px;
+      background: rgba(255, 255, 255, 0.82);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 650;
+      outline: none;
+    }
+
+    .channel-access-input:focus {
+      border-color: rgba(59, 130, 246, 0.45);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.10);
+    }
+
+    .channel-access-status {
+      min-height: 18px;
+      margin-top: 8px;
+      color: var(--text2);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .channel-access-status.error {
+      color: var(--red);
+    }
+
     .status-card .label {
       font-size: 12px;
       font-weight: 600;
@@ -6057,10 +6095,12 @@
 
     function channelCardHtml(card){
       const copy=card.copy?'<div class="channel-copy">'+escapeHtml(card.copy)+'</div>':'';
+      const extra=card.extraHtml||'';
       return '<div class="service-card channel-card '+escapeHtml(card.tone||'')+'">'+
         '<div class="channel-head"><div><div class="channel-title">'+escapeHtml(card.title)+'</div><div class="channel-subtitle">'+escapeHtml(card.subtitle||'')+'</div></div>'+channelStatus(card.statusLabel, card.statusTone)+'</div>'+
         copy+
         channelMeta(card.meta)+
+        extra+
         '<div class="channel-actions">'+(card.actions||[]).map(channelActionButton).join('')+'</div>'+
       '</div>';
     }
@@ -6132,7 +6172,23 @@
         ],
       };
 
-      return [webCard, weixinCard, feishuCard].map(channelCardHtml).join('');
+      const teammateCard={
+        title:'同事访问',
+        subtitle:agentBound?'测试邀请':'接受邀请',
+        statusLabel:agentBound?'可邀请':(connected?'可接受邀请':'待登录 CatsCo'),
+        statusTone:agentBound||connected?'pending':'disabled',
+        tone:'',
+        copy:agentBound?'邀请同事使用当前 Agent，并查看平台访问名单。':'收到邀请后，可在这里输入 Agent 编号接受。',
+        meta:[agentBound?(botName+' · uid '+catsState.botUid):'未选择 Agent', '组织级访问关系'],
+        extraHtml:connected
+          ? (agentBound
+            ? '<div class="channel-access-form"><input class="channel-access-input" id="agent-access-user-ref" autocomplete="off" placeholder="同事用户编号或用户名" /><select class="channel-access-input" id="agent-access-permission" aria-label="访问权限"><option value="use">可使用</option><option value="view">仅可见</option><option value="manage">可管理</option></select><button class="btn btn-primary" onclick="inviteAgentTeammate(this)">邀请</button><button class="btn" onclick="loadAgentAccessOverview(this)">查看名单</button></div><div class="channel-access-form"><input class="channel-access-input" id="agent-invite-agent-ref" autocomplete="off" placeholder="Agent 用户编号或用户名" /><button class="btn" onclick="acceptAgentInvite(this)">接受 Agent 邀请</button></div><div class="channel-access-status" id="agent-access-status" aria-live="polite"></div>'
+            : '<div class="channel-access-form"><input class="channel-access-input" id="agent-invite-agent-ref" autocomplete="off" placeholder="Agent 用户编号或用户名" /><button class="btn btn-primary" onclick="acceptAgentInvite(this)">接受邀请</button></div><div class="channel-access-status" id="agent-access-status" aria-live="polite"></div>')
+          : '',
+        actions:connected?[]:[{label:'登录 CatsCo', onclick:"switchPage('chat')", primary:true}],
+      };
+
+      return [webCard, teammateCard, weixinCard, feishuCard].map(channelCardHtml).join('');
     }
 
     function renderLegacyServiceControls(svcs){
@@ -9392,6 +9448,135 @@
       }finally{
         btn.disabled=buildCatsChatStage().key!=='ready';
         if(attach)attach.disabled=buildCatsChatStage().key!=='ready' || !catsDesktopFilePickerAvailable();
+      }
+    }
+
+    // === 当前 Agent 同事访问 ===
+    function setAgentAccessStatus(text, isError){
+      const el=document.getElementById('agent-access-status');
+      if(el){
+        el.textContent=text||'';
+        el.className='channel-access-status'+(isError?' error':'');
+      }
+      setCatsAction(text, isError);
+    }
+
+    function readAgentAccessUserRef(){
+      const input=document.getElementById('agent-access-user-ref');
+      const userRef=input?input.value:'';
+      const text=String(userRef||'').trim();
+      if(!text){
+        setAgentAccessStatus('请输入同事的 CatsCo 用户编号或用户名', true);
+        if(input)input.focus();
+        return '';
+      }
+      const normalized=text.replace(/^@/,'').trim();
+      if(!/^\d+$/.test(normalized) && !/^[a-zA-Z0-9_.-]+$/.test(normalized)){
+        setAgentAccessStatus('用户名只能包含字母、数字、下划线、横线或点号', true);
+        if(input)input.focus();
+        return '';
+      }
+      return normalized;
+    }
+
+    function readAgentAccessPermission(){
+      const select=document.getElementById('agent-access-permission');
+      const value=String(select?select.value:'use').trim();
+      return value||'use';
+    }
+
+    async function inviteAgentTeammate(btn){
+      const userRef=readAgentAccessUserRef();
+      if(!userRef)return;
+      const permission=readAgentAccessPermission();
+      if(btn)btn.disabled=true;
+      try{
+        setAgentAccessStatus('正在发送访问邀请...');
+        const data=await parseCatsResponse(await fetch(API+'/api/cats/agent-access/invite',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({userRef, permission})
+        }));
+        setAgentAccessStatus(data.message||'已发送访问邀请。请让同事刷新虚拟员工列表。');
+      }catch(e){
+        setAgentAccessStatus('邀请失败：'+e.message,true);
+      }finally{
+        if(btn)btn.disabled=false;
+      }
+    }
+
+    async function loadAgentAccessOverview(btn){
+      if(btn)btn.disabled=true;
+      try{
+        setAgentAccessStatus('正在读取访问名单...');
+        const data=await parseCatsResponse(await fetch(API+'/api/cats/agent-access/overview'));
+        const access=Array.isArray(data.access)?data.access:[];
+        if(!access.length){
+          setAgentAccessStatus('当前还没有邀请记录。');
+          return;
+        }
+        const text=access.slice(0,4).map(item=>{
+          const name=item.display_name||item.username||item.user_uid||'成员';
+          const status=item.status||item.access_status||'pending_accept';
+          const permission=item.permission||'use';
+          return name+'：'+formatAgentAccessStatus(status)+' / '+formatAgentPermission(permission);
+        }).join('；');
+        const more=access.length>4?'；另有 '+(access.length-4)+' 条':'';
+        setAgentAccessStatus('访问名单：'+text+more);
+      }catch(e){
+        setAgentAccessStatus('读取访问名单失败：'+e.message,true);
+      }finally{
+        if(btn)btn.disabled=false;
+      }
+    }
+
+    function formatAgentAccessStatus(status){
+      if(status==='active')return '可使用';
+      if(status==='blocked')return '不可使用';
+      if(status==='revoked')return '已撤销';
+      return '待接受';
+    }
+
+    function formatAgentPermission(permission){
+      if(permission==='manage')return '可管理';
+      if(permission==='view')return '仅可见';
+      return '可使用';
+    }
+
+    function readAgentInviteAgentRef(){
+      const input=document.getElementById('agent-invite-agent-ref');
+      const agentRef=input?input.value:'';
+      const text=String(agentRef||'').trim();
+      if(!text){
+        setAgentAccessStatus('请输入 Agent 的用户编号或用户名', true);
+        if(input)input.focus();
+        return '';
+      }
+      const normalized=text.replace(/^@/,'').trim();
+      if(!/^\d+$/.test(normalized) && !/^[a-zA-Z0-9_.-]+$/.test(normalized)){
+        setAgentAccessStatus('用户名只能包含字母、数字、下划线、横线或点号', true);
+        if(input)input.focus();
+        return '';
+      }
+      return normalized;
+    }
+
+    async function acceptAgentInvite(btn){
+      const agentRef=readAgentInviteAgentRef();
+      if(!agentRef)return;
+      if(btn)btn.disabled=true;
+      try{
+        setAgentAccessStatus('正在接受 Agent 邀请...');
+        const data=await parseCatsResponse(await fetch(API+'/api/cats/agent-access/accept-invite',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({agentRef})
+        }));
+        setAgentAccessStatus(data.message||'已接受 Agent 邀请。请刷新虚拟员工列表。');
+      }catch(e){
+        setAgentAccessStatus('接受邀请失败：'+e.message,true);
+      }finally{
+        if(btn)btn.disabled=false;
       }
     }
 

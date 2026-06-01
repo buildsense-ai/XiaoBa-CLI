@@ -872,6 +872,267 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.data.host, '127.0.0.1:9');
   });
 
+  test('GET /cats/agent-access/overview proxies the platform Agent access list', async () => {
+    const seenRequests: string[] = [];
+    await startCatsServer((req, res) => {
+      seenRequests.push(`${req.method} ${req.path}`);
+      if (req.path === '/api/agents/110/access') {
+        assert.equal(req.header('authorization'), 'Bearer valid-user-token');
+        return res.json({ access: [{ id: 1, user_uid: 88, status: 'active', permission: 'use' }] });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    writeCatsLocalConfig({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'valid-user-token',
+        uid: '77',
+      },
+      currentBot: {
+        uid: '110',
+        name: 'Dev Agent',
+        apiKey: 'agent-api-key',
+        boundByUserUid: '77',
+        bindingSource: 'explicit-bind',
+      },
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/agent-access/overview`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.mode, 'org_agent_access');
+    assert.equal(data.botUid, '110');
+    assert.deepStrictEqual(data.access, [{ id: 1, user_uid: 88, status: 'active', permission: 'use' }]);
+    assert.deepStrictEqual(seenRequests, ['GET /api/agents/110/access']);
+  });
+
+  test('POST /cats/agent-access/invite sends a platform Agent invitation from the current user', async () => {
+    const seenRequests: string[] = [];
+    await startCatsServer((req, res) => {
+      seenRequests.push(`${req.method} ${req.path}`);
+      if (req.path === '/api/agents/110/access/invite') {
+        assert.equal(req.header('authorization'), 'Bearer valid-user-token');
+        assert.deepStrictEqual(req.body, {
+          target_user_id: 88,
+          permission: 'manage',
+        });
+        return res.json({ access: { id: 3, status: 'pending_accept', permission: 'manage' } });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    writeCatsLocalConfig({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'valid-user-token',
+        uid: '77',
+      },
+      currentBot: {
+        uid: '110',
+        name: 'Dev Agent',
+        apiKey: 'agent-api-key',
+        boundByUserUid: '77',
+        bindingSource: 'explicit-bind',
+      },
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/agent-access/invite`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userUid: '88', permission: 'manage' }),
+    });
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.action, 'invite');
+    assert.equal(data.status, 'pending_acceptance');
+    assert.equal(data.permission, 'manage');
+    assert.equal(data.botUid, '110');
+    assert.equal(data.userUid, '88');
+    assert.deepStrictEqual(seenRequests, ['POST /api/agents/110/access/invite']);
+  });
+
+  test('POST /cats/agent-access/invite accepts a teammate username', async () => {
+    const seenRequests: string[] = [];
+    await startCatsServer((req, res) => {
+      seenRequests.push(`${req.method} ${req.path}`);
+      if (req.path === '/api/agents/110/access/invite') {
+        assert.equal(req.header('authorization'), 'Bearer valid-user-token');
+        assert.deepStrictEqual(req.body, {
+          target_username: 'teammate',
+          permission: 'use',
+        });
+        return res.json({ access: { id: 4, status: 'pending_accept', permission: 'use' } });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    writeCatsLocalConfig({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'valid-user-token',
+        uid: '77',
+      },
+      currentBot: {
+        uid: '110',
+        name: 'Dev Agent',
+        apiKey: 'agent-api-key',
+        boundByUserUid: '77',
+        bindingSource: 'explicit-bind',
+      },
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/agent-access/invite`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userRef: '@teammate' }),
+    });
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.username, 'teammate');
+    assert.equal(data.targetUser, '@teammate');
+    assert.deepStrictEqual(seenRequests, ['POST /api/agents/110/access/invite']);
+  });
+
+  test('PATCH /cats/agent-access/:accessId updates platform Agent access state', async () => {
+    const seenRequests: string[] = [];
+    await startCatsServer((req, res) => {
+      seenRequests.push(`${req.method} ${req.path}`);
+      if (req.path === '/api/agents/110/access/55') {
+        assert.equal(req.method, 'PATCH');
+        assert.equal(req.header('authorization'), 'Bearer valid-user-token');
+        assert.deepStrictEqual(req.body, { permission: 'view', status: 'active' });
+        return res.json({ access: { id: 55, status: 'active', permission: 'view' } });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    writeCatsLocalConfig({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'valid-user-token',
+        uid: '77',
+      },
+      currentBot: {
+        uid: '110',
+        name: 'Dev Agent',
+        apiKey: 'agent-api-key',
+        boundByUserUid: '77',
+        bindingSource: 'explicit-bind',
+      },
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/agent-access/55`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ permission: 'view', status: 'active' }),
+    });
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.action, 'update_access');
+    assert.equal(data.botUid, '110');
+    assert.equal(data.accessId, '55');
+    assert.deepStrictEqual(seenRequests, ['PATCH /api/agents/110/access/55']);
+  });
+
+  test('DELETE /cats/agent-access/:accessId revokes platform Agent access', async () => {
+    const seenRequests: string[] = [];
+    await startCatsServer((req, res) => {
+      seenRequests.push(`${req.method} ${req.path}`);
+      if (req.path === '/api/agents/110/access/55') {
+        assert.equal(req.method, 'DELETE');
+        assert.equal(req.header('authorization'), 'Bearer valid-user-token');
+        return res.json({ status: 'revoked' });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    writeCatsLocalConfig({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'valid-user-token',
+        uid: '77',
+      },
+      currentBot: {
+        uid: '110',
+        name: 'Dev Agent',
+        apiKey: 'agent-api-key',
+        boundByUserUid: '77',
+        bindingSource: 'explicit-bind',
+      },
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/agent-access/55`, { method: 'DELETE' });
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.action, 'revoke_access');
+    assert.equal(data.accessId, '55');
+    assert.deepStrictEqual(seenRequests, ['DELETE /api/agents/110/access/55']);
+  });
+
+  test('POST /cats/agent-access/accept-invite accepts an Agent invite as the current user', async () => {
+    const seenRequests: string[] = [];
+    await startCatsServer((req, res) => {
+      seenRequests.push(`${req.method} ${req.path}`);
+      if (req.path === '/api/agents/access/accept') {
+        assert.equal(req.header('authorization'), 'Bearer valid-user-token');
+        assert.deepStrictEqual(req.body, { agent_uid: 110 });
+        return res.json({ access: { agent_uid: 110, status: 'active' } });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    writeCatsLocalConfig({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'valid-user-token',
+        uid: '88',
+      },
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/agent-access/accept-invite`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentRef: '110' }),
+    });
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.action, 'accept_invite');
+    assert.equal(data.status, 'accepted');
+    assert.equal(data.agentUid, '110');
+    assert.deepStrictEqual(seenRequests, ['POST /api/agents/access/accept']);
+  });
+
   test('PUT /cats/config/preferences persists typed CatsCo preferences', async () => {
     const response = await fetch(`${dashboardBaseUrl}/api/cats/config/preferences`, {
       method: 'PUT',
