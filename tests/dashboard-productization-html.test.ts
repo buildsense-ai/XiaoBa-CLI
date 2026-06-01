@@ -102,6 +102,7 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /id="cats-state-card"/);
   assert.match(dashboardHtml, /id="cats-checklist"/);
   assert.match(dashboardHtml, /id="cats-relay-model-panel"/);
+  assert.match(dashboardHtml, /\.chat-shell\.connect-collapsed #cats-relay-model-panel/);
   assert.match(dashboardHtml, /let pendingStartupSource = ''/);
   assert.match(dashboardHtml, /function relayModelIdForSetup\(\)/);
   assert.match(dashboardHtml, /登录后会自动接入/);
