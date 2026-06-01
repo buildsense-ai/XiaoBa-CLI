@@ -3,7 +3,7 @@ import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo } from './types';
 import { MessageSender } from './message-sender';
 import { extractContentBlocks } from './content-blocks';
 import { MessageSessionManager } from '../core/message-session-manager';
-import { AgentServices, BUSY_MESSAGE, RuntimeFeedbackInput } from '../core/agent-session';
+import { AgentServices, BUSY_MESSAGE, RuntimeFeedbackInput, SessionCallbacks } from '../core/agent-session';
 import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import type { SubAgentInfo } from '../core/sub-agent-session';
@@ -194,6 +194,73 @@ export class CatsCompanyBot {
     return channel;
   }
 
+  private buildSessionCallbacks(topic: string): SessionCallbacks {
+    return {
+      onRetry: async (attempt, maxRetries) => {
+        try {
+          await this.sender.reply(topic, `⚠️ 大模型请求失败，正在重试 (${attempt}/${maxRetries})...`);
+        } catch (err: any) {
+          Logger.warning(`重试提示发送失败: ${err.message}`);
+        }
+      },
+      onThinking: async (thinking: string) => {
+        try {
+          await this.sender.sendThinking(topic, thinking);
+        } catch (err: any) {
+          Logger.warning(`前端通知发送失败 (thinking): ${err.message}`);
+        }
+      },
+      onToolStart: async (toolName: string, toolUseId: string, input: any) => {
+        // 跳过输出型工具的 WORKING 消息
+        if (shouldHideCatsToolProgress(toolName)) {
+          return;
+        }
+        try {
+          await this.sender.sendToolUse(topic, toolUseId, toolName, input);
+        } catch (err: any) {
+          Logger.warning(`前端通知发送失败 (tool_use): ${err.message}`);
+        }
+      },
+      onToolEnd: async (toolName: string, toolUseId: string, result: string) => {
+        // 跳过输出型工具的 WORKING 消息
+        if (shouldHideCatsToolProgress(toolName)) {
+          return;
+        }
+        try {
+          let content = result;
+
+          // 清理 execute_shell 的格式化前缀
+          if (content.startsWith('命令执行成功:') || content.startsWith('命令执行失败:')) {
+            const lines = content.split('\n');
+            content = lines.slice(5).join('\n').trim();
+          }
+
+          // 清理 read_file 的格式化前缀
+          if (content.startsWith('文件:')) {
+            const lines = content.split('\n');
+            const contentStart = lines.findIndex(line => line.match(/^\s+\d+→/));
+            if (contentStart > 0) {
+              content = lines.slice(contentStart).join('\n');
+            }
+          }
+
+          // 清理 glob 的格式化前缀
+          if (content.startsWith('找到') && content.includes('个匹配文件:')) {
+            const lines = content.split('\n');
+            const listStart = lines.findIndex((line, idx) => idx > 0 && line.match(/^\s+\d+\./));
+            if (listStart > 0) {
+              content = lines.slice(listStart).join('\n').trim();
+            }
+          }
+
+          await this.sender.sendToolResult(topic, toolUseId, content);
+        } catch (err: any) {
+          Logger.warning(`前端通知发送失败 (tool_result): ${err.message}`);
+        }
+      },
+    };
+  }
+
   // ─── 消息处理 ─────────────────────────────────────────
 
   /**
@@ -340,70 +407,7 @@ export class CatsCompanyBot {
         channel,
         runtimeFeedback,
         pendingUserInputProvider: () => this.consumeQueuedUserInput(key),
-        callbacks: {
-          onRetry: async (attempt, maxRetries) => {
-            try {
-              await this.sender.reply(msg.topic, `⚠️ 大模型请求失败，正在重试 (${attempt}/${maxRetries})...`);
-            } catch (err: any) {
-              Logger.warning(`重试提示发送失败: ${err.message}`);
-            }
-          },
-          onThinking: async (thinking: string) => {
-            try {
-              await this.sender.sendThinking(msg.topic, thinking);
-            } catch (err: any) {
-              Logger.warning(`前端通知发送失败 (thinking): ${err.message}`);
-            }
-          },
-          onToolStart: async (toolName: string, toolUseId: string, input: any) => {
-            // 跳过输出型工具的 WORKING 消息
-            if (shouldHideCatsToolProgress(toolName)) {
-              return;
-            }
-            try {
-              await this.sender.sendToolUse(msg.topic, toolUseId, toolName, input);
-            } catch (err: any) {
-              Logger.warning(`前端通知发送失败 (tool_use): ${err.message}`);
-            }
-          },
-          onToolEnd: async (toolName: string, toolUseId: string, result: string) => {
-            // 跳过输出型工具的 WORKING 消息
-            if (shouldHideCatsToolProgress(toolName)) {
-              return;
-            }
-            try {
-              let content = result;
-
-              // 清理 execute_shell 的格式化前缀
-              if (content.startsWith('命令执行成功:') || content.startsWith('命令执行失败:')) {
-                const lines = content.split('\n');
-                content = lines.slice(5).join('\n').trim();
-              }
-
-              // 清理 read_file 的格式化前缀
-              if (content.startsWith('文件:')) {
-                const lines = content.split('\n');
-                const contentStart = lines.findIndex(line => line.match(/^\s+\d+→/));
-                if (contentStart > 0) {
-                  content = lines.slice(contentStart).join('\n');
-                }
-              }
-
-              // 清理 glob 的格式化前缀
-              if (content.startsWith('找到') && content.includes('个匹配文件:')) {
-                const lines = content.split('\n');
-                const listStart = lines.findIndex((line, idx) => idx > 0 && line.match(/^\s+\d+\./));
-                if (listStart > 0) {
-                  content = lines.slice(listStart).join('\n').trim();
-                }
-              }
-
-              await this.sender.sendToolResult(msg.topic, toolUseId, content);
-            } catch (err: any) {
-              Logger.warning(`前端通知发送失败 (tool_result): ${err.message}`);
-            }
-          },
-        },
+        callbacks: this.buildSessionCallbacks(msg.topic),
       });
 
       // 最终文本回复
@@ -535,6 +539,7 @@ export class CatsCompanyBot {
     try {
       const result = await session.handleRuntimeObservation(text, {
         channel,
+        callbacks: this.buildSessionCallbacks(topic),
         source: 'subagent_result',
       });
       if (result.text === BUSY_MESSAGE) {
@@ -696,12 +701,14 @@ export class CatsCompanyBot {
       const result = msg.source === 'subagent_feedback'
         ? await session.handleRuntimeObservation(msg.userMessage as string, {
           channel,
+          callbacks: this.buildSessionCallbacks(msg.topic),
           source: 'subagent_result',
         })
         : await session.handleMessage(msg.userMessage, {
           channel,
           runtimeFeedback: msg.runtimeFeedback,
           pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey),
+          callbacks: this.buildSessionCallbacks(msg.topic),
         });
       if (result.text.startsWith('处理消息时出错:')) {
         try {

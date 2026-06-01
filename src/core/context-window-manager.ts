@@ -12,6 +12,20 @@ export interface CompactIfNeededOptions {
   sessionKey: string;
   reason?: string;
   signal?: AbortSignal;
+  onStatus?: (event: ContextCompactionStatusEvent) => void | Promise<void>;
+}
+
+export type ContextCompactionStatus = 'start' | 'complete' | 'error';
+
+export interface ContextCompactionStatusEvent {
+  status: ContextCompactionStatus;
+  sessionKey: string;
+  reason?: string;
+  usedTokens: number;
+  maxTokens: number;
+  usagePercent: number;
+  messageCount?: number;
+  error?: unknown;
 }
 
 /**
@@ -39,14 +53,34 @@ export class ContextWindowManager {
     const usage = this.compressor.getUsageInfo(durable);
     const reason = options.reason ? `${options.reason} ` : '';
     Logger.info(`[${options.sessionKey}] ${reason}上下文即将压缩: ${usage.usedTokens}/${usage.maxTokens} tokens (${usage.usagePercent}%)`);
+    await this.emitStatus(options, {
+      status: 'start',
+      sessionKey: options.sessionKey,
+      reason: options.reason,
+      ...usage,
+    });
 
     try {
       const compacted = await this.compressor.compact(durable, { signal: options.signal });
       const result = [...compacted, ...transient];
       Logger.info(`[${options.sessionKey}] 压缩完成，当前消息数: ${result.length}`);
+      await this.emitStatus(options, {
+        status: 'complete',
+        sessionKey: options.sessionKey,
+        reason: options.reason,
+        messageCount: result.length,
+        ...usage,
+      });
       return result;
     } catch (err) {
       Logger.error(`[${options.sessionKey}] 压缩失败: ${err}`);
+      await this.emitStatus(options, {
+        status: 'error',
+        sessionKey: options.sessionKey,
+        reason: options.reason,
+        error: err,
+        ...usage,
+      });
       return messages;
     }
   }
@@ -54,6 +88,18 @@ export class ContextWindowManager {
   getUsageInfo(messages: Message[]): ReturnType<ContextCompressor['getUsageInfo']> {
     const { durable } = splitDurableAndTransient(messages);
     return this.compressor.getUsageInfo(durable);
+  }
+
+  private async emitStatus(
+    options: CompactIfNeededOptions,
+    event: ContextCompactionStatusEvent,
+  ): Promise<void> {
+    if (!options.onStatus) return;
+    try {
+      await options.onStatus(event);
+    } catch (err) {
+      Logger.warning(`[${options.sessionKey}] 上下文压缩状态通知失败: ${err}`);
+    }
   }
 }
 

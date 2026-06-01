@@ -13,7 +13,7 @@ import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { SessionTurnLogger } from '../utils/session-turn-logger';
 import { Metrics } from '../utils/metrics';
-import { ContextWindowManager } from './context-window-manager';
+import { ContextWindowManager, type ContextCompactionStatusEvent } from './context-window-manager';
 import {
   RuntimeFeedbackInbox,
   RuntimeFeedbackInput,
@@ -32,6 +32,9 @@ export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-fee
 export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
 export const ERROR_MESSAGE = '不好意思，刚才处理出了点问题，你再试一次？';
 export const MODEL_TIMEOUT_MESSAGE = '模型中转请求超时了，我已经保留本轮已完成的工具结果和上下文。你可以直接说“继续”，我会从这里接上。';
+export const CONTEXT_COMPACTION_START_MESSAGE = '正在压缩上下文，整理较早的对话内容。';
+export const CONTEXT_COMPACTION_COMPLETE_MESSAGE = '上下文压缩完成，继续处理当前请求。';
+export const CONTEXT_COMPACTION_ERROR_MESSAGE = '上下文压缩失败，已保留原上下文继续处理。';
 
 // ─── 接口定义 ───────────────────────────────────────────
 
@@ -48,11 +51,16 @@ export type SystemPromptProvider = () => Promise<string> | string;
 /** 会话回调（由适配层提供） */
 export interface SessionCallbacks {
   onText?: (text: string) => void;
-  onThinking?: (thinking: string) => void;
+  onThinking?: (thinking: string) => void | Promise<void>;
   onToolStart?: (name: string, toolUseId: string, input: any) => void;
   onToolEnd?: (name: string, toolUseId: string, result: string) => void;
   onToolDisplay?: (name: string, content: string) => void;
   onRetry?: (attempt: number, maxRetries: number) => void;
+}
+
+export interface InitSessionOptions {
+  callbacks?: SessionCallbacks;
+  signal?: AbortSignal;
 }
 
 /** 消息处理选项（由平台适配层传入） */
@@ -235,7 +243,7 @@ export class AgentSession {
   // ─── 初始化 ─────────────────────────────────────────
 
   /** 构建系统提示词（幂等，仅首次生效） */
-  async init(): Promise<void> {
+  async init(options: InitSessionOptions = {}): Promise<void> {
     if (this.initialized) return;
     const systemPrompt = this.systemPromptOverride
       ? await this.systemPromptOverride()
@@ -268,7 +276,8 @@ export class AgentSession {
       this.messages = await this.contextWindowManager.compactIfNeeded(this.messages, {
         sessionKey: this.key,
         reason: '恢复后',
-        signal: this.activeAbortController?.signal,
+        signal: options.signal ?? this.activeAbortController?.signal,
+        onStatus: this.createContextCompactionNotifier(options.callbacks),
       });
     }
 
@@ -380,10 +389,14 @@ export class AgentSession {
         sessionKey: this.key,
         reason: '处理前',
         signal: this.activeAbortController.signal,
+        onStatus: this.createContextCompactionNotifier(callbacks),
       });
 
       try {
-        await this.init();
+        await this.init({
+          callbacks,
+          signal: this.activeAbortController.signal,
+        });
         const result = await this.turnController.run({
           input: text,
           messages: this.messages,
@@ -579,6 +592,32 @@ export class AgentSession {
 
   private consumeRuntimeFeedback(inputs: RuntimeFeedbackInput[] = []): string[] {
     return this.runtimeFeedbackInbox.consume(inputs);
+  }
+
+  private createContextCompactionNotifier(callbacks?: SessionCallbacks): ((event: ContextCompactionStatusEvent) => Promise<void>) | undefined {
+    if (!callbacks?.onThinking) return undefined;
+    return async (event: ContextCompactionStatusEvent) => {
+      const message = this.formatContextCompactionStatus(event);
+      if (!message) return;
+      try {
+        await callbacks.onThinking?.(message);
+      } catch (err) {
+        Logger.warning(`[会话 ${this.key}] 上下文压缩提示发送失败: ${err}`);
+      }
+    };
+  }
+
+  private formatContextCompactionStatus(event: ContextCompactionStatusEvent): string {
+    switch (event.status) {
+      case 'start':
+        return CONTEXT_COMPACTION_START_MESSAGE;
+      case 'complete':
+        return CONTEXT_COMPACTION_COMPLETE_MESSAGE;
+      case 'error':
+        return CONTEXT_COMPACTION_ERROR_MESSAGE;
+      default:
+        return '';
+    }
   }
 
   private stopSubAgents(reason: string): void {
