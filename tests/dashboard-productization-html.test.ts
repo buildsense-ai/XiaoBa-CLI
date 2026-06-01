@@ -224,13 +224,14 @@ test('CatsCo Chat composer supports local attachments', () => {
   assert.match(dashboardHtml, /attachNote\.hidden=locked \|\| catsDesktopFilePickerAvailable\(\)/);
   assert.match(dashboardHtml, /setCatsAction\(CATS_ATTACHMENT_BROWSER_MESSAGE, true\)/);
   assert.match(dashboardHtml, /window\.catscoDesktop\.selectFiles/);
-  assert.match(dashboardHtml, /file_token:item\.token/);
+  assert.match(dashboardHtml, /file_tokens:sendable\.map\(item=>item\.token\)/);
   assert.match(dashboardHtml, /function setupCatsAttachmentInputs\(\)/);
+  assert.doesNotMatch(dashboardHtml, /sendCatsAttachment/);
   assert.doesNotMatch(dashboardHtml, /file_path:item\.path/);
   assert.doesNotMatch(dashboardHtml, /input\.click\(\)/);
   assert.doesNotMatch(dashboardHtml, /queueCatsPaths/);
   assert.match(dashboardHtml, /catsMessageInput\.addEventListener\('paste'/);
-  assert.match(dashboardHtml, /\/api\/cats\/messages\/send-file/);
+  assert.doesNotMatch(dashboardHtml, /\/api\/cats\/messages\/send-file/);
 });
 
 test('CatsCo Chat composer keeps focused text readable on dark input surface', () => {

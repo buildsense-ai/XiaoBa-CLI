@@ -127,6 +127,84 @@ describe('dashboard CatsCo attachment API', () => {
     });
   });
 
+  test('sends text and multiple local attachments as one atomic content_blocks message', async () => {
+    const uploadTypes: string[] = [];
+    const uploadNames = ['photo.png', 'report.pdf'];
+    const sentBodies: any[] = [];
+
+    const catsApp = express();
+    catsApp.post('/api/upload', (req, res) => {
+      const type = String(req.query.type || '');
+      const index = uploadTypes.length;
+      uploadTypes.push(type);
+      req.resume();
+      res.json({
+        url: `/uploads/${uploadNames[index]}`,
+        name: uploadNames[index],
+        size: index + 10,
+      });
+    });
+    catsApp.post('/api/messages/send', express.json(), (req, res) => {
+      sentBodies.push(req.body);
+      res.json({ seq_id: 43, content_blocks: req.body.content_blocks });
+    });
+    catsServer = await listen(catsApp);
+
+    process.env.CATSCO_HTTP_BASE_URL = serverUrl(catsServer);
+    process.env.CATSCO_USER_TOKEN = 'user-token';
+    process.env.CATSCO_USER_UID = '1';
+    process.env.CATSCO_BOT_UID = '2';
+    process.env.CATSCO_API_KEY = 'agent-key';
+
+    const dashboardApp = express();
+    dashboardApp.use(express.json());
+    dashboardApp.use('/api', createApiRouter({ getAll: () => [] } as any));
+    dashboardServer = await listen(dashboardApp);
+
+    const imagePath = path.join(testRoot, 'photo.png');
+    const filePath = path.join(testRoot, 'report.pdf');
+    fs.writeFileSync(imagePath, 'fake image');
+    fs.writeFileSync(filePath, 'hello world');
+    const imageGrant = createLocalFileGrant(imagePath);
+    const fileGrant = createLocalFileGrant(filePath);
+
+    const response = await fetch(`${serverUrl(dashboardServer)}/api/cats/messages/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        topic_id: 'p2p_1_2',
+        content: '一起看这些附件',
+        file_tokens: [imageGrant.token, fileGrant.token],
+      }),
+    });
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.ok, true);
+    assert.deepEqual(uploadTypes, ['image', 'file']);
+    assert.equal(sentBodies.length, 1);
+    assert.deepEqual(sentBodies[0], {
+      topic_id: 'p2p_1_2',
+      type: 'text',
+      content: '一起看这些附件',
+      content_blocks: [
+        { type: 'text', text: '一起看这些附件' },
+        {
+          type: 'image',
+          payload: { url: '/uploads/photo.png', name: 'photo.png', size: 10 },
+        },
+        {
+          type: 'file',
+          payload: { url: '/uploads/report.pdf', name: 'report.pdf', size: 11 },
+        },
+      ],
+    });
+    assert.deepEqual(data.files.map((item: any) => ({ type: item.type, name: item.file.name })), [
+      { type: 'image', name: 'photo.png' },
+      { type: 'file', name: 'report.pdf' },
+    ]);
+  });
+
   test('rejects raw local paths before calling CatsCo', async () => {
     process.env.CATSCO_USER_TOKEN = 'user-token';
     const dashboardApp = express();

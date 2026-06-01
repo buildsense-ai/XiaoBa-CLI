@@ -56,7 +56,6 @@ function createProcessHarness() {
   bot.pendingAnswers = new Map();
   bot.pendingAnswerBySession = new Map();
   bot.pendingAttachments = new Map();
-  bot.pendingTextMessages = new Map();
   bot.messageQueue = new Map();
   bot.buildMultimodalMessage = async (text: string, attachments: any[]) => {
     multimodalCalls.push({ text, attachments });
@@ -192,6 +191,22 @@ describe('CatsCo content blocks', () => {
       { type: 'text', text: '[file] b.pdf -> C:\\tmp\\catsco-test\\b.pdf' },
     ]);
     assert.deepStrictEqual(handledTurns[0].options.runtimeFeedback, []);
+  });
+
+  test('plain text messages are processed immediately without attachment coalesce wait', async () => {
+    const { bot, handledTurns } = createProcessHarness();
+
+    await (bot as any).onMessage({
+      topic: 'p2p_1_2',
+      senderId: 'usr1',
+      text: '这条纯文本不应该等待附件',
+      content: '这条纯文本不应该等待附件',
+      isGroup: false,
+      seq: 10,
+    });
+
+    assert.strictEqual(handledTurns.length, 1);
+    assert.strictEqual(handledTurns[0].userMessage, '这条纯文本不应该等待附件');
   });
 
   test('channel sendFile propagates upload failures to tool execution', async () => {

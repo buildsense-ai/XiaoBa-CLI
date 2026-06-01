@@ -70,6 +70,27 @@ interface CatsRequestOptions {
   timeoutMs?: number;
 }
 
+interface CatsUploadedLocalAttachment {
+  type: 'image' | 'file';
+  file: {
+    name: string;
+    size: number;
+  };
+  upload: {
+    url: string;
+    name: string;
+    size: number;
+  };
+  contentBlock: {
+    type: 'image' | 'file';
+    payload: {
+      url: string;
+      name: string;
+      size: number;
+    };
+  };
+}
+
 type RelayModelProtocol = 'anthropic' | 'openai';
 
 interface RelayModelConfig {
@@ -365,6 +386,45 @@ async function catsRequest(
   }
 
   return data;
+}
+
+async function uploadCatsGrantedAttachment(state: CatsAuthState, fileToken: string): Promise<CatsUploadedLocalAttachment> {
+  const grant = consumeLocalFileGrant(fileToken);
+  const stat = validateLocalFileGrant(grant);
+  const fileName = grant.name;
+  const uploadType = inferCatsUploadType(fileName);
+  const upload = await uploadCatsLocalFile({
+    httpBaseUrl: state.httpBaseUrl,
+    filePath: grant.filePath,
+    type: uploadType,
+    authHeader: `Bearer ${state.token}`,
+  });
+  const payload = {
+    url: upload.url,
+    name: upload.name || fileName,
+    size: upload.size || stat.size,
+  };
+  return {
+    type: uploadType,
+    file: {
+      name: fileName,
+      size: stat.size,
+    },
+    upload,
+    contentBlock: {
+      type: uploadType,
+      payload,
+    },
+  };
+}
+
+function summarizeCatsAttachments(attachments: CatsUploadedLocalAttachment[]): string {
+  if (attachments.length === 0) return '';
+  if (attachments.length === 1) {
+    const item = attachments[0];
+    return `[${item.type === 'image' ? '图片' : '文件'}] ${item.file.name}`;
+  }
+  return `[附件] ${attachments.map(item => item.file.name).join(', ')}`;
 }
 
 async function catsApiKeyRequest(
@@ -2040,14 +2100,39 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
       const topicId = String(req.body?.topic_id || '').trim();
       const content = String(req.body?.content || '').trim();
-      if (!topicId || !content) return res.status(400).json({ error: 'topic_id and content are required' });
+      const fileTokens = Array.isArray(req.body?.file_tokens)
+        ? req.body.file_tokens.map((token: unknown) => String(token || '').trim()).filter(Boolean)
+        : [];
+      if (!topicId || (!content && fileTokens.length === 0)) {
+        return res.status(400).json({ error: 'topic_id and content/file_tokens are required' });
+      }
       assertCurrentCatsTopic(state, topicId);
+      const attachments: CatsUploadedLocalAttachment[] = [];
+      for (const fileToken of fileTokens) {
+        attachments.push(await uploadCatsGrantedAttachment(state, fileToken));
+      }
+      const contentBlocks = attachments.length > 0
+        ? [
+            ...(content ? [{ type: 'text', text: content }] : []),
+            ...attachments.map(item => item.contentBlock),
+          ]
+        : [];
+      const displayContent = content || summarizeCatsAttachments(attachments);
       const data = await catsRequest('POST', state.httpBaseUrl, '/api/messages/send', {
         topic_id: topicId,
         type: 'text',
-        content,
+        content: displayContent,
+        ...(contentBlocks.length > 0 ? { content_blocks: contentBlocks } : {}),
       }, state.token);
-      res.json(data);
+      res.json({
+        ...data,
+        ok: true,
+        files: attachments.map(item => ({
+          type: item.type,
+          file: item.file,
+          upload: item.upload,
+        })),
+      });
     } catch (e: any) {
       res.status(e.status || 500).json({ error: e.message, data: e.data });
     }
@@ -2063,40 +2148,18 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       if (!topicId || !fileToken) return res.status(400).json({ error: 'topic_id and file_token are required' });
       assertCurrentCatsTopic(state, topicId);
 
-      const grant = consumeLocalFileGrant(fileToken);
-      const stat = validateLocalFileGrant(grant);
-
-      const fileName = grant.name;
-      const uploadType = inferCatsUploadType(fileName);
-      const upload = await uploadCatsLocalFile({
-        httpBaseUrl: state.httpBaseUrl,
-        filePath: grant.filePath,
-        type: uploadType,
-        authHeader: `Bearer ${state.token}`,
-      });
-
-      const content = {
-        type: uploadType,
-        payload: {
-          url: upload.url,
-          name: upload.name || fileName,
-          size: upload.size || stat.size,
-        },
-      };
+      const attachment = await uploadCatsGrantedAttachment(state, fileToken);
       const data = await catsRequest('POST', state.httpBaseUrl, '/api/messages/send', {
         topic_id: topicId,
-        type: uploadType,
-        content,
+        type: attachment.type,
+        content: attachment.contentBlock,
       }, state.token);
 
       res.json({
         ok: true,
-        type: uploadType,
-        file: {
-          name: fileName,
-          size: stat.size,
-        },
-        upload,
+        type: attachment.type,
+        file: attachment.file,
+        upload: attachment.upload,
         message: data,
       });
     } catch (e: any) {

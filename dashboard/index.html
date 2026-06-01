@@ -9022,30 +9022,6 @@
       }
     }
 
-    async function sendCatsAttachment(item){
-      item.status='sending';
-      item.error='';
-      renderCatsAttachments();
-      try{
-        await parseCatsResponse(await fetch(API+'/api/cats/messages/send-file',{
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({
-            topic_id:catsState.topicId,
-            file_token:item.token,
-            file_name:item.name,
-          }),
-        }));
-        item.status='sent';
-      }catch(e){
-        item.status='error';
-        item.error=e.message;
-        throw e;
-      }finally{
-        renderCatsAttachments();
-      }
-    }
-
     function setupCatsAttachmentInputs(){
       const chatWindow=document.querySelector('.chat-window');
       if(chatWindow){
@@ -9097,26 +9073,29 @@
       if(attach)attach.disabled=true;
       pulsePetState('typing', sendable.length?'上传中...':'发送中...', 1400);
       try{
-        if(content){
-          await parseCatsResponse(await fetch(API+'/api/cats/messages/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({topic_id:catsState.topicId,content})}));
-          input.value='';
-          autoResizeCatsMessageInput();
-        }
-        let failed=0;
-        for(const item of sendable){
-          try{
-            await sendCatsAttachment(item);
-          }catch(_e){
-            failed+=1;
-          }
-        }
+        sendable.forEach(item=>{item.status='sending';item.error='';});
+        renderCatsAttachments();
+        await parseCatsResponse(await fetch(API+'/api/cats/messages/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+          topic_id:catsState.topicId,
+          content,
+          file_tokens:sendable.map(item=>item.token),
+        })}));
+        input.value='';
+        autoResizeCatsMessageInput();
+        sendable.forEach(item=>{item.status='sent';});
         catsAttachmentQueue=catsAttachmentQueue.filter(item=>item.status!=='sent');
         renderCatsAttachments();
         catsScrollPinnedToBottom=true;
-        if(failed)setCatsAction(failed+' 个附件发送失败，请重新选择文件或检查 CatsCo 连接。',true);
-        else pulsePetState('success', '已发送', 1800);
+        pulsePetState('success', '已发送', 1800);
         await loadCatsMessages(true, {forceBottom:true});
       }catch(e){
+        sendable.forEach(item=>{
+          if(item.status==='sending'){
+            item.status='error';
+            item.error=e.message;
+          }
+        });
+        renderCatsAttachments();
         setCatsAction('发送失败：'+e.message,true);
       }finally{
         btn.disabled=buildCatsChatStage().key!=='ready';
