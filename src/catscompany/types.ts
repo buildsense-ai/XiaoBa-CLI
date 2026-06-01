@@ -6,6 +6,10 @@ export interface CatsCompanyConfig {
   serverUrl: string;
   /** Bot API Key，如 "cc_8_abc123..." */
   apiKey: string;
+  /** 当前本地运行体 ID，用于防止同一个 bot 被多个本地 body 混用 */
+  bodyId?: string;
+  /** 当前安装/设备 ID，默认与 bodyId 相同 */
+  installationId?: string;
   /** HTTP 基础地址（用于文件上传），默认从 serverUrl 推导 */
   httpBaseUrl?: string;
   /** 会话过期时间（毫秒），默认 30 分钟 */

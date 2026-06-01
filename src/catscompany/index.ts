@@ -94,6 +94,8 @@ export class CatsCompanyBot {
     this.bot = new CatsClient({
       serverUrl: config.serverUrl,
       apiKey: config.apiKey,
+      bodyId: config.bodyId,
+      installationId: config.installationId,
       httpBaseUrl: config.httpBaseUrl,
     });
 

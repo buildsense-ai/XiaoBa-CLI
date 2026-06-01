@@ -7,6 +7,7 @@ import * as dotenv from 'dotenv';
 import express from 'express';
 import type { Server } from 'http';
 import { createApiRouter } from '../src/dashboard/routes/api';
+import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 
 describe('dashboard typed settings API', () => {
   let testRoot: string;
@@ -35,10 +36,16 @@ describe('dashboard typed settings API', () => {
     'CATSCO_USER_DISPLAY_NAME',
     'CATSCO_BOT_UID',
     'CATSCO_API_KEY',
+    'CATSCO_DEVICE_ID',
+    'CATSCO_BODY_ID',
+    'CATSCO_INSTALLATION_ID',
     'CATSCO_SERVER_URL',
     'CATSCOMPANY_BOT_UID',
     'CATSCOMPANY_API_KEY',
     'CATSCOMPANY_SERVER_URL',
+    'CATSCOMPANY_DEVICE_ID',
+    'CATSCOMPANY_BODY_ID',
+    'CATSCOMPANY_INSTALLATION_ID',
   ];
   const originalEnv: Record<string, string | undefined> = {};
 
@@ -932,6 +939,30 @@ describe('dashboard typed settings API', () => {
       process.env.CATSCO_API_KEY = 'cats_svc_test';
       process.env.CATSCO_SERVER_URL = 'wss://app.catsco.cc/v0/channels';
       process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${catsAddress.port}`;
+      createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+        version: 1,
+        endpoints: {
+          httpBaseUrl: `http://127.0.0.1:${catsAddress.port}`,
+          serverUrl: 'wss://app.catsco.cc/v0/channels',
+        },
+        account: {
+          token: 'user-token',
+          uid: '38',
+        },
+        currentBot: {
+          uid: '110',
+          name: 'CatsCo',
+          username: 'catsco_38',
+          apiKey: 'cats_svc_test',
+          boundByUserUid: '38',
+          bindingSource: 'test',
+        },
+        device: {
+          deviceId: 'body-settings',
+          bodyId: 'body-settings',
+          installationId: 'body-settings',
+        },
+      });
 
       const response = await fetch(`${dashboardBaseUrl}/api/cats/relay/model-config/apply`, {
         method: 'POST',
@@ -1547,7 +1578,7 @@ describe('dashboard typed settings API', () => {
       fs.writeFileSync(path.join(testRoot, '.env'), [
         'GAUZ_LLM_PROVIDER=anthropic',
         'GAUZ_LLM_API_BASE=https://relay.catsco.cc/anthropic',
-        'GAUZ_LLM_API_KEY=sk-bf-old-local-secret',
+        'GAUZ_LLM_API_KEY=sk-bf-different-local-secret',
         'GAUZ_LLM_MODEL=MiniMax-M2.7',
         '',
       ].join('\n'));
@@ -1568,7 +1599,7 @@ describe('dashboard typed settings API', () => {
       assert.equal(data.key.prefix, 'sk-bf-old');
       assert.equal(createCalled, false);
       assert.equal(rotateCalled, false);
-      assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-old-local-secret');
+      assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-different-local-secret');
       assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
     } finally {
       await new Promise<void>(resolve => catsServer.close(() => resolve()));
@@ -1617,6 +1648,74 @@ describe('dashboard typed settings API', () => {
       assert.equal(data.action, 'rotate_required');
       assert.equal(data.key.prefix, 'sk-bf-old');
       assert.equal(fs.existsSync(path.join(testRoot, '.env')), false);
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
+  test('POST /cats/relay/model-config/apply explains upstream relay key rotation failures', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    catsApp.get('/api/relay/config', (_req, res) => {
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'MiniMax-M2.7',
+        self_service_enabled: true,
+        endpoints: [{ protocol: 'Anthropic-compatible', base_url: 'https://relay.catsco.cc/anthropic' }],
+      });
+    });
+    catsApp.get('/api/relay/key', (_req, res) => {
+      res.json({
+        configured: true,
+        key: {
+          id: 'vk-existing',
+          name: 'existing',
+          prefix: 'sk-bf-old...cret',
+          state: 'active',
+        },
+      });
+    });
+    catsApp.post('/api/relay/key/rotate', (_req, res) => {
+      res.status(502).json({
+        error: 'bifrost request failed',
+        detail: 'upstream sk-bf-sensitive-secret failed',
+      });
+    });
+    const catsServer = await listen(catsApp);
+    const address = catsServer.address();
+    if (!address || typeof address === 'string') throw new Error('cats server did not bind');
+
+    try {
+      fs.writeFileSync(path.join(testRoot, '.env'), [
+        'GAUZ_LLM_PROVIDER=anthropic',
+        'GAUZ_LLM_API_BASE=https://relay.catsco.cc/anthropic',
+        'GAUZ_LLM_API_KEY=sk-bf-different-local-secret',
+        'GAUZ_LLM_MODEL=MiniMax-M2.7',
+        '',
+      ].join('\n'));
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocol: 'anthropic', rotateExisting: true }),
+      });
+      const text = await response.text();
+      const data = JSON.parse(text) as any;
+      const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+      assert.equal(response.status, 502);
+      assert.equal(data.action, 'relay_key_reset_required');
+      assert.match(data.error, /CatsCo 中转 Key 重新生成失败/);
+      assert.match(data.error, /bifrost request failed/);
+      assert.match(data.error, /点击“撤销”删除当前 Key/);
+      assert.match(data.error, /系统会自动创建并写入新的 Key/);
+      assert.match(data.data.detail, /\[redacted-key\]/);
+      assert.equal(text.includes('sk-bf-sensitive-secret'), false);
+      assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-different-local-secret');
+      assert.equal(parsed.GAUZ_LLM_MODEL, 'MiniMax-M2.7');
     } finally {
       await new Promise<void>(resolve => catsServer.close(() => resolve()));
     }

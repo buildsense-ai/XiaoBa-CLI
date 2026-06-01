@@ -10,6 +10,8 @@ export type { UploadResult } from './upload';
 export interface CatsClientConfig {
   serverUrl: string;
   apiKey: string;
+  bodyId?: string;
+  installationId?: string;
   httpBaseUrl?: string;
 }
 
@@ -58,6 +60,14 @@ const CATSCOMPANY_CLIENT_UA = 'CatsCo/1.0';
 function maskSecret(value: string): string {
   if (value.length <= 10) return '***';
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+function firstNonEmpty(...values: Array<string | undefined>): string {
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (text) return text;
+  }
+  return '';
 }
 
 export class CatsSendError extends Error {
@@ -113,10 +123,31 @@ export class CatsClient extends EventEmitter {
   connect(): void {
     if (this.ws) return;
 
-    Logger.info(`[CatsCompany] 正在连接: ${this.config.serverUrl}, apiKey=${maskSecret(this.config.apiKey)}`);
+    const bodyId = firstNonEmpty(
+      this.config.bodyId,
+      process.env.CATSCO_BODY_ID,
+      process.env.CATSCOMPANY_BODY_ID,
+      process.env.CATSCO_DEVICE_ID,
+      process.env.CATSCOMPANY_DEVICE_ID,
+    );
+    if (!bodyId) {
+      throw new Error('CatsCo bodyId missing; bind this runtime to a CatsCo agent body before starting the connector.');
+    }
+    const installationId = firstNonEmpty(
+      this.config.installationId,
+      process.env.CATSCO_INSTALLATION_ID,
+      process.env.CATSCOMPANY_INSTALLATION_ID,
+      bodyId,
+    );
+
+    Logger.info(`[CatsCompany] 正在连接: ${this.config.serverUrl}, apiKey=${maskSecret(this.config.apiKey)}, bodyId=${bodyId}`);
     this.supportsClientMessageDedupe = false;
     this.ws = new WebSocket(this.config.serverUrl, {
-      headers: { 'X-API-Key': this.config.apiKey }
+      headers: {
+        'X-API-Key': this.config.apiKey,
+        'X-CatsCo-Body-ID': bodyId,
+        'X-CatsCo-Installation-ID': installationId,
+      },
     });
 
     this.ws.on('open', () => {
