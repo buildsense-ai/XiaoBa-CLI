@@ -1243,8 +1243,8 @@ function catsErrorResponse(error: any): { status: number; body: Record<string, u
 function relayKeyErrorResponse(error: any): { status: number; body: Record<string, unknown> } {
   const message = sanitizeCatsErrorMessage(error?.message || error);
   const body: Record<string, unknown> = {
-    error: `CatsCo 中转 Key 重新生成失败：${message}。请稍后重试，或在 CatsCo 中转站页面手动复制/生成 Key 后再切换模型。`,
-    action: 'relay_key_generation_failed',
+    error: `CatsCo 中转 Key 重新生成失败：${message}。请在 CatsCo 中转站点击“撤销”删除当前 Key，然后回到 Dashboard 重新选择模型；系统会自动创建并写入新的 Key。`,
+    action: 'relay_key_reset_required',
   };
   const data = sanitizeCatsErrorData(error?.data);
   if (data) body.data = data;

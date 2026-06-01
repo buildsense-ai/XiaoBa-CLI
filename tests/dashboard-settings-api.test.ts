@@ -1707,9 +1707,11 @@ describe('dashboard typed settings API', () => {
       const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
 
       assert.equal(response.status, 502);
-      assert.equal(data.action, 'relay_key_generation_failed');
+      assert.equal(data.action, 'relay_key_reset_required');
       assert.match(data.error, /CatsCo 中转 Key 重新生成失败/);
       assert.match(data.error, /bifrost request failed/);
+      assert.match(data.error, /点击“撤销”删除当前 Key/);
+      assert.match(data.error, /系统会自动创建并写入新的 Key/);
       assert.match(data.data.detail, /\[redacted-key\]/);
       assert.equal(text.includes('sk-bf-sensitive-secret'), false);
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-different-local-secret');
