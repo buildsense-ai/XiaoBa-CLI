@@ -1070,27 +1070,41 @@ async function fetchCatsRelayKey(state: CatsAuthState): Promise<any> {
   return catsRequest('GET', state.httpBaseUrl, '/api/relay/key', undefined, state.token);
 }
 
+async function revealCatsRelayKey(state: CatsAuthState): Promise<any> {
+  return catsRequest('POST', state.httpBaseUrl, '/api/relay/key/reveal', {}, state.token);
+}
+
 async function ensureCatsRelayPlainKey(
   state: CatsAuthState,
   options: { rotateExisting?: boolean } = {},
-): Promise<{ response: any; plainKey: string; created: boolean; rotated: boolean }> {
+): Promise<{ response: any; plainKey: string; created: boolean; rotated: boolean; revealed: boolean }> {
   const current = await fetchCatsRelayKey(state);
   const currentKey = current?.key;
   const active = currentKey && String(currentKey.state || 'active') === 'active';
   const currentPlainKey = String(currentKey?.key || '').trim();
 
   if (active && currentPlainKey) {
-    return { response: current, plainKey: currentPlainKey, created: false, rotated: false };
+    return { response: current, plainKey: currentPlainKey, created: false, rotated: false, revealed: false };
   }
 
   const reusableLocalKey = active ? findReusableLocalRelayKey(currentKey) : undefined;
   if (reusableLocalKey) {
-    return { response: current, plainKey: reusableLocalKey, created: false, rotated: false };
+    return { response: current, plainKey: reusableLocalKey, created: false, rotated: false, revealed: false };
   }
 
   if (active && !options.rotateExisting) {
+    try {
+      const revealed = await revealCatsRelayKey(state);
+      const revealedPlainKey = String(revealed?.key?.key || '').trim();
+      if (revealedPlainKey) {
+        return { response: revealed, plainKey: revealedPlainKey, created: false, rotated: false, revealed: true };
+      }
+    } catch {
+      // Older CatsCompany / relay deployments may not expose reveal yet. Fall
+      // through to the explicit rotation prompt instead of failing silently.
+    }
     throw httpError(
-      '已有 CatsCo 中转 Key，但明文不会再次返回。请确认是否重新生成后再启用中转模型。',
+      '已有 CatsCo 中转 Key，但当前无法读取明文。请确认是否重新生成后再启用中转模型。',
       409,
     );
   }
@@ -1110,6 +1124,7 @@ async function ensureCatsRelayPlainKey(
     plainKey,
     created: !active,
     rotated: active,
+    revealed: false,
   };
 }
 
@@ -1199,6 +1214,7 @@ async function setupCatsRelayModelForDesktop(
     key: sanitizeRelayKeyInfo(ensured.response?.key),
     createdKey: ensured.created,
     rotatedKey: ensured.rotated,
+    revealedKey: ensured.revealed,
   };
 }
 
@@ -2446,6 +2462,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         key: sanitizeRelayKeyInfo(ensured.response?.key),
         createdKey: ensured.created,
         rotatedKey: ensured.rotated,
+        revealedKey: ensured.revealed,
         restartRequired: restartInfo.wasRunning && !restartInfo.restartRequested,
         connectorRestarted: restartInfo.restartRequested,
         connectorStarted: restartInfo.startRequested,

@@ -7639,7 +7639,7 @@
         });
         const data=await r.json().catch(()=>({}));
         if(r.status===409&&data.action==='rotate_required'){
-          const ok=confirm('你的 CatsCo 中转 Key 已存在，但明文不会再次返回。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');
+          const ok=confirm('你的 CatsCo 中转 Key 已存在，但当前无法读取明文。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');
           if(ok){
             retrying=true;
             setRelayModelApplyBusy(false);
@@ -8632,7 +8632,7 @@
         }
       }catch(e){
         if(e.status===409 && e.action==='rotate_required'){
-          const ok=confirm('你的 CatsCo 中转 Key 已存在，但明文不会再次返回。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');
+          const ok=confirm('你的 CatsCo 中转 Key 已存在，但当前无法读取明文。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');
           if(ok){
             retrying=true;
             setCatsSetupBusy(false);

@@ -1364,6 +1364,80 @@ describe('dashboard typed settings API', () => {
     }
   });
 
+  test('POST /cats/relay/model-config/apply reveals existing relay key before prompting rotation', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    let revealCalled = false;
+    let createCalled = false;
+    let rotateCalled = false;
+
+    catsApp.get('/api/relay/config', (_req, res) => {
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'MiniMax-M2.7',
+        self_service_enabled: true,
+        endpoints: [{ protocol: 'Anthropic-compatible', base_url: 'https://relay.catsco.cc/anthropic' }],
+      });
+    });
+    catsApp.get('/api/relay/key', (_req, res) => {
+      res.json({
+        configured: true,
+        key: { id: 'vk-existing', name: 'existing', prefix: 'sk-bf-cu...cret', state: 'active' },
+      });
+    });
+    catsApp.post('/api/relay/key/reveal', (_req, res) => {
+      revealCalled = true;
+      res.json({
+        configured: true,
+        key: {
+          id: 'vk-existing',
+          name: 'existing',
+          prefix: 'sk-bf-cu...cret',
+          state: 'active',
+          key: 'sk-bf-current-secret',
+        },
+      });
+    });
+    catsApp.post('/api/relay/key', (_req, res) => {
+      createCalled = true;
+      res.status(500).json({ error: 'create should not be called' });
+    });
+    catsApp.post('/api/relay/key/rotate', (_req, res) => {
+      rotateCalled = true;
+      res.status(500).json({ error: 'rotate should not be called' });
+    });
+    const catsServer = await listen(catsApp);
+    const address = catsServer.address();
+    if (!address || typeof address === 'string') throw new Error('cats server did not bind');
+
+    try {
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelId: 'minimax-m2.7' }),
+      });
+      const text = await response.text();
+      const data = JSON.parse(text) as any;
+      const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+      assert.equal(response.status, 200, text);
+      assert.equal(data.createdKey, false);
+      assert.equal(data.rotatedKey, false);
+      assert.equal(data.revealedKey, true);
+      assert.equal(revealCalled, true);
+      assert.equal(createCalled, false);
+      assert.equal(rotateCalled, false);
+      assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-current-secret');
+      assert.equal(text.includes('sk-bf-current-secret'), false);
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
   test('POST /cats/relay/model-config/apply reuses stored relay key while custom startup is active', async () => {
     const catsApp = express();
     catsApp.use(express.json());
