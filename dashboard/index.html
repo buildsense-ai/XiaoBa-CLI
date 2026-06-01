@@ -1229,6 +1229,7 @@
       font-weight: 700;
       line-height: 1;
       border: 1px solid transparent;
+      white-space: nowrap;
     }
 
     .tag.purple { background: var(--accent-light); color: var(--accent); border-color: rgba(59, 130, 246, 0.10); }
@@ -1590,6 +1591,11 @@
       margin-bottom: 20px;
     }
 
+    .services-grid.connector-grid {
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      margin-top: 12px;
+    }
+
     .status-card,
     .service-card {
       border-radius: 22px;
@@ -1605,6 +1611,140 @@
       transform: translateY(-2px);
       box-shadow: var(--shadow-md), var(--glow);
       border-color: var(--border-strong);
+    }
+
+    .service-gate-card {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      border-color: rgba(59, 130, 246, 0.18);
+      background: rgba(59, 130, 246, 0.06);
+    }
+
+    .service-gate-card:hover {
+      transform: none;
+    }
+
+    .service-gate-title {
+      color: var(--text);
+      font-size: 15px;
+      font-weight: 850;
+      margin-bottom: 5px;
+    }
+
+    .service-gate-copy {
+      color: var(--text2);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .channel-card {
+      min-height: 168px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .channel-card.primary {
+      border-color: rgba(59, 130, 246, 0.22);
+      background: rgba(59, 130, 246, 0.06);
+    }
+
+    .channel-card.blocked {
+      border-color: rgba(148, 163, 184, 0.28);
+      background: rgba(248, 250, 252, 0.84);
+    }
+
+    .channel-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .channel-title {
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 850;
+      line-height: 1.3;
+    }
+
+    .channel-subtitle {
+      color: var(--text3);
+      font-size: 12px;
+      font-weight: 800;
+      margin-top: 4px;
+    }
+
+    .channel-copy {
+      color: var(--text2);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .channel-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      white-space: nowrap;
+      border-radius: 999px;
+      padding: 7px 11px;
+      font-size: 12px;
+      font-weight: 850;
+      border: 1px solid transparent;
+    }
+
+    .channel-status::before {
+      content: '';
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 0 5px rgba(255, 255, 255, 0.5);
+    }
+
+    .channel-status.ready {
+      background: var(--green-light);
+      color: var(--green);
+      border-color: rgba(30, 169, 113, 0.16);
+    }
+
+    .channel-status.pending {
+      background: var(--warm-light);
+      color: var(--warm);
+      border-color: rgba(245, 155, 87, 0.14);
+    }
+
+    .channel-status.disabled {
+      background: rgba(103, 112, 133, 0.1);
+      color: var(--text2);
+      border-color: rgba(103, 112, 133, 0.12);
+    }
+
+    .channel-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: var(--text2);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .channel-meta span {
+      border-radius: 999px;
+      background: rgba(103, 112, 133, 0.08);
+      border: 1px solid rgba(103, 112, 133, 0.10);
+      padding: 5px 9px;
+      line-height: 1;
+    }
+
+    .channel-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: auto;
     }
 
     .status-card .label {
@@ -2489,44 +2629,178 @@
 
     .chat-shell {
       display: grid;
-      grid-template-columns: clamp(300px, 19vw, 360px) minmax(0, 1fr);
-      gap: 12px;
-      height: calc(100vh - 118px);
-      min-height: 620px;
-      align-items: stretch;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 18px;
+      height: auto;
+      min-height: 0;
+      align-items: start;
     }
 
-    .chat-shell.connect-collapsed {
+    .chat-shell.chat-ready {
+      grid-template-columns: clamp(320px, 24vw, 390px) minmax(0, 1fr);
+      align-items: stretch;
+      min-height: 620px;
+    }
+
+    .chat-shell.chat-ready.connect-collapsed {
       grid-template-columns: 64px minmax(0, 1fr);
     }
 
     body.chat-active .main-wrapper {
-      padding: 24px 24px 16px;
+      padding: 32px var(--dashboard-page-gutter);
     }
 
     body.chat-active .page-content {
       width: 100%;
       max-width: none;
-      height: calc(100vh - 40px);
       margin: 0;
-      padding: 0;
+      padding: 0 0 32px;
+      height: auto;
     }
 
     #page-chat.active {
-      display: flex;
-      flex-direction: column;
-      height: 100%;
+      display: block;
+      height: auto;
       min-height: 0;
     }
 
     #page-chat .section-title {
-      display: none;
+      display: block;
+      margin-bottom: 4px;
     }
 
     body.chat-active .chat-shell {
-      flex: 1;
       height: auto;
       min-height: 0;
+    }
+
+    .start-page-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: flex-start;
+      margin-bottom: 22px;
+    }
+
+    .start-page-title-group {
+      max-width: 720px;
+    }
+
+    .start-panel {
+      padding: 24px;
+    }
+
+    .startup-hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: start;
+      margin-bottom: 18px;
+    }
+
+    .startup-eyebrow {
+      color: var(--text3);
+      font-size: 12px;
+      font-weight: 800;
+      margin-bottom: 6px;
+    }
+
+    .startup-hero h3 {
+      font-size: 24px;
+      line-height: 1.2;
+      margin: 0 0 6px;
+    }
+
+    .startup-step-list {
+      display: grid;
+      gap: 10px;
+      margin: 16px 0;
+    }
+
+    .startup-step-row {
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      border: 1px solid var(--border);
+      background: #fff;
+      border-radius: 14px;
+      padding: 14px 16px;
+    }
+
+    .startup-step-index {
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      background: #eef2f7;
+      color: var(--text2);
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .startup-step-title {
+      color: var(--text);
+      font-weight: 850;
+      margin-bottom: 2px;
+    }
+
+    .startup-step-meta {
+      color: var(--text2);
+      font-size: 13px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .startup-step-badge {
+      min-width: 72px;
+      text-align: center;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 850;
+      background: #f1f5f9;
+      color: #475569;
+    }
+
+    .startup-step-row.pass {
+      border-color: rgba(5, 150, 105, 0.22);
+      background: rgba(5, 150, 105, 0.05);
+    }
+
+    .startup-step-row.pass .startup-step-index,
+    .startup-step-row.pass .startup-step-badge {
+      background: var(--green-light);
+      color: var(--green);
+    }
+
+    .startup-step-row.current {
+      border-color: rgba(37, 99, 235, 0.34);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
+    }
+
+    .startup-step-row.current .startup-step-index,
+    .startup-step-row.current .startup-step-badge {
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+
+    .startup-step-row.warning .startup-step-index,
+    .startup-step-row.warning .startup-step-badge {
+      background: var(--orange-light);
+      color: var(--orange);
+    }
+
+    .startup-step-row.fail {
+      border-color: rgba(220, 38, 38, 0.22);
+      background: rgba(220, 38, 38, 0.04);
+    }
+
+    .startup-step-row.fail .startup-step-index,
+    .startup-step-row.fail .startup-step-badge {
+      background: var(--red-light);
+      color: var(--red);
     }
 
     .chat-panel {
@@ -2570,6 +2844,24 @@
       overflow-wrap: anywhere;
     }
 
+    .dashboard-quick-actions {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .dashboard-quick-actions .btn {
+      justify-content: center;
+      min-width: 0;
+      white-space: normal;
+      line-height: 1.25;
+    }
+
+    .dashboard-quick-actions .btn:first-child {
+      grid-column: 1 / -1;
+    }
+
     .chat-muted {
       color: var(--text2);
       font-size: 13px;
@@ -2605,6 +2897,12 @@
       transform: translateY(-1px);
     }
 
+    .chat-shell.chat-ready .chat-connect {
+      padding: 14px;
+      max-height: calc(100vh - 116px);
+      overflow-y: auto;
+    }
+
     .chat-shell.connect-collapsed .chat-connect {
       padding: 10px 8px;
       gap: 10px;
@@ -2629,9 +2927,11 @@
       line-height: 1.25;
     }
 
+    .chat-shell.connect-collapsed .dashboard-quick-actions,
     .chat-shell.connect-collapsed .chat-connect-intro,
     .chat-shell.connect-collapsed #cats-state-card,
     .chat-shell.connect-collapsed #cats-checklist,
+    .chat-shell.connect-collapsed #cats-setup-diagnostics,
     .chat-shell.connect-collapsed #cats-connected-card,
     .chat-shell.connect-collapsed #cats-auth-panel,
     .chat-shell.connect-collapsed #cats-connection-details,
@@ -2688,6 +2988,11 @@
       background: rgba(230,162,60,0.08);
     }
 
+    .chat-state-card.setup {
+      border-color: rgba(37, 99, 235, 0.22);
+      background: rgba(37, 99, 235, 0.06);
+    }
+
     .chat-state-title {
       font-weight: 800;
       color: var(--text);
@@ -2741,6 +3046,12 @@
     .chat-step-row.fail {
       border-color: rgba(220,93,115,0.24);
       background: rgba(220,93,115,0.07);
+    }
+
+    .chat-step-row.current,
+    .chat-step-row.todo {
+      border-color: rgba(103, 112, 133, 0.16);
+      background: rgba(248, 250, 252, 0.84);
     }
 
     .chat-status-list {
@@ -2822,7 +3133,7 @@
 
     .chat-connected-actions {
       display: grid;
-      grid-template-columns: 1fr;
+      grid-template-columns: 1fr 1fr;
       gap: 8px;
     }
 
@@ -2878,6 +3189,18 @@
       padding: 16px;
     }
 
+    .start-panel.needs-auth,
+    .start-panel.needs-setup,
+    .start-panel.expanded {
+      padding: 24px;
+    }
+
+    .chat-shell.chat-ready .start-panel.needs-auth,
+    .chat-shell.chat-ready .start-panel.needs-setup,
+    .chat-shell.chat-ready .start-panel.expanded {
+      padding: 14px;
+    }
+
     .chat-connect.needs-setup .chat-connected-card strong,
     .chat-connect.needs-setup .chat-connected-card .chat-muted,
     .chat-connect.expanded .chat-advanced {
@@ -2906,11 +3229,15 @@
     }
 
     .chat-window {
-      display: flex;
+      display: none;
       flex-direction: column;
       min-height: 0;
       background: #181b20;
       color: #e8eaed;
+    }
+
+    .chat-shell.chat-ready .chat-window {
+      display: flex;
     }
 
     .chat-panel.chat-window {
@@ -3673,6 +4000,10 @@
       object-fit: contain;
     }
 
+    .floating-pet {
+      display: none;
+    }
+
     @media (max-width: 760px) {
       .chat-shell {
         grid-template-columns: 1fr;
@@ -3698,6 +4029,9 @@
       .chat-shell.connect-collapsed .chat-connect-controls {
         flex-direction: row;
         width: auto;
+      }
+      .dashboard-quick-actions {
+        grid-template-columns: 1fr;
       }
       .chat-step-list {
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3837,6 +4171,14 @@
       gap: 3px;
     }
 
+    .sidebar-section-label {
+      margin: 12px 8px 4px;
+      color: var(--text3);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
     .nav-item {
       min-height: 38px;
       padding: 8px 10px;
@@ -3871,9 +4213,23 @@
       font-size: 14px;
     }
 
+    .nav-item-secondary {
+      color: var(--text2);
+      opacity: 0.82;
+    }
+
+    .nav-item-secondary .nav-icon {
+      opacity: 0.72;
+    }
+
     .sidebar-footer {
       border-top: 1px solid var(--border);
       padding: 14px 10px 8px;
+    }
+
+    .sidebar-webapp-btn {
+      width: 100%;
+      justify-content: center;
     }
 
     .sidebar-update-btn {
@@ -4453,6 +4809,113 @@
     .chat-markdown table { font-size: 0.875rem; }
     .chat-input-bar textarea { font-size: 0.9375rem; }
 
+    @media (max-width: 900px) {
+      body {
+        display: block;
+      }
+
+      .sidebar,
+      body.chat-active .sidebar,
+      body:not(.chat-active) .sidebar {
+        position: static;
+        width: 100%;
+        min-height: auto;
+        padding: 12px;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .sidebar-brand {
+        margin-bottom: 10px;
+      }
+
+      .sidebar-brand-text,
+      .sidebar-brand-ver {
+        display: block;
+      }
+
+      .sidebar-section-label {
+        display: none;
+      }
+
+      .sidebar-nav {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .nav-item {
+        justify-content: center;
+        padding: 10px 8px;
+      }
+
+      .nav-item span:not(.nav-icon) {
+        display: inline;
+      }
+
+      .nav-icon {
+        display: none;
+      }
+
+      .nav-item-secondary:nth-of-type(n+6) {
+        display: none;
+      }
+
+      .nav-item-secondary {
+        display: none;
+      }
+
+      .sidebar-footer {
+        display: none;
+      }
+
+      .main-wrapper,
+      body.chat-active .main-wrapper,
+      body:not(.chat-active) .main-wrapper {
+        margin-left: 0;
+        padding: 18px 14px;
+      }
+
+      .page-content,
+      body.chat-active .page-content {
+        width: 100%;
+        max-width: none;
+        height: auto;
+        min-height: auto;
+      }
+
+      .start-page-header {
+        display: block;
+      }
+
+      .chat-shell,
+      .chat-shell.chat-ready {
+        grid-template-columns: 1fr;
+        min-height: 0;
+      }
+
+      .chat-shell.chat-ready.connect-collapsed {
+        grid-template-columns: 1fr;
+      }
+
+      .startup-step-row {
+        grid-template-columns: 30px minmax(0, 1fr);
+      }
+
+      .startup-step-badge {
+        grid-column: 2;
+        justify-self: start;
+      }
+
+      .service-gate-card {
+        display: grid;
+      }
+
+      .chat-shell.chat-ready .chat-window {
+        min-height: 620px;
+      }
+    }
+
   </style>
 </head>
 <body class="chat-active">
@@ -4466,33 +4929,33 @@
       </div>
     </div>
     <nav class="sidebar-nav">
+      <div class="sidebar-section-label">核心</div>
       <a class="nav-item active" onclick="switchPage('chat')" data-page="chat">
-        <span class="nav-icon">@</span> <span>CatsCo</span>
-      </a>
-      <a class="nav-item" onclick="switchPage('services')" data-page="services">
-        <span class="nav-icon">&gt;</span> <span>机器人</span>
-      </a>
-      <a class="nav-item" href="gauzmem.html">
-        <span class="nav-icon">#</span> <span>GauzMem</span>
+        <span class="nav-icon">@</span> <span>启动</span>
       </a>
       <a class="nav-item" onclick="switchPage('config')" data-page="config">
-        <span class="nav-icon">~</span> <span>设置</span>
+        <span class="nav-icon">~</span> <span>模型</span>
       </a>
-      <a class="nav-item" onclick="switchPage('store')" data-page="store">
+      <a class="nav-item" onclick="switchPage('services')" data-page="services">
+        <span class="nav-icon">&gt;</span> <span>通道</span>
+      </a>
+      <div class="sidebar-section-label">实验 / 开发</div>
+      <a class="nav-item nav-item-secondary" href="gauzmem.html">
+        <span class="nav-icon">#</span> <span>GauzMem</span>
+      </a>
+      <a class="nav-item nav-item-secondary" onclick="switchPage('store')" data-page="store">
         <span class="nav-icon">+</span> <span>Skills</span>
       </a>
-      <a class="nav-item" onclick="switchPage('developer')" data-page="developer">
+      <a class="nav-item nav-item-secondary" onclick="switchPage('developer')" data-page="developer">
         <span class="nav-icon">{}</span> <span>开发者中心</span>
       </a>
-      <a class="nav-item" onclick="switchPage('companion')" data-page="companion">
+      <a class="nav-item nav-item-secondary" onclick="switchPage('companion')" data-page="companion">
         <span class="nav-icon">*</span> <span>伙伴</span>
       </a>
     </nav>
     <div class="sidebar-footer">
       <div class="sidebar-footer-info">
-        <span id="topbar-status" style="display:inline-block;margin-bottom:4px;font-size:11px;padding:3px 8px;border-radius:999px;background:rgba(30,169,113,0.15);color:#1ea971;font-weight:700">在线</span><br/>
-        <span id="footer-platform">-</span><br/>
-        <span id="footer-node">-</span>
+        <button class="btn sidebar-webapp-btn" id="sidebar-webapp-btn" onclick="openCatsWebapp()" disabled>完成启动后打开 WebApp</button>
         <button class="btn sidebar-update-btn" id="sidebar-update-btn" onclick="showUpdateModal(true)">检查更新</button>
       </div>
     </div>
@@ -4506,15 +4969,15 @@
       <div class="page" id="page-services">
         <div class="settings-header">
           <div class="settings-heading">
-            <div class="settings-kicker">Connectors</div>
-            <div class="section-title" style="margin-bottom:0">机器人连接器</div>
-            <div class="settings-meta">启动 CatsCo webapp、飞书或微信入口；日志和诊断保留在同一页，方便排障。</div>
+            <div class="settings-kicker">通道</div>
+            <div class="section-title" style="margin-bottom:0">Agent 通道</div>
+            <div class="settings-meta">管理当前 Agent 的联系入口。</div>
           </div>
           <button class="btn btn-primary" onclick="fetchStatus()">刷新状态</button>
         </div>
         <div class="services-grid robot-grid" id="services-grid"><div class="loading">加载中...</div></div>
-        <details class="run-details" open>
-          <summary><span>启动前检查</span><span class="tag">readiness</span></summary>
+        <details class="run-details">
+          <summary><span>启动诊断</span><span class="tag">readiness</span></summary>
           <div class="run-details-body">
             <div class="run-overview">
               <div class="run-summary" id="run-summary">
@@ -4533,6 +4996,12 @@
           <summary><span>Diagnostics</span><span class="tag">version / host / paths</span></summary>
           <div class="run-details-body">
             <div class="status-grid" id="status-grid"></div>
+          </div>
+        </details>
+        <details class="run-details" id="connector-diagnostics-details">
+          <summary><span>本地接收服务诊断（高级）</span><span class="tag">高级诊断</span></summary>
+          <div class="run-details-body">
+            <div class="services-grid connector-grid" id="legacy-services-grid"><div class="loading">加载中...</div></div>
           </div>
         </details>
       </div>
@@ -4610,46 +5079,38 @@
 
       <!-- Page: Chat -->
       <div class="page active" id="page-chat">
-        <div class="section-title">CatsCo Chat</div>
+        <div class="start-page-header">
+          <div class="start-page-title-group">
+            <div class="settings-kicker">首页</div>
+            <div class="section-title">启动 CatsCo Agent</div>
+            <div class="settings-meta">先完成登录、模型和 Agent 绑定。完成后可在网页、微信、飞书或本地测试里使用。</div>
+          </div>
+        </div>
         <div class="chat-shell">
-          <div class="chat-panel chat-connect">
+          <div class="chat-panel chat-connect start-panel">
             <div class="chat-connect-header">
               <div>
-                <h3>CatsCo 连接</h3>
-                <div class="chat-muted chat-connect-intro">Dashboard Chat 连接同一个 CatsCompany 网页会话；本地 agent 通过 CatsCompany connector 回复。</div>
+                <div class="startup-eyebrow">启动向导</div>
+                <h3 id="cats-startup-title">下一步：登录 CatsCo</h3>
+                <div class="chat-muted chat-connect-intro">Dashboard 负责启动和管理这个 Agent；完成后可在 WebApp、微信、飞书或本地测试里使用。</div>
               </div>
               <div class="chat-connect-controls">
-                <span class="status-dot stopped" id="cats-chat-state">checking</span>
+                <span class="status-dot stopped" id="cats-chat-state">检查中</span>
                 <button class="btn chat-collapse-toggle" type="button" id="cats-connect-toggle" onclick="toggleCatsConnectPanel()" title="收起连接面板" aria-label="收起连接面板" style="display:none"><span class="collapse-icon">&lt;</span></button>
               </div>
             </div>
 
             <div class="chat-state-card warning" id="cats-state-card">
               <div>
-                <div class="chat-state-title" id="cats-state-title">正在检查 CatsCo Chat</div>
+                <div class="chat-state-title" id="cats-state-title">正在检查启动状态</div>
                 <div class="chat-muted" id="cats-state-copy">检查模型来源、CatsCo 账号、agent 绑定和 CatsCompany connector。</div>
               </div>
               <button class="btn btn-primary" id="cats-state-action" onclick="runCatsNextAction()">查看</button>
             </div>
 
-            <div class="chat-step-list" id="cats-checklist">
-              <div class="loading">加载中...</div>
-            </div>
-
-            <div class="chat-connected-card" id="cats-connected-card">
-              <strong>已连接 CatsCo</strong>
-              <div class="chat-muted" id="cats-connected-copy">可以直接开始对话。</div>
-              <div class="chat-connected-actions">
-                <button class="btn btn-success" onclick="handleCatsSetupAction()" id="cats-setup-btn">绑定并启动</button>
-                <button class="btn" onclick="showBotSelector()">选择机器人</button>
-                <button class="btn" onclick="resetCatsAuth()">切换账号</button>
-                <button class="btn" onclick="toggleCatsAdvanced()">高级设置</button>
-              </div>
-            </div>
-
             <div class="chat-form" id="cats-auth-panel">
               <div id="cats-login-fields">
-                <div class="chat-muted" id="cats-login-copy" style="margin-bottom:10px">使用 CatsCo webapp（CatsCompany）同一账号登录。</div>
+                <div class="chat-muted" id="cats-login-copy" style="margin-bottom:10px">使用你的 CatsCo 账号登录。</div>
                 <input class="config-input" id="cats-account" type="text" placeholder="邮箱或用户名" style="margin-bottom:10px" />
                 <input class="config-input" id="cats-password" type="password" placeholder="密码" />
                 <button class="btn btn-primary" onclick="submitCatsAuth()" id="cats-auth-btn" style="width:100%;margin-top:12px">登录</button>
@@ -4669,14 +5130,31 @@
               </div>
             </div>
 
+            <div class="startup-step-list" id="cats-checklist">
+              <div class="loading">加载中...</div>
+            </div>
+
+            <div class="chat-connected-card" id="cats-connected-card">
+              <strong>已连接 CatsCo</strong>
+              <div class="chat-muted" id="cats-connected-copy">可以直接开始对话。</div>
+              <div class="chat-connected-actions">
+                <button class="btn btn-success" onclick="handleCatsSetupAction()" id="cats-setup-btn">绑定并启动</button>
+                <button class="btn" onclick="openCatsWebapp()" id="cats-connected-webapp-btn" disabled>完成后打开 WebApp</button>
+                <button class="btn" onclick="getWeixinToken()" id="cats-connected-weixin-btn" disabled>完成后绑定微信</button>
+                <button class="btn" onclick="showBotSelector()">选择机器人</button>
+                <button class="btn" onclick="resetCatsAuth()">切换账号</button>
+                <button class="btn" onclick="toggleCatsAdvanced()">高级设置</button>
+              </div>
+            </div>
+
             <details class="chat-diagnostics" id="cats-connection-details">
-              <summary><span>连接详情</span><span class="tag" id="cats-details-summary">account / agent / connector</span></summary>
+              <summary><span>高级诊断</span><span class="tag" id="cats-details-summary">账号 / Agent / 入口</span></summary>
               <div class="chat-diagnostics-body">
                 <div class="chat-status-list" id="cats-status">
                   <div class="loading">加载中...</div>
                 </div>
                 <details class="chat-advanced" id="cats-advanced">
-                  <summary>高级 endpoint</summary>
+                  <summary>Endpoint</summary>
                   <div class="chat-advanced-body">
                     <div class="chat-advanced-note">默认连接 CatsCo 生产环境。只有在调试私有部署时才需要修改。</div>
                     <input class="config-input" id="cats-http-base" type="text" placeholder="HTTP Base URL" />
@@ -4716,9 +5194,9 @@
       <div class="page" id="page-config">
         <div class="settings-header">
           <div class="settings-heading">
-            <div class="settings-kicker">Settings</div>
-            <div class="section-title" style="margin-bottom:0">模型来源与 Runtime Profile</div>
-            <div class="settings-meta">优先使用 CatsCo 托管模型；自定义模型和本地环境变量保留在高级区域。</div>
+            <div class="settings-kicker">模型</div>
+            <div class="section-title" style="margin-bottom:0">模型设置</div>
+            <div class="settings-meta">现在先配置自定义模型；CatsCo 托管模型接入后会合并到账号额度。</div>
           </div>
           <button class="btn" onclick="refreshSettingsPage()">刷新</button>
         </div>
@@ -4728,14 +5206,22 @@
               <div class="settings-setup-title">先完成关键配置</div>
               <div class="settings-setup-copy">普通使用只需要确认 CatsCo 登录和模型来源；Runtime Profile、.env、adapter endpoint 都放在高级折叠区。</div>
             </div>
-            <span class="tag warm">setup</span>
+            <span class="tag warm">设置</span>
           </div>
           <div class="settings-step-grid">
             <div class="settings-step"><div class="settings-step-title">加载中 <span class="tag gray">...</span></div><div class="settings-step-meta">正在读取 readiness。</div></div>
           </div>
         </div>
         <div class="config-section" id="model-source-panel"><div class="loading">加载模型来源...</div></div>
-        <div class="config-section" id="runtime-config-panel"><div class="loading">加载 runtime 配置...</div></div>
+        <details class="config-section settings-advanced-shell" id="runtime-config-details">
+          <summary class="settings-advanced-summary">
+            <span>Runtime Profile（高级）</span>
+            <span class="tag warm">beta</span>
+          </summary>
+          <div class="settings-advanced-body">
+            <div id="runtime-config-panel"><div class="loading">加载 runtime 配置...</div></div>
+          </div>
+        </details>
         <details class="config-section settings-advanced-shell" id="env-config-details">
           <summary class="settings-advanced-summary">
             <span>本地环境变量（高级诊断）</span>
@@ -4949,7 +5435,7 @@
     let appReadinessSnapshot = {};
     let appReadinessLoaded = false;
     let appReadinessError = '';
-    const pageTitles = { services:'机器人', companion:'伙伴', chat:'CatsCo', config:'设置', store:'Skills', developer:'开发者中心' };
+    const pageTitles = { services:'通道', companion:'伙伴', chat:'启动', config:'模型', store:'Skills', developer:'开发者中心' };
     let catsAuthMode = 'login';
     let catsState = {};
     let catsNextAction = 'none';
@@ -4968,12 +5454,19 @@
     const CATS_SCROLL_TOP_THRESHOLD = 96;
     let catsAttachmentQueue = [];
     let catsAttachmentSeq = 0;
+    let weixinChannelSnapshot = null;
     const CATS_ATTACHMENT_BROWSER_MESSAGE = '普通浏览器不能直接上传本地附件；请在 CatsCo 桌面客户端使用 + 选择文件，或把文件路径作为文字说明发给 Agent。';
     const CATS_DEFAULT_HTTP_BASE = 'https://app.catsco.cc';
     const CATS_DEFAULT_WS_URL = 'wss://app.catsco.cc/v0/channels';
     const CATS_WORKING_TEXT_PREFIX = 'AI文本:';
     const CATS_WORKING_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
     const catsRuntimePlanOpenState = new Map();
+
+    function openCatsWebapp() {
+      const base = (catsState.httpBaseUrl || CATS_DEFAULT_HTTP_BASE).replace(/\/+$/, '');
+      window.open(base, '_blank', 'noopener,noreferrer');
+    }
+
     const petFrames = {
       idle: ['pet/idle/01.png', 'pet/idle/02.png', 'pet/idle/03.png', 'pet/idle/04.png'],
       thinking: ['pet/thinking/01.png', 'pet/thinking/02.png', 'pet/thinking/03.png', 'pet/thinking/04.png'],
@@ -5358,6 +5851,10 @@
         if (!catsPollTimer) catsPollTimer = setInterval(fetchCatsStatus, 5000);
       } else if (name === 'config') {
         refreshSettingsPage();
+      } else if (name === 'services') {
+        fetchCatsStatus();
+        fetchStatus();
+        fetchWeixinChannelBinding();
       } else if (name === 'companion') {
         setPetState(petState);
       } else if (name === 'store') {
@@ -5376,16 +5873,24 @@
         renderStatus(data);
         renderServices(data.services || []);
         fetchReadiness();
-        document.getElementById('footer-platform').textContent = data.platform || '-';
-        document.getElementById('footer-node').textContent = data.nodeVersion || '-';
-        document.getElementById('topbar-status').textContent = '在线';
-        document.getElementById('topbar-status').style.background = 'rgba(30,169,113,0.15)';
-        document.getElementById('topbar-status').style.color = '#1ea971';
+        const platformEl = document.getElementById('footer-platform');
+        const nodeEl = document.getElementById('footer-node');
+        const statusEl = document.getElementById('topbar-status');
+        if (platformEl) platformEl.textContent = data.platform || '-';
+        if (nodeEl) nodeEl.textContent = data.nodeVersion || '-';
+        if (statusEl) {
+          statusEl.textContent = '在线';
+          statusEl.style.background = 'rgba(30,169,113,0.15)';
+          statusEl.style.color = '#1ea971';
+        }
         applyPetBaseline();
       } catch (e) {
-        document.getElementById('topbar-status').textContent = '离线';
-        document.getElementById('topbar-status').style.background = 'rgba(220,93,115,0.12)';
-        document.getElementById('topbar-status').style.color = '#dc5d73';
+        const statusEl = document.getElementById('topbar-status');
+        if (statusEl) {
+          statusEl.textContent = '离线';
+          statusEl.style.background = 'rgba(220,93,115,0.12)';
+          statusEl.style.color = '#dc5d73';
+        }
         setPetAutoBaseline('error');
       }
     }
@@ -5404,6 +5909,7 @@
         appReadinessError = '';
         renderReadiness(appReadinessSnapshot);
         renderSettingsSetupSummary();
+        renderServices(appStatusSnapshot.services || []);
         if (document.getElementById('page-chat')?.classList.contains('active')) renderCatsStatus();
       } catch (e) {
         appReadinessSnapshot = {};
@@ -5411,6 +5917,7 @@
         appReadinessError = e && e.message ? e.message : 'Readiness API 暂不可用';
         renderReadinessError(e);
         renderSettingsSetupSummary();
+        renderServices(appStatusSnapshot.services || []);
         if (document.getElementById('page-chat')?.classList.contains('active')) renderCatsStatus();
       }
     }
@@ -5485,7 +5992,7 @@
       if (target === 'settings') return switchPage('config');
       if (target === 'catsco') return switchPage('chat');
       if (target === 'skills') return switchPage('store');
-      if (target === 'service') return svcAction('catscompany','start');
+      if (target === 'service') return openConnectorDiagnostics();
       const details = document.getElementById('diagnostics-details');
       if (details) {
         details.open = true;
@@ -5508,6 +6015,7 @@
     function readinessStatusClass(status) {
       if (status === 'ready') return 'running';
       if (status === 'warning') return 'stopped';
+      if (status === 'setup') return 'stopped';
       return 'error';
     }
 
@@ -5526,13 +6034,123 @@
       return '启动';
     }
 
+    function serviceByName(svcs, name){
+      return (svcs||[]).find(service=>service.name===name)||null;
+    }
+
+    function channelStatus(label, tone){
+      return '<span class="channel-status '+escapeHtml(tone||'disabled')+'">'+escapeHtml(label)+'</span>';
+    }
+
+    function channelMeta(items){
+      const filtered=(items||[]).filter(Boolean);
+      return filtered.length?'<div class="channel-meta">'+filtered.map(item=>'<span>'+escapeHtml(item)+'</span>').join('')+'</div>':'';
+    }
+
+    function channelActionButton(action){
+      if(!action)return '';
+      const disabled=action.disabled?' disabled':'';
+      const primary=action.primary?' btn-primary':'';
+      const title=action.title?' title="'+escapeHtml(action.title)+'"':'';
+      return '<button class="btn'+primary+'" onclick="'+action.onclick+'"'+disabled+title+'>'+escapeHtml(action.label)+'</button>';
+    }
+
+    function channelCardHtml(card){
+      const copy=card.copy?'<div class="channel-copy">'+escapeHtml(card.copy)+'</div>':'';
+      return '<div class="service-card channel-card '+escapeHtml(card.tone||'')+'">'+
+        '<div class="channel-head"><div><div class="channel-title">'+escapeHtml(card.title)+'</div><div class="channel-subtitle">'+escapeHtml(card.subtitle||'')+'</div></div>'+channelStatus(card.statusLabel, card.statusTone)+'</div>'+
+        copy+
+        channelMeta(card.meta)+
+        '<div class="channel-actions">'+(card.actions||[]).map(channelActionButton).join('')+'</div>'+
+      '</div>';
+    }
+
+    function getChannelGateAction(stage){
+      return stage.action==='settings'
+        ? { label:'去配置模型', onclick:"switchPage('config')", primary:true }
+        : { label:'回到启动向导', onclick:"switchPage('chat')", primary:true };
+    }
+
+    function openConnectorDiagnostics(){
+      const details=document.getElementById('connector-diagnostics-details');
+      if(details){
+        details.open=true;
+        details.scrollIntoView({behavior:'smooth', block:'start'});
+      }
+    }
+
+    function renderChannelCards(svcs){
+      const stage=buildCatsChatStage();
+      const catsService=serviceByName(svcs,'catscompany');
+      const weixinService=serviceByName(svcs,'weixin');
+      const feishuService=serviceByName(svcs,'feishu');
+      const connected=isCatsLoggedIn();
+      const agentBound=Boolean(connected && catsState.configured && catsState.botUid);
+      const ready=stage.key==='ready';
+      const botName=catsState.botName || catsState.bot?.display_name || catsState.bot?.username || catsState.botUid || '当前 Agent';
+      const bodySummary=formatCatsBodyStatus(catsState.bodyStatus, Boolean(catsState.configured));
+      const weixinBinding=weixinChannelSnapshot?.binding||null;
+      const weixinConfigured=Boolean(weixinChannelSnapshot?.configured && weixinBinding);
+      const weixinCanBind=agentBound && !['body-conflict','body-auth-error'].includes(stage.key);
+      const gateAction=getChannelGateAction(stage);
+
+      const webCard={
+        title:'CatsCo WebApp',
+        subtitle:'网页',
+        statusLabel:ready?'可使用':(agentBound?'待启动':'待绑定'),
+        statusTone:ready?'ready':(agentBound?'pending':'disabled'),
+        tone:'primary',
+        copy:ready?'网页消息进入当前 Agent。':'',
+        meta:[agentBound?botName:'未选择 Agent', catsService?.status==='running'?'接收就绪':'未就绪'],
+        actions:[ready?{label:'打开 WebApp', onclick:'openCatsWebapp()', primary:true}:gateAction],
+      };
+
+      const weixinCard={
+        title:'微信',
+        subtitle:'扫码绑定',
+        statusLabel:weixinConfigured?'已绑定':(weixinCanBind?'可绑定':'待绑定 Agent'),
+        statusTone:weixinConfigured?'ready':(weixinCanBind?'pending':'disabled'),
+        tone:weixinConfigured?'primary':'',
+        copy:weixinConfigured?'微信消息进入当前 Agent。':'',
+        meta:[agentBound?botName:'未选择 Agent', weixinBinding?.tokenLast4?'****'+weixinBinding.tokenLast4:'', weixinService?.status==='running'?'接收就绪':'未就绪'],
+        actions:[
+          weixinCanBind?{label:weixinConfigured?'重新扫码':'扫码绑定', onclick:'getWeixinToken()', primary:true}:{label:'选择 Agent', onclick:"switchPage('chat')", primary:true},
+        ],
+      };
+
+      const feishuCard={
+        title:'飞书',
+        subtitle:'组织消息',
+        statusLabel:feishuService?.status==='running'?'高级模式运行中':'后续接入',
+        statusTone:feishuService?.status==='running'?'pending':'disabled',
+        tone:'blocked',
+        copy:'待接入。',
+        meta:[agentBound?botName:'未选择 Agent'],
+        actions:[
+          {label:'高级诊断', onclick:'openConnectorDiagnostics()'},
+          {label:'待接入', onclick:'void 0', disabled:true, title:'飞书通道绑定还未产品化'},
+        ],
+      };
+
+      return [webCard, weixinCard, feishuCard].map(channelCardHtml).join('');
+    }
+
+    function renderLegacyServiceControls(svcs){
+      const grid=document.getElementById('legacy-services-grid');
+      if(!grid)return;
+      if(!svcs.length){grid.innerHTML='<div class="loading">暂无本地 connector</div>';return;}
+      grid.innerHTML=svcs.map(s=>{
+        const running=s.status==='running';
+        const stateLabel=running?'已启动':'未启动';
+        const error=s.lastError?'<div class="service-detail"><span style="color:var(--red)">'+escapeHtml(s.lastError)+'</span></div>':'';
+        return '<div class="service-card"><div class="service-header"><div class="service-name">'+escapeHtml(s.label)+'</div><span class="service-status '+escapeHtml(s.status)+'">'+stateLabel+'</span></div><div class="service-copy">'+escapeHtml(serviceCopy(s.name))+'</div>'+error+'<div class="service-actions">'+(running?'<button class="btn btn-danger" onclick="svcAction(\''+s.name+'\',\'stop\')">'+servicePrimaryAction(s.name,true)+'</button><button class="btn" onclick="svcAction(\''+s.name+'\',\'restart\')">重启</button>':'<button class="btn btn-success" onclick="svcAction(\''+s.name+'\',\'start\')">'+servicePrimaryAction(s.name,false)+'</button>')+'<button class="btn" onclick="showLogs(\''+s.name+'\',\''+escapeHtml(s.label)+'\')">日志</button></div></div>';
+      }).join('');
+    }
+
     function renderServices(svcs) {
       const g = document.getElementById('services-grid');
-      if (!svcs.length) { g.innerHTML = '<div class="loading">无服务</div>'; return; }
-      g.innerHTML = svcs.map(s => {
-        const r = s.status==='running', up = r&&s.uptime?formatUptime(s.uptime):'-';
-        return '<div class="service-card"><div class="service-header"><div class="service-name">'+escapeHtml(s.label)+'</div><span class="service-status '+escapeHtml(s.status)+'">'+escapeHtml(s.status)+'</span></div><div class="service-copy">'+escapeHtml(serviceCopy(s.name))+'</div><div class="service-detail">'+(r?'<span>PID: '+escapeHtml(s.pid)+'</span><span>Uptime: '+up+'</span>':'<span>未运行</span>')+(s.lastError?'<span style="color:var(--red)">'+escapeHtml(s.lastError)+'</span>':'')+'</div><div class="service-actions">'+(r?'<button class="btn btn-danger" onclick="svcAction(\''+s.name+'\',\'stop\')">'+servicePrimaryAction(s.name, true)+'</button><button class="btn" onclick="svcAction(\''+s.name+'\',\'restart\')">重启</button>':'<button class="btn btn-success" onclick="svcAction(\''+s.name+'\',\'start\')">'+servicePrimaryAction(s.name, false)+'</button>')+'<button class="btn" onclick="showLogs(\''+s.name+'\',\''+escapeHtml(s.label)+'\')">日志</button></div></div>';
-      }).join('');
+      if(g)g.innerHTML=renderChannelCards(svcs||[]);
+      renderLegacyServiceControls(svcs||[]);
     }
 
     function getSkillCompanionStats(name) {
@@ -6258,8 +6876,9 @@
     }
 
     function settingsStepHtml(title, status, meta, action){
-      const tone=status==='ready'?'green':status==='warning'?'warm':status==='blocked'?'red':'gray';
-      const label=status==='ready'?(title==='CatsCo Chat'?'运行中':'完成'):status==='warning'?(title==='CatsCo Chat'?'未启动':'需处理'):status==='blocked'?'待配置':'等待';
+      const isEntry=title==='聊天入口';
+      const tone=status==='ready'?'green':(status==='warning'||status==='blocked')?'warm':'gray';
+      const label=status==='ready'?(isEntry?'运行中':'完成'):status==='warning'?(isEntry?'未启动':'需处理'):status==='blocked'?'待设置':'等待';
       return '<button class="settings-step" type="button" onclick="'+action+'"><div class="settings-step-title">'+escapeHtml(title)+' '+runtimeTag(label,tone)+'</div><div class="settings-step-meta">'+escapeHtml(meta||'')+'</div></button>';
     }
 
@@ -6281,7 +6900,7 @@
       const next = modelSection?.status==='blocked'
         ? '先补齐模型来源；当前托管模型未接入前，自定义模型是启动本地 agent 的必要配置。'
         : catscoSection?.status==='blocked'
-          ? '模型已就绪后，继续登录并绑定 CatsCo Chat。'
+          ? '模型已就绪后，继续登录并绑定聊天入口。'
           : catscoSection?.status==='warning'
             ? 'CatsCompany connector 还未启动；这只影响网页 Chat，飞书和微信在运行页独立启动。'
             : '关键配置看起来可用；高级区保持折叠，按需诊断。';
@@ -6290,11 +6909,11 @@
           <div class="settings-setup-title">先完成关键配置</div>
           <div class="settings-setup-copy">${escapeHtml(next)}</div>
         </div>
-        ${runtimeTag('setup','warm')}
+        ${runtimeTag('设置','warm')}
       </div>
       <div class="settings-step-grid">
         ${settingsStepHtml('模型来源', modelSection?.status||'unknown', modelMeta, "openCustomModelSettings()")}
-        ${settingsStepHtml('CatsCo Chat', catscoSection?.status||'unknown', catsMeta, "switchPage('chat')")}
+        ${settingsStepHtml('聊天入口', catscoSection?.status||'unknown', catsMeta, "switchPage('chat')")}
         ${settingsStepHtml('Runtime Profile', runtimeSection?.status||'unknown', runtimeMeta, "toggleSettingsGroup('runtime-config-group','runtimeStatus')")}
       </div>`;
     }
@@ -6444,7 +7063,7 @@
                     <div class="model-source-title">自定义模型（当前需要）</div>
                     <div class="model-source-copy">托管模型未接入前，启动本地 agent 需要这里的模型地址、模型名称和访问凭证。修改会自动保存，访问凭证只保存 presence，不会回显。</div>
                   </div>
-                  ${runtimeTag(credentialMeta, keyField.present?'green':'red')}
+                  ${runtimeTag(credentialMeta, keyField.present?'green':'warm')}
                 </div>
               </summary>
               <div class="model-source-form">
@@ -7048,7 +7667,7 @@
     function catsAuthHelpText(){
       if(catsState.authStatus==='invalid')return catsState.authError||'本地登录态已失效，请重新登录。';
       if(catsState.authStatus==='unchecked'&&catsState.authError)return catsState.authError;
-      return '使用 CatsCo webapp（CatsCompany）同一账号登录。';
+      return '请输入账号密码；登录后会保存在本机，不会自动启动任何 agent。';
     }
 
     function buildCatsChatStage(){
@@ -7062,24 +7681,24 @@
       if(!appReadinessLoaded || !modelSection || !catscoSection){
         return {
           key:'needs-readiness',
-          status:'blocked',
-          badge:'checking',
+          status:'setup',
+          badge:'检查中',
           title:'正在读取启动状态',
-          copy:appReadinessError||'等待模型来源和 CatsCo readiness 检查完成。',
+          copy:appReadinessError||'正在检查模型来源、CatsCo 账号和聊天入口。',
           action:'settings',
-          actionLabel:'打开设置',
+          actionLabel:'查看模型设置',
           inputPlaceholder:'等待启动状态检查',
         };
       }
       if(!connected){
         return {
           key:'needs-auth',
-          status:'blocked',
-          badge:'login',
+          status:'setup',
+          badge:'未登录',
           title:'登录 CatsCo',
-          copy:catsAuthHelpText(),
+          copy:'先用你的 CatsCo 账号登录，下一步再选择模型和 Agent。',
           action:'auth',
-          actionLabel:'登录或注册',
+          actionLabel:'登录 CatsCo',
           inputPlaceholder:'先登录 CatsCo',
         };
       }
@@ -7087,22 +7706,22 @@
       if(modelBlocked){
         return {
           key:'needs-model',
-          status:'blocked',
-          badge:'blocked',
-          title:'先完成模型来源',
-          copy:firstReadinessProblem(modelSection)||'需要配置自定义模型后，本地 agent 才能回复 CatsCo Chat。',
+          status:'setup',
+          badge:'待设置',
+          title:'配置模型来源',
+          copy:firstReadinessProblem(modelSection)||'当前需要配置自定义模型后，本地 agent 才能回复。',
           action:'settings',
-          actionLabel:'打开设置',
+          actionLabel:'去配置模型',
           inputPlaceholder:'先完成模型来源设置',
         };
       }
       if(catscoSection.status==='blocked'){
         return {
           key:'needs-catsco-readiness',
-          status:'blocked',
-          badge:'blocked',
+          status:'setup',
+          badge:'待设置',
           title:'完善 CatsCo 连接',
-          copy:firstReadinessProblem(catscoSection)||'CatsCo Chat readiness 未通过。',
+          copy:firstReadinessProblem(catscoSection)||'需要先完成 CatsCo 登录、Agent 绑定或入口启动。',
           action:'setup',
           actionLabel:'检查连接',
           inputPlaceholder:'先完成 CatsCo 连接检查',
@@ -7113,7 +7732,7 @@
         return {
           key:'body-conflict',
           status:'blocked',
-          badge:'body',
+          badge:'错误',
           title:'另一个设备正在运行这个 agent',
           copy:'CatsCo 平台显示这个机器人当前已由另一个 body 连接。请停止那边的进程，或重新选择/创建当前设备自己的 agent。',
           action:'bot-selector',
@@ -7125,7 +7744,7 @@
         return {
           key:'body-auth-error',
           status:'blocked',
-          badge:'body',
+          badge:'错误',
           title:'当前账号不能管理这个 agent',
           copy:bodyStatus.error||'CatsCo 平台拒绝查询这个 bot 的 body 状态。请确认当前账号和绑定的 agent 是否匹配。',
           action:'bot-selector',
@@ -7136,8 +7755,8 @@
       if(!configured){
         return {
           key:'needs-binding',
-          status:'blocked',
-          badge:'bind',
+          status:'setup',
+          badge:'待绑定',
           title:'绑定 CatsCo agent',
           copy:'账号已登录，需要创建或绑定本地 agent 在 CatsCo 中的身份。',
           action:'setup',
@@ -7149,20 +7768,20 @@
         return {
           key:'needs-connector',
           status:'warning',
-          badge:'start',
-          title:'启动 CatsCompany connector',
-          copy:'账号和 agent 已绑定，启动后 CatsCompany 网页消息会进入本地 runtime。',
+          badge:'待启动',
+          title:'启动聊天入口',
+          copy:'账号和 agent 已绑定，启动后 CatsCo WebApp 消息会进入本地 runtime。',
           action:'setup',
-          actionLabel:'启动 connector',
+          actionLabel:'启动入口',
           inputPlaceholder:'先启动 CatsCompany connector',
         };
       }
       if(!topicReady){
         return {
           key:'needs-topic',
-          status:'blocked',
-          badge:'topic',
-          title:'准备 Chat 会话',
+          status:'setup',
+          badge:'准备中',
+          title:'准备聊天会话',
           copy:'账号和 agent 已就绪，但还没有拿到可对话的 topic。',
           action:'setup',
           actionLabel:'重新检查',
@@ -7172,11 +7791,11 @@
       return {
         key:'ready',
         status:'ready',
-        badge:'ready',
-        title:'可以直接对话',
-        copy:'消息会发送到 CatsCompany 网页会话，本地 agent 通过 CatsCompany connector 回复。',
-        action:'refresh',
-        actionLabel:'刷新消息',
+        badge:'运行中',
+        title:'Agent 已启动',
+        copy:'可以去 CatsCo WebApp、微信、飞书或本地测试 Chat 和当前 agent 沟通。',
+        action:'webapp',
+        actionLabel:'打开 WebApp',
         inputPlaceholder:'输入消息，Enter 发送，Shift+Enter 换行',
       };
     }
@@ -7195,19 +7814,40 @@
         : (catsState.authStatus==='invalid'?'登录态失效':'未登录');
       const bodySummary=formatCatsBodyStatus(catsState.bodyStatus, configured);
       const modelSection=getReadinessSection('model');
-      const modelStatus=modelSection
-        ? (modelSection.status==='blocked'?'fail':modelSection.status==='warning'?'warning':'pass')
-        : 'fail';
+      const modelReady=Boolean(modelSection && modelSection.status!=='blocked');
+      const bodyFailed=configured && (bodySummary.level==='fail');
+      const entryReady=running && topicReady;
+      const statusLabel=status=>{
+        if(status==='pass')return '已完成';
+        if(status==='current')return '当前步骤';
+        if(status==='warning')return '需要处理';
+        if(status==='fail')return '错误';
+        return '未开始';
+      };
       const steps=[
-        {label:'模型来源', status:modelStatus, meta:modelSection?firstReadinessProblem(modelSection)||modelSection.summary:'等待 readiness'},
-        {label:'CatsCo 账号', status:connected?'pass':'fail', meta:accountMeta},
-        {label:'Agent 绑定', status:configured?'pass':'fail', meta:configured&&catsState.botUid?('uid '+catsState.botUid):'未绑定'},
-        {label:'Agent Body', status:bodySummary.level, meta:bodySummary.text},
-        {label:'CatsCompany connector', status:running?'pass':(configured?'warning':'fail'), meta:running?'运行中':'未启动'},
-        {label:'Chat 会话', status:topicReady?'pass':'fail', meta:topicReady?'已就绪':'等待 topic'},
+        {
+          label:'登录 CatsCo',
+          status:connected?'pass':'current',
+          meta:connected?accountMeta:'使用你的 CatsCo 账号登录。',
+        },
+        {
+          label:'选择 AI 模型',
+          status:modelReady?'pass':(connected?'current':'todo'),
+          meta:modelReady?(modelSection.summary||'模型来源已可用'):'填写模型密钥后，这个 Agent 才能回复。',
+        },
+        {
+          label:'选择要运行的 Agent',
+          status:bodyFailed?'fail':(configured?'pass':(connected&&modelReady?'current':'todo')),
+          meta:configured?(catsState.botUid?('当前 Agent uid '+catsState.botUid):bodySummary.text):'选择或创建当前 Dashboard 要管理的 Agent。',
+        },
+        {
+          label:'打开使用入口',
+          status:entryReady?'pass':(configured?(running?'warning':'current'):'todo'),
+          meta:entryReady?'网页和本地测试 Chat 已就绪。':(configured?'启动网页聊天入口后开始使用。':'完成设置后打开使用入口。'),
+        },
       ];
-      list.innerHTML=steps.map(step=>
-        '<div class="chat-step-row '+step.status+'"><strong>'+escapeHtml(step.label)+'</strong><span>'+escapeHtml(step.meta||'')+'</span></div>'
+      list.innerHTML=steps.map((step,index)=>
+        '<div class="startup-step-row '+step.status+'"><div class="startup-step-index">'+(index+1)+'</div><div><div class="startup-step-title">'+escapeHtml(step.label)+'</div><div class="startup-step-meta">'+escapeHtml(step.meta||'')+'</div></div><div class="startup-step-badge">'+statusLabel(step.status)+'</div></div>'
       ).join('');
     }
 
@@ -7227,10 +7867,30 @@
       catsNextAction=stage.action;
       if(action){
         action.textContent=stage.actionLabel||'查看';
-        action.style.display=stage.action==='none'?'none':'inline-flex';
+        action.style.display=(stage.action==='none'||stage.action==='auth')?'none':'inline-flex';
+      }
+      const startupTitle=document.getElementById('cats-startup-title');
+      if(startupTitle)startupTitle.textContent=stage.key==='ready'?'Agent 已启动':'下一步：'+stage.title;
+      const sidebarWebapp=document.getElementById('sidebar-webapp-btn');
+      if(sidebarWebapp){
+        const ready=stage.key==='ready';
+        sidebarWebapp.disabled=!ready;
+        sidebarWebapp.textContent=ready?'打开 CatsCo WebApp':'完成启动后打开 WebApp';
+        sidebarWebapp.classList.toggle('btn-primary', ready);
+      }
+      const ready=stage.key==='ready';
+      const connectedWebapp=document.getElementById('cats-connected-webapp-btn');
+      if(connectedWebapp){
+        connectedWebapp.disabled=!ready;
+        connectedWebapp.textContent=ready?'打开 WebApp':'完成后打开 WebApp';
+      }
+      const connectedWeixin=document.getElementById('cats-connected-weixin-btn');
+      if(connectedWeixin){
+        connectedWeixin.disabled=!ready;
+        connectedWeixin.textContent=ready?'微信扫码':'完成后绑定微信';
       }
       const details=document.getElementById('cats-details-summary');
-      if(details)details.textContent=stage.key==='ready'?'ready':'needs attention';
+      if(details)details.textContent=stage.key==='ready'?'运行中':'诊断';
       const input=document.getElementById('cats-message-input');
       const send=document.getElementById('cats-send-btn');
       const attach=document.getElementById('cats-attach-btn');
@@ -7255,6 +7915,7 @@
       if(catsNextAction==='settings')return switchPage('config');
       if(catsNextAction==='setup')return handleCatsSetupAction();
       if(catsNextAction==='bot-selector')return showBotSelector();
+      if(catsNextAction==='webapp')return openCatsWebapp();
       if(catsNextAction==='refresh')return loadCatsMessages(true);
       if(catsNextAction==='auth'){
         const input=document.getElementById('cats-account');
@@ -7310,6 +7971,7 @@
           catsMessagesOwnerKey=nextOwnerKey;
         }
         renderCatsStatus();
+        renderServices(appStatusSnapshot.services || []);
         if((dashboardSettingsSnapshot.fields||[]).length && !shouldDeferModelSourceRender())renderModelSource(dashboardSettingsSnapshot);
         if(catsState.topicId) loadCatsMessages(false);
       }catch(e){
@@ -7320,13 +7982,8 @@
     function updateCatsLayoutState(stage){
       const panel=document.querySelector('.chat-connect');
       if(!panel)return;
-      const service=catsState.service||{};
-      const user=catsState.user||{};
-      const connected=isCatsLoggedIn();
-      const configured=Boolean(catsState.configured);
-      const running=service.status==='running';
       const chatStage=stage||buildCatsChatStage();
-      const ready=chatStage.key==='ready' || (connected && configured && running && Boolean(catsState.topicId));
+      const ready=chatStage.key==='ready';
       const shell=document.querySelector('.chat-shell');
       const toggle=document.getElementById('cats-connect-toggle');
       if(!ready){
@@ -7335,7 +7992,10 @@
       }else if(!catsConnectManualOverride){
         catsConnectCollapsed=true;
       }
-      if(shell) shell.classList.toggle('connect-collapsed', ready && catsConnectCollapsed);
+      if(shell){
+        shell.classList.toggle('chat-ready', ready);
+        shell.classList.toggle('connect-collapsed', ready && catsConnectCollapsed);
+      }
       if(toggle){
         toggle.style.display=ready?'inline-flex':'none';
         toggle.title=catsConnectCollapsed?'展开连接面板':'收起连接面板';
@@ -7343,6 +8003,9 @@
         const icon=toggle.querySelector('.collapse-icon');
         if(icon) icon.textContent=catsConnectCollapsed?'>':'<';
       }
+      const connected=isCatsLoggedIn();
+      const configured=Boolean(catsState.configured);
+      const running=(catsState.service||{}).status==='running';
       panel.classList.toggle('needs-auth', !connected);
       panel.classList.toggle('needs-setup', connected && (!configured || !running));
       if(!connected) panel.classList.add('expanded');
@@ -8737,11 +9400,11 @@
     let weixinPollAgentUid='';
     async function fetchWeixinChannelBinding(){
       const el=document.getElementById('weixin-channel-status');
-      if(!el)return;
       try{
         const r=await fetch(API+'/api/weixin/channel-binding');
         const d=await r.json();
         if(!r.ok||d.error)throw new Error(d.error||'微信通道状态加载失败');
+        weixinChannelSnapshot=d;
         const agent=d.currentAgent;
         const binding=d.binding;
         const parts=[];
@@ -8750,15 +9413,20 @@
         if(d.configured&&binding){
           parts.push('微信已绑定到此 Agent');
           if(binding.tokenLast4)parts.push('Token ****'+binding.tokenLast4);
-          el.className='runtime-note';
+          if(el)el.className='runtime-note';
         }else{
           if(agent)parts.push(d.reason||'微信尚未绑定到当前 Agent');
-          el.className='runtime-note warning';
+          if(el)el.className='runtime-note warning';
         }
-        el.textContent=parts.join(' · ');
+        if(el)el.textContent=parts.join(' · ');
+        renderServices(appStatusSnapshot.services || []);
       }catch(e){
-        el.className='runtime-note danger';
-        el.textContent='微信通道状态加载失败：'+(e.message||String(e));
+        weixinChannelSnapshot={configured:false,error:e.message||String(e)};
+        if(el){
+          el.className='runtime-note danger';
+          el.textContent='微信通道状态加载失败：'+(e.message||String(e));
+        }
+        renderServices(appStatusSnapshot.services || []);
       }
     }
     async function getWeixinToken(){

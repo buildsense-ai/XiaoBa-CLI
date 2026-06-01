@@ -1,0 +1,1048 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CatsCo Minimal Agent Chat</title>
+  <style>
+    :root {
+      --bg: #f7f7f8;
+      --surface: #ffffff;
+      --surface-soft: #f3f4f6;
+      --ink: #111827;
+      --muted: #6b7280;
+      --faint: #9ca3af;
+      --line: #e5e7eb;
+      --line-strong: #d1d5db;
+      --primary: #111827;
+      --green: #12845c;
+      --green-soft: #eaf8f1;
+      --amber: #b7791f;
+      --amber-soft: #fff7e6;
+      --red: #c2414b;
+      --shadow: 0 18px 48px rgba(15, 23, 42, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, rgba(17, 24, 39, 0.04), transparent 34rem),
+        var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    textarea {
+      font: inherit;
+    }
+
+    button {
+      border: 0;
+      cursor: pointer;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .topbar {
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.82);
+      backdrop-filter: blur(18px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      background: var(--ink);
+      color: #fff;
+      font-weight: 900;
+      font-size: 13px;
+    }
+
+    .brand-title {
+      font-size: 14px;
+      font-weight: 850;
+      line-height: 1.15;
+      white-space: nowrap;
+    }
+
+    .brand-subtitle {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 42vw;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-pill,
+    .tiny-button {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--muted);
+      padding: 0 12px;
+      font-size: 12px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+
+    .status-pill.ready {
+      color: var(--green);
+      background: var(--green-soft);
+      border-color: rgba(18, 132, 92, 0.18);
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: currentColor;
+    }
+
+    .tiny-button {
+      color: var(--ink);
+      transition: background 0.16s ease, border-color 0.16s ease;
+    }
+
+    .tiny-button:hover {
+      background: var(--surface-soft);
+      border-color: var(--line-strong);
+    }
+
+    .main {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 24px 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 292px;
+      gap: 16px;
+      min-height: 0;
+    }
+
+    .chat-shell,
+    .side-panel,
+    .drawer {
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: var(--shadow);
+    }
+
+    .chat-shell {
+      border-radius: 18px;
+      min-height: calc(100vh - 112px);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      overflow: hidden;
+    }
+
+    .chat-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.74);
+    }
+
+    .agent-line {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .avatar {
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      background: linear-gradient(145deg, #111827, #374151);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-weight: 900;
+      flex: 0 0 auto;
+    }
+
+    .agent-name {
+      font-size: 18px;
+      font-weight: 900;
+      line-height: 1.2;
+    }
+
+    .agent-meta {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 3px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 58vw;
+    }
+
+    .chat-head-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .ghost-button,
+    .primary-button,
+    .secondary-button {
+      min-height: 40px;
+      border-radius: 10px;
+      padding: 0 14px;
+      font-size: 13px;
+      font-weight: 820;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease;
+    }
+
+    .primary-button {
+      color: #fff;
+      background: var(--primary);
+      box-shadow: 0 12px 28px rgba(17, 24, 39, 0.16);
+    }
+
+    .primary-button:hover {
+      transform: translateY(-1px);
+    }
+
+    .secondary-button,
+    .ghost-button {
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--ink);
+    }
+
+    .ghost-button {
+      border-color: transparent;
+      color: var(--muted);
+      background: transparent;
+    }
+
+    .secondary-button:hover,
+    .ghost-button:hover {
+      background: var(--surface-soft);
+      border-color: var(--line-strong);
+    }
+
+    .chat-body {
+      min-height: 0;
+      overflow: auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      background:
+        linear-gradient(rgba(255,255,255,0.52), rgba(255,255,255,0.86)),
+        radial-gradient(circle at 30% 0%, rgba(17, 24, 39, 0.04), transparent 25rem);
+    }
+
+    .setup-card {
+      width: min(560px, 100%);
+      margin: auto;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--surface);
+      padding: 28px;
+      box-shadow: 0 14px 38px rgba(15, 23, 42, 0.08);
+    }
+
+    .setup-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--amber);
+      background: var(--amber-soft);
+      border: 1px solid rgba(183, 121, 31, 0.18);
+      min-height: 28px;
+      border-radius: 999px;
+      padding: 0 10px;
+      font-size: 12px;
+      font-weight: 850;
+      margin-bottom: 16px;
+    }
+
+    .setup-title {
+      margin: 0;
+      font-size: clamp(30px, 5vw, 46px);
+      line-height: 1.06;
+      letter-spacing: 0;
+    }
+
+    .setup-copy {
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.62;
+      max-width: 480px;
+    }
+
+    .setup-action-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 24px;
+    }
+
+    .setup-steps {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 26px;
+    }
+
+    .step {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      background: #fff;
+    }
+
+    .step.current {
+      border-color: rgba(183, 121, 31, 0.28);
+      background: var(--amber-soft);
+    }
+
+    .step.done {
+      border-color: rgba(18, 132, 92, 0.18);
+      background: var(--green-soft);
+    }
+
+    .step-label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      margin-bottom: 4px;
+    }
+
+    .step-value {
+      font-size: 13px;
+      font-weight: 850;
+      line-height: 1.25;
+    }
+
+    .message {
+      max-width: min(620px, 86%);
+      display: grid;
+      gap: 7px;
+    }
+
+    .message.agent { align-self: flex-start; }
+    .message.user { align-self: flex-end; }
+
+    .bubble {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 13px 15px;
+      background: var(--surface);
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .message.user .bubble {
+      background: var(--primary);
+      color: #fff;
+      border-color: var(--primary);
+      border-bottom-right-radius: 6px;
+    }
+
+    .message.agent .bubble {
+      border-bottom-left-radius: 6px;
+    }
+
+    .message-meta {
+      color: var(--faint);
+      font-size: 12px;
+      padding: 0 4px;
+    }
+
+    .composer {
+      border-top: 1px solid var(--line);
+      padding: 14px;
+      background: rgba(255, 255, 255, 0.88);
+    }
+
+    .composer-box {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: end;
+      gap: 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 15px;
+      padding: 8px;
+      background: var(--surface);
+    }
+
+    .icon-button {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      background: transparent;
+      color: var(--muted);
+      font-weight: 900;
+    }
+
+    .icon-button:hover {
+      background: var(--surface-soft);
+    }
+
+    textarea {
+      resize: none;
+      border: 0;
+      outline: 0;
+      min-height: 36px;
+      max-height: 130px;
+      padding: 8px 0;
+      color: var(--ink);
+      background: transparent;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .side-panel {
+      border-radius: 18px;
+      overflow: hidden;
+      align-self: start;
+      position: sticky;
+      top: 88px;
+    }
+
+    .side-section {
+      padding: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .side-section:last-child {
+      border-bottom: 0;
+    }
+
+    .side-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 14px;
+      font-weight: 900;
+      margin-bottom: 12px;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      padding: 8px 0;
+    }
+
+    .row strong {
+      color: var(--ink);
+      font-size: 13px;
+      text-align: right;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      padding: 0 8px;
+      color: var(--muted);
+      background: var(--surface);
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .badge.green {
+      color: var(--green);
+      background: var(--green-soft);
+      border-color: rgba(18, 132, 92, 0.18);
+    }
+
+    .badge.amber {
+      color: var(--amber);
+      background: var(--amber-soft);
+      border-color: rgba(183, 121, 31, 0.18);
+    }
+
+    .skill-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .skill-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 8px 10px;
+      background: var(--surface);
+    }
+
+    .skill-name {
+      font-size: 13px;
+      font-weight: 850;
+    }
+
+    .skill-meta {
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 1px;
+    }
+
+    .entry-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .entry-button {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      min-height: 42px;
+      background: var(--surface);
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 820;
+    }
+
+    .entry-button:hover {
+      background: var(--surface-soft);
+      border-color: var(--line-strong);
+    }
+
+    .drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      background: rgba(17, 24, 39, 0.28);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.18s ease;
+    }
+
+    .drawer {
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      bottom: 12px;
+      z-index: 40;
+      width: min(420px, calc(100vw - 24px));
+      border-radius: 18px;
+      transform: translateX(calc(100% + 24px));
+      transition: transform 0.22s ease;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+
+    body.drawer-open .drawer-backdrop {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    body.drawer-open .drawer {
+      transform: translateX(0);
+    }
+
+    .drawer-head,
+    .drawer-foot {
+      padding: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .drawer-foot {
+      border-bottom: 0;
+      border-top: 1px solid var(--line);
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .drawer-title {
+      font-size: 18px;
+      font-weight: 900;
+      margin: 0;
+    }
+
+    .drawer-copy {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .drawer-body {
+      overflow: auto;
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+      align-content: start;
+    }
+
+    .model-option {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      background: var(--surface);
+    }
+
+    .model-option.selected {
+      border-color: var(--ink);
+      box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.06);
+    }
+
+    .model-title {
+      font-size: 14px;
+      font-weight: 900;
+    }
+
+    .model-copy {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .field input,
+    .field select {
+      min-height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0 11px;
+      color: var(--ink);
+      background: var(--surface);
+      outline: 0;
+    }
+
+    .field input:focus,
+    .field select:focus {
+      border-color: var(--ink);
+      box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.06);
+    }
+
+    .mobile-tools {
+      display: none;
+      padding: 12px 16px;
+      border-top: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.9);
+      gap: 8px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    @media (max-width: 920px) {
+      .topbar {
+        padding: 0 14px;
+      }
+
+      .status-pill {
+        display: none;
+      }
+
+      .main {
+        width: min(100vw, 760px);
+        padding: 10px;
+        grid-template-columns: 1fr;
+      }
+
+      .side-panel {
+        display: none;
+      }
+
+      .chat-shell {
+        min-height: calc(100vh - 84px);
+        border-radius: 16px;
+      }
+
+      .chat-head {
+        padding: 14px;
+      }
+
+      .chat-head-actions .ghost-button {
+        display: none;
+      }
+
+      .agent-name {
+        font-size: 16px;
+      }
+
+      .agent-meta {
+        max-width: 52vw;
+      }
+
+      .chat-body {
+        padding: 14px;
+      }
+
+      .setup-card {
+        padding: 22px;
+        margin: 0;
+        align-self: center;
+      }
+
+      .setup-steps {
+        grid-template-columns: 1fr;
+      }
+
+      .composer {
+        padding: 10px;
+      }
+
+      .mobile-tools {
+        display: grid;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .brand-subtitle {
+        display: none;
+      }
+
+      .top-actions .tiny-button:nth-child(2) {
+        display: none;
+      }
+
+      .chat-head {
+        align-items: flex-start;
+      }
+
+      .avatar {
+        width: 38px;
+        height: 38px;
+      }
+
+      .setup-title {
+        font-size: 31px;
+      }
+
+      .setup-action-row .primary-button,
+      .setup-action-row .secondary-button {
+        width: 100%;
+      }
+
+      .drawer {
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 100vw;
+        border-radius: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">CC</div>
+        <div>
+          <div class="brand-title">CatsCo Agent</div>
+          <div class="brand-subtitle">Dev Agent · 本机 Body</div>
+        </div>
+      </div>
+      <div class="top-actions">
+        <div class="status-pill ready"><span class="status-dot"></span>账号已登录</div>
+        <button class="tiny-button" onclick="openDrawer('skills')">Skills</button>
+        <button class="tiny-button" onclick="openDrawer('settings')">设置</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="chat-shell" aria-label="Agent 对话">
+        <div class="chat-head">
+          <div class="agent-line">
+            <div class="avatar">DA</div>
+            <div>
+              <div class="agent-name">Dev Agent</div>
+              <div class="agent-meta">等待模型配置 · WebApp 可用 · 微信待绑定</div>
+            </div>
+          </div>
+          <div class="chat-head-actions">
+            <button class="ghost-button" onclick="openDrawer('settings')">诊断</button>
+            <button class="secondary-button" onclick="openDrawer('model')">模型</button>
+          </div>
+        </div>
+
+        <div class="chat-body">
+          <div class="setup-card">
+            <div class="setup-eyebrow"><span class="status-dot"></span>还差一步</div>
+            <h1 class="setup-title">选择模型后就能和 Agent 对话</h1>
+            <p class="setup-copy">CatsCo 已登录，Agent 已绑定到这台机器。配置模型后，下面的输入框会自动打开。</p>
+            <div class="setup-action-row">
+              <button class="primary-button" onclick="openDrawer('model')">选择 AI 模型</button>
+              <button class="secondary-button" onclick="showReadyState()">查看对话态</button>
+            </div>
+            <div class="setup-steps">
+              <div class="step done">
+                <div class="step-label">已完成</div>
+                <div class="step-value">登录 CatsCo</div>
+              </div>
+              <div class="step done">
+                <div class="step-label">已完成</div>
+                <div class="step-value">绑定 Agent</div>
+              </div>
+              <div class="step current">
+                <div class="step-label">当前</div>
+                <div class="step-value">选择模型</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="mobile-tools">
+          <button class="entry-button" onclick="openDrawer('entries')">入口</button>
+          <button class="entry-button" onclick="openDrawer('skills')">Skills</button>
+          <button class="entry-button" onclick="openDrawer('settings')">设置</button>
+        </div>
+
+        <div class="composer">
+          <div class="composer-box">
+            <button class="icon-button" title="添加资料">+</button>
+            <textarea id="composer" placeholder="配置模型后开始对话" disabled></textarea>
+            <button class="primary-button" id="sendButton" disabled>发送</button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="side-panel">
+        <div class="side-section">
+          <div class="side-title">
+            <span>当前状态</span>
+            <span class="badge amber">缺模型</span>
+          </div>
+          <div class="row"><span>CatsCo</span><strong>zhuhanyuan</strong></div>
+          <div class="row"><span>Agent</span><strong>Dev Agent</strong></div>
+          <div class="row"><span>Body</span><strong>本机 Mac</strong></div>
+        </div>
+
+        <div class="side-section">
+          <div class="side-title">
+            <span>入口</span>
+            <span class="badge">3</span>
+          </div>
+          <div class="entry-grid">
+            <button class="entry-button">WebApp</button>
+            <button class="entry-button">微信</button>
+            <button class="entry-button">飞书</button>
+            <button class="entry-button">本地</button>
+          </div>
+        </div>
+
+        <div class="side-section">
+          <div class="side-title">
+            <span>Skills</span>
+            <button class="ghost-button" onclick="openDrawer('skills')" style="min-height:28px;padding:0 8px">查看</button>
+          </div>
+          <div class="skill-list">
+            <div class="skill-item">
+              <div>
+                <div class="skill-name">代码编辑</div>
+                <div class="skill-meta">已启用</div>
+              </div>
+              <span class="badge green">on</span>
+            </div>
+            <div class="skill-item">
+              <div>
+                <div class="skill-name">本地文件</div>
+                <div class="skill-meta">需授权</div>
+              </div>
+              <span class="badge amber">grant</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <div class="drawer-backdrop" onclick="closeDrawer()"></div>
+  <aside class="drawer" aria-label="设置面板">
+    <div class="drawer-head">
+      <h2 class="drawer-title" id="drawerTitle">选择 AI 模型</h2>
+      <p class="drawer-copy" id="drawerCopy">选择 CatsCo 托管模型，或填写第三方兼容模型。</p>
+    </div>
+    <div class="drawer-body" id="drawerBody"></div>
+    <div class="drawer-foot">
+      <button class="secondary-button" onclick="closeDrawer()">取消</button>
+      <button class="primary-button" onclick="closeDrawer()">保存</button>
+    </div>
+  </aside>
+
+  <script>
+    const drawerTitle = document.getElementById('drawerTitle');
+    const drawerCopy = document.getElementById('drawerCopy');
+    const drawerBody = document.getElementById('drawerBody');
+
+    const drawerContent = {
+      model: {
+        title: '选择 AI 模型',
+        copy: '这是唯一必须配置的技术项。',
+        body: `
+          <div class="model-option selected">
+            <div class="model-title">CatsCo 托管模型</div>
+            <div class="model-copy">登录后使用账号额度。当前演示为即将接入。</div>
+          </div>
+          <div class="model-option">
+            <div class="model-title">第三方兼容模型</div>
+            <div class="model-copy">适合 beta 阶段和自定义模型。</div>
+          </div>
+          <div class="field">
+            <label>兼容类型</label>
+            <select>
+              <option>OpenAI-compatible</option>
+              <option>Anthropic-compatible</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>模型地址</label>
+            <input placeholder="https://api.example.com/v1" />
+          </div>
+          <div class="field">
+            <label>模型名称</label>
+            <input placeholder="gpt-4.1-mini" />
+          </div>
+          <div class="field">
+            <label>API Key</label>
+            <input type="password" placeholder="留空表示不修改" />
+          </div>
+        `
+      },
+      skills: {
+        title: 'Skills',
+        copy: '只管理 Agent 能力，不进入启动细节。',
+        body: `
+          <div class="skill-list">
+            <div class="skill-item"><div><div class="skill-name">代码编辑</div><div class="skill-meta">读取、修改、运行测试</div></div><span class="badge green">已启用</span></div>
+            <div class="skill-item"><div><div class="skill-name">本地文件</div><div class="skill-meta">需要用户授权目录</div></div><span class="badge amber">需授权</span></div>
+            <div class="skill-item"><div><div class="skill-name">PPT / 文档</div><div class="skill-meta">生成和检查交付物</div></div><span class="badge green">已启用</span></div>
+            <div class="skill-item"><div><div class="skill-name">GauzMem</div><div class="skill-meta">实验记忆能力</div></div><span class="badge">beta</span></div>
+          </div>
+        `
+      },
+      entries: {
+        title: '使用入口',
+        copy: '这些都是当前 Agent 的沟通方式。',
+        body: `
+          <div class="skill-list">
+            <div class="skill-item"><div><div class="skill-name">CatsCo WebApp</div><div class="skill-meta">网页聊天入口</div></div><span class="badge green">可打开</span></div>
+            <div class="skill-item"><div><div class="skill-name">微信</div><div class="skill-meta">扫码绑定到当前 Agent</div></div><span class="badge amber">待绑定</span></div>
+            <div class="skill-item"><div><div class="skill-name">飞书</div><div class="skill-meta">组织消息入口</div></div><span class="badge">待接入</span></div>
+            <div class="skill-item"><div><div class="skill-name">本地测试</div><div class="skill-meta">直接在 Dashboard 对话</div></div><span class="badge amber">等模型</span></div>
+          </div>
+        `
+      },
+      settings: {
+        title: '设置与诊断',
+        copy: '平时不用看；出问题时再打开。',
+        body: `
+          <div class="skill-list">
+            <div class="skill-item"><div><div class="skill-name">Agent 绑定</div><div class="skill-meta">Dev Agent · body-local</div></div><span class="badge green">正常</span></div>
+            <div class="skill-item"><div><div class="skill-name">Runtime Profile</div><div class="skill-meta">工作目录、工具开关</div></div><span class="badge">高级</span></div>
+            <div class="skill-item"><div><div class="skill-name">本地环境变量</div><div class="skill-meta">兼容旧配置</div></div><span class="badge">高级</span></div>
+            <div class="skill-item"><div><div class="skill-name">Connector 日志</div><div class="skill-meta">WebApp / 微信 / 飞书</div></div><span class="badge">诊断</span></div>
+          </div>
+        `
+      }
+    };
+
+    function openDrawer(kind) {
+      const content = drawerContent[kind] || drawerContent.model;
+      drawerTitle.textContent = content.title;
+      drawerCopy.textContent = content.copy;
+      drawerBody.innerHTML = content.body;
+      document.body.classList.add('drawer-open');
+    }
+
+    function closeDrawer() {
+      document.body.classList.remove('drawer-open');
+    }
+
+    function showReadyState() {
+      const body = document.querySelector('.chat-body');
+      body.innerHTML = `
+        <div class="message agent">
+          <div class="message-meta">Dev Agent · 刚刚</div>
+          <div class="bubble">我已经准备好了。你可以直接发任务，也可以上传文件或说明要处理的目录。</div>
+        </div>
+        <div class="message user">
+          <div class="message-meta">你 · 刚刚</div>
+          <div class="bubble">帮我看一下这个项目下一步怎么整理。</div>
+        </div>
+        <div class="message agent">
+          <div class="message-meta">Dev Agent · 正在处理</div>
+          <div class="bubble">可以。我会先读项目结构，再把可执行的下一步整理成列表。</div>
+        </div>
+      `;
+      document.getElementById('composer').disabled = false;
+      document.getElementById('composer').placeholder = '和 Dev Agent 说点什么...';
+      document.getElementById('sendButton').disabled = false;
+      document.querySelector('.agent-meta').textContent = '在线 · WebApp 可用 · 微信待绑定';
+    }
+  </script>
+</body>
+</html>

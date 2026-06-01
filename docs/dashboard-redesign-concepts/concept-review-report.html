@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CatsCo Dashboard 四版视觉方案评审</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --paper: #fff;
+      --ink: #111827;
+      --muted: #667085;
+      --line: #d9dee7;
+      --soft: #eef1f6;
+      --green: #0f8f61;
+      --amber: #b7791f;
+      --blue: #2563eb;
+      --red: #c2414b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.62;
+    }
+    main { max-width: 1280px; margin: 0 auto; padding: 44px 24px 80px; }
+    h1 { margin: 0; font-size: clamp(34px, 5vw, 58px); line-height: 1.05; letter-spacing: 0; }
+    h2 { margin: 44px 0 16px; font-size: 28px; letter-spacing: 0; }
+    h3 { margin: 0 0 8px; font-size: 18px; }
+    p { margin: 0; color: var(--muted); }
+    a { color: var(--blue); text-decoration: none; }
+    .hero {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--paper);
+      padding: 32px;
+      box-shadow: 0 20px 60px rgba(15, 23, 42, 0.07);
+    }
+    .kicker {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .hero-copy { margin-top: 14px; max-width: 920px; font-size: 17px; }
+    .decision {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 18px;
+      margin-top: 22px;
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+      padding: 18px;
+    }
+    .panel.primary { border-color: rgba(37, 99, 235, 0.24); background: #f8fbff; }
+    .panel.good { border-color: rgba(15, 143, 97, 0.2); background: #f3fbf7; }
+    .panel.warn { border-color: rgba(183, 121, 31, 0.22); background: #fffaf0; }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 2px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      margin: 0 6px 8px 0;
+    }
+    .tag.green { border-color: rgba(15, 143, 97, 0.22); color: var(--green); background: #ecfdf5; }
+    .tag.amber { border-color: rgba(183, 121, 31, 0.22); color: var(--amber); background: #fff7ed; }
+    .tag.blue { border-color: rgba(37, 99, 235, 0.2); color: var(--blue); background: #eff6ff; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+    .score {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .score-item {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      padding: 11px;
+    }
+    .score-label { color: var(--muted); font-size: 12px; font-weight: 750; }
+    .score-value { margin-top: 4px; font-size: 20px; font-weight: 900; }
+    .shot-pair {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 210px;
+      gap: 12px;
+      align-items: start;
+      margin-top: 14px;
+    }
+    .shot {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      background: #fff;
+      box-shadow: 0 12px 34px rgba(15, 23, 42, 0.07);
+    }
+    .shot img { display: block; width: 100%; height: auto; }
+    .mobile-shot img { width: 100%; }
+    .review-list {
+      margin: 12px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+    }
+    .review-list li { margin: 6px 0; }
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+    }
+    .table th, .table td {
+      border-bottom: 1px solid var(--line);
+      padding: 13px 14px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .table th { background: #f8fafc; color: #475467; font-size: 13px; }
+    .table td { color: var(--muted); }
+    .table tr:last-child td { border-bottom: 0; }
+    .path {
+      color: #475467;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      word-break: break-all;
+    }
+    .mock {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+      overflow: hidden;
+      margin-top: 14px;
+    }
+    .mock-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      border-bottom: 1px solid var(--line);
+      padding: 14px 16px;
+    }
+    .mock-body {
+      display: grid;
+      grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.6fr);
+      gap: 16px;
+      padding: 16px;
+    }
+    .state-card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 20px;
+      background: linear-gradient(145deg, #fff, #f8fafc);
+    }
+    .state-card h3 { font-size: 28px; line-height: 1.15; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 0 16px;
+      border-radius: 8px;
+      background: #111827;
+      color: #fff;
+      font-weight: 850;
+      margin-top: 18px;
+    }
+    .summary-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 11px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .summary-row strong { color: var(--ink); }
+    @media (max-width: 860px) {
+      main { padding: 24px 14px 54px; }
+      .hero { padding: 24px; }
+      .decision, .grid-2, .grid-4, .shot-pair, .mock-body { grid-template-columns: 1fr; }
+      .score { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .shot-pair { gap: 10px; }
+      .mobile-shot { max-width: 240px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div class="kicker">Dashboard visual exploration</div>
+      <h1>CatsCo Dashboard 四版视觉方案评审</h1>
+      <p class="hero-copy">这次不再只讨论功能结构，而是比较四种完整视觉方向。结论是：以 shadcn app shell 作为落地底座，吸收 B 版的亲和文案、A 版的运维清晰度、C 版的“虚拟员工身份”表达。</p>
+      <div class="decision">
+        <div class="panel primary">
+          <h3>推荐方向</h3>
+          <p>采用 D 版作为主设计语言：黑白灰语义 token、清晰边框、低饱和状态 Badge、Sidebar + inset 工作区、模型 Sheet。它最像可以直接工程化落地的真实 Dashboard。</p>
+          <div style="margin-top:14px">
+            <span class="tag blue">D 为底座</span>
+            <span class="tag green">吸收 B 的亲和</span>
+            <span class="tag">吸收 A 的诊断结构</span>
+            <span class="tag amber">C 只取身份表达</span>
+          </div>
+        </div>
+        <div class="panel good">
+          <h3>第一版落地目标</h3>
+          <p>不是做漂亮概念页，而是把现有 Dashboard 变成一个普通用户能用、工程上能维护的 Agent Body 控制台。</p>
+        </div>
+      </div>
+    </section>
+
+    <h2>评分总览</h2>
+    <table class="table">
+      <thead>
+        <tr>
+          <th>版本</th>
+          <th>风格</th>
+          <th>最强点</th>
+          <th>主要问题</th>
+          <th>建议</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>A</td>
+          <td>Quiet Ops Console</td>
+          <td>信息密度合适，状态和诊断清楚，适合高级区。</td>
+          <td>略偏运维工具，普通用户的情绪阻力稍高。</td>
+          <td>保留高级诊断和状态摘要思路。</td>
+        </tr>
+        <tr>
+          <td>B</td>
+          <td>Warm Product Workbench</td>
+          <td>主状态最容易懂，按钮和流程很亲和。</td>
+          <td>暖色背景偏重，长期作为工具可能不够克制。</td>
+          <td>吸收文案、流程卡和空白感。</td>
+        </tr>
+        <tr>
+          <td>C</td>
+          <td>Virtual Employee Cockpit</td>
+          <td>最能表达“虚拟员工”的身份和身体概念。</td>
+          <td>深色驾驶舱太重，日常工具使用成本高。</td>
+          <td>只吸收身份卡、身体/通道/能力的语义。</td>
+        </tr>
+        <tr>
+          <td>D</td>
+          <td>shadcn App Shell</td>
+          <td>最可落地，结构规整，组件语言清晰。</td>
+          <td>略标准化，需要加一点 CatsCo 自己的身份感。</td>
+          <td>作为最终界面底座。</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>A：专业运维控制台</h2>
+    <div class="panel">
+      <span class="tag blue">清晰</span><span class="tag">高效率</span><span class="tag">适合诊断</span>
+      <p>A 版像一个成熟 SaaS 控制台。优点是用户能很快看到 Agent、Body、模型、通道状态；缺点是“控制台感”更强，少了一点普通用户可亲近性。</p>
+      <div class="score">
+        <div class="score-item"><div class="score-label">清晰度</div><div class="score-value">8.5</div></div>
+        <div class="score-item"><div class="score-label">亲和度</div><div class="score-value">7</div></div>
+        <div class="score-item"><div class="score-label">落地性</div><div class="score-value">8</div></div>
+        <div class="score-item"><div class="score-label">品牌感</div><div class="score-value">6.5</div></div>
+      </div>
+      <div class="shot-pair">
+        <div class="shot"><img src="../assets/dashboard-redesign-concepts/a-desktop.png" alt="A desktop screenshot" /></div>
+        <div class="shot mobile-shot"><img src="../assets/dashboard-redesign-concepts/a-mobile.png" alt="A mobile screenshot" /></div>
+      </div>
+      <ul class="review-list">
+        <li>可吸收：右侧当前 Agent 摘要、运行信号、高级诊断的表达方式。</li>
+        <li>需避免：首屏略像运维后台，普通用户可能觉得这是给开发者看的。</li>
+      </ul>
+    </div>
+
+    <h2>B：清爽产品化工作台</h2>
+    <div class="panel">
+      <span class="tag green">最易懂</span><span class="tag">亲和</span><span class="tag amber">暖色偏重</span>
+      <p>B 版在普通用户理解上最好，“Agent 还差一步就能运行”非常直接。它的问题是暖色和柔和卡片太多，长期工具界面可能不够稳。</p>
+      <div class="score">
+        <div class="score-item"><div class="score-label">清晰度</div><div class="score-value">9</div></div>
+        <div class="score-item"><div class="score-label">亲和度</div><div class="score-value">9</div></div>
+        <div class="score-item"><div class="score-label">落地性</div><div class="score-value">7.5</div></div>
+        <div class="score-item"><div class="score-label">品牌感</div><div class="score-value">7</div></div>
+      </div>
+      <div class="shot-pair">
+        <div class="shot"><img src="../assets/dashboard-redesign-concepts/b-desktop.png" alt="B desktop screenshot" /></div>
+        <div class="shot mobile-shot"><img src="../assets/dashboard-redesign-concepts/b-mobile.png" alt="B mobile screenshot" /></div>
+      </div>
+      <ul class="review-list">
+        <li>可吸收：主标题文案、流程步骤、按钮层级、移动端单列结构。</li>
+        <li>需避免：整套暖色底色不适合作为长期生产力工具主色。</li>
+      </ul>
+    </div>
+
+    <h2>C：虚拟员工协作驾驶舱</h2>
+    <div class="panel">
+      <span class="tag">身份感最强</span><span class="tag blue">概念清楚</span><span class="tag amber">日常过重</span>
+      <p>C 版最能表达“Agent 是虚拟员工，有身份、身体、通道、能力”。但深色驾驶舱适合作为品牌概念，不适合作为每天打开的本地 Dashboard。</p>
+      <div class="score">
+        <div class="score-item"><div class="score-label">清晰度</div><div class="score-value">7.5</div></div>
+        <div class="score-item"><div class="score-label">亲和度</div><div class="score-value">6.5</div></div>
+        <div class="score-item"><div class="score-label">落地性</div><div class="score-value">6.5</div></div>
+        <div class="score-item"><div class="score-label">品牌感</div><div class="score-value">9</div></div>
+      </div>
+      <div class="shot-pair">
+        <div class="shot"><img src="../assets/dashboard-redesign-concepts/c-desktop.png" alt="C desktop screenshot" /></div>
+        <div class="shot mobile-shot"><img src="../assets/dashboard-redesign-concepts/c-mobile.png" alt="C mobile screenshot" /></div>
+      </div>
+      <ul class="review-list">
+        <li>可吸收：虚拟员工身份卡、身体/通道/能力三件事的语义结构。</li>
+        <li>需避免：深色大驾驶舱、过强装饰网格、太大的概念标题。</li>
+      </ul>
+    </div>
+
+    <h2>D：shadcn App Shell</h2>
+    <div class="panel primary">
+      <span class="tag green">推荐底座</span><span class="tag">工程化</span><span class="tag">克制</span><span class="tag blue">组件语言清晰</span>
+      <p>D 版最适合作为新版 Dashboard 的基础。它不像概念页，像真实 app：Sidebar、Card、Badge、Sheet、Tabs 的层级很明确，黑白灰语义 token 也最方便落地。</p>
+      <div class="score">
+        <div class="score-item"><div class="score-label">清晰度</div><div class="score-value">8.5</div></div>
+        <div class="score-item"><div class="score-label">亲和度</div><div class="score-value">8</div></div>
+        <div class="score-item"><div class="score-label">落地性</div><div class="score-value">9.5</div></div>
+        <div class="score-item"><div class="score-label">品牌感</div><div class="score-value">7</div></div>
+      </div>
+      <div class="shot-pair">
+        <div class="shot"><img src="../assets/dashboard-redesign-concepts/d-desktop.png" alt="D desktop screenshot" /></div>
+        <div class="shot mobile-shot"><img src="../assets/dashboard-redesign-concepts/d-mobile.png" alt="D mobile screenshot" /></div>
+      </div>
+      <ul class="review-list">
+        <li>采用：左侧 Sidebar + 主工作区 + 右侧当前 Agent 摘要。</li>
+        <li>采用：模型配置用 Sheet，而不是主页面。</li>
+        <li>需要补强：加一点 C 版的“虚拟员工身份”表达，避免太像通用后台模板。</li>
+      </ul>
+    </div>
+
+    <h2>推荐融合方案</h2>
+    <div class="grid-2">
+      <div class="panel good">
+        <h3>最终风格</h3>
+        <p>以 D 版 shadcn app shell 为骨架：黑白灰、8px 圆角、清晰边框、低饱和 Badge、明确 Card composition。视觉上更像生产力工具，而不是营销页或开发者调试页。</p>
+      </div>
+      <div class="panel">
+        <h3>要吸收的部分</h3>
+        <p>B 的“还差一步”文案和流程感，A 的诊断分组，C 的虚拟员工身份卡。三者都只作为局部能力，不改变 D 的整体语言。</p>
+      </div>
+    </div>
+
+    <div class="mock">
+      <div class="mock-top">
+        <strong>CatsCo / Agent 工作台</strong>
+        <span class="tag amber">等待配置模型</span>
+      </div>
+      <div class="mock-body">
+        <div class="state-card">
+          <span class="tag amber">缺少 AI 模型</span>
+          <h3>配置模型后即可启动 Agent Body</h3>
+          <p>Dev Agent 已绑定到本机。选择一个模型来源后，Dashboard 会进入启动状态。</p>
+          <div class="button">选择 AI 模型</div>
+        </div>
+        <div class="panel">
+          <h3>当前 Agent</h3>
+          <div class="summary-row"><span>CatsCo 账号</span><strong>yuan@catsco.cn</strong></div>
+          <div class="summary-row"><span>Agent</span><strong>Dev Agent</strong></div>
+          <div class="summary-row"><span>Agent Body</span><strong>本机 MacBook</strong></div>
+          <div class="summary-row"><span>模型</span><strong>未选择</strong></div>
+          <div class="summary-row"><span>通道</span><strong>WebApp 可用</strong></div>
+        </div>
+      </div>
+    </div>
+
+    <h2>落地顺序</h2>
+    <div class="grid-4">
+      <div class="panel">
+        <h3>1. App Shell</h3>
+        <p>主导航改为工作台 / 通道 / 高级。移除模型主入口。</p>
+      </div>
+      <div class="panel">
+        <h3>2. 工作台</h3>
+        <p>一个主状态、一个主按钮、右侧 Agent 摘要。</p>
+      </div>
+      <div class="panel">
+        <h3>3. 模型 Sheet</h3>
+        <p>复用现有保存接口，把模型配置从页面改成侧抽屉。</p>
+      </div>
+      <div class="panel">
+        <h3>4. 高级收纳</h3>
+        <p>Runtime、.env、readiness、connector 和实验功能进入高级。</p>
+      </div>
+    </div>
+
+    <h2>文件索引</h2>
+    <div class="panel">
+      <p class="path">version-a-ops-console.html</p>
+      <p class="path">version-b-product-workbench.html</p>
+      <p class="path">version-c-employee-cockpit.html</p>
+      <p class="path">version-d-shadcn-app-shell.html</p>
+      <p class="path">../assets/dashboard-redesign-concepts/*.png</p>
+    </div>
+  </main>
+</body>
+</html>

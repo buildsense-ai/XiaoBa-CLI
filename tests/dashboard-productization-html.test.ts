@@ -10,7 +10,7 @@ function countOccurrences(text: string, pattern: RegExp): number {
 }
 
 test('dashboard settings page uses model source before Runtime Profile', () => {
-  assert.match(dashboardHtml, /模型来源与 Runtime Profile/);
+  assert.match(dashboardHtml, /模型设置/);
   assert.match(dashboardHtml, /id="model-source-panel"/);
   assert.match(dashboardHtml, /function fetchDashboardSettings\(\)/);
   assert.match(dashboardHtml, /\/api\/settings/);
@@ -26,8 +26,8 @@ test('dashboard settings page uses model source before Runtime Profile', () => {
   assert.match(dashboardHtml, /config-group-title-main/);
   assert.match(dashboardHtml, /config-group-title-actions/);
   assert.match(dashboardHtml, /保存后新 session 生效/);
-  assert.match(dashboardHtml, /title==='CatsCo Chat'\?'运行中':'完成'/);
-  assert.match(dashboardHtml, /title==='CatsCo Chat'\?'未启动':'需处理'/);
+  assert.match(dashboardHtml, /const isEntry=title==='聊天入口'/);
+  assert.match(dashboardHtml, /status==='blocked'\?'待设置':'等待'/);
   assert.doesNotMatch(dashboardHtml, /status==='warning'\?'注意'/);
   assert.match(dashboardHtml, /当前已运行 session 不会热更新/);
   assert.doesNotMatch(dashboardHtml, /buildsense\.asia/i);
@@ -53,7 +53,7 @@ test('run page is driven by readiness instead of raw diagnostics cards', () => {
   assert.match(dashboardHtml, /function renderReadiness\(data\)/);
   assert.match(dashboardHtml, /启动前检查未通过/);
   assert.match(dashboardHtml, /模型来源、CatsCo Chat、Runtime Profile 和 Skills/);
-  assert.match(dashboardHtml, /<details class="run-details" open>\s*<summary><span>启动前检查<\/span><span class="tag">readiness<\/span><\/summary>/);
+  assert.match(dashboardHtml, /<details class="run-details">\s*<summary><span>启动诊断<\/span><span class="tag">readiness<\/span><\/summary>/);
   assert.match(dashboardHtml, /<summary><span>Diagnostics<\/span><span class="tag">version \/ host \/ paths<\/span><\/summary>/);
   assert.doesNotMatch(dashboardHtml, /<summary><span>Service details<\/span><span class="tag">connector<\/span><\/summary>/);
   assert.doesNotMatch(dashboardHtml, /<div class="section-title">系统状态<\/div>/);
@@ -80,6 +80,10 @@ test('raw env editing is explicitly advanced and confirmed', () => {
 
 test('dashboard IA no longer exposes old temporary labels in primary entries', () => {
   assert.doesNotMatch(dashboardHtml, /XiaoBa TEST|XiaoBa Chat|XiaoBa Bot|CatsCompany 连接|Skill Store|<span>商店<\/span>|<span>配置<\/span>|<span>服务<\/span>/);
+  assert.match(dashboardHtml, /<span>启动<\/span>/);
+  assert.match(dashboardHtml, /<span>模型<\/span>/);
+  assert.match(dashboardHtml, /<span>通道<\/span>/);
+  assert.match(dashboardHtml, /实验 \/ 开发/);
 });
 
 test('CatsCo Chat page is driven by readiness state instead of loose controls', () => {
@@ -89,8 +93,21 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /function buildCatsChatStage\(\)/);
   assert.match(dashboardHtml, /function renderCatsChecklist\(stage\)/);
   assert.match(dashboardHtml, /function runCatsNextAction\(\)/);
-  assert.match(dashboardHtml, /先完成模型来源/);
-  assert.match(dashboardHtml, /Dashboard Chat 连接同一个 CatsCompany 网页会话/);
+  assert.match(dashboardHtml, /配置模型来源/);
+  assert.match(dashboardHtml, /下一步：登录 CatsCo/);
+  assert.match(dashboardHtml, /startup-step-list/);
+  assert.match(dashboardHtml, /chat-shell\.chat-ready/);
+  assert.match(dashboardHtml, /\.chat-window \{[\s\S]*?display: none;[\s\S]*?\.chat-shell\.chat-ready \.chat-window \{[\s\S]*?display: flex;/);
+  assert.match(dashboardHtml, /\.chat-shell\.connect-collapsed #cats-state-card,[\s\S]*?\.chat-shell\.connect-collapsed #cats-checklist,/);
+  assert.match(dashboardHtml, /const ready=chatStage\.key==='ready';/);
+  assert.match(dashboardHtml, /id="sidebar-webapp-btn"[^>]*disabled/);
+  assert.match(dashboardHtml, /id="cats-connected-webapp-btn" disabled/);
+  assert.match(dashboardHtml, /id="cats-connected-weixin-btn" disabled/);
+  assert.match(dashboardHtml, /sidebarWebapp\.disabled=!ready/);
+  assert.match(dashboardHtml, /connectedWebapp\.disabled=!ready/);
+  assert.match(dashboardHtml, /connectedWeixin\.disabled=!ready/);
+  assert.match(dashboardHtml, /openCatsWebapp\(\)/);
+  assert.match(dashboardHtml, /微信扫码/);
   assert.match(dashboardHtml, /CatsCompany connector/);
   assert.match(dashboardHtml, /Agent Body/);
   assert.match(dashboardHtml, /function formatCatsBodyStatus\(bodyStatus, configured\)/);
@@ -101,7 +118,7 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /当前账号不能管理这个 agent/);
   assert.match(dashboardHtml, /恢复 CatsCompany connector/);
   assert.match(dashboardHtml, /<details class="chat-diagnostics" id="cats-connection-details">/);
-  assert.match(dashboardHtml, /<summary>高级 endpoint<\/summary>/);
+  assert.match(dashboardHtml, /<summary>Endpoint<\/summary>/);
   assert.match(dashboardHtml, /input\.disabled=locked/);
   assert.match(dashboardHtml, /send\.disabled=locked/);
   assert.match(dashboardHtml, /attach\.disabled=locked/);
@@ -110,6 +127,22 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /needs-readiness/);
   assert.match(dashboardHtml, /appReadinessLoaded/);
   assert.doesNotMatch(dashboardHtml, /末尾 \+/);
+});
+
+test('agent channel page replaces legacy service manager as the primary entry', () => {
+  assert.match(dashboardHtml, /Agent 通道/);
+  assert.match(dashboardHtml, /管理当前 Agent 的联系入口/);
+  assert.match(dashboardHtml, /function renderChannelCards\(svcs\)/);
+  assert.match(dashboardHtml, /CatsCo WebApp/);
+  assert.match(dashboardHtml, /扫码绑定/);
+  assert.match(dashboardHtml, /待接入。/);
+  assert.match(dashboardHtml, /本地接收服务诊断（高级）/);
+  assert.match(dashboardHtml, /id="legacy-services-grid"/);
+  assert.match(dashboardHtml, /function renderLegacyServiceControls\(svcs\)/);
+  const channelBlock = dashboardHtml.match(/function renderChannelCards\(svcs\)\{[\s\S]*?function renderLegacyServiceControls/)?.[0] || '';
+  assert.doesNotMatch(channelBlock, /svcAction\(/);
+  assert.match(channelBlock, /openCatsWebapp\(\)/);
+  assert.match(channelBlock, /getWeixinToken\(\)/);
 });
 
 test('CatsCo login is separate from bot binding and connector startup', () => {

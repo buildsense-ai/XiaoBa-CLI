@@ -1,0 +1,1321 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CatsCo Dashboard - Quiet Ops Console</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --panel-soft: #fbfcfd;
+      --line: #e4e7ec;
+      --line-strong: #d2d8e2;
+      --text: #172033;
+      --muted: #647084;
+      --subtle: #8a95a6;
+      --brand: #2458d3;
+      --brand-dark: #1d46aa;
+      --ok: #16835a;
+      --ok-bg: #e9f7f0;
+      --warn: #a45b05;
+      --warn-bg: #fff3dc;
+      --info: #3867b7;
+      --info-bg: #edf4ff;
+      --danger: #b42318;
+      --danger-bg: #fff0ee;
+      --shadow: 0 18px 48px rgba(23, 32, 51, 0.12);
+      --radius: 8px;
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.75), rgba(246, 247, 249, 0) 280px),
+        var(--bg);
+      font-family: var(--font);
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 248px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 22px 18px;
+      border-right: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.84);
+      backdrop-filter: blur(18px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 8px 22px;
+    }
+
+    .mark {
+      display: grid;
+      width: 32px;
+      height: 32px;
+      place-items: center;
+      border: 1px solid #cad3e2;
+      border-radius: 8px;
+      background: #f8fafc;
+      color: var(--brand);
+      font-weight: 760;
+    }
+
+    .brand-title {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.2;
+      font-weight: 720;
+    }
+
+    .brand-subtitle {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .nav {
+      display: grid;
+      gap: 6px;
+    }
+
+    .nav button {
+      display: flex;
+      width: 100%;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 11px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      color: #39465a;
+      text-align: left;
+    }
+
+    .nav button:hover {
+      background: #f4f7fb;
+    }
+
+    .nav button.active {
+      border-color: #dae2ef;
+      background: #eef4ff;
+      color: #163f9d;
+      font-weight: 680;
+    }
+
+    .nav-icon {
+      width: 20px;
+      color: currentColor;
+      text-align: center;
+      font-size: 15px;
+    }
+
+    .side-status {
+      position: absolute;
+      right: 18px;
+      bottom: 20px;
+      left: 18px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-soft);
+    }
+
+    .side-status strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 12px;
+    }
+
+    .side-status span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .main {
+      min-width: 0;
+      padding: 22px 30px 40px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      margin: 0 auto 22px;
+      max-width: 1180px;
+    }
+
+    .page-kicker {
+      margin: 0 0 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.25;
+      font-weight: 730;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .sync-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--ok);
+      box-shadow: 0 0 0 4px rgba(22, 131, 90, 0.1);
+    }
+
+    .mobile-tabs {
+      display: none;
+    }
+
+    .page {
+      display: none;
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+
+    .page.active {
+      display: block;
+    }
+
+    .workbench-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.86fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .status-panel {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: 0 1px 2px rgba(23, 32, 51, 0.04);
+    }
+
+    .status-head {
+      display: grid;
+      gap: 22px;
+      padding: 28px;
+      border-bottom: 1px solid var(--line);
+      background:
+        linear-gradient(135deg, rgba(36, 88, 211, 0.08), rgba(22, 131, 90, 0.06) 52%, rgba(255, 255, 255, 0) 52%),
+        var(--panel);
+    }
+
+    .state-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .state-copy {
+      max-width: 620px;
+    }
+
+    .state-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      color: var(--ok);
+      font-size: 13px;
+      font-weight: 680;
+    }
+
+    .pulse {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--ok);
+    }
+
+    .state-title {
+      margin: 0;
+      font-size: 30px;
+      line-height: 1.18;
+      font-weight: 760;
+    }
+
+    .state-note {
+      margin: 10px 0 0;
+      max-width: 500px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .primary-btn {
+      display: inline-flex;
+      flex: 0 0 auto;
+      align-items: center;
+      justify-content: center;
+      min-width: 138px;
+      min-height: 40px;
+      padding: 0 16px;
+      border: 1px solid var(--brand-dark);
+      border-radius: 8px;
+      background: var(--brand);
+      color: #fff;
+      font-weight: 700;
+      text-decoration: none;
+      box-shadow: 0 8px 18px rgba(36, 88, 211, 0.18);
+    }
+
+    .primary-btn:hover {
+      background: var(--brand-dark);
+    }
+
+    .quick-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .text-action {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.68);
+      color: #34445c;
+      font-size: 13px;
+      font-weight: 620;
+      text-decoration: none;
+    }
+
+    .text-action:hover {
+      border-color: var(--line-strong);
+      background: #fff;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      border-bottom: 1px solid var(--line);
+    }
+
+    .summary-item {
+      min-height: 100px;
+      padding: 18px;
+      border-right: 1px solid var(--line);
+    }
+
+    .summary-item:last-child {
+      border-right: 0;
+    }
+
+    .label {
+      margin: 0 0 8px;
+      color: var(--subtle);
+      font-size: 12px;
+      font-weight: 660;
+    }
+
+    .value {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+
+    .meta {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0;
+      padding: 16px;
+      background: var(--panel-soft);
+    }
+
+    .flow-step {
+      position: relative;
+      padding-left: 28px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .flow-step::before {
+      position: absolute;
+      left: 0;
+      top: 1px;
+      display: grid;
+      width: 18px;
+      height: 18px;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: 50%;
+      background: #fff;
+      color: var(--subtle);
+      content: "";
+      font-size: 11px;
+    }
+
+    .flow-step.done {
+      color: #243249;
+    }
+
+    .flow-step.done::before {
+      border-color: var(--ok);
+      background: var(--ok);
+      color: #fff;
+      content: "✓";
+    }
+
+    .flow-step.current {
+      color: var(--brand);
+    }
+
+    .flow-step.current::before {
+      border-color: var(--brand);
+      box-shadow: inset 0 0 0 4px #fff;
+      background: var(--brand);
+    }
+
+    .object-panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: 0 1px 2px rgba(23, 32, 51, 0.04);
+    }
+
+    .panel-section {
+      padding: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .panel-section:last-child {
+      border-bottom: 0;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .section-title h2,
+    .page-section h2 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 730;
+    }
+
+    .section-title p,
+    .page-section > p {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 0 8px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 680;
+      white-space: nowrap;
+    }
+
+    .chip.ok {
+      border-color: #b9e7d1;
+      background: var(--ok-bg);
+      color: var(--ok);
+    }
+
+    .chip.warn {
+      border-color: #f6d397;
+      background: var(--warn-bg);
+      color: var(--warn);
+    }
+
+    .chip.info {
+      border-color: #c8dcff;
+      background: var(--info-bg);
+      color: var(--info);
+    }
+
+    .chip.gray {
+      border-color: var(--line);
+      background: #f7f8fa;
+      color: #536175;
+    }
+
+    .kv-list {
+      display: grid;
+      gap: 12px;
+    }
+
+    .kv {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      font-size: 13px;
+    }
+
+    .kv span:first-child {
+      color: var(--muted);
+    }
+
+    .kv span:last-child {
+      font-weight: 650;
+      text-align: right;
+    }
+
+    .mini-metric {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .metric {
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-soft);
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 14px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .page-section {
+      margin-bottom: 18px;
+    }
+
+    .channel-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .channel-card,
+    .advanced-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: 0 1px 2px rgba(23, 32, 51, 0.04);
+    }
+
+    .channel-card {
+      display: grid;
+      min-height: 260px;
+      grid-template-rows: auto 1fr auto;
+      padding: 18px;
+    }
+
+    .channel-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .channel-icon {
+      display: grid;
+      width: 36px;
+      height: 36px;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-soft);
+      color: var(--brand);
+      font-weight: 760;
+    }
+
+    .channel-card h2 {
+      margin: 14px 0 6px;
+      font-size: 16px;
+      font-weight: 740;
+    }
+
+    .channel-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .channel-detail {
+      display: grid;
+      gap: 9px;
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+
+    .channel-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .outline-btn,
+    .ghost-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 34px;
+      padding: 0 11px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 660;
+      text-decoration: none;
+    }
+
+    .outline-btn {
+      border: 1px solid var(--line-strong);
+      background: #fff;
+      color: #27364d;
+    }
+
+    .ghost-btn {
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+    }
+
+    .outline-btn:hover,
+    .ghost-btn:hover {
+      background: #f5f7fb;
+    }
+
+    .advanced-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .advanced-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 16px;
+    }
+
+    .advanced-card h2 {
+      margin: 0 0 4px;
+      font-size: 14px;
+      font-weight: 720;
+    }
+
+    .advanced-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      display: none;
+      background: rgba(13, 20, 33, 0.38);
+    }
+
+    .drawer-backdrop.open {
+      display: block;
+    }
+
+    .drawer {
+      position: fixed;
+      top: 0;
+      right: 0;
+      z-index: 50;
+      display: flex;
+      width: min(460px, 100vw);
+      height: 100vh;
+      flex-direction: column;
+      transform: translateX(100%);
+      border-left: 1px solid var(--line);
+      background: #fff;
+      box-shadow: var(--shadow);
+      transition: transform 180ms ease;
+    }
+
+    .drawer.open {
+      transform: translateX(0);
+    }
+
+    .drawer-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 20px 22px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .drawer-header h2 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .icon-btn {
+      display: grid;
+      width: 34px;
+      height: 34px;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--muted);
+    }
+
+    .drawer-body {
+      overflow: auto;
+      padding: 18px 22px 22px;
+    }
+
+    .model-choice {
+      display: grid;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+
+    .choice {
+      display: grid;
+      gap: 6px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-soft);
+    }
+
+    .choice.selected {
+      border-color: #9db8f5;
+      background: #f3f7ff;
+    }
+
+    .choice.disabled {
+      opacity: 0.64;
+    }
+
+    .choice-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .choice strong {
+      font-size: 14px;
+    }
+
+    .choice p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .form {
+      display: grid;
+      gap: 12px;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .field label {
+      color: #40506a;
+      font-size: 12px;
+      font-weight: 690;
+    }
+
+    .field input,
+    .field select {
+      width: 100%;
+      height: 38px;
+      padding: 0 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--text);
+    }
+
+    .drawer-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      padding: 16px 22px;
+      border-top: 1px solid var(--line);
+      background: var(--panel-soft);
+    }
+
+    .save-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+      padding: 0 14px;
+      border: 1px solid var(--brand-dark);
+      border-radius: 8px;
+      background: var(--brand);
+      color: #fff;
+      font-weight: 700;
+    }
+
+    @media (max-width: 980px) {
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        display: none;
+      }
+
+      .main {
+        padding: 18px 16px 34px;
+      }
+
+      .topbar {
+        align-items: flex-start;
+        margin-bottom: 14px;
+      }
+
+      .top-actions {
+        display: none;
+      }
+
+      .mobile-tabs {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+        margin: 0 -16px 16px;
+        padding: 8px 16px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.9);
+        backdrop-filter: blur(14px);
+      }
+
+      .mobile-tabs button {
+        min-height: 36px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        color: var(--muted);
+        font-weight: 670;
+      }
+
+      .mobile-tabs button.active {
+        border-color: #bdd0ff;
+        background: #eef4ff;
+        color: var(--brand);
+      }
+
+      .workbench-grid,
+      .channel-grid,
+      .advanced-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .summary-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .summary-item {
+        min-height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .summary-item:last-child {
+        border-bottom: 0;
+      }
+
+      .state-row {
+        display: grid;
+      }
+
+      .state-title {
+        font-size: 25px;
+      }
+
+      .primary-btn {
+        width: 100%;
+      }
+
+      .flow {
+        grid-template-columns: 1fr 1fr;
+        row-gap: 14px;
+      }
+    }
+
+    @media (max-width: 560px) {
+      h1 {
+        font-size: 21px;
+      }
+
+      .status-head {
+        padding: 22px 18px;
+      }
+
+      .quick-links {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .text-action {
+        justify-content: center;
+      }
+
+      .mini-metric {
+        grid-template-columns: 1fr;
+      }
+
+      .channel-card {
+        min-height: auto;
+      }
+
+      .drawer {
+        width: 100vw;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand">
+        <div class="mark">C</div>
+        <div>
+          <p class="brand-title">CatsCo Dashboard</p>
+          <p class="brand-subtitle">Agent Body 控制台</p>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="active" data-page="workbench"><span class="nav-icon">⌘</span>工作台</button>
+        <button data-page="channels"><span class="nav-icon">↗</span>通道</button>
+        <button data-page="advanced"><span class="nav-icon">⚙</span>高级</button>
+      </nav>
+
+      <div class="side-status">
+        <strong>Body 状态</strong>
+        <span>本机在线 · connector 正常 · 最近同步 24 秒前</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <p class="page-kicker">Quiet Ops Console</p>
+          <h1 id="pageTitle">Agent 工作台</h1>
+        </div>
+        <div class="top-actions">
+          <span class="sync-dot"></span>
+          <span>catsco.dev · Dev Agent</span>
+        </div>
+      </div>
+
+      <div class="mobile-tabs" aria-label="移动端主导航">
+        <button class="active" data-page="workbench">工作台</button>
+        <button data-page="channels">通道</button>
+        <button data-page="advanced">高级</button>
+      </div>
+
+      <section class="page active" id="workbench">
+        <div class="workbench-grid">
+          <section class="status-panel" aria-label="Agent 主状态">
+            <div class="status-head">
+              <div class="state-row">
+                <div class="state-copy">
+                  <div class="state-eyebrow"><span class="pulse"></span>可用</div>
+                  <h2 class="state-title">Dev Agent 已连接到本机 Agent Body</h2>
+                  <p class="state-note">模型和通道已就绪。团队成员可以从 CatsCo WebApp 进入，也可以在通道页绑定微信或飞书。</p>
+                </div>
+                <a class="primary-btn" href="#">打开 WebApp</a>
+              </div>
+              <div class="quick-links">
+                <button class="text-action" data-open-model>配置模型</button>
+                <a class="text-action" href="#">本地测试</a>
+                <a class="text-action" href="#">切换 Agent</a>
+                <button class="text-action" data-page-link="advanced">查看诊断</button>
+              </div>
+            </div>
+
+            <div class="summary-grid" aria-label="状态摘要">
+              <div class="summary-item">
+                <p class="label">CatsCo 账号</p>
+                <p class="value">zhuhanyuan</p>
+                <p class="meta">已登录 · Owner</p>
+              </div>
+              <div class="summary-item">
+                <p class="label">Agent</p>
+                <p class="value">Dev Agent</p>
+                <p class="meta">绑定 catsco-agent-dev</p>
+              </div>
+              <div class="summary-item">
+                <p class="label">Agent Body</p>
+                <p class="value">MacBook Pro</p>
+                <p class="meta">本机 · 运行中</p>
+              </div>
+              <div class="summary-item">
+                <p class="label">模型</p>
+                <p class="value">gpt-4.1-mini</p>
+                <p class="meta">OpenAI-compatible</p>
+              </div>
+              <div class="summary-item">
+                <p class="label">通道</p>
+                <p class="value">WebApp 可用</p>
+                <p class="meta">微信待绑定 · 飞书待启用</p>
+              </div>
+            </div>
+
+            <div class="flow" aria-label="配置进度">
+              <div class="flow-step done">登录 CatsCo</div>
+              <div class="flow-step done">选择模型</div>
+              <div class="flow-step done">绑定 Agent</div>
+              <div class="flow-step current">运行中</div>
+            </div>
+          </section>
+
+          <aside class="object-panel" aria-label="当前对象">
+            <div class="panel-section">
+              <div class="section-title">
+                <div>
+                  <h2>当前 Agent</h2>
+                  <p>团队默认服务对象</p>
+                </div>
+                <span class="chip ok">在线</span>
+              </div>
+              <div class="kv-list">
+                <div class="kv"><span>名称</span><span>Dev Agent</span></div>
+                <div class="kv"><span>Body ID</span><span>body-local-24</span></div>
+                <div class="kv"><span>入口</span><span>WebApp</span></div>
+                <div class="kv"><span>版本</span><span>2026.05</span></div>
+              </div>
+            </div>
+
+            <div class="panel-section">
+              <div class="section-title">
+                <div>
+                  <h2>运行信号</h2>
+                  <p>只展示影响使用的信号</p>
+                </div>
+              </div>
+              <div class="mini-metric">
+                <div class="metric"><strong>42 ms</strong><span>心跳</span></div>
+                <div class="metric"><strong>3</strong><span>可用通道</span></div>
+                <div class="metric"><strong>0</strong><span>阻塞项</span></div>
+              </div>
+            </div>
+
+            <div class="panel-section">
+              <div class="section-title">
+                <div>
+                  <h2>下一步</h2>
+                  <p>为当前 Agent 增加微信或飞书入口。</p>
+                </div>
+                <button class="outline-btn" data-page-link="channels">管理通道</button>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="page" id="channels">
+        <div class="page-section">
+          <h2>当前 Agent 的通道</h2>
+          <p>WebApp、微信、飞书都连接到 Dev Agent，不作为独立机器人管理。</p>
+        </div>
+
+        <div class="channel-grid">
+          <article class="channel-card">
+            <div class="channel-top">
+              <div class="channel-icon">W</div>
+              <span class="chip ok">可用</span>
+            </div>
+            <div>
+              <h2>CatsCo WebApp</h2>
+              <p>团队成员进入 WebApp 后直接与当前 Agent 对话。</p>
+              <div class="channel-detail">
+                <div class="kv"><span>绑定 Agent</span><span>Dev Agent</span></div>
+                <div class="kv"><span>入口状态</span><span>已发布</span></div>
+              </div>
+            </div>
+            <div class="channel-actions">
+              <a class="outline-btn" href="#">打开</a>
+              <a class="ghost-btn" href="#">高级诊断</a>
+            </div>
+          </article>
+
+          <article class="channel-card">
+            <div class="channel-top">
+              <div class="channel-icon">微</div>
+              <span class="chip warn">待绑定</span>
+            </div>
+            <div>
+              <h2>微信</h2>
+              <p>扫码后，微信消息会进入当前 Agent Body。</p>
+              <div class="channel-detail">
+                <div class="kv"><span>绑定 Agent</span><span>Dev Agent</span></div>
+                <div class="kv"><span>扫码</span><span>等待确认</span></div>
+              </div>
+            </div>
+            <div class="channel-actions">
+              <a class="outline-btn" href="#">扫码绑定</a>
+              <a class="ghost-btn" href="#">高级诊断</a>
+            </div>
+          </article>
+
+          <article class="channel-card">
+            <div class="channel-top">
+              <div class="channel-icon">飞</div>
+              <span class="chip gray">未启用</span>
+            </div>
+            <div>
+              <h2>飞书</h2>
+              <p>将飞书机器人事件转发给当前 Agent。</p>
+              <div class="channel-detail">
+                <div class="kv"><span>绑定 Agent</span><span>Dev Agent</span></div>
+                <div class="kv"><span>凭据</span><span>缺少配置</span></div>
+              </div>
+            </div>
+            <div class="channel-actions">
+              <a class="outline-btn" href="#">开始绑定</a>
+              <a class="ghost-btn" href="#">高级诊断</a>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="page" id="advanced">
+        <div class="page-section">
+          <h2>高级诊断</h2>
+          <p>保留运行、配置和开发工具，不进入普通工作流。</p>
+        </div>
+
+        <div class="advanced-grid">
+          <article class="advanced-card">
+            <div>
+              <h2>readiness</h2>
+              <p>原始检查项与阻塞原因</p>
+            </div>
+            <span class="chip ok">通过</span>
+          </article>
+          <article class="advanced-card">
+            <div>
+              <h2>Runtime Profile</h2>
+              <p>本机运行身份与路径</p>
+            </div>
+            <span class="chip info">已选择</span>
+          </article>
+          <article class="advanced-card">
+            <div>
+              <h2>.env</h2>
+              <p>兼容旧配置与密钥</p>
+            </div>
+            <span class="chip warn">敏感</span>
+          </article>
+          <article class="advanced-card">
+            <div>
+              <h2>connector</h2>
+              <p>CatsCompany 进程诊断</p>
+            </div>
+            <span class="chip ok">运行中</span>
+          </article>
+          <article class="advanced-card">
+            <div>
+              <h2>logs</h2>
+              <p>最近事件与错误日志</p>
+            </div>
+            <span class="chip gray">只读</span>
+          </article>
+          <article class="advanced-card">
+            <div>
+              <h2>GauzMem</h2>
+              <p>图记忆实验入口</p>
+            </div>
+            <span class="chip info">Beta</span>
+          </article>
+          <article class="advanced-card">
+            <div>
+              <h2>SkillHub</h2>
+              <p>开发者能力与技能调试</p>
+            </div>
+            <span class="chip info">Dev</span>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="drawer-backdrop" data-close-model></div>
+  <aside class="drawer" aria-label="选择 AI 模型" aria-hidden="true">
+    <div class="drawer-header">
+      <div>
+        <p class="page-kicker">Model Setup</p>
+        <h2>选择 AI 模型</h2>
+      </div>
+      <button class="icon-btn" data-close-model aria-label="关闭">×</button>
+    </div>
+    <div class="drawer-body">
+      <div class="model-choice">
+        <div class="choice disabled">
+          <div class="choice-row">
+            <strong>CatsCo 托管模型</strong>
+            <span class="chip gray">即将支持</span>
+          </div>
+          <p>由 CatsCo 提供模型和额度，后续可直接选择套餐。</p>
+        </div>
+        <div class="choice selected">
+          <div class="choice-row">
+            <strong>第三方兼容模型</strong>
+            <span class="chip ok">当前</span>
+          </div>
+          <p>填写兼容接口后，当前 Agent Body 会使用此模型回复。</p>
+        </div>
+      </div>
+
+      <form class="form">
+        <div class="field">
+          <label for="modelType">兼容类型</label>
+          <select id="modelType">
+            <option>OpenAI-compatible</option>
+            <option>Anthropic-compatible</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="modelEndpoint">模型地址</label>
+          <input id="modelEndpoint" value="https://api.openai.com/v1" />
+        </div>
+        <div class="field">
+          <label for="modelName">模型名称</label>
+          <input id="modelName" value="gpt-4.1-mini" />
+        </div>
+        <div class="field">
+          <label for="apiKey">API Key</label>
+          <input id="apiKey" type="password" value="sk-••••••••••••" />
+        </div>
+      </form>
+    </div>
+    <div class="drawer-footer">
+      <button class="outline-btn" data-close-model>取消</button>
+      <button class="save-btn" data-close-model>保存</button>
+    </div>
+  </aside>
+
+  <script>
+    const titles = {
+      workbench: "Agent 工作台",
+      channels: "通道",
+      advanced: "高级"
+    };
+
+    const navButtons = document.querySelectorAll("[data-page]");
+    const pageLinks = document.querySelectorAll("[data-page-link]");
+    const pages = document.querySelectorAll(".page");
+    const pageTitle = document.getElementById("pageTitle");
+
+    function setPage(pageId) {
+      pages.forEach((page) => page.classList.toggle("active", page.id === pageId));
+      navButtons.forEach((button) => button.classList.toggle("active", button.dataset.page === pageId));
+      pageTitle.textContent = titles[pageId] || titles.workbench;
+    }
+
+    navButtons.forEach((button) => {
+      button.addEventListener("click", () => setPage(button.dataset.page));
+    });
+
+    pageLinks.forEach((button) => {
+      button.addEventListener("click", () => setPage(button.dataset.pageLink));
+    });
+
+    const drawer = document.querySelector(".drawer");
+    const backdrop = document.querySelector(".drawer-backdrop");
+    const openModelButtons = document.querySelectorAll("[data-open-model]");
+    const closeModelButtons = document.querySelectorAll("[data-close-model]");
+
+    function setDrawer(open) {
+      drawer.classList.toggle("open", open);
+      backdrop.classList.toggle("open", open);
+      drawer.setAttribute("aria-hidden", String(!open));
+    }
+
+    openModelButtons.forEach((button) => {
+      button.addEventListener("click", () => setDrawer(true));
+    });
+
+    closeModelButtons.forEach((button) => {
+      button.addEventListener("click", () => setDrawer(false));
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") setDrawer(false);
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,731 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CatsCo Ultra Minimal Chat</title>
+  <style>
+    :root {
+      --bg: #fbfbfc;
+      --ink: #111827;
+      --muted: #6b7280;
+      --faint: #9ca3af;
+      --line: #e5e7eb;
+      --line-strong: #d1d5db;
+      --surface: #ffffff;
+      --soft: #f4f5f7;
+      --primary: #111827;
+      --amber: #a16207;
+      --amber-bg: #fff8e8;
+      --green: #0f8f61;
+      --green-bg: #ecfdf5;
+      --shadow: 0 18px 56px rgba(15, 23, 42, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    textarea,
+    select {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+      border: 0;
+    }
+
+    .page {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+
+    .topbar {
+      height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(251, 251, 252, 0.88);
+      backdrop-filter: blur(16px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .mark {
+      width: 30px;
+      height: 30px;
+      border-radius: 9px;
+      background: var(--ink);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 900;
+      flex: 0 0 auto;
+    }
+
+    .brand-main {
+      font-size: 14px;
+      font-weight: 880;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+
+    .brand-sub {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 50vw;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .text-button,
+    .icon-button,
+    .primary-button,
+    .secondary-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+      border-radius: 9px;
+      font-size: 13px;
+      font-weight: 820;
+      transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+    }
+
+    .text-button {
+      color: var(--muted);
+      background: transparent;
+      padding: 0 9px;
+    }
+
+    .text-button:hover {
+      color: var(--ink);
+      background: var(--soft);
+    }
+
+    .icon-button {
+      width: 36px;
+      background: transparent;
+      color: var(--muted);
+      font-weight: 900;
+    }
+
+    .icon-button:hover {
+      background: var(--soft);
+      color: var(--ink);
+    }
+
+    .primary-button {
+      color: #fff;
+      background: var(--primary);
+      padding: 0 15px;
+      box-shadow: 0 12px 28px rgba(17, 24, 39, 0.14);
+    }
+
+    .primary-button:hover {
+      transform: translateY(-1px);
+    }
+
+    .secondary-button {
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--ink);
+      padding: 0 14px;
+    }
+
+    .secondary-button:hover {
+      background: var(--soft);
+      border-color: var(--line-strong);
+    }
+
+    .chat {
+      width: min(860px, calc(100vw - 28px));
+      margin: 0 auto;
+      padding: 36px 0 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      min-height: 0;
+      overflow: auto;
+    }
+
+    .agent-header {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      margin-bottom: 8px;
+    }
+
+    .avatar {
+      width: 44px;
+      height: 44px;
+      border-radius: 15px;
+      background: linear-gradient(145deg, #111827, #3b4354);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-weight: 900;
+    }
+
+    .agent-name {
+      font-size: 24px;
+      line-height: 1.1;
+      font-weight: 920;
+      margin: 0;
+    }
+
+    .agent-status {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .notice {
+      width: min(620px, 100%);
+      border: 1px solid rgba(161, 98, 7, 0.2);
+      border-radius: 18px;
+      background: var(--amber-bg);
+      padding: 18px;
+      box-shadow: 0 12px 32px rgba(161, 98, 7, 0.08);
+    }
+
+    .notice-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--amber);
+      font-size: 12px;
+      font-weight: 860;
+      margin-bottom: 10px;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: currentColor;
+    }
+
+    .notice-title {
+      margin: 0;
+      font-size: clamp(26px, 4vw, 38px);
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    .notice-copy {
+      color: var(--muted);
+      margin: 11px 0 0;
+      font-size: 15px;
+      line-height: 1.6;
+      max-width: 520px;
+    }
+
+    .notice-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 20px;
+      flex-wrap: wrap;
+    }
+
+    .micro-status {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 26px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      padding: 0 9px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.68);
+      font-size: 12px;
+      font-weight: 780;
+    }
+
+    .pill.done {
+      color: var(--green);
+      border-color: rgba(15, 143, 97, 0.16);
+      background: var(--green-bg);
+    }
+
+    .message {
+      max-width: min(680px, 88%);
+      display: grid;
+      gap: 7px;
+    }
+
+    .message.agent { align-self: flex-start; }
+    .message.user { align-self: flex-end; }
+
+    .message-meta {
+      color: var(--faint);
+      font-size: 12px;
+      padding: 0 3px;
+    }
+
+    .bubble {
+      border: 1px solid var(--line);
+      border-radius: 17px;
+      padding: 13px 15px;
+      background: var(--surface);
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+      font-size: 14px;
+      line-height: 1.58;
+    }
+
+    .message.agent .bubble {
+      border-bottom-left-radius: 6px;
+    }
+
+    .message.user .bubble {
+      border-bottom-right-radius: 6px;
+      background: var(--primary);
+      color: #fff;
+      border-color: var(--primary);
+    }
+
+    .composer-wrap {
+      padding: 14px 20px 18px;
+      border-top: 1px solid var(--line);
+      background: rgba(251, 251, 252, 0.88);
+      backdrop-filter: blur(16px);
+      position: sticky;
+      bottom: 0;
+    }
+
+    .composer {
+      width: min(860px, 100%);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: end;
+      gap: 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 16px;
+      background: var(--surface);
+      padding: 8px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+    }
+
+    textarea {
+      border: 0;
+      outline: 0;
+      resize: none;
+      min-height: 36px;
+      max-height: 140px;
+      padding: 8px 0;
+      color: var(--ink);
+      background: transparent;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    textarea:disabled {
+      color: var(--muted);
+    }
+
+    .drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(17, 24, 39, 0.28);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.18s ease;
+      z-index: 30;
+    }
+
+    .drawer {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      bottom: 10px;
+      width: min(400px, calc(100vw - 20px));
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      transform: translateX(calc(100% + 24px));
+      transition: transform 0.22s ease;
+      z-index: 40;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      overflow: hidden;
+    }
+
+    body.drawer-open .drawer-backdrop {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    body.drawer-open .drawer {
+      transform: translateX(0);
+    }
+
+    .drawer-head {
+      padding: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .drawer-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 900;
+    }
+
+    .drawer-copy {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .drawer-body {
+      padding: 18px;
+      overflow: auto;
+      display: grid;
+      gap: 12px;
+      align-content: start;
+    }
+
+    .drawer-foot {
+      padding: 14px 18px;
+      border-top: 1px solid var(--line);
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .option,
+    .list-item {
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--surface);
+      padding: 13px;
+    }
+
+    .option.selected {
+      border-color: var(--ink);
+      box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.06);
+    }
+
+    .item-title {
+      font-size: 14px;
+      font-weight: 880;
+    }
+
+    .item-copy {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      margin-top: 3px;
+    }
+
+    .list-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 24px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 820;
+      white-space: nowrap;
+    }
+
+    .badge.green {
+      color: var(--green);
+      background: var(--green-bg);
+      border-color: rgba(15, 143, 97, 0.16);
+    }
+
+    .badge.amber {
+      color: var(--amber);
+      background: var(--amber-bg);
+      border-color: rgba(161, 98, 7, 0.18);
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .field input,
+    .field select {
+      min-height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface);
+      color: var(--ink);
+      padding: 0 10px;
+      outline: 0;
+    }
+
+    .field input:focus,
+    .field select:focus {
+      border-color: var(--ink);
+      box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.06);
+    }
+
+    @media (max-width: 720px) {
+      .topbar {
+        height: 56px;
+        padding: 0 12px;
+      }
+
+      .brand-sub {
+        display: none;
+      }
+
+      .top-actions .text-button:not(:last-child) {
+        display: none;
+      }
+
+      .chat {
+        width: 100%;
+        padding: 22px 14px 18px;
+      }
+
+      .agent-header {
+        margin-bottom: 4px;
+      }
+
+      .avatar {
+        width: 40px;
+        height: 40px;
+        border-radius: 14px;
+      }
+
+      .agent-name {
+        font-size: 21px;
+      }
+
+      .agent-status {
+        font-size: 13px;
+      }
+
+      .notice {
+        width: 100%;
+        padding: 18px;
+      }
+
+      .notice-title {
+        font-size: 29px;
+      }
+
+      .notice-actions {
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+
+      .notice-actions .primary-button,
+      .notice-actions .secondary-button {
+        width: 100%;
+      }
+
+      .composer-wrap {
+        padding: 10px;
+      }
+
+      .drawer {
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 100vw;
+        border-radius: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">CC</div>
+        <div>
+          <div class="brand-main">CatsCo Agent</div>
+          <div class="brand-sub">Dev Agent · 本机 Body</div>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button class="text-button" onclick="openDrawer('skills')">Skills</button>
+        <button class="text-button" onclick="openDrawer('settings')">设置</button>
+        <button class="icon-button" onclick="openDrawer('settings')" aria-label="更多">···</button>
+      </div>
+    </header>
+
+    <main class="chat">
+      <div class="agent-header">
+        <div class="avatar">DA</div>
+        <div>
+          <h1 class="agent-name">Dev Agent</h1>
+          <div class="agent-status">已登录 · 已绑定 · 等待模型</div>
+        </div>
+      </div>
+
+      <section class="notice">
+        <div class="notice-label"><span class="dot"></span>还差一步</div>
+        <h2 class="notice-title">选择模型后即可开始对话</h2>
+        <p class="notice-copy">CatsCo 已登录，Dev Agent 已绑定到这台机器。现在只需要选择一个模型来源。</p>
+        <div class="notice-actions">
+          <button class="primary-button" onclick="openDrawer('model')">选择 AI 模型</button>
+          <button class="secondary-button" onclick="showReadyState()">预览对话态</button>
+        </div>
+        <div class="micro-status">
+          <span class="pill done"><span class="dot"></span>CatsCo 已登录</span>
+          <span class="pill done"><span class="dot"></span>Agent 已绑定</span>
+          <span class="pill">WebApp 可用</span>
+        </div>
+      </section>
+    </main>
+
+    <footer class="composer-wrap">
+      <div class="composer">
+        <button class="icon-button" aria-label="添加资料">+</button>
+        <textarea id="composer" disabled placeholder="配置模型后开始对话"></textarea>
+        <button class="primary-button" id="sendButton" disabled>发送</button>
+      </div>
+    </footer>
+  </div>
+
+  <div class="drawer-backdrop" onclick="closeDrawer()"></div>
+  <aside class="drawer" aria-label="设置">
+    <div class="drawer-head">
+      <h2 class="drawer-title" id="drawerTitle">选择 AI 模型</h2>
+      <p class="drawer-copy" id="drawerCopy">配置后即可开始对话。</p>
+    </div>
+    <div class="drawer-body" id="drawerBody"></div>
+    <div class="drawer-foot">
+      <button class="secondary-button" onclick="closeDrawer()">取消</button>
+      <button class="primary-button" onclick="closeDrawer()">保存</button>
+    </div>
+  </aside>
+
+  <script>
+    const drawerTitle = document.getElementById('drawerTitle');
+    const drawerCopy = document.getElementById('drawerCopy');
+    const drawerBody = document.getElementById('drawerBody');
+
+    const content = {
+      model: {
+        title: '选择 AI 模型',
+        copy: '选择 CatsCo 托管模型，或填写第三方模型。',
+        body: `
+          <div class="option selected"><div class="item-title">CatsCo 托管模型</div><div class="item-copy">使用 CatsCo 账号额度。当前演示为即将接入。</div></div>
+          <div class="option"><div class="item-title">第三方兼容模型</div><div class="item-copy">适合 beta 阶段和自定义模型。</div></div>
+          <div class="field"><label>兼容类型</label><select><option>OpenAI-compatible</option><option>Anthropic-compatible</option></select></div>
+          <div class="field"><label>模型地址</label><input placeholder="https://api.example.com/v1" /></div>
+          <div class="field"><label>模型名称</label><input placeholder="gpt-4.1-mini" /></div>
+          <div class="field"><label>API Key</label><input type="password" placeholder="留空表示不修改" /></div>
+        `
+      },
+      skills: {
+        title: 'Skills',
+        copy: '管理这个 Agent 会用到的能力。',
+        body: `
+          <div class="list-item"><div><div class="item-title">代码编辑</div><div class="item-copy">修改文件、运行测试、提交变更</div></div><span class="badge green">启用</span></div>
+          <div class="list-item"><div><div class="item-title">本地文件</div><div class="item-copy">需要目录授权后访问</div></div><span class="badge amber">授权</span></div>
+          <div class="list-item"><div><div class="item-title">文档/PPT</div><div class="item-copy">生成并检查交付物</div></div><span class="badge green">启用</span></div>
+          <div class="list-item"><div><div class="item-title">GauzMem</div><div class="item-copy">实验记忆能力</div></div><span class="badge">beta</span></div>
+        `
+      },
+      settings: {
+        title: '设置',
+        copy: '平时不用看。出问题时再打开。',
+        body: `
+          <div class="list-item"><div><div class="item-title">当前 Agent</div><div class="item-copy">Dev Agent · body-local</div></div><span class="badge green">正常</span></div>
+          <div class="list-item"><div><div class="item-title">入口</div><div class="item-copy">WebApp / 微信 / 飞书 / 本地</div></div><span class="badge">管理</span></div>
+          <div class="list-item"><div><div class="item-title">Runtime Profile</div><div class="item-copy">工作目录、工具开关</div></div><span class="badge">高级</span></div>
+          <div class="list-item"><div><div class="item-title">诊断日志</div><div class="item-copy">connector、readiness、环境变量</div></div><span class="badge">高级</span></div>
+        `
+      }
+    };
+
+    function openDrawer(kind) {
+      const next = content[kind] || content.model;
+      drawerTitle.textContent = next.title;
+      drawerCopy.textContent = next.copy;
+      drawerBody.innerHTML = next.body;
+      document.body.classList.add('drawer-open');
+    }
+
+    function closeDrawer() {
+      document.body.classList.remove('drawer-open');
+    }
+
+    function showReadyState() {
+      document.querySelector('.agent-status').textContent = '在线 · WebApp 可用 · 微信待绑定';
+      document.querySelector('.chat').innerHTML = `
+        <div class="agent-header">
+          <div class="avatar">DA</div>
+          <div>
+            <h1 class="agent-name">Dev Agent</h1>
+            <div class="agent-status">在线 · WebApp 可用 · 微信待绑定</div>
+          </div>
+        </div>
+        <div class="message agent"><div class="message-meta">Dev Agent · 刚刚</div><div class="bubble">我已经准备好了。你可以直接发任务，也可以上传文件或说明要处理的目录。</div></div>
+        <div class="message user"><div class="message-meta">你 · 刚刚</div><div class="bubble">帮我看一下这个项目下一步怎么整理。</div></div>
+        <div class="message agent"><div class="message-meta">Dev Agent · 正在处理</div><div class="bubble">可以。我会先读项目结构，再把可执行的下一步整理成列表。</div></div>
+      `;
+      const composer = document.getElementById('composer');
+      const send = document.getElementById('sendButton');
+      composer.disabled = false;
+      composer.placeholder = '和 Dev Agent 说点什么...';
+      send.disabled = false;
+    }
+  </script>
+</body>
+</html>

@@ -54,9 +54,11 @@ Thumbs.db
 
 # 本地 agent / IDE 生成配置
 .claude/
+.agents/
 .kiro/
 .playwright-mcp/
 .xiaoba/
+skills-lock.json
 
 # 打包文件
 *.dmg

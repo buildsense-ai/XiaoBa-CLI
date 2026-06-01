@@ -1,0 +1,1566 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CatsCo Dashboard - shadcn App Shell</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --background: #f8fafc;
+      --foreground: #09090b;
+      --card: #ffffff;
+      --card-foreground: #09090b;
+      --popover: #ffffff;
+      --popover-foreground: #09090b;
+      --primary: #18181b;
+      --primary-foreground: #fafafa;
+      --secondary: #f4f4f5;
+      --secondary-foreground: #18181b;
+      --muted: #f4f4f5;
+      --muted-foreground: #71717a;
+      --accent: #f4f4f5;
+      --accent-foreground: #18181b;
+      --destructive: #b42318;
+      --destructive-foreground: #fef2f2;
+      --border: #e4e4e7;
+      --input: #e4e4e7;
+      --ring: #18181b;
+      --success: #16794c;
+      --success-bg: #ecfdf3;
+      --success-border: #abefc6;
+      --warning: #a15c07;
+      --warning-bg: #fffaeb;
+      --warning-border: #fedf89;
+      --info: #175cd3;
+      --info-bg: #eff8ff;
+      --info-border: #b2ddff;
+      --sidebar: #ffffff;
+      --sidebar-foreground: #3f3f46;
+      --sidebar-accent: #f4f4f5;
+      --sidebar-accent-foreground: #09090b;
+      --sidebar-border: #e4e4e7;
+      --radius: 8px;
+      --radius-sm: 6px;
+      --radius-lg: 10px;
+      --shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+      --shadow-lg: 0 24px 70px rgba(15, 23, 42, 0.18);
+      --font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      min-height: 100%;
+      background: var(--background);
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      color: var(--foreground);
+      background: var(--background);
+      font-family: var(--font);
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .app-shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 264px minmax(0, 1fr);
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      padding: 16px;
+      border-right: 1px solid var(--sidebar-border);
+      background: var(--sidebar);
+      color: var(--sidebar-foreground);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 40px;
+      padding: 4px 6px;
+    }
+
+    .brand-mark {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--primary);
+      color: var(--primary-foreground);
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    .brand-copy {
+      display: grid;
+      gap: 1px;
+      min-width: 0;
+    }
+
+    .brand-copy strong {
+      color: var(--foreground);
+      font-size: 14px;
+      font-weight: 650;
+      line-height: 1.2;
+    }
+
+    .brand-copy span {
+      color: var(--muted-foreground);
+      font-size: 12px;
+      line-height: 1.2;
+    }
+
+    .sidebar-section {
+      display: grid;
+      gap: 8px;
+    }
+
+    .sidebar-label {
+      padding: 0 8px;
+      color: var(--muted-foreground);
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .nav {
+      display: grid;
+      gap: 4px;
+    }
+
+    .nav-button {
+      width: 100%;
+      min-height: 36px;
+      display: grid;
+      grid-template-columns: 18px 1fr auto;
+      align-items: center;
+      gap: 9px;
+      padding: 7px 9px;
+      border: 1px solid transparent;
+      border-radius: var(--radius);
+      background: transparent;
+      color: var(--sidebar-foreground);
+      text-align: left;
+      font-size: 14px;
+    }
+
+    .nav-button:hover,
+    .nav-button.active {
+      border-color: var(--border);
+      background: var(--sidebar-accent);
+      color: var(--sidebar-accent-foreground);
+    }
+
+    .nav-button svg,
+    .icon-button svg,
+    .btn svg {
+      width: 16px;
+      height: 16px;
+      stroke-width: 2;
+    }
+
+    .nav-count {
+      min-width: 20px;
+      height: 20px;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--card);
+      color: var(--muted-foreground);
+      font-size: 11px;
+    }
+
+    .sidebar-card {
+      margin-top: auto;
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--card);
+      box-shadow: var(--shadow);
+    }
+
+    .sidebar-card-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .sidebar-card strong {
+      color: var(--foreground);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .sidebar-card span {
+      color: var(--muted-foreground);
+      font-size: 12px;
+    }
+
+    .main {
+      min-width: 0;
+      padding: 16px;
+    }
+
+    .inset {
+      min-height: calc(100vh - 32px);
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--card);
+      box-shadow: var(--shadow);
+    }
+
+    .topbar {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.84);
+      backdrop-filter: blur(12px);
+    }
+
+    .breadcrumbs {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      color: var(--muted-foreground);
+      font-size: 13px;
+    }
+
+    .breadcrumbs strong {
+      color: var(--foreground);
+      font-weight: 600;
+    }
+
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .icon-button {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--card);
+      color: var(--foreground);
+    }
+
+    .icon-button:hover,
+    .btn:hover {
+      background: var(--accent);
+    }
+
+    .page {
+      display: none;
+      padding: 22px;
+    }
+
+    .page.active {
+      display: block;
+    }
+
+    .page-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 326px;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .section-title {
+      display: grid;
+      gap: 5px;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 22px;
+      font-weight: 650;
+      line-height: 1.25;
+    }
+
+    h2 {
+      font-size: 16px;
+      font-weight: 650;
+      line-height: 1.35;
+    }
+
+    h3 {
+      font-size: 14px;
+      font-weight: 650;
+      line-height: 1.35;
+    }
+
+    p {
+      color: var(--muted-foreground);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--card);
+      color: var(--card-foreground);
+      box-shadow: var(--shadow);
+    }
+
+    .card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .card-title {
+      display: grid;
+      gap: 4px;
+    }
+
+    .card-content {
+      padding: 16px;
+    }
+
+    .card-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px;
+      border-top: 1px solid var(--border);
+      background: #fcfcfd;
+    }
+
+    .status-card {
+      display: grid;
+      gap: 18px;
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background:
+        linear-gradient(180deg, rgba(244, 244, 245, 0.5), rgba(255, 255, 255, 0) 46%),
+        var(--card);
+      box-shadow: var(--shadow);
+    }
+
+    .status-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .status-heading {
+      display: grid;
+      gap: 8px;
+    }
+
+    .status-heading h1 {
+      font-size: 26px;
+      line-height: 1.16;
+    }
+
+    .status-copy {
+      max-width: 560px;
+      color: var(--muted-foreground);
+      font-size: 14px;
+    }
+
+    .status-rail {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .btn-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn {
+      min-height: 36px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--card);
+      color: var(--foreground);
+      font-size: 13px;
+      font-weight: 500;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      min-height: 40px;
+      padding: 9px 14px;
+      border-color: var(--primary);
+      background: var(--primary);
+      color: var(--primary-foreground);
+      font-weight: 600;
+    }
+
+    .btn-primary:hover {
+      background: #27272a;
+    }
+
+    .btn-ghost {
+      border-color: transparent;
+      background: transparent;
+      color: var(--muted-foreground);
+    }
+
+    .btn-sm {
+      min-height: 32px;
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      width: fit-content;
+      min-height: 22px;
+      padding: 2px 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--secondary);
+      color: var(--secondary-foreground);
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+
+    .badge-success {
+      border-color: var(--success-border);
+      background: var(--success-bg);
+      color: var(--success);
+    }
+
+    .badge-warning {
+      border-color: var(--warning-border);
+      background: var(--warning-bg);
+      color: var(--warning);
+    }
+
+    .badge-info {
+      border-color: var(--info-border);
+      background: var(--info-bg);
+      color: var(--info);
+    }
+
+    .badge-muted {
+      background: var(--muted);
+      color: var(--muted-foreground);
+    }
+
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: currentColor;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .summary-item {
+      min-width: 0;
+      display: grid;
+      gap: 6px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: #fcfcfd;
+    }
+
+    .summary-label {
+      color: var(--muted-foreground);
+      font-size: 12px;
+    }
+
+    .summary-value {
+      overflow: hidden;
+      color: var(--foreground);
+      font-size: 13px;
+      font-weight: 600;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .step {
+      display: grid;
+      gap: 7px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--card);
+    }
+
+    .step span {
+      color: var(--muted-foreground);
+      font-size: 12px;
+    }
+
+    .step strong {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .step.current {
+      border-color: var(--warning-border);
+      background: var(--warning-bg);
+    }
+
+    .tabs {
+      display: inline-flex;
+      gap: 3px;
+      padding: 3px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--muted);
+    }
+
+    .tab-trigger {
+      min-height: 30px;
+      padding: 5px 10px;
+      border: 0;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--muted-foreground);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .tab-trigger.active {
+      background: var(--card);
+      color: var(--foreground);
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+    }
+
+    .channel-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .channel-card {
+      display: grid;
+      gap: 14px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--card);
+      box-shadow: var(--shadow);
+    }
+
+    .channel-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .channel-icon {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--muted);
+      color: var(--foreground);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .key-values {
+      display: grid;
+      gap: 8px;
+    }
+
+    .kv {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 13px;
+    }
+
+    .kv span {
+      color: var(--muted-foreground);
+    }
+
+    .kv strong {
+      overflow: hidden;
+      color: var(--foreground);
+      font-weight: 500;
+      text-align: right;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .side-panel {
+      display: grid;
+      gap: 16px;
+    }
+
+    .agent-card {
+      display: grid;
+      gap: 14px;
+    }
+
+    .agent-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .avatar {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--primary);
+      color: var(--primary-foreground);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .agent-meta {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+
+    .agent-meta strong {
+      overflow: hidden;
+      font-size: 14px;
+      font-weight: 650;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .agent-meta span {
+      color: var(--muted-foreground);
+      font-size: 12px;
+    }
+
+    .field-group {
+      display: grid;
+      gap: 12px;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .field-label {
+      color: var(--foreground);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .field-control {
+      width: 100%;
+      min-height: 36px;
+      padding: 8px 10px;
+      border: 1px solid var(--input);
+      border-radius: var(--radius);
+      background: var(--card);
+      color: var(--foreground);
+      font-size: 13px;
+      outline: none;
+    }
+
+    .field-control:focus {
+      border-color: var(--ring);
+      box-shadow: 0 0 0 3px rgba(24, 24, 27, 0.1);
+    }
+
+    .field-description {
+      color: var(--muted-foreground);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .model-choice-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .model-choice {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--card);
+    }
+
+    .model-choice.active {
+      border-color: var(--ring);
+      box-shadow: 0 0 0 3px rgba(24, 24, 27, 0.08);
+    }
+
+    .model-choice.disabled {
+      background: var(--muted);
+      color: var(--muted-foreground);
+    }
+
+    .advanced-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .advanced-item {
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--card);
+      box-shadow: var(--shadow);
+    }
+
+    .advanced-icon {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--muted);
+      color: var(--muted-foreground);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .advanced-copy {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+
+    .advanced-copy strong {
+      overflow: hidden;
+      font-size: 14px;
+      font-weight: 600;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .advanced-copy span {
+      color: var(--muted-foreground);
+      font-size: 12px;
+    }
+
+    .log-box {
+      display: grid;
+      gap: 6px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: #09090b;
+      color: #d4d4d8;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .sheet-backdrop {
+      position: fixed;
+      inset: 0;
+      display: none;
+      background: rgba(9, 9, 11, 0.42);
+      z-index: 20;
+    }
+
+    .sheet-backdrop.open {
+      display: block;
+    }
+
+    .sheet {
+      position: fixed;
+      top: 0;
+      right: 0;
+      width: min(480px, 100vw);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid var(--border);
+      background: var(--popover);
+      color: var(--popover-foreground);
+      box-shadow: var(--shadow-lg);
+      transform: translateX(100%);
+      transition: transform 180ms ease;
+      z-index: 21;
+    }
+
+    .sheet.open {
+      transform: translateX(0);
+    }
+
+    .sheet-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 18px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .sheet-title {
+      display: grid;
+      gap: 5px;
+    }
+
+    .sheet-body {
+      flex: 1;
+      overflow: auto;
+      display: grid;
+      align-content: start;
+      gap: 16px;
+      padding: 18px;
+    }
+
+    .sheet-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 14px 18px;
+      border-top: 1px solid var(--border);
+      background: #fcfcfd;
+    }
+
+    .mobile-tabs {
+      display: none;
+      padding: 8px;
+      border-bottom: 1px solid var(--border);
+      background: var(--card);
+    }
+
+    @media (max-width: 1120px) {
+      .page-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .summary-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .channel-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 820px) {
+      .app-shell {
+        display: block;
+      }
+
+      .sidebar {
+        position: static;
+        height: auto;
+        padding: 12px;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .sidebar-section,
+      .sidebar-card {
+        display: none;
+      }
+
+      .main {
+        padding: 0;
+      }
+
+      .inset {
+        min-height: auto;
+        border: 0;
+        border-radius: 0;
+      }
+
+      .mobile-tabs {
+        display: block;
+      }
+
+      .mobile-tabs .tabs {
+        width: 100%;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+      }
+
+      .tab-trigger {
+        width: 100%;
+      }
+
+      .topbar {
+        padding: 12px;
+      }
+
+      .topbar-actions .btn {
+        display: none;
+      }
+
+      .page {
+        padding: 14px;
+      }
+
+      .section-header,
+      .status-top,
+      .card-header,
+      .card-footer {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .summary-grid,
+      .steps,
+      .advanced-grid,
+      .model-choice-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .status-heading h1 {
+        font-size: 22px;
+      }
+
+      .btn-row,
+      .sheet-footer {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .btn,
+      .icon-button {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand">
+        <div class="brand-mark">CC</div>
+        <div class="brand-copy">
+          <strong>CatsCo Dashboard</strong>
+          <span>Agent Body 控制台</span>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-label">主入口</div>
+        <nav class="nav">
+          <button class="nav-button active" type="button" data-page="workbench">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+              <path d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path>
+              <path d="M8 8h8M8 12h5M8 16h7"></path>
+            </svg>
+            <span>工作台</span>
+            <span class="nav-count">1</span>
+          </button>
+          <button class="nav-button" type="button" data-page="channels">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+              <path d="M21 8a5 5 0 0 1-5 5H8l-5 4V8a5 5 0 0 1 5-5h8a5 5 0 0 1 5 5Z"></path>
+              <path d="M17 17h1a3 3 0 0 0 3-3v-1"></path>
+            </svg>
+            <span>通道</span>
+            <span class="nav-count">3</span>
+          </button>
+          <button class="nav-button" type="button" data-page="advanced">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+              <path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"></path>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.37 1.05V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 8 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.05-.37H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 8a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .37-1.05V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 16 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.22.38.58.65 1 .75.16.04.33.06.5.06H21a2 2 0 1 1 0 4h-.09A1.65 1.65 0 0 0 19.4 15Z"></path>
+            </svg>
+            <span>高级</span>
+            <span class="nav-count">8</span>
+          </button>
+        </nav>
+      </div>
+
+      <div class="sidebar-card">
+        <div class="sidebar-card-row">
+          <strong>当前环境</strong>
+          <span class="badge badge-success"><span class="dot"></span>本机</span>
+        </div>
+        <span>body-macbook-pro.local</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="inset">
+        <header class="topbar">
+          <div class="breadcrumbs">
+            <span>CatsCo</span>
+            <span>/</span>
+            <strong id="crumbTitle">Agent 工作台</strong>
+          </div>
+          <div class="topbar-actions">
+            <button class="btn btn-sm" type="button">刷新状态</button>
+            <button class="icon-button" type="button" aria-label="打开通知">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                <path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 7h18s-3 0-3-7"></path>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <div class="mobile-tabs">
+          <div class="tabs" role="tablist" aria-label="移动端主入口">
+            <button class="tab-trigger active" type="button" data-page="workbench">工作台</button>
+            <button class="tab-trigger" type="button" data-page="channels">通道</button>
+            <button class="tab-trigger" type="button" data-page="advanced">高级</button>
+          </div>
+        </div>
+
+        <section class="page active" id="page-workbench">
+          <div class="section-header">
+            <div class="section-title">
+              <h1>Agent 工作台</h1>
+              <p>当前 Agent Body 的可用状态和下一步动作。</p>
+            </div>
+            <span class="badge badge-warning"><span class="dot"></span>等待配置模型</span>
+          </div>
+
+          <div class="page-grid">
+            <div class="stack">
+              <section class="status-card" aria-label="主状态区">
+                <div class="status-top">
+                  <div class="status-heading">
+                    <span class="badge badge-warning">缺少 AI 模型</span>
+                    <h1>配置模型后即可启动 Agent Body</h1>
+                    <p class="status-copy">Dev Agent 已绑定到本机。选择一个模型来源后，Dashboard 会进入启动状态。</p>
+                  </div>
+                  <div class="status-rail">
+                    <span class="badge badge-success">账号已登录</span>
+                    <span class="badge badge-success">Agent 已绑定</span>
+                    <span class="badge badge-warning">Body 未启动</span>
+                  </div>
+                </div>
+
+                <div class="btn-row">
+                  <button class="btn btn-primary" type="button" data-open-sheet>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                      <path d="M12 3v18M5 10h14M7 16h10"></path>
+                    </svg>
+                    选择 AI 模型
+                  </button>
+                  <button class="btn btn-ghost" type="button" data-page="advanced">查看诊断</button>
+                </div>
+
+                <div class="summary-grid" aria-label="状态摘要">
+                  <div class="summary-item">
+                    <span class="summary-label">CatsCo 账号</span>
+                    <strong class="summary-value">yuan@catsco.cn</strong>
+                    <span class="badge badge-success">已登录</span>
+                  </div>
+                  <div class="summary-item">
+                    <span class="summary-label">Agent</span>
+                    <strong class="summary-value">Dev Agent</strong>
+                    <span class="badge badge-success">已绑定</span>
+                  </div>
+                  <div class="summary-item">
+                    <span class="summary-label">Agent Body</span>
+                    <strong class="summary-value">本机 MacBook</strong>
+                    <span class="badge badge-warning">未启动</span>
+                  </div>
+                  <div class="summary-item">
+                    <span class="summary-label">模型</span>
+                    <strong class="summary-value">未选择</strong>
+                    <span class="badge badge-warning">必填</span>
+                  </div>
+                  <div class="summary-item">
+                    <span class="summary-label">通道</span>
+                    <strong class="summary-value">WebApp 可用</strong>
+                    <span class="badge badge-info">3 个入口</span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="card" aria-label="配置进度">
+                <div class="card-header">
+                  <div class="card-title">
+                    <h2>配置进度</h2>
+                    <p>主流程保持在一个工作台内。</p>
+                  </div>
+                  <div class="tabs" role="tablist" aria-label="工作台视图">
+                    <button class="tab-trigger active" type="button">状态</button>
+                    <button class="tab-trigger" type="button">入口</button>
+                    <button class="tab-trigger" type="button">诊断</button>
+                  </div>
+                </div>
+                <div class="card-content">
+                  <div class="steps">
+                    <div class="step">
+                      <span>第一步</span>
+                      <strong>登录 CatsCo</strong>
+                      <span class="badge badge-success">完成</span>
+                    </div>
+                    <div class="step current">
+                      <span>第二步</span>
+                      <strong>选择模型</strong>
+                      <span class="badge badge-warning">当前</span>
+                    </div>
+                    <div class="step">
+                      <span>第三步</span>
+                      <strong>绑定 Agent</strong>
+                      <span class="badge badge-success">完成</span>
+                    </div>
+                    <div class="step">
+                      <span>第四步</span>
+                      <strong>启动 Body</strong>
+                      <span class="badge badge-muted">等待</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="card-footer">
+                  <p>可用后主按钮会变为“打开 WebApp”。</p>
+                  <button class="btn btn-sm" type="button" data-open-sheet>配置模型</button>
+                </div>
+              </section>
+            </div>
+
+            <aside class="side-panel" aria-label="当前 Agent">
+              <section class="card agent-card">
+                <div class="card-header">
+                  <div class="card-title">
+                    <h2>当前 Agent</h2>
+                    <p>绑定到当前 Agent Body。</p>
+                  </div>
+                  <span class="badge badge-success">在线身份</span>
+                </div>
+                <div class="card-content">
+                  <div class="agent-row">
+                    <div class="avatar">DA</div>
+                    <div class="agent-meta">
+                      <strong>Dev Agent</strong>
+                      <span>catsco://agent/dev-agent</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="card-footer">
+                  <button class="btn btn-sm" type="button">切换 Agent</button>
+                  <button class="btn btn-sm" type="button">本地测试</button>
+                </div>
+              </section>
+
+              <section class="card">
+                <div class="card-header">
+                  <div class="card-title">
+                    <h2>使用入口</h2>
+                    <p>配置完成后从这里进入。</p>
+                  </div>
+                </div>
+                <div class="card-content">
+                  <div class="key-values">
+                    <div class="kv">
+                      <span>WebApp</span>
+                      <strong>可打开</strong>
+                    </div>
+                    <div class="kv">
+                      <span>微信</span>
+                      <strong>待扫码</strong>
+                    </div>
+                    <div class="kv">
+                      <span>飞书</span>
+                      <strong>待绑定</strong>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </aside>
+          </div>
+        </section>
+
+        <section class="page" id="page-channels">
+          <div class="section-header">
+            <div class="section-title">
+              <h1>通道</h1>
+              <p>WebApp、微信、飞书都是当前 Agent 的入口。</p>
+            </div>
+            <span class="badge badge-info">绑定到 Dev Agent</span>
+          </div>
+
+          <div class="channel-grid">
+            <article class="channel-card">
+              <div class="channel-head">
+                <div>
+                  <div class="channel-icon">WA</div>
+                </div>
+                <span class="badge badge-success"><span class="dot"></span>可用</span>
+              </div>
+              <div class="card-title">
+                <h2>CatsCo WebApp</h2>
+                <p>浏览器内和当前 Agent 对话。</p>
+              </div>
+              <div class="key-values">
+                <div class="kv">
+                  <span>Agent</span>
+                  <strong>Dev Agent</strong>
+                </div>
+                <div class="kv">
+                  <span>状态</span>
+                  <strong>已绑定</strong>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button class="btn" type="button">打开 WebApp</button>
+                <button class="btn btn-ghost" type="button">高级诊断</button>
+              </div>
+            </article>
+
+            <article class="channel-card">
+              <div class="channel-head">
+                <div>
+                  <div class="channel-icon">WX</div>
+                </div>
+                <span class="badge badge-warning"><span class="dot"></span>待扫码</span>
+              </div>
+              <div class="card-title">
+                <h2>微信</h2>
+                <p>扫码后绑定到当前 Agent。</p>
+              </div>
+              <div class="key-values">
+                <div class="kv">
+                  <span>Agent</span>
+                  <strong>Dev Agent</strong>
+                </div>
+                <div class="kv">
+                  <span>入口</span>
+                  <strong>个人号 / 群聊</strong>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button class="btn" type="button">扫码绑定</button>
+                <button class="btn btn-ghost" type="button">高级诊断</button>
+              </div>
+            </article>
+
+            <article class="channel-card">
+              <div class="channel-head">
+                <div>
+                  <div class="channel-icon">FS</div>
+                </div>
+                <span class="badge badge-muted"><span class="dot"></span>待绑定</span>
+              </div>
+              <div class="card-title">
+                <h2>飞书</h2>
+                <p>连接企业工作台里的 Agent。</p>
+              </div>
+              <div class="key-values">
+                <div class="kv">
+                  <span>Agent</span>
+                  <strong>Dev Agent</strong>
+                </div>
+                <div class="kv">
+                  <span>配置</span>
+                  <strong>缺少 App Secret</strong>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button class="btn" type="button">绑定飞书</button>
+                <button class="btn btn-ghost" type="button">高级诊断</button>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="page" id="page-advanced">
+          <div class="section-header">
+            <div class="section-title">
+              <h1>高级</h1>
+              <p>诊断、运行环境和开发者入口集中收纳。</p>
+            </div>
+            <div class="tabs" role="tablist" aria-label="高级视图">
+              <button class="tab-trigger active" type="button">诊断</button>
+              <button class="tab-trigger" type="button">运行时</button>
+              <button class="tab-trigger" type="button">开发者</button>
+            </div>
+          </div>
+
+          <div class="stack">
+            <div class="advanced-grid">
+              <article class="advanced-item">
+                <div class="advanced-icon">RD</div>
+                <div class="advanced-copy">
+                  <strong>readiness 原始检查</strong>
+                  <span>账号、模型、Agent、Body</span>
+                </div>
+                <span class="badge badge-warning">1 项阻塞</span>
+              </article>
+              <article class="advanced-item">
+                <div class="advanced-icon">RP</div>
+                <div class="advanced-copy">
+                  <strong>Runtime Profile</strong>
+                  <span>本机 / 云端 / 容器</span>
+                </div>
+                <span class="badge badge-success">本机</span>
+              </article>
+              <article class="advanced-item">
+                <div class="advanced-icon">ENV</div>
+                <div class="advanced-copy">
+                  <strong>本地 .env</strong>
+                  <span>第三方模型和通道兼容配置</span>
+                </div>
+                <span class="badge badge-muted">12 项</span>
+              </article>
+              <article class="advanced-item">
+                <div class="advanced-icon">CON</div>
+                <div class="advanced-copy">
+                  <strong>connector 进程</strong>
+                  <span>CatsCompany bridge</span>
+                </div>
+                <span class="badge badge-success">运行中</span>
+              </article>
+              <article class="advanced-item">
+                <div class="advanced-icon">LOG</div>
+                <div class="advanced-copy">
+                  <strong>logs</strong>
+                  <span>最近 30 分钟</span>
+                </div>
+                <span class="badge badge-info">可查看</span>
+              </article>
+              <article class="advanced-item">
+                <div class="advanced-icon">GM</div>
+                <div class="advanced-copy">
+                  <strong>GauzMem</strong>
+                  <span>记忆实验入口</span>
+                </div>
+                <span class="badge badge-muted">Beta</span>
+              </article>
+              <article class="advanced-item">
+                <div class="advanced-icon">SH</div>
+                <div class="advanced-copy">
+                  <strong>SkillHub</strong>
+                  <span>技能开发与调试</span>
+                </div>
+                <span class="badge badge-muted">Dev</span>
+              </article>
+              <article class="advanced-item">
+                <div class="advanced-icon">API</div>
+                <div class="advanced-copy">
+                  <strong>connector API</strong>
+                  <span>端口、健康检查、token</span>
+                </div>
+                <span class="badge badge-success">200</span>
+              </article>
+            </div>
+
+            <section class="card">
+              <div class="card-header">
+                <div class="card-title">
+                  <h2>最近日志</h2>
+                  <p>默认折叠在高级区，不进入普通工作台。</p>
+                </div>
+                <button class="btn btn-sm" type="button">打开完整日志</button>
+              </div>
+              <div class="card-content">
+                <div class="log-box" aria-label="日志预览">
+                  <span>22:36:08 connector ready on 127.0.0.1:8787</span>
+                  <span>22:36:11 agent bound: Dev Agent</span>
+                  <span>22:36:15 model readiness failed: provider missing</span>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="sheet-backdrop" data-close-sheet></div>
+  <aside class="sheet" aria-label="选择 AI 模型" aria-modal="true" role="dialog">
+    <div class="sheet-header">
+      <div class="sheet-title">
+        <h2>选择 AI 模型</h2>
+        <p>模型配置在侧抽屉中完成，不进入独立页面。</p>
+      </div>
+      <button class="icon-button" type="button" aria-label="关闭模型配置" data-close-sheet>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <path d="M18 6 6 18M6 6l12 12"></path>
+        </svg>
+      </button>
+    </div>
+    <div class="sheet-body">
+      <div class="tabs" role="tablist" aria-label="模型来源">
+        <button class="tab-trigger active" type="button">模型来源</button>
+        <button class="tab-trigger" type="button">连接字段</button>
+      </div>
+
+      <div class="model-choice-grid">
+        <div class="model-choice disabled">
+          <span class="badge badge-muted">即将支持</span>
+          <h3>CatsCo 托管模型</h3>
+          <p>由 CatsCo 管理额度和模型版本。</p>
+        </div>
+        <div class="model-choice active">
+          <span class="badge badge-info">当前选择</span>
+          <h3>第三方兼容模型</h3>
+          <p>填写兼容接口即可启动。</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">
+            <h2>第三方模型</h2>
+            <p>只保留启动所需字段。</p>
+          </div>
+        </div>
+        <div class="card-content">
+          <div class="field-group">
+            <label class="field">
+              <span class="field-label">兼容类型</span>
+              <select class="field-control">
+                <option>OpenAI-compatible</option>
+                <option>Anthropic-compatible</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">模型地址</span>
+              <input class="field-control" value="https://api.example.com/v1">
+              <span class="field-description">Base URL，不包含具体 chat path。</span>
+            </label>
+            <label class="field">
+              <span class="field-label">模型名称</span>
+              <input class="field-control" value="gpt-4.1-mini">
+            </label>
+            <label class="field">
+              <span class="field-label">API Key</span>
+              <input class="field-control" type="password" value="sk-local-preview">
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="sheet-footer">
+      <button class="btn" type="button" data-close-sheet>取消</button>
+      <button class="btn btn-primary" type="button" data-close-sheet>保存模型</button>
+    </div>
+  </aside>
+
+  <script>
+    const pageTitles = {
+      workbench: "Agent 工作台",
+      channels: "通道",
+      advanced: "高级"
+    };
+
+    function setPage(name) {
+      document.querySelectorAll(".page").forEach((page) => {
+        page.classList.toggle("active", page.id === `page-${name}`);
+      });
+      document.querySelectorAll("[data-page]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.page === name);
+      });
+      document.getElementById("crumbTitle").textContent = pageTitles[name] || "Agent 工作台";
+    }
+
+    document.querySelectorAll("[data-page]").forEach((button) => {
+      button.addEventListener("click", () => setPage(button.dataset.page));
+    });
+
+    const sheet = document.querySelector(".sheet");
+    const backdrop = document.querySelector(".sheet-backdrop");
+
+    function setSheet(open) {
+      sheet.classList.toggle("open", open);
+      backdrop.classList.toggle("open", open);
+    }
+
+    document.querySelectorAll("[data-open-sheet]").forEach((button) => {
+      button.addEventListener("click", () => setSheet(true));
+    });
+
+    document.querySelectorAll("[data-close-sheet]").forEach((button) => {
+      button.addEventListener("click", () => setSheet(false));
+    });
+  </script>
+</body>
+</html>

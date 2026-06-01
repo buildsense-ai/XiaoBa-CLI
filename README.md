@@ -14,6 +14,20 @@
 
 ---
 
+## 当前重点计划：组织虚拟员工与 Dashboard 重构
+
+团队协作请先看这几个入口：
+
+- **虚拟员工架构过渡计划**：[根目录 HTML 入口](virtual-employee-architecture-transition-report.html) / [docs 完整报告](docs/virtual-employee-architecture-transition-report.html)
+- **Dashboard 重设计需求**：[docs/dashboard-redesign-requirements.md](docs/dashboard-redesign-requirements.md)
+- **Dashboard 设计决策**：[docs/dashboard-redesign-decision.md](docs/dashboard-redesign-decision.md)
+- **Dashboard 视觉探索**：[docs/dashboard-redesign-concepts/README.md](docs/dashboard-redesign-concepts/README.md)
+- **当前推荐极简方向**：[Ultra Minimal Chat mockup](docs/dashboard-redesign-concepts/version-f-ultra-minimal-chat.html)
+
+当前产品判断：Dashboard 应该先从“调试控制台”收敛成“Agent Chat”。普通用户打开后，核心目标只有一个：登录并完成必要配置，然后直接和当前 Agent 对话；Skills 和诊断都作为隐藏管理入口。
+
+---
+
 ## 💡 什么是 CatsCo？
 
 CatsCo 不是传统的 AI 助手，它是一个**真正拟人化的 Agent**。

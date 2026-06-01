@@ -1,0 +1,1560 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CatsCo Dashboard - Virtual Employee Cockpit</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1018;
+      --bg-2: #121826;
+      --panel: rgba(255, 255, 255, 0.078);
+      --panel-strong: rgba(255, 255, 255, 0.118);
+      --panel-soft: rgba(255, 255, 255, 0.052);
+      --line: rgba(255, 255, 255, 0.13);
+      --line-strong: rgba(255, 255, 255, 0.22);
+      --text: #f4f7fb;
+      --muted: #a8b2c3;
+      --subtle: #737f92;
+      --cyan: #48d7d0;
+      --green: #70df9c;
+      --amber: #f3bf58;
+      --blue: #83a9ff;
+      --rose: #ff7d90;
+      --surface: #f7f9fc;
+      --surface-2: #edf2f7;
+      --surface-text: #182233;
+      --surface-muted: #647086;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
+      --radius-lg: 18px;
+      --radius: 12px;
+      --radius-sm: 8px;
+      --font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      min-height: 100%;
+      background: var(--bg);
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      color: var(--text);
+      font-family: var(--font);
+      letter-spacing: 0;
+      background:
+        radial-gradient(circle at 18% 8%, rgba(72, 215, 208, 0.16), transparent 31rem),
+        radial-gradient(circle at 88% 0%, rgba(243, 191, 88, 0.12), transparent 28rem),
+        linear-gradient(135deg, #0d1018 0%, #131b29 46%, #0f141d 100%);
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 232px minmax(0, 1fr);
+    }
+
+    .rail {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 22px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      border-right: 1px solid var(--line);
+      background: rgba(8, 11, 17, 0.72);
+      backdrop-filter: blur(22px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 42px;
+      padding: 0 6px;
+    }
+
+    .mark {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(72, 215, 208, 0.5);
+      border-radius: 11px;
+      background:
+        linear-gradient(145deg, rgba(72, 215, 208, 0.2), rgba(131, 169, 255, 0.12)),
+        rgba(255, 255, 255, 0.06);
+      color: var(--cyan);
+      font-weight: 800;
+    }
+
+    .brand-title {
+      display: grid;
+      gap: 2px;
+    }
+
+    .brand-title strong {
+      font-size: 15px;
+      line-height: 1.1;
+    }
+
+    .brand-title span {
+      color: var(--subtle);
+      font-size: 12px;
+    }
+
+    .nav {
+      display: grid;
+      gap: 8px;
+    }
+
+    .nav button {
+      width: 100%;
+      min-height: 46px;
+      display: grid;
+      grid-template-columns: 28px 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border: 1px solid transparent;
+      border-radius: var(--radius);
+      color: var(--muted);
+      background: transparent;
+      text-align: left;
+    }
+
+    .nav button:hover,
+    .nav button.active {
+      color: var(--text);
+      border-color: var(--line);
+      background: var(--panel);
+    }
+
+    .nav button.active {
+      box-shadow: inset 3px 0 0 var(--cyan);
+    }
+
+    .nav-icon {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      color: #071014;
+      background: var(--cyan);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .nav button:nth-child(2) .nav-icon {
+      background: var(--amber);
+    }
+
+    .nav button:nth-child(3) .nav-icon {
+      background: var(--blue);
+    }
+
+    .nav-kicker {
+      width: 7px;
+      height: 7px;
+      border-radius: 99px;
+      background: currentColor;
+      opacity: 0.65;
+    }
+
+    .rail-card {
+      margin-top: auto;
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel-soft);
+    }
+
+    .rail-card b {
+      font-size: 13px;
+    }
+
+    .rail-card span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .main {
+      min-width: 0;
+      padding: 22px;
+    }
+
+    .topbar {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .title-block {
+      display: grid;
+      gap: 5px;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      font-size: clamp(24px, 3.4vw, 40px);
+      line-height: 1.05;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .chip {
+      min-height: 30px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.055);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 99px;
+      background: var(--green);
+      box-shadow: 0 0 0 4px rgba(112, 223, 156, 0.12);
+    }
+
+    .dot.warn {
+      background: var(--amber);
+      box-shadow: 0 0 0 4px rgba(243, 191, 88, 0.12);
+    }
+
+    .dot.off {
+      background: var(--rose);
+      box-shadow: 0 0 0 4px rgba(255, 125, 144, 0.12);
+    }
+
+    .btn {
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.07);
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .btn:hover {
+      border-color: var(--line-strong);
+      background: rgba(255, 255, 255, 0.105);
+    }
+
+    .btn.primary {
+      min-height: 48px;
+      padding: 0 22px;
+      border-color: rgba(72, 215, 208, 0.64);
+      color: #041112;
+      background: linear-gradient(135deg, #55ede5, #8ee7a8);
+      font-weight: 800;
+      box-shadow: 0 14px 34px rgba(72, 215, 208, 0.2);
+    }
+
+    .btn.small {
+      min-height: 34px;
+      padding: 0 11px;
+      font-size: 12px;
+    }
+
+    .page {
+      display: none;
+    }
+
+    .page.active {
+      display: block;
+    }
+
+    .cockpit-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.08fr) minmax(330px, 0.92fr);
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .status-hero {
+      position: relative;
+      min-height: 408px;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 24px;
+      padding: 24px;
+      border: 1px solid rgba(255, 255, 255, 0.17);
+      border-radius: var(--radius-lg);
+      background:
+        linear-gradient(145deg, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.055)),
+        linear-gradient(135deg, rgba(72, 215, 208, 0.17), rgba(131, 169, 255, 0.06));
+      box-shadow: var(--shadow);
+    }
+
+    .status-hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+      background-size: 34px 34px;
+      mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.8), transparent 78%);
+      pointer-events: none;
+    }
+
+    .status-top,
+    .status-action,
+    .stage-map {
+      position: relative;
+      z-index: 1;
+    }
+
+    .status-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .eyebrow {
+      color: var(--cyan);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .hero-copy {
+      display: grid;
+      align-content: center;
+      gap: 14px;
+      position: relative;
+      z-index: 1;
+      max-width: 650px;
+    }
+
+    .hero-copy h2 {
+      font-size: clamp(30px, 5vw, 62px);
+      line-height: 0.98;
+      letter-spacing: 0;
+    }
+
+    .hero-copy p {
+      max-width: 520px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    .status-action {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .status-note {
+      color: var(--subtle);
+      font-size: 13px;
+    }
+
+    .stage-map {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+
+    .stage {
+      min-width: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: rgba(0, 0, 0, 0.16);
+    }
+
+    .stage b {
+      display: block;
+      overflow: hidden;
+      color: var(--text);
+      font-size: 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .stage span {
+      display: block;
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .stage.current {
+      border-color: rgba(243, 191, 88, 0.56);
+      background: rgba(243, 191, 88, 0.11);
+    }
+
+    .employee-panel {
+      min-height: 408px;
+      padding: 20px;
+      display: grid;
+      gap: 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: rgba(7, 10, 15, 0.46);
+      box-shadow: var(--shadow);
+    }
+
+    .employee-card {
+      display: grid;
+      grid-template-columns: 116px 1fr;
+      gap: 16px;
+      align-items: center;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(145deg, rgba(255, 255, 255, 0.095), rgba(255, 255, 255, 0.045));
+    }
+
+    .avatar {
+      position: relative;
+      width: 116px;
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      border-radius: 30px;
+      border: 1px solid rgba(72, 215, 208, 0.48);
+      background:
+        radial-gradient(circle at 50% 24%, rgba(112, 223, 156, 0.34), transparent 25%),
+        linear-gradient(145deg, rgba(72, 215, 208, 0.28), rgba(131, 169, 255, 0.12));
+      overflow: hidden;
+    }
+
+    .avatar::before {
+      content: "";
+      width: 56px;
+      height: 64px;
+      border: 2px solid rgba(244, 247, 251, 0.72);
+      border-radius: 22px 22px 16px 16px;
+      box-shadow:
+        0 19px 0 -8px rgba(244, 247, 251, 0.38),
+        0 37px 0 -12px rgba(72, 215, 208, 0.35);
+    }
+
+    .avatar::after {
+      content: "";
+      position: absolute;
+      width: 58px;
+      height: 3px;
+      top: 44px;
+      background: linear-gradient(90deg, transparent, rgba(72, 215, 208, 0.9), transparent);
+      box-shadow: 0 18px 0 rgba(244, 247, 251, 0.45);
+    }
+
+    .employee-meta {
+      min-width: 0;
+      display: grid;
+      gap: 10px;
+    }
+
+    .employee-meta h3 {
+      font-size: 21px;
+    }
+
+    .employee-meta p {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .summary-item {
+      min-height: 84px;
+      padding: 12px;
+      display: grid;
+      gap: 7px;
+      align-content: center;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.052);
+    }
+
+    .summary-item span {
+      color: var(--subtle);
+      font-size: 12px;
+    }
+
+    .summary-item b {
+      overflow-wrap: anywhere;
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    .summary-item strong {
+      color: var(--cyan);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .workbench-bottom {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(280px, 0.72fr);
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .surface-card {
+      padding: 18px;
+      border: 1px solid rgba(24, 34, 51, 0.12);
+      border-radius: var(--radius-lg);
+      color: var(--surface-text);
+      background: var(--surface);
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.14);
+    }
+
+    .surface-card h3 {
+      color: var(--surface-text);
+      font-size: 17px;
+    }
+
+    .surface-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+      margin-bottom: 14px;
+    }
+
+    .surface-head p {
+      color: var(--surface-muted);
+      margin-top: 4px;
+      font-size: 13px;
+    }
+
+    .quick-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .quick {
+      min-height: 122px;
+      display: grid;
+      align-content: space-between;
+      gap: 12px;
+      padding: 14px;
+      border: 1px solid #d8e0ea;
+      border-radius: var(--radius);
+      background: #ffffff;
+    }
+
+    .quick-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .quick-icon {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      color: #071014;
+      background: var(--cyan);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .quick:nth-child(2) .quick-icon {
+      background: var(--amber);
+    }
+
+    .quick:nth-child(3) .quick-icon {
+      background: var(--blue);
+    }
+
+    .quick:nth-child(4) .quick-icon {
+      background: var(--green);
+    }
+
+    .quick b {
+      display: block;
+      color: var(--surface-text);
+      font-size: 14px;
+    }
+
+    .quick span {
+      display: block;
+      margin-top: 5px;
+      color: var(--surface-muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .mini-status {
+      color: #1d6f57;
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .body-stack {
+      display: grid;
+      gap: 10px;
+    }
+
+    .body-line {
+      min-height: 44px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      background: var(--surface-2);
+    }
+
+    .body-line b {
+      font-size: 13px;
+    }
+
+    .body-line span {
+      color: var(--surface-muted);
+      font-size: 12px;
+    }
+
+    .page-panel {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: rgba(255, 255, 255, 0.06);
+      box-shadow: var(--shadow);
+    }
+
+    .page-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .page-header h2 {
+      font-size: clamp(24px, 3vw, 36px);
+    }
+
+    .page-header p {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .channel-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .channel-card {
+      min-height: 300px;
+      padding: 18px;
+      display: grid;
+      align-content: space-between;
+      gap: 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background:
+        linear-gradient(145deg, rgba(255, 255, 255, 0.112), rgba(255, 255, 255, 0.05));
+    }
+
+    .channel-card h3 {
+      font-size: 22px;
+    }
+
+    .channel-card p {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .channel-orbit {
+      height: 104px;
+      display: grid;
+      place-items: center;
+      border: 1px dashed rgba(255, 255, 255, 0.22);
+      border-radius: var(--radius);
+      background:
+        radial-gradient(circle at center, rgba(72, 215, 208, 0.2), transparent 44%),
+        rgba(0, 0, 0, 0.12);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .channel-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+    }
+
+    .advanced-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .advanced-item {
+      min-height: 154px;
+      padding: 16px;
+      display: grid;
+      align-content: space-between;
+      gap: 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(0, 0, 0, 0.16);
+    }
+
+    .advanced-item h3 {
+      font-size: 16px;
+    }
+
+    .advanced-item p {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .code-pill {
+      display: inline-flex;
+      width: fit-content;
+      align-items: center;
+      padding: 5px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.045);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+    }
+
+    .drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: none;
+      background: rgba(4, 6, 10, 0.54);
+      backdrop-filter: blur(10px);
+    }
+
+    .drawer-backdrop.open {
+      display: block;
+    }
+
+    .drawer {
+      position: fixed;
+      inset: 0 0 0 auto;
+      z-index: 21;
+      width: min(460px, 100vw);
+      height: 100vh;
+      transform: translateX(102%);
+      transition: transform 220ms ease;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      border-left: 1px solid var(--line);
+      color: var(--surface-text);
+      background: var(--surface);
+      box-shadow: -28px 0 70px rgba(0, 0, 0, 0.34);
+    }
+
+    .drawer.open {
+      transform: translateX(0);
+    }
+
+    .drawer-head,
+    .drawer-foot {
+      padding: 18px;
+      border-bottom: 1px solid #dce3ec;
+    }
+
+    .drawer-foot {
+      border-top: 1px solid #dce3ec;
+      border-bottom: 0;
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    .drawer-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .drawer-head h2 {
+      font-size: 22px;
+    }
+
+    .drawer-head p {
+      margin-top: 4px;
+      color: var(--surface-muted);
+      font-size: 13px;
+    }
+
+    .drawer-body {
+      overflow: auto;
+      padding: 18px;
+      display: grid;
+      align-content: start;
+      gap: 14px;
+    }
+
+    .model-option {
+      padding: 14px;
+      border: 1px solid #d8e0ea;
+      border-radius: var(--radius);
+      background: #ffffff;
+    }
+
+    .model-option.disabled {
+      background: #f0f3f7;
+    }
+
+    .model-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: flex-start;
+    }
+
+    .model-option h3 {
+      font-size: 16px;
+    }
+
+    .model-option p {
+      margin-top: 5px;
+      color: var(--surface-muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .form-grid {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--surface-muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    input,
+    select {
+      width: 100%;
+      min-height: 40px;
+      border: 1px solid #cdd7e4;
+      border-radius: var(--radius-sm);
+      padding: 0 10px;
+      color: var(--surface-text);
+      background: #ffffff;
+      outline: 0;
+    }
+
+    input:focus,
+    select:focus {
+      border-color: #2fc7be;
+      box-shadow: 0 0 0 3px rgba(72, 215, 208, 0.18);
+    }
+
+    .light-btn {
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 14px;
+      border: 1px solid #cdd7e4;
+      border-radius: var(--radius-sm);
+      color: var(--surface-text);
+      background: #ffffff;
+    }
+
+    .light-btn.primary {
+      border-color: #25b8b0;
+      color: #041112;
+      background: linear-gradient(135deg, #55ede5, #8ee7a8);
+      font-weight: 800;
+    }
+
+    .close {
+      width: 36px;
+      height: 36px;
+      padding: 0;
+      border-radius: 10px;
+      font-size: 18px;
+    }
+
+    @media (max-width: 1180px) {
+      .cockpit-grid,
+      .workbench-bottom {
+        grid-template-columns: 1fr;
+      }
+
+      .channel-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .advanced-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 820px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+
+      .rail {
+        position: static;
+        height: auto;
+        padding: 14px;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .brand {
+        padding: 0;
+      }
+
+      .nav {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .nav button {
+        grid-template-columns: 1fr;
+        justify-items: center;
+        min-height: 70px;
+        text-align: center;
+      }
+
+      .nav-kicker {
+        display: none;
+      }
+
+      .rail-card {
+        display: none;
+      }
+
+      .main {
+        padding: 16px;
+      }
+
+      .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .top-actions {
+        width: 100%;
+        flex-wrap: wrap;
+      }
+
+      .status-hero,
+      .employee-panel,
+      .page-panel {
+        border-radius: 14px;
+      }
+
+      .status-top,
+      .page-header {
+        flex-direction: column;
+      }
+
+      .stage-map {
+        grid-template-columns: 1fr;
+      }
+
+      .employee-card {
+        grid-template-columns: 1fr;
+      }
+
+      .avatar {
+        width: min(116px, 42vw);
+      }
+
+      .summary-grid,
+      .quick-grid,
+      .advanced-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .status-action .btn.primary,
+      .status-action .btn {
+        width: 100%;
+      }
+
+      .drawer {
+        width: 100vw;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .main {
+        padding: 12px;
+      }
+
+      .status-hero,
+      .employee-panel,
+      .surface-card,
+      .page-panel {
+        padding: 14px;
+      }
+
+      .hero-copy h2 {
+        font-size: 34px;
+      }
+
+      .hero-copy p {
+        font-size: 14px;
+      }
+
+      .nav button {
+        font-size: 12px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail" aria-label="主导航">
+      <div class="brand">
+        <div class="mark">C</div>
+        <div class="brand-title">
+          <strong>CatsCo</strong>
+          <span>Virtual Employee Cockpit</span>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="active" type="button" data-page="workbench" aria-current="page">
+          <span class="nav-icon">工</span>
+          <span>工作台</span>
+          <span class="nav-kicker"></span>
+        </button>
+        <button type="button" data-page="channels">
+          <span class="nav-icon">通</span>
+          <span>通道</span>
+          <span class="nav-kicker"></span>
+        </button>
+        <button type="button" data-page="advanced">
+          <span class="nav-icon">高</span>
+          <span>高级</span>
+          <span class="nav-kicker"></span>
+        </button>
+      </nav>
+
+      <div class="rail-card">
+        <b>当前身体</b>
+        <span>MacBook Pro / 本机 Body<br>运行态：等待模型配置</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="title-block">
+          <h1>Agent 工作台</h1>
+          <p class="subtitle">管理当前虚拟员工的身份、身体、通道和能力。</p>
+        </div>
+        <div class="top-actions">
+          <span class="chip"><span class="dot warn"></span>模型待配置</span>
+          <button class="btn small" type="button">刷新</button>
+        </div>
+      </header>
+
+      <section class="page active" id="page-workbench" data-title="Agent 工作台" data-subtitle="管理当前虚拟员工的身份、身体、通道和能力。">
+        <div class="cockpit-grid">
+          <section class="status-hero" aria-label="主状态区">
+            <div class="status-top">
+              <span class="eyebrow">Employee Status</span>
+              <span class="chip"><span class="dot warn"></span>下一步：选择 AI 模型</span>
+            </div>
+
+            <div class="hero-copy">
+              <h2>小八还缺一个大脑</h2>
+              <p>模型配置完成后，这个 Agent Body 就可以启动，并通过 WebApp、微信或飞书接收消息。</p>
+            </div>
+
+            <div class="status-action">
+              <button class="btn primary" type="button" data-open-model>选择 AI 模型</button>
+              <span class="status-note">保存模型后可启动 Body。</span>
+            </div>
+
+            <div class="stage-map" aria-label="配置进度">
+              <div class="stage">
+                <b>登录 CatsCo</b>
+                <span>已完成</span>
+              </div>
+              <div class="stage">
+                <b>绑定 Agent</b>
+                <span>Dev Agent</span>
+              </div>
+              <div class="stage current">
+                <b>选择模型</b>
+                <span>当前步骤</span>
+              </div>
+              <div class="stage">
+                <b>启动 Body</b>
+                <span>等待</span>
+              </div>
+              <div class="stage">
+                <b>打开通道</b>
+                <span>就绪后可用</span>
+              </div>
+            </div>
+          </section>
+
+          <aside class="employee-panel" aria-label="状态摘要">
+            <div class="employee-card">
+              <div class="avatar" aria-hidden="true"></div>
+              <div class="employee-meta">
+                <span class="eyebrow">Virtual Employee</span>
+                <h3>小八 / Dev Agent</h3>
+                <p>身份已绑定，本机身体待启动。当前阻塞项是模型配置。</p>
+              </div>
+            </div>
+
+            <div class="summary-grid">
+              <div class="summary-item">
+                <span>CatsCo 账号</span>
+                <b>zhuhanyuan</b>
+                <strong>已登录</strong>
+              </div>
+              <div class="summary-item">
+                <span>Agent</span>
+                <b>Dev Agent</b>
+                <strong>已绑定</strong>
+              </div>
+              <div class="summary-item">
+                <span>Agent Body</span>
+                <b>本机 Mac Body</b>
+                <strong>未启动</strong>
+              </div>
+              <div class="summary-item">
+                <span>模型</span>
+                <b>第三方兼容模型</b>
+                <strong>待配置</strong>
+              </div>
+              <div class="summary-item">
+                <span>通道</span>
+                <b>WebApp / 微信 / 飞书</b>
+                <strong>待就绪</strong>
+              </div>
+              <div class="summary-item">
+                <span>能力</span>
+                <b>工具、记忆、文件</b>
+                <strong>可诊断</strong>
+              </div>
+            </div>
+          </aside>
+        </div>
+
+        <div class="workbench-bottom">
+          <section class="surface-card" aria-label="可用入口">
+            <div class="surface-head">
+              <div>
+                <h3>入口与能力</h3>
+                <p>Agent 启动后从这里进入日常协作。</p>
+              </div>
+              <button class="light-btn" type="button" data-switch-page="channels">查看通道</button>
+            </div>
+            <div class="quick-grid">
+              <div class="quick">
+                <div class="quick-top">
+                  <span class="quick-icon">W</span>
+                  <span class="mini-status">待启动</span>
+                </div>
+                <div>
+                  <b>WebApp</b>
+                  <span>CatsCo 聊天入口</span>
+                </div>
+              </div>
+              <div class="quick">
+                <div class="quick-top">
+                  <span class="quick-icon">微</span>
+                  <span class="mini-status">待绑定</span>
+                </div>
+                <div>
+                  <b>微信</b>
+                  <span>绑定到当前 Agent</span>
+                </div>
+              </div>
+              <div class="quick">
+                <div class="quick-top">
+                  <span class="quick-icon">飞</span>
+                  <span class="mini-status">待绑定</span>
+                </div>
+                <div>
+                  <b>飞书</b>
+                  <span>团队消息入口</span>
+                </div>
+              </div>
+              <div class="quick">
+                <div class="quick-top">
+                  <span class="quick-icon">能</span>
+                  <span class="mini-status">在线</span>
+                </div>
+                <div>
+                  <b>能力</b>
+                  <span>工具、记忆、技能</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="surface-card" aria-label="身体状态">
+            <div class="surface-head">
+              <div>
+                <h3>Agent Body</h3>
+                <p>这台机器承载当前虚拟员工。</p>
+              </div>
+            </div>
+            <div class="body-stack">
+              <div class="body-line">
+                <b>运行身份</b>
+                <span>body-mac-local</span>
+              </div>
+              <div class="body-line">
+                <b>Connector</b>
+                <span>待启动</span>
+              </div>
+              <div class="body-line">
+                <b>Runtime Profile</b>
+                <span>Local Dev</span>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" id="page-channels" data-title="通道" data-subtitle="WebApp、微信、飞书都是当前 Agent 的入口。">
+        <div class="page-panel">
+          <div class="page-header">
+            <div>
+              <h2>当前 Agent 的通道</h2>
+              <p>每个入口都连接到 Dev Agent，不创建新的机器人身份。</p>
+            </div>
+            <span class="chip"><span class="dot warn"></span>等待 Body 启动</span>
+          </div>
+
+          <div class="channel-grid">
+            <article class="channel-card">
+              <div>
+                <div class="channel-orbit">CatsCo WebApp</div>
+                <h3>WebApp</h3>
+                <p>浏览器里的主要聊天入口。Body 就绪后可直接打开。</p>
+              </div>
+              <div>
+                <span class="chip"><span class="dot warn"></span>待启动</span>
+                <p>绑定：Dev Agent</p>
+              </div>
+              <div class="channel-actions">
+                <button class="btn" type="button">打开</button>
+                <button class="btn" type="button">高级诊断</button>
+              </div>
+            </article>
+
+            <article class="channel-card">
+              <div>
+                <div class="channel-orbit">WeChat Bridge</div>
+                <h3>微信</h3>
+                <p>扫码后把微信消息转入当前 Agent，不改变账号身份。</p>
+              </div>
+              <div>
+                <span class="chip"><span class="dot off"></span>未绑定</span>
+                <p>绑定：Dev Agent</p>
+              </div>
+              <div class="channel-actions">
+                <button class="btn" type="button">扫码绑定</button>
+                <button class="btn" type="button">高级诊断</button>
+              </div>
+            </article>
+
+            <article class="channel-card">
+              <div>
+                <div class="channel-orbit">Feishu Bot</div>
+                <h3>飞书</h3>
+                <p>用于团队会话和机器人应用，配置后接入当前 Agent。</p>
+              </div>
+              <div>
+                <span class="chip"><span class="dot off"></span>未绑定</span>
+                <p>绑定：Dev Agent</p>
+              </div>
+              <div class="channel-actions">
+                <button class="btn" type="button">绑定飞书</button>
+                <button class="btn" type="button">高级诊断</button>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-advanced" data-title="高级" data-subtitle="诊断、运行配置和开发者入口集中收纳。">
+        <div class="page-panel">
+          <div class="page-header">
+            <div>
+              <h2>高级诊断</h2>
+              <p>普通启动流程不依赖这些信息。</p>
+            </div>
+            <span class="chip"><span class="dot"></span>开发者区域</span>
+          </div>
+
+          <div class="advanced-grid">
+            <article class="advanced-item">
+              <span class="code-pill">readiness</span>
+              <div>
+                <h3>Readiness</h3>
+                <p>原始检查项、阻塞原因、修复入口。</p>
+              </div>
+              <button class="btn small" type="button">查看</button>
+            </article>
+            <article class="advanced-item">
+              <span class="code-pill">runtime</span>
+              <div>
+                <h3>Runtime Profile</h3>
+                <p>本机、云 VM、容器等运行档案。</p>
+              </div>
+              <button class="btn small" type="button">编辑</button>
+            </article>
+            <article class="advanced-item">
+              <span class="code-pill">.env</span>
+              <div>
+                <h3>本地环境变量</h3>
+                <p>兼容旧配置，后续逐步迁移。</p>
+              </div>
+              <button class="btn small" type="button">打开</button>
+            </article>
+            <article class="advanced-item">
+              <span class="code-pill">connector</span>
+              <div>
+                <h3>Connector</h3>
+                <p>进程、端口、心跳和通道桥接状态。</p>
+              </div>
+              <button class="btn small" type="button">诊断</button>
+            </article>
+            <article class="advanced-item">
+              <span class="code-pill">logs</span>
+              <div>
+                <h3>Logs</h3>
+                <p>启动日志、错误日志、通道事件。</p>
+              </div>
+              <button class="btn small" type="button">查看</button>
+            </article>
+            <article class="advanced-item">
+              <span class="code-pill">GauzMem</span>
+              <div>
+                <h3>GauzMem</h3>
+                <p>图记忆实验入口和索引状态。</p>
+              </div>
+              <button class="btn small" type="button">进入</button>
+            </article>
+            <article class="advanced-item">
+              <span class="code-pill">SkillHub</span>
+              <div>
+                <h3>SkillHub</h3>
+                <p>技能开发、安装和调试入口。</p>
+              </div>
+              <button class="btn small" type="button">管理</button>
+            </article>
+            <article class="advanced-item">
+              <span class="code-pill">body</span>
+              <div>
+                <h3>Body 诊断</h3>
+                <p>机器身份、目录权限和本地服务。</p>
+              </div>
+              <button class="btn small" type="button">检查</button>
+            </article>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="drawer-backdrop" data-close-model></div>
+  <aside class="drawer" aria-label="选择 AI 模型" aria-hidden="true">
+    <div class="drawer-head">
+      <div>
+        <h2>选择 AI 模型</h2>
+        <p>不离开工作台，保存后即可继续启动。</p>
+      </div>
+      <button class="light-btn close" type="button" data-close-model aria-label="关闭">×</button>
+    </div>
+
+    <div class="drawer-body">
+      <section class="model-option disabled">
+        <div class="model-row">
+          <div>
+            <h3>CatsCo 托管模型</h3>
+            <p>统一托管、无需填写 Key。</p>
+          </div>
+          <span class="code-pill">即将支持</span>
+        </div>
+      </section>
+
+      <section class="model-option">
+        <div class="model-row">
+          <div>
+            <h3>第三方兼容模型</h3>
+            <p>适合已有 OpenAI 或 Anthropic 兼容服务的用户。</p>
+          </div>
+          <span class="code-pill">当前</span>
+        </div>
+
+        <div class="form-grid">
+          <label>
+            兼容类型
+            <select>
+              <option>OpenAI-compatible</option>
+              <option>Anthropic-compatible</option>
+            </select>
+          </label>
+          <label>
+            模型地址
+            <input value="https://api.example.com/v1">
+          </label>
+          <label>
+            模型名称
+            <input value="gpt-4.1-mini">
+          </label>
+          <label>
+            API Key
+            <input type="password" value="sk-placeholder">
+          </label>
+        </div>
+      </section>
+    </div>
+
+    <div class="drawer-foot">
+      <button class="light-btn" type="button" data-close-model>取消</button>
+      <button class="light-btn primary" type="button" data-close-model>保存</button>
+    </div>
+  </aside>
+
+  <script>
+    const navButtons = Array.from(document.querySelectorAll("[data-page]"));
+    const pages = Array.from(document.querySelectorAll(".page"));
+    const title = document.querySelector(".title-block h1");
+    const subtitle = document.querySelector(".subtitle");
+
+    function switchPage(name) {
+      navButtons.forEach((button) => {
+        const active = button.dataset.page === name;
+        button.classList.toggle("active", active);
+        button.toggleAttribute("aria-current", active);
+      });
+
+      pages.forEach((page) => {
+        const active = page.id === `page-${name}`;
+        page.classList.toggle("active", active);
+        if (active) {
+          title.textContent = page.dataset.title;
+          subtitle.textContent = page.dataset.subtitle;
+        }
+      });
+    }
+
+    navButtons.forEach((button) => {
+      button.addEventListener("click", () => switchPage(button.dataset.page));
+    });
+
+    document.querySelectorAll("[data-switch-page]").forEach((button) => {
+      button.addEventListener("click", () => switchPage(button.dataset.switchPage));
+    });
+
+    const drawer = document.querySelector(".drawer");
+    const backdrop = document.querySelector(".drawer-backdrop");
+    const openModelButtons = document.querySelectorAll("[data-open-model]");
+    const closeModelButtons = document.querySelectorAll("[data-close-model]");
+
+    function setDrawer(open) {
+      drawer.classList.toggle("open", open);
+      backdrop.classList.toggle("open", open);
+      drawer.setAttribute("aria-hidden", String(!open));
+    }
+
+    openModelButtons.forEach((button) => {
+      button.addEventListener("click", () => setDrawer(true));
+    });
+
+    closeModelButtons.forEach((button) => {
+      button.addEventListener("click", () => setDrawer(false));
+    });
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        setDrawer(false);
+      }
+    });
+  </script>
+</body>
+</html>

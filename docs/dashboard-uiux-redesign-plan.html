@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CatsCo Dashboard 交互改版方案</title>
+  <style>
+    :root {
+      --bg: #f7f9fc;
+      --paper: #ffffff;
+      --ink: #111827;
+      --muted: #64748b;
+      --line: #dbe3ee;
+      --blue: #2563eb;
+      --green: #059669;
+      --amber: #d97706;
+      --red: #dc2626;
+      --blue-soft: #eff6ff;
+      --green-soft: #ecfdf5;
+      --amber-soft: #fff7ed;
+      --red-soft: #fff1f2;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.62;
+    }
+    main { max-width: 1220px; margin: 0 auto; padding: 44px 28px 76px; }
+    .hero {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 34px;
+      box-shadow: 0 20px 58px rgba(15, 23, 42, 0.08);
+    }
+    .kicker { color: var(--blue); font-size: 13px; font-weight: 800; margin-bottom: 8px; }
+    h1 { margin: 0; font-size: clamp(34px, 4.4vw, 58px); line-height: 1.06; letter-spacing: 0; }
+    h2 { margin: 46px 0 14px; font-size: 28px; letter-spacing: 0; }
+    h3 { margin: 0 0 8px; font-size: 18px; letter-spacing: 0; }
+    p { margin: 0; color: var(--muted); }
+    .hero p { max-width: 920px; margin-top: 16px; font-size: 17px; }
+    .grid { display: grid; gap: 18px; }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
+    }
+    .tag {
+      display: inline-flex;
+      min-height: 24px;
+      align-items: center;
+      padding: 2px 10px;
+      border-radius: 999px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 800;
+      margin-bottom: 10px;
+    }
+    .tag.red { background: var(--red-soft); color: var(--red); }
+    .tag.green { background: var(--green-soft); color: var(--green); }
+    .tag.amber { background: var(--amber-soft); color: var(--amber); }
+    .shot {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      overflow: hidden;
+      box-shadow: 0 16px 44px rgba(15, 23, 42, 0.08);
+    }
+    .shot img { display: block; width: 100%; height: auto; }
+    .shot-body { padding: 18px; }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .step {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      min-height: 150px;
+    }
+    .step-no {
+      display: inline-flex;
+      width: 30px;
+      height: 30px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      background: #111827;
+      color: #fff;
+      font-weight: 900;
+      margin-bottom: 12px;
+    }
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+    }
+    .table th,
+    .table td {
+      border-bottom: 1px solid var(--line);
+      padding: 14px 16px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .table th {
+      background: #f8fafc;
+      color: #334155;
+      font-size: 13px;
+    }
+    .table td { color: var(--muted); }
+    .table tr:last-child td { border-bottom: 0; }
+    .screen {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      overflow: hidden;
+      background: var(--paper);
+      box-shadow: 0 20px 58px rgba(15, 23, 42, 0.08);
+    }
+    .mock {
+      display: grid;
+      grid-template-columns: 220px minmax(0, 1fr);
+      min-height: 560px;
+      background: #f8fafc;
+    }
+    .mock-nav {
+      background: #fff;
+      border-right: 1px solid var(--line);
+      padding: 22px 14px;
+    }
+    .mock-brand { font-weight: 900; margin-bottom: 28px; }
+    .mock-nav-item {
+      padding: 10px 12px;
+      border-radius: 10px;
+      color: var(--muted);
+      font-weight: 750;
+      margin-bottom: 6px;
+    }
+    .mock-nav-item.active { background: #eef4ff; color: #172554; }
+    .mock-main { padding: 30px; }
+    .mock-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: flex-start;
+      margin-bottom: 22px;
+    }
+    .mock-title { font-size: 30px; font-weight: 900; line-height: 1.15; }
+    .mock-sub { color: var(--muted); margin-top: 6px; }
+    .mock-button {
+      background: var(--blue);
+      color: #fff;
+      border-radius: 10px;
+      padding: 11px 18px;
+      font-weight: 850;
+      white-space: nowrap;
+    }
+    .mock-steps { display: grid; gap: 12px; }
+    .mock-row {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 14px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+    }
+    .mock-dot {
+      width: 32px;
+      height: 32px;
+      border-radius: 999px;
+      background: #e0ecff;
+      color: var(--blue);
+      display: grid;
+      place-items: center;
+      font-weight: 900;
+    }
+    .mock-row h4 { margin: 0; font-size: 16px; }
+    .mock-row p { font-size: 13px; margin-top: 3px; }
+    .mock-pill {
+      border-radius: 999px;
+      background: #f1f5f9;
+      color: #475569;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 850;
+    }
+    .mock-row.active { border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08); }
+    .mock-row.active .mock-pill { background: var(--blue); color: #fff; }
+    .callout {
+      border-left: 4px solid var(--blue);
+      background: var(--blue-soft);
+      border-radius: 12px;
+      padding: 16px 18px;
+      color: #1e3a8a;
+    }
+    .path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #475569; font-size: 13px; }
+    ul { margin: 10px 0 0; padding-left: 20px; color: var(--muted); }
+    li { margin: 6px 0; }
+    @media (max-width: 860px) {
+      main { padding: 24px 14px 52px; }
+      .hero { padding: 24px; }
+      .grid-2, .grid-3, .flow { grid-template-columns: 1fr; }
+      .mock { grid-template-columns: 1fr; }
+      .mock-nav { display: none; }
+      .mock-main { padding: 20px; }
+      .mock-head { display: block; }
+      .mock-button { display: inline-block; margin-top: 14px; }
+      .table { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div class="kicker">CatsCo Dashboard · Redesign Proposal · 2026-05-31</div>
+      <h1>新的交互原则：先启动 Agent，再进入 Chat</h1>
+      <p>
+        三个独立 reviewer 的意见高度一致：Dashboard 当前最大问题是“未就绪时把 Chat 当主界面”。改版应把首页改成状态驱动的启动向导；
+        Chat、日志、Runtime Profile、GauzMem、Skills 等都不应该在普通用户的第一路径里抢注意力。
+      </p>
+    </section>
+
+    <h2>一、三方 review 共识</h2>
+    <div class="grid grid-3">
+      <div class="card">
+        <span class="tag red">P0</span>
+        <h3>未就绪时 Chat 不能占主画面</h3>
+        <p>当前最大黑色区域不可用，却占据最强视觉权重。首页应先回答“还差哪一步才能让 Agent 工作”。</p>
+      </div>
+      <div class="card">
+        <span class="tag amber">P1</span>
+        <h3>状态语言像报警，不像进度</h3>
+        <p>未登录、未配置属于初始化，不是错误。红色只应留给 token 失效、body 冲突、启动失败。</p>
+      </div>
+      <div class="card">
+        <span class="tag green">P1</span>
+        <h3>主入口要变成用户语言</h3>
+        <p>“connector / readiness / Runtime Profile / Diagnostics”应退到高级区；主入口应叫“网页聊天、微信、飞书、本地测试”。</p>
+      </div>
+    </div>
+
+    <h2>二、当前界面的根因</h2>
+    <div class="grid grid-2">
+      <article class="shot">
+        <img src="./assets/dashboard-uiux-audit/01-start-desktop.png" alt="当前启动页桌面" />
+        <div class="shot-body">
+          <h3>现状：启动流程被压缩，Chat 抢主视觉</h3>
+          <p>用户看到的是一个不可用的聊天窗口，而不是清楚的 setup 流程。</p>
+        </div>
+      </article>
+      <article class="shot">
+        <img src="./assets/dashboard-uiux-audit/05-start-mobile.png" alt="当前启动页移动端" />
+        <div class="shot-body">
+          <h3>移动端：icon rail 和露出的 Chat 都干扰任务</h3>
+          <p>小屏应该只显示当前任务和下一步，不能保留桌面式侧栏。</p>
+        </div>
+      </article>
+    </div>
+
+    <h2>三、目标信息架构</h2>
+    <div class="callout">
+      <strong>Dashboard 的默认用户任务不是聊天，而是让这个 body 上的 agent 能工作。</strong>
+      所以首页是“启动 Agent”，Chat 是 ready 后的使用入口或本地测试入口。
+    </div>
+    <table class="table" style="margin-top:18px">
+      <thead>
+        <tr>
+          <th>新导航</th>
+          <th>用户理解</th>
+          <th>包含内容</th>
+          <th>移除/降级</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>首页</td>
+          <td>我还差哪一步才能启动这个 Agent</td>
+          <td>登录、模型、Agent 绑定、启动入口、ready 后打开 WebApp</td>
+          <td>不可用 Chat、重复登录表单、英文状态</td>
+        </tr>
+        <tr>
+          <td>模型与额度</td>
+          <td>这个 Agent 用什么模型</td>
+          <td>托管模型、自定义模型、访问凭证、保存，未来接额度</td>
+          <td>Runtime Profile、CatsCo Chat readiness</td>
+        </tr>
+        <tr>
+          <td>聊天入口</td>
+          <td>我从哪里和 Agent 聊</td>
+          <td>CatsCo WebApp、微信、飞书、本地测试 Chat、API</td>
+          <td>PID、uptime、connector 命名、日志主按钮</td>
+        </tr>
+        <tr>
+          <td>高级</td>
+          <td>排障和开发</td>
+          <td>诊断、日志、Runtime Profile、.env、GauzMem、Skills、开发者中心、更新</td>
+          <td>默认不在主路径里展示</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>四、首页目标交互</h2>
+    <div class="flow">
+      <div class="step">
+        <div class="step-no">1</div>
+        <h3>登录 CatsCo</h3>
+        <p>先确认当前操作者是谁。未登录时只出现一个主按钮：登录。</p>
+      </div>
+      <div class="step">
+        <div class="step-no">2</div>
+        <h3>配置模型</h3>
+        <p>当前阶段优先自定义模型；托管模型显示为即将接入。</p>
+      </div>
+      <div class="step">
+        <div class="step-no">3</div>
+        <h3>选择 Agent</h3>
+        <p>绑定这个进程对应的 Agent/body，避免复制 API key 造成多 body 冲突。</p>
+      </div>
+      <div class="step">
+        <div class="step-no">4</div>
+        <h3>打开入口</h3>
+        <p>启动后主按钮变成打开 CatsCo WebApp；微信、飞书、本地 Chat 作为次入口。</p>
+      </div>
+    </div>
+
+    <h2>五、建议界面草图</h2>
+    <section class="screen">
+      <div class="mock">
+        <aside class="mock-nav">
+          <div class="mock-brand">CatsCo</div>
+          <div class="mock-nav-item active">首页</div>
+          <div class="mock-nav-item">模型与额度</div>
+          <div class="mock-nav-item">聊天入口</div>
+          <div class="mock-nav-item">高级</div>
+        </aside>
+        <section class="mock-main">
+          <div class="mock-head">
+            <div>
+              <div class="mock-title">启动 CatsCo Agent</div>
+              <div class="mock-sub">完成下面几步后，就可以在 WebApp、微信或飞书里使用这个 agent。</div>
+            </div>
+            <div class="mock-button">登录 CatsCo</div>
+          </div>
+          <div class="mock-steps">
+            <div class="mock-row active">
+              <div class="mock-dot">1</div>
+              <div><h4>登录 CatsCo</h4><p>使用你的 CatsCo 账号进入组织空间。</p></div>
+              <div class="mock-pill">继续</div>
+            </div>
+            <div class="mock-row">
+              <div class="mock-dot">2</div>
+              <div><h4>配置模型</h4><p>当前需要自定义模型访问凭证；托管模型接入后会走账号额度。</p></div>
+              <div class="mock-pill">待设置</div>
+            </div>
+            <div class="mock-row">
+              <div class="mock-dot">3</div>
+              <div><h4>绑定 Agent</h4><p>选择或创建这个 body 对应的 CatsCo Agent。</p></div>
+              <div class="mock-pill">未开始</div>
+            </div>
+            <div class="mock-row">
+              <div class="mock-dot">4</div>
+              <div><h4>打开聊天入口</h4><p>启动后可打开 WebApp，或绑定微信、飞书等入口。</p></div>
+              <div class="mock-pill">未开始</div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <h2>六、状态和颜色规范</h2>
+    <table class="table">
+      <thead>
+        <tr>
+          <th>状态</th>
+          <th>颜色</th>
+          <th>使用场景</th>
+          <th>不要用于</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>未开始</td>
+          <td>灰色</td>
+          <td>还没登录、还没配置、还没绑定</td>
+          <td>不要用红色</td>
+        </tr>
+        <tr>
+          <td>待设置</td>
+          <td>蓝色</td>
+          <td>当前下一步，例如登录或配置模型</td>
+          <td>不要同时出现多个蓝色主 CTA</td>
+        </tr>
+        <tr>
+          <td>运行中 / 已完成</td>
+          <td>绿色</td>
+          <td>connector running、模型配置有效、Agent 已绑定</td>
+          <td>不要用于“可以尝试”</td>
+        </tr>
+        <tr>
+          <td>需要处理</td>
+          <td>琥珀色</td>
+          <td>平台状态未知、旧平台未支持、非阻塞提示</td>
+          <td>不要用于真正失败</td>
+        </tr>
+        <tr>
+          <td>错误</td>
+          <td>红色</td>
+          <td>token 失效、body 冲突、启动失败、权限错误</td>
+          <td>不要用于正常初始化</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>七、实施顺序</h2>
+    <div class="grid">
+      <div class="card">
+        <span class="tag green">Phase UX-1 · 已实现</span>
+        <h3>把首页从 Chat 改成启动向导</h3>
+        <ul>
+          <li>默认首页不再显示不可用 Chat。</li>
+          <li>合并登录卡和登录表单，未登录时只有一个主登录入口。</li>
+          <li>中文化状态：未登录、待设置、未开始、运行中、错误。</li>
+          <li>移动端取消 icon rail，改成中文顶部/底部导航。</li>
+          <li>Chat 仅作为 ready 后主界面或“本地测试 Chat”入口。</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="tag green">Phase UX-2 · 通道页已改</span>
+        <h3>模型与 Agent 通道拆清楚</h3>
+        <ul>
+          <li>模型页只做模型来源和保存，不再重复 CatsCo/Runtime readiness。</li>
+          <li>通道页已从 service manager 改成 Agent 通道：网页、微信、飞书只表达是否绑定到当前 Agent。</li>
+          <li>启动/停止 connector、日志、路径、PID、Runtime Profile、.env、更新全部进入高级。</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="tag amber">Phase UX-3 · 需要后端配合</span>
+        <h3>补真实能力</h3>
+        <ul>
+          <li>模型测试连接 API。</li>
+          <li>CatsCo 托管模型和额度。</li>
+          <li>WebApp 微信 channel secret 同步到 body。</li>
+          <li>openid / 飞书 user id 绑定回 CatsCo actor。</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2>八、当前报告和截图</h2>
+    <div class="card">
+      <p class="path">docs/dashboard-uiux-audit-report.html</p>
+      <p class="path">docs/dashboard-uiux-redesign-plan.html</p>
+      <p class="path">docs/assets/dashboard-uiux-audit/*.png</p>
+    </div>
+  </main>
+</body>
+</html>

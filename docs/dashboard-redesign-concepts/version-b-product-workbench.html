@@ -1,0 +1,1247 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CatsCo Dashboard - Product Workbench</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #fbfaf7;
+      --surface: #ffffff;
+      --surface-warm: #fff8ef;
+      --surface-green: #eef8f2;
+      --surface-blue: #eef5ff;
+      --text: #24211d;
+      --muted: #766f66;
+      --soft: #9a9185;
+      --line: #e7dfd4;
+      --line-strong: #d6cabc;
+      --brand: #176b57;
+      --brand-dark: #0f5141;
+      --accent: #c7722e;
+      --warning: #9b5a1a;
+      --danger: #a43d34;
+      --ok: #24744f;
+      --shadow: 0 18px 55px rgba(55, 41, 26, .12);
+      --radius: 8px;
+      --rail: 248px;
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(180deg, rgba(255, 248, 239, .86), rgba(251, 250, 247, 0) 310px),
+        var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      border: 0;
+      cursor: pointer;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: var(--rail) minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .rail {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 24px 18px;
+      border-right: 1px solid var(--line);
+      background: rgba(255, 252, 247, .82);
+      backdrop-filter: blur(18px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    .mark {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      background: var(--brand);
+      color: #fff;
+      font-weight: 760;
+    }
+
+    .brand strong,
+    .section-title strong {
+      display: block;
+      font-size: 15px;
+      line-height: 1.25;
+    }
+
+    .brand span,
+    .section-title span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.3;
+    }
+
+    .nav {
+      display: grid;
+      gap: 7px;
+    }
+
+    .nav button {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      min-height: 44px;
+      padding: 0 12px;
+      border-radius: var(--radius);
+      background: transparent;
+      color: var(--muted);
+      text-align: left;
+    }
+
+    .nav button svg {
+      width: 18px;
+      height: 18px;
+      stroke-width: 2;
+      flex: 0 0 auto;
+    }
+
+    .nav button.active {
+      background: #eaf4ee;
+      color: var(--brand-dark);
+      font-weight: 700;
+    }
+
+    .rail-note {
+      position: absolute;
+      right: 18px;
+      bottom: 22px;
+      left: 18px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, .74);
+    }
+
+    .rail-note b {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+
+    .rail-note span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    main {
+      min-width: 0;
+      padding: 26px clamp(18px, 4vw, 46px) 42px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 22px;
+    }
+
+    .mobile-tabs {
+      display: none;
+    }
+
+    .page-title h1 {
+      margin: 0;
+      font-size: 25px;
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+
+    .page-title p {
+      margin: 7px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .utility {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .ghost-btn,
+    .soft-btn,
+    .text-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 0 12px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 650;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .soft-btn {
+      border-color: transparent;
+      background: #f2eee7;
+    }
+
+    .text-btn {
+      border-color: transparent;
+      background: transparent;
+      color: var(--brand-dark);
+      padding-inline: 4px;
+    }
+
+    .icon {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      stroke-width: 2;
+      fill: none;
+      flex: 0 0 auto;
+    }
+
+    .panel {
+      display: none;
+    }
+
+    .panel.active {
+      display: block;
+    }
+
+    .workbench-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(310px, .85fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .status-board {
+      position: relative;
+      overflow: hidden;
+      min-height: 370px;
+      padding: clamp(22px, 4vw, 34px);
+      border: 1px solid #e4d6c7;
+      border-radius: 16px;
+      background:
+        linear-gradient(135deg, rgba(255, 248, 239, .94), rgba(255, 255, 255, .9) 54%, rgba(238, 248, 242, .82)),
+        var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .status-board::after {
+      content: "";
+      position: absolute;
+      right: -72px;
+      top: -84px;
+      width: 230px;
+      height: 230px;
+      border: 1px solid rgba(23, 107, 87, .13);
+      border-radius: 50%;
+      background: rgba(255, 255, 255, .38);
+    }
+
+    .status-copy {
+      position: relative;
+      z-index: 1;
+      max-width: 640px;
+    }
+
+    .state-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 30px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: #fff4df;
+      color: var(--warning);
+      font-size: 13px;
+      font-weight: 760;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .status-board h2 {
+      margin: 18px 0 10px;
+      font-size: clamp(28px, 4vw, 44px);
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    .status-board p {
+      max-width: 520px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.65;
+    }
+
+    .primary-action {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      min-height: 48px;
+      margin-top: 26px;
+      padding: 0 20px;
+      border-radius: var(--radius);
+      background: var(--brand);
+      color: #fff;
+      font-size: 15px;
+      font-weight: 760;
+      box-shadow: 0 12px 22px rgba(23, 107, 87, .22);
+      white-space: nowrap;
+    }
+
+    .primary-action:hover {
+      background: var(--brand-dark);
+    }
+
+    .progress-row {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 32px;
+    }
+
+    .step {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid rgba(36, 33, 29, .08);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, .7);
+    }
+
+    .step small {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--soft);
+      font-size: 11px;
+    }
+
+    .step b {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.25;
+    }
+
+    .step.current {
+      border-color: rgba(199, 114, 46, .32);
+      background: #fff8eb;
+    }
+
+    .summary {
+      display: grid;
+      gap: 14px;
+    }
+
+    .object-card,
+    .channel-card,
+    .advanced-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+
+    .object-card {
+      padding: 18px;
+    }
+
+    .object-card h3,
+    .channel-card h3,
+    .advanced-card h3 {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.3;
+    }
+
+    .object-card header,
+    .channel-card header,
+    .advanced-card header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .status-list {
+      display: grid;
+      gap: 9px;
+    }
+
+    .status-row {
+      display: grid;
+      grid-template-columns: 108px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      min-height: 34px;
+      padding-bottom: 9px;
+      border-bottom: 1px solid #f0ebe4;
+      font-size: 13px;
+    }
+
+    .status-row:last-child {
+      padding-bottom: 0;
+      border-bottom: 0;
+    }
+
+    .label {
+      color: var(--muted);
+    }
+
+    .value {
+      overflow: hidden;
+      color: var(--text);
+      font-weight: 700;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .mini-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 24px;
+      padding: 0 8px;
+      border-radius: 999px;
+      background: #f2eee7;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .mini-chip.ok {
+      background: #e8f5ee;
+      color: var(--ok);
+    }
+
+    .mini-chip.warn {
+      background: #fff2da;
+      color: var(--warning);
+    }
+
+    .mini-chip.wait {
+      background: #edf3fb;
+      color: #316796;
+    }
+
+    .quick-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .quick-actions .soft-btn,
+    .quick-actions .ghost-btn {
+      min-height: 42px;
+      justify-content: flex-start;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 18px;
+      margin: 4px 0 16px;
+    }
+
+    .section-title h2 {
+      margin: 0;
+      font-size: 21px;
+      line-height: 1.25;
+    }
+
+    .section-title p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .channels-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .channel-card {
+      display: flex;
+      flex-direction: column;
+      min-height: 235px;
+      padding: 18px;
+    }
+
+    .channel-icon {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      background: var(--surface-blue);
+      color: #316796;
+      font-weight: 780;
+    }
+
+    .channel-card:nth-child(2) .channel-icon {
+      background: var(--surface-green);
+      color: #20714d;
+    }
+
+    .channel-card:nth-child(3) .channel-icon {
+      background: #f6efff;
+      color: #6d4ca0;
+    }
+
+    .channel-meta {
+      display: grid;
+      gap: 9px;
+      margin: 12px 0 18px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .channel-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: auto;
+    }
+
+    .diagnostic-link {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .advanced-shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 310px;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .advanced-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .advanced-card {
+      padding: 16px;
+    }
+
+    .advanced-card p {
+      margin: 8px 0 14px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .advanced-card footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .log-preview {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #2d2924;
+      color: #f9f0e5;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    .log-preview span {
+      color: #d4b58c;
+    }
+
+    .drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: none;
+      background: rgba(37, 29, 21, .28);
+    }
+
+    .drawer-backdrop.open {
+      display: block;
+    }
+
+    .drawer {
+      position: fixed;
+      inset: 0 0 0 auto;
+      z-index: 21;
+      display: flex;
+      flex-direction: column;
+      width: min(480px, 100vw);
+      max-width: 100%;
+      transform: translateX(105%);
+      transition: transform .22s ease;
+      border-left: 1px solid var(--line);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .drawer.open {
+      transform: translateX(0);
+    }
+
+    .drawer header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 22px 22px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .drawer h2 {
+      margin: 0;
+      font-size: 20px;
+    }
+
+    .drawer-body {
+      overflow: auto;
+      padding: 18px 22px 22px;
+    }
+
+    .model-choice {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .model-card {
+      padding: 15px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+    }
+
+    .model-card.selected {
+      border-color: rgba(23, 107, 87, .46);
+      background: #f2fbf6;
+    }
+
+    .model-card h3 {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 0 0 6px;
+      font-size: 15px;
+    }
+
+    .model-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .form-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+    }
+
+    .field input,
+    .field select {
+      width: 100%;
+      min-height: 42px;
+      padding: 0 11px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: #fff;
+      color: var(--text);
+      outline: 0;
+    }
+
+    .field input:focus,
+    .field select:focus {
+      border-color: rgba(23, 107, 87, .74);
+      box-shadow: 0 0 0 3px rgba(23, 107, 87, .12);
+    }
+
+    .drawer footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: auto;
+      padding: 16px 22px;
+      border-top: 1px solid var(--line);
+      background: #fffdf9;
+    }
+
+    .save-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      padding: 0 16px;
+      border-radius: var(--radius);
+      background: var(--brand);
+      color: #fff;
+      font-weight: 760;
+    }
+
+    @media (max-width: 1040px) {
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      .rail {
+        display: none;
+      }
+
+      main {
+        padding-top: 18px;
+      }
+
+      .mobile-tabs {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 6px;
+        margin: 0 0 18px;
+        padding: 5px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, .72);
+      }
+
+      .mobile-tabs button {
+        min-height: 38px;
+        border-radius: var(--radius);
+        background: transparent;
+        color: var(--muted);
+        font-weight: 720;
+      }
+
+      .mobile-tabs button.active {
+        background: #eaf4ee;
+        color: var(--brand-dark);
+      }
+
+      .workbench-grid,
+      .advanced-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .channels-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 680px) {
+      main {
+        padding-inline: 14px;
+      }
+
+      .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .utility {
+        width: 100%;
+        justify-content: flex-start;
+      }
+
+      .status-board {
+        min-height: 0;
+        border-radius: 12px;
+      }
+
+      .primary-action {
+        width: 100%;
+      }
+
+      .progress-row,
+      .quick-actions,
+      .advanced-list {
+        grid-template-columns: 1fr;
+      }
+
+      .status-row {
+        grid-template-columns: 92px minmax(0, 1fr);
+      }
+
+      .status-row .mini-chip {
+        grid-column: 2;
+        justify-self: start;
+      }
+
+      .section-head,
+      .channel-actions {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .drawer {
+        width: 100vw;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="rail" aria-label="主导航">
+      <div class="brand">
+        <div class="mark">C</div>
+        <div>
+          <strong>CatsCo Dashboard</strong>
+          <span>本机 Agent Body 控制台</span>
+        </div>
+      </div>
+
+      <nav class="nav" data-nav>
+        <button class="active" type="button" data-panel="workbench" aria-current="page">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M4 13h6V4H4v9Z"></path><path d="M14 20h6V4h-6v16Z"></path><path d="M4 20h6v-3H4v3Z"></path></svg>
+          工作台
+        </button>
+        <button type="button" data-panel="channels">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M4 12h16"></path><path d="M4 17h16"></path><circle cx="7" cy="7" r="2"></circle><circle cx="17" cy="12" r="2"></circle><circle cx="10" cy="17" r="2"></circle></svg>
+          通道
+        </button>
+        <button type="button" data-panel="advanced">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M12 3v4"></path><path d="M12 17v4"></path><path d="M3 12h4"></path><path d="M17 12h4"></path><circle cx="12" cy="12" r="4"></circle></svg>
+          高级
+        </button>
+      </nav>
+
+      <div class="rail-note">
+        <b>当前环境</b>
+        <span>MacBook Pro / local-body-7f2a<br>上次刷新 22:41</span>
+      </div>
+    </aside>
+
+    <main>
+      <div class="mobile-tabs" data-nav aria-label="主导航">
+        <button class="active" type="button" data-panel="workbench">工作台</button>
+        <button type="button" data-panel="channels">通道</button>
+        <button type="button" data-panel="advanced">高级</button>
+      </div>
+
+      <div class="topbar">
+        <div class="page-title">
+          <h1>Agent 工作台</h1>
+          <p>确认当前 Agent 是否可用，并完成下一步。</p>
+        </div>
+        <div class="utility">
+          <span class="mini-chip ok"><span class="dot"></span>CatsCo 已登录</span>
+          <button class="ghost-btn" type="button">刷新状态</button>
+        </div>
+      </div>
+
+      <section class="panel active" id="panel-workbench" aria-label="工作台">
+        <div class="workbench-grid">
+          <section class="status-board" aria-label="主状态">
+            <div class="status-copy">
+              <span class="state-chip"><span class="dot"></span>需要选择 AI 模型</span>
+              <h2>Agent 还差一步就能运行。</h2>
+              <p>已登录 CatsCo，并已绑定 Agent。选择模型后即可启动本机 Agent Body，随后可从 WebApp、微信或飞书进入对话。</p>
+              <button class="primary-action" type="button" data-open-model>
+                选择 AI 模型
+                <svg class="icon" viewBox="0 0 24 24"><path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path></svg>
+              </button>
+            </div>
+
+            <div class="progress-row" aria-label="配置进度">
+              <div class="step">
+                <small>完成</small>
+                <b><span class="mini-chip ok">✓</span>登录 CatsCo</b>
+              </div>
+              <div class="step current">
+                <small>当前</small>
+                <b><span class="mini-chip warn">2</span>选择模型</b>
+              </div>
+              <div class="step">
+                <small>完成</small>
+                <b><span class="mini-chip ok">✓</span>绑定 Agent</b>
+              </div>
+              <div class="step">
+                <small>等待</small>
+                <b><span class="mini-chip wait">4</span>启动 Body</b>
+              </div>
+            </div>
+          </section>
+
+          <aside class="summary" aria-label="状态摘要">
+            <section class="object-card">
+              <header>
+                <h3>状态摘要</h3>
+                <span class="mini-chip warn">未就绪</span>
+              </header>
+              <div class="status-list">
+                <div class="status-row">
+                  <span class="label">CatsCo 账号</span>
+                  <span class="value">yuan@catsco.ai</span>
+                  <span class="mini-chip ok">已登录</span>
+                </div>
+                <div class="status-row">
+                  <span class="label">Agent</span>
+                  <span class="value">小八助手</span>
+                  <span class="mini-chip ok">已绑定</span>
+                </div>
+                <div class="status-row">
+                  <span class="label">Agent Body</span>
+                  <span class="value">本机 Mac</span>
+                  <span class="mini-chip wait">待启动</span>
+                </div>
+                <div class="status-row">
+                  <span class="label">模型</span>
+                  <span class="value">尚未选择</span>
+                  <button class="text-btn" type="button" data-open-model>配置</button>
+                </div>
+                <div class="status-row">
+                  <span class="label">通道</span>
+                  <span class="value">WebApp 可用，微信待绑</span>
+                  <span class="mini-chip wait">2/3</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="object-card">
+              <header>
+                <h3>可用入口</h3>
+                <span class="mini-chip">当前 Agent</span>
+              </header>
+              <div class="quick-actions">
+                <button class="soft-btn" type="button">
+                  <svg class="icon" viewBox="0 0 24 24"><path d="M4 6h16v12H4z"></path><path d="M8 22h8"></path><path d="M12 18v4"></path></svg>
+                  WebApp
+                </button>
+                <button class="ghost-btn" type="button">
+                  <svg class="icon" viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v8Z"></path></svg>
+                  本地测试
+                </button>
+                <button class="ghost-btn" type="button" data-jump="channels">微信绑定</button>
+                <button class="ghost-btn" type="button" data-jump="channels">飞书绑定</button>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-channels" aria-label="通道">
+        <div class="section-head">
+          <div class="section-title">
+            <h2>通道</h2>
+            <p>这些入口都连接到当前 Agent：小八助手。</p>
+          </div>
+          <span class="mini-chip ok"><span class="dot"></span>WebApp 可打开</span>
+        </div>
+
+        <div class="channels-grid">
+          <article class="channel-card">
+            <header>
+              <div>
+                <div class="channel-icon">W</div>
+              </div>
+              <span class="mini-chip ok">可用</span>
+            </header>
+            <h3>CatsCo WebApp</h3>
+            <div class="channel-meta">
+              <span>绑定 Agent：小八助手</span>
+              <span>入口：catsco.ai/app/agents/xiaoba</span>
+            </div>
+            <div class="channel-actions">
+              <button class="soft-btn" type="button">打开 WebApp</button>
+              <a class="diagnostic-link" href="#advanced" data-jump="advanced">高级诊断</a>
+            </div>
+          </article>
+
+          <article class="channel-card">
+            <header>
+              <div class="channel-icon">微</div>
+              <span class="mini-chip wait">待绑定</span>
+            </header>
+            <h3>微信</h3>
+            <div class="channel-meta">
+              <span>绑定 Agent：小八助手</span>
+              <span>扫码后可私聊或加入群聊。</span>
+            </div>
+            <div class="channel-actions">
+              <button class="soft-btn" type="button">扫码绑定</button>
+              <a class="diagnostic-link" href="#advanced" data-jump="advanced">高级诊断</a>
+            </div>
+          </article>
+
+          <article class="channel-card">
+            <header>
+              <div class="channel-icon">飞</div>
+              <span class="mini-chip wait">待连接</span>
+            </header>
+            <h3>飞书</h3>
+            <div class="channel-meta">
+              <span>绑定 Agent：小八助手</span>
+              <span>用于群机器人和工作区消息。</span>
+            </div>
+            <div class="channel-actions">
+              <button class="soft-btn" type="button">连接飞书</button>
+              <a class="diagnostic-link" href="#advanced" data-jump="advanced">高级诊断</a>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-advanced" aria-label="高级">
+        <div class="section-head">
+          <div class="section-title">
+            <h2>高级</h2>
+            <p>诊断、运行配置和开发者入口默认收纳在这里。</p>
+          </div>
+          <span class="mini-chip">开发者区域</span>
+        </div>
+
+        <div class="advanced-shell">
+          <div class="advanced-list">
+            <article class="advanced-card">
+              <header>
+                <h3>Readiness</h3>
+                <span class="mini-chip warn">模型缺失</span>
+              </header>
+              <p>查看账号、Agent、模型、connector 的原始检查项。</p>
+              <footer><button class="ghost-btn" type="button">打开检查</button><span class="label">8 项</span></footer>
+            </article>
+
+            <article class="advanced-card">
+              <header>
+                <h3>Runtime Profile</h3>
+                <span class="mini-chip ok">local</span>
+              </header>
+              <p>切换本机、云 VM 或容器运行参数。</p>
+              <footer><button class="ghost-btn" type="button">编辑 Profile</button><span class="label">本机</span></footer>
+            </article>
+
+            <article class="advanced-card">
+              <header>
+                <h3>.env</h3>
+                <span class="mini-chip">兼容</span>
+              </header>
+              <p>保留旧配置项，用于模型、微信、飞书迁移期。</p>
+              <footer><button class="ghost-btn" type="button">查看变量</button><span class="label">只显示关键项</span></footer>
+            </article>
+
+            <article class="advanced-card">
+              <header>
+                <h3>Connector</h3>
+                <span class="mini-chip wait">待启动</span>
+              </header>
+              <p>检查 CatsCompany connector 进程、端口和心跳。</p>
+              <footer><button class="ghost-btn" type="button">进程诊断</button><span class="label">localhost</span></footer>
+            </article>
+
+            <article class="advanced-card">
+              <header>
+                <h3>Logs</h3>
+                <span class="mini-chip">最近 200 行</span>
+              </header>
+              <p>排查启动、模型调用和通道连接错误。</p>
+              <footer><button class="ghost-btn" type="button">查看日志</button><span class="label">22:41</span></footer>
+            </article>
+
+            <article class="advanced-card">
+              <header>
+                <h3>GauzMem</h3>
+                <span class="mini-chip">Beta</span>
+              </header>
+              <p>图记忆实验入口，默认不进入普通工作流。</p>
+              <footer><button class="ghost-btn" type="button">打开实验</button><span class="label">Beta</span></footer>
+            </article>
+
+            <article class="advanced-card">
+              <header>
+                <h3>SkillHub</h3>
+                <span class="mini-chip">Developer</span>
+              </header>
+              <p>管理本地技能、开发调试和能力发布。</p>
+              <footer><button class="ghost-btn" type="button">进入 SkillHub</button><span class="label">7 skills</span></footer>
+            </article>
+          </div>
+
+          <aside class="log-preview" aria-label="日志预览">
+            <div><span>22:41:18</span> readiness: model missing</div>
+            <div><span>22:41:18</span> account: yuan@catsco.ai</div>
+            <div><span>22:41:19</span> agent: xiaoba-assistant</div>
+            <div><span>22:41:19</span> body: local-body-7f2a</div>
+            <div><span>22:41:20</span> next: configure model</div>
+          </aside>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="drawer-backdrop" data-close-model></div>
+  <aside class="drawer" aria-label="选择 AI 模型" aria-hidden="true">
+    <header>
+      <div>
+        <h2>选择 AI 模型</h2>
+        <span class="label">保存后回到 Agent 工作台</span>
+      </div>
+      <button class="ghost-btn" type="button" data-close-model>关闭</button>
+    </header>
+    <div class="drawer-body">
+      <div class="model-choice">
+        <section class="model-card">
+          <h3>CatsCo 托管模型 <span class="mini-chip wait">即将支持</span></h3>
+          <p>使用 CatsCo 统一托管的模型额度。当前版本保留入口。</p>
+        </section>
+        <section class="model-card selected">
+          <h3>第三方兼容模型 <span class="mini-chip ok">可配置</span></h3>
+          <p>填写兼容模型服务，供当前 Agent 回复消息。</p>
+        </section>
+      </div>
+
+      <div class="form-grid" aria-label="第三方模型配置">
+        <div class="field">
+          <label for="compat">兼容类型</label>
+          <select id="compat">
+            <option>OpenAI-compatible</option>
+            <option>Anthropic-compatible</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="endpoint">模型地址</label>
+          <input id="endpoint" type="text" value="https://api.openai.com/v1">
+        </div>
+        <div class="field">
+          <label for="model">模型名称</label>
+          <input id="model" type="text" value="gpt-4.1">
+        </div>
+        <div class="field">
+          <label for="key">API Key</label>
+          <input id="key" type="password" value="sk-demo-placeholder">
+        </div>
+      </div>
+    </div>
+    <footer>
+      <button class="ghost-btn" type="button" data-close-model>取消</button>
+      <button class="save-btn" type="button" data-close-model>保存模型</button>
+    </footer>
+  </aside>
+
+  <script>
+    const panels = document.querySelectorAll('.panel');
+    const navButtons = document.querySelectorAll('[data-panel]');
+    const title = document.querySelector('.page-title h1');
+    const subtitle = document.querySelector('.page-title p');
+    const titles = {
+      workbench: ['Agent 工作台', '确认当前 Agent 是否可用，并完成下一步。'],
+      channels: ['通道', '管理当前 Agent 的 WebApp、微信和飞书入口。'],
+      advanced: ['高级', '诊断、运行配置和开发者入口。']
+    };
+
+    function showPanel(name) {
+      panels.forEach((panel) => panel.classList.toggle('active', panel.id === `panel-${name}`));
+      navButtons.forEach((button) => {
+        const active = button.dataset.panel === name;
+        button.classList.toggle('active', active);
+        if (active) {
+          button.setAttribute('aria-current', 'page');
+        } else {
+          button.removeAttribute('aria-current');
+        }
+      });
+      title.textContent = titles[name][0];
+      subtitle.textContent = titles[name][1];
+    }
+
+    navButtons.forEach((button) => {
+      button.addEventListener('click', () => showPanel(button.dataset.panel));
+    });
+
+    document.querySelectorAll('[data-jump]').forEach((button) => {
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        showPanel(button.dataset.jump);
+      });
+    });
+
+    const drawer = document.querySelector('.drawer');
+    const backdrop = document.querySelector('.drawer-backdrop');
+    const openModelButtons = document.querySelectorAll('[data-open-model]');
+    const closeModelButtons = document.querySelectorAll('[data-close-model]');
+
+    function setModelDrawer(open) {
+      drawer.classList.toggle('open', open);
+      backdrop.classList.toggle('open', open);
+      drawer.setAttribute('aria-hidden', String(!open));
+    }
+
+    openModelButtons.forEach((button) => button.addEventListener('click', () => setModelDrawer(true)));
+    closeModelButtons.forEach((button) => button.addEventListener('click', () => setModelDrawer(false)));
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        setModelDrawer(false);
+      }
+    });
+  </script>
+</body>
+</html>
