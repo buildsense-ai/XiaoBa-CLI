@@ -72,9 +72,25 @@ function firstNonEmpty(...values: unknown[]): string | undefined {
   return undefined;
 }
 
-function normalizeBaseUrl(value: unknown, fallback: string): string {
+function normalizeBaseUrl(
+  value: unknown,
+  fallback: string,
+  options: { upgradeCatsCoHttp?: boolean } = {},
+): string {
   const text = String(value || '').trim().replace(/\/+$/, '');
-  return text || fallback;
+  if (!text) return fallback;
+  if (options.upgradeCatsCoHttp) {
+    try {
+      const url = new URL(text);
+      if (url.protocol === 'http:' && url.hostname === 'app.catsco.cc') {
+        url.protocol = 'https:';
+        return url.toString().replace(/\/+$/, '');
+      }
+    } catch {
+      // Keep validation at the caller boundary; this helper only normalizes known legacy values.
+    }
+  }
+  return text;
 }
 
 function readEnvFile(runtimeRoot: string): Record<string, string> {
@@ -259,6 +275,7 @@ export class CatsCoLocalConfigService {
           endpoints.httpBaseUrl,
         ),
         DEFAULT_CATSCO_HTTP_BASE_URL,
+        { upgradeCatsCoHttp: true },
       ),
       serverUrl: normalizeBaseUrl(
         firstNonEmpty(

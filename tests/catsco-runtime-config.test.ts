@@ -129,6 +129,44 @@ describe('CatsCo runtime config resolver', () => {
     assert.equal(resolved.envOverlay.CATSCO_API_KEY, undefined);
   });
 
+  test('upgrades legacy app.catsco.cc HTTP endpoint to HTTPS', () => {
+    const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
+    service.save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: 'http://app.catsco.cc',
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'user-token',
+        uid: 'user-1',
+      },
+      currentBot: {
+        uid: 'bot-1',
+        name: 'Bot',
+        apiKey: 'bot-key',
+        boundByUserUid: 'user-1',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'device-1',
+        bodyId: 'body-1',
+        installationId: 'install-1',
+      },
+    });
+
+    const resolved = resolveCatsCoRuntimeConfig({
+      runtimeRoot: tempDir,
+      env: {
+        CATSCOMPANY_HTTP_BASE_URL: 'http://app.catsco.cc',
+      },
+    });
+
+    assert.equal(resolved.auth.httpBaseUrl, 'https://app.catsco.cc');
+    assert.equal(resolved.connector?.httpBaseUrl, 'https://app.catsco.cc');
+    assert.equal(resolved.envOverlay.CATSCO_HTTP_BASE_URL, 'https://app.catsco.cc');
+  });
+
   test('does not start from legacy ChatConfig without a confirmed body binding', () => {
     const resolved = resolveCatsCoRuntimeConfig({
       runtimeRoot: tempDir,
