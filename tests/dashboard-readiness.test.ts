@@ -205,6 +205,7 @@ describe('dashboard readiness and service preflight API', () => {
       'CATSCO_USER_UID=100',
       'CATSCO_BOT_UID=200',
     ]);
+    writeConfirmedCatsBinding();
 
     const preflightResponse = await fetch(`${baseUrl}/api/services/catscompany/preflight`, { method: 'POST' });
     const preflightText = await preflightResponse.text();
