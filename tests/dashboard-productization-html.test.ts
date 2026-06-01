@@ -28,6 +28,8 @@ test('dashboard settings page uses model source before Runtime Profile', () => {
   assert.match(dashboardHtml, /data-relay-model-id/);
   assert.match(dashboardHtml, /data-relay-model-context/);
   assert.match(dashboardHtml, /function enableCatsRelayModelFromButton\(button, options=\{\}\)/);
+  assert.match(dashboardHtml, /context=button\.dataset\.relayModelContext\|\|'settings'/);
+  assert.match(dashboardHtml, /button\.disabled=relayActionBusy\(\) \|\| \(context!=='chat' && !isCatsLoggedIn\(\)\)/);
   assert.match(dashboardHtml, /activateConnector:options\.activateConnector!==false/);
   assert.match(dashboardHtml, /\/api\/cats\/relay\/model-config\/apply/);
   assert.match(dashboardHtml, /http:\/\/127\.0\.0\.1:3800/);

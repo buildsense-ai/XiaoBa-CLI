@@ -6909,7 +6909,8 @@
 
     function refreshRelayActionControls(){
       document.querySelectorAll('[data-relay-model-id]').forEach(button=>{
-        button.disabled=relayActionBusy() || !isCatsLoggedIn();
+        const context=button.dataset.relayModelContext||'settings';
+        button.disabled=relayActionBusy() || (context!=='chat' && !isCatsLoggedIn());
       });
       document.querySelectorAll('[data-custom-startup-action]').forEach(button=>{
         button.disabled=relayActionBusy();
