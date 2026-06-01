@@ -28,6 +28,13 @@ test('resolveMaxTokens uses higher default for CatsCo relay and MiniMax M2.7', (
     }),
     32768,
   );
+  assert.equal(
+    resolveMaxTokens({
+      apiUrl: 'https://example.test/v1/chat/completions',
+      model: 'MiniMax-M3',
+    }),
+    32768,
+  );
 });
 
 test('resolveMaxTokens keeps the conservative default for other providers', () => {

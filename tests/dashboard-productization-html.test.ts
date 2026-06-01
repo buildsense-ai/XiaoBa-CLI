@@ -28,12 +28,14 @@ test('dashboard settings page uses model source before Runtime Profile', () => {
   assert.match(dashboardHtml, /data-relay-model-id/);
   assert.match(dashboardHtml, /data-relay-model-context/);
   assert.match(dashboardHtml, /function enableCatsRelayModelFromButton\(button, options=\{\}\)/);
+  assert.match(dashboardHtml, /context=button\.dataset\.relayModelContext\|\|'settings'/);
+  assert.match(dashboardHtml, /button\.disabled=relayActionBusy\(\) \|\| \(context!=='chat' && !isCatsLoggedIn\(\)\)/);
   assert.match(dashboardHtml, /activateConnector:options\.activateConnector!==false/);
   assert.match(dashboardHtml, /\/api\/cats\/relay\/model-config\/apply/);
   assert.match(dashboardHtml, /http:\/\/127\.0\.0\.1:3800/);
   assert.match(dashboardHtml, /无法连接本地 CatsCo Dashboard API/);
   assert.match(dashboardHtml, /访问凭证只保存 presence，不会回显/);
-  assert.match(dashboardHtml, /保存自定义模型设置？访问凭证会写入本地 \.env，仅用于本机 runtime。/);
+  assert.match(dashboardHtml, /保存并启用自定义模型？访问凭证会写入本地 \.env，仅用于本机 runtime。/);
   assert.match(dashboardHtml, /Runtime Profile 状态/);
   assert.match(dashboardHtml, /受控编辑/);
   assert.match(dashboardHtml, /config-group-title-main/);
@@ -102,6 +104,10 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /id="cats-state-card"/);
   assert.match(dashboardHtml, /id="cats-checklist"/);
   assert.match(dashboardHtml, /id="cats-relay-model-panel"/);
+  assert.match(dashboardHtml, /\.chat-shell\.connect-collapsed #cats-relay-model-panel/);
+  assert.match(dashboardHtml, /let pendingStartupSource = ''/);
+  assert.match(dashboardHtml, /function relayModelIdForSetup\(\)/);
+  assert.match(dashboardHtml, /登录后会自动接入/);
   assert.match(dashboardHtml, /function buildCatsChatStage\(\)/);
   assert.match(dashboardHtml, /function renderCatsChecklist\(stage\)/);
   assert.match(dashboardHtml, /function renderCatsRelayModelPanel\(\)/);
@@ -120,7 +126,13 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /function unlockCatsAuthFields\(focusAccount=false\)/);
   assert.match(dashboardHtml, /if\(!connected\)unlockCatsAuthFields\(false\)/);
   assert.match(dashboardHtml, /let catsStatusGeneration = 0/);
+  assert.match(dashboardHtml, /let catsStatusMutationInFlight = false/);
+  assert.match(dashboardHtml, /let catsSetupInFlight=false/);
+  assert.match(dashboardHtml, /let relayModelConfigRequestSeq=0/);
   assert.match(dashboardHtml, /function invalidateCatsStatusRequests\(\)/);
+  assert.match(dashboardHtml, /function invalidateRelayModelConfigRequests\(\)/);
+  assert.match(dashboardHtml, /function isRelayModelConfigRequestCurrent\(requestGeneration, requestSeq, requestAccountKey\)/);
+  assert.match(dashboardHtml, /catsStatusMutationInFlight && !priority/);
   assert.match(dashboardHtml, /function autoResizeCatsMessageInput\(\)/);
   assert.match(dashboardHtml, /overflowY=input\.scrollHeight>maxHeight\?'auto':'hidden'/);
   assert.match(dashboardHtml, /const connectedCardOwnsAction=connected && \(stage\.action==='setup' \|\| stage\.action==='refresh'\)/);
@@ -145,12 +157,19 @@ test('custom model save refreshes readiness before Chat remains locked', () => {
 
 test('CatsCo Chat setup refreshes readiness before unlocking the composer', () => {
   const setupBlock = dashboardHtml.match(/async function setupCatsBot\(options=\{\}\)\{[\s\S]*?async function resetCatsAuth/)?.[0] || '';
-  assert.match(setupBlock, /setupRelayModel:true/);
-  assert.match(setupBlock, /relayModelId:selectedRelayModelId\(\)\|\|undefined/);
+  assert.match(setupBlock, /const setupRelayModel=shouldSetupRelayOnCatsSetup\(\)/);
+  assert.match(setupBlock, /setupRelayModel,/);
+  assert.match(setupBlock, /relayModelId:setupRelayModel \? \(relayModelIdForSetup\(\)\|\|undefined\) : undefined/);
   assert.match(setupBlock, /rotateRelayKey:Boolean\(options\.rotateRelayKey\)/);
+  assert.match(setupBlock, /setCatsSetupBusy\(true\)/);
+  assert.match(setupBlock, /setCatsStatusMutationBusy\(true\)/);
+  assert.match(setupBlock, /invalidateCatsStatusRequests\(\)/);
+  assert.match(setupBlock, /catsSetupWarningText\(data\)/);
   assert.match(setupBlock, /e\.status===409 && e\.action==='rotate_required'/);
+  assert.match(setupBlock, /setCatsStatusMutationBusy\(false\)/);
+  assert.match(setupBlock, /setCatsSetupBusy\(false\)/);
   assert.match(setupBlock, /await fetchStatus\(\)/);
-  assert.match(setupBlock, /await fetchCatsStatus\(\)/);
+  assert.match(setupBlock, /await fetchCatsStatus\(\{priority:true\}\)/);
   assert.match(setupBlock, /renderCatsStatus\(\)/);
   assert.match(setupBlock, /const stage=buildCatsChatStage\(\)/);
   assert.match(setupBlock, /await loadCatsMessages\(true, \{reset:true, forceBottom:true\}\)/);
@@ -207,13 +226,14 @@ test('CatsCo Chat composer supports local attachments', () => {
   assert.match(dashboardHtml, /attachNote\.hidden=locked \|\| catsDesktopFilePickerAvailable\(\)/);
   assert.match(dashboardHtml, /setCatsAction\(CATS_ATTACHMENT_BROWSER_MESSAGE, true\)/);
   assert.match(dashboardHtml, /window\.catscoDesktop\.selectFiles/);
-  assert.match(dashboardHtml, /file_token:item\.token/);
+  assert.match(dashboardHtml, /file_tokens:sendable\.map\(item=>item\.token\)/);
   assert.match(dashboardHtml, /function setupCatsAttachmentInputs\(\)/);
+  assert.doesNotMatch(dashboardHtml, /sendCatsAttachment/);
   assert.doesNotMatch(dashboardHtml, /file_path:item\.path/);
   assert.doesNotMatch(dashboardHtml, /input\.click\(\)/);
   assert.doesNotMatch(dashboardHtml, /queueCatsPaths/);
   assert.match(dashboardHtml, /catsMessageInput\.addEventListener\('paste'/);
-  assert.match(dashboardHtml, /\/api\/cats\/messages\/send-file/);
+  assert.doesNotMatch(dashboardHtml, /\/api\/cats\/messages\/send-file/);
 });
 
 test('CatsCo Chat composer keeps focused text readable on dark input surface', () => {

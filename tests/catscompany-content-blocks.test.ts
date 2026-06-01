@@ -10,7 +10,7 @@ function createProcessHarness() {
   const runtimeObservations: Array<{ text: string; options: any }> = [];
   const sentTexts: Array<{ topic: string; text: string }> = [];
   const replies: Array<{ topic: string; text: string }> = [];
-  const sentThinking: Array<{ text: string; metadata?: any }> = [];
+  const sentThinking: Array<{ topic: string; text: string; metadata?: any }> = [];
   const toolUses: Array<{ topic: string; toolUseId: string; name: string; input: any; metadata?: any }> = [];
   const toolResults: Array<{ topic: string; toolUseId: string; content: string; isError?: boolean; metadata?: any }> = [];
 
@@ -43,8 +43,8 @@ function createProcessHarness() {
     sendText: async (topic: string, text: string) => {
       sentTexts.push({ topic, text });
     },
-    sendThinking: async (_topic: string, text: string, metadata?: any) => {
-      sentThinking.push({ text, metadata });
+    sendThinking: async (topic: string, text: string, metadata?: any) => {
+      sentThinking.push({ topic, text, metadata });
     },
     sendToolUse: async (topic: string, toolUseId: string, name: string, input: any, metadata?: any) => {
       toolUses.push({ topic, toolUseId, name, input, metadata });
@@ -56,7 +56,6 @@ function createProcessHarness() {
   bot.pendingAnswers = new Map();
   bot.pendingAnswerBySession = new Map();
   bot.pendingAttachments = new Map();
-  bot.pendingTextMessages = new Map();
   bot.messageQueue = new Map();
   bot.buildMultimodalMessage = async (text: string, attachments: any[]) => {
     multimodalCalls.push({ text, attachments });
@@ -194,6 +193,94 @@ describe('CatsCo content blocks', () => {
     assert.deepStrictEqual(handledTurns[0].options.runtimeFeedback, []);
   });
 
+  test('processes CatsCompany websocket content_blocks as one user turn', async () => {
+    const { bot, downloads, multimodalCalls, handledTurns } = createProcessHarness();
+
+    await (bot as any).onMessage({
+      topic: 'p2p_1_2',
+      senderId: 'usr1',
+      text: '[附件] a.png, b.pdf',
+      content: '[附件] a.png, b.pdf',
+      content_blocks: [
+        { type: 'text', text: '非 Dashboard 入口一起看这些附件' },
+        { type: 'image', payload: { url: '/uploads/images/a.png', name: 'a.png', size: 12 } },
+        { type: 'file', payload: { url: '/uploads/files/b.pdf', name: 'b.pdf', size: 34 } },
+      ],
+      isGroup: false,
+      seq: 10,
+    });
+
+    assert.deepStrictEqual(downloads, [
+      { url: '/uploads/images/a.png', fileName: 'a.png' },
+      { url: '/uploads/files/b.pdf', fileName: 'b.pdf' },
+    ]);
+    assert.strictEqual(multimodalCalls.length, 1);
+    assert.strictEqual(multimodalCalls[0].text, '非 Dashboard 入口一起看这些附件');
+    assert.deepStrictEqual(
+      multimodalCalls[0].attachments.map((attachment) => ({
+        fileName: attachment.fileName,
+        localPath: attachment.localPath,
+        type: attachment.type,
+      })),
+      [
+        { fileName: 'a.png', localPath: 'C:\\tmp\\catsco-test\\a.png', type: 'image' },
+        { fileName: 'b.pdf', localPath: 'C:\\tmp\\catsco-test\\b.pdf', type: 'file' },
+      ],
+    );
+    assert.strictEqual(handledTurns.length, 1);
+    assert.deepStrictEqual(handledTurns[0].userMessage, [
+      { type: 'text', text: '非 Dashboard 入口一起看这些附件' },
+      { type: 'text', text: '[image] a.png -> C:\\tmp\\catsco-test\\a.png' },
+      { type: 'text', text: '[file] b.pdf -> C:\\tmp\\catsco-test\\b.pdf' },
+    ]);
+  });
+
+  test('plain text messages are processed immediately without attachment coalesce wait', async () => {
+    const { bot, handledTurns, sentThinking } = createProcessHarness();
+
+    await (bot as any).onMessage({
+      topic: 'p2p_1_2',
+      senderId: 'usr1',
+      text: '这条纯文本不应该等待附件',
+      content: '这条纯文本不应该等待附件',
+      isGroup: false,
+      seq: 10,
+    });
+
+    assert.strictEqual(handledTurns.length, 1);
+    assert.strictEqual(handledTurns[0].userMessage, '这条纯文本不应该等待附件');
+    assert.strictEqual(typeof handledTurns[0].options.callbacks?.onThinking, 'function');
+    await handledTurns[0].options.callbacks.onThinking('纯文本压缩状态');
+    assert.deepStrictEqual(
+      sentThinking.map(({ topic, text }) => ({ topic, text })),
+      [{ topic: 'p2p_1_2', text: '纯文本压缩状态' }],
+    );
+  });
+
+  test('queued CatsCompany turns keep working callbacks for compaction status', async () => {
+    const { bot, handledTurns, sentThinking } = createProcessHarness();
+    bot.messageQueue.set('cc_user:usr1', [{
+      userMessage: '排队消息也应该显示压缩状态',
+      topic: 'p2p_1_2',
+      senderId: 'usr1',
+      seq: 11,
+      receivedAt: Date.now(),
+      source: 'user',
+      runtimeFeedback: [],
+    }]);
+
+    await (bot as any).drainMessageQueue('cc_user:usr1');
+
+    assert.strictEqual(handledTurns.length, 1);
+    assert.strictEqual(handledTurns[0].userMessage, '排队消息也应该显示压缩状态');
+    assert.strictEqual(typeof handledTurns[0].options.callbacks?.onThinking, 'function');
+    await handledTurns[0].options.callbacks.onThinking('排队压缩状态');
+    assert.deepStrictEqual(
+      sentThinking.map(({ topic, text }) => ({ topic, text })),
+      [{ topic: 'p2p_1_2', text: '排队压缩状态' }],
+    );
+  });
+
   test('channel sendFile propagates upload failures to tool execution', async () => {
     const bot = Object.create(CatsCompanyBot.prototype) as any;
     bot.sender = {
@@ -310,7 +397,7 @@ describe('CatsCo content blocks', () => {
   });
 
   test('subagent feedback visible reply is sent back to CatsCompany', async () => {
-    const { bot, runtimeObservations, sentTexts, session } = createProcessHarness();
+    const { bot, runtimeObservations, sentTexts, sentThinking, session } = createProcessHarness();
     session.handleRuntimeObservation = async (text: string, options: any) => {
       runtimeObservations.push({ text, options });
       return { visibleToUser: true, text: '已根据子 agent 结果处理完。' };
@@ -325,17 +412,26 @@ describe('CatsCo content blocks', () => {
 
     assert.strictEqual(runtimeObservations.length, 1);
     assert.strictEqual(runtimeObservations[0].options.source, 'subagent_result');
+    assert.strictEqual(typeof runtimeObservations[0].options.callbacks?.onThinking, 'function');
+    await runtimeObservations[0].options.callbacks.onThinking('子 agent 回流压缩状态');
+    assert.deepStrictEqual(
+      sentThinking.map(({ topic, text }) => ({ topic, text })),
+      [{ topic: 'p2p_38_110', text: '子 agent 回流压缩状态' }],
+    );
     assert.deepStrictEqual(sentTexts, [
       { topic: 'p2p_38_110', text: '已根据子 agent 结果处理完。' },
     ]);
   });
 
   test('queued subagent error reply is not sent twice', async () => {
-    const { bot, sentTexts, replies, session } = createProcessHarness();
-    session.handleRuntimeObservation = async () => ({
+    const { bot, runtimeObservations, sentTexts, replies, sentThinking, session } = createProcessHarness();
+    session.handleRuntimeObservation = async (text: string, options: any) => {
+      runtimeObservations.push({ text, options });
+      return {
       visibleToUser: true,
       text: '处理消息时出错: 子 agent 结果处理失败',
-    });
+      };
+    };
     bot.messageQueue.set('cc_user:usr38', [{
       userMessage: '[子agent1 已完成]\n结果摘要：审查完成',
       topic: 'p2p_38_110',
@@ -347,6 +443,14 @@ describe('CatsCo content blocks', () => {
 
     await (bot as any).drainMessageQueue('cc_user:usr38');
 
+    assert.strictEqual(runtimeObservations.length, 1);
+    assert.strictEqual(runtimeObservations[0].options.source, 'subagent_result');
+    assert.strictEqual(typeof runtimeObservations[0].options.callbacks?.onThinking, 'function');
+    await runtimeObservations[0].options.callbacks.onThinking('排队子 agent 压缩状态');
+    assert.deepStrictEqual(
+      sentThinking.map(({ topic, text }) => ({ topic, text })),
+      [{ topic: 'p2p_38_110', text: '排队子 agent 压缩状态' }],
+    );
     assert.deepStrictEqual(sentTexts, []);
     assert.deepStrictEqual(replies, [
       { topic: 'p2p_38_110', text: '处理消息时出错: 子 agent 结果处理失败' },

@@ -14,6 +14,7 @@ const KNOWN_VISION_MODEL_PATTERNS = [
   /gpt-4o/i,
   /gpt-4\.1/i,
   /gpt-5/i,
+  /minimax-m3/i,
   /\bo3\b/i,
   /\bo4\b/i,
   /gemini/i,
@@ -37,7 +38,7 @@ export function isPrimaryModelVisionCapable(config: Pick<ChatConfig, 'apiUrl' | 
 
   // Anthropic-compatible endpoints from text-only providers often reject image blocks.
   if (apiUrl.includes('deepseek.com') || apiUrl.includes('minimaxi.com')) {
-    return includesAny(modelKey, [/vision/i, /vl/i, /image/i, /multimodal/i, /omni/i]);
+    return includesAny(modelKey, [/minimax-m3/i, /vision/i, /vl/i, /image/i, /multimodal/i, /omni/i]);
   }
 
   if (includesAny(modelKey, KNOWN_TEXT_ONLY_MODEL_PATTERNS)) {

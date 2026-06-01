@@ -186,29 +186,34 @@ function buildModelChecks(
   const catsCoToken = firstNonEmpty(env.CATSCO_USER_TOKEN, env.CATSCOMPANY_USER_TOKEN);
   const catsCoUserUid = firstNonEmpty(env.CATSCO_USER_UID, env.CATSCOMPANY_USER_UID);
   const relayConfigured = isCatsRelayModelConfigured(provider, apiBase, model, apiKey);
-
-  return [
-    relayConfigured
-      ? passCheck(
+  const relayCheck = relayConfigured
+    ? passCheck(
+      'model.managed.relay',
+      'CatsCo 中转模型',
+      `已启用 CatsCo 中转：${provider} / ${model}`,
+    )
+    : catsCoToken && catsCoUserUid
+      ? failCheck(
         'model.managed.relay',
         'CatsCo 中转模型',
-        `已启用 CatsCo 中转：${provider} / ${model}`,
+        '已登录 CatsCo，可在设置里一键启用 CatsCo 中转模型',
+        'warning',
+        { label: '打开设置', target: 'settings' },
       )
-      : catsCoToken && catsCoUserUid
-        ? failCheck(
-          'model.managed.relay',
-          'CatsCo 中转模型',
-          '已登录 CatsCo，可在设置里一键启用 CatsCo 中转模型',
-          'warning',
-          { label: '打开设置', target: 'settings' },
-        )
-        : failCheck(
+      : failCheck(
         'model.managed.account',
         'CatsCo 中转模型',
         '登录 CatsCo 后才可使用中转模型；当前请使用自定义模型',
         'warning',
         { label: '打开 CatsCo', target: 'catsco' },
-      ),
+      );
+
+  if (relayConfigured) {
+    return [relayCheck];
+  }
+
+  return [
+    relayCheck,
     provider && SUPPORTED_PROVIDERS.has(provider)
       ? passCheck('model.custom.provider', '自定义模型服务', `自定义模型服务类型为 ${provider}`)
       : failCheck('model.custom.provider', '自定义模型服务', '自定义模型服务类型不受支持', 'blocker', {

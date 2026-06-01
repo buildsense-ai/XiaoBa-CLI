@@ -34,7 +34,23 @@ export interface DashboardSettingField {
 export interface DashboardSettingsSnapshot {
   runtimeRoot: string;
   generatedAt: string;
+  modelStartup: DashboardModelStartupSnapshot;
   fields: DashboardSettingField[];
+}
+
+export interface DashboardModelProfileSnapshot {
+  provider?: string;
+  apiBase?: string;
+  model?: string;
+  apiKeyPresent: boolean;
+  configured: boolean;
+}
+
+export interface DashboardModelStartupSnapshot {
+  source: 'relay' | 'custom';
+  effective: DashboardModelProfileSnapshot;
+  custom: DashboardModelProfileSnapshot;
+  relay: DashboardModelProfileSnapshot;
 }
 
 export interface DashboardSettingsUpdateResult {
@@ -122,6 +138,114 @@ const DEFINITION_BY_ID = new Map(DASHBOARD_SETTING_DEFINITIONS.map(definition =>
   definition,
 ]));
 
+const CUSTOM_MODEL_ENV_KEYS: Record<string, string> = {
+  'model.provider': 'CATSCO_CUSTOM_LLM_PROVIDER',
+  'model.apiBase': 'CATSCO_CUSTOM_LLM_API_BASE',
+  'model.model': 'CATSCO_CUSTOM_LLM_MODEL',
+  'model.apiKey': 'CATSCO_CUSTOM_LLM_API_KEY',
+};
+
+const EFFECTIVE_MODEL_ENV_KEYS = {
+  provider: 'GAUZ_LLM_PROVIDER',
+  apiBase: 'GAUZ_LLM_API_BASE',
+  model: 'GAUZ_LLM_MODEL',
+  apiKey: 'GAUZ_LLM_API_KEY',
+} as const;
+
+const RELAY_MODEL_ENV_KEYS = {
+  provider: 'CATSCO_RELAY_LLM_PROVIDER',
+  apiBase: 'CATSCO_RELAY_LLM_API_BASE',
+  model: 'CATSCO_RELAY_LLM_MODEL',
+  apiKey: 'CATSCO_RELAY_LLM_API_KEY',
+} as const;
+
+function isModelSetting(id: string): boolean {
+  return id.startsWith('model.');
+}
+
+function isCatsRelayApiBase(value: unknown): boolean {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  try {
+    return new URL(text).hostname.toLowerCase() === 'relay.catsco.cc';
+  } catch {
+    return text.toLowerCase().includes('relay.catsco.cc');
+  }
+}
+
+function modelSettingDisplayValue(
+  definition: DashboardSettingDefinition,
+  fileEnv: Record<string, string>,
+  env: NodeJS.ProcessEnv,
+): string | undefined {
+  const legacyApiBase = firstNonEmpty(fileEnv.GAUZ_LLM_API_BASE, env.GAUZ_LLM_API_BASE);
+  const customEnvKey = CUSTOM_MODEL_ENV_KEYS[definition.id];
+  const customValue = customEnvKey ? firstNonEmpty(fileEnv[customEnvKey], env[customEnvKey]) : undefined;
+
+  if (customEnvKey && isCatsRelayApiBase(legacyApiBase)) {
+    return customValue;
+  }
+
+  return firstNonEmpty(fileEnv[definition.envKey], env[definition.envKey]);
+}
+
+function readModelProfile(
+  keys: typeof EFFECTIVE_MODEL_ENV_KEYS | typeof RELAY_MODEL_ENV_KEYS,
+  fileEnv: Record<string, string>,
+  env: NodeJS.ProcessEnv,
+): DashboardModelProfileSnapshot {
+  const provider = firstNonEmpty(fileEnv[keys.provider], env[keys.provider]);
+  const apiBase = firstNonEmpty(fileEnv[keys.apiBase], env[keys.apiBase]);
+  const model = firstNonEmpty(fileEnv[keys.model], env[keys.model]);
+  const apiKey = firstNonEmpty(fileEnv[keys.apiKey], env[keys.apiKey]);
+  return {
+    provider,
+    apiBase: sanitizeUrlSettingValue(apiBase ?? ''),
+    model,
+    apiKeyPresent: Boolean(apiKey),
+    configured: Boolean(provider && apiBase && model && apiKey),
+  };
+}
+
+function readCustomModelProfile(
+  fileEnv: Record<string, string>,
+  env: NodeJS.ProcessEnv,
+): DashboardModelProfileSnapshot {
+  const provider = firstNonEmpty(fileEnv.CATSCO_CUSTOM_LLM_PROVIDER, env.CATSCO_CUSTOM_LLM_PROVIDER);
+  const apiBase = firstNonEmpty(fileEnv.CATSCO_CUSTOM_LLM_API_BASE, env.CATSCO_CUSTOM_LLM_API_BASE);
+  const model = firstNonEmpty(fileEnv.CATSCO_CUSTOM_LLM_MODEL, env.CATSCO_CUSTOM_LLM_MODEL);
+  const apiKey = firstNonEmpty(fileEnv.CATSCO_CUSTOM_LLM_API_KEY, env.CATSCO_CUSTOM_LLM_API_KEY);
+  return {
+    provider,
+    apiBase: sanitizeUrlSettingValue(apiBase ?? ''),
+    model,
+    apiKeyPresent: Boolean(apiKey),
+    configured: Boolean(provider && apiBase && model && apiKey),
+  };
+}
+
+function buildModelStartupSnapshot(
+  fileEnv: Record<string, string>,
+  env: NodeJS.ProcessEnv,
+): DashboardModelStartupSnapshot {
+  const effective = readModelProfile(EFFECTIVE_MODEL_ENV_KEYS, fileEnv, env);
+  const custom = readCustomModelProfile(fileEnv, env);
+  const storedRelay = readModelProfile(RELAY_MODEL_ENV_KEYS, fileEnv, env);
+  const relay = storedRelay.configured
+    ? storedRelay
+    : {
+      ...storedRelay,
+      provider: storedRelay.provider || (isCatsRelayApiBase(effective.apiBase) ? effective.provider : storedRelay.provider),
+      apiBase: storedRelay.apiBase || (isCatsRelayApiBase(effective.apiBase) ? effective.apiBase : storedRelay.apiBase),
+      model: storedRelay.model || (isCatsRelayApiBase(effective.apiBase) ? effective.model : storedRelay.model),
+      apiKeyPresent: storedRelay.apiKeyPresent || (isCatsRelayApiBase(effective.apiBase) && effective.apiKeyPresent),
+      configured: isCatsRelayApiBase(effective.apiBase) && effective.configured,
+    };
+  const source = isCatsRelayApiBase(effective.apiBase) ? 'relay' : 'custom';
+
+  return { source, effective, custom, relay };
+}
+
 export function getDashboardSettings(
   options: DashboardSettingsOptions = {},
 ): DashboardSettingsSnapshot {
@@ -132,8 +256,11 @@ export function getDashboardSettings(
   return {
     runtimeRoot,
     generatedAt: (options.now ?? new Date()).toISOString(),
+    modelStartup: buildModelStartupSnapshot(fileEnv, env),
     fields: DASHBOARD_SETTING_DEFINITIONS.map(definition => {
-      const value = firstNonEmpty(fileEnv[definition.envKey], env[definition.envKey]);
+      const value = isModelSetting(definition.id)
+        ? modelSettingDisplayValue(definition, fileEnv, env)
+        : firstNonEmpty(fileEnv[definition.envKey], env[definition.envKey]);
       const common = {
         id: definition.id,
         group: definition.group,

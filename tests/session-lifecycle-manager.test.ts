@@ -168,6 +168,63 @@ describe('AgentSession lifecycle', () => {
     );
   });
 
+  test('handleMessage surfaces restored-history compaction as thinking status', async () => {
+    const {
+      AgentSession,
+      SessionStore,
+      CONTEXT_COMPACTION_START_MESSAGE,
+      CONTEXT_COMPACTION_COMPLETE_MESSAGE,
+    } = loadSessionModules();
+    SessionStore.getInstance().saveContext('catscompany:lifecycle-compact-status', [
+      { role: 'user', content: 'old user message' },
+      { role: 'assistant', content: 'old assistant message' },
+    ]);
+
+    const session = new AgentSession('catscompany:lifecycle-compact-status', buildMockServices(), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+    assert.equal(session.restoreFromStore(), true);
+
+    const compactReasons: string[] = [];
+    (session as any).contextWindowManager.compactIfNeeded = async (messages: any[], options: any) => {
+      compactReasons.push(options.reason || '');
+      if (options.reason === '恢复后') {
+        await options.onStatus?.({
+          status: 'start',
+          sessionKey: 'catscompany:lifecycle-compact-status',
+          reason: options.reason,
+          usedTokens: 900,
+          maxTokens: 1000,
+          usagePercent: 90,
+        });
+        await options.onStatus?.({
+          status: 'complete',
+          sessionKey: 'catscompany:lifecycle-compact-status',
+          reason: options.reason,
+          usedTokens: 900,
+          maxTokens: 1000,
+          usagePercent: 90,
+          messageCount: messages.length,
+        });
+      }
+      return messages;
+    };
+
+    const thinking: string[] = [];
+    await session.handleMessage('new user message', {
+      callbacks: {
+        onThinking: text => {
+          thinking.push(text);
+        },
+      },
+    });
+
+    assert.deepStrictEqual(compactReasons, ['处理前', '恢复后']);
+    assert.deepStrictEqual(thinking, [
+      CONTEXT_COMPACTION_START_MESSAGE,
+      CONTEXT_COMPACTION_COMPLETE_MESSAGE,
+    ]);
+  });
+
   test('handleMessage preserves completed tool context when model relay times out', async () => {
     const { AgentSession, SessionStore, MODEL_TIMEOUT_MESSAGE } = loadSessionModules();
     let aiCalls = 0;
@@ -307,6 +364,8 @@ function loadSessionModules(): any {
   return {
     AgentSession: require('../src/core/agent-session').AgentSession,
     MODEL_TIMEOUT_MESSAGE: require('../src/core/agent-session').MODEL_TIMEOUT_MESSAGE,
+    CONTEXT_COMPACTION_START_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_START_MESSAGE,
+    CONTEXT_COMPACTION_COMPLETE_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_COMPLETE_MESSAGE,
     SessionStore: require('../src/utils/session-store').SessionStore,
   };
 }
