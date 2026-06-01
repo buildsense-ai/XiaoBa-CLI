@@ -7,6 +7,7 @@ import * as dotenv from 'dotenv';
 import express from 'express';
 import type { Server } from 'http';
 import { createApiRouter } from '../src/dashboard/routes/api';
+import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 
 describe('dashboard typed settings API', () => {
   let testRoot: string;
@@ -35,10 +36,16 @@ describe('dashboard typed settings API', () => {
     'CATSCO_USER_DISPLAY_NAME',
     'CATSCO_BOT_UID',
     'CATSCO_API_KEY',
+    'CATSCO_DEVICE_ID',
+    'CATSCO_BODY_ID',
+    'CATSCO_INSTALLATION_ID',
     'CATSCO_SERVER_URL',
     'CATSCOMPANY_BOT_UID',
     'CATSCOMPANY_API_KEY',
     'CATSCOMPANY_SERVER_URL',
+    'CATSCOMPANY_DEVICE_ID',
+    'CATSCOMPANY_BODY_ID',
+    'CATSCOMPANY_INSTALLATION_ID',
   ];
   const originalEnv: Record<string, string | undefined> = {};
 
@@ -932,6 +939,30 @@ describe('dashboard typed settings API', () => {
       process.env.CATSCO_API_KEY = 'cats_svc_test';
       process.env.CATSCO_SERVER_URL = 'wss://app.catsco.cc/v0/channels';
       process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${catsAddress.port}`;
+      createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+        version: 1,
+        endpoints: {
+          httpBaseUrl: `http://127.0.0.1:${catsAddress.port}`,
+          serverUrl: 'wss://app.catsco.cc/v0/channels',
+        },
+        account: {
+          token: 'user-token',
+          uid: '38',
+        },
+        currentBot: {
+          uid: '110',
+          name: 'CatsCo',
+          username: 'catsco_38',
+          apiKey: 'cats_svc_test',
+          boundByUserUid: '38',
+          bindingSource: 'test',
+        },
+        device: {
+          deviceId: 'body-settings',
+          bodyId: 'body-settings',
+          installationId: 'body-settings',
+        },
+      });
 
       const response = await fetch(`${dashboardBaseUrl}/api/cats/relay/model-config/apply`, {
         method: 'POST',

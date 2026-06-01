@@ -118,7 +118,8 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /先选模型，再检查启动/);
   assert.match(dashboardHtml, /连接 CatsCompany 网页会话，本地 agent 回复/);
   assert.match(dashboardHtml, /CatsCompany connector/);
-  assert.match(dashboardHtml, /已绑定，启动 connector 后可回复/);
+  assert.match(dashboardHtml, /选择机器人/);
+  assert.match(dashboardHtml, /已绑定，启动后接收网页消息/);
   assert.match(dashboardHtml, /<details class="chat-diagnostics" id="cats-connection-details">/);
   assert.match(dashboardHtml, /<summary>高级 endpoint<\/summary>/);
   assert.doesNotMatch(dashboardHtml, /toggleCatsAdvanced/);

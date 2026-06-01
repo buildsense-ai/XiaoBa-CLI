@@ -4,47 +4,21 @@ import { CatsCompanyBot } from '../catscompany';
 import { CatsCompanyConfig } from '../catscompany/types';
 import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/runtime-command-support';
 import { ChatConfig } from '../types';
+import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 
 export interface CatsCoCommandConfigResolution {
   config?: CatsCompanyConfig;
-  missing: Array<'serverUrl' | 'apiKey'>;
-}
-
-function firstEnv(env: NodeJS.ProcessEnv, ...keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = env[key]?.trim();
-    if (value) return value;
-  }
-  return undefined;
+  missing: Array<'serverUrl' | 'apiKey' | 'bodyId'>;
 }
 
 export function resolveCatsCoCommandConfig(
   config: ChatConfig,
   env: NodeJS.ProcessEnv = process.env,
 ): CatsCoCommandConfigResolution {
-  const serverUrl = firstEnv(env, 'CATSCO_SERVER_URL', 'CATSCOMPANY_SERVER_URL')
-    || config.catscompany?.serverUrl;
-  const apiKey = firstEnv(env, 'CATSCO_API_KEY', 'CATSCOMPANY_API_KEY')
-    || config.catscompany?.apiKey;
-  const httpBaseUrl = firstEnv(env, 'CATSCO_HTTP_BASE_URL', 'CATSCOMPANY_HTTP_BASE_URL')
-    || config.catscompany?.httpBaseUrl;
-
-  const missing: CatsCoCommandConfigResolution['missing'] = [];
-  if (!serverUrl) missing.push('serverUrl');
-  if (!apiKey) missing.push('apiKey');
-
-  if (!serverUrl || !apiKey) {
-    return { missing };
-  }
-
+  const resolved = resolveCatsCoRuntimeConfig({ runtimeRoot: process.cwd(), env, config });
   return {
-    missing: [],
-    config: {
-      serverUrl,
-      apiKey,
-      httpBaseUrl,
-      sessionTTL: config.catscompany?.sessionTTL,
-    },
+    missing: resolved.missing,
+    config: resolved.connector,
   };
 }
 
@@ -56,14 +30,14 @@ export async function catscompanyCommand(): Promise<void> {
   const config = ConfigManager.getConfig();
   const resolved = resolveCatsCoCommandConfig(config);
 
-  if (!resolved.config) {
-    Logger.error('CatsCo 配置缺失。请设置环境变量 CATSCO_SERVER_URL 和 CATSCO_API_KEY，');
-    Logger.error('或继续使用兼容变量 CATSCOMPANY_SERVER_URL / CATSCOMPANY_API_KEY。');
-    Logger.error('也可以在 ~/.xiaoba/config.json 中配置 catscompany.serverUrl 和 catscompany.apiKey。');
+  const connectorConfig = resolved.config;
+  if (!connectorConfig) {
+    Logger.error(`CatsCo 配置缺失：${resolved.missing.join(', ') || 'unknown'}。`);
+    Logger.error('请先在 Dashboard 登录 CatsCo 并选择/绑定机器人，或设置兼容环境变量。');
     process.exit(1);
   }
 
-  const bot = new CatsCompanyBot(resolved.config);
+  const bot = new CatsCompanyBot(connectorConfig);
 
   // 优雅退出
   const shutdown = async () => {

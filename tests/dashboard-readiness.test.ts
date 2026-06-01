@@ -7,6 +7,7 @@ import express from 'express';
 import type { Server } from 'http';
 import { createApiRouter } from '../src/dashboard/routes/api';
 import { ServiceInfo } from '../src/dashboard/service-manager';
+import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 
 describe('dashboard readiness and service preflight API', () => {
   let testRoot: string;
@@ -32,12 +33,18 @@ describe('dashboard readiness and service preflight API', () => {
     'CATSCO_SERVER_URL',
     'CATSCO_HTTP_BASE_URL',
     'CATSCO_API_KEY',
+    'CATSCO_DEVICE_ID',
+    'CATSCO_BODY_ID',
+    'CATSCO_INSTALLATION_ID',
     'CATSCO_USER_TOKEN',
     'CATSCO_USER_UID',
     'CATSCO_BOT_UID',
     'CATSCOMPANY_SERVER_URL',
     'CATSCOMPANY_HTTP_BASE_URL',
     'CATSCOMPANY_API_KEY',
+    'CATSCOMPANY_DEVICE_ID',
+    'CATSCOMPANY_BODY_ID',
+    'CATSCOMPANY_INSTALLATION_ID',
     'CATSCOMPANY_USER_TOKEN',
     'CATSCOMPANY_USER_UID',
     'CATSCOMPANY_BOT_UID',
@@ -152,6 +159,7 @@ describe('dashboard readiness and service preflight API', () => {
       'CATSCO_USER_UID=100',
       'CATSCO_BOT_UID=200',
     ]);
+    writeConfirmedCatsBinding();
 
     const preflightResponse = await fetch(`${baseUrl}/api/services/catscompany/preflight`, { method: 'POST' });
     const preflightText = await preflightResponse.text();
@@ -345,6 +353,7 @@ describe('dashboard readiness and service preflight API', () => {
       'CATSCO_SERVER_URL=wss://app.catsco.cc/v0/channels',
       'CATSCO_API_KEY=catsco-agent-secret',
     ]);
+    writeConfirmedCatsBinding();
 
     const response = await fetch(`${baseUrl}/api/services/catscompany/start`, { method: 'POST' });
     const text = await response.text();
@@ -411,6 +420,33 @@ function service(name: string, label: string): ServiceInfo {
 
 function writeEnv(lines: string[]): void {
   fs.writeFileSync(path.join(process.cwd(), '.env'), `${lines.join('\n')}\n`, 'utf-8');
+}
+
+function writeConfirmedCatsBinding(): void {
+  createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).save({
+    version: 1,
+    endpoints: {
+      httpBaseUrl: 'https://app.catsco.cc',
+      serverUrl: 'wss://app.catsco.cc/v0/channels',
+    },
+    account: {
+      token: 'user-token',
+      uid: '100',
+    },
+    currentBot: {
+      uid: '200',
+      name: 'CatsCo',
+      username: 'catsco_100',
+      apiKey: 'catsco-agent-secret',
+      boundByUserUid: '100',
+      bindingSource: 'test',
+    },
+    device: {
+      deviceId: 'body-readiness',
+      bodyId: 'body-readiness',
+      installationId: 'body-readiness',
+    },
+  });
 }
 
 function listen(app: express.Express): Promise<Server> {

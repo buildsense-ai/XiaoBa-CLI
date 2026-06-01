@@ -7,6 +7,7 @@ import { resolveRuntimeProfileFromConfig } from '../runtime/runtime-profile-conf
 import { ChatConfig } from '../types';
 import { ServiceInfo, ServiceManager } from './service-manager';
 import { readDashboardEnvFile } from './settings';
+import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 
 export type DashboardReadinessStatus = 'ready' | 'warning' | 'blocked';
 export type DashboardReadinessCheckStatus = 'pass' | 'warning' | 'fail';
@@ -60,6 +61,7 @@ export interface DashboardReadinessOptions {
   runtimeRoot?: string;
   env?: NodeJS.ProcessEnv;
   config?: ChatConfig;
+  catsCoOverrides?: Record<string, unknown>;
   now?: Date;
 }
 
@@ -74,12 +76,12 @@ export async function getDashboardReadiness(
 ): Promise<DashboardReadinessSnapshot> {
   const generatedAt = (options.now ?? new Date()).toISOString();
   const runtimeRoot = path.resolve(options.runtimeRoot ?? process.cwd());
-  const env = getEffectiveDashboardEnv(runtimeRoot, options.env);
   const config = options.config ?? {};
+  const env = getEffectiveCatsCoRuntimeEnv(runtimeRoot, getEffectiveDashboardEnv(runtimeRoot, options.env), config, options.catsCoOverrides);
   const services = serviceManager.getAll().map(service => getServicePreflight(
     serviceManager,
     service.name,
-    { runtimeRoot, env, config, now: options.now },
+    { runtimeRoot, env, config, catsCoOverrides: options.catsCoOverrides, now: options.now },
   ));
   const sections = [
     buildModelSection(env, config),
@@ -108,8 +110,8 @@ export function getServicePreflight(
   options: DashboardReadinessOptions = {},
 ): DashboardServicePreflight {
   const runtimeRoot = path.resolve(options.runtimeRoot ?? process.cwd());
-  const env = getEffectiveDashboardEnv(runtimeRoot, options.env);
   const config = options.config ?? {};
+  const env = getEffectiveCatsCoRuntimeEnv(runtimeRoot, getEffectiveDashboardEnv(runtimeRoot, options.env), config, options.catsCoOverrides);
   const service = serviceManager.getService(name);
   if (!service) {
     throw new Error(`Service "${name}" not found`);
@@ -149,6 +151,26 @@ function getEffectiveDashboardEnv(
     ...env,
     ...readDashboardEnvFile(runtimeRoot),
   };
+}
+
+function getEffectiveCatsCoRuntimeEnv(
+  runtimeRoot: string,
+  env: NodeJS.ProcessEnv,
+  config: ChatConfig,
+  catsCoOverrides?: Record<string, unknown>,
+): NodeJS.ProcessEnv {
+  const catsCoRuntime = resolveCatsCoRuntimeConfig({ runtimeRoot, env, config, overrides: catsCoOverrides });
+  const effectiveEnv = {
+    ...env,
+    ...catsCoRuntime.envOverlay,
+  };
+  if (!catsCoRuntime.bodyConfigured) {
+    delete effectiveEnv.CATSCO_BOT_UID;
+    delete effectiveEnv.CATSCOMPANY_BOT_UID;
+    delete effectiveEnv.CATSCO_API_KEY;
+    delete effectiveEnv.CATSCOMPANY_API_KEY;
+  }
+  return effectiveEnv;
 }
 
 function buildModelSection(

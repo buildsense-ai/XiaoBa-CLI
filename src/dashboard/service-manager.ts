@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as dotenv from 'dotenv';
 import { EventEmitter } from 'events';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
+import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 
 const isWindows = process.platform === 'win32';
 
@@ -26,6 +27,12 @@ interface ManagedService {
 }
 
 const MAX_LOG_LINES = 500;
+
+function readEnvFile(root: string): Record<string, string> {
+  const envPath = path.join(root, '.env');
+  if (!fs.existsSync(envPath)) return {};
+  return dotenv.parse(fs.readFileSync(envPath, 'utf-8'));
+}
 
 export class ServiceManager extends EventEmitter {
   private services: Map<string, ManagedService> = new Map();
@@ -188,21 +195,31 @@ export class ServiceManager extends EventEmitter {
     if (!svc) throw new Error(`Service "${name}" not found`);
     if (svc.info.status === 'running') throw new Error(`Service "${name}" is already running`);
 
-    // 每次启动时实时读取.env，确保用最新配置
-    const envPath = path.join(this.projectRoot, '.env');
-    let envVars = { ...process.env };
-    if (fs.existsSync(envPath)) {
-      const parsed = dotenv.parse(fs.readFileSync(envPath, 'utf-8'));
-      envVars = { ...envVars, ...parsed };
-    }
-
     // cwd 统一用 process.cwd()，Electron 主进程已 chdir 到 userData 目录
     // 这样子进程创建的 skill 文件和 Dashboard 读取的在同一个目录
     const spawnCwd = process.cwd();
 
+    // 每次启动时实时读取 .env。开发根目录提供默认值，runtime root 是运行态权威配置。
+    let envVars = { ...process.env };
+    const envRoots = Array.from(new Set([this.projectRoot, spawnCwd]));
+    for (const root of envRoots) {
+      envVars = { ...envVars, ...readEnvFile(root) };
+    }
+
     // 打包版：确保子进程能找到 node_modules
     if (this.isPackaged() && process.env.XIAOBA_NODE_MODULES) {
       envVars.NODE_PATH = process.env.XIAOBA_NODE_MODULES;
+    }
+
+    if (name === 'catscompany') {
+      const catsCoRuntime = resolveCatsCoRuntimeConfig({
+        runtimeRoot: spawnCwd,
+        env: envVars,
+      });
+      envVars = {
+        ...envVars,
+        ...catsCoRuntime.envOverlay,
+      };
     }
 
     const runtimeEnvironment = resolveRuntimeEnvironment({

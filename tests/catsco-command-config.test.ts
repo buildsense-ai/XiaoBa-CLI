@@ -1,9 +1,16 @@
-import { describe, test } from 'node:test';
+import { afterEach, beforeEach, describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { resolveCatsCoCommandConfig } from '../src/commands/catscompany';
 import { ChatConfig } from '../src/types';
+import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 
 describe('CatsCo command config resolution', () => {
+  let tempDir: string;
+  let originalCwd: string;
+
   const baseConfig: ChatConfig = {
     catscompany: {
       serverUrl: 'wss://legacy-config.example/v0/channels',
@@ -13,8 +20,22 @@ describe('CatsCo command config resolution', () => {
     },
   };
 
-  test('prefers CATSCO env aliases over legacy env and user config', () => {
+  beforeEach(() => {
+    originalCwd = process.cwd();
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-command-config-'));
+    process.chdir(tempDir);
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test('uses CATSCO env endpoints with confirmed local body binding', () => {
+    saveConfirmedBinding();
     const resolved = resolveCatsCoCommandConfig(baseConfig, {
+      CATSCO_USER_TOKEN: 'env-token',
+      CATSCO_USER_UID: 'user-1',
       CATSCO_SERVER_URL: 'wss://catsco.example/v0/channels',
       CATSCO_API_KEY: 'catsco-key',
       CATSCO_HTTP_BASE_URL: 'https://catsco.example',
@@ -25,28 +46,32 @@ describe('CatsCo command config resolution', () => {
 
     assert.deepEqual(resolved.missing, []);
     assert.equal(resolved.config?.serverUrl, 'wss://catsco.example/v0/channels');
-    assert.equal(resolved.config?.apiKey, 'catsco-key');
+    assert.equal(resolved.config?.apiKey, 'local-bot-key');
+    assert.equal(resolved.config?.bodyId, 'body-local');
     assert.equal(resolved.config?.httpBaseUrl, 'https://catsco.example');
     assert.equal(resolved.config?.sessionTTL, 123);
   });
 
-  test('falls back to CATSCOMPANY env aliases', () => {
+  test('falls back to CATSCOMPANY env endpoints with confirmed local body binding', () => {
+    saveConfirmedBinding();
     const resolved = resolveCatsCoCommandConfig({}, {
+      CATSCOMPANY_USER_TOKEN: 'legacy-env-token',
+      CATSCOMPANY_USER_UID: 'user-1',
       CATSCOMPANY_SERVER_URL: 'wss://legacy-env.example/v0/channels',
       CATSCOMPANY_API_KEY: 'legacy-env-key',
     });
 
     assert.deepEqual(resolved.missing, []);
     assert.equal(resolved.config?.serverUrl, 'wss://legacy-env.example/v0/channels');
-    assert.equal(resolved.config?.apiKey, 'legacy-env-key');
+    assert.equal(resolved.config?.apiKey, 'local-bot-key');
+    assert.equal(resolved.config?.bodyId, 'body-local');
   });
 
-  test('falls back to legacy user config key', () => {
+  test('does not start from legacy user config key without a confirmed body binding', () => {
     const resolved = resolveCatsCoCommandConfig(baseConfig, {});
 
-    assert.deepEqual(resolved.missing, []);
-    assert.equal(resolved.config?.serverUrl, 'wss://legacy-config.example/v0/channels');
-    assert.equal(resolved.config?.apiKey, 'legacy-config-key');
+    assert.deepEqual(resolved.missing, ['apiKey', 'bodyId']);
+    assert.equal(resolved.config, undefined);
   });
 
   test('reports missing required connection values', () => {
@@ -54,7 +79,34 @@ describe('CatsCo command config resolution', () => {
       CATSCO_HTTP_BASE_URL: 'https://catsco.example',
     });
 
-    assert.deepEqual(resolved.missing, ['serverUrl', 'apiKey']);
+    assert.deepEqual(resolved.missing, ['apiKey', 'bodyId']);
     assert.equal(resolved.config, undefined);
   });
+
+  function saveConfirmedBinding(): void {
+    createCatsCoLocalConfigService({ runtimeRoot: tempDir }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: 'https://local.example',
+        serverUrl: 'wss://local.example/v0/channels',
+      },
+      account: {
+        token: 'local-token',
+        uid: 'user-1',
+      },
+      currentBot: {
+        uid: 'bot-local',
+        name: 'Local Bot',
+        username: 'catsco_user_1',
+        apiKey: 'local-bot-key',
+        boundByUserUid: 'user-1',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'body-local',
+        bodyId: 'body-local',
+        installationId: 'body-local',
+      },
+    });
+  }
 });
