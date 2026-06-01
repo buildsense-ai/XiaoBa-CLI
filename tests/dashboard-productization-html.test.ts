@@ -134,6 +134,20 @@ test('agent channel page replaces legacy service manager as the primary entry', 
   assert.match(dashboardHtml, /管理当前 Agent 的联系入口/);
   assert.match(dashboardHtml, /function renderChannelCards\(svcs\)/);
   assert.match(dashboardHtml, /CatsCo WebApp/);
+  assert.match(dashboardHtml, /同事访问/);
+  assert.match(dashboardHtml, /id="agent-access-user-ref"/);
+  assert.match(dashboardHtml, /id="agent-access-status"/);
+  assert.match(dashboardHtml, /同事用户编号或用户名/);
+  assert.match(dashboardHtml, /channel-access-form/);
+  assert.match(dashboardHtml, /function setAgentAccessStatus/);
+  assert.match(dashboardHtml, /inviteAgentTeammate\(this\)/);
+  assert.match(dashboardHtml, /loadAgentAccessOverview\(this\)/);
+  assert.match(dashboardHtml, /id="agent-access-permission"/);
+  assert.match(dashboardHtml, /id="agent-invite-agent-ref"/);
+  assert.match(dashboardHtml, /acceptAgentInvite\(this\)/);
+  assert.match(dashboardHtml, /\/api\/cats\/agent-access\/invite/);
+  assert.match(dashboardHtml, /\/api\/cats\/agent-access\/overview/);
+  assert.match(dashboardHtml, /\/api\/cats\/agent-access\/accept-invite/);
   assert.match(dashboardHtml, /扫码绑定/);
   assert.match(dashboardHtml, /待接入。/);
   assert.match(dashboardHtml, /本地接收服务诊断（高级）/);
@@ -151,10 +165,14 @@ test('CatsCo login is separate from bot binding and connector startup', () => {
   assert.match(dashboardHtml, /登录态已保存。请确认要绑定的 CatsCo agent，再手动启动 connector。/);
   assert.match(dashboardHtml, /showBotSelector\(\)/);
   assert.match(dashboardHtml, /createCatsBotAndBind\(this\)/);
+  assert.match(dashboardHtml, /id="cats-create-bot-name"/);
+  assert.match(dashboardHtml, /id="bot-selector-status"/);
+  assert.match(dashboardHtml, /创建并绑定/);
   assert.match(dashboardHtml, /\/api\/cats\/create-bot/);
   assert.match(dashboardHtml, /\/api\/cats\/bind-bot/);
   assert.match(dashboardHtml, /data-bind-bot/);
   assert.match(dashboardHtml, /请选择已有机器人，或点击“绑定并启动”创建\/绑定当前 agent。/);
+  assert.doesNotMatch(dashboardHtml, /prompt\('为当前设备创建一个新的 CatsCo agent/);
   assert.doesNotMatch(
     dashboardHtml,
     /setCatsAction\('登录态已保存，正在绑定 CatsCo agent\.\.\.'\);\s*await setupCatsBot\(\);/,
