@@ -10,7 +10,7 @@ export function resolveMaxTokens(config: ChatConfig): number {
 
   const apiUrl = (config.apiUrl || '').toLowerCase();
   const model = (config.model || '').toLowerCase();
-  if (apiUrl.includes('relay.catsco.cc') || model.includes('minimax-m2.7')) {
+  if (apiUrl.includes('relay.catsco.cc') || model.includes('minimax-m2.7') || model.includes('minimax-m3')) {
     return DEFAULT_RELAY_MAX_TOKENS;
   }
 

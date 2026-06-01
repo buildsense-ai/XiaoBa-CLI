@@ -30,6 +30,25 @@ describe('model capabilities', () => {
     );
   });
 
+  test('treats MiniMax M3 as vision-capable through MiniMax and relay endpoints', () => {
+    assert.strictEqual(
+      isPrimaryModelVisionCapable({
+        provider: 'anthropic',
+        apiUrl: 'https://api.minimaxi.com/anthropic',
+        model: 'MiniMax-M3',
+      }),
+      true,
+    );
+    assert.strictEqual(
+      isPrimaryModelVisionCapable({
+        provider: 'anthropic',
+        apiUrl: 'https://relay.catsco.cc/anthropic',
+        model: 'MiniMax-M3',
+      }),
+      true,
+    );
+  });
+
   test('keeps relay tool calling enabled for MiniMax, DeepSeek, and GLM', () => {
     assert.strictEqual(
       isPrimaryModelToolCallingCapable({
@@ -52,6 +71,14 @@ describe('model capabilities', () => {
         provider: 'anthropic',
         apiUrl: 'https://relay.catsco.cc/anthropic',
         model: 'MiniMax-M2.7',
+      }),
+      true,
+    );
+    assert.strictEqual(
+      isPrimaryModelToolCallingCapable({
+        provider: 'anthropic',
+        apiUrl: 'https://relay.catsco.cc/anthropic',
+        model: 'MiniMax-M3',
       }),
       true,
     );

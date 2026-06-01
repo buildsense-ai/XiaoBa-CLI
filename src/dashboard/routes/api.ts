@@ -528,6 +528,18 @@ function fallbackRelayModelCatalog(config: any): RelayModelConfig[] {
       quotaClass: 'standard',
     },
     {
+      id: 'minimax-m3',
+      label: 'MiniMax M3',
+      model: 'MiniMax-M3',
+      family: 'minimax',
+      provider: 'anthropic',
+      protocol: 'Anthropic-compatible',
+      baseUrl,
+      enabled: true,
+      default: false,
+      quotaClass: 'multimodal',
+    },
+    {
       id: 'deepseek-v4-flash',
       label: 'DeepSeek V4 Flash',
       model: 'deepseek-v4-flash',
