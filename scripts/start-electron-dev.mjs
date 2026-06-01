@@ -1,8 +1,13 @@
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import electronPath from 'electron';
+import { resolveElectronDevOptions } from './electron-dev-options.mjs';
 
-const env = { ...process.env };
-delete env.ELECTRON_RUN_AS_NODE;
+const { env, port, userDataDir } = resolveElectronDevOptions();
+fs.mkdirSync(userDataDir, { recursive: true });
+
+console.log(`[dev] Dashboard port: ${port}`);
+console.log(`[dev] User data: ${userDataDir}`);
 
 const child = spawn(electronPath, ['.'], {
   cwd: process.cwd(),

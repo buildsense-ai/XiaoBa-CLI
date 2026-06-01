@@ -52,3 +52,4 @@ bash.exe.stackdump
 build-resources/runtime/
 
 .cache/runtime-downloads/
+.dev-user-data/

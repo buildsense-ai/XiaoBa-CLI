@@ -11,6 +11,7 @@ import { resolveSessionSurface } from './session-surface';
 import { TurnContextBuilder } from './turn-context-builder';
 import { TurnLogRecorder } from './turn-log-recorder';
 import { PlanRuntime } from './plan-runtime';
+import { getPetService } from '../pet/pet-service';
 
 export interface AgentTurnServices {
   aiService: AIService;
@@ -120,6 +121,11 @@ export class AgentTurnController {
       runtimeObservationSource: params.runtimeObservationSource,
     });
 
+    if (result.finalResponseVisible) {
+      this.recordPetTurnCompletion('message_completed');
+      this.recordPetTurnCompletion('task_completed');
+    }
+
     return {
       text: result.finalResponseVisible ? (result.response || '[无回复]') : '',
       visibleToUser: result.finalResponseVisible,
@@ -195,5 +201,15 @@ export class AgentTurnController {
         return block;
       });
     }
+  }
+
+  private recordPetTurnCompletion(eventType: 'message_completed' | 'task_completed'): void {
+    getPetService().recordEvent({
+      event_type: eventType,
+      session_id: this.options.sessionKey,
+      metadata: {
+        surface: resolveSessionSurface(this.options.sessionKey, this.options.sessionType),
+      },
+    });
   }
 }
