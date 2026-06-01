@@ -1357,6 +1357,39 @@
       font-size: 13px;
       line-height: 1.45;
     }
+    .bot-create-form {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+    }
+    .bot-create-input {
+      width: 210px;
+      min-width: 0;
+      height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0 11px;
+      background: rgba(255, 255, 255, 0.86);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 650;
+      outline: none;
+    }
+    .bot-create-input:focus {
+      border-color: rgba(16, 185, 129, 0.45);
+      box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.10);
+    }
+    .bot-selector-status {
+      min-height: 18px;
+      padding: 0 16px 12px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .bot-selector-status.error {
+      color: var(--red);
+    }
     .bot-item {
       display: flex;
       align-items: center;
@@ -8184,17 +8217,32 @@
       return platform || '当前设备';
     }
 
+    function setBotSelectorStatus(text, isError) {
+      const el = document.getElementById('bot-selector-status');
+      if (el) {
+        el.textContent = text || '';
+        el.className = 'bot-selector-status' + (isError ? ' error' : '');
+      }
+      setCatsAction(text, isError);
+    }
+
+    function readBotCreateName(defaultName) {
+      const input = document.getElementById('cats-create-bot-name');
+      const value = input ? String(input.value || '').trim() : '';
+      if (value) return value;
+      return defaultName;
+    }
+
     async function createCatsBotAndBind(button) {
       const defaultName = `CatsCo (${catsDefaultDeviceName()})`;
-      const botDisplayName = prompt('为当前设备创建一个新的 CatsCo agent：', defaultName);
-      if (botDisplayName === null) return;
+      const botDisplayName = readBotCreateName(defaultName);
       const btn = button || document.getElementById('cats-create-bot-btn');
       const previousText = btn ? btn.textContent : '';
       if (btn) {
         btn.disabled = true;
         btn.textContent = '创建中...';
       }
-      setCatsAction('正在创建新的 CatsCo agent...');
+      setBotSelectorStatus('正在创建新的 CatsCo agent...');
 
       try {
         const created = await parseCatsResponse(await fetch(API + '/api/cats/create-bot', {
@@ -8208,13 +8256,13 @@
         }));
         await bindCatsBot(created.bot?.uid, created.bot?.display_name || botDisplayName || defaultName, btn, {
           confirm: false,
-          restoreText: previousText || '创建新机器人',
+          restoreText: previousText || '创建并绑定',
         });
       } catch (e) {
-        setCatsAction('创建失败: ' + e.message, true);
+        setBotSelectorStatus('创建失败: ' + e.message, true);
         if (btn) {
           btn.disabled = false;
-          btn.textContent = previousText || '创建新机器人';
+          btn.textContent = previousText || '创建并绑定';
         }
       }
     }
@@ -8295,8 +8343,12 @@
           </div>
           <div class="bot-selector-toolbar">
             <div class="bot-selector-note">一个本地 CatsCo/XiaoBa 进程只绑定一个机器人身份。</div>
-            <button class="btn btn-success" id="cats-create-bot-btn" onclick="createCatsBotAndBind(this)">创建新机器人</button>
+            <div class="bot-create-form">
+              <input class="bot-create-input" id="cats-create-bot-name" autocomplete="off" placeholder="例如 Dev Agent" />
+              <button class="btn btn-success" id="cats-create-bot-btn" onclick="createCatsBotAndBind(this)">创建并绑定</button>
+            </div>
           </div>
+          <div class="bot-selector-status" id="bot-selector-status" aria-live="polite"></div>
           <div id="bot-list" class="bot-list"></div>
         </div>
       `;

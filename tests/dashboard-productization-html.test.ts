@@ -165,10 +165,14 @@ test('CatsCo login is separate from bot binding and connector startup', () => {
   assert.match(dashboardHtml, /登录态已保存。请确认要绑定的 CatsCo agent，再手动启动 connector。/);
   assert.match(dashboardHtml, /showBotSelector\(\)/);
   assert.match(dashboardHtml, /createCatsBotAndBind\(this\)/);
+  assert.match(dashboardHtml, /id="cats-create-bot-name"/);
+  assert.match(dashboardHtml, /id="bot-selector-status"/);
+  assert.match(dashboardHtml, /创建并绑定/);
   assert.match(dashboardHtml, /\/api\/cats\/create-bot/);
   assert.match(dashboardHtml, /\/api\/cats\/bind-bot/);
   assert.match(dashboardHtml, /data-bind-bot/);
   assert.match(dashboardHtml, /请选择已有机器人，或点击“绑定并启动”创建\/绑定当前 agent。/);
+  assert.doesNotMatch(dashboardHtml, /prompt\('为当前设备创建一个新的 CatsCo agent/);
   assert.doesNotMatch(
     dashboardHtml,
     /setCatsAction\('登录态已保存，正在绑定 CatsCo agent\.\.\.'\);\s*await setupCatsBot\(\);/,
