@@ -1240,6 +1240,17 @@ function catsErrorResponse(error: any): { status: number; body: Record<string, u
   return { status: error.status || 500, body };
 }
 
+function relayKeyErrorResponse(error: any): { status: number; body: Record<string, unknown> } {
+  const message = sanitizeCatsErrorMessage(error?.message || error);
+  const body: Record<string, unknown> = {
+    error: `CatsCo 中转 Key 重新生成失败：${message}。请稍后重试，或在 CatsCo 中转站页面手动复制/生成 Key 后再切换模型。`,
+    action: 'relay_key_generation_failed',
+  };
+  const data = sanitizeCatsErrorData(error?.data);
+  if (data) body.data = data;
+  return { status: error?.status || 502, body };
+}
+
 function activateCatsCompanyConnector(
   serviceManager: ServiceManager,
   options: { startIfStopped?: boolean } = {},
@@ -2382,7 +2393,8 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
             key: sanitizeRelayKeyInfo((await fetchCatsRelayKey(state))?.key),
           });
         }
-        throw error;
+        const payload = relayKeyErrorResponse(error);
+        return res.status(payload.status).json(payload.body);
       }
 
       const apiBase = selectedModel.baseUrl;
