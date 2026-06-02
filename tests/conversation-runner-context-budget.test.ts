@@ -130,6 +130,35 @@ test('mechanical prompt trimming removes dangling tool result messages', () => {
   }
 });
 
+test('mechanical prompt trimming filters provider replay blocks with retained tool calls', () => {
+  const runner = makeRunner(1_200);
+  const messages: Message[] = [
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        { id: 'kept_call', type: 'function', function: { name: 'read_file', arguments: '{}' } },
+        { id: 'dropped_call', type: 'function', function: { name: 'execute_shell', arguments: '{}' } },
+      ],
+      providerContent: [
+        { type: 'thinking', thinking: 'hidden chain', signature: 'sig_1' },
+        { type: 'tool_use', id: 'kept_call', name: 'read_file', input: {} },
+        { type: 'tool_use', id: 'dropped_call', name: 'execute_shell', input: {} },
+      ],
+    },
+    { role: 'tool', content: 'kept result', tool_call_id: 'kept_call', name: 'read_file' },
+  ];
+
+  const repaired = (runner as any).repairToolExchangeMessages(messages) as Message[];
+  const assistant = repaired.find(message => message.role === 'assistant');
+
+  assert.deepEqual(assistant?.tool_calls?.map(toolCall => toolCall.id), ['kept_call']);
+  assert.deepEqual(assistant?.providerContent?.map(block => block.type === 'tool_use' ? block.id : block.type), [
+    'thinking',
+    'kept_call',
+  ]);
+});
+
 test('image content blocks contribute to prompt token estimates', () => {
   const image: ContentBlock = {
     type: 'image',

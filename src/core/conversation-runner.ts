@@ -378,6 +378,7 @@ export class ConversationRunner {
         role: 'assistant',
         content: response.content,
         tool_calls: response.toolCalls,
+        providerContent: response.providerContent,
       };
       const executionRecords: ToolExecutionRecord[] = [];
       let shouldPauseTurn = false;
@@ -561,6 +562,7 @@ export class ConversationRunner {
     }
 
     const transcriptToolCalls = this.filterToolCallsForTranscript(assistantMsg, transcriptRecords);
+    const providerContent = this.filterProviderContentForTranscript(assistantMsg, transcriptToolCalls);
     const assistant: Message = {
       role: 'assistant',
       content: this.shouldKeepAssistantDraft(assistantMsg, outboundMessages)
@@ -568,6 +570,9 @@ export class ConversationRunner {
         : null,
       ...(transcriptToolCalls?.length
         ? { tool_calls: transcriptToolCalls }
+        : {}),
+      ...(providerContent?.length
+        ? { providerContent }
         : {}),
     };
 
@@ -630,6 +635,31 @@ export class ConversationRunner {
     if (!assistantMsg.tool_calls?.length) return undefined;
     const transcriptToolCallIds = new Set(transcriptRecords.map(record => record.toolCall.id));
     return assistantMsg.tool_calls.filter(toolCall => transcriptToolCallIds.has(toolCall.id));
+  }
+
+  private filterProviderContentForTranscript(
+    assistantMsg: Message,
+    transcriptToolCalls: Message['tool_calls'],
+  ): Message['providerContent'] {
+    if (!Array.isArray(assistantMsg.providerContent) || !transcriptToolCalls?.length) {
+      return undefined;
+    }
+
+    const transcriptToolCallIds = new Set(transcriptToolCalls.map(toolCall => toolCall.id));
+    const blocks: NonNullable<Message['providerContent']> = [];
+    let hasToolUse = false;
+
+    for (const block of assistantMsg.providerContent) {
+      if (!block || typeof block !== 'object') continue;
+      if (block.type === 'tool_use') {
+        const id = typeof block.id === 'string' ? block.id : '';
+        if (!transcriptToolCallIds.has(id)) continue;
+        hasToolUse = true;
+      }
+      blocks.push(block);
+    }
+
+    return hasToolUse ? blocks : undefined;
   }
 
   private shouldKeepAssistantDraft(
@@ -1125,13 +1155,18 @@ export class ConversationRunner {
       }
 
       if (toolCalls.length > 0) {
-        repaired.push({ ...message, tool_calls: toolCalls });
+        const providerContent = this.filterProviderContentForTranscript(message, toolCalls);
+        repaired.push({
+          ...message,
+          tool_calls: toolCalls,
+          providerContent,
+        });
         continue;
       }
 
       const content = contentToString(message.content).trim();
       if (content) {
-        repaired.push({ ...message, tool_calls: undefined });
+        repaired.push({ ...message, tool_calls: undefined, providerContent: undefined });
       }
     }
 
@@ -1150,6 +1185,7 @@ export class ConversationRunner {
       ...message,
       content: `${content.slice(0, maxChars)}\n...[已截断以适配模型上下文预算，原始 ${content.length} 字符]`,
       tool_calls: undefined,
+      providerContent: undefined,
     };
   }
 
@@ -1174,6 +1210,10 @@ export class ConversationRunner {
 
     if (aggressive && next.tool_calls) {
       delete next.tool_calls;
+    }
+
+    if (content.length > maxChars || aggressive) {
+      delete next.providerContent;
     }
 
     return next;

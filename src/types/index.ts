@@ -2,6 +2,8 @@ export type ContentBlock =
   | { type: 'text'; text: string }
   | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'; data: string } };
 
+export type ProviderContentBlock = Record<string, unknown> & { type: string };
+
 export interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string | ContentBlock[] | null;
@@ -22,6 +24,8 @@ export interface Message {
   /** 标记内部 runtime observation，例如子 agent 完成结果；对模型仍以 user role 承载 */
   __runtimeObservation?: boolean;
   runtimeObservationSource?: string;
+  /** Provider 原始 assistant content blocks，仅用于下次请求回放，不展示给用户。 */
+  providerContent?: ProviderContentBlock[];
 }
 
 export interface ChatConfig {
@@ -79,6 +83,8 @@ export interface ChatResponse {
   usage?: TokenUsage;
   /** Provider stop/finish reason, e.g. max_tokens/length/tool_use/stop. */
   stopReason?: string;
+  /** Provider 原始 assistant content blocks，仅用于下次请求回放，不展示给用户。 */
+  providerContent?: ProviderContentBlock[];
 }
 
 export interface CommandOptions {
