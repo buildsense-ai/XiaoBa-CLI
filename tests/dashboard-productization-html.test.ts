@@ -32,6 +32,8 @@ test('Agent Hub keeps connector controls and third-party model config without du
   assert.match(dashboardHtml, /\/api\/cats\/relay\/model-config\/apply/);
   assert.match(dashboardHtml, /service-config/);
   assert.match(dashboardHtml, /CatsCo 中转模型在 CatsCo 页面选择/);
+  assert.match(dashboardHtml, /自定义模型默认使用 128K 安全上下文/);
+  assert.match(dashboardHtml, /上下文 '\+escapeHtml\(contextLabel\)\+'/);
   assert.doesNotMatch(servicesPageHtml, /模型来源与 Runtime Profile/);
   assert.doesNotMatch(servicesPageHtml, /id="settings-setup-panel"/);
   assert.doesNotMatch(servicesPageHtml, /先完成关键配置/);

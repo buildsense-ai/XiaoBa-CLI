@@ -1,0 +1,154 @@
+import { ChatConfig } from '../types';
+import { resolveMaxTokens } from '../providers/output-limits';
+
+export interface ModelContextWindowSpec {
+  id: string;
+  label: string;
+  modelPatterns: RegExp[];
+  contextWindowTokens: number;
+}
+
+export interface ModelContextWindowResolution {
+  source: 'relay' | 'custom' | 'explicit' | 'fallback';
+  model?: string;
+  label: string;
+  contextWindowTokens: number;
+  promptBudgetTokens: number;
+  safetyReserveTokens: number;
+  maxOutputTokens: number;
+}
+
+export const CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
+const ESTIMATION_MARGIN_RATIO = 0.06;
+const PROTOCOL_RESERVE_TOKENS = 4_096;
+const MIN_SAFETY_RESERVE_TOKENS = 8_192;
+
+export const RELAY_MODEL_CONTEXT_WINDOW_SPECS: ModelContextWindowSpec[] = [
+  {
+    id: 'minimax-m3',
+    label: 'MiniMax M3',
+    modelPatterns: [/^minimax-m3$/i],
+    contextWindowTokens: 1_000_000,
+  },
+  {
+    id: 'minimax-m2.7',
+    label: 'MiniMax M2.7',
+    modelPatterns: [/^minimax-m2\.7(?:-highspeed)?$/i],
+    contextWindowTokens: 204_800,
+  },
+  {
+    id: 'deepseek-v4-flash',
+    label: 'DeepSeek V4 Flash',
+    modelPatterns: [/^deepseek-v4-flash$/i],
+    contextWindowTokens: 1_000_000,
+  },
+  {
+    id: 'glm-5.1',
+    label: 'GLM 5.1',
+    modelPatterns: [/^glm-5\.1$/i],
+    contextWindowTokens: 200_000,
+  },
+];
+
+export function parsePositiveInteger(value: unknown): number | undefined {
+  const text = String(value ?? '').trim();
+  if (!text) return undefined;
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.floor(parsed);
+}
+
+export function findKnownModelContextWindowSpec(model: unknown): ModelContextWindowSpec | undefined {
+  const modelName = String(model || '').trim();
+  if (!modelName) return undefined;
+  return RELAY_MODEL_CONTEXT_WINDOW_SPECS.find(spec => (
+    spec.modelPatterns.some(pattern => pattern.test(modelName))
+  ));
+}
+
+export function resolveKnownModelContextWindowTokens(model: unknown): number | undefined {
+  return findKnownModelContextWindowSpec(model)?.contextWindowTokens;
+}
+
+export function calculatePromptBudgetTokens(
+  contextWindowTokens: number,
+  maxOutputTokens: number,
+): { promptBudgetTokens: number; safetyReserveTokens: number } {
+  const estimationReserve = Math.ceil(contextWindowTokens * ESTIMATION_MARGIN_RATIO);
+  const rawSafetyReserveTokens = Math.max(
+    MIN_SAFETY_RESERVE_TOKENS,
+    maxOutputTokens + PROTOCOL_RESERVE_TOKENS + estimationReserve,
+  );
+  const safetyReserveTokens = Math.min(
+    Math.max(0, contextWindowTokens - 1),
+    rawSafetyReserveTokens,
+  );
+  const promptBudgetTokens = Math.max(1, contextWindowTokens - safetyReserveTokens);
+  return {
+    promptBudgetTokens,
+    safetyReserveTokens,
+  };
+}
+
+export function isCatsRelayModelConfig(
+  config: Pick<ChatConfig, 'apiUrl' | 'model' | 'provider'>,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const source = String(env.CATSCO_MODEL_SOURCE || '').trim().toLowerCase();
+  if (source === 'relay') return true;
+  if (source === 'custom') return false;
+  const apiUrl = String(config.apiUrl || '').trim().toLowerCase();
+  return apiUrl.includes('relay.catsco.cc');
+}
+
+export function resolveConfiguredContextWindowTokens(
+  env: NodeJS.ProcessEnv = process.env,
+): number | undefined {
+  return parsePositiveInteger(env.GAUZ_LLM_CONTEXT_WINDOW_TOKENS)
+    ?? parsePositiveInteger(env.GAUZ_LLM_CONTEXT_TOKENS);
+}
+
+export function resolveModelContextWindow(
+  config: Pick<ChatConfig, 'apiUrl' | 'model' | 'provider' | 'maxTokens'>,
+  env: NodeJS.ProcessEnv = process.env,
+): ModelContextWindowResolution {
+  const model = String(config.model || '').trim();
+  const explicitWindow = resolveConfiguredContextWindowTokens(env);
+  const knownSpec = findKnownModelContextWindowSpec(model);
+  const relay = isCatsRelayModelConfig(config, env);
+  const contextWindowTokens = explicitWindow
+    ?? (relay ? knownSpec?.contextWindowTokens : undefined)
+    ?? CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS;
+  const maxOutputTokens = resolveMaxTokens(config as ChatConfig);
+  const budget = calculatePromptBudgetTokens(contextWindowTokens, maxOutputTokens);
+
+  return {
+    source: explicitWindow ? 'explicit' : relay ? 'relay' : 'custom',
+    model,
+    label: knownSpec?.label || model || '自定义模型',
+    contextWindowTokens,
+    promptBudgetTokens: budget.promptBudgetTokens,
+    safetyReserveTokens: budget.safetyReserveTokens,
+    maxOutputTokens,
+  };
+}
+
+export function resolveModelPromptBudgetTokens(
+  config: Pick<ChatConfig, 'apiUrl' | 'model' | 'provider' | 'maxTokens'>,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  return resolveModelContextWindow(config, env).promptBudgetTokens;
+}
+
+export function formatContextWindowTokens(tokens: number | undefined): string {
+  if (!Number.isFinite(tokens) || !tokens) return '安全默认';
+  if (tokens >= 1_000_000) {
+    const value = tokens / 1_000_000;
+    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}M`;
+  }
+  if (tokens >= 1_000) {
+    const value = tokens / 1_000;
+    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}K`;
+  }
+  return `${tokens}`;
+}

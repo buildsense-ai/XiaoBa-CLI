@@ -19,15 +19,19 @@ describe('dashboard typed settings API', () => {
     'GAUZ_LLM_API_BASE',
     'GAUZ_LLM_API_KEY',
     'GAUZ_LLM_MODEL',
+    'GAUZ_LLM_CONTEXT_WINDOW_TOKENS',
+    'GAUZ_LLM_CONTEXT_TOKENS',
     'CATSCO_MODEL_SOURCE',
     'CATSCO_CUSTOM_LLM_PROVIDER',
     'CATSCO_CUSTOM_LLM_API_BASE',
     'CATSCO_CUSTOM_LLM_API_KEY',
     'CATSCO_CUSTOM_LLM_MODEL',
+    'CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS',
     'CATSCO_RELAY_LLM_PROVIDER',
     'CATSCO_RELAY_LLM_API_BASE',
     'CATSCO_RELAY_LLM_API_KEY',
     'CATSCO_RELAY_LLM_MODEL',
+    'CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS',
     'CATSCO_HTTP_BASE_URL',
     'CATSCO_SERVER_URL',
     'CATSCO_USER_TOKEN',
@@ -687,9 +691,9 @@ describe('dashboard typed settings API', () => {
       });
       const text = await response.text();
       const data = JSON.parse(text) as any;
+      assert.equal(response.status, 200, text);
       const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
 
-      assert.equal(response.status, 200, text);
       assert.equal(data.provider, 'anthropic');
       assert.equal(data.apiBase, 'https://relay.catsco.cc/anthropic');
       assert.equal(data.model, 'deepseek-v4-flash');
@@ -698,7 +702,11 @@ describe('dashboard typed settings API', () => {
       assert.equal(parsed.GAUZ_LLM_PROVIDER, 'anthropic');
       assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
       assert.equal(parsed.GAUZ_LLM_MODEL, 'deepseek-v4-flash');
+      assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '1000000');
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-openai-compatible');
+      assert.equal(parsed.CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS, '1000000');
+      assert.equal(data.selectedModel.context_window_tokens, 1000000);
+      assert.equal(data.selectedModel.context_label, '1M');
       assert.equal(text.includes('sk-bf-openai-compatible'), false);
     } finally {
       await new Promise<void>(resolve => catsServer.close(() => resolve()));
@@ -748,9 +756,9 @@ describe('dashboard typed settings API', () => {
       });
       const text = await response.text();
       const data = JSON.parse(text) as any;
+      assert.equal(response.status, 200, text);
       const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
 
-      assert.equal(response.status, 200, text);
       assert.equal(data.provider, 'anthropic');
       assert.equal(data.apiBase, 'https://relay.catsco.cc/anthropic');
       assert.equal(data.model, 'glm-5.1');
@@ -758,7 +766,10 @@ describe('dashboard typed settings API', () => {
       assert.equal(parsed.GAUZ_LLM_PROVIDER, 'anthropic');
       assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
       assert.equal(parsed.GAUZ_LLM_MODEL, 'glm-5.1');
+      assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '200000');
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-glm-secret');
+      assert.equal(parsed.CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS, '200000');
+      assert.equal(data.selectedModel.context_window_tokens, 200000);
     } finally {
       await new Promise<void>(resolve => catsServer.close(() => resolve()));
     }

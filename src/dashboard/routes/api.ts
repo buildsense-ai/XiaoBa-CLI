@@ -13,6 +13,14 @@ import { APP_VERSION } from '../../version';
 import type { ChatConfig } from '../../types';
 import { createRuntimeConfigSnapshot } from '../../runtime/runtime-config-snapshot';
 import {
+  CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS,
+  calculatePromptBudgetTokens,
+  formatContextWindowTokens,
+  parsePositiveInteger,
+  resolveKnownModelContextWindowTokens,
+  resolveModelContextWindow,
+} from '../../utils/model-context-window';
+import {
   getDashboardReadiness,
   getServicePreflight,
 } from '../readiness';
@@ -143,6 +151,7 @@ interface RelayModelConfig {
   enabled: boolean;
   default: boolean;
   quotaClass?: string;
+  contextWindowTokens?: number;
 }
 
 const MODEL_SOURCE_ENV_KEY = 'CATSCO_MODEL_SOURCE';
@@ -151,18 +160,21 @@ const CUSTOM_MODEL_ENV_KEYS = {
   apiBase: 'CATSCO_CUSTOM_LLM_API_BASE',
   model: 'CATSCO_CUSTOM_LLM_MODEL',
   apiKey: 'CATSCO_CUSTOM_LLM_API_KEY',
+  contextWindowTokens: 'CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS',
 } as const;
 const RELAY_MODEL_ENV_KEYS = {
   provider: 'CATSCO_RELAY_LLM_PROVIDER',
   apiBase: 'CATSCO_RELAY_LLM_API_BASE',
   model: 'CATSCO_RELAY_LLM_MODEL',
   apiKey: 'CATSCO_RELAY_LLM_API_KEY',
+  contextWindowTokens: 'CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS',
 } as const;
 const EFFECTIVE_MODEL_ENV_KEYS = {
   provider: 'GAUZ_LLM_PROVIDER',
   apiBase: 'GAUZ_LLM_API_BASE',
   model: 'GAUZ_LLM_MODEL',
   apiKey: 'GAUZ_LLM_API_KEY',
+  contextWindowTokens: 'GAUZ_LLM_CONTEXT_WINDOW_TOKENS',
 } as const;
 
 interface ModelLaunchProfile {
@@ -170,6 +182,7 @@ interface ModelLaunchProfile {
   apiBase?: string;
   model?: string;
   apiKey?: string;
+  contextWindowTokens?: number;
 }
 
 function normalizeBaseUrl(value: unknown, fallback: string): string {
@@ -733,6 +746,9 @@ function normalizeRelayModelConfig(item: any, config: any, index: number): Relay
   const provider: 'anthropic' = 'anthropic';
   const protocol = 'Anthropic-compatible';
   const baseUrl = relayEndpointForProtocol(config, 'anthropic');
+  const contextWindowTokens = parsePositiveInteger(item?.context_window_tokens)
+    ?? parsePositiveInteger(item?.contextWindowTokens)
+    ?? resolveKnownModelContextWindowTokens(model);
   return {
     id: String(item?.id || model || `relay-model-${index}`).trim(),
     label: String(item?.label || model).trim(),
@@ -744,6 +760,7 @@ function normalizeRelayModelConfig(item: any, config: any, index: number): Relay
     enabled: item?.enabled !== false,
     default: item?.default === true,
     quotaClass: String(item?.quota_class || item?.quotaClass || '').trim() || undefined,
+    contextWindowTokens,
   };
 }
 
@@ -761,6 +778,7 @@ function fallbackRelayModelCatalog(config: any): RelayModelConfig[] {
       enabled: true,
       default: true,
       quotaClass: 'standard',
+      contextWindowTokens: 204_800,
     },
     {
       id: 'minimax-m3',
@@ -773,6 +791,7 @@ function fallbackRelayModelCatalog(config: any): RelayModelConfig[] {
       enabled: true,
       default: false,
       quotaClass: 'multimodal',
+      contextWindowTokens: 1_000_000,
     },
     {
       id: 'deepseek-v4-flash',
@@ -785,6 +804,7 @@ function fallbackRelayModelCatalog(config: any): RelayModelConfig[] {
       enabled: true,
       default: false,
       quotaClass: 'flash-low',
+      contextWindowTokens: 1_000_000,
     },
     {
       id: 'glm-5.1',
@@ -797,6 +817,7 @@ function fallbackRelayModelCatalog(config: any): RelayModelConfig[] {
       enabled: true,
       default: false,
       quotaClass: 'standard',
+      contextWindowTokens: 200_000,
     },
   ];
 }
@@ -848,6 +869,9 @@ function selectRelayModel(
 }
 
 function relayModelPayload(model: RelayModelConfig): Record<string, unknown> {
+  const promptBudget = model.contextWindowTokens
+    ? calculatePromptBudgetTokens(model.contextWindowTokens, 32_768).promptBudgetTokens
+    : undefined;
   return {
     id: model.id,
     label: model.label,
@@ -859,6 +883,9 @@ function relayModelPayload(model: RelayModelConfig): Record<string, unknown> {
     enabled: model.enabled,
     default: model.default,
     quota_class: model.quotaClass,
+    context_window_tokens: model.contextWindowTokens,
+    prompt_budget_tokens: promptBudget,
+    context_label: model.contextWindowTokens ? formatContextWindowTokens(model.contextWindowTokens) : undefined,
   };
 }
 
@@ -886,11 +913,13 @@ function writeDashboardEnvAndProcess(updates: Record<string, string | undefined>
 
 function modelProfileFromCurrentConfig(): ModelLaunchProfile {
   const config = getModelConfigReadonly();
+  const fileEnv = readEnvFile();
   return {
     provider: config.provider,
     apiBase: config.apiUrl,
     model: config.model,
     apiKey: config.apiKey,
+    contextWindowTokens: parsePositiveInteger(firstNonEmpty(process.env.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, fileEnv.GAUZ_LLM_CONTEXT_WINDOW_TOKENS)),
   };
 }
 
@@ -904,6 +933,7 @@ function modelProfileFromStoredEnv(
     apiBase: firstNonEmpty(process.env[keys.apiBase], fileEnv[keys.apiBase]),
     model: firstNonEmpty(process.env[keys.model], fileEnv[keys.model]),
     apiKey: firstNonEmpty(process.env[keys.apiKey], fileEnv[keys.apiKey]),
+    contextWindowTokens: parsePositiveInteger(firstNonEmpty(process.env[keys.contextWindowTokens], fileEnv[keys.contextWindowTokens])),
   };
 }
 
@@ -926,13 +956,17 @@ function modelProfileUpdates(
     [keys.apiBase]: profile.apiBase,
     [keys.model]: profile.model,
     [keys.apiKey]: profile.apiKey,
+    [keys.contextWindowTokens]: profile.contextWindowTokens ? String(profile.contextWindowTokens) : undefined,
   };
 }
 
 function preserveCurrentCustomModelBeforeRelay(): string[] {
-  const current = modelProfileFromCurrentConfig();
+  const current = {
+    ...modelProfileFromCurrentConfig(),
+  };
   if (isCatsRelayApiBase(current.apiBase)) return [];
   if (!current.provider && !current.apiBase && !current.model && !current.apiKey) return [];
+  current.contextWindowTokens = current.contextWindowTokens ?? CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS;
 
   return writeDashboardEnvAndProcess(modelProfileUpdates(CUSTOM_MODEL_ENV_KEYS, current)).updated;
 }
@@ -973,6 +1007,7 @@ function mirrorCurrentModelAsCustomStartup(input: any, previous: ModelLaunchProf
   const custom: ModelLaunchProfile = {
     ...current,
     apiKey,
+    contextWindowTokens: storedCustom.contextWindowTokens ?? CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS,
   };
 
   if (!isCompleteModelProfile(custom) && (previousSource === 'relay' || isCatsRelayApiBase(previous.apiBase))) {
@@ -992,14 +1027,18 @@ function mirrorCurrentModelAsCustomStartup(input: any, previous: ModelLaunchProf
 }
 
 function writeCustomModelStartupConfig(): { profile: ModelLaunchProfile; updated: string[]; cleared: string[] } {
-  const profile = modelProfileFromStoredEnv(CUSTOM_MODEL_ENV_KEYS);
+  const profile = {
+    ...modelProfileFromStoredEnv(CUSTOM_MODEL_ENV_KEYS),
+  };
   if (!isCompleteModelProfile(profile)) {
     const error: any = new Error('请先在设置里保存完整的自定义模型地址、模型名称和访问凭证。');
     error.status = 400;
     error.reason = 'CUSTOM_MODEL_NOT_CONFIGURED';
     throw error;
   }
+  profile.contextWindowTokens = profile.contextWindowTokens ?? CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS;
   const result = writeDashboardEnvAndProcess({
+    ...modelProfileUpdates(CUSTOM_MODEL_ENV_KEYS, profile),
     ...modelProfileUpdates(EFFECTIVE_MODEL_ENV_KEYS, profile),
     [MODEL_SOURCE_ENV_KEY]: 'custom',
   });
@@ -1013,6 +1052,7 @@ function writeRelayModelStartupConfig(model: RelayModelConfig, apiKey: string): 
     apiBase: model.baseUrl,
     model: model.model,
     apiKey,
+    contextWindowTokens: model.contextWindowTokens ?? resolveKnownModelContextWindowTokens(model.model),
   };
   const result = writeDashboardEnvAndProcess({
     ...modelProfileUpdates(RELAY_MODEL_ENV_KEYS, profile),
@@ -1383,6 +1423,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
   
   router.get('/status', (_req, res) => {
     const config = ConfigManager.getConfigReadonly();
+    const contextWindow = resolveModelContextWindow(config);
     const services = serviceManager.getAll();
     res.json({
       version: APP_VERSION,
@@ -1392,6 +1433,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       nodeVersion: process.version,
       model: config.model,
       provider: config.provider,
+      contextWindow,
       skillsPath: PathResolver.getSkillsPath(),
       services,
     });

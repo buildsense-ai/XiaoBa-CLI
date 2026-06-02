@@ -20,6 +20,7 @@ import {
   SUBAGENT_TOOL_NAME,
   TRANSIENT_RUNNER_HINT_PREFIX,
 } from './runner-orchestration-policy';
+import { resolveModelPromptBudgetTokens } from '../utils/model-context-window';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -42,8 +43,6 @@ function normalizeToolName(name: string): string {
   return TOOL_NAME_ALIASES[name] ?? name;
 }
 
-const DEFAULT_PROMPT_BUDGET = 120000;
-const ANTHROPIC_PROMPT_BUDGET = 200000;
 const MIN_MESSAGE_BUDGET = 2000;
 const OVERFLOW_REDUCTION_RATIO = 0.6;
 const TRANSIENT_CURRENT_DIRECTORY_PREFIX = '[transient_current_directory]';
@@ -958,7 +957,7 @@ export class ConversationRunner {
 
   private ensurePromptBudget(messages: Message[], tools: ToolDefinition[]): void {
     const toolTokens = estimateToolsTokens(tools);
-    const messageBudget = Math.max(MIN_MESSAGE_BUDGET, this.maxPromptTokens - toolTokens);
+    const messageBudget = Math.max(1, this.maxPromptTokens - toolTokens);
     let messageTokens = estimateMessagesTokens(messages);
 
     if (messageTokens <= messageBudget) {
@@ -977,7 +976,7 @@ export class ConversationRunner {
     }
 
     if (messageTokens > messageBudget) {
-      const minimal = this.buildMinimalFallback(messages);
+      const minimal = this.buildMinimalFallback(messages, messageBudget);
       this.replaceMessages(messages, minimal);
       messageTokens = estimateMessagesTokens(messages);
     }
@@ -1025,7 +1024,7 @@ export class ConversationRunner {
     return candidate;
   }
 
-  private buildMinimalFallback(messages: Message[]): Message[] {
+  private buildMinimalFallback(messages: Message[], targetTokens: number): Message[] {
     const system = messages.find(msg => msg.role === 'system');
     const nonSystem = messages.filter(msg => msg.role !== 'system');
     const tail = nonSystem.slice(-2).map(msg => this.shrinkMessage(msg, true));
@@ -1036,7 +1035,43 @@ export class ConversationRunner {
     }
     result.push(...tail);
 
-    return result;
+    return this.fitMessagesToBudget(result, targetTokens);
+  }
+
+  private fitMessagesToBudget(messages: Message[], targetTokens: number): Message[] {
+    let candidate = messages;
+    const caps = [600, 320, 160, 80];
+
+    for (const cap of caps) {
+      if (estimateMessagesTokens(candidate) <= targetTokens) {
+        return candidate;
+      }
+      candidate = candidate.map((message, index) => (
+        this.truncateMessageContent(message, index === 0 ? cap * 2 : cap)
+      ));
+    }
+
+    while (estimateMessagesTokens(candidate) > targetTokens && candidate.length > 1) {
+      candidate.splice(1, 1);
+    }
+
+    if (estimateMessagesTokens(candidate) > targetTokens && candidate.length > 0) {
+      candidate = [this.truncateMessageContent(candidate[0], 80)];
+    }
+
+    return candidate;
+  }
+
+  private truncateMessageContent(message: Message, maxChars: number): Message {
+    const content = contentToString(message.content);
+    if (content.length <= maxChars) {
+      return message;
+    }
+    return {
+      ...message,
+      content: `${content.slice(0, maxChars)}\n...[已截断以适配模型上下文预算，原始 ${content.length} 字符]`,
+      tool_calls: undefined,
+    };
   }
 
   private shrinkMessage(message: Message, aggressive: boolean): Message {
@@ -1087,11 +1122,14 @@ export class ConversationRunner {
       return maxContextTokens;
     }
 
-    const provider = (process.env.GAUZ_LLM_PROVIDER || '').trim().toLowerCase();
-    const model = (process.env.GAUZ_LLM_MODEL || '').trim().toLowerCase();
-    const isAnthropic = provider === 'anthropic' || model.includes('claude');
-
-    return isAnthropic ? ANTHROPIC_PROMPT_BUDGET : DEFAULT_PROMPT_BUDGET;
+    return resolveModelPromptBudgetTokens({
+      provider: process.env.GAUZ_LLM_PROVIDER === 'anthropic' || process.env.GAUZ_LLM_PROVIDER === 'openai'
+        ? process.env.GAUZ_LLM_PROVIDER
+        : undefined,
+      apiUrl: process.env.GAUZ_LLM_API_BASE,
+      model: process.env.GAUZ_LLM_MODEL,
+      maxTokens: Number(process.env.GAUZ_LLM_MAX_OUTPUT_TOKENS || process.env.GAUZ_LLM_MAX_TOKENS) || undefined,
+    }, process.env);
   }
 
   private isPromptTooLongError(error: any): boolean {
