@@ -153,6 +153,74 @@ describe('AgentSession lifecycle', () => {
     );
   });
 
+  test('session persistence strips provider replay hidden thinking from restored history', async () => {
+    const { SessionStore } = loadSessionModules();
+    SessionStore.getInstance().saveContext('user:lifecycle-provider-replay', [
+      { role: 'user', content: '需要读文件' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'toolu_1',
+          type: 'function',
+          function: { name: 'read_file', arguments: '{"path":"notes.md"}' },
+        }],
+        providerContent: [
+          { type: 'thinking', thinking: 'hidden chain text', signature: 'sig_secret' },
+          { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: { path: 'notes.md' } },
+        ],
+      },
+      { role: 'tool', content: 'private tool result', tool_call_id: 'toolu_1', name: 'read_file' },
+      { role: 'assistant', content: '读完了' },
+    ]);
+
+    const restored = SessionStore.getInstance().loadContext('user:lifecycle-provider-replay');
+    const raw = fs.readFileSync(
+      path.join(testRoot, 'data', 'sessions', 'user_lifecycle-provider-replay.jsonl'),
+      'utf-8',
+    );
+
+    assert.equal(restored.some((message: any) => Array.isArray(message.providerContent)), false);
+    assert.equal(restored.some((message: any) => message.role === 'tool'), false);
+    assert.equal(restored.some((message: any) => message.tool_calls?.length), false);
+    assert.match(String(restored[1]?.content || ''), /provider replay 隐藏内容未写入本地会话/);
+    assert.doesNotMatch(raw, /hidden chain text/);
+    assert.doesNotMatch(raw, /sig_secret/);
+    assert.doesNotMatch(raw, /private tool result/);
+  });
+
+  test('loading legacy sessions migrates provider replay hidden thinking off disk', async () => {
+    const { SessionStore } = loadSessionModules();
+    const sessionFile = path.join(testRoot, 'data', 'sessions', 'user_lifecycle-legacy-provider-replay.jsonl');
+    fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+    fs.writeFileSync(sessionFile, [
+      JSON.stringify({ role: 'user', content: '旧历史' }),
+      JSON.stringify({
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'toolu_legacy',
+          type: 'function',
+          function: { name: 'read_file', arguments: '{"path":"legacy.md"}' },
+        }],
+        providerContent: [
+          { type: 'thinking', thinking: 'legacy hidden chain', signature: 'legacy_sig' },
+          { type: 'tool_use', id: 'toolu_legacy', name: 'read_file', input: { path: 'legacy.md' } },
+        ],
+      }),
+      JSON.stringify({ role: 'tool', content: 'legacy tool result', tool_call_id: 'toolu_legacy', name: 'read_file' }),
+    ].join('\n') + '\n', 'utf-8');
+
+    const restored = SessionStore.getInstance().loadContext('user:lifecycle-legacy-provider-replay');
+    const migratedRaw = fs.readFileSync(sessionFile, 'utf-8');
+
+    assert.equal(restored.some((message: any) => Array.isArray(message.providerContent)), false);
+    assert.equal(restored.some((message: any) => message.role === 'tool'), false);
+    assert.doesNotMatch(migratedRaw, /legacy hidden chain/);
+    assert.doesNotMatch(migratedRaw, /legacy_sig/);
+    assert.doesNotMatch(migratedRaw, /legacy tool result/);
+  });
+
   test('handleMessage persists each completed turn before cleanup', async () => {
     const { AgentSession, SessionStore } = loadSessionModules();
     const session = new AgentSession('catscompany:lifecycle-autosave', buildMockServices(), 'catscompany');

@@ -147,7 +147,21 @@ export class ContextDebugLogger {
     } catch { /* SDK dump 写入失败不影响主流程 */ }
   }
 
+  private static sanitizeSecretString(value: string): string {
+    return value
+      .replace(/sk-[A-Za-z0-9_-]{8,}/g, '[redacted-key]')
+      .replace(/cats_svc_[A-Za-z0-9_-]+/g, '[redacted-token]')
+      .replace(/\bAuthorization\s*[:=]\s*(?:[A-Za-z][A-Za-z0-9+.-]*\s+)?[^\s,;'"`<>]+/gi, 'Authorization: [redacted-token]')
+      .replace(/\b(?:Bearer|ApiKey|Token)\s+[A-Za-z0-9._~+/=-]+/gi, match => `${match.split(/\s+/)[0]} [redacted-token]`)
+      .replace(/(["']?)([A-Za-z0-9_.-]*(?:token|api[_-]?key|secret|password)[A-Za-z0-9_.-]*)\1\s*[:=]\s*["']?[^&\s,'"`<>}]+["']?/gi, '$1$2$1=[redacted-token]');
+  }
+
+  private static isSensitiveKey(key: string): boolean {
+    return /(?:authorization|token|api[_-]?key|apikey|secret|password|credential)/i.test(key);
+  }
+
   private static sanitizeSdkDump(value: unknown, seen = new WeakSet<object>()): unknown {
+    if (typeof value === 'string') return ContextDebugLogger.sanitizeSecretString(value);
     if (value === null || typeof value !== 'object') return value;
     if (seen.has(value)) return '[Circular]';
     seen.add(value);
@@ -163,6 +177,13 @@ export class ContextDebugLogger {
     const output: Record<string, unknown> = {};
 
     for (const [key, item] of Object.entries(source)) {
+      if (ContextDebugLogger.isSensitiveKey(key)) {
+        output[key] = typeof item === 'string'
+          ? `[redacted sensitive value: ${item.length} chars]`
+          : '[redacted sensitive value]';
+        continue;
+      }
+
       if (key === 'thinking' && typeof item === 'string') {
         output[key] = `[redacted hidden thinking: ${item.length} chars]`;
         continue;

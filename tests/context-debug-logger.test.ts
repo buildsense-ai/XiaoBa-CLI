@@ -20,6 +20,11 @@ test('SDK debug dumps redact provider hidden thinking blocks', () => {
             { type: 'redacted_thinking', data: 'opaque_secret' },
           ],
         }],
+        apiKey: 'sk-secret-debug-value',
+        token: 'plain-token-should-not-leak',
+        headers: { Authorization: 'Bearer cats_svc_debug_should_not_leak' },
+        toolInput: { password: 'plain-password-should-not-leak' },
+        toolArgs: 'api_key=tool-secret-token password=debug-pass',
       },
     });
 
@@ -35,6 +40,12 @@ test('SDK debug dumps redact provider hidden thinking blocks', () => {
     assert.doesNotMatch(content, /hidden chain text/);
     assert.doesNotMatch(content, /sig_secret/);
     assert.doesNotMatch(content, /opaque_secret/);
+    assert.doesNotMatch(content, /sk-secret-debug-value/);
+    assert.doesNotMatch(content, /plain-token-should-not-leak/);
+    assert.doesNotMatch(content, /cats_svc_debug_should_not_leak/);
+    assert.doesNotMatch(content, /plain-password-should-not-leak/);
+    assert.doesNotMatch(content, /tool-secret-token/);
+    assert.doesNotMatch(content, /debug-pass/);
 
     fs.unlinkSync(path.join(debugDir, file));
   } finally {

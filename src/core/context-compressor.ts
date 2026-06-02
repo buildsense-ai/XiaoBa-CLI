@@ -129,6 +129,50 @@ function truncateLongText(text: string, maxChars: number): string {
   return prefix + text.slice(0, maxChars - 30) + `\n...[共 ${text.length} 字符]`;
 }
 
+function fitTextPrefixToTokenBudget(text: string, budget: number): string {
+  const safeBudget = Math.max(0, Math.floor(budget));
+  if (safeBudget <= 0 || !text) return '';
+  if (estimateTokens(text) <= safeBudget) return text;
+
+  let low = 0;
+  let high = text.length;
+  let best = '';
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = text.slice(0, mid);
+    if (estimateTokens(candidate) <= safeBudget) {
+      best = candidate;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return best;
+}
+
+function truncateTextToTokenBudget(text: string, budget: number): string {
+  const safeBudget = Math.max(0, Math.floor(budget));
+  if (safeBudget <= 0 || !text) return '';
+  if (estimateTokens(text) <= safeBudget) return text;
+
+  const suffix = `\n...[共 ${text.length} 字符]`;
+  let low = 0;
+  let high = text.length;
+  let best = '';
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = text.slice(0, mid) + suffix;
+    if (estimateTokens(candidate) <= safeBudget) {
+      best = candidate;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return best || fitTextPrefixToTokenBudget(text, safeBudget);
+}
+
 /**
  * 按 token 预算从最新消息往前构建摘要文本
  *
@@ -137,30 +181,31 @@ function truncateLongText(text: string, maxChars: number): string {
  * @returns 摘要文本
  */
 export function truncateForSummary(messages: Message[], budget: number = SUMMARY_CONTENT_BUDGET): string {
+  const safeBudget = Math.max(0, Math.floor(budget));
+  if (safeBudget <= 0) return '';
+
   // 反序遍历：从最新到最早
   const reversed = [...messages].reverse();
   const result: string[] = [];
   let usedTokens = 0;
-  let skippedCount = 0;
 
   for (const msg of reversed) {
     const { text, tokens } = messageToSummaryText(msg);
 
-    if (usedTokens + tokens > budget) {
-      // 超出预算
-      if (skippedCount === 0) {
-        // 只有一条消息就超预算了，强制截断
-        const truncated = truncateLongText(text, 500);
-        result.push(truncated);
-      } else {
-        // 多条消息，停止添加
-        break;
+    if (usedTokens + tokens > safeBudget) {
+      const remainingBudget = safeBudget - usedTokens;
+      if (remainingBudget > 0) {
+        const truncated = truncateTextToTokenBudget(text, remainingBudget);
+        if (truncated) {
+          result.push(truncated);
+          usedTokens += estimateTokens(truncated);
+        }
       }
+      break;
     } else {
       result.push(text);
       usedTokens += tokens;
     }
-    skippedCount++;
   }
 
   // 构建最终文本（需要正序）
@@ -169,10 +214,11 @@ export function truncateForSummary(messages: Message[], budget: number = SUMMARY
   // 如果有跳过的消息，添加标记
   const totalSkipped = messages.length - result.length;
   if (totalSkipped > 0) {
-    return `[早期 ${totalSkipped} 条消息已截断，共 ${messages.length} 条消息]\n\n${truncatedText}`;
+    const marked = `[早期 ${totalSkipped} 条消息已截断，共 ${messages.length} 条消息]\n\n${truncatedText}`;
+    return truncateTextToTokenBudget(marked, safeBudget);
   }
 
-  return truncatedText;
+  return truncateTextToTokenBudget(truncatedText, safeBudget);
 }
 
 // ─── 压缩 Prompt ──────────────────────────────────────────

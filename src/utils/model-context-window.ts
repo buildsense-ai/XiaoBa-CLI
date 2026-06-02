@@ -26,6 +26,7 @@ const MIN_SAFETY_RESERVE_TOKENS = 8_192;
 const MIN_SUMMARY_BUDGET_TOKENS = 50_000;
 const MAX_SUMMARY_BUDGET_TOKENS = 300_000;
 const SUMMARY_BUDGET_RATIO = 0.35;
+const SUMMARY_WRAPPER_RESERVE_TOKENS = 8_192;
 
 export const RELAY_MODEL_CONTEXT_WINDOW_SPECS: ModelContextWindowSpec[] = [
   {
@@ -153,10 +154,15 @@ export function resolveModelPromptBudgetTokens(
 }
 
 export function calculateSummaryBudgetTokens(promptBudgetTokens: number): number {
-  const scaled = Math.floor(promptBudgetTokens * SUMMARY_BUDGET_RATIO);
+  const wrapperReserveTokens = Math.min(
+    SUMMARY_WRAPPER_RESERVE_TOKENS,
+    Math.max(0, Math.floor(promptBudgetTokens * 0.2)),
+  );
+  const contentCeiling = Math.max(1, promptBudgetTokens - wrapperReserveTokens);
+  const scaled = Math.floor(contentCeiling * SUMMARY_BUDGET_RATIO);
   return Math.max(
-    Math.min(MIN_SUMMARY_BUDGET_TOKENS, Math.max(1, promptBudgetTokens)),
-    Math.min(MAX_SUMMARY_BUDGET_TOKENS, scaled),
+    Math.min(MIN_SUMMARY_BUDGET_TOKENS, contentCeiling),
+    Math.min(MAX_SUMMARY_BUDGET_TOKENS, contentCeiling, scaled),
   );
 }
 

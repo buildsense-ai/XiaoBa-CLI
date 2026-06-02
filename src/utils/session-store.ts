@@ -22,6 +22,69 @@ function stateFilePath(key: string): string {
   return path.join(SESSION_STATE_DIR, keyToFilename(key).replace(/\.jsonl$/, '.json'));
 }
 
+function hasHiddenProviderReplay(message: Message): boolean {
+  return Array.isArray(message.providerContent)
+    && message.providerContent.some(block => (
+      block?.type === 'thinking'
+      || block?.type === 'redacted_thinking'
+    ));
+}
+
+function providerReplaySummary(message: Message): string {
+  const publicText = typeof message.content === 'string' ? message.content.trim() : '';
+  const toolNames = (message.tool_calls || [])
+    .map(toolCall => toolCall.function?.name)
+    .filter(Boolean);
+  const suffix = toolNames.length > 0
+    ? ` 工具调用: ${toolNames.join(', ')}。`
+    : '';
+  return [
+    publicText,
+    `[历史工具调用已完成；provider replay 隐藏内容未写入本地会话。${suffix}]`,
+  ].filter(Boolean).join('\n');
+}
+
+function sanitizeForPersistence(messages: Message[]): Message[] {
+  const hiddenReplayToolCallIds = new Set<string>();
+  const durable: Message[] = [];
+
+  for (const message of messages) {
+    if ((message as any).__injected || message.role === 'system') {
+      continue;
+    }
+
+    if (message.role === 'tool' && message.tool_call_id && hiddenReplayToolCallIds.has(message.tool_call_id)) {
+      continue;
+    }
+
+    if (message.role !== 'assistant') {
+      durable.push({ ...message, providerContent: undefined });
+      continue;
+    }
+
+    if (hasHiddenProviderReplay(message) && message.tool_calls?.length) {
+      for (const toolCall of message.tool_calls) {
+        hiddenReplayToolCallIds.add(toolCall.id);
+      }
+      durable.push({
+        ...message,
+        content: providerReplaySummary(message),
+        tool_calls: undefined,
+        providerContent: undefined,
+      });
+      continue;
+    }
+
+    durable.push({ ...message, providerContent: undefined });
+  }
+
+  return durable;
+}
+
+function serializeMessages(messages: Message[]): string {
+  return messages.map(message => JSON.stringify(message)).join('\n') + '\n';
+}
+
 export interface SessionRuntimeState {
   currentDirectory?: string;
   updatedAt?: string;
@@ -40,9 +103,7 @@ export class SessionStore {
     try {
       ensureDir();
       const fp = filePath(sessionKey);
-      const lines = messages
-        .filter(m => !(m as any).__injected) // 跳过注入的临时消息
-        .filter(m => m.role !== 'system') // 跳过系统消息，恢复时会重新生成
+      const lines = sanitizeForPersistence(messages)
         .map(m => JSON.stringify(m));
       fs.writeFileSync(fp, lines.join('\n') + '\n', 'utf-8');
     } catch (err) {
@@ -62,7 +123,13 @@ export class SessionStore {
         try { msgs.push(JSON.parse(line) as Message); }
         catch { Logger.warning(`跳过损坏的 JSONL 行 [${sessionKey}]: ${line.slice(0, 50)}`); }
       }
-      return msgs;
+      const sanitized = sanitizeForPersistence(msgs);
+      const migratedContent = serializeMessages(sanitized).trim();
+      if (migratedContent !== content) {
+        fs.writeFileSync(fp, serializeMessages(sanitized), 'utf-8');
+        Logger.info(`会话已迁移清理 provider replay: ${sessionKey}`);
+      }
+      return sanitized;
     } catch (err) {
       Logger.error(`加载 context 失败 [${sessionKey}]: ${err}`);
       return [];

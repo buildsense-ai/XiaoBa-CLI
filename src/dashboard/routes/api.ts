@@ -2302,6 +2302,50 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       if (!targetBot) return res.status(404).json({ error: 'Bot not found' });
 
       const apiKey = await getCatsBotApiKey(state, botUid, targetBot);
+      const relayState: CatsAuthState = {
+        ...state,
+        uid: userUid,
+        username: me.username || state.username || '',
+        displayName: me.display_name || me.username || state.displayName || '',
+      };
+      let relayModelSetup: Record<string, unknown> | undefined;
+      if (req.body?.setupRelayModel !== false) {
+        try {
+          relayModelSetup = await setupCatsRelayModelForDesktop(
+            relayState,
+            req.body?.relayModelId || req.body?.modelId || req.body?.model,
+            {
+              rotateExisting: req.body?.rotateRelayKey === true || req.body?.rotateExisting === true,
+            },
+          );
+        } catch (relayError: any) {
+          const message = sanitizeCatsErrorMessage(relayError?.message || relayError);
+          const status = relayError?.status || 500;
+          relayModelSetup = {
+            ok: false,
+            error: message,
+            status,
+            action: status === 409 ? 'rotate_required' : undefined,
+          };
+          return res.status(status).json({
+            ok: false,
+            error: message,
+            action: status === 409 ? 'rotate_required' : undefined,
+            relayModelSetup,
+            user: {
+              uid: userUid,
+              username: me.username || state.username || '',
+              display_name: me.display_name || me.username || state.displayName || '',
+            },
+            bot: {
+              uid: botUid,
+              username: targetBot.username || '',
+              display_name: targetBot.display_name || targetBot.username || 'Bot',
+            },
+            topicId: p2pTopicId(userUid, botUid),
+          });
+        }
+      }
       const result = await commitCatsBotBindingAndStartConnector(serviceManager, state, {
         userUid,
         username: me.username || state.username || '',
@@ -2328,6 +2372,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         preflight: result.preflight,
         connectorStarted: result.connectorStarted,
         connectorRestarted: result.connectorRestarted,
+        relayModelSetup,
         warnings: result.warnings.length > 0 ? result.warnings : undefined,
         message: `已绑定机器人 "${botName}"`,
       });

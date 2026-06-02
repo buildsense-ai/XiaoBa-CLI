@@ -176,6 +176,18 @@ test('CatsCo Chat setup refreshes readiness before unlocking the composer', () =
   assert.match(setupBlock, /await loadCatsMessages\(true, \{reset:true, forceBottom:true\}\)/);
 });
 
+test('CatsCo bot binding carries selected relay model setup', () => {
+  const bindBlock = dashboardHtml.match(/async function bindCatsBot\(botUid, botName, button, options\) \{[\s\S]*?function closeBotSelector/)?.[0] || '';
+  assert.match(bindBlock, /const setupRelayModel=shouldSetupRelayOnCatsSetup\(\)/);
+  assert.match(bindBlock, /setupRelayModel,/);
+  assert.match(bindBlock, /relayModelId:setupRelayModel \? \(relayModelIdForSetup\(\)\|\|undefined\) : undefined/);
+  assert.match(bindBlock, /rotateRelayKey:Boolean\(options\?\.rotateRelayKey\)/);
+  assert.match(bindBlock, /pendingStartupSource=''/);
+  assert.match(bindBlock, /pendingRelayModelId=''/);
+  assert.match(bindBlock, /e\.status===409 && e\.action==='rotate_required'/);
+  assert.match(bindBlock, /bindCatsBot\(botUid, botName, button, \{\.\.\.options, confirm:false, restoreText, rotateRelayKey:true\}\)/);
+});
+
 test('CatsCo Chat preserves scroll position while reading history', () => {
   assert.match(dashboardHtml, /let catsScrollPinnedToBottom = true/);
   assert.match(dashboardHtml, /let catsMessagesCache = \[\]/);

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS,
   calculatePromptBudgetTokens,
+  calculateSummaryBudgetTokens,
   resolveModelContextWindow,
 } from '../src/utils/model-context-window';
 
@@ -86,4 +87,12 @@ test('tiny explicit context windows never produce a prompt budget beyond the win
   assert.equal(resolved.promptBudgetTokens, 1);
   assert.equal(resolved.promptBudgetTokens + resolved.maxOutputTokens <= resolved.contextWindowTokens, true);
   assert.equal(resolved.summaryBudgetTokens, 1);
+});
+
+test('summary content budget reserves room for summary wrapper on small prompt budgets', () => {
+  const promptBudget = 30_000;
+  const summaryBudget = calculateSummaryBudgetTokens(promptBudget);
+
+  assert.ok(summaryBudget > 0);
+  assert.ok(summaryBudget < promptBudget);
 });

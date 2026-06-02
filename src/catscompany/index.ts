@@ -540,6 +540,12 @@ export class CatsCompanyBot {
     });
 
     const stopTypingHeartbeat = this.startTypingHeartbeat(topic);
+    let typingHeartbeatStopped = false;
+    const stopTypingHeartbeatOnce = () => {
+      if (typingHeartbeatStopped) return;
+      typingHeartbeatStopped = true;
+      stopTypingHeartbeat();
+    };
 
     try {
       const result = await session.handleRuntimeObservation(text, {
@@ -565,9 +571,10 @@ export class CatsCompanyBot {
           Logger.warning(`子智能体结果回复发送失败: ${err.message}`);
         }
       }
+      stopTypingHeartbeatOnce();
       await this.drainMessageQueue(sessionKey);
     } finally {
-      stopTypingHeartbeat();
+      stopTypingHeartbeatOnce();
       this.clearPendingAnswerBySession(sessionKey);
     }
   }

@@ -1,6 +1,7 @@
 import { describe, test, beforeEach } from 'node:test';
 import * as assert from 'node:assert';
 import { ContextCompressor, contentToString, messagesToConversationText, parseCompactSummary, buildCompactSystemPrompt, truncateForSummary } from '../src/core/context-compressor';
+import { estimateTokens } from '../src/core/token-estimator';
 import type { Message } from '../src/types';
 import type { AIService } from '../src/utils/ai-service';
 
@@ -104,6 +105,13 @@ describe('messagesToConversationText', () => {
     const result = truncateForSummary(msgs);
     assert.ok(result.includes('...[共 1000 字符]'), '应包含截断标记');
     assert.ok(!result.includes('中'.repeat(900)), '截断后不应包含900个字符');
+  });
+
+  test('摘要输入中单条超大消息按 token 预算截断', () => {
+    const result = truncateForSummary([user('中'.repeat(1000))], 20);
+
+    assert.ok(estimateTokens(result) <= 20, `summary should fit budget, got ${estimateTokens(result)}`);
+    assert.ok(!result.includes('中'.repeat(100)), '不应保留固定 500 字符的大段内容');
   });
 });
 

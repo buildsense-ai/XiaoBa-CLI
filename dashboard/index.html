@@ -8464,14 +8464,23 @@
         btn.disabled = true;
         btn.textContent = '绑定中...';
       }
-      setCatsAction(`正在绑定 ${name} 并启动 CatsCompany connector...`);
+      const setupRelayModel=shouldSetupRelayOnCatsSetup();
+      setCatsAction(setupRelayModel?`正在确认中转模型、绑定 ${name} 并启动 connector...`:`正在绑定 ${name} 并按当前自定义模型启动 connector...`);
 
       try {
         const data = await parseCatsResponse(await fetch(API + '/api/cats/bind-bot', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...getCatsEndpointFields(), botUid }),
+          body: JSON.stringify({
+            ...getCatsEndpointFields(),
+            botUid,
+            setupRelayModel,
+            relayModelId:setupRelayModel ? (relayModelIdForSetup()||undefined) : undefined,
+            rotateRelayKey:Boolean(options?.rotateRelayKey),
+          }),
         }));
+        pendingStartupSource='';
+        pendingRelayModelId='';
         catsState = {
           ...catsState,
           ...data,
@@ -8485,13 +8494,24 @@
         };
         closeBotSelector();
         await fetchStatus();
-        await fetchCatsStatus();
+        await fetchCatsStatus({priority:true});
         renderCatsStatus();
-        setCatsAction(data.message || `已绑定 ${name}。可以直接开始对话。`);
+        const warningText=catsSetupWarningText(data);
+        const readyMessage=data.message || `已绑定 ${name}。可以直接开始对话。`;
+        setCatsAction(warningText?readyMessage+' 但有提示：'+warningText:readyMessage);
         pulsePetState('success', '已绑定', 1800);
         await loadCatsMessages(true, { reset: true, forceBottom: true });
       } catch (e) {
-        setCatsAction('绑定失败: ' + e.message, true);
+        if(e.status===409 && e.action==='rotate_required'){
+          const ok=confirm('你的 CatsCo 中转 Key 已存在，但当前无法读取明文。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');
+          if(ok){
+            await bindCatsBot(botUid, botName, button, {...options, confirm:false, restoreText, rotateRelayKey:true});
+            return;
+          }
+          setCatsAction('已取消。你也可以在 CatsCompany 中转站页面复制现有配置后手动填写。', true);
+        }else{
+          setCatsAction('绑定失败: ' + formatDashboardApiError(e,'/api/cats/bind-bot'), true);
+        }
       } finally {
         if (btn) {
           btn.disabled = false;
