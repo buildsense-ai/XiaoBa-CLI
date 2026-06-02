@@ -4,95 +4,77 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 const dashboardHtml = readFileSync(join(process.cwd(), 'dashboard/index.html'), 'utf-8');
+const servicesPageHtml = dashboardHtml.match(/<div class="page" id="page-services">[\s\S]*?<div class="page" id="page-companion">/)?.[0] || '';
 
-function countOccurrences(text: string, pattern: RegExp): number {
-  return [...text.matchAll(pattern)].length;
-}
-
-test('dashboard settings page uses model source before Runtime Profile', () => {
-  assert.match(dashboardHtml, /模型来源与 Runtime Profile/);
-  assert.match(dashboardHtml, /id="model-source-panel"/);
-  assert.match(dashboardHtml, /function fetchDashboardSettings\(\)/);
-  assert.match(dashboardHtml, /\/api\/settings/);
-  assert.match(dashboardHtml, /id="settings-setup-panel"/);
-  assert.match(dashboardHtml, /先完成关键配置/);
-  assert.match(dashboardHtml, /CatsCo 中转模型/);
-  assert.match(dashboardHtml, /自定义模型（手动配置）/);
-  assert.match(dashboardHtml, /启用 CatsCo 中转/);
-  assert.match(dashboardHtml, /DeepSeek V4 Flash/);
-  assert.match(dashboardHtml, /GLM 5\.1/);
-  assert.match(dashboardHtml, /Anthropic SDK/);
+test('Agent Hub keeps connector controls and third-party model config without duplicate runtime panels', () => {
+  assert.match(servicesPageHtml, /Agent Hub/);
+  assert.match(servicesPageHtml, /运行、连接与设置/);
+  assert.match(servicesPageHtml, /id="services-grid"/);
+  assert.match(servicesPageHtml, /自定义模型/);
+  assert.match(servicesPageHtml, /id="custom-model-toggle-btn"/);
+  assert.match(dashboardHtml, /function toggleCustomModelSettings\(\)/);
+  assert.match(servicesPageHtml, /id="model-source-panel"/);
+  assert.match(dashboardHtml, /自定义模型（第三方）/);
+  assert.match(dashboardHtml, /保存自定义模型/);
+  assert.match(dashboardHtml, /凭证仅保存到本地 \.env/);
+  assert.match(dashboardHtml, /function markServiceConfigDirty\(name\)/);
+  assert.match(dashboardHtml, /async function saveServiceConfig\(name\)/);
+  assert.match(dashboardHtml, /function cancelServiceConfig\(name\)/);
   assert.match(dashboardHtml, /function enableCatsRelayModel\(modelId, options=\{\}\)/);
   assert.match(dashboardHtml, /let relayModelApplyInFlight=false/);
   assert.match(dashboardHtml, /function setRelayModelApplyBusy\(busy\)/);
   assert.match(dashboardHtml, /data-relay-model-id/);
   assert.match(dashboardHtml, /data-relay-model-context/);
   assert.match(dashboardHtml, /function enableCatsRelayModelFromButton\(button, options=\{\}\)/);
-  assert.match(dashboardHtml, /context=button\.dataset\.relayModelContext\|\|'settings'/);
+  assert.match(dashboardHtml, /const context=button\?\.dataset\?\.relayModelContext \|\| 'settings'/);
   assert.match(dashboardHtml, /button\.disabled=relayActionBusy\(\) \|\| \(context!=='chat' && !isCatsLoggedIn\(\)\)/);
   assert.match(dashboardHtml, /activateConnector:options\.activateConnector!==false/);
   assert.match(dashboardHtml, /\/api\/cats\/relay\/model-config\/apply/);
-  assert.match(dashboardHtml, /http:\/\/127\.0\.0\.1:3800/);
-  assert.match(dashboardHtml, /无法连接本地 CatsCo Dashboard API/);
-  assert.match(dashboardHtml, /访问凭证只保存 presence，不会回显/);
-  assert.match(dashboardHtml, /保存并启用自定义模型？访问凭证会写入本地 \.env，仅用于本机 runtime。/);
-  assert.match(dashboardHtml, /Runtime Profile 状态/);
-  assert.match(dashboardHtml, /受控编辑/);
-  assert.match(dashboardHtml, /config-group-title-main/);
-  assert.match(dashboardHtml, /config-group-title-actions/);
-  assert.match(dashboardHtml, /保存后新 session 生效/);
-  assert.match(dashboardHtml, /title==='CatsCo Chat'\?'运行中':'完成'/);
-  assert.match(dashboardHtml, /title==='CatsCo Chat'\?'未启动':'需处理'/);
-  assert.doesNotMatch(dashboardHtml, /status==='warning'\?'注意'/);
-  assert.match(dashboardHtml, /当前已运行 session 不会热更新/);
+  assert.match(dashboardHtml, /service-config/);
+  assert.match(dashboardHtml, /CatsCo 中转模型在 CatsCo 页面选择/);
+  assert.doesNotMatch(servicesPageHtml, /模型来源与 Runtime Profile/);
+  assert.doesNotMatch(servicesPageHtml, /id="settings-setup-panel"/);
+  assert.doesNotMatch(servicesPageHtml, /先完成关键配置/);
+  assert.doesNotMatch(servicesPageHtml, /启动前检查/);
+  assert.doesNotMatch(servicesPageHtml, /Diagnostics/);
+  assert.doesNotMatch(servicesPageHtml, /Runtime Profile 状态/);
+  assert.doesNotMatch(servicesPageHtml, /受控编辑/);
+  assert.doesNotMatch(servicesPageHtml, /id="env-config-details"/);
+  assert.doesNotMatch(servicesPageHtml, /id="save-config-btn"/);
+  assert.doesNotMatch(servicesPageHtml, /id="config-panel"/);
+  assert.doesNotMatch(dashboardHtml, /function setupEnvConfigLazyLoad\(\)/);
   assert.doesNotMatch(dashboardHtml, /escapeJsString/);
   assert.doesNotMatch(dashboardHtml, /buildsense\.asia/i);
 });
 
-test('dashboard settings collapse state survives refresh-oriented rerenders', () => {
-  assert.match(dashboardHtml, /const settingsCollapseState=\{/);
-  assert.match(dashboardHtml, /function toggleSettingsGroup\(id, key\)/);
-  assert.match(dashboardHtml, /modelSource:true/);
-  assert.match(dashboardHtml, /settingsCollapsedClass\('modelSource', false\)/);
-  assert.match(dashboardHtml, /settingsCollapsedClass\('runtimeStatus', valid\)/);
-  assert.match(dashboardHtml, /settingsCollapsedClass\('runtimeEditor', true\)/);
-  assert.match(dashboardHtml, /function shouldDeferRuntimeConfigRender\(\)/);
-  assert.match(dashboardHtml, /editor\.contains\(active\) && active\.matches\('input, select, textarea'\)/);
-  assert.match(dashboardHtml, /fetchRuntimeConfig\(\{force:true\}\)/);
-  assert.match(dashboardHtml, /飞书（高级）/);
-  assert.match(dashboardHtml, /微信（高级）/);
+test('Companion Hub presents pet growth, skill search, and action preview', () => {
+  assert.match(dashboardHtml, /Companion Hub/);
+  assert.match(dashboardHtml, /伙伴 <span class="badge">动作库 22 帧<\/span>/);
+  assert.match(dashboardHtml, /CatsCo Companion/);
+  assert.match(dashboardHtml, /id="companion-pet-bubble"/);
+  assert.match(dashboardHtml, /下一解锁/);
+  assert.match(dashboardHtml, /Lv\.2 Skill 气泡/);
+  assert.match(dashboardHtml, /今日成长/);
+  assert.match(dashboardHtml, /能力调用/);
+  assert.match(dashboardHtml, /最近工作/);
+  assert.match(dashboardHtml, /当前动作库/);
+  assert.match(dashboardHtml, /function previewPetAction/);
+  assert.match(dashboardHtml, /previewPetState/);
+  assert.match(dashboardHtml, /restorePetRealState/);
+  assert.match(dashboardHtml, /shouldInterruptPetPreview/);
+  assert.match(dashboardHtml, /id="skillhub-search-input"/);
+  assert.match(dashboardHtml, /发现技能/);
+  assert.match(dashboardHtml, /已安装技能/);
+  assert.doesNotMatch(dashboardHtml, /Token 经验/);
+  assert.doesNotMatch(dashboardHtml, /id="pet-token-xp"/);
 });
 
-test('run page is driven by readiness instead of raw diagnostics cards', () => {
-  assert.match(dashboardHtml, /id="run-summary"/);
-  assert.match(dashboardHtml, /id="readiness-grid"/);
-  assert.match(dashboardHtml, /fetch\(API\+'\/api\/readiness'\)/);
-  assert.match(dashboardHtml, /function renderReadiness\(data\)/);
-  assert.match(dashboardHtml, /启动前检查未通过/);
-  assert.match(dashboardHtml, /模型来源、CatsCo Chat、Runtime Profile 和 Skills/);
-  assert.match(dashboardHtml, /<details class="run-details" open>\s*<summary><span>启动前检查<\/span><span class="tag">readiness<\/span><\/summary>/);
-  assert.match(dashboardHtml, /<summary><span>Diagnostics<\/span><span class="tag">version \/ host \/ paths<\/span><\/summary>/);
-  assert.doesNotMatch(dashboardHtml, /<summary><span>Service details<\/span><span class="tag">connector<\/span><\/summary>/);
-  assert.doesNotMatch(dashboardHtml, /<div class="section-title">系统状态<\/div>/);
-  assert.doesNotMatch(dashboardHtml, /<div class="label">Provider<\/div>/);
-});
-
-test('raw env editing is explicitly advanced and confirmed', () => {
-  assert.match(
-    dashboardHtml,
-    /<details class="config-section settings-advanced-shell" id="env-config-details">[\s\S]*本地环境变量（高级诊断）[\s\S]*id="config-panel"/,
-  );
-  assert.match(dashboardHtml, /展开后加载 \.env 配置/);
-  assert.match(dashboardHtml, /function setupEnvConfigLazyLoad\(\)/);
-  assert.match(dashboardHtml, /保存本地环境变量配置？这会写入项目 \.env，可能包含访问凭证、token 或 secret。/);
-  assert.match(dashboardHtml, /访问凭证、token、secret 不会写入 Runtime Profile/);
-  assert.doesNotMatch(dashboardHtml, /备用模型兼容配置|GAUZ_LLM_BACKUP_/);
-  assert.equal(countOccurrences(dashboardHtml, /id="config-saved"/g), 1);
-  assert.equal(countOccurrences(dashboardHtml, /id="save-config-btn"/g), 1);
-
-  const initBlock = dashboardHtml.match(/\/\/ Init[\s\S]*?<\/script>/)?.[0] || '';
-  assert.match(initBlock, /setupEnvConfigLazyLoad\(\)/);
-  assert.doesNotMatch(initBlock, /fetchConfig\(\)/);
+test('settings refresh path follows simplified Agent Hub sections', () => {
+  assert.match(dashboardHtml, /async function refreshSettingsPage\(\)/);
+  assert.match(dashboardHtml, /Promise\.all\(\[fetchDashboardSettings\(\), fetchReadiness\(\), fetchConfig\(\)\]\)/);
+  assert.match(dashboardHtml, /fetchDashboardSettings\(\),fetchStatus\(\),fetchReadiness\(\),fetchCatsStatus\(\)/);
+  assert.match(dashboardHtml, /if\(appStatusSnapshot && Array\.isArray\(appStatusSnapshot\.services\) && !shouldDeferServiceRender\(\)\)renderServices\(appStatusSnapshot\.services\);/);
+  assert.doesNotMatch(dashboardHtml, /fetchDashboardSettings\(\),fetchStatus\(\),fetchRuntimeConfig\(\),fetchReadiness\(\),fetchCatsStatus\(\)/);
 });
 
 test('dashboard IA no longer exposes old temporary labels in primary entries', () => {
@@ -150,12 +132,16 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.doesNotMatch(dashboardHtml, /末尾 \+/);
 });
 
-test('custom model save refreshes readiness before Chat remains locked', () => {
+test('custom model save refreshes simplified state before Chat remains locked', () => {
   assert.match(
+    dashboardHtml,
+    /fetchDashboardSettings\(\),fetchStatus\(\),fetchReadiness\(\),fetchCatsStatus\(\)/,
+  );
+  assert.doesNotMatch(
     dashboardHtml,
     /fetchDashboardSettings\(\),fetchStatus\(\),fetchRuntimeConfig\(\),fetchReadiness\(\),fetchCatsStatus\(\)/,
   );
-  assert.match(dashboardHtml, /已保存，正在刷新启动状态/);
+  assert.match(dashboardHtml, /已保存。新 session 或下一次启动 connector 后生效。/);
 });
 
 test('CatsCo Chat setup refreshes readiness before unlocking the composer', () => {

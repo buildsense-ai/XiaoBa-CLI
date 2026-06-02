@@ -2,13 +2,32 @@ const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog } = require
 const path = require('path');
 const fs = require('fs');
 
-const DASHBOARD_PORT = 3800;
+const DASHBOARD_PORT = resolveDashboardPort(process.env.XIAOBA_DASHBOARD_PORT);
 let mainWindow = null;
 let tray = null;
 let autoUpdater = null;
 const REFRESHABLE_BUNDLED_SKILLS = new Set([]);
 const RETIRED_BUNDLED_SKILLS = new Set(['advanced-reader', 'vision-analysis']);
 const SKILL_SYNC_MARKER = '.xiaoba-bundled-skill.json';
+
+applyConfiguredUserDataPath();
+
+function resolveDashboardPort(value) {
+  const text = String(value || '').trim();
+  if (!/^\d+$/.test(text)) return 3800;
+  const port = Number.parseInt(text, 10);
+  if (port < 1 || port > 65535) return 3800;
+  return port;
+}
+
+function applyConfiguredUserDataPath() {
+  const configuredUserDataDir = String(process.env.XIAOBA_ELECTRON_USER_DATA_DIR || '').trim();
+  if (!configuredUserDataDir) return;
+
+  const resolvedUserDataDir = path.resolve(configuredUserDataDir);
+  fs.mkdirSync(resolvedUserDataDir, { recursive: true });
+  app.setPath('userData', resolvedUserDataDir);
+}
 
 // 闂佽绻愮换鎴犳崲閸℃稒鍎婃い鏍仜缁€澶愭煟濡厧鍔嬬紒?electron-updater闂備焦瀵х粙鎴︽偋閸℃哎浜归柡灞诲劜閻掕顭块懜鐢点€掔紒鈧?
 try {

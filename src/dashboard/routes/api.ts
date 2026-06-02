@@ -34,6 +34,7 @@ import { createCatsCoLocalConfigService } from '../../catscompany/local-config';
 import { resolveCatsCoRuntimeConfig } from '../../catscompany/runtime-config';
 import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-grants';
 import { registerSkillHubRoutes } from './skillhub';
+import { registerPetRoutes } from './pet';
 import { SkillHubService } from '../../skillhub/service';
 import {
   computeLocalSkillContentHash,
@@ -1332,6 +1333,7 @@ function persistCatsUserSession(state: CatsAuthState, login: any): void {
 export function createApiRouter(serviceManager: ServiceManager, updateController?: UpdateController): Router {
   const router = Router();
   registerSkillHubRoutes(router);
+  registerPetRoutes(router);
 
   // ==================== 总览 ====================
 

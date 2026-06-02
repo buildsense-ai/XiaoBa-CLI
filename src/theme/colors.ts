@@ -36,16 +36,16 @@ export const styles = {
   highlight: (text: string) => theme.gold(text),
 
   // 成功消息
-  success: (text: string) => theme.success(`✓ ${text}`),
+  success: (text: string) => theme.success(`[OK] ${text}`),
 
   // 错误消息
-  error: (text: string) => theme.error(`✗ ${text}`),
+  error: (text: string) => theme.error(`[ERROR] ${text}`),
 
   // 警告消息
-  warning: (text: string) => theme.warning(`⚠ ${text}`),
+  warning: (text: string) => theme.warning(`[WARN] ${text}`),
 
   // 信息消息
-  info: (text: string) => theme.info(`ℹ ${text}`),
+  info: (text: string) => theme.info(`[info] ${text}`),
 
   // 品牌标识 - 渐变效果
   brand: (text: string) => theme.gold.bold(text),
