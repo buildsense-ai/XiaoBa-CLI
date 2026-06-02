@@ -10,6 +10,7 @@ function createProcessHarness() {
   const runtimeObservations: Array<{ text: string; options: any }> = [];
   const sentTexts: Array<{ topic: string; text: string }> = [];
   const replies: Array<{ topic: string; text: string }> = [];
+  const sentTyping: Array<{ topic: string }> = [];
   const sentThinking: Array<{ topic: string; text: string; metadata?: any }> = [];
   const toolUses: Array<{ topic: string; toolUseId: string; name: string; input: any; metadata?: any }> = [];
   const toolResults: Array<{ topic: string; toolUseId: string; content: string; isError?: boolean; metadata?: any }> = [];
@@ -35,7 +36,9 @@ function createProcessHarness() {
       downloads.push({ url, fileName });
       return `C:\\tmp\\catsco-test\\${fileName}`;
     },
-    sendTyping: () => undefined,
+    sendTyping: (topic: string) => {
+      sentTyping.push({ topic });
+    },
     reply: async (topic: string, text: string) => {
       replies.push({ topic, text });
     },
@@ -68,7 +71,7 @@ function createProcessHarness() {
     ];
   };
 
-  return { bot, downloads, multimodalCalls, handledTurns, runtimeObservations, sentTexts, replies, sentThinking, toolUses, toolResults, session };
+  return { bot, downloads, multimodalCalls, handledTurns, runtimeObservations, sentTexts, replies, sentTyping, sentThinking, toolUses, toolResults, session };
 }
 
 describe('CatsCo content blocks', () => {
@@ -278,6 +281,23 @@ describe('CatsCo content blocks', () => {
     assert.deepStrictEqual(
       sentThinking.map(({ topic, text }) => ({ topic, text })),
       [{ topic: 'p2p_1_2', text: '排队压缩状态' }],
+    );
+  });
+
+  test('keeps CatsCompany typing visible while a turn is processing', async () => {
+    const { bot, sentTyping } = createProcessHarness();
+
+    const stopTyping = (bot as any).startTypingHeartbeat('p2p_1_2', 10);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    stopTyping();
+    const countAfterStop = sentTyping.length;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    assert.ok(countAfterStop >= 2);
+    assert.strictEqual(sentTyping.length, countAfterStop);
+    assert.deepStrictEqual(
+      sentTyping.map(({ topic }) => topic),
+      Array(sentTyping.length).fill('p2p_1_2'),
     );
   });
 
