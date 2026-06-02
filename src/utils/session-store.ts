@@ -5,6 +5,7 @@ import { Logger } from './logger';
 
 const SESSIONS_DIR = path.resolve(process.cwd(), 'data', 'sessions');
 const SESSION_STATE_DIR = path.resolve(process.cwd(), 'data', 'session-state');
+const TOOL_RESULT_SUMMARY_MAX_CHARS = 800;
 
 function ensureDir(): void {
   if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -30,21 +31,48 @@ function hasHiddenProviderReplay(message: Message): boolean {
     ));
 }
 
-function providerReplaySummary(message: Message): string {
+function contentToPersistenceText(content: Message['content']): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map(block => block.type === 'text' ? block.text : '[图片]').join('');
+}
+
+function truncatePersistenceText(text: string, maxChars = TOOL_RESULT_SUMMARY_MAX_CHARS): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 28))}\n...[共 ${text.length} 字符]`;
+}
+
+function collectToolResultSummaries(messages: Message[]): Map<string, string> {
+  const summaries = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role !== 'tool' || !message.tool_call_id) continue;
+    const text = truncatePersistenceText(contentToPersistenceText(message.content).trim());
+    const name = message.name || 'unknown';
+    summaries.set(message.tool_call_id, `[工具 ${name}] ${text || '(无文本输出)'}`);
+  }
+  return summaries;
+}
+
+function providerReplaySummary(message: Message, toolResultSummaries: Map<string, string>): string {
   const publicText = typeof message.content === 'string' ? message.content.trim() : '';
   const toolNames = (message.tool_calls || [])
     .map(toolCall => toolCall.function?.name)
     .filter(Boolean);
+  const toolSummaries = (message.tool_calls || [])
+    .map(toolCall => toolResultSummaries.get(toolCall.id))
+    .filter((summary): summary is string => Boolean(summary));
   const suffix = toolNames.length > 0
     ? ` 工具调用: ${toolNames.join(', ')}。`
     : '';
   return [
     publicText,
     `[历史工具调用已完成；provider replay 隐藏内容未写入本地会话。${suffix}]`,
+    toolSummaries.length > 0 ? `[历史工具结果摘要]\n${toolSummaries.join('\n')}` : '',
   ].filter(Boolean).join('\n');
 }
 
 function sanitizeForPersistence(messages: Message[]): Message[] {
+  const toolResultSummaries = collectToolResultSummaries(messages);
   const hiddenReplayToolCallIds = new Set<string>();
   const durable: Message[] = [];
 
@@ -68,7 +96,7 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
       }
       durable.push({
         ...message,
-        content: providerReplaySummary(message),
+        content: providerReplaySummary(message, toolResultSummaries),
         tool_calls: undefined,
         providerContent: undefined,
       });

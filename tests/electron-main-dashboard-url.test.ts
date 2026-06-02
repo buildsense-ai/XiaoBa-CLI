@@ -28,6 +28,16 @@ test('electron uses Chinese menus with close-to-tray control', () => {
   assert.doesNotMatch(electronMain, /label: 'Help'/);
 });
 
+test('electron changes cwd to userData before reading close-to-tray menu preference', () => {
+  const chdirIndex = electronMain.indexOf('process.chdir(userDataPath)');
+  const menuCallIndex = electronMain.indexOf('createApplicationMenu();');
+
+  assert.notEqual(chdirIndex, -1);
+  assert.notEqual(menuCallIndex, -1);
+  assert.equal(chdirIndex < menuCallIndex, true);
+  assert.match(electronMain, /close-to-tray preferences are read from process\.cwd\(\)\/\.xiaoba\/catsco\.json/);
+});
+
 test('electron tray uses app icons and notifies after background hide', () => {
   assert.match(electronMain, /function createTrayIcon\(\)/);
   assert.match(electronMain, /build-resources\/icon\.ico/);

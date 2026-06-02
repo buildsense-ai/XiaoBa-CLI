@@ -416,6 +416,7 @@ async function startServer() {
 
   // 闂佽崵濮崇粈浣规櫠娴犲鍋柛鈩冾殢閸熷懘鏌曟径鍫濃偓妤冪矙婵犲洦鐓熼柍鍝勶工閺嬫稓绱撳鍛ч柡浣哥Ч瀹曞ジ鎮㈢亸浣稿緧闂備礁鎲￠悧鏇㈠箠鎼淬劌绠栨俊銈呮噺閸嬨劑鏌嶉搹瑙勭erData闂佽瀛╃粙鎺曟懌闂佸搫鍊风欢姘跺箖娴犲惟闁挎洍鍋撻柣鎾存礋閺屸剝鎷呴崫鍕垫毉閻庤鎸风欢姘跺极?
   const userDataPath = app.getPath('userData');
+  // Keep this before createApplicationMenu(): close-to-tray preferences are read from process.cwd()/.xiaoba/catsco.json.
   process.chdir(userDataPath);
 
   // 濠电姷顣介埀顒€鍟块埀顒€缍婇幃妯荤箙缁茬尃rData闂傚倷鐒﹁ぐ鍐嫉椤掑嫭鍎夐柛娑欐綑鐎?env闂備焦瀵х粙鎴炵附閺冨倸鍨濋柣鏇犵％p闂傚倷鐒﹁ぐ鍐嚐椤栫倛鍥蓟閵夈儳顦?env.example

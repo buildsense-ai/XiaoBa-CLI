@@ -184,9 +184,9 @@ describe('AgentSession lifecycle', () => {
     assert.equal(restored.some((message: any) => message.role === 'tool'), false);
     assert.equal(restored.some((message: any) => message.tool_calls?.length), false);
     assert.match(String(restored[1]?.content || ''), /provider replay 隐藏内容未写入本地会话/);
+    assert.match(String(restored[1]?.content || ''), /private tool result/);
     assert.doesNotMatch(raw, /hidden chain text/);
     assert.doesNotMatch(raw, /sig_secret/);
-    assert.doesNotMatch(raw, /private tool result/);
   });
 
   test('loading legacy sessions migrates provider replay hidden thinking off disk', async () => {
@@ -216,9 +216,9 @@ describe('AgentSession lifecycle', () => {
 
     assert.equal(restored.some((message: any) => Array.isArray(message.providerContent)), false);
     assert.equal(restored.some((message: any) => message.role === 'tool'), false);
+    assert.match(migratedRaw, /legacy tool result/);
     assert.doesNotMatch(migratedRaw, /legacy hidden chain/);
     assert.doesNotMatch(migratedRaw, /legacy_sig/);
-    assert.doesNotMatch(migratedRaw, /legacy tool result/);
   });
 
   test('handleMessage persists each completed turn before cleanup', async () => {
