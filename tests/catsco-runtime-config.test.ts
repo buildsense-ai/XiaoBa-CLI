@@ -253,4 +253,34 @@ describe('CatsCo runtime config resolver', () => {
     assert.equal(resolved.envOverlay.CATSCO_API_KEY, undefined);
     assert.equal(resolved.envOverlay.CATSCO_BOT_UID, undefined);
   });
+
+  test('can migrate legacy env-only bot binding for dashboard startup', () => {
+    const resolved = resolveCatsCoRuntimeConfig({
+      runtimeRoot: tempDir,
+      env: {
+        CATSCO_SERVER_URL: 'wss://env.example/v0/channels',
+        CATSCO_HTTP_BASE_URL: 'https://env.example',
+        CATSCO_USER_TOKEN: 'env-user-token',
+        CATSCO_USER_UID: 'user-env',
+        CATSCO_USER_NAME: 'env-user',
+        CATSCO_BOT_UID: 'bot-env',
+        CATSCO_API_KEY: 'cc_env_api_key',
+      },
+      migrateLegacyEnvBinding: true,
+    });
+
+    assert.equal(resolved.bodyConfigured, true);
+    assert.equal(resolved.connector?.apiKey, 'cc_env_api_key');
+    assert.equal(resolved.connector?.bodyId?.startsWith('device_'), true);
+    assert.equal(resolved.auth.botUid, 'bot-env');
+    assert.equal(resolved.envOverlay.CATSCO_API_KEY, 'cc_env_api_key');
+    assert.equal(resolved.envOverlay.CATSCOMPANY_BODY_ID?.startsWith('device_'), true);
+
+    const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
+    const config = service.load();
+    assert.equal(config.currentBot?.uid, 'bot-env');
+    assert.equal(config.currentBot?.boundByUserUid, 'user-env');
+    assert.equal(config.currentBot?.bindingSource, 'legacy-env-migration');
+    assert.equal(Boolean(config.device?.bodyId), true);
+  });
 });
