@@ -126,6 +126,10 @@ export class ConfigManager {
       process.env.GAUZ_LLM_MAX_OUTPUT_TOKENS,
       process.env.GAUZ_LLM_MAX_TOKENS,
     );
+    const contextWindowTokens = this.parsePositiveIntegerEnv(
+      process.env.GAUZ_LLM_CONTEXT_WINDOW_TOKENS,
+      process.env.GAUZ_LLM_CONTEXT_TOKENS,
+    );
 
     if (provider === 'openai' || provider === 'anthropic') {
       override.provider = provider;
@@ -141,6 +145,9 @@ export class ConfigManager {
     }
     if (maxTokens !== undefined) {
       override.maxTokens = maxTokens;
+    }
+    if (contextWindowTokens !== undefined) {
+      override.contextWindowTokens = contextWindowTokens;
     }
 
     return override;

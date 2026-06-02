@@ -6,6 +6,7 @@ import { ContextCompressor } from './context-compressor';
 export interface ContextWindowManagerOptions {
   maxContextTokens?: number;
   compactionThreshold?: number;
+  summaryContentBudget?: number;
 }
 
 export interface CompactIfNeededOptions {

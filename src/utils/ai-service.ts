@@ -6,6 +6,7 @@ import { AnthropicProvider } from '../providers/anthropic-provider';
 import { OpenAIProvider } from '../providers/openai-provider';
 import { Logger } from './logger';
 import { isPrimaryModelToolCallingCapable } from './model-capabilities';
+import { resolveModelContextWindow } from './model-context-window';
 
 /**
  * AI 服务 - 统一的 AI 调用入口
@@ -23,11 +24,15 @@ export class AIService {
   private provider: AIProvider;
 
   constructor(overrides?: Partial<ChatConfig>) {
-    this.config = this.withResolvedProvider({
+    this.config = this.withResolvedContextWindow(this.withResolvedProvider({
       ...ConfigManager.getConfig(),
       ...(overrides || {})
-    });
+    }));
     this.provider = this.createProvider(this.config);
+  }
+
+  getConfig(): ChatConfig {
+    return { ...this.config };
   }
 
   /**
@@ -52,6 +57,15 @@ export class AIService {
     return {
       ...config,
       provider: this.resolveProvider(config),
+    };
+  }
+
+  private withResolvedContextWindow(config: ChatConfig): ChatConfig {
+    const contextWindowTokens = config.contextWindowTokens
+      ?? resolveModelContextWindow(config).contextWindowTokens;
+    return {
+      ...config,
+      contextWindowTokens,
     };
   }
 

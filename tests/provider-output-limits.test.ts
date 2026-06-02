@@ -46,3 +46,23 @@ test('resolveMaxTokens keeps the conservative default for other providers', () =
     8192,
   );
 });
+
+test('resolveMaxTokens clamps output to a quarter of explicit context windows', () => {
+  assert.equal(
+    resolveMaxTokens({
+      apiUrl: 'https://custom.example.test/anthropic',
+      model: 'tiny-window',
+      maxTokens: 8192,
+      contextWindowTokens: 1024,
+    }),
+    256,
+  );
+  assert.equal(
+    resolveMaxTokens({
+      apiUrl: 'https://relay.catsco.cc/anthropic',
+      model: 'MiniMax-M3',
+      contextWindowTokens: 1_000_000,
+    }),
+    32768,
+  );
+});

@@ -16,6 +16,7 @@ test('relay MiniMax M3 uses a 1M official window with output and estimator reser
   assert.equal(resolved.contextWindowTokens, 1_000_000);
   assert.equal(resolved.maxOutputTokens, 32_768);
   assert.equal(resolved.promptBudgetTokens + resolved.safetyReserveTokens, 1_000_000);
+  assert.equal(resolved.summaryBudgetTokens, 300_000);
   assert.ok(resolved.safetyReserveTokens > resolved.maxOutputTokens, 'reserve must include output tokens and protocol margin');
   assert.ok(resolved.promptBudgetTokens < resolved.contextWindowTokens, 'runtime budget must stay below the official window');
 });
@@ -49,6 +50,7 @@ test('custom models keep the safe default even if the model name resembles a kno
 
   assert.equal(resolved.source, 'custom');
   assert.equal(resolved.contextWindowTokens, CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS);
+  assert.equal(resolved.summaryBudgetTokens, 50_000);
   assert.ok(resolved.promptBudgetTokens < CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS);
 });
 
@@ -82,4 +84,6 @@ test('tiny explicit context windows never produce a prompt budget beyond the win
   assert.equal(resolved.contextWindowTokens, 1024);
   assert.equal(resolved.promptBudgetTokens + resolved.safetyReserveTokens, 1024);
   assert.equal(resolved.promptBudgetTokens, 1);
+  assert.equal(resolved.promptBudgetTokens + resolved.maxOutputTokens <= resolved.contextWindowTokens, true);
+  assert.equal(resolved.summaryBudgetTokens, 1);
 });

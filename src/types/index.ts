@@ -30,6 +30,7 @@ export interface ChatConfig {
   model?: string;
   temperature?: number;
   maxTokens?: number;
+  contextWindowTokens?: number;
   provider?: 'openai' | 'anthropic';
   feishu?: {
     appId?: string;

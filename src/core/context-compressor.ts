@@ -308,15 +308,18 @@ export interface CompactOptions {
 export class ContextCompressor {
   private maxContextTokens: number;
   private compactionThreshold: number;
+  private summaryContentBudget: number;
   private aiService: AIService;
 
   constructor(aiService: AIService, options?: {
     maxContextTokens?: number;
     compactionThreshold?: number;
+    summaryContentBudget?: number;
   }) {
     this.aiService = aiService;
     this.maxContextTokens = options?.maxContextTokens ?? 128000;
     this.compactionThreshold = options?.compactionThreshold ?? 0.7;
+    this.summaryContentBudget = options?.summaryContentBudget ?? SUMMARY_CONTENT_BUDGET;
   }
 
   /**
@@ -372,7 +375,7 @@ export class ContextCompressor {
     }
 
     // 按 token 预算从最新消息往前构建摘要文本
-    const truncated = truncateForSummary(session, SUMMARY_CONTENT_BUDGET);
+    const truncated = truncateForSummary(session, this.summaryContentBudget);
 
     try {
       const summaryMessages: Message[] = [

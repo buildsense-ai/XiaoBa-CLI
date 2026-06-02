@@ -26,7 +26,6 @@ import { SessionLifecycleManager } from './session-lifecycle-manager';
 import { PlanRuntime } from './plan-runtime';
 import { SubAgentManager } from './sub-agent-manager';
 import type { PendingUserInputProvider } from './conversation-runner';
-import { ConfigManager } from '../utils/config';
 import { resolveModelContextWindow } from '../utils/model-context-window';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
@@ -141,12 +140,16 @@ export class AgentSession {
     const type = sessionType || this.extractSessionType(key);
     this.sessionTurnLogger = new SessionTurnLogger(type, key);
     this.turnLogRecorder = new TurnLogRecorder(this.sessionTurnLogger);
-    const contextWindow = resolveModelContextWindow(ConfigManager.getConfigReadonly());
+    const modelConfig = typeof (services.aiService as any).getConfig === 'function'
+      ? (services.aiService as any).getConfig()
+      : {};
+    const contextWindow = resolveModelContextWindow(modelConfig);
     Logger.info(
       `[${key}] 模型上下文: ${contextWindow.label} window=${contextWindow.contextWindowTokens}, promptBudget=${contextWindow.promptBudgetTokens}, reserve=${contextWindow.safetyReserveTokens}`,
     );
     this.contextWindowManager = new ContextWindowManager(services.aiService, {
       maxContextTokens: contextWindow.promptBudgetTokens,
+      summaryContentBudget: contextWindow.summaryBudgetTokens,
     });
     this.skillRuntime = new SessionSkillRuntime(services.skillManager, key);
     this.lifecycleManager = new SessionLifecycleManager({

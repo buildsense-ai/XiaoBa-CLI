@@ -43,9 +43,19 @@ export function estimateMessageTokens(message: Message): number {
   let tokens = 4;
 
   if (message.content) {
-    const content = typeof message.content === 'string' ? message.content :
-      Array.isArray(message.content) ? message.content.map(b => b.type === 'text' ? b.text : '[图片]').join('') : '[图片]';
-    tokens += estimateTokens(content);
+    if (typeof message.content === 'string') {
+      tokens += estimateTokens(message.content);
+    } else if (Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (block.type === 'text') {
+          tokens += estimateTokens(block.text);
+        } else {
+          tokens += estimateImageTokens(block);
+        }
+      }
+    } else {
+      tokens += estimateTokens('[图片]');
+    }
   }
 
   if (message.tool_calls) {
@@ -61,6 +71,13 @@ export function estimateMessageTokens(message: Message): number {
   }
 
   return tokens;
+}
+
+function estimateImageTokens(block: Extract<Message['content'], any[]>[number]): number {
+  if (block?.type !== 'image') return estimateTokens('[图片]');
+  const data = String(block.source?.data || '');
+  if (!data) return estimateTokens('[图片]');
+  return Math.max(estimateTokens('[图片]'), Math.ceil(data.length * 0.125));
 }
 
 /**

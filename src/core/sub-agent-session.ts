@@ -287,6 +287,9 @@ export class SubAgentSession {
 
     // 7. 用 callbacks 捕获进度。这里产生的是 runtime event，不是主 agent 最终结果。
     const callbacks: RunnerCallbacks = {
+      onThinking: (thinking) => {
+        this.emitEvent('agent_progress', thinking);
+      },
       onToolStart: (name) => {
         this.emitEvent('agent_tool_start', `开始执行工具 ${name}`, { toolName: name });
       },

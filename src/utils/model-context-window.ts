@@ -16,12 +16,16 @@ export interface ModelContextWindowResolution {
   promptBudgetTokens: number;
   safetyReserveTokens: number;
   maxOutputTokens: number;
+  summaryBudgetTokens: number;
 }
 
 export const CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 const ESTIMATION_MARGIN_RATIO = 0.06;
 const PROTOCOL_RESERVE_TOKENS = 4_096;
 const MIN_SAFETY_RESERVE_TOKENS = 8_192;
+const MIN_SUMMARY_BUDGET_TOKENS = 50_000;
+const MAX_SUMMARY_BUDGET_TOKENS = 300_000;
+const SUMMARY_BUDGET_RATIO = 0.35;
 
 export const RELAY_MODEL_CONTEXT_WINDOW_SPECS: ModelContextWindowSpec[] = [
   {
@@ -94,11 +98,14 @@ export function isCatsRelayModelConfig(
   config: Pick<ChatConfig, 'apiUrl' | 'model' | 'provider'>,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
+  const apiUrl = String(config.apiUrl || '').trim().toLowerCase();
+  if (apiUrl) {
+    return apiUrl.includes('relay.catsco.cc');
+  }
   const source = String(env.CATSCO_MODEL_SOURCE || '').trim().toLowerCase();
   if (source === 'relay') return true;
   if (source === 'custom') return false;
-  const apiUrl = String(config.apiUrl || '').trim().toLowerCase();
-  return apiUrl.includes('relay.catsco.cc');
+  return false;
 }
 
 export function resolveConfiguredContextWindowTokens(
@@ -109,18 +116,22 @@ export function resolveConfiguredContextWindowTokens(
 }
 
 export function resolveModelContextWindow(
-  config: Pick<ChatConfig, 'apiUrl' | 'model' | 'provider' | 'maxTokens'>,
+  config: Pick<ChatConfig, 'apiUrl' | 'model' | 'provider' | 'maxTokens' | 'contextWindowTokens'>,
   env: NodeJS.ProcessEnv = process.env,
 ): ModelContextWindowResolution {
   const model = String(config.model || '').trim();
-  const explicitWindow = resolveConfiguredContextWindowTokens(env);
+  const explicitWindow = parsePositiveInteger(config.contextWindowTokens) ?? resolveConfiguredContextWindowTokens(env);
   const knownSpec = findKnownModelContextWindowSpec(model);
   const relay = isCatsRelayModelConfig(config, env);
   const contextWindowTokens = explicitWindow
     ?? (relay ? knownSpec?.contextWindowTokens : undefined)
     ?? CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS;
-  const maxOutputTokens = resolveMaxTokens(config as ChatConfig);
+  const maxOutputTokens = resolveMaxTokens({
+    ...config,
+    contextWindowTokens,
+  } as ChatConfig);
   const budget = calculatePromptBudgetTokens(contextWindowTokens, maxOutputTokens);
+  const summaryBudgetTokens = calculateSummaryBudgetTokens(budget.promptBudgetTokens);
 
   return {
     source: explicitWindow ? 'explicit' : relay ? 'relay' : 'custom',
@@ -130,14 +141,23 @@ export function resolveModelContextWindow(
     promptBudgetTokens: budget.promptBudgetTokens,
     safetyReserveTokens: budget.safetyReserveTokens,
     maxOutputTokens,
+    summaryBudgetTokens,
   };
 }
 
 export function resolveModelPromptBudgetTokens(
-  config: Pick<ChatConfig, 'apiUrl' | 'model' | 'provider' | 'maxTokens'>,
+  config: Pick<ChatConfig, 'apiUrl' | 'model' | 'provider' | 'maxTokens' | 'contextWindowTokens'>,
   env: NodeJS.ProcessEnv = process.env,
 ): number {
   return resolveModelContextWindow(config, env).promptBudgetTokens;
+}
+
+export function calculateSummaryBudgetTokens(promptBudgetTokens: number): number {
+  const scaled = Math.floor(promptBudgetTokens * SUMMARY_BUDGET_RATIO);
+  return Math.max(
+    Math.min(MIN_SUMMARY_BUDGET_TOKENS, Math.max(1, promptBudgetTokens)),
+    Math.min(MAX_SUMMARY_BUDGET_TOKENS, scaled),
+  );
 }
 
 export function formatContextWindowTokens(tokens: number | undefined): string {

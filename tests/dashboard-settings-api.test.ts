@@ -264,6 +264,8 @@ describe('dashboard typed settings API', () => {
     assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://api.deepseek.com/v1');
     assert.equal(parsed.GAUZ_LLM_MODEL, 'deepseek-chat');
     assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-custom-secret');
+    assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '128000');
+    assert.equal(parsed.CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS, '128000');
     assert.equal(parsed.CATSCO_RELAY_LLM_API_KEY, 'sk-bf-relay-secret');
     assert.equal(parsed.CATSCO_RELAY_LLM_MODEL, 'MiniMax-M2.7');
   });
@@ -594,11 +596,13 @@ describe('dashboard typed settings API', () => {
       assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
       assert.equal(parsed.GAUZ_LLM_MODEL, 'MiniMax-M2.7');
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-secret-created-once');
+      assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '204800');
       assert.equal(parsed.CATSCO_MODEL_SOURCE, 'relay');
       assert.equal(parsed.CATSCO_RELAY_LLM_PROVIDER, 'anthropic');
       assert.equal(parsed.CATSCO_RELAY_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
       assert.equal(parsed.CATSCO_RELAY_LLM_MODEL, 'MiniMax-M2.7');
       assert.equal(parsed.CATSCO_RELAY_LLM_API_KEY, 'sk-bf-secret-created-once');
+      assert.equal(parsed.CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS, '204800');
       assert.equal(process.env.GAUZ_LLM_PROVIDER, 'anthropic');
 
       const customResponse = await fetch(`${baseUrl}/api/settings`, {
