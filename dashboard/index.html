@@ -6398,7 +6398,9 @@
         await fetchSkillHubDeveloper();
         await searchSkillHub('', true);
       } catch (e) {
-        alert('连接 SkillHub 失败：' + (e.message || String(e)) + '\n\n请先在 CatsCo 页面完成登录。');
+        const message = e.message || String(e);
+        const loginHint = /catsco.*login|required|token|401|登录/i.test(message) ? '\n\n请先在 CatsCo 页面完成登录。' : '';
+        alert('连接 SkillHub 失败：' + message + loginHint);
       }
     }
 
