@@ -39,6 +39,7 @@ export interface CatsCoLocalConfig {
   preferences?: {
     autoConnect?: boolean;
     switchConfirmEnabled?: boolean;
+    closeToTray?: boolean;
   };
   updatedAt?: string;
 }
@@ -498,6 +499,7 @@ export class CatsCoLocalConfigService {
     const next = {
       autoConnect: preferences.autoConnect ?? config.preferences?.autoConnect ?? true,
       switchConfirmEnabled: preferences.switchConfirmEnabled ?? config.preferences?.switchConfirmEnabled ?? true,
+      closeToTray: preferences.closeToTray ?? config.preferences?.closeToTray ?? true,
     };
     this.save({
       ...config,
@@ -544,6 +546,7 @@ export class CatsCoLocalConfigService {
       preferences: {
         autoConnect: config.preferences?.autoConnect ?? true,
         switchConfirmEnabled: config.preferences?.switchConfirmEnabled ?? true,
+        closeToTray: config.preferences?.closeToTray ?? true,
       },
     };
   }
@@ -554,6 +557,7 @@ export class CatsCoLocalConfigService {
       preferences: {
         autoConnect: true,
         switchConfirmEnabled: true,
+        closeToTray: true,
       },
     };
   }

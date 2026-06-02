@@ -215,6 +215,7 @@ export class ServiceManager extends EventEmitter {
       const catsCoRuntime = resolveCatsCoRuntimeConfig({
         runtimeRoot: spawnCwd,
         env: envVars,
+        migrateLegacyEnvBinding: true,
       });
       envVars = {
         ...envVars,

@@ -40,6 +40,7 @@ export interface CatsCoRuntimeConfigOptions {
   env?: NodeJS.ProcessEnv;
   config?: ChatConfig;
   overrides?: Record<string, unknown>;
+  migrateLegacyEnvBinding?: boolean;
 }
 
 function firstNonEmpty(...values: unknown[]): string | undefined {
@@ -89,8 +90,12 @@ export function resolveCatsCoRuntimeConfig(
     ...env,
   };
   const service = createCatsCoLocalConfigService({ runtimeRoot, env: effectiveEnv });
-  const localConfig = service.load();
-  const auth = service.getAuthState(options.overrides || {});
+  let localConfig = service.load();
+  let auth = service.getAuthState(options.overrides || {});
+  if (options.migrateLegacyEnvBinding && migrateLegacyEnvBinding(service, localConfig, auth)) {
+    localConfig = service.load();
+    auth = service.getAuthState(options.overrides || {});
+  }
 
   const explicitServerUrl = firstNonEmpty(
     options.overrides?.serverUrl,
@@ -166,6 +171,29 @@ export function resolveCatsCoRuntimeConfig(
       botUid,
     }, localConfig),
   };
+}
+
+function migrateLegacyEnvBinding(
+  service: ReturnType<typeof createCatsCoLocalConfigService>,
+  localConfig: CatsCoLocalConfig,
+  auth: CatsCoAuthSnapshot,
+): boolean {
+  if (hasConfirmedLocalBotBinding(localConfig, auth.uid)) return false;
+  const userUid = String(auth.uid || '').trim();
+  const token = String(auth.token || '').trim();
+  const botUid = String(auth.botUid || '').trim();
+  const apiKey = String(auth.apiKey || '').trim();
+  if (!userUid || !token || !botUid || !apiKey) return false;
+  if (/^sk-/i.test(apiKey)) return false;
+  service.writeBotBinding(auth, {
+    userUid,
+    username: auth.username,
+    displayName: auth.displayName,
+    botUid,
+    apiKey,
+    bindingSource: 'legacy-env-migration',
+  });
+  return true;
 }
 
 function hasConfirmedLocalBotBinding(localConfig: CatsCoLocalConfig, userUid?: string): boolean {

@@ -1,4 +1,4 @@
-import { Message, ContentBlock, ChatResponse } from '../types';
+import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
 import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { StreamCallbacks } from '../providers/provider';
@@ -20,6 +20,7 @@ import {
   SUBAGENT_TOOL_NAME,
   TRANSIENT_RUNNER_HINT_PREFIX,
 } from './runner-orchestration-policy';
+import { calculateSummaryBudgetTokens, resolveModelPromptBudgetTokens } from '../utils/model-context-window';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -42,13 +43,13 @@ function normalizeToolName(name: string): string {
   return TOOL_NAME_ALIASES[name] ?? name;
 }
 
-const DEFAULT_PROMPT_BUDGET = 120000;
-const ANTHROPIC_PROMPT_BUDGET = 200000;
 const MIN_MESSAGE_BUDGET = 2000;
 const OVERFLOW_REDUCTION_RATIO = 0.6;
 const TRANSIENT_CURRENT_DIRECTORY_PREFIX = '[transient_current_directory]';
 const MAX_EMPTY_MAX_TOKEN_RECOVERIES = 1;
 const EMPTY_MAX_TOKENS_MESSAGE = '模型这轮输出达到了 max_tokens 上限，但没有生成可见回复或工具调用。已保留当前上下文；请回复“继续”，我会从刚才的位置继续推进。';
+export const PROMPT_BUDGET_TRIM_MESSAGE = '当前上下文超过模型窗口，已裁剪较早的历史内容以继续处理。';
+export const PROMPT_TOOLS_DISABLED_MESSAGE = '当前模型上下文不足以加载全部工具，本轮已先按纯文本继续处理。';
 
 /**
  * 对话运行回调
@@ -161,6 +162,7 @@ export class ConversationRunner {
     this.compressor = new ContextCompressor(this.aiService, {
       maxContextTokens: this.maxPromptTokens,
       compactionThreshold: 0.5,
+      summaryContentBudget: calculateSummaryBudgetTokens(this.maxPromptTokens),
     });
   }
 
@@ -194,6 +196,7 @@ export class ConversationRunner {
     let nextPlanNudgeAt = nextPlanNudgeToolCount(0);
     let nextSubagentNudgeAt = nextSubagentNudgeToolCount(0);
     let emptyMaxTokenRecoveries = 0;
+    let notifiedToolBudgetDisabled = false;
 
     while (true) {
       turns++;
@@ -209,9 +212,16 @@ export class ConversationRunner {
           newMessages,
         };
       }
+      const requestTools = this.fitToolsToPromptBudget(activeTools);
+      if (requestTools.length < activeTools.length && !notifiedToolBudgetDisabled) {
+        notifiedToolBudgetDisabled = true;
+        if (callbacks?.onThinking) {
+          await callbacks.onThinking(PROMPT_TOOLS_DISABLED_MESSAGE);
+        }
+      }
 
       if (this.enableCompression) {
-        const toolTokens = estimateToolsTokens(activeTools);
+        const toolTokens = estimateToolsTokens(requestTools);
         const messageTokens = estimateMessagesTokens(messages);
         const totalTokens = messageTokens + toolTokens;
         const usagePercent = Math.round((totalTokens / this.maxPromptTokens) * 100);
@@ -221,28 +231,34 @@ export class ConversationRunner {
         const threshold = this.maxPromptTokens * 0.5;
         if (totalTokens > threshold) {
           Logger.info(`上下文使用率 ${usagePercent}%，触发压缩...`);
+          if (callbacks?.onThinking) {
+            await callbacks.onThinking('上下文较长，正在压缩后继续处理。');
+          }
           const compacted = await this.compressor.compact(messages, {
             signal: this.toolExecutionContext?.abortSignal,
           });
           messages.length = 0;
           messages.push(...compacted);
+          if (callbacks?.onThinking) {
+            await callbacks.onThinking('上下文压缩完成，继续处理。');
+          }
         }
       }
 
       const orchestrationHints: Message[] = [];
       if (turns === 1 && !hasShownInitialOrchestrationHint) {
-        const explicitPlanHint = buildExplicitPlanRequestHintIfUseful(messages, activeTools);
-        const decisionHint = buildInitialDecisionHintIfUseful(messages, activeTools);
+        const explicitPlanHint = buildExplicitPlanRequestHintIfUseful(messages, requestTools);
+        const decisionHint = buildInitialDecisionHintIfUseful(messages, requestTools);
         if (explicitPlanHint) orchestrationHints.push(explicitPlanHint);
         if (decisionHint) orchestrationHints.push(decisionHint);
         hasShownInitialOrchestrationHint = orchestrationHints.length > 0;
       }
-      if (shouldAddPlanSoftNudge(activeTools, turns, executedToolCalls, hasUpdatedPlan || hasRecordedDecision, nextPlanNudgeAt)) {
+      if (shouldAddPlanSoftNudge(requestTools, turns, executedToolCalls, hasUpdatedPlan || hasRecordedDecision, nextPlanNudgeAt)) {
         orchestrationHints.push(buildPlanSoftNudge(turns, executedToolCalls, planSoftNudgeCount));
         planSoftNudgeCount++;
         nextPlanNudgeAt = nextPlanNudgeToolCount(executedToolCalls);
       }
-      if (shouldAddSubagentSoftNudge(activeTools, turns, executedToolCalls, hasSpawnedSubagent || hasRecordedDecision, nextSubagentNudgeAt)) {
+      if (shouldAddSubagentSoftNudge(requestTools, turns, executedToolCalls, hasSpawnedSubagent || hasRecordedDecision, nextSubagentNudgeAt)) {
         orchestrationHints.push(buildSubagentSoftNudge(turns, executedToolCalls, subagentSoftNudgeCount));
         subagentSoftNudgeCount++;
         nextSubagentNudgeAt = nextSubagentNudgeToolCount(executedToolCalls);
@@ -253,14 +269,17 @@ export class ConversationRunner {
         ...orchestrationHints,
       ]);
       nextTurnTransientHints = [];
-      this.ensurePromptBudget(requestMessages, activeTools);
-      this.logProviderMessagesForDebug(requestMessages, activeTools, turns);
+      const promptTrimmed = this.ensurePromptBudget(requestMessages, requestTools);
+      if (promptTrimmed && callbacks?.onThinking) {
+        await callbacks.onThinking(PROMPT_BUDGET_TRIM_MESSAGE);
+      }
+      this.logProviderMessagesForDebug(requestMessages, requestTools, turns);
       const aiStartTime = Date.now();
-      Logger.info(`[${this.sessionLabel}Turn ${turns}] 调用AI推理 (可用工具: ${activeTools.length}个)`);
+      Logger.info(`[${this.sessionLabel}Turn ${turns}] 调用AI推理 (可用工具: ${requestTools.length}个)`);
 
       let response;
       try {
-        response = await this.requestModelResponse(requestMessages, activeTools, callbacks);
+        response = await this.requestModelResponse(requestMessages, requestTools, callbacks);
         const aiDuration = Date.now() - aiStartTime;
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI推理完成，耗时: ${aiDuration}ms`);
       } catch (error: any) {
@@ -359,6 +378,7 @@ export class ConversationRunner {
         role: 'assistant',
         content: response.content,
         tool_calls: response.toolCalls,
+        providerContent: response.providerContent,
       };
       const executionRecords: ToolExecutionRecord[] = [];
       let shouldPauseTurn = false;
@@ -542,6 +562,7 @@ export class ConversationRunner {
     }
 
     const transcriptToolCalls = this.filterToolCallsForTranscript(assistantMsg, transcriptRecords);
+    const providerContent = this.filterProviderContentForTranscript(assistantMsg, transcriptToolCalls);
     const assistant: Message = {
       role: 'assistant',
       content: this.shouldKeepAssistantDraft(assistantMsg, outboundMessages)
@@ -549,6 +570,9 @@ export class ConversationRunner {
         : null,
       ...(transcriptToolCalls?.length
         ? { tool_calls: transcriptToolCalls }
+        : {}),
+      ...(providerContent?.length
+        ? { providerContent }
         : {}),
     };
 
@@ -611,6 +635,31 @@ export class ConversationRunner {
     if (!assistantMsg.tool_calls?.length) return undefined;
     const transcriptToolCallIds = new Set(transcriptRecords.map(record => record.toolCall.id));
     return assistantMsg.tool_calls.filter(toolCall => transcriptToolCallIds.has(toolCall.id));
+  }
+
+  private filterProviderContentForTranscript(
+    assistantMsg: Message,
+    transcriptToolCalls: Message['tool_calls'],
+  ): Message['providerContent'] {
+    if (!Array.isArray(assistantMsg.providerContent) || !transcriptToolCalls?.length) {
+      return undefined;
+    }
+
+    const transcriptToolCallIds = new Set(transcriptToolCalls.map(toolCall => toolCall.id));
+    const blocks: NonNullable<Message['providerContent']> = [];
+    let hasToolUse = false;
+
+    for (const block of assistantMsg.providerContent) {
+      if (!block || typeof block !== 'object') continue;
+      if (block.type === 'tool_use') {
+        const id = typeof block.id === 'string' ? block.id : '';
+        if (!transcriptToolCallIds.has(id)) continue;
+        hasToolUse = true;
+      }
+      blocks.push(block);
+    }
+
+    return hasToolUse ? blocks : undefined;
   }
 
   private shouldKeepAssistantDraft(
@@ -944,7 +993,10 @@ export class ConversationRunner {
 
       Logger.warning('检测到提示词超长，执行紧急上下文裁剪后重试一次');
       this.forceTrimForOverflow(messages);
-      this.ensurePromptBudget(messages, activeTools);
+      const promptTrimmed = this.ensurePromptBudget(messages, activeTools);
+      if (promptTrimmed && callbacks?.onThinking) {
+        await callbacks.onThinking(PROMPT_BUDGET_TRIM_MESSAGE);
+      }
 
       if (this.stream) {
         const streamCallbacks: StreamCallbacks = {
@@ -956,13 +1008,13 @@ export class ConversationRunner {
     }
   }
 
-  private ensurePromptBudget(messages: Message[], tools: ToolDefinition[]): void {
+  private ensurePromptBudget(messages: Message[], tools: ToolDefinition[]): boolean {
     const toolTokens = estimateToolsTokens(tools);
-    const messageBudget = Math.max(MIN_MESSAGE_BUDGET, this.maxPromptTokens - toolTokens);
+    const messageBudget = Math.max(1, this.maxPromptTokens - toolTokens);
     let messageTokens = estimateMessagesTokens(messages);
 
     if (messageTokens <= messageBudget) {
-      return;
+      return false;
     }
 
     Logger.warning(
@@ -977,7 +1029,7 @@ export class ConversationRunner {
     }
 
     if (messageTokens > messageBudget) {
-      const minimal = this.buildMinimalFallback(messages);
+      const minimal = this.buildMinimalFallback(messages, messageBudget);
       this.replaceMessages(messages, minimal);
       messageTokens = estimateMessagesTokens(messages);
     }
@@ -985,6 +1037,24 @@ export class ConversationRunner {
     Logger.info(
       `[上下文守门] 裁剪后: messages=${messageTokens}, tools=${toolTokens}, budget=${this.maxPromptTokens}`
     );
+    return true;
+  }
+
+  private fitToolsToPromptBudget(tools: ToolDefinition[]): ToolDefinition[] {
+    if (tools.length === 0) {
+      return tools;
+    }
+
+    const toolTokens = estimateToolsTokens(tools);
+    const toolBudget = Math.max(1, this.maxPromptTokens - MIN_MESSAGE_BUDGET);
+    if (toolTokens <= toolBudget) {
+      return tools;
+    }
+
+    Logger.warning(
+      `[上下文守门] 工具定义超预算: tools=${toolTokens}, toolBudget=${toolBudget}, promptBudget=${this.maxPromptTokens}; 本轮禁用工具定义`
+    );
+    return [];
   }
 
   private forceTrimForOverflow(messages: Message[]): void {
@@ -1022,10 +1092,10 @@ export class ConversationRunner {
       candidate = [...trimmedSystem, ...old, ...recent];
     }
 
-    return candidate;
+    return this.repairToolExchangeMessages(candidate);
   }
 
-  private buildMinimalFallback(messages: Message[]): Message[] {
+  private buildMinimalFallback(messages: Message[], targetTokens: number): Message[] {
     const system = messages.find(msg => msg.role === 'system');
     const nonSystem = messages.filter(msg => msg.role !== 'system');
     const tail = nonSystem.slice(-2).map(msg => this.shrinkMessage(msg, true));
@@ -1036,13 +1106,93 @@ export class ConversationRunner {
     }
     result.push(...tail);
 
-    return result;
+    return this.fitMessagesToBudget(result, targetTokens);
+  }
+
+  private fitMessagesToBudget(messages: Message[], targetTokens: number): Message[] {
+    let candidate = this.repairToolExchangeMessages(messages);
+    const caps = [600, 320, 160, 80];
+
+    for (const cap of caps) {
+      if (estimateMessagesTokens(candidate) <= targetTokens) {
+        return candidate;
+      }
+      candidate = candidate.map((message, index) => (
+        this.truncateMessageContent(message, index === 0 ? cap * 2 : cap)
+      ));
+      candidate = this.repairToolExchangeMessages(candidate);
+    }
+
+    while (estimateMessagesTokens(candidate) > targetTokens && candidate.length > 1) {
+      candidate.splice(1, 1);
+    }
+
+    if (estimateMessagesTokens(candidate) > targetTokens && candidate.length > 0) {
+      candidate = [this.truncateMessageContent(candidate[0], 80)];
+    }
+
+    return this.repairToolExchangeMessages(candidate);
+  }
+
+  private repairToolExchangeMessages(messages: Message[]): Message[] {
+    const toolResultIds = new Set(
+      messages
+        .filter(message => message.role === 'tool' && message.tool_call_id)
+        .map(message => message.tool_call_id as string),
+    );
+    const retainedToolCallIds = new Set<string>();
+    const repaired: Message[] = [];
+
+    for (const message of messages) {
+      if (message.role !== 'assistant' || !message.tool_calls?.length) {
+        repaired.push(message);
+        continue;
+      }
+
+      const toolCalls = message.tool_calls.filter(toolCall => toolResultIds.has(toolCall.id));
+      for (const toolCall of toolCalls) {
+        retainedToolCallIds.add(toolCall.id);
+      }
+
+      if (toolCalls.length > 0) {
+        const providerContent = this.filterProviderContentForTranscript(message, toolCalls);
+        repaired.push({
+          ...message,
+          tool_calls: toolCalls,
+          providerContent,
+        });
+        continue;
+      }
+
+      const content = contentToString(message.content).trim();
+      if (content) {
+        repaired.push({ ...message, tool_calls: undefined, providerContent: undefined });
+      }
+    }
+
+    return repaired.filter(message => {
+      if (message.role !== 'tool') return true;
+      return Boolean(message.tool_call_id && retainedToolCallIds.has(message.tool_call_id));
+    });
+  }
+
+  private truncateMessageContent(message: Message, maxChars: number): Message {
+    const content = contentToString(message.content);
+    if (content.length <= maxChars) {
+      return message;
+    }
+    return {
+      ...message,
+      content: `${content.slice(0, maxChars)}\n...[已截断以适配模型上下文预算，原始 ${content.length} 字符]`,
+      tool_calls: undefined,
+      providerContent: undefined,
+    };
   }
 
   private shrinkMessage(message: Message, aggressive: boolean): Message {
     const maxChars = this.resolveMessageCharLimit(message, aggressive);
-    const content = message.content || '';
-    let nextContent = content;
+    const content = contentToString(message.content);
+    let nextContent = message.content;
 
     if (content.length > maxChars) {
       nextContent = content.slice(0, maxChars) + `\n...[已截断，原始 ${content.length} 字符]`;
@@ -1060,6 +1210,10 @@ export class ConversationRunner {
 
     if (aggressive && next.tool_calls) {
       delete next.tool_calls;
+    }
+
+    if (content.length > maxChars || aggressive) {
+      delete next.providerContent;
     }
 
     return next;
@@ -1087,11 +1241,26 @@ export class ConversationRunner {
       return maxContextTokens;
     }
 
-    const provider = (process.env.GAUZ_LLM_PROVIDER || '').trim().toLowerCase();
-    const model = (process.env.GAUZ_LLM_MODEL || '').trim().toLowerCase();
-    const isAnthropic = provider === 'anthropic' || model.includes('claude');
+    return resolveModelPromptBudgetTokens(this.resolveModelConfig(), process.env);
+  }
 
-    return isAnthropic ? ANTHROPIC_PROMPT_BUDGET : DEFAULT_PROMPT_BUDGET;
+  private resolveModelConfig(): Pick<ChatConfig, 'apiUrl' | 'model' | 'provider' | 'maxTokens' | 'contextWindowTokens'> {
+    const serviceConfig = typeof (this.aiService as any).getConfig === 'function'
+      ? (this.aiService as any).getConfig()
+      : undefined;
+    if (serviceConfig && typeof serviceConfig === 'object') {
+      return serviceConfig;
+    }
+
+    return {
+      provider: process.env.GAUZ_LLM_PROVIDER === 'anthropic' || process.env.GAUZ_LLM_PROVIDER === 'openai'
+        ? process.env.GAUZ_LLM_PROVIDER
+        : undefined,
+      apiUrl: process.env.GAUZ_LLM_API_BASE,
+      model: process.env.GAUZ_LLM_MODEL,
+      maxTokens: Number(process.env.GAUZ_LLM_MAX_OUTPUT_TOKENS || process.env.GAUZ_LLM_MAX_TOKENS) || undefined,
+      contextWindowTokens: Number(process.env.GAUZ_LLM_CONTEXT_WINDOW_TOKENS || process.env.GAUZ_LLM_CONTEXT_TOKENS) || undefined,
+    };
   }
 
   private isPromptTooLongError(error: any): boolean {

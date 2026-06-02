@@ -5,6 +5,10 @@ import { AIProvider, AIRequestOptions, StreamCallbacks } from './provider';
 import { ContextDebugLogger } from '../utils/context-debug-logger';
 import { resolveMaxTokens } from './output-limits';
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
 /**
  * Anthropic Provider
  * 使用官方 SDK 替代 axios 手动调用，支持 streaming
@@ -128,24 +132,8 @@ export class AnthropicProvider implements AIProvider {
 
       if (msg.role === 'assistant') {
         if (msg.tool_calls && msg.tool_calls.length > 0) {
-          const blocks: (Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam)[] = [];
-          if (msg.content && typeof msg.content === 'string' && msg.content.trim()) {
-            blocks.push({ type: 'text', text: msg.content });
-          }
-          for (const toolCall of msg.tool_calls) {
-            let input: Record<string, unknown> = {};
-            try {
-              input = JSON.parse(toolCall.function.arguments || '{}');
-            } catch {
-              input = {};
-            }
-            blocks.push({
-              type: 'tool_use',
-              id: toolCall.id,
-              name: toolCall.function.name,
-              input
-            });
-          }
+          const blocks = this.transformAssistantContentBlocks(msg)
+            || this.transformAssistantToolCallBlocks(msg);
           transformedMessages.push({ role: 'assistant', content: blocks });
         } else {
           // 处理纯文本或 ContentBlock[] 的情况
@@ -194,12 +182,88 @@ export class AnthropicProvider implements AIProvider {
     }));
   }
 
+  private transformAssistantToolCallBlocks(msg: Message): (Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam)[] {
+    const blocks: (Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam)[] = [];
+    if (msg.content && typeof msg.content === 'string' && msg.content.trim()) {
+      blocks.push({ type: 'text', text: msg.content });
+    }
+    for (const toolCall of msg.tool_calls || []) {
+      let input: Record<string, unknown> = {};
+      try {
+        input = JSON.parse(toolCall.function.arguments || '{}');
+      } catch {
+        input = {};
+      }
+      blocks.push({
+        type: 'tool_use',
+        id: toolCall.id,
+        name: toolCall.function.name,
+        input
+      });
+    }
+    return blocks;
+  }
+
+  private transformAssistantContentBlocks(msg: Message): any[] | undefined {
+    if (!Array.isArray(msg.providerContent) || msg.providerContent.length === 0) {
+      return undefined;
+    }
+
+    const retainedToolCallIds = new Set((msg.tool_calls || []).map(toolCall => toolCall.id));
+    const blocks: any[] = [];
+    let hasRetainedToolUse = false;
+
+    for (const block of msg.providerContent) {
+      if (!block || typeof block !== 'object') continue;
+      const type = String((block as any).type || '');
+      if (type === 'text' && typeof (block as any).text === 'string') {
+        blocks.push({ type: 'text', text: (block as any).text });
+        continue;
+      }
+      if (type === 'thinking' && typeof (block as any).thinking === 'string') {
+        const thinkingBlock: Record<string, unknown> = {
+          type: 'thinking',
+          thinking: (block as any).thinking,
+        };
+        if (typeof (block as any).signature === 'string') {
+          thinkingBlock.signature = (block as any).signature;
+        }
+        blocks.push(thinkingBlock);
+        continue;
+      }
+      if (type === 'redacted_thinking') {
+        const redactedBlock: Record<string, unknown> = { type: 'redacted_thinking' };
+        if (typeof (block as any).data === 'string') {
+          redactedBlock.data = (block as any).data;
+        }
+        blocks.push(redactedBlock);
+        continue;
+      }
+      if (
+        type === 'tool_use'
+        && typeof (block as any).id === 'string'
+        && retainedToolCallIds.has((block as any).id)
+      ) {
+        hasRetainedToolUse = true;
+        blocks.push({
+          type: 'tool_use',
+          id: (block as any).id,
+          name: String((block as any).name || ''),
+          input: isRecord((block as any).input) ? (block as any).input : {},
+        });
+      }
+    }
+
+    return hasRetainedToolUse ? blocks : undefined;
+  }
+
   /**
    * 从 Anthropic 响应中提取统一格式
    */
   private parseResponse(response: Anthropic.Message): ChatResponse {
     const textParts: string[] = [];
     let toolCalls: ChatResponse['toolCalls'] = undefined;
+    const providerContent = this.preserveAssistantProviderContent(response.content as any[]);
 
     for (const block of response.content) {
       if (block.type === 'text') {
@@ -229,7 +293,52 @@ export class AnthropicProvider implements AIProvider {
       toolCalls,
       usage,
       stopReason: response.stop_reason || undefined,
+      ...(providerContent.length > 0 ? { providerContent } : {}),
     };
+  }
+
+  private preserveAssistantProviderContent(content: any[]): NonNullable<ChatResponse['providerContent']> {
+    if (!Array.isArray(content) || !content.some(block => block?.type === 'tool_use')) {
+      return [];
+    }
+
+    const blocks: NonNullable<ChatResponse['providerContent']> = [];
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const type = String(block.type || '');
+      if (type === 'text' && typeof block.text === 'string') {
+        blocks.push({ type: 'text', text: block.text });
+        continue;
+      }
+      if (type === 'thinking' && typeof block.thinking === 'string') {
+        const thinkingBlock: Record<string, unknown> & { type: string } = {
+          type: 'thinking',
+          thinking: block.thinking,
+        };
+        if (typeof block.signature === 'string') {
+          thinkingBlock.signature = block.signature;
+        }
+        blocks.push(thinkingBlock);
+        continue;
+      }
+      if (type === 'redacted_thinking') {
+        const redactedBlock: Record<string, unknown> & { type: string } = { type: 'redacted_thinking' };
+        if (typeof block.data === 'string') {
+          redactedBlock.data = block.data;
+        }
+        blocks.push(redactedBlock);
+        continue;
+      }
+      if (type === 'tool_use' && typeof block.id === 'string') {
+        blocks.push({
+          type: 'tool_use',
+          id: block.id,
+          name: String(block.name || ''),
+          input: isRecord(block.input) ? block.input : {},
+        });
+      }
+    }
+    return blocks;
   }
 
   /**

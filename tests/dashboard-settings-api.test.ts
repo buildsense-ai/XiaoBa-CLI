@@ -19,15 +19,19 @@ describe('dashboard typed settings API', () => {
     'GAUZ_LLM_API_BASE',
     'GAUZ_LLM_API_KEY',
     'GAUZ_LLM_MODEL',
+    'GAUZ_LLM_CONTEXT_WINDOW_TOKENS',
+    'GAUZ_LLM_CONTEXT_TOKENS',
     'CATSCO_MODEL_SOURCE',
     'CATSCO_CUSTOM_LLM_PROVIDER',
     'CATSCO_CUSTOM_LLM_API_BASE',
     'CATSCO_CUSTOM_LLM_API_KEY',
     'CATSCO_CUSTOM_LLM_MODEL',
+    'CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS',
     'CATSCO_RELAY_LLM_PROVIDER',
     'CATSCO_RELAY_LLM_API_BASE',
     'CATSCO_RELAY_LLM_API_KEY',
     'CATSCO_RELAY_LLM_MODEL',
+    'CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS',
     'CATSCO_HTTP_BASE_URL',
     'CATSCO_SERVER_URL',
     'CATSCO_USER_TOKEN',
@@ -129,6 +133,26 @@ describe('dashboard typed settings API', () => {
     assert.equal(apiKey.present, true);
     assert.equal(apiKey.last4, undefined);
     assert.equal(text.includes('abc'), false);
+  });
+
+  test('PUT /cats/config/preferences persists close button behavior', async () => {
+    const initialResponse = await fetch(`${baseUrl}/api/cats/config`);
+    const initial = await initialResponse.json() as any;
+    assert.equal(initialResponse.status, 200);
+    assert.equal(initial.preferences.closeToTray, true);
+
+    const response = await fetch(`${baseUrl}/api/cats/config/preferences`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ closeToTray: false }),
+    });
+    const data = await response.json() as any;
+    assert.equal(response.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.preferences.closeToTray, false);
+
+    const config = createCatsCoLocalConfigService({ runtimeRoot: testRoot }).load();
+    assert.equal(config.preferences?.closeToTray, false);
   });
 
   test('GET /settings sanitizes URL credentials and query values before display', async () => {
@@ -240,6 +264,8 @@ describe('dashboard typed settings API', () => {
     assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://api.deepseek.com/v1');
     assert.equal(parsed.GAUZ_LLM_MODEL, 'deepseek-chat');
     assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-custom-secret');
+    assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '128000');
+    assert.equal(parsed.CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS, '128000');
     assert.equal(parsed.CATSCO_RELAY_LLM_API_KEY, 'sk-bf-relay-secret');
     assert.equal(parsed.CATSCO_RELAY_LLM_MODEL, 'MiniMax-M2.7');
   });
@@ -570,11 +596,13 @@ describe('dashboard typed settings API', () => {
       assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
       assert.equal(parsed.GAUZ_LLM_MODEL, 'MiniMax-M2.7');
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-secret-created-once');
+      assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '204800');
       assert.equal(parsed.CATSCO_MODEL_SOURCE, 'relay');
       assert.equal(parsed.CATSCO_RELAY_LLM_PROVIDER, 'anthropic');
       assert.equal(parsed.CATSCO_RELAY_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
       assert.equal(parsed.CATSCO_RELAY_LLM_MODEL, 'MiniMax-M2.7');
       assert.equal(parsed.CATSCO_RELAY_LLM_API_KEY, 'sk-bf-secret-created-once');
+      assert.equal(parsed.CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS, '204800');
       assert.equal(process.env.GAUZ_LLM_PROVIDER, 'anthropic');
 
       const customResponse = await fetch(`${baseUrl}/api/settings`, {
@@ -667,9 +695,9 @@ describe('dashboard typed settings API', () => {
       });
       const text = await response.text();
       const data = JSON.parse(text) as any;
+      assert.equal(response.status, 200, text);
       const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
 
-      assert.equal(response.status, 200, text);
       assert.equal(data.provider, 'anthropic');
       assert.equal(data.apiBase, 'https://relay.catsco.cc/anthropic');
       assert.equal(data.model, 'deepseek-v4-flash');
@@ -678,7 +706,11 @@ describe('dashboard typed settings API', () => {
       assert.equal(parsed.GAUZ_LLM_PROVIDER, 'anthropic');
       assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
       assert.equal(parsed.GAUZ_LLM_MODEL, 'deepseek-v4-flash');
+      assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '1000000');
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-openai-compatible');
+      assert.equal(parsed.CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS, '1000000');
+      assert.equal(data.selectedModel.context_window_tokens, 1000000);
+      assert.equal(data.selectedModel.context_label, '1M');
       assert.equal(text.includes('sk-bf-openai-compatible'), false);
     } finally {
       await new Promise<void>(resolve => catsServer.close(() => resolve()));
@@ -728,9 +760,9 @@ describe('dashboard typed settings API', () => {
       });
       const text = await response.text();
       const data = JSON.parse(text) as any;
+      assert.equal(response.status, 200, text);
       const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
 
-      assert.equal(response.status, 200, text);
       assert.equal(data.provider, 'anthropic');
       assert.equal(data.apiBase, 'https://relay.catsco.cc/anthropic');
       assert.equal(data.model, 'glm-5.1');
@@ -738,7 +770,10 @@ describe('dashboard typed settings API', () => {
       assert.equal(parsed.GAUZ_LLM_PROVIDER, 'anthropic');
       assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
       assert.equal(parsed.GAUZ_LLM_MODEL, 'glm-5.1');
+      assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '200000');
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-glm-secret');
+      assert.equal(parsed.CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS, '200000');
+      assert.equal(data.selectedModel.context_window_tokens, 200000);
     } finally {
       await new Promise<void>(resolve => catsServer.close(() => resolve()));
     }
@@ -1359,6 +1394,80 @@ describe('dashboard typed settings API', () => {
       assert.equal(parsed.GAUZ_LLM_MODEL, 'deepseek-v4-flash');
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-old-local-secret');
       assert.equal(text.includes('sk-bf-old-local-secret'), false);
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
+  test('POST /cats/relay/model-config/apply reveals existing relay key before prompting rotation', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    let revealCalled = false;
+    let createCalled = false;
+    let rotateCalled = false;
+
+    catsApp.get('/api/relay/config', (_req, res) => {
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'MiniMax-M2.7',
+        self_service_enabled: true,
+        endpoints: [{ protocol: 'Anthropic-compatible', base_url: 'https://relay.catsco.cc/anthropic' }],
+      });
+    });
+    catsApp.get('/api/relay/key', (_req, res) => {
+      res.json({
+        configured: true,
+        key: { id: 'vk-existing', name: 'existing', prefix: 'sk-bf-cu...cret', state: 'active' },
+      });
+    });
+    catsApp.post('/api/relay/key/reveal', (_req, res) => {
+      revealCalled = true;
+      res.json({
+        configured: true,
+        key: {
+          id: 'vk-existing',
+          name: 'existing',
+          prefix: 'sk-bf-cu...cret',
+          state: 'active',
+          key: 'sk-bf-current-secret',
+        },
+      });
+    });
+    catsApp.post('/api/relay/key', (_req, res) => {
+      createCalled = true;
+      res.status(500).json({ error: 'create should not be called' });
+    });
+    catsApp.post('/api/relay/key/rotate', (_req, res) => {
+      rotateCalled = true;
+      res.status(500).json({ error: 'rotate should not be called' });
+    });
+    const catsServer = await listen(catsApp);
+    const address = catsServer.address();
+    if (!address || typeof address === 'string') throw new Error('cats server did not bind');
+
+    try {
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelId: 'minimax-m2.7' }),
+      });
+      const text = await response.text();
+      const data = JSON.parse(text) as any;
+      const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+      assert.equal(response.status, 200, text);
+      assert.equal(data.createdKey, false);
+      assert.equal(data.rotatedKey, false);
+      assert.equal(data.revealedKey, true);
+      assert.equal(revealCalled, true);
+      assert.equal(createCalled, false);
+      assert.equal(rotateCalled, false);
+      assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-current-secret');
+      assert.equal(text.includes('sk-bf-current-secret'), false);
     } finally {
       await new Promise<void>(resolve => catsServer.close(() => resolve()));
     }

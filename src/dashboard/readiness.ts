@@ -159,7 +159,13 @@ function getEffectiveCatsCoRuntimeEnv(
   config: ChatConfig,
   catsCoOverrides?: Record<string, unknown>,
 ): NodeJS.ProcessEnv {
-  const catsCoRuntime = resolveCatsCoRuntimeConfig({ runtimeRoot, env, config, overrides: catsCoOverrides });
+  const catsCoRuntime = resolveCatsCoRuntimeConfig({
+    runtimeRoot,
+    env,
+    config,
+    overrides: catsCoOverrides,
+    migrateLegacyEnvBinding: true,
+  });
   const effectiveEnv = {
     ...env,
     ...catsCoRuntime.envOverlay,

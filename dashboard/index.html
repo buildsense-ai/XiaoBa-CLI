@@ -7099,10 +7099,10 @@
     let catsSetupInFlight=false;
     const CUSTOM_MODEL_AUTO_SAVE_DELAY=900;
     const RELAY_FALLBACK_MODELS=[
-      {id:'minimax-m2.7',label:'MiniMax M2.7',model:'MiniMax-M2.7',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'standard',default:true},
-      {id:'minimax-m3',label:'MiniMax M3',model:'MiniMax-M3',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'multimodal'},
-      {id:'deepseek-v4-flash',label:'DeepSeek V4 Flash',model:'deepseek-v4-flash',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'flash-low'},
-      {id:'glm-5.1',label:'GLM 5.1',model:'glm-5.1',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'standard'},
+      {id:'minimax-m2.7',label:'MiniMax M2.7',model:'MiniMax-M2.7',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'standard',context_window_tokens:204800,context_label:'204.8K',default:true},
+      {id:'minimax-m3',label:'MiniMax M3',model:'MiniMax-M3',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'multimodal',context_window_tokens:1000000,context_label:'1M'},
+      {id:'deepseek-v4-flash',label:'DeepSeek V4 Flash',model:'deepseek-v4-flash',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'flash-low',context_window_tokens:1000000,context_label:'1M'},
+      {id:'glm-5.1',label:'GLM 5.1',model:'glm-5.1',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'standard',context_window_tokens:200000,context_label:'200K'},
     ];
     const serviceConfigGroups={
       catscompany:{
@@ -7239,6 +7239,21 @@
       return RELAY_FALLBACK_MODELS;
     }
 
+    function formatModelContextLabel(tokens, fallback){
+      if(fallback)return fallback;
+      const n=Number(tokens||0);
+      if(!Number.isFinite(n)||n<=0)return '安全默认';
+      if(n>=1000000){
+        const v=n/1000000;
+        return (Number.isInteger(v)?String(v):v.toFixed(1))+'M';
+      }
+      if(n>=1000){
+        const v=n/1000;
+        return (Number.isInteger(v)?String(v):v.toFixed(1))+'K';
+      }
+      return String(n);
+    }
+
     function modelStartupSnapshot(){
       return dashboardSettingsSnapshot?.modelStartup || {};
     }
@@ -7282,12 +7297,13 @@
     function relayModelChoiceHtml(model, activeId, catsConnected, context='settings'){
       const id=String(model.id||model.model||'');
       const active=id===activeId;
-      const quota=model.quota_class==='flash-low'?'低额度 Flash':'标准额度';
+      const quota=model.quota_class==='flash-low'?'低额度 Flash':model.quota_class==='multimodal'?'多模态':'标准额度';
+      const contextLabel=formatModelContextLabel(model.context_window_tokens, model.context_label);
       const disabled=relayActionBusy() || (context!=='chat' && !catsConnected);
       return '<button class="relay-model-choice'+(active?' active':'')+'" type="button" data-relay-model-id="'+escapeHtml(id)+'" data-relay-model-context="'+escapeHtml(context)+'" '+(disabled?'disabled':'')+' onclick="enableCatsRelayModelFromButton(this)">'
         +'<span class="relay-model-label">'+escapeHtml(model.label||model.model||id)+'</span>'
         +'<span class="relay-model-name">'+escapeHtml(model.model||id)+'</span>'
-        +'<span class="relay-model-meta">'+escapeHtml(quota)+' · Anthropic SDK</span>'
+        +'<span class="relay-model-meta">'+escapeHtml(quota)+' · 上下文 '+escapeHtml(contextLabel)+' · Anthropic SDK</span>'
         +'</button>';
     }
 
@@ -7297,7 +7313,7 @@
       const provider=custom.provider || settingValue('model.provider') || 'anthropic';
       const model=custom.model || settingValue('model.model') || '未配置';
       const meta=configured
-        ? '自定义配置 · '+(provider==='openai'?'OpenAI SDK':'Anthropic SDK')
+        ? '自定义配置 · 安全上下文 128K · '+(provider==='openai'?'OpenAI SDK':'Anthropic SDK')
         : '去设置填写 endpoint / key';
       return '<button class="relay-model-choice '+(active?' active':'')+(configured?'':' needs-config')+'" type="button" data-custom-startup-action="true" data-custom-startup-context="'+escapeHtml(context)+'" '+(relayActionBusy()?'disabled':'')+' onclick="enableCustomStartupModelFromButton(this)">'
         +'<span class="relay-model-label">自定义模型</span>'
@@ -7409,12 +7425,13 @@
       const draft=captureCustomModelDraft();
 
       p.innerHTML=`<div class="model-source-layout">
+        <div class="runtime-note">中转模型和自定义模型会分别保存。CatsCo 中转会按所选模型自动调整上下文；自定义模型默认按 128K 安全上下文运行，若模型实际窗口更小，请减少历史或在高级环境变量里降低 GAUZ_LLM_CONTEXT_WINDOW_TOKENS。</div>
         <details class="model-source-card warning" id="custom-model-settings"${customModelSettingsOpen?' open':''}>
           <summary>
             <div class="model-source-head">
               <div>
                 <div class="model-source-title">自定义模型（第三方）</div>
-                <div class="model-source-copy">只有手动接入第三方模型时需要填写。CatsCo 中转模型请在 CatsCo 页面选择。</div>
+                <div class="model-source-copy">只有手动接入第三方模型时需要填写。CatsCo 中转模型请在 CatsCo 页面选择；自定义模型默认使用 128K 安全上下文。</div>
               </div>
               ${runtimeTag(credentialMeta, keyField.present?'green':'gray')}
             </div>
@@ -7432,7 +7449,7 @@
               <button class="btn btn-primary" onclick="saveCustomModelSettings()">保存自定义模型</button>
               <span class="config-saved" id="model-source-saved">已保存</span>
             </div>
-            <div id="model-source-status" style="color:var(--text2);font-size:13px">凭证仅保存到本地 .env；新 session 或下一次启动 connector 后生效。</div>
+            <div id="model-source-status" style="color:var(--text2);font-size:13px">凭证仅保存到本地 .env；自定义模型默认 128K 安全上下文，新 session 或下一次启动 connector 后生效。</div>
           </div>
         </details>
       </div>`;
@@ -7639,7 +7656,7 @@
         });
         const data=await r.json().catch(()=>({}));
         if(r.status===409&&data.action==='rotate_required'){
-          const ok=confirm('你的 CatsCo 中转 Key 已存在，但明文不会再次返回。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');
+          const ok=confirm('你的 CatsCo 中转 Key 已存在，但当前无法读取明文。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');
           if(ok){
             retrying=true;
             setRelayModelApplyBusy(false);
@@ -8632,7 +8649,7 @@
         }
       }catch(e){
         if(e.status===409 && e.action==='rotate_required'){
-          const ok=confirm('你的 CatsCo 中转 Key 已存在，但明文不会再次返回。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');
+          const ok=confirm('你的 CatsCo 中转 Key 已存在，但当前无法读取明文。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');
           if(ok){
             retrying=true;
             setCatsSetupBusy(false);

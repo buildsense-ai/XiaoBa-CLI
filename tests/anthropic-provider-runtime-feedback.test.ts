@@ -66,4 +66,71 @@ describe('AnthropicProvider runtime feedback boundary', () => {
     assert.equal(result.usage.totalTokens, 30);
     assert.equal((provider as any).maxTokens, 32768);
   });
+
+  test('preserves MiniMax M3 thinking blocks for tool-use replay', () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/anthropic/v1/messages',
+      model: 'MiniMax-M3',
+    });
+
+    const result = (provider as any).parseResponse({
+      content: [
+        { type: 'thinking', thinking: 'hidden chain', signature: 'sig_123' },
+        { type: 'tool_use', id: 'call_1', name: 'execute_shell', input: { command: 'git status' } },
+      ],
+      stop_reason: 'tool_use',
+      usage: {
+        input_tokens: 10,
+        output_tokens: 20,
+      },
+    });
+
+    assert.equal(result.content, null);
+    assert.equal(result.toolCalls.length, 1);
+    assert.deepStrictEqual(result.providerContent, [
+      { type: 'thinking', thinking: 'hidden chain', signature: 'sig_123' },
+      { type: 'tool_use', id: 'call_1', name: 'execute_shell', input: { command: 'git status' } },
+    ]);
+  });
+
+  test('replays preserved thinking blocks before tool_use blocks', () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/anthropic/v1/messages',
+      model: 'MiniMax-M3',
+    });
+
+    const messages: Message[] = [
+      { role: 'user', content: 'clean repo' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'execute_shell', arguments: '{"command":"git status"}' },
+        }],
+        providerContent: [
+          { type: 'thinking', thinking: 'hidden chain', signature: 'sig_123' },
+          { type: 'tool_use', id: 'call_1', name: 'execute_shell', input: { command: 'git status' } },
+        ],
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'call_1',
+        name: 'execute_shell',
+        content: 'clean',
+      },
+    ];
+
+    const transformed = (provider as any).transformMessages(messages);
+    assert.deepStrictEqual(transformed.messages[1], {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'hidden chain', signature: 'sig_123' },
+        { type: 'tool_use', id: 'call_1', name: 'execute_shell', input: { command: 'git status' } },
+      ],
+    });
+  });
 });

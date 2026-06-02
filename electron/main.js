@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -6,6 +6,7 @@ const DASHBOARD_PORT = resolveDashboardPort(process.env.XIAOBA_DASHBOARD_PORT);
 let mainWindow = null;
 let tray = null;
 let autoUpdater = null;
+let hideNoticeShown = false;
 const REFRESHABLE_BUNDLED_SKILLS = new Set([]);
 const RETIRED_BUNDLED_SKILLS = new Set(['advanced-reader', 'vision-analysis']);
 const SKILL_SYNC_MARKER = '.xiaoba-bundled-skill.json';
@@ -27,6 +28,86 @@ function applyConfiguredUserDataPath() {
   const resolvedUserDataDir = path.resolve(configuredUserDataDir);
   fs.mkdirSync(resolvedUserDataDir, { recursive: true });
   app.setPath('userData', resolvedUserDataDir);
+}
+
+function readCloseToTrayPreference() {
+  try {
+    const configPath = path.join(process.cwd(), '.xiaoba', 'catsco.json');
+    if (!fs.existsSync(configPath)) return true;
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const value = config?.preferences?.closeToTray;
+    return value !== false;
+  } catch (_error) {
+    return true;
+  }
+}
+
+function writeCloseToTrayPreference(closeToTray) {
+  const configPath = path.join(process.cwd(), '.xiaoba', 'catsco.json');
+  const configDir = path.dirname(configPath);
+  let config = {};
+
+  try {
+    if (fs.existsSync(configPath)) {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    }
+  } catch (_error) {
+    config = {};
+  }
+
+  const next = {
+    ...config,
+    version: config.version || 1,
+    preferences: {
+      ...config.preferences,
+      autoConnect: config.preferences?.autoConnect ?? true,
+      switchConfirmEnabled: config.preferences?.switchConfirmEnabled ?? true,
+      closeToTray: Boolean(closeToTray),
+    },
+    updatedAt: new Date().toISOString(),
+  };
+
+  fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(configPath, JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 });
+}
+
+function showMainWindow() {
+  if (mainWindow) {
+    mainWindow.show();
+    mainWindow.focus();
+  } else {
+    createWindow();
+  }
+}
+
+function createTrayIcon() {
+  const appRoot = getAppRoot();
+  const candidates = process.platform === 'win32'
+    ? ['build-resources/icon.ico', 'build-resources/icons/icon.ico', 'build-resources/icons/32x32.png', 'dashboard/cat-icon.png']
+    : ['build-resources/icons/32x32.png', 'build-resources/icon.png', 'dashboard/cat-icon.png'];
+
+  for (const relativePath of candidates) {
+    const iconPath = path.join(appRoot, relativePath);
+    if (!fs.existsSync(iconPath)) continue;
+    const image = nativeImage.createFromPath(iconPath);
+    if (!image.isEmpty()) {
+      return image.resize({ width: 16, height: 16 });
+    }
+  }
+
+  return nativeImage
+    .createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAABhSURBVFhH7c6xDQAgDASwkP2XZgEqCgrZwJ+u8Ov1vt+RM0EHHXTQQQcddNBBBx100EEHHXTQQQcddNBBBx100EEHHXTQQQcddNBBBx100EEHHXTQQQcddNBBBx3834kDK+kAIRUXPjcAAAAASUVORK5CYII=')
+    .resize({ width: 16, height: 16 });
+}
+
+function notifyWindowHidden() {
+  if (hideNoticeShown || !tray || process.platform !== 'win32' || typeof tray.displayBalloon !== 'function') return;
+  hideNoticeShown = true;
+  tray.displayBalloon({
+    title: 'CatsCo 已在后台运行',
+    content: '点击右下角 CatsCo 图标可恢复窗口。',
+    icon: createTrayIcon(),
+  });
 }
 
 // 闂佽绻愮换鎴犳崲閸℃稒鍎婃い鏍仜缁€澶愭煟濡厧鍔嬬紒?electron-updater闂備焦瀵х粙鎴︽偋閸℃哎浜归柡灞诲劜閻掕顭块懜鐢点€掔紒鈧?
@@ -445,9 +526,10 @@ function createWindow() {
   mainWindow.loadURL(`http://127.0.0.1:${DASHBOARD_PORT}`);
 
   mainWindow.on('close', (e) => {
-    if (process.platform === 'darwin' && !app.isQuitting) {
+    if (!app.isQuitting && readCloseToTrayPreference()) {
       e.preventDefault();
       mainWindow.hide();
+      notifyWindowHidden();
     }
   });
 
@@ -503,26 +585,118 @@ ipcMain.handle('catsco:select-files', async (event) => {
     .filter(Boolean);
 });
 
+function createApplicationMenu() {
+  const closeToTray = readCloseToTrayPreference();
+  const quit = () => {
+    app.isQuitting = true;
+    app.quit();
+  };
+
+  const editMenu = [
+    { label: '撤销', role: 'undo' },
+    { label: '重做', role: 'redo' },
+    { type: 'separator' },
+    { label: '剪切', role: 'cut' },
+    { label: '复制', role: 'copy' },
+    { label: '粘贴', role: 'paste' },
+    { label: '全选', role: 'selectAll' },
+  ];
+
+  const template = [
+    ...(process.platform === 'darwin' ? [{
+      label: 'CatsCo',
+      submenu: [
+        { label: '关于 CatsCo', role: 'about' },
+        { type: 'separator' },
+        { label: '隐藏 CatsCo', role: 'hide' },
+        { label: '隐藏其他应用', role: 'hideOthers' },
+        { label: '显示全部', role: 'unhide' },
+        { type: 'separator' },
+        { label: '退出 CatsCo', accelerator: 'Command+Q', click: quit },
+      ],
+    }] : []),
+    {
+      label: '文件',
+      submenu: [
+        { label: '打开 Dashboard', click: showMainWindow },
+        { type: 'separator' },
+        { label: '退出 CatsCo', accelerator: process.platform === 'darwin' ? 'Command+Q' : 'Ctrl+Q', click: quit },
+      ],
+    },
+    {
+      label: '编辑',
+      submenu: editMenu,
+    },
+    {
+      label: '视图',
+      submenu: [
+        { label: '重新加载', role: 'reload' },
+        { label: '强制重新加载', role: 'forceReload' },
+        { label: '开发者工具', role: 'toggleDevTools' },
+        { type: 'separator' },
+        { label: '实际大小', role: 'resetZoom' },
+        { label: '放大', role: 'zoomIn' },
+        { label: '缩小', role: 'zoomOut' },
+        { type: 'separator' },
+        { label: '全屏', role: 'togglefullscreen' },
+      ],
+    },
+    {
+      label: '窗口',
+      submenu: [
+        { label: '显示主窗口', click: showMainWindow },
+        {
+          label: '点 × 后隐藏到后台',
+          type: 'checkbox',
+          checked: closeToTray,
+          click: (menuItem) => {
+            writeCloseToTrayPreference(menuItem.checked);
+          },
+        },
+        { type: 'separator' },
+        { label: '最小化', role: 'minimize' },
+        { label: '关闭窗口', role: 'close' },
+      ],
+    },
+    {
+      label: '帮助',
+      submenu: [
+        {
+          label: '检查更新',
+          enabled: Boolean(autoUpdater),
+          click: () => {
+            updateController.checkForUpdates(true).catch((error) => {
+              console.error('Manual update check failed:', error);
+            });
+          },
+        },
+        {
+          label: '打开发布页',
+          click: () => {
+            const url = updateState.releasePageUrl;
+            if (url) shell.openExternal(url);
+          },
+        },
+      ],
+    },
+  ];
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 function createTray() {
-  const icon = nativeImage.createFromDataURL(
-    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAABhSURBVFhH7c6xDQAgDASwkP2XZgEqCgrZwJ+u8Ov1vt+RM0EHHXTQQQcddNBBBx100EEHHXTQQQcddNBBBx100EEHHXTQQQcddNBBBx100EEHHXTQQQcddNBBBx3834kDK+kAIRUXPjcAAAAASUVORK5CYII='
-  );
-  tray = new Tray(icon.resize({ width: 16, height: 16 }));
+  tray = new Tray(createTrayIcon());
 
   const contextMenu = Menu.buildFromTemplate([
-    { label: 'Open CatsCo Dashboard', click: () => {
-      if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
-      else createWindow();
-    }},
+    { label: '打开 CatsCo Dashboard', click: showMainWindow },
     { type: 'separator' },
-    { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); }} ,
+    { label: '退出 CatsCo', click: () => { app.isQuitting = true; app.quit(); }} ,
   ]);
 
   tray.setToolTip('CatsCo Dashboard');
   tray.setContextMenu(contextMenu);
   tray.on('click', () => {
-    if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
-    else createWindow();
+    showMainWindow();
   });
 }
 
@@ -597,6 +771,7 @@ if (autoUpdater) {
 app.whenReady().then(async () => {
   try {
     await startServer();
+    createApplicationMenu();
     createWindow();
     createTray();
     
