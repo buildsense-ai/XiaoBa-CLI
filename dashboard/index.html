@@ -4864,11 +4864,11 @@
       <a class="nav-item" onclick="switchPage('services')" data-page="services">
         <span class="nav-icon">&gt;</span> <span>智能体中心</span>
       </a>
+      <a class="nav-item" onclick="switchPage('store')" data-page="store">
+        <span class="nav-icon">+</span> <span>Skills</span>
+      </a>
       <a class="nav-item" onclick="switchPage('companion')" data-page="companion">
         <span class="nav-icon">*</span> <span>伙伴中心</span>
-      </a>
-      <a class="nav-item" onclick="switchPage('developer')" data-page="developer">
-        <span class="nav-icon">{}</span> <span>开发者中心</span>
       </a>
     </nav>
     <div class="sidebar-footer">
@@ -5006,9 +5006,17 @@
           </section>
           </aside>
         </div>
-        <div id="companion-skillhub-section" style="margin-top:28px">
-          <div class="companion-skills-head">
-            <div class="section-title" style="margin-bottom:0">Skills</div>
+      </div>
+
+      <!-- Page: Store -->
+      <div class="page" id="page-store">
+        <div id="skillhub-section">
+          <div class="settings-header">
+            <div class="settings-heading">
+              <div class="settings-kicker">SkillHub</div>
+              <div class="section-title" style="margin-bottom:0">Skills</div>
+              <div class="settings-meta">公开 Skill 无需登录即可搜索和安装；登录后可分享本地 Skill 并管理已发布版本。</div>
+            </div>
             <button class="btn" onclick="refreshSkillHubPage()">刷新</button>
           </div>
           <div class="companion-skill-toolbar">
@@ -5035,6 +5043,72 @@
               <div class="skills-grid" id="store-grid"><div class="loading">加载中...</div></div>
             </div>
           </details>
+        </div>
+
+        <div class="settings-header" style="margin-top:28px">
+          <div class="settings-heading">
+            <div class="settings-kicker">SkillHub Developer</div>
+            <div class="section-title" style="margin-bottom:0">发布管理</div>
+            <div class="settings-meta">登录 SkillHub 后可申请开发者权限、提交 Skill、管理自己的已发布版本。</div>
+          </div>
+          <button class="btn" onclick="fetchSkillHubDeveloper()">刷新</button>
+        </div>
+
+        <div class="config-section" id="skillhub-account-card">
+          <div class="loading">正在检查 SkillHub 登录状态...</div>
+        </div>
+
+        <div class="config-section" id="skillhub-developer-status">
+          <div class="loading">正在读取开发者状态...</div>
+        </div>
+
+        <div class="config-section" id="skillhub-developer-apply">
+          <div class="config-group-title-main">申请成为开发者</div>
+          <div class="settings-meta" style="margin-bottom:14px">普通账号申请通过后，云端会给账号增加 developer 角色。</div>
+          <div class="chat-form-row" style="margin-bottom:10px">
+            <input class="config-input" id="skillhub-apply-name" placeholder="开发者显示名称" />
+            <input class="config-input" id="skillhub-apply-namespace" placeholder="命名空间，例如 contract-team" />
+          </div>
+          <div class="chat-form-row" style="margin-bottom:10px">
+            <input class="config-input" id="skillhub-apply-contact" placeholder="联系邮箱 / 微信 / 电话" />
+            <input class="config-input" id="skillhub-apply-homepage" placeholder="主页或组织链接（可选）" />
+          </div>
+          <textarea class="config-input" id="skillhub-apply-reason" rows="3" placeholder="简单说明你要发布哪些类型的 Skill"></textarea>
+          <div class="config-actions" style="margin-top:12px">
+            <button class="btn btn-primary" onclick="applySkillHubDeveloper()">提交申请</button>
+          </div>
+        </div>
+
+        <div class="config-section" id="skillhub-developer-console">
+          <div class="config-group-title-main">提交 Skill 审核</div>
+          <div class="settings-meta" style="margin-bottom:14px">选择本地 Skill 文件夹，填写基本信息；Agent 会读取文件、生成 manifest 草稿并提交云端扫描审核。</div>
+          <div class="settings-step-grid">
+            <label><span class="wizard-label">本地 Skill 文件夹</span><input class="config-input" id="skillhub-local-path" placeholder="例如 E:\skills\contract-review" /></label>
+            <label><span class="wizard-label">版本</span><input class="config-input" id="skillhub-version" value="1.0.0" /></label>
+            <label><span class="wizard-label">Skill 名称</span><input class="config-input" id="skillhub-name" placeholder="合同审查助手" /></label>
+            <label><span class="wizard-label">分类</span><input class="config-input" id="skillhub-category" placeholder="法务 / 办公 / 工程造价" /></label>
+            <label style="grid-column:1/-1"><span class="wizard-label">简介</span><input class="config-input" id="skillhub-description" placeholder="说明这个 Skill 解决什么问题" /></label>
+            <label style="grid-column:1/-1"><span class="wizard-label">关键词</span><input class="config-input" id="skillhub-keywords" placeholder="合同审查，采购合同，条款风险" /></label>
+            <label style="grid-column:1/-1"><span class="wizard-label">触发示例</span><textarea class="config-input" id="skillhub-triggers" rows="3" placeholder="帮我审查这份采购合同&#10;找出合同里的付款风险&#10;检查协议条款是否合理"></textarea></label>
+            <label><span class="wizard-label">权限</span><input class="config-input" id="skillhub-permissions" value="filesystem.read.user_selected" /></label>
+            <label><span class="wizard-label">仓库链接（可选）</span><input class="config-input" id="skillhub-repository-url" placeholder="https://github.com/org/repo" /></label>
+          </div>
+          <div class="config-actions" style="margin-top:14px">
+            <button class="btn" onclick="createSkillHubManifestDraft()">生成 skill.json 草稿</button>
+            <button class="btn btn-primary" onclick="submitSkillHubReview()">提交审核</button>
+          </div>
+          <pre class="manifest-preview" id="skillhub-manifest-preview" style="margin-top:14px">尚未生成 manifest。</pre>
+        </div>
+
+        <div class="config-section">
+          <div class="config-group-title-main">我的提交</div>
+          <div class="portal-list" id="skillhub-submissions-list"><div class="loading">暂无数据</div></div>
+        </div>
+
+        <div class="config-section">
+          <div class="config-group-title-main">My Published Versions</div>
+          <div class="settings-meta" style="margin-bottom:14px">Published SkillHub versions can be managed here. Public users can install any published version.</div>
+          <div class="portal-list" id="skillhub-package-versions-list"><div class="loading">No published versions</div></div>
         </div>
       </div>
 
@@ -5143,74 +5217,7 @@
         </div>
       </div>
 
-      <!-- Page: Developer -->
-      <div class="page" id="page-developer">
-        <div class="settings-header">
-          <div class="settings-heading">
-            <div class="settings-kicker">Developer Hub</div>
-            <div class="section-title" style="margin-bottom:0">Developer Hub</div>
-            <div class="settings-meta">申请开发者权限、生成 skill.json、提交 Skill 到云端审核。</div>
-          </div>
-          <button class="btn" onclick="fetchSkillHubDeveloper()">刷新</button>
-        </div>
 
-        <div class="config-section" id="skillhub-account-card">
-          <div class="loading">正在检查 SkillHub 登录状态...</div>
-        </div>
-
-        <div class="config-section" id="skillhub-developer-status">
-          <div class="loading">正在读取开发者状态...</div>
-        </div>
-
-        <div class="config-section" id="skillhub-developer-apply">
-          <div class="config-group-title-main">申请成为开发者</div>
-          <div class="settings-meta" style="margin-bottom:14px">普通账号申请通过后，云端会给账号增加 developer 角色。</div>
-          <div class="chat-form-row" style="margin-bottom:10px">
-            <input class="config-input" id="skillhub-apply-name" placeholder="开发者显示名称" />
-            <input class="config-input" id="skillhub-apply-namespace" placeholder="命名空间，例如 contract-team" />
-          </div>
-          <div class="chat-form-row" style="margin-bottom:10px">
-            <input class="config-input" id="skillhub-apply-contact" placeholder="联系邮箱 / 微信 / 电话" />
-            <input class="config-input" id="skillhub-apply-homepage" placeholder="主页或组织链接（可选）" />
-          </div>
-          <textarea class="config-input" id="skillhub-apply-reason" rows="3" placeholder="简单说明你要发布哪些类型的 Skill"></textarea>
-          <div class="config-actions" style="margin-top:12px">
-            <button class="btn btn-primary" onclick="applySkillHubDeveloper()">提交申请</button>
-          </div>
-        </div>
-
-        <div class="config-section" id="skillhub-developer-console">
-          <div class="config-group-title-main">提交 Skill 审核</div>
-          <div class="settings-meta" style="margin-bottom:14px">选择本地 Skill 文件夹，填写基本信息；Agent 会读取文件、生成 manifest 草稿并提交云端扫描审核。</div>
-          <div class="settings-step-grid">
-            <label><span class="wizard-label">本地 Skill 文件夹</span><input class="config-input" id="skillhub-local-path" placeholder="例如 E:\\skills\\contract-review" /></label>
-            <label><span class="wizard-label">版本</span><input class="config-input" id="skillhub-version" value="1.0.0" /></label>
-            <label><span class="wizard-label">Skill 名称</span><input class="config-input" id="skillhub-name" placeholder="合同审查助手" /></label>
-            <label><span class="wizard-label">分类</span><input class="config-input" id="skillhub-category" placeholder="法务 / 办公 / 工程造价" /></label>
-            <label style="grid-column:1/-1"><span class="wizard-label">简介</span><input class="config-input" id="skillhub-description" placeholder="说明这个 Skill 解决什么问题" /></label>
-            <label style="grid-column:1/-1"><span class="wizard-label">关键词</span><input class="config-input" id="skillhub-keywords" placeholder="合同审查，采购合同，条款风险" /></label>
-            <label style="grid-column:1/-1"><span class="wizard-label">触发示例</span><textarea class="config-input" id="skillhub-triggers" rows="3" placeholder="帮我审查这份采购合同&#10;找出合同里的付款风险&#10;检查协议条款是否合理"></textarea></label>
-            <label><span class="wizard-label">权限</span><input class="config-input" id="skillhub-permissions" value="filesystem.read.user_selected" /></label>
-            <label><span class="wizard-label">仓库链接（可选）</span><input class="config-input" id="skillhub-repository-url" placeholder="https://github.com/org/repo" /></label>
-          </div>
-          <div class="config-actions" style="margin-top:14px">
-            <button class="btn" onclick="createSkillHubManifestDraft()">生成 skill.json 草稿</button>
-            <button class="btn btn-primary" onclick="submitSkillHubReview()">提交审核</button>
-          </div>
-          <pre class="manifest-preview" id="skillhub-manifest-preview" style="margin-top:14px">尚未生成 manifest。</pre>
-        </div>
-
-        <div class="config-section">
-          <div class="config-group-title-main">我的提交</div>
-          <div class="portal-list" id="skillhub-submissions-list"><div class="loading">暂无数据</div></div>
-        </div>
-
-        <div class="config-section">
-          <div class="config-group-title-main">My Published Versions</div>
-          <div class="settings-meta" style="margin-bottom:14px">Published SkillHub versions can be managed here. Public users can install any published version.</div>
-          <div class="portal-list" id="skillhub-package-versions-list"><div class="loading">No published versions</div></div>
-        </div>
-      </div>
 
     </div>
   </div>
@@ -5338,7 +5345,7 @@
     let appReadinessSnapshot = {};
     let appReadinessLoaded = false;
     let appReadinessError = '';
-    const pageTitles = { services:'Agent Hub', companion:'Companion Hub', chat:'CatsCo', developer:'Developer Hub' };
+    const pageTitles = { services:'Agent Hub', store:'SkillHub', companion:'Companion Hub', chat:'CatsCo' };
     let catsAuthMode = 'login';
     let catsState = {};
     let catsNextAction = 'none';
@@ -5974,12 +5981,12 @@
         if (!catsPollTimer) catsPollTimer = setInterval(fetchCatsStatus, 5000);
       } else if (name === 'companion') {
         setPetState(petState);
+      } else if (name === 'store') {
         refreshSkillHubPage();
+        fetchSkillHubDeveloper();
       } else if (name === 'services') {
         fetchStatus();
         refreshSettingsPage();
-      } else if (name === 'developer') {
-        fetchSkillHubDeveloper();
       }
     }
 
@@ -6107,7 +6114,7 @@
     function runReadinessAction(target) {
       if (target === 'settings') return switchPage('services');
       if (target === 'catsco') return switchPage('chat');
-      if (target === 'skills') return switchPage('companion');
+      if (target === 'skills') return switchPage('store');
       if (target === 'service') return svcAction('catscompany','start');
       fetchStatus();
       fetchReadiness();

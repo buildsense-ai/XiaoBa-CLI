@@ -47,7 +47,7 @@ test('Agent Hub keeps connector controls and third-party model config without du
   assert.doesNotMatch(dashboardHtml, /buildsense\.asia/i);
 });
 
-test('Companion Hub presents pet growth, skill search, and action preview', () => {
+test('Companion Hub presents pet growth and action preview', () => {
   assert.match(dashboardHtml, /Companion Hub/);
   assert.match(dashboardHtml, /伙伴 <span class="badge">动作库 22 帧<\/span>/);
   assert.match(dashboardHtml, /CatsCo Companion/);
@@ -62,13 +62,23 @@ test('Companion Hub presents pet growth, skill search, and action preview', () =
   assert.match(dashboardHtml, /previewPetState/);
   assert.match(dashboardHtml, /restorePetRealState/);
   assert.match(dashboardHtml, /shouldInterruptPetPreview/);
-  assert.match(dashboardHtml, /id="skillhub-search-input"/);
-  assert.match(dashboardHtml, /发现技能/);
-  assert.match(dashboardHtml, /已安装技能/);
   assert.doesNotMatch(dashboardHtml, /Token 经验/);
   assert.doesNotMatch(dashboardHtml, /id="pet-token-xp"/);
 });
 
+test('SkillHub Skills page is separate from Companion Hub and owns publishing controls', () => {
+  assert.match(dashboardHtml, /onclick="switchPage\('store'\)" data-page="store"/);
+  assert.match(dashboardHtml, /<div class="page" id="page-store">/);
+  assert.match(dashboardHtml, /id="skillhub-section"/);
+  assert.match(dashboardHtml, /id="skillhub-search-input"/);
+  assert.match(dashboardHtml, /发现技能/);
+  assert.match(dashboardHtml, /已安装技能/);
+  assert.match(dashboardHtml, /SkillHub Developer/);
+  assert.match(dashboardHtml, /id="skillhub-package-versions-list"/);
+  assert.doesNotMatch(dashboardHtml, /data-page="developer"/);
+  assert.doesNotMatch(dashboardHtml, /id="page-developer"/);
+  assert.match(dashboardHtml, /if \(target === 'skills'\) return switchPage\('store'\);/);
+});
 test('settings refresh path follows simplified Agent Hub sections', () => {
   assert.match(dashboardHtml, /async function refreshSettingsPage\(\)/);
   assert.match(dashboardHtml, /Promise\.all\(\[fetchDashboardSettings\(\), fetchReadiness\(\), fetchConfig\(\)\]\)/);
