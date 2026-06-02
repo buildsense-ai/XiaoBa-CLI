@@ -172,6 +172,25 @@ test('image content blocks contribute to prompt token estimates', () => {
   assert.ok(estimateMessageTokens({ role: 'user', content: [image] }) >= 1_000);
 });
 
+test('provider replay thinking contributes to prompt token estimates', () => {
+  const hiddenThinking = 'a'.repeat(200_000);
+  const tokens = estimateMessageTokens({
+    role: 'assistant',
+    content: null,
+    tool_calls: [{
+      id: 'call_1',
+      type: 'function',
+      function: { name: 'execute_shell', arguments: '{}' },
+    }],
+    providerContent: [
+      { type: 'thinking', thinking: hiddenThinking, signature: 'sig_1' },
+      { type: 'tool_use', id: 'call_1', name: 'execute_shell', input: {} },
+    ],
+  });
+
+  assert.ok(tokens > 40_000, `hidden provider thinking should be budgeted, got ${tokens}`);
+});
+
 test('oversized tool schemas are disabled visibly before provider requests', async () => {
   const hugeTool: ToolDefinition = {
     name: 'huge_tool_schema',

@@ -66,8 +66,58 @@ export function estimateMessageTokens(message: Message): number {
     }
   }
 
+  tokens += estimateProviderContentTokens(message);
+
   if (message.name) {
     tokens += estimateTokens(message.name);
+  }
+
+  return tokens;
+}
+
+function estimateProviderContentTokens(message: Message): number {
+  const blocks = message.providerContent;
+  if (!Array.isArray(blocks) || blocks.length === 0) return 0;
+
+  const existingToolCallIds = new Set((message.tool_calls || []).map(toolCall => toolCall.id));
+  const hasStringContent = typeof message.content === 'string' && message.content.length > 0;
+  let tokens = 2;
+
+  for (const block of blocks) {
+    if (!block || typeof block !== 'object') continue;
+    const type = typeof block.type === 'string' ? block.type : '';
+    tokens += estimateTokens(type) + 2;
+
+    if (type === 'text' && typeof block.text === 'string') {
+      if (!hasStringContent) tokens += estimateTokens(block.text);
+      continue;
+    }
+
+    if (type === 'thinking' && typeof block.thinking === 'string') {
+      tokens += estimateTokens(block.thinking);
+      if (typeof block.signature === 'string') {
+        tokens += estimateTokens(block.signature);
+      }
+      continue;
+    }
+
+    if (type === 'redacted_thinking') {
+      tokens += estimateJsonTokens(block);
+      continue;
+    }
+
+    if (type === 'tool_use') {
+      const id = typeof block.id === 'string' ? block.id : '';
+      if (existingToolCallIds.has(id)) {
+        continue;
+      }
+      tokens += estimateTokens(id);
+      tokens += estimateTokens(typeof block.name === 'string' ? block.name : '');
+      tokens += estimateJsonTokens(block.input);
+      continue;
+    }
+
+    tokens += estimateJsonTokens(block);
   }
 
   return tokens;

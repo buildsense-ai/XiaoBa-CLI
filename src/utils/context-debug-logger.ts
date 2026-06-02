@@ -141,9 +141,47 @@ export class ContextDebugLogger {
           timestamp: now.toISOString(),
           stage,
           request_id: requestId,
-          data
+          data: ContextDebugLogger.sanitizeSdkDump(data)
         }, null, 2)
       );
     } catch { /* SDK dump 写入失败不影响主流程 */ }
+  }
+
+  private static sanitizeSdkDump(value: unknown, seen = new WeakSet<object>()): unknown {
+    if (value === null || typeof value !== 'object') return value;
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      const output = value.map(item => ContextDebugLogger.sanitizeSdkDump(item, seen));
+      seen.delete(value);
+      return output;
+    }
+
+    const source = value as Record<string, unknown>;
+    const type = typeof source.type === 'string' ? source.type : '';
+    const output: Record<string, unknown> = {};
+
+    for (const [key, item] of Object.entries(source)) {
+      if (key === 'thinking' && typeof item === 'string') {
+        output[key] = `[redacted hidden thinking: ${item.length} chars]`;
+        continue;
+      }
+
+      if (key === 'signature' && typeof item === 'string') {
+        output[key] = '[redacted thinking signature]';
+        continue;
+      }
+
+      if (type === 'redacted_thinking' && key === 'data' && typeof item === 'string') {
+        output[key] = `[redacted thinking data: ${item.length} chars]`;
+        continue;
+      }
+
+      output[key] = ContextDebugLogger.sanitizeSdkDump(item, seen);
+    }
+
+    seen.delete(value);
+    return output;
   }
 }
