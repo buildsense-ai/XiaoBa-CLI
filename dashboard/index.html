@@ -4864,9 +4864,6 @@
       <a class="nav-item" onclick="switchPage('services')" data-page="services">
         <span class="nav-icon">&gt;</span> <span>智能体中心</span>
       </a>
-      <a class="nav-item" onclick="switchPage('store')" data-page="store">
-        <span class="nav-icon">+</span> <span>Skills</span>
-      </a>
       <a class="nav-item" onclick="switchPage('companion')" data-page="companion">
         <span class="nav-icon">*</span> <span>伙伴中心</span>
       </a>
@@ -5341,7 +5338,7 @@
     let appReadinessSnapshot = {};
     let appReadinessLoaded = false;
     let appReadinessError = '';
-    const pageTitles = { services:'Agent Hub', store:'SkillHub', companion:'Companion Hub', chat:'CatsCo', developer:'Developer Hub' };
+    const pageTitles = { services:'Agent Hub', companion:'Companion Hub', chat:'CatsCo', developer:'Developer Hub' };
     let catsAuthMode = 'login';
     let catsState = {};
     let catsNextAction = 'none';
@@ -5964,12 +5961,11 @@
     function switchPage(name) {
       document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
       document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-      const pageName = name === 'store' ? 'companion' : name;
-      const page = document.getElementById('page-'+pageName);
+      const page = document.getElementById('page-'+name);
       if (page) page.classList.add('active');
       const nav = document.querySelector('.nav-item[data-page="'+name+'"]');
       if (nav) nav.classList.add('active');
-      document.body.classList.toggle('companion-active', pageName === 'companion');
+      document.body.classList.toggle('companion-active', name === 'companion');
       document.body.classList.toggle('chat-active', name === 'chat');
       const titleEl = document.getElementById('topbar-title');
       if (titleEl) titleEl.textContent = pageTitles[name] || name;
@@ -5979,10 +5975,6 @@
       } else if (name === 'companion') {
         setPetState(petState);
         refreshSkillHubPage();
-      } else if (name === 'store') {
-        setPetState(petState);
-        refreshSkillHubPage();
-        setTimeout(() => document.getElementById('companion-skillhub-section')?.scrollIntoView({ block:'start' }), 0);
       } else if (name === 'services') {
         fetchStatus();
         refreshSettingsPage();
@@ -6115,7 +6107,7 @@
     function runReadinessAction(target) {
       if (target === 'settings') return switchPage('services');
       if (target === 'catsco') return switchPage('chat');
-      if (target === 'skills') return switchPage('store');
+      if (target === 'skills') return switchPage('companion');
       if (target === 'service') return svcAction('catscompany','start');
       fetchStatus();
       fetchReadiness();

@@ -69,13 +69,6 @@ test('Companion Hub presents pet growth, skill search, and action preview', () =
   assert.doesNotMatch(dashboardHtml, /id="pet-token-xp"/);
 });
 
-test('SkillHub remains reachable from the primary Skills navigation item', () => {
-  assert.match(dashboardHtml, /onclick="switchPage\('store'\)" data-page="store"/);
-  assert.match(dashboardHtml, /const pageName = name === 'store' \? 'companion' : name;/);
-  assert.match(dashboardHtml, /id="companion-skillhub-section"/);
-  assert.match(dashboardHtml, /if \(target === 'skills'\) return switchPage\('store'\);/);
-});
-
 test('settings refresh path follows simplified Agent Hub sections', () => {
   assert.match(dashboardHtml, /async function refreshSettingsPage\(\)/);
   assert.match(dashboardHtml, /Promise\.all\(\[fetchDashboardSettings\(\), fetchReadiness\(\), fetchConfig\(\)\]\)/);
