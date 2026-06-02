@@ -631,6 +631,14 @@
       min-width: 0;
     }
 
+    .settings-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
     .settings-kicker {
       color: var(--text3);
       font-size: 12px;
@@ -1215,6 +1223,23 @@
       gap: 18px;
     }
 
+    .companion-skills-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    .companion-skill-toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
     .skill-card {
       border-radius: 24px;
       padding: 20px;
@@ -1747,6 +1772,22 @@
       flex-wrap: wrap;
     }
 
+    .compact-readiness {
+      margin: 20px 0 26px;
+    }
+
+    .readiness-alert {
+      box-shadow: none;
+    }
+
+    .readiness-alert-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
     .run-summary-main {
       min-width: 0;
     }
@@ -1942,6 +1983,65 @@
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
+    }
+
+    .service-config {
+      margin-top: 16px;
+      border-top: 1px solid var(--border-light);
+      padding-top: 12px;
+    }
+
+    .service-config summary {
+      cursor: pointer;
+      list-style: none;
+      color: var(--text2);
+      font-size: 13px;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .service-config summary::-webkit-details-marker { display: none; }
+
+    .service-config-body {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .service-config-row {
+      display: grid;
+      gap: 6px;
+    }
+
+    .service-config-row .config-label {
+      min-width: 0;
+      font-size: 12px;
+    }
+
+    .service-config-row .config-input {
+      width: 100%;
+    }
+
+    .service-config-actions {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 2px;
+    }
+
+    .service-config.dirty .service-config-actions {
+      display: flex;
+    }
+
+    .service-config-hint {
+      color: var(--text3);
+      font-size: 12px;
+      font-weight: 700;
+      margin-right: auto;
     }
 
     .config-panel {
@@ -4172,9 +4272,9 @@
 
     .companion-hero {
       display: grid;
-      grid-template-columns: minmax(280px, 420px) minmax(360px, 1fr);
+      grid-template-columns: minmax(300px, 420px) minmax(360px, 1fr);
       gap: 18px;
-      align-items: stretch;
+      align-items: start;
     }
 
     .companion-card {
@@ -4185,20 +4285,56 @@
     }
 
     .pet-stage.companion-card {
-      min-height: 360px;
-    }
-
-    .companion-panel {
+      min-height: 0;
       padding: 20px;
-      display: grid;
+      display: flex;
+      flex-direction: column;
+      place-items: unset;
       gap: 16px;
     }
 
-    .companion-title-row {
+    .pet-stage.companion-card::before {
+      left: 58px;
+      right: 58px;
+      bottom: 118px;
+      height: 18px;
+      opacity: 0.72;
+    }
+
+    .companion-profile-head,
+    .companion-next-title-row {
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
       gap: 14px;
+      position: relative;
+      z-index: 2;
+    }
+
+    .companion-side-stack {
+      display: grid;
+      gap: 14px;
+    }
+
+    .companion-panel,
+    .companion-next-card,
+    .companion-summary-card,
+    .companion-recent-card,
+    .companion-actions-card {
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .companion-level-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+      font-size: 15px;
+      font-weight: 850;
+      position: relative;
+      z-index: 2;
     }
 
     .companion-eyebrow {
@@ -4220,6 +4356,54 @@
       font-size: 13px;
       line-height: 1.5;
       margin-top: 6px;
+    }
+
+    .companion-pet-visual {
+      min-height: 250px;
+      display: grid;
+      place-items: center;
+      position: relative;
+      z-index: 1;
+    }
+
+    .pet-stage.companion-card .pet-frame {
+      width: min(76%, 220px);
+      height: 220px;
+      margin-top: 36px;
+      max-width: 100%;
+    }
+
+    .companion-pet-bubble {
+      position: absolute;
+      left: 50%;
+      top: 4px;
+      transform: translateX(-50%);
+      max-width: min(92%, 280px);
+      min-height: 38px;
+      padding: 9px 13px;
+      border: 1px solid var(--border-light);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.96);
+      color: var(--text2);
+      font-size: 13px;
+      font-weight: 750;
+      line-height: 1.35;
+      text-align: center;
+      box-shadow: var(--shadow-sm);
+      z-index: 3;
+    }
+
+    .companion-pet-bubble::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      bottom: -7px;
+      width: 12px;
+      height: 12px;
+      transform: translateX(-50%) rotate(45deg);
+      background: inherit;
+      border-right: 1px solid var(--border-light);
+      border-bottom: 1px solid var(--border-light);
     }
 
     .companion-level {
@@ -4262,10 +4446,10 @@
     }
 
     .companion-metric {
-      padding: 12px;
-      border: 1px solid var(--border);
+      padding: 11px 12px;
+      border: 1px solid var(--border-light);
       border-radius: 10px;
-      background: #fff;
+      background: var(--surface-muted);
       min-width: 0;
     }
 
@@ -4281,6 +4465,46 @@
       font-size: 15px;
       font-weight: 800;
       white-space: nowrap;
+    }
+
+    .companion-next-name {
+      color: var(--text);
+      font-size: 20px;
+      font-weight: 850;
+      line-height: 1.25;
+    }
+
+    .companion-next-copy {
+      color: var(--text2);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .companion-next-stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .companion-next-stat {
+      padding: 11px 12px;
+      border: 1px solid var(--border-light);
+      border-radius: 10px;
+      background: var(--surface-muted);
+    }
+
+    .companion-next-stat span {
+      display: block;
+      color: var(--text3);
+      font-size: 11px;
+      font-weight: 750;
+      margin-bottom: 4px;
+    }
+
+    .companion-next-stat strong {
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 850;
     }
 
     .companion-section-head {
@@ -4313,6 +4537,12 @@
       background: #fff;
     }
 
+    .companion-recent-card .companion-process-item {
+      grid-template-columns: 8px 1fr;
+      padding: 9px 10px;
+      background: var(--surface-muted);
+    }
+
     .companion-process-dot {
       width: 8px;
       height: 8px;
@@ -4342,42 +4572,65 @@
       white-space: nowrap;
     }
 
-    .companion-unlocks {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
-    }
-
-    .companion-unlock {
-      min-height: 76px;
-      padding: 11px;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      background: #fff;
-      display: grid;
-      align-content: space-between;
-      gap: 8px;
-    }
-
-    .companion-unlock.locked {
+    .companion-text-action {
+      border: 0;
+      background: transparent;
       color: var(--text3);
-      background: #f8fafc;
+      font-size: 12px;
+      font-weight: 750;
+      cursor: pointer;
+      padding: 0;
     }
 
-    .companion-unlock-title {
-      font-size: 13px;
-      font-weight: 800;
-      color: var(--text);
-    }
-
-    .companion-unlock.locked .companion-unlock-title {
+    .companion-text-action:hover {
       color: var(--text2);
     }
 
-    .companion-unlock-meta {
+    .companion-action-library {
+      display: grid;
+      gap: 12px;
+    }
+
+    .companion-action-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .companion-action-tags .pet-action {
+      min-height: 0;
+      display: inline-flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 8px 11px;
+      border-radius: 10px;
+      border: 1px solid var(--border-light);
+      background: var(--surface-muted);
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 800;
+      box-shadow: none;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .companion-action-tags .pet-action.active,
+    .companion-action-tags .pet-action.previewing {
+      color: var(--accent);
+      background: var(--accent-light);
+      border-color: rgba(59, 130, 246, 0.16);
+    }
+
+    .companion-action-tags .pet-action span {
+      margin: 0;
+      color: var(--text3);
       font-size: 11px;
       font-weight: 700;
-      color: var(--text3);
+    }
+
+    .companion-action-tags .pet-action.active span,
+    .companion-action-tags .pet-action.previewing span {
+      color: var(--accent);
     }
 
     .floating-pet-panel {
@@ -4453,7 +4706,7 @@
     @media (max-width: 780px) {
       body:not(.chat-active) .companion-hero,
       body:not(.chat-active) .companion-metrics,
-      body:not(.chat-active) .companion-unlocks {
+      body:not(.chat-active) .companion-next-stats {
         grid-template-columns: 1fr;
       }
     }
@@ -4531,7 +4784,7 @@
 
       .companion-hero,
       .companion-metrics,
-      .companion-unlocks {
+      .companion-next-stats {
         grid-template-columns: 1fr;
       }
 
@@ -4609,26 +4862,17 @@
         <span class="nav-icon">@</span> <span>CatsCo</span>
       </a>
       <a class="nav-item" onclick="switchPage('services')" data-page="services">
-        <span class="nav-icon">&gt;</span> <span>机器人</span>
+        <span class="nav-icon">&gt;</span> <span>智能体中心</span>
       </a>
-      <a class="nav-item" onclick="switchPage('config')" data-page="config">
-        <span class="nav-icon">~</span> <span>设置</span>
-      </a>
-      <a class="nav-item" onclick="switchPage('store')" data-page="store">
-        <span class="nav-icon">+</span> <span>Skills</span>
+      <a class="nav-item" onclick="switchPage('companion')" data-page="companion">
+        <span class="nav-icon">*</span> <span>伙伴中心</span>
       </a>
       <a class="nav-item" onclick="switchPage('developer')" data-page="developer">
         <span class="nav-icon">{}</span> <span>开发者中心</span>
       </a>
-      <a class="nav-item" onclick="switchPage('companion')" data-page="companion">
-        <span class="nav-icon">*</span> <span>伙伴</span>
-      </a>
     </nav>
     <div class="sidebar-footer">
       <div class="sidebar-footer-info">
-        <span id="topbar-status" style="display:inline-block;margin-bottom:4px;font-size:11px;padding:3px 8px;border-radius:999px;background:rgba(30,169,113,0.15);color:#1ea971;font-weight:700">在线</span><br/>
-        <span id="footer-platform">-</span><br/>
-        <span id="footer-node">-</span>
         <button class="btn sidebar-update-btn" id="sidebar-update-btn" onclick="showUpdateModal(true)">检查更新</button>
       </div>
     </div>
@@ -4642,105 +4886,155 @@
       <div class="page" id="page-services">
         <div class="settings-header">
           <div class="settings-heading">
-            <div class="settings-kicker">Connectors</div>
-            <div class="section-title" style="margin-bottom:0">机器人连接器</div>
-            <div class="settings-meta">启动 CatsCo webapp、飞书或微信入口；日志和诊断保留在同一页，方便排障。</div>
+            <div class="settings-kicker">Agent Hub</div>
+            <div class="section-title" style="margin-bottom:0">运行、连接与设置</div>
+            <div class="settings-meta">集中处理本地 agent、连接器和必要的高级环境变量。</div>
           </div>
           <button class="btn btn-primary" onclick="fetchStatus()">刷新状态</button>
         </div>
         <div class="services-grid robot-grid" id="services-grid"><div class="loading">加载中...</div></div>
-        <details class="run-details" open>
-          <summary><span>启动前检查</span><span class="tag">readiness</span></summary>
-          <div class="run-details-body">
-            <div class="run-overview">
-              <div class="run-summary" id="run-summary">
-                <div class="run-summary-main">
-                  <div class="run-summary-label">启动状态</div>
-                  <div class="run-summary-title">正在检查本地 agent</div>
-                  <div class="run-summary-meta">检查模型来源、CatsCo Chat、Runtime Profile 和 Skills。</div>
-                </div>
-                <button class="btn" onclick="fetchStatus()">刷新</button>
-              </div>
-              <div class="readiness-grid" id="readiness-grid"><div class="loading">加载中...</div></div>
-            </div>
+
+        <div class="settings-header" style="margin-top:28px">
+          <div class="settings-heading">
+            <div class="settings-kicker">Settings</div>
+            <div class="section-title" style="margin-bottom:0">自定义模型</div>
+            <div class="settings-meta">CatsCo 中转模型在 CatsCo 页面选择；这里只保留第三方模型的手动配置。</div>
           </div>
-        </details>
-        <details class="run-details" id="diagnostics-details">
-          <summary><span>Diagnostics</span><span class="tag">version / host / paths</span></summary>
-          <div class="run-details-body">
-            <div class="status-grid" id="status-grid"></div>
+          <div class="settings-actions">
+            <button class="btn" id="custom-model-toggle-btn" onclick="toggleCustomModelSettings()">展开配置</button>
+            <button class="btn" onclick="refreshSettingsPage()">刷新设置</button>
           </div>
-        </details>
+        </div>
+        <div class="config-section" id="model-source-panel"><div class="loading">加载模型来源...</div></div>
       </div>
 
       <!-- Page: Companion -->
       <div class="page" id="page-companion">
-        <div class="section-title">伙伴 <span class="badge">预览</span> <span class="badge" id="skill-count">0</span></div>
-        <div class="companion-hero">
-          <div class="pet-stage companion-card" aria-label="电子宠物动画预览">
-            <img class="pet-frame" id="pet-frame" src="pet/idle/01.png" alt="CatsCo companion" />
+        <div class="settings-header">
+          <div class="settings-heading">
+            <div class="settings-kicker">Companion Hub</div>
+            <div class="section-title" style="margin-bottom:0">伙伴 <span class="badge">动作库 22 帧</span></div>
           </div>
-          <div class="companion-card companion-panel">
-            <div class="companion-title-row">
+        </div>
+        <div class="companion-hero">
+          <section class="pet-stage companion-card companion-profile-card" aria-label="CatsCo 宠物伙伴">
+            <div class="companion-profile-head">
               <div>
                 <div class="companion-eyebrow">CatsCo Companion</div>
                 <div class="companion-name" id="pet-profile-name">CatsCo</div>
-                <div class="companion-state-copy" id="pet-state-copy">正在等待下一项任务。</div>
               </div>
-              <span class="pet-state-pill" id="pet-state-pill">idle</span>
+              <span class="pet-state-pill" id="pet-state-pill">待机中</span>
+            </div>
+            <div class="companion-level-title">
+              <span id="pet-level-label">Lv.1</span>
+              <span id="pet-title-label">新手伙伴</span>
+            </div>
+            <div class="companion-state-copy" id="pet-state-copy">正在等待下一项任务。</div>
+
+            <div class="companion-pet-visual" id="companion-pet-visual">
+              <div class="companion-pet-bubble" id="companion-pet-bubble">等待下一项任务</div>
+              <img class="pet-frame" id="pet-frame" src="pet/idle/01.png" alt="CatsCo companion" />
             </div>
 
             <div class="companion-level">
               <div class="companion-level-meta">
-                <span id="pet-level-label">Lv.1</span>
-                <span id="pet-xp-label">0 / 100 XP</span>
+                <span>等级进度</span>
+                <span id="pet-xp-label">0 / 50 XP</span>
               </div>
               <div class="companion-xp-track"><div class="companion-xp-bar" id="pet-xp-bar"></div></div>
             </div>
+          </section>
 
+          <aside class="companion-side-stack">
+          <section class="companion-card companion-next-card">
+            <div class="companion-section-head">
+              <div class="companion-section-title">下一解锁</div>
+              <span class="tag" id="companion-next-level-tag">Lv.2</span>
+            </div>
+            <div id="companion-next-unlock">
+              <div class="companion-next-name">Lv.2 Skill 气泡</div>
+              <div class="companion-next-copy">宠物会显示正在调用哪个 skill。</div>
+              <div class="companion-next-stats">
+                <div class="companion-next-stat"><span>当前 XP</span><strong>0 / 50 XP</strong></div>
+                <div class="companion-next-stat"><span>还差</span><strong>50 XP</strong></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="companion-card companion-summary-card">
+            <div class="companion-section-head">
+              <div class="companion-section-title">成长摘要</div>
+            </div>
             <div class="companion-metrics">
               <div class="companion-metric">
-                <div class="companion-metric-label">Token 经验</div>
-                <div class="companion-metric-value" id="pet-token-xp">待接入</div>
+                <div class="companion-metric-label">今日成长</div>
+                <div class="companion-metric-value" id="pet-today-xp">0 XP</div>
               </div>
               <div class="companion-metric">
                 <div class="companion-metric-label">能力调用</div>
-                <div class="companion-metric-value" id="pet-skill-xp">0</div>
+                <div class="companion-metric-value" id="pet-skill-xp">0 次</div>
               </div>
               <div class="companion-metric">
                 <div class="companion-metric-label">当前形态</div>
                 <div class="companion-metric-value" id="pet-form-label">基础小猫</div>
               </div>
             </div>
+          </section>
 
-            <div>
+          <section class="companion-card companion-recent-card">
               <div class="companion-section-head">
-                <div class="companion-section-title">工作过程</div>
-                <button class="btn" onclick="clearPetProcess()" style="font-size:12px;padding:6px 10px">清空</button>
+                <div class="companion-section-title">最近工作</div>
+                <button class="companion-text-action" onclick="clearPetProcess()">清空</button>
               </div>
               <div class="companion-process-list" id="companion-process-list"></div>
-            </div>
+          </section>
 
-            <div>
+          <section class="companion-card companion-actions-card">
+            <div class="companion-action-library">
               <div class="companion-section-head">
-                <div class="companion-section-title">解锁预告</div>
+                <div class="companion-section-title">当前动作库</div>
+                <span class="tag">22 帧</span>
               </div>
-              <div class="companion-unlocks" id="companion-unlocks"></div>
+              <div class="pet-action-grid companion-action-tags">
+                <div class="pet-action active" data-pet-state="idle" role="button" tabindex="0" onclick="previewPetAction('idle')" onkeydown="handlePetActionPreviewKey(event,'idle')">待机<span>4 帧</span></div>
+                <div class="pet-action" data-pet-state="thinking" role="button" tabindex="0" onclick="previewPetAction('thinking')" onkeydown="handlePetActionPreviewKey(event,'thinking')">思考<span>4 帧</span></div>
+                <div class="pet-action" data-pet-state="typing" role="button" tabindex="0" onclick="previewPetAction('typing')" onkeydown="handlePetActionPreviewKey(event,'typing')">输入<span>6 帧</span></div>
+                <div class="pet-action" data-pet-state="success" role="button" tabindex="0" onclick="previewPetAction('success')" onkeydown="handlePetActionPreviewKey(event,'success')">成功<span>4 帧</span></div>
+                <div class="pet-action" data-pet-state="error" role="button" tabindex="0" onclick="previewPetAction('error')" onkeydown="handlePetActionPreviewKey(event,'error')">错误<span>4 帧</span></div>
+              </div>
             </div>
-
-            <div class="pet-action-grid">
-              <button class="btn pet-action active" data-pet-state="idle" onclick="setPetState('idle')">待机<span>4 帧循环</span></button>
-              <button class="btn pet-action" data-pet-state="thinking" onclick="setPetState('thinking')">思考<span>4 帧循环</span></button>
-              <button class="btn pet-action" data-pet-state="typing" onclick="setPetState('typing')">输入<span>6 帧循环</span></button>
-              <button class="btn pet-action" data-pet-state="success" onclick="setPetState('success')">成功<span>4 帧循环</span></button>
-              <button class="btn pet-action" data-pet-state="error" onclick="setPetState('error')">错误<span>4 帧循环</span></button>
-            </div>
-            <div class="pet-frame-strip" id="pet-frame-strip"></div>
-          </div>
+          </section>
+          </aside>
         </div>
-        <div style="margin-top:22px">
-          <div class="section-title">能力成长预览</div>
-          <div class="skills-grid" id="skills-grid"><div class="loading">加载中...</div></div>
+        <div id="companion-skillhub-section" style="margin-top:28px">
+          <div class="companion-skills-head">
+            <div class="section-title" style="margin-bottom:0">Skills</div>
+            <button class="btn" onclick="refreshSkillHubPage()">刷新</button>
+          </div>
+          <div class="companion-skill-toolbar">
+            <input class="config-input" id="skillhub-search-input" placeholder="搜索合同审查、PPT、工程量清单..." onkeydown="if(event.key==='Enter')searchSkillHub()" />
+            <button class="btn btn-primary" onclick="searchSkillHub()">搜索</button>
+            <button class="btn" onclick="document.getElementById('skillhub-search-input').value='';searchSkillHub('', true)">清空</button>
+          </div>
+          <details class="config-section" open>
+            <summary class="settings-advanced-summary">
+              <span>发现技能</span>
+              <span class="tag">cloud registry</span>
+            </summary>
+            <div class="settings-advanced-body">
+              <div class="skills-grid" id="skillhub-registry-grid"><div class="loading">搜索云端已审核 Skill。</div></div>
+            </div>
+          </details>
+
+          <details class="config-section" open>
+            <summary class="settings-advanced-summary">
+              <span>已安装技能</span>
+              <span class="tag">local</span>
+            </summary>
+            <div class="settings-advanced-body">
+              <div class="skills-grid" id="store-grid"><div class="loading">加载中...</div></div>
+            </div>
+          </details>
         </div>
       </div>
 
@@ -4849,88 +5143,12 @@
         </div>
       </div>
 
-      <!-- Page: Config -->
-      <div class="page" id="page-config">
-        <div class="settings-header">
-          <div class="settings-heading">
-            <div class="settings-kicker">Settings</div>
-            <div class="section-title" style="margin-bottom:0">模型来源与 Runtime Profile</div>
-            <div class="settings-meta">优先使用 CatsCo 中转模型；自定义模型和本地环境变量保留在高级区域。</div>
-          </div>
-          <button class="btn" onclick="refreshSettingsPage()">刷新</button>
-        </div>
-        <div class="config-section settings-setup-card" id="settings-setup-panel">
-          <div class="settings-setup-head">
-            <div>
-              <div class="settings-setup-title">先完成关键配置</div>
-              <div class="settings-setup-copy">普通使用只需要确认 CatsCo 登录和模型来源；Runtime Profile、.env、adapter endpoint 都放在高级折叠区。</div>
-            </div>
-            <span class="tag warm">setup</span>
-          </div>
-          <div class="settings-step-grid">
-            <div class="settings-step"><div class="settings-step-title">加载中 <span class="tag gray">...</span></div><div class="settings-step-meta">正在读取 readiness。</div></div>
-          </div>
-        </div>
-        <div class="config-section" id="model-source-panel"><div class="loading">加载模型来源...</div></div>
-        <div class="config-section" id="runtime-config-panel"><div class="loading">加载 runtime 配置...</div></div>
-        <details class="config-section settings-advanced-shell" id="env-config-details">
-          <summary class="settings-advanced-summary">
-            <span>本地环境变量（高级诊断）</span>
-            <span class="tag warm">兼容入口</span>
-          </summary>
-          <div class="settings-advanced-body">
-            <div class="runtime-note warning">这个区域保留给 adapter 和本地调试变量。访问凭证、token、secret 不会写入 Runtime Profile。</div>
-            <div class="config-actions" style="margin-bottom:14px">
-              <button class="btn btn-primary" id="save-config-btn" onclick="saveConfig()" style="display:none">保存 .env</button>
-              <span class="config-saved" id="config-saved">已保存</span>
-            </div>
-            <div id="config-panel"><div class="loading">展开后加载 .env 配置...</div></div>
-          </div>
-        </details>
-      </div>
-
-      <!-- Page: Store -->
-      <div class="page" id="page-store">
-        <div class="settings-header">
-          <div class="settings-heading">
-            <div class="settings-kicker">SkillHub</div>
-            <div class="section-title" style="margin-bottom:0">Skills</div>
-            <div class="settings-meta">公开 Skill 无需登录即可搜索和安装；登录后可申请开发者权限并提交 Skill。</div>
-          </div>
-          <button class="btn" onclick="refreshSkillHubPage()">刷新</button>
-        </div>
-
-        <details class="config-section" open>
-          <summary class="settings-advanced-summary">
-            <span>发现技能</span>
-            <span class="tag">cloud registry</span>
-          </summary>
-          <div class="settings-advanced-body">
-            <div class="chat-form-row" style="margin-bottom:14px">
-              <input class="config-input" id="skillhub-search-input" placeholder="搜索合同审查、PPT、工程量清单..." onkeydown="if(event.key==='Enter')searchSkillHub()" />
-              <button class="btn btn-primary" onclick="searchSkillHub()">搜索</button>
-            </div>
-            <div class="skills-grid" id="skillhub-registry-grid"><div class="loading">搜索云端已审核 Skill。</div></div>
-          </div>
-        </details>
-
-        <details class="config-section" open>
-          <summary class="settings-advanced-summary">
-            <span>已安装技能</span>
-            <span class="tag">local</span>
-          </summary>
-          <div class="settings-advanced-body">
-            <div class="skills-grid" id="store-grid"><div class="loading">加载中...</div></div>
-          </div>
-        </details>
-      </div>
-
       <!-- Page: Developer -->
       <div class="page" id="page-developer">
         <div class="settings-header">
           <div class="settings-heading">
-            <div class="settings-kicker">SkillHub Developer</div>
-            <div class="section-title" style="margin-bottom:0">开发者中心</div>
+            <div class="settings-kicker">Developer Hub</div>
+            <div class="section-title" style="margin-bottom:0">Developer Hub</div>
             <div class="settings-meta">申请开发者权限、生成 skill.json、提交 Skill 到云端审核。</div>
           </div>
           <button class="btn" onclick="fetchSkillHubDeveloper()">刷新</button>
@@ -4996,7 +5214,7 @@
     <div class="floating-pet-panel" id="floating-pet-panel">
       <div class="floating-pet-panel-head">
         <div>
-          <div class="floating-pet-panel-title">Working Process</div>
+          <div class="floating-pet-panel-title">最近工作</div>
           <div class="floating-pet-panel-subtitle" id="floating-pet-panel-state">idle</div>
         </div>
         <span class="pet-state-pill" id="floating-pet-panel-level">Lv.1</span>
@@ -5104,7 +5322,7 @@
     let appReadinessSnapshot = {};
     let appReadinessLoaded = false;
     let appReadinessError = '';
-    const pageTitles = { services:'机器人', companion:'伙伴', chat:'CatsCo', config:'设置', store:'Skills', developer:'开发者中心' };
+    const pageTitles = { services:'Agent Hub', companion:'Companion Hub', chat:'CatsCo', developer:'Developer Hub' };
     let catsAuthMode = 'login';
     let catsState = {};
     let catsNextAction = 'none';
@@ -5136,19 +5354,24 @@
     const petFrames = {
       idle: ['pet/idle/01.png', 'pet/idle/02.png', 'pet/idle/03.png', 'pet/idle/04.png'],
       thinking: ['pet/thinking/01.png', 'pet/thinking/02.png', 'pet/thinking/03.png', 'pet/thinking/04.png'],
+      working: ['pet/thinking/01.png', 'pet/thinking/02.png', 'pet/thinking/03.png', 'pet/thinking/04.png'],
       typing: ['pet/typing/01.png', 'pet/typing/02.png', 'pet/typing/03.png', 'pet/typing/04.png', 'pet/typing/05.png', 'pet/typing/06.png'],
       success: ['pet/success/01.png', 'pet/success/02.png', 'pet/success/03.png', 'pet/success/04.png'],
-      error: ['pet/error/01.png', 'pet/error/02.png', 'pet/error/03.png', 'pet/error/04.png']
+      error: ['pet/error/01.png', 'pet/error/02.png', 'pet/error/03.png', 'pet/error/04.png'],
+      level_up: ['pet/success/01.png', 'pet/success/02.png', 'pet/success/03.png', 'pet/success/04.png']
     };
-    const petSpeeds = { idle: 520, thinking: 620, typing: 140, success: 360, error: 420 };
-    const petStateLabels = { idle: '待机中', thinking: '思考中', typing: '输入中', success: '完成了', error: '出错了' };
+    const petSpeeds = { idle: 520, thinking: 620, working: 520, typing: 140, success: 360, error: 420, level_up: 320 };
+    const petStateLabels = { idle: '待机中', thinking: '思考中', working: '工作中', typing: '输入中', success: '完成了', error: '出错了', level_up: '升级了' };
     const petStateCopy = {
       idle: '正在等待下一项任务。',
       thinking: '正在整理上下文和下一步动作。',
+      working: '正在执行当前任务。',
       typing: '正在处理输入或输出内容。',
       success: '刚完成了一项工作。',
-      error: '遇到异常，需要你看一眼。'
+      error: '遇到异常，需要你看一眼。',
+      level_up: '经验提升，解锁了新等级。'
     };
+    const petPreviewLabels = { idle: '待机', thinking: '思考', typing: '输入', success: '成功', error: '错误' };
     const PET_PROFILE_KEY = 'xiaoba.petProfile';
     const PET_PROCESS_KEY = 'xiaoba.petProcess';
     const PET_POSITION_KEY = 'xiaoba.petPosition';
@@ -5158,20 +5381,33 @@
     const DASHBOARD_FONT_SCALE_STEP = 5;
     const DASHBOARD_FONT_SCALE_DEFAULT = 100;
     const petUnlocks = [
-      { level: 2, title: '专注表情', meta: '更多 thinking 动态' },
-      { level: 4, title: 'CatsCo 皮肤', meta: '浅色工作台主题' },
-      { level: 7, title: '新伙伴位', meta: '解锁第二只宠物' }
+      { level: 1, title: '基础小猫', meta: '基础待机、思考、完成、错误动作' },
+      { level: 2, title: 'Skill 气泡', meta: '宠物会显示正在调用哪个 skill' },
+      { level: 3, title: '专注表情包', meta: '思考和工作时动作更丰富' },
+      { level: 4, title: '工作台皮肤', meta: '解锁浅色工位风格' },
+      { level: 5, title: '错误解释', meta: '出错时提示可能原因' },
+      { level: 6, title: '完成庆祝', meta: '任务完成后出现庆祝动作' },
+      { level: 7, title: '新伙伴位', meta: '解锁第二只协作宠物' },
+      { level: 8, title: 'Skill 徽章', meta: '显示最擅长的 skill 类型' },
+      { level: 9, title: '工作总结', meta: '宠物总结本次任务过程' },
+      { level: 10, title: '高级伙伴', meta: '高级外观和专属状态反馈' }
     ];
+    const petLevelStepXp = { 1: 50, 2: 100, 3: 200, 4: 350 };
     let petState = 'idle';
+    let realPetState = 'idle';
+    let realPetMessage = petStateCopy.idle;
+    let previewPetState = '';
     let petFrameIndex = 0;
     let petTimer = null;
     let petStateHoldTimer = null;
+    let previewPetTimer = null;
     let petBubbleTimer = null;
     let petAutoBaseline = 'idle';
     let petDragState = null;
     let petDragSuppressClick = false;
     let petProfile = loadPetProfile();
     let petProcess = loadPetProcess();
+    let petBackendLastEventId = '';
     let lastCatsMessageSignature = '';
     let catsWorkingActive = false;
     let skillHubState = { authenticated:false, roles:[], permissions:[], installed:[] };
@@ -5186,12 +5422,13 @@
           level: 1,
           xp: 0,
           tokenXp: 0,
+          todayXp: 0,
           skillCalls: 0,
           form: '基础小猫',
           ...JSON.parse(localStorage.getItem(PET_PROFILE_KEY) || '{}')
         };
       } catch (_error) {
-        return { name: 'CatsCo', level: 1, xp: 0, tokenXp: 0, skillCalls: 0, form: '基础小猫' };
+        return { name: 'CatsCo', level: 1, xp: 0, tokenXp: 0, todayXp: 0, skillCalls: 0, form: '基础小猫' };
       }
     }
 
@@ -5200,7 +5437,8 @@
     }
 
     function xpForLevel(level) {
-      return Math.max(100, level * 100);
+      const safeLevel = Number(level || 1);
+      return petLevelStepXp[safeLevel] || 350;
     }
 
     function awardPetXp(amount, source) {
@@ -5251,25 +5489,34 @@
     }
 
     function renderPetProcess() {
-      const empty = '<div class="companion-process-item"><span class="companion-process-dot"></span><div><div class="companion-process-title">暂无工作过程</div><div class="companion-process-detail">当小猫开始思考、执行或遇到问题时，会在这里留下简短记录。</div></div><span class="companion-process-time">--:--</span></div>';
-      const html = petProcess.length ? petProcess.map(item => '<div class="companion-process-item"><span class="companion-process-dot"></span><div><div class="companion-process-title">'+escapeHtml(item.title)+'</div><div class="companion-process-detail">'+escapeHtml(item.detail || petStateCopy[item.state] || '')+'</div></div><span class="companion-process-time">'+formatPetTime(item.ts)+'</span></div>').join('') : empty;
+      const pageEmpty = '<div class="companion-process-item"><span class="companion-process-dot"></span><div><div class="companion-process-title">暂无最近工作</div></div></div>';
+      const floatingEmpty = '<div class="companion-process-item"><span class="companion-process-dot"></span><div><div class="companion-process-title">暂无最近工作</div><div class="companion-process-detail">当小猫开始思考、执行或遇到问题时，会在这里留下简短记录。</div></div><span class="companion-process-time">--:--</span></div>';
+      const pageItems = petProcess.slice(0, 3);
+      const pageHtml = pageItems.length ? pageItems.map(item => '<div class="companion-process-item"><span class="companion-process-dot"></span><div><div class="companion-process-title"><span class="companion-process-time">'+formatPetTime(item.ts)+'</span> '+escapeHtml(item.title)+'</div></div></div>').join('') : pageEmpty;
+      const floatingItems = petProcess.slice(0, 8);
+      const floatingHtml = floatingItems.length ? floatingItems.map(item => '<div class="companion-process-item"><span class="companion-process-dot"></span><div><div class="companion-process-title">'+escapeHtml(item.title)+'</div><div class="companion-process-detail">'+escapeHtml(item.detail || petStateCopy[item.state] || '')+'</div></div><span class="companion-process-time">'+formatPetTime(item.ts)+'</span></div>').join('') : floatingEmpty;
       const pageList = document.getElementById('companion-process-list');
       const floatingList = document.getElementById('floating-process-list');
-      if (pageList) pageList.innerHTML = html;
-      if (floatingList) floatingList.innerHTML = html;
+      if (pageList) pageList.innerHTML = pageHtml;
+      if (floatingList) floatingList.innerHTML = floatingHtml;
     }
 
     function renderPetProfile() {
-      const next = xpForLevel(petProfile.level);
-      const percent = Math.max(0, Math.min(100, Math.round((petProfile.xp / next) * 100)));
+      const currentXp = Number.isFinite(Number(petProfile.currentLevelXp)) ? Number(petProfile.currentLevelXp) : Number(petProfile.xp || 0);
+      const next = Number.isFinite(Number(petProfile.nextLevelRequiredXp)) && Number(petProfile.nextLevelRequiredXp) > 0
+        ? Number(petProfile.nextLevelRequiredXp)
+        : xpForLevel(petProfile.level);
+      const todayXp = Number.isFinite(Number(petProfile.todayXp)) ? Number(petProfile.todayXp) : 0;
+      const percent = Math.max(0, Math.min(100, Math.round((currentXp / next) * 100)));
       const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
       const legacyTestName = ['XiaoBa', 'TEST'].join(' ');
       if (petProfile.name === 'XiaoBa' || petProfile.name === legacyTestName) petProfile.name = 'CatsCo';
       setText('pet-profile-name', petProfile.name || 'CatsCo');
       setText('pet-level-label', 'Lv.' + petProfile.level);
-      setText('pet-xp-label', petProfile.xp + ' / ' + next + ' XP');
-      setText('pet-token-xp', petProfile.tokenXp ? String(petProfile.tokenXp) : '待接入');
-      setText('pet-skill-xp', String(petProfile.skillCalls || 0));
+      setText('pet-title-label', petProfile.title || '新手伙伴');
+      setText('pet-xp-label', currentXp + ' / ' + next + ' XP');
+      setText('pet-today-xp', todayXp + ' XP');
+      setText('pet-skill-xp', String(petProfile.skillCalls || 0) + ' 次');
       setText('pet-form-label', petProfile.form || '基础小猫');
       setText('floating-pet-panel-level', 'Lv.' + petProfile.level);
       const bar = document.getElementById('pet-xp-bar');
@@ -5277,13 +5524,154 @@
       renderPetUnlocks();
     }
 
+    async function fetchPetStatus() {
+      try {
+        const res = await fetch(API + '/api/pet/status');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const status = await res.json();
+        applyPetStatus(status);
+      } catch (_error) {
+        // Pet status is decorative runtime feedback; keep the page usable if it is unavailable.
+      }
+    }
+
+    async function fetchPetTimeline() {
+      try {
+        const res = await fetch(API + '/api/pet/timeline?limit=8');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        const events = Array.isArray(data.events) ? data.events : [];
+        petProcess = events.map(petEventToProcessItem);
+        renderPetProcess();
+      } catch (_error) {
+        renderPetProcess();
+      }
+    }
+
+    async function fetchPetProgress() {
+      try {
+        const res = await fetch(API + '/api/pet/progress');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const progress = await res.json();
+        applyPetProgress(progress);
+      } catch (_error) {
+        // Keep the companion panel stable if growth stats are temporarily unavailable.
+      }
+    }
+
+    function applyPetProgress(progress) {
+      if (!progress || typeof progress !== 'object') return;
+      const skillStats = Array.isArray(progress.skill_stats) ? progress.skill_stats : [];
+      const skillCalls = skillStats.reduce((sum, stat) => {
+        const count = Number(stat && stat.call_count);
+        return sum + (Number.isFinite(count) && count > 0 ? count : 0);
+      }, 0);
+      petProfile = {
+        ...petProfile,
+        level: Number(progress.level || petProfile.level || 1),
+        title: progress.title || petProfile.title || petProfile.form,
+        totalXp: Number(progress.total_xp || petProfile.totalXp || 0),
+        todayXp: Number(progress.today_xp || 0),
+        skillCalls,
+      };
+      renderPetProfile();
+    }
+
+    function applyPetStatus(status) {
+      if (!status || typeof status !== 'object') return;
+      petProfile = {
+        ...petProfile,
+        level: Number(status.level || petProfile.level || 1),
+        title: status.title || petProfile.title || petProfile.form,
+        totalXp: Number(status.total_xp || 0),
+        currentLevelXp: Number(status.current_level_xp || 0),
+        nextLevelRequiredXp: Number(status.next_level_required_xp || 0) || null,
+        skillCalls: Number(petProfile.skillCalls || 0),
+      };
+      renderPetProfile();
+
+      const state = status.current_state || 'idle';
+      const message = status.current_bubble_message || petStateCopy[state] || '';
+      const eventId = status.last_event_id || '';
+      const isNewEvent = Boolean(eventId && eventId !== petBackendLastEventId);
+      if (isNewEvent) petBackendLastEventId = eventId;
+      if (previewPetState && isNewEvent && shouldInterruptPetPreview(status)) cancelPetPreview();
+
+      const holdMs = petHoldMsForStatus(status);
+      setPetState(state, {
+        message,
+        holdMs,
+        silent: !isNewEvent,
+        record: false,
+      });
+    }
+
+    function shouldInterruptPetPreview(status) {
+      const eventType = status.last_event_type || '';
+      const state = status.current_state || '';
+      return eventType === 'skill_failed' || eventType === 'level_up' || eventType === 'task_completed' || state === 'error' || state === 'level_up';
+    }
+
+    function petHoldMsForStatus(status) {
+      const eventType = status.last_event_type || '';
+      if (eventType === 'level_up') return 3600;
+      if (eventType === 'skill_failed') return 7000;
+      if (eventType === 'skill_started') return 0;
+      if (eventType === 'skill_succeeded' || eventType === 'task_completed' || eventType === 'message_completed') return 2600;
+      return 0;
+    }
+
+    function petEventToProcessItem(event) {
+      return {
+        title: event.message || petEventTitle(event),
+        detail: petEventDetail(event),
+        state: petEventState(event),
+        ts: Date.parse(event.created_at || '') || Date.now(),
+      };
+    }
+
+    function petEventTitle(event) {
+      const name = event.skill_name ? '「' + event.skill_name + '」' : '';
+      if (event.event_type === 'skill_started') return name ? '正在调用' + name + 'skill' : '正在调用 skill';
+      if (event.event_type === 'skill_succeeded') return name ? name + 'skill 已完成' : 'skill 已完成';
+      if (event.event_type === 'skill_failed') return name ? name + 'skill 出错了' : 'skill 出错了';
+      if (event.event_type === 'task_completed') return '任务完成';
+      if (event.event_type === 'message_completed') return 'CatsCo 回复了';
+      if (event.event_type === 'level_up') return '升级了';
+      return name || '工作事件';
+    }
+
+    function petEventDetail(event) {
+      if (event.skill_name) return 'Skill: ' + event.skill_name;
+      return petStateCopy[petEventState(event)] || '';
+    }
+
+    function petEventState(event) {
+      if (event.event_type === 'skill_started') return 'working';
+      if (event.event_type === 'skill_failed') return 'error';
+      if (event.event_type === 'level_up') return 'level_up';
+      if (event.event_type === 'skill_succeeded' || event.event_type === 'task_completed' || event.event_type === 'message_completed') return 'success';
+      return 'idle';
+    }
+
     function renderPetUnlocks() {
-      const box = document.getElementById('companion-unlocks');
+      const box = document.getElementById('companion-next-unlock');
       if (!box) return;
-      box.innerHTML = petUnlocks.map(item => {
-        const locked = petProfile.level < item.level;
-        return '<div class="companion-unlock'+(locked?' locked':'')+'"><div class="companion-unlock-title">'+escapeHtml(item.title)+'</div><div class="companion-unlock-meta">'+(locked?'Lv.'+item.level+' 解锁':'已解锁')+' · '+escapeHtml(item.meta)+'</div></div>';
-      }).join('');
+      const level = Number(petProfile.level || 1);
+      const currentXp = Number.isFinite(Number(petProfile.currentLevelXp)) ? Number(petProfile.currentLevelXp) : Number(petProfile.xp || 0);
+      const next = Number.isFinite(Number(petProfile.nextLevelRequiredXp)) && Number(petProfile.nextLevelRequiredXp) > 0
+        ? Number(petProfile.nextLevelRequiredXp)
+        : xpForLevel(level);
+      const remaining = Math.max(0, next - currentXp);
+      const nextUnlock = petUnlocks.find(item => item.level > level);
+      const tag = document.getElementById('companion-next-level-tag');
+      if (!nextUnlock) {
+        if (tag) tag.textContent = '已全部解锁';
+        box.innerHTML = '<div class="companion-next-name">Lv.10 高级伙伴</div><div class="companion-next-copy">高级外观和专属状态反馈已解锁。</div><div class="companion-next-stats"><div class="companion-next-stat"><span>当前 XP</span><strong>'+currentXp+' XP</strong></div><div class="companion-next-stat"><span>还差</span><strong>0 XP</strong></div></div>';
+        return;
+      }
+      if (tag) tag.textContent = 'Lv.' + nextUnlock.level;
+      box.innerHTML = '<div class="companion-next-name">Lv.'+nextUnlock.level+' '+escapeHtml(nextUnlock.title)+'</div><div class="companion-next-copy">'+escapeHtml(nextUnlock.meta)+'</div><div class="companion-next-stats"><div class="companion-next-stat"><span>当前 XP</span><strong>'+currentXp+' / '+next+' XP</strong></div><div class="companion-next-stat"><span>还差</span><strong>'+remaining+' XP</strong></div></div>';
     }
 
     function preloadPetFrames() {
@@ -5310,11 +5698,38 @@
     function showPetBubble(text) {
       const shell = document.getElementById('floating-pet');
       const bubble = document.getElementById('floating-pet-bubble');
+      const companionBubble = document.getElementById('companion-pet-bubble');
+      const message = text || petStateLabels[petState] || petState;
+      if (bubble) bubble.textContent = message;
+      if (companionBubble) companionBubble.textContent = message;
       if (!shell || !bubble) return;
-      bubble.textContent = text || petStateLabels[petState] || petState;
       shell.classList.add('show-bubble');
       if (petBubbleTimer) clearTimeout(petBubbleTimer);
       petBubbleTimer = setTimeout(() => shell.classList.remove('show-bubble'), 2400);
+    }
+
+    function applyPetDisplayState(state, options = {}) {
+      if (!petFrames[state]) state = 'idle';
+      petState = state;
+      petFrameIndex = 0;
+      document.querySelectorAll('.pet-action').forEach(btn => {
+        btn.classList.toggle('active', !previewPetState && btn.dataset.petState === state);
+        btn.classList.toggle('previewing', previewPetState && btn.dataset.petState === previewPetState);
+      });
+      const pill = document.getElementById('pet-state-pill');
+      if (pill) pill.textContent = petStateLabels[state] || state;
+      const copy = document.getElementById('pet-state-copy');
+      const message = options.message || petStateCopy[state] || petStateLabels[state] || state;
+      if (copy) copy.textContent = message;
+      const companionBubble = document.getElementById('companion-pet-bubble');
+      if (companionBubble) companionBubble.textContent = message;
+      const panelState = document.getElementById('floating-pet-panel-state');
+      if (panelState) panelState.textContent = petStateLabels[state] || state;
+      renderPetFrameStrip(state);
+      showPetFrame();
+      if (petTimer) clearInterval(petTimer);
+      petTimer = setInterval(showPetFrame, petSpeeds[state] || 420);
+      if (!options.silent && (options.message || options.manual || state !== 'idle')) showPetBubble(options.message || petStateLabels[state]);
     }
 
     function setPetState(state, options = {}) {
@@ -5323,27 +5738,52 @@
         clearTimeout(petStateHoldTimer);
         petStateHoldTimer = null;
       }
-      const previousState = petState;
-      petState = state;
-      petFrameIndex = 0;
-      document.querySelectorAll('.pet-action').forEach(btn => btn.classList.toggle('active', btn.dataset.petState === state));
-      const pill = document.getElementById('pet-state-pill');
-      if (pill) pill.textContent = state;
-      const copy = document.getElementById('pet-state-copy');
-      if (copy) copy.textContent = options.message || petStateCopy[state] || petStateLabels[state] || state;
-      const panelState = document.getElementById('floating-pet-panel-state');
-      if (panelState) panelState.textContent = petStateLabels[state] || state;
-      renderPetFrameStrip(state);
-      showPetFrame();
-      if (petTimer) clearInterval(petTimer);
-      petTimer = setInterval(showPetFrame, petSpeeds[state] || 420);
-      if (options.message || options.manual || state !== 'idle') showPetBubble(options.message || petStateLabels[state]);
-      if (options.message || options.manual || (previousState !== state && state !== 'idle')) {
+      const previousState = realPetState || petState;
+      const message = options.message || petStateCopy[state] || petStateLabels[state] || state;
+      realPetState = state;
+      realPetMessage = message;
+      if (!previewPetState) applyPetDisplayState(state, options);
+      if (options.record !== false && (options.message || options.manual || (previousState !== state && state !== 'idle'))) {
         recordPetProcess(petStateLabels[state] || state, options.message || petStateCopy[state] || '', state);
       }
       if (options.holdMs) {
         petStateHoldTimer = setTimeout(() => setPetState(petAutoBaseline), options.holdMs);
       }
+    }
+
+    function previewPetAction(state) {
+      if (!petFrames[state]) return;
+      if (previewPetTimer) clearTimeout(previewPetTimer);
+      previewPetState = state;
+      applyPetDisplayState(state, {
+        message: '正在预览：' + (petPreviewLabels[state] || petStateLabels[state] || state) + '动作',
+        record: false,
+        manual: true,
+      });
+      previewPetTimer = setTimeout(restorePetRealState, 2600);
+    }
+
+    function handlePetActionPreviewKey(event, state) {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      previewPetAction(state);
+    }
+
+    function cancelPetPreview() {
+      if (previewPetTimer) {
+        clearTimeout(previewPetTimer);
+        previewPetTimer = null;
+      }
+      previewPetState = '';
+    }
+
+    function restorePetRealState() {
+      cancelPetPreview();
+      applyPetDisplayState(realPetState || petAutoBaseline || 'idle', {
+        message: realPetMessage || petStateCopy[realPetState] || '',
+        silent: true,
+        record: false,
+      });
     }
 
     function setPetAutoBaseline(state) {
@@ -5516,12 +5956,12 @@
       if (name === 'chat') {
         fetchCatsStatus();
         if (!catsPollTimer) catsPollTimer = setInterval(fetchCatsStatus, 5000);
-      } else if (name === 'config') {
-        refreshSettingsPage();
       } else if (name === 'companion') {
         setPetState(petState);
-      } else if (name === 'store') {
         refreshSkillHubPage();
+      } else if (name === 'services') {
+        fetchStatus();
+        refreshSettingsPage();
       } else if (name === 'developer') {
         fetchSkillHubDeveloper();
       }
@@ -5534,18 +5974,10 @@
         appStatusSnapshot = data || {};
         document.querySelector('.sidebar-brand-ver').textContent = 'v' + (data.version || '-');
         renderStatus(data);
-        renderServices(data.services || []);
+        if(!shouldDeferServiceRender())renderServices(data.services || []);
         await fetchReadiness();
-        document.getElementById('footer-platform').textContent = data.platform || '-';
-        document.getElementById('footer-node').textContent = data.nodeVersion || '-';
-        document.getElementById('topbar-status').textContent = '在线';
-        document.getElementById('topbar-status').style.background = 'rgba(30,169,113,0.15)';
-        document.getElementById('topbar-status').style.color = '#1ea971';
         applyPetBaseline();
       } catch (e) {
-        document.getElementById('topbar-status').textContent = '离线';
-        document.getElementById('topbar-status').style.background = 'rgba(220,93,115,0.12)';
-        document.getElementById('topbar-status').style.color = '#dc5d73';
         setPetAutoBaseline('error');
       }
     }
@@ -5563,14 +5995,12 @@
         appReadinessLoaded = true;
         appReadinessError = '';
         renderReadiness(appReadinessSnapshot);
-        renderSettingsSetupSummary();
         if (document.getElementById('page-chat')?.classList.contains('active')) renderCatsStatus();
       } catch (e) {
         appReadinessSnapshot = {};
         appReadinessLoaded = false;
         appReadinessError = e && e.message ? e.message : 'Readiness API 暂不可用';
         renderReadinessError(e);
-        renderSettingsSetupSummary();
         if (document.getElementById('page-chat')?.classList.contains('active')) renderCatsStatus();
       }
     }
@@ -5582,11 +6012,16 @@
         localSkillsCache = Array.isArray(skills) ? skills : [];
         renderSkills(localSkillsCache);
         renderLocalSkillStore(localSkillsCache);
-      } catch (e) { document.getElementById('skills-grid').innerHTML = '<div class="loading">无法加载</div>'; }
+      } catch (e) {
+        const grid = document.getElementById('store-grid') || document.getElementById('skills-grid');
+        if (grid) grid.innerHTML = '<div class="loading">无法加载</div>';
+      }
     }
 
     function renderStatus(d) {
-      document.getElementById('status-grid').innerHTML =
+      const grid = document.getElementById('status-grid');
+      if (!grid) return;
+      grid.innerHTML =
         '<div class="status-card"><div class="label">Version</div><div class="value">'+escapeHtml(d.version||'-')+'</div></div>'+
         '<div class="status-card"><div class="label">Runtime</div><div class="value">'+escapeHtml(d.platform||'-')+'</div><div class="readiness-summary">Host: '+escapeHtml(d.hostname||'-')+'</div></div>'+
         '<div class="status-card"><div class="label">Model</div><div class="value">'+escapeHtml(d.model||'-')+'</div><div class="readiness-summary">'+escapeHtml(d.provider||'-')+'</div></div>'+
@@ -5598,25 +6033,22 @@
       const statusText = formatReadinessStatus(status);
       const summaryTitle = document.querySelector('#run-summary .run-summary-title');
       const summaryMeta = document.querySelector('#run-summary .run-summary-meta');
-      if (summaryTitle) summaryTitle.textContent = statusText.title;
-      if (summaryMeta) summaryMeta.textContent = statusText.meta;
+      const actions = document.getElementById('readiness-alert-actions');
+      const issues = collectReadinessIssues(data);
+      const firstIssue = issues[0];
 
-      const grid = document.getElementById('readiness-grid');
-      const sections = data.sections || [];
-      if (!sections.length) {
-        grid.innerHTML = '<div class="loading">暂无 readiness 数据</div>';
+      if (firstIssue) {
+        const label = firstIssue.section.label || firstIssue.section.id || '连接状态';
+        const message = firstIssue.check.message || firstIssue.section.summary || '请处理对应连接配置。';
+        if (summaryTitle) summaryTitle.textContent = '需要处理：' + label;
+        if (summaryMeta) summaryMeta.textContent = message;
+        if (actions) actions.innerHTML = '<button class="btn" onclick="fetchStatus();fetchReadiness()">刷新</button>' + readinessActionButton(firstIssue.section.action);
         return;
       }
 
-      grid.innerHTML = sections.map(section => {
-        const checks = selectReadinessChecks(section.checks || []);
-        return '<div class="readiness-card '+escapeHtml(section.status||'blocked')+'">'+
-          '<div class="readiness-card-head"><div><div class="readiness-title">'+escapeHtml(section.label||section.id||'-')+'</div><div class="readiness-summary">'+escapeHtml(section.summary||'')+'</div></div>'+
-          '<span class="status-dot '+readinessStatusClass(section.status)+'">'+escapeHtml(formatReadinessLabel(section.status))+'</span></div>'+
-          '<div class="readiness-checks">'+checks.map(renderReadinessCheck).join('')+'</div>'+
-          readinessActionButton(section.action)+
-        '</div>';
-      }).join('');
+      if (summaryTitle) summaryTitle.textContent = statusText.title;
+      if (summaryMeta) summaryMeta.textContent = statusText.meta;
+      if (actions) actions.innerHTML = '<button class="btn" onclick="fetchStatus();fetchReadiness()">刷新</button>';
     }
 
     function renderReadinessError(error) {
@@ -5624,8 +6056,22 @@
       const summaryMeta = document.querySelector('#run-summary .run-summary-meta');
       if (summaryTitle) summaryTitle.textContent = '无法读取启动状态';
       if (summaryMeta) summaryMeta.textContent = error && error.message ? error.message : 'Readiness API 暂不可用';
-      const grid = document.getElementById('readiness-grid');
-      if (grid) grid.innerHTML = '<div class="runtime-note danger">Readiness API 暂不可用，请重启 Dashboard 后重试。</div>';
+      const actions = document.getElementById('readiness-alert-actions');
+      if (actions) actions.innerHTML = '<button class="btn" onclick="fetchStatus();fetchReadiness()">刷新</button>';
+    }
+
+    function collectReadinessIssues(data) {
+      const hiddenSections = new Set(['model', 'runtimeprofile', 'runtime-profile', 'skills', 'skill']);
+      const sections = (data.sections || []).filter(section => !hiddenSections.has(String(section.id || '').toLowerCase()));
+      const issues = [];
+      sections.forEach(section => {
+        const checks = section.checks || [];
+        const activeCheck = checks.find(check => check.status !== 'pass');
+        if (section.status !== 'ready' || activeCheck) {
+          issues.push({ section, check: activeCheck || {} });
+        }
+      });
+      return issues;
     }
 
     function selectReadinessChecks(checks) {
@@ -5639,25 +6085,22 @@
 
     function readinessActionButton(action) {
       if (!action) return '';
-      return '<button class="btn btn-ghost" style="margin-top:14px" onclick="runReadinessAction(\''+escapeHtml(action.target||'diagnostics')+'\')">'+escapeHtml(action.label||'查看')+'</button>';
+      return '<button class="btn btn-ghost" onclick="runReadinessAction(\''+escapeHtml(action.target||'settings')+'\')">'+escapeHtml(action.label||'查看')+'</button>';
     }
 
     function runReadinessAction(target) {
-      if (target === 'settings') return switchPage('config');
+      if (target === 'settings') return switchPage('services');
       if (target === 'catsco') return switchPage('chat');
-      if (target === 'skills') return switchPage('store');
+      if (target === 'skills') return switchPage('companion');
       if (target === 'service') return svcAction('catscompany','start');
-      const details = document.getElementById('diagnostics-details');
-      if (details) {
-        details.open = true;
-        details.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
+      fetchStatus();
+      fetchReadiness();
     }
 
     function formatReadinessStatus(status) {
-      if (status === 'ready') return { title: '可以启动并使用 CatsCo', meta: '模型、CatsCo、Runtime Profile 和 Skills 已通过本地检查。' };
-      if (status === 'warning') return { title: '基本就绪，还有待处理项', meta: '可以继续，但建议先处理黄色提示，尤其是 connector 是否运行。' };
-      return { title: '启动前需要处理配置', meta: '红色项目会阻止默认启动；按卡片提示补齐后再启动。' };
+      if (status === 'ready') return { title: '启动状态正常', meta: '没有需要单独处理的连接问题。' };
+      if (status === 'warning') return { title: '有配置项需要确认', meta: '模型来源和 Runtime Profile 已合并到下方设置区处理。' };
+      return { title: '需要先处理连接问题', meta: '下方服务卡片会显示具体启动入口和日志。' };
     }
 
     function formatReadinessLabel(status) {
@@ -5692,8 +6135,74 @@
       if (!svcs.length) { g.innerHTML = '<div class="loading">无服务</div>'; return; }
       g.innerHTML = svcs.map(s => {
         const r = s.status==='running', up = r&&s.uptime?formatUptime(s.uptime):'-';
-        return '<div class="service-card"><div class="service-header"><div class="service-name">'+escapeHtml(s.label)+'</div><span class="service-status '+escapeHtml(s.status)+'">'+escapeHtml(s.status)+'</span></div><div class="service-copy">'+escapeHtml(serviceCopy(s.name))+'</div><div class="service-detail">'+(r?'<span>PID: '+escapeHtml(s.pid)+'</span><span>Uptime: '+up+'</span>':'<span>未运行</span>')+(s.lastError?'<span style="color:var(--red)">'+escapeHtml(s.lastError)+'</span>':'')+'</div><div class="service-actions">'+(r?'<button class="btn btn-danger" onclick="svcAction(\''+s.name+'\',\'stop\')">'+servicePrimaryAction(s.name, true)+'</button><button class="btn" onclick="svcAction(\''+s.name+'\',\'restart\')">重启</button>':'<button class="btn btn-success" onclick="svcAction(\''+s.name+'\',\'start\')">'+servicePrimaryAction(s.name, false)+'</button>')+'<button class="btn" onclick="showLogs(\''+s.name+'\',\''+escapeHtml(s.label)+'\')">日志</button></div></div>';
+        return '<div class="service-card"><div class="service-header"><div class="service-name">'+escapeHtml(s.label)+'</div><span class="service-status '+escapeHtml(s.status)+'">'+escapeHtml(s.status)+'</span></div><div class="service-copy">'+escapeHtml(serviceCopy(s.name))+'</div><div class="service-detail">'+(r?'<span>PID: '+escapeHtml(s.pid)+'</span><span>Uptime: '+up+'</span>':'<span>未运行</span>')+(s.lastError?'<span style="color:var(--red)">'+escapeHtml(s.lastError)+'</span>':'')+'</div><div class="service-actions">'+(r?'<button class="btn btn-danger" onclick="svcAction(\''+s.name+'\',\'stop\')">'+servicePrimaryAction(s.name, true)+'</button><button class="btn" onclick="svcAction(\''+s.name+'\',\'restart\')">重启</button>':'<button class="btn btn-success" onclick="svcAction(\''+s.name+'\',\'start\')">'+servicePrimaryAction(s.name, false)+'</button>')+'<button class="btn" onclick="showLogs(\''+s.name+'\',\''+escapeHtml(s.label)+'\')">日志</button></div>'+renderServiceConfig(s.name)+'</div>';
       }).join('');
+    }
+
+    function shouldDeferServiceRender(){
+      const active=document.activeElement;
+      if(active && active.closest && active.closest('.service-config'))return true;
+      return Boolean(document.querySelector('.service-config.dirty'));
+    }
+
+    function serviceConfigValue(key){
+      if(configData && Object.prototype.hasOwnProperty.call(configData,key))return configData[key];
+      const aliases={
+        CATSCO_API_KEY:'CATSCOMPANY_API_KEY',
+        CATSCO_HTTP_BASE_URL:'CATSCOMPANY_HTTP_BASE_URL',
+        CATSCO_SERVER_URL:'CATSCOMPANY_SERVER_URL',
+      };
+      const alias=aliases[key];
+      return alias && configData && Object.prototype.hasOwnProperty.call(configData,alias) ? configData[alias] : '';
+    }
+
+    function renderServiceConfig(name){
+      const group=serviceConfigGroups[name];
+      if(!group)return '';
+      const rows=group.keys.map(item=>{
+        const value=serviceConfigValue(item.key);
+        const action=item.action==='weixinToken'
+          ? '<button class="btn btn-primary" onclick="getWeixinToken()" style="margin-top:6px">获取 Token</button>'
+          : '';
+        return '<div class="service-config-row"><label class="config-label">'+escapeHtml(item.label)+'</label><input class="config-input" data-service-config="'+escapeHtml(name)+'" data-key="'+escapeHtml(item.key)+'" type="'+(item.sensitive?'password':'text')+'" value="'+escapeHtml(value)+'" placeholder="'+escapeHtml(item.key)+'" oninput="markServiceConfigDirty(\''+escapeHtml(name)+'\')" />'+action+'</div>';
+      }).join('');
+      return '<details class="service-config" id="service-config-'+escapeHtml(name)+'"><summary><span>'+escapeHtml(group.title)+'</span><span class="tag">高级</span></summary><div class="service-config-body"><div class="runtime-note">'+escapeHtml(group.hint)+'</div>'+rows+'<div class="service-config-actions"><span class="service-config-hint">凭证仅保存到本地 .env</span><button class="btn btn-primary" onclick="saveServiceConfig(\''+escapeHtml(name)+'\')">保存</button><button class="btn" onclick="cancelServiceConfig(\''+escapeHtml(name)+'\')">取消</button><span class="config-saved" id="service-config-saved-'+escapeHtml(name)+'">已保存</span></div></div></details>';
+    }
+
+    function markServiceConfigDirty(name){
+      const panel=document.getElementById('service-config-'+name);
+      if(panel)panel.classList.add('dirty');
+    }
+
+    async function saveServiceConfig(name){
+      const panel=document.getElementById('service-config-'+name);
+      const group=serviceConfigGroups[name];
+      if(!panel||!group)return;
+      if(!confirm('保存 '+group.title+'？凭证仅保存到本地 .env。'))return;
+      const updates={};
+      panel.querySelectorAll('[data-key]').forEach(el=>{updates[el.dataset.key]=el.value;});
+      try{
+        const r=await fetch(API+'/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(updates)});
+        const d=await r.json();
+        if(!r.ok||d.error)throw new Error(d.error||'保存失败');
+        panel.classList.remove('dirty');
+        const saved=document.getElementById('service-config-saved-'+name);
+        if(saved){saved.classList.add('show');setTimeout(()=>saved.classList.remove('show'),2000);}
+        await Promise.all([fetchConfig(),fetchStatus(),fetchReadiness()]);
+      }catch(e){
+        alert('保存失败: '+formatDashboardApiError(e,'/api/config'));
+      }
+    }
+
+    function cancelServiceConfig(name){
+      const panel=document.getElementById('service-config-'+name);
+      const group=serviceConfigGroups[name];
+      if(!panel||!group)return;
+      group.keys.forEach(item=>{
+        const input=panel.querySelector('[data-key="'+item.key+'"]');
+        if(input)input.value=serviceConfigValue(item.key);
+      });
+      panel.classList.remove('dirty');
     }
 
     function getSkillCompanionStats(name) {
@@ -5761,8 +6270,8 @@
     }
 
     function renderSkills(skills) {
-      document.getElementById('skill-count').textContent = skills.length;
       const g = document.getElementById('skills-grid');
+      if (!g) return;
       if (!skills.length) { g.innerHTML = '<div class="loading">No Skills</div>'; return; }
       g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">disabled</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">user</span>':'')+(sk.autoInvocable?'<span class="tag active">auto</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+renderSkillHubLocalMeta(sk)+renderSkillGrowth(sk.name)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+'</div>').join('');
     }
@@ -5771,7 +6280,7 @@
       const g = document.getElementById('store-grid');
       if (!g) return;
       if (!skills.length) { g.innerHTML = '<div class="loading">No Skills</div>'; return; }
-      g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">disabled</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">user</span>':'')+(sk.autoInvocable?'<span class="tag active">auto</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+renderSkillHubLocalMeta(sk)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+renderSkillActionButtons(sk)+'</div>').join('');
+      g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">disabled</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">user</span>':'')+(sk.autoInvocable?'<span class="tag active">auto</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+renderSkillHubLocalMeta(sk)+renderSkillGrowth(sk.name)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+renderSkillActionButtons(sk)+'</div>').join('');
     }
 
     async function shareLocalSkillToSkillHub(skillName) {
@@ -5976,7 +6485,7 @@
         const data = await parseSimpleResponse(await fetch(API + '/api/skillhub/developer'));
         renderSkillHubDeveloper(data);
       } catch (e) {
-        if (statusBox) statusBox.innerHTML = '<div class="runtime-note danger">开发者中心加载失败：'+escapeHtml(e.message || String(e))+'</div>';
+        if (statusBox) statusBox.innerHTML = '<div class="runtime-note danger">Developer Hub 加载失败：'+escapeHtml(e.message || String(e))+'</div>';
       }
     }
 
@@ -6451,87 +6960,68 @@
       {id:'deepseek-v4-flash',label:'DeepSeek V4 Flash',model:'deepseek-v4-flash',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'flash-low'},
       {id:'glm-5.1',label:'GLM 5.1',model:'glm-5.1',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'standard'},
     ];
-    const settingsCollapseState={
-      modelSource:true,
-      runtimeStatus:true,
-      runtimeEditor:true,
+    const serviceConfigGroups={
+      catscompany:{
+        title:'CatsCo 连接配置',
+        hint:'通常由 CatsCo 登录和绑定流程写入。',
+        keys:[
+          {key:'CATSCO_SERVER_URL',label:'WebSocket 地址'},
+          {key:'CATSCO_HTTP_BASE_URL',label:'API 地址'},
+          {key:'CATSCO_API_KEY',label:'Agent 访问凭证',sensitive:true},
+        ],
+      },
+      feishu:{
+        title:'飞书配置',
+        hint:'用于飞书 App 接入本地 agent。',
+        keys:[
+          {key:'FEISHU_APP_ID',label:'App ID'},
+          {key:'FEISHU_APP_SECRET',label:'App Secret',sensitive:true},
+          {key:'FEISHU_BOT_OPEN_ID',label:'Bot Open ID'},
+          {key:'FEISHU_BOT_ALIASES',label:'唤醒别名'},
+        ],
+      },
+      weixin:{
+        title:'微信配置',
+        hint:'用于微信入口接入本地 agent。',
+        keys:[
+          {key:'WEIXIN_TOKEN',label:'Token',sensitive:true,action:'weixinToken'},
+        ],
+      },
     };
-    const configGroups=[
-      {title:'自定义模型兼容配置', collapsed:true, keys:[{key:'GAUZ_LLM_PROVIDER',label:'兼容类型',type:'select',options:['anthropic','openai']},{key:'GAUZ_LLM_API_BASE',label:'模型地址'},{key:'GAUZ_LLM_API_KEY',label:'访问凭证',sensitive:true},{key:'GAUZ_LLM_MODEL',label:'模型名称'}]},
-      {title:'CatsCo webapp（高级）', collapsed:true, keys:[{key:'CATSCOMPANY_API_KEY',label:'Agent 访问凭证',sensitive:true}]},
-      {title:'飞书（高级）', collapsed:true, keys:[{key:'FEISHU_APP_ID',label:'App ID'},{key:'FEISHU_APP_SECRET',label:'App Secret',sensitive:true},{key:'FEISHU_BOT_OPEN_ID',label:'Bot Open ID'},{key:'FEISHU_BOT_ALIASES',label:'Bot Aliases'}]},
-      {title:'微信（高级）', collapsed:true, keys:[{key:'WEIXIN_TOKEN',label:'Token',sensitive:true}]},
-    ];
 
     async function refreshSettingsPage(){
-      await Promise.all([fetchDashboardSettings(), fetchRuntimeConfig(), fetchReadiness()]);
-      renderSettingsSetupSummary();
-    }
-
-    function settingsCollapsedClass(key, fallback){
-      if(settingsCollapseState[key]===undefined)settingsCollapseState[key]=Boolean(fallback);
-      return settingsCollapseState[key]?' collapsed':'';
-    }
-
-    function toggleSettingsGroup(id, key){
-      const el=document.getElementById(id);
-      if(!el)return;
-      el.classList.toggle('collapsed');
-      settingsCollapseState[key]=el.classList.contains('collapsed');
-    }
-
-    function settingsStepHtml(title, status, meta, action){
-      const tone=status==='ready'?'green':status==='warning'?'warm':status==='blocked'?'red':'gray';
-      const label=status==='ready'?(title==='CatsCo Chat'?'运行中':'完成'):status==='warning'?(title==='CatsCo Chat'?'未启动':'需处理'):status==='blocked'?'待配置':'等待';
-      return '<button class="settings-step" type="button" onclick="'+action+'"><div class="settings-step-title">'+escapeHtml(title)+' '+runtimeTag(label,tone)+'</div><div class="settings-step-meta">'+escapeHtml(meta||'')+'</div></button>';
-    }
-
-    function renderSettingsSetupSummary(){
-      const panel=document.getElementById('settings-setup-panel');
-      if(!panel)return;
-      const modelSection=getReadinessSection('model');
-      const catscoSection=getReadinessSection('catsco');
-      const runtimeSection=getReadinessSection('runtimeProfile');
-      const modelMeta=appReadinessLoaded && modelSection
-        ? firstReadinessProblem(modelSection)||modelSection.summary
-        : (appReadinessError||'等待模型来源检查完成');
-      const catsMeta=appReadinessLoaded && catscoSection
-        ? firstReadinessProblem(catscoSection)||catscoSection.summary
-        : '等待 CatsCompany connector 检查完成';
-      const runtimeMeta=appReadinessLoaded && runtimeSection
-        ? firstReadinessProblem(runtimeSection)||runtimeSection.summary
-        : '仅在要改显示名、工作目录或工具开关时需要打开';
-      const next = modelSection?.status==='blocked'
-        ? '先补齐模型来源；可登录 CatsCo 启用中转模型，或手动填写自定义模型。'
-        : catscoSection?.status==='blocked'
-          ? '模型已就绪后，继续登录并绑定 CatsCo Chat。'
-          : catscoSection?.status==='warning'
-            ? 'CatsCompany connector 还未启动；这只影响网页 Chat，飞书和微信在运行页独立启动。'
-            : '关键配置看起来可用；高级区保持折叠，按需诊断。';
-      panel.innerHTML=`<div class="settings-setup-head">
-        <div>
-          <div class="settings-setup-title">先完成关键配置</div>
-          <div class="settings-setup-copy">${escapeHtml(next)}</div>
-        </div>
-        ${runtimeTag('setup','warm')}
-      </div>
-      <div class="settings-step-grid">
-        ${settingsStepHtml('模型来源', modelSection?.status||'unknown', modelMeta, "openCustomModelSettings()")}
-        ${settingsStepHtml('CatsCo Chat', catscoSection?.status||'unknown', catsMeta, "switchPage('chat')")}
-        ${settingsStepHtml('Runtime Profile', runtimeSection?.status||'unknown', runtimeMeta, "toggleSettingsGroup('runtime-config-group','runtimeStatus')")}
-      </div>`;
+      await Promise.all([fetchDashboardSettings(), fetchReadiness(), fetchConfig()]);
     }
 
     function openCustomModelSettings(){
-      settingsCollapseState.modelSource=false;
-      const group=document.getElementById('model-source-group');
-      if(group)group.classList.remove('collapsed');
       const details=document.getElementById('custom-model-settings');
       if(details){
         details.open=true;
         customModelSettingsOpen=true;
+        syncCustomModelToggleButton();
         details.scrollIntoView({behavior:'smooth',block:'start'});
       }
+    }
+
+    function toggleCustomModelSettings(){
+      const details=document.getElementById('custom-model-settings');
+      if(details){
+        details.open=!details.open;
+        customModelSettingsOpen=details.open;
+        syncCustomModelToggleButton();
+        if(details.open)details.scrollIntoView({behavior:'smooth',block:'nearest'});
+        return;
+      }
+      customModelSettingsOpen=!customModelSettingsOpen;
+      syncCustomModelToggleButton();
+    }
+
+    function syncCustomModelToggleButton(){
+      const btn=document.getElementById('custom-model-toggle-btn');
+      if(!btn)return;
+      const details=document.getElementById('custom-model-settings');
+      const open=details?details.open:customModelSettingsOpen;
+      btn.textContent=open?'收纳配置':'展开配置';
     }
 
     async function fetchDashboardSettings(){
@@ -6540,7 +7030,6 @@
         const data=await r.json();
         if(!r.ok||data.error)throw new Error(data.error||'settings 加载失败');
         dashboardSettingsSnapshot=data;
-        renderSettingsSetupSummary();
         if(!shouldDeferModelSourceRender()) renderModelSource(data);
         fetchRelayModelConfig();
       }catch(e){
@@ -6558,7 +7047,7 @@
     }
 
     function shouldDeferModelSourceRender(){
-      const page=document.getElementById('page-config');
+      const page=document.getElementById('page-services');
       const details=document.getElementById('custom-model-settings');
       if(!page || !details || !page.classList.contains('active'))return false;
       return details.open || details.contains(document.activeElement);
@@ -6728,7 +7217,8 @@
       if(!details)return;
       details.open=Boolean(draft?.open || customModelSettingsOpen);
       customModelSettingsOpen=details.open;
-      details.addEventListener('toggle',()=>{customModelSettingsOpen=details.open;});
+      details.addEventListener('toggle',()=>{customModelSettingsOpen=details.open;syncCustomModelToggleButton();});
+      syncCustomModelToggleButton();
 
       if(draft && draft.open){
         const pairs=[
@@ -6764,86 +7254,43 @@
         p.innerHTML='<div class="runtime-note warning">模型来源暂不可用，请稍后刷新。</div>';
         return;
       }
-      const user=catsState.user||{};
-      const catsConnected=isCatsLoggedIn();
       const keyField=settingField('model.apiKey');
       const credentialMeta=keyField.present
         ? '已配置访问凭证'
         : '未配置访问凭证';
       const apiBaseValue=settingValue('model.apiBase');
-      const relayConfigured=isRelayStartupActive() || (isCatsRelayModelGateway(apiBaseValue)&&keyField.present);
-      const relayModels=relayModelCatalog();
-      const relayHasModels=relayModels.length>0;
-      const relayActiveModelId=selectedRelayModelId();
-      const relayHighlightedModelId=relayConfigured?relayActiveModelId:'';
-      const relayActiveModel=relayModels.find(model=>String(model.id||model.model||'')===relayActiveModelId)||relayModels[0]||{};
-      const managedStatus=relayConfigured?'已启用':catsConnected?'可启用':'需要登录';
-      const managedTone=relayConfigured?'green':catsConnected?'warm':'gray';
-      const managedCopy=relayConfigured
-        ? '当前已使用 CatsCo 中转模型。模型切换会沿用同一把中转 Key，并继续走 Anthropic SDK。'
-        : catsConnected
-          ? relayHasModels?'已登录 CatsCo。选择模型后会一键生成或复用你的中转 Key，并写入本机模型配置。':'CatsCo 中转暂未提供可用模型，请稍后重试。'
-          : '登录 CatsCo 后，可以一键启用 CatsCo 中转模型。当前版本仍可先在高级区配置自定义模型。';
       const hideInternalGateway=isInternalModelGateway(apiBaseValue);
       const apiBaseDisplayValue=hideInternalGateway?'':apiBaseValue;
       const apiBasePlaceholder=hideInternalGateway?'已配置 CatsCo 内部兼容网关（隐藏）':'https://example.com/v1/messages';
       const draft=captureCustomModelDraft();
 
-      p.innerHTML=`<div class="config-group${settingsCollapsedClass('modelSource', false)}" id="model-source-group">
-        <div class="config-group-title" onclick="toggleSettingsGroup('model-source-group','modelSource')">
-          <span class="config-group-title-main">
-            <span>模型来源</span>
-            <span class="tag warm">当前关键配置</span>
-          </span>
-        </div>
-        <div class="config-group-body model-source-layout">
-          <div class="runtime-note">中转模型和自定义模型会分别保存。点击中转模型会切换为中转启动；保存自定义模型会切换为自定义启动。</div>
-          <div class="model-source-grid">
-            <div class="model-source-card primary">
-              <div class="model-source-head">
-                <div>
-                  <div class="model-source-title">CatsCo 中转模型</div>
-                  <div class="model-source-copy">${managedCopy}</div>
-                </div>
-                ${runtimeTag(managedStatus, managedTone)}
+      p.innerHTML=`<div class="model-source-layout">
+        <details class="model-source-card warning" id="custom-model-settings"${customModelSettingsOpen?' open':''}>
+          <summary>
+            <div class="model-source-head">
+              <div>
+                <div class="model-source-title">自定义模型（第三方）</div>
+                <div class="model-source-copy">只有手动接入第三方模型时需要填写。CatsCo 中转模型请在 CatsCo 页面选择。</div>
               </div>
-              <div class="model-source-actions">
-                <button class="btn" onclick="switchPage('chat')">${catsConnected?'查看 CatsCo 连接':'登录 CatsCo'}</button>
-                <button class="btn btn-primary" data-relay-model-id="${escapeHtml(relayActiveModelId)}" data-relay-primary-action="true" data-relay-default-label="${relayConfigured?'应用所选模型':'启用 CatsCo 中转'}" ${(catsConnected&&relayHasModels&&!relayActionBusy())?'':'disabled'} onclick="enableCatsRelayModelFromButton(this)">${relayModelApplyInFlight?'切换中...':relayConfigured?'应用所选模型':'启用 CatsCo 中转'}</button>
-              </div>
-              ${relayHasModels?'<div class="relay-model-list">':'<div class="runtime-note warning" style="margin-top:12px">CatsCo 中转暂未提供可用模型。</div><div class="relay-model-list" style="display:none">'}
-                ${relayModels.map(model=>relayModelChoiceHtml(model, relayHighlightedModelId, catsConnected)).join('')}
-              </div>
-              <div id="relay-model-status" style="color:var(--text2);font-size:13px;margin-top:10px">${relayConfigured?'当前启动来源：CatsCo 中转 · '+escapeHtml(relayActiveModel.model||relayModelConfigSnapshot?.model||''):'启用后会切换为中转启动，自定义模型配置会保留。'}</div>
+              ${runtimeTag(credentialMeta, keyField.present?'green':'gray')}
             </div>
-            <details class="model-source-card warning" id="custom-model-settings"${customModelSettingsOpen?' open':''}>
-              <summary>
-                <div class="model-source-head">
-                  <div>
-                    <div class="model-source-title">自定义模型（手动配置）</div>
-                    <div class="model-source-copy">手动接入第三方模型时填写这里的模型地址、模型名称和访问凭证。修改会自动保存，访问凭证只保存 presence，不会回显。</div>
-                  </div>
-                  ${runtimeTag(credentialMeta, keyField.present?'green':'red')}
-                </div>
-              </summary>
-              <div class="model-source-form">
-                <div class="config-row"><label class="config-label">兼容类型</label><select class="config-select" id="model-provider-setting"><option value="anthropic"${settingValue('model.provider')==='anthropic'?' selected':''}>Anthropic-compatible</option><option value="openai"${settingValue('model.provider')==='openai'?' selected':''}>OpenAI-compatible</option></select></div>
-                <div class="config-row"><label class="config-label">模型地址</label><input class="config-input" id="model-api-base-setting" value="${escapeHtml(apiBaseDisplayValue)}" placeholder="${escapeHtml(apiBasePlaceholder)}" data-hidden-internal="${hideInternalGateway?'true':'false'}" /></div>
-                <div class="config-row"><label class="config-label">模型名称</label><input class="config-input" id="model-name-setting" value="${escapeHtml(settingValue('model.model'))}" placeholder="model-name" /></div>
-                <div class="config-row"><label class="config-label">访问凭证</label><input class="config-input" id="model-secret-setting" type="password" value="" placeholder="${keyField.present?'留空表示保持现有凭证':'输入访问凭证'}" /></div>
-                <div class="model-secret-row">
-                  <label><input type="checkbox" id="model-secret-clear-setting" /> 清除已保存的访问凭证</label>
-                  <span>${credentialMeta}</span>
-                </div>
-                <div class="model-source-actions">
-                  <button class="btn btn-primary" onclick="saveCustomModelSettings()">保存并启用自定义模型</button>
-                  <span class="config-saved" id="model-source-saved">已保存</span>
-                </div>
-                <div id="model-source-status" style="color:var(--text2);font-size:13px">改动会自动保存到自定义模型，并切换为自定义启动。</div>
-              </div>
-            </details>
+          </summary>
+          <div class="model-source-form">
+            <div class="config-row"><label class="config-label">兼容类型</label><select class="config-select" id="model-provider-setting"><option value="anthropic"${settingValue('model.provider')==='anthropic'?' selected':''}>Anthropic-compatible</option><option value="openai"${settingValue('model.provider')==='openai'?' selected':''}>OpenAI-compatible</option></select></div>
+            <div class="config-row"><label class="config-label">模型地址</label><input class="config-input" id="model-api-base-setting" value="${escapeHtml(apiBaseDisplayValue)}" placeholder="${escapeHtml(apiBasePlaceholder)}" data-hidden-internal="${hideInternalGateway?'true':'false'}" /></div>
+            <div class="config-row"><label class="config-label">模型名称</label><input class="config-input" id="model-name-setting" value="${escapeHtml(settingValue('model.model'))}" placeholder="model-name" /></div>
+            <div class="config-row"><label class="config-label">访问凭证</label><input class="config-input" id="model-secret-setting" type="password" value="" placeholder="${keyField.present?'留空表示保持现有凭证':'输入访问凭证'}" /></div>
+            <div class="model-secret-row">
+              <label><input type="checkbox" id="model-secret-clear-setting" /> 清除已保存的访问凭证</label>
+              <span>${credentialMeta}</span>
+            </div>
+            <div class="model-source-actions">
+              <button class="btn btn-primary" onclick="saveCustomModelSettings()">保存自定义模型</button>
+              <span class="config-saved" id="model-source-saved">已保存</span>
+            </div>
+            <div id="model-source-status" style="color:var(--text2);font-size:13px">凭证仅保存到本地 .env；新 session 或下一次启动 connector 后生效。</div>
           </div>
-        </div>
+        </details>
       </div>`;
       restoreCustomModelDraft(draft);
       bindCustomModelAutoSave();
@@ -7069,7 +7516,7 @@
         }
         pendingStartupSource='';
         pendingRelayModelId='';
-        await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchRuntimeConfig(),fetchReadiness(),fetchCatsStatus()]);
+        await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchReadiness(),fetchCatsStatus()]);
         const successMessage=data.message||('已启用 CatsCo 中转模型：'+(data.selectedModel?.label||label));
         setRelayModelApplyStatus(successMessage,'success',source);
         setModelSourceStatus(data.connectorRestarted||data.connectorStarted?'已写入并已请求 connector 使用新配置。':'已写入 CatsCo 中转模型配置。','success');
@@ -7112,7 +7559,7 @@
         if(!r.ok||data.error)throw new Error(data.error||'切换自定义模型失败');
         pendingStartupSource='';
         pendingRelayModelId='';
-        await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchRuntimeConfig(),fetchReadiness(),fetchCatsStatus()]);
+        await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchReadiness(),fetchCatsStatus()]);
         const message=data.message||('已切换为自定义模型：'+(data.model||''));
         setRelayModelApplyStatus(message,'success',source);
         setModelSourceStatus(data.connectorRestarted||data.connectorStarted?'已请求 connector 使用自定义模型。':'已切换为自定义模型启动。','success');
@@ -7195,7 +7642,7 @@
         if(saved){saved.classList.add('show');setTimeout(()=>saved.classList.remove('show'),2000);}
         if(!auto){
           setModelSourceStatus('已保存，正在刷新启动状态...','muted');
-          await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchRuntimeConfig(),fetchReadiness(),fetchCatsStatus()]);
+          await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchReadiness(),fetchCatsStatus()]);
           setModelSourceStatus(d.connectorRestarted?'已保存，并已请求重启 CatsCo agent 使用自定义模型。':'已保存自定义配置。配置完整时会切换为自定义启动。','success');
         }
       }catch(e){
@@ -7221,297 +7668,15 @@
         const r=await fetch(API+'/api/config');
         configData=await r.json();
         envConfigLoaded=true;
-        renderConfig();
+        if(appStatusSnapshot && Array.isArray(appStatusSnapshot.services) && !shouldDeferServiceRender())renderServices(appStatusSnapshot.services);
       }catch(e){
         envConfigLoaded=false;
-        document.getElementById('config-panel').innerHTML='<div class="loading">加载失败</div>';
       }finally{
         envConfigLoading=false;
       }
     }
-    async function fetchRuntimeConfig(options){
-      try{
-        const r=await fetch(API+'/api/runtime/config');
-        const data=await r.json();
-        runtimeConfigSnapshot=data;
-        if(!(options&&options.force) && shouldDeferRuntimeConfigRender())return;
-        renderRuntimeConfig(data);
-      }catch(e){
-        document.getElementById('runtime-config-panel').innerHTML='<div class="loading">runtime 配置加载失败</div>';
-      }
-    }
-
-    function shouldDeferRuntimeConfigRender(){
-      const page=document.getElementById('page-config');
-      const editor=document.getElementById('runtime-profile-editor');
-      const active=document.activeElement;
-      if(!page || !page.classList.contains('active') || !editor || !active)return false;
-      return editor.contains(active) && active.matches('input, select, textarea');
-    }
-
-    function renderRuntimeConfig(snapshot){
-      const p=document.getElementById('runtime-config-panel');
-      if(!p)return;
-      if(snapshot.error){
-        p.innerHTML='<div class="runtime-note danger">Runtime Profile 状态加载失败：'+escapeHtml(snapshot.error)+'</div>';
-        return;
-      }
-      runtimeConfigSnapshot=snapshot;
-      const profile=snapshot.profile||{};
-      const profileConfig=snapshot.profileConfig||{};
-      const editing=snapshot.profileEditing||{};
-      const model=profile.model||{};
-      const logging=snapshot.logging||{};
-      const upload=logging.upload||{};
-      const registeredTools=(snapshot.tools&&snapshot.tools.registered)||[];
-      const tools=(snapshot.tools&&snapshot.tools.enabled)||[];
-      const disabled=(snapshot.tools&&snapshot.tools.disabled)||[];
-      const skills=snapshot.skills||{};
-      const prompt=snapshot.systemPrompt||{text:'',length:0};
-      const validationIssues=(snapshot.validation&&snapshot.validation.issues)||[];
-      const configIssues=profileConfig.issues||[];
-      const allIssues=validationIssues.concat(configIssues);
-      const issueCount=allIssues.length;
-      const valid=issueCount===0;
-      const workingDirectory=snapshot.workingDirectory||{};
-      const profileState=profileConfig.exists?(profileConfig.loaded?'profile loaded':'profile file issue'):'using defaults';
-      const profileStateTone=profileConfig.exists?(profileConfig.loaded?'green':'red'):'gray';
-      const toolTags=tools.map(t=>runtimeTag(t.name+(t.transcriptMode&&t.transcriptMode!=='default'?' · '+t.transcriptMode:''),'active')).join('');
-      const disabledTags=disabled.map(t=>runtimeTag(t.name,'gray')).join('');
-      const skillTags=(skills.items||[]).slice(0,18).map(s=>runtimeTag(s.name,'')).join('');
-      const editFields=(editing.editableFields||[]).map(f=>runtimeTag(f,'green')).join('');
-      const readOnlyFields=(editing.readOnlyFields||[]).map(f=>runtimeTag(f,'gray')).join('');
-      const validationRows=renderRuntimeIssueRows(allIssues);
-      const missingProfileNote=!profileConfig.exists
-        ? '<div class="runtime-note warning">尚未创建 profile 文件；当前 session 使用默认配置。保存受控字段会创建 <code>'+escapeHtml(profileConfig.path||'-')+'</code>，并在新 session 生效。</div>'
-        : '';
-      const unsafeProfileNote=configIssues.length
-        ? '<div class="runtime-note danger">Profile 文件存在校验问题。Dashboard 只允许保存安全字段，请先处理下面的问题。</div>'
-        : '';
-      const skillLoadError=skills.loadError
-        ? '<div class="runtime-issue-row"><strong>skills.loadError</strong> · '+escapeHtml(skills.loadError)+'</div>'
-        : '';
-
-      if(!valid)settingsCollapseState.runtimeStatus=false;
-      p.innerHTML=`<div class="config-group${settingsCollapsedClass('runtimeStatus', valid)}" id="runtime-config-group">
-        <div class="config-group-title" onclick="toggleSettingsGroup('runtime-config-group','runtimeStatus')">
-          <span class="config-group-title-main">
-            <span>Runtime Profile 状态</span>
-            <span class="advanced-muted">高级诊断</span>
-          </span>
-          <span class="config-group-title-actions">
-            <button class="btn btn-ghost" onclick="event.stopPropagation();fetchRuntimeConfig()" style="font-size:12px;padding:4px 10px">刷新</button>
-          </span>
-        </div>
-        <div class="config-group-body">
-          <div class="profile-status-line">
-            ${runtimeTag(valid?'配置有效':'配置问题 '+issueCount, valid?'green':'red')}
-            ${runtimeTag(profileState, profileStateTone)}
-            ${runtimeTag('保存后新 session 生效','warm')}
-          </div>
-          ${missingProfileNote}
-          ${unsafeProfileNote}
-          <div class="profile-summary-grid">
-            <div class="profile-summary-item">
-              <div class="profile-summary-label">Profile 文件</div>
-              <div class="profile-summary-value"><code>${escapeHtml(profileConfig.path||'-')}</code></div>
-              <div class="profile-summary-meta">${profileConfig.exists?(profileConfig.loaded?'已加载':'存在但未加载'):'尚未创建，当前使用默认值'}</div>
-            </div>
-            <div class="profile-summary-item">
-              <div class="profile-summary-label">当前 Profile</div>
-              <div class="profile-summary-value"><code>${escapeHtml(profile.id||'-')}</code></div>
-              <div class="profile-summary-meta">${escapeHtml(formatRuntimeSurface(profile.surface))}</div>
-            </div>
-            <div class="profile-summary-item">
-              <div class="profile-summary-label">运行根目录</div>
-              <div class="profile-summary-value"><code>${escapeHtml(snapshot.runtimeRoot||'-')}</code></div>
-              <div class="profile-summary-meta">Dashboard 只展示和编辑当前本地 runtime。</div>
-            </div>
-            <div class="profile-summary-item">
-              <div class="profile-summary-label">生效范围</div>
-              <div class="profile-summary-value">新 session</div>
-              <div class="profile-summary-meta">当前已运行 session 不会热更新。</div>
-            </div>
-          </div>
-          ${validationRows?'<div class="runtime-subsection-title">配置问题</div>'+validationRows:''}
-          <div class="runtime-subsection-title">最终生效配置</div>
-          <div class="runtime-field-list">
-            ${renderRuntimeField('工作目录','<code>'+escapeHtml(workingDirectory.path||profile.workingDirectory||'-')+'</code> '+runtimeTag(workingDirectory.exists?'exists':'missing', workingDirectory.exists?'green':'red'))}
-            ${renderRuntimeField('模型','<code>'+escapeHtml(model.provider||'-')+'</code> / <code>'+escapeHtml(model.model||'-')+'</code><div class="profile-summary-meta">'+(model.apiUrl?'模型地址已配置，详情见高级诊断':'未配置模型地址')+'</div>')}
-            ${renderRuntimeField('工具', '<div class="runtime-tag-list">'+(toolTags||runtimeTag('无启用工具','gray'))+'</div>')}
-            ${disabledTags?renderRuntimeField('禁用工具','<div class="runtime-tag-list">'+disabledTags+'</div>'):''}
-            ${renderRuntimeField('Skills','<div class="runtime-tag-list">'+runtimeTag(skills.enabled?'enabled':'disabled', skills.enabled?'green':'gray')+' <code>'+escapeHtml(skills.path||'-')+'</code></div><div class="runtime-tag-list" style="margin-top:8px">'+(skillTags||runtimeTag('未加载 skill','gray'))+'</div>'+skillLoadError)}
-            ${renderRuntimeField('日志','<code>'+escapeHtml(logging.sessionLogDir||'-')+'</code><div class="profile-summary-meta">runtime: '+escapeHtml(logging.runtimeLogDir||'-')+' · reports: '+escapeHtml(logging.reportDir||'-')+' · upload: '+(upload.enabled?'on':'off')+(upload.serverUrl?' · '+escapeHtml(upload.serverUrl):'')+'</div>')}
-            ${renderRuntimeField('可编辑字段','<div class="runtime-tag-list">'+(editFields||runtimeTag('未开放编辑','gray'))+'</div>')}
-            ${renderRuntimeField('只读字段','<div class="runtime-tag-list">'+(readOnlyFields||runtimeTag('-','gray'))+'</div>')}
-          </div>
-          <details style="margin-top:18px">
-            <summary style="cursor:pointer;color:var(--text2);font-weight:700">Diagnostics: System prompt 展开结果（${Number(prompt.length||0)} chars）</summary>
-            <pre style="margin-top:10px;max-height:340px;overflow:auto;white-space:pre-wrap;background:var(--surface-muted);border:1px solid var(--border);border-radius:16px;padding:14px;color:var(--text);font-size:12px;line-height:1.6">${escapeHtml(prompt.text||'')}</pre>
-          </details>
-        </div>
-      </div>
-      ${renderRuntimeProfileEditor(profile, registeredTools, skills)}`;
-    }
-
-    function renderRuntimeProfileEditor(profile, registeredTools, skills){
-      const enabledTools=new Set((profile.tools&&profile.tools.enabled)||[]);
-      const toolControls=(registeredTools||[]).map(t=>'<label class="runtime-check-row"><input type="checkbox" data-runtime-tool="'+escapeHtml(t.name)+'" '+(enabledTools.has(t.name)?'checked':'')+' /> <span>'+escapeHtml(t.name)+'</span></label>').join('');
-      return `<div class="config-group${settingsCollapsedClass('runtimeEditor', true)}" id="runtime-profile-editor">
-        <div class="config-group-title" onclick="toggleSettingsGroup('runtime-profile-editor','runtimeEditor')">
-          <span class="config-group-title-main">
-            <span>受控编辑</span>
-            <span class="tag warm">保存后新 session 生效</span>
-          </span>
-        </div>
-        <div class="config-group-body">
-          <div class="runtime-note">只保存显示名、默认工作目录、启用工具和 skills 开关。访问凭证、token、secret 不会写入 Runtime Profile。</div>
-          <div class="config-row"><label class="config-label">Agent 显示名</label><input class="config-input" id="runtime-profile-display-name" value="${escapeHtml(profile.displayName||'')}" placeholder="例如 CatsCo Assistant" /></div>
-          <div class="config-row"><label class="config-label">默认工作目录</label><input class="config-input" id="runtime-profile-working-directory" value="${escapeHtml(profile.workingDirectory||'')}" placeholder="默认工作目录" /></div>
-          <div class="config-row"><label class="config-label">Skills</label><div style="flex:1"><label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700"><input type="checkbox" id="runtime-profile-skills-enabled" ${skills.enabled?'checked':''} /> 启用 skills</label></div></div>
-          <div class="config-row" style="align-items:flex-start"><label class="config-label">可用工具</label><div class="runtime-tool-grid" style="flex:1">${toolControls||'<span class="tag gray">没有注册工具</span>'}</div></div>
-          <div class="config-actions">
-            <button class="btn" onclick="previewRuntimeProfileEdit()">预览影响</button>
-            <button class="btn btn-primary" onclick="saveRuntimeProfileEdit()">保存到 profile</button>
-            <button class="btn btn-ghost" onclick="rollbackRuntimeProfileEdit()">回滚上次保存</button>
-            <span class="config-saved" id="runtime-profile-edit-saved">已保存</span>
-          </div>
-          <div id="runtime-profile-edit-status" style="margin-top:12px;color:var(--text2);font-size:13px"></div>
-          <div id="runtime-profile-diff" style="margin-top:12px"></div>
-        </div>
-      </div>`;
-    }
-
     function runtimeTag(label, tone){
       return '<span class="tag '+(tone||'')+'">'+escapeHtml(label)+'</span>';
-    }
-
-    function renderRuntimeField(label, valueHtml){
-      return '<div class="runtime-field-row"><div class="runtime-field-label">'+escapeHtml(label)+'</div><div class="runtime-field-value">'+valueHtml+'</div></div>';
-    }
-
-    function renderRuntimeIssueRows(issues){
-      return (issues||[]).map(i=>'<div class="runtime-issue-row"><strong>'+escapeHtml(i.path||'-')+'</strong> · '+escapeHtml(i.message||'')+'</div>').join('');
-    }
-
-    function formatRuntimeSurface(surface){
-      if(surface==='catscompany')return 'CatsCo';
-      if(surface==='feishu')return 'Feishu';
-      if(surface==='weixin')return 'Weixin';
-      if(surface==='cli')return 'CLI';
-      return surface||'-';
-    }
-
-    function collectRuntimeProfileEditInput(){
-      const enabled=Array.from(document.querySelectorAll('[data-runtime-tool]')).filter(el=>el.checked).map(el=>el.getAttribute('data-runtime-tool'));
-      return {
-        displayName: document.getElementById('runtime-profile-display-name').value.trim(),
-        workingDirectory: document.getElementById('runtime-profile-working-directory').value.trim(),
-        tools: { enabled },
-        skills: { enabled: document.getElementById('runtime-profile-skills-enabled').checked }
-      };
-    }
-
-    async function previewRuntimeProfileEdit(){
-      await submitRuntimeProfileEdit('preview');
-    }
-
-    async function saveRuntimeProfileEdit(){
-      if(!confirm('保存 Runtime Profile？保存后只影响新 session，当前 session 不会热更新。'))return;
-      await submitRuntimeProfileEdit('save');
-    }
-
-    async function submitRuntimeProfileEdit(mode){
-      const status=document.getElementById('runtime-profile-edit-status');
-      try{
-        status.style.color='var(--text2)';
-        status.textContent=mode==='save'?'保存中...':'预览中...';
-        const r=await fetch(API+(mode==='save'?'/api/runtime/profile':'/api/runtime/profile/preview'),{method:mode==='save'?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collectRuntimeProfileEditInput())});
-        const d=await r.json();
-        if(!r.ok||d.error)throw new Error(d.error||'请求失败');
-        renderRuntimeProfileEditResult(d, mode==='save');
-        if(mode==='save'){
-          const s=document.getElementById('runtime-profile-edit-saved');
-          s.classList.add('show');
-          setTimeout(()=>s.classList.remove('show'),2000);
-          await fetchRuntimeConfig({force:true});
-        }
-      }catch(e){
-        status.textContent='失败：'+e.message;
-        status.style.color='var(--red)';
-      }
-    }
-
-    function renderRuntimeProfileEditResult(result, saved){
-      const status=document.getElementById('runtime-profile-edit-status');
-      const diff=document.getElementById('runtime-profile-diff');
-      const issues=(result.validation&&result.validation.issues)||[];
-      status.style.color=issues.length?'var(--red)':'var(--green)';
-      status.textContent=(saved?'已保存到 Runtime Profile。新 session 生效。':'预览完成，未写入文件。')+(issues.length?' 有 '+issues.length+' 个配置问题。':' 配置有效。');
-      const diffRows=(result.diff||[]).map(item=>'<div class="runtime-result-row"><strong>'+escapeHtml(item.path)+'</strong><div style="color:var(--text3);margin-top:6px">before: <code>'+escapeHtml(formatRuntimeValue(item.before))+'</code></div><div style="color:var(--text2);margin-top:4px">after: <code>'+escapeHtml(formatRuntimeValue(item.after))+'</code></div></div>').join('');
-      const issueRows=renderRuntimeIssueRows(issues);
-      diff.innerHTML=(issueRows||'')+(diffRows||'<div style="color:var(--text3);font-size:12px">没有字段变化。</div>');
-    }
-
-    async function rollbackRuntimeProfileEdit(){
-      if(!confirm('确定回滚上一次 runtime profile 保存？'))return;
-      const status=document.getElementById('runtime-profile-edit-status');
-      try{
-        const r=await fetch(API+'/api/runtime/profile/rollback',{method:'POST'});
-        const d=await r.json();
-        if(!r.ok||d.error)throw new Error(d.error||'回滚失败');
-        status.style.color='var(--green)';
-        status.textContent=d.deleted?'已删除新建的 profile 文件。':'已恢复上一次 profile 文件。';
-        await fetchRuntimeConfig({force:true});
-      }catch(e){
-        status.style.color='var(--red)';
-        status.textContent='回滚失败：'+e.message;
-      }
-    }
-
-    function formatRuntimeValue(value){
-      if(value===undefined)return '(未设置)';
-      if(Array.isArray(value))return value.join(', ');
-      if(value&&typeof value==='object')return JSON.stringify(value);
-      return String(value);
-    }
-
-    function toggleConfigGroup(idx) {
-      const el = document.getElementById('config-grp-'+idx);
-      if (el) {
-        el.classList.toggle('collapsed');
-        if(configGroups[idx])configGroups[idx].collapsed=el.classList.contains('collapsed');
-      }
-    }
-
-    function setupEnvConfigLazyLoad(){
-      const details=document.getElementById('env-config-details');
-      if(!details)return;
-      const loadIfOpen=()=>{if(details.open&&!envConfigLoaded&&!envConfigLoading)fetchConfig();};
-      details.addEventListener('toggle',loadIfOpen);
-      loadIfOpen();
-    }
-
-    function renderConfig(){
-      const p=document.getElementById('config-panel');
-      document.getElementById('save-config-btn').style.display='inline-block';
-      p.innerHTML=configGroups.map((g,idx)=>{
-        const collapsedClass = g.collapsed ? ' collapsed' : '';
-        const rows = g.keys.map(i=>{
-          const v=configData[i.key]||'';
-          if(i.type==='select') return '<div class="config-row"><label class="config-label">'+escapeHtml(i.label)+'</label><select class="config-select" data-key="'+escapeHtml(i.key)+'">'+i.options.map(o=>'<option value="'+escapeHtml(o)+'"'+(v===o?' selected':'')+'>'+escapeHtml(o||'(空)')+'</option>').join('')+'</select></div>';
-          const extraBtn = (i.key==='WEIXIN_TOKEN')?'<button class="btn btn-primary" onclick="getWeixinToken()" style="margin-left:8px">获取Token</button>':'';
-          return '<div class="config-row"><label class="config-label">'+escapeHtml(i.label)+'</label><input class="config-input" data-key="'+escapeHtml(i.key)+'" type="'+(i.sensitive?'password':'text')+'" value="'+escapeHtml(v)+'" placeholder="'+escapeHtml(i.key)+'" />'+extraBtn+'</div>';
-        }).join('');
-        return '<div class="config-group'+collapsedClass+'" id="config-grp-'+idx+'"><div class="config-group-title" onclick="toggleConfigGroup('+idx+')"><span class="config-group-title-main">'+escapeHtml(g.title)+'</span></div><div class="config-group-body">'+rows+'</div></div>';
-      }).join('');
-    }
-
-    async function saveConfig(){
-      if(!confirm('保存本地环境变量配置？这会写入项目 .env，可能包含访问凭证、token 或 secret。'))return;
-      const inputs=document.querySelectorAll('[data-key]'),updates={};
-      inputs.forEach(el=>{updates[el.dataset.key]=el.value;});
-      try{const r=await fetch(API+'/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(updates)});const d=await r.json();if(d.ok){const s=document.getElementById('config-saved');s.classList.add('show');setTimeout(()=>s.classList.remove('show'),2000);}}catch(e){alert('保存失败: '+e.message);}
     }
 
     function normalizeDashboardFontScale(value){
@@ -7882,7 +8047,7 @@
     }
 
     function runCatsNextAction(){
-      if(catsNextAction==='settings')return switchPage('config');
+      if(catsNextAction==='settings')return switchPage('services');
       if(catsNextAction==='setup')return setupCatsBot();
       if(catsNextAction==='bot-selector')return showBotSelector();
       if(catsNextAction==='refresh')return loadCatsMessages(true);
@@ -9443,9 +9608,9 @@
     // Init
     loadDashboardFontScale();
     preloadPetFrames();renderPetProfile();renderPetProcess();initFloatingPetDrag();setPetState('idle');
-    setupEnvConfigLazyLoad();fetchStatus();fetchSkills();fetchSkillHubStatus();fetchDashboardSettings();fetchRuntimeConfig();fetchUpdateStatus(true);fetchCatsStatus();
+    fetchConfig();fetchStatus();fetchSkills();fetchSkillHubStatus();fetchDashboardSettings();fetchUpdateStatus(true);fetchCatsStatus();fetchPetStatus();fetchPetTimeline();fetchPetProgress();
     if(document.getElementById('page-chat')?.classList.contains('active') && !catsPollTimer) catsPollTimer = setInterval(fetchCatsStatus, 5000);
-    setInterval(fetchStatus,5000);setInterval(fetchSkills,30000);setInterval(()=>fetchUpdateStatus(true),5000);
+    setInterval(fetchStatus,5000);setInterval(fetchSkills,30000);setInterval(()=>fetchUpdateStatus(true),5000);setInterval(()=>{fetchPetStatus();fetchPetTimeline();fetchPetProgress();},2500);
     const catsMessagesBox = document.getElementById('cats-messages');
     catsMessagesBox.addEventListener('scroll', handleCatsMessagesScroll, { passive: true });
     const catsMessageInput = document.getElementById('cats-message-input');
