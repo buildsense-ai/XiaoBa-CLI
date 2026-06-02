@@ -283,4 +283,18 @@ describe('CatsCo runtime config resolver', () => {
     assert.equal(config.currentBot?.bindingSource, 'legacy-env-migration');
     assert.equal(Boolean(config.device?.bodyId), true);
   });
+
+  test('defaults close button behavior to hiding in tray and persists overrides', () => {
+    const service = createCatsCoLocalConfigService({ runtimeRoot: tempDir, env: {} as NodeJS.ProcessEnv });
+
+    assert.equal(service.toDashboardConfigPayload().preferences.closeToTray, true);
+
+    const disabled = service.updatePreferences({ closeToTray: false });
+    assert.equal(disabled.closeToTray, false);
+    assert.equal(service.toDashboardConfigPayload().preferences.closeToTray, false);
+
+    const restored = service.updatePreferences({ closeToTray: true });
+    assert.equal(restored.closeToTray, true);
+    assert.equal(service.toDashboardConfigPayload().preferences.closeToTray, true);
+  });
 });

@@ -131,6 +131,26 @@ describe('dashboard typed settings API', () => {
     assert.equal(text.includes('abc'), false);
   });
 
+  test('PUT /cats/config/preferences persists close button behavior', async () => {
+    const initialResponse = await fetch(`${baseUrl}/api/cats/config`);
+    const initial = await initialResponse.json() as any;
+    assert.equal(initialResponse.status, 200);
+    assert.equal(initial.preferences.closeToTray, true);
+
+    const response = await fetch(`${baseUrl}/api/cats/config/preferences`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ closeToTray: false }),
+    });
+    const data = await response.json() as any;
+    assert.equal(response.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.preferences.closeToTray, false);
+
+    const config = createCatsCoLocalConfigService({ runtimeRoot: testRoot }).load();
+    assert.equal(config.preferences?.closeToTray, false);
+  });
+
   test('GET /settings sanitizes URL credentials and query values before display', async () => {
     fs.writeFileSync(path.join(testRoot, '.env'), [
       'GAUZ_LLM_API_BASE=https://user:pass@model.example.test/v1/messages?token=secret#frag',

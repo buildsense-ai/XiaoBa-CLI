@@ -29,6 +29,18 @@ function applyConfiguredUserDataPath() {
   app.setPath('userData', resolvedUserDataDir);
 }
 
+function readCloseToTrayPreference() {
+  try {
+    const configPath = path.join(process.cwd(), '.xiaoba', 'catsco.json');
+    if (!fs.existsSync(configPath)) return true;
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const value = config?.preferences?.closeToTray;
+    return value !== false;
+  } catch (_error) {
+    return true;
+  }
+}
+
 // 闂佽绻愮换鎴犳崲閸℃稒鍎婃い鏍仜缁€澶愭煟濡厧鍔嬬紒?electron-updater闂備焦瀵х粙鎴︽偋閸℃哎浜归柡灞诲劜閻掕顭块懜鐢点€掔紒鈧?
 try {
   autoUpdater = require('electron-updater').autoUpdater;
@@ -445,7 +457,7 @@ function createWindow() {
   mainWindow.loadURL(`http://127.0.0.1:${DASHBOARD_PORT}`);
 
   mainWindow.on('close', (e) => {
-    if (process.platform === 'darwin' && !app.isQuitting) {
+    if (!app.isQuitting && readCloseToTrayPreference()) {
       e.preventDefault();
       mainWindow.hide();
     }
