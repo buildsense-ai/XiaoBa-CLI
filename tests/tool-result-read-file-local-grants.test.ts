@@ -42,6 +42,7 @@ describe('ReadTool local file grants', () => {
     return {
       kind: 'catscompany_attachment',
       source: 'catscompany',
+      attachmentRef: 'catsco_attachment:current-read-grant',
       filePath,
       fileName: path.basename(filePath),
       fileType: 'file',
@@ -106,6 +107,35 @@ describe('ReadTool local file grants', () => {
     assert.match(String(result.content), /hello from current attachment/);
   });
 
+  test('allows reading a CatsCo attachment by opaque reference without exposing the local path', async () => {
+    const filePath = managedFile('referenced.md');
+    const result = await tool.execute(
+      { file_path: 'catsco_attachment:read-current' },
+      catsContext([grant(filePath, { attachmentRef: 'catsco_attachment:read-current' })]),
+    );
+
+    assert.equal(result.ok, true);
+    assert.match(String(result.content), /hello from current attachment/);
+    assert.match(String(result.content), /Path: catsco_attachment:read-current/);
+    assert.doesNotMatch(String(result.content), new RegExp(escapeRegExp(filePath)));
+    assert.doesNotMatch(String(result.content), new RegExp(escapeRegExp(testRoot)));
+  });
+
+  test('rejects unknown CatsCo attachment references without exposing granted local paths', async () => {
+    const filePath = managedFile('private.md');
+    const result = await tool.execute(
+      { file_path: 'catsco_attachment:missing-read' },
+      catsContext([grant(filePath, { attachmentRef: 'catsco_attachment:owned-read' })]),
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'PERMISSION_DENIED');
+    assert.match(result.message, /附件引用不属于当前已授权/);
+    assert.match(result.message, /catsco_attachment:missing-read/);
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(filePath)));
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(testRoot)));
+  });
+
   test('allows reading a relative CatsCo attachment path with an absolute matching grant', async () => {
     const filePath = managedFile('relative.md');
     const result = await tool.execute({ file_path: path.join('tmp', 'downloads', 'relative.md') }, catsContext([grant(filePath)]));
@@ -144,6 +174,23 @@ describe('ReadTool local file grants', () => {
     assert.doesNotMatch(untrusted.message, /hello from current attachment/);
   });
 
+  test('rejects stale CatsCo attachment references without exposing the local path', async () => {
+    const filePath = managedFile('expired-reference.md');
+    const result = await tool.execute({
+      file_path: 'catsco_attachment:expired-read',
+    }, catsContext([grant(filePath, {
+      attachmentRef: 'catsco_attachment:expired-read',
+      expiresAt: Date.now() - 1,
+    })]));
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'PERMISSION_DENIED');
+    assert.match(result.message, /已过期/);
+    assert.match(result.message, /catsco_attachment:expired-read/);
+    assert.doesNotMatch(result.message, /expired-reference\.md/);
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(testRoot)));
+  });
+
   test('keeps missing-file errors ahead of local grant checks', async () => {
     const filePath = path.join(testRoot, 'tmp', 'downloads', 'missing.md');
     const result = await tool.execute({ file_path: filePath }, catsContext());
@@ -177,3 +224,7 @@ describe('ReadTool local file grants', () => {
     assert.match(String(result.content), /hello from current attachment/);
   });
 });
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

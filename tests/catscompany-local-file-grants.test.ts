@@ -49,6 +49,7 @@ describe('CatsCo local file grant creation', () => {
     });
 
     assert.ok(result);
+    assert.match(result.attachmentRef || '', /^catsco_attachment:/);
     assert.equal(result.filePath, fs.realpathSync(filePath));
     assert.equal(result.fileName, 'report.md');
     assert.equal(result.fileType, 'file');

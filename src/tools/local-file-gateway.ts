@@ -9,10 +9,22 @@ export type LocalFileAccessDecision =
   | { ok: true; grant?: ScopedLocalFileGrant }
   | { ok: false; errorCode: ToolErrorCode; message: string };
 
+export type LocalFileReferenceDecision =
+  | { matched: false }
+  | { matched: true; ok: true; absolutePath: string; displayPath: string; grant: ScopedLocalFileGrant }
+  | { matched: true; ok: false; errorCode: ToolErrorCode; message: string };
+
 interface ResolveLocalFileAccessOptions {
   operation: LocalFileOperation;
   absolutePath: string;
 }
+
+interface ResolveLocalFileReferenceOptions {
+  operation: LocalFileOperation;
+  inputPath: string;
+}
+
+const CATSCOMPANY_ATTACHMENT_REF_PREFIX = 'catsco_attachment:';
 
 export function resolveLocalFileAccess(
   context: ToolExecutionContext,
@@ -37,9 +49,52 @@ export function resolveLocalFileAccess(
     errorCode: 'PERMISSION_DENIED',
     message: [
       '该本地附件缓存不属于当前已授权的用户消息，已阻止访问。',
-      '请让用户在当前会话重新上传附件，或使用本轮消息中明确提供的授权附件路径。',
+      '请让用户在当前会话重新上传附件，或使用本轮消息中明确提供的授权附件引用。',
       `Path: ${absolutePath}`,
     ].join('\n'),
+  };
+}
+
+export function resolveLocalFileReference(
+  context: ToolExecutionContext,
+  options: ResolveLocalFileReferenceOptions,
+): LocalFileReferenceDecision {
+  if (context.surface !== 'catscompany') return { matched: false };
+
+  const attachmentRef = normalizeAttachmentReference(options.inputPath);
+  if (!attachmentRef) return { matched: false };
+
+  const matchingGrant = findMatchingGrantByReference(context.localFileGrants, attachmentRef);
+  if (!matchingGrant) {
+    return {
+      matched: true,
+      ok: false,
+      errorCode: 'PERMISSION_DENIED',
+      message: [
+        '该附件引用不属于当前已授权的用户消息，已阻止访问。',
+        '请让用户在当前会话重新上传附件，或使用本轮消息中明确提供的授权附件引用。',
+        `Attachment ref: ${attachmentRef}`,
+      ].join('\n'),
+    };
+  }
+
+  const absolutePath = normalizePath(matchingGrant.filePath);
+  const access = validateGrant(context, matchingGrant, absolutePath, options.operation, attachmentRef);
+  if (!access.ok) {
+    return {
+      matched: true,
+      ok: false,
+      errorCode: access.errorCode,
+      message: access.message,
+    };
+  }
+
+  return {
+    matched: true,
+    ok: true,
+    absolutePath,
+    displayPath: attachmentRef,
+    grant: matchingGrant,
   };
 }
 
@@ -48,31 +103,32 @@ function validateGrant(
   grant: ScopedLocalFileGrant,
   absolutePath: string,
   operation: LocalFileGrantOperation,
+  displayPath = absolutePath,
 ): LocalFileAccessDecision {
   const scope = context.executionScope;
   if (!scope || scope.source !== 'catscompany') {
-    return denied('当前工具调用缺少 CatsCo 执行身份，无法访问本地附件缓存。', absolutePath);
+    return denied('当前工具调用缺少 CatsCo 执行身份，无法访问本地附件缓存。', displayPath);
   }
 
   if (scope.identityTrust !== 'server_canonical' || !scope.isTrusted) {
-    return denied('当前消息身份未通过服务端一致性校验，无法访问本地附件缓存。', absolutePath);
+    return denied('当前消息身份未通过服务端一致性校验，无法访问本地附件缓存。', displayPath);
   }
 
   if (grant.identityTrust !== 'server_canonical' || grant.source !== 'catscompany') {
-    return denied('本地文件授权不是服务端可信 CatsCo 身份生成的授权，已阻止访问。', absolutePath);
+    return denied('本地文件授权不是服务端可信 CatsCo 身份生成的授权，已阻止访问。', displayPath);
   }
 
   if (!grant.operations.includes(operation)) {
-    return denied(`本地文件授权不允许执行 ${operation}。`, absolutePath);
+    return denied(`本地文件授权不允许执行 ${operation}。`, displayPath);
   }
 
   if (grant.expiresAt <= Date.now()) {
-    return denied('本地文件授权已过期，请让用户在当前会话重新上传附件。', absolutePath);
+    return denied('本地文件授权已过期，请让用户在当前会话重新上传附件。', displayPath);
   }
 
   const localDeviceGrant = context.localDeviceGrant;
   if (!localDeviceGrant || localDeviceGrant.source !== 'catscompany') {
-    return denied('当前本机运行体缺少 CatsCo body 授权，无法访问本地附件缓存。', absolutePath);
+    return denied('当前本机运行体缺少 CatsCo body 授权，无法访问本地附件缓存。', displayPath);
   }
 
   const mismatches = [
@@ -96,7 +152,7 @@ function validateGrant(
       message: [
         '本地文件授权与当前执行身份不一致，已阻止访问以避免串用户或串设备。',
         ...mismatches.map(([field, grantValue, scopeValue]) => `${field}: grant=${grantValue || '(empty)'} scope=${scopeValue || '(empty)'}`),
-        `Path: ${absolutePath}`,
+        targetLine(displayPath),
       ].join('\n'),
     };
   }
@@ -105,13 +161,13 @@ function validateGrant(
   try {
     stats = fs.statSync(absolutePath);
   } catch {
-    return denied('授权附件文件已不存在，请让用户重新上传。', absolutePath);
+    return denied('授权附件文件已不存在，请让用户重新上传。', displayPath);
   }
   if (!stats.isFile()) {
-    return denied('授权附件路径已不再指向文件，请让用户重新上传。', absolutePath);
+    return denied('授权附件路径已不再指向文件，请让用户重新上传。', displayPath);
   }
   if (stats.size !== grant.size || stats.mtimeMs !== grant.mtimeMs) {
-    return denied('授权附件文件在授权后发生变化，请让用户重新上传。', absolutePath);
+    return denied('授权附件文件在授权后发生变化，请让用户重新上传。', displayPath);
   }
 
   return { ok: true, grant };
@@ -121,8 +177,14 @@ function denied(reason: string, absolutePath: string): LocalFileAccessDecision {
   return {
     ok: false,
     errorCode: 'PERMISSION_DENIED',
-    message: [reason, `Path: ${absolutePath}`].join('\n'),
+    message: [reason, targetLine(absolutePath)].join('\n'),
   };
+}
+
+function targetLine(displayPath: string): string {
+  return normalizeAttachmentReference(displayPath)
+    ? `Attachment ref: ${displayPath}`
+    : `Path: ${displayPath}`;
 }
 
 function findMatchingGrant(
@@ -131,6 +193,22 @@ function findMatchingGrant(
 ): ScopedLocalFileGrant | undefined {
   if (!Array.isArray(grants)) return undefined;
   return grants.find(grant => normalizePath(grant.filePath) === absolutePath);
+}
+
+function findMatchingGrantByReference(
+  grants: ScopedLocalFileGrant[] | undefined,
+  attachmentRef: string,
+): ScopedLocalFileGrant | undefined {
+  if (!Array.isArray(grants)) return undefined;
+  return grants.find(grant => normalizeAttachmentReference(grant.attachmentRef) === attachmentRef);
+}
+
+function normalizeAttachmentReference(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const text = value.trim();
+  if (!text.startsWith(CATSCOMPANY_ATTACHMENT_REF_PREFIX)) return undefined;
+  const id = text.slice(CATSCOMPANY_ATTACHMENT_REF_PREFIX.length).trim();
+  return id ? `${CATSCOMPANY_ATTACHMENT_REF_PREFIX}${id}` : undefined;
 }
 
 function isManagedCatsCoDownloadPath(context: ToolExecutionContext, absolutePath: string): boolean {

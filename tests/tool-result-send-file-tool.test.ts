@@ -46,6 +46,7 @@ describe('SendFileTool - ToolExecutionResult', () => {
     return {
       kind: 'catscompany_attachment',
       source: 'catscompany',
+      attachmentRef: 'catsco_attachment:current-send-grant',
       filePath,
       fileName: path.basename(filePath),
       fileType: 'file',
@@ -260,6 +261,64 @@ describe('SendFileTool - ToolExecutionResult', () => {
     assert.strictEqual(sentPath, filePath);
   });
 
+  test('allows sending a CatsCo attachment by opaque reference without exposing the local path', async () => {
+    const filePath = managedFile('referenced-send.md');
+    let sentPath = '';
+    context.surface = 'catscompany';
+    context.sessionId = 'cc_user:usr7';
+    context.executionScope = scope({ topicId: 'chat-1' });
+    context.localDeviceGrant = deviceGrant();
+    context.localFileGrants = [grant(filePath, { attachmentRef: 'catsco_attachment:send-current' })];
+    context.channel = {
+      chatId: 'chat-1',
+      reply: async () => {},
+      sendFile: async (_chatId, resolvedPath) => {
+        sentPath = resolvedPath;
+      },
+    };
+
+    const result = await tool.execute({
+      file_path: 'catsco_attachment:send-current',
+      file_name: 'referenced-send.md',
+    }, context);
+
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(sentPath, filePath);
+    assert.match(String(result.content), /Path: catsco_attachment:send-current/);
+    assert.doesNotMatch(String(result.content), new RegExp(escapeRegExp(filePath)));
+    assert.doesNotMatch(String(result.content), new RegExp(escapeRegExp(testRoot)));
+  });
+
+  test('blocks unknown CatsCo attachment references before sending', async () => {
+    const filePath = managedFile('private-send.md');
+    let sendCalled = false;
+    context.surface = 'catscompany';
+    context.sessionId = 'cc_user:usr7';
+    context.executionScope = scope({ topicId: 'chat-1' });
+    context.localDeviceGrant = deviceGrant();
+    context.localFileGrants = [grant(filePath, { attachmentRef: 'catsco_attachment:owned-send' })];
+    context.channel = {
+      chatId: 'chat-1',
+      reply: async () => {},
+      sendFile: async () => {
+        sendCalled = true;
+      },
+    };
+
+    const result = await tool.execute({
+      file_path: 'catsco_attachment:missing-send',
+      file_name: 'missing.md',
+    }, context);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'PERMISSION_DENIED');
+    assert.match(result.message, /附件引用不属于当前已授权/);
+    assert.match(result.message, /catsco_attachment:missing-send/);
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(filePath)));
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(testRoot)));
+    assert.strictEqual(sendCalled, false);
+  });
+
   test('allows sending a relative CatsCo attachment cache path with a matching local grant', async () => {
     const filePath = managedFile('relative.md');
     let sentPath = '';
@@ -333,6 +392,39 @@ describe('SendFileTool - ToolExecutionResult', () => {
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.errorCode, 'PERMISSION_DENIED');
     assert.match(result.message, /未通过服务端一致性校验/);
+    assert.strictEqual(sendCalled, false);
+  });
+
+  test('blocks stale CatsCo attachment references without exposing the local path', async () => {
+    const filePath = managedFile('expired-send.md');
+    let sendCalled = false;
+    context.surface = 'catscompany';
+    context.sessionId = 'cc_user:usr7';
+    context.executionScope = scope({ topicId: 'chat-1' });
+    context.localDeviceGrant = deviceGrant();
+    context.localFileGrants = [grant(filePath, {
+      attachmentRef: 'catsco_attachment:expired-send',
+      expiresAt: Date.now() - 1,
+    })];
+    context.channel = {
+      chatId: 'chat-1',
+      reply: async () => {},
+      sendFile: async () => {
+        sendCalled = true;
+      },
+    };
+
+    const result = await tool.execute({
+      file_path: 'catsco_attachment:expired-send',
+      file_name: 'expired-send.md',
+    }, context);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'PERMISSION_DENIED');
+    assert.match(result.message, /已过期/);
+    assert.match(result.message, /catsco_attachment:expired-send/);
+    assert.doesNotMatch(result.message, /expired-send\.md/);
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(testRoot)));
     assert.strictEqual(sendCalled, false);
   });
 
@@ -417,3 +509,7 @@ describe('SendFileTool - ToolExecutionResult', () => {
     assert.ok(result.message.includes(`Path: ${filePath}`));
   });
 });
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

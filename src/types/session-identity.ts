@@ -55,6 +55,7 @@ export interface ScopedLocalDeviceGrant {
 export interface ScopedLocalFileGrant {
   kind: LocalFileGrantKind;
   source: MessageSource;
+  attachmentRef?: string;
   filePath: string;
   fileName: string;
   fileType: LocalFileGrantFileType;

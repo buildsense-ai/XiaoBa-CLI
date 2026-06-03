@@ -922,20 +922,21 @@ export class CatsCompanyBot {
     const blocks: import('../types').ContentBlock[] = [];
     const config = ConfigManager.getConfigReadonly();
     const primaryModelCanSeeImages = isPrimaryModelVisionCapable(config);
-    const currentImagePaths: string[] = [];
-    const currentFilePaths: string[] = [];
+    const currentImageRefs: string[] = [];
 
     if (text) {
       blocks.push({ type: 'text', text });
     }
 
     for (const att of attachments) {
+      const attachmentReference = this.formatAttachmentReferenceForModel(att);
       if (att.type === 'image') {
         if (!primaryModelCanSeeImages) {
-          currentImagePaths.push(`[Current image] ${att.fileName}\n[Current authorized attachment path] ${att.localPath}`);
+          currentImageRefs.push(attachmentReference);
           continue;
         }
 
+        blocks.push({ type: 'text', text: attachmentReference });
         const imgBlock = await createImageBlock(att.localPath);
         if (imgBlock) {
           blocks.push(imgBlock);
@@ -944,42 +945,48 @@ export class CatsCompanyBot {
           Logger.warning(`[多模态] 图片块创建失败: ${att.fileName} at ${att.localPath}`);
         }
       } else {
-        blocks.push({ type: 'text', text: `[文件] ${att.fileName}\n[授权附件路径] ${att.localPath}` });
+        blocks.push({ type: 'text', text: attachmentReference });
       }
     }
 
     Logger.info(`[多模态] 构建完成，共 ${blocks.length} 个块: ${blocks.map(b => b.type).join(', ')}`);
-    if (currentImagePaths.length > 0) {
+    if (currentImageRefs.length > 0) {
       blocks.push({
         type: 'text',
         text: [
           '[Current user turn contains image attachments]',
           'The primary model cannot directly inspect image pixels in this runtime.',
-          'If the user request depends on image content, call read_file on the current authorized attachment path below.',
-          'Use only the current authorized attachment path(s) listed here. Do not use old tmp/downloads paths, old image URLs, old filenames, or prior image descriptions.',
-          currentImagePaths.join('\n\n'),
+          'If the user request depends on image content, call read_file with file_path set to the current authorized attachment reference below.',
+          'Use only the current authorized attachment reference(s) listed here. Do not use old tmp/downloads paths, old image URLs, old filenames, or prior image descriptions.',
+          currentImageRefs.join('\n\n'),
         ].join('\n'),
       });
-      Logger.info(`[CatsCo] Primary model is text-only; exposed ${currentImagePaths.length} current image path(s) for read_file`);
-    }
-
-    if (currentFilePaths.length > 0) {
-      blocks.push({
-        type: 'text',
-        text: [
-          '[Current user turn contains file attachments]',
-          'If file content is needed, use only the current file path(s) below. Do not reuse historical attachment paths.',
-          currentFilePaths.join('\n\n'),
-        ].join('\n'),
-      });
+      Logger.info(`[CatsCo] Primary model is text-only; exposed ${currentImageRefs.length} current attachment reference(s) for read_file`);
     }
 
     return blocks;
   }
 
+  private formatAttachmentReferenceForModel(attachment: PendingAttachment): string {
+    const label = attachment.type === 'image' ? '图片' : '文件';
+    const attachmentRef = attachment.localFileGrant?.attachmentRef;
+    if (!attachmentRef) {
+      return [
+        `[${label}] ${attachment.fileName}`,
+        '[附件授权状态] 当前消息没有生成可读取的本地附件引用。',
+      ].join('\n');
+    }
+
+    return [
+      `[${label}] ${attachment.fileName}`,
+      `[授权附件引用] ${attachmentRef}`,
+      '[使用方式] 如需读取或转发该附件，将 read_file/send_file 的 file_path 设置为这个引用。',
+    ].join('\n');
+  }
+
   private formatAttachmentContext(attachments: PendingAttachment[]): string {
     const lines = attachments.map((attachment, index) => {
-      return `[附件${index + 1}] ${attachment.fileName} (${attachment.type})\n[附件路径] ${attachment.localPath}`;
+      return `[附件${index + 1}]\n${this.formatAttachmentReferenceForModel(attachment)}`;
     });
     return `[用户已上传附件]\n${lines.join('\n')}`;
   }

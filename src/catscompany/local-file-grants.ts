@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import type {
   ExecutionScope,
   LocalFileGrantFileType,
@@ -8,6 +9,7 @@ import type {
 } from '../types/session-identity';
 
 export const CATSCOMPANY_ATTACHMENT_GRANT_TTL_MS = 30 * 60 * 1000;
+export const CATSCOMPANY_ATTACHMENT_REF_PREFIX = 'catsco_attachment:';
 
 export interface CatsCoDeviceGrantInput {
   bodyId?: string;
@@ -62,6 +64,7 @@ export function createCatsCoAttachmentGrant(
   return {
     kind: 'catscompany_attachment',
     source: 'catscompany',
+    attachmentRef: `${CATSCOMPANY_ATTACHMENT_REF_PREFIX}${randomUUID()}`,
     filePath,
     fileName: input.fileName,
     fileType: input.type || 'unknown',

@@ -1,5 +1,6 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import * as path from 'path';
 import { ConversationRunner } from '../src/core/conversation-runner';
 import { Message } from '../src/types';
 import type { ScopedLocalFileGrant } from '../src/types/session-identity';
@@ -31,6 +32,7 @@ function grant(filePath: string): ScopedLocalFileGrant {
   return {
     kind: 'catscompany_attachment',
     source: 'catscompany',
+    attachmentRef: `catsco_attachment:${filePath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') || 'file'}`,
     filePath,
     fileName: filePath.split(/[\\/]/).pop() || 'file.txt',
     fileType: 'file',

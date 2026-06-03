@@ -80,7 +80,7 @@ function createProcessHarness() {
       { type: 'text', text },
       ...attachments.map((attachment) => ({
         type: 'text',
-        text: `[${attachment.type}] ${attachment.fileName} -> ${attachment.localPath}`,
+        text: `[${attachment.type}] ${attachment.fileName} -> ${attachment.localFileGrant?.attachmentRef || '(no authorized attachment reference)'}`,
       })),
     ];
   };
@@ -163,6 +163,29 @@ describe('CatsCo content blocks', () => {
     assert.strictEqual(parsed.files[0].fileName, 'crack.png');
   });
 
+  test('builds CatsCo attachment context with opaque references instead of local paths', async () => {
+    const bot = Object.create(CatsCompanyBot.prototype);
+    const localPath = 'C:\\tmp\\catsco-secret\\tmp\\downloads\\report.pdf';
+    const attachment = {
+      fileName: 'report.pdf',
+      localPath,
+      type: 'file',
+      receivedAt: Date.now(),
+      localFileGrant: {
+        attachmentRef: 'catsco_attachment:visible-ref',
+      },
+    };
+
+    const blocks = await (bot as any).buildMultimodalMessage('请读取这个文件', [attachment]);
+    const prompt = (bot as any).buildAttachmentOnlyPrompt([attachment]);
+    const modelVisible = JSON.stringify(blocks) + '\n' + prompt;
+
+    assert.match(modelVisible, /catsco_attachment:visible-ref/);
+    assert.match(modelVisible, /授权附件引用/);
+    assert.doesNotMatch(modelVisible, /catsco-secret/);
+    assert.doesNotMatch(modelVisible, new RegExp(escapeRegExp(localPath)));
+  });
+
   test('processes multiple attachments as one user turn', async () => {
     const { bot, downloads, multimodalCalls, handledTurns } = createProcessHarness();
 
@@ -203,9 +226,9 @@ describe('CatsCo content blocks', () => {
     assert.strictEqual(handledTurns.length, 1);
     assert.deepStrictEqual(handledTurns[0].userMessage, [
       { type: 'text', text: '一起看这些附件' },
-      { type: 'text', text: '[image] a.png -> C:\\tmp\\catsco-test\\a.png' },
-      { type: 'text', text: '[image] c.png -> C:\\tmp\\catsco-test\\c.png' },
-      { type: 'text', text: '[file] b.pdf -> C:\\tmp\\catsco-test\\b.pdf' },
+      { type: 'text', text: '[image] a.png -> (no authorized attachment reference)' },
+      { type: 'text', text: '[image] c.png -> (no authorized attachment reference)' },
+      { type: 'text', text: '[file] b.pdf -> (no authorized attachment reference)' },
     ]);
     assert.deepStrictEqual(handledTurns[0].options.runtimeFeedback, []);
   });
@@ -247,8 +270,8 @@ describe('CatsCo content blocks', () => {
     assert.strictEqual(handledTurns.length, 1);
     assert.deepStrictEqual(handledTurns[0].userMessage, [
       { type: 'text', text: '非 Dashboard 入口一起看这些附件' },
-      { type: 'text', text: '[image] a.png -> C:\\tmp\\catsco-test\\a.png' },
-      { type: 'text', text: '[file] b.pdf -> C:\\tmp\\catsco-test\\b.pdf' },
+      { type: 'text', text: '[image] a.png -> (no authorized attachment reference)' },
+      { type: 'text', text: '[file] b.pdf -> (no authorized attachment reference)' },
     ]);
   });
 
@@ -298,7 +321,15 @@ describe('CatsCo content blocks', () => {
       assert.strictEqual(grants[0].deviceBodyId, 'body-main');
       assert.strictEqual(grants[0].fileType, 'file');
       assert.strictEqual(grants[0].fileName, 'report.pdf');
+      const attachmentRef = grants[0].attachmentRef;
+      assert.ok(attachmentRef);
+      assert.match(attachmentRef, /^catsco_attachment:/);
       assert.strictEqual(grants[0].filePath, fs.realpathSync(path.join(testRoot, 'tmp', 'downloads', 'report.pdf')));
+      const renderedUserMessage = (handledTurns[0].userMessage as any[])
+        .map(block => block.text || '')
+        .join('\n');
+      assert.match(renderedUserMessage, new RegExp(attachmentRef));
+      assert.doesNotMatch(renderedUserMessage, /tmp[\\/]+downloads/);
     } finally {
       process.chdir(originalCwd);
       fs.rmSync(testRoot, { recursive: true, force: true });
@@ -344,6 +375,32 @@ describe('CatsCo content blocks', () => {
       process.chdir(originalCwd);
       fs.rmSync(testRoot, { recursive: true, force: true });
     }
+  });
+
+  test('builds attachment messages with opaque references instead of local paths', async () => {
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    const localPath = 'C:\\tmp\\catsco-test\\secret-report.pdf';
+
+    const blocks = await bot.buildMultimodalMessage('请读取这个文件', [{
+      fileName: 'secret-report.pdf',
+      localPath,
+      type: 'file',
+      receivedAt: Date.now(),
+      localFileGrant: {
+        attachmentRef: 'catsco_attachment:opaque-ref',
+      },
+    }]);
+
+    const text = blocks
+      .filter((block: any) => block.type === 'text')
+      .map((block: any) => block.text)
+      .join('\n');
+
+    assert.match(text, /请读取这个文件/);
+    assert.match(text, /catsco_attachment:opaque-ref/);
+    assert.doesNotMatch(text, /secret-report\.pdf -> C:/);
+    assert.doesNotMatch(text, /C:\\tmp\\catsco-test/);
+    assert.doesNotMatch(text, /授权附件路径/);
   });
 
   test('plain text messages are processed immediately without attachment coalesce wait', async () => {
@@ -585,3 +642,7 @@ describe('CatsCo content blocks', () => {
     ]);
   });
 });
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

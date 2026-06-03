@@ -3,7 +3,7 @@ import * as assert from 'node:assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { resolveLocalFileAccess } from '../src/tools/local-file-gateway';
+import { resolveLocalFileAccess, resolveLocalFileReference } from '../src/tools/local-file-gateway';
 import type {
   ExecutionScope,
   ScopedLocalDeviceGrant,
@@ -45,6 +45,7 @@ function grant(filePath: string, overrides: Partial<ScopedLocalFileGrant> = {}):
   return {
     kind: 'catscompany_attachment',
     source: 'catscompany',
+    attachmentRef: 'catsco_attachment:current-grant',
     filePath,
     fileName: path.basename(filePath),
     fileType: 'file',
@@ -111,6 +112,83 @@ describe('resolveLocalFileAccess', () => {
     });
 
     assert.equal(result.ok, true);
+  });
+
+  test('resolves a CatsCo attachment reference without exposing the local path', () => {
+    const workspaceRoot = makeWorkspace();
+    const filePath = makeManagedFile(workspaceRoot, 'current-ref.md');
+    const result = resolveLocalFileReference(context({
+      workspaceRoot,
+      executionScope: scope(),
+      localDeviceGrant: deviceGrant(),
+      localFileGrants: [grant(filePath, { attachmentRef: 'catsco_attachment:current-ref' })],
+    }), {
+      operation: 'read_file',
+      inputPath: ' catsco_attachment:current-ref ',
+    });
+
+    assert.equal(result.matched, true);
+    if (result.matched) {
+      assert.equal(result.ok, true);
+      if (result.ok) {
+        assert.equal(result.absolutePath, path.resolve(filePath));
+        assert.equal(result.displayPath, 'catsco_attachment:current-ref');
+      }
+    }
+  });
+
+  test('rejects invalid attachment references without leaking the local path', () => {
+    const workspaceRoot = makeWorkspace();
+    const filePath = makeManagedFile(workspaceRoot, 'expired-ref.md');
+    const result = resolveLocalFileReference(context({
+      workspaceRoot,
+      executionScope: scope(),
+      localDeviceGrant: deviceGrant(),
+      localFileGrants: [grant(filePath, {
+        attachmentRef: 'catsco_attachment:expired-ref',
+        expiresAt: Date.now() - 1,
+      })],
+    }), {
+      operation: 'read_file',
+      inputPath: 'catsco_attachment:expired-ref',
+    });
+
+    assert.equal(result.matched, true);
+    if (result.matched) {
+      assert.equal(result.ok, false);
+      if (!result.ok) {
+        assert.match(result.message, /已过期/);
+        assert.match(result.message, /catsco_attachment:expired-ref/);
+        assert.doesNotMatch(result.message, /expired-ref\.md/);
+        assert.doesNotMatch(result.message, new RegExp(escapeRegExp(workspaceRoot)));
+      }
+    }
+  });
+
+  test('rejects unknown attachment references without leaking any granted local path', () => {
+    const workspaceRoot = makeWorkspace();
+    const filePath = makeManagedFile(workspaceRoot, 'private-ref.md');
+    const result = resolveLocalFileReference(context({
+      workspaceRoot,
+      executionScope: scope(),
+      localDeviceGrant: deviceGrant(),
+      localFileGrants: [grant(filePath, { attachmentRef: 'catsco_attachment:owned-ref' })],
+    }), {
+      operation: 'read_file',
+      inputPath: 'catsco_attachment:unknown-ref',
+    });
+
+    assert.equal(result.matched, true);
+    if (result.matched) {
+      assert.equal(result.ok, false);
+      if (!result.ok) {
+        assert.equal(result.errorCode, 'PERMISSION_DENIED');
+        assert.match(result.message, /附件引用不属于当前已授权/);
+        assert.match(result.message, /catsco_attachment:unknown-ref/);
+        assert.doesNotMatch(result.message, /private-ref\.md/);
+        assert.doesNotMatch(result.message, new RegExp(escapeRegExp(workspaceRoot)));
+      }
+    }
   });
 
   test('rejects a CatsCo managed attachment path without a current grant', () => {
@@ -315,3 +393,7 @@ describe('resolveLocalFileAccess', () => {
     assert.deepEqual(result, { ok: true });
   });
 });
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
