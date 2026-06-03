@@ -112,6 +112,9 @@ describe('resolveLocalFileAccess', () => {
     });
 
     assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.displayPath, 'catsco_attachment:current-grant');
+    }
   });
 
   test('resolves a CatsCo attachment reference without exposing the local path', () => {
@@ -191,6 +194,50 @@ describe('resolveLocalFileAccess', () => {
     }
   });
 
+  test('rejects attachment references when current identity mismatches without leaking the local path', () => {
+    const workspaceRoot = makeWorkspace();
+    const filePath = makeManagedFile(workspaceRoot, 'wrong-actor-ref.md');
+    const result = resolveLocalFileReference(context({
+      workspaceRoot,
+      executionScope: scope({ actorUserId: 'usr8', sessionKey: 'cc_user:usr8' }),
+      localDeviceGrant: deviceGrant(),
+      localFileGrants: [grant(filePath, { attachmentRef: 'catsco_attachment:wrong-actor' })],
+    }), {
+      operation: 'read_file',
+      inputPath: 'catsco_attachment:wrong-actor',
+    });
+
+    assert.equal(result.matched, true);
+    if (result.matched) {
+      assert.equal(result.ok, false);
+      if (!result.ok) {
+        assert.equal(result.errorCode, 'PERMISSION_DENIED');
+        assert.match(result.message, /授权与当前执行身份不一致/);
+        assert.match(result.message, /Attachment ref: catsco_attachment:wrong-actor/);
+        assert.doesNotMatch(result.message, /wrong-actor-ref\.md/);
+        assert.doesNotMatch(result.message, new RegExp(escapeRegExp(workspaceRoot)));
+      }
+    }
+  });
+
+  test('rejects CatsCo attachment references outside CatsCo sessions', () => {
+    const workspaceRoot = makeWorkspace();
+    const result = resolveLocalFileReference(context({
+      workspaceRoot,
+      surface: 'cli',
+    }), {
+      operation: 'read_file',
+      inputPath: 'catsco_attachment:outside-catsco',
+    });
+
+    assert.deepEqual(result, {
+      matched: true,
+      ok: false,
+      errorCode: 'PERMISSION_DENIED',
+      message: 'CatsCo 附件引用只能在当前 CatsCo 会话中使用。',
+    });
+  });
+
   test('rejects a CatsCo managed attachment path without a current grant', () => {
     const workspaceRoot = makeWorkspace();
     const filePath = makeManagedFile(workspaceRoot, 'old-report.md');
@@ -207,6 +254,9 @@ describe('resolveLocalFileAccess', () => {
     if (!result.ok) {
       assert.equal(result.errorCode, 'PERMISSION_DENIED');
       assert.match(result.message, /不属于当前已授权的用户消息/);
+      assert.match(result.message, /\[CatsCo managed attachment cache\]/);
+      assert.doesNotMatch(result.message, /old-report\.md/);
+      assert.doesNotMatch(result.message, new RegExp(escapeRegExp(workspaceRoot)));
     }
   });
 
@@ -224,7 +274,11 @@ describe('resolveLocalFileAccess', () => {
     });
 
     assert.equal(result.ok, false);
-    if (!result.ok) assert.match(result.message, /未通过服务端一致性校验/);
+    if (!result.ok) {
+      assert.match(result.message, /未通过服务端一致性校验/);
+      assert.match(result.message, /catsco_attachment:current-grant/);
+      assert.doesNotMatch(result.message, new RegExp(escapeRegExp(workspaceRoot)));
+    }
   });
 
   test('rejects a grant when actor identity does not match the current execution scope', () => {

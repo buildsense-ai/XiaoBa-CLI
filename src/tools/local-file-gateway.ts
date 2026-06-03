@@ -6,7 +6,7 @@ import type { ToolErrorCode, ToolExecutionContext } from '../types/tool';
 export type LocalFileOperation = 'read_file' | 'send_file';
 
 export type LocalFileAccessDecision =
-  | { ok: true; grant?: ScopedLocalFileGrant }
+  | { ok: true; grant?: ScopedLocalFileGrant; displayPath?: string }
   | { ok: false; errorCode: ToolErrorCode; message: string };
 
 export type LocalFileReferenceDecision =
@@ -25,6 +25,7 @@ interface ResolveLocalFileReferenceOptions {
 }
 
 const CATSCOMPANY_ATTACHMENT_REF_PREFIX = 'catsco_attachment:';
+const MANAGED_ATTACHMENT_CACHE_DISPLAY_PATH = '[CatsCo managed attachment cache]';
 
 export function resolveLocalFileAccess(
   context: ToolExecutionContext,
@@ -37,7 +38,10 @@ export function resolveLocalFileAccess(
   const absolutePath = normalizePath(options.absolutePath);
   const matchingGrant = findMatchingGrant(context.localFileGrants, absolutePath);
   if (matchingGrant) {
-    return validateGrant(context, matchingGrant, absolutePath, options.operation);
+    const displayPath = displayPathForGrant(matchingGrant);
+    const access = validateGrant(context, matchingGrant, absolutePath, options.operation, displayPath);
+    if (!access.ok) return access;
+    return { ok: true, grant: matchingGrant, displayPath };
   }
 
   if (!isManagedCatsCoDownloadPath(context, absolutePath)) {
@@ -50,7 +54,7 @@ export function resolveLocalFileAccess(
     message: [
       '该本地附件缓存不属于当前已授权的用户消息，已阻止访问。',
       '请让用户在当前会话重新上传附件，或使用本轮消息中明确提供的授权附件引用。',
-      `Path: ${absolutePath}`,
+      `Path: ${MANAGED_ATTACHMENT_CACHE_DISPLAY_PATH}`,
     ].join('\n'),
   };
 }
@@ -59,10 +63,17 @@ export function resolveLocalFileReference(
   context: ToolExecutionContext,
   options: ResolveLocalFileReferenceOptions,
 ): LocalFileReferenceDecision {
-  if (context.surface !== 'catscompany') return { matched: false };
-
   const attachmentRef = normalizeAttachmentReference(options.inputPath);
   if (!attachmentRef) return { matched: false };
+
+  if (context.surface !== 'catscompany') {
+    return {
+      matched: true,
+      ok: false,
+      errorCode: 'PERMISSION_DENIED',
+      message: 'CatsCo 附件引用只能在当前 CatsCo 会话中使用。',
+    };
+  }
 
   const matchingGrant = findMatchingGrantByReference(context.localFileGrants, attachmentRef);
   if (!matchingGrant) {
@@ -201,6 +212,11 @@ function findMatchingGrantByReference(
 ): ScopedLocalFileGrant | undefined {
   if (!Array.isArray(grants)) return undefined;
   return grants.find(grant => normalizeAttachmentReference(grant.attachmentRef) === attachmentRef);
+}
+
+function displayPathForGrant(grant: ScopedLocalFileGrant): string {
+  return normalizeAttachmentReference(grant.attachmentRef)
+    || (grant.fileName ? `[CatsCo authorized attachment: ${grant.fileName}]` : MANAGED_ATTACHMENT_CACHE_DISPLAY_PATH);
 }
 
 function normalizeAttachmentReference(value: unknown): string | undefined {

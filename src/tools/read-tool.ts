@@ -122,6 +122,24 @@ export class ReadTool implements Tool {
       }
     }
 
+    if (!resolvedFromAttachmentRef) {
+      const localAccess = resolveLocalFileAccess(context, {
+        operation: 'read_file',
+        absolutePath,
+      });
+      if (!localAccess.ok) {
+        return {
+          ok: false,
+          errorCode: localAccess.errorCode,
+          message: localAccess.message,
+        };
+      }
+      if (localAccess.displayPath) {
+        displayPath = localAccess.displayPath;
+        visiblePath = localAccess.displayPath;
+      }
+    }
+
     if (!fs.existsSync(absolutePath)) {
       return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `错误：文件不存在: ${visiblePath}` };
     }
@@ -141,20 +159,6 @@ export class ReadTool implements Tool {
       }
     } catch {
       return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `错误：文件不存在: ${visiblePath}` };
-    }
-
-    if (!resolvedFromAttachmentRef) {
-      const localAccess = resolveLocalFileAccess(context, {
-        operation: 'read_file',
-        absolutePath,
-      });
-      if (!localAccess.ok) {
-        return {
-          ok: false,
-          errorCode: localAccess.errorCode,
-          message: localAccess.message,
-        };
-      }
     }
 
     const ext = path.extname(absolutePath).toLowerCase();
@@ -487,7 +491,7 @@ export class ReadTool implements Tool {
       if (imageBlock) {
         return {
           _imageForNewMessage: true,
-          imageBlock,
+          imageBlock: { ...imageBlock, filePath },
           filePath,
         };
       }

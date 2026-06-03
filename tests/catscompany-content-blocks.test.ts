@@ -403,6 +403,45 @@ describe('CatsCo content blocks', () => {
     assert.doesNotMatch(text, /授权附件路径/);
   });
 
+  test('sanitizes CatsCo image block metadata to use opaque references', async () => {
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    const originalModel = process.env.GAUZ_LLM_MODEL;
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-image-ref-'));
+    const localPath = path.join(testRoot, 'tmp', 'downloads', 'secret-image.png');
+
+    try {
+      process.env.GAUZ_LLM_MODEL = 'gpt-4o';
+      fs.mkdirSync(path.dirname(localPath), { recursive: true });
+      fs.writeFileSync(
+        localPath,
+        Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=', 'base64'),
+      );
+
+      const blocks = await bot.buildMultimodalMessage('看看这张图', [{
+        fileName: 'secret-image.png',
+        localPath,
+        type: 'image',
+        receivedAt: Date.now(),
+        localFileGrant: {
+          attachmentRef: 'catsco_attachment:image-ref',
+        },
+      }]);
+
+      const imageBlock = blocks.find((block: any) => block.type === 'image') as any;
+      assert.ok(imageBlock);
+      assert.strictEqual(imageBlock.filePath, 'catsco_attachment:image-ref');
+      assert.doesNotMatch(JSON.stringify(blocks), new RegExp(escapeRegExp(localPath)));
+      assert.doesNotMatch(JSON.stringify(blocks), new RegExp(escapeRegExp(testRoot)));
+    } finally {
+      if (originalModel === undefined) {
+        delete process.env.GAUZ_LLM_MODEL;
+      } else {
+        process.env.GAUZ_LLM_MODEL = originalModel;
+      }
+      fs.rmSync(testRoot, { recursive: true, force: true });
+    }
+  });
+
   test('plain text messages are processed immediately without attachment coalesce wait', async () => {
     const { bot, handledTurns, sentThinking } = createProcessHarness();
 

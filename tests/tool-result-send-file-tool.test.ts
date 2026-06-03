@@ -259,6 +259,9 @@ describe('SendFileTool - ToolExecutionResult', () => {
 
     assert.strictEqual(result.ok, true);
     assert.strictEqual(sentPath, filePath);
+    assert.match(String(result.content), /Path: catsco_attachment:current-send-grant/);
+    assert.doesNotMatch(String(result.content), new RegExp(escapeRegExp(filePath)));
+    assert.doesNotMatch(String(result.content), new RegExp(escapeRegExp(testRoot)));
   });
 
   test('allows sending a CatsCo attachment by opaque reference without exposing the local path', async () => {
@@ -342,6 +345,9 @@ describe('SendFileTool - ToolExecutionResult', () => {
 
     assert.strictEqual(result.ok, true);
     assert.strictEqual(sentPath, filePath);
+    assert.match(String(result.content), /Path: catsco_attachment:current-send-grant/);
+    assert.doesNotMatch(String(result.content), new RegExp(escapeRegExp(filePath)));
+    assert.doesNotMatch(String(result.content), new RegExp(escapeRegExp(testRoot)));
   });
 
   test('blocks sending a CatsCo attachment cache file without a current local grant', async () => {
@@ -364,6 +370,9 @@ describe('SendFileTool - ToolExecutionResult', () => {
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.errorCode, 'PERMISSION_DENIED');
     assert.match(result.message, /不属于当前已授权的用户消息/);
+    assert.match(result.message, /\[CatsCo managed attachment cache\]/);
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(filePath)));
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(testRoot)));
     assert.strictEqual(sendCalled, false);
   });
 
@@ -392,6 +401,8 @@ describe('SendFileTool - ToolExecutionResult', () => {
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.errorCode, 'PERMISSION_DENIED');
     assert.match(result.message, /未通过服务端一致性校验/);
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(filePath)));
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(testRoot)));
     assert.strictEqual(sendCalled, false);
   });
 
@@ -449,6 +460,8 @@ describe('SendFileTool - ToolExecutionResult', () => {
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.errorCode, 'PERMISSION_DENIED');
     assert.match(result.message, /topicId/);
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(filePath)));
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(testRoot)));
     assert.strictEqual(sendCalled, false);
   });
 
@@ -468,7 +481,7 @@ describe('SendFileTool - ToolExecutionResult', () => {
     assert.ok(result.message.includes('Path is not a file.'));
   });
 
-  test('CatsCo managed directory path is rejected before local grant checks', async () => {
+  test('CatsCo managed directory path is rejected by local grant checks without exposing the path', async () => {
     const directoryPath = path.join(testRoot, 'tmp', 'downloads');
     fs.mkdirSync(directoryPath, { recursive: true });
     context.surface = 'catscompany';
@@ -486,8 +499,38 @@ describe('SendFileTool - ToolExecutionResult', () => {
     const result = await tool.execute({ file_path: directoryPath, file_name: 'downloads' }, context);
 
     assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'PERMISSION_DENIED');
+    assert.match(result.message, /\[CatsCo managed attachment cache\]/);
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(directoryPath)));
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(testRoot)));
+  });
+
+  test('redacts CatsCo attachment paths from channel send errors', async () => {
+    const filePath = managedFile('send-error.md');
+    context.surface = 'catscompany';
+    context.sessionId = 'cc_user:usr7';
+    context.executionScope = scope({ topicId: 'chat-1' });
+    context.localDeviceGrant = deviceGrant();
+    context.localFileGrants = [grant(filePath, { attachmentRef: 'catsco_attachment:send-error' })];
+    context.channel = {
+      chatId: 'chat-1',
+      reply: async () => {},
+      sendFile: async () => {
+        throw new Error(`upload failed for ${filePath}`);
+      },
+    };
+
+    const result = await tool.execute({
+      file_path: 'catsco_attachment:send-error',
+      file_name: 'send-error.md',
+    }, context);
+
+    assert.strictEqual(result.ok, false);
     assert.strictEqual(result.errorCode, 'TOOL_EXECUTION_ERROR');
-    assert.ok(result.message.includes('Path is not a file.'));
+    assert.match(result.message, /File send failed: upload failed for catsco_attachment:send-error/);
+    assert.match(result.message, /Path: catsco_attachment:send-error/);
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(filePath)));
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(testRoot)));
   });
 
   test('channel errors are returned in tool_result content', async () => {

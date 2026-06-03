@@ -105,6 +105,9 @@ describe('ReadTool local file grants', () => {
 
     assert.equal(result.ok, true);
     assert.match(String(result.content), /hello from current attachment/);
+    assert.match(String(result.content), /Path: catsco_attachment:current-read-grant/);
+    assert.doesNotMatch(String(result.content), new RegExp(escapeRegExp(filePath)));
+    assert.doesNotMatch(String(result.content), new RegExp(escapeRegExp(testRoot)));
   });
 
   test('allows reading a CatsCo attachment by opaque reference without exposing the local path', async () => {
@@ -142,6 +145,9 @@ describe('ReadTool local file grants', () => {
 
     assert.equal(result.ok, true);
     assert.match(String(result.content), /hello from current attachment/);
+    assert.match(String(result.content), /Path: catsco_attachment:current-read-grant/);
+    assert.doesNotMatch(String(result.content), new RegExp(escapeRegExp(filePath)));
+    assert.doesNotMatch(String(result.content), new RegExp(escapeRegExp(testRoot)));
   });
 
   test('rejects reading a CatsCo attachment cache file without a current grant', async () => {
@@ -151,6 +157,9 @@ describe('ReadTool local file grants', () => {
     assert.equal(result.ok, false);
     assert.equal(result.errorCode, 'PERMISSION_DENIED');
     assert.match(result.message, /不属于当前已授权的用户消息/);
+    assert.match(result.message, /\[CatsCo managed attachment cache\]/);
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(filePath)));
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(testRoot)));
   });
 
   test('rejects managed attachment reads for legacy or untrusted execution scopes', async () => {
@@ -164,6 +173,8 @@ describe('ReadTool local file grants', () => {
     assert.equal(legacy.ok, false);
     assert.equal(legacy.errorCode, 'PERMISSION_DENIED');
     assert.doesNotMatch(legacy.message, /hello from current attachment/);
+    assert.doesNotMatch(legacy.message, new RegExp(escapeRegExp(filePath)));
+    assert.doesNotMatch(legacy.message, new RegExp(escapeRegExp(testRoot)));
 
     const untrusted = await tool.execute({ file_path: filePath }, catsContext([canonicalGrant], scope({
       identityTrust: 'untrusted',
@@ -172,6 +183,8 @@ describe('ReadTool local file grants', () => {
     assert.equal(untrusted.ok, false);
     assert.equal(untrusted.errorCode, 'PERMISSION_DENIED');
     assert.doesNotMatch(untrusted.message, /hello from current attachment/);
+    assert.doesNotMatch(untrusted.message, new RegExp(escapeRegExp(filePath)));
+    assert.doesNotMatch(untrusted.message, new RegExp(escapeRegExp(testRoot)));
   });
 
   test('rejects stale CatsCo attachment references without exposing the local path', async () => {
@@ -191,22 +204,27 @@ describe('ReadTool local file grants', () => {
     assert.doesNotMatch(result.message, new RegExp(escapeRegExp(testRoot)));
   });
 
-  test('keeps missing-file errors ahead of local grant checks', async () => {
+  test('checks local grants before missing managed cache files to avoid leaking raw paths', async () => {
     const filePath = path.join(testRoot, 'tmp', 'downloads', 'missing.md');
     const result = await tool.execute({ file_path: filePath }, catsContext());
 
     assert.equal(result.ok, false);
-    assert.equal(result.errorCode, 'FILE_NOT_FOUND');
+    assert.equal(result.errorCode, 'PERMISSION_DENIED');
+    assert.match(result.message, /\[CatsCo managed attachment cache\]/);
+    assert.doesNotMatch(result.message, /missing\.md/);
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(testRoot)));
   });
 
-  test('returns a directory read error before local grant checks for managed directories', async () => {
+  test('checks local grants before managed directories to avoid leaking raw paths', async () => {
     const directoryPath = path.join(testRoot, 'tmp', 'downloads');
     fs.mkdirSync(directoryPath, { recursive: true });
     const result = await tool.execute({ file_path: directoryPath }, catsContext());
 
     assert.equal(result.ok, false);
-    assert.equal(result.errorCode, 'TOOL_EXECUTION_ERROR');
-    assert.match(result.message, /Path is not a file/);
+    assert.equal(result.errorCode, 'PERMISSION_DENIED');
+    assert.match(result.message, /\[CatsCo managed attachment cache\]/);
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(directoryPath)));
+    assert.doesNotMatch(result.message, new RegExp(escapeRegExp(testRoot)));
   });
 
   test('does not require local grants for CLI reads', async () => {

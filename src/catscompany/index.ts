@@ -939,7 +939,10 @@ export class CatsCompanyBot {
         blocks.push({ type: 'text', text: attachmentReference });
         const imgBlock = await createImageBlock(att.localPath);
         if (imgBlock) {
-          blocks.push(imgBlock);
+          blocks.push({
+            ...imgBlock,
+            filePath: att.localFileGrant?.attachmentRef || `[CatsCo attachment: ${att.fileName}]`,
+          } as any);
           Logger.info(`[多模态] 已添加图片块: ${att.fileName}, base64长度: ${(imgBlock.source as any)?.data?.length || 0}`);
         } else {
           Logger.warning(`[多模态] 图片块创建失败: ${att.fileName} at ${att.localPath}`);

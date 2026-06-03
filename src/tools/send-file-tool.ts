@@ -68,43 +68,6 @@ CatsCo file selection rules:
       const resolved = resolveToolPath(file_path, context);
       absolutePath = resolved.absolutePath;
       displayPath = resolved.absolutePath;
-      if (!resolved.exists) {
-        return {
-          ok: false,
-          errorCode: 'FILE_NOT_FOUND',
-          message: [
-            'File not found.',
-            `Input path: ${resolved.inputPath}`,
-            `Resolved path: ${resolved.absolutePath}`,
-          ].join('\n'),
-        };
-      }
-
-      if (!resolved.isFile) {
-        return {
-          ok: false,
-          errorCode: 'TOOL_EXECUTION_ERROR',
-          message: [
-            'Path is not a file.',
-            `Input path: ${resolved.inputPath}`,
-            `Resolved path: ${resolved.absolutePath}`,
-          ].join('\n'),
-        };
-      }
-    }
-
-    try {
-      fs.accessSync(absolutePath, fs.constants.R_OK);
-    } catch {
-      return {
-        ok: false,
-        errorCode: 'PERMISSION_DENIED',
-        message: [
-          'File is not readable.',
-          `Input path: ${file_path}`,
-          `Resolved path: ${displayPath}`,
-        ].join('\n'),
-      };
     }
 
     if (!resolvedFromAttachmentRef) {
@@ -119,6 +82,60 @@ CatsCo file selection rules:
           message: localAccess.message,
         };
       }
+      if (localAccess.displayPath) {
+        displayPath = localAccess.displayPath;
+      }
+    }
+
+    if (!fs.existsSync(absolutePath)) {
+      return {
+        ok: false,
+        errorCode: 'FILE_NOT_FOUND',
+        message: [
+          'File not found.',
+          `Input path: ${file_path}`,
+          `Resolved path: ${displayPath}`,
+        ].join('\n'),
+      };
+    }
+
+    try {
+      const stats = fs.statSync(absolutePath);
+      if (!stats.isFile()) {
+        return {
+          ok: false,
+          errorCode: 'TOOL_EXECUTION_ERROR',
+          message: [
+            'Path is not a file.',
+            `Input path: ${file_path}`,
+            `Resolved path: ${displayPath}`,
+          ].join('\n'),
+        };
+      }
+    } catch {
+      return {
+        ok: false,
+        errorCode: 'FILE_NOT_FOUND',
+        message: [
+          'File not found.',
+          `Input path: ${file_path}`,
+          `Resolved path: ${displayPath}`,
+        ].join('\n'),
+      };
+    }
+
+    try {
+      fs.accessSync(absolutePath, fs.constants.R_OK);
+    } catch {
+      return {
+        ok: false,
+        errorCode: 'PERMISSION_DENIED',
+        message: [
+          'File is not readable.',
+          `Input path: ${file_path}`,
+          `Resolved path: ${displayPath}`,
+        ].join('\n'),
+      };
     }
 
     const channel = context.channel;
@@ -146,16 +163,23 @@ CatsCo file selection rules:
         ].join('\n'),
       };
     } catch (error: any) {
+      const safeErrorMessage = redactToolVisiblePath(error.message, absolutePath, displayPath);
       Logger.error(`文件发送失败 (sendFile): ${error.message}`);
       return {
         ok: false,
         errorCode: 'TOOL_EXECUTION_ERROR',
         message: [
-          `File send failed: ${error.message}`,
+          `File send failed: ${safeErrorMessage}`,
           `Path: ${displayPath}`,
           `Name: ${file_name}`,
         ].join('\n'),
       };
     }
   }
+}
+
+function redactToolVisiblePath(message: unknown, absolutePath: string, displayPath: string): string {
+  const text = String(message || '');
+  if (!absolutePath || !displayPath || absolutePath === displayPath) return text;
+  return text.split(absolutePath).join(displayPath);
 }
