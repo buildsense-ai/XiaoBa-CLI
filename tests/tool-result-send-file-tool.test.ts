@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { SendFileTool } from '../src/tools/send-file-tool';
-import type { ExecutionScope } from '../src/types/session-identity';
+import type { ExecutionScope, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../src/types/session-identity';
 import { ToolExecutionContext } from '../src/types/tool';
 
 describe('SendFileTool - ToolExecutionResult', () => {
@@ -38,6 +38,52 @@ describe('SendFileTool - ToolExecutionResult', () => {
       isTrusted: true,
       ...overrides,
     };
+  }
+
+  function grant(filePath: string, overrides: Partial<ScopedLocalFileGrant> = {}): ScopedLocalFileGrant {
+    const stat = fs.statSync(filePath);
+    const now = Date.now();
+    return {
+      kind: 'catscompany_attachment',
+      source: 'catscompany',
+      filePath,
+      fileName: path.basename(filePath),
+      fileType: 'file',
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      sessionKey: 'cc_user:usr7',
+      topicId: 'chat-1',
+      topicType: 'p2p',
+      actorUserId: 'usr7',
+      agentId: 'usr43',
+      agentBodyId: 'body-main',
+      deviceBodyId: 'body-main',
+      deviceInstallationId: 'install-main',
+      identityTrust: 'server_canonical',
+      operations: ['read_file', 'send_file'],
+      createdAt: now,
+      expiresAt: now + 60_000,
+      ...overrides,
+    };
+  }
+
+  function deviceGrant(overrides: Partial<ScopedLocalDeviceGrant> = {}): ScopedLocalDeviceGrant {
+    return {
+      kind: 'catscompany_body',
+      source: 'catscompany',
+      bodyId: 'body-main',
+      installationId: 'install-main',
+      deviceId: 'install-main',
+      createdAt: Date.now(),
+      ...overrides,
+    };
+  }
+
+  function managedFile(name = 'attachment.md'): string {
+    const filePath = path.join(testRoot, 'tmp', 'downloads', name);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, 'hello');
+    return filePath;
   }
 
   test('definition marks sent files as outbound transcript messages', () => {
@@ -192,6 +238,128 @@ describe('SendFileTool - ToolExecutionResult', () => {
     assert.strictEqual(sentChatId, 'chat-1');
   });
 
+  test('allows sending a CatsCo attachment cache file with a matching local grant', async () => {
+    const filePath = managedFile('current.md');
+    let sentPath = '';
+    context.surface = 'catscompany';
+    context.sessionId = 'cc_user:usr7';
+    context.executionScope = scope({ topicId: 'chat-1' });
+    context.localDeviceGrant = deviceGrant();
+    context.localFileGrants = [grant(filePath)];
+    context.channel = {
+      chatId: 'chat-1',
+      reply: async () => {},
+      sendFile: async (_chatId, resolvedPath) => {
+        sentPath = resolvedPath;
+      },
+    };
+
+    const result = await tool.execute({ file_path: filePath, file_name: 'current.md' }, context);
+
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(sentPath, filePath);
+  });
+
+  test('allows sending a relative CatsCo attachment cache path with a matching local grant', async () => {
+    const filePath = managedFile('relative.md');
+    let sentPath = '';
+    context.surface = 'catscompany';
+    context.sessionId = 'cc_user:usr7';
+    context.executionScope = scope({ topicId: 'chat-1' });
+    context.localDeviceGrant = deviceGrant();
+    context.localFileGrants = [grant(filePath)];
+    context.channel = {
+      chatId: 'chat-1',
+      reply: async () => {},
+      sendFile: async (_chatId, resolvedPath) => {
+        sentPath = resolvedPath;
+      },
+    };
+
+    const result = await tool.execute({
+      file_path: path.join('tmp', 'downloads', 'relative.md'),
+      file_name: 'relative.md',
+    }, context);
+
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(sentPath, filePath);
+  });
+
+  test('blocks sending a CatsCo attachment cache file without a current local grant', async () => {
+    const filePath = managedFile('old.md');
+    let sendCalled = false;
+    context.surface = 'catscompany';
+    context.sessionId = 'cc_user:usr7';
+    context.executionScope = scope({ topicId: 'chat-1' });
+    context.localDeviceGrant = deviceGrant();
+    context.channel = {
+      chatId: 'chat-1',
+      reply: async () => {},
+      sendFile: async () => {
+        sendCalled = true;
+      },
+    };
+
+    const result = await tool.execute({ file_path: filePath, file_name: 'old.md' }, context);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'PERMISSION_DENIED');
+    assert.match(result.message, /不属于当前已授权的用户消息/);
+    assert.strictEqual(sendCalled, false);
+  });
+
+  test('blocks managed attachment send for legacy execution scope even with a matching grant', async () => {
+    const filePath = managedFile('legacy-cache.md');
+    let sendCalled = false;
+    context.surface = 'catscompany';
+    context.sessionId = 'cc_user:usr7';
+    context.executionScope = scope({
+      topicId: 'chat-1',
+      identityTrust: 'legacy_context',
+      isTrusted: false,
+    });
+    context.localDeviceGrant = deviceGrant();
+    context.localFileGrants = [grant(filePath)];
+    context.channel = {
+      chatId: 'chat-1',
+      reply: async () => {},
+      sendFile: async () => {
+        sendCalled = true;
+      },
+    };
+
+    const result = await tool.execute({ file_path: filePath, file_name: 'legacy-cache.md' }, context);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'PERMISSION_DENIED');
+    assert.match(result.message, /未通过服务端一致性校验/);
+    assert.strictEqual(sendCalled, false);
+  });
+
+  test('blocks managed attachment send when grant topic identity mismatches', async () => {
+    const filePath = managedFile('wrong-topic.md');
+    let sendCalled = false;
+    context.surface = 'catscompany';
+    context.sessionId = 'cc_user:usr7';
+    context.executionScope = scope({ topicId: 'chat-1' });
+    context.localDeviceGrant = deviceGrant();
+    context.localFileGrants = [grant(filePath, { topicId: 'chat-2' })];
+    context.channel = {
+      chatId: 'chat-1',
+      reply: async () => {},
+      sendFile: async () => {
+        sendCalled = true;
+      },
+    };
+
+    const result = await tool.execute({ file_path: filePath, file_name: 'wrong-topic.md' }, context);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'PERMISSION_DENIED');
+    assert.match(result.message, /topicId/);
+    assert.strictEqual(sendCalled, false);
+  });
+
   test('directory path is rejected before send', async () => {
     context.channel = {
       chatId: 'chat-1',
@@ -202,6 +370,28 @@ describe('SendFileTool - ToolExecutionResult', () => {
     };
 
     const result = await tool.execute({ file_path: '.', file_name: 'root' }, context);
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'TOOL_EXECUTION_ERROR');
+    assert.ok(result.message.includes('Path is not a file.'));
+  });
+
+  test('CatsCo managed directory path is rejected before local grant checks', async () => {
+    const directoryPath = path.join(testRoot, 'tmp', 'downloads');
+    fs.mkdirSync(directoryPath, { recursive: true });
+    context.surface = 'catscompany';
+    context.sessionId = 'cc_user:usr7';
+    context.executionScope = scope({ topicId: 'chat-1' });
+    context.localDeviceGrant = deviceGrant();
+    context.channel = {
+      chatId: 'chat-1',
+      reply: async () => {},
+      sendFile: async () => {
+        throw new Error('should not send');
+      },
+    };
+
+    const result = await tool.execute({ file_path: directoryPath, file_name: 'downloads' }, context);
 
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.errorCode, 'TOOL_EXECUTION_ERROR');

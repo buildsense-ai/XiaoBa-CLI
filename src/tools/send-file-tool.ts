@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
 import { resolveToolPath } from '../utils/tool-path-resolver';
+import { resolveLocalFileAccess } from './local-file-gateway';
 import { resolveOutboundTarget } from './outbound-gateway';
 
 export class SendFileTool implements Tool {
@@ -80,6 +81,18 @@ CatsCo file selection rules:
           `Input path: ${resolved.inputPath}`,
           `Resolved path: ${resolved.absolutePath}`,
         ].join('\n'),
+      };
+    }
+
+    const localAccess = resolveLocalFileAccess(context, {
+      operation: 'send_file',
+      absolutePath: resolved.absolutePath,
+    });
+    if (!localAccess.ok) {
+      return {
+        ok: false,
+        errorCode: localAccess.errorCode,
+        message: localAccess.message,
       };
     }
 

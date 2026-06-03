@@ -15,7 +15,7 @@ const CATSCO_FILE_SELECTION_INSTRUCTION = [
   '- tmp/downloads/... is the local cache for files/images received from chat. It is not the user\'s general local file library.',
   '- If the user asks for a new/local file or says they have not sent it before, do not reuse files from tmp/downloads/... or old conversation paths.',
   '- If the user did not provide an exact path, first ask for the location or search likely local folders such as Desktop, Downloads, Documents, Pictures, or an explicit path the user mentioned.',
-  '- Only reuse tmp/downloads/... when the user clearly asks to resend/open an earlier chat attachment.',
+  '- Only use tmp/downloads/... paths that are shown in the current user turn as authorized attachment paths; old attachment paths may be denied by local file grants.',
 ].join('\n');
 
 export function resolveSessionSurface(sessionKey: string, sessionType?: string): SessionSurface {

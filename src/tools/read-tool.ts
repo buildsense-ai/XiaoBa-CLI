@@ -7,6 +7,7 @@ import { createImageBlock } from '../utils/image-utils';
 import { ConfigManager } from '../utils/config';
 import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
 import { analyzeImageWithReaderProxy, ReaderProxyResult } from '../utils/reader-proxy';
+import { resolveLocalFileAccess } from './local-file-gateway';
 
 export const DEFAULT_TEXT_READ_LIMIT = 200;
 export const MAX_TEXT_READ_LIMIT = 2000;
@@ -84,6 +85,10 @@ export class ReadTool implements Tool {
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { file_path, offset, limit, pages, prompt, analysis_prompt } = args;
 
+    if (!file_path || typeof file_path !== 'string') {
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: '文件路径不能为空' };
+    }
+
     const absolutePath = path.isAbsolute(file_path)
       ? file_path
       : path.join(context.workingDirectory, file_path);
@@ -95,6 +100,35 @@ export class ReadTool implements Tool {
 
     if (!fs.existsSync(absolutePath)) {
       return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `错误：文件不存在: ${absolutePath}` };
+    }
+
+    try {
+      const stats = fs.statSync(absolutePath);
+      if (!stats.isFile()) {
+        return {
+          ok: false,
+          errorCode: 'TOOL_EXECUTION_ERROR',
+          message: [
+            'Path is not a file.',
+            `Input path: ${file_path}`,
+            `Resolved path: ${absolutePath}`,
+          ].join('\n'),
+        };
+      }
+    } catch {
+      return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `错误：文件不存在: ${absolutePath}` };
+    }
+
+    const localAccess = resolveLocalFileAccess(context, {
+      operation: 'read_file',
+      absolutePath,
+    });
+    if (!localAccess.ok) {
+      return {
+        ok: false,
+        errorCode: localAccess.errorCode,
+        message: localAccess.message,
+      };
     }
 
     const ext = path.extname(absolutePath).toLowerCase();

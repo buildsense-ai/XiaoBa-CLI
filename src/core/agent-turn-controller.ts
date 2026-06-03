@@ -1,5 +1,5 @@
 import { ContentBlock, Message } from '../types';
-import type { ExecutionScope } from '../types/session-identity';
+import type { ExecutionScope, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
 import { ChannelCallbacks } from '../types/tool';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
@@ -37,6 +37,8 @@ export interface RunAgentTurnParams {
   callbacks?: AgentTurnCallbacks;
   channel?: ChannelCallbacks;
   executionScope?: ExecutionScope;
+  localDeviceGrant?: ScopedLocalDeviceGrant;
+  localFileGrants?: ScopedLocalFileGrant[];
   pendingUserInputProvider?: PendingUserInputProvider;
   abortSignal?: AbortSignal;
   shouldContinue: () => boolean;
@@ -93,6 +95,8 @@ export class AgentTurnController {
     const runner = this.createRunner({
       channel: params.channel,
       executionScope: params.executionScope,
+      localDeviceGrant: params.localDeviceGrant,
+      localFileGrants: params.localFileGrants,
       pendingUserInputProvider: params.pendingUserInputProvider,
       abortSignal: params.abortSignal,
       shouldContinue: params.shouldContinue,
@@ -140,6 +144,8 @@ export class AgentTurnController {
   private createRunner(options: {
     channel?: ChannelCallbacks;
     executionScope?: ExecutionScope;
+    localDeviceGrant?: ScopedLocalDeviceGrant;
+    localFileGrants?: ScopedLocalFileGrant[];
     pendingUserInputProvider?: PendingUserInputProvider;
     abortSignal?: AbortSignal;
     shouldContinue: () => boolean;
@@ -170,6 +176,8 @@ export class AgentTurnController {
           abortSignal: options.abortSignal,
           channel: options.channel,
           executionScope: options.executionScope,
+          localDeviceGrant: options.localDeviceGrant,
+          localFileGrants: options.localFileGrants,
         },
       },
     );

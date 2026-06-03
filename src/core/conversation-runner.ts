@@ -1,4 +1,5 @@
 import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
+import type { ScopedLocalFileGrant } from '../types/session-identity';
 import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { StreamCallbacks } from '../providers/provider';
@@ -83,12 +84,25 @@ export interface RunResult {
   newMessages: Message[];
 }
 
+export interface PendingUserInput {
+  content: string | ContentBlock[];
+  localFileGrants?: ScopedLocalFileGrant[];
+}
+
 export type PendingUserInputProvider = () =>
   | string
   | ContentBlock[]
+  | PendingUserInput
   | null
   | undefined
-  | Promise<string | ContentBlock[] | null | undefined>;
+  | Promise<string | ContentBlock[] | PendingUserInput | null | undefined>;
+
+function isPendingUserInput(value: string | ContentBlock[] | PendingUserInput): value is PendingUserInput {
+  return Boolean(value)
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && 'content' in value;
+}
 
 interface ToolExecutionRecord {
   toolCall: ToolCall;
@@ -499,13 +513,24 @@ export class ConversationRunner {
     const pending = await this.pendingUserInputProvider();
     if (!pending) return false;
 
-    const userMessage: Message = { role: 'user', content: pending };
+    const content = isPendingUserInput(pending) ? pending.content : pending;
+    if (isPendingUserInput(pending) && pending.localFileGrants?.length) {
+      this.toolExecutionContext = {
+        ...(this.toolExecutionContext || {}),
+        localFileGrants: [
+          ...(this.toolExecutionContext?.localFileGrants || []),
+          ...pending.localFileGrants,
+        ],
+      };
+    }
+
+    const userMessage: Message = { role: 'user', content };
     messages.push(userMessage);
     newMessages.push(userMessage);
 
-    const preview = typeof pending === 'string'
-      ? pending
-      : pending.map(block => block.type === 'text' ? block.text : '[image]').join('');
+    const preview = typeof content === 'string'
+      ? content
+      : content.map(block => block.type === 'text' ? block.text : '[image]').join('');
     Logger.info(
       `[${this.sessionLabel}Turn ${turns}] 已合并处理期间新到的用户消息: ` +
       ConversationRunner.truncateForLog(preview, 240)

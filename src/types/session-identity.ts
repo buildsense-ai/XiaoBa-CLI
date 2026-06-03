@@ -38,3 +38,38 @@ export interface ExecutionScope {
   identityTrust: IdentityTrustLevel;
   isTrusted: boolean;
 }
+
+export type LocalFileGrantKind = 'catscompany_attachment';
+export type LocalFileGrantFileType = 'file' | 'image' | 'unknown';
+export type LocalFileGrantOperation = 'read_file' | 'send_file';
+
+export interface ScopedLocalDeviceGrant {
+  kind: 'catscompany_body';
+  source: MessageSource;
+  bodyId: string;
+  installationId?: string;
+  deviceId?: string;
+  createdAt: number;
+}
+
+export interface ScopedLocalFileGrant {
+  kind: LocalFileGrantKind;
+  source: MessageSource;
+  filePath: string;
+  fileName: string;
+  fileType: LocalFileGrantFileType;
+  size: number;
+  mtimeMs: number;
+  sessionKey: string;
+  topicId: string;
+  topicType: MessageTopicType;
+  actorUserId: string;
+  agentId?: string;
+  agentBodyId: string;
+  deviceBodyId: string;
+  deviceInstallationId?: string;
+  identityTrust: IdentityTrustLevel;
+  operations: LocalFileGrantOperation[];
+  createdAt: number;
+  expiresAt: number;
+}

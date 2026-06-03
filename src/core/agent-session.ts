@@ -1,5 +1,5 @@
 import { Message } from '../types';
-import type { ExecutionScope } from '../types/session-identity';
+import type { ExecutionScope, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
 import * as fs from 'fs';
 import * as path from 'path';
 import { AIService } from '../utils/ai-service';
@@ -72,6 +72,10 @@ export interface HandleMessageOptions {
   channel?: ChannelCallbacks;
   /** 当前 turn 的可信执行身份 */
   executionScope?: ExecutionScope;
+  /** 当前本机运行体授权，例如 CatsCo body/device 绑定。 */
+  localDeviceGrant?: ScopedLocalDeviceGrant;
+  /** 当前 turn 已授权的本地文件资源。 */
+  localFileGrants?: ScopedLocalFileGrant[];
   /** 当前 turn 专属、给 agent 可见的运行时反馈 */
   runtimeFeedback?: RuntimeFeedbackInput[];
   /** Pulls user messages that arrived while this session was busy. */
@@ -364,6 +368,8 @@ export class AgentSession {
       let callbacks: SessionCallbacks | undefined;
       let channel: ChannelCallbacks | undefined;
       let executionScope: ExecutionScope | undefined;
+      let localDeviceGrant: ScopedLocalDeviceGrant | undefined;
+      let localFileGrants: ScopedLocalFileGrant[] | undefined;
       let runtimeFeedbackInputs: RuntimeFeedbackInput[] = [];
       let pendingUserInputProvider: PendingUserInputProvider | undefined;
 
@@ -371,6 +377,8 @@ export class AgentSession {
         if (
           'channel' in callbacksOrOptions
           || 'executionScope' in callbacksOrOptions
+          || 'localDeviceGrant' in callbacksOrOptions
+          || 'localFileGrants' in callbacksOrOptions
           || 'callbacks' in callbacksOrOptions
           || 'runtimeFeedback' in callbacksOrOptions
           || 'pendingUserInputProvider' in callbacksOrOptions
@@ -380,6 +388,8 @@ export class AgentSession {
           callbacks = opts.callbacks;
           channel = opts.channel;
           executionScope = opts.executionScope;
+          localDeviceGrant = opts.localDeviceGrant;
+          localFileGrants = opts.localFileGrants;
           runtimeFeedbackInputs = opts.runtimeFeedback || [];
           pendingUserInputProvider = opts.pendingUserInputProvider;
         } else {
@@ -422,6 +432,8 @@ export class AgentSession {
           callbacks,
           channel,
           executionScope,
+          localDeviceGrant,
+          localFileGrants,
           pendingUserInputProvider,
           abortSignal: this.activeAbortController.signal,
           shouldContinue: () => !this.interruptRequested,

@@ -1,6 +1,20 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { CatsCompanyBot } from '../src/catscompany';
+
+function canonicalMetadata(actorUserId: string, topicId: string, agentId = 'usr43', bodyId = 'body-main') {
+  return {
+    catsco_identity: {
+      actor: { user_id: actorUserId },
+      agent: { agent_id: agentId, body_id: bodyId },
+      topic: { topic_id: topicId, type: topicId.startsWith('grp_') ? 'group' : 'p2p', channel_seq: 12 },
+      permissions: { source: 'server_canonical_message' },
+    },
+  };
+}
 
 function createProcessHarness() {
   const bot = Object.create(CatsCompanyBot.prototype) as any;
@@ -236,6 +250,100 @@ describe('CatsCo content blocks', () => {
       { type: 'text', text: '[image] a.png -> C:\\tmp\\catsco-test\\a.png' },
       { type: 'text', text: '[file] b.pdf -> C:\\tmp\\catsco-test\\b.pdf' },
     ]);
+  });
+
+  test('passes scoped local file grants from canonical CatsCompany attachments into the session turn', async () => {
+    const originalCwd = process.cwd();
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-content-grants-'));
+
+    try {
+      process.chdir(testRoot);
+      const { bot, handledTurns } = createProcessHarness();
+      bot.localDeviceGrant = {
+        kind: 'catscompany_body',
+        source: 'catscompany',
+        bodyId: 'body-main',
+        installationId: 'install-main',
+        deviceId: 'install-main',
+        createdAt: Date.now(),
+      };
+      bot.sender.downloadFile = async (_url: string, fileName: string) => {
+        const localPath = path.join(testRoot, 'tmp', 'downloads', fileName);
+        fs.mkdirSync(path.dirname(localPath), { recursive: true });
+        fs.writeFileSync(localPath, 'hello');
+        return localPath;
+      };
+
+      await (bot as any).onMessage({
+        topic: 'p2p_1_43',
+        senderId: 'usr1',
+        text: '[附件] report.pdf',
+        content: '[附件] report.pdf',
+        metadata: canonicalMetadata('usr1', 'p2p_1_43'),
+        content_blocks: [
+          { type: 'text', text: '请读取这个文件' },
+          { type: 'file', payload: { url: '/uploads/files/report.pdf', name: 'report.pdf', size: 34 } },
+        ],
+        isGroup: false,
+        seq: 12,
+      });
+
+      assert.strictEqual(handledTurns.length, 1);
+      const grants = handledTurns[0].options.localFileGrants;
+      assert.strictEqual(grants.length, 1);
+      assert.strictEqual(grants[0].sessionKey, 'cc_user:usr1');
+      assert.strictEqual(grants[0].topicId, 'p2p_1_43');
+      assert.strictEqual(grants[0].actorUserId, 'usr1');
+      assert.strictEqual(grants[0].agentBodyId, 'body-main');
+      assert.strictEqual(grants[0].deviceBodyId, 'body-main');
+      assert.strictEqual(grants[0].fileType, 'file');
+      assert.strictEqual(grants[0].fileName, 'report.pdf');
+      assert.strictEqual(grants[0].filePath, fs.realpathSync(path.join(testRoot, 'tmp', 'downloads', 'report.pdf')));
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(testRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('does not create local file grants for legacy CatsCompany attachments', async () => {
+    const originalCwd = process.cwd();
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-content-grants-'));
+
+    try {
+      process.chdir(testRoot);
+      const { bot, handledTurns } = createProcessHarness();
+      bot.localDeviceGrant = {
+        kind: 'catscompany_body',
+        source: 'catscompany',
+        bodyId: 'body-main',
+        createdAt: Date.now(),
+      };
+      bot.sender.downloadFile = async (_url: string, fileName: string) => {
+        const localPath = path.join(testRoot, 'tmp', 'downloads', fileName);
+        fs.mkdirSync(path.dirname(localPath), { recursive: true });
+        fs.writeFileSync(localPath, 'hello');
+        return localPath;
+      };
+
+      await (bot as any).onMessage({
+        topic: 'p2p_1_43',
+        senderId: 'usr1',
+        text: '[附件] report.pdf',
+        content: '[附件] report.pdf',
+        content_blocks: [
+          { type: 'text', text: '请读取这个文件' },
+          { type: 'file', payload: { url: '/uploads/files/report.pdf', name: 'report.pdf', size: 34 } },
+        ],
+        isGroup: false,
+        seq: 12,
+      });
+
+      assert.strictEqual(handledTurns.length, 1);
+      assert.deepStrictEqual(handledTurns[0].options.localFileGrants, []);
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(testRoot, { recursive: true, force: true });
+    }
   });
 
   test('plain text messages are processed immediately without attachment coalesce wait', async () => {

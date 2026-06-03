@@ -3,6 +3,7 @@ import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo } from './types';
 import { MessageSender } from './message-sender';
 import { extractContentBlocks } from './content-blocks';
 import { createCatsCoMessageEnvelope, createExecutionScope } from './message-envelope';
+import { createCatsCoAttachmentGrant, createCatsCoLocalDeviceGrant } from './local-file-grants';
 import { MessageSessionManager } from '../core/message-session-manager';
 import { AgentServices, BUSY_MESSAGE, RuntimeFeedbackInput, SessionCallbacks } from '../core/agent-session';
 import { Logger } from '../utils/logger';
@@ -10,6 +11,8 @@ import { SubAgentManager } from '../core/sub-agent-manager';
 import type { SubAgentInfo } from '../core/sub-agent-session';
 import { ChannelCallbacks } from '../types/tool';
 import { ContentBlock } from '../types';
+import type { PendingUserInput } from '../core/conversation-runner';
+import type { ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
 import { randomUUID } from 'crypto';
 import { ConfigManager } from '../utils/config';
@@ -20,6 +23,7 @@ interface PendingAttachment {
   localPath: string;
   type: 'file' | 'image';
   receivedAt: number;
+  localFileGrant?: ScopedLocalFileGrant;
 }
 
 interface PendingAnswer {
@@ -37,6 +41,7 @@ interface QueuedMessage {
   senderId: string;
   seq: number;
   executionScope: ParsedCatsMessage['executionScope'];
+  localFileGrants?: ScopedLocalFileGrant[];
   receivedAt: number;
   source?: 'user' | 'subagent_feedback';
   runtimeFeedback?: RuntimeFeedbackInput[];
@@ -92,6 +97,7 @@ export class CatsCompanyBot {
   private botUid: string | null = null;
   private runtime: AdapterRuntimeBundle;
   private runtimeProfile: AdapterRuntimeBundle['profile'];
+  private localDeviceGrant?: ScopedLocalDeviceGrant;
 
   constructor(config: CatsCompanyConfig) {
     this.bot = new CatsClient({
@@ -103,6 +109,11 @@ export class CatsCompanyBot {
     });
 
     this.sender = new MessageSender(this.bot, config.httpBaseUrl, config.apiKey);
+    this.localDeviceGrant = createCatsCoLocalDeviceGrant({
+      bodyId: config.bodyId,
+      installationId: config.installationId,
+      deviceId: config.installationId || config.bodyId,
+    });
 
     const runtime = createCatsCompanyRuntime(config.sessionTTL);
     this.runtime = runtime;
@@ -343,6 +354,7 @@ export class CatsCompanyBot {
 
     let userMessage: string | import('../types').ContentBlock[] = msg.text;
     const runtimeFeedback: RuntimeFeedbackInput[] = [];
+    let localFileGrants: ScopedLocalFileGrant[] = [];
 
     const messageFiles = msg.files && msg.files.length > 0 ? msg.files : (msg.file ? [msg.file] : []);
     if (messageFiles.length > 0) {
@@ -362,10 +374,17 @@ export class CatsCompanyBot {
           localPath,
           type: file.type,
           receivedAt: Date.now(),
+          localFileGrant: createCatsCoAttachmentGrant(msg.executionScope, this.localDeviceGrant, {
+            localPath,
+            fileName: file.fileName,
+            type: file.type,
+            workspaceRoot: process.cwd(),
+          }),
         });
       }
 
       if (attachments.length > 0) {
+        localFileGrants = this.collectLocalFileGrants(attachments);
         userMessage = await this.buildMultimodalMessage(msg.text, attachments);
         Logger.info(`[${key}] 原子附件消息（attachments=${attachments.length})`);
       } else {
@@ -374,6 +393,7 @@ export class CatsCompanyBot {
     } else {
       const queuedAttachments = this.consumePendingAttachments(key);
       if (queuedAttachments.length > 0) {
+        localFileGrants = this.collectLocalFileGrants(queuedAttachments);
         userMessage = await this.buildMultimodalMessage(msg.text, queuedAttachments);
         Logger.info(`[${key}] 追加 ${queuedAttachments.length} 个附件`);
       }
@@ -388,6 +408,7 @@ export class CatsCompanyBot {
         senderId: msg.senderId,
         seq: msg.seq,
         executionScope: msg.executionScope,
+        localFileGrants,
         receivedAt: Date.now(),
         source: 'user',
         runtimeFeedback,
@@ -409,6 +430,8 @@ export class CatsCompanyBot {
       const result = await session.handleMessage(userMessage, {
         channel,
         executionScope: msg.executionScope,
+        localDeviceGrant: this.localDeviceGrant,
+        localFileGrants,
         runtimeFeedback,
         pendingUserInputProvider: () => this.consumeQueuedUserInput(key),
         callbacks: this.buildSessionCallbacks(msg.topic),
@@ -768,11 +791,14 @@ export class CatsCompanyBot {
           callbacks: this.buildSessionCallbacks(msg.topic),
           source: 'subagent_result',
           executionScope: msg.executionScope,
+          localDeviceGrant: this.localDeviceGrant,
         })
         : await session.handleMessage(msg.userMessage, {
           channel,
           executionScope: msg.executionScope,
+          localDeviceGrant: this.localDeviceGrant,
           runtimeFeedback: msg.runtimeFeedback,
+          localFileGrants: msg.localFileGrants,
           pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey),
           callbacks: this.buildSessionCallbacks(msg.topic),
         });
@@ -797,7 +823,7 @@ export class CatsCompanyBot {
     await this.drainMessageQueue(sessionKey);
   }
 
-  private consumeQueuedUserInput(sessionKey: string): string | ContentBlock[] | null {
+  private consumeQueuedUserInput(sessionKey: string): string | ContentBlock[] | PendingUserInput | null {
     const queue = this.messageQueue.get(sessionKey);
     if (!queue || queue.length === 0) return null;
 
@@ -816,7 +842,10 @@ export class CatsCompanyBot {
     });
 
     Logger.info(`[${sessionKey}] 合并 ${messages.length} 条处理期间新到的用户消息`);
-    return this.mergeQueuedMessages(messages);
+    const content = this.mergeQueuedMessages(messages);
+    const localFileGrants = messages.flatMap(item => item.localFileGrants || []);
+    if (localFileGrants.length === 0) return content;
+    return { content, localFileGrants };
   }
 
   private mergeQueuedMessages(messages: QueuedMessage[]): string | ContentBlock[] {
@@ -882,6 +911,12 @@ export class CatsCompanyBot {
     return queue;
   }
 
+  private collectLocalFileGrants(attachments: PendingAttachment[]): ScopedLocalFileGrant[] {
+    return attachments
+      .map(attachment => attachment.localFileGrant)
+      .filter((grant): grant is ScopedLocalFileGrant => Boolean(grant));
+  }
+
   private async buildMultimodalMessage(text: string, attachments: PendingAttachment[]): Promise<import('../types').ContentBlock[]> {
     const { createImageBlock } = require('../utils/image-utils');
     const blocks: import('../types').ContentBlock[] = [];
@@ -897,7 +932,7 @@ export class CatsCompanyBot {
     for (const att of attachments) {
       if (att.type === 'image') {
         if (!primaryModelCanSeeImages) {
-          currentImagePaths.push(`[Current image] ${att.fileName}\n[Current image path] ${att.localPath}`);
+          currentImagePaths.push(`[Current image] ${att.fileName}\n[Current authorized attachment path] ${att.localPath}`);
           continue;
         }
 
@@ -909,7 +944,7 @@ export class CatsCompanyBot {
           Logger.warning(`[多模态] 图片块创建失败: ${att.fileName} at ${att.localPath}`);
         }
       } else {
-        blocks.push({ type: 'text', text: `[文件] ${att.fileName}\n[路径] ${att.localPath}` });
+        blocks.push({ type: 'text', text: `[文件] ${att.fileName}\n[授权附件路径] ${att.localPath}` });
       }
     }
 
@@ -920,8 +955,8 @@ export class CatsCompanyBot {
         text: [
           '[Current user turn contains image attachments]',
           'The primary model cannot directly inspect image pixels in this runtime.',
-          'If the user request depends on image content, call read_file on the current image path below.',
-          'Use only the current image path(s) listed here. Do not use old tmp/downloads paths, old image URLs, old filenames, or prior image descriptions.',
+          'If the user request depends on image content, call read_file on the current authorized attachment path below.',
+          'Use only the current authorized attachment path(s) listed here. Do not use old tmp/downloads paths, old image URLs, old filenames, or prior image descriptions.',
           currentImagePaths.join('\n\n'),
         ].join('\n'),
       });
