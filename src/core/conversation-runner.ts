@@ -26,6 +26,7 @@ import {
   buildRuntimeContextMessage,
 } from './runtime-context-builder';
 import { calculateSummaryBudgetTokens, resolveModelPromptBudgetTokens } from '../utils/model-context-window';
+import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -303,6 +304,31 @@ export class ConversationRunner {
         const aiDuration = Date.now() - aiStartTime;
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI推理完成，耗时: ${aiDuration}ms`);
       } catch (error: any) {
+        if (this.isMessageSurface() && isModelImageSafetyError(error)) {
+          if (this.toolExecutionContext?.channel && this.toolExecutionContext?.surface !== 'catscompany') {
+            try {
+              await this.toolExecutionContext.channel.reply(
+                this.toolExecutionContext.channel.chatId,
+                MODEL_IMAGE_SAFETY_MESSAGE,
+              );
+            } catch (err: any) {
+              Logger.error(`[${this.sessionLabel}Turn ${turns}] 图片安全提示发送失败: ${err.message}`);
+            }
+          }
+          const assistantMessage: Message = {
+            role: 'assistant',
+            content: MODEL_IMAGE_SAFETY_MESSAGE,
+          };
+          messages.push(assistantMessage);
+          newMessages.push(assistantMessage);
+          Logger.warning(`[${this.sessionLabel}Turn ${turns}] 图片被模型安全策略拒绝，已发送可见收束提示: ${error.message}`);
+          return {
+            response: MODEL_IMAGE_SAFETY_MESSAGE,
+            finalResponseVisible: true,
+            messages,
+            newMessages,
+          };
+        }
         if (hasDeliveredMessageOutThisRun && this.isMessageSurface()) {
           Logger.warning(`[${this.sessionLabel}Turn ${turns}] 已有外发消息送达，后续推理失败后直接收束: ${error.message}`);
           return {

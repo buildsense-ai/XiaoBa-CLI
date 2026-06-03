@@ -41,6 +41,7 @@ import { SubAgentManager } from './sub-agent-manager';
 import type { PendingUserInputProvider } from './conversation-runner';
 import { resolveModelContextWindow } from '../utils/model-context-window';
 import { parseSessionKeyV2 } from './session-router';
+import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
 
@@ -507,11 +508,14 @@ export class AgentSession {
 
         // 识别多模态相关错误
         const errorMsg = err.message || String(err);
-        const isVisionError = errorMsg.match(/image|vision|multimodal|media_type|base64.*not supported/i);
+        const isImageSafetyError = isModelImageSafetyError(err);
+        const isVisionError = !isImageSafetyError && errorMsg.match(/image|vision|multimodal|media_type|base64.*not supported/i);
         const isModelTimeoutError = this.isModelTimeoutError(err);
 
         let errorReply = ERROR_MESSAGE;
-        if (isVisionError) {
+        if (isImageSafetyError) {
+          errorReply = MODEL_IMAGE_SAFETY_MESSAGE;
+        } else if (isVisionError) {
           errorReply = '当前模型不支持图片识别。请使用支持多模态的模型（如 Claude 3.5 Sonnet 或 GPT-4V），或者用文字描述图片内容。';
         } else if (isModelTimeoutError) {
           errorReply = MODEL_TIMEOUT_MESSAGE;
@@ -520,7 +524,7 @@ export class AgentSession {
         // 添加错误回复到上下文，保持对话连贯性
         this.messages.push({
           role: 'assistant',
-          content: this.formatErrorContextMessage(err, isModelTimeoutError),
+          content: this.formatErrorContextMessage(err, isModelTimeoutError, isImageSafetyError),
         });
         this.messages = this.turnContextBuilder.removeTransientMessages(this.messages);
         this.lifecycleManager.saveContext(this.messages);
@@ -730,10 +734,13 @@ export class AgentSession {
     return /API错误\s*\(504\)|request_timed_out|request timed out|default_request_timeout_in_seconds|upstream request timeout|gateway timeout/i.test(text);
   }
 
-  private formatErrorContextMessage(error: any, isModelTimeoutError: boolean): string {
+  private formatErrorContextMessage(error: any, isModelTimeoutError: boolean, isImageSafetyError = false): string {
     const detail = this.sanitizeErrorMessage(error?.message || String(error));
     if (isModelTimeoutError) {
       return `[处理中断: 模型中转请求超时。已保留本轮已完成的工具结果和上下文；如果用户要求继续，请基于当前上下文继续，避免重复已经完成的工具步骤。错误摘要: ${detail}]`;
+    }
+    if (isImageSafetyError) {
+      return `[处理中断: 上游模型拒绝了当前对话中的图片。已保留本轮已完成的上下文；如果用户要求继续，请提示用户删除或更换相关图片，或新开对话后继续。错误摘要: ${detail}]`;
     }
     return `[处理失败: ${detail}]`;
   }
