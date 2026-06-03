@@ -1,4 +1,5 @@
 import { ContentBlock, Message } from '../types';
+import type { ExecutionScope } from '../types/session-identity';
 import { ChannelCallbacks } from '../types/tool';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
@@ -35,6 +36,7 @@ export interface RunAgentTurnParams {
   runtimeObservationSource?: string;
   callbacks?: AgentTurnCallbacks;
   channel?: ChannelCallbacks;
+  executionScope?: ExecutionScope;
   pendingUserInputProvider?: PendingUserInputProvider;
   abortSignal?: AbortSignal;
   shouldContinue: () => boolean;
@@ -90,6 +92,7 @@ export class AgentTurnController {
 
     const runner = this.createRunner({
       channel: params.channel,
+      executionScope: params.executionScope,
       pendingUserInputProvider: params.pendingUserInputProvider,
       abortSignal: params.abortSignal,
       shouldContinue: params.shouldContinue,
@@ -136,6 +139,7 @@ export class AgentTurnController {
 
   private createRunner(options: {
     channel?: ChannelCallbacks;
+    executionScope?: ExecutionScope;
     pendingUserInputProvider?: PendingUserInputProvider;
     abortSignal?: AbortSignal;
     shouldContinue: () => boolean;
@@ -165,6 +169,7 @@ export class AgentTurnController {
           },
           abortSignal: options.abortSignal,
           channel: options.channel,
+          executionScope: options.executionScope,
         },
       },
     );

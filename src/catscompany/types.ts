@@ -1,3 +1,5 @@
+import type { ExecutionScope, MessageEnvelope } from '../types/session-identity';
+
 /**
  * CatsCo agent 连接配置
  */
@@ -32,6 +34,12 @@ export interface ParsedCatsMessage {
   text: string;
   /** 原始 content（可能是 string 或 RichContent） */
   rawContent: unknown;
+  /** 原始 metadata，由 CatsCo 服务端透传/注入 */
+  metadata?: Record<string, unknown>;
+  /** 标准化后的消息信封 */
+  envelope: MessageEnvelope;
+  /** 当前 turn 的执行身份 */
+  executionScope: ExecutionScope;
   /** 文件附件信息（rich content file/image 时存在） */
   file?: CatsFileInfo;
   /** 同一条消息里的全部附件（content_blocks 或 rich content） */

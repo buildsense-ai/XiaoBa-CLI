@@ -1,4 +1,5 @@
 import { ContentBlock } from './index';
+import type { ExecutionScope } from './session-identity';
 import type { PlanRuntime, RuntimePlanSnapshot } from '../core/plan-runtime';
 import type { AIService } from '../utils/ai-service';
 import type { SkillManager } from '../skills/skill-manager';
@@ -141,6 +142,8 @@ export interface ToolExecutionContext {
   runtimeServices?: RuntimeToolServices;
   /** 平台通道回调（飞书/CatsCompany 等聊天会话时由平台层注入） */
   channel?: ChannelCallbacks;
+  /** 当前 turn 的可信执行身份；后续 ToolGateway/设备授权会基于它做权限判断。 */
+  executionScope?: ExecutionScope;
 }
 
 /**

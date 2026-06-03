@@ -1,4 +1,5 @@
 import { Message } from '../types';
+import type { ExecutionScope } from '../types/session-identity';
 import * as fs from 'fs';
 import * as path from 'path';
 import { AIService } from '../utils/ai-service';
@@ -69,6 +70,8 @@ export interface HandleMessageOptions {
   callbacks?: SessionCallbacks;
   /** 平台通道回调，注入到 ToolExecutionContext 供工具使用 */
   channel?: ChannelCallbacks;
+  /** 当前 turn 的可信执行身份 */
+  executionScope?: ExecutionScope;
   /** 当前 turn 专属、给 agent 可见的运行时反馈 */
   runtimeFeedback?: RuntimeFeedbackInput[];
   /** Pulls user messages that arrived while this session was busy. */
@@ -360,12 +363,14 @@ export class AgentSession {
       // 兼容旧签名：如果传入的对象有 onText/onToolStart 等字段，视为 SessionCallbacks
       let callbacks: SessionCallbacks | undefined;
       let channel: ChannelCallbacks | undefined;
+      let executionScope: ExecutionScope | undefined;
       let runtimeFeedbackInputs: RuntimeFeedbackInput[] = [];
       let pendingUserInputProvider: PendingUserInputProvider | undefined;
 
       if (callbacksOrOptions) {
         if (
           'channel' in callbacksOrOptions
+          || 'executionScope' in callbacksOrOptions
           || 'callbacks' in callbacksOrOptions
           || 'runtimeFeedback' in callbacksOrOptions
           || 'pendingUserInputProvider' in callbacksOrOptions
@@ -374,6 +379,7 @@ export class AgentSession {
           const opts = callbacksOrOptions as HandleMessageOptions;
           callbacks = opts.callbacks;
           channel = opts.channel;
+          executionScope = opts.executionScope;
           runtimeFeedbackInputs = opts.runtimeFeedback || [];
           pendingUserInputProvider = opts.pendingUserInputProvider;
         } else {
@@ -415,6 +421,7 @@ export class AgentSession {
           runtimeObservationSource,
           callbacks,
           channel,
+          executionScope,
           pendingUserInputProvider,
           abortSignal: this.activeAbortController.signal,
           shouldContinue: () => !this.interruptRequested,

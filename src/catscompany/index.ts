@@ -2,6 +2,7 @@ import { CatsClient, MessageContext } from './client';
 import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo } from './types';
 import { MessageSender } from './message-sender';
 import { extractContentBlocks } from './content-blocks';
+import { createCatsCoMessageEnvelope, createExecutionScope } from './message-envelope';
 import { MessageSessionManager } from '../core/message-session-manager';
 import { AgentServices, BUSY_MESSAGE, RuntimeFeedbackInput, SessionCallbacks } from '../core/agent-session';
 import { Logger } from '../utils/logger';
@@ -35,6 +36,7 @@ interface QueuedMessage {
   topic: string;
   senderId: string;
   seq: number;
+  executionScope: ParsedCatsMessage['executionScope'];
   receivedAt: number;
   source?: 'user' | 'subagent_feedback';
   runtimeFeedback?: RuntimeFeedbackInput[];
@@ -281,9 +283,7 @@ export class CatsCompanyBot {
     // 过滤 bot 自己发出的消息，防止循环
     if (this.botUid && msg.senderId === this.botUid) return;
 
-    const key = msg.chatType === 'group'
-      ? `cc_group:${msg.topic}`
-      : `cc_user:${msg.senderId}`;
+    const key = msg.envelope.sessionKey;
 
     // ── 拦截：如果当前 session 正在等待回答，按 sender 精确匹配 ──
     const pendingId = this.pendingAnswerBySession.get(key);
@@ -312,7 +312,7 @@ export class CatsCompanyBot {
     const subAgentManager = SubAgentManager.getInstance();
     subAgentManager.registerPlatformCallbacks(key, {
       injectMessage: async (text: string) => {
-        await this.handleSubAgentFeedback(key, msg.topic, msg.senderId, text);
+        await this.handleSubAgentFeedback(key, msg.topic, msg.senderId, text, msg.executionScope);
       },
       onSubAgentEvent: async (event: any, info?: SubAgentInfo) => {
         await this.handleSubAgentRuntimeEvent(msg.topic, event, info);
@@ -387,6 +387,7 @@ export class CatsCompanyBot {
         topic: msg.topic,
         senderId: msg.senderId,
         seq: msg.seq,
+        executionScope: msg.executionScope,
         receivedAt: Date.now(),
         source: 'user',
         runtimeFeedback,
@@ -407,6 +408,7 @@ export class CatsCompanyBot {
     try {
       const result = await session.handleMessage(userMessage, {
         channel,
+        executionScope: msg.executionScope,
         runtimeFeedback,
         pendingUserInputProvider: () => this.consumeQueuedUserInput(key),
         callbacks: this.buildSessionCallbacks(msg.topic),
@@ -504,14 +506,30 @@ export class CatsCompanyBot {
     const blockText = blockTextParts.join('\n\n');
     const mergedText = blockText || text;
     if (!mergedText && files.length === 0) return null;
+    const messageText = mergedText
+      || (files.length > 0
+        ? files.map(item => `[${item.type === 'image' ? '图片' : '文件'}] ${item.fileName}`).join('\n')
+        : '');
+    const envelope = createCatsCoMessageEnvelope({
+      topic: ctx.topic,
+      isGroup: ctx.isGroup,
+      senderId: ctx.senderId,
+      seq: ctx.seq,
+      text: messageText,
+      metadata: ctx.metadata,
+      botUid: this.botUid,
+    });
 
     return {
       topic: ctx.topic,
       chatType,
       senderId: ctx.senderId,
       seq: ctx.seq ?? 0,
-      text: mergedText || (files.length > 0 ? files.map(item => `[${item.type === 'image' ? '图片' : '文件'}] ${item.fileName}`).join('\n') : ''),
+      text: messageText,
       rawContent: ctx.content,
+      metadata: ctx.metadata,
+      envelope,
+      executionScope: createExecutionScope(envelope),
       file: files[0],
       files,
     };
@@ -525,11 +543,12 @@ export class CatsCompanyBot {
     topic: string,
     senderId: string,
     text: string,
+    executionScope?: ParsedCatsMessage['executionScope'],
   ): Promise<void> {
     const session = this.sessionManager.getOrCreate(sessionKey);
 
     if (session.isBusy()) {
-      this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text);
+      this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope);
       Logger.info(`[${sessionKey}] 主会话忙，子智能体反馈已入队`);
       return;
     }
@@ -552,9 +571,10 @@ export class CatsCompanyBot {
         channel,
         callbacks: this.buildSessionCallbacks(topic),
         source: 'subagent_result',
+        executionScope,
       });
       if (result.text === BUSY_MESSAGE) {
-        this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text);
+        this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope);
         Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
         return;
       }
@@ -579,13 +599,24 @@ export class CatsCompanyBot {
     }
   }
 
-  private enqueueSubAgentFeedback(sessionKey: string, topic: string, senderId: string, text: string): void {
+  private enqueueSubAgentFeedback(
+    sessionKey: string,
+    topic: string,
+    senderId: string,
+    text: string,
+    executionScope?: ParsedCatsMessage['executionScope'],
+  ): void {
     const queue = this.messageQueue.get(sessionKey) ?? [];
     queue.push({
       userMessage: text,
       topic,
       senderId,
       seq: 0,
+      executionScope: executionScope ?? createExecutionScope(createCatsCoMessageEnvelope({
+        topic,
+        senderId,
+        text,
+      })),
       receivedAt: Date.now(),
       source: 'subagent_feedback',
     });
@@ -736,9 +767,11 @@ export class CatsCompanyBot {
           channel,
           callbacks: this.buildSessionCallbacks(msg.topic),
           source: 'subagent_result',
+          executionScope: msg.executionScope,
         })
         : await session.handleMessage(msg.userMessage, {
           channel,
+          executionScope: msg.executionScope,
           runtimeFeedback: msg.runtimeFeedback,
           pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey),
           callbacks: this.buildSessionCallbacks(msg.topic),
