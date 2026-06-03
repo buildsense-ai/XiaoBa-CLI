@@ -1,4 +1,10 @@
 import { Message } from '../types';
+import type {
+  ExecutionScope,
+  ScopedLocalDeviceGrant,
+  ScopedLocalFileGrant,
+  SessionRoute,
+} from '../types/session-identity';
 import {
   SessionSkillRuntime,
   TRANSIENT_SKILLS_LIST_PREFIX,
@@ -9,6 +15,10 @@ import {
   TRANSIENT_SUBAGENT_STATUS_PREFIX,
   buildSubAgentStatusMessage,
 } from './sub-agent-observation';
+import {
+  TRANSIENT_RUNTIME_CONTEXT_PREFIX,
+  buildRuntimeContextMessage,
+} from './runtime-context-builder';
 
 const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
@@ -16,6 +26,11 @@ const TRANSIENT_SOFT_CHECK_PREFIX = '[transient_soft_check]';
 
 export interface BuildTurnContextParams {
   sessionKey: string;
+  sessionType?: string;
+  sessionRoute?: SessionRoute;
+  executionScope?: ExecutionScope;
+  localDeviceGrant?: ScopedLocalDeviceGrant;
+  localFileGrants?: ScopedLocalFileGrant[];
   durableMessages: Message[];
   runtimeFeedback: string[];
   skillRuntime: SessionSkillRuntime;
@@ -35,6 +50,7 @@ export interface BuildTurnContextResult {
 export class TurnContextBuilder {
   async build(params: BuildTurnContextParams): Promise<BuildTurnContextResult> {
     const contextMessages = [...params.durableMessages];
+    this.injectRuntimeContext(contextMessages, params);
     this.injectRuntimeFeedback(contextMessages, params.runtimeFeedback);
     this.injectPlanStatus(contextMessages, params.planRuntime);
     this.injectSubAgentStatus(contextMessages, params.sessionKey);
@@ -60,8 +76,22 @@ export class TurnContextBuilder {
       if (msg.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SOFT_CHECK_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SKILLS_LIST_PREFIX)) return false;
+      if (msg.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX)) return false;
       return true;
     });
+  }
+
+  private injectRuntimeContext(messages: Message[], params: BuildTurnContextParams): void {
+    const message = buildRuntimeContextMessage({
+      sessionKey: params.sessionKey,
+      sessionType: params.sessionType,
+      sessionRoute: params.sessionRoute,
+      executionScope: params.executionScope,
+      localDeviceGrant: params.localDeviceGrant,
+      localFileGrants: params.localFileGrants,
+    });
+    if (!message) return;
+    this.insertBeforeLastUser(messages, message);
   }
 
   private injectRuntimeFeedback(messages: Message[], runtimeFeedback: string[]): void {

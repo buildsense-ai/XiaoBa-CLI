@@ -1,5 +1,5 @@
 import { ContentBlock, Message } from '../types';
-import type { ExecutionScope, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
+import type { ExecutionScope, ScopedLocalDeviceGrant, ScopedLocalFileGrant, SessionRoute } from '../types/session-identity';
 import { ChannelCallbacks } from '../types/tool';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
@@ -36,6 +36,7 @@ export interface RunAgentTurnParams {
   runtimeObservationSource?: string;
   callbacks?: AgentTurnCallbacks;
   channel?: ChannelCallbacks;
+  sessionRoute?: SessionRoute;
   executionScope?: ExecutionScope;
   localDeviceGrant?: ScopedLocalDeviceGrant;
   localFileGrants?: ScopedLocalFileGrant[];
@@ -58,6 +59,7 @@ export interface AgentTurnRunError extends Error {
 export interface AgentTurnControllerOptions {
   sessionKey: string;
   sessionType?: string;
+  sessionRoute?: SessionRoute;
   services: AgentTurnServices;
   skillRuntime: SessionSkillRuntime;
   planRuntime: PlanRuntime;
@@ -86,6 +88,11 @@ export class AgentTurnController {
 
     const turnContext = await this.options.turnContextBuilder.build({
       sessionKey: this.options.sessionKey,
+      sessionType: this.options.sessionType,
+      sessionRoute: params.sessionRoute ?? this.options.sessionRoute,
+      executionScope: params.executionScope,
+      localDeviceGrant: params.localDeviceGrant,
+      localFileGrants: params.localFileGrants,
       durableMessages: params.messages,
       runtimeFeedback: params.runtimeFeedback,
       skillRuntime: this.options.skillRuntime,

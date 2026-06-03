@@ -17,6 +17,7 @@ import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-r
 import { randomUUID } from 'crypto';
 import { ConfigManager } from '../utils/config';
 import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
+import { createCatsCoSessionRoute } from '../core/session-router';
 
 interface PendingAttachment {
   fileName: string;
@@ -317,7 +318,8 @@ export class CatsCompanyBot {
   }
 
   private async processParsedMessage(msg: ParsedCatsMessage, key: string): Promise<void> {
-    const session = this.sessionManager.getOrCreate(key);
+    const sessionRoute = msg.envelope ? createCatsCoSessionRoute(msg.envelope) : undefined;
+    const session = this.sessionManager.getOrCreate(sessionRoute && sessionRoute.sessionKey === key ? sessionRoute : key);
 
     // 注册持久化回调到 SubAgentManager
     const subAgentManager = SubAgentManager.getInstance();
@@ -429,13 +431,14 @@ export class CatsCompanyBot {
     try {
       const result = await session.handleMessage(userMessage, {
         channel,
+        sessionRoute,
         executionScope: msg.executionScope,
-        localDeviceGrant: this.localDeviceGrant,
-        localFileGrants,
-        runtimeFeedback,
-        pendingUserInputProvider: () => this.consumeQueuedUserInput(key),
-        callbacks: this.buildSessionCallbacks(msg.topic),
-      });
+          localDeviceGrant: this.localDeviceGrant,
+          localFileGrants,
+          runtimeFeedback,
+          pendingUserInputProvider: () => this.consumeQueuedUserInput(key, msg.executionScope),
+          callbacks: this.buildSessionCallbacks(msg.topic),
+        });
 
       // 最终文本回复
       if (result.visibleToUser && result.text) {
@@ -806,7 +809,7 @@ export class CatsCompanyBot {
           localDeviceGrant: this.localDeviceGrant,
           runtimeFeedback: msg.runtimeFeedback,
           localFileGrants: msg.localFileGrants,
-          pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey),
+          pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey, msg.executionScope),
           callbacks: this.buildSessionCallbacks(msg.topic),
         });
       if (result.text.startsWith('处理消息时出错:')) {
@@ -830,14 +833,24 @@ export class CatsCompanyBot {
     await this.drainMessageQueue(sessionKey);
   }
 
-  private consumeQueuedUserInput(sessionKey: string): string | ContentBlock[] | PendingUserInput | null {
+  private consumeQueuedUserInput(
+    sessionKey: string,
+    currentScope?: ParsedCatsMessage['executionScope'],
+  ): string | ContentBlock[] | PendingUserInput | null {
     const queue = this.messageQueue.get(sessionKey);
     if (!queue || queue.length === 0) return null;
 
-    const userMessages = queue.filter(item => item.source !== 'subagent_feedback');
-    const runtimeMessages = queue.filter(item => item.source === 'subagent_feedback');
-    if (runtimeMessages.length > 0) {
-      this.messageQueue.set(sessionKey, runtimeMessages);
+    const userMessages: QueuedMessage[] = [];
+    let firstRemainingIndex = 0;
+    for (; firstRemainingIndex < queue.length; firstRemainingIndex++) {
+      const item = queue[firstRemainingIndex];
+      if (item.source === 'subagent_feedback') break;
+      if (!this.canMergeQueuedMessage(currentScope, item.executionScope)) break;
+      userMessages.push(item);
+    }
+    const remainingMessages = queue.slice(firstRemainingIndex);
+    if (remainingMessages.length > 0) {
+      this.messageQueue.set(sessionKey, remainingMessages);
     } else {
       this.messageQueue.delete(sessionKey);
     }
@@ -853,6 +866,20 @@ export class CatsCompanyBot {
     const localFileGrants = messages.flatMap(item => item.localFileGrants || []);
     if (localFileGrants.length === 0) return content;
     return { content, localFileGrants };
+  }
+
+  private canMergeQueuedMessage(
+    currentScope: ParsedCatsMessage['executionScope'] | undefined,
+    queuedScope: ParsedCatsMessage['executionScope'] | undefined,
+  ): boolean {
+    if (!currentScope || !queuedScope) return true;
+    return currentScope.sessionKey === queuedScope.sessionKey
+      && currentScope.topicId === queuedScope.topicId
+      && currentScope.topicType === queuedScope.topicType
+      && currentScope.actorUserId === queuedScope.actorUserId
+      && currentScope.agentId === queuedScope.agentId
+      && currentScope.agentBodyId === queuedScope.agentBodyId
+      && currentScope.identityTrust === queuedScope.identityTrust;
   }
 
   private mergeQueuedMessages(messages: QueuedMessage[]): string | ContentBlock[] {

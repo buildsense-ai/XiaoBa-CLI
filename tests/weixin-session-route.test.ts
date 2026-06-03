@@ -31,6 +31,12 @@ describe('Weixin SessionRoute V2', () => {
       assert.equal(bot.contextTokens.get(sessionKey), 'ctx-token');
       assert.equal(bot.contextTokens.get('user:shared'), 'ctx-token');
       assert.equal(bot.handledTurns.length, 1);
+      assert.equal(bot.handledTurns[0].options.channel.chatId, 'shared');
+      assert.equal(bot.handledTurns[0].options.sessionRoute.sessionKey, sessionKey);
+      assert.equal(bot.handledTurns[0].options.executionScope.source, 'weixin');
+      assert.equal(bot.handledTurns[0].options.executionScope.topicType, 'p2p');
+      assert.equal(bot.handledTurns[0].options.executionScope.topicId, 'shared');
+      assert.equal(bot.handledTurns[0].options.executionScope.actorUserId, 'shared');
 
       await bot.handledTurns[0].options.channel.reply('ignored-chat-id', 'reply text');
 
@@ -66,11 +72,14 @@ describe('Weixin SessionRoute V2', () => {
       const sessionKey = 'session:v2:weixin:p2p:shared';
       assert.equal(bot.messageQueue.has(sessionKey), true);
       assert.equal(bot.messageQueue.get(sessionKey)?.[0]?.userId, 'shared');
+      assert.equal(bot.messageQueue.get(sessionKey)?.[0]?.sessionRoute.actorUserId, 'shared');
       bot.sessionBusy = false;
       await (bot as any).drainMessageQueue(sessionKey);
 
       assert.deepEqual(bot.createdSessions, [sessionKey, sessionKey]);
       assert.equal(bot.handledTurns.length, 1);
+      assert.equal(bot.handledTurns[0].options.channel.chatId, 'shared');
+      assert.equal(bot.handledTurns[0].options.executionScope.topicId, 'shared');
     } finally {
       SubAgentManager.getInstance().unregisterPlatformCallbacks('session:v2:weixin:p2p:shared');
     }

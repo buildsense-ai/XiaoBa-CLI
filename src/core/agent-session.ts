@@ -71,6 +71,8 @@ export interface HandleMessageOptions {
   callbacks?: SessionCallbacks;
   /** 平台通道回调，注入到 ToolExecutionContext 供工具使用 */
   channel?: ChannelCallbacks;
+  /** 当前 turn 的会话路由快照，用于模型可见的结构化运行上下文 */
+  sessionRoute?: SessionRoute;
   /** 当前 turn 的可信执行身份 */
   executionScope?: ExecutionScope;
   /** 当前本机运行体授权，例如 CatsCo body/device 绑定。 */
@@ -171,6 +173,7 @@ export class AgentSession {
     this.turnController = new AgentTurnController({
       sessionKey: key,
       sessionType,
+      sessionRoute,
       services,
       skillRuntime: this.skillRuntime,
       planRuntime: this.planRuntime,
@@ -376,6 +379,7 @@ export class AgentSession {
       // 兼容旧签名：如果传入的对象有 onText/onToolStart 等字段，视为 SessionCallbacks
       let callbacks: SessionCallbacks | undefined;
       let channel: ChannelCallbacks | undefined;
+      let sessionRoute: SessionRoute | undefined;
       let executionScope: ExecutionScope | undefined;
       let localDeviceGrant: ScopedLocalDeviceGrant | undefined;
       let localFileGrants: ScopedLocalFileGrant[] | undefined;
@@ -385,6 +389,7 @@ export class AgentSession {
       if (callbacksOrOptions) {
         if (
           'channel' in callbacksOrOptions
+          || 'sessionRoute' in callbacksOrOptions
           || 'executionScope' in callbacksOrOptions
           || 'localDeviceGrant' in callbacksOrOptions
           || 'localFileGrants' in callbacksOrOptions
@@ -396,6 +401,7 @@ export class AgentSession {
           const opts = callbacksOrOptions as HandleMessageOptions;
           callbacks = opts.callbacks;
           channel = opts.channel;
+          sessionRoute = opts.sessionRoute;
           executionScope = opts.executionScope;
           localDeviceGrant = opts.localDeviceGrant;
           localFileGrants = opts.localFileGrants;
@@ -440,6 +446,7 @@ export class AgentSession {
           runtimeObservationSource,
           callbacks,
           channel,
+          sessionRoute,
           executionScope,
           localDeviceGrant,
           localFileGrants,
