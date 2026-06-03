@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
 import { resolveToolPath } from '../utils/tool-path-resolver';
+import { resolveOutboundTarget } from './outbound-gateway';
 
 export class SendFileTool implements Tool {
   definition: ToolDefinition = {
@@ -83,12 +84,20 @@ CatsCo file selection rules:
     }
 
     const channel = context.channel;
-    if (!channel) {
-      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: '当前不在聊天会话中，无法发送文件' };
+    const target = resolveOutboundTarget(context, {
+      operation: 'send_file',
+      missingChannelMessage: '当前不在聊天会话中，无法发送文件',
+    });
+    if (!target.ok) {
+      return {
+        ok: false,
+        errorCode: target.errorCode,
+        message: target.message,
+      };
     }
 
     try {
-      await channel.sendFile(channel.chatId, resolved.absolutePath, file_name);
+      await channel!.sendFile(target.chatId, resolved.absolutePath, file_name);
       Logger.info(`[send_file] 已发送: ${file_name} (${resolved.absolutePath})`);
       return {
         ok: true,
