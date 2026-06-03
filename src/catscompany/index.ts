@@ -733,9 +733,16 @@ export class CatsCompanyBot {
   }
 
   private handleCancelMessage(ctx: MessageContext): void {
-    const key = ctx.isGroup
-      ? `cc_group:${ctx.topic}`
-      : `cc_user:${ctx.senderId}`;
+    const envelope = createCatsCoMessageEnvelope({
+      topic: ctx.topic,
+      isGroup: ctx.isGroup,
+      senderId: ctx.senderId,
+      seq: ctx.seq,
+      text: '',
+      metadata: ctx.metadata,
+      botUid: this.botUid,
+    });
+    const key = envelope.sessionKey;
     const session = (this.sessionManager as any).get?.(key) ?? null;
     if (!session) {
       Logger.info(`[${key}] 收到取消事件，但会话不存在`);

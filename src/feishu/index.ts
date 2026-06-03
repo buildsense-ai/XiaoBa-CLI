@@ -14,6 +14,11 @@ import { ChimeInJudge } from '../bridge/chime-in-judge';
 import { ChannelCallbacks } from '../types/tool';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
 import { randomUUID } from 'crypto';
+import {
+  createFeishuBridgeSessionRoute,
+  createFeishuSessionRoute,
+  parseSessionKeyV2,
+} from '../core/session-router';
 
 interface PendingAttachment {
   fileName: string;
@@ -207,6 +212,7 @@ export class FeishuBot {
     opts?: {
       sessionKey?: string;
       senderId?: string;
+      isGroup?: boolean;
       /** 可选的 reply 拦截器（如 bridge 场景需要收集回复文本） */
       replyInterceptor?: (text: string) => void;
     },
@@ -217,7 +223,11 @@ export class FeishuBot {
         opts?.replyInterceptor?.(text);
         await this.sender.reply(targetChatId, text);
         // 广播给所有 bridge peer（仅群聊）
-        const isGroupChat = !opts?.sessionKey || opts.sessionKey.startsWith('group:');
+        const parsedRoute = opts?.sessionKey ? parseSessionKeyV2(opts.sessionKey) : undefined;
+        const inferredGroup = parsedRoute
+          ? parsedRoute.topicType === 'group'
+          : (!opts?.sessionKey || opts.sessionKey.startsWith('group:'));
+        const isGroupChat = opts?.isGroup ?? inferredGroup;
         if (isGroupChat && this.bridgeClient && this.bridgeConfig) {
           this.bridgeClient.broadcast({
             from: this.bridgeConfig.name,
@@ -254,9 +264,9 @@ export class FeishuBot {
     }
 
 
-    const key = msg.chatType === 'group'
-      ? `group:${msg.chatId}`
-      : `user:${msg.senderId}`;
+    const route = createFeishuSessionRoute(msg);
+    const key = route.sessionKey;
+    const isGroup = msg.chatType === 'group';
 
     // ── 拦截：如果当前 session 正在等待回答，按 sender 精确匹配 ──
     const pendingId = this.pendingAnswerBySession.get(key);
@@ -276,7 +286,7 @@ export class FeishuBot {
     }
 
     // 获取或创建会话（传入 chatId 用于过期时主动唤醒）
-    const session = this.sessionManager.getOrCreate(key);
+    const session = this.sessionManager.getOrCreate(route);
 
     // 注册持久化平台回调到 SubAgentManager
     // 子智能体完成后通过 injectMessage 通知主 Agent
@@ -365,6 +375,7 @@ export class FeishuBot {
     const channel = this.buildChannel(msg.chatId, {
       sessionKey: key,
       senderId: msg.senderId,
+      isGroup,
     });
 
     try {
@@ -499,8 +510,12 @@ export class FeishuBot {
       return;
     }
 
-    const sessionKey = `group:${msg.chat_id}`;
-    const session = this.sessionManager.getOrCreate(sessionKey);
+    const route = createFeishuBridgeSessionRoute({
+      chatId: msg.chat_id,
+      from: msg.from,
+    });
+    const sessionKey = route.sessionKey;
+    const session = this.sessionManager.getOrCreate(route);
     const text = `${msg.from}: ${msg.content}`;
 
     // 记录到 chime-in judge 的上下文（无论是否触发推理）
@@ -551,11 +566,15 @@ export class FeishuBot {
 
     if (session.isBusy()) {
       const queue = this.messageQueue.get(sessionKey) ?? [];
-      queue.push({ userText: messageText, chatId: msg.chat_id, senderId: '', source: 'user' });
+      queue.push({ userText: messageText, chatId: msg.chat_id, senderId: msg.from || '', source: 'user' });
       this.messageQueue.set(sessionKey, queue);
       return;
     }
-    const channel = this.buildChannel(msg.chat_id);
+    const channel = this.buildChannel(msg.chat_id, {
+      sessionKey,
+      senderId: msg.from || '',
+      isGroup: true,
+    });
     try {
       await session.handleMessage(messageText, { channel });
     } finally {

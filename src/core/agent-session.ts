@@ -1,5 +1,5 @@
 import { Message } from '../types';
-import type { ExecutionScope, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
+import type { ExecutionScope, ScopedLocalDeviceGrant, ScopedLocalFileGrant, SessionRoute } from '../types/session-identity';
 import * as fs from 'fs';
 import * as path from 'path';
 import { AIService } from '../utils/ai-service';
@@ -28,6 +28,7 @@ import { PlanRuntime } from './plan-runtime';
 import { SubAgentManager } from './sub-agent-manager';
 import type { PendingUserInputProvider } from './conversation-runner';
 import { resolveModelContextWindow } from '../utils/model-context-window';
+import { parseSessionKeyV2 } from './session-router';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
 
@@ -143,6 +144,7 @@ export class AgentSession {
     public readonly key: string,
     private services: AgentServices,
     private sessionType?: string,
+    private readonly sessionRoute?: SessionRoute,
   ) {
     const type = sessionType || this.extractSessionType(key);
     this.sessionTurnLogger = new SessionTurnLogger(type, key);
@@ -161,6 +163,7 @@ export class AgentSession {
     this.skillRuntime = new SessionSkillRuntime(services.skillManager, key);
     this.lifecycleManager = new SessionLifecycleManager({
       sessionKey: key,
+      legacySessionKey: sessionRoute?.legacySessionKey,
       runtimeFeedbackInbox: this.runtimeFeedbackInbox,
     });
     this.defaultDirectory = this.resolveDefaultDirectory();
@@ -233,6 +236,12 @@ export class AgentSession {
   }
 
   private extractSessionType(key: string): string {
+    const parsedV2 = parseSessionKeyV2(key);
+    if (parsedV2) {
+      if (parsedV2.source === 'catscompany') return 'catscompany';
+      if (parsedV2.source === 'feishu') return 'feishu';
+      if (parsedV2.source === 'weixin') return 'weixin';
+    }
     if (key.startsWith('catscompany:')) return 'catscompany';
     if (key.startsWith('feishu:')) return 'feishu';
     if (key.startsWith('user:')) return 'weixin';

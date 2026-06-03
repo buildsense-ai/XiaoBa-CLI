@@ -71,8 +71,10 @@ describe('CatsCompany execution scope flow', () => {
       seq: 12,
     });
 
-    assert.deepEqual(sessionKeys, ['cc_user:usr7']);
+    assert.deepEqual(sessionKeys, ['session:v2:catscompany:p2p:p2p_7_43:agent:usr43']);
     assert.equal(handledTurns.length, 1);
+    assert.equal(handledTurns[0].options.executionScope.sessionKey, 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43');
+    assert.equal(handledTurns[0].options.executionScope.legacySessionKey, 'cc_user:usr7');
     assert.equal(handledTurns[0].options.executionScope.actorUserId, 'usr7');
     assert.equal(handledTurns[0].options.executionScope.agentId, 'usr43');
     assert.equal(handledTurns[0].options.executionScope.agentBodyId, 'body-main');
@@ -94,9 +96,12 @@ describe('CatsCompany execution scope flow', () => {
 
     assert.equal(handledTurns.length, 0);
     session.setBusy(false);
-    await (bot as any).drainMessageQueue('cc_user:usr8');
+    await (bot as any).drainMessageQueue('session:v2:catscompany:p2p:p2p_8_43:agent:usr43');
 
-    assert.deepEqual(sessionKeys, ['cc_user:usr8', 'cc_user:usr8']);
+    assert.deepEqual(sessionKeys, [
+      'session:v2:catscompany:p2p:p2p_8_43:agent:usr43',
+      'session:v2:catscompany:p2p:p2p_8_43:agent:usr43',
+    ]);
     assert.equal(handledTurns.length, 1);
     assert.equal(handledTurns[0].options.executionScope.actorUserId, 'usr8');
     assert.equal(handledTurns[0].options.executionScope.topicId, 'p2p_8_43');
@@ -116,7 +121,7 @@ describe('CatsCompany execution scope flow', () => {
       seq: 12,
     });
 
-    assert.deepEqual(sessionKeys, ['cc_group:grp_80']);
+    assert.deepEqual(sessionKeys, ['session:v2:catscompany:group:grp_80:agent:usr43']);
     assert.equal(handledTurns.length, 1);
     assert.equal(handledTurns[0].options.executionScope.topicType, 'group');
     assert.equal(handledTurns[0].options.executionScope.topicId, 'grp_80');

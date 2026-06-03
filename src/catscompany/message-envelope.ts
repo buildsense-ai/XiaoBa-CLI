@@ -1,4 +1,8 @@
 import type { ExecutionScope, IdentityTrustLevel, MessageEnvelope, MessageTopicType } from '../types/session-identity';
+import {
+  buildLegacyCatsCoSessionKey,
+  createSessionRoute,
+} from '../core/session-router';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -66,12 +70,26 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
     : catscoIdentity
       ? 'untrusted'
       : 'legacy_context';
-  const sessionKey = buildCatsCoSessionKey(resolvedTopicType, topicId, actorUserId);
+  const legacySessionKey = buildCatsCoSessionKey(resolvedTopicType, topicId, actorUserId);
+  const route = createSessionRoute({
+    source: 'catscompany',
+    topicId,
+    topicType: resolvedTopicType,
+    actorUserId,
+    agentId,
+    agentBodyId,
+    messageId: buildMessageId(topicId, channelSeq, metadata),
+    channelSeq,
+    identityTrust,
+    identitySource: isCanonicalTrusted ? 'metadata.catsco_identity' : undefined,
+    legacySessionKey,
+  });
 
   return {
     source: 'catscompany',
-    sessionKey,
-    messageId: buildMessageId(topicId, channelSeq, metadata),
+    sessionKey: route.sessionKey,
+    legacySessionKey,
+    messageId: route.messageId,
     topicId,
     topicType: resolvedTopicType,
     actorUserId,
@@ -91,6 +109,7 @@ export function createExecutionScope(envelope: MessageEnvelope): ExecutionScope 
   return {
     source: envelope.source,
     sessionKey: envelope.sessionKey,
+    legacySessionKey: envelope.legacySessionKey,
     topicId: envelope.topicId,
     topicType: envelope.topicType,
     actorUserId: envelope.actorUserId,
@@ -108,10 +127,7 @@ export function buildCatsCoSessionKey(
   topicId: string,
   actorUserId: string,
 ): string {
-  if (topicType === 'group') {
-    return `cc_group:${topicId}`;
-  }
-  return `cc_user:${actorUserId || 'unknown'}`;
+  return buildLegacyCatsCoSessionKey(topicType, topicId, actorUserId);
 }
 
 function buildMessageId(

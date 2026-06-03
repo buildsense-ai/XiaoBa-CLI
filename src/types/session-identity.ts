@@ -10,6 +10,7 @@ export type IdentityTrustLevel =
 export interface MessageEnvelope {
   source: MessageSource;
   sessionKey: string;
+  legacySessionKey?: string;
   messageId?: string;
   topicId: string;
   topicType: MessageTopicType;
@@ -28,6 +29,7 @@ export interface MessageEnvelope {
 export interface ExecutionScope {
   source: MessageSource;
   sessionKey: string;
+  legacySessionKey?: string;
   topicId: string;
   topicType: MessageTopicType;
   actorUserId: string;
@@ -37,6 +39,34 @@ export interface ExecutionScope {
   permissionsSource?: string;
   identityTrust: IdentityTrustLevel;
   isTrusted: boolean;
+}
+
+export interface SessionIdentitySnapshot {
+  source: MessageSource;
+  topicId: string;
+  topicType: MessageTopicType;
+  actorUserId: string;
+  agentId?: string;
+  agentBodyId?: string;
+  identityTrust: IdentityTrustLevel;
+  identitySource?: string;
+}
+
+export interface SessionRoute {
+  version: 2;
+  source: MessageSource;
+  sessionKey: string;
+  legacySessionKey?: string;
+  topicId: string;
+  topicType: MessageTopicType;
+  actorUserId: string;
+  agentId?: string;
+  agentBodyId?: string;
+  messageId?: string;
+  channelSeq?: number;
+  identityTrust: IdentityTrustLevel;
+  identitySource?: string;
+  identity: SessionIdentitySnapshot;
 }
 
 export type LocalFileGrantKind = 'catscompany_attachment';

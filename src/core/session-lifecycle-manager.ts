@@ -5,6 +5,7 @@ import { RuntimeFeedbackInbox } from './runtime-feedback-inbox';
 
 export interface SessionLifecycleManagerOptions {
   sessionKey: string;
+  legacySessionKey?: string;
   runtimeFeedbackInbox: RuntimeFeedbackInbox;
   sessionStore?: SessionStore;
 }
@@ -32,17 +33,18 @@ export class SessionLifecycleManager {
   }
 
   markRestoreFromStore(): boolean {
-    if (!this.sessionStore.hasSession(this.options.sessionKey)) {
+    const restoreKey = this.resolveExistingSessionKey();
+    if (!restoreKey) {
       this.pendingRestore = undefined;
       return false;
     }
-    const messages = this.sessionStore.loadContext(this.options.sessionKey);
+    const messages = this.sessionStore.loadContext(restoreKey);
     if (messages.length === 0) {
       this.pendingRestore = undefined;
       return false;
     }
     this.pendingRestore = messages;
-    Logger.info(`[会话 ${this.options.sessionKey}] 标记从 DB 恢复 ${messages.length} 条消息`);
+    Logger.info(`[会话 ${this.options.sessionKey}] 标记从 DB 恢复 ${messages.length} 条消息${restoreKey === this.options.sessionKey ? '' : ` (legacy: ${restoreKey})`}`);
     return true;
   }
 
@@ -64,6 +66,10 @@ export class SessionLifecycleManager {
   clear(): ResetSessionStateResult {
     this.sessionStore.deleteSession(this.options.sessionKey);
     this.sessionStore.deleteRuntimeState(this.options.sessionKey);
+    if (this.options.legacySessionKey && this.options.legacySessionKey !== this.options.sessionKey) {
+      this.sessionStore.deleteSession(this.options.legacySessionKey);
+      this.sessionStore.deleteRuntimeState(this.options.legacySessionKey);
+    }
     return this.reset();
   }
 
@@ -72,7 +78,12 @@ export class SessionLifecycleManager {
   }
 
   loadCurrentDirectory(): string | undefined {
-    return this.sessionStore.loadRuntimeState(this.options.sessionKey).currentDirectory;
+    const current = this.sessionStore.loadRuntimeState(this.options.sessionKey).currentDirectory;
+    if (current) return current;
+    if (!this.options.legacySessionKey || this.options.legacySessionKey === this.options.sessionKey) {
+      return undefined;
+    }
+    return this.sessionStore.loadRuntimeState(this.options.legacySessionKey).currentDirectory;
   }
 
   saveCurrentDirectory(currentDirectory: string): void {
@@ -90,5 +101,16 @@ export class SessionLifecycleManager {
 
   hasPendingRestore(): boolean {
     return !!this.pendingRestore;
+  }
+
+  private resolveExistingSessionKey(): string | undefined {
+    if (this.sessionStore.hasSession(this.options.sessionKey)) {
+      return this.options.sessionKey;
+    }
+    const legacy = this.options.legacySessionKey;
+    if (legacy && legacy !== this.options.sessionKey && this.sessionStore.hasSession(legacy)) {
+      return legacy;
+    }
+    return undefined;
   }
 }

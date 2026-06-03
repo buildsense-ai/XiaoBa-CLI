@@ -41,6 +41,14 @@ describe('surface prompt', () => {
     assert.equal(resolveSessionSurface('cc_user:shared-prefix', 'catscompany'), 'catscompany');
   });
 
+  test('resolves V2 session keys without relying on sessionType overrides', () => {
+    assert.equal(resolveSessionSurface('session:v2:feishu:p2p:ou_1'), 'feishu');
+    assert.equal(resolveSessionSurface('session:v2:weixin:p2p:ou_1'), 'weixin');
+    assert.equal(resolveSessionSurface('session:v2:catscompany:group:grp_1:agent:usr43'), 'catscompany');
+    assert.match(composeSurfacePrompt('session:v2:feishu:group:oc_1') || '', /\[surface:feishu:group\]/);
+    assert.match(composeSurfacePrompt('session:v2:feishu:p2p:ou_1') || '', /\[surface:feishu:private\]/);
+  });
+
   test('composes current Feishu private and group surface prompts', () => {
     const privatePrompt = composeSurfacePrompt('user:feishu-user');
     const groupPrompt = composeSurfacePrompt('group:feishu-group');
