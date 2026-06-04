@@ -7647,6 +7647,8 @@
         pendingRelayModelId=selectedModelId;
         renderCatsStatus();
         setRelayModelApplyBusy(true);
+        setCatsStatusMutationBusy(true);
+        invalidateCatsStatusRequests();
         setRelayModelApplyStatus('正在启用 CatsCo 中转模型（'+label+'）...','muted',source);
         const r=await fetch(API+'/api/cats/relay/model-config/apply',{
           method:'POST',
@@ -7663,6 +7665,7 @@
           if(ok){
             retrying=true;
             setRelayModelApplyBusy(false);
+            setCatsStatusMutationBusy(false);
             return enableCatsRelayModel(selectedModelId,{...options,rotateExisting:true});
           }
           setRelayModelApplyStatus('已取消。你也可以在 CatsCompany 中转站页面复制现有配置后手动填写。','muted',source);
@@ -7680,14 +7683,17 @@
         }
         pendingStartupSource='';
         pendingRelayModelId='';
-        await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchReadiness(),fetchCatsStatus()]);
+        await refreshCatsChatAfterMutation({focusInput:source==='chat'});
         const successMessage=data.message||('已启用 CatsCo 中转模型：'+(data.selectedModel?.label||label));
         setRelayModelApplyStatus(successMessage,'success',source);
         setModelSourceStatus(data.connectorRestarted||data.connectorStarted?'已写入并已请求 connector 使用新配置。':'已写入 CatsCo 中转模型配置。','success');
       }catch(e){
         setRelayModelApplyStatus('启用失败：'+formatDashboardApiError(e,'/api/cats/relay/model-config/apply'),'error',source);
       }finally{
-        if(!retrying)setRelayModelApplyBusy(false);
+        if(!retrying){
+          setCatsStatusMutationBusy(false);
+          setRelayModelApplyBusy(false);
+        }
       }
     }
 
@@ -7714,6 +7720,8 @@
         pendingRelayModelId='';
         renderCatsStatus();
         setRelayModelApplyBusy(true);
+        setCatsStatusMutationBusy(true);
+        invalidateCatsStatusRequests();
         setRelayModelApplyStatus('正在切换为自定义模型...','muted',source);
         const r=await fetch(API+'/api/model-source/custom/apply',{
           method:'POST',
@@ -7726,13 +7734,14 @@
         if(!r.ok||data.error)throw new Error(data.error||'切换自定义模型失败');
         pendingStartupSource='';
         pendingRelayModelId='';
-        await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchReadiness(),fetchCatsStatus()]);
+        await refreshCatsChatAfterMutation({focusInput:source==='chat'});
         const message=data.message||('已切换为自定义模型：'+(data.model||''));
         setRelayModelApplyStatus(message,'success',source);
         setModelSourceStatus(data.connectorRestarted||data.connectorStarted?'已请求 connector 使用自定义模型。':'已切换为自定义模型启动。','success');
       }catch(e){
         setRelayModelApplyStatus('切换失败：'+formatDashboardApiError(e,'/api/model-source/custom/apply'),'error',source);
       }finally{
+        setCatsStatusMutationBusy(false);
         setRelayModelApplyBusy(false);
       }
     }
@@ -8269,6 +8278,29 @@
       catsStatusMutationInFlight=Boolean(busy);
     }
 
+    function focusCatsMessageInputSoon(){
+      const focusInput=()=>{
+        const input=document.getElementById('cats-message-input');
+        if(input && !input.disabled){
+          input.focus({preventScroll:true});
+          autoResizeCatsMessageInput();
+        }
+      };
+      if(typeof requestAnimationFrame==='function')requestAnimationFrame(focusInput);
+      else setTimeout(focusInput,0);
+    }
+
+    async function refreshCatsChatAfterMutation(options={}){
+      await fetchDashboardSettings();
+      await fetchStatus();
+      await fetchCatsStatus({priority:true});
+      await fetchReadiness();
+      renderCatsStatus();
+      const stage=buildCatsChatStage();
+      if(stage.key==='ready' && options.focusInput!==false)focusCatsMessageInputSoon();
+      return stage;
+    }
+
     async function fetchCatsStatus(options={}){
       const priority=Boolean(options.priority);
       if(catsStatusMutationInFlight && !priority)return;
@@ -8470,6 +8502,8 @@
         btn.disabled = true;
         btn.textContent = '绑定中...';
       }
+      setCatsStatusMutationBusy(true);
+      invalidateCatsStatusRequests();
       const setupRelayModel=shouldSetupRelayOnCatsSetup();
       setCatsAction(setupRelayModel?`正在确认中转模型、绑定 ${name} 并启动 connector...`:`正在绑定 ${name} 并按当前自定义模型启动 connector...`);
 
@@ -8499,18 +8533,17 @@
           service: data.service,
         };
         closeBotSelector();
-        await fetchStatus();
-        await fetchCatsStatus({priority:true});
-        renderCatsStatus();
+        const stage=await refreshCatsChatAfterMutation({focusInput:true});
         const warningText=catsSetupWarningText(data);
         const readyMessage=data.message || `已绑定 ${name}。可以直接开始对话。`;
         setCatsAction(warningText?readyMessage+' 但有提示：'+warningText:readyMessage);
         pulsePetState('success', '已绑定', 1800);
-        await loadCatsMessages(true, { reset: true, forceBottom: true });
+        if(stage.key==='ready')await loadCatsMessages(true, { reset: true, forceBottom: true });
       } catch (e) {
         if(e.status===409 && e.action==='rotate_required'){
           const ok=confirm('你的 CatsCo 中转 Key 已存在，但当前无法读取明文。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');
           if(ok){
+            setCatsStatusMutationBusy(false);
             await bindCatsBot(botUid, botName, button, {...options, confirm:false, restoreText, rotateRelayKey:true});
             return;
           }
@@ -8523,6 +8556,7 @@
           btn.disabled = false;
           btn.textContent = restoreText;
         }
+        setCatsStatusMutationBusy(false);
       }
     }
 
@@ -8660,10 +8694,7 @@
         pendingStartupSource='';
         pendingRelayModelId='';
         catsState={...catsState,...data, connected:true, configured:true, botUid:data.bot?.uid||data.botUid, topicId:data.topicId, user:data.user, service:data.service};
-        await fetchStatus();
-        await fetchCatsStatus({priority:true});
-        renderCatsStatus();
-        const stage=buildCatsChatStage();
+        const stage=await refreshCatsChatAfterMutation({focusInput:true});
         const warningText=catsSetupWarningText(data);
         if(stage.key==='ready'){
           const readyMessage=data.connectorRestarted?'已重启 connector，可以直接开始对话。':'已连接。可以直接开始对话。';
