@@ -31,6 +31,7 @@ import {
   normalizeDeviceRpcToolResultForTransport,
   normalizeDeviceRpcToolResultPayload,
 } from '../tools/device-rpc-tool';
+import { formatPathForLog } from '../utils/log-redaction';
 
 interface PendingAttachment {
   fileName: string;
@@ -1376,15 +1377,16 @@ export class CatsCompanyBot {
 
         blocks.push({ type: 'text', text: attachmentReference });
         const imgBlock = await createImageBlock(att.localPath);
+        const logFile = formatPathForLog(att.localPath || att.fileName);
         if (imgBlock) {
           blocks.push({
             ...imgBlock,
             filePath: att.localFileGrant?.attachmentRef || `[CatsCo attachment: ${att.fileName}]`,
           } as any);
-          Logger.info(`[CatsCo] vision_direct model=${modelName} file=${att.fileName} bytes_base64=${((imgBlock as any).source as any)?.data?.length || 0}`);
+          Logger.info(`[CatsCo] vision_direct model=${modelName} file=${logFile} bytes_base64=${((imgBlock as any).source as any)?.data?.length || 0}`);
         } else {
           currentImageRefs.push(attachmentReference);
-          Logger.warning(`[CatsCo] vision_fallback_read_file model=${modelName} file=${att.fileName} reason=image_block_create_failed`);
+          Logger.warning(`[CatsCo] vision_fallback_read_file model=${modelName} file=${logFile} reason=image_block_create_failed`);
         }
       } else {
         blocks.push({ type: 'text', text: attachmentReference });

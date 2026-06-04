@@ -162,9 +162,9 @@ interface RelayModelConfig {
   quotaClass?: string;
   contextWindowTokens?: number;
   capabilities?: {
-    tool_calling: boolean;
-    vision: boolean;
-    streaming: boolean;
+    tool_calling?: boolean;
+    vision?: boolean;
+    streaming?: boolean;
   };
 }
 
@@ -874,11 +874,25 @@ function relayModelCapabilitiesPayload(item: any, profile?: RelayModelProfile): 
 
   const capabilities = item?.capabilities;
   if (!capabilities || typeof capabilities !== 'object') return undefined;
-  return {
-    tool_calling: Boolean(capabilities.tool_calling ?? capabilities.toolCalling),
-    vision: Boolean(capabilities.vision),
-    streaming: Boolean(capabilities.streaming),
-  };
+  const payload: RelayModelConfig['capabilities'] = {};
+  const toolCalling = optionalBoolean(capabilities.tool_calling ?? capabilities.toolCalling);
+  const vision = optionalBoolean(capabilities.vision);
+  const streaming = optionalBoolean(capabilities.streaming);
+  if (toolCalling !== undefined) payload.tool_calling = toolCalling;
+  if (vision !== undefined) payload.vision = vision;
+  if (streaming !== undefined) payload.streaming = streaming;
+  return Object.keys(payload).length > 0 ? payload : undefined;
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value !== 0;
+  if (typeof value === 'string') {
+    const text = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'y', 'on'].includes(text)) return true;
+    if (['false', '0', 'no', 'n', 'off'].includes(text)) return false;
+  }
+  return undefined;
 }
 
 function normalizeRelayModelConfig(item: any, config: any, index: number): RelayModelConfig | null {

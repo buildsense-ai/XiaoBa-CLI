@@ -1265,6 +1265,57 @@ describe('dashboard typed settings API', () => {
     }
   });
 
+  test('GET /cats/relay/model-config preserves partial unknown relay capabilities', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    catsApp.get('/api/relay/config', (_req, res) => {
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'custom-vision',
+        self_service_enabled: false,
+        endpoints: [
+          { protocol: 'Anthropic-compatible', base_url: 'https://relay.catsco.cc/anthropic' },
+        ],
+        models: [
+          {
+            id: 'custom-vision',
+            label: 'Custom Vision',
+            model: 'custom-vision',
+            enabled: true,
+            default: true,
+            capabilities: {
+              vision: 'true',
+              streaming: 0,
+            },
+          },
+        ],
+      });
+    });
+    const catsServer = await listen(catsApp);
+    const address = catsServer.address();
+    if (!address || typeof address === 'string') throw new Error('cats server did not bind');
+
+    try {
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config?modelId=custom-vision`);
+      const text = await response.text();
+      const data = JSON.parse(text) as any;
+
+      assert.equal(response.status, 200, text);
+      assert.deepStrictEqual(data.selectedModel.capabilities, {
+        vision: true,
+        streaming: false,
+      });
+      assert.equal('tool_calling' in data.selectedModel.capabilities, false);
+      assert.deepStrictEqual(data.models[0].capabilities, data.selectedModel.capabilities);
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
   test('POST /cats/relay/model-config/apply sanitizes upstream error payloads', async () => {
     const catsApp = express();
     catsApp.use(express.json());
