@@ -90,6 +90,18 @@ export type ToolExecutionResult =
   | { ok: true; content: string | import('./index').ContentBlock[] }
   | { ok: false; errorCode: string; message: string; retryable?: boolean };
 
+export interface DeviceRpcToolRequest {
+  toolName: string;
+  operation: ScopedDeviceGrant['operations'][number];
+  args: Record<string, unknown>;
+  grant: ScopedDeviceGrant;
+  timeoutMs?: number;
+}
+
+export interface DeviceRpcTransport {
+  executeTool(request: DeviceRpcToolRequest): Promise<ToolExecutionResult>;
+}
+
 export type ToolErrorCode =
   | 'TOOL_NOT_FOUND'
   | 'INVALID_TOOL_ARGUMENTS'
@@ -156,6 +168,8 @@ export interface ToolExecutionContext {
   deviceGrants?: ScopedDeviceGrant[];
   /** 服务端为当前 turn 选定的用户设备，或明确要求先选择设备。 */
   deviceSelection?: ScopedDeviceSelection;
+  /** CatsCo 远程设备 RPC 通道。工具只能通过窄接口请求后端选定设备执行。 */
+  deviceRpc?: DeviceRpcTransport;
   /** 当前 turn 已授权的本地文件资源，例如用户本轮上传的 CatsCo 附件缓存。 */
   localFileGrants?: ScopedLocalFileGrant[];
 }

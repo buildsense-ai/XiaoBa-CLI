@@ -3,7 +3,22 @@ import type { ToolErrorCode, ToolExecutionContext } from '../types/tool';
 import { resolveDeviceGrant } from '../core/device-grants';
 
 export type ToolGatewayDecision =
-  | { ok: true; grant?: ScopedDeviceGrant }
+  | {
+      ok: true;
+      mode: 'local';
+      grant?: ScopedDeviceGrant;
+      targetDeviceId?: string;
+      targetDeviceDisplayName?: string;
+    }
+  | {
+      ok: true;
+      mode: 'remote';
+      grant: ScopedDeviceGrant;
+      targetDeviceId: string;
+      targetDeviceDisplayName?: string;
+      targetDeviceBodyId?: string;
+      targetDeviceInstallationId?: string;
+    }
   | { ok: false; errorCode: ToolErrorCode; message: string };
 
 export interface ResolveToolGatewayAccessOptions {
@@ -17,6 +32,8 @@ export interface CatsCoVisiblePathOptions {
   fallback?: string;
   preserveRelative?: boolean;
 }
+
+const REMOTE_READONLY_OPERATIONS = new Set<DeviceGrantOperation>(['read_file', 'glob', 'grep']);
 
 export function isCatsCoToolGatewayContext(context: ToolExecutionContext): boolean {
   return context.surface === 'catscompany' || context.executionScope?.source === 'catscompany';
@@ -56,7 +73,7 @@ export function resolveToolGatewayAccess(
   options: ResolveToolGatewayAccessOptions,
 ): ToolGatewayDecision {
   if (!isCatsCoToolGatewayContext(context)) {
-    return { ok: true };
+    return { ok: true, mode: 'local' };
   }
 
   if (options.operation === 'execute_shell' && !options.allowCatsCoShell) {
@@ -80,7 +97,15 @@ export function resolveToolGatewayAccess(
     return denied(['当前运行体缺少 CatsCo 本机设备绑定，已阻止本地设备操作。'], options.targetLabel);
   }
 
-  const selectedTarget = resolveBackendSelectedDevice(context.deviceSelection, localDevice, options.targetLabel);
+  const selectionScope = validateSelectionScope(context.deviceSelection, scope, options.targetLabel);
+  if (!selectionScope.ok) return selectionScope;
+
+  const selectedTarget = resolveBackendSelectedDevice(
+    context.deviceSelection,
+    localDevice,
+    options.operation,
+    options.targetLabel,
+  );
   if (!selectedTarget.ok) return selectedTarget;
 
   const targetDeviceId = selectedTarget.deviceId || localDevice.deviceId || localDevice.installationId || localDevice.bodyId;
@@ -96,6 +121,31 @@ export function resolveToolGatewayAccess(
   }
 
   const grant = decision.grant;
+  if (selectedTarget.mode === 'remote') {
+    if (!REMOTE_READONLY_OPERATIONS.has(options.operation)) {
+      return denied([
+        `后端选定的用户设备不是当前运行体，但 ${options.operation} 还没有开放远程执行。`,
+        '当前 PR 只开放 read_file / glob / grep 三个只读远程工具。',
+      ], options.targetLabel);
+    }
+    if (!context.deviceRpc) {
+      return denied([
+        '后端选定的用户设备不是当前运行体，且当前运行体没有配置远程设备 RPC 通道。',
+        '已阻止本地 fallback，避免误操作当前设备或串设备。',
+        selectedTarget.displayName ? `Selected device: ${selectedTarget.displayName}` : '',
+      ], options.targetLabel);
+    }
+    return {
+      ok: true,
+      mode: 'remote',
+      grant,
+      targetDeviceId: selectedTarget.deviceId,
+      targetDeviceDisplayName: selectedTarget.displayName,
+      targetDeviceBodyId: selectedTarget.bodyId,
+      targetDeviceInstallationId: selectedTarget.installationId,
+    };
+  }
+
   const mismatches: string[] = [];
   if (grant.deviceBodyId && localDevice.bodyId && grant.deviceBodyId !== localDevice.bodyId) {
     mismatches.push('device body');
@@ -110,28 +160,54 @@ export function resolveToolGatewayAccess(
     ], options.targetLabel);
   }
 
-  return { ok: true, grant };
+  return {
+    ok: true,
+    mode: 'local',
+    grant,
+    targetDeviceId,
+    targetDeviceDisplayName: selectedTarget.displayName,
+  };
 }
 
 type SelectedDeviceDecision =
-  | { ok: true; deviceId?: string }
+  | {
+      ok: true;
+      mode: 'local';
+      deviceId?: string;
+      displayName?: string;
+    }
+  | {
+      ok: true;
+      mode: 'remote';
+      deviceId: string;
+      displayName?: string;
+      bodyId?: string;
+      installationId?: string;
+    }
   | { ok: false; errorCode: ToolErrorCode; message: string };
 
 function resolveBackendSelectedDevice(
   selection: ScopedDeviceSelection | undefined,
   localDevice: ScopedLocalDeviceGrant,
+  operation: DeviceGrantOperation,
   targetLabel?: string,
 ): SelectedDeviceDecision {
-  if (!selection) return { ok: true };
+  if (!selection) {
+    return {
+      ok: true,
+      mode: 'local',
+      deviceId: localDevice.deviceId || localDevice.installationId || localDevice.bodyId,
+    };
+  }
 
   if (selection.status === 'needs_selection') {
-    return denied([
+    return selectedDenied([
       '后端尚未选定要操作的用户设备，已阻止本地设备操作。',
       '请让用户从可用设备中选择一个设备名后再继续。',
     ], targetLabel);
   }
   if (selection.status === 'unavailable') {
-    return denied([
+    return selectedDenied([
       '当前用户没有可用的在线设备授权，已阻止本地设备操作。',
       '请让用户打开并授权目标设备后再继续。',
     ], targetLabel);
@@ -139,17 +215,63 @@ function resolveBackendSelectedDevice(
 
   const selectedDeviceId = selection.selectedDeviceId;
   if (!selectedDeviceId) {
-    return denied(['后端设备选择缺少 selectedDeviceId，已阻止本地设备操作。'], targetLabel);
+    return selectedDenied(['后端设备选择缺少 selectedDeviceId，已阻止本地设备操作。'], targetLabel);
   }
 
-  if (!matchesLocalDevice(selection, localDevice)) {
-    return denied([
-      '后端选定的用户设备不是当前运行体，已阻止本地设备操作以避免串设备。',
+  if (Array.isArray(selection.selectedDeviceOperations)
+    && selection.selectedDeviceOperations.length > 0
+    && !selection.selectedDeviceOperations.includes(operation)) {
+    return selectedDenied([
+      `后端选定设备没有声明支持 ${operation}，已阻止设备工具调用。`,
       selection.selectedDeviceDisplayName ? `Selected device: ${selection.selectedDeviceDisplayName}` : '',
     ], targetLabel);
   }
 
-  return { ok: true, deviceId: selectedDeviceId };
+  if (matchesLocalDevice(selection, localDevice)) {
+    return {
+      ok: true,
+      mode: 'local',
+      deviceId: selectedDeviceId,
+      displayName: selection.selectedDeviceDisplayName,
+    };
+  }
+
+  return {
+    ok: true,
+    mode: 'remote',
+    deviceId: selectedDeviceId,
+    displayName: selection.selectedDeviceDisplayName,
+    bodyId: selection.selectedDeviceBodyId,
+    installationId: selection.selectedDeviceInstallationId,
+  };
+}
+
+function selectedDenied(lines: string[], targetLabel?: string): SelectedDeviceDecision {
+  return denied(lines, targetLabel) as Extract<SelectedDeviceDecision, { ok: false }>;
+}
+
+function validateSelectionScope(
+  selection: ScopedDeviceSelection | undefined,
+  scope: NonNullable<ToolExecutionContext['executionScope']>,
+  targetLabel?: string,
+): ToolGatewayDecision {
+  if (!selection) return { ok: true, mode: 'local' };
+  if (selection.identityTrust !== 'server_canonical') {
+    return denied(['后端设备选择不是服务端可信身份生成的，已阻止设备工具调用。'], targetLabel);
+  }
+  const mismatches = [
+    ['source', selection.source, scope.source],
+    ['sessionKey', selection.sessionKey, scope.sessionKey],
+    ['topicId', selection.topicId, scope.topicId],
+    ['topicType', selection.topicType, scope.topicType],
+    ['actorUserId', selection.actorUserId, scope.actorUserId],
+    ['agentId', selection.agentId, scope.agentId],
+  ].filter(([, selectionValue, scopeValue]) => selectionValue !== scopeValue);
+  if (mismatches.length === 0) return { ok: true, mode: 'local' };
+  return denied([
+    '后端设备选择与当前执行身份不一致，已阻止设备工具调用以避免串用户或串会话。',
+    ...mismatches.map(([field, selectionValue, scopeValue]) => `${field}: selection=${selectionValue || '(empty)'} scope=${scopeValue || '(empty)'}`),
+  ], targetLabel);
 }
 
 function matchesLocalDevice(selection: ScopedDeviceSelection, localDevice: ScopedLocalDeviceGrant): boolean {

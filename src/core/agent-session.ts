@@ -12,7 +12,7 @@ import * as path from 'path';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
-import { ChannelCallbacks } from '../types/tool';
+import { ChannelCallbacks, DeviceRpcTransport } from '../types/tool';
 import {
   SessionSkillRuntime,
   SkillReloadHandler,
@@ -88,6 +88,8 @@ export interface HandleMessageOptions {
   deviceGrants?: ScopedDeviceGrant[];
   /** 服务端为当前 turn 选定的用户设备。 */
   deviceSelection?: ScopedDeviceSelection;
+  /** 当前 turn 可用的远程设备 RPC 通道。 */
+  deviceRpc?: DeviceRpcTransport;
   /** 当前 turn 已授权的本地文件资源。 */
   localFileGrants?: ScopedLocalFileGrant[];
   /** 当前 turn 专属、给 agent 可见的运行时反馈 */
@@ -395,6 +397,7 @@ export class AgentSession {
       let localDeviceGrant: ScopedLocalDeviceGrant | undefined;
       let deviceGrants: ScopedDeviceGrant[] | undefined;
       let deviceSelection: ScopedDeviceSelection | undefined;
+      let deviceRpc: DeviceRpcTransport | undefined;
       let localFileGrants: ScopedLocalFileGrant[] | undefined;
       let runtimeFeedbackInputs: RuntimeFeedbackInput[] = [];
       let pendingUserInputProvider: PendingUserInputProvider | undefined;
@@ -407,6 +410,7 @@ export class AgentSession {
           || 'localDeviceGrant' in callbacksOrOptions
           || 'deviceGrants' in callbacksOrOptions
           || 'deviceSelection' in callbacksOrOptions
+          || 'deviceRpc' in callbacksOrOptions
           || 'localFileGrants' in callbacksOrOptions
           || 'callbacks' in callbacksOrOptions
           || 'runtimeFeedback' in callbacksOrOptions
@@ -421,6 +425,7 @@ export class AgentSession {
           localDeviceGrant = opts.localDeviceGrant;
           deviceGrants = opts.deviceGrants;
           deviceSelection = opts.deviceSelection;
+          deviceRpc = opts.deviceRpc;
           localFileGrants = opts.localFileGrants;
           runtimeFeedbackInputs = opts.runtimeFeedback || [];
           pendingUserInputProvider = opts.pendingUserInputProvider;
@@ -468,6 +473,7 @@ export class AgentSession {
           localDeviceGrant,
           deviceGrants,
           deviceSelection,
+          deviceRpc,
           localFileGrants,
           pendingUserInputProvider,
           abortSignal: this.activeAbortController.signal,
