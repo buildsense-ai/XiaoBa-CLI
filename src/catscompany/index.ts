@@ -1,4 +1,4 @@
-import { CatsClient, MessageContext } from './client';
+import { CatsClient, MessageContext, type CatsDeviceRpcMessage } from './client';
 import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo } from './types';
 import { MessageSender } from './message-sender';
 import { extractContentBlocks } from './content-blocks';
@@ -116,11 +116,24 @@ export class CatsCompanyBot {
   };
 
   constructor(config: CatsCompanyConfig) {
+    const localDeviceId = config.installationId || config.bodyId;
+    const deviceRegistration = localDeviceId
+      ? {
+          device_id: localDeviceId,
+          display_name: config.deviceName || process.env.COMPUTERNAME || process.env.HOSTNAME || hostname() || localDeviceId,
+          body_id: config.bodyId,
+          installation_id: config.installationId || config.bodyId,
+          status: 'online' as const,
+          capabilities: ['read_file', 'send_file', 'glob', 'grep'],
+        }
+      : undefined;
+
     this.bot = new CatsClient({
       serverUrl: config.serverUrl,
       apiKey: config.apiKey,
       bodyId: config.bodyId,
       installationId: config.installationId,
+      deviceRegistration,
       httpBaseUrl: config.httpBaseUrl,
     });
 
@@ -130,17 +143,7 @@ export class CatsCompanyBot {
       installationId: config.installationId,
       deviceId: config.installationId || config.bodyId,
     });
-    if (config.bodyId || config.installationId) {
-      const deviceId = config.installationId || config.bodyId!;
-      this.deviceRegistration = {
-        device_id: deviceId,
-        display_name: config.deviceName || process.env.COMPUTERNAME || process.env.HOSTNAME || hostname() || deviceId,
-        body_id: config.bodyId,
-        installation_id: config.installationId || config.bodyId,
-        status: 'online',
-        capabilities: ['read_file', 'send_file', 'glob', 'grep'],
-      };
-    }
+    this.deviceRegistration = deviceRegistration;
 
     const runtime = createCatsCompanyRuntime(config.sessionTTL);
     this.runtime = runtime;
@@ -186,6 +189,10 @@ export class CatsCompanyBot {
       await this.onMessage(ctx);
     });
 
+    this.bot.on('device_rpc_request', async (request: CatsDeviceRpcMessage) => {
+      await this.handleDeviceRpcRequest(request);
+    });
+
     this.bot.on('error', (err: Error) => {
       Logger.error(`CatsCo 连接错误: ${err.message}`);
     });
@@ -215,6 +222,67 @@ export class CatsCompanyBot {
     if (!this.deviceRegistrationTimer) return;
     clearInterval(this.deviceRegistrationTimer);
     this.deviceRegistrationTimer = undefined;
+  }
+
+  private async handleDeviceRpcRequest(request: CatsDeviceRpcMessage): Promise<void> {
+    const requestID = request.request_id;
+    if (!requestID) return;
+
+    const targetError = this.validateDeviceRpcTarget(request);
+    const isPing = request.operation === 'ping' || request.tool_name === 'ping';
+    const error = targetError || (isPing
+      ? undefined
+      : {
+          code: 'unsupported_operation',
+          message: 'CatsCo Device RPC transport is connected, but local tool execution is not enabled for this operation yet.',
+        });
+
+    try {
+      await this.bot.sendDeviceRpcResult({
+        request_id: requestID,
+        grant_id: request.grant_id,
+        session_key: request.session_key,
+        topic_id: request.topic_id,
+        topic_type: request.topic_type,
+        actor_user_id: request.actor_user_id,
+        agent_id: request.agent_id,
+        agent_body_id: request.agent_body_id,
+        device_id: this.localDeviceGrant?.deviceId || request.device_id,
+        device_body_id: this.localDeviceGrant?.bodyId || request.device_body_id,
+        device_installation_id: this.localDeviceGrant?.installationId || request.device_installation_id,
+        operation: request.operation,
+        tool_name: request.tool_name,
+        result: error ? undefined : { ok: true, pong: true },
+        error,
+      });
+    } catch (err: any) {
+      Logger.warning(`[CatsCompany] Device RPC result 发送失败: request=${requestID}, error=${err?.message || err}`);
+    }
+  }
+
+  private validateDeviceRpcTarget(request: CatsDeviceRpcMessage): { code: string; message: string } | undefined {
+    if (!this.localDeviceGrant) {
+      return { code: 'device_not_bound', message: 'Current runtime is not bound to a CatsCo local device.' };
+    }
+    if (typeof request.expires_at === 'number' && Date.now() > request.expires_at) {
+      return { code: 'request_expired', message: 'Device RPC request has expired.' };
+    }
+    if (request.device_id && this.localDeviceGrant.deviceId) {
+      return request.device_id === this.localDeviceGrant.deviceId
+        ? undefined
+        : { code: 'target_device_mismatch', message: 'Device RPC target device_id does not match this local runtime.' };
+    }
+    if (request.device_installation_id && this.localDeviceGrant.installationId) {
+      return request.device_installation_id === this.localDeviceGrant.installationId
+        ? undefined
+        : { code: 'target_device_mismatch', message: 'Device RPC target installation_id does not match this local runtime.' };
+    }
+    if (request.device_body_id) {
+      return request.device_body_id === this.localDeviceGrant.bodyId
+        ? undefined
+        : { code: 'target_device_mismatch', message: 'Device RPC target body_id does not match this local runtime.' };
+    }
+    return { code: 'target_device_mismatch', message: 'Device RPC target does not match this local runtime.' };
   }
 
   // ─── 构建 ChannelCallbacks ──────────────────────
