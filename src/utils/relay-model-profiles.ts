@@ -68,7 +68,7 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
     model: 'deepseek-v4-flash',
     family: 'deepseek',
     quotaClass: 'flash-low',
-    preferredProvider: 'openai',
+    preferredProvider: 'anthropic',
     contextWindowTokens: 1_000_000,
     capabilities: {
       toolCalling: true,
@@ -82,7 +82,7 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
     model: 'glm-5.1',
     family: 'glm',
     quotaClass: 'standard',
-    preferredProvider: 'openai',
+    preferredProvider: 'anthropic',
     contextWindowTokens: 200_000,
     capabilities: {
       toolCalling: true,
