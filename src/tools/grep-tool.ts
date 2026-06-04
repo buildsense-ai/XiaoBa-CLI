@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { isReadPathAllowed } from '../utils/safety';
+import { formatCatsCoVisiblePath, redactCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
 
 const VCS_DIRECTORIES_TO_EXCLUDE = ['.git', '.svn', '.hg', '.bzr'] as const;
 const DEFAULT_LIMIT = 250;
@@ -109,11 +110,21 @@ export class GrepTool implements Tool {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
     }
 
+    const gateway = resolveToolGatewayAccess(context, {
+      toolName: this.definition.name,
+      operation: 'grep',
+      targetLabel: searchPath || '.',
+    });
+    if (!gateway.ok) {
+      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
+    }
+    const visibleSearchPath = formatCatsCoVisiblePath(context, searchPath || '.', { preserveRelative: true });
+
     // 按优先级尝试各个 fallback
     const fallbacks = [
-      { name: 'ripgrep (rg)', fn: () => this.executeWithRipgrep(args, resolvedSearchPath, context) },
-      { name: 'system grep', fn: () => this.executeWithSystemGrep(args, resolvedSearchPath, context) },
-      { name: 'Node.js glob', fn: () => this.executeWithNodeJS(args, resolvedSearchPath, context) },
+      { name: 'ripgrep (rg)', fn: () => this.executeWithRipgrep(args, resolvedSearchPath, context, visibleSearchPath) },
+      { name: 'system grep', fn: () => this.executeWithSystemGrep(args, resolvedSearchPath, context, visibleSearchPath) },
+      { name: 'Node.js glob', fn: () => this.executeWithNodeJS(args, resolvedSearchPath, context, visibleSearchPath) },
     ];
 
     let lastError: Error | null = null;
@@ -135,11 +146,12 @@ export class GrepTool implements Tool {
     }
 
     // 所有 fallback 都失败
-    const errorMsg = lastError?.message || '所有搜索方法都失败了';
+    const rawErrorMsg = lastError?.message || '所有搜索方法都失败了';
+    const errorMsg = redactCatsCoVisiblePath(context, rawErrorMsg, resolvedSearchPath, visibleSearchPath);
     return { ok: false, errorCode: 'EXECUTION_ERROR', message: errorMsg };
   }
 
-  private async executeWithRipgrep(args: any, searchPath: string, context: ToolExecutionContext): Promise<FallbackResult> {
+  private async executeWithRipgrep(args: any, searchPath: string, context: ToolExecutionContext, visibleSearchPath?: string): Promise<FallbackResult> {
     const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
     const rgArgs: string[] = ['--color=never', '--no-heading', '--hidden'];
 
@@ -159,11 +171,11 @@ export class GrepTool implements Tool {
 
     try {
       const output = execFileSync('rg', rgArgs, { cwd: context.workingDirectory, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] }) as string;
-      return { content: this.processOutput(output, args, context) };
+      return { content: this.processOutput(output, args, context, visibleSearchPath) };
     } catch (error: any) {
       if (error.status === 1) {
         // 无匹配，返回格式化的"未找到"
-        return { content: this.formatNoMatch(pattern, originalPath, globPattern, fileType) };
+        return { content: this.formatNoMatch(pattern, visibleSearchPath ?? originalPath, globPattern, fileType) };
       }
       // exit code 2 或其他错误，抛出让 execute 统一处理
       const errorMsg = error.stderr || `rg 执行失败 (exit ${error.status})`;
@@ -171,7 +183,7 @@ export class GrepTool implements Tool {
     }
   }
 
-  private async executeWithSystemGrep(args: any, searchPath: string, context: ToolExecutionContext): Promise<FallbackResult> {
+  private async executeWithSystemGrep(args: any, searchPath: string, context: ToolExecutionContext, visibleSearchPath?: string): Promise<FallbackResult> {
     const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
     const grepArgs: string[] = [];
 
@@ -194,17 +206,17 @@ export class GrepTool implements Tool {
         processedOutput = lines.filter(line => globRegex.test(path.basename(line.split(':')[0]))).join('\n');
       }
 
-      return { content: this.processOutput(processedOutput, args, context) };
+      return { content: this.processOutput(processedOutput, args, context, visibleSearchPath) };
     } catch (error: any) {
       if (error.status === 1) {
-        return { content: this.formatNoMatch(pattern, originalPath, globPattern, fileType) };
+        return { content: this.formatNoMatch(pattern, visibleSearchPath ?? originalPath, globPattern, fileType) };
       }
       const errorMsg = error.stderr || `grep 执行失败 (exit ${error.status})`;
       throw new Error(errorMsg);
     }
   }
 
-  private async executeWithNodeJS(args: any, searchPath: string, context: ToolExecutionContext): Promise<FallbackResult> {
+  private async executeWithNodeJS(args: any, searchPath: string, context: ToolExecutionContext, visibleSearchPath?: string): Promise<FallbackResult> {
     const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
 
     if (!fs.existsSync(searchPath)) {
@@ -245,10 +257,10 @@ export class GrepTool implements Tool {
     };
 
     walkDir(searchPath);
-    return { content: this.processOutput(results.join('\n'), args, context) };
+    return { content: this.processOutput(results.join('\n'), args, context, visibleSearchPath) };
   }
 
-  private processOutput(output: string, args: any, context: ToolExecutionContext): string {
+  private processOutput(output: string, args: any, context: ToolExecutionContext, visibleSearchPath?: string): string {
     const { pattern, path: originalPath, glob: globPattern, type: fileType, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
     const allLines = output.trim().split('\n').filter(Boolean);
     const { items: limitedLines, appliedLimit } = applyHeadLimit(allLines, limit, offset);
@@ -276,7 +288,7 @@ export class GrepTool implements Tool {
       result.numFiles = result.filenames.length;
     }
 
-    return this.formatResult(result, pattern, originalPath, globPattern, fileType);
+    return this.formatResult(result, pattern, visibleSearchPath ?? originalPath, globPattern, fileType);
   }
 
   private formatNoMatch(pattern: string, searchPath: string | undefined, globPattern: string | undefined, fileType: string | undefined): string {

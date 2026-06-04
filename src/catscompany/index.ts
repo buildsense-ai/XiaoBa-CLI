@@ -136,7 +136,7 @@ export class CatsCompanyBot {
         body_id: config.bodyId,
         installation_id: config.installationId || config.bodyId,
         status: 'online',
-        capabilities: ['read_file', 'send_file'],
+        capabilities: ['read_file', 'send_file', 'glob', 'grep'],
       };
     }
 
