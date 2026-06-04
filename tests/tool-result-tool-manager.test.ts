@@ -9,6 +9,8 @@ import * as fs from 'fs';
 import { ToolManager } from '../src/tools/tool-manager';
 import type { ExecutionScope } from '../src/types/session-identity';
 
+const ONE_PIXEL_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+
 describe('ToolManager - ToolExecutionResult 统一处理', () => {
   let manager: ToolManager;
   let testRoot: string;
@@ -113,6 +115,46 @@ describe('ToolManager - ToolExecutionResult 统一处理', () => {
       else process.env.CATSCOMPANY_API_KEY = previousApiKey;
       if (previousReaderApiKey === undefined) delete process.env.READER_PROXY_API_KEY;
       else process.env.READER_PROXY_API_KEY = previousReaderApiKey;
+    }
+  });
+
+  test('read_file returns a direct image block for MiniMax M3 relay model', async () => {
+    const previousConfigPath = process.env.XIAOBA_CONFIG_PATH;
+    const previousProvider = process.env.GAUZ_LLM_PROVIDER;
+    const previousApiBase = process.env.GAUZ_LLM_API_BASE;
+    const previousModel = process.env.GAUZ_LLM_MODEL;
+    process.env.XIAOBA_CONFIG_PATH = path.join(testRoot, 'missing-config.json');
+    process.env.GAUZ_LLM_PROVIDER = 'anthropic';
+    process.env.GAUZ_LLM_API_BASE = 'https://relay.catsco.cc/anthropic';
+    process.env.GAUZ_LLM_MODEL = 'MiniMax-M3';
+
+    try {
+      const filePath = path.join(testRoot, 'm3-image.png');
+      fs.writeFileSync(filePath, Buffer.from(ONE_PIXEL_PNG_BASE64, 'base64'));
+
+      const result = await manager.executeTool(
+        { id: 't2_m3_img', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ file_path: filePath }) } },
+        [{ role: 'user', content: '帮我看看图里有什么' }],
+      );
+
+      assert.strictEqual(result.ok, true);
+      const content = result.content as any;
+      assert.strictEqual(content._imageForNewMessage, true);
+      assert.strictEqual(content.filePath, filePath);
+      assert.strictEqual(content.imageBlock.type, 'image');
+      assert.strictEqual(content.imageBlock.source.type, 'base64');
+      assert.strictEqual(content.imageBlock.source.media_type, 'image/jpeg');
+      assert.ok(content.imageBlock.source.data.length > 0);
+      assert.strictEqual(result.errorCode, undefined);
+    } finally {
+      if (previousConfigPath === undefined) delete process.env.XIAOBA_CONFIG_PATH;
+      else process.env.XIAOBA_CONFIG_PATH = previousConfigPath;
+      if (previousProvider === undefined) delete process.env.GAUZ_LLM_PROVIDER;
+      else process.env.GAUZ_LLM_PROVIDER = previousProvider;
+      if (previousApiBase === undefined) delete process.env.GAUZ_LLM_API_BASE;
+      else process.env.GAUZ_LLM_API_BASE = previousApiBase;
+      if (previousModel === undefined) delete process.env.GAUZ_LLM_MODEL;
+      else process.env.GAUZ_LLM_MODEL = previousModel;
     }
   });
 

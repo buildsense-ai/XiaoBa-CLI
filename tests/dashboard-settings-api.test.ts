@@ -782,6 +782,73 @@ describe('dashboard typed settings API', () => {
     }
   });
 
+  test('POST /cats/relay/model-config/apply normalizes known relay model aliases before writing startup config', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    catsApp.get('/api/relay/config', (_req, res) => {
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'minimax-m3',
+        self_service_enabled: true,
+        endpoints: [
+          { protocol: 'Anthropic-compatible', base_url: 'https://relay.catsco.cc/anthropic' },
+        ],
+        models: [
+          {
+            id: 'minimax-m3',
+            label: 'MiniMax M3',
+            model: 'minimax-m3',
+            enabled: true,
+            default: true,
+          },
+        ],
+      });
+    });
+    catsApp.get('/api/relay/key', (_req, res) => {
+      res.json({ configured: false });
+    });
+    catsApp.post('/api/relay/key', (_req, res) => {
+      res.json({
+        key: {
+          id: 'vk-m3',
+          name: 'CatsCo user 38',
+          prefix: 'sk-bf-m3',
+          state: 'active',
+          key: 'sk-bf-m3-secret',
+        },
+      });
+    });
+    const catsServer = await listen(catsApp);
+    const address = catsServer.address();
+    if (!address || typeof address === 'string') throw new Error('cats server did not bind');
+
+    try {
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelId: 'minimax-m3' }),
+      });
+      const text = await response.text();
+      const data = JSON.parse(text) as any;
+      assert.equal(response.status, 200, text);
+      const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+      assert.equal(data.model, 'MiniMax-M3');
+      assert.equal(data.selectedModel.model, 'MiniMax-M3');
+      assert.equal(data.selectedModel.id, 'minimax-m3');
+      assert.equal(data.selectedModel.capabilities.vision, true);
+      assert.equal(parsed.GAUZ_LLM_MODEL, 'MiniMax-M3');
+      assert.equal(parsed.CATSCO_RELAY_LLM_MODEL, 'MiniMax-M3');
+      assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '1000000');
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
   test('POST /cats/relay/model-config/apply locks model catalog entries to the relay Anthropic endpoint', async () => {
     const catsApp = express();
     catsApp.use(express.json());

@@ -30,7 +30,7 @@ import {
   updateDashboardSettings,
   writeDashboardEnvUpdates,
 } from '../settings';
-import { RELAY_MODEL_PROFILES, findRelayModelProfile } from '../../utils/relay-model-profiles';
+import { RELAY_MODEL_PROFILES, findRelayModelProfile, type RelayModelProfile } from '../../utils/relay-model-profiles';
 import {
   RuntimeProfileEditInput,
   hasRuntimeProfileRollback,
@@ -863,10 +863,29 @@ function canonicalRelayModelName(value: unknown): string {
   return model;
 }
 
+function relayModelCapabilitiesPayload(item: any, profile?: RelayModelProfile): RelayModelConfig['capabilities'] {
+  if (profile) {
+    return {
+      tool_calling: profile.capabilities.toolCalling,
+      vision: profile.capabilities.vision,
+      streaming: profile.capabilities.streaming,
+    };
+  }
+
+  const capabilities = item?.capabilities;
+  if (!capabilities || typeof capabilities !== 'object') return undefined;
+  return {
+    tool_calling: Boolean(capabilities.tool_calling ?? capabilities.toolCalling),
+    vision: Boolean(capabilities.vision),
+    streaming: Boolean(capabilities.streaming),
+  };
+}
+
 function normalizeRelayModelConfig(item: any, config: any, index: number): RelayModelConfig | null {
-  const model = canonicalRelayModelName(item?.model);
-  if (!model) return null;
-  const profile = findRelayModelProfile(model);
+  const rawModel = canonicalRelayModelName(item?.model);
+  if (!rawModel) return null;
+  const profile = findRelayModelProfile(rawModel);
+  const model = profile?.model || rawModel;
   const provider: 'anthropic' = 'anthropic';
   const protocol = 'Anthropic-compatible';
   const baseUrl = relayEndpointForProtocol(config, 'anthropic');
@@ -875,7 +894,7 @@ function normalizeRelayModelConfig(item: any, config: any, index: number): Relay
     ?? profile?.contextWindowTokens
     ?? resolveKnownModelContextWindowTokens(model);
   return {
-    id: String(item?.id || model || `relay-model-${index}`).trim(),
+    id: String(item?.id || profile?.id || model || `relay-model-${index}`).trim(),
     label: String(item?.label || profile?.label || model).trim(),
     model,
     family: String(item?.family || profile?.family || '').trim() || undefined,
@@ -886,11 +905,7 @@ function normalizeRelayModelConfig(item: any, config: any, index: number): Relay
     default: item?.default === true,
     quotaClass: String(item?.quota_class || item?.quotaClass || profile?.quotaClass || '').trim() || undefined,
     contextWindowTokens,
-    capabilities: profile ? {
-      tool_calling: profile.capabilities.toolCalling,
-      vision: profile.capabilities.vision,
-      streaming: profile.capabilities.streaming,
-    } : undefined,
+    capabilities: relayModelCapabilitiesPayload(item, profile),
   };
 }
 
