@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer } from 'ws';
 import { CatsClient } from '../src/catscompany/client';
 
 describe('CatsCompany client body identity', () => {
   const servers: WebSocketServer[] = [];
+  const httpServers: Server[] = [];
   const identityEnvKeys = [
     'CATSCO_BODY_ID',
     'CATSCOMPANY_BODY_ID',
@@ -24,6 +26,9 @@ describe('CatsCompany client body identity', () => {
 
   afterEach(() => {
     for (const server of servers.splice(0)) {
+      server.close();
+    }
+    for (const server of httpServers.splice(0)) {
       server.close();
     }
     for (const key of identityEnvKeys) {
@@ -76,5 +81,55 @@ describe('CatsCompany client body identity', () => {
     });
 
     assert.throws(() => client.connect(), /bodyId missing/);
+  });
+
+  test('registers device capabilities through CatsCompany HTTP API', async () => {
+    const requestPromise = new Promise<{ url?: string; method?: string; headers: Record<string, string | string[] | undefined>; body: any }>((resolve, reject) => {
+      const server = createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on('data', chunk => chunks.push(Buffer.from(chunk)));
+        req.on('end', () => {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          resolve({ url: req.url, method: req.method, headers: req.headers, body });
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ device: { deviceId: body.device_id } }));
+        });
+      });
+      httpServers.push(server);
+      server.listen(0, '127.0.0.1', () => {
+        void (async () => {
+          const address = server.address() as AddressInfo;
+          const client = new CatsClient({
+            serverUrl: 'ws://127.0.0.1:1/v0/channels',
+            httpBaseUrl: `http://127.0.0.1:${address.port}`,
+            apiKey: 'cc-test-key',
+            bodyId: 'body-test',
+            installationId: 'install-test',
+          });
+          await client.registerDevice({
+            device_id: 'install-test',
+            display_name: 'Test Device',
+            body_id: 'body-test',
+            installation_id: 'install-test',
+            status: 'online',
+            capabilities: ['read_file', 'send_file'],
+          });
+        })().catch(reject);
+      });
+    });
+
+    const request = await requestPromise;
+    assert.equal(request.method, 'POST');
+    assert.equal(request.url, '/api/devices/register');
+    assert.equal(request.headers.authorization, 'ApiKey cc-test-key');
+    assert.equal(request.headers['content-type'], 'application/json');
+    assert.deepEqual(request.body, {
+      device_id: 'install-test',
+      display_name: 'Test Device',
+      body_id: 'body-test',
+      installation_id: 'install-test',
+      status: 'online',
+      capabilities: ['read_file', 'send_file'],
+    });
   });
 });

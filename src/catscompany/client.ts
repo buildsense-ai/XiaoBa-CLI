@@ -15,6 +15,15 @@ export interface CatsClientConfig {
   httpBaseUrl?: string;
 }
 
+export interface CatsDeviceRegistration {
+  device_id: string;
+  display_name?: string;
+  body_id?: string;
+  installation_id?: string;
+  status?: 'online' | 'offline';
+  capabilities?: string[];
+}
+
 export interface MessageContext {
   topic: string;
   senderId: string;
@@ -343,11 +352,26 @@ export class CatsClient extends EventEmitter {
 
   async uploadFile(filePath: string, type: 'image' | 'file' = 'file'): Promise<UploadResult> {
     return uploadCatsLocalFile({
-      httpBaseUrl: this.config.httpBaseUrl || 'https://app.catsco.cc',
+      httpBaseUrl: this.httpBaseUrl(),
       filePath,
       type,
       authHeader: `ApiKey ${this.config.apiKey}`,
     });
+  }
+
+  async registerDevice(registration: CatsDeviceRegistration): Promise<unknown> {
+    const res = await fetch(`${this.httpBaseUrl()}/api/devices/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `ApiKey ${this.config.apiKey}`,
+      },
+      body: JSON.stringify(registration),
+    });
+    if (!res.ok) {
+      throw new Error(`CatsCompany device registration failed: ${res.status}`);
+    }
+    return res.json().catch(() => ({}));
   }
 
   async sendImage(topic: string, upload: UploadResult): Promise<number> {
@@ -465,10 +489,29 @@ export class CatsClient extends EventEmitter {
     }
   }
 
+  private httpBaseUrl(): string {
+    return this.config.httpBaseUrl || inferHttpBaseUrl(this.config.serverUrl) || 'https://app.catsco.cc';
+  }
+
   disconnect(): void {
     this.closed = true;
     this.stopHeartbeat();
     this.ws?.close();
+  }
+}
+
+function inferHttpBaseUrl(serverUrl: string): string | undefined {
+  try {
+    const url = new URL(serverUrl);
+    if (url.protocol === 'ws:') url.protocol = 'http:';
+    else if (url.protocol === 'wss:') url.protocol = 'https:';
+    else if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined;
+    url.pathname = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return undefined;
   }
 }
 

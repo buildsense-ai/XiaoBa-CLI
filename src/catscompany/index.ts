@@ -4,6 +4,7 @@ import { MessageSender } from './message-sender';
 import { extractContentBlocks } from './content-blocks';
 import { createCatsCoMessageEnvelope, createExecutionScope } from './message-envelope';
 import { createCatsCoAttachmentGrant, createCatsCoLocalDeviceGrant } from './local-file-grants';
+import { extractCatsCoDeviceGrants } from './device-grants';
 import { MessageSessionManager } from '../core/message-session-manager';
 import { AgentServices, BUSY_MESSAGE, RuntimeFeedbackInput, SessionCallbacks } from '../core/agent-session';
 import { Logger } from '../utils/logger';
@@ -12,9 +13,10 @@ import type { SubAgentInfo } from '../core/sub-agent-session';
 import { ChannelCallbacks } from '../types/tool';
 import { ContentBlock } from '../types';
 import type { PendingUserInput } from '../core/conversation-runner';
-import type { ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
+import type { ScopedDeviceGrant, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
 import { randomUUID } from 'crypto';
+import { hostname } from 'os';
 import { ConfigManager } from '../utils/config';
 import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
 import { createCatsCoSessionRoute } from '../core/session-router';
@@ -42,6 +44,7 @@ interface QueuedMessage {
   senderId: string;
   seq: number;
   executionScope: ParsedCatsMessage['executionScope'];
+  deviceGrants?: ScopedDeviceGrant[];
   localFileGrants?: ScopedLocalFileGrant[];
   receivedAt: number;
   source?: 'user' | 'subagent_feedback';
@@ -50,6 +53,7 @@ interface QueuedMessage {
 
 const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 const TYPING_HEARTBEAT_INTERVAL_MS = 5_000;
+const DEVICE_REGISTRATION_REFRESH_MS = 120_000;
 const HIDDEN_CATS_TOOL_PROGRESS = new Set([
   'send_text',
   'send_file',
@@ -99,6 +103,15 @@ export class CatsCompanyBot {
   private runtime: AdapterRuntimeBundle;
   private runtimeProfile: AdapterRuntimeBundle['profile'];
   private localDeviceGrant?: ScopedLocalDeviceGrant;
+  private deviceRegistrationTimer?: ReturnType<typeof setInterval>;
+  private readonly deviceRegistration?: {
+    device_id: string;
+    display_name?: string;
+    body_id?: string;
+    installation_id?: string;
+    status: 'online';
+    capabilities: string[];
+  };
 
   constructor(config: CatsCompanyConfig) {
     this.bot = new CatsClient({
@@ -115,6 +128,17 @@ export class CatsCompanyBot {
       installationId: config.installationId,
       deviceId: config.installationId || config.bodyId,
     });
+    if (config.bodyId || config.installationId) {
+      const deviceId = config.installationId || config.bodyId!;
+      this.deviceRegistration = {
+        device_id: deviceId,
+        display_name: process.env.COMPUTERNAME || process.env.HOSTNAME || hostname() || deviceId,
+        body_id: config.bodyId,
+        installation_id: config.installationId || config.bodyId,
+        status: 'online',
+        capabilities: ['read_file', 'send_file'],
+      };
+    }
 
     const runtime = createCatsCompanyRuntime(config.sessionTTL);
     this.runtime = runtime;
@@ -150,6 +174,10 @@ export class CatsCompanyBot {
       this.runtimeProfile.prompt.displayName = botName;
       process.env.CURRENT_AGENT_DISPLAY_NAME = botName;
       Logger.success(`CatsCo agent 已连接，uid=${info.uid}, name=${botName}`);
+      this.registerCurrentDevice().catch((err: any) => {
+        Logger.warning(`CatsCo 设备注册失败，继续保持聊天连接: ${err?.message || err}`);
+      });
+      this.startDeviceRegistrationRefresh();
     });
 
     this.bot.on('message', async (ctx: MessageContext) => {
@@ -162,6 +190,29 @@ export class CatsCompanyBot {
 
     this.bot.connect();
     Logger.success('CatsCo agent 已启动，等待消息...');
+  }
+
+  private async registerCurrentDevice(): Promise<void> {
+    if (!this.deviceRegistration?.device_id) return;
+    await this.bot.registerDevice(this.deviceRegistration);
+    Logger.info(`[CatsCompany] 已注册本机设备能力: device=${this.deviceRegistration.device_id}, capabilities=${this.deviceRegistration.capabilities.join(',')}`);
+  }
+
+  private startDeviceRegistrationRefresh(): void {
+    if (!this.deviceRegistration?.device_id) return;
+    this.stopDeviceRegistrationRefresh();
+    this.deviceRegistrationTimer = setInterval(() => {
+      this.registerCurrentDevice().catch((err: any) => {
+        Logger.warning(`CatsCo 设备状态刷新失败: ${err?.message || err}`);
+      });
+    }, DEVICE_REGISTRATION_REFRESH_MS);
+    (this.deviceRegistrationTimer as any).unref?.();
+  }
+
+  private stopDeviceRegistrationRefresh(): void {
+    if (!this.deviceRegistrationTimer) return;
+    clearInterval(this.deviceRegistrationTimer);
+    this.deviceRegistrationTimer = undefined;
   }
 
   // ─── 构建 ChannelCallbacks ──────────────────────
@@ -410,6 +461,7 @@ export class CatsCompanyBot {
         senderId: msg.senderId,
         seq: msg.seq,
         executionScope: msg.executionScope,
+        deviceGrants: msg.deviceGrants,
         localFileGrants,
         receivedAt: Date.now(),
         source: 'user',
@@ -433,12 +485,13 @@ export class CatsCompanyBot {
         channel,
         sessionRoute,
         executionScope: msg.executionScope,
-          localDeviceGrant: this.localDeviceGrant,
-          localFileGrants,
-          runtimeFeedback,
-          pendingUserInputProvider: () => this.consumeQueuedUserInput(key, msg.executionScope),
-          callbacks: this.buildSessionCallbacks(msg.topic),
-        });
+        localDeviceGrant: this.localDeviceGrant,
+        deviceGrants: msg.deviceGrants,
+        localFileGrants,
+        runtimeFeedback,
+        pendingUserInputProvider: () => this.consumeQueuedUserInput(key, msg.executionScope),
+        callbacks: this.buildSessionCallbacks(msg.topic),
+      });
 
       // 最终文本回复
       if (result.visibleToUser && result.text) {
@@ -545,6 +598,7 @@ export class CatsCompanyBot {
       metadata: ctx.metadata,
       botUid: this.botUid,
     });
+    const executionScope = createExecutionScope(envelope);
 
     return {
       topic: ctx.topic,
@@ -555,7 +609,8 @@ export class CatsCompanyBot {
       rawContent: ctx.content,
       metadata: ctx.metadata,
       envelope,
-      executionScope: createExecutionScope(envelope),
+      executionScope,
+      deviceGrants: extractCatsCoDeviceGrants(ctx.metadata, executionScope),
       file: files[0],
       files,
     };
@@ -807,6 +862,7 @@ export class CatsCompanyBot {
           channel,
           executionScope: msg.executionScope,
           localDeviceGrant: this.localDeviceGrant,
+          deviceGrants: msg.deviceGrants,
           runtimeFeedback: msg.runtimeFeedback,
           localFileGrants: msg.localFileGrants,
           pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey, msg.executionScope),
@@ -864,8 +920,13 @@ export class CatsCompanyBot {
     Logger.info(`[${sessionKey}] 合并 ${messages.length} 条处理期间新到的用户消息`);
     const content = this.mergeQueuedMessages(messages);
     const localFileGrants = messages.flatMap(item => item.localFileGrants || []);
-    if (localFileGrants.length === 0) return content;
-    return { content, localFileGrants };
+    const deviceGrants = messages.flatMap(item => item.deviceGrants || []);
+    if (localFileGrants.length === 0 && deviceGrants.length === 0) return content;
+    return {
+      content,
+      localFileGrants: localFileGrants.length > 0 ? localFileGrants : undefined,
+      deviceGrants: deviceGrants.length > 0 ? deviceGrants : undefined,
+    };
   }
 
   private canMergeQueuedMessage(
@@ -920,6 +981,7 @@ export class CatsCompanyBot {
    * 停止机器人
    */
   async destroy(): Promise<void> {
+    this.stopDeviceRegistrationRefresh();
     this.bot.disconnect();
     await this.sessionManager.destroy();
     for (const pendingId of Array.from(this.pendingAnswers.keys())) {

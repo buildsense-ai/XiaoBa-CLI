@@ -1,4 +1,4 @@
-import type { ExecutionScope, MessageEnvelope } from '../types/session-identity';
+import type { ExecutionScope, MessageEnvelope, ScopedDeviceGrant } from '../types/session-identity';
 
 /**
  * CatsCo agent 连接配置
@@ -40,6 +40,8 @@ export interface ParsedCatsMessage {
   envelope: MessageEnvelope;
   /** 当前 turn 的执行身份 */
   executionScope: ExecutionScope;
+  /** 服务端签发的当前 turn 用户设备授权 */
+  deviceGrants?: ScopedDeviceGrant[];
   /** 文件附件信息（rich content file/image 时存在） */
   file?: CatsFileInfo;
   /** 同一条消息里的全部附件（content_blocks 或 rich content） */

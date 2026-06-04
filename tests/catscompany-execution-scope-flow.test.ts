@@ -14,6 +14,38 @@ function canonicalMetadata(actorUserId: string, topicId: string, agentId = 'usr4
   };
 }
 
+function deviceGrant(overrides: Record<string, unknown> = {}) {
+  return {
+    kind: 'user_device_grant',
+    source: 'catscompany',
+    grantId: 'device-grant-1',
+    status: 'active',
+    identityTrust: 'server_canonical',
+    identitySource: 'metadata.catsco_identity',
+    deviceId: 'alice-laptop',
+    deviceDisplayName: 'Alice Laptop',
+    deviceBodyId: 'body-device',
+    deviceInstallationId: 'install-device',
+    ownerUserId: 'usr7',
+    sessionKey: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
+    topicId: 'p2p_7_43',
+    topicType: 'p2p',
+    actorUserId: 'usr7',
+    agentId: 'usr43',
+    agentBodyId: 'body-main',
+    operations: ['read_file', 'send_file'],
+    createdAt: 1_000,
+    expiresAt: 601_000,
+    ...overrides,
+  };
+}
+
+function metadataWithDeviceGrants(actorUserId: string, topicId: string, grants: unknown[], agentId = 'usr43', bodyId = 'body-main') {
+  const metadata = canonicalMetadata(actorUserId, topicId, agentId, bodyId);
+  (metadata.catsco_identity as any).device_grants = grants;
+  return metadata;
+}
+
 function createHarness(options: { busy?: boolean } = {}) {
   const bot = Object.create(CatsCompanyBot.prototype) as any;
   const handledTurns: Array<{ userMessage: unknown; options: any }> = [];
@@ -134,6 +166,45 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(handledTurns[0].options.executionScope.actorUserId, 'usr7');
   });
 
+  test('passes server canonical device grants into CatsCompany session turn', async () => {
+    const { bot, handledTurns } = createHarness();
+
+    await (bot as any).onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '读一下本机文件',
+      content: '读一下本机文件',
+      metadata: metadataWithDeviceGrants('usr7', 'p2p_7_43', [deviceGrant()]),
+      isGroup: false,
+      seq: 12,
+    });
+
+    assert.equal(handledTurns.length, 1);
+    assert.equal(handledTurns[0].options.deviceGrants?.length, 1);
+    assert.equal(handledTurns[0].options.deviceGrants[0].deviceId, 'alice-laptop');
+    assert.deepEqual(handledTurns[0].options.deviceGrants[0].operations, ['read_file', 'send_file']);
+  });
+
+  test('drops device grants that do not match the canonical execution scope', async () => {
+    const { bot, handledTurns } = createHarness();
+
+    await (bot as any).onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '读一下本机文件',
+      content: '读一下本机文件',
+      metadata: metadataWithDeviceGrants('usr7', 'p2p_7_43', [
+        deviceGrant({ actorUserId: 'usr8' }),
+        deviceGrant({ agentBodyId: 'body-other' }),
+      ]),
+      isGroup: false,
+      seq: 12,
+    });
+
+    assert.equal(handledTurns.length, 1);
+    assert.equal(handledTurns[0].options.deviceGrants, undefined);
+  });
+
   test('does not merge queued CatsCo group input from another actor into the current actor scope', () => {
     const { bot } = createHarness();
     const sessionKey = 'session:v2:catscompany:group:grp_80:agent:usr43';
@@ -170,5 +241,33 @@ describe('CatsCompany execution scope flow', () => {
     const pendingForBob = (bot as any).consumeQueuedUserInput(sessionKey, bobScope);
     assert.equal(pendingForBob, 'bob follow-up');
     assert.equal(bot.messageQueue.has(sessionKey), false);
+  });
+
+  test('preserves device grants when queued CatsCompany user input is merged', () => {
+    const { bot } = createHarness();
+    const scope = createExecutionScope(createCatsCoMessageEnvelope({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: 'first',
+      metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+      botUid: 'usr43',
+    }));
+
+    bot.messageQueue.set(scope.sessionKey, [{
+      userMessage: '补充读取文件',
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      seq: 13,
+      executionScope: scope,
+      deviceGrants: [deviceGrant()],
+      receivedAt: Date.now(),
+      source: 'user',
+    }]);
+
+    const pending = (bot as any).consumeQueuedUserInput(scope.sessionKey, scope);
+    assert.equal(typeof pending, 'object');
+    assert.equal(pending.content, '补充读取文件');
+    assert.equal(pending.deviceGrants.length, 1);
+    assert.equal(pending.deviceGrants[0].deviceId, 'alice-laptop');
   });
 });
