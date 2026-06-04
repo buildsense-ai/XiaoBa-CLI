@@ -460,13 +460,13 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.relayModelSetup.model, 'glm-5.1');
     assert.equal(data.relayModelSetup.createdKey, true);
     assert.equal(text.includes('sk-bf-fresh-secret'), false);
-    assert.equal(env.GAUZ_LLM_PROVIDER, 'anthropic');
-    assert.equal(env.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
+    assert.equal(env.GAUZ_LLM_PROVIDER, 'openai');
+    assert.equal(env.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/v1');
     assert.equal(env.GAUZ_LLM_MODEL, 'glm-5.1');
     assert.equal(env.GAUZ_LLM_API_KEY, 'sk-bf-fresh-secret');
     assert.equal(env.CATSCO_MODEL_SOURCE, 'relay');
-    assert.equal(env.CATSCO_RELAY_LLM_PROVIDER, 'anthropic');
-    assert.equal(env.CATSCO_RELAY_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
+    assert.equal(env.CATSCO_RELAY_LLM_PROVIDER, 'openai');
+    assert.equal(env.CATSCO_RELAY_LLM_API_BASE, 'https://relay.catsco.cc/v1');
     assert.equal(env.CATSCO_RELAY_LLM_MODEL, 'glm-5.1');
     assert.equal(env.CATSCO_RELAY_LLM_API_KEY, 'sk-bf-fresh-secret');
     assert.equal(env.CATSCO_BOT_UID, '188');
@@ -773,8 +773,8 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.relayModelSetup.createdKey, true);
     assert.equal(text.includes('sk-bf-existing-bot-secret'), false);
     assert.equal(relayKeyCreated, 1);
-    assert.equal(env.GAUZ_LLM_PROVIDER, 'anthropic');
-    assert.equal(env.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
+    assert.equal(env.GAUZ_LLM_PROVIDER, 'openai');
+    assert.equal(env.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/v1');
     assert.equal(env.GAUZ_LLM_MODEL, 'glm-5.1');
     assert.equal(env.GAUZ_LLM_API_KEY, 'sk-bf-existing-bot-secret');
     assert.equal(env.CATSCO_MODEL_SOURCE, 'relay');

@@ -54,14 +54,15 @@ describe('model capabilities', () => {
     assert.deepStrictEqual(
       RELAY_MODEL_PROFILES.map(profile => ({
         model: profile.model,
+        provider: profile.preferredProvider,
         vision: profile.capabilities.vision,
         context: profile.contextWindowTokens,
       })),
       [
-        { model: 'MiniMax-M2.7', vision: false, context: 204_800 },
-        { model: 'MiniMax-M3', vision: true, context: 1_000_000 },
-        { model: 'deepseek-v4-flash', vision: false, context: 1_000_000 },
-        { model: 'glm-5.1', vision: false, context: 200_000 },
+        { model: 'MiniMax-M2.7', provider: 'anthropic', vision: false, context: 204_800 },
+        { model: 'MiniMax-M3', provider: 'anthropic', vision: true, context: 1_000_000 },
+        { model: 'deepseek-v4-flash', provider: 'openai', vision: false, context: 1_000_000 },
+        { model: 'glm-5.1', provider: 'openai', vision: false, context: 200_000 },
       ],
     );
     assert.strictEqual(findRelayModelProfile('minimax-m3')?.capabilities.vision, true);

@@ -30,7 +30,15 @@ import {
   updateDashboardSettings,
   writeDashboardEnvUpdates,
 } from '../settings';
-import { RELAY_MODEL_PROFILES, findRelayModelProfile, type RelayModelProfile } from '../../utils/relay-model-profiles';
+import {
+  RELAY_MODEL_PROFILES,
+  findRelayModelProfile,
+  relayModelProviderBaseUrl,
+  relayModelProviderProtocolLabel,
+  relayModelProviderSdkLabel,
+  type RelayModelProfile,
+  type RelayModelProvider,
+} from '../../utils/relay-model-profiles';
 import {
   RuntimeProfileEditInput,
   hasRuntimeProfileRollback,
@@ -154,9 +162,10 @@ interface RelayModelConfig {
   label: string;
   model: string;
   family?: string;
-  provider: 'anthropic' | 'openai';
+  provider: RelayModelProvider;
   protocol: string;
   baseUrl: string;
+  sdkLabel: string;
   enabled: boolean;
   default: boolean;
   quotaClass?: string;
@@ -837,11 +846,11 @@ async function commitCatsBotBindingAndStartConnector(
 
 function normalizeRelayModelProtocol(value: unknown): RelayModelProtocol {
   const text = String(value || '').trim().toLowerCase();
-  return text === 'openai' ? 'openai' : 'anthropic';
+  return text.includes('openai') ? 'openai' : 'anthropic';
 }
 
-function normalizeRelayProvider(value: unknown): 'anthropic' | 'openai' {
-  return String(value || '').trim().toLowerCase() === 'openai' ? 'openai' : 'anthropic';
+function normalizeRelayProvider(value: unknown): RelayModelProvider {
+  return String(value || '').trim().toLowerCase().includes('openai') ? 'openai' : 'anthropic';
 }
 
 function relayEndpointForProtocol(config: any, protocol: RelayModelProtocol): string {
@@ -851,7 +860,9 @@ function relayEndpointForProtocol(config: any, protocol: RelayModelProtocol): st
     return protocol === 'openai' ? label.includes('openai') : label.includes('anthropic');
   });
   const baseUrl = normalizeBaseUrl(config?.base_url, 'https://relay.catsco.cc');
-  const fallback = protocol === 'openai' ? `${baseUrl}/v1` : `${baseUrl}/anthropic`;
+  const fallback = baseUrl === 'https://relay.catsco.cc'
+    ? relayModelProviderBaseUrl(protocol)
+    : protocol === 'openai' ? `${baseUrl}/v1` : `${baseUrl}/anthropic`;
   return normalizeBaseUrl(endpoint?.base_url, fallback);
 }
 
@@ -900,9 +911,10 @@ function normalizeRelayModelConfig(item: any, config: any, index: number): Relay
   if (!rawModel) return null;
   const profile = findRelayModelProfile(rawModel);
   const model = profile?.model || rawModel;
-  const provider: 'anthropic' = 'anthropic';
-  const protocol = 'Anthropic-compatible';
-  const baseUrl = relayEndpointForProtocol(config, 'anthropic');
+  const provider = profile?.preferredProvider
+    ?? normalizeRelayProvider(item?.provider ?? item?.protocol);
+  const protocol = relayModelProviderProtocolLabel(provider);
+  const baseUrl = relayEndpointForProtocol(config, provider);
   const contextWindowTokens = parsePositiveInteger(item?.context_window_tokens)
     ?? parsePositiveInteger(item?.contextWindowTokens)
     ?? profile?.contextWindowTokens
@@ -915,6 +927,7 @@ function normalizeRelayModelConfig(item: any, config: any, index: number): Relay
     provider,
     protocol,
     baseUrl,
+    sdkLabel: relayModelProviderSdkLabel(provider),
     enabled: item?.enabled !== false,
     default: item?.default === true,
     quotaClass: String(item?.quota_class || item?.quotaClass || profile?.quotaClass || '').trim() || undefined,
@@ -924,15 +937,15 @@ function normalizeRelayModelConfig(item: any, config: any, index: number): Relay
 }
 
 function fallbackRelayModelCatalog(config: any): RelayModelConfig[] {
-  const baseUrl = relayEndpointForProtocol(config, 'anthropic');
   return RELAY_MODEL_PROFILES.map((profile, index) => ({
     id: profile.id,
     label: profile.label,
     model: profile.model,
     family: profile.family,
-    provider: 'anthropic',
-    protocol: 'Anthropic-compatible',
-    baseUrl,
+    provider: profile.preferredProvider,
+    protocol: relayModelProviderProtocolLabel(profile.preferredProvider),
+    baseUrl: relayEndpointForProtocol(config, profile.preferredProvider),
+    sdkLabel: relayModelProviderSdkLabel(profile.preferredProvider),
     enabled: true,
     default: index === 0,
     quotaClass: profile.quotaClass,
@@ -1016,6 +1029,7 @@ function relayModelPayload(model: RelayModelConfig): Record<string, unknown> {
     provider: model.provider,
     protocol: model.protocol,
     base_url: model.baseUrl,
+    sdk_label: model.sdkLabel,
     enabled: model.enabled,
     default: model.default,
     quota_class: model.quotaClass,
