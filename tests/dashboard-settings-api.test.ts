@@ -711,6 +711,8 @@ describe('dashboard typed settings API', () => {
       assert.equal(parsed.CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS, '1000000');
       assert.equal(data.selectedModel.context_window_tokens, 1000000);
       assert.equal(data.selectedModel.context_label, '1M');
+      assert.equal(data.selectedModel.capabilities.vision, false);
+      assert.equal(data.selectedModel.capabilities.tool_calling, true);
       assert.equal(text.includes('sk-bf-openai-compatible'), false);
     } finally {
       await new Promise<void>(resolve => catsServer.close(() => resolve()));
@@ -774,6 +776,7 @@ describe('dashboard typed settings API', () => {
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-glm-secret');
       assert.equal(parsed.CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS, '200000');
       assert.equal(data.selectedModel.context_window_tokens, 200000);
+      assert.equal(data.selectedModel.capabilities.vision, false);
     } finally {
       await new Promise<void>(resolve => catsServer.close(() => resolve()));
     }

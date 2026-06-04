@@ -1,9 +1,35 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { CatsCompanyBot } from '../src/catscompany';
+import { ConfigManager } from '../src/utils/config';
+
+const ONE_PIXEL_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+
+async function withPatchedModel<T>(
+  config: any,
+  run: () => Promise<T>,
+): Promise<T> {
+  const originalGetConfigReadonly = ConfigManager.getConfigReadonly;
+  (ConfigManager as any).getConfigReadonly = () => config;
+  try {
+    return await run();
+  } finally {
+    (ConfigManager as any).getConfigReadonly = originalGetConfigReadonly;
+  }
+}
+
+function createTempPng(name: string): { filePath: string; cleanup: () => void } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-image-'));
+  const filePath = path.join(dir, name);
+  fs.writeFileSync(filePath, Buffer.from(ONE_PIXEL_PNG_BASE64, 'base64'));
+  return {
+    filePath,
+    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+  };
+}
 
 function canonicalMetadata(actorUserId: string, topicId: string, agentId = 'usr43', bodyId = 'body-main') {
   return {
@@ -232,6 +258,63 @@ describe('CatsCo content blocks', () => {
       { type: 'text', text: '[file] b.pdf -> (no authorized attachment reference)' },
     ]);
     assert.deepStrictEqual(handledTurns[0].options.runtimeFeedback, []);
+  });
+
+  test('builds direct image blocks for MiniMax M3 relay model', async () => {
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    const temp = createTempPng('red-blue.png');
+
+    try {
+      const blocks = await withPatchedModel(
+        {
+          provider: 'anthropic',
+          apiUrl: 'https://relay.catsco.cc/anthropic',
+          model: 'MiniMax-M3',
+        },
+        () => bot.buildMultimodalMessage('看图', [{
+          type: 'image',
+          fileName: 'red-blue.png',
+          localPath: temp.filePath,
+        }]),
+      );
+
+      assert.strictEqual(blocks.length, 3);
+      assert.deepStrictEqual(blocks[0], { type: 'text', text: '看图' });
+      assert.strictEqual(blocks[1].type, 'text');
+      assert.match((blocks[1] as any).text, /red-blue\.png/);
+      assert.strictEqual(blocks[2].type, 'image');
+      assert.strictEqual((blocks[2] as any).source.type, 'base64');
+      assert.strictEqual((blocks[2] as any).source.media_type, 'image/jpeg');
+      assert.ok((blocks[2] as any).source.data.length > 0);
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  test('exposes read_file fallback attachment reference for non-vision relay models', async () => {
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+
+    const blocks = await withPatchedModel(
+      {
+        provider: 'anthropic',
+        apiUrl: 'https://relay.catsco.cc/anthropic',
+        model: 'MiniMax-M2.7',
+      },
+      () => bot.buildMultimodalMessage('看图', [{
+        type: 'image',
+        fileName: 'red-blue.png',
+        localPath: 'C:\\tmp\\red-blue.png',
+        localFileGrant: { attachmentRef: 'catsco_attachment:image-ref' },
+      }]),
+    );
+
+    assert.strictEqual(blocks.length, 2);
+    assert.deepStrictEqual(blocks[0], { type: 'text', text: '看图' });
+    assert.strictEqual(blocks[1].type, 'text');
+    assert.match((blocks[1] as any).text, /Current user turn contains image attachments/);
+    assert.match((blocks[1] as any).text, /call read_file/);
+    assert.match((blocks[1] as any).text, /catsco_attachment:image-ref/);
+    assert.doesNotMatch((blocks[1] as any).text, /C:\\tmp\\red-blue\.png/);
   });
 
   test('processes CatsCompany websocket content_blocks as one user turn', async () => {

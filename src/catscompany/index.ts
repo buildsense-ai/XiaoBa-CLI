@@ -1359,6 +1359,7 @@ export class CatsCompanyBot {
     const blocks: import('../types').ContentBlock[] = [];
     const config = ConfigManager.getConfigReadonly();
     const primaryModelCanSeeImages = isPrimaryModelVisionCapable(config);
+    const modelName = config.model || 'unknown';
     const currentImageRefs: string[] = [];
 
     if (text) {
@@ -1380,9 +1381,10 @@ export class CatsCompanyBot {
             ...imgBlock,
             filePath: att.localFileGrant?.attachmentRef || `[CatsCo attachment: ${att.fileName}]`,
           } as any);
-          Logger.info(`[多模态] 已添加图片块: ${att.fileName}, base64长度: ${(imgBlock.source as any)?.data?.length || 0}`);
+          Logger.info(`[CatsCo] vision_direct model=${modelName} file=${att.fileName} bytes_base64=${((imgBlock as any).source as any)?.data?.length || 0}`);
         } else {
-          Logger.warning(`[多模态] 图片块创建失败: ${att.fileName} at ${att.localPath}`);
+          currentImageRefs.push(attachmentReference);
+          Logger.warning(`[CatsCo] vision_fallback_read_file model=${modelName} file=${att.fileName} reason=image_block_create_failed`);
         }
       } else {
         blocks.push({ type: 'text', text: attachmentReference });
@@ -1392,16 +1394,16 @@ export class CatsCompanyBot {
     Logger.info(`[多模态] 构建完成，共 ${blocks.length} 个块: ${blocks.map(b => b.type).join(', ')}`);
     if (currentImageRefs.length > 0) {
       blocks.push({
-        type: 'text',
-        text: [
-          '[Current user turn contains image attachments]',
-          'The primary model cannot directly inspect image pixels in this runtime.',
-          'If the user request depends on image content, call read_file with file_path set to the current authorized attachment reference below.',
-          'Use only the current authorized attachment reference(s) listed here. Do not use old tmp/downloads paths, old image URLs, old filenames, or prior image descriptions.',
-          currentImageRefs.join('\n\n'),
-        ].join('\n'),
-      });
-      Logger.info(`[CatsCo] Primary model is text-only; exposed ${currentImageRefs.length} current attachment reference(s) for read_file`);
+          type: 'text',
+          text: [
+            '[Current user turn contains image attachments]',
+            'The primary model cannot directly inspect image pixels in this runtime.',
+            'If the user request depends on image content, call read_file with file_path set to the current authorized attachment reference below.',
+            'Use only the current authorized attachment reference(s) listed here. Do not use old tmp/downloads paths, old image URLs, old filenames, or prior image descriptions.',
+            currentImageRefs.join('\n\n'),
+          ].join('\n'),
+        });
+      Logger.info(`[CatsCo] vision_fallback_read_file model=${modelName} images=${currentImageRefs.length} reason=${primaryModelCanSeeImages ? 'image_block_create_failed' : 'model_not_vision_capable'}`);
     }
 
     return blocks;

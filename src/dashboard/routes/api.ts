@@ -30,6 +30,7 @@ import {
   updateDashboardSettings,
   writeDashboardEnvUpdates,
 } from '../settings';
+import { RELAY_MODEL_PROFILES, findRelayModelProfile } from '../../utils/relay-model-profiles';
 import {
   RuntimeProfileEditInput,
   hasRuntimeProfileRollback,
@@ -160,6 +161,11 @@ interface RelayModelConfig {
   default: boolean;
   quotaClass?: string;
   contextWindowTokens?: number;
+  capabilities?: {
+    tool_calling: boolean;
+    vision: boolean;
+    streaming: boolean;
+  };
 }
 
 const MODEL_SOURCE_ENV_KEY = 'CATSCO_MODEL_SOURCE';
@@ -860,83 +866,54 @@ function canonicalRelayModelName(value: unknown): string {
 function normalizeRelayModelConfig(item: any, config: any, index: number): RelayModelConfig | null {
   const model = canonicalRelayModelName(item?.model);
   if (!model) return null;
+  const profile = findRelayModelProfile(model);
   const provider: 'anthropic' = 'anthropic';
   const protocol = 'Anthropic-compatible';
   const baseUrl = relayEndpointForProtocol(config, 'anthropic');
   const contextWindowTokens = parsePositiveInteger(item?.context_window_tokens)
     ?? parsePositiveInteger(item?.contextWindowTokens)
+    ?? profile?.contextWindowTokens
     ?? resolveKnownModelContextWindowTokens(model);
   return {
     id: String(item?.id || model || `relay-model-${index}`).trim(),
-    label: String(item?.label || model).trim(),
+    label: String(item?.label || profile?.label || model).trim(),
     model,
-    family: String(item?.family || '').trim() || undefined,
+    family: String(item?.family || profile?.family || '').trim() || undefined,
     provider,
     protocol,
     baseUrl,
     enabled: item?.enabled !== false,
     default: item?.default === true,
-    quotaClass: String(item?.quota_class || item?.quotaClass || '').trim() || undefined,
+    quotaClass: String(item?.quota_class || item?.quotaClass || profile?.quotaClass || '').trim() || undefined,
     contextWindowTokens,
+    capabilities: profile ? {
+      tool_calling: profile.capabilities.toolCalling,
+      vision: profile.capabilities.vision,
+      streaming: profile.capabilities.streaming,
+    } : undefined,
   };
 }
 
 function fallbackRelayModelCatalog(config: any): RelayModelConfig[] {
   const baseUrl = relayEndpointForProtocol(config, 'anthropic');
-  return [
-    {
-      id: 'minimax-m2.7',
-      label: 'MiniMax M2.7',
-      model: 'MiniMax-M2.7',
-      family: 'minimax',
-      provider: 'anthropic',
-      protocol: 'Anthropic-compatible',
-      baseUrl,
-      enabled: true,
-      default: true,
-      quotaClass: 'standard',
-      contextWindowTokens: 204_800,
+  return RELAY_MODEL_PROFILES.map((profile, index) => ({
+    id: profile.id,
+    label: profile.label,
+    model: profile.model,
+    family: profile.family,
+    provider: 'anthropic',
+    protocol: 'Anthropic-compatible',
+    baseUrl,
+    enabled: true,
+    default: index === 0,
+    quotaClass: profile.quotaClass,
+    contextWindowTokens: profile.contextWindowTokens,
+    capabilities: {
+      tool_calling: profile.capabilities.toolCalling,
+      vision: profile.capabilities.vision,
+      streaming: profile.capabilities.streaming,
     },
-    {
-      id: 'minimax-m3',
-      label: 'MiniMax M3',
-      model: 'MiniMax-M3',
-      family: 'minimax',
-      provider: 'anthropic',
-      protocol: 'Anthropic-compatible',
-      baseUrl,
-      enabled: true,
-      default: false,
-      quotaClass: 'multimodal',
-      contextWindowTokens: 1_000_000,
-    },
-    {
-      id: 'deepseek-v4-flash',
-      label: 'DeepSeek V4 Flash',
-      model: 'deepseek-v4-flash',
-      family: 'deepseek',
-      provider: 'anthropic',
-      protocol: 'Anthropic-compatible',
-      baseUrl,
-      enabled: true,
-      default: false,
-      quotaClass: 'flash-low',
-      contextWindowTokens: 1_000_000,
-    },
-    {
-      id: 'glm-5.1',
-      label: 'GLM 5.1',
-      model: 'glm-5.1',
-      family: 'glm',
-      provider: 'anthropic',
-      protocol: 'Anthropic-compatible',
-      baseUrl,
-      enabled: true,
-      default: false,
-      quotaClass: 'standard',
-      contextWindowTokens: 200_000,
-    },
-  ];
+  }));
 }
 
 function relayModelCatalog(config: any): RelayModelConfig[] {
@@ -1016,6 +993,7 @@ function relayModelPayload(model: RelayModelConfig): Record<string, unknown> {
     context_window_tokens: model.contextWindowTokens,
     prompt_budget_tokens: promptBudget,
     context_label: model.contextWindowTokens ? formatContextWindowTokens(model.contextWindowTokens) : undefined,
+    capabilities: model.capabilities,
   };
 }
 

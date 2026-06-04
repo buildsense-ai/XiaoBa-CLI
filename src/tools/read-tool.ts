@@ -7,6 +7,7 @@ import { createImageBlock } from '../utils/image-utils';
 import { ConfigManager } from '../utils/config';
 import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
 import { analyzeImageWithReaderProxy, ReaderProxyResult } from '../utils/reader-proxy';
+import { Logger } from '../utils/logger';
 import { resolveLocalFileAccess, resolveLocalFileReference } from './local-file-gateway';
 import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
 import { executeRemoteReadonlyTool } from './device-rpc-tool';
@@ -513,16 +514,21 @@ export class ReadTool implements Tool {
     const config = ConfigManager.getConfigReadonly();
     const imagePrompt = this.getImageReadPrompt(context, prompt);
     const visionCapable = isPrimaryModelVisionCapable(config);
+    const modelName = config.model || 'unknown';
 
     if (visionCapable) {
       const imageBlock = await createImageBlock(absolutePath);
       if (imageBlock) {
+        Logger.info(`[CatsCo] vision_direct model=${modelName} tool=read_file file=${filePath} bytes_base64=${((imageBlock as any).source as any)?.data?.length || 0}`);
         return {
           _imageForNewMessage: true,
           imageBlock: { ...imageBlock, filePath },
           filePath,
         };
       }
+      Logger.warning(`[CatsCo] vision_fallback_read_file model=${modelName} tool=read_file file=${filePath} reason=image_block_create_failed path=${absolutePath}`);
+    } else {
+      Logger.info(`[CatsCo] vision_fallback_read_file model=${modelName} tool=read_file file=${filePath} reason=model_not_vision_capable`);
     }
 
     const proxyResult = await analyzeImageWithReaderProxy({

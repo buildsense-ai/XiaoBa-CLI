@@ -1,4 +1,5 @@
 import { ChatConfig } from '../types';
+import { findRelayModelProfile } from './relay-model-profiles';
 
 const KNOWN_TEXT_ONLY_MODEL_PATTERNS = [
   /deepseek/i,
@@ -35,6 +36,10 @@ export function isPrimaryModelVisionCapable(config: Pick<ChatConfig, 'apiUrl' | 
   const apiUrl = (config.apiUrl || '').toLowerCase();
   const model = (config.model || '').trim();
   const modelKey = model.toLowerCase();
+  const relayProfile = apiUrl.includes('relay.catsco.cc') ? findRelayModelProfile(model) : undefined;
+  if (relayProfile) {
+    return relayProfile.capabilities.vision;
+  }
 
   // Anthropic-compatible endpoints from text-only providers often reject image blocks.
   if (apiUrl.includes('deepseek.com') || apiUrl.includes('minimaxi.com')) {
@@ -49,6 +54,10 @@ export function isPrimaryModelVisionCapable(config: Pick<ChatConfig, 'apiUrl' | 
 }
 
 export function isPrimaryModelToolCallingCapable(config: Pick<ChatConfig, 'apiUrl' | 'model' | 'provider'>): boolean {
-  void config;
+  const apiUrl = (config.apiUrl || '').toLowerCase();
+  const relayProfile = apiUrl.includes('relay.catsco.cc') ? findRelayModelProfile(config.model) : undefined;
+  if (relayProfile) {
+    return relayProfile.capabilities.toolCalling;
+  }
   return true;
 }
