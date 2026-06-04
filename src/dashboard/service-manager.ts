@@ -28,6 +28,21 @@ interface ManagedService {
 
 const MAX_LOG_LINES = 500;
 
+function stripAnsi(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/\x1B\[[0-9;]*m/g, '');
+}
+
+function pickLastErrorLine(logs: string[]): string | undefined {
+  for (let i = logs.length - 1; i >= 0; i -= 1) {
+    const line = stripAnsi(logs[i] || '').trim();
+    if (/\[ERROR\]|\berror\b|错误|失败|过期/i.test(line)) {
+      return line;
+    }
+  }
+  return undefined;
+}
+
 function readEnvFile(root: string): Record<string, string> {
   const envPath = path.join(root, '.env');
   if (!fs.existsSync(envPath)) return {};
@@ -271,7 +286,10 @@ export class ServiceManager extends EventEmitter {
       svc.info.status = code === 0 ? 'stopped' : 'error';
       svc.info.pid = undefined;
       if (code !== 0) {
-        svc.info.lastError = `Process exited with code ${code}`;
+        const lastErrorLine = pickLastErrorLine(svc.logs);
+        svc.info.lastError = lastErrorLine
+          ? `${lastErrorLine} (code ${code})`
+          : `Process exited with code ${code}`;
       }
       svc.process = undefined;
       this.emit('service-stopped', name, code);

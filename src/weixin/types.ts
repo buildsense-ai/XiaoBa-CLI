@@ -3,6 +3,7 @@ export interface WeixinConfig {
   baseUrl: string;
   cdnBaseUrl: string;
   stateDir?: string;
+  onSessionExpired?: () => void | Promise<void>;
 }
 
 export interface WeixinMessage {

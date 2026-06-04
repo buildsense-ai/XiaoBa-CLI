@@ -80,13 +80,42 @@ export class WeixinBot {
 
   private async saveState(): Promise<void> {
     try {
-      const bufPath = path.join(this.stateDir, 'get_updates.buf');
-      const tokensPath = path.join(this.stateDir, 'context_tokens.json');
+      const { bufPath, tokensPath } = this.getStatePaths();
 
       await fs.writeFile(bufPath, this.getUpdatesBuf);
       await fs.writeFile(tokensPath, JSON.stringify(Object.fromEntries(this.contextTokens)));
     } catch (err) {
       Logger.error(`[微信] 保存状态失败: ${err}`);
+    }
+  }
+
+  private getStatePaths(): { bufPath: string; tokensPath: string } {
+    return {
+      bufPath: path.join(this.stateDir, 'get_updates.buf'),
+      tokensPath: path.join(this.stateDir, 'context_tokens.json'),
+    };
+  }
+
+  private async clearState(): Promise<void> {
+    this.getUpdatesBuf = '';
+    this.contextTokens.clear();
+    try {
+      const { bufPath, tokensPath } = this.getStatePaths();
+      await fs.rm(bufPath, { force: true });
+      await fs.rm(tokensPath, { force: true });
+    } catch (err) {
+      Logger.error(`[微信] 清理过期状态失败: ${err}`);
+    }
+  }
+
+  private async handleSessionExpired(): Promise<void> {
+    Logger.error('[微信] 会话已过期，请重新登录：打开 Dashboard 的微信配置，点击“获取 Token”扫码授权，保存后重新启动微信机器人。');
+    await this.clearState();
+    this.isRunning = false;
+    try {
+      await this.config.onSessionExpired?.();
+    } catch (err) {
+      Logger.error(`[微信] 会话过期收束失败: ${err}`);
     }
   }
 
@@ -142,9 +171,8 @@ export class WeixinBot {
         const { ret, errcode, errmsg, msgs = [], get_updates_buf } = response.data;
 
         if (errcode === -14) {
-          Logger.error('[微信] 会话已过期，请重新登录');
-          await new Promise(resolve => setTimeout(resolve, 3600000));
-          continue;
+          await this.handleSessionExpired();
+          return;
         }
 
         if (get_updates_buf) {
@@ -316,6 +344,9 @@ export class WeixinBot {
   destroy(): void {
     this.isRunning = false;
     this.messageQueue.clear();
+    void this.sessionManager.destroy().catch(err => {
+      Logger.warning(`[微信] 清理会话管理器失败: ${err}`);
+    });
     Logger.info('[微信] 机器人已停止');
   }
 }

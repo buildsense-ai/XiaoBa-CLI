@@ -3,6 +3,8 @@ import { WeixinBot } from '../weixin';
 import { WeixinConfig } from '../weixin/types';
 import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/runtime-command-support';
 
+const WEIXIN_SESSION_EXPIRED_EXIT_CODE = 78;
+
 export async function weixinCommand(): Promise<void> {
   const token = process.env.WEIXIN_TOKEN;
   const baseUrl = process.env.WEIXIN_BASE_URL || 'https://ilinkai.weixin.qq.com';
@@ -15,19 +17,31 @@ export async function weixinCommand(): Promise<void> {
 
   process.env.CURRENT_PLATFORM = '微信';
 
-  const config: WeixinConfig = { token, baseUrl, cdnBaseUrl };
-  const bot = new WeixinBot(config);
+  let bot: WeixinBot | undefined;
+  let exiting = false;
 
-  const shutdown = () => {
+  const shutdown = (exitCode = 0) => {
+    if (exiting) return;
+    exiting = true;
     Promise.resolve(stopRuntimeCommandSupport())
       .catch(() => undefined)
       .finally(() => {
-        bot.destroy();
-        process.exit(0);
+        bot?.destroy();
+        Logger.closeLogFile();
+        process.exit(exitCode);
       });
   };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+
+  const config: WeixinConfig = {
+    token,
+    baseUrl,
+    cdnBaseUrl,
+    onSessionExpired: () => shutdown(WEIXIN_SESSION_EXPIRED_EXIT_CODE),
+  };
+  bot = new WeixinBot(config);
+
+  process.on('SIGINT', () => shutdown(0));
+  process.on('SIGTERM', () => shutdown(0));
 
   await bot.start();
   await startRuntimeCommandSupport();

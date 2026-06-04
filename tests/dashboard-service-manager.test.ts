@@ -115,6 +115,28 @@ describe('dashboard service manager', () => {
       fs.rmSync(runtimeRoot, { recursive: true, force: true });
     }
   });
+
+  test('preserves the last child error line when a service exits non-zero', async () => {
+    const manager = new ServiceManager(process.cwd());
+    const serviceRecord = (manager as any).services.get('weixin');
+    serviceRecord.info.command = process.execPath;
+    serviceRecord.info.args = [
+      '-e',
+      "console.error('[ERROR] [微信] 会话已过期，请重新登录'); process.exit(78);",
+    ];
+
+    const stopped = new Promise<void>(resolve => {
+      manager.once('service-stopped', () => resolve());
+    });
+
+    manager.start('weixin');
+    await stopped;
+
+    const service = manager.getService('weixin');
+    assert.equal(service?.status, 'error');
+    assert.match(service?.lastError || '', /会话已过期/);
+    assert.match(service?.lastError || '', /code 78/);
+  });
 });
 
 function normalize(value: string): string {
