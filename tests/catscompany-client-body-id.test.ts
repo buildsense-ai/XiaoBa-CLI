@@ -178,6 +178,58 @@ describe('CatsCompany client body identity', () => {
     });
   });
 
+  test('clears online body lease snapshot after websocket disconnect', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    servers.push(server);
+    await new Promise<void>(resolve => server.once('listening', resolve));
+
+    server.once('connection', socket => {
+      socket.on('message', data => {
+        const msg = JSON.parse(data.toString());
+        if (!msg.hi) return;
+        socket.send(JSON.stringify({
+          ctrl: {
+            id: msg.hi.id,
+            code: 200,
+            params: {
+              build: 'catscompany',
+              ver: '0.1.0',
+              features: ['client_msg_id', 'device_rpc'],
+              uid: 'usr42',
+              name: 'Agent',
+              body_lease: {
+                state: 'online',
+                active: true,
+                body_id: 'body-agent',
+              },
+            },
+          },
+        }));
+        setTimeout(() => socket.close(), 10);
+      });
+    });
+
+    const address = server.address() as AddressInfo;
+    const client = new CatsClient({
+      serverUrl: `ws://127.0.0.1:${address.port}`,
+      apiKey: 'cc-test-key',
+      bodyId: 'body-agent',
+    });
+    client.on('error', () => undefined);
+    await new Promise<void>(resolve => {
+      client.once('ready', () => resolve());
+      client.connect();
+    });
+    assert.equal(client.getStatusSnapshot().bodyLease?.state, 'online');
+
+    await waitUntil(() => client.getStatusSnapshot().ready === false);
+    const status = client.getStatusSnapshot();
+    client.disconnect();
+
+    assert.equal(status.connected, false);
+    assert.equal(status.bodyLease?.state, 'offline');
+  });
+
   test('emits device rpc requests outside the regular message stream', async () => {
     const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
     servers.push(server);
@@ -243,6 +295,12 @@ describe('CatsCompany client body identity', () => {
                   features: ['client_msg_id', 'device_rpc'],
                   uid: 'usr42',
                   name: 'Agent',
+                  body_lease: {
+                    state: 'online',
+                    active: true,
+                    body_id: 'body-agent',
+                    lease_ttl_ms: 120000,
+                  },
                 },
               },
             }));
@@ -275,6 +333,10 @@ describe('CatsCompany client body identity', () => {
       client.once('ready', () => resolve());
       client.connect();
     });
+    const readyStatus = client.getStatusSnapshot();
+    assert.equal(readyStatus.supportsDeviceRpc, true);
+    assert.equal(readyStatus.bodyLease?.state, 'online');
+    assert.equal(readyStatus.bodyLease?.bodyId, 'body-agent');
 
     const result = await client.sendDeviceRpcRequest({
       request_id: 'rpc-outbound-1',
@@ -290,6 +352,11 @@ describe('CatsCompany client body identity', () => {
     assert.equal(request.grant_id, 'grant-1');
     assert.equal(request.operation, 'ping');
     assert.deepEqual(result.result, { ok: true });
+    const rpcStatus = client.getStatusSnapshot().deviceRpc;
+    assert.equal(rpcStatus.pendingCount, 0);
+    assert.equal(rpcStatus.counters.sent, 1);
+    assert.equal(rpcStatus.counters.acked, 1);
+    assert.equal(rpcStatus.counters.result, 1);
   });
 
   test('rejects device rpc request when ack fails after an early result', async () => {
@@ -472,3 +539,13 @@ describe('CatsCompany client body identity', () => {
     assert.deepEqual(result.result, { ok: true });
   });
 });
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error('condition timed out');
+    }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}

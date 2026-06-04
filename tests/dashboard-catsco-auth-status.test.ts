@@ -168,7 +168,33 @@ describe('dashboard CatsCo account status', () => {
       }
       if (req.path === '/api/bots/body-status') {
         assert.equal(req.query.uid, '110');
-        return res.json({ body_id: 'body-local', active: true });
+        return res.json({
+          body_id: 'body-local',
+          active: true,
+          lease_expires_at: '2026-06-04T12:00:00Z',
+          lease_ttl_ms: 120000,
+        });
+      }
+      if (req.path === '/api/devices/rpc-status') {
+        assert.equal(req.query.agent_id, 'usr110');
+        return res.json({
+          pending_count: 2,
+          pending: [{
+            request_id: 'rpc-status-1',
+            agent_id: 'usr110',
+            device_id: 'alice-laptop',
+            operation: 'read_file',
+            tool_name: 'read_file',
+            payload: { path: 'C:/Users/alice/secret.txt' },
+            requester_connected: true,
+            target_connected: true,
+          }, {
+            request_id: 'rpc-other-agent',
+            agent_id: 'usr999',
+            device_id: 'alice-desktop',
+            operation: 'read_file',
+          }],
+        });
       }
       return res.status(404).json({ error: 'not found' });
     });
@@ -210,7 +236,63 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.unconfirmedBotBinding, false);
     assert.equal(data.botUid, '110');
     assert.equal(data.bodyStatus.state, 'online');
+    assert.equal(data.bodyStatus.leaseTtlMs, 120000);
+    assert.equal(data.deviceRpcStatus.state, 'ok');
+    assert.equal(data.deviceRpcStatus.pendingCount, 1);
+    assert.equal(data.deviceRpcStatus.pending[0].requestId, 'rpc-status-1');
+    assert.equal(JSON.stringify(data.deviceRpcStatus).includes('rpc-other-agent'), false);
+    assert.equal(JSON.stringify(data.deviceRpcStatus).includes('secret.txt'), false);
     assert.equal(data.topicId, 'p2p_42_110');
+  });
+
+  test('GET /cats/status redacts CatsCo device RPC status errors', async () => {
+    await startCatsServer((req, res) => {
+      assert.equal(req.header('authorization'), 'Bearer valid-user-token');
+      if (req.path === '/api/me') {
+        return res.json({ uid: 42, username: 'webuser', display_name: 'Web User' });
+      }
+      if (req.path === '/api/bots/body-status') {
+        return res.json({ body_id: 'body-local', active: true });
+      }
+      if (req.path === '/api/devices/rpc-status') {
+        return res.status(500).json({ error: 'failed at C:/Users/alice/secret.txt with Bearer user-secret' });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'valid-user-token',
+        uid: '42',
+        username: 'webuser',
+        displayName: 'Web User',
+      },
+      currentBot: {
+        uid: '110',
+        name: 'CatsCo',
+        username: 'catsco_42',
+        apiKey: 'agent-api-key',
+        boundByUserUid: '42',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'body-local',
+        bodyId: 'body-local',
+        installationId: 'body-local',
+      },
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/status`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.deviceRpcStatus.state, 'unknown');
+    assert.equal(JSON.stringify(data.deviceRpcStatus).includes('secret.txt'), false);
+    assert.equal(JSON.stringify(data.deviceRpcStatus).includes('user-secret'), false);
   });
 
   test('POST /cats/auth/login writes both CatsCo and CatsCompany env aliases', async () => {

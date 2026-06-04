@@ -592,6 +592,8 @@ async function getCatsBotBodyStatus(
       localBodyId: normalizedLocalBodyId,
       platformBodyId: platformBodyId || undefined,
       connectedAt: typeof data?.connected_at === 'string' ? data.connected_at : undefined,
+      leaseExpiresAt: typeof data?.lease_expires_at === 'string' ? data.lease_expires_at : undefined,
+      leaseTtlMs: Number.isFinite(Number(data?.lease_ttl_ms)) ? Number(data.lease_ttl_ms) : undefined,
       checkedAt: new Date().toISOString(),
     };
   } catch (error: any) {
@@ -615,6 +617,108 @@ async function getCatsBotBodyStatus(
       error: String(error?.message || 'unable to query CatsCo body status'),
     };
   }
+}
+
+async function getCatsDeviceRpcStatus(state: CatsAuthState, botUid?: string): Promise<Record<string, unknown>> {
+  if (!state.token) {
+    return {
+      state: 'not_configured',
+      pendingCount: 0,
+      pending: [],
+    };
+  }
+
+  try {
+    const agentId = catsStatusAgentId(botUid);
+    const rpcStatusPath = agentId
+      ? `/api/devices/rpc-status?agent_id=${encodeURIComponent(agentId)}`
+      : '/api/devices/rpc-status';
+    const data = await catsRequest(
+      'GET',
+      state.httpBaseUrl,
+      rpcStatusPath,
+      undefined,
+      state.token,
+      { timeoutMs: 2500 },
+    );
+    const pending = Array.isArray(data?.pending)
+      ? data.pending.map(sanitizeCatsDeviceRpcPending).filter(Boolean)
+      : [];
+    const scopedPending = agentId
+      ? pending.filter((item: any) => !item.agentId || item.agentId === agentId)
+      : pending;
+    return {
+      state: 'ok',
+      pendingCount: scopedPending.length,
+      pending: scopedPending,
+      checkedAt: new Date().toISOString(),
+    };
+  } catch (error: any) {
+    const status = Number(error?.status || 0);
+    if (status === 401 || status === 403) {
+      return {
+        state: 'auth_error',
+        pendingCount: 0,
+        pending: [],
+        checkedAt: new Date().toISOString(),
+        error: status === 403
+          ? '当前 CatsCo 账号不能查询设备 RPC 状态'
+          : 'CatsCo 登录态无法查询设备 RPC 状态，请重新登录',
+      };
+    }
+    return {
+      state: 'unknown',
+      pendingCount: 0,
+      pending: [],
+      checkedAt: new Date().toISOString(),
+      error: redactCatsStatusError(String(error?.message || 'unable to query CatsCo device RPC status')),
+    };
+  }
+}
+
+function sanitizeCatsDeviceRpcPending(item: any): Record<string, unknown> | undefined {
+  if (!item || typeof item !== 'object') return undefined;
+  const requestId = String(item.request_id || item.requestId || '').trim();
+  if (!requestId) return undefined;
+  return {
+    requestId,
+    agentId: safeCatsStatusString(item.agent_id || item.agentId),
+    agentBodyId: safeCatsStatusString(item.agent_body_id || item.agentBodyId),
+    actorUserId: safeCatsStatusString(item.actor_user_id || item.actorUserId),
+    sessionKey: safeCatsStatusString(item.session_key || item.sessionKey),
+    topicId: safeCatsStatusString(item.topic_id || item.topicId),
+    topicType: safeCatsStatusString(item.topic_type || item.topicType),
+    grantId: safeCatsStatusString(item.grant_id || item.grantId),
+    deviceId: safeCatsStatusString(item.device_id || item.deviceId),
+    deviceBodyId: safeCatsStatusString(item.device_body_id || item.deviceBodyId),
+    deviceInstallationId: safeCatsStatusString(item.device_installation_id || item.deviceInstallationId),
+    operation: safeCatsStatusString(item.operation),
+    toolName: safeCatsStatusString(item.tool_name || item.toolName),
+    createdAt: Number.isFinite(Number(item.created_at || item.createdAt)) ? Number(item.created_at || item.createdAt) : undefined,
+    expiresAt: Number.isFinite(Number(item.expires_at || item.expiresAt)) ? Number(item.expires_at || item.expiresAt) : undefined,
+    ttlMs: Number.isFinite(Number(item.ttl_ms || item.ttlMs)) ? Number(item.ttl_ms || item.ttlMs) : undefined,
+    requesterConnected: Boolean(item.requester_connected || item.requesterConnected),
+    targetConnected: Boolean(item.target_connected || item.targetConnected),
+  };
+}
+
+function safeCatsStatusString(value: unknown): string | undefined {
+  const text = String(value || '').trim();
+  return text || undefined;
+}
+
+function catsStatusAgentId(botUid?: string): string {
+  const uid = String(botUid || '').trim();
+  if (!uid) return '';
+  return uid.startsWith('usr') ? uid : `usr${uid}`;
+}
+
+function redactCatsStatusError(message: string): string {
+  return message
+    .replace(/\b(Bearer|ApiKey)\s+[A-Za-z0-9._~:/+=-]+/gi, '$1 [redacted]')
+    .replace(/\b(sk|cc)_[A-Za-z0-9._-]+/g, '$1_[redacted]')
+    .replace(/[A-Za-z]:[\\/][^\s'"<>]+/g, '[redacted-path]')
+    .replace(/\/(?:Users|home|tmp|var|etc)\/[^\s'"<>]+/g, '[redacted-path]');
 }
 
 function getCatsCompanyBindingPreflight(
@@ -1990,6 +2094,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
 
     const localBodyId = runtime.localConfig.device?.bodyId;
     const bodyStatus = await getCatsBotBodyStatus(state, state.botUid, localBodyId);
+    const deviceRpcStatus = await getCatsDeviceRpcStatus(state, state.botUid);
     const bodyBlocking = bodyStatus.state === 'conflict' || bodyStatus.state === 'auth_error';
     const chatReady = connected && runtime.bodyConfigured && !bodyBlocking;
 
@@ -2012,6 +2117,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       } : null,
       device: runtime.localConfig.device || null,
       bodyStatus,
+      deviceRpcStatus,
       conflicts: runtime.conflicts,
       topicId: chatReady && user?.uid && state.botUid ? p2pTopicId(user.uid, state.botUid) : '',
       httpBaseUrl: state.httpBaseUrl,

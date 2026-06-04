@@ -53,6 +53,59 @@ export interface CatsDeviceRpcMessage {
   expires_at?: number;
 }
 
+export interface CatsBodyLeaseStatus {
+  state?: string;
+  active?: boolean;
+  bodyId?: string;
+  connectedAt?: string;
+  leaseExpiresAt?: string;
+  leaseTtlMs?: number;
+}
+
+export interface CatsDeviceRpcEvent {
+  phase: 'sent' | 'acked' | 'result' | 'timeout' | 'failed' | 'inbound_request' | 'inbound_result_sent';
+  requestId: string;
+  operation?: string;
+  toolName?: string;
+  deviceId?: string;
+  createdAt: string;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface CatsClientStatusSnapshot {
+  connected: boolean;
+  ready: boolean;
+  uid: string;
+  name: string;
+  bodyId?: string;
+  installationId?: string;
+  bodyLease?: CatsBodyLeaseStatus;
+  supportsDeviceRpc: boolean;
+  deviceRegistration?: CatsDeviceRegistration;
+  deviceRpc: {
+    pendingCount: number;
+    pending: Array<{
+      requestId: string;
+      operation?: string;
+      toolName?: string;
+      deviceId?: string;
+      startedAt: string;
+      acknowledged: boolean;
+    }>;
+    recent: CatsDeviceRpcEvent[];
+    counters: {
+      sent: number;
+      acked: number;
+      result: number;
+      timeout: number;
+      failed: number;
+      inboundRequest: number;
+      inboundResultSent: number;
+    };
+  };
+}
+
 export interface MessageContext {
   topic: string;
   senderId: string;
@@ -148,9 +201,25 @@ export class CatsClient extends EventEmitter {
   private pendingDeviceRpc = new Map<string, PendingDeviceRpc>();
   private pingTimer: NodeJS.Timeout | null = null;
   private pongTimer: NodeJS.Timeout | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
   private subscribedTopics = new Set<string>();
   private supportsClientMessageDedupe = false;
+  private supportsDeviceRpc = false;
+  private ready = false;
+  private activeBodyId = '';
+  private activeInstallationId = '';
+  private bodyLease: CatsBodyLeaseStatus | undefined;
+  private deviceRpcRecent: CatsDeviceRpcEvent[] = [];
+  private deviceRpcCounters = {
+    sent: 0,
+    acked: 0,
+    result: 0,
+    timeout: 0,
+    failed: 0,
+    inboundRequest: 0,
+    inboundResultSent: 0,
+  };
 
   public uid = '';
   public name = '';
@@ -178,9 +247,14 @@ export class CatsClient extends EventEmitter {
       process.env.CATSCOMPANY_INSTALLATION_ID,
       bodyId,
     );
+    this.activeBodyId = bodyId;
+    this.activeInstallationId = installationId;
 
     Logger.info(`[CatsCompany] 正在连接: ${this.config.serverUrl}, apiKey=${maskSecret(this.config.apiKey)}, bodyId=${bodyId}`);
     this.supportsClientMessageDedupe = false;
+    this.supportsDeviceRpc = false;
+    this.ready = false;
+    this.bodyLease = undefined;
     this.ws = new WebSocket(this.config.serverUrl, {
       headers: {
         'X-API-Key': this.config.apiKey,
@@ -217,6 +291,9 @@ export class CatsClient extends EventEmitter {
       Logger.warning(`[CatsCompany] WebSocket 已关闭: code=${code}, reason=${reason.toString() || '-'}`);
       this.stopHeartbeat();
       this.ws = null;
+      this.ready = false;
+      this.supportsDeviceRpc = false;
+      this.bodyLease = { state: 'offline', active: false, bodyId: this.activeBodyId || undefined };
       this.rejectPendingAcks(new CatsSendError(
         'timeout',
         'WebSocket 在收到 CatsCompany 服务器确认前关闭',
@@ -246,9 +323,12 @@ export class CatsClient extends EventEmitter {
           Logger.info('[CatsCompany] 服务端支持 client_msg_id 幂等发送');
         }
         if (Array.isArray(msg.ctrl.params?.features) && msg.ctrl.params.features.includes('device_rpc')) {
+          this.supportsDeviceRpc = true;
           Logger.info('[CatsCompany] 服务端支持 device_rpc 远程设备传输');
         }
-        this.emit('ready', { uid: this.uid, name: this.name });
+        this.bodyLease = normalizeBodyLeaseStatus(msg.ctrl.params?.body_lease || msg.ctrl.params?.bodyLease);
+        this.ready = true;
+        this.emit('ready', { uid: this.uid, name: this.name, bodyLease: this.bodyLease });
         this.autoAcceptFriendRequests().catch(console.error);
         this.resubscribeTopics();
       } else if (msg.ctrl.id) {
@@ -314,20 +394,30 @@ export class CatsClient extends EventEmitter {
         if (!deviceRpcResultMatchesPending(message, pending.request)) {
           clearTimeout(pending.timer);
           this.pendingDeviceRpc.delete(message.request_id);
+          this.recordDeviceRpcEvent('failed', pending.request, {
+            startedAt: pending.startedAt,
+            error: 'result scope mismatch',
+          });
           pending.reject(new CatsSendError(
             'ack',
             `Device RPC ${message.request_id} result scope does not match pending request`,
             409
           ));
+          this.emit('device_rpc_result', message);
+          return;
         } else if (pending.acknowledged) {
           this.resolvePendingDeviceRpc(message.request_id, pending, message);
         } else {
           pending.result = message;
         }
       }
+      if (pending) {
+        this.recordDeviceRpcEvent('result', message, { startedAt: pending.startedAt });
+      }
       this.emit('device_rpc_result', message);
       return;
     }
+    this.recordDeviceRpcEvent('inbound_request', message);
     this.emit('device_rpc_request', message);
   }
 
@@ -393,6 +483,9 @@ export class CatsClient extends EventEmitter {
     timeoutMs = 60000
   ): Promise<CatsDeviceRpcMessage> {
     const requestID = request.request_id || buildDeviceRpcRequestID();
+    if (this.ready && !this.supportsDeviceRpc) {
+      throw new CatsSendError('ack', 'CatsCompany server does not support device_rpc', 501);
+    }
     if (this.pendingDeviceRpc.has(requestID)) {
       throw new CatsSendError('ack', `Device RPC request_id already pending: ${requestID}`, 409);
     }
@@ -404,9 +497,12 @@ export class CatsClient extends EventEmitter {
       request_id: requestID,
     };
 
+    const startedAt = Date.now();
+    this.recordDeviceRpcEvent('sent', deviceRpc, { startedAt });
     const resultPromise = new Promise<CatsDeviceRpcMessage>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingDeviceRpc.delete(requestID);
+        this.recordDeviceRpcEvent('timeout', deviceRpc, { startedAt });
         reject(new CatsSendError(
           'timeout',
           `Device RPC ${requestID} 在 ${timeoutMs}ms 内没有收到设备结果`
@@ -418,6 +514,7 @@ export class CatsClient extends EventEmitter {
         reject,
         timer,
         acknowledged: false,
+        startedAt,
       });
     });
 
@@ -425,19 +522,28 @@ export class CatsClient extends EventEmitter {
       await this.sendEnvelopeWithAck(msgId, { device_rpc: deviceRpc }, {
         timeoutMessage: 'WebSocket 已发送 Device RPC 请求，但 10 秒内没有收到 CatsCompany 服务器确认',
       });
-    } catch (err) {
+    } catch (err: any) {
       const pending = this.pendingDeviceRpc.get(requestID);
       if (pending) {
         clearTimeout(pending.timer);
         this.pendingDeviceRpc.delete(requestID);
+        this.recordDeviceRpcEvent('failed', deviceRpc, {
+          startedAt,
+          error: err?.message || String(err),
+        });
         throw err;
       }
+      this.recordDeviceRpcEvent('failed', deviceRpc, {
+        startedAt,
+        error: err?.message || String(err),
+      });
       throw err;
     }
 
     const pending = this.pendingDeviceRpc.get(requestID);
     if (pending) {
       pending.acknowledged = true;
+      this.recordDeviceRpcEvent('acked', deviceRpc, { startedAt });
       if (pending.result) {
         this.resolvePendingDeviceRpc(requestID, pending, pending.result);
       }
@@ -451,16 +557,27 @@ export class CatsClient extends EventEmitter {
       throw new Error('Device RPC result request_id is required');
     }
     const msgId = `${++this.msgId}`;
-    await this.sendEnvelopeWithAck(msgId, {
-      device_rpc: {
-        ...result,
-        id: msgId,
-        type: 'result',
-        request_id: requestID,
-      },
-    }, {
-      timeoutMessage: 'WebSocket 已发送 Device RPC 结果，但 10 秒内没有收到 CatsCompany 服务器确认',
-    });
+    const message: CatsDeviceRpcMessage = {
+      ...result,
+      id: msgId,
+      type: 'result',
+      request_id: requestID,
+    };
+    const startedAt = Date.now();
+    try {
+      await this.sendEnvelopeWithAck(msgId, {
+        device_rpc: message,
+      }, {
+        timeoutMessage: 'WebSocket 已发送 Device RPC 结果，但 10 秒内没有收到 CatsCompany 服务器确认',
+      });
+      this.recordDeviceRpcEvent('inbound_result_sent', message, { startedAt });
+    } catch (err: any) {
+      this.recordDeviceRpcEvent('failed', message, {
+        startedAt,
+        error: err?.message || String(err),
+      });
+      throw err;
+    }
   }
 
   private sendEnvelopeWithAck(
@@ -550,6 +667,39 @@ export class CatsClient extends EventEmitter {
     return res.json().catch(() => ({}));
   }
 
+  getStatusSnapshot(): CatsClientStatusSnapshot {
+    const pending = Array.from(this.pendingDeviceRpc.values()).map(item => ({
+      requestId: item.request.request_id,
+      operation: item.request.operation,
+      toolName: item.request.tool_name,
+      deviceId: item.request.device_id,
+      startedAt: new Date(item.startedAt).toISOString(),
+      acknowledged: item.acknowledged,
+    }));
+    return {
+      connected: this.ws?.readyState === WebSocket.OPEN,
+      ready: this.ready,
+      uid: this.uid,
+      name: this.name,
+      bodyId: this.activeBodyId || undefined,
+      installationId: this.activeInstallationId || undefined,
+      bodyLease: this.bodyLease ? { ...this.bodyLease } : undefined,
+      supportsDeviceRpc: this.supportsDeviceRpc,
+      deviceRegistration: this.config.deviceRegistration ? {
+        ...this.config.deviceRegistration,
+        capabilities: this.config.deviceRegistration.capabilities
+          ? [...this.config.deviceRegistration.capabilities]
+          : undefined,
+      } : undefined,
+      deviceRpc: {
+        pendingCount: pending.length,
+        pending,
+        recent: [...this.deviceRpcRecent],
+        counters: { ...this.deviceRpcCounters },
+      },
+    };
+  }
+
   async sendImage(topic: string, upload: UploadResult): Promise<number> {
     const content = {
       type: 'image',
@@ -617,7 +767,58 @@ export class CatsClient extends EventEmitter {
     for (const [requestID, pending] of this.pendingDeviceRpc.entries()) {
       clearTimeout(pending.timer);
       this.pendingDeviceRpc.delete(requestID);
+      this.recordDeviceRpcEvent('failed', pending.request, {
+        startedAt: pending.startedAt,
+        error: err.message,
+      });
       pending.reject(err);
+    }
+  }
+
+  private recordDeviceRpcEvent(
+    phase: CatsDeviceRpcEvent['phase'],
+    message: CatsDeviceRpcMessage,
+    options: { startedAt?: number; error?: string } = {}
+  ): void {
+    const requestId = String(message.request_id || '').trim();
+    if (!requestId) return;
+    const startedAt = options.startedAt;
+    const event: CatsDeviceRpcEvent = {
+      phase,
+      requestId,
+      operation: message.operation,
+      toolName: message.tool_name,
+      deviceId: message.device_id,
+      createdAt: new Date().toISOString(),
+      durationMs: startedAt ? Math.max(0, Date.now() - startedAt) : undefined,
+      error: options.error,
+    };
+    this.deviceRpcRecent.push(event);
+    if (this.deviceRpcRecent.length > 30) {
+      this.deviceRpcRecent = this.deviceRpcRecent.slice(-30);
+    }
+    switch (phase) {
+      case 'sent':
+        this.deviceRpcCounters.sent++;
+        break;
+      case 'acked':
+        this.deviceRpcCounters.acked++;
+        break;
+      case 'result':
+        this.deviceRpcCounters.result++;
+        break;
+      case 'timeout':
+        this.deviceRpcCounters.timeout++;
+        break;
+      case 'failed':
+        this.deviceRpcCounters.failed++;
+        break;
+      case 'inbound_request':
+        this.deviceRpcCounters.inboundRequest++;
+        break;
+      case 'inbound_result_sent':
+        this.deviceRpcCounters.inboundResultSent++;
+        break;
     }
   }
 
@@ -658,10 +859,16 @@ export class CatsClient extends EventEmitter {
   }
 
   private scheduleReconnect(): void {
+    if (this.closed) return;
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
     Logger.info(`[CatsCompany] ${delay}ms 后重连 (尝试 ${this.reconnectAttempts + 1})`);
     this.reconnectAttempts++;
-    setTimeout(() => this.connect(), delay);
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.closed) this.connect();
+    }, delay);
+    this.reconnectTimer.unref?.();
   }
 
   private resubscribeTopics(): void {
@@ -679,6 +886,10 @@ export class CatsClient extends EventEmitter {
 
   disconnect(): void {
     this.closed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.stopHeartbeat();
     this.ws?.close();
   }
@@ -690,7 +901,30 @@ interface PendingDeviceRpc {
   reject: (err: Error) => void;
   timer: NodeJS.Timeout;
   acknowledged: boolean;
+  startedAt: number;
   result?: CatsDeviceRpcMessage;
+}
+
+function normalizeBodyLeaseStatus(raw: any): CatsBodyLeaseStatus | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  return {
+    state: stringField(raw, 'state'),
+    active: Boolean(raw.active),
+    bodyId: stringField(raw, 'body_id') || stringField(raw, 'bodyId'),
+    connectedAt: stringField(raw, 'connected_at') || stringField(raw, 'connectedAt'),
+    leaseExpiresAt: stringField(raw, 'lease_expires_at') || stringField(raw, 'leaseExpiresAt'),
+    leaseTtlMs: numberField(raw, 'lease_ttl_ms') ?? numberField(raw, 'leaseTtlMs'),
+  };
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
+  const text = String(record[key] || '').trim();
+  return text || undefined;
+}
+
+function numberField(record: Record<string, unknown>, key: string): number | undefined {
+  const value = Number(record[key]);
+  return Number.isFinite(value) ? value : undefined;
 }
 
 function inferHttpBaseUrl(serverUrl: string): string | undefined {

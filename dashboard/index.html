@@ -8324,6 +8324,21 @@
       if(connected && configured && running) panel.classList.remove('expanded');
     }
 
+    function catsDeviceRpcStatusLabel(rpcStatus){
+      if(!rpcStatus || rpcStatus.state==='not_configured') return '未就绪';
+      if(rpcStatus.state==='auth_error') return '权限错误';
+      if(rpcStatus.state==='unknown') return '未知';
+      const pending=Number(rpcStatus.pendingCount||rpcStatus.pending_count||0);
+      return pending>0?(pending+' pending'):'ready';
+    }
+
+    function catsBodyLeaseLabel(bodyStatus){
+      const state=bodyStatus.state||'unknown';
+      const ttl=Number(bodyStatus.leaseTtlMs||bodyStatus.lease_ttl_ms||0);
+      if(state==='online' && ttl>0) return state+' / '+Math.ceil(ttl/1000)+'s';
+      return state;
+    }
+
     function renderCatsStatus(){
       const service=catsState.service||{};
       const user=catsState.user||{};
@@ -8333,6 +8348,7 @@
       const configured=Boolean(catsState.configured);
       const stage=buildCatsChatStage();
       const bodyStatus=catsState.bodyStatus||{};
+      const rpcStatus=catsState.deviceRpcStatus||{};
       const botLabel=catsState.bot?.name||catsState.botName||catsState.bot?.username||catsState.botUid||'未绑定';
       const accountMeta=connected
         ? (user.display_name?escapeHtml(user.display_name):'已登录')
@@ -8340,7 +8356,8 @@
       status.innerHTML=
         '<div class="chat-status-row"><span>账号</span><strong>'+accountMeta+'</strong></div>'+
         '<div class="chat-status-row"><span>CatsCo Agent</span><strong>'+escapeHtml(botLabel)+'</strong></div>'+
-        '<div class="chat-status-row"><span>Body</span><strong>'+escapeHtml(bodyStatus.state||'unknown')+'</strong></div>'+
+        '<div class="chat-status-row"><span>Body</span><strong>'+escapeHtml(catsBodyLeaseLabel(bodyStatus))+'</strong></div>'+
+        '<div class="chat-status-row"><span>Device RPC</span><strong>'+escapeHtml(catsDeviceRpcStatusLabel(rpcStatus))+'</strong></div>'+
         '<div class="chat-status-row"><span>Topic</span><strong>'+(catsState.topicId?escapeHtml(catsState.topicId):'未就绪')+'</strong></div>'+
         '<div class="chat-status-row"><span>CatsCompany connector</span><strong style="color:'+(running?'var(--green)':'var(--orange)')+'">'+(running?'运行中':'未启动')+'</strong></div>';
 
