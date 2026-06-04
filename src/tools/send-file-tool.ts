@@ -48,6 +48,7 @@ CatsCo file selection rules:
 
     let absolutePath: string;
     let displayPath: string;
+    let visibleInputPath = file_path;
     let resolvedFromAttachmentRef = false;
     let authorizedByLocalFileGrant = false;
 
@@ -65,6 +66,7 @@ CatsCo file selection rules:
       }
       absolutePath = reference.absolutePath;
       displayPath = reference.displayPath;
+      visibleInputPath = reference.displayPath;
       resolvedFromAttachmentRef = true;
       authorizedByLocalFileGrant = true;
     } else {
@@ -87,6 +89,7 @@ CatsCo file selection rules:
       }
       if (localAccess.displayPath) {
         displayPath = localAccess.displayPath;
+        visibleInputPath = localAccess.displayPath;
       }
       authorizedByLocalFileGrant = Boolean(localAccess.grant);
     }
@@ -117,6 +120,7 @@ CatsCo file selection rules:
         };
       }
       displayPath = formatCatsCoVisiblePath(context, displayPath, { preserveRelative: true });
+      visibleInputPath = displayPath;
     }
 
     if (!fs.existsSync(absolutePath)) {
@@ -125,7 +129,7 @@ CatsCo file selection rules:
         errorCode: 'FILE_NOT_FOUND',
         message: [
           'File not found.',
-          `Input path: ${file_path}`,
+          `Input path: ${visibleInputPath}`,
           `Resolved path: ${displayPath}`,
         ].join('\n'),
       };
@@ -139,7 +143,7 @@ CatsCo file selection rules:
           errorCode: 'TOOL_EXECUTION_ERROR',
           message: [
             'Path is not a file.',
-            `Input path: ${file_path}`,
+            `Input path: ${visibleInputPath}`,
             `Resolved path: ${displayPath}`,
           ].join('\n'),
         };
@@ -150,7 +154,7 @@ CatsCo file selection rules:
         errorCode: 'FILE_NOT_FOUND',
         message: [
           'File not found.',
-          `Input path: ${file_path}`,
+          `Input path: ${visibleInputPath}`,
           `Resolved path: ${displayPath}`,
         ].join('\n'),
       };
@@ -164,7 +168,7 @@ CatsCo file selection rules:
         errorCode: 'PERMISSION_DENIED',
         message: [
           'File is not readable.',
-          `Input path: ${file_path}`,
+          `Input path: ${visibleInputPath}`,
           `Resolved path: ${displayPath}`,
         ].join('\n'),
       };

@@ -93,6 +93,7 @@ export class ReadTool implements Tool {
     let absolutePath: string;
     let displayPath = file_path;
     let visiblePath: string;
+    let visibleInputPath = file_path;
     let resolvedFromAttachmentRef = false;
     let authorizedByLocalFileGrant = false;
 
@@ -111,6 +112,7 @@ export class ReadTool implements Tool {
       absolutePath = reference.absolutePath;
       displayPath = reference.displayPath;
       visiblePath = reference.displayPath;
+      visibleInputPath = reference.displayPath;
       resolvedFromAttachmentRef = true;
       authorizedByLocalFileGrant = true;
     } else {
@@ -140,6 +142,7 @@ export class ReadTool implements Tool {
       if (localAccess.displayPath) {
         displayPath = localAccess.displayPath;
         visiblePath = localAccess.displayPath;
+        visibleInputPath = localAccess.displayPath;
       }
       authorizedByLocalFileGrant = Boolean(localAccess.grant);
     }
@@ -159,6 +162,7 @@ export class ReadTool implements Tool {
       }
       displayPath = formatCatsCoVisiblePath(context, displayPath, { preserveRelative: true });
       visiblePath = formatCatsCoVisiblePath(context, visiblePath);
+      visibleInputPath = formatCatsCoVisiblePath(context, file_path);
     }
 
     if (!fs.existsSync(absolutePath)) {
@@ -173,7 +177,7 @@ export class ReadTool implements Tool {
           errorCode: 'TOOL_EXECUTION_ERROR',
           message: [
             'Path is not a file.',
-            `Input path: ${file_path}`,
+            `Input path: ${visibleInputPath}`,
             `Resolved path: ${visiblePath}`,
           ].join('\n'),
         };

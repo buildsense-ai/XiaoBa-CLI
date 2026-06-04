@@ -164,6 +164,39 @@ describe('CatsCo ToolGateway', () => {
     assert.doesNotMatch(String(send.content), new RegExp(escapeRegExp(filePath)));
   });
 
+  test('redacts local absolute paths from CatsCo device file failure results', async () => {
+    const root = makeWorkspace();
+    const missingPath = path.join(root, 'missing.txt');
+    const ctx = context(root, {
+      deviceGrants: [deviceGrant(['read_file', 'send_file'])],
+    });
+
+    const readDirectory = await new ReadTool().execute({ file_path: root }, ctx);
+    assert.equal(readDirectory.ok, false);
+    if (!readDirectory.ok) {
+      assert.equal(readDirectory.errorCode, 'TOOL_EXECUTION_ERROR');
+      assert.match(readDirectory.message, /Path is not a file/);
+      assert.doesNotMatch(readDirectory.message, new RegExp(escapeRegExp(root)));
+    }
+
+    const sendMissing = await new SendFileTool().execute({ file_path: missingPath, file_name: 'missing.txt' }, ctx);
+    assert.equal(sendMissing.ok, false);
+    if (!sendMissing.ok) {
+      assert.equal(sendMissing.errorCode, 'FILE_NOT_FOUND');
+      assert.match(sendMissing.message, /File not found/);
+      assert.doesNotMatch(sendMissing.message, new RegExp(escapeRegExp(missingPath)));
+      assert.doesNotMatch(sendMissing.message, new RegExp(escapeRegExp(root)));
+    }
+
+    const sendDirectory = await new SendFileTool().execute({ file_path: root, file_name: 'root' }, ctx);
+    assert.equal(sendDirectory.ok, false);
+    if (!sendDirectory.ok) {
+      assert.equal(sendDirectory.errorCode, 'TOOL_EXECUTION_ERROR');
+      assert.match(sendDirectory.message, /Path is not a file/);
+      assert.doesNotMatch(sendDirectory.message, new RegExp(escapeRegExp(root)));
+    }
+  });
+
   test('allows glob only when the CatsCo device grant includes glob operation', async () => {
     const root = makeWorkspace();
     fs.writeFileSync(path.join(root, 'a.txt'), 'a');
