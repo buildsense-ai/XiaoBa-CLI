@@ -178,7 +178,7 @@ describe('CatsCompany client body identity', () => {
     });
   });
 
-  test('clears online body lease snapshot after websocket disconnect', async () => {
+  test('marks body lease snapshot stale after websocket disconnect', async () => {
     const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
     servers.push(server);
     await new Promise<void>(resolve => server.once('listening', resolve));
@@ -201,6 +201,8 @@ describe('CatsCompany client body identity', () => {
                 state: 'online',
                 active: true,
                 body_id: 'body-agent',
+                runtime_mode: 'shared_memory',
+                route_state: 'ready',
               },
             },
           },
@@ -228,6 +230,10 @@ describe('CatsCompany client body identity', () => {
 
     assert.equal(status.connected, false);
     assert.equal(status.bodyLease?.state, 'offline');
+    assert.equal(status.bodyLease?.bodyId, 'body-agent');
+    assert.equal(status.bodyLease?.runtimeMode, 'shared_memory');
+    assert.equal(status.bodyLease?.source, 'local_transport');
+    assert.equal(status.bodyLease?.stale, true);
   });
 
   test('emits device rpc requests outside the regular message stream', async () => {

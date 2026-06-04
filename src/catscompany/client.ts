@@ -57,9 +57,14 @@ export interface CatsBodyLeaseStatus {
   state?: string;
   active?: boolean;
   bodyId?: string;
+  runtimeMode?: string;
+  routeState?: string;
   connectedAt?: string;
   leaseExpiresAt?: string;
   leaseTtlMs?: number;
+  observedAt?: string;
+  source?: 'server' | 'local_transport';
+  stale?: boolean;
 }
 
 export interface CatsDeviceRpcEvent {
@@ -293,7 +298,15 @@ export class CatsClient extends EventEmitter {
       this.ws = null;
       this.ready = false;
       this.supportsDeviceRpc = false;
-      this.bodyLease = { state: 'offline', active: false, bodyId: this.activeBodyId || undefined };
+      this.bodyLease = {
+        ...(this.bodyLease || {}),
+        state: 'offline',
+        active: false,
+        bodyId: this.bodyLease?.bodyId || this.activeBodyId || undefined,
+        source: 'local_transport',
+        stale: true,
+        observedAt: new Date().toISOString(),
+      };
       this.rejectPendingAcks(new CatsSendError(
         'timeout',
         'WebSocket 在收到 CatsCompany 服务器确认前关闭',
@@ -911,9 +924,14 @@ function normalizeBodyLeaseStatus(raw: any): CatsBodyLeaseStatus | undefined {
     state: stringField(raw, 'state'),
     active: Boolean(raw.active),
     bodyId: stringField(raw, 'body_id') || stringField(raw, 'bodyId'),
+    runtimeMode: stringField(raw, 'runtime_mode') || stringField(raw, 'runtimeMode'),
+    routeState: stringField(raw, 'route_state') || stringField(raw, 'routeState'),
     connectedAt: stringField(raw, 'connected_at') || stringField(raw, 'connectedAt'),
     leaseExpiresAt: stringField(raw, 'lease_expires_at') || stringField(raw, 'leaseExpiresAt'),
     leaseTtlMs: numberField(raw, 'lease_ttl_ms') ?? numberField(raw, 'leaseTtlMs'),
+    observedAt: new Date().toISOString(),
+    source: 'server',
+    stale: false,
   };
 }
 

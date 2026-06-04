@@ -8328,15 +8328,19 @@
       if(!rpcStatus || rpcStatus.state==='not_configured') return '未就绪';
       if(rpcStatus.state==='auth_error') return '权限错误';
       if(rpcStatus.state==='unknown') return '未知';
+      if(rpcStatus.state==='degraded') return '部分不可达';
       const pending=Number(rpcStatus.pendingCount||rpcStatus.pending_count||0);
-      return pending>0?(pending+' pending'):'ready';
+      const mode=rpcStatus.runtimeMode||rpcStatus.runtime_mode||'';
+      return pending>0?(pending+' pending'):(mode?('ready / '+mode):'ready');
     }
 
     function catsBodyLeaseLabel(bodyStatus){
       const state=bodyStatus.state||'unknown';
       const ttl=Number(bodyStatus.leaseTtlMs||bodyStatus.lease_ttl_ms||0);
-      if(state==='online' && ttl>0) return state+' / '+Math.ceil(ttl/1000)+'s';
-      return state;
+      const mode=bodyStatus.runtimeMode||bodyStatus.runtime_mode||'';
+      const suffix=mode?' / '+mode:'';
+      if(state==='online' && ttl>0) return state+' / '+Math.ceil(ttl/1000)+'s'+suffix;
+      return state+suffix;
     }
 
     function renderCatsStatus(){
@@ -8371,8 +8375,10 @@
       document.getElementById('cats-connected-card').style.display=connected?'block':'none';
       const loginCopy=document.getElementById('cats-login-copy');
       if(loginCopy)loginCopy.textContent=catsAuthHelpText();
-      document.getElementById('cats-connected-copy').textContent=configured
-        ? (running?'可以直接开始对话。':'账号和 agent 已绑定，点击“启动 connector”恢复 CatsCompany connector。')
+      document.getElementById('cats-connected-copy').textContent=catsState.chatReady
+        ? '可以直接开始对话。'
+        : configured
+        ? (running?'账号和 agent 已绑定，等待当前 body 在线。':'账号和 agent 已绑定，点击“启动 connector”恢复 CatsCompany connector。')
         : '账号已登录。请选择已有机器人，或创建/绑定当前 agent。';
       const setupBtn=document.getElementById('cats-setup-btn');
       if(setupBtn){

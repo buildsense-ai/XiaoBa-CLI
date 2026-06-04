@@ -171,6 +171,8 @@ describe('dashboard CatsCo account status', () => {
         return res.json({
           body_id: 'body-local',
           active: true,
+          runtime_mode: 'shared_memory',
+          route_state: 'ready',
           lease_expires_at: '2026-06-04T12:00:00Z',
           lease_ttl_ms: 120000,
         });
@@ -237,12 +239,139 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.botUid, '110');
     assert.equal(data.bodyStatus.state, 'online');
     assert.equal(data.bodyStatus.leaseTtlMs, 120000);
+    assert.equal(data.bodyStatus.runtimeMode, 'shared_memory');
+    assert.equal(data.bodyLeaseReady, true);
+    assert.equal(data.routerReady, true);
     assert.equal(data.deviceRpcStatus.state, 'ok');
     assert.equal(data.deviceRpcStatus.pendingCount, 1);
     assert.equal(data.deviceRpcStatus.pending[0].requestId, 'rpc-status-1');
     assert.equal(JSON.stringify(data.deviceRpcStatus).includes('rpc-other-agent'), false);
     assert.equal(JSON.stringify(data.deviceRpcStatus).includes('secret.txt'), false);
     assert.equal(data.topicId, 'p2p_42_110');
+  });
+
+  test('GET /cats/status keeps binding configured but blocks chat when body lease is offline', async () => {
+    await startCatsServer((req, res) => {
+      assert.equal(req.header('authorization'), 'Bearer valid-user-token');
+      if (req.path === '/api/me') {
+        return res.json({ uid: 42, username: 'webuser', display_name: 'Web User' });
+      }
+      if (req.path === '/api/bots/body-status') {
+        return res.json({
+          body_id: 'body-local',
+          active: false,
+          state: 'offline',
+          runtime_mode: 'shared_memory',
+          route_state: 'ready',
+        });
+      }
+      if (req.path === '/api/devices/rpc-status') {
+        return res.json({ state: 'ok', runtime_mode: 'shared_memory', route_state: 'ready', pending_count: 0, pending: [] });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'valid-user-token',
+        uid: '42',
+        username: 'webuser',
+        displayName: 'Web User',
+      },
+      currentBot: {
+        uid: '110',
+        name: 'CatsCo',
+        username: 'catsco_42',
+        apiKey: 'agent-api-key',
+        boundByUserUid: '42',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'body-local',
+        bodyId: 'body-local',
+        installationId: 'body-local',
+      },
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/status`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.configured, true);
+    assert.equal(data.bindingConfigured, true);
+    assert.equal(data.bodyLeaseReady, false);
+    assert.equal(data.chatReady, false);
+    assert.equal(data.bodyStatus.state, 'offline');
+    assert.equal(data.topicId, '');
+  });
+
+  test('GET /cats/status degrades device RPC status when a route is disconnected', async () => {
+    await startCatsServer((req, res) => {
+      assert.equal(req.header('authorization'), 'Bearer valid-user-token');
+      if (req.path === '/api/me') {
+        return res.json({ uid: 42, username: 'webuser', display_name: 'Web User' });
+      }
+      if (req.path === '/api/bots/body-status') {
+        return res.json({ body_id: 'body-local', active: true });
+      }
+      if (req.path === '/api/devices/rpc-status') {
+        return res.json({
+          state: 'ok',
+          runtime_mode: 'shared_memory',
+          route_state: 'ready',
+          pending_count: 1,
+          pending: [{
+            request_id: 'rpc-disconnected',
+            agent_id: 'usr110',
+            device_id: 'alice-laptop',
+            operation: 'read_file',
+            payload: { path: 'C:/Users/alice/secret.txt' },
+            requester_connected: true,
+            target_connected: false,
+          }],
+        });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'valid-user-token',
+        uid: '42',
+        username: 'webuser',
+        displayName: 'Web User',
+      },
+      currentBot: {
+        uid: '110',
+        name: 'CatsCo',
+        username: 'catsco_42',
+        apiKey: 'agent-api-key',
+        boundByUserUid: '42',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'body-local',
+        bodyId: 'body-local',
+        installationId: 'body-local',
+      },
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/status`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.deviceRpcStatus.state, 'degraded');
+    assert.equal(data.deviceRpcStatus.disconnectedPendingCount, 1);
+    assert.equal(data.deviceRpcStatus.runtimeMode, 'shared_memory');
+    assert.equal(JSON.stringify(data.deviceRpcStatus).includes('secret.txt'), false);
   });
 
   test('GET /cats/status redacts CatsCo device RPC status errors', async () => {

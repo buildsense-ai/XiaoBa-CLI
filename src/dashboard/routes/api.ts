@@ -586,11 +586,14 @@ async function getCatsBotBodyStatus(
     const platformBodyId = String(data?.body_id || data?.bodyId || '').trim();
     const active = Boolean(data?.active);
     const bodyMismatch = platformBodyId && platformBodyId !== normalizedLocalBodyId;
+    const remoteState = String(data?.state || '').trim();
     return {
-      state: bodyMismatch ? 'conflict' : active ? 'online' : 'offline',
+      state: bodyMismatch ? 'conflict' : active ? 'online' : remoteState || 'offline',
       active,
       localBodyId: normalizedLocalBodyId,
       platformBodyId: platformBodyId || undefined,
+      runtimeMode: safeCatsStatusString(data?.runtime_mode || data?.runtimeMode),
+      routeState: safeCatsStatusString(data?.route_state || data?.routeState),
       connectedAt: typeof data?.connected_at === 'string' ? data.connected_at : undefined,
       leaseExpiresAt: typeof data?.lease_expires_at === 'string' ? data.lease_expires_at : undefined,
       leaseTtlMs: Number.isFinite(Number(data?.lease_ttl_ms)) ? Number(data.lease_ttl_ms) : undefined,
@@ -647,9 +650,16 @@ async function getCatsDeviceRpcStatus(state: CatsAuthState, botUid?: string): Pr
     const scopedPending = agentId
       ? pending.filter((item: any) => !item.agentId || item.agentId === agentId)
       : pending;
+    const disconnectedPending = scopedPending.filter((item: any) => item.requesterConnected === false || item.targetConnected === false);
+    const serverState = safeCatsStatusString(data?.state);
+    const routeState = safeCatsStatusString(data?.route_state || data?.routeState);
     return {
-      state: 'ok',
+      state: disconnectedPending.length > 0 ? 'degraded' : serverState || 'ok',
+      runtimeMode: safeCatsStatusString(data?.runtime_mode || data?.runtimeMode),
+      routeState,
+      routerReady: routeState ? routeState === 'ready' || routeState === 'process_local' : true,
       pendingCount: scopedPending.length,
+      disconnectedPendingCount: disconnectedPending.length,
       pending: scopedPending,
       checkedAt: new Date().toISOString(),
     };
@@ -2096,12 +2106,18 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
     const bodyStatus = await getCatsBotBodyStatus(state, state.botUid, localBodyId);
     const deviceRpcStatus = await getCatsDeviceRpcStatus(state, state.botUid);
     const bodyBlocking = bodyStatus.state === 'conflict' || bodyStatus.state === 'auth_error';
-    const chatReady = connected && runtime.bodyConfigured && !bodyBlocking;
+    const bindingConfigured = connected && runtime.bodyConfigured && !bodyBlocking;
+    const bodyLeaseReady = bodyStatus.state === 'online' && Boolean(bodyStatus.active);
+    const routerReady = deviceRpcStatus.state !== 'auth_error' && deviceRpcStatus.state !== 'unknown' && deviceRpcStatus.routerReady !== false;
+    const chatReady = bindingConfigured && bodyLeaseReady;
 
     res.json({
       connected,
-      configured: chatReady,
+      configured: bindingConfigured,
+      bindingConfigured,
       bodyConfigured: runtime.bodyConfigured,
+      bodyLeaseReady,
+      routerReady,
       connectorReady: runtime.connectorReady,
       chatReady,
       unconfirmedBotBinding: runtime.unconfirmedBotBinding,
