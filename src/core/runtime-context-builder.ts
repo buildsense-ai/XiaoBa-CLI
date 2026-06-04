@@ -4,6 +4,7 @@ import type {
   MessageSource,
   MessageTopicType,
   ScopedDeviceGrant,
+  ScopedDeviceSelection,
   ScopedLocalDeviceGrant,
   ScopedLocalFileGrant,
   SessionRoute,
@@ -19,6 +20,7 @@ export interface BuildRuntimeContextParams {
   executionScope?: ExecutionScope;
   localDeviceGrant?: ScopedLocalDeviceGrant;
   deviceGrants?: ScopedDeviceGrant[];
+  deviceSelection?: ScopedDeviceSelection;
   localFileGrants?: ScopedLocalFileGrant[];
 }
 
@@ -61,6 +63,21 @@ interface RuntimeContextSnapshot {
       status: string;
       expiresAt: number;
     }>;
+    deviceSelection?: {
+      status: string;
+      selectionSource?: string;
+      selectedDevice?: {
+        deviceId: string;
+        displayName?: string;
+        operations?: string[];
+      };
+      candidates?: Array<{
+        deviceId: string;
+        displayName?: string;
+        operations?: string[];
+      }>;
+      candidateCount?: number;
+    };
     localFiles?: Array<{
       ref?: string;
       fileName: string;
@@ -147,12 +164,14 @@ export function buildRuntimeContextSnapshot(params: BuildRuntimeContextParams): 
       toolsUseBackendScope: true,
       localDevice: sanitizeLocalDevice(params.localDeviceGrant),
       userDevices: sanitizeDeviceGrants(params.deviceGrants),
+      deviceSelection: sanitizeDeviceSelection(params.deviceSelection),
       localFiles: sanitizeLocalFiles(params.localFileGrants),
     }),
     rules: [
       'Treat session.topic as the current conversation target and turn.actorUserId as the current speaker.',
       'Do not ask the user to provide internal IDs from this context; use tools and backend scope when needed.',
-      'Do not choose a user device yourself. Use backend-scoped device grants when a tool requires a device.',
+      'Use execution.deviceSelection as the backend-selected target when a tool requires a user device.',
+      'If execution.deviceSelection.status is needs_selection or unavailable, ask the user to choose an available device by display name before using device tools.',
       'Do not infer or expose local filesystem paths. Use attachment refs when a tool requires a file reference.',
     ],
   }) as RuntimeContextSnapshot;
@@ -176,6 +195,27 @@ function sanitizeDeviceGrants(grants?: ScopedDeviceGrant[]): RuntimeContextSnaps
     status: grant.status,
     expiresAt: grant.expiresAt,
   }));
+}
+
+function sanitizeDeviceSelection(selection?: ScopedDeviceSelection): RuntimeContextSnapshot['execution']['deviceSelection'] | undefined {
+  if (!selection) return undefined;
+  return pruneUndefined({
+    status: selection.status,
+    selectionSource: selection.selectionSource,
+    selectedDevice: selection.selectedDeviceId
+      ? pruneUndefined({
+        deviceId: selection.selectedDeviceId,
+        displayName: selection.selectedDeviceDisplayName,
+        operations: selection.selectedDeviceOperations ? [...selection.selectedDeviceOperations] : undefined,
+      })
+      : undefined,
+    candidates: selection.candidates?.map(candidate => pruneUndefined({
+      deviceId: candidate.deviceId,
+      displayName: candidate.displayName,
+      operations: candidate.operations ? [...candidate.operations] : undefined,
+    })),
+    candidateCount: selection.candidateCount,
+  });
 }
 
 function sanitizeLocalFiles(grants?: ScopedLocalFileGrant[]): RuntimeContextSnapshot['execution']['localFiles'] | undefined {

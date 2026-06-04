@@ -2,6 +2,7 @@ import { ContentBlock } from './index';
 import type {
   ExecutionScope,
   ScopedDeviceGrant,
+  ScopedDeviceSelection,
   ScopedLocalDeviceGrant,
   ScopedLocalFileGrant,
 } from './session-identity';
@@ -153,6 +154,8 @@ export interface ToolExecutionContext {
   localDeviceGrant?: ScopedLocalDeviceGrant;
   /** 当前 turn 已授权的用户设备资源，供未来远程设备工具校验。 */
   deviceGrants?: ScopedDeviceGrant[];
+  /** 服务端为当前 turn 选定的用户设备，或明确要求先选择设备。 */
+  deviceSelection?: ScopedDeviceSelection;
   /** 当前 turn 已授权的本地文件资源，例如用户本轮上传的 CatsCo 附件缓存。 */
   localFileGrants?: ScopedLocalFileGrant[];
 }

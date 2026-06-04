@@ -1,4 +1,4 @@
-import type { DeviceGrantOperation, ScopedDeviceGrant } from '../types/session-identity';
+import type { DeviceGrantOperation, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant } from '../types/session-identity';
 import type { ToolErrorCode, ToolExecutionContext } from '../types/tool';
 import { resolveDeviceGrant } from '../core/device-grants';
 
@@ -80,7 +80,10 @@ export function resolveToolGatewayAccess(
     return denied(['当前运行体缺少 CatsCo 本机设备绑定，已阻止本地设备操作。'], options.targetLabel);
   }
 
-  const targetDeviceId = localDevice.deviceId || localDevice.installationId || localDevice.bodyId;
+  const selectedTarget = resolveBackendSelectedDevice(context.deviceSelection, localDevice, options.targetLabel);
+  if (!selectedTarget.ok) return selectedTarget;
+
+  const targetDeviceId = selectedTarget.deviceId || localDevice.deviceId || localDevice.installationId || localDevice.bodyId;
   const decision = resolveDeviceGrant(context, {
     operation: options.operation,
     deviceId: targetDeviceId,
@@ -108,6 +111,60 @@ export function resolveToolGatewayAccess(
   }
 
   return { ok: true, grant };
+}
+
+type SelectedDeviceDecision =
+  | { ok: true; deviceId?: string }
+  | { ok: false; errorCode: ToolErrorCode; message: string };
+
+function resolveBackendSelectedDevice(
+  selection: ScopedDeviceSelection | undefined,
+  localDevice: ScopedLocalDeviceGrant,
+  targetLabel?: string,
+): SelectedDeviceDecision {
+  if (!selection) return { ok: true };
+
+  if (selection.status === 'needs_selection') {
+    return denied([
+      '后端尚未选定要操作的用户设备，已阻止本地设备操作。',
+      '请让用户从可用设备中选择一个设备名后再继续。',
+    ], targetLabel);
+  }
+  if (selection.status === 'unavailable') {
+    return denied([
+      '当前用户没有可用的在线设备授权，已阻止本地设备操作。',
+      '请让用户打开并授权目标设备后再继续。',
+    ], targetLabel);
+  }
+
+  const selectedDeviceId = selection.selectedDeviceId;
+  if (!selectedDeviceId) {
+    return denied(['后端设备选择缺少 selectedDeviceId，已阻止本地设备操作。'], targetLabel);
+  }
+
+  if (!matchesLocalDevice(selection, localDevice)) {
+    return denied([
+      '后端选定的用户设备不是当前运行体，已阻止本地设备操作以避免串设备。',
+      selection.selectedDeviceDisplayName ? `Selected device: ${selection.selectedDeviceDisplayName}` : '',
+    ], targetLabel);
+  }
+
+  return { ok: true, deviceId: selectedDeviceId };
+}
+
+function matchesLocalDevice(selection: ScopedDeviceSelection, localDevice: ScopedLocalDeviceGrant): boolean {
+  const selectedIds = [
+    selection.selectedDeviceId,
+    selection.selectedDeviceInstallationId,
+    selection.selectedDeviceBodyId,
+  ].filter(Boolean);
+  const localIds = [
+    localDevice.deviceId,
+    localDevice.installationId,
+    localDevice.bodyId,
+  ].filter(Boolean);
+  if (selectedIds.length === 0 || localIds.length === 0) return false;
+  return selectedIds.some(selected => localIds.includes(selected));
 }
 
 function denied(lines: string[], targetLabel?: string): ToolGatewayDecision {

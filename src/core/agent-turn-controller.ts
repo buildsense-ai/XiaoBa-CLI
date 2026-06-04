@@ -2,6 +2,7 @@ import { ContentBlock, Message } from '../types';
 import type {
   ExecutionScope,
   ScopedDeviceGrant,
+  ScopedDeviceSelection,
   ScopedLocalDeviceGrant,
   ScopedLocalFileGrant,
   SessionRoute,
@@ -46,6 +47,7 @@ export interface RunAgentTurnParams {
   executionScope?: ExecutionScope;
   localDeviceGrant?: ScopedLocalDeviceGrant;
   deviceGrants?: ScopedDeviceGrant[];
+  deviceSelection?: ScopedDeviceSelection;
   localFileGrants?: ScopedLocalFileGrant[];
   pendingUserInputProvider?: PendingUserInputProvider;
   abortSignal?: AbortSignal;
@@ -100,6 +102,7 @@ export class AgentTurnController {
       executionScope: params.executionScope,
       localDeviceGrant: params.localDeviceGrant,
       deviceGrants: params.deviceGrants,
+      deviceSelection: params.deviceSelection,
       localFileGrants: params.localFileGrants,
       durableMessages: params.messages,
       runtimeFeedback: params.runtimeFeedback,
@@ -112,6 +115,7 @@ export class AgentTurnController {
       executionScope: params.executionScope,
       localDeviceGrant: params.localDeviceGrant,
       deviceGrants: params.deviceGrants,
+      deviceSelection: params.deviceSelection,
       localFileGrants: params.localFileGrants,
       pendingUserInputProvider: params.pendingUserInputProvider,
       abortSignal: params.abortSignal,
@@ -162,6 +166,7 @@ export class AgentTurnController {
     executionScope?: ExecutionScope;
     localDeviceGrant?: ScopedLocalDeviceGrant;
     deviceGrants?: ScopedDeviceGrant[];
+    deviceSelection?: ScopedDeviceSelection;
     localFileGrants?: ScopedLocalFileGrant[];
     pendingUserInputProvider?: PendingUserInputProvider;
     abortSignal?: AbortSignal;
@@ -195,6 +200,7 @@ export class AgentTurnController {
           executionScope: options.executionScope,
           localDeviceGrant: options.localDeviceGrant,
           deviceGrants: options.deviceGrants,
+          deviceSelection: options.deviceSelection,
           localFileGrants: options.localFileGrants,
         },
       },

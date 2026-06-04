@@ -5,6 +5,7 @@ import { extractContentBlocks } from './content-blocks';
 import { createCatsCoMessageEnvelope, createExecutionScope } from './message-envelope';
 import { createCatsCoAttachmentGrant, createCatsCoLocalDeviceGrant } from './local-file-grants';
 import { extractCatsCoDeviceGrants } from './device-grants';
+import { extractCatsCoDeviceSelection } from './device-selection';
 import { MessageSessionManager } from '../core/message-session-manager';
 import { AgentServices, BUSY_MESSAGE, RuntimeFeedbackInput, SessionCallbacks } from '../core/agent-session';
 import { Logger } from '../utils/logger';
@@ -13,7 +14,7 @@ import type { SubAgentInfo } from '../core/sub-agent-session';
 import { ChannelCallbacks } from '../types/tool';
 import { ContentBlock } from '../types';
 import type { PendingUserInput } from '../core/conversation-runner';
-import type { ScopedDeviceGrant, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
+import type { ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
 import { randomUUID } from 'crypto';
 import { hostname } from 'os';
@@ -45,6 +46,7 @@ interface QueuedMessage {
   seq: number;
   executionScope: ParsedCatsMessage['executionScope'];
   deviceGrants?: ScopedDeviceGrant[];
+  deviceSelection?: ScopedDeviceSelection;
   localFileGrants?: ScopedLocalFileGrant[];
   receivedAt: number;
   source?: 'user' | 'subagent_feedback';
@@ -132,7 +134,7 @@ export class CatsCompanyBot {
       const deviceId = config.installationId || config.bodyId!;
       this.deviceRegistration = {
         device_id: deviceId,
-        display_name: process.env.COMPUTERNAME || process.env.HOSTNAME || hostname() || deviceId,
+        display_name: config.deviceName || process.env.COMPUTERNAME || process.env.HOSTNAME || hostname() || deviceId,
         body_id: config.bodyId,
         installation_id: config.installationId || config.bodyId,
         status: 'online',
@@ -462,6 +464,7 @@ export class CatsCompanyBot {
         seq: msg.seq,
         executionScope: msg.executionScope,
         deviceGrants: msg.deviceGrants,
+        deviceSelection: msg.deviceSelection,
         localFileGrants,
         receivedAt: Date.now(),
         source: 'user',
@@ -487,6 +490,7 @@ export class CatsCompanyBot {
         executionScope: msg.executionScope,
         localDeviceGrant: this.localDeviceGrant,
         deviceGrants: msg.deviceGrants,
+        deviceSelection: msg.deviceSelection,
         localFileGrants,
         runtimeFeedback,
         pendingUserInputProvider: () => this.consumeQueuedUserInput(key, msg.executionScope),
@@ -611,6 +615,7 @@ export class CatsCompanyBot {
       envelope,
       executionScope,
       deviceGrants: extractCatsCoDeviceGrants(ctx.metadata, executionScope),
+      deviceSelection: extractCatsCoDeviceSelection(ctx.metadata, executionScope),
       file: files[0],
       files,
     };
@@ -857,12 +862,14 @@ export class CatsCompanyBot {
           source: 'subagent_result',
           executionScope: msg.executionScope,
           localDeviceGrant: this.localDeviceGrant,
+          deviceSelection: msg.deviceSelection,
         })
         : await session.handleMessage(msg.userMessage, {
           channel,
           executionScope: msg.executionScope,
           localDeviceGrant: this.localDeviceGrant,
           deviceGrants: msg.deviceGrants,
+          deviceSelection: msg.deviceSelection,
           runtimeFeedback: msg.runtimeFeedback,
           localFileGrants: msg.localFileGrants,
           pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey, msg.executionScope),
@@ -921,11 +928,13 @@ export class CatsCompanyBot {
     const content = this.mergeQueuedMessages(messages);
     const localFileGrants = messages.flatMap(item => item.localFileGrants || []);
     const deviceGrants = messages.flatMap(item => item.deviceGrants || []);
-    if (localFileGrants.length === 0 && deviceGrants.length === 0) return content;
+    const deviceSelection = [...messages].reverse().find(item => item.deviceSelection)?.deviceSelection;
+    if (localFileGrants.length === 0 && deviceGrants.length === 0 && !deviceSelection) return content;
     return {
       content,
       localFileGrants: localFileGrants.length > 0 ? localFileGrants : undefined,
       deviceGrants: deviceGrants.length > 0 ? deviceGrants : undefined,
+      deviceSelection,
     };
   }
 

@@ -13,6 +13,7 @@ import { ShellTool } from '../src/tools/bash-tool';
 import type {
   ExecutionScope,
   ScopedDeviceGrant,
+  ScopedDeviceSelection,
   ScopedLocalDeviceGrant,
 } from '../src/types/session-identity';
 import type { ToolExecutionContext } from '../src/types/tool';
@@ -72,10 +73,34 @@ function deviceGrant(operations: ScopedDeviceGrant['operations'], overrides: Par
   };
 }
 
+function deviceSelection(overrides: Partial<ScopedDeviceSelection> = {}): ScopedDeviceSelection {
+  const currentScope = scope();
+  return {
+    kind: 'user_device_selection',
+    source: 'catscompany',
+    status: 'selected',
+    selectionSource: 'single_active_device',
+    sessionKey: currentScope.sessionKey,
+    topicId: currentScope.topicId,
+    topicType: currentScope.topicType,
+    actorUserId: currentScope.actorUserId,
+    agentId: currentScope.agentId,
+    identityTrust: 'server_canonical',
+    identitySource: 'metadata.catsco_identity',
+    selectedDeviceId: 'install-device',
+    selectedDeviceDisplayName: 'Test Device',
+    selectedDeviceBodyId: 'body-device',
+    selectedDeviceInstallationId: 'install-device',
+    selectedDeviceOperations: ['read_file'],
+    ...overrides,
+  };
+}
+
 function context(root: string, options: {
   executionScope?: ExecutionScope;
   localDeviceGrant?: ScopedLocalDeviceGrant;
   deviceGrants?: ScopedDeviceGrant[];
+  deviceSelection?: ScopedDeviceSelection;
 } = {}): ToolExecutionContext {
   return {
     workingDirectory: root,
@@ -86,6 +111,7 @@ function context(root: string, options: {
     executionScope: options.executionScope ?? scope(),
     localDeviceGrant: options.localDeviceGrant ?? localDevice(),
     deviceGrants: options.deviceGrants,
+    deviceSelection: options.deviceSelection,
   };
 }
 
@@ -120,6 +146,71 @@ describe('CatsCo ToolGateway', () => {
 
     assert.equal(result.ok, true);
     assert.match(String(result.content), /allowed content/);
+  });
+
+  test('allows read_file when backend-selected device matches the current CatsCo device', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'selected content');
+
+    const result = await new ReadTool().execute({ file_path: filePath }, context(root, {
+      deviceGrants: [deviceGrant(['read_file'])],
+      deviceSelection: deviceSelection(),
+    }));
+
+    assert.equal(result.ok, true);
+    assert.match(String(result.content), /selected content/);
+  });
+
+  test('blocks device tools when backend requires device selection first', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'secret');
+
+    const result = await new ReadTool().execute({ file_path: filePath }, context(root, {
+      deviceGrants: [deviceGrant(['read_file'])],
+      deviceSelection: deviceSelection({
+        status: 'needs_selection',
+        selectedDeviceId: undefined,
+        selectedDeviceBodyId: undefined,
+        selectedDeviceInstallationId: undefined,
+      }),
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+      assert.match(result.message, /尚未选定/);
+      assert.doesNotMatch(result.message, new RegExp(escapeRegExp(filePath)));
+    }
+  });
+
+  test('blocks device tools when backend-selected device is not the current CatsCo device', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'secret');
+
+    const result = await new ReadTool().execute({ file_path: filePath }, context(root, {
+      deviceGrants: [deviceGrant(['read_file'], {
+        deviceId: 'other-device',
+        deviceDisplayName: 'Other Device',
+        deviceBodyId: 'body-other',
+        deviceInstallationId: 'install-other',
+      })],
+      deviceSelection: deviceSelection({
+        selectedDeviceId: 'other-device',
+        selectedDeviceDisplayName: 'Other Device',
+        selectedDeviceBodyId: 'body-other',
+        selectedDeviceInstallationId: 'install-other',
+      }),
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+      assert.match(result.message, /不是当前运行体/);
+      assert.doesNotMatch(result.message, new RegExp(escapeRegExp(filePath)));
+    }
   });
 
   test('redacts local absolute paths from successful CatsCo device file results', async () => {
