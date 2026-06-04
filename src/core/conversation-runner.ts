@@ -1,5 +1,5 @@
 import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
-import type { ScopedLocalFileGrant } from '../types/session-identity';
+import type { ScopedDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
 import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { StreamCallbacks } from '../providers/provider';
@@ -21,6 +21,10 @@ import {
   SUBAGENT_TOOL_NAME,
   TRANSIENT_RUNNER_HINT_PREFIX,
 } from './runner-orchestration-policy';
+import {
+  TRANSIENT_RUNTIME_CONTEXT_PREFIX,
+  buildRuntimeContextMessage,
+} from './runtime-context-builder';
 import { calculateSummaryBudgetTokens, resolveModelPromptBudgetTokens } from '../utils/model-context-window';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -86,6 +90,7 @@ export interface RunResult {
 
 export interface PendingUserInput {
   content: string | ContentBlock[];
+  deviceGrants?: ScopedDeviceGrant[];
   localFileGrants?: ScopedLocalFileGrant[];
 }
 
@@ -514,6 +519,17 @@ export class ConversationRunner {
     if (!pending) return false;
 
     const content = isPendingUserInput(pending) ? pending.content : pending;
+    let shouldRefreshRuntimeContext = false;
+    if (isPendingUserInput(pending) && pending.deviceGrants?.length) {
+      this.toolExecutionContext = {
+        ...(this.toolExecutionContext || {}),
+        deviceGrants: [
+          ...(this.toolExecutionContext?.deviceGrants || []),
+          ...pending.deviceGrants,
+        ],
+      };
+      shouldRefreshRuntimeContext = true;
+    }
     if (isPendingUserInput(pending) && pending.localFileGrants?.length) {
       this.toolExecutionContext = {
         ...(this.toolExecutionContext || {}),
@@ -522,6 +538,10 @@ export class ConversationRunner {
           ...pending.localFileGrants,
         ],
       };
+      shouldRefreshRuntimeContext = true;
+    }
+    if (shouldRefreshRuntimeContext) {
+      this.refreshRuntimeContextForPendingInput(messages);
     }
 
     const userMessage: Message = { role: 'user', content };
@@ -537,6 +557,34 @@ export class ConversationRunner {
     );
 
     return true;
+  }
+
+  private refreshRuntimeContextForPendingInput(messages: Message[]): void {
+    const sessionKey = this.toolExecutionContext?.sessionId
+      || this.toolExecutionContext?.executionScope?.sessionKey;
+    if (!sessionKey) return;
+
+    const runtimeContext = buildRuntimeContextMessage({
+      sessionKey,
+      sessionType: this.toolExecutionContext?.surface,
+      executionScope: this.toolExecutionContext?.executionScope,
+      localDeviceGrant: this.toolExecutionContext?.localDeviceGrant,
+      deviceGrants: this.toolExecutionContext?.deviceGrants,
+      localFileGrants: this.toolExecutionContext?.localFileGrants,
+    });
+    if (!runtimeContext) return;
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (
+        message.role === 'system'
+        && typeof message.content === 'string'
+        && message.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX)
+      ) {
+        messages.splice(i, 1);
+      }
+    }
+    messages.push(runtimeContext);
   }
 
   /**

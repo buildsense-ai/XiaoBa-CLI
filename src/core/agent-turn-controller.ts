@@ -1,5 +1,11 @@
 import { ContentBlock, Message } from '../types';
-import type { ExecutionScope, ScopedLocalDeviceGrant, ScopedLocalFileGrant, SessionRoute } from '../types/session-identity';
+import type {
+  ExecutionScope,
+  ScopedDeviceGrant,
+  ScopedLocalDeviceGrant,
+  ScopedLocalFileGrant,
+  SessionRoute,
+} from '../types/session-identity';
 import { ChannelCallbacks } from '../types/tool';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
@@ -39,6 +45,7 @@ export interface RunAgentTurnParams {
   sessionRoute?: SessionRoute;
   executionScope?: ExecutionScope;
   localDeviceGrant?: ScopedLocalDeviceGrant;
+  deviceGrants?: ScopedDeviceGrant[];
   localFileGrants?: ScopedLocalFileGrant[];
   pendingUserInputProvider?: PendingUserInputProvider;
   abortSignal?: AbortSignal;
@@ -92,6 +99,7 @@ export class AgentTurnController {
       sessionRoute: params.sessionRoute ?? this.options.sessionRoute,
       executionScope: params.executionScope,
       localDeviceGrant: params.localDeviceGrant,
+      deviceGrants: params.deviceGrants,
       localFileGrants: params.localFileGrants,
       durableMessages: params.messages,
       runtimeFeedback: params.runtimeFeedback,
@@ -103,6 +111,7 @@ export class AgentTurnController {
       channel: params.channel,
       executionScope: params.executionScope,
       localDeviceGrant: params.localDeviceGrant,
+      deviceGrants: params.deviceGrants,
       localFileGrants: params.localFileGrants,
       pendingUserInputProvider: params.pendingUserInputProvider,
       abortSignal: params.abortSignal,
@@ -152,6 +161,7 @@ export class AgentTurnController {
     channel?: ChannelCallbacks;
     executionScope?: ExecutionScope;
     localDeviceGrant?: ScopedLocalDeviceGrant;
+    deviceGrants?: ScopedDeviceGrant[];
     localFileGrants?: ScopedLocalFileGrant[];
     pendingUserInputProvider?: PendingUserInputProvider;
     abortSignal?: AbortSignal;
@@ -184,6 +194,7 @@ export class AgentTurnController {
           channel: options.channel,
           executionScope: options.executionScope,
           localDeviceGrant: options.localDeviceGrant,
+          deviceGrants: options.deviceGrants,
           localFileGrants: options.localFileGrants,
         },
       },

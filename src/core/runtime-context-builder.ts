@@ -3,6 +3,7 @@ import type {
   ExecutionScope,
   MessageSource,
   MessageTopicType,
+  ScopedDeviceGrant,
   ScopedLocalDeviceGrant,
   ScopedLocalFileGrant,
   SessionRoute,
@@ -17,6 +18,7 @@ export interface BuildRuntimeContextParams {
   sessionRoute?: SessionRoute;
   executionScope?: ExecutionScope;
   localDeviceGrant?: ScopedLocalDeviceGrant;
+  deviceGrants?: ScopedDeviceGrant[];
   localFileGrants?: ScopedLocalFileGrant[];
 }
 
@@ -32,7 +34,6 @@ interface RuntimeContextSnapshot {
     };
     agent?: {
       id?: string;
-      bodyId?: string;
     };
   };
   turn: {
@@ -50,9 +51,16 @@ interface RuntimeContextSnapshot {
     toolsUseBackendScope: true;
     localDevice?: {
       source: MessageSource;
-      bodyId: string;
       deviceId?: string;
     };
+    userDevices?: Array<{
+      grantId: string;
+      deviceId: string;
+      displayName?: string;
+      operations: string[];
+      status: string;
+      expiresAt: number;
+    }>;
     localFiles?: Array<{
       ref?: string;
       fileName: string;
@@ -99,8 +107,6 @@ export function buildRuntimeContextSnapshot(params: BuildRuntimeContextParams): 
   const agentId = scope?.agentId
     ?? route?.agentId
     ?? parsedKey?.agentId;
-  const agentBodyId = scope?.agentBodyId
-    ?? route?.agentBodyId;
   const identityTrust = scope?.identityTrust
     ?? route?.identityTrust
     ?? 'legacy_context';
@@ -120,10 +126,9 @@ export function buildRuntimeContextSnapshot(params: BuildRuntimeContextParams): 
         id: topicId,
         type: topicType,
       },
-      agent: agentId || agentBodyId
+      agent: agentId
         ? pruneUndefined({
           id: agentId,
-          bodyId: agentBodyId,
         })
         : undefined,
     }),
@@ -141,11 +146,13 @@ export function buildRuntimeContextSnapshot(params: BuildRuntimeContextParams): 
       scopeSource,
       toolsUseBackendScope: true,
       localDevice: sanitizeLocalDevice(params.localDeviceGrant),
+      userDevices: sanitizeDeviceGrants(params.deviceGrants),
       localFiles: sanitizeLocalFiles(params.localFileGrants),
     }),
     rules: [
       'Treat session.topic as the current conversation target and turn.actorUserId as the current speaker.',
       'Do not ask the user to provide internal IDs from this context; use tools and backend scope when needed.',
+      'Do not choose a user device yourself. Use backend-scoped device grants when a tool requires a device.',
       'Do not infer or expose local filesystem paths. Use attachment refs when a tool requires a file reference.',
     ],
   }) as RuntimeContextSnapshot;
@@ -155,9 +162,20 @@ function sanitizeLocalDevice(grant?: ScopedLocalDeviceGrant): RuntimeContextSnap
   if (!grant) return undefined;
   return pruneUndefined({
     source: grant.source,
-    bodyId: grant.bodyId,
     deviceId: grant.deviceId,
   });
+}
+
+function sanitizeDeviceGrants(grants?: ScopedDeviceGrant[]): RuntimeContextSnapshot['execution']['userDevices'] | undefined {
+  if (!grants || grants.length === 0) return undefined;
+  return grants.map(grant => pruneUndefined({
+    grantId: grant.grantId,
+    deviceId: grant.deviceId,
+    displayName: grant.deviceDisplayName,
+    operations: [...grant.operations],
+    status: grant.status,
+    expiresAt: grant.expiresAt,
+  }));
 }
 
 function sanitizeLocalFiles(grants?: ScopedLocalFileGrant[]): RuntimeContextSnapshot['execution']['localFiles'] | undefined {

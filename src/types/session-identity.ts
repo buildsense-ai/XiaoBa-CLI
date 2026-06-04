@@ -72,6 +72,18 @@ export interface SessionRoute {
 export type LocalFileGrantKind = 'catscompany_attachment';
 export type LocalFileGrantFileType = 'file' | 'image' | 'unknown';
 export type LocalFileGrantOperation = 'read_file' | 'send_file';
+export type UserDeviceStatus = 'unknown' | 'online' | 'offline';
+export type DeviceGrantStatus = 'active' | 'revoked';
+export type DeviceGrantOperation =
+  | 'read_file'
+  | 'write_file'
+  | 'edit_file'
+  | 'send_file'
+  | 'execute_shell'
+  | 'glob'
+  | 'grep'
+  | 'browser_control'
+  | 'desktop_control';
 
 export interface ScopedLocalDeviceGrant {
   kind: 'catscompany_body';
@@ -80,6 +92,44 @@ export interface ScopedLocalDeviceGrant {
   installationId?: string;
   deviceId?: string;
   createdAt: number;
+}
+
+export interface UserDevice {
+  kind: 'user_device';
+  source: MessageSource;
+  ownerUserId: string;
+  deviceId: string;
+  displayName?: string;
+  bodyId?: string;
+  installationId?: string;
+  identityTrust: IdentityTrustLevel;
+  identitySource?: string;
+  status: UserDeviceStatus;
+  registeredAt: number;
+  lastSeenAt?: number;
+}
+
+export interface ScopedDeviceGrant {
+  kind: 'user_device_grant';
+  source: MessageSource;
+  grantId: string;
+  status: DeviceGrantStatus;
+  identityTrust: IdentityTrustLevel;
+  identitySource?: string;
+  deviceId: string;
+  deviceDisplayName?: string;
+  deviceBodyId?: string;
+  deviceInstallationId?: string;
+  ownerUserId: string;
+  sessionKey: string;
+  topicId: string;
+  topicType: MessageTopicType;
+  actorUserId: string;
+  agentId?: string;
+  agentBodyId?: string;
+  operations: DeviceGrantOperation[];
+  createdAt: number;
+  expiresAt: number;
 }
 
 export interface ScopedLocalFileGrant {

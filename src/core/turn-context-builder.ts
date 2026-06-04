@@ -1,6 +1,7 @@
 import { Message } from '../types';
 import type {
   ExecutionScope,
+  ScopedDeviceGrant,
   ScopedLocalDeviceGrant,
   ScopedLocalFileGrant,
   SessionRoute,
@@ -30,6 +31,7 @@ export interface BuildTurnContextParams {
   sessionRoute?: SessionRoute;
   executionScope?: ExecutionScope;
   localDeviceGrant?: ScopedLocalDeviceGrant;
+  deviceGrants?: ScopedDeviceGrant[];
   localFileGrants?: ScopedLocalFileGrant[];
   durableMessages: Message[];
   runtimeFeedback: string[];
@@ -88,6 +90,7 @@ export class TurnContextBuilder {
       sessionRoute: params.sessionRoute,
       executionScope: params.executionScope,
       localDeviceGrant: params.localDeviceGrant,
+      deviceGrants: params.deviceGrants,
       localFileGrants: params.localFileGrants,
     });
     if (!message) return;
