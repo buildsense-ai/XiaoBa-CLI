@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 
 const dashboardHtml = readFileSync(join(process.cwd(), 'dashboard/index.html'), 'utf-8');
 const servicesPageHtml = dashboardHtml.match(/<div class="page" id="page-services">[\s\S]*?<div class="page" id="page-companion">/)?.[0] || '';
@@ -142,6 +143,59 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /needs-readiness/);
   assert.match(dashboardHtml, /appReadinessLoaded/);
   assert.doesNotMatch(dashboardHtml, /末尾 \+/);
+});
+
+test('relay model cards render SDK labels from model payloads', () => {
+  assert.match(dashboardHtml, /sdk_label:'Anthropic SDK'/);
+  assert.match(dashboardHtml, /const sdkLabel=model\.sdk_label \|\|/);
+  assert.match(dashboardHtml, /escapeHtml\(contextLabel\)\+' · '\+escapeHtml\(sdkLabel\)/);
+  assert.doesNotMatch(dashboardHtml, /escapeHtml\(contextLabel\)\+' · Anthropic SDK'/);
+
+  const functionSource = dashboardHtml.match(
+    /function relayModelChoiceHtml\(model, activeId, catsConnected, context='settings'\)\{[\s\S]*?\n    \}/,
+  )?.[0];
+  assert.ok(functionSource);
+
+  const relayModelChoiceHtml = vm.runInNewContext(`${functionSource}; relayModelChoiceHtml`, {
+    escapeHtml: (value: unknown) => String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;'),
+    formatModelContextLabel: (tokens: unknown, fallback: unknown) => fallback || `${tokens} tokens`,
+    relayActionBusy: () => false,
+    String,
+  }) as (
+    model: Record<string, unknown>,
+    activeId: string,
+    catsConnected: boolean,
+    context?: string,
+  ) => string;
+
+  const html = relayModelChoiceHtml(
+    {
+      id: 'custom-openai',
+      label: 'OpenAI <Relay>',
+      model: 'custom&model',
+      provider: 'anthropic',
+      sdk_label: 'OpenAI SDK',
+      quota_class: 'standard',
+      context_window_tokens: 128000,
+      context_label: '128K',
+    },
+    'custom-openai',
+    true,
+    'chat',
+  );
+
+  assert.match(html, /class="relay-model-choice active"/);
+  assert.match(html, /data-relay-model-id="custom-openai"/);
+  assert.match(html, /data-relay-model-context="chat"/);
+  assert.match(html, /OpenAI &lt;Relay&gt;/);
+  assert.match(html, /custom&amp;model/);
+  assert.match(html, /上下文 128K · OpenAI SDK/);
+  assert.doesNotMatch(html, /Anthropic SDK/);
 });
 
 test('custom model save refreshes simplified state before Chat remains locked', () => {
