@@ -8,6 +8,7 @@ import { ChatConfig } from '../types';
 import { ServiceInfo, ServiceManager } from './service-manager';
 import { readDashboardEnvFile } from './settings';
 import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
+import { getWeixinChannelStatus } from './weixin-channel-binding';
 
 export type DashboardReadinessStatus = 'ready' | 'warning' | 'blocked';
 export type DashboardReadinessCheckStatus = 'pass' | 'warning' | 'fail';
@@ -120,7 +121,7 @@ export function getServicePreflight(
   const checks = [
     ...buildModelChecks(env, config),
     ...buildRuntimeChecks(service, runtimeRoot, env, config, serviceNameToSurface(name)),
-    ...buildServiceSpecificChecks(name, env, config),
+    ...buildServiceSpecificChecks(name, env, config, runtimeRoot),
   ];
   const status = statusFromChecks(checks);
 
@@ -441,6 +442,7 @@ function buildServiceSpecificChecks(
   name: string,
   env: NodeJS.ProcessEnv,
   config: ChatConfig,
+  runtimeRoot: string,
 ): DashboardReadinessCheck[] {
   if (name === 'catscompany') {
     const serverUrl = firstNonEmpty(
@@ -487,10 +489,23 @@ function buildServiceSpecificChecks(
   }
 
   if (name === 'weixin') {
+    const status = getWeixinChannelStatus({ runtimeRoot, env });
     return [
+      status.currentAgent
+        ? passCheck('service.weixin.agent', '微信所属 Agent', `微信将接入当前 agent ${status.currentAgent.name || status.currentAgent.uid}`)
+        : failCheck('service.weixin.agent', '微信所属 Agent', status.reason || '请先选择并绑定 CatsCo agent', 'blocker', {
+          label: '打开 CatsCo',
+          target: 'catsco',
+        }),
+      status.configured
+        ? passCheck('service.weixin.binding', '微信通道绑定', `微信通道已绑定到 agent ${status.binding?.agentName || status.binding?.agentUid}`)
+        : failCheck('service.weixin.binding', '微信通道绑定', status.reason || '请先在当前 agent 下扫码绑定微信', 'blocker', {
+          label: '打开设置',
+          target: 'settings',
+        }),
       firstNonEmpty(env.WEIXIN_TOKEN)
         ? passCheck('service.weixin.token', '微信 Token', '微信 Token 已配置')
-        : failCheck('service.weixin.token', '微信 Token', '需要配置 WEIXIN_TOKEN', 'blocker', {
+        : failCheck('service.weixin.token', '微信 Token', '需要在当前 agent 下扫码获取微信 Token', 'blocker', {
           label: '打开设置',
           target: 'settings',
         }),
