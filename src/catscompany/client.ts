@@ -9,7 +9,9 @@ export type { UploadResult } from './upload';
 
 export interface CatsClientConfig {
   serverUrl: string;
-  apiKey: string;
+  apiKey?: string;
+  connectorToken?: string;
+  authMode?: 'bot' | 'device_connector';
   bodyId?: string;
   installationId?: string;
   deviceRegistration?: CatsDeviceRegistration;
@@ -235,19 +237,31 @@ export class CatsClient extends EventEmitter {
 
   connect(): void {
     if (this.ws) return;
+    const connectorMode = this.isDeviceConnectorAuth();
 
     const bodyId = firstNonEmpty(
       this.config.bodyId,
+      this.config.deviceRegistration?.body_id,
+      this.config.deviceRegistration?.device_id,
       process.env.CATSCO_BODY_ID,
       process.env.CATSCOMPANY_BODY_ID,
       process.env.CATSCO_DEVICE_ID,
       process.env.CATSCOMPANY_DEVICE_ID,
     );
     if (!bodyId) {
-      throw new Error('CatsCo bodyId missing; bind this runtime to a CatsCo agent body before starting the connector.');
+      throw new Error(connectorMode
+        ? 'CatsCo deviceId missing; pair this device connector before starting it.'
+        : 'CatsCo bodyId missing; bind this runtime to a CatsCo agent body before starting the connector.');
+    }
+    if (!connectorMode && !firstNonEmpty(this.config.apiKey)) {
+      throw new Error('CatsCo apiKey missing; bind this runtime to a CatsCo agent body before starting the connector.');
+    }
+    if (connectorMode && !firstNonEmpty(this.config.connectorToken)) {
+      throw new Error('CatsCo connectorToken missing; pair this device connector before starting it.');
     }
     const installationId = firstNonEmpty(
       this.config.installationId,
+      this.config.deviceRegistration?.installation_id,
       process.env.CATSCO_INSTALLATION_ID,
       process.env.CATSCOMPANY_INSTALLATION_ID,
       bodyId,
@@ -255,17 +269,22 @@ export class CatsClient extends EventEmitter {
     this.activeBodyId = bodyId;
     this.activeInstallationId = installationId;
 
-    Logger.info(`[CatsCompany] 正在连接: ${this.config.serverUrl}, apiKey=${maskSecret(this.config.apiKey)}, bodyId=${bodyId}`);
+    Logger.info(`[CatsCompany] 正在连接: ${this.config.serverUrl}, auth=${connectorMode ? 'device_connector' : 'bot_api_key'}, bodyId=${bodyId}`);
     this.supportsClientMessageDedupe = false;
     this.supportsDeviceRpc = false;
     this.ready = false;
     this.bodyLease = undefined;
+    const headers: Record<string, string> = {
+      'X-CatsCo-Body-ID': bodyId,
+      'X-CatsCo-Installation-ID': installationId,
+    };
+    if (connectorMode) {
+      headers['X-CatsCo-Connector-Token'] = firstNonEmpty(this.config.connectorToken) || '';
+    } else {
+      headers['X-API-Key'] = firstNonEmpty(this.config.apiKey) || '';
+    }
     this.ws = new WebSocket(this.config.serverUrl, {
-      headers: {
-        'X-API-Key': this.config.apiKey,
-        'X-CatsCo-Body-ID': bodyId,
-        'X-CatsCo-Installation-ID': installationId,
-      },
+      headers,
     });
 
     this.ws.on('open', () => {
@@ -342,8 +361,10 @@ export class CatsClient extends EventEmitter {
         this.bodyLease = normalizeBodyLeaseStatus(msg.ctrl.params?.body_lease || msg.ctrl.params?.bodyLease);
         this.ready = true;
         this.emit('ready', { uid: this.uid, name: this.name, bodyLease: this.bodyLease });
-        this.autoAcceptFriendRequests().catch(console.error);
-        this.resubscribeTopics();
+        if (!this.isDeviceConnectorAuth()) {
+          this.autoAcceptFriendRequests().catch(console.error);
+          this.resubscribeTopics();
+        }
       } else if (msg.ctrl.id) {
         const pending = this.pendingAcks.get(msg.ctrl.id);
         if (pending) {
@@ -636,12 +657,13 @@ export class CatsClient extends EventEmitter {
   }
 
   private async acceptFriendRequest(userId: number): Promise<void> {
+    if (this.isDeviceConnectorAuth()) return;
     const httpBaseUrl = this.config.httpBaseUrl || 'https://app.catsco.cc';
     const res = await fetch(`${httpBaseUrl}/api/friends/accept`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `ApiKey ${this.config.apiKey}`
+        'Authorization': this.authHeader()
       },
       body: JSON.stringify({ user_id: userId })
     });
@@ -661,16 +683,19 @@ export class CatsClient extends EventEmitter {
       httpBaseUrl: this.httpBaseUrl(),
       filePath,
       type,
-      authHeader: `ApiKey ${this.config.apiKey}`,
+      authHeader: this.authHeader(),
     });
   }
 
   async registerDevice(registration: CatsDeviceRegistration): Promise<unknown> {
-    const res = await fetch(`${this.httpBaseUrl()}/api/devices/register`, {
+    const path = this.isDeviceConnectorAuth()
+      ? '/api/device-connectors/register'
+      : '/api/devices/register';
+    const res = await fetch(`${this.httpBaseUrl()}${path}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `ApiKey ${this.config.apiKey}`,
+        'Authorization': this.authHeader(),
       },
       body: JSON.stringify(registration),
     });
@@ -895,6 +920,21 @@ export class CatsClient extends EventEmitter {
 
   private httpBaseUrl(): string {
     return this.config.httpBaseUrl || inferHttpBaseUrl(this.config.serverUrl) || 'https://app.catsco.cc';
+  }
+
+  private isDeviceConnectorAuth(): boolean {
+    return this.config.authMode === 'device_connector' || Boolean(firstNonEmpty(this.config.connectorToken));
+  }
+
+  private authHeader(): string {
+    if (this.isDeviceConnectorAuth()) {
+      const token = firstNonEmpty(this.config.connectorToken);
+      if (!token) throw new Error('CatsCo connector token is required');
+      return `DeviceConnector ${token}`;
+    }
+    const apiKey = firstNonEmpty(this.config.apiKey);
+    if (!apiKey) throw new Error('CatsCo API key is required');
+    return `ApiKey ${apiKey}`;
   }
 
   disconnect(): void {

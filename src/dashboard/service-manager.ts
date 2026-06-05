@@ -141,6 +141,17 @@ export class ServiceManager extends EventEmitter {
       logs: [],
     });
 
+    this.services.set('device-connector', {
+      info: {
+        name: 'device-connector',
+        label: 'CatsCo Device Connector',
+        command,
+        args: args('device-connector'),
+        status: 'stopped',
+      },
+      logs: [],
+    });
+
     this.services.set('feishu', {
       info: {
         name: 'feishu',

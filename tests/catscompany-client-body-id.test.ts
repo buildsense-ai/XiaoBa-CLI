@@ -73,6 +73,38 @@ describe('CatsCompany client body identity', () => {
     assert.equal(headers['x-catsco-installation-id'], 'install-test');
   });
 
+  test('sends connector token headers without api key in device connector mode', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    servers.push(server);
+    await new Promise<void>(resolve => server.once('listening', resolve));
+
+    const headersPromise = new Promise<Record<string, string | string[] | undefined>>(resolve => {
+      server.once('connection', (socket, request) => {
+        resolve(request.headers);
+        socket.close();
+      });
+    });
+
+    const address = server.address() as AddressInfo;
+    const client = new CatsClient({
+      serverUrl: `ws://127.0.0.1:${address.port}`,
+      authMode: 'device_connector',
+      connectorToken: 'device-token',
+      bodyId: 'device-local',
+      installationId: 'install-local',
+    });
+    client.on('error', () => undefined);
+
+    client.connect();
+    const headers = await headersPromise;
+    client.disconnect();
+
+    assert.equal(headers['x-api-key'], undefined);
+    assert.equal(headers['x-catsco-connector-token'], 'device-token');
+    assert.equal(headers['x-catsco-body-id'], 'device-local');
+    assert.equal(headers['x-catsco-installation-id'], 'install-local');
+  });
+
   test('fails before connecting when body id is missing', () => {
     clearIdentityEnv();
     const client = new CatsClient({
@@ -175,6 +207,49 @@ describe('CatsCompany client body identity', () => {
       installation_id: 'install-test',
       status: 'online',
       capabilities: ['read_file', 'send_file'],
+    });
+  });
+
+  test('registers connector devices through scoped Device Connector HTTP API', async () => {
+    const requestPromise = new Promise<{ url?: string; method?: string; headers: Record<string, string | string[] | undefined>; body: any }>((resolve, reject) => {
+      const server = createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on('data', chunk => chunks.push(Buffer.from(chunk)));
+        req.on('end', () => {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          resolve({ url: req.url, method: req.method, headers: req.headers, body });
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ device: { deviceId: body.device_id } }));
+        });
+      });
+      httpServers.push(server);
+      server.listen(0, '127.0.0.1', () => {
+        void (async () => {
+          const address = server.address() as AddressInfo;
+          const client = new CatsClient({
+            serverUrl: 'ws://127.0.0.1:1/v0/channels',
+            httpBaseUrl: `http://127.0.0.1:${address.port}`,
+            authMode: 'device_connector',
+            connectorToken: 'device-token',
+            bodyId: 'device-local',
+          });
+          await client.registerDevice({
+            device_id: 'device-local',
+            status: 'online',
+            capabilities: ['read_file', 'glob'],
+          });
+        })().catch(reject);
+      });
+    });
+
+    const request = await requestPromise;
+    assert.equal(request.method, 'POST');
+    assert.equal(request.url, '/api/device-connectors/register');
+    assert.equal(request.headers.authorization, 'DeviceConnector device-token');
+    assert.deepEqual(request.body, {
+      device_id: 'device-local',
+      status: 'online',
+      capabilities: ['read_file', 'glob'],
     });
   });
 

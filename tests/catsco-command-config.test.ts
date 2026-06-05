@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { resolveCatsCoCommandConfig } from '../src/commands/catscompany';
+import { resolveDeviceConnectorCommandConfig } from '../src/commands/device-connector';
 import { ChatConfig } from '../src/types';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 
@@ -81,6 +82,70 @@ describe('CatsCo command config resolution', () => {
 
     assert.deepEqual(resolved.missing, ['apiKey', 'bodyId']);
     assert.equal(resolved.config, undefined);
+  });
+
+  test('resolves lightweight device connector config from local enrollment', () => {
+    createCatsCoLocalConfigService({ runtimeRoot: tempDir }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: 'https://app.example',
+        serverUrl: 'wss://app.example/v0/channels',
+      },
+      device: {
+        deviceId: 'device-local',
+        bodyId: 'device-local',
+        installationId: 'install-local',
+      },
+      deviceConnector: {
+        token: 'device-token',
+        ownerUid: 'usr7',
+        deviceId: 'device-local',
+        installationId: 'install-local',
+        capabilities: ['read_file', 'glob'],
+      },
+    });
+
+    const resolved = resolveDeviceConnectorCommandConfig({}, {}, {});
+
+    assert.deepEqual(resolved.missing, []);
+    assert.equal(resolved.config?.authMode, 'device_connector');
+    assert.equal(resolved.config?.connectorToken, 'device-token');
+    assert.equal(resolved.config?.bodyId, 'device-local');
+    assert.equal(resolved.config?.installationId, 'install-local');
+    assert.deepEqual(resolved.config?.capabilities, ['read_file', 'glob']);
+  });
+
+  test('keeps saved device connector capabilities as the startup ceiling', () => {
+    createCatsCoLocalConfigService({ runtimeRoot: tempDir }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: 'https://app.example',
+        serverUrl: 'wss://app.example/v0/channels',
+      },
+      device: {
+        deviceId: 'device-local',
+        bodyId: 'device-local',
+        installationId: 'install-local',
+      },
+      deviceConnector: {
+        token: 'device-token',
+        ownerUid: 'usr7',
+        deviceId: 'device-local',
+        installationId: 'install-local',
+        capabilities: ['read_file', 'glob', 'grep'],
+      },
+    });
+
+    const resolved = resolveDeviceConnectorCommandConfig({}, {}, {
+      allowWrite: true,
+      allowShell: true,
+      capability: ['read_file', 'write_file', 'execute_shell'],
+    });
+
+    assert.deepEqual(resolved.missing, []);
+    assert.deepEqual(resolved.config?.capabilities, ['read_file', 'glob', 'grep']);
+    assert.equal(resolved.config?.allowWriteFile, false);
+    assert.equal(resolved.config?.allowShell, false);
   });
 
   function saveConfirmedBinding(): void {

@@ -130,6 +130,9 @@ export class CatsCompanyBot {
   };
 
   constructor(config: CatsCompanyConfig) {
+    if (!config.apiKey) {
+      throw new Error('CatsCompanyBot requires a bot API key. Use CatsCoDeviceConnector for device-only mode.');
+    }
     const localDeviceId = config.installationId || config.bodyId;
     const deviceRegistration = localDeviceId
       ? {
@@ -145,6 +148,7 @@ export class CatsCompanyBot {
     this.bot = new CatsClient({
       serverUrl: config.serverUrl,
       apiKey: config.apiKey,
+      authMode: 'bot',
       bodyId: config.bodyId,
       installationId: config.installationId,
       deviceRegistration,

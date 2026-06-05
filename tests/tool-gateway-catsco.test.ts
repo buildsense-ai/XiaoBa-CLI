@@ -365,6 +365,15 @@ describe('CatsCo ToolGateway', () => {
     assert.match(String(grep.content), /needle/);
     assert.doesNotMatch(String(grep.content), new RegExp(escapeRegExp(root)));
 
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-tool-gateway-outside-'));
+    const outsideFile = path.join(outsideRoot, 'outside-notes.txt');
+    fs.writeFileSync(outsideFile, 'outside needle');
+    const outsideGrep = await new GrepTool().execute({ pattern: 'needle', path: outsideFile, output_mode: 'content' }, ctx);
+    assert.equal(outsideGrep.ok, true);
+    assert.match(String(outsideGrep.content), /outside needle/);
+    assert.doesNotMatch(String(outsideGrep.content), /\.\.\//);
+    assert.doesNotMatch(String(outsideGrep.content), new RegExp(escapeRegExp(outsideRoot)));
+
     const write = await new WriteTool().execute({ file_path: outPath, content: 'after' }, ctx);
     assert.equal(write.ok, true);
     assert.doesNotMatch(String(write.content), new RegExp(escapeRegExp(outPath)));
