@@ -9,6 +9,7 @@ import { Logger } from '../utils/logger';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { isToolAllowed, isBashCommandAllowed } from '../utils/safety';
 import { resolveToolGatewayAccess } from './tool-gateway';
+import { executeRemoteTool } from './device-rpc-tool';
 
 const execAsync = promisify(exec);
 const CWD_MARKER_PREFIX = '__XIAOBA_CWD_MARKER__';
@@ -73,10 +74,13 @@ export class ShellTool implements Tool {
     const gateway = resolveToolGatewayAccess(context, {
       toolName: this.definition.name,
       operation: 'execute_shell',
+      allowCatsCoShell: true,
     });
     if (!gateway.ok) {
       return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
     }
+    const remoteResult = await executeRemoteTool(context, gateway, 'execute_shell', 'execute_shell', args);
+    if (remoteResult) return remoteResult;
 
     if (description) {
       Logger.info(`Executing command: ${description}`);

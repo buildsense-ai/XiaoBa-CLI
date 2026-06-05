@@ -70,6 +70,15 @@ function normalizeDeviceSelection(record: UnknownRecord, scope: ExecutionScope):
       || stringField(record, 'selected_device_installation_id')
       || stringField(selectedDevice, 'installationId')
       || stringField(selectedDevice, 'installation_id'),
+    selectedDeviceStatus: normalizeDeviceStatus(stringField(selectedDevice, 'status') || stringField(record, 'selectedDeviceStatus')),
+    selectedDeviceActive: booleanField(selectedDevice, 'active') ?? booleanField(record, 'selectedDeviceActive'),
+    selectedDeviceRouteConnected: booleanField(selectedDevice, 'routeConnected')
+      ?? booleanField(selectedDevice, 'route_connected')
+      ?? booleanField(record, 'selectedDeviceRouteConnected'),
+    selectedDeviceRoutable: booleanField(selectedDevice, 'routable') ?? booleanField(record, 'selectedDeviceRoutable'),
+    selectedDeviceUnavailableReason: stringField(selectedDevice, 'unavailableReason')
+      || stringField(selectedDevice, 'unavailable_reason')
+      || stringField(record, 'selectedDeviceUnavailableReason'),
     selectedDeviceOperations: normalizeOperations(selectedDevice?.operations ?? record.selectedDeviceOperations ?? record.selected_device_operations),
     candidates: normalizeCandidates(record.candidates),
     candidateCount: numberField(record, 'candidateCount') ?? numberField(record, 'candidate_count'),
@@ -98,6 +107,11 @@ function normalizeCandidates(value: unknown): DeviceSelectionCandidate[] | undef
       return pruneUndefined({
         deviceId,
         displayName: stringField(record, 'displayName') || stringField(record, 'display_name'),
+        status: normalizeDeviceStatus(stringField(record, 'status')),
+        active: booleanField(record, 'active'),
+        routeConnected: booleanField(record, 'routeConnected') ?? booleanField(record, 'route_connected'),
+        routable: booleanField(record, 'routable'),
+        unavailableReason: stringField(record, 'unavailableReason') || stringField(record, 'unavailable_reason'),
         operations: normalizeOperations(record.operations),
         lastSeenAt: numberField(record, 'lastSeenAt') ?? numberField(record, 'last_seen_at'),
       }) as DeviceSelectionCandidate;
@@ -142,6 +156,12 @@ function normalizeTopicType(value: string | undefined): MessageTopicType {
   return 'unknown';
 }
 
+function normalizeDeviceStatus(value: string | undefined): 'online' | 'offline' | 'unknown' | undefined {
+  if (value === 'online' || value === 'offline') return value;
+  if (value === 'unknown') return 'unknown';
+  return undefined;
+}
+
 function asRecord(value: unknown): UnknownRecord | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   return value as UnknownRecord;
@@ -161,6 +181,12 @@ function numberField(record: UnknownRecord | undefined, key: string): number | u
     const parsed = Number(value);
     if (Number.isFinite(parsed) && parsed >= 0) return parsed;
   }
+  return undefined;
+}
+
+function booleanField(record: UnknownRecord | undefined, key: string): boolean | undefined {
+  const value = record?.[key];
+  if (typeof value === 'boolean') return value;
   return undefined;
 }
 

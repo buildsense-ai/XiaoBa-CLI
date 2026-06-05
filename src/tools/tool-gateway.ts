@@ -33,7 +33,7 @@ export interface CatsCoVisiblePathOptions {
   preserveRelative?: boolean;
 }
 
-const REMOTE_READONLY_OPERATIONS = new Set<DeviceGrantOperation>(['read_file', 'glob', 'grep']);
+const REMOTE_RPC_OPERATIONS = new Set<DeviceGrantOperation>(['read_file', 'glob', 'grep', 'write_file', 'execute_shell']);
 
 export function isCatsCoToolGatewayContext(context: ToolExecutionContext): boolean {
   return context.surface === 'catscompany' || context.executionScope?.source === 'catscompany';
@@ -122,10 +122,10 @@ export function resolveToolGatewayAccess(
 
   const grant = decision.grant;
   if (selectedTarget.mode === 'remote') {
-    if (!REMOTE_READONLY_OPERATIONS.has(options.operation)) {
+    if (!REMOTE_RPC_OPERATIONS.has(options.operation)) {
       return denied([
         `后端选定的用户设备不是当前运行体，但 ${options.operation} 还没有开放远程执行。`,
-        '当前 PR 只开放 read_file / glob / grep 三个只读远程工具。',
+        '当前远程设备 RPC 仅支持 read_file / glob / grep / write_file / execute_shell，且必须由服务端显式授权。',
       ], options.targetLabel);
     }
     if (!context.deviceRpc) {
@@ -208,7 +208,9 @@ function resolveBackendSelectedDevice(
   }
   if (selection.status === 'unavailable') {
     return selectedDenied([
-      '当前用户没有可用的在线设备授权，已阻止本地设备操作。',
+      selection.selectionSource === 'no_routable_devices'
+        ? '当前用户有设备记录，但没有可路由的在线设备连接，已阻止设备操作。'
+        : '当前用户没有可用的在线设备授权，已阻止本地设备操作。',
       '请让用户打开并授权目标设备后再继续。',
     ], targetLabel);
   }
@@ -223,6 +225,14 @@ function resolveBackendSelectedDevice(
     && !selection.selectedDeviceOperations.includes(operation)) {
     return selectedDenied([
       `后端选定设备没有声明支持 ${operation}，已阻止设备工具调用。`,
+      selection.selectedDeviceDisplayName ? `Selected device: ${selection.selectedDeviceDisplayName}` : '',
+    ], targetLabel);
+  }
+
+  if (selection.selectedDeviceRoutable === false) {
+    return selectedDenied([
+      '后端选定设备当前不可路由，已阻止设备工具调用。',
+      selection.selectedDeviceUnavailableReason ? `原因: ${selection.selectedDeviceUnavailableReason}` : '',
       selection.selectedDeviceDisplayName ? `Selected device: ${selection.selectedDeviceDisplayName}` : '',
     ], targetLabel);
   }

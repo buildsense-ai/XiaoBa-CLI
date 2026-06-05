@@ -61,6 +61,9 @@ function normalizeDeviceGrant(value: unknown): ScopedDeviceGrant | undefined {
     deviceDisplayName: stringField(record, 'deviceDisplayName') || stringField(record, 'device_display_name'),
     deviceBodyId: stringField(record, 'deviceBodyId') || stringField(record, 'device_body_id'),
     deviceInstallationId: stringField(record, 'deviceInstallationId') || stringField(record, 'device_installation_id'),
+    deviceActive: booleanField(record, 'deviceActive') ?? booleanField(record, 'device_active'),
+    deviceRouteConnected: booleanField(record, 'deviceRouteConnected') ?? booleanField(record, 'device_route_connected'),
+    deviceRoutable: booleanField(record, 'deviceRoutable') ?? booleanField(record, 'device_routable'),
     ownerUserId,
     sessionKey,
     topicId,
@@ -149,6 +152,12 @@ function numberField(record: UnknownRecord, key: string): number | undefined {
     const parsed = Number(value);
     if (Number.isFinite(parsed) && parsed >= 0) return parsed;
   }
+  return undefined;
+}
+
+function booleanField(record: UnknownRecord | undefined, key: string): boolean | undefined {
+  const value = record?.[key];
+  if (typeof value === 'boolean') return value;
   return undefined;
 }
 

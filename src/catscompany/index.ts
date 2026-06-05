@@ -17,6 +17,8 @@ import type { PendingUserInput } from '../core/conversation-runner';
 import type { DeviceGrantOperation, ExecutionScope, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
 import { randomUUID } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import { hostname } from 'os';
 import { ConfigManager } from '../utils/config';
 import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
@@ -24,8 +26,10 @@ import { createCatsCoSessionRoute } from '../core/session-router';
 import { ReadTool } from '../tools/read-tool';
 import { GlobTool } from '../tools/glob-tool';
 import { GrepTool } from '../tools/grep-tool';
+import { WriteTool } from '../tools/write-tool';
+import { ShellTool } from '../tools/bash-tool';
 import {
-  isRemoteReadonlyTool,
+  isRemoteDeviceTool,
   normalizeDeviceRpcToolResultForTransport,
   normalizeDeviceRpcToolResultPayload,
 } from '../tools/device-rpc-tool';
@@ -65,6 +69,7 @@ const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 const TYPING_HEARTBEAT_INTERVAL_MS = 5_000;
 const DEVICE_REGISTRATION_REFRESH_MS = 120_000;
 const DEVICE_RPC_DEFAULT_TTL_MS = 60_000;
+const DEVICE_AUTH_SNAPSHOT_PATH = path.join(process.cwd(), 'tmp', 'catsco-device-authorization.json');
 const HIDDEN_CATS_TOOL_PROGRESS = new Set([
   'send_text',
   'send_file',
@@ -304,9 +309,9 @@ export class CatsCompanyBot {
   }
 
   private async executeLocalDeviceRpcTool(request: CatsDeviceRpcMessage): Promise<ToolExecutionResult> {
-    const operation = this.normalizeDeviceRpcReadonlyOperation(request.operation);
+    const operation = this.normalizeDeviceRpcOperation(request.operation);
     const toolName = String(request.tool_name || operation || '').trim();
-    if (!operation || !isRemoteReadonlyTool(toolName, operation)) {
+    if (!operation || !isRemoteDeviceTool(toolName, operation)) {
       return {
         ok: false,
         errorCode: 'PERMISSION_DENIED',
@@ -323,6 +328,10 @@ export class CatsCompanyBot {
         return new GlobTool().execute(args, context);
       case 'grep':
         return new GrepTool().execute(args, context);
+      case 'write_file':
+        return new WriteTool().execute(args, context);
+      case 'execute_shell':
+        return new ShellTool().execute(args, context);
       default:
         return {
           ok: false,
@@ -410,10 +419,10 @@ export class CatsCompanyBot {
     const targetError = this.validateDeviceRpcTarget(request);
     if (targetError) return targetError;
 
-    const operation = this.normalizeDeviceRpcReadonlyOperation(request.operation);
+    const operation = this.normalizeDeviceRpcOperation(request.operation);
     const toolName = String(request.tool_name || operation || '').trim();
-    if (!operation || !isRemoteReadonlyTool(toolName, operation)) {
-      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, glob, and grep.' };
+    if (!operation || !isRemoteDeviceTool(toolName, operation)) {
+      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, glob, grep, write_file, and execute_shell.' };
     }
 
     const requiredFields: Array<[keyof CatsDeviceRpcMessage, string]> = [
@@ -435,9 +444,13 @@ export class CatsCompanyBot {
     return undefined;
   }
 
-  private normalizeDeviceRpcReadonlyOperation(value: unknown): DeviceGrantOperation | undefined {
+  private normalizeDeviceRpcOperation(value: unknown): DeviceGrantOperation | undefined {
     const operation = String(value || '').trim();
-    if (operation === 'read_file' || operation === 'glob' || operation === 'grep') {
+    if (operation === 'read_file'
+      || operation === 'glob'
+      || operation === 'grep'
+      || operation === 'write_file'
+      || operation === 'execute_shell') {
       return operation;
     }
     return undefined;
@@ -883,7 +896,7 @@ export class CatsCompanyBot {
     });
     const executionScope = createExecutionScope(envelope);
 
-    return {
+    const parsed: ParsedCatsMessage = {
       topic: ctx.topic,
       chatType,
       senderId: ctx.senderId,
@@ -898,6 +911,65 @@ export class CatsCompanyBot {
       file: files[0],
       files,
     };
+    this.persistDeviceAuthorizationSnapshot(parsed);
+    return parsed;
+  }
+
+  private persistDeviceAuthorizationSnapshot(message: ParsedCatsMessage): void {
+    const selection = message.deviceSelection;
+    const grants = message.deviceGrants || [];
+    if (!selection && grants.length === 0) return;
+    const now = Date.now();
+    const ttlMsValues = grants
+      .map(grant => grant.expiresAt - now)
+      .filter(value => Number.isFinite(value) && value >= 0);
+    const operations = [...new Set(grants.flatMap(grant => grant.operations || []))];
+    const snapshot = {
+      schema: 'catsco.device_authorization.v1',
+      updatedAt: new Date(now).toISOString(),
+      source: 'last_catsco_turn',
+      topicId: message.topic,
+      topicType: message.chatType,
+      actorUserId: message.executionScope.actorUserId,
+      agentId: message.executionScope.agentId,
+      messageSeq: message.seq,
+      state: selection?.status || (grants.length > 0 ? 'selected' : 'unknown'),
+      selectionSource: selection?.selectionSource,
+      selectedDevice: selection?.selectedDeviceId ? {
+        deviceId: selection.selectedDeviceId,
+        displayName: selection.selectedDeviceDisplayName,
+        status: selection.selectedDeviceStatus,
+        active: selection.selectedDeviceActive,
+        routeConnected: selection.selectedDeviceRouteConnected,
+        routable: selection.selectedDeviceRoutable,
+        unavailableReason: selection.selectedDeviceUnavailableReason,
+      } : undefined,
+      operations,
+      ttlMs: ttlMsValues.length > 0 ? Math.min(...ttlMsValues) : undefined,
+      expiresAt: grants.length > 0 ? Math.min(...grants.map(grant => grant.expiresAt)) : undefined,
+      deniedReason: selection?.status === 'unavailable'
+        ? selection.selectionSource || selection.selectedDeviceUnavailableReason
+        : undefined,
+      candidates: selection?.candidates?.map(candidate => ({
+        deviceId: candidate.deviceId,
+        displayName: candidate.displayName,
+        status: candidate.status,
+        active: candidate.active,
+        routeConnected: candidate.routeConnected,
+        routable: candidate.routable,
+        unavailableReason: candidate.unavailableReason,
+        operations: candidate.operations,
+      })),
+      grantCount: grants.length,
+    };
+    try {
+      fs.mkdirSync(path.dirname(DEVICE_AUTH_SNAPSHOT_PATH), { recursive: true });
+      const tmpPath = `${DEVICE_AUTH_SNAPSHOT_PATH}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(snapshot, null, 2), 'utf-8');
+      fs.renameSync(tmpPath, DEVICE_AUTH_SNAPSHOT_PATH);
+    } catch (error: any) {
+      Logger.warning(`[CatsCompany] device authorization snapshot write skipped: ${error?.message || error}`);
+    }
   }
 
   /**

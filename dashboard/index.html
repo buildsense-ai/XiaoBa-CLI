@@ -8327,6 +8327,7 @@
     function catsDeviceRpcStatusLabel(rpcStatus){
       if(!rpcStatus || rpcStatus.state==='not_configured') return '未就绪';
       if(rpcStatus.state==='auth_error') return '权限错误';
+      if(rpcStatus.routeState==='unavailable') return '共享状态不可用';
       if(rpcStatus.state==='unknown') return '未知';
       if(rpcStatus.state==='degraded') return '部分不可达';
       const pending=Number(rpcStatus.pendingCount||rpcStatus.pending_count||0);
@@ -8343,6 +8344,34 @@
       return state+suffix;
     }
 
+    function catsDeviceAuthorizationLabel(auth){
+      if(!auth) return '无设备';
+      const state=auth.state||'unknown';
+      const selected=auth.selectedDevice||{};
+      const name=selected.displayName||selected.deviceId||'未选择';
+      const route=selected.routable===true?'可路由':(selected.routeConnected===false?'路由断开':'未就绪');
+      const pending=Number(auth.pendingCount||0);
+      const ttl=Number(auth.ttlMs||0);
+      const suffix=pending>0?(' / '+pending+' pending'):(ttl>0?(' / '+Math.ceil(ttl/1000)+'s'):'');
+      if(state==='no_devices') return '无设备';
+      if(state==='available') return '可用设备 '+Number(auth.routableCount||0)+' 台 / 本轮未选择';
+      if(state==='needs_route') return '等待设备连接';
+      return name+' / '+route+suffix;
+    }
+
+    function catsDeviceOperationsLabel(auth){
+      const ops=Array.isArray(auth?.operations)?auth.operations.filter(Boolean):[];
+      return ops.length?ops.join(', '):'无本轮授权';
+    }
+
+    function catsDeviceDenialLabel(auth){
+      if(!auth) return '';
+      if(auth.deniedReason) return auth.deniedReason;
+      const candidates=Array.isArray(auth.unavailableCandidates)?auth.unavailableCandidates:[];
+      const blocked=candidates.find(item=>item && item.unavailableReason);
+      return blocked?.unavailableReason||'';
+    }
+
     function renderCatsStatus(){
       const service=catsState.service||{};
       const user=catsState.user||{};
@@ -8353,6 +8382,8 @@
       const stage=buildCatsChatStage();
       const bodyStatus=catsState.bodyStatus||{};
       const rpcStatus=catsState.deviceRpcStatus||{};
+      const deviceAuth=catsState.deviceAuthorization||{};
+      const denial=catsDeviceDenialLabel(deviceAuth);
       const botLabel=catsState.bot?.name||catsState.botName||catsState.bot?.username||catsState.botUid||'未绑定';
       const accountMeta=connected
         ? (user.display_name?escapeHtml(user.display_name):'已登录')
@@ -8362,6 +8393,9 @@
         '<div class="chat-status-row"><span>CatsCo Agent</span><strong>'+escapeHtml(botLabel)+'</strong></div>'+
         '<div class="chat-status-row"><span>Body</span><strong>'+escapeHtml(catsBodyLeaseLabel(bodyStatus))+'</strong></div>'+
         '<div class="chat-status-row"><span>Device RPC</span><strong>'+escapeHtml(catsDeviceRpcStatusLabel(rpcStatus))+'</strong></div>'+
+        '<div class="chat-status-row"><span>设备授权</span><strong>'+escapeHtml(catsDeviceAuthorizationLabel(deviceAuth))+'</strong></div>'+
+        '<div class="chat-status-row"><span>授权操作</span><strong>'+escapeHtml(catsDeviceOperationsLabel(deviceAuth))+'</strong></div>'+
+        (denial?'<div class="chat-status-row"><span>最近拒绝</span><strong>'+escapeHtml(denial)+'</strong></div>':'')+
         '<div class="chat-status-row"><span>Topic</span><strong>'+(catsState.topicId?escapeHtml(catsState.topicId):'未就绪')+'</strong></div>'+
         '<div class="chat-status-row"><span>CatsCompany connector</span><strong style="color:'+(running?'var(--green)':'var(--orange)')+'">'+(running?'运行中':'未启动')+'</strong></div>';
 

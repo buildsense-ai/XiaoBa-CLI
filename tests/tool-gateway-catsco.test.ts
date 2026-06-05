@@ -302,6 +302,40 @@ describe('CatsCo ToolGateway', () => {
     assert.deepEqual(calls[1].args, { pattern: 'needle', path: '/remote/project', output_mode: 'files' });
   });
 
+  test('routes write_file to the backend-selected remote device without local writes', async () => {
+    const root = makeWorkspace();
+    const requestedPath = path.join(root, 'should-not-exist.txt');
+    let rpcRequest: any;
+    const result = await new WriteTool().execute({ file_path: requestedPath, content: 'remote write' }, context(root, {
+      deviceGrants: [deviceGrant(['write_file'], {
+        deviceId: 'other-device',
+        deviceDisplayName: 'Other Device',
+        deviceBodyId: 'body-other',
+        deviceInstallationId: 'install-other',
+      })],
+      deviceSelection: deviceSelection({
+        selectedDeviceId: 'other-device',
+        selectedDeviceDisplayName: 'Other Device',
+        selectedDeviceBodyId: 'body-other',
+        selectedDeviceInstallationId: 'install-other',
+        selectedDeviceOperations: ['write_file'],
+      }),
+      deviceRpc: {
+        executeTool: async request => {
+          rpcRequest = request;
+          return { ok: true, content: 'remote write ok' };
+        },
+      },
+    }));
+
+    assert.equal(result.ok, true);
+    assert.equal(String(result.content), 'remote write ok');
+    assert.equal(rpcRequest.toolName, 'write_file');
+    assert.equal(rpcRequest.operation, 'write_file');
+    assert.deepEqual(rpcRequest.args, { file_path: requestedPath, content: 'remote write' });
+    assert.equal(fs.existsSync(requestedPath), false);
+  });
+
   test('redacts local absolute paths from successful CatsCo device file results', async () => {
     const root = makeWorkspace();
     const filePath = path.join(root, 'notes.txt');
@@ -408,16 +442,16 @@ describe('CatsCo ToolGateway', () => {
     }
   });
 
-  test('blocks execute_shell in CatsCo sessions even when a grant contains execute_shell', async () => {
+  test('blocks execute_shell until the server grants execute_shell for the current device', async () => {
     const root = makeWorkspace();
     const result = await new ShellTool().execute({ command: 'echo hello' }, context(root, {
-      deviceGrants: [deviceGrant(['execute_shell'])],
+      deviceGrants: [deviceGrant(['read_file'])],
     }));
 
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.equal(result.errorCode, 'PERMISSION_DENIED');
-      assert.match(result.message, /暂不允许通过 execute_shell/);
+      assert.match(result.message, /执行 execute_shell/);
     }
   });
 });

@@ -46,7 +46,7 @@ function request(overrides: Partial<CatsDeviceRpcMessage> = {}): CatsDeviceRpcMe
   };
 }
 
-describe('CatsCompany Device RPC readonly tools', () => {
+describe('CatsCompany Device RPC tools', () => {
   test('executes read_file on the target local device and returns a normalized result', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
@@ -67,21 +67,42 @@ describe('CatsCompany Device RPC readonly tools', () => {
     assert.equal(captured.result.device_id, 'install-device');
   });
 
-  test('rejects non-readonly Device RPC operations before local tool execution', async () => {
+  test('executes write_file on the target local device when explicitly granted', async () => {
+    const captured: { result?: any } = {};
+    const bot = botWithDevice(captured);
+    const tmpRoot = path.join(process.cwd(), 'tmp');
+    fs.mkdirSync(tmpRoot, { recursive: true });
+    const dir = fs.mkdtempSync(path.join(tmpRoot, 'device-rpc-write-'));
+    const filePath = path.join(dir, 'created.txt');
+
+    await bot.handleDeviceRpcRequest(request({
+      request_id: 'rpc-write-1',
+      operation: 'write_file',
+      tool_name: 'write_file',
+      payload: { args: { file_path: filePath, content: 'hello from rpc write' } },
+    }));
+
+    assert.ok(captured.result);
+    assert.equal(captured.result.error, undefined);
+    assert.equal(captured.result.result.ok, true);
+    assert.equal(fs.readFileSync(filePath, 'utf-8'), 'hello from rpc write');
+  });
+
+  test('rejects unsupported Device RPC operations before local tool execution', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
 
     await bot.handleDeviceRpcRequest(request({
-      request_id: 'rpc-shell-1',
-      operation: 'execute_shell',
-      tool_name: 'execute_shell',
-      payload: { args: { command: 'echo unsafe' } },
+      request_id: 'rpc-send-file-1',
+      operation: 'send_file',
+      tool_name: 'send_file',
+      payload: { args: { file_path: 'secret.txt' } },
     }));
 
     assert.ok(captured.result);
     assert.equal(captured.result.result, undefined);
     assert.equal(captured.result.error.code, 'unsupported_operation');
-    assert.match(captured.result.error.message, /read_file, glob, and grep/);
+    assert.match(captured.result.error.message, /read_file, glob, grep, write_file, and execute_shell/);
   });
 
   test('rejects Device RPC requests for another target device', async () => {

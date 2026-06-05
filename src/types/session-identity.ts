@@ -106,6 +106,10 @@ export interface UserDevice {
   identityTrust: IdentityTrustLevel;
   identitySource?: string;
   status: UserDeviceStatus;
+  active?: boolean;
+  routeConnected?: boolean;
+  routable?: boolean;
+  unavailableReason?: string;
   registeredAt: number;
   lastSeenAt?: number;
 }
@@ -121,6 +125,9 @@ export interface ScopedDeviceGrant {
   deviceDisplayName?: string;
   deviceBodyId?: string;
   deviceInstallationId?: string;
+  deviceActive?: boolean;
+  deviceRouteConnected?: boolean;
+  deviceRoutable?: boolean;
   ownerUserId: string;
   sessionKey: string;
   topicId: string;
@@ -136,6 +143,11 @@ export interface ScopedDeviceGrant {
 export interface DeviceSelectionCandidate {
   deviceId: string;
   displayName?: string;
+  status?: UserDeviceStatus;
+  active?: boolean;
+  routeConnected?: boolean;
+  routable?: boolean;
+  unavailableReason?: string;
   operations?: DeviceGrantOperation[];
   lastSeenAt?: number;
 }
@@ -156,6 +168,11 @@ export interface ScopedDeviceSelection {
   selectedDeviceDisplayName?: string;
   selectedDeviceBodyId?: string;
   selectedDeviceInstallationId?: string;
+  selectedDeviceStatus?: UserDeviceStatus;
+  selectedDeviceActive?: boolean;
+  selectedDeviceRouteConnected?: boolean;
+  selectedDeviceRoutable?: boolean;
+  selectedDeviceUnavailableReason?: string;
   selectedDeviceOperations?: DeviceGrantOperation[];
   candidates?: DeviceSelectionCandidate[];
   candidateCount?: number;
