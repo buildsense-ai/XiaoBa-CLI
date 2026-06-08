@@ -11,11 +11,16 @@ import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-r
 import { promises as fs } from 'fs';
 import path from 'path';
 import {
+  ChannelAgentBindingResolver,
+  CHANNEL_BINDING_REQUIRED_MESSAGE,
+} from '../core/channel-agent-binding-resolver';
+import {
   createExecutionScopeFromRoute,
   createSessionRoute,
   createWeixinSessionRoute,
   parseSessionKeyV2,
 } from '../core/session-router';
+import type { ChannelAgentRouteBinding } from '../core/session-router';
 import type { SessionRoute } from '../types/session-identity';
 
 const CHANNEL_VERSION = 'xiaoba-weixin/1.0';
@@ -44,6 +49,8 @@ export class WeixinBot {
   private sessionManager: MessageSessionManager;
   private agentServices: AgentServices;
   private runtime: AdapterRuntimeBundle;
+  private bindingResolver: ChannelAgentBindingResolver;
+  private channelAppId: string;
   private contextTokens = new Map<string, string>();
   private messageQueue = new Map<string, QueuedMessage[]>();
   private isRunning = false;
@@ -58,6 +65,8 @@ export class WeixinBot {
     const runtime = createWeixinRuntime();
     this.runtime = runtime;
     this.agentServices = runtime.services;
+    this.bindingResolver = new ChannelAgentBindingResolver(config.channelAgentBinding);
+    this.channelAppId = config.channelAppId?.trim() || '';
 
     this.sessionManager = new MessageSessionManager(
       this.agentServices,
@@ -186,7 +195,10 @@ export class WeixinBot {
     const parsed = this.handler.parseMessage(msg);
     if (!parsed || this.handler.shouldIgnoreMessage(parsed)) return;
 
-    const route = createWeixinSessionRoute(parsed);
+    const routeBinding = await this.resolveChannelAgentBinding(parsed);
+    if (routeBinding === null) return;
+
+    const route = createWeixinSessionRoute(parsed, routeBinding);
     const sessionKey = route.sessionKey;
     const userId = route.actorUserId;
     if (msg.context_token) {
@@ -261,6 +273,37 @@ export class WeixinBot {
       await channel.reply(route.topicId, result.text);
     }
     await this.drainMessageQueue(sessionKey);
+  }
+
+  private async resolveChannelAgentBinding(message: WeixinMessage): Promise<ChannelAgentRouteBinding | undefined | null> {
+    if (!this.bindingResolver.enabled) return undefined;
+    const userId = message.from?.id?.trim();
+    if (!userId) return undefined;
+    try {
+      const resolution = await this.bindingResolver.resolve({
+        channel: 'weixin',
+        channelAppId: this.channelAppId || undefined,
+        channelUserId: userId,
+        channelConversationType: 'p2p',
+      });
+      if (!resolution) return undefined;
+      if (!resolution.bound) {
+        if (this.bindingResolver.required) {
+          await this.sender.sendText(userId, CHANNEL_BINDING_REQUIRED_MESSAGE, message.context_token);
+          Logger.warning(`[weixin_binding] 未找到绑定: user=${userId}`);
+          return null;
+        }
+        return undefined;
+      }
+      return resolution;
+    } catch (error: any) {
+      Logger.warning(`[weixin_binding] 绑定查询失败: ${error?.message || error}`);
+      if (this.bindingResolver.required) {
+        await this.sender.sendText(userId, '虚拟员工绑定查询失败，请稍后重试。', message.context_token);
+        return null;
+      }
+      return undefined;
+    }
   }
 
   private async handleSubAgentFeedback(

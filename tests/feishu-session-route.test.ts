@@ -68,9 +68,111 @@ describe('Feishu SessionRoute V2', () => {
       SubAgentManager.getInstance().unregisterPlatformCallbacks('session:v2:feishu:group:oc_group');
     }
   });
+
+  test('does not apply QR channel binding to Feishu group messages yet', async () => {
+    const bot = createHarness({
+      bindingResolver: {
+        enabled: true,
+        required: true,
+        resolve: async () => {
+          throw new Error('group binding should not be resolved in this PR');
+        },
+      },
+      message: {
+        messageId: 'msg-group-binding-skipped',
+        chatId: 'oc_group',
+        chatType: 'group',
+        senderId: 'ou_user',
+        text: '@bot 看一下',
+        mentionBot: true,
+        msgType: 'text',
+      },
+    });
+
+    try {
+      await (bot as any).onMessage({});
+
+      const sessionKey = 'session:v2:feishu:group:oc_group';
+      assert.deepEqual(bot.createdSessions, [sessionKey]);
+      assert.equal(bot.handledTurns.length, 1);
+      assert.equal(bot.handledTurns[0].options.sessionRoute.sessionKey, sessionKey);
+      assert.equal(bot.handledTurns[0].options.executionScope.topicType, 'group');
+    } finally {
+      SubAgentManager.getInstance().unregisterPlatformCallbacks('session:v2:feishu:group:oc_group');
+    }
+  });
+
+  test('does not create a model session when channel binding is required but missing', async () => {
+    const replies: string[] = [];
+    const bot = createHarness({
+      replies,
+      bindingResolver: {
+        enabled: true,
+        required: true,
+        resolve: async () => ({ bound: false }),
+      },
+      message: {
+        messageId: 'msg-binding-missing',
+        chatId: 'shared',
+        chatType: 'p2p',
+        senderId: 'shared',
+        text: 'hello',
+        mentionBot: false,
+        msgType: 'text',
+      },
+    });
+
+    await (bot as any).onMessage({});
+
+    assert.deepEqual(bot.createdSessions, []);
+    assert.equal(bot.handledTurns.length, 0);
+    assert.equal(replies.length, 1);
+    assert.match(replies[0], /入口码|绑定/);
+  });
+
+  test('uses resolved channel binding as the Feishu agent session route', async () => {
+    const bot = createHarness({
+      bindingResolver: {
+        enabled: true,
+        required: true,
+        resolve: async () => ({
+          bound: true,
+          agentId: 'usr43',
+          agentBodyId: 'body-contract',
+          identityTrust: 'server_canonical',
+          identitySource: 'channel_agent_binding',
+        }),
+      },
+      message: {
+        messageId: 'msg-binding-ok',
+        chatId: 'shared',
+        chatType: 'p2p',
+        senderId: 'ou_user',
+        text: '查合同',
+        mentionBot: false,
+        msgType: 'text',
+      },
+    });
+
+    try {
+      await (bot as any).onMessage({});
+
+      const sessionKey = 'session:v2:feishu:p2p:shared:agent:usr43';
+      assert.deepEqual(bot.createdSessions, [sessionKey]);
+      assert.equal(bot.handledTurns.length, 1);
+      assert.equal(bot.handledTurns[0].options.sessionRoute.agentId, 'usr43');
+      assert.equal(bot.handledTurns[0].options.sessionRoute.agentBodyId, 'body-contract');
+      assert.equal(bot.handledTurns[0].options.sessionRoute.identityTrust, 'server_canonical');
+      assert.equal(bot.handledTurns[0].options.executionScope.agentId, 'usr43');
+      assert.equal(bot.handledTurns[0].options.executionScope.agentBodyId, 'body-contract');
+      assert.equal(bot.handledTurns[0].options.executionScope.isTrusted, true);
+    } finally {
+      SubAgentManager.getInstance().unregisterPlatformCallbacks('session:v2:feishu:p2p:shared:agent:usr43');
+    }
+  });
 });
 
-function createHarness(options: { busy?: boolean; message: any }): any {
+function createHarness(options: { busy?: boolean; message: any; bindingResolver?: any; replies?: string[] }): any {
   const bot = Object.create(FeishuBot.prototype) as any;
   bot.sessionBusy = options.busy ?? false;
   bot.createdSessions = [] as string[];
@@ -82,6 +184,8 @@ function createHarness(options: { busy?: boolean; message: any }): any {
   bot.messageQueue = new Map();
   bot.bridgeClient = null;
   bot.bridgeConfig = undefined;
+  bot.channelAppId = 'cli_app';
+  bot.bindingResolver = options.bindingResolver || { enabled: false, required: false };
   bot.handler = {
     parse: () => options.message,
   };
@@ -104,7 +208,9 @@ function createHarness(options: { busy?: boolean; message: any }): any {
     },
   };
   bot.sender = {
-    reply: async () => undefined,
+    reply: async (_chatId: string, text: string) => {
+      options.replies?.push(text);
+    },
     downloadFile: async () => null,
     fetchMergeForwardTexts: async () => '',
     sendFile: async () => undefined,
