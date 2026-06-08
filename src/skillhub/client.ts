@@ -134,12 +134,8 @@ export class SkillHubClient {
     }
     const [applicationResult, submissionsResult, packageVersionsResult] = await Promise.all([
       this.request<any>('GET', '/api/developer-applications/me').catch(error => ({ error })),
-      status.roles.includes('developer')
-        ? this.request<any>('GET', '/api/developer/submissions').catch(error => ({ error, submissions: [] }))
-        : Promise.resolve({ submissions: [] }),
-      status.roles.includes('developer')
-        ? this.request<any>('GET', '/api/developer/package-versions').catch(error => ({ error, packageVersions: [] }))
-        : Promise.resolve({ packageVersions: [] }),
+      this.request<any>('GET', '/api/developer/submissions').catch(error => ({ error, submissions: [] })),
+      this.request<any>('GET', '/api/developer/package-versions').catch(error => ({ error, packageVersions: [] })),
     ]);
     return {
       ...status,
@@ -163,7 +159,7 @@ export class SkillHubClient {
   }
 
   async quickShare(input: any): Promise<any> {
-    return this.request('POST', '/api/developer/submissions', {
+    return this.request('POST', '/api/skills/share', {
       ...input,
       quickShare: true,
     });

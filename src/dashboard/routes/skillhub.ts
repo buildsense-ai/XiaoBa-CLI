@@ -133,6 +133,14 @@ export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOpt
     }
   });
 
+  router.post('/skillhub/share-local-skill', async (req, res) => {
+    try {
+      res.status(201).json(await serviceFrom(req.body).shareLocalSkill(req.body || {}));
+    } catch (error: any) {
+      sendSkillHubError(res, error);
+    }
+  });
+
   router.post('/skillhub/developer/package-versions/:id/yank', async (req, res) => {
     try {
       res.json(await serviceFrom(req.body).yankOwnPackageVersion(String(req.params.id || ''), String(req.body?.reason || '')));

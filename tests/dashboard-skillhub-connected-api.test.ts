@@ -120,7 +120,7 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(fs.existsSync(path.join(install.body.skill.path, 'SKILL.md')), true);
   });
 
-  test('quick shares an installed local skill through SkillHub submissions', async () => {
+  test('quick shares an installed local skill as a regular authenticated SkillHub user', async () => {
     fs.mkdirSync(path.join(testRoot, 'skills', 'quick-demo'), { recursive: true });
     fs.writeFileSync(path.join(testRoot, 'skills', 'quick-demo', 'SKILL.md'), [
       '---',
@@ -138,7 +138,7 @@ describe('dashboard connected SkillHub API', () => {
     await startDashboard();
 
     await post('/api/skillhub/auth/login', { email: 'demo@example.com', password: 'passw0rd!!' });
-    const share = await post('/api/skillhub/developer/share-local-skill', { skillName: 'quick-demo' });
+    const share = await post('/api/skillhub/share-local-skill', { skillName: 'quick-demo' });
     assert.equal(share.status, 201);
     assert.equal(share.body.ok, true);
     assert.equal(share.body.skill.id, 'lin/quick-demo');
@@ -278,7 +278,7 @@ describe('dashboard connected SkillHub API', () => {
         },
       });
     });
-    app.post('/api/developer/submissions', (req, res) => {
+    app.post('/api/skills/share', (req, res) => {
       const manifest = {
         ...req.body.manifest,
         id: `lin/${req.body.manifest.name}`,
@@ -299,6 +299,9 @@ describe('dashboard connected SkillHub API', () => {
           request: req.body,
         },
       });
+    });
+    app.post('/api/developer/submissions', (_req, res) => {
+      res.status(403).json({ error: 'developer submissions should not be used for quick share' });
     });
     app.get('/api/skills', (_req, res) => res.json({ skills: [fixture.entry] }));
     app.get('/api/trust/public-keys', (_req, res) => res.json(fixture.trust));

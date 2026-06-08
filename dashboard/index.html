@@ -6350,7 +6350,7 @@
       if (!confirm('Share this local Skill to SkillHub?\n\n' + skillName)) return;
       try {
         await ensureSkillHubAuthenticated();
-        let data = await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/share-local-skill', {
+        let data = await parseSimpleResponse(await fetch(API + '/api/skillhub/share-local-skill', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({ skillName }),
@@ -6358,7 +6358,7 @@
         if (data.requiresConfirmation) {
           const latest = data.latestVersion ? ('\nLatest version: ' + data.latestVersion) : '';
           if (!confirm('A SkillHub skill with the same name already exists, but the local content is different.' + latest + '\n\nPublish this as a new patch version?')) return;
-          data = await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/share-local-skill', {
+          data = await parseSimpleResponse(await fetch(API + '/api/skillhub/share-local-skill', {
             method:'POST',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({ skillName, confirmVersionPublish: true }),
@@ -6734,8 +6734,11 @@
           ? '<div class="settings-setup-head"><div><div class="settings-setup-title">'+(developer?'开发者权限已启用':'当前账号还不是开发者')+'</div><div class="settings-setup-copy">'+escapeHtml(data.user?.displayName || data.user?.email || 'CatsCo 用户')+' · '+escapeHtml(roles.join(', ') || 'user')+'</div></div><span class="tag '+(developer?'green':'warm')+'">'+(developer?'developer':'user')+'</span></div>'
           : '<div class="runtime-note warning">请先在本页登录 SkillHub，然后再申请开发者权限。</div>';
       }
-      if (applyBox) applyBox.style.display = authenticated && !developer ? 'block' : 'none';
-      if (consoleBox) consoleBox.style.display = developer ? 'block' : 'none';
+      if (statusBox && authenticated) {
+        statusBox.innerHTML = '<div class="settings-setup-head"><div><div class="settings-setup-title">SkillHub publish enabled</div><div class="settings-setup-copy">'+escapeHtml(data.user?.displayName || data.user?.email || 'CatsCo user')+' can share local Skills and manage owned versions.</div></div><span class="tag green">connected</span></div>';
+      }
+      if (applyBox) applyBox.style.display = 'none';
+      if (consoleBox) consoleBox.style.display = 'none';
       if (list) {
         const submissions = data.submissions || [];
         list.innerHTML = submissions.length ? submissions.map(item => {
