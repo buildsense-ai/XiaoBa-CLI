@@ -225,6 +225,40 @@ describe('dashboard readiness and service preflight API', () => {
     assert.equal(readinessText.includes('sk-bf-relay-secret'), false);
   });
 
+  test('custom startup readiness can use a relay gateway endpoint without being treated as managed relay', async () => {
+    writeEnv([
+      'CATSCO_MODEL_SOURCE=custom',
+      'GAUZ_LLM_PROVIDER=openai',
+      'GAUZ_LLM_API_BASE=https://relay.catsco.cc/v1',
+      'GAUZ_LLM_API_KEY=sk-custom-relay-secret',
+      'GAUZ_LLM_MODEL=MiniMax-M3',
+      'CATSCO_CUSTOM_LLM_PROVIDER=openai',
+      'CATSCO_CUSTOM_LLM_API_BASE=https://relay.catsco.cc/v1',
+      'CATSCO_CUSTOM_LLM_API_KEY=sk-custom-relay-secret',
+      'CATSCO_CUSTOM_LLM_MODEL=MiniMax-M3',
+      'CATSCO_HTTP_BASE_URL=https://app.catsco.cc',
+      'CATSCO_SERVER_URL=wss://app.catsco.cc/v0/channels',
+      'CATSCO_API_KEY=catsco-agent-secret',
+      'CATSCO_USER_TOKEN=user-token',
+      'CATSCO_USER_UID=100',
+      'CATSCO_BOT_UID=200',
+    ]);
+    writeConfirmedCatsBinding();
+
+    const readinessResponse = await fetch(`${baseUrl}/api/readiness`);
+    const readinessText = await readinessResponse.text();
+    const readiness = JSON.parse(readinessText) as any;
+    const model = readiness.sections.find((section: any) => section.id === 'model');
+
+    assert.equal(readinessResponse.status, 200, readinessText);
+    assert.equal(model.status, 'warning');
+    assert.equal(model.summary.includes('自定义模型'), true);
+    assert.equal(model.checks.some((check: any) => check.id === 'model.managed.relay' && check.status === 'warning'), true);
+    assert.equal(model.checks.some((check: any) => check.id === 'model.custom.apiBase' && check.status === 'pass'), true);
+    assert.equal(model.checks.some((check: any) => check.id === 'model.custom.model' && check.status === 'pass'), true);
+    assert.equal(readinessText.includes('sk-custom-relay-secret'), false);
+  });
+
   test('Feishu and Weixin preflight block when connector credentials are missing', async () => {
     writeEnv([
       'GAUZ_LLM_PROVIDER=openai',

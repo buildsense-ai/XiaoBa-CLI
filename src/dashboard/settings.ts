@@ -159,6 +159,8 @@ const RELAY_MODEL_ENV_KEYS = {
   apiKey: 'CATSCO_RELAY_LLM_API_KEY',
 } as const;
 
+const MODEL_SOURCE_ENV_KEY = 'CATSCO_MODEL_SOURCE';
+
 function isModelSetting(id: string): boolean {
   return id.startsWith('model.');
 }
@@ -231,7 +233,7 @@ function buildModelStartupSnapshot(
   const effective = readModelProfile(EFFECTIVE_MODEL_ENV_KEYS, fileEnv, env);
   const custom = readCustomModelProfile(fileEnv, env);
   const storedRelay = readModelProfile(RELAY_MODEL_ENV_KEYS, fileEnv, env);
-  const requestedSource = firstNonEmpty(fileEnv.CATSCO_MODEL_SOURCE, env.CATSCO_MODEL_SOURCE);
+  const requestedSource = firstNonEmpty(fileEnv[MODEL_SOURCE_ENV_KEY], env[MODEL_SOURCE_ENV_KEY]);
   const relay = storedRelay.configured
     ? storedRelay
     : {

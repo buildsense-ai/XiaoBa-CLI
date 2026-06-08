@@ -270,6 +270,38 @@ describe('dashboard typed settings API', () => {
     assert.equal(parsed.CATSCO_RELAY_LLM_MODEL, 'MiniMax-M2.7');
   });
 
+  test('custom startup source is preserved when it uses a relay gateway endpoint', async () => {
+    fs.writeFileSync(path.join(testRoot, '.env'), [
+      'CATSCO_MODEL_SOURCE=custom',
+      'GAUZ_LLM_PROVIDER=openai',
+      'GAUZ_LLM_API_BASE=https://relay.catsco.cc/v1',
+      'GAUZ_LLM_API_KEY=sk-custom-relay-secret',
+      'GAUZ_LLM_MODEL=MiniMax-M3',
+      'CATSCO_CUSTOM_LLM_PROVIDER=openai',
+      'CATSCO_CUSTOM_LLM_API_BASE=https://relay.catsco.cc/v1',
+      'CATSCO_CUSTOM_LLM_API_KEY=sk-custom-relay-secret',
+      'CATSCO_CUSTOM_LLM_MODEL=MiniMax-M3',
+      'CATSCO_RELAY_LLM_PROVIDER=anthropic',
+      'CATSCO_RELAY_LLM_API_BASE=https://relay.catsco.cc/anthropic',
+      'CATSCO_RELAY_LLM_API_KEY=sk-bf-relay-secret',
+      'CATSCO_RELAY_LLM_MODEL=MiniMax-M3',
+      '',
+    ].join('\n'));
+
+    const settingsResponse = await fetch(`${baseUrl}/api/settings`);
+    const settingsText = await settingsResponse.text();
+    const settings = JSON.parse(settingsText) as any;
+
+    assert.equal(settingsResponse.status, 200, settingsText);
+    assert.equal(settings.modelStartup.source, 'custom');
+    assert.equal(settings.modelStartup.custom.configured, true);
+    assert.equal(settings.modelStartup.custom.model, 'MiniMax-M3');
+    assert.equal(settings.modelStartup.custom.apiBase, 'https://relay.catsco.cc/v1');
+    assert.equal(settings.modelStartup.relay.configured, true);
+    assert.equal(settingsText.includes('sk-custom-relay-secret'), false);
+    assert.equal(settingsText.includes('sk-bf-relay-secret'), false);
+  });
+
   test('POST /model-source/custom/apply does not echo unsafe custom API base details', async () => {
     fs.writeFileSync(path.join(testRoot, '.env'), [
       'CATSCO_CUSTOM_LLM_PROVIDER=openai',
