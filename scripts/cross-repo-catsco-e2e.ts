@@ -14,9 +14,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 const catsRepo = path.resolve(process.env.CATSCOMPANY_REPO || path.join(rootDir, '..', 'cats-company'));
 const dbDsn = String(process.env.CATSCOMPANY_E2E_DB_DSN || '').trim();
+const e2eTimeoutMs = positiveNumber(process.env.CATSCOMPANY_E2E_TIMEOUT_MS, 180_000);
+const apiTimeoutMs = positiveNumber(process.env.CATSCOMPANY_E2E_API_TIMEOUT_MS, 15_000);
 
 if (!dbDsn) {
-  console.log('[cross-repo:e2e] skipped: CATSCOMPANY_E2E_DB_DSN is not set');
+  const message = '[cross-repo:e2e] CATSCOMPANY_E2E_DB_DSN is not set';
+  if (process.env.CI === 'true') {
+    console.error(message);
+    process.exit(1);
+  }
+  console.log(`${message}; skipped outside CI`);
   process.exit(0);
 }
 
@@ -38,7 +45,16 @@ let serverProcess: ChildProcessWithoutNullStreams | undefined;
 let connector: CatsCoDeviceConnector | undefined;
 let botClient: CatsClient | undefined;
 
-main().catch(error => {
+const watchdog = setTimeout(() => {
+  console.error(`[cross-repo:e2e] timed out after ${e2eTimeoutMs}ms`);
+  serverProcess?.kill('SIGKILL');
+  process.exit(1);
+}, e2eTimeoutMs);
+
+main().then(() => {
+  clearTimeout(watchdog);
+}).catch(error => {
+  clearTimeout(watchdog);
   console.error(`[cross-repo:e2e] failed: ${error?.message || error}`);
   process.exit(1);
 });
@@ -63,9 +79,11 @@ async function main(): Promise<void> {
   }, null, 2), 'utf8');
 
   try {
+    logStep('starting cats-company server');
     serverProcess = startCatsCompanyServer(configPath);
     await waitForReady(`${httpBaseUrl}/ready`, 45_000);
 
+  logStep('registering human user');
   const user = await api('POST', '/api/auth/register', {
     username: `e2e_user_${runId.slice(-10)}`,
     password: 'password123',
@@ -77,6 +95,7 @@ async function main(): Promise<void> {
   assert(token, 'register response missing token');
   assert(userId > 0, 'register response missing uid');
 
+  logStep('creating bot user');
   const bot = await api('POST', '/api/bots', {
     username: `e2e_agent_${runId.slice(-10)}`,
     password: 'password123',
@@ -89,6 +108,7 @@ async function main(): Promise<void> {
   assert(botUid > 0, 'create bot response missing uid');
   assert(botApiKey, 'create bot response missing api_key');
 
+  logStep('creating device pairing');
   const pairing = await api('POST', '/api/device-connectors/pairings', {
     device_name: 'E2E Device',
     capabilities: ['read_file', 'glob', 'grep'],
@@ -99,6 +119,7 @@ async function main(): Promise<void> {
   assert(pairingCode, 'pairing response missing pairing_code');
   assert(pairingId, 'pairing response missing pairing_id');
 
+  logStep('enrolling device connector');
   const deviceId = `e2e-device-${runId.slice(-10)}`;
   const enrollment = await api('POST', '/api/device-connectors/enroll', {
     pairing_code: pairingCode,
@@ -114,6 +135,7 @@ async function main(): Promise<void> {
   const pairingStatus = await api('GET', `/api/device-connectors/pairings/${pairingId}`, undefined, token);
   assert(stringField(pairingStatus, 'status') === 'consumed', 'pairing was not consumed');
 
+  logStep('starting XiaoBa device connector');
   connector = new CatsCoDeviceConnector({
     serverUrl: wsUrl,
     httpBaseUrl,
@@ -127,6 +149,7 @@ async function main(): Promise<void> {
   await connector.start();
   await waitForRoutableDevice(token, deviceId, 20_000);
 
+  logStep('starting XiaoBa bot client');
   botClient = new CatsClient({
     serverUrl: wsUrl,
     httpBaseUrl,
@@ -138,12 +161,14 @@ async function main(): Promise<void> {
   botClient.connect();
   await botReady;
 
+  logStep('opening agent conversation');
   const openAgent = await api('POST', '/api/agents/open', {
     agent_uid: botUid,
   }, token);
   const topic = stringField(openAgent, 'topic');
   assert(topic, 'open agent response missing topic');
 
+  logStep('sending message and waiting for device grant');
   const messagePromise = waitForMessageWithGrant(botClient, topic, 20_000);
   await api('POST', '/api/messages/send', {
     topic_id: topic,
@@ -161,6 +186,7 @@ async function main(): Promise<void> {
   assert(stringField(grant, 'agentId') === `usr${botUid}`, 'grant agent did not match bot');
   assert(stringField(grant, 'deviceId') === deviceId, 'grant device did not match connector');
 
+  logStep('sending device_rpc read_file request');
   const result = await botClient.sendDeviceRpcRequest({
     request_id: `rpc-${runId}`,
     grant_id: stringField(grant, 'grantId'),
@@ -182,12 +208,14 @@ async function main(): Promise<void> {
   assert(payload?.ok === true, `device RPC did not return ok=true: ${JSON.stringify(result)}`);
   assert(String(payload.content || '').includes(sentinel), 'device RPC result did not include sentinel content');
 
+  logStep('checking pending cleanup and status redaction');
   const status = await api('GET', `/api/devices/rpc-status?agent_id=usr${botUid}`, undefined, token);
   assert(numberField(status, 'pending_count') === 0, `pending RPC was not cleared: ${JSON.stringify(status)}`);
   const statusText = JSON.stringify(status);
   assert(!statusText.includes(sentinelFile), 'rpc-status leaked local absolute file path');
   assert(!statusText.includes(sentinel), 'rpc-status leaked file content');
 
+  logStep('deleting device connector registration');
   await api('DELETE', `/api/devices/${encodeURIComponent(deviceId)}`, undefined, token);
   const devicesAfterDelete = await api('GET', '/api/devices', undefined, token);
   const remaining = Array.isArray(devicesAfterDelete.devices) ? devicesAfterDelete.devices : [];
@@ -247,14 +275,27 @@ async function api(
   token?: string,
   expected = 200,
 ): Promise<any> {
-  const res = await fetch(`${httpBaseUrl}${route}`, {
-    method,
-    headers: {
-      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), apiTimeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(`${httpBaseUrl}${route}`, {
+      method,
+      headers: {
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      throw new Error(`${method} ${route} timed out after ${apiTimeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   const text = await res.text();
   let parsed: any = {};
   if (text) {
@@ -384,6 +425,15 @@ function numberField(record: any, key: string): number {
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
+}
+
+function logStep(message: string): void {
+  console.log(`[cross-repo:e2e] ${message}`);
+}
+
+function positiveNumber(value: unknown, fallback: number): number {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
 function prefixLines(prefix: string, value: string): string {
