@@ -180,13 +180,19 @@ describe('AgentSession lifecycle', () => {
       'utf-8',
     );
 
+    assert.deepStrictEqual(
+      restored.map((message: any) => message.content),
+      ['需要读文件', '读完了'],
+    );
     assert.equal(restored.some((message: any) => Array.isArray(message.providerContent)), false);
     assert.equal(restored.some((message: any) => message.role === 'tool'), false);
     assert.equal(restored.some((message: any) => message.tool_calls?.length), false);
-    assert.match(String(restored[1]?.content || ''), /provider replay 隐藏内容未写入本地会话/);
-    assert.match(String(restored[1]?.content || ''), /private tool result/);
+    assert.equal(restored.some((message: any) => String(message.content || '').includes('provider replay 隐藏内容')), false);
+    assert.equal(restored.some((message: any) => String(message.content || '').includes('private tool result')), false);
     assert.doesNotMatch(raw, /hidden chain text/);
     assert.doesNotMatch(raw, /sig_secret/);
+    assert.doesNotMatch(raw, /provider replay 隐藏内容/);
+    assert.doesNotMatch(raw, /private tool result/);
   });
 
   test('loading legacy sessions migrates provider replay hidden thinking off disk', async () => {
@@ -214,11 +220,44 @@ describe('AgentSession lifecycle', () => {
     const restored = SessionStore.getInstance().loadContext('user:lifecycle-legacy-provider-replay');
     const migratedRaw = fs.readFileSync(sessionFile, 'utf-8');
 
+    assert.deepStrictEqual(
+      restored.map((message: any) => message.content),
+      ['旧历史'],
+    );
     assert.equal(restored.some((message: any) => Array.isArray(message.providerContent)), false);
     assert.equal(restored.some((message: any) => message.role === 'tool'), false);
-    assert.match(migratedRaw, /legacy tool result/);
+    assert.doesNotMatch(migratedRaw, /legacy tool result/);
     assert.doesNotMatch(migratedRaw, /legacy hidden chain/);
     assert.doesNotMatch(migratedRaw, /legacy_sig/);
+    assert.doesNotMatch(migratedRaw, /provider replay 隐藏内容/);
+  });
+
+  test('loading already-migrated provider replay placeholders strips them from assistant text', async () => {
+    const { SessionStore } = loadSessionModules();
+    const sessionFile = path.join(testRoot, 'data', 'sessions', 'user_lifecycle-placeholder-leak.jsonl');
+    fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+    fs.writeFileSync(sessionFile, [
+      JSON.stringify({ role: 'user', content: '旧会话继续' }),
+      JSON.stringify({
+        role: 'assistant',
+        content: '[历史工具调用已完成；provider replay 隐藏内容未写入本地会话。 工具调用: write_file。]\n[历史工具结果摘要]\n[工具 write_file] 写入了 report.md',
+      }),
+      JSON.stringify({
+        role: 'assistant',
+        content: '保留这句公开回复\n[历史工具调用已完成；provider replay 隐藏内容未写入本地会话。 工具调用: read_file。]\n继续保留这句',
+      }),
+    ].join('\n') + '\n', 'utf-8');
+
+    const restored = SessionStore.getInstance().loadContext('user:lifecycle-placeholder-leak');
+    const migratedRaw = fs.readFileSync(sessionFile, 'utf-8');
+
+    assert.deepStrictEqual(
+      restored.map((message: any) => message.content),
+      ['旧会话继续', '保留这句公开回复\n继续保留这句'],
+    );
+    assert.doesNotMatch(migratedRaw, /历史工具调用已完成/);
+    assert.doesNotMatch(migratedRaw, /历史工具结果摘要/);
+    assert.doesNotMatch(migratedRaw, /写入了 report\.md/);
   });
 
   test('handleMessage persists each completed turn before cleanup', async () => {
