@@ -122,8 +122,9 @@ export function nextSubagentNudgeToolCount(current: number): number {
 
 export function makeRunnerHint(lines: string[]): Message {
   return {
-    role: 'system',
+    role: 'user',
     content: [TRANSIENT_RUNNER_HINT_PREFIX, ...lines].join('\n'),
+    __injected: true,
   };
 }
 

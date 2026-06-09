@@ -29,8 +29,9 @@ describe('runner orchestration policy', () => {
     ].join('\n')), tools);
 
     assert.ok(hint);
-    assert.equal(hint?.role, 'system');
-    assert.match(String(hint?.content), new RegExp(TRANSIENT_RUNNER_HINT_PREFIX));
+    assert.equal(hint?.role, 'user');
+    assert.equal(hint?.__injected, true);
+    assert.ok(String(hint?.content).startsWith(TRANSIENT_RUNNER_HINT_PREFIX));
     assert.match(String(hint?.content), /语义编排提示/);
     assert.match(String(hint?.content), /不是硬性要求|可用编排动作/);
   });

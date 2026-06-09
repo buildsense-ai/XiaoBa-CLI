@@ -2,8 +2,34 @@ import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
 import { AnthropicProvider } from '../src/providers/anthropic-provider';
 import { Message } from '../src/types';
+import {
+  makeRunnerHint,
+  TRANSIENT_RUNNER_HINT_PREFIX,
+} from '../src/core/runner-orchestration-policy';
 
 describe('AnthropicProvider runtime feedback boundary', () => {
+  test('keeps transient runner hints out of the Anthropic system prompt', () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/anthropic/v1/messages',
+      model: 'MiniMax-M3',
+    });
+
+    const messages: Message[] = [
+      { role: 'system', content: 'stable system prompt' },
+      makeRunnerHint(['runtime-only orchestration nudge']),
+    ];
+
+    const transformed = (provider as any).transformMessages(messages);
+
+    assert.equal(transformed.system, 'stable system prompt');
+    assert.equal(transformed.system.includes(TRANSIENT_RUNNER_HINT_PREFIX), false);
+    assert.equal(transformed.messages.length, 1);
+    assert.equal(transformed.messages[0].role, 'user');
+    assert.ok(String(transformed.messages[0].content).startsWith(TRANSIENT_RUNNER_HINT_PREFIX));
+    assert.equal(JSON.stringify(transformed).includes('__injected'), false);
+  });
+
   test('transforms runtime feedback without leaking internal message fields', () => {
     const provider = new AnthropicProvider({
       apiKey: 'test-key',
