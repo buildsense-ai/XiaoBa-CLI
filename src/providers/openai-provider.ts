@@ -95,6 +95,18 @@ export class OpenAIProvider implements AIProvider {
     );
   }
 
+  private visibleMessageContent(message: any): string | null {
+    const content = typeof message?.content === 'string'
+      ? message.content
+      : Array.isArray(message?.content)
+        ? message.content
+            .map((item: any) => typeof item?.text === 'string' ? item.text : '')
+            .join('')
+        : '';
+    const visible = stripOpenAIThinkingText(content).trim();
+    return visible || null;
+  }
+
   /**
    * 构建请求头
    */
@@ -127,7 +139,7 @@ export class OpenAIProvider implements AIProvider {
     });
 
     return {
-      content: message.content || null,
+      content: this.visibleMessageContent(message),
       toolCalls: message.tool_calls,
       stopReason: choice.finish_reason || undefined,
       usage: usage ? {
@@ -162,6 +174,7 @@ export class OpenAIProvider implements AIProvider {
 
     return new Promise<ChatResponse>((resolve, reject) => {
       let fullContent = '';
+      let contentStripper = new OpenAIThinkingStripper();
       const toolCallsMap = new Map<number, { id: string; type: 'function'; function: { name: string; arguments: string } }>();
       let buffer = '';
       let streamUsage: ChatResponse['usage'] = undefined;
@@ -208,10 +221,21 @@ export class OpenAIProvider implements AIProvider {
             const delta = choice?.delta;
             if (!delta) continue;
 
+            // OpenAI-compatible providers may stream hidden reasoning fields
+            // (reasoning_content/thinking/etc.). CatsCo treats them as private
+            // provider-side work: never render them and never send them back as
+            // conversation content.
+            if (hasOpenAIReasoningDelta(delta)) {
+              // Deliberately ignored.
+            }
+
             // 文本内容
             if (delta.content) {
-              fullContent += delta.content;
-              callbacks?.onText?.(delta.content);
+              const visibleContent = contentStripper.push(delta.content);
+              if (visibleContent) {
+                fullContent += visibleContent;
+                callbacks?.onText?.(visibleContent);
+              }
             }
 
             // 工具调用（增量拼接）
@@ -239,6 +263,11 @@ export class OpenAIProvider implements AIProvider {
 
       stream.on('end', () => {
         options?.signal?.removeEventListener('abort', onAbort);
+        const tail = contentStripper.flush();
+        if (tail) {
+          fullContent += tail;
+          callbacks?.onText?.(tail);
+        }
         const toolCalls = toolCallsMap.size > 0
           ? Array.from(toolCallsMap.values())
           : undefined;
@@ -264,6 +293,84 @@ export class OpenAIProvider implements AIProvider {
         reject(err);
       });
     });
+  }
+}
+
+function hasOpenAIReasoningDelta(delta: any): boolean {
+  return typeof delta?.reasoning_content === 'string'
+    || typeof delta?.reasoning === 'string'
+    || typeof delta?.thinking === 'string';
+}
+
+function stripOpenAIThinkingText(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think>\s*/gi, '')
+    .replace(/^\s*<think\b[^>]*>[\s\S]*$/i, '');
+}
+
+function longestThinkTagPrefixSuffix(value: string, tag: string): number {
+  const lower = value.toLowerCase();
+  const max = Math.min(lower.length, tag.length - 1);
+  for (let length = max; length > 0; length--) {
+    if (lower.slice(-length) === tag.slice(0, length)) return length;
+  }
+  return 0;
+}
+
+class OpenAIThinkingStripper {
+  private buffer = '';
+  private inThinking = false;
+
+  push(chunk: string): string {
+    this.buffer += chunk;
+    let output = '';
+
+    while (this.buffer) {
+      const lower = this.buffer.toLowerCase();
+
+      if (this.inThinking) {
+        const closeIndex = lower.indexOf('</think>');
+        if (closeIndex < 0) {
+          const keep = longestThinkTagPrefixSuffix(this.buffer, '</think>');
+          this.buffer = keep > 0 ? this.buffer.slice(-keep) : '';
+          break;
+        }
+        this.buffer = this.buffer.slice(closeIndex + '</think>'.length);
+        this.inThinking = false;
+        continue;
+      }
+
+      const openIndex = lower.indexOf('<think');
+      if (openIndex < 0) {
+        const keep = longestThinkTagPrefixSuffix(this.buffer, '<think');
+        output += keep > 0 ? this.buffer.slice(0, -keep) : this.buffer;
+        this.buffer = keep > 0 ? this.buffer.slice(-keep) : '';
+        break;
+      }
+
+      output += this.buffer.slice(0, openIndex);
+      const openEndIndex = this.buffer.indexOf('>', openIndex);
+      if (openEndIndex < 0) {
+        this.buffer = this.buffer.slice(openIndex);
+        break;
+      }
+      this.buffer = this.buffer.slice(openEndIndex + 1);
+      this.inThinking = true;
+    }
+
+    return output;
+  }
+
+  flush(): string {
+    if (this.inThinking) {
+      this.buffer = '';
+      this.inThinking = false;
+      return '';
+    }
+    const output = this.buffer;
+    this.buffer = '';
+    return output;
   }
 }
 
