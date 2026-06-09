@@ -6,6 +6,7 @@ import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
 import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
+import { foldHistoricalReadFileMessages, resolveReadFileMessageFoldingOptions } from './read-file-message-folder';
 import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
@@ -264,11 +265,23 @@ export class ConversationRunner {
         nextSubagentNudgeAt = nextSubagentNudgeToolCount(executedToolCalls);
       }
 
-      const requestMessages = this.buildProviderInputMessages(messages, [
+      let requestMessages = this.buildProviderInputMessages(messages, [
         ...nextTurnTransientHints,
         ...orchestrationHints,
       ]);
       nextTurnTransientHints = [];
+      const readFileFolding = foldHistoricalReadFileMessages(
+        requestMessages,
+        resolveReadFileMessageFoldingOptions(),
+      );
+      requestMessages = readFileFolding.messages;
+      if (readFileFolding.stats.folded_count > 0) {
+        Logger.info(
+          `[${this.sessionLabel}Turn ${turns}] read_file 历史折叠: `
+          + `folded=${readFileFolding.stats.folded_count}, `
+          + `saved≈${readFileFolding.stats.saved_tokens_est} tokens`,
+        );
+      }
       const promptTrimmed = this.ensurePromptBudget(requestMessages, requestTools);
       if (promptTrimmed && callbacks?.onThinking) {
         await callbacks.onThinking(PROMPT_BUDGET_TRIM_MESSAGE);
