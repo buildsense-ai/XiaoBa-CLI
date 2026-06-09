@@ -103,7 +103,10 @@ export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOpt
 
   router.post('/skillhub/developer/apply', async (req, res) => {
     try {
-      res.status(201).json(await serviceFrom(req.body).applyDeveloper(req.body || {}));
+      res.status(410).json({
+        error: 'SkillHub developer applications are retired. Logged-in users can share Skills directly.',
+        code: 'skillhub.developer_flow_retired',
+      });
     } catch (error: any) {
       sendSkillHubError(res, error);
     }
@@ -111,7 +114,10 @@ export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOpt
 
   router.post('/skillhub/developer/manifest-draft', async (req, res) => {
     try {
-      res.json(await serviceFrom(req.body).createManifestDraft(req.body || {}));
+      res.status(410).json({
+        error: 'SkillHub manifest draft generation is retired. Share a local Skill directly.',
+        code: 'skillhub.review_flow_retired',
+      });
     } catch (error: any) {
       sendSkillHubError(res, error);
     }
@@ -119,7 +125,10 @@ export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOpt
 
   router.post('/skillhub/developer/submissions', async (req, res) => {
     try {
-      res.status(201).json(await serviceFrom(req.body).createSubmission(req.body || {}));
+      res.status(410).json({
+        error: 'SkillHub review submissions are retired. Use direct Skill sharing.',
+        code: 'skillhub.review_flow_retired',
+      });
     } catch (error: any) {
       sendSkillHubError(res, error);
     }
@@ -142,6 +151,14 @@ export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOpt
   });
 
   router.post('/skillhub/developer/package-versions/:id/yank', async (req, res) => {
+    try {
+      res.json(await serviceFrom(req.body).yankOwnPackageVersion(String(req.params.id || ''), String(req.body?.reason || '')));
+    } catch (error: any) {
+      sendSkillHubError(res, error);
+    }
+  });
+
+  router.post('/skillhub/me/package-versions/:id/yank', async (req, res) => {
     try {
       res.json(await serviceFrom(req.body).yankOwnPackageVersion(String(req.params.id || ''), String(req.body?.reason || '')));
     } catch (error: any) {

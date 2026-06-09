@@ -132,22 +132,19 @@ export class SkillHubClient {
         submissions: [],
       };
     }
-    const [applicationResult, submissionsResult, packageVersionsResult] = await Promise.all([
-      this.request<any>('GET', '/api/developer-applications/me').catch(error => ({ error })),
-      this.request<any>('GET', '/api/developer/submissions').catch(error => ({ error, submissions: [] })),
-      this.request<any>('GET', '/api/developer/package-versions').catch(error => ({ error, packageVersions: [] })),
-    ]);
+    const packageVersionsResult = await this.request<any>('GET', '/api/me/skill-versions')
+      .catch(error => ({ error, packageVersions: [], skillVersions: [] }));
     return {
       ...status,
       authenticated: true,
-      application: applicationResult?.application || null,
-      submissions: submissionsResult?.submissions || [],
-      packageVersions: packageVersionsResult?.packageVersions || [],
+      application: null,
+      submissions: [],
+      packageVersions: packageVersionsResult?.skillVersions || packageVersionsResult?.packageVersions || [],
     };
   }
 
   async applyDeveloper(input: any): Promise<any> {
-    return this.request('POST', '/api/developer-applications', input);
+    return this.getDeveloperDashboard();
   }
 
   async createManifestDraft(input: any): Promise<any> {
@@ -155,7 +152,7 @@ export class SkillHubClient {
   }
 
   async createSubmission(input: any): Promise<any> {
-    return this.request('POST', '/api/developer/submissions', input);
+    return this.quickShare(input);
   }
 
   async quickShare(input: any): Promise<any> {
@@ -168,7 +165,7 @@ export class SkillHubClient {
   async yankOwnPackageVersion(packageVersionId: string, reason = ''): Promise<any> {
     return this.request(
       'POST',
-      `/api/developer/package-versions/${encodeURIComponent(packageVersionId)}/yank`,
+      `/api/me/skill-versions/${encodeURIComponent(packageVersionId)}/yank`,
       { reason },
     );
   }

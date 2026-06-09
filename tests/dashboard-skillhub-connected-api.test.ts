@@ -87,10 +87,8 @@ describe('dashboard connected SkillHub API', () => {
       websiteUrl: 'https://example.com',
       reason: '发布合同审查和文档处理类 Skill。',
     });
-    assert.equal(application.status, 201);
-    assert.equal(application.body.application.namespace, 'contract-team');
-    assert.equal(application.body.application.contact, 'dev@example.com');
-    assert.equal(application.body.application.websiteUrl, 'https://example.com');
+    assert.equal(application.status, 410);
+    assert.equal(application.body.code, 'skillhub.developer_flow_retired');
 
     const search = await get('/api/skillhub/search?q=合同');
     assert.equal(search.status, 200);

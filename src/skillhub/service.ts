@@ -219,7 +219,7 @@ export class SkillHubService {
     return {
       ok: true,
       skill: {
-        id: submission?.skill?.skillId || submission?.submission?.normalizedManifest?.id || skill.metadata.name,
+        id: submission?.skill?.skillId || submission?.upload?.skillId || submission?.submission?.normalizedManifest?.id || skill.metadata.name,
         name: skill.metadata.name,
         description: skill.metadata.description,
         path: localPath,
@@ -268,10 +268,6 @@ const SOURCE_SKIP_DIRS = new Set([
 ]);
 const SOURCE_SKIP_FILES = new Set([
   'skill.json',
-  'REVIEW.json',
-  'SBOM.json',
-  '.xiaoba-bundled-skill.json',
-  '.xiaoba-skillhub-install.json',
 ]);
 const MAX_SOURCE_FILES = 200;
 const MAX_SOURCE_TOTAL_BYTES = 20 * 1024 * 1024;

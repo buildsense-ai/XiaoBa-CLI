@@ -5108,7 +5108,7 @@
           <div class="portal-list" id="skillhub-submissions-list"><div class="loading">暂无数据</div></div>
         </div>
 
-        <div class="config-section" style="display:none">
+        <div class="config-section">
           <div class="config-group-title-main">My Published Versions</div>
           <div class="settings-meta" style="margin-bottom:14px">Published SkillHub versions can be managed here. Public users can install any published version.</div>
           <div class="portal-list" id="skillhub-package-versions-list"><div class="loading">No published versions</div></div>
@@ -6765,7 +6765,7 @@
       if (!packageVersionId) return;
       if (!confirm('Remove this published SkillHub version from public search and downloads?')) return;
       try {
-        await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/package-versions/' + encodeURIComponent(packageVersionId) + '/yank', {
+        await parseSimpleResponse(await fetch(API + '/api/skillhub/me/package-versions/' + encodeURIComponent(packageVersionId) + '/yank', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({ reason:'removed by owner from dashboard' }),
