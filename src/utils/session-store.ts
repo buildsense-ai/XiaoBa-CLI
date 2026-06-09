@@ -2,12 +2,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Message } from '../types';
 import { Logger } from './logger';
+import {
+  contentToText,
+  stripAssistantTranscriptArtifacts,
+} from './transcript-artifacts';
 
 const SESSIONS_DIR = path.resolve(process.cwd(), 'data', 'sessions');
 const SESSION_STATE_DIR = path.resolve(process.cwd(), 'data', 'session-state');
-const PROVIDER_REPLAY_PLACEHOLDER_LINE =
-  /^\[历史工具调用已完成；provider replay 隐藏内容未写入本地会话。.*\]$/;
-const PROVIDER_REPLAY_RESULT_SUMMARY_HEADER = '[历史工具结果摘要]';
 
 function ensureDir(): void {
   if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -33,23 +34,6 @@ function hasHiddenProviderReplay(message: Message): boolean {
     ));
 }
 
-function contentToText(content: Message['content']): string {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-  return content.map(block => block.type === 'text' ? block.text : '[图片]').join('');
-}
-
-function stripProviderReplayArtifacts(text: string): string {
-  const summaryIndex = text.indexOf(PROVIDER_REPLAY_RESULT_SUMMARY_HEADER);
-  const withoutSummaries = summaryIndex >= 0 ? text.slice(0, summaryIndex) : text;
-  return withoutSummaries
-    .split(/\r?\n/)
-    .filter(line => !PROVIDER_REPLAY_PLACEHOLDER_LINE.test(line.trim()))
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
 function sanitizeForPersistence(messages: Message[]): Message[] {
   const hiddenReplayToolCallIds = new Set<string>();
   const durable: Message[] = [];
@@ -72,7 +56,7 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
       for (const toolCall of message.tool_calls) {
         hiddenReplayToolCallIds.add(toolCall.id);
       }
-      const publicText = stripProviderReplayArtifacts(contentToText(message.content));
+      const publicText = stripAssistantTranscriptArtifacts(contentToText(message.content));
       if (publicText) {
         durable.push({
           ...message,
@@ -85,7 +69,7 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
     }
 
     if (typeof message.content === 'string') {
-      const cleanedText = stripProviderReplayArtifacts(message.content);
+      const cleanedText = stripAssistantTranscriptArtifacts(message.content);
       if (cleanedText) {
         durable.push({
           ...message,

@@ -24,6 +24,8 @@ export interface Message {
   /** 标记内部 runtime observation，例如子 agent 完成结果；对模型仍以 user role 承载 */
   __runtimeObservation?: boolean;
   runtimeObservationSource?: string;
+  /** 标记内部错误占位，仅用于本地恢复/继续，不应进入模型上下文或持久历史。 */
+  __internalErrorArtifact?: boolean;
   /** Provider 原始 assistant content blocks，仅用于下次请求回放，不展示给用户。 */
   providerContent?: ProviderContentBlock[];
 }
