@@ -19,6 +19,10 @@ import {
   selectProtectedCurrentRunToolResultIndexes,
 } from './current-run-tool-result-folding';
 import {
+  foldToolResultsTowardPromptBudget,
+  resolveAdaptiveToolResultFoldingOptions,
+} from './adaptive-tool-result-folder';
+import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
   buildPlanSoftNudge,
@@ -323,13 +327,19 @@ export class ConversationRunner {
         requestMessages,
         currentRunToolResultFoldingOptions,
       );
+      const readFileFoldingOptions = {
+        ...resolveReadFileMessageFoldingOptions(),
+        foldCurrentRun: currentRunToolResultFoldingOptions.enabled,
+        protectedCurrentRunToolResultIndexes,
+      };
+      const executeShellFoldingOptions = {
+        ...resolveExecuteShellMessageFoldingOptions(),
+        foldCurrentRun: currentRunToolResultFoldingOptions.enabled,
+        protectedCurrentRunToolResultIndexes,
+      };
       const readFileFolding = foldHistoricalReadFileMessages(
         requestMessages,
-        {
-          ...resolveReadFileMessageFoldingOptions(),
-          foldCurrentRun: currentRunToolResultFoldingOptions.enabled,
-          protectedCurrentRunToolResultIndexes,
-        },
+        readFileFoldingOptions,
       );
       requestMessages = readFileFolding.messages;
       if (readFileFolding.stats.folded_count > 0) {
@@ -342,11 +352,7 @@ export class ConversationRunner {
       }
       const executeShellFolding = foldHistoricalExecuteShellMessages(
         requestMessages,
-        {
-          ...resolveExecuteShellMessageFoldingOptions(),
-          foldCurrentRun: currentRunToolResultFoldingOptions.enabled,
-          protectedCurrentRunToolResultIndexes,
-        },
+        executeShellFoldingOptions,
       );
       requestMessages = executeShellFolding.messages;
       if (executeShellFolding.stats.folded_count > 0) {
@@ -355,6 +361,26 @@ export class ConversationRunner {
           + `folded=${executeShellFolding.stats.folded_count}, `
           + `current=${executeShellFolding.stats.folded_current_turn_count}, `
           + `saved≈${executeShellFolding.stats.saved_tokens_est} tokens`,
+        );
+      }
+      const adaptiveFolding = foldToolResultsTowardPromptBudget(
+        requestMessages,
+        requestTools,
+        readFileFoldingOptions,
+        executeShellFoldingOptions,
+        resolveAdaptiveToolResultFoldingOptions(),
+      );
+      requestMessages = adaptiveFolding.messages;
+      if (adaptiveFolding.stats.folded_count > 0) {
+        Logger.info(
+          `[${this.sessionLabel}Turn ${turns}] adaptive tool_result folding: `
+          + `passes=${adaptiveFolding.stats.passes}, `
+          + `folded=${adaptiveFolding.stats.folded_count}, `
+          + `current=${adaptiveFolding.stats.folded_current_turn_count}, `
+          + `saved≈${adaptiveFolding.stats.saved_tokens_est} tokens, `
+          + `prompt≈${adaptiveFolding.stats.started_prompt_tokens_est}->${adaptiveFolding.stats.finished_prompt_tokens_est}, `
+          + `target=${adaptiveFolding.stats.target_prompt_tokens}, `
+          + `thresholds=${adaptiveFolding.stats.thresholds_tried.join('/')}`,
         );
       }
       if (toolResultContextBeforeFolding && toolResultContextBeforeFolding.tool_result_count > 0) {
