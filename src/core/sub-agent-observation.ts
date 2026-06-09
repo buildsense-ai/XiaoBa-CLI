@@ -29,7 +29,7 @@ export function buildSubAgentStatusMessage(
   }
 
   return {
-    role: 'system',
+    role: 'user',
     content: [
       TRANSIENT_SUBAGENT_STATUS_PREFIX,
       sections.join('\n\n'),
@@ -40,6 +40,7 @@ export function buildSubAgentStatusMessage(
         '需要细节时用 check_subagent；用户要求停止时用 stop_subagent。',
       ].join('\n'),
     ].join('\n\n'),
+    __injected: true,
   };
 }
 

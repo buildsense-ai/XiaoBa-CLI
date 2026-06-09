@@ -118,7 +118,8 @@ describe('subagent runtime events', () => {
       });
 
       const eventIndex = result.messages.findIndex(message => (
-        message.role === 'system'
+        message.role === 'user'
+        && message.__injected === true
         && typeof message.content === 'string'
         && message.content.startsWith('[transient_subagent_status]')
       ));
@@ -159,8 +160,7 @@ describe('subagent runtime events', () => {
     });
 
     assert.equal(result.messages.some(message => (
-      message.role === 'system'
-      && typeof message.content === 'string'
+      typeof message.content === 'string'
       && message.content.startsWith('[transient_subagent_status]')
     )), false);
   });
@@ -200,8 +200,7 @@ describe('subagent runtime events', () => {
       });
 
       assert.equal(result.messages.some(message => (
-        message.role === 'system'
-        && typeof message.content === 'string'
+        typeof message.content === 'string'
         && message.content.startsWith('[transient_subagent_status]')
       )), false);
     } finally {

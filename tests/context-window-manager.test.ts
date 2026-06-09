@@ -42,8 +42,8 @@ describe('ContextWindowManager', () => {
       assistant('durable answer'),
       { role: 'user', content: 'INJECTED_CONTEXT_SHOULD_NOT_BE_SUMMARIZED', __injected: true },
       { role: 'user', content: '[运行时反馈] RUNTIME_FEEDBACK_SHOULD_NOT_BE_SUMMARIZED', __injected: true, __runtimeFeedback: true },
-      { role: 'system', content: '[transient_skills_list]\nSKILL_LIST_SHOULD_NOT_BE_SUMMARIZED' },
-      { role: 'system', content: '[transient_subagent_status]\nSUBAGENT_STATUS_SHOULD_NOT_BE_SUMMARIZED' },
+      { role: 'user', content: '[transient_skills_list]\nSKILL_LIST_SHOULD_NOT_BE_SUMMARIZED', __injected: true },
+      { role: 'user', content: '[transient_subagent_status]\nSUBAGENT_STATUS_SHOULD_NOT_BE_SUMMARIZED', __injected: true },
     ];
 
     const result = await manager.compactIfNeeded(messages, {

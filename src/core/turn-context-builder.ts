@@ -14,6 +14,14 @@ const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 const TRANSIENT_SOFT_CHECK_PREFIX = '[transient_soft_check]';
 
+const TRANSIENT_PREFIXES = [
+  TRANSIENT_SUBAGENT_STATUS_PREFIX,
+  TRANSIENT_PLAN_STATUS_PREFIX,
+  TRANSIENT_RUNNER_HINT_PREFIX,
+  TRANSIENT_SOFT_CHECK_PREFIX,
+  TRANSIENT_SKILLS_LIST_PREFIX,
+];
+
 export interface BuildTurnContextParams {
   sessionKey: string;
   durableMessages: Message[];
@@ -54,19 +62,9 @@ export class TurnContextBuilder {
   removeTransientMessages(messages: Message[]): Message[] {
     return messages.filter(msg => {
       if (msg.__runtimeFeedback) return false;
-      if (
-        typeof msg.content === 'string'
-        && msg.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)
-        && (msg.__injected || msg.role === 'system')
-      ) {
+      if (isTransientPromptMessage(msg) && (msg.__injected || msg.role === 'system')) {
         return false;
       }
-      if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
-      if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
-      if (msg.content.startsWith(TRANSIENT_PLAN_STATUS_PREFIX)) return false;
-      if (msg.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)) return false;
-      if (msg.content.startsWith(TRANSIENT_SOFT_CHECK_PREFIX)) return false;
-      if (msg.content.startsWith(TRANSIENT_SKILLS_LIST_PREFIX)) return false;
       return true;
     });
   }
@@ -87,8 +85,9 @@ export class TurnContextBuilder {
     const planText = planRuntime?.formatForPrompt();
     if (!planText) return;
     this.insertBeforeLastUser(messages, {
-      role: 'system',
+      role: 'user',
       content: `${TRANSIENT_PLAN_STATUS_PREFIX}\n${planText}`,
+      __injected: true,
     });
   }
 
@@ -119,4 +118,10 @@ function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
     if (predicate(items[idx])) return idx;
   }
   return -1;
+}
+
+function isTransientPromptMessage(message: Message): boolean {
+  const { content } = message;
+  return typeof content === 'string'
+    && TRANSIENT_PREFIXES.some(prefix => content.startsWith(prefix));
 }

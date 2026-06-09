@@ -14,7 +14,8 @@ describe('SessionSkillRuntime', () => {
     const message = runtime.buildSkillsListMessage();
 
     assert.ok(message);
-    assert.equal(message.role, 'system');
+    assert.equal(message.role, 'user');
+    assert.equal(message.__injected, true);
     assert.match(String(message.content), /^\[transient_skills_list\]/);
     assert.match(String(message.content), /demo: Demo skill/);
     assert.doesNotMatch(String(message.content), /Skill prompt for demo/);

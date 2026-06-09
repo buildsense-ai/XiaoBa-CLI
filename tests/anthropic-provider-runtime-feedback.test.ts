@@ -6,6 +6,8 @@ import {
   makeRunnerHint,
   TRANSIENT_RUNNER_HINT_PREFIX,
 } from '../src/core/runner-orchestration-policy';
+import { TRANSIENT_SUBAGENT_STATUS_PREFIX } from '../src/core/sub-agent-observation';
+import { TRANSIENT_SKILLS_LIST_PREFIX } from '../src/skills/session-skill-runtime';
 
 describe('AnthropicProvider runtime feedback boundary', () => {
   test('keeps transient runner hints out of the Anthropic system prompt', () => {
@@ -27,6 +29,50 @@ describe('AnthropicProvider runtime feedback boundary', () => {
     assert.equal(transformed.messages.length, 1);
     assert.equal(transformed.messages[0].role, 'user');
     assert.ok(String(transformed.messages[0].content).startsWith(TRANSIENT_RUNNER_HINT_PREFIX));
+    assert.equal(JSON.stringify(transformed).includes('__injected'), false);
+  });
+
+  test('keeps transient runtime status out of the Anthropic system prompt', () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/anthropic/v1/messages',
+      model: 'MiniMax-M3',
+    });
+
+    const transientMessages: Message[] = [
+      {
+        role: 'user',
+        content: '[transient_plan_status]\n[in_progress] run targeted checks',
+        __injected: true,
+      },
+      {
+        role: 'user',
+        content: `${TRANSIENT_SUBAGENT_STATUS_PREFIX}\nsub-agent still running`,
+        __injected: true,
+      },
+      {
+        role: 'user',
+        content: `${TRANSIENT_SKILLS_LIST_PREFIX}\n- demo: Demo skill`,
+        __injected: true,
+      },
+    ];
+    const messages: Message[] = [
+      { role: 'system', content: 'stable system prompt' },
+      ...transientMessages,
+      { role: 'user', content: 'latest user request' },
+    ];
+
+    const transformed = (provider as any).transformMessages(messages);
+
+    assert.equal(transformed.system, 'stable system prompt');
+    assert.equal(transformed.system.includes('[transient_'), false);
+    assert.equal(transformed.messages.length, 4);
+    assert.deepEqual(transformed.messages.map((message: any) => message.role), [
+      'user',
+      'user',
+      'user',
+      'user',
+    ]);
     assert.equal(JSON.stringify(transformed).includes('__injected'), false);
   });
 

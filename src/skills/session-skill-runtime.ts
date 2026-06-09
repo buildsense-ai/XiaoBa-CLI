@@ -33,8 +33,9 @@ export class SessionSkillRuntime {
       .join('\n');
 
     return {
-      role: 'system',
+      role: 'user',
       content: `${TRANSIENT_SKILLS_LIST_PREFIX}\n你可以使用以下 skills（必须通过 skill 工具调用）：\n\n${skillList}`,
+      __injected: true,
     };
   }
 
