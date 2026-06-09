@@ -179,12 +179,17 @@ describe('GrepTool', () => {
 
   describe('安全性检查', () => {
     test('应该处理工作目录外的路径并返回错误', async () => {
+      const outsideMissingPath = path.join(
+        os.tmpdir(),
+        `grep-outside-missing-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        'missing.txt'
+      );
       const result = await grepTool.execute({
         pattern: 'test',
-        path: '../../etc/passwd'
+        path: outsideMissingPath
       }, context);
 
-      // 由于路径不存在，应该返回错误
+      // 由于路径在工作目录外且不存在，应该返回错误
       assert.ok(!result.ok, '应该返回错误');
       assert.ok(result.message.includes('目录不存在') || result.message.includes('rg') || result.message.includes('grep'),
         `错误信息应该有用，实际: ${result.message}`);
