@@ -239,6 +239,7 @@ function startCatsCompanyServer(configFile: string): ChildProcessWithoutNullStre
       GOCACHE: goCache,
       OC_JWT_SECRET: process.env.OC_JWT_SECRET || `catsco-e2e-${runId}`,
     },
+    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: false,
   });
@@ -402,15 +403,26 @@ async function findFreePort(): Promise<number> {
 async function stopProcess(child: ChildProcessWithoutNullStreams): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   await new Promise<void>(resolve => {
+    const kill = (signal: NodeJS.Signals) => {
+      if (process.platform !== 'win32' && child.pid) {
+        try {
+          process.kill(-child.pid, signal);
+          return;
+        } catch {
+          // Fall back to killing the direct child below.
+        }
+      }
+      child.kill(signal);
+    };
     const timer = setTimeout(() => {
-      child.kill('SIGKILL');
+      kill('SIGKILL');
       resolve();
     }, 5000);
     child.once('exit', () => {
       clearTimeout(timer);
       resolve();
     });
-    child.kill('SIGTERM');
+    kill('SIGTERM');
   });
 }
 
