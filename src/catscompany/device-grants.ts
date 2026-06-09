@@ -85,7 +85,6 @@ function grantMatchesScope(grant: ScopedDeviceGrant, scope: ExecutionScope): boo
     && grant.topicId === scope.topicId
     && grant.topicType === scope.topicType
     && grant.actorUserId === scope.actorUserId
-    && grant.ownerUserId === scope.actorUserId
     && grant.agentId === scope.agentId
     && grant.agentBodyId === scope.agentBodyId;
 }

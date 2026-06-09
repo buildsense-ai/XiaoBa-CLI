@@ -188,10 +188,6 @@ export function validateDeviceGrant(
     ['agentBodyId', grant.agentBodyId, scope.agentBodyId],
   ].filter(([, grantValue, scopeValue]) => grantValue !== scopeValue);
 
-  if (grant.ownerUserId !== scope.actorUserId) {
-    mismatches.push(['ownerUserId', grant.ownerUserId, scope.actorUserId]);
-  }
-
   if (mismatches.length > 0) {
     return {
       ok: false,

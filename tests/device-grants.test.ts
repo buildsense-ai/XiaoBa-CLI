@@ -192,7 +192,6 @@ describe('device grants', () => {
       ['topicId', { topicId: 'grp_81' }],
       ['topicType', { topicType: 'p2p' }],
       ['actorUserId', { actorUserId: 'usr8', ownerUserId: 'usr8' }],
-      ['ownerUserId', { ownerUserId: 'usr8' }],
       ['agentId', { agentId: 'usr99' }],
       ['agentBodyId', { agentBodyId: 'body-other' }],
     ];
@@ -207,6 +206,24 @@ describe('device grants', () => {
 
       assert.equal(decision.ok, false, field);
       if (!decision.ok) assert.match(decision.message, new RegExp(field), field);
+    }
+  });
+
+  test('accepts delegated channel grants where device owner differs from actor', () => {
+    const decision = validateDeviceGrant({
+      executionScope: scope({ actorUserId: 'usr100' }),
+    }, grant({
+      ownerUserId: 'usr7',
+      actorUserId: 'usr100',
+    }), {
+      operation: 'read_file',
+      now: 2_000,
+    });
+
+    assert.equal(decision.ok, true);
+    if (decision.ok) {
+      assert.equal(decision.grant.ownerUserId, 'usr7');
+      assert.equal(decision.grant.actorUserId, 'usr100');
     }
   });
 });

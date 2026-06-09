@@ -208,6 +208,33 @@ describe('CatsCompany execution scope flow', () => {
     assert.deepEqual(handledTurns[0].options.deviceGrants[0].operations, ['read_file', 'send_file']);
   });
 
+  test('passes delegated channel device grants while preserving the channel actor', async () => {
+    const { bot, handledTurns } = createHarness();
+
+    await (bot as any).onMessage({
+      topic: 'p2p_100_43',
+      senderId: 'usr100',
+      text: '读一下我的电脑文件',
+      content: '读一下我的电脑文件',
+      metadata: metadataWithDeviceGrants('usr100', 'p2p_100_43', [
+        deviceGrant({
+          ownerUserId: 'usr7',
+          actorUserId: 'usr100',
+          sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+          topicId: 'p2p_100_43',
+        }),
+      ]),
+      isGroup: false,
+      seq: 12,
+    });
+
+    assert.equal(handledTurns.length, 1);
+    assert.equal(handledTurns[0].options.executionScope.actorUserId, 'usr100');
+    assert.equal(handledTurns[0].options.deviceGrants?.length, 1);
+    assert.equal(handledTurns[0].options.deviceGrants[0].ownerUserId, 'usr7');
+    assert.equal(handledTurns[0].options.deviceGrants[0].actorUserId, 'usr100');
+  });
+
   test('passes server canonical device selection into CatsCompany session turn', async () => {
     const { bot, handledTurns } = createHarness();
 
