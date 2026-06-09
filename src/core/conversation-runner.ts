@@ -8,6 +8,12 @@ import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
 import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
 import { foldHistoricalReadFileMessages, resolveReadFileMessageFoldingOptions } from './read-file-message-folder';
+import { foldHistoricalExecuteShellMessages, resolveExecuteShellMessageFoldingOptions } from './execute-shell-message-folder';
+import {
+  formatToolResultContextReport,
+  resolveToolResultContextReportOptions,
+  summarizeToolResultContext,
+} from './tool-result-context-report';
 import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
@@ -304,6 +310,10 @@ export class ConversationRunner {
         ...orchestrationHints,
       ]);
       nextTurnTransientHints = [];
+      const toolResultContextReportOptions = resolveToolResultContextReportOptions();
+      const toolResultContextBeforeFolding = toolResultContextReportOptions.enabled
+        ? summarizeToolResultContext(requestMessages, toolResultContextReportOptions)
+        : null;
       const readFileFolding = foldHistoricalReadFileMessages(
         requestMessages,
         resolveReadFileMessageFoldingOptions(),
@@ -315,6 +325,30 @@ export class ConversationRunner {
           + `folded=${readFileFolding.stats.folded_count}, `
           + `saved≈${readFileFolding.stats.saved_tokens_est} tokens`,
         );
+      }
+      const executeShellFolding = foldHistoricalExecuteShellMessages(
+        requestMessages,
+        resolveExecuteShellMessageFoldingOptions(),
+      );
+      requestMessages = executeShellFolding.messages;
+      if (executeShellFolding.stats.folded_count > 0) {
+        Logger.info(
+          `[${this.sessionLabel}Turn ${turns}] execute_shell historical folding: `
+          + `folded=${executeShellFolding.stats.folded_count}, `
+          + `saved≈${executeShellFolding.stats.saved_tokens_est} tokens`,
+        );
+      }
+      if (toolResultContextBeforeFolding && toolResultContextBeforeFolding.tool_result_count > 0) {
+        const toolResultContextAfterFolding = summarizeToolResultContext(
+          requestMessages,
+          toolResultContextReportOptions,
+        );
+        for (const line of formatToolResultContextReport(
+          toolResultContextBeforeFolding,
+          toolResultContextAfterFolding,
+        )) {
+          Logger.info(`[${this.sessionLabel}Turn ${turns}] ${line}`);
+        }
       }
       const promptTrimmed = this.ensurePromptBudget(requestMessages, requestTools);
       if (promptTrimmed && callbacks?.onThinking) {
