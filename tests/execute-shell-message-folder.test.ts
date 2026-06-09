@@ -93,6 +93,33 @@ test('does not fold execute_shell result from the current tool loop', () => {
   assert.equal(result.messages[2].content, raw);
 });
 
+test('can delayed-fold older current-run execute_shell results while protecting recent results', () => {
+  const firstRaw = makeShellOutput('npm test -- current-old', 100);
+  const secondRaw = makeShellOutput('npm test -- current-recent', 100);
+  const messages: Message[] = [
+    { role: 'user', content: 'run several commands in one request' },
+    makeToolCallMessage('call_current_old', 'npm test -- current-old'),
+    { role: 'tool', name: 'execute_shell', tool_call_id: 'call_current_old', content: firstRaw },
+    { role: 'assistant', content: 'old shell complete' },
+    makeToolCallMessage('call_current_recent', 'npm test -- current-recent'),
+    { role: 'tool', name: 'execute_shell', tool_call_id: 'call_current_recent', content: secondRaw },
+  ];
+
+  const result = foldHistoricalExecuteShellMessages(messages, {
+    thresholdTokens: 20,
+    foldCurrentRun: true,
+    protectedCurrentRunToolResultIndexes: new Set([5]),
+  });
+
+  assert.equal(result.stats.candidate_count, 1);
+  assert.equal(result.stats.current_turn_candidate_count, 1);
+  assert.equal(result.stats.folded_count, 1);
+  assert.equal(result.stats.folded_current_turn_count, 1);
+  assert.equal(result.stats.protected_current_turn_count, 1);
+  assert.ok(String(result.messages[2].content).startsWith(FOLDED_EXECUTE_SHELL_PREFIX));
+  assert.equal(result.messages[5].content, secondRaw);
+});
+
 test('can keep the most recent historical execute_shell result raw', () => {
   const firstRaw = makeShellOutput('npm test -- old', 100);
   const secondRaw = makeShellOutput('npm test -- recent', 100);

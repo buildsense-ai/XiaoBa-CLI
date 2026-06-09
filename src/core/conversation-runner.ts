@@ -15,6 +15,10 @@ import {
   summarizeToolResultContext,
 } from './tool-result-context-report';
 import {
+  resolveCurrentRunToolResultFoldingOptions,
+  selectProtectedCurrentRunToolResultIndexes,
+} from './current-run-tool-result-folding';
+import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
   buildPlanSoftNudge,
@@ -314,27 +318,42 @@ export class ConversationRunner {
       const toolResultContextBeforeFolding = toolResultContextReportOptions.enabled
         ? summarizeToolResultContext(requestMessages, toolResultContextReportOptions)
         : null;
+      const currentRunToolResultFoldingOptions = resolveCurrentRunToolResultFoldingOptions();
+      const protectedCurrentRunToolResultIndexes = selectProtectedCurrentRunToolResultIndexes(
+        requestMessages,
+        currentRunToolResultFoldingOptions,
+      );
       const readFileFolding = foldHistoricalReadFileMessages(
         requestMessages,
-        resolveReadFileMessageFoldingOptions(),
+        {
+          ...resolveReadFileMessageFoldingOptions(),
+          foldCurrentRun: currentRunToolResultFoldingOptions.enabled,
+          protectedCurrentRunToolResultIndexes,
+        },
       );
       requestMessages = readFileFolding.messages;
       if (readFileFolding.stats.folded_count > 0) {
         Logger.info(
-          `[${this.sessionLabel}Turn ${turns}] read_file 历史折叠: `
+          `[${this.sessionLabel}Turn ${turns}] read_file folding: `
           + `folded=${readFileFolding.stats.folded_count}, `
+          + `current=${readFileFolding.stats.folded_current_turn_count}, `
           + `saved≈${readFileFolding.stats.saved_tokens_est} tokens`,
         );
       }
       const executeShellFolding = foldHistoricalExecuteShellMessages(
         requestMessages,
-        resolveExecuteShellMessageFoldingOptions(),
+        {
+          ...resolveExecuteShellMessageFoldingOptions(),
+          foldCurrentRun: currentRunToolResultFoldingOptions.enabled,
+          protectedCurrentRunToolResultIndexes,
+        },
       );
       requestMessages = executeShellFolding.messages;
       if (executeShellFolding.stats.folded_count > 0) {
         Logger.info(
-          `[${this.sessionLabel}Turn ${turns}] execute_shell historical folding: `
+          `[${this.sessionLabel}Turn ${turns}] execute_shell folding: `
           + `folded=${executeShellFolding.stats.folded_count}, `
+          + `current=${executeShellFolding.stats.folded_current_turn_count}, `
           + `saved≈${executeShellFolding.stats.saved_tokens_est} tokens`,
         );
       }

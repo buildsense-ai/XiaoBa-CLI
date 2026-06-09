@@ -10,14 +10,19 @@ export interface ReadFileMessageFoldingOptions {
   maxPreviewLines: number;
   maxSymbolLines: number;
   keepRecentHistoricalReads: number;
+  foldCurrentRun: boolean;
+  protectedCurrentRunToolResultIndexes?: ReadonlySet<number>;
 }
 
 export interface ReadFileMessageFoldingStats {
   enabled: boolean;
   candidate_count: number;
+  current_turn_candidate_count: number;
   folded_count: number;
+  folded_current_turn_count: number;
   skipped_recent_count: number;
   skipped_current_turn_count: number;
+  protected_current_turn_count: number;
   raw_tokens_est: number;
   folded_tokens_est: number;
   saved_tokens_est: number;
@@ -35,6 +40,7 @@ interface FoldCandidate {
   message: Message;
   rawText: string;
   rawTokens: number;
+  currentRun: boolean;
   toolCall?: NonNullable<Message['tool_calls']>[number];
 }
 
@@ -44,6 +50,7 @@ const DEFAULT_OPTIONS: ReadFileMessageFoldingOptions = {
   maxPreviewLines: 8,
   maxSymbolLines: 18,
   keepRecentHistoricalReads: 0,
+  foldCurrentRun: false,
 };
 
 export function resolveReadFileMessageFoldingOptions(
@@ -67,6 +74,7 @@ export function resolveReadFileMessageFoldingOptions(
       env.XIAOBA_READ_FILE_FOLD_KEEP_RECENT,
       DEFAULT_OPTIONS.keepRecentHistoricalReads,
     ),
+    foldCurrentRun: DEFAULT_OPTIONS.foldCurrentRun,
   };
 }
 
@@ -88,11 +96,18 @@ export function foldHistoricalReadFileMessages(
   const toolCallsById = collectToolCallsById(messages);
   const candidates: FoldCandidate[] = [];
   let skippedCurrentTurnCount = 0;
+  let protectedCurrentTurnCount = 0;
 
   messages.forEach((message, index) => {
     if (!isReadFileToolResult(message)) return;
-    if (index > lastUserIndex) {
+    const currentRun = index > lastUserIndex;
+    if (currentRun && !resolved.foldCurrentRun) {
       skippedCurrentTurnCount++;
+      return;
+    }
+    if (currentRun && resolved.protectedCurrentRunToolResultIndexes?.has(index)) {
+      skippedCurrentTurnCount++;
+      protectedCurrentTurnCount++;
       return;
     }
 
@@ -105,19 +120,26 @@ export function foldHistoricalReadFileMessages(
     const toolCall = message.tool_call_id
       ? toolCallsById.get(message.tool_call_id)
       : undefined;
-    candidates.push({ index, message, rawText, rawTokens, toolCall });
+    candidates.push({ index, message, rawText, rawTokens, currentRun, toolCall });
   });
 
   const stats = emptyStats(resolved);
   stats.candidate_count = candidates.length;
+  stats.current_turn_candidate_count = candidates.filter(candidate => candidate.currentRun).length;
   stats.skipped_current_turn_count = skippedCurrentTurnCount;
+  stats.protected_current_turn_count = protectedCurrentTurnCount;
 
   if (candidates.length === 0) {
     return { messages, stats };
   }
 
-  const keepRecent = Math.min(resolved.keepRecentHistoricalReads, candidates.length);
-  const candidatesToFold = candidates.slice(0, candidates.length - keepRecent);
+  const historicalCandidates = candidates.filter(candidate => !candidate.currentRun);
+  const currentRunCandidates = candidates.filter(candidate => candidate.currentRun);
+  const keepRecent = Math.min(resolved.keepRecentHistoricalReads, historicalCandidates.length);
+  const candidatesToFold = [
+    ...historicalCandidates.slice(0, historicalCandidates.length - keepRecent),
+    ...currentRunCandidates,
+  ];
   stats.skipped_recent_count = keepRecent;
 
   if (candidatesToFold.length === 0) {
@@ -129,6 +151,7 @@ export function foldHistoricalReadFileMessages(
     const folded = buildFoldedReadFileContent(candidate, resolved);
     foldedByIndex.set(candidate.index, folded);
     stats.folded_count++;
+    if (candidate.currentRun) stats.folded_current_turn_count++;
     stats.raw_tokens_est += candidate.rawTokens;
     stats.folded_tokens_est += estimateTokens(folded);
   }
@@ -150,9 +173,12 @@ function emptyStats(options: ReadFileMessageFoldingOptions): ReadFileMessageFold
   return {
     enabled: options.enabled,
     candidate_count: 0,
+    current_turn_candidate_count: 0,
     folded_count: 0,
+    folded_current_turn_count: 0,
     skipped_recent_count: 0,
     skipped_current_turn_count: 0,
+    protected_current_turn_count: 0,
     raw_tokens_est: 0,
     folded_tokens_est: 0,
     saved_tokens_est: 0,
