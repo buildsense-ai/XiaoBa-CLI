@@ -1,5 +1,6 @@
 import type {
   IdentityTrustLevel,
+  ExecutionScope,
   MessageEnvelope,
   MessageSource,
   MessageTopicType,
@@ -137,6 +138,22 @@ export function createWeixinSessionRoute(message: WeixinMessage): SessionRoute {
     identitySource: 'weixin.ilink',
     legacySessionKey: `user:${actorUserId}`,
   });
+}
+
+export function createExecutionScopeFromRoute(route: SessionRoute): ExecutionScope {
+  return {
+    source: route.source,
+    sessionKey: route.sessionKey,
+    legacySessionKey: route.legacySessionKey,
+    topicId: route.topicId,
+    topicType: route.topicType,
+    actorUserId: route.actorUserId,
+    agentId: route.agentId,
+    agentBodyId: route.agentBodyId,
+    channelSeq: route.channelSeq,
+    identityTrust: route.identityTrust,
+    isTrusted: route.identityTrust === 'server_canonical',
+  };
 }
 
 export function buildSessionKeyV2(input: {

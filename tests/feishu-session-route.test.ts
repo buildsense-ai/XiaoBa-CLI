@@ -23,6 +23,11 @@ describe('Feishu SessionRoute V2', () => {
       assert.deepEqual(bot.createdSessions, ['session:v2:feishu:p2p:shared']);
       assert.equal(bot.handledTurns.length, 1);
       assert.equal(bot.handledTurns[0].options.channel.chatId, 'shared');
+      assert.equal(bot.handledTurns[0].options.sessionRoute.sessionKey, 'session:v2:feishu:p2p:shared');
+      assert.equal(bot.handledTurns[0].options.executionScope.source, 'feishu');
+      assert.equal(bot.handledTurns[0].options.executionScope.topicType, 'p2p');
+      assert.equal(bot.handledTurns[0].options.executionScope.topicId, 'shared');
+      assert.equal(bot.handledTurns[0].options.executionScope.actorUserId, 'shared');
       assert.equal(bot.messageQueue.size, 0);
     } finally {
       SubAgentManager.getInstance().unregisterPlatformCallbacks('session:v2:feishu:p2p:shared');
@@ -49,12 +54,16 @@ describe('Feishu SessionRoute V2', () => {
       const sessionKey = 'session:v2:feishu:group:oc_group';
       assert.equal(bot.messageQueue.has(sessionKey), true);
       assert.equal(bot.messageQueue.get(sessionKey)?.[0]?.senderId, 'ou_user');
+      assert.equal(bot.messageQueue.get(sessionKey)?.[0]?.sessionRoute.actorUserId, 'ou_user');
       bot.sessionBusy = false;
       await (bot as any).drainMessageQueue(sessionKey);
 
       assert.deepEqual(bot.createdSessions, [sessionKey, sessionKey]);
       assert.equal(bot.handledTurns.length, 1);
       assert.equal(bot.handledTurns[0].options.channel.chatId, 'oc_group');
+      assert.equal(bot.handledTurns[0].options.sessionRoute.sessionKey, sessionKey);
+      assert.equal(bot.handledTurns[0].options.executionScope.topicType, 'group');
+      assert.equal(bot.handledTurns[0].options.executionScope.actorUserId, 'ou_user');
     } finally {
       SubAgentManager.getInstance().unregisterPlatformCallbacks('session:v2:feishu:group:oc_group');
     }

@@ -15,10 +15,13 @@ import { ChannelCallbacks } from '../types/tool';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
 import { randomUUID } from 'crypto';
 import {
+  createExecutionScopeFromRoute,
   createFeishuBridgeSessionRoute,
   createFeishuSessionRoute,
+  createSessionRoute,
   parseSessionKeyV2,
 } from '../core/session-router';
+import type { SessionRoute } from '../types/session-identity';
 
 interface PendingAttachment {
   fileName: string;
@@ -40,6 +43,7 @@ interface QueuedMessage {
   userText: string;
   chatId: string;
   senderId: string;
+  sessionRoute: SessionRoute;
   source?: 'user' | 'subagent_feedback';
   runtimeFeedback?: RuntimeFeedbackInput[];
 }
@@ -293,7 +297,7 @@ export class FeishuBot {
     const subAgentManager = SubAgentManager.getInstance();
     subAgentManager.registerPlatformCallbacks(key, {
       injectMessage: async (text: string) => {
-        await this.handleSubAgentFeedback(key, msg.chatId, msg.senderId, text);
+        await this.handleSubAgentFeedback(key, msg.chatId, msg.senderId, text, route);
       },
     });
 
@@ -365,7 +369,7 @@ export class FeishuBot {
         Logger.warning(`[${key}] 检测到用户中断请求，已请求中止当前回合`);
       }
       const queue = this.messageQueue.get(key) ?? [];
-      queue.push({ userText, chatId: msg.chatId, senderId: msg.senderId, source: 'user', runtimeFeedback });
+      queue.push({ userText, chatId: msg.chatId, senderId: msg.senderId, sessionRoute: route, source: 'user', runtimeFeedback });
       this.messageQueue.set(key, queue);
       Logger.info(`[${key}] 主会话忙，消息已入队 (队列长度: ${queue.length})`);
       return;
@@ -379,7 +383,12 @@ export class FeishuBot {
     });
 
     try {
-      const result = await session.handleMessage(userText, { channel, runtimeFeedback });
+      const result = await session.handleMessage(userText, {
+        channel,
+        sessionRoute: route,
+        executionScope: createExecutionScopeFromRoute(route),
+        runtimeFeedback,
+      });
       if (result.text === BUSY_MESSAGE || result.text === ERROR_MESSAGE) {
         await this.sender.reply(msg.chatId, result.text);
       }
@@ -400,11 +409,13 @@ export class FeishuBot {
     chatId: string,
     senderId: string,
     text: string,
+    sessionRoute?: SessionRoute,
   ): Promise<void> {
     const session = this.sessionManager.getOrCreate(sessionKey);
+    const route = sessionRoute ?? this.createRouteFromSessionKey(sessionKey, senderId);
 
     if (session.isBusy()) {
-      this.enqueueSubAgentFeedback(sessionKey, chatId, senderId, text);
+      this.enqueueSubAgentFeedback(sessionKey, chatId, senderId, text, route);
       Logger.info(`[${sessionKey}] 主会话忙，子智能体反馈已入队`);
       return;
     }
@@ -417,10 +428,12 @@ export class FeishuBot {
     try {
       const result = await session.handleRuntimeObservation(text, {
         channel,
+        sessionRoute: route,
+        executionScope: createExecutionScopeFromRoute(route),
         source: 'subagent_result',
       });
       if (result.text === BUSY_MESSAGE) {
-        this.enqueueSubAgentFeedback(sessionKey, chatId, senderId, text);
+        this.enqueueSubAgentFeedback(sessionKey, chatId, senderId, text, route);
         Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
         return;
       }
@@ -433,12 +446,20 @@ export class FeishuBot {
     }
   }
 
-  private enqueueSubAgentFeedback(sessionKey: string, chatId: string, senderId: string, text: string): void {
+  private enqueueSubAgentFeedback(
+    sessionKey: string,
+    chatId: string,
+    senderId: string,
+    text: string,
+    sessionRoute?: SessionRoute,
+  ): void {
+    const route = sessionRoute ?? this.createRouteFromSessionKey(sessionKey, senderId);
     const queue = this.messageQueue.get(sessionKey) ?? [];
     queue.push({
       userText: text,
       chatId,
       senderId,
+      sessionRoute: route,
       source: 'subagent_feedback',
     });
     this.messageQueue.set(sessionKey, queue);
@@ -460,16 +481,22 @@ export class FeishuBot {
     const channel = this.buildChannel(msg.chatId, {
       sessionKey,
       senderId: msg.senderId,
+      isGroup: msg.sessionRoute.topicType === 'group',
     });
+    const executionScope = createExecutionScopeFromRoute(msg.sessionRoute);
 
     try {
       const result = msg.source === 'subagent_feedback'
         ? await session.handleRuntimeObservation(msg.userText, {
           channel,
+          sessionRoute: msg.sessionRoute,
+          executionScope,
           source: 'subagent_result',
         })
         : await session.handleMessage(msg.userText, {
           channel,
+          sessionRoute: msg.sessionRoute,
+          executionScope,
           runtimeFeedback: msg.runtimeFeedback,
         });
       if (result.text === ERROR_MESSAGE) {
@@ -481,6 +508,22 @@ export class FeishuBot {
 
     // 处理期间可能又有新消息入队，递归排空
     await this.drainMessageQueue(sessionKey);
+  }
+
+  private createRouteFromSessionKey(sessionKey: string, senderId: string): SessionRoute {
+    const parsed = parseSessionKeyV2(sessionKey);
+    const legacyGroupId = sessionKey.startsWith('group:') ? sessionKey.slice('group:'.length) : '';
+    const legacyUserId = sessionKey.startsWith('user:') ? sessionKey.slice('user:'.length) : '';
+    return createSessionRoute({
+      source: parsed?.source || 'feishu',
+      topicId: parsed?.topicId || legacyGroupId || legacyUserId || senderId || 'unknown_chat',
+      topicType: parsed?.topicType || (legacyGroupId ? 'group' : legacyUserId ? 'p2p' : 'unknown'),
+      actorUserId: senderId || legacyUserId || 'unknown_actor',
+      agentId: parsed?.agentId,
+      identityTrust: 'legacy_context',
+      identitySource: 'feishu.runtime',
+      legacySessionKey: parsed ? undefined : sessionKey,
+    });
   }
 
   /** 从 Group/*.md 读取已知 chat_id */
@@ -566,7 +609,7 @@ export class FeishuBot {
 
     if (session.isBusy()) {
       const queue = this.messageQueue.get(sessionKey) ?? [];
-      queue.push({ userText: messageText, chatId: msg.chat_id, senderId: msg.from || '', source: 'user' });
+      queue.push({ userText: messageText, chatId: msg.chat_id, senderId: msg.from || '', sessionRoute: route, source: 'user' });
       this.messageQueue.set(sessionKey, queue);
       return;
     }
@@ -576,7 +619,11 @@ export class FeishuBot {
       isGroup: true,
     });
     try {
-      await session.handleMessage(messageText, { channel });
+      await session.handleMessage(messageText, {
+        channel,
+        sessionRoute: route,
+        executionScope: createExecutionScopeFromRoute(route),
+      });
     } finally {
       this.clearPendingAnswerBySession(sessionKey);
     }

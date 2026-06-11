@@ -303,12 +303,17 @@ describe('resolveLocalFileAccess', () => {
     }
   });
 
-  test('rejects a grant when topic or body identity does not match', () => {
+  test('rejects a grant when topic, agent, or body identity does not match', () => {
     const workspaceRoot = makeWorkspace();
     const filePath = makeManagedFile(workspaceRoot);
     const result = resolveLocalFileAccess(context({
       workspaceRoot,
-      executionScope: scope({ topicId: 'p2p_8_43', agentBodyId: 'body-other' }),
+      executionScope: scope({
+        topicId: 'p2p_8_43',
+        topicType: 'group',
+        agentId: 'usr99',
+        agentBodyId: 'body-other',
+      }),
       localDeviceGrant: deviceGrant({ bodyId: 'body-other' }),
       localFileGrants: [grant(filePath)],
     }), {
@@ -319,8 +324,30 @@ describe('resolveLocalFileAccess', () => {
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.match(result.message, /topicId/);
+      assert.match(result.message, /topicType/);
+      assert.match(result.message, /agentId/);
       assert.match(result.message, /agentBodyId/);
       assert.match(result.message, /deviceBodyId/);
+    }
+  });
+
+  test('rejects a grant when device installation identity does not match', () => {
+    const workspaceRoot = makeWorkspace();
+    const filePath = makeManagedFile(workspaceRoot);
+    const result = resolveLocalFileAccess(context({
+      workspaceRoot,
+      executionScope: scope(),
+      localDeviceGrant: deviceGrant({ installationId: 'install-other' }),
+      localFileGrants: [grant(filePath, { deviceInstallationId: 'install-main' })],
+    }), {
+      operation: 'read_file',
+      absolutePath: filePath,
+    });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.message, /deviceInstallationId/);
+      assert.doesNotMatch(result.message, new RegExp(escapeRegExp(workspaceRoot)));
     }
   });
 

@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { isToolAllowed, isPathAllowed } from '../utils/safety';
+import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
 
 /**
  * Edit 工具 - 精确字符串替换
@@ -53,9 +54,19 @@ export class EditTool implements Tool {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
     }
 
+    const gateway = resolveToolGatewayAccess(context, {
+      toolName: this.definition.name,
+      operation: 'edit_file',
+      targetLabel: file_path,
+    });
+    if (!gateway.ok) {
+      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
+    }
+    const displayPath = formatCatsCoVisiblePath(context, file_path, { preserveRelative: true });
+
     // 检查文件是否存在
     if (!fs.existsSync(absolutePath)) {
-      return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `错误：文件不存在: ${absolutePath}` };
+      return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `错误：文件不存在: ${displayPath}` };
     }
 
     // 读取文件内容
@@ -63,14 +74,14 @@ export class EditTool implements Tool {
 
     // 检查 old_string 是否存在
     if (!content.includes(old_string)) {
-      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `错误：在文件中未找到要替换的字符串。\n文件: ${file_path}\n查找: ${old_string.substring(0, 100)}${old_string.length > 100 ? '...' : ''}` };
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `错误：在文件中未找到要替换的字符串。\n文件: ${displayPath}\n查找: ${old_string.substring(0, 100)}${old_string.length > 100 ? '...' : ''}` };
     }
 
     // 检查唯一性（如果不是 replace_all）
     if (!replace_all) {
       const occurrences = content.split(old_string).length - 1;
       if (occurrences > 1) {
-        return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `错误：找到 ${occurrences} 个匹配项，但 replace_all=false。\n请提供更具体的字符串以确保唯一性，或设置 replace_all=true 替换所有匹配项。\n文件: ${file_path}` };
+        return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `错误：找到 ${occurrences} 个匹配项，但 replace_all=false。\n请提供更具体的字符串以确保唯一性，或设置 replace_all=true 替换所有匹配项。\n文件: ${displayPath}` };
       }
     }
 
@@ -97,6 +108,6 @@ export class EditTool implements Tool {
     const newLines = newContent.split('\n').length;
     const lineDiff = newLines - oldLines;
 
-    return { ok: true, content: `成功编辑文件: ${file_path}\nPath: ${absolutePath}\n替换次数: ${replacedCount}\n原始行数: ${oldLines}\n新行数: ${newLines}${lineDiff !== 0 ? `\n行数变化: ${lineDiff > 0 ? '+' : ''}${lineDiff}` : ''}` };
+    return { ok: true, content: `成功编辑文件: ${displayPath}\nPath: ${displayPath}\n替换次数: ${replacedCount}\n原始行数: ${oldLines}\n新行数: ${newLines}${lineDiff !== 0 ? `\n行数变化: ${lineDiff > 0 ? '+' : ''}${lineDiff}` : ''}` };
   }
 }
