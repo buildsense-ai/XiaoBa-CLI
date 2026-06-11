@@ -7,6 +7,7 @@ import type {
   MessageTopicType,
   ScopedDeviceGrant,
 } from '../types/session-identity';
+import { isDelegatedDeviceGrant } from '../core/device-grants';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -47,14 +48,16 @@ function normalizeDeviceGrant(value: unknown): ScopedDeviceGrant | undefined {
   const operations = normalizeOperations(record.operations);
   const createdAt = numberField(record, 'createdAt') ?? numberField(record, 'created_at');
   const expiresAt = numberField(record, 'expiresAt') ?? numberField(record, 'expires_at');
+  const status = normalizeStatus(stringField(record, 'status'));
   if (!grantId || !deviceId || !ownerUserId || !sessionKey || !topicId || !actorUserId) return undefined;
   if (operations.length === 0 || createdAt === undefined || expiresAt === undefined) return undefined;
+  if (status !== 'active') return undefined;
 
   return pruneUndefined({
     kind: 'user_device_grant',
     source,
     grantId,
-    status: normalizeStatus(stringField(record, 'status')),
+    status,
     identityTrust: normalizeTrust(stringField(record, 'identityTrust') || stringField(record, 'identity_trust')),
     identitySource: stringField(record, 'identitySource') || stringField(record, 'identity_source'),
     deviceId,
@@ -78,6 +81,9 @@ function normalizeDeviceGrant(value: unknown): ScopedDeviceGrant | undefined {
 }
 
 function grantMatchesScope(grant: ScopedDeviceGrant, scope: ExecutionScope): boolean {
+  if (grant.ownerUserId !== grant.actorUserId && !isDelegatedDeviceGrant(grant)) {
+    return false;
+  }
   return grant.status === 'active'
     && grant.identityTrust === 'server_canonical'
     && grant.source === scope.source
@@ -114,8 +120,9 @@ function normalizeSource(value: string | undefined): MessageSource {
   return value === 'catscompany' ? 'catscompany' : 'unknown';
 }
 
-function normalizeStatus(value: string | undefined): DeviceGrantStatus {
-  return value === 'revoked' ? 'revoked' : 'active';
+function normalizeStatus(value: string | undefined): DeviceGrantStatus | undefined {
+  if (value === 'active' || value === 'revoked') return value;
+  return undefined;
 }
 
 function normalizeTrust(value: string | undefined): IdentityTrustLevel {

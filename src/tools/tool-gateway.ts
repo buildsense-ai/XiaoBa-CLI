@@ -52,7 +52,7 @@ export function formatCatsCoVisiblePath(
   if (!text) return fallback;
   if (/^catsco_attachment:[A-Za-z0-9._:-]+$/.test(text)) return text;
   if (/^\[CatsCo [^\]]+\]$/.test(text)) return text;
-  if (options.preserveRelative && !looksLikeAbsoluteLocalPath(text)) return text;
+  if (options.preserveRelative && !looksLikeAbsoluteLocalPath(text) && isSafeRelativeDisplayPath(text)) return text;
   return fallback;
 }
 
@@ -285,18 +285,23 @@ function validateSelectionScope(
 }
 
 function matchesLocalDevice(selection: ScopedDeviceSelection, localDevice: ScopedLocalDeviceGrant): boolean {
-  const selectedIds = [
-    selection.selectedDeviceId,
-    selection.selectedDeviceInstallationId,
-    selection.selectedDeviceBodyId,
-  ].filter(Boolean);
-  const localIds = [
-    localDevice.deviceId,
-    localDevice.installationId,
-    localDevice.bodyId,
-  ].filter(Boolean);
-  if (selectedIds.length === 0 || localIds.length === 0) return false;
-  return selectedIds.some(selected => localIds.includes(selected));
+  let matchedStrongTarget = false;
+
+  if (selection.selectedDeviceId) {
+    if (!localDevice.deviceId || selection.selectedDeviceId !== localDevice.deviceId) return false;
+    matchedStrongTarget = true;
+  }
+
+  if (selection.selectedDeviceInstallationId) {
+    if (!localDevice.installationId || selection.selectedDeviceInstallationId !== localDevice.installationId) return false;
+    matchedStrongTarget = true;
+  }
+
+  if (selection.selectedDeviceBodyId) {
+    if (!localDevice.bodyId || selection.selectedDeviceBodyId !== localDevice.bodyId) return false;
+  }
+
+  return matchedStrongTarget;
 }
 
 function denied(lines: string[], targetLabel?: string): ToolGatewayDecision {
@@ -323,4 +328,9 @@ function looksLikeAbsoluteLocalPath(value: string): boolean {
     || /^\\\\/.test(value)
     || /^\//.test(value)
     || /^~[\\/]/.test(value);
+}
+
+function isSafeRelativeDisplayPath(value: string): boolean {
+  const normalized = value.replace(/\\/g, '/');
+  return normalized.split('/').every(segment => segment !== '..');
 }

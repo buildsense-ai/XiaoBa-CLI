@@ -130,6 +130,35 @@ describe('Feishu SessionRoute V2', () => {
     assert.match(replies[0], /入口码|绑定/);
   });
 
+  test('does not create a model session when required channel binding resolver is disabled or returns empty', async () => {
+    for (const bindingResolver of [
+      { enabled: false, required: true },
+      { enabled: true, required: true, resolve: async () => undefined },
+    ]) {
+      const replies: string[] = [];
+      const bot = createHarness({
+        replies,
+        bindingResolver,
+        message: {
+          messageId: `msg-binding-disabled-${replies.length}`,
+          chatId: 'shared',
+          chatType: 'p2p',
+          senderId: 'shared',
+          text: 'hello',
+          mentionBot: false,
+          msgType: 'text',
+        },
+      });
+
+      await (bot as any).onMessage({});
+
+      assert.deepEqual(bot.createdSessions, []);
+      assert.equal(bot.handledTurns.length, 0);
+      assert.equal(replies.length, 1);
+      assert.match(replies[0], /绑定|配置|失败/);
+    }
+  });
+
   test('uses resolved channel binding as the Feishu agent session route', async () => {
     const bot = createHarness({
       bindingResolver: {

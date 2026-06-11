@@ -220,6 +220,7 @@ describe('CatsCompany execution scope flow', () => {
         deviceGrant({
           ownerUserId: 'usr7',
           actorUserId: 'usr100',
+          identitySource: 'channel_identity_link',
           sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
           topicId: 'p2p_100_43',
         }),
@@ -233,6 +234,32 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(handledTurns[0].options.deviceGrants?.length, 1);
     assert.equal(handledTurns[0].options.deviceGrants[0].ownerUserId, 'usr7');
     assert.equal(handledTurns[0].options.deviceGrants[0].actorUserId, 'usr100');
+    assert.equal(handledTurns[0].options.deviceGrants[0].identitySource, 'channel_identity_link');
+  });
+
+  test('drops owner mismatch device grants without a delegated channel source', async () => {
+    const { bot, handledTurns } = createHarness();
+
+    await (bot as any).onMessage({
+      topic: 'p2p_100_43',
+      senderId: 'usr100',
+      text: '读一下我的电脑文件',
+      content: '读一下我的电脑文件',
+      metadata: metadataWithDeviceGrants('usr100', 'p2p_100_43', [
+        deviceGrant({
+          ownerUserId: 'usr7',
+          actorUserId: 'usr100',
+          identitySource: 'metadata.catsco_identity',
+          sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+          topicId: 'p2p_100_43',
+        }),
+      ]),
+      isGroup: false,
+      seq: 12,
+    });
+
+    assert.equal(handledTurns.length, 1);
+    assert.equal(handledTurns[0].options.deviceGrants, undefined);
   });
 
   test('passes server canonical device selection into CatsCompany session turn', async () => {
@@ -289,6 +316,8 @@ describe('CatsCompany execution scope flow', () => {
       metadata: metadataWithDeviceGrants('usr7', 'p2p_7_43', [
         deviceGrant({ actorUserId: 'usr8' }),
         deviceGrant({ agentBodyId: 'body-other' }),
+        deviceGrant({ status: 'revoked' }),
+        deviceGrant({ status: undefined }),
       ]),
       isGroup: false,
       seq: 12,

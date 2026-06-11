@@ -28,6 +28,7 @@ export const CHANNEL_BINDING_REQUIRED_MESSAGE = '请先扫描虚拟员工入口�
 export class ChannelAgentBindingResolver {
   readonly enabled: boolean;
   readonly required: boolean;
+  readonly misconfiguredRequired: boolean;
   private readonly httpBaseUrl: string;
   private readonly token?: string;
   private readonly timeoutMs: number;
@@ -37,10 +38,14 @@ export class ChannelAgentBindingResolver {
     this.token = options.token?.trim() || undefined;
     this.timeoutMs = normalizeTimeout(options.timeoutMs);
     this.required = Boolean(options.required);
-    this.enabled = Boolean(options.enabled && this.httpBaseUrl);
+    this.enabled = Boolean((options.enabled || options.required) && this.httpBaseUrl);
+    this.misconfiguredRequired = Boolean(this.required && !this.httpBaseUrl);
   }
 
   async resolve(input: ChannelAgentBindingResolveInput): Promise<ChannelAgentBindingResolution | undefined> {
+    if (this.misconfiguredRequired) {
+      throw new Error('channel agent binding is required but CATSCO_CHANNEL_BINDING_HTTP_BASE_URL is missing');
+    }
     if (!this.enabled) return undefined;
     const params = new URLSearchParams({
       channel: input.channel,

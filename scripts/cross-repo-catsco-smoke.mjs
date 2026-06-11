@@ -31,12 +31,18 @@ const catsServerSmoke = [
   'TestDeviceRPCDoesNotRouteByBareBodyOrInstallationID',
   'TestSharedRuntimeRoutesDeviceRPCAcrossHubs',
   'TestRedisRuntimeRoutesDeviceRPCAcrossStates',
+  'TestChannelAgentBindingLinkUser',
+  'TestChannelAgentBindingConfirmRequiresTokenInProduction',
+  'TestBotRecipientIdentityUsesLinkedChannelDeviceOwner',
+  'TestFeishuMessageEventDeliversToBoundAgent',
+  'TestWeixinTextMessageDeliversToBoundAgent',
 ].join('|');
 
 const tsxCli = require.resolve('tsx/cli');
 const xiaoBaSmokeTests = [
   'tests/catscompany-client-body-id.test.ts',
   'tests/catscompany-device-rpc-tools.test.ts',
+  'tests/catscompany-execution-scope-flow.test.ts',
   'tests/tool-gateway-catsco.test.ts',
 ];
 

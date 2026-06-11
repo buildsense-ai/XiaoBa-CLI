@@ -14,10 +14,24 @@ afterEach(() => {
 describe('ChannelAgentBindingResolver', () => {
   test('only enables when explicitly enabled and a binding base URL is configured', () => {
     assert.equal(new ChannelAgentBindingResolver({ enabled: true }).enabled, false);
+    assert.equal(new ChannelAgentBindingResolver({ required: true }).enabled, false);
+    assert.equal(new ChannelAgentBindingResolver({ required: true }).misconfiguredRequired, true);
     assert.equal(new ChannelAgentBindingResolver({
       enabled: true,
       httpBaseUrl: 'https://app.catsco.cc/',
     }).enabled, true);
+    assert.equal(new ChannelAgentBindingResolver({
+      required: true,
+      httpBaseUrl: 'https://app.catsco.cc/',
+    }).enabled, true);
+  });
+
+  test('fails closed when binding is required but base URL is missing', async () => {
+    const resolver = new ChannelAgentBindingResolver({ required: true });
+    await assert.rejects(
+      resolver.resolve({ channel: 'feishu', channelUserId: 'ou_user' }),
+      /required.*HTTP_BASE_URL/i,
+    );
   });
 
   test('resolves env options with CatsCo and CatsCompany names', () => {

@@ -5,6 +5,8 @@ import crypto from 'crypto';
 import { Logger } from '../utils/logger';
 import { uploadCatsLocalFile, type UploadResult } from './upload';
 
+const MAX_DEVICE_RPC_EVENT_ERROR_LENGTH = 240;
+
 export type { UploadResult } from './upload';
 
 export interface CatsClientConfig {
@@ -829,7 +831,7 @@ export class CatsClient extends EventEmitter {
       deviceId: message.device_id,
       createdAt: new Date().toISOString(),
       durationMs: startedAt ? Math.max(0, Date.now() - startedAt) : undefined,
-      error: options.error,
+      error: sanitizeDeviceRpcEventError(options.error),
     };
     this.deviceRpcRecent.push(event);
     if (this.deviceRpcRecent.length > 30) {
@@ -1048,5 +1050,19 @@ function deviceRpcResultMatchesPending(result: CatsDeviceRpcMessage, request: Ca
 function deviceRpcOptionalFieldMatches(actual: unknown, expected: unknown): boolean {
   const actualText = typeof actual === 'string' ? actual.trim() : '';
   const expectedText = typeof expected === 'string' ? expected.trim() : '';
-  return !actualText || !expectedText || actualText === expectedText;
+  if (!expectedText) return true;
+  return Boolean(actualText) && actualText === expectedText;
+}
+
+function sanitizeDeviceRpcEventError(error?: string): string | undefined {
+  const raw = String(error || '').trim();
+  if (!raw) return undefined;
+  const sanitized = raw
+    .replace(/\b(Bearer|ApiKey|Basic)\s+[A-Za-z0-9._~:/+=-]+/gi, '$1 [redacted]')
+    .replace(/\b((?:access|refresh)[_-]?token|token|api[_-]?key|secret|client[_-]?secret|password|CATSCO_[A-Z0-9_]*TOKEN)\s*=\s*[^\s'"&]+/gi, '$1=[redacted]')
+    .replace(/[A-Za-z]:[\\/][^\s'"<>]+/g, '[redacted-path]')
+    .replace(/\\\\[^\\/\s]+\\[^\\/\s]+(?:\\[^\s'"<>]+)*/g, '[redacted-path]')
+    .replace(/\/(?:Users|home|tmp|var|etc)\/[^\s'"<>]+/g, '[redacted-path]');
+  if (sanitized.length <= MAX_DEVICE_RPC_EVENT_ERROR_LENGTH) return sanitized;
+  return `${sanitized.slice(0, MAX_DEVICE_RPC_EVENT_ERROR_LENGTH - 3)}...`;
 }

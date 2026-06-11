@@ -101,6 +101,8 @@ describe('device grants', () => {
     assert.equal(createDeviceGrant(scope(), device(), { operations: [] }), undefined);
     assert.equal(createDeviceGrant(scope(), device({ source: 'feishu' }), { operations: ['read_file'] }), undefined);
     assert.equal(createDeviceGrant(scope(), device({ ownerUserId: 'usr8' }), { operations: ['read_file'] }), undefined);
+    assert.equal(createDeviceGrant(scope(), device({ identityTrust: 'untrusted' }), { operations: ['read_file'] }), undefined);
+    assert.equal(createDeviceGrant(scope(), device({ status: 'offline' }), { operations: ['read_file'] }), undefined);
   });
 
   test('resolves a matching grant by operation and optional target device', () => {
@@ -169,7 +171,8 @@ describe('device grants', () => {
       ['expired', grant({ expiresAt: 2_000 }), /已过期/],
       ['operation', grant({ operations: ['send_file'] }), /不允许执行 read_file/],
       ['target device', grant(), /目标设备不一致/],
-      ['untrusted', grant({ identityTrust: 'untrusted' }), /未可信身份/],
+      ['untrusted', grant({ identityTrust: 'untrusted' }), /不是服务端可信身份/],
+      ['legacy', grant({ identityTrust: 'legacy_context' }), /不是服务端可信身份/],
     ];
 
     for (const [name, candidate, messagePattern] of cases) {
@@ -215,6 +218,7 @@ describe('device grants', () => {
     }, grant({
       ownerUserId: 'usr7',
       actorUserId: 'usr100',
+      identitySource: 'channel_identity_link',
     }), {
       operation: 'read_file',
       now: 2_000,
@@ -224,6 +228,33 @@ describe('device grants', () => {
     if (decision.ok) {
       assert.equal(decision.grant.ownerUserId, 'usr7');
       assert.equal(decision.grant.actorUserId, 'usr100');
+    }
+  });
+
+  test('rejects owner mismatch grants without an explicit trusted channel delegation source', () => {
+    const candidates: Array<[string, Partial<ScopedDeviceGrant>]> = [
+      ['missing identitySource', { identitySource: undefined }],
+      ['plain metadata source', { identitySource: 'metadata.catsco_identity' }],
+      ['device rpc forward source', { identitySource: 'device_rpc_forward' }],
+      ['legacy delegated source', { identitySource: 'channel_identity_link', identityTrust: 'legacy_context' }],
+    ];
+
+    for (const [name, overrides] of candidates) {
+      const decision = validateDeviceGrant({
+        executionScope: scope({ actorUserId: 'usr100' }),
+      }, grant({
+        ownerUserId: 'usr7',
+        actorUserId: 'usr100',
+        ...overrides,
+      }), {
+        operation: 'read_file',
+        now: 2_000,
+      });
+
+      assert.equal(decision.ok, false, name);
+      if (!decision.ok) {
+        assert.match(decision.message, /owner|可信身份|委托/, name);
+      }
     }
   });
 });
