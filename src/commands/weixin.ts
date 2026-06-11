@@ -1,12 +1,14 @@
 import { Logger } from '../utils/logger';
 import { WeixinBot } from '../weixin';
 import { WeixinConfig } from '../weixin/types';
+import { resolveChannelAgentBindingOptions } from '../core/channel-agent-binding-resolver';
 import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/runtime-command-support';
 
 export async function weixinCommand(): Promise<void> {
   const token = process.env.WEIXIN_TOKEN;
   const baseUrl = process.env.WEIXIN_BASE_URL || 'https://ilinkai.weixin.qq.com';
   const cdnBaseUrl = process.env.WEIXIN_CDN_BASE_URL || 'https://novac2c.cdn.weixin.qq.com/c2c';
+  const channelAppId = process.env.WEIXIN_APP_ID || process.env.WEIXIN_BOT_ID || process.env.CATSCO_WEIXIN_APP_ID;
 
   if (!token) {
     Logger.error('微信配置缺失。请设置环境变量 WEIXIN_TOKEN');
@@ -15,7 +17,13 @@ export async function weixinCommand(): Promise<void> {
 
   process.env.CURRENT_PLATFORM = '微信';
 
-  const config: WeixinConfig = { token, baseUrl, cdnBaseUrl };
+  const config: WeixinConfig = {
+    token,
+    baseUrl,
+    cdnBaseUrl,
+    channelAppId,
+    channelAgentBinding: resolveChannelAgentBindingOptions(),
+  };
   const bot = new WeixinBot(config);
 
   const shutdown = () => {

@@ -45,6 +45,11 @@ export interface ResolveDeviceGrantOptions {
   now?: number;
 }
 
+const DELEGATED_DEVICE_GRANT_SOURCES = new Set([
+  'channel_agent_binding',
+  'channel_identity_link',
+]);
+
 export function createUserDevice(input: CreateUserDeviceInput): UserDevice | undefined {
   const source = normalizeSource(input.source);
   const ownerUserId = normalizeId(input.ownerUserId);
@@ -78,6 +83,8 @@ export function createDeviceGrant(
   if (operations.length === 0) return undefined;
   if (device.source !== scope.source) return undefined;
   if (device.ownerUserId !== scope.actorUserId) return undefined;
+  if (device.identityTrust !== 'server_canonical') return undefined;
+  if (device.status !== 'online') return undefined;
   const now = normalizeTime(options.now) ?? Date.now();
   const ttlMs = normalizeTtl(options.ttlMs);
 
@@ -165,8 +172,12 @@ export function validateDeviceGrant(
     return denied(`设备授权不是 active 状态，已阻止操作：${grant.status}`);
   }
 
-  if (grant.identityTrust === 'untrusted') {
-    return denied('设备授权来自未可信身份，已阻止操作。');
+  if (grant.identityTrust !== 'server_canonical') {
+    return denied('设备授权不是服务端可信身份签发，已阻止操作。');
+  }
+
+  if (grant.ownerUserId !== grant.actorUserId && !isDelegatedDeviceGrant(grant)) {
+    return denied('设备授权的设备 owner 与当前 actor 不一致，且缺少可信的渠道委托标记，已阻止操作。');
   }
 
   if (!grant.operations.includes(options.operation)) {
@@ -188,10 +199,6 @@ export function validateDeviceGrant(
     ['agentBodyId', grant.agentBodyId, scope.agentBodyId],
   ].filter(([, grantValue, scopeValue]) => grantValue !== scopeValue);
 
-  if (grant.ownerUserId !== scope.actorUserId) {
-    mismatches.push(['ownerUserId', grant.ownerUserId, scope.actorUserId]);
-  }
-
   if (mismatches.length > 0) {
     return {
       ok: false,
@@ -204,6 +211,13 @@ export function validateDeviceGrant(
   }
 
   return { ok: true, grant };
+}
+
+export function isDelegatedDeviceGrant(grant: Pick<ScopedDeviceGrant, 'ownerUserId' | 'actorUserId' | 'identityTrust' | 'identitySource'>): boolean {
+  if (grant.ownerUserId === grant.actorUserId) return false;
+  if (grant.identityTrust !== 'server_canonical') return false;
+  const identitySource = normalizeId(grant.identitySource);
+  return Boolean(identitySource && DELEGATED_DEVICE_GRANT_SOURCES.has(identitySource));
 }
 
 function denied(message: string): DeviceGrantDecision {

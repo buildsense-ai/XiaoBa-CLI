@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { isReadPathAllowed } from '../utils/safety';
-import { formatCatsCoVisiblePath, redactCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
+import { formatCatsCoVisiblePath, isCatsCoToolGatewayContext, redactCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
 import { executeRemoteReadonlyTool } from './device-rpc-tool';
 
 const VCS_DIRECTORIES_TO_EXCLUDE = ['.git', '.svn', '.hg', '.bzr'] as const;
@@ -52,7 +52,7 @@ function formatLimitInfo(
   return parts.join(', ');
 }
 
-function toRelativePath(absolutePath: string, cwd: string): string {
+function toRelativePath(absolutePath: string, cwd: string, context?: ToolExecutionContext, visibleSearchPath?: string): string {
   let relative = absolutePath;
 
   if (path.isAbsolute(absolutePath)) {
@@ -61,7 +61,16 @@ function toRelativePath(absolutePath: string, cwd: string): string {
     relative = absolutePath.slice(2);
   }
 
-  return relative.replace(/\\/g, '/');
+  const normalized = relative.replace(/\\/g, '/');
+  if (!context || !isCatsCoToolGatewayContext(context)) {
+    return normalized;
+  }
+  if (!normalized.startsWith('../') && normalized !== '..' && !path.isAbsolute(normalized)) {
+    return normalized;
+  }
+  const basename = path.basename(absolutePath);
+  const base = visibleSearchPath || '[current CatsCo device]';
+  return basename ? `${base.replace(/\/$/, '')}/${basename}` : base;
 }
 
 function isCommandAvailable(command: string): boolean {
@@ -272,13 +281,13 @@ export class GrepTool implements Tool {
     if (output_mode === 'content') {
       result.content = limitedLines.map(line => {
         const colonIndex = line.indexOf(':');
-        return colonIndex > 0 ? toRelativePath(line.substring(0, colonIndex), context.workingDirectory) + line.substring(colonIndex) : line;
+        return colonIndex > 0 ? toRelativePath(line.substring(0, colonIndex), context.workingDirectory, context, visibleSearchPath) + line.substring(colonIndex) : line;
       }).join('\n');
       result.numLines = limitedLines.length;
     } else if (output_mode === 'count') {
       const finalCountLines = limitedLines.map(line => {
         const colonIndex = line.lastIndexOf(':');
-        return colonIndex > 0 ? toRelativePath(line.substring(0, colonIndex), context.workingDirectory) + line.substring(colonIndex) : line;
+        return colonIndex > 0 ? toRelativePath(line.substring(0, colonIndex), context.workingDirectory, context, visibleSearchPath) + line.substring(colonIndex) : line;
       });
       result.numMatches = finalCountLines.reduce((sum, line) => {
         const count = parseInt(line.substring(line.lastIndexOf(':') + 1), 10);
@@ -287,7 +296,7 @@ export class GrepTool implements Tool {
       result.content = finalCountLines.join('\n');
       result.numFiles = finalCountLines.length;
     } else {
-      result.filenames = limitedLines.map(line => toRelativePath(line, context.workingDirectory));
+      result.filenames = limitedLines.map(line => toRelativePath(line, context.workingDirectory, context, visibleSearchPath));
       result.numFiles = result.filenames.length;
     }
 

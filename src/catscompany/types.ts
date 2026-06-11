@@ -7,7 +7,11 @@ export interface CatsCompanyConfig {
   /** WebSocket 服务器地址，如 "ws://localhost:6061/v0/channels" */
   serverUrl: string;
   /** Bot API Key，如 "cc_8_abc123..." */
-  apiKey: string;
+  apiKey?: string;
+  /** Device Connector 专用 token；只允许本机设备注册和 Device RPC 回传 */
+  connectorToken?: string;
+  /** 连接身份模式。默认是完整 agent bot；device_connector 是轻量本机执行载体。 */
+  authMode?: 'bot' | 'device_connector';
   /** 当前本地运行体 ID，用于防止同一个 bot 被多个本地 body 混用 */
   bodyId?: string;
   /** 当前安装/设备 ID，默认与 bodyId 相同 */
@@ -18,6 +22,12 @@ export interface CatsCompanyConfig {
   httpBaseUrl?: string;
   /** 会话过期时间（毫秒），默认 30 分钟 */
   sessionTTL?: number;
+  /** 轻量 connector 暴露给云端的本机工具能力 */
+  capabilities?: string[];
+  /** 是否允许远程写文件；默认不允许 */
+  allowWriteFile?: boolean;
+  /** 是否允许远程执行 shell；默认不允许 */
+  allowShell?: boolean;
 }
 
 /**

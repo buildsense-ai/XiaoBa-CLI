@@ -95,4 +95,53 @@ describe('SessionRoute V2', () => {
     assert.equal(route.actorUserId, 'ResearchBot');
     assert.equal(route.topicType, 'group');
   });
+
+  test('keeps channel users isolated by QR-bound agent id', () => {
+    const feishuContract = createFeishuSessionRoute({
+      messageId: 'msg-feishu-1',
+      chatId: 'oc_p2p',
+      chatType: 'p2p',
+      senderId: 'ou_user',
+      text: '查合同',
+      mentionBot: false,
+      msgType: 'text',
+    }, {
+      agentId: 'usr43',
+      agentBodyId: 'body-contract',
+      identityTrust: 'server_canonical',
+      identitySource: 'channel_agent_binding',
+    });
+    const feishuFinance = createFeishuSessionRoute({
+      messageId: 'msg-feishu-2',
+      chatId: 'oc_p2p',
+      chatType: 'p2p',
+      senderId: 'ou_user',
+      text: '查发票',
+      mentionBot: false,
+      msgType: 'text',
+    }, {
+      agentId: 'usr99',
+      identityTrust: 'server_canonical',
+      identitySource: 'channel_agent_binding',
+    });
+    const weixinContract = createWeixinSessionRoute({
+      message_id: 'msg-weixin-1',
+      from: { id: 'openid-user' },
+      chat: { id: 'bot' },
+      text: '查合同',
+      context_token: 'ctx',
+    }, {
+      agentId: 'usr43',
+      identityTrust: 'server_canonical',
+      identitySource: 'channel_agent_binding',
+    });
+
+    assert.equal(feishuContract.sessionKey, 'session:v2:feishu:p2p:oc_p2p:agent:usr43');
+    assert.equal(feishuFinance.sessionKey, 'session:v2:feishu:p2p:oc_p2p:agent:usr99');
+    assert.notEqual(feishuContract.sessionKey, feishuFinance.sessionKey);
+    assert.equal(feishuContract.agentBodyId, 'body-contract');
+    assert.equal(feishuContract.identityTrust, 'server_canonical');
+    assert.equal(feishuContract.identitySource, 'channel_agent_binding');
+    assert.equal(weixinContract.sessionKey, 'session:v2:weixin:p2p:openid-user:agent:usr43');
+  });
 });

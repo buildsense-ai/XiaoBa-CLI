@@ -12,6 +12,7 @@ import { PathResolver } from '../../utils/path-resolver';
 import { APP_VERSION } from '../../version';
 import type { ChatConfig } from '../../types';
 import { createRuntimeConfigSnapshot } from '../../runtime/runtime-config-snapshot';
+import { enrollDeviceConnector } from '../../commands/device-connector';
 import {
   CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS,
   calculatePromptBudgetTokens,
@@ -221,6 +222,42 @@ function hostLabel(value: string): string {
   } catch {
     return value;
   }
+}
+
+function normalizeDevicePairingCode(value: unknown): string {
+  const text = String(value || '').trim();
+  if (!/^[A-Za-z0-9_-]{6,160}$/.test(text)) {
+    throw httpError('invalid device pairing code', 400);
+  }
+  return text;
+}
+
+function normalizeLaunchUrl(
+  value: unknown,
+  fallback: string,
+  allowedProtocols: Set<string>,
+): string {
+  const raw = String(value || '').trim();
+  const candidate = raw || fallback;
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw httpError('invalid connector launch URL', 400);
+  }
+  if (!allowedProtocols.has(parsed.protocol)) {
+    throw httpError('unsupported connector launch URL protocol', 400);
+  }
+  return parsed.toString().replace(/\/+$/, '');
+}
+
+function defaultWsUrlForHttpBase(httpBaseUrl: string): string {
+  const url = new URL(httpBaseUrl);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.pathname = '/v0/channels';
+  url.search = '';
+  url.hash = '';
+  return url.toString().replace(/\/+$/, '');
 }
 
 function createCatsNetworkError(error: any, httpBaseUrl: string): Error {
@@ -2813,6 +2850,92 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       res.json({ ok: true, preferences });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.post('/cats/device-connector/pair', async (req, res) => {
+    try {
+      const pairingCode = normalizeDevicePairingCode(
+        req.body?.pairing_code || req.body?.pairingCode || req.body?.code,
+      );
+      const httpBaseUrl = normalizeLaunchUrl(
+        req.body?.http_base_url || req.body?.httpBaseUrl,
+        DEFAULT_CATSCO_HTTP_BASE_URL,
+        new Set(['http:', 'https:']),
+      );
+      const serverUrl = normalizeLaunchUrl(
+        req.body?.server_url || req.body?.serverUrl,
+        defaultWsUrlForHttpBase(httpBaseUrl),
+        new Set(['ws:', 'wss:']),
+      );
+      const deviceName = String(req.body?.device_name || req.body?.deviceName || req.body?.name || '').trim();
+      const localConfig = createCatsCoLocalConfigService({ runtimeRoot: process.cwd() });
+
+      await enrollDeviceConnector(localConfig, ConfigManager.getConfig(), {
+        pair: pairingCode,
+        httpBaseUrl,
+        serverUrl,
+        name: deviceName || undefined,
+      });
+
+      const current = serviceManager.getService('device-connector');
+      const wasRunning = current?.status === 'running';
+      const service = wasRunning
+        ? serviceManager.restart('device-connector')
+        : serviceManager.start('device-connector');
+
+      res.json({
+        ok: true,
+        service,
+        connectorStarted: !wasRunning,
+        connectorRestarted: wasRunning,
+        message: wasRunning
+          ? 'CatsCo Device Connector 已重新配对并在后台重启。'
+          : 'CatsCo Device Connector 已配对并在后台启动。',
+      });
+    } catch (e: any) {
+      res.status(e.status || 400).json({ error: e.message || 'device connector pairing failed' });
+    }
+  });
+
+  router.post('/cats/device-connector/ensure-running', async (_req, res) => {
+    try {
+      const localConfig = createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).load();
+      const connector = localConfig.deviceConnector;
+      if (localConfig.preferences?.autoConnect === false) {
+        return res.status(409).json({
+          ok: false,
+          error: 'Device Connector auto-connect is disabled',
+          reason: 'AUTO_CONNECT_DISABLED',
+        });
+      }
+      if (!connector?.token || !connector.deviceId) {
+        return res.status(409).json({
+          ok: false,
+          error: 'Device Connector is not paired',
+          reason: 'DEVICE_CONNECTOR_NOT_PAIRED',
+        });
+      }
+
+      const current = serviceManager.getService('device-connector');
+      if (current?.status === 'running') {
+        return res.json({
+          ok: true,
+          service: current,
+          connectorStarted: false,
+          connectorRestarted: false,
+        });
+      }
+
+      const service = serviceManager.start('device-connector');
+      return res.json({
+        ok: true,
+        service,
+        connectorStarted: true,
+        connectorRestarted: false,
+      });
+    } catch (e: any) {
+      return res.status(e.status || 400).json({ error: e.message || 'device connector start failed' });
     }
   });
 

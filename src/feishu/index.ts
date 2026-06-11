@@ -15,12 +15,17 @@ import { ChannelCallbacks } from '../types/tool';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
 import { randomUUID } from 'crypto';
 import {
+  ChannelAgentBindingResolver,
+  CHANNEL_BINDING_REQUIRED_MESSAGE,
+} from '../core/channel-agent-binding-resolver';
+import {
   createExecutionScopeFromRoute,
   createFeishuBridgeSessionRoute,
   createFeishuSessionRoute,
   createSessionRoute,
   parseSessionKeyV2,
 } from '../core/session-router';
+import type { ChannelAgentRouteBinding } from '../core/session-router';
 import type { SessionRoute } from '../types/session-identity';
 
 interface PendingAttachment {
@@ -93,6 +98,8 @@ export class FeishuBot {
   private sessionManager: MessageSessionManager;
   private agentServices: AgentServices;
   private runtime: AdapterRuntimeBundle;
+  private bindingResolver: ChannelAgentBindingResolver;
+  private channelAppId: string;
   private bridgeServer: BridgeServer | null = null;
   private bridgeClient: BridgeClient | null = null;
   private bridgeConfig: FeishuConfig['bridge'] | undefined;
@@ -115,6 +122,8 @@ export class FeishuBot {
       appId: config.appId,
       appSecret: config.appSecret,
     };
+    this.channelAppId = config.appId;
+    this.bindingResolver = new ChannelAgentBindingResolver(config.channelAgentBinding);
 
     this.client = new Lark.Client(baseConfig);
     this.wsClient = new Lark.WSClient({
@@ -267,8 +276,10 @@ export class FeishuBot {
       this.processedMsgIds = new Set(ids.slice(-500));
     }
 
+    const routeBinding = await this.resolveChannelAgentBinding(msg);
+    if (routeBinding === null) return;
 
-    const route = createFeishuSessionRoute(msg);
+    const route = createFeishuSessionRoute(msg, routeBinding);
     const key = route.sessionKey;
     const isGroup = msg.chatType === 'group';
 
@@ -463,6 +474,50 @@ export class FeishuBot {
       source: 'subagent_feedback',
     });
     this.messageQueue.set(sessionKey, queue);
+  }
+
+  private async resolveChannelAgentBinding(msg: ReturnType<MessageHandler['parse']>): Promise<ChannelAgentRouteBinding | undefined | null> {
+    if (!msg) return undefined;
+    if (!this.bindingResolver.enabled) {
+      if (this.bindingResolver.required) {
+        await this.sender.reply(msg.chatId, '虚拟员工绑定服务未配置，请联系管理员检查 CatsCo 绑定地址。');
+        Logger.warning(`[feishu_binding] required=true but resolver is disabled: sender=${msg.senderId}, chat=${msg.chatId}`);
+        return null;
+      }
+      return undefined;
+    }
+    if (msg.chatType !== 'p2p') return undefined;
+    try {
+      const resolution = await this.bindingResolver.resolve({
+        channel: 'feishu',
+        channelAppId: this.channelAppId,
+        channelUserId: msg.senderId,
+        channelConversationType: 'p2p',
+      });
+      if (!resolution) {
+        if (this.bindingResolver.required) {
+          await this.sender.reply(msg.chatId, '虚拟员工绑定查询失败，请稍后重试。');
+          return null;
+        }
+        return undefined;
+      }
+      if (!resolution.bound) {
+        if (this.bindingResolver.required) {
+          await this.sender.reply(msg.chatId, CHANNEL_BINDING_REQUIRED_MESSAGE);
+          Logger.warning(`[feishu_binding] 未找到绑定: sender=${msg.senderId}, chat=${msg.chatId}`);
+          return null;
+        }
+        return undefined;
+      }
+      return resolution;
+    } catch (error: any) {
+      Logger.warning(`[feishu_binding] 绑定查询失败: ${error?.message || error}`);
+      if (this.bindingResolver.required) {
+        await this.sender.reply(msg.chatId, '虚拟员工绑定查询失败，请稍后重试。');
+        return null;
+      }
+      return undefined;
+    }
   }
 
   /**

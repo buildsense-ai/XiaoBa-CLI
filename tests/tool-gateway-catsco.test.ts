@@ -164,6 +164,28 @@ describe('CatsCo ToolGateway', () => {
     assert.match(String(result.content), /selected content/);
   });
 
+  test('does not execute locally when selected device identifiers conflict with the current device', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'must not be read locally');
+
+    const result = await new ReadTool().execute({ file_path: filePath }, context(root, {
+      deviceGrants: [deviceGrant(['read_file'])],
+      deviceSelection: deviceSelection({
+        selectedDeviceId: 'install-device',
+        selectedDeviceBodyId: 'body-other',
+        selectedDeviceInstallationId: 'install-device',
+      }),
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+      assert.match(result.message, /远程设备 RPC 通道/);
+      assert.doesNotMatch(result.message, new RegExp(escapeRegExp(filePath)));
+    }
+  });
+
   test('blocks device tools when backend requires device selection first', async () => {
     const root = makeWorkspace();
     const filePath = path.join(root, 'notes.txt');
@@ -364,6 +386,23 @@ describe('CatsCo ToolGateway', () => {
     assert.equal(grep.ok, true);
     assert.match(String(grep.content), /needle/);
     assert.doesNotMatch(String(grep.content), new RegExp(escapeRegExp(root)));
+
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-tool-gateway-outside-'));
+    const outsideFile = path.join(outsideRoot, 'outside-notes.txt');
+    fs.writeFileSync(outsideFile, 'outside needle');
+    const outsideGrep = await new GrepTool().execute({ pattern: 'needle', path: outsideFile, output_mode: 'content' }, ctx);
+    assert.equal(outsideGrep.ok, true);
+    assert.match(String(outsideGrep.content), /outside needle/);
+    assert.doesNotMatch(String(outsideGrep.content), /\.\.\//);
+    assert.doesNotMatch(String(outsideGrep.content), new RegExp(escapeRegExp(outsideRoot)));
+
+    const relativeOutsidePath = path.relative(root, outsideFile);
+    const outsideRelativeGrep = await new GrepTool().execute({ pattern: 'needle', path: relativeOutsidePath, output_mode: 'content' }, ctx);
+    assert.equal(outsideRelativeGrep.ok, true);
+    assert.match(String(outsideRelativeGrep.content), /outside needle/);
+    assert.doesNotMatch(String(outsideRelativeGrep.content), /\.\.\//);
+    assert.doesNotMatch(String(outsideRelativeGrep.content), new RegExp(escapeRegExp(relativeOutsidePath)));
+    assert.doesNotMatch(String(outsideRelativeGrep.content), new RegExp(escapeRegExp(outsideRoot)));
 
     const write = await new WriteTool().execute({ file_path: outPath, content: 'after' }, ctx);
     assert.equal(write.ok, true);
