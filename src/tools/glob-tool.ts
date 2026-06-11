@@ -4,6 +4,7 @@ import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from 
 import { glob } from 'glob';
 import { isReadPathAllowed } from '../utils/safety';
 import { formatCatsCoVisiblePath, isCatsCoToolGatewayContext, resolveToolGatewayAccess } from './tool-gateway';
+import { executeRemoteReadonlyTool } from './device-rpc-tool';
 
 interface GlobResult {
   numFiles: number;
@@ -44,6 +45,17 @@ export class GlobTool implements Tool {
     const { pattern, path: searchPath, limit = 100 } = args;
     const startTime = Date.now();
 
+    const gateway = resolveToolGatewayAccess(context, {
+      toolName: this.definition.name,
+      operation: 'glob',
+      targetLabel: searchPath || '.',
+    });
+    if (!gateway.ok) {
+      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
+    }
+    const remoteResult = await executeRemoteReadonlyTool(context, gateway, 'glob', 'glob', args);
+    if (remoteResult) return remoteResult;
+
     // 确定搜索目录
     const cwd = searchPath
       ? (path.isAbsolute(searchPath) ? searchPath : path.join(context.workingDirectory, searchPath))
@@ -54,14 +66,6 @@ export class GlobTool implements Tool {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
     }
 
-    const gateway = resolveToolGatewayAccess(context, {
-      toolName: this.definition.name,
-      operation: 'glob',
-      targetLabel: searchPath || '.',
-    });
-    if (!gateway.ok) {
-      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
-    }
     const visibleSearchPath = formatCatsCoVisiblePath(context, searchPath || '.', { preserveRelative: true });
     const visibleCwd = formatCatsCoVisiblePath(context, cwd);
 

@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { isReadPathAllowed } from '../utils/safety';
 import { formatCatsCoVisiblePath, redactCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
+import { executeRemoteReadonlyTool } from './device-rpc-tool';
 
 const VCS_DIRECTORIES_TO_EXCLUDE = ['.git', '.svn', '.hg', '.bzr'] as const;
 const DEFAULT_LIMIT = 250;
@@ -101,15 +102,6 @@ export class GrepTool implements Tool {
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { pattern, path: searchPath } = args;
 
-    const resolvedSearchPath = searchPath
-      ? (path.isAbsolute(searchPath) ? searchPath : path.join(context.workingDirectory, searchPath))
-      : context.workingDirectory;
-
-    const pathPermission = isReadPathAllowed(resolvedSearchPath, context.workingDirectory);
-    if (!pathPermission.allowed) {
-      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
-    }
-
     const gateway = resolveToolGatewayAccess(context, {
       toolName: this.definition.name,
       operation: 'grep',
@@ -117,6 +109,17 @@ export class GrepTool implements Tool {
     });
     if (!gateway.ok) {
       return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
+    }
+    const remoteResult = await executeRemoteReadonlyTool(context, gateway, 'grep', 'grep', args);
+    if (remoteResult) return remoteResult;
+
+    const resolvedSearchPath = searchPath
+      ? (path.isAbsolute(searchPath) ? searchPath : path.join(context.workingDirectory, searchPath))
+      : context.workingDirectory;
+
+    const pathPermission = isReadPathAllowed(resolvedSearchPath, context.workingDirectory);
+    if (!pathPermission.allowed) {
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
     }
     const visibleSearchPath = formatCatsCoVisiblePath(context, searchPath || '.', { preserveRelative: true });
 
