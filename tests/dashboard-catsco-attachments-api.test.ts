@@ -27,6 +27,20 @@ function serverUrl(server: Server): string {
   return `http://127.0.0.1:${address.port}`;
 }
 
+async function removeTempRoot(root: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+  throw lastError;
+}
+
 describe('dashboard CatsCo attachment API', () => {
   let testRoot: string;
   let originalCwd: string;
@@ -55,7 +69,7 @@ describe('dashboard CatsCo attachment API', () => {
       if (originalEnv[key] === undefined) delete process.env[key];
       else process.env[key] = originalEnv[key];
     }
-    fs.rmSync(testRoot, { recursive: true, force: true });
+    await removeTempRoot(testRoot);
   });
 
   test('streams a local file to CatsCo and sends the attachment as the user', async () => {

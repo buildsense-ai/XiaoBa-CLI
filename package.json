@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "build:dashboard": "node scripts/build-dashboard.js",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "start:cli": "node dist/index.js",
@@ -68,6 +69,8 @@
     "gray-matter": "^4.0.3",
     "inquirer": "^8.2.7",
     "ora": "^5.4.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "sharp": "^0.34.5"
   },
   "devDependencies": {
@@ -81,6 +84,7 @@
     "electron": "^33.4.11",
     "electron-builder": "^26.8.1",
     "electron-packager": "^17.1.2",
+    "esbuild": "^0.27.2",
     "playwright": "^1.58.2",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
