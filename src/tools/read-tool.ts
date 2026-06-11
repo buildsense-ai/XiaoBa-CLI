@@ -8,6 +8,8 @@ import { ConfigManager } from '../utils/config';
 import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
 import { analyzeImageWithReaderProxy, ReaderProxyResult } from '../utils/reader-proxy';
 import { resolveLocalFileAccess, resolveLocalFileReference } from './local-file-gateway';
+import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
+import { executeRemoteReadonlyTool } from './device-rpc-tool';
 
 export const DEFAULT_TEXT_READ_LIMIT = 200;
 export const MAX_TEXT_READ_LIMIT = 2000;
@@ -92,7 +94,9 @@ export class ReadTool implements Tool {
     let absolutePath: string;
     let displayPath = file_path;
     let visiblePath: string;
+    let visibleInputPath = file_path;
     let resolvedFromAttachmentRef = false;
+    let authorizedByLocalFileGrant = false;
 
     const reference = resolveLocalFileReference(context, {
       operation: 'read_file',
@@ -109,17 +113,14 @@ export class ReadTool implements Tool {
       absolutePath = reference.absolutePath;
       displayPath = reference.displayPath;
       visiblePath = reference.displayPath;
+      visibleInputPath = reference.displayPath;
       resolvedFromAttachmentRef = true;
+      authorizedByLocalFileGrant = true;
     } else {
       absolutePath = path.isAbsolute(file_path)
         ? file_path
         : path.join(context.workingDirectory, file_path);
       visiblePath = absolutePath;
-
-      const pathPermission = isReadPathAllowed(absolutePath, context.workingDirectory);
-      if (!pathPermission.allowed) {
-        return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
-      }
     }
 
     if (!resolvedFromAttachmentRef) {
@@ -137,7 +138,34 @@ export class ReadTool implements Tool {
       if (localAccess.displayPath) {
         displayPath = localAccess.displayPath;
         visiblePath = localAccess.displayPath;
+        visibleInputPath = localAccess.displayPath;
       }
+      authorizedByLocalFileGrant = Boolean(localAccess.grant);
+    }
+
+    if (!authorizedByLocalFileGrant) {
+      const gateway = resolveToolGatewayAccess(context, {
+        toolName: this.definition.name,
+        operation: 'read_file',
+        targetLabel: displayPath,
+      });
+      if (!gateway.ok) {
+        return {
+          ok: false,
+          errorCode: gateway.errorCode,
+          message: gateway.message,
+        };
+      }
+      const remoteResult = await executeRemoteReadonlyTool(context, gateway, 'read_file', 'read_file', args);
+      if (remoteResult) return remoteResult;
+
+      const pathPermission = isReadPathAllowed(absolutePath, context.workingDirectory);
+      if (!pathPermission.allowed) {
+        return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
+      }
+      displayPath = formatCatsCoVisiblePath(context, displayPath, { preserveRelative: true });
+      visiblePath = formatCatsCoVisiblePath(context, visiblePath);
+      visibleInputPath = formatCatsCoVisiblePath(context, file_path);
     }
 
     if (!fs.existsSync(absolutePath)) {
@@ -152,7 +180,7 @@ export class ReadTool implements Tool {
           errorCode: 'TOOL_EXECUTION_ERROR',
           message: [
             'Path is not a file.',
-            `Input path: ${file_path}`,
+            `Input path: ${visibleInputPath}`,
             `Resolved path: ${visiblePath}`,
           ].join('\n'),
         };

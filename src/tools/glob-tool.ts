@@ -3,6 +3,8 @@ import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { glob } from 'glob';
 import { isReadPathAllowed } from '../utils/safety';
+import { formatCatsCoVisiblePath, isCatsCoToolGatewayContext, resolveToolGatewayAccess } from './tool-gateway';
+import { executeRemoteReadonlyTool } from './device-rpc-tool';
 
 interface GlobResult {
   numFiles: number;
@@ -43,6 +45,17 @@ export class GlobTool implements Tool {
     const { pattern, path: searchPath, limit = 100 } = args;
     const startTime = Date.now();
 
+    const gateway = resolveToolGatewayAccess(context, {
+      toolName: this.definition.name,
+      operation: 'glob',
+      targetLabel: searchPath || '.',
+    });
+    if (!gateway.ok) {
+      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
+    }
+    const remoteResult = await executeRemoteReadonlyTool(context, gateway, 'glob', 'glob', args);
+    if (remoteResult) return remoteResult;
+
     // 确定搜索目录
     const cwd = searchPath
       ? (path.isAbsolute(searchPath) ? searchPath : path.join(context.workingDirectory, searchPath))
@@ -53,13 +66,16 @@ export class GlobTool implements Tool {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
     }
 
+    const visibleSearchPath = formatCatsCoVisiblePath(context, searchPath || '.', { preserveRelative: true });
+    const visibleCwd = formatCatsCoVisiblePath(context, cwd);
+
     // 检查目录是否存在
     if (!fs.existsSync(cwd)) {
-      return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `目录不存在: ${cwd}` };
+      return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `目录不存在: ${visibleCwd}` };
     }
 
     // 执行 glob 搜索
-    const shouldReturnAbsolutePaths = Boolean(searchPath && path.isAbsolute(searchPath));
+    const shouldReturnAbsolutePaths = !isCatsCoToolGatewayContext(context) && Boolean(searchPath && path.isAbsolute(searchPath));
 
     const files = await glob(pattern, {
       cwd,
@@ -70,7 +86,7 @@ export class GlobTool implements Tool {
     });
 
     if (files.length === 0) {
-      return { ok: true, content: `未找到匹配的文件。\n模式: ${pattern}\n目录: ${searchPath || '.'}\nPath: ${cwd}` };
+      return { ok: true, content: `未找到匹配的文件。\n模式: ${pattern}\n目录: ${visibleSearchPath}\nPath: ${visibleCwd}` };
     }
 
     // 使用Promise.allSettled容错处理stat（文件可能在glob后被删除）
@@ -97,18 +113,18 @@ export class GlobTool implements Tool {
       durationMs: Date.now() - startTime
     };
 
-    return { ok: true, content: this.formatResult(result, pattern, searchPath, cwd) };
+    return { ok: true, content: this.formatResult(result, pattern, visibleSearchPath, visibleCwd) };
   }
 
   private formatResult(
     result: GlobResult,
     pattern: string,
-    searchPath: string | undefined,
-    cwd: string,
+    visibleSearchPath: string,
+    visibleCwd: string,
   ): string {
     const { numFiles, filenames, truncated, durationMs } = result;
 
-    const header = `找到 ${numFiles} 个文件 (${durationMs}ms)${truncated ? ' - 结果已截断，考虑使用更精确的模式' : ''}:\n模式: ${pattern}\n目录: ${searchPath || '.'}\nPath: ${cwd}\n\n`;
+    const header = `找到 ${numFiles} 个文件 (${durationMs}ms)${truncated ? ' - 结果已截断，考虑使用更精确的模式' : ''}:\n模式: ${pattern}\n目录: ${visibleSearchPath}\nPath: ${visibleCwd}\n\n`;
     const fileList = filenames.map((file, i) => `${(i + 1).toString().padStart(4, ' ')}. ${file}`).join('\n');
     
     return header + fileList + (truncated ? '\n\n提示: 结果被限制在前 100 个文件。使用更具体的路径或模式来缩小范围。' : '');
