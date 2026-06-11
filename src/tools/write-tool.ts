@@ -3,6 +3,7 @@ import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
 import { isToolAllowed, isPathAllowed } from '../utils/safety';
+import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
 
 /**
  * Write 工具 - 写入文件内容
@@ -45,9 +46,19 @@ export class WriteTool implements Tool {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
     }
 
+    const gateway = resolveToolGatewayAccess(context, {
+      toolName: this.definition.name,
+      operation: 'write_file',
+      targetLabel: file_path,
+    });
+    if (!gateway.ok) {
+      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
+    }
+
     // 获取相对路径用于显示
     const relativePath = path.relative(context.workingDirectory, absolutePath);
-    const displayPath = relativePath.startsWith('..') ? absolutePath : relativePath;
+    const rawDisplayPath = relativePath.startsWith('..') ? absolutePath : relativePath;
+    const displayPath = formatCatsCoVisiblePath(context, rawDisplayPath, { preserveRelative: true });
 
     // 检查文件是否已存在
     const fileExists = fs.existsSync(absolutePath);
@@ -89,6 +100,6 @@ export class WriteTool implements Tool {
       }
     }
 
-    return { ok: true, content: `成功${operation}文件: ${file_path}\nPath: ${absolutePath}\n行数: ${lines}\n大小: ${sizeKB} KB (${bytes} bytes)` };
+    return { ok: true, content: `成功${operation}文件: ${displayPath}\nPath: ${displayPath}\n行数: ${lines}\n大小: ${sizeKB} KB (${bytes} bytes)` };
   }
 }

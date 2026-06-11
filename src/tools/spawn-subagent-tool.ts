@@ -5,6 +5,9 @@ import { AIService } from '../utils/ai-service';
 import { SkillManager } from '../skills/skill-manager';
 import { Logger } from '../utils/logger';
 import { styles } from '../theme/colors';
+import { isCatsCoToolGatewayContext } from './tool-gateway';
+
+const CATSCO_SUBAGENT_ALLOWED_TOOLS = ['ask_parent'] as const;
 
 /**
  * spawn_subagent - 派遣子智能体后台执行隔离任务
@@ -98,6 +101,10 @@ export class SpawnSubagentTool implements Tool {
     if (!maxTurnsResult.ok) {
       return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: maxTurnsResult.message };
     }
+    const catsCoSubAgentTools = resolveCatsCoSubAgentAllowedTools(context, allowedToolsResult.value);
+    if (!catsCoSubAgentTools.ok) {
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: catsCoSubAgentTools.message };
+    }
 
     const manager = SubAgentManager.getInstance();
     const sessionKey = context.sessionId || 'unknown';
@@ -111,7 +118,7 @@ export class SpawnSubagentTool implements Tool {
         agentType,
         toolScope,
         subAgentPrompt,
-        allowedTools: allowedToolsResult.value,
+        allowedTools: catsCoSubAgentTools.value,
         maxTurns: maxTurnsResult.value,
         taskDescription,
         userMessage,
@@ -132,7 +139,7 @@ export class SpawnSubagentTool implements Tool {
     console.log(styles.text(`   ID: ${result.id}`));
     const displayAgentType = result.agentType || agentType || (skillName ? 'skill' : 'worker');
     const displayToolScope = result.toolScope || toolScope || defaultToolScopeFor(displayAgentType);
-    const effectiveAllowedTools = result.allowedTools ?? allowedToolsResult.value;
+    const effectiveAllowedTools = result.allowedTools ?? catsCoSubAgentTools.value;
 
     console.log(styles.text(`   Type: ${displayAgentType}`));
     console.log(styles.text(`   Scope: ${displayToolScope}\n`));
@@ -149,6 +156,35 @@ export class SpawnSubagentTool implements Tool {
       `完成后会以后台结果通知回到主会话；你仍负责主线推进和最终回复。`,
     ].filter(Boolean).join('\n') };
   }
+}
+
+function resolveCatsCoSubAgentAllowedTools(
+  context: ToolExecutionContext,
+  requestedTools?: string[],
+): { ok: true; value?: string[] } | { ok: false; message: string } {
+  const hasCatsCoDeviceContext = isCatsCoToolGatewayContext(context)
+    && Boolean(context.executionScope || context.deviceGrants?.length || context.localFileGrants?.length || context.localDeviceGrant);
+  if (!hasCatsCoDeviceContext) {
+    return { ok: true, value: requestedTools };
+  }
+
+  if (!requestedTools) {
+    return { ok: true, value: [...CATSCO_SUBAGENT_ALLOWED_TOOLS] };
+  }
+
+  const deniedTools = requestedTools.filter(tool => !CATSCO_SUBAGENT_ALLOWED_TOOLS.includes(tool as any));
+  if (deniedTools.length > 0) {
+    return {
+      ok: false,
+      message: [
+        'CatsCo 用户设备授权不会传递给子智能体，已阻止子智能体使用本地文件或命令工具。',
+        `被拒绝的工具: ${deniedTools.join(', ')}`,
+        '请在主会话当前 turn 中直接使用已授权工具，或让子智能体通过 ask_parent 请求主会话继续处理。',
+      ].join('\n'),
+    };
+  }
+
+  return { ok: true, value: requestedTools };
 }
 
 function normalizeMaxTurns(value: unknown): { ok: true; value?: number } | { ok: false; message: string } {

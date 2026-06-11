@@ -143,9 +143,12 @@ function validateGrant(
   }
 
   const mismatches = [
+    ['source', grant.source, scope.source],
     ['sessionKey', grant.sessionKey, scope.sessionKey],
     ['topicId', grant.topicId, scope.topicId],
+    ['topicType', grant.topicType, scope.topicType],
     ['actorUserId', grant.actorUserId, scope.actorUserId],
+    ['agentId', grant.agentId, scope.agentId],
     ['agentBodyId', grant.agentBodyId, scope.agentBodyId],
     ['deviceBodyId', grant.deviceBodyId, localDeviceGrant.bodyId],
   ].filter(([, grantValue, scopeValue]) => grantValue !== scopeValue);

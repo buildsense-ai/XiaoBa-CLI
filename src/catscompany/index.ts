@@ -1,23 +1,34 @@
-import { CatsClient, MessageContext } from './client';
+import { CatsClient, MessageContext, type CatsDeviceRpcMessage } from './client';
 import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo } from './types';
 import { MessageSender } from './message-sender';
 import { extractContentBlocks } from './content-blocks';
 import { createCatsCoMessageEnvelope, createExecutionScope } from './message-envelope';
 import { createCatsCoAttachmentGrant, createCatsCoLocalDeviceGrant } from './local-file-grants';
+import { extractCatsCoDeviceGrants } from './device-grants';
+import { extractCatsCoDeviceSelection } from './device-selection';
 import { MessageSessionManager } from '../core/message-session-manager';
 import { AgentServices, BUSY_MESSAGE, RuntimeFeedbackInput, SessionCallbacks } from '../core/agent-session';
 import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import type { SubAgentInfo } from '../core/sub-agent-session';
-import { ChannelCallbacks } from '../types/tool';
+import { ChannelCallbacks, DeviceRpcTransport, ToolErrorCode, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { ContentBlock } from '../types';
 import type { PendingUserInput } from '../core/conversation-runner';
-import type { ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
+import type { DeviceGrantOperation, ExecutionScope, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
 import { randomUUID } from 'crypto';
+import { hostname } from 'os';
 import { ConfigManager } from '../utils/config';
 import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
 import { createCatsCoSessionRoute } from '../core/session-router';
+import { ReadTool } from '../tools/read-tool';
+import { GlobTool } from '../tools/glob-tool';
+import { GrepTool } from '../tools/grep-tool';
+import {
+  isRemoteReadonlyTool,
+  normalizeDeviceRpcToolResultForTransport,
+  normalizeDeviceRpcToolResultPayload,
+} from '../tools/device-rpc-tool';
 
 interface PendingAttachment {
   fileName: string;
@@ -42,6 +53,8 @@ interface QueuedMessage {
   senderId: string;
   seq: number;
   executionScope: ParsedCatsMessage['executionScope'];
+  deviceGrants?: ScopedDeviceGrant[];
+  deviceSelection?: ScopedDeviceSelection;
   localFileGrants?: ScopedLocalFileGrant[];
   receivedAt: number;
   source?: 'user' | 'subagent_feedback';
@@ -50,6 +63,8 @@ interface QueuedMessage {
 
 const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 const TYPING_HEARTBEAT_INTERVAL_MS = 5_000;
+const DEVICE_REGISTRATION_REFRESH_MS = 120_000;
+const DEVICE_RPC_DEFAULT_TTL_MS = 60_000;
 const HIDDEN_CATS_TOOL_PROGRESS = new Set([
   'send_text',
   'send_file',
@@ -99,13 +114,35 @@ export class CatsCompanyBot {
   private runtime: AdapterRuntimeBundle;
   private runtimeProfile: AdapterRuntimeBundle['profile'];
   private localDeviceGrant?: ScopedLocalDeviceGrant;
+  private deviceRegistrationTimer?: ReturnType<typeof setInterval>;
+  private readonly deviceRegistration?: {
+    device_id: string;
+    display_name?: string;
+    body_id?: string;
+    installation_id?: string;
+    status: 'online';
+    capabilities: string[];
+  };
 
   constructor(config: CatsCompanyConfig) {
+    const localDeviceId = config.installationId || config.bodyId;
+    const deviceRegistration = localDeviceId
+      ? {
+          device_id: localDeviceId,
+          display_name: config.deviceName || process.env.COMPUTERNAME || process.env.HOSTNAME || hostname() || localDeviceId,
+          body_id: config.bodyId,
+          installation_id: config.installationId || config.bodyId,
+          status: 'online' as const,
+          capabilities: ['read_file', 'glob', 'grep'],
+        }
+      : undefined;
+
     this.bot = new CatsClient({
       serverUrl: config.serverUrl,
       apiKey: config.apiKey,
       bodyId: config.bodyId,
       installationId: config.installationId,
+      deviceRegistration,
       httpBaseUrl: config.httpBaseUrl,
     });
 
@@ -115,6 +152,7 @@ export class CatsCompanyBot {
       installationId: config.installationId,
       deviceId: config.installationId || config.bodyId,
     });
+    this.deviceRegistration = deviceRegistration;
 
     const runtime = createCatsCompanyRuntime(config.sessionTTL);
     this.runtime = runtime;
@@ -150,10 +188,18 @@ export class CatsCompanyBot {
       this.runtimeProfile.prompt.displayName = botName;
       process.env.CURRENT_AGENT_DISPLAY_NAME = botName;
       Logger.success(`CatsCo agent 已连接，uid=${info.uid}, name=${botName}`);
+      this.registerCurrentDevice().catch((err: any) => {
+        Logger.warning(`CatsCo 设备注册失败，继续保持聊天连接: ${err?.message || err}`);
+      });
+      this.startDeviceRegistrationRefresh();
     });
 
     this.bot.on('message', async (ctx: MessageContext) => {
       await this.onMessage(ctx);
+    });
+
+    this.bot.on('device_rpc_request', async (request: CatsDeviceRpcMessage) => {
+      await this.handleDeviceRpcRequest(request);
     });
 
     this.bot.on('error', (err: Error) => {
@@ -162,6 +208,291 @@ export class CatsCompanyBot {
 
     this.bot.connect();
     Logger.success('CatsCo agent 已启动，等待消息...');
+  }
+
+  private async registerCurrentDevice(): Promise<void> {
+    if (!this.deviceRegistration?.device_id) return;
+    await this.bot.registerDevice(this.deviceRegistration);
+    Logger.info(`[CatsCompany] 已注册本机设备能力: device=${this.deviceRegistration.device_id}, capabilities=${this.deviceRegistration.capabilities.join(',')}`);
+  }
+
+  private startDeviceRegistrationRefresh(): void {
+    if (!this.deviceRegistration?.device_id) return;
+    this.stopDeviceRegistrationRefresh();
+    this.deviceRegistrationTimer = setInterval(() => {
+      this.registerCurrentDevice().catch((err: any) => {
+        Logger.warning(`CatsCo 设备状态刷新失败: ${err?.message || err}`);
+      });
+    }, DEVICE_REGISTRATION_REFRESH_MS);
+    (this.deviceRegistrationTimer as any).unref?.();
+  }
+
+  private stopDeviceRegistrationRefresh(): void {
+    if (!this.deviceRegistrationTimer) return;
+    clearInterval(this.deviceRegistrationTimer);
+    this.deviceRegistrationTimer = undefined;
+  }
+
+  private buildDeviceRpcTransport(): DeviceRpcTransport {
+    return {
+      executeTool: async ({ toolName, operation, args, grant, timeoutMs }) => {
+        const response = await this.bot.sendDeviceRpcRequest({
+          request_id: `device_rpc_${randomUUID()}`,
+          grant_id: grant.grantId,
+          session_key: grant.sessionKey,
+          topic_id: grant.topicId,
+          topic_type: grant.topicType,
+          actor_user_id: grant.actorUserId,
+          agent_id: grant.agentId,
+          agent_body_id: grant.agentBodyId,
+          device_id: grant.deviceId,
+          device_body_id: grant.deviceBodyId,
+          device_installation_id: grant.deviceInstallationId,
+          operation,
+          tool_name: toolName,
+          payload: { args },
+          expires_at: grant.expiresAt,
+        }, timeoutMs);
+
+        if (response.error) {
+          return {
+            ok: false,
+            errorCode: this.mapDeviceRpcToolErrorCode(response.error.code),
+            message: response.error.message || response.error.code || '远程设备工具执行失败。',
+            retryable: this.isRetryableDeviceRpcError(response.error.code),
+          };
+        }
+        return normalizeDeviceRpcToolResultPayload(response.result);
+      },
+    };
+  }
+
+  private async handleDeviceRpcRequest(request: CatsDeviceRpcMessage): Promise<void> {
+    const requestID = request.request_id;
+    if (!requestID) return;
+
+    const validationError = this.validateDeviceRpcToolRequest(request);
+    const result = validationError ? undefined : await this.executeLocalDeviceRpcTool(request);
+    const error = validationError || (!result || result.ok
+      ? undefined
+      : {
+          code: result.errorCode || 'tool_execution_error',
+          message: result.message,
+        });
+
+    try {
+      await this.bot.sendDeviceRpcResult({
+        request_id: requestID,
+        grant_id: request.grant_id,
+        session_key: request.session_key,
+        topic_id: request.topic_id,
+        topic_type: request.topic_type,
+        actor_user_id: request.actor_user_id,
+        agent_id: request.agent_id,
+        agent_body_id: request.agent_body_id,
+        device_id: this.localDeviceGrant?.deviceId || request.device_id,
+        device_body_id: this.localDeviceGrant?.bodyId || request.device_body_id,
+        device_installation_id: this.localDeviceGrant?.installationId || request.device_installation_id,
+        operation: request.operation,
+        tool_name: request.tool_name,
+        result: error || !result ? undefined : normalizeDeviceRpcToolResultForTransport(result),
+        error,
+      });
+    } catch (err: any) {
+      Logger.warning(`[CatsCompany] Device RPC result 发送失败: request=${requestID}, error=${err?.message || err}`);
+    }
+  }
+
+  private async executeLocalDeviceRpcTool(request: CatsDeviceRpcMessage): Promise<ToolExecutionResult> {
+    const operation = this.normalizeDeviceRpcReadonlyOperation(request.operation);
+    const toolName = String(request.tool_name || operation || '').trim();
+    if (!operation || !isRemoteReadonlyTool(toolName, operation)) {
+      return {
+        ok: false,
+        errorCode: 'PERMISSION_DENIED',
+        message: `Device RPC 不允许执行 ${toolName || request.operation || 'unknown'}。`,
+      };
+    }
+
+    const context = this.buildDeviceRpcToolContext(request, operation);
+    const args = this.extractDeviceRpcToolArgs(request.payload);
+    switch (operation) {
+      case 'read_file':
+        return new ReadTool().execute(args, context);
+      case 'glob':
+        return new GlobTool().execute(args, context);
+      case 'grep':
+        return new GrepTool().execute(args, context);
+      default:
+        return {
+          ok: false,
+          errorCode: 'PERMISSION_DENIED',
+          message: `Device RPC 不允许执行 ${operation}。`,
+        };
+    }
+  }
+
+  private buildDeviceRpcToolContext(
+    request: CatsDeviceRpcMessage,
+    operation: DeviceGrantOperation,
+  ): ToolExecutionContext {
+    const topicType = request.topic_type === 'group' || request.topic_type === 'p2p'
+      ? request.topic_type
+      : 'unknown';
+    const executionScope: ExecutionScope = {
+      source: 'catscompany',
+      sessionKey: String(request.session_key || ''),
+      topicId: String(request.topic_id || ''),
+      topicType,
+      actorUserId: String(request.actor_user_id || ''),
+      agentId: request.agent_id,
+      agentBodyId: request.agent_body_id,
+      permissionsSource: 'device_rpc_forward',
+      identityTrust: 'server_canonical',
+      isTrusted: true,
+    };
+    const now = Date.now();
+    const grant: ScopedDeviceGrant = {
+      kind: 'user_device_grant',
+      source: 'catscompany',
+      grantId: String(request.grant_id || ''),
+      status: 'active',
+      identityTrust: 'server_canonical',
+      identitySource: 'device_rpc_forward',
+      deviceId: String(request.device_id || this.localDeviceGrant?.deviceId || ''),
+      deviceBodyId: request.device_body_id || this.localDeviceGrant?.bodyId,
+      deviceInstallationId: request.device_installation_id || this.localDeviceGrant?.installationId,
+      ownerUserId: executionScope.actorUserId,
+      sessionKey: executionScope.sessionKey,
+      topicId: executionScope.topicId,
+      topicType,
+      actorUserId: executionScope.actorUserId,
+      agentId: executionScope.agentId,
+      agentBodyId: executionScope.agentBodyId,
+      operations: [operation],
+      createdAt: typeof request.created_at === 'number' ? request.created_at : now,
+      expiresAt: typeof request.expires_at === 'number' ? request.expires_at : now + DEVICE_RPC_DEFAULT_TTL_MS,
+    };
+    const deviceSelection: ScopedDeviceSelection = {
+      kind: 'user_device_selection',
+      source: 'catscompany',
+      status: 'selected',
+      selectionSource: 'device_rpc_forward',
+      sessionKey: executionScope.sessionKey,
+      topicId: executionScope.topicId,
+      topicType,
+      actorUserId: executionScope.actorUserId,
+      agentId: executionScope.agentId,
+      identityTrust: 'server_canonical',
+      identitySource: 'device_rpc_forward',
+      selectedDeviceId: grant.deviceId,
+      selectedDeviceBodyId: grant.deviceBodyId,
+      selectedDeviceInstallationId: grant.deviceInstallationId,
+      selectedDeviceOperations: [operation],
+      createdAt: now,
+    };
+    const workingDirectory = process.cwd();
+    return {
+      workingDirectory,
+      workspaceRoot: workingDirectory,
+      conversationHistory: [],
+      sessionId: executionScope.sessionKey,
+      surface: 'catscompany',
+      permissionProfile: 'strict',
+      executionScope,
+      localDeviceGrant: this.localDeviceGrant,
+      deviceGrants: [grant],
+      deviceSelection,
+    };
+  }
+
+  private validateDeviceRpcToolRequest(request: CatsDeviceRpcMessage): { code: string; message: string } | undefined {
+    const targetError = this.validateDeviceRpcTarget(request);
+    if (targetError) return targetError;
+
+    const operation = this.normalizeDeviceRpcReadonlyOperation(request.operation);
+    const toolName = String(request.tool_name || operation || '').trim();
+    if (!operation || !isRemoteReadonlyTool(toolName, operation)) {
+      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, glob, and grep.' };
+    }
+
+    const requiredFields: Array<[keyof CatsDeviceRpcMessage, string]> = [
+      ['grant_id', 'grant_id'],
+      ['session_key', 'session_key'],
+      ['topic_id', 'topic_id'],
+      ['topic_type', 'topic_type'],
+      ['actor_user_id', 'actor_user_id'],
+      ['device_id', 'device_id'],
+    ];
+    for (const [field, label] of requiredFields) {
+      if (!String(request[field] || '').trim()) {
+        return { code: 'invalid_request', message: `Device RPC request missing ${label}.` };
+      }
+    }
+    if (typeof request.expires_at === 'number' && Date.now() > request.expires_at) {
+      return { code: 'request_expired', message: 'Device RPC request has expired.' };
+    }
+    return undefined;
+  }
+
+  private normalizeDeviceRpcReadonlyOperation(value: unknown): DeviceGrantOperation | undefined {
+    const operation = String(value || '').trim();
+    if (operation === 'read_file' || operation === 'glob' || operation === 'grep') {
+      return operation;
+    }
+    return undefined;
+  }
+
+  private extractDeviceRpcToolArgs(payload: unknown): Record<string, unknown> {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
+    const record = payload as Record<string, unknown>;
+    if (record.args && typeof record.args === 'object' && !Array.isArray(record.args)) {
+      return { ...(record.args as Record<string, unknown>) };
+    }
+    return { ...record };
+  }
+
+  private mapDeviceRpcToolErrorCode(code: unknown): ToolErrorCode {
+    const text = String(code || '').toLowerCase();
+    if (text.includes('permission') || text.includes('forbidden') || text.includes('mismatch') || text.includes('unsupported')) {
+      return 'PERMISSION_DENIED';
+    }
+    if (text.includes('timeout') || text.includes('expired')) {
+      return 'EXECUTION_TIMEOUT';
+    }
+    if (text.includes('not_found') || text.includes('offline') || text.includes('unavailable')) {
+      return 'TOOL_EXECUTION_ERROR';
+    }
+    return 'TOOL_EXECUTION_ERROR';
+  }
+
+  private isRetryableDeviceRpcError(code: unknown): boolean {
+    const text = String(code || '').toLowerCase();
+    return text.includes('timeout') || text.includes('offline') || text.includes('unavailable');
+  }
+
+  private validateDeviceRpcTarget(request: CatsDeviceRpcMessage): { code: string; message: string } | undefined {
+    if (!this.localDeviceGrant) {
+      return { code: 'device_not_bound', message: 'Current runtime is not bound to a CatsCo local device.' };
+    }
+    const checks: Array<[unknown, unknown, string]> = [
+      [request.device_id, this.localDeviceGrant.deviceId, 'device_id'],
+      [request.device_installation_id, this.localDeviceGrant.installationId, 'installation_id'],
+      [request.device_body_id, this.localDeviceGrant.bodyId, 'body_id'],
+    ];
+    let matchedAny = false;
+    for (const [requested, local, label] of checks) {
+      const requestedText = String(requested || '').trim();
+      if (!requestedText) continue;
+      const localText = String(local || '').trim();
+      if (!localText || requestedText !== localText) {
+        return { code: 'target_device_mismatch', message: `Device RPC target ${label} does not match this local runtime.` };
+      }
+      matchedAny = true;
+    }
+    return matchedAny
+      ? undefined
+      : { code: 'target_device_mismatch', message: 'Device RPC target does not match this local runtime.' };
   }
 
   // ─── 构建 ChannelCallbacks ──────────────────────
@@ -410,6 +741,8 @@ export class CatsCompanyBot {
         senderId: msg.senderId,
         seq: msg.seq,
         executionScope: msg.executionScope,
+        deviceGrants: msg.deviceGrants,
+        deviceSelection: msg.deviceSelection,
         localFileGrants,
         receivedAt: Date.now(),
         source: 'user',
@@ -433,12 +766,15 @@ export class CatsCompanyBot {
         channel,
         sessionRoute,
         executionScope: msg.executionScope,
-          localDeviceGrant: this.localDeviceGrant,
-          localFileGrants,
-          runtimeFeedback,
-          pendingUserInputProvider: () => this.consumeQueuedUserInput(key, msg.executionScope),
-          callbacks: this.buildSessionCallbacks(msg.topic),
-        });
+        localDeviceGrant: this.localDeviceGrant,
+        deviceGrants: msg.deviceGrants,
+        deviceSelection: msg.deviceSelection,
+        deviceRpc: this.buildDeviceRpcTransport(),
+        localFileGrants,
+        runtimeFeedback,
+        pendingUserInputProvider: () => this.consumeQueuedUserInput(key, msg.executionScope),
+        callbacks: this.buildSessionCallbacks(msg.topic),
+      });
 
       // 最终文本回复
       if (result.visibleToUser && result.text) {
@@ -545,6 +881,7 @@ export class CatsCompanyBot {
       metadata: ctx.metadata,
       botUid: this.botUid,
     });
+    const executionScope = createExecutionScope(envelope);
 
     return {
       topic: ctx.topic,
@@ -555,7 +892,9 @@ export class CatsCompanyBot {
       rawContent: ctx.content,
       metadata: ctx.metadata,
       envelope,
-      executionScope: createExecutionScope(envelope),
+      executionScope,
+      deviceGrants: extractCatsCoDeviceGrants(ctx.metadata, executionScope),
+      deviceSelection: extractCatsCoDeviceSelection(ctx.metadata, executionScope),
       file: files[0],
       files,
     };
@@ -598,6 +937,8 @@ export class CatsCompanyBot {
         callbacks: this.buildSessionCallbacks(topic),
         source: 'subagent_result',
         executionScope,
+        localDeviceGrant: this.localDeviceGrant,
+        deviceRpc: this.buildDeviceRpcTransport(),
       });
       if (result.text === BUSY_MESSAGE) {
         this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope);
@@ -802,11 +1143,16 @@ export class CatsCompanyBot {
           source: 'subagent_result',
           executionScope: msg.executionScope,
           localDeviceGrant: this.localDeviceGrant,
+          deviceSelection: msg.deviceSelection,
+          deviceRpc: this.buildDeviceRpcTransport(),
         })
         : await session.handleMessage(msg.userMessage, {
           channel,
           executionScope: msg.executionScope,
           localDeviceGrant: this.localDeviceGrant,
+          deviceGrants: msg.deviceGrants,
+          deviceSelection: msg.deviceSelection,
+          deviceRpc: this.buildDeviceRpcTransport(),
           runtimeFeedback: msg.runtimeFeedback,
           localFileGrants: msg.localFileGrants,
           pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey, msg.executionScope),
@@ -864,8 +1210,15 @@ export class CatsCompanyBot {
     Logger.info(`[${sessionKey}] 合并 ${messages.length} 条处理期间新到的用户消息`);
     const content = this.mergeQueuedMessages(messages);
     const localFileGrants = messages.flatMap(item => item.localFileGrants || []);
-    if (localFileGrants.length === 0) return content;
-    return { content, localFileGrants };
+    const deviceGrants = messages.flatMap(item => item.deviceGrants || []);
+    const deviceSelection = [...messages].reverse().find(item => item.deviceSelection)?.deviceSelection;
+    if (localFileGrants.length === 0 && deviceGrants.length === 0 && !deviceSelection) return content;
+    return {
+      content,
+      localFileGrants: localFileGrants.length > 0 ? localFileGrants : undefined,
+      deviceGrants: deviceGrants.length > 0 ? deviceGrants : undefined,
+      deviceSelection,
+    };
   }
 
   private canMergeQueuedMessage(
@@ -920,6 +1273,7 @@ export class CatsCompanyBot {
    * 停止机器人
    */
   async destroy(): Promise<void> {
+    this.stopDeviceRegistrationRefresh();
     this.bot.disconnect();
     await this.sessionManager.destroy();
     for (const pendingId of Array.from(this.pendingAnswers.keys())) {

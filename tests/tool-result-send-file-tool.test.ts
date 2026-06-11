@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { SendFileTool } from '../src/tools/send-file-tool';
-import type { ExecutionScope, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../src/types/session-identity';
+import type { ExecutionScope, ScopedDeviceGrant, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../src/types/session-identity';
 import { ToolExecutionContext } from '../src/types/tool';
 
 describe('SendFileTool - ToolExecutionResult', () => {
@@ -76,6 +76,33 @@ describe('SendFileTool - ToolExecutionResult', () => {
       installationId: 'install-main',
       deviceId: 'install-main',
       createdAt: Date.now(),
+      ...overrides,
+    };
+  }
+
+  function userDeviceGrant(operations: ScopedDeviceGrant['operations'], overrides: Partial<ScopedDeviceGrant> = {}): ScopedDeviceGrant {
+    const currentScope = scope();
+    return {
+      kind: 'user_device_grant',
+      source: 'catscompany',
+      grantId: 'device-grant-send-file',
+      status: 'active',
+      identityTrust: 'server_canonical',
+      identitySource: 'metadata.catsco_identity',
+      deviceId: 'install-main',
+      deviceDisplayName: 'Main Device',
+      deviceBodyId: 'body-main',
+      deviceInstallationId: 'install-main',
+      ownerUserId: currentScope.actorUserId,
+      sessionKey: currentScope.sessionKey,
+      topicId: currentScope.topicId,
+      topicType: currentScope.topicType,
+      actorUserId: currentScope.actorUserId,
+      agentId: currentScope.agentId,
+      agentBodyId: currentScope.agentBodyId,
+      operations,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
       ...overrides,
     };
   }
@@ -154,6 +181,8 @@ describe('SendFileTool - ToolExecutionResult', () => {
     fs.writeFileSync(filePath, 'hello');
     let sentChatId = '';
     context.executionScope = scope({ topicId: 'chat-1' });
+    context.localDeviceGrant = deviceGrant();
+    context.deviceGrants = [userDeviceGrant(['send_file'], { topicId: 'chat-1' })];
     context.channel = {
       chatId: 'chat-1',
       reply: async () => {},
@@ -215,7 +244,7 @@ describe('SendFileTool - ToolExecutionResult', () => {
     assert.strictEqual(sendCalled, false);
   });
 
-  test('allows file send for legacy CatsCo scope when topic matches', async () => {
+  test('blocks regular file send for legacy CatsCo scope even when topic matches', async () => {
     const filePath = path.join(testRoot, 'legacy.md');
     fs.writeFileSync(filePath, 'hello');
     let sentChatId = '';
@@ -235,8 +264,10 @@ describe('SendFileTool - ToolExecutionResult', () => {
 
     const result = await tool.execute({ file_path: filePath, file_name: 'legacy.md' }, context);
 
-    assert.strictEqual(result.ok, true);
-    assert.strictEqual(sentChatId, 'chat-1');
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'PERMISSION_DENIED');
+    assert.match(result.message, /身份未通过服务端一致性校验/);
+    assert.strictEqual(sentChatId, '');
   });
 
   test('allows sending a CatsCo attachment cache file with a matching local grant', async () => {
