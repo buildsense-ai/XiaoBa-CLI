@@ -2,6 +2,7 @@ import { Logger } from '../utils/logger';
 import { ConfigManager } from '../utils/config';
 import { FeishuBot } from '../feishu';
 import { FeishuConfig } from '../feishu/types';
+import { resolveChannelAgentBindingOptions } from '../core/channel-agent-binding-resolver';
 import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/runtime-command-support';
 
 /**
@@ -35,6 +36,7 @@ export async function feishuCommand(): Promise<void> {
     sessionTTL: config.feishu?.sessionTTL,
     botOpenId,
     botAliases,
+    channelAgentBinding: resolveChannelAgentBindingOptions(),
   };
 
   // Bot Bridge 配置

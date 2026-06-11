@@ -2,7 +2,9 @@ export interface WeixinConfig {
   token: string;
   baseUrl: string;
   cdnBaseUrl: string;
+  channelAppId?: string;
   stateDir?: string;
+  channelAgentBinding?: import('../core/channel-agent-binding-resolver').ChannelAgentBindingResolverOptions;
 }
 
 export interface WeixinMessage {

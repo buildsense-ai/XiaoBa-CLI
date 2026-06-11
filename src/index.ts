@@ -53,6 +53,38 @@ function main() {
     });
 
   program
+    .command('device-connector')
+    .description('Start the lightweight CatsCo local device connector')
+    .option('--pair <code>', 'Pair this device with a CatsCo account using a pairing code')
+    .option('--name <name>', 'Set the local device display name')
+    .option('--allow-write', 'Allow approved remote write_file requests on this device')
+    .option('--allow-shell', 'Allow approved remote execute_shell requests on this device')
+    .option('--capability <capability...>', 'Expose additional device capabilities')
+    .option('--http-base-url <url>', 'CatsCo HTTP API base URL')
+    .option('--server-url <url>', 'CatsCo WebSocket URL')
+    .option('--runtime-root <path>', 'Runtime directory for CatsCo local connector config')
+    .action(async (options) => {
+      const { deviceConnectorCommand } = await import('./commands/device-connector');
+      await deviceConnectorCommand(options);
+    });
+
+  program
+    .command('connector')
+    .description('Start the lightweight CatsCo local device connector')
+    .option('--pair <code>', 'Pair this device with a CatsCo account using a pairing code')
+    .option('--name <name>', 'Set the local device display name')
+    .option('--allow-write', 'Allow approved remote write_file requests on this device')
+    .option('--allow-shell', 'Allow approved remote execute_shell requests on this device')
+    .option('--capability <capability...>', 'Expose additional device capabilities')
+    .option('--http-base-url <url>', 'CatsCo HTTP API base URL')
+    .option('--server-url <url>', 'CatsCo WebSocket URL')
+    .option('--runtime-root <path>', 'Runtime directory for CatsCo local connector config')
+    .action(async (options) => {
+      const { deviceConnectorCommand } = await import('./commands/device-connector');
+      await deviceConnectorCommand(options);
+    });
+
+  program
     .command('catsco')
     .description('Start the CatsCo webapp connector (compatibility alias)')
     .action(async () => {

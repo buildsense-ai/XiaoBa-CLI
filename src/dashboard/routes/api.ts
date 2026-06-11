@@ -12,6 +12,7 @@ import { PathResolver } from '../../utils/path-resolver';
 import { APP_VERSION } from '../../version';
 import type { ChatConfig } from '../../types';
 import { createRuntimeConfigSnapshot } from '../../runtime/runtime-config-snapshot';
+import { enrollDeviceConnector } from '../../commands/device-connector';
 import {
   CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS,
   calculatePromptBudgetTokens,
@@ -53,6 +54,7 @@ import {
 
 const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cc';
 const DEFAULT_CATSCO_WS_URL = 'wss://app.catsco.cc/v0/channels';
+const CATS_DEVICE_AUTH_SNAPSHOT_FILE = 'catsco-device-authorization.json';
 const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
 const SYSTEM_SKILL_DIRS = new Set<string>();
 
@@ -220,6 +222,42 @@ function hostLabel(value: string): string {
   } catch {
     return value;
   }
+}
+
+function normalizeDevicePairingCode(value: unknown): string {
+  const text = String(value || '').trim();
+  if (!/^[A-Za-z0-9_-]{6,160}$/.test(text)) {
+    throw httpError('invalid device pairing code', 400);
+  }
+  return text;
+}
+
+function normalizeLaunchUrl(
+  value: unknown,
+  fallback: string,
+  allowedProtocols: Set<string>,
+): string {
+  const raw = String(value || '').trim();
+  const candidate = raw || fallback;
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw httpError('invalid connector launch URL', 400);
+  }
+  if (!allowedProtocols.has(parsed.protocol)) {
+    throw httpError('unsupported connector launch URL protocol', 400);
+  }
+  return parsed.toString().replace(/\/+$/, '');
+}
+
+function defaultWsUrlForHttpBase(httpBaseUrl: string): string {
+  const url = new URL(httpBaseUrl);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.pathname = '/v0/channels';
+  url.search = '';
+  url.hash = '';
+  return url.toString().replace(/\/+$/, '');
 }
 
 function createCatsNetworkError(error: any, httpBaseUrl: string): Error {
@@ -653,11 +691,12 @@ async function getCatsDeviceRpcStatus(state: CatsAuthState, botUid?: string): Pr
     const disconnectedPending = scopedPending.filter((item: any) => item.requesterConnected === false || item.targetConnected === false);
     const serverState = safeCatsStatusString(data?.state);
     const routeState = safeCatsStatusString(data?.route_state || data?.routeState);
+    const routerReady = isCatsRouteStateReady(routeState);
     return {
-      state: disconnectedPending.length > 0 ? 'degraded' : serverState || 'ok',
+      state: !routerReady ? 'degraded' : disconnectedPending.length > 0 ? 'degraded' : serverState || 'ok',
       runtimeMode: safeCatsStatusString(data?.runtime_mode || data?.runtimeMode),
       routeState,
-      routerReady: routeState ? routeState === 'ready' || routeState === 'process_local' : true,
+      routerReady,
       pendingCount: scopedPending.length,
       disconnectedPendingCount: disconnectedPending.length,
       pending: scopedPending,
@@ -684,6 +723,242 @@ async function getCatsDeviceRpcStatus(state: CatsAuthState, botUid?: string): Pr
       error: redactCatsStatusError(String(error?.message || 'unable to query CatsCo device RPC status')),
     };
   }
+}
+
+async function getCatsDevicesStatus(state: CatsAuthState): Promise<Record<string, unknown>> {
+  if (!state.token) {
+    return {
+      state: 'not_configured',
+      devices: [],
+      deviceCount: 0,
+      routableCount: 0,
+    };
+  }
+
+  try {
+    const data = await catsRequest(
+      'GET',
+      state.httpBaseUrl,
+      '/api/devices',
+      undefined,
+      state.token,
+      { timeoutMs: 2500 },
+    );
+    const devices = Array.isArray(data?.devices)
+      ? data.devices.map(sanitizeCatsDeviceStatus).filter(Boolean)
+      : [];
+    const routableCount = devices.filter((device: any) => device.routable === true).length;
+    const activeCount = devices.filter((device: any) => device.active === true).length;
+    return {
+      state: 'ok',
+      devices,
+      deviceCount: devices.length,
+      activeCount,
+      routableCount,
+      checkedAt: new Date().toISOString(),
+    };
+  } catch (error: any) {
+    const status = Number(error?.status || 0);
+    if (status === 401 || status === 403) {
+      return {
+        state: 'auth_error',
+        devices: [],
+        deviceCount: 0,
+        routableCount: 0,
+        checkedAt: new Date().toISOString(),
+        error: status === 403
+          ? '当前 CatsCo 账号不能查询设备状态'
+          : 'CatsCo 登录态无法查询设备状态，请重新登录',
+      };
+    }
+    return {
+      state: 'unknown',
+      devices: [],
+      deviceCount: 0,
+      routableCount: 0,
+      checkedAt: new Date().toISOString(),
+      error: redactCatsStatusError(String(error?.message || 'unable to query CatsCo devices')),
+    };
+  }
+}
+
+function sanitizeCatsDeviceStatus(item: any): Record<string, unknown> | undefined {
+  if (!item || typeof item !== 'object') return undefined;
+  const deviceId = safeCatsStatusString(item.deviceId || item.device_id);
+  if (!deviceId) return undefined;
+  const capabilities = Array.isArray(item.capabilities)
+    ? item.capabilities.map((value: unknown) => safeCatsStatusString(value)).filter(Boolean)
+    : [];
+  return {
+    deviceId,
+    displayName: safeCatsStatusString(item.displayName || item.display_name),
+    status: safeCatsStatusString(item.status),
+    active: Boolean(item.active),
+    routeConnected: Boolean(item.routeConnected || item.route_connected),
+    routable: Boolean(item.routable),
+    unavailableReason: safeCatsStatusString(item.unavailableReason || item.unavailable_reason),
+    capabilities,
+    registeredAt: Number.isFinite(Number(item.registeredAt || item.registered_at)) ? Number(item.registeredAt || item.registered_at) : undefined,
+    lastSeenAt: Number.isFinite(Number(item.lastSeenAt || item.last_seen_at)) ? Number(item.lastSeenAt || item.last_seen_at) : undefined,
+  };
+}
+
+function isCatsRouteStateReady(routeState?: string): boolean {
+  const normalized = safeCatsStatusString(routeState);
+  if (!normalized) return true;
+  if (normalized === 'unavailable' || normalized === 'degraded' || normalized === 'error' || normalized === 'unknown') {
+    return false;
+  }
+  return normalized === 'ready'
+    || normalized === 'process_local'
+    || normalized === 'shared_memory'
+    || normalized === 'redis'
+    || normalized.endsWith('_ready');
+}
+
+function buildCatsDeviceAuthorizationSummary(
+  devicesStatus: Record<string, unknown>,
+  deviceRpcStatus: Record<string, unknown>,
+): Record<string, unknown> {
+  const localSnapshot = readCatsDeviceAuthorizationSnapshot();
+  const hasPendingRpc = Array.isArray(deviceRpcStatus.pending) && deviceRpcStatus.pending.length > 0;
+  if (localSnapshot && localSnapshot.state !== 'stale' && !hasPendingRpc) {
+    return mergeCatsDeviceAuthorizationSnapshot(localSnapshot, devicesStatus, deviceRpcStatus);
+  }
+  const devices = Array.isArray(devicesStatus.devices) ? devicesStatus.devices as Array<Record<string, unknown>> : [];
+  const pending = Array.isArray(deviceRpcStatus.pending) ? deviceRpcStatus.pending as Array<Record<string, unknown>> : [];
+  const firstPending = pending[0];
+  const selectedDeviceId = safeCatsStatusString(firstPending?.deviceId);
+  const selected = selectedDeviceId
+    ? devices.find(device => device.deviceId === selectedDeviceId)
+    : undefined;
+  const unavailable = devices.filter(device => device.routable !== true);
+  const pendingOperation = safeCatsStatusString(firstPending?.operation);
+  const ttlMs = Number.isFinite(Number(firstPending?.ttlMs)) ? Number(firstPending?.ttlMs) : undefined;
+  const deniedReason = selected
+    ? safeCatsStatusString(selected.unavailableReason)
+    : devices.length > 0 && Number(devicesStatus.routableCount || 0) === 0 && unavailable.length > 0
+      ? safeCatsStatusString(unavailable[0].unavailableReason)
+      : undefined;
+  const state = firstPending
+    ? 'pending'
+    : selected
+      ? selected.routable === true ? 'ready' : 'unavailable'
+      : devices.length > 0
+        ? Number(devicesStatus.routableCount || 0) > 0 ? 'available' : 'needs_route'
+        : 'no_devices';
+  return {
+    state,
+    selectedDevice: selected ? {
+      deviceId: selected.deviceId,
+      displayName: selected.displayName,
+      status: selected.status,
+      active: selected.active,
+      routeConnected: selected.routeConnected,
+      routable: selected.routable,
+      unavailableReason: selected.unavailableReason,
+    } : undefined,
+    operations: pendingOperation ? [pendingOperation] : [],
+    ttlMs,
+    pendingCount: pending.length,
+    deniedReason,
+    candidateCount: devices.length,
+    routableCount: Number(devicesStatus.routableCount || 0),
+    unavailableCandidates: unavailable.slice(0, 5).map(device => ({
+      deviceId: device.deviceId,
+      displayName: device.displayName,
+      status: device.status,
+      active: device.active,
+      routeConnected: device.routeConnected,
+      routable: device.routable,
+      unavailableReason: device.unavailableReason,
+    })),
+  };
+}
+
+function readCatsDeviceAuthorizationSnapshot(): Record<string, unknown> | undefined {
+  try {
+    const snapshotPath = path.join(process.cwd(), 'tmp', CATS_DEVICE_AUTH_SNAPSHOT_FILE);
+    if (!fs.existsSync(snapshotPath)) return undefined;
+    const raw = fs.readFileSync(snapshotPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || parsed.schema !== 'catsco.device_authorization.v1') return undefined;
+    const updatedAt = Date.parse(String(parsed.updatedAt || ''));
+    const ageMs = Number.isFinite(updatedAt) ? Date.now() - updatedAt : Number.POSITIVE_INFINITY;
+    const sanitized = sanitizeCatsDeviceAuthorizationSnapshot(parsed);
+    if (ageMs > 10 * 60_000) {
+      return { ...sanitized, state: 'stale', stale: true };
+    }
+    return sanitized;
+  } catch {
+    return undefined;
+  }
+}
+
+function sanitizeCatsDeviceAuthorizationSnapshot(snapshot: any): Record<string, unknown> {
+  const selected = snapshot.selectedDevice && typeof snapshot.selectedDevice === 'object'
+    ? sanitizeCatsDeviceStatus({
+      deviceId: snapshot.selectedDevice.deviceId,
+      displayName: snapshot.selectedDevice.displayName,
+      status: snapshot.selectedDevice.status,
+      active: snapshot.selectedDevice.active,
+      routeConnected: snapshot.selectedDevice.routeConnected,
+      routable: snapshot.selectedDevice.routable,
+      unavailableReason: snapshot.selectedDevice.unavailableReason,
+      capabilities: snapshot.operations,
+    })
+    : undefined;
+  const candidates = Array.isArray(snapshot.candidates)
+    ? snapshot.candidates.map(sanitizeCatsDeviceStatus).filter(Boolean)
+    : [];
+  return {
+    state: safeCatsStatusString(snapshot.state) || 'unknown',
+    source: 'last_catsco_turn',
+    updatedAt: safeCatsStatusString(snapshot.updatedAt),
+    topicId: safeCatsStatusString(snapshot.topicId),
+    topicType: safeCatsStatusString(snapshot.topicType),
+    actorUserId: safeCatsStatusString(snapshot.actorUserId),
+    agentId: safeCatsStatusString(snapshot.agentId),
+    messageSeq: Number.isFinite(Number(snapshot.messageSeq)) ? Number(snapshot.messageSeq) : undefined,
+    selectionSource: safeCatsStatusString(snapshot.selectionSource),
+    selectedDevice: selected,
+    operations: Array.isArray(snapshot.operations) ? snapshot.operations.map((value: unknown) => safeCatsStatusString(value)).filter(Boolean) : [],
+    ttlMs: Number.isFinite(Number(snapshot.ttlMs)) ? Math.max(0, Number(snapshot.ttlMs)) : undefined,
+    expiresAt: Number.isFinite(Number(snapshot.expiresAt)) ? Number(snapshot.expiresAt) : undefined,
+    deniedReason: safeCatsStatusString(snapshot.deniedReason),
+    candidates,
+    grantCount: Number.isFinite(Number(snapshot.grantCount)) ? Number(snapshot.grantCount) : 0,
+  };
+}
+
+function mergeCatsDeviceAuthorizationSnapshot(
+  snapshot: Record<string, unknown>,
+  devicesStatus: Record<string, unknown>,
+  deviceRpcStatus: Record<string, unknown>,
+): Record<string, unknown> {
+  const pending = Array.isArray(deviceRpcStatus.pending) ? deviceRpcStatus.pending as Array<Record<string, unknown>> : [];
+  const devices = Array.isArray(devicesStatus.devices) ? devicesStatus.devices as Array<Record<string, unknown>> : [];
+  const selected = snapshot.selectedDevice && typeof snapshot.selectedDevice === 'object'
+    ? { ...(snapshot.selectedDevice as Record<string, unknown>) }
+    : undefined;
+  const selectedDeviceId = safeCatsStatusString(selected?.deviceId);
+  const liveDevice = selectedDeviceId ? devices.find(device => device.deviceId === selectedDeviceId) : undefined;
+  const mergedSelected = selected || liveDevice
+    ? {
+      ...(selected || {}),
+      ...(liveDevice || {}),
+    }
+    : undefined;
+  const pendingForSelected = selectedDeviceId
+    ? pending.filter(item => item.deviceId === selectedDeviceId)
+    : pending;
+  return {
+    ...snapshot,
+    selectedDevice: mergedSelected,
+    pendingCount: pendingForSelected.length,
+    routableCount: Number(devicesStatus.routableCount || 0),
+    deniedReason: snapshot.deniedReason || safeCatsStatusString(mergedSelected?.unavailableReason),
+  };
 }
 
 function sanitizeCatsDeviceRpcPending(item: any): Record<string, unknown> | undefined {
@@ -2105,6 +2380,8 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
     const localBodyId = runtime.localConfig.device?.bodyId;
     const bodyStatus = await getCatsBotBodyStatus(state, state.botUid, localBodyId);
     const deviceRpcStatus = await getCatsDeviceRpcStatus(state, state.botUid);
+    const devicesStatus = await getCatsDevicesStatus(state);
+    const deviceAuthorization = buildCatsDeviceAuthorizationSummary(devicesStatus, deviceRpcStatus);
     const bodyBlocking = bodyStatus.state === 'conflict' || bodyStatus.state === 'auth_error';
     const bindingConfigured = connected && runtime.bodyConfigured && !bodyBlocking;
     const bodyLeaseReady = bodyStatus.state === 'online' && Boolean(bodyStatus.active);
@@ -2133,6 +2410,8 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       } : null,
       device: runtime.localConfig.device || null,
       bodyStatus,
+      devicesStatus,
+      deviceAuthorization,
       deviceRpcStatus,
       conflicts: runtime.conflicts,
       topicId: chatReady && user?.uid && state.botUid ? p2pTopicId(user.uid, state.botUid) : '',
@@ -2571,6 +2850,92 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       res.json({ ok: true, preferences });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.post('/cats/device-connector/pair', async (req, res) => {
+    try {
+      const pairingCode = normalizeDevicePairingCode(
+        req.body?.pairing_code || req.body?.pairingCode || req.body?.code,
+      );
+      const httpBaseUrl = normalizeLaunchUrl(
+        req.body?.http_base_url || req.body?.httpBaseUrl,
+        DEFAULT_CATSCO_HTTP_BASE_URL,
+        new Set(['http:', 'https:']),
+      );
+      const serverUrl = normalizeLaunchUrl(
+        req.body?.server_url || req.body?.serverUrl,
+        defaultWsUrlForHttpBase(httpBaseUrl),
+        new Set(['ws:', 'wss:']),
+      );
+      const deviceName = String(req.body?.device_name || req.body?.deviceName || req.body?.name || '').trim();
+      const localConfig = createCatsCoLocalConfigService({ runtimeRoot: process.cwd() });
+
+      await enrollDeviceConnector(localConfig, ConfigManager.getConfig(), {
+        pair: pairingCode,
+        httpBaseUrl,
+        serverUrl,
+        name: deviceName || undefined,
+      });
+
+      const current = serviceManager.getService('device-connector');
+      const wasRunning = current?.status === 'running';
+      const service = wasRunning
+        ? serviceManager.restart('device-connector')
+        : serviceManager.start('device-connector');
+
+      res.json({
+        ok: true,
+        service,
+        connectorStarted: !wasRunning,
+        connectorRestarted: wasRunning,
+        message: wasRunning
+          ? 'CatsCo Device Connector 已重新配对并在后台重启。'
+          : 'CatsCo Device Connector 已配对并在后台启动。',
+      });
+    } catch (e: any) {
+      res.status(e.status || 400).json({ error: e.message || 'device connector pairing failed' });
+    }
+  });
+
+  router.post('/cats/device-connector/ensure-running', async (_req, res) => {
+    try {
+      const localConfig = createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).load();
+      const connector = localConfig.deviceConnector;
+      if (localConfig.preferences?.autoConnect === false) {
+        return res.status(409).json({
+          ok: false,
+          error: 'Device Connector auto-connect is disabled',
+          reason: 'AUTO_CONNECT_DISABLED',
+        });
+      }
+      if (!connector?.token || !connector.deviceId) {
+        return res.status(409).json({
+          ok: false,
+          error: 'Device Connector is not paired',
+          reason: 'DEVICE_CONNECTOR_NOT_PAIRED',
+        });
+      }
+
+      const current = serviceManager.getService('device-connector');
+      if (current?.status === 'running') {
+        return res.json({
+          ok: true,
+          service: current,
+          connectorStarted: false,
+          connectorRestarted: false,
+        });
+      }
+
+      const service = serviceManager.start('device-connector');
+      return res.json({
+        ok: true,
+        service,
+        connectorStarted: true,
+        connectorRestarted: false,
+      });
+    } catch (e: any) {
+      return res.status(e.status || 400).json({ error: e.message || 'device connector start failed' });
     }
   });
 

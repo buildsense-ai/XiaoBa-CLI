@@ -1,17 +1,36 @@
 const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
 
 const DASHBOARD_PORT = resolveDashboardPort(process.env.XIAOBA_DASHBOARD_PORT);
+const DEEP_LINK_PROTOCOL = 'catsco';
 let mainWindow = null;
 let tray = null;
 let autoUpdater = null;
 let hideNoticeShown = false;
+let dashboardReady = false;
+const pendingDeepLinks = [];
 const REFRESHABLE_BUNDLED_SKILLS = new Set([]);
 const RETIRED_BUNDLED_SKILLS = new Set(['advanced-reader', 'vision-analysis']);
 const SKILL_SYNC_MARKER = '.xiaoba-bundled-skill.json';
 
 applyConfiguredUserDataPath();
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    showMainWindow();
+    queueCatsCoDeepLink(extractCatsCoDeepLink(argv));
+  });
+}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  queueCatsCoDeepLink(url);
+});
 
 function resolveDashboardPort(value) {
   const text = String(value || '').trim();
@@ -108,6 +127,146 @@ function notifyWindowHidden() {
     content: '点击右下角 CatsCo 图标可恢复窗口。',
     icon: createTrayIcon(),
   });
+}
+
+function registerDeepLinkProtocol() {
+  try {
+    if (process.defaultApp && process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(DEEP_LINK_PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
+    } else {
+      app.setAsDefaultProtocolClient(DEEP_LINK_PROTOCOL);
+    }
+  } catch (error) {
+    console.log('CatsCo deep link registration skipped:', error?.message || error);
+  }
+}
+
+function extractCatsCoDeepLink(argv) {
+  if (!Array.isArray(argv)) return null;
+  return argv.find((arg) => /^catsco:\/\//i.test(String(arg || '').trim())) || null;
+}
+
+function queueCatsCoDeepLink(rawUrl) {
+  if (!rawUrl) return;
+  if (!dashboardReady) {
+    pendingDeepLinks.push(String(rawUrl));
+    return;
+  }
+  handleCatsCoDeepLink(String(rawUrl)).catch((error) => {
+    showDeviceConnectorError(error);
+  });
+}
+
+async function drainPendingDeepLinks() {
+  const links = pendingDeepLinks.splice(0, pendingDeepLinks.length);
+  for (const link of links) {
+    await handleCatsCoDeepLink(link);
+  }
+}
+
+async function handleCatsCoDeepLink(rawUrl) {
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new Error('无法识别 CatsCo 连接。');
+  }
+
+  if (url.protocol !== `${DEEP_LINK_PROTOCOL}:`) return;
+  if (url.hostname !== 'device-connector' || url.pathname !== '/pair') {
+    throw new Error('这个 CatsCo 连接类型暂不支持。');
+  }
+
+  const code = url.searchParams.get('code') || url.searchParams.get('pairing_code') || url.searchParams.get('pair');
+  if (!code) {
+    throw new Error('设备配对链接缺少配对码。');
+  }
+
+  const result = await postLocalDashboardJson('/api/cats/device-connector/pair', {
+    code,
+    http_base_url: url.searchParams.get('http_base_url') || url.searchParams.get('httpBaseUrl') || undefined,
+    server_url: url.searchParams.get('server_url') || url.searchParams.get('serverUrl') || undefined,
+    device_name: url.searchParams.get('device_name') || url.searchParams.get('deviceName') || undefined,
+  });
+
+  enableOpenAtLogin();
+  showMainWindow();
+  notifyDeviceConnectorStatus('CatsCo 本机设备已连接', result?.message || 'Device Connector 已在后台运行。');
+}
+
+function postLocalDashboardJson(apiPath, body) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body || {});
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port: DASHBOARD_PORT,
+      path: apiPath,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        let data = {};
+        if (text) {
+          try {
+            data = JSON.parse(text);
+          } catch {
+            data = { raw: text };
+          }
+        }
+        if (response.statusCode && response.statusCode >= 200 && response.statusCode < 300) {
+          resolve(data);
+          return;
+        }
+        reject(new Error(data?.error || `CatsCo local request failed: ${response.statusCode}`));
+      });
+    });
+    request.on('error', reject);
+    request.write(payload);
+    request.end();
+  });
+}
+
+function enableOpenAtLogin() {
+  if (!app.isPackaged || typeof app.setLoginItemSettings !== 'function') return;
+  try {
+    app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true });
+  } catch (error) {
+    console.log('CatsCo login item registration skipped:', error?.message || error);
+  }
+}
+
+function notifyDeviceConnectorStatus(title, content) {
+  if (tray && process.platform === 'win32' && typeof tray.displayBalloon === 'function') {
+    tray.displayBalloon({ title, content, icon: createTrayIcon() });
+  }
+}
+
+function showDeviceConnectorError(error) {
+  const message = error?.message || '本机设备连接失败，请重新生成配对码后再试。';
+  showMainWindow();
+  dialog.showMessageBox({
+    type: 'warning',
+    title: '本机设备连接失败',
+    message,
+    buttons: ['知道了'],
+  }).catch(() => {});
+}
+
+async function startSavedDeviceConnector() {
+  try {
+    await postLocalDashboardJson('/api/cats/device-connector/ensure-running', {});
+  } catch (error) {
+    const message = String(error?.message || error || '');
+    if (!/not paired|auto-connect|already running|preflight/i.test(message)) {
+      console.log('CatsCo Device Connector auto-start skipped:', message);
+    }
+  }
 }
 
 // 闂佽绻愮换鎴犳崲閸℃稒鍎婃い鏍仜缁€澶愭煟濡厧鍔嬬紒?electron-updater闂備焦瀵х粙鎴︽偋閸℃哎浜归柡灞诲劜閻掕顭块懜鐢点€掔紒鈧?
@@ -769,12 +928,19 @@ if (autoUpdater) {
   });
 }
 
+if (gotSingleInstanceLock) {
 app.whenReady().then(async () => {
   try {
+    registerDeepLinkProtocol();
     await startServer();
+    dashboardReady = true;
     createApplicationMenu();
     createWindow();
     createTray();
+    const startupDeepLink = extractCatsCoDeepLink(process.argv);
+    if (startupDeepLink) pendingDeepLinks.push(startupDeepLink);
+    await drainPendingDeepLinks().catch(showDeviceConnectorError);
+    startSavedDeviceConnector().catch(() => {});
     
     // 闂備礁鎲￠崙褰掑垂閻楀牊鍙忛柍鍝勬噹鐟欙箓骞栧ǎ顒€鐒烘慨濠囩畺閺岋紕浠︾拠鎻掑濠电偞褰冨鈥愁嚕?
     if (app.isPackaged && autoUpdater) {
@@ -800,3 +966,4 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   app.isQuitting = true;
 });
+}

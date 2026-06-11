@@ -17,6 +17,8 @@ import type { PendingUserInput } from '../core/conversation-runner';
 import type { DeviceGrantOperation, ExecutionScope, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
 import { randomUUID } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import { hostname } from 'os';
 import { ConfigManager } from '../utils/config';
 import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
@@ -24,8 +26,10 @@ import { createCatsCoSessionRoute } from '../core/session-router';
 import { ReadTool } from '../tools/read-tool';
 import { GlobTool } from '../tools/glob-tool';
 import { GrepTool } from '../tools/grep-tool';
+import { WriteTool } from '../tools/write-tool';
+import { ShellTool } from '../tools/bash-tool';
 import {
-  isRemoteReadonlyTool,
+  isRemoteDeviceTool,
   normalizeDeviceRpcToolResultForTransport,
   normalizeDeviceRpcToolResultPayload,
 } from '../tools/device-rpc-tool';
@@ -65,6 +69,7 @@ const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 const TYPING_HEARTBEAT_INTERVAL_MS = 5_000;
 const DEVICE_REGISTRATION_REFRESH_MS = 120_000;
 const DEVICE_RPC_DEFAULT_TTL_MS = 60_000;
+const DEVICE_AUTH_SNAPSHOT_PATH = path.join(process.cwd(), 'tmp', 'catsco-device-authorization.json');
 const HIDDEN_CATS_TOOL_PROGRESS = new Set([
   'send_text',
   'send_file',
@@ -123,9 +128,17 @@ export class CatsCompanyBot {
     status: 'online';
     capabilities: string[];
   };
+  private readonly allowWriteFile: boolean;
+  private readonly allowShell: boolean;
 
   constructor(config: CatsCompanyConfig) {
+    if (!config.apiKey) {
+      throw new Error('CatsCompanyBot requires a bot API key. Use CatsCoDeviceConnector for device-only mode.');
+    }
     const localDeviceId = config.installationId || config.bodyId;
+    const deviceCapabilities = normalizeRuntimeDeviceCapabilities(config);
+    this.allowWriteFile = deviceCapabilities.includes('write_file') && Boolean(config.allowWriteFile);
+    this.allowShell = deviceCapabilities.includes('execute_shell') && Boolean(config.allowShell);
     const deviceRegistration = localDeviceId
       ? {
           device_id: localDeviceId,
@@ -133,13 +146,14 @@ export class CatsCompanyBot {
           body_id: config.bodyId,
           installation_id: config.installationId || config.bodyId,
           status: 'online' as const,
-          capabilities: ['read_file', 'glob', 'grep'],
+          capabilities: deviceCapabilities,
         }
       : undefined;
 
     this.bot = new CatsClient({
       serverUrl: config.serverUrl,
       apiKey: config.apiKey,
+      authMode: 'bot',
       bodyId: config.bodyId,
       installationId: config.installationId,
       deviceRegistration,
@@ -272,8 +286,19 @@ export class CatsCompanyBot {
     if (!requestID) return;
 
     const validationError = this.validateDeviceRpcToolRequest(request);
-    const result = validationError ? undefined : await this.executeLocalDeviceRpcTool(request);
-    const error = validationError || (!result || result.ok
+    let result: ToolExecutionResult | undefined;
+    let executionError: { code: string; message: string } | undefined;
+    if (!validationError) {
+      try {
+        result = await this.executeLocalDeviceRpcTool(request);
+      } catch (err: any) {
+        executionError = {
+          code: 'tool_execution_error',
+          message: err?.message || String(err || 'Device RPC local tool execution failed.'),
+        };
+      }
+    }
+    const error = validationError || executionError || (!result || result.ok
       ? undefined
       : {
           code: result.errorCode || 'tool_execution_error',
@@ -304,13 +329,34 @@ export class CatsCompanyBot {
   }
 
   private async executeLocalDeviceRpcTool(request: CatsDeviceRpcMessage): Promise<ToolExecutionResult> {
-    const operation = this.normalizeDeviceRpcReadonlyOperation(request.operation);
+    const operation = this.normalizeDeviceRpcOperation(request.operation);
     const toolName = String(request.tool_name || operation || '').trim();
-    if (!operation || !isRemoteReadonlyTool(toolName, operation)) {
+    if (!operation || !isRemoteDeviceTool(toolName, operation)) {
       return {
         ok: false,
         errorCode: 'PERMISSION_DENIED',
         message: `Device RPC 不允许执行 ${toolName || request.operation || 'unknown'}。`,
+      };
+    }
+    if (!(this.deviceRegistration?.capabilities || []).includes(operation)) {
+      return {
+        ok: false,
+        errorCode: 'PERMISSION_DENIED',
+        message: `当前 CatsCo runtime 未注册远程 ${operation} 能力。`,
+      };
+    }
+    if (operation === 'write_file' && !this.allowWriteFile) {
+      return {
+        ok: false,
+        errorCode: 'PERMISSION_DENIED',
+        message: '当前 CatsCo runtime 未显式开启远程写文件能力。',
+      };
+    }
+    if (operation === 'execute_shell' && !this.allowShell) {
+      return {
+        ok: false,
+        errorCode: 'PERMISSION_DENIED',
+        message: '当前 CatsCo runtime 未显式开启远程 shell 能力。',
       };
     }
 
@@ -323,6 +369,10 @@ export class CatsCompanyBot {
         return new GlobTool().execute(args, context);
       case 'grep':
         return new GrepTool().execute(args, context);
+      case 'write_file':
+        return new WriteTool().execute(args, context);
+      case 'execute_shell':
+        return new ShellTool().execute(args, context);
       default:
         return {
           ok: false,
@@ -410,10 +460,10 @@ export class CatsCompanyBot {
     const targetError = this.validateDeviceRpcTarget(request);
     if (targetError) return targetError;
 
-    const operation = this.normalizeDeviceRpcReadonlyOperation(request.operation);
+    const operation = this.normalizeDeviceRpcOperation(request.operation);
     const toolName = String(request.tool_name || operation || '').trim();
-    if (!operation || !isRemoteReadonlyTool(toolName, operation)) {
-      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, glob, and grep.' };
+    if (!operation || !isRemoteDeviceTool(toolName, operation)) {
+      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, glob, grep, write_file, and execute_shell.' };
     }
 
     const requiredFields: Array<[keyof CatsDeviceRpcMessage, string]> = [
@@ -435,9 +485,13 @@ export class CatsCompanyBot {
     return undefined;
   }
 
-  private normalizeDeviceRpcReadonlyOperation(value: unknown): DeviceGrantOperation | undefined {
+  private normalizeDeviceRpcOperation(value: unknown): DeviceGrantOperation | undefined {
     const operation = String(value || '').trim();
-    if (operation === 'read_file' || operation === 'glob' || operation === 'grep') {
+    if (operation === 'read_file'
+      || operation === 'glob'
+      || operation === 'grep'
+      || operation === 'write_file'
+      || operation === 'execute_shell') {
       return operation;
     }
     return undefined;
@@ -883,7 +937,7 @@ export class CatsCompanyBot {
     });
     const executionScope = createExecutionScope(envelope);
 
-    return {
+    const parsed: ParsedCatsMessage = {
       topic: ctx.topic,
       chatType,
       senderId: ctx.senderId,
@@ -898,6 +952,65 @@ export class CatsCompanyBot {
       file: files[0],
       files,
     };
+    this.persistDeviceAuthorizationSnapshot(parsed);
+    return parsed;
+  }
+
+  private persistDeviceAuthorizationSnapshot(message: ParsedCatsMessage): void {
+    const selection = message.deviceSelection;
+    const grants = message.deviceGrants || [];
+    if (!selection && grants.length === 0) return;
+    const now = Date.now();
+    const ttlMsValues = grants
+      .map(grant => grant.expiresAt - now)
+      .filter(value => Number.isFinite(value) && value >= 0);
+    const operations = [...new Set(grants.flatMap(grant => grant.operations || []))];
+    const snapshot = {
+      schema: 'catsco.device_authorization.v1',
+      updatedAt: new Date(now).toISOString(),
+      source: 'last_catsco_turn',
+      topicId: message.topic,
+      topicType: message.chatType,
+      actorUserId: message.executionScope.actorUserId,
+      agentId: message.executionScope.agentId,
+      messageSeq: message.seq,
+      state: selection?.status || (grants.length > 0 ? 'selected' : 'unknown'),
+      selectionSource: selection?.selectionSource,
+      selectedDevice: selection?.selectedDeviceId ? {
+        deviceId: selection.selectedDeviceId,
+        displayName: selection.selectedDeviceDisplayName,
+        status: selection.selectedDeviceStatus,
+        active: selection.selectedDeviceActive,
+        routeConnected: selection.selectedDeviceRouteConnected,
+        routable: selection.selectedDeviceRoutable,
+        unavailableReason: selection.selectedDeviceUnavailableReason,
+      } : undefined,
+      operations,
+      ttlMs: ttlMsValues.length > 0 ? Math.min(...ttlMsValues) : undefined,
+      expiresAt: grants.length > 0 ? Math.min(...grants.map(grant => grant.expiresAt)) : undefined,
+      deniedReason: selection?.status === 'unavailable'
+        ? selection.selectionSource || selection.selectedDeviceUnavailableReason
+        : undefined,
+      candidates: selection?.candidates?.map(candidate => ({
+        deviceId: candidate.deviceId,
+        displayName: candidate.displayName,
+        status: candidate.status,
+        active: candidate.active,
+        routeConnected: candidate.routeConnected,
+        routable: candidate.routable,
+        unavailableReason: candidate.unavailableReason,
+        operations: candidate.operations,
+      })),
+      grantCount: grants.length,
+    };
+    try {
+      fs.mkdirSync(path.dirname(DEVICE_AUTH_SNAPSHOT_PATH), { recursive: true });
+      const tmpPath = `${DEVICE_AUTH_SNAPSHOT_PATH}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(snapshot, null, 2), 'utf-8');
+      fs.renameSync(tmpPath, DEVICE_AUTH_SNAPSHOT_PATH);
+    } catch (error: any) {
+      Logger.warning(`[CatsCompany] device authorization snapshot write skipped: ${error?.message || error}`);
+    }
   }
 
   /**
@@ -1442,4 +1555,19 @@ export class CatsCompanyBot {
       this.pendingAnswerBySession.delete(pending.sessionKey);
     }
   }
+}
+
+function normalizeRuntimeDeviceCapabilities(config: CatsCompanyConfig): string[] {
+  const values = new Set<string>();
+  const configured = config.capabilities && config.capabilities.length > 0
+    ? config.capabilities
+    : ['read_file', 'glob', 'grep'];
+  for (const item of configured) {
+    const text = String(item || '').trim();
+    if (text === 'read_file' || text === 'glob' || text === 'grep') values.add(text);
+    if (text === 'write_file' && config.allowWriteFile) values.add(text);
+    if (text === 'execute_shell' && config.allowShell) values.add(text);
+  }
+  if (values.size === 0) values.add('read_file');
+  return Array.from(values);
 }

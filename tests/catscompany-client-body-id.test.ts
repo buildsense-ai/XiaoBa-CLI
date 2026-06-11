@@ -73,6 +73,38 @@ describe('CatsCompany client body identity', () => {
     assert.equal(headers['x-catsco-installation-id'], 'install-test');
   });
 
+  test('sends connector token headers without api key in device connector mode', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    servers.push(server);
+    await new Promise<void>(resolve => server.once('listening', resolve));
+
+    const headersPromise = new Promise<Record<string, string | string[] | undefined>>(resolve => {
+      server.once('connection', (socket, request) => {
+        resolve(request.headers);
+        socket.close();
+      });
+    });
+
+    const address = server.address() as AddressInfo;
+    const client = new CatsClient({
+      serverUrl: `ws://127.0.0.1:${address.port}`,
+      authMode: 'device_connector',
+      connectorToken: 'device-token',
+      bodyId: 'device-local',
+      installationId: 'install-local',
+    });
+    client.on('error', () => undefined);
+
+    client.connect();
+    const headers = await headersPromise;
+    client.disconnect();
+
+    assert.equal(headers['x-api-key'], undefined);
+    assert.equal(headers['x-catsco-connector-token'], 'device-token');
+    assert.equal(headers['x-catsco-body-id'], 'device-local');
+    assert.equal(headers['x-catsco-installation-id'], 'install-local');
+  });
+
   test('fails before connecting when body id is missing', () => {
     clearIdentityEnv();
     const client = new CatsClient({
@@ -175,6 +207,49 @@ describe('CatsCompany client body identity', () => {
       installation_id: 'install-test',
       status: 'online',
       capabilities: ['read_file', 'send_file'],
+    });
+  });
+
+  test('registers connector devices through scoped Device Connector HTTP API', async () => {
+    const requestPromise = new Promise<{ url?: string; method?: string; headers: Record<string, string | string[] | undefined>; body: any }>((resolve, reject) => {
+      const server = createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on('data', chunk => chunks.push(Buffer.from(chunk)));
+        req.on('end', () => {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          resolve({ url: req.url, method: req.method, headers: req.headers, body });
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ device: { deviceId: body.device_id } }));
+        });
+      });
+      httpServers.push(server);
+      server.listen(0, '127.0.0.1', () => {
+        void (async () => {
+          const address = server.address() as AddressInfo;
+          const client = new CatsClient({
+            serverUrl: 'ws://127.0.0.1:1/v0/channels',
+            httpBaseUrl: `http://127.0.0.1:${address.port}`,
+            authMode: 'device_connector',
+            connectorToken: 'device-token',
+            bodyId: 'device-local',
+          });
+          await client.registerDevice({
+            device_id: 'device-local',
+            status: 'online',
+            capabilities: ['read_file', 'glob'],
+          });
+        })().catch(reject);
+      });
+    });
+
+    const request = await requestPromise;
+    assert.equal(request.method, 'POST');
+    assert.equal(request.url, '/api/device-connectors/register');
+    assert.equal(request.headers.authorization, 'DeviceConnector device-token');
+    assert.deepEqual(request.body, {
+      device_id: 'device-local',
+      status: 'online',
+      capabilities: ['read_file', 'glob'],
     });
   });
 
@@ -319,6 +394,18 @@ describe('CatsCompany client body identity', () => {
               device_rpc: {
                 type: 'result',
                 request_id: msg.device_rpc.request_id,
+                grant_id: msg.device_rpc.grant_id,
+                session_key: msg.device_rpc.session_key,
+                topic_id: msg.device_rpc.topic_id,
+                topic_type: msg.device_rpc.topic_type,
+                actor_user_id: msg.device_rpc.actor_user_id,
+                agent_id: msg.device_rpc.agent_id,
+                agent_body_id: msg.device_rpc.agent_body_id,
+                device_id: msg.device_rpc.device_id,
+                device_body_id: msg.device_rpc.device_body_id,
+                device_installation_id: msg.device_rpc.device_installation_id,
+                operation: msg.device_rpc.operation,
+                tool_name: msg.device_rpc.tool_name,
                 result: { ok: true },
               },
             }));
@@ -394,6 +481,18 @@ describe('CatsCompany client body identity', () => {
             device_rpc: {
               type: 'result',
               request_id: msg.device_rpc.request_id,
+              grant_id: msg.device_rpc.grant_id,
+              session_key: msg.device_rpc.session_key,
+              topic_id: msg.device_rpc.topic_id,
+              topic_type: msg.device_rpc.topic_type,
+              actor_user_id: msg.device_rpc.actor_user_id,
+              agent_id: msg.device_rpc.agent_id,
+              agent_body_id: msg.device_rpc.agent_body_id,
+              device_id: msg.device_rpc.device_id,
+              device_body_id: msg.device_rpc.device_body_id,
+              device_installation_id: msg.device_rpc.device_installation_id,
+              operation: msg.device_rpc.operation,
+              tool_name: msg.device_rpc.tool_name,
               result: { ok: true },
             },
           }));
@@ -425,6 +524,78 @@ describe('CatsCompany client body identity', () => {
       /ack 500/
     );
     client.disconnect();
+  });
+
+  test('redacts and truncates device rpc recent errors in status snapshots', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    servers.push(server);
+    await new Promise<void>(resolve => server.once('listening', resolve));
+
+    server.once('connection', socket => {
+      socket.on('message', data => {
+        const msg = JSON.parse(data.toString());
+        if (msg.hi) {
+          socket.send(JSON.stringify({
+            ctrl: {
+              id: msg.hi.id,
+              code: 200,
+              params: {
+                build: 'catscompany',
+                ver: '0.1.0',
+                features: ['client_msg_id', 'device_rpc'],
+                uid: 'usr42',
+                name: 'Agent',
+              },
+            },
+          }));
+          return;
+        }
+        if (msg.device_rpc?.type === 'request') {
+          socket.send(JSON.stringify({
+            ctrl: {
+              id: msg.device_rpc.id,
+              code: 500,
+              text: `failed at C:/Users/alice/secret/project/file.txt with Bearer user-secret CATSCO_USER_TOKEN=very-secret ${'detail '.repeat(80)}`,
+            },
+          }));
+        }
+      });
+    });
+
+    const address = server.address() as AddressInfo;
+    const client = new CatsClient({
+      serverUrl: `ws://127.0.0.1:${address.port}`,
+      apiKey: 'cc-test-key',
+      bodyId: 'body-agent',
+      installationId: 'install-agent',
+    });
+    client.on('error', () => undefined);
+    await new Promise<void>(resolve => {
+      client.once('ready', () => resolve());
+      client.connect();
+    });
+
+    await assert.rejects(
+      () => client.sendDeviceRpcRequest({
+        request_id: 'rpc-redact-error',
+        grant_id: 'grant-1',
+        device_id: 'install-test',
+        operation: 'execute_shell',
+        tool_name: 'execute_shell',
+      }),
+      /ack 500/
+    );
+
+    const recentError = client.getStatusSnapshot().deviceRpc.recent.at(-1)?.error || '';
+    client.disconnect();
+
+    assert.ok(recentError.length <= 240);
+    assert.match(recentError, /\[redacted-path\]/);
+    assert.match(recentError, /Bearer \[redacted\]/);
+    assert.match(recentError, /CATSCO_USER_TOKEN=\[redacted\]/);
+    assert.equal(recentError.includes('secret/project/file.txt'), false);
+    assert.equal(recentError.includes('user-secret'), false);
+    assert.equal(recentError.includes('very-secret'), false);
   });
 
   test('rejects device rpc results whose scope does not match the pending request', async () => {
@@ -486,6 +657,77 @@ describe('CatsCompany client body identity', () => {
         request_id: 'rpc-scope-mismatch',
         grant_id: 'grant-1',
         device_id: 'install-test',
+        operation: 'read_file',
+        tool_name: 'read_file',
+      }),
+      /scope does not match/
+    );
+    client.disconnect();
+  });
+
+  test('rejects device rpc results that omit expected scope fields', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    servers.push(server);
+    await new Promise<void>(resolve => server.once('listening', resolve));
+
+    server.once('connection', socket => {
+      socket.on('message', data => {
+        const msg = JSON.parse(data.toString());
+        if (msg.hi) {
+          socket.send(JSON.stringify({
+            ctrl: {
+              id: msg.hi.id,
+              code: 200,
+              params: {
+                build: 'catscompany',
+                ver: '0.1.0',
+                features: ['client_msg_id', 'device_rpc'],
+                uid: 'usr42',
+                name: 'Agent',
+              },
+            },
+          }));
+          return;
+        }
+        if (msg.device_rpc?.type === 'request') {
+          socket.send(JSON.stringify({ ctrl: { id: msg.device_rpc.id, code: 200, text: 'ok' } }));
+          socket.send(JSON.stringify({
+            device_rpc: {
+              type: 'result',
+              request_id: msg.device_rpc.request_id,
+              result: { ok: true },
+            },
+          }));
+        }
+      });
+    });
+
+    const address = server.address() as AddressInfo;
+    const client = new CatsClient({
+      serverUrl: `ws://127.0.0.1:${address.port}`,
+      apiKey: 'cc-test-key',
+      bodyId: 'body-agent',
+      installationId: 'install-agent',
+    });
+    client.on('error', () => undefined);
+    await new Promise<void>(resolve => {
+      client.once('ready', () => resolve());
+      client.connect();
+    });
+
+    await assert.rejects(
+      () => client.sendDeviceRpcRequest({
+        request_id: 'rpc-missing-scope',
+        grant_id: 'grant-1',
+        session_key: 'session:v2:catscompany:p2p:p2p_7_42:agent:usr42',
+        topic_id: 'p2p_7_42',
+        topic_type: 'p2p',
+        actor_user_id: 'usr7',
+        agent_id: 'usr42',
+        agent_body_id: 'body-agent',
+        device_id: 'install-test',
+        device_body_id: 'body-device',
+        device_installation_id: 'install-test',
         operation: 'read_file',
         tool_name: 'read_file',
       }),

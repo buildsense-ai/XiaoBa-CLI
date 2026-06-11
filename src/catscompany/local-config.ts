@@ -27,6 +27,19 @@ export interface CatsCoLocalDevice {
   name?: string;
 }
 
+export interface CatsCoLocalDeviceConnector {
+  token: string;
+  ownerUid?: string;
+  deviceId: string;
+  installationId: string;
+  name?: string;
+  capabilities?: string[];
+  allowWriteFile?: boolean;
+  allowShell?: boolean;
+  pairedAt?: string;
+  tokenExpiresAt?: string;
+}
+
 export interface CatsCoLocalConfig {
   version: 1;
   endpoints?: {
@@ -36,6 +49,7 @@ export interface CatsCoLocalConfig {
   account?: CatsCoLocalAccount;
   currentBot?: CatsCoLocalBot;
   device?: CatsCoLocalDevice;
+  deviceConnector?: CatsCoLocalDeviceConnector;
   preferences?: {
     autoConnect?: boolean;
     switchConfirmEnabled?: boolean;
@@ -438,6 +452,67 @@ export class CatsCoLocalConfigService {
     });
   }
 
+  writeDeviceConnectorEnrollment(state: CatsCoAuthSnapshot, input: {
+    token: string;
+    ownerUid?: string;
+    deviceId: string;
+    installationId?: string;
+    name?: string;
+    capabilities?: string[];
+    allowWriteFile?: boolean;
+    allowShell?: boolean;
+    tokenExpiresAt?: string;
+  }): string[] {
+    const deviceId = String(input.deviceId || '').trim();
+    if (!deviceId) {
+      throw new Error('deviceId is required');
+    }
+    const installationId = String(input.installationId || deviceId).trim();
+    const config = this.load();
+    this.save({
+      ...config,
+      endpoints: {
+        ...(config.endpoints || {}),
+        httpBaseUrl: state.httpBaseUrl,
+        serverUrl: state.serverUrl,
+      },
+      device: {
+        ...(config.device || {}),
+        deviceId,
+        bodyId: deviceId,
+        installationId,
+        name: input.name || config.device?.name,
+      },
+      deviceConnector: {
+        token: input.token,
+        ownerUid: input.ownerUid || state.uid,
+        deviceId,
+        installationId,
+        name: input.name,
+        capabilities: input.capabilities,
+        allowWriteFile: Boolean(input.allowWriteFile),
+        allowShell: Boolean(input.allowShell),
+        pairedAt: new Date().toISOString(),
+        tokenExpiresAt: input.tokenExpiresAt,
+      },
+    });
+
+    return writeEnvUpdates(this.runtimeRoot, this.env, {
+      CATSCO_HTTP_BASE_URL: state.httpBaseUrl,
+      CATSCO_SERVER_URL: state.serverUrl,
+      CATSCO_CONNECTOR_TOKEN: input.token,
+      CATSCO_DEVICE_ID: deviceId,
+      CATSCO_BODY_ID: deviceId,
+      CATSCO_INSTALLATION_ID: installationId,
+      CATSCOMPANY_HTTP_BASE_URL: state.httpBaseUrl,
+      CATSCOMPANY_SERVER_URL: state.serverUrl,
+      CATSCOMPANY_CONNECTOR_TOKEN: input.token,
+      CATSCOMPANY_DEVICE_ID: deviceId,
+      CATSCOMPANY_BODY_ID: deviceId,
+      CATSCOMPANY_INSTALLATION_ID: installationId,
+    });
+  }
+
   clearAccount(): string[] {
     const config = this.load();
     this.save({
@@ -541,6 +616,19 @@ export class CatsCoLocalConfigService {
           bodyId: config.device.bodyId,
           installationId: config.device.installationId,
           name: config.device.name || '',
+        }
+        : null,
+      deviceConnector: config.deviceConnector
+        ? {
+          ownerUid: config.deviceConnector.ownerUid || '',
+          deviceId: config.deviceConnector.deviceId,
+          installationId: config.deviceConnector.installationId,
+          name: config.deviceConnector.name || '',
+          capabilities: config.deviceConnector.capabilities || [],
+          allowWriteFile: Boolean(config.deviceConnector.allowWriteFile),
+          allowShell: Boolean(config.deviceConnector.allowShell),
+          pairedAt: config.deviceConnector.pairedAt || '',
+          hasToken: Boolean(config.deviceConnector.token),
         }
         : null,
       preferences: {

@@ -1,3 +1,4 @@
+import type { ContentBlock } from '../types';
 import type { DeviceGrantOperation } from '../types/session-identity';
 import type { ToolErrorCode, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import type { ToolGatewayDecision } from './tool-gateway';
@@ -11,6 +12,12 @@ export function isRemoteReadonlyTool(toolName: string, operation: DeviceGrantOpe
     || (toolName === 'grep' && operation === 'grep');
 }
 
+export function isRemoteDeviceTool(toolName: string, operation: DeviceGrantOperation): boolean {
+  return isRemoteReadonlyTool(toolName, operation)
+    || (toolName === 'write_file' && operation === 'write_file')
+    || (toolName === 'execute_shell' && operation === 'execute_shell');
+}
+
 export async function executeRemoteReadonlyTool(
   context: ToolExecutionContext,
   gateway: ToolGatewayDecision,
@@ -18,13 +25,23 @@ export async function executeRemoteReadonlyTool(
   operation: DeviceGrantOperation,
   args: Record<string, unknown>,
 ): Promise<ToolExecutionResult | undefined> {
+  return executeRemoteTool(context, gateway, toolName, operation, args);
+}
+
+export async function executeRemoteTool(
+  context: ToolExecutionContext,
+  gateway: ToolGatewayDecision,
+  toolName: 'read_file' | 'glob' | 'grep' | 'write_file' | 'execute_shell',
+  operation: DeviceGrantOperation,
+  args: Record<string, unknown>,
+): Promise<ToolExecutionResult | undefined> {
   if (!gateway.ok || gateway.mode !== 'remote') return undefined;
 
-  if (!isRemoteReadonlyTool(toolName, operation)) {
+  if (!isRemoteDeviceTool(toolName, operation)) {
     return {
       ok: false,
       errorCode: 'PERMISSION_DENIED',
-      message: `远程设备 RPC 当前只允许 read_file / glob / grep，已阻止 ${toolName}。`,
+      message: `远程设备 RPC 当前不支持 ${toolName}。`,
     };
   }
 
@@ -105,28 +122,55 @@ function timeoutForGrant(expiresAt: number): number {
   return Math.max(5_000, Math.min(REMOTE_TOOL_TIMEOUT_MS, remaining));
 }
 
-function normalizeDeviceRpcContent(content: unknown): string {
+function normalizeDeviceRpcContent(content: unknown): string | ContentBlock[] {
   if (typeof content === 'string') return truncateText(content);
   if (Array.isArray(content)) {
+    const blocks: ContentBlock[] = [];
     const lines: string[] = [];
     for (const block of content) {
       if (!block || typeof block !== 'object') continue;
       const record = block as Record<string, unknown>;
       if (record.type === 'text' && typeof record.text === 'string') {
-        lines.push(record.text);
+        const text = truncateText(record.text);
+        lines.push(text);
+        blocks.push({ type: 'text', text });
       } else if (record.type === 'image') {
-        lines.push('[远程设备返回了图片内容块；当前 Device RPC 不转发图片二进制，请让用户以附件方式上传该图片。]');
+        const imageBlock = sanitizeImageBlock(record);
+        if (imageBlock) {
+          blocks.push(imageBlock);
+        } else {
+          lines.push('[远程设备返回了图片内容块，但内容格式无效。]');
+        }
       }
     }
-    return truncateText(lines.join('\n'));
+    return blocks.length > 0 ? blocks : truncateText(lines.join('\n'));
   }
   if (content && typeof content === 'object') {
     const record = content as Record<string, unknown>;
-    if (record._imageForNewMessage) {
-      return '[远程设备读取到图片文件；当前 Device RPC 不转发图片二进制，请让用户以附件方式上传该图片。]';
+    if (record._imageForNewMessage && record.imageBlock && typeof record.imageBlock === 'object') {
+      const imageBlock = sanitizeImageBlock(record.imageBlock as Record<string, unknown>);
+      if (imageBlock) return [imageBlock];
     }
   }
   return truncateText(String(content ?? ''));
+}
+
+function sanitizeImageBlock(record: Record<string, unknown>): ContentBlock | undefined {
+  if (record.type !== 'image') return undefined;
+  const source = record.source;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return undefined;
+  const sourceRecord = source as Record<string, unknown>;
+  const mediaType = typeof sourceRecord.media_type === 'string' ? sourceRecord.media_type : undefined;
+  const data = typeof sourceRecord.data === 'string' ? sourceRecord.data : undefined;
+  if (!mediaType || !data) return undefined;
+  return {
+    type: 'image',
+    source: {
+      type: 'base64',
+      media_type: mediaType,
+      data,
+    },
+  } as unknown as ContentBlock;
 }
 
 function truncateText(value: string): string {

@@ -7,6 +7,7 @@ import type {
   MessageTopicType,
   ScopedDeviceGrant,
 } from '../types/session-identity';
+import { isDelegatedDeviceGrant } from '../core/device-grants';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -47,20 +48,25 @@ function normalizeDeviceGrant(value: unknown): ScopedDeviceGrant | undefined {
   const operations = normalizeOperations(record.operations);
   const createdAt = numberField(record, 'createdAt') ?? numberField(record, 'created_at');
   const expiresAt = numberField(record, 'expiresAt') ?? numberField(record, 'expires_at');
+  const status = normalizeStatus(stringField(record, 'status'));
   if (!grantId || !deviceId || !ownerUserId || !sessionKey || !topicId || !actorUserId) return undefined;
   if (operations.length === 0 || createdAt === undefined || expiresAt === undefined) return undefined;
+  if (status !== 'active') return undefined;
 
   return pruneUndefined({
     kind: 'user_device_grant',
     source,
     grantId,
-    status: normalizeStatus(stringField(record, 'status')),
+    status,
     identityTrust: normalizeTrust(stringField(record, 'identityTrust') || stringField(record, 'identity_trust')),
     identitySource: stringField(record, 'identitySource') || stringField(record, 'identity_source'),
     deviceId,
     deviceDisplayName: stringField(record, 'deviceDisplayName') || stringField(record, 'device_display_name'),
     deviceBodyId: stringField(record, 'deviceBodyId') || stringField(record, 'device_body_id'),
     deviceInstallationId: stringField(record, 'deviceInstallationId') || stringField(record, 'device_installation_id'),
+    deviceActive: booleanField(record, 'deviceActive') ?? booleanField(record, 'device_active'),
+    deviceRouteConnected: booleanField(record, 'deviceRouteConnected') ?? booleanField(record, 'device_route_connected'),
+    deviceRoutable: booleanField(record, 'deviceRoutable') ?? booleanField(record, 'device_routable'),
     ownerUserId,
     sessionKey,
     topicId,
@@ -75,6 +81,9 @@ function normalizeDeviceGrant(value: unknown): ScopedDeviceGrant | undefined {
 }
 
 function grantMatchesScope(grant: ScopedDeviceGrant, scope: ExecutionScope): boolean {
+  if (grant.ownerUserId !== grant.actorUserId && !isDelegatedDeviceGrant(grant)) {
+    return false;
+  }
   return grant.status === 'active'
     && grant.identityTrust === 'server_canonical'
     && grant.source === scope.source
@@ -82,7 +91,6 @@ function grantMatchesScope(grant: ScopedDeviceGrant, scope: ExecutionScope): boo
     && grant.topicId === scope.topicId
     && grant.topicType === scope.topicType
     && grant.actorUserId === scope.actorUserId
-    && grant.ownerUserId === scope.actorUserId
     && grant.agentId === scope.agentId
     && grant.agentBodyId === scope.agentBodyId;
 }
@@ -112,8 +120,9 @@ function normalizeSource(value: string | undefined): MessageSource {
   return value === 'catscompany' ? 'catscompany' : 'unknown';
 }
 
-function normalizeStatus(value: string | undefined): DeviceGrantStatus {
-  return value === 'revoked' ? 'revoked' : 'active';
+function normalizeStatus(value: string | undefined): DeviceGrantStatus | undefined {
+  if (value === 'active' || value === 'revoked') return value;
+  return undefined;
 }
 
 function normalizeTrust(value: string | undefined): IdentityTrustLevel {
@@ -149,6 +158,12 @@ function numberField(record: UnknownRecord, key: string): number | undefined {
     const parsed = Number(value);
     if (Number.isFinite(parsed) && parsed >= 0) return parsed;
   }
+  return undefined;
+}
+
+function booleanField(record: UnknownRecord | undefined, key: string): boolean | undefined {
+  const value = record?.[key];
+  if (typeof value === 'boolean') return value;
   return undefined;
 }
 

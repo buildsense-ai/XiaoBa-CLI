@@ -198,6 +198,29 @@ describe('dashboard CatsCo account status', () => {
           }],
         });
       }
+      if (req.path === '/api/devices') {
+        return res.json({
+          devices: [{
+            deviceId: 'alice-laptop',
+            displayName: 'Alice Laptop',
+            status: 'online',
+            active: true,
+            routeConnected: true,
+            routable: true,
+            capabilities: ['read_file', 'glob', 'grep'],
+            lastSeenAt: 1780560000000,
+          }, {
+            deviceId: 'alice-desktop',
+            displayName: 'Alice Desktop',
+            status: 'online',
+            active: true,
+            routeConnected: false,
+            routable: false,
+            unavailableReason: 'route_unavailable',
+            capabilities: ['read_file'],
+          }],
+        });
+      }
       return res.status(404).json({ error: 'not found' });
     });
     createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
@@ -245,9 +268,94 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.deviceRpcStatus.state, 'ok');
     assert.equal(data.deviceRpcStatus.pendingCount, 1);
     assert.equal(data.deviceRpcStatus.pending[0].requestId, 'rpc-status-1');
+    assert.equal(data.devicesStatus.deviceCount, 2);
+    assert.equal(data.devicesStatus.routableCount, 1);
+    assert.equal(data.deviceAuthorization.state, 'pending');
+    assert.equal(data.deviceAuthorization.selectedDevice.displayName, 'Alice Laptop');
+    assert.deepEqual(data.deviceAuthorization.operations, ['read_file']);
     assert.equal(JSON.stringify(data.deviceRpcStatus).includes('rpc-other-agent'), false);
     assert.equal(JSON.stringify(data.deviceRpcStatus).includes('secret.txt'), false);
+    assert.equal(JSON.stringify(data.deviceAuthorization).includes('secret.txt'), false);
     assert.equal(data.topicId, 'p2p_42_110');
+  });
+
+  test('GET /cats/status does not invent a selected device when no turn has chosen one', async () => {
+    await startCatsServer((req, res) => {
+      assert.equal(req.header('authorization'), 'Bearer valid-user-token');
+      if (req.path === '/api/me') {
+        return res.json({ uid: 42, username: 'webuser', display_name: 'Web User' });
+      }
+      if (req.path === '/api/bots/body-status') {
+        return res.json({
+          body_id: 'body-local',
+          active: true,
+          runtime_mode: 'redis',
+          route_state: 'ready',
+          lease_ttl_ms: 120000,
+        });
+      }
+      if (req.path === '/api/devices/rpc-status') {
+        return res.json({
+          state: 'ok',
+          runtime_mode: 'redis',
+          route_state: 'redis_ready',
+          pending_count: 0,
+          pending: [],
+        });
+      }
+      if (req.path === '/api/devices') {
+        return res.json({
+          devices: [{
+            deviceId: 'alice-laptop',
+            displayName: 'Alice Laptop',
+            status: 'online',
+            active: true,
+            routeConnected: true,
+            routable: true,
+            capabilities: ['read_file', 'glob'],
+          }],
+        });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      endpoints: {
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+      },
+      account: {
+        token: 'valid-user-token',
+        uid: '42',
+        username: 'webuser',
+        displayName: 'Web User',
+      },
+      currentBot: {
+        uid: '110',
+        name: 'CatsCo',
+        username: 'catsco_42',
+        apiKey: 'agent-api-key',
+        boundByUserUid: '42',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'body-local',
+        bodyId: 'body-local',
+        installationId: 'body-local',
+      },
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/status`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.deviceRpcStatus.runtimeMode, 'redis');
+    assert.equal(data.deviceRpcStatus.routeState, 'redis_ready');
+    assert.equal(data.deviceRpcStatus.routerReady, true);
+    assert.equal(data.deviceAuthorization.state, 'available');
+    assert.equal(data.deviceAuthorization.routableCount, 1);
+    assert.equal(data.deviceAuthorization.selectedDevice, undefined);
+    assert.deepEqual(data.deviceAuthorization.operations, []);
   });
 
   test('GET /cats/status keeps binding configured but blocks chat when body lease is offline', async () => {

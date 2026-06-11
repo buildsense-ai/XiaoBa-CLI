@@ -4,6 +4,7 @@ import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from 
 import { Logger } from '../utils/logger';
 import { isToolAllowed, isPathAllowed } from '../utils/safety';
 import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
+import { executeRemoteTool } from './device-rpc-tool';
 
 /**
  * Write 工具 - 写入文件内容
@@ -36,6 +37,17 @@ export class WriteTool implements Tool {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${toolPermission.reason}` };
     }
 
+    const gateway = resolveToolGatewayAccess(context, {
+      toolName: this.definition.name,
+      operation: 'write_file',
+      targetLabel: file_path,
+    });
+    if (!gateway.ok) {
+      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
+    }
+    const remoteResult = await executeRemoteTool(context, gateway, 'write_file', 'write_file', args);
+    if (remoteResult) return remoteResult;
+
     // 解析文件路径
     const absolutePath = path.isAbsolute(file_path)
       ? file_path
@@ -44,15 +56,6 @@ export class WriteTool implements Tool {
     const pathPermission = isPathAllowed(absolutePath, context.workingDirectory);
     if (!pathPermission.allowed) {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
-    }
-
-    const gateway = resolveToolGatewayAccess(context, {
-      toolName: this.definition.name,
-      operation: 'write_file',
-      targetLabel: file_path,
-    });
-    if (!gateway.ok) {
-      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
     }
 
     // 获取相对路径用于显示

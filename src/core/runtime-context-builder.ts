@@ -55,25 +55,36 @@ interface RuntimeContextSnapshot {
       source: MessageSource;
       deviceId?: string;
     };
-    userDevices?: Array<{
-      grantId: string;
-      deviceId: string;
-      displayName?: string;
-      operations: string[];
-      status: string;
-      expiresAt: number;
-    }>;
+      userDevices?: Array<{
+        grantId: string;
+        deviceId: string;
+        displayName?: string;
+        operations: string[];
+        status: string;
+        routable?: boolean;
+        routeConnected?: boolean;
+        ttlMs?: number;
+        expiresAt: number;
+      }>;
     deviceSelection?: {
       status: string;
       selectionSource?: string;
       selectedDevice?: {
         deviceId: string;
         displayName?: string;
+        status?: string;
+        routable?: boolean;
+        routeConnected?: boolean;
+        unavailableReason?: string;
         operations?: string[];
       };
       candidates?: Array<{
         deviceId: string;
         displayName?: string;
+        status?: string;
+        routable?: boolean;
+        routeConnected?: boolean;
+        unavailableReason?: string;
         operations?: string[];
       }>;
       candidateCount?: number;
@@ -190,11 +201,14 @@ function sanitizeDeviceGrants(grants?: ScopedDeviceGrant[]): RuntimeContextSnaps
   return grants.map(grant => pruneUndefined({
     grantId: grant.grantId,
     deviceId: grant.deviceId,
-    displayName: grant.deviceDisplayName,
-    operations: [...grant.operations],
-    status: grant.status,
-    expiresAt: grant.expiresAt,
-  }));
+      displayName: grant.deviceDisplayName,
+      operations: [...grant.operations],
+      status: grant.status,
+      routable: grant.deviceRoutable,
+      routeConnected: grant.deviceRouteConnected,
+      ttlMs: Math.max(0, grant.expiresAt - Date.now()),
+      expiresAt: grant.expiresAt,
+    }));
 }
 
 function sanitizeDeviceSelection(selection?: ScopedDeviceSelection): RuntimeContextSnapshot['execution']['deviceSelection'] | undefined {
@@ -206,12 +220,20 @@ function sanitizeDeviceSelection(selection?: ScopedDeviceSelection): RuntimeCont
       ? pruneUndefined({
         deviceId: selection.selectedDeviceId,
         displayName: selection.selectedDeviceDisplayName,
+        status: selection.selectedDeviceStatus,
+        routable: selection.selectedDeviceRoutable,
+        routeConnected: selection.selectedDeviceRouteConnected,
+        unavailableReason: selection.selectedDeviceUnavailableReason,
         operations: selection.selectedDeviceOperations ? [...selection.selectedDeviceOperations] : undefined,
       })
       : undefined,
     candidates: selection.candidates?.map(candidate => pruneUndefined({
       deviceId: candidate.deviceId,
       displayName: candidate.displayName,
+      status: candidate.status,
+      routable: candidate.routable,
+      routeConnected: candidate.routeConnected,
+      unavailableReason: candidate.unavailableReason,
       operations: candidate.operations ? [...candidate.operations] : undefined,
     })),
     candidateCount: selection.candidateCount,
