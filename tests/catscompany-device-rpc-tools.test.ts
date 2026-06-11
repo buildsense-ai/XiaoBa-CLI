@@ -5,7 +5,11 @@ import * as path from 'path';
 import { CatsCompanyBot } from '../src/catscompany';
 import type { CatsDeviceRpcMessage } from '../src/catscompany/client';
 
-function botWithDevice(captured: { result?: any }): any {
+function botWithDevice(captured: { result?: any }, options: {
+  capabilities?: string[];
+  allowWriteFile?: boolean;
+  allowShell?: boolean;
+} = {}): any {
   const bot = Object.create(CatsCompanyBot.prototype) as any;
   bot.localDeviceGrant = {
     kind: 'catscompany_body',
@@ -15,6 +19,16 @@ function botWithDevice(captured: { result?: any }): any {
     deviceId: 'install-device',
     createdAt: Date.now(),
   };
+  bot.deviceRegistration = {
+    device_id: 'install-device',
+    display_name: 'Test Device',
+    body_id: 'body-device',
+    installation_id: 'install-device',
+    status: 'online',
+    capabilities: options.capabilities || ['read_file', 'glob', 'grep'],
+  };
+  bot.allowWriteFile = Boolean(options.allowWriteFile);
+  bot.allowShell = Boolean(options.allowShell);
   bot.bot = {
     sendDeviceRpcResult: async (result: any) => {
       captured.result = result;
@@ -69,7 +83,10 @@ describe('CatsCompany Device RPC tools', () => {
 
   test('executes write_file on the target local device when explicitly granted', async () => {
     const captured: { result?: any } = {};
-    const bot = botWithDevice(captured);
+    const bot = botWithDevice(captured, {
+      capabilities: ['read_file', 'glob', 'grep', 'write_file'],
+      allowWriteFile: true,
+    });
     const tmpRoot = path.join(process.cwd(), 'tmp');
     fs.mkdirSync(tmpRoot, { recursive: true });
     const dir = fs.mkdtempSync(path.join(tmpRoot, 'device-rpc-write-'));
@@ -86,6 +103,28 @@ describe('CatsCompany Device RPC tools', () => {
     assert.equal(captured.result.error, undefined);
     assert.equal(captured.result.result.ok, true);
     assert.equal(fs.readFileSync(filePath, 'utf-8'), 'hello from rpc write');
+  });
+
+  test('rejects write_file on the full runtime unless local capability is explicitly enabled', async () => {
+    const captured: { result?: any } = {};
+    const bot = botWithDevice(captured);
+    const tmpRoot = path.join(process.cwd(), 'tmp');
+    fs.mkdirSync(tmpRoot, { recursive: true });
+    const dir = fs.mkdtempSync(path.join(tmpRoot, 'device-rpc-write-denied-'));
+    const filePath = path.join(dir, 'created.txt');
+
+    await bot.handleDeviceRpcRequest(request({
+      request_id: 'rpc-write-denied-1',
+      operation: 'write_file',
+      tool_name: 'write_file',
+      payload: { args: { file_path: filePath, content: 'blocked' } },
+    }));
+
+    assert.ok(captured.result);
+    assert.equal(captured.result.result, undefined);
+    assert.equal(captured.result.error.code, 'PERMISSION_DENIED');
+    assert.match(captured.result.error.message, /未注册远程 write_file 能力|未显式开启远程写文件能力/);
+    assert.equal(fs.existsSync(filePath), false);
   });
 
   test('rejects unsupported Device RPC operations before local tool execution', async () => {
@@ -117,5 +156,22 @@ describe('CatsCompany Device RPC tools', () => {
     assert.ok(captured.result);
     assert.equal(captured.result.result, undefined);
     assert.equal(captured.result.error.code, 'target_device_mismatch');
+  });
+
+  test('returns a structured error when local Device RPC tool execution throws', async () => {
+    const captured: { result?: any } = {};
+    const bot = botWithDevice(captured);
+    bot.executeLocalDeviceRpcTool = async () => {
+      throw new Error('boom from local tool');
+    };
+
+    await bot.handleDeviceRpcRequest(request({ request_id: 'rpc-throw-1' }));
+
+    assert.ok(captured.result);
+    assert.equal(captured.result.result, undefined);
+    assert.equal(captured.result.error.code, 'tool_execution_error');
+    assert.match(captured.result.error.message, /boom from local tool/);
+    assert.equal(captured.result.grant_id, 'grant-read-1');
+    assert.equal(captured.result.device_id, 'install-device');
   });
 });

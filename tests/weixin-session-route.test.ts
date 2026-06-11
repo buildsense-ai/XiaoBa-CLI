@@ -118,6 +118,39 @@ describe('Weixin SessionRoute V2', () => {
     assert.match(sentTexts[0].text, /入口码|绑定/);
   });
 
+  test('does not create a model session when required channel binding resolver is disabled or returns empty', async () => {
+    for (const bindingResolver of [
+      { enabled: false, required: true },
+      { enabled: true, required: true, resolve: async () => undefined },
+    ]) {
+      const sentTexts: Array<{ userId: string; text: string; contextToken?: string }> = [];
+      const bot = createHarness({
+        sentTexts,
+        bindingResolver,
+        parsed: {
+          message_id: 'wx-msg-binding-disabled',
+          from: { id: 'shared' },
+          chat: { id: 'wx-bot' },
+          text: 'hello',
+          context_token: 'ctx-token',
+        },
+      });
+
+      await (bot as any).handleMessage({
+        message_type: 0,
+        message_id: 'wx-msg-binding-disabled',
+        from_user_id: 'shared',
+        to_user_id: 'wx-bot',
+        context_token: 'ctx-token',
+      });
+
+      assert.deepEqual(bot.createdSessions, []);
+      assert.equal(bot.handledTurns.length, 0);
+      assert.equal(sentTexts.length, 1);
+      assert.match(sentTexts[0].text, /绑定|配置|失败/);
+    }
+  });
+
   test('uses resolved channel binding as the Weixin agent session route', async () => {
     const bindingInputs: any[] = [];
     const bot = createHarness({

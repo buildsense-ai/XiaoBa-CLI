@@ -477,7 +477,15 @@ export class FeishuBot {
   }
 
   private async resolveChannelAgentBinding(msg: ReturnType<MessageHandler['parse']>): Promise<ChannelAgentRouteBinding | undefined | null> {
-    if (!msg || !this.bindingResolver.enabled) return undefined;
+    if (!msg) return undefined;
+    if (!this.bindingResolver.enabled) {
+      if (this.bindingResolver.required) {
+        await this.sender.reply(msg.chatId, '虚拟员工绑定服务未配置，请联系管理员检查 CatsCo 绑定地址。');
+        Logger.warning(`[feishu_binding] required=true but resolver is disabled: sender=${msg.senderId}, chat=${msg.chatId}`);
+        return null;
+      }
+      return undefined;
+    }
     if (msg.chatType !== 'p2p') return undefined;
     try {
       const resolution = await this.bindingResolver.resolve({
@@ -486,7 +494,13 @@ export class FeishuBot {
         channelUserId: msg.senderId,
         channelConversationType: 'p2p',
       });
-      if (!resolution) return undefined;
+      if (!resolution) {
+        if (this.bindingResolver.required) {
+          await this.sender.reply(msg.chatId, '虚拟员工绑定查询失败，请稍后重试。');
+          return null;
+        }
+        return undefined;
+      }
       if (!resolution.bound) {
         if (this.bindingResolver.required) {
           await this.sender.reply(msg.chatId, CHANNEL_BINDING_REQUIRED_MESSAGE);

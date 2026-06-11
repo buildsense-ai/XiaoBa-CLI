@@ -276,9 +276,16 @@ export class WeixinBot {
   }
 
   private async resolveChannelAgentBinding(message: WeixinMessage): Promise<ChannelAgentRouteBinding | undefined | null> {
-    if (!this.bindingResolver.enabled) return undefined;
     const userId = message.from?.id?.trim();
     if (!userId) return undefined;
+    if (!this.bindingResolver.enabled) {
+      if (this.bindingResolver.required) {
+        await this.sender.sendText(userId, '虚拟员工绑定服务未配置，请联系管理员检查 CatsCo 绑定地址。', message.context_token);
+        Logger.warning(`[weixin_binding] required=true but resolver is disabled: user=${userId}`);
+        return null;
+      }
+      return undefined;
+    }
     try {
       const resolution = await this.bindingResolver.resolve({
         channel: 'weixin',
@@ -286,7 +293,13 @@ export class WeixinBot {
         channelUserId: userId,
         channelConversationType: 'p2p',
       });
-      if (!resolution) return undefined;
+      if (!resolution) {
+        if (this.bindingResolver.required) {
+          await this.sender.sendText(userId, '虚拟员工绑定查询失败，请稍后重试。', message.context_token);
+          return null;
+        }
+        return undefined;
+      }
       if (!resolution.bound) {
         if (this.bindingResolver.required) {
           await this.sender.sendText(userId, CHANNEL_BINDING_REQUIRED_MESSAGE, message.context_token);
