@@ -137,6 +137,7 @@ export function resolveCatsCoRuntimeConfig(
       apiKey,
       bodyId,
       installationId,
+      deviceName: localConfig.device?.name,
       httpBaseUrl,
       sessionTTL: config.catscompany?.sessionTTL,
     }

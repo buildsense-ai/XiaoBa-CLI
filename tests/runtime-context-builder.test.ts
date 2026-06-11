@@ -12,6 +12,7 @@ import type { Message } from '../src/types';
 import type {
   ExecutionScope,
   ScopedDeviceGrant,
+  ScopedDeviceSelection,
   ScopedLocalFileGrant,
 } from '../src/types/session-identity';
 
@@ -53,6 +54,7 @@ describe('runtime context builder', () => {
         createdAt: Date.now(),
       },
       deviceGrants: [userDeviceGrant],
+      deviceSelection: deviceSelection(executionScope),
       localFileGrants: [grant],
       durableMessages,
       runtimeFeedback: [],
@@ -82,6 +84,11 @@ describe('runtime context builder', () => {
     assert.equal(snapshot.execution.userDevices[0].displayName, 'Alice laptop');
     assert.deepEqual(snapshot.execution.userDevices[0].operations, ['read_file', 'execute_shell']);
     assert.equal(snapshot.execution.userDevices[0].status, 'active');
+    assert.equal(snapshot.execution.deviceSelection.status, 'selected');
+    assert.equal(snapshot.execution.deviceSelection.selectionSource, 'single_active_device');
+    assert.equal(snapshot.execution.deviceSelection.selectedDevice.deviceId, 'device-user-1');
+    assert.equal(snapshot.execution.deviceSelection.selectedDevice.displayName, 'Alice laptop');
+    assert.deepEqual(snapshot.execution.deviceSelection.selectedDevice.operations, ['read_file']);
     assert.equal(snapshot.execution.localFiles[0].ref, 'catsco_attachment:contract');
     assert.equal(snapshot.execution.localFiles[0].fileName, 'contract.pdf');
     assert.doesNotMatch(result.messages[runtimeIndex].content as string, /C:\\secret/);
@@ -230,6 +237,28 @@ function deviceGrant(scope: ExecutionScope, deviceId = 'device-user-1'): ScopedD
   });
   assert.ok(grant);
   return grant;
+}
+
+function deviceSelection(scope: ExecutionScope): ScopedDeviceSelection {
+  return {
+    kind: 'user_device_selection',
+    source: scope.source,
+    status: 'selected',
+    selectionSource: 'single_active_device',
+    sessionKey: scope.sessionKey,
+    topicId: scope.topicId,
+    topicType: scope.topicType,
+    actorUserId: scope.actorUserId,
+    agentId: scope.agentId,
+    identityTrust: scope.identityTrust,
+    identitySource: 'metadata.catsco_identity',
+    selectedDeviceId: 'device-user-1',
+    selectedDeviceDisplayName: 'Alice laptop',
+    selectedDeviceBodyId: 'body-secret',
+    selectedDeviceInstallationId: 'installation-main',
+    selectedDeviceOperations: ['read_file'],
+    createdAt: 2_000,
+  };
 }
 
 function buildMockServices(overrides: any = {}): any {

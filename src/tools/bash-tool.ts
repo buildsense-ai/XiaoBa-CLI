@@ -8,6 +8,7 @@ import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from 
 import { Logger } from '../utils/logger';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { isToolAllowed, isBashCommandAllowed } from '../utils/safety';
+import { resolveToolGatewayAccess } from './tool-gateway';
 
 const execAsync = promisify(exec);
 const CWD_MARKER_PREFIX = '__XIAOBA_CWD_MARKER__';
@@ -67,6 +68,14 @@ export class ShellTool implements Tool {
     const commandPermission = isBashCommandAllowed(command);
     if (!commandPermission.allowed) {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `Execution blocked: ${commandPermission.reason}` };
+    }
+
+    const gateway = resolveToolGatewayAccess(context, {
+      toolName: this.definition.name,
+      operation: 'execute_shell',
+    });
+    if (!gateway.ok) {
+      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
     }
 
     if (description) {
