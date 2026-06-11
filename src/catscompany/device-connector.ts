@@ -124,8 +124,19 @@ export class CatsCoDeviceConnector {
     if (!requestID) return;
 
     const validationError = this.validateDeviceRpcToolRequest(request);
-    const result = validationError ? undefined : await this.executeLocalDeviceRpcTool(request);
-    const error = validationError || (!result || result.ok
+    let result: ToolExecutionResult | undefined;
+    let executionError: { code: string; message: string } | undefined;
+    if (!validationError) {
+      try {
+        result = await this.executeLocalDeviceRpcTool(request);
+      } catch (err: any) {
+        executionError = {
+          code: 'tool_execution_error',
+          message: err?.message || String(err || 'Device RPC local tool execution failed.'),
+        };
+      }
+    }
+    const error = validationError || executionError || (!result || result.ok
       ? undefined
       : {
           code: result.errorCode || 'tool_execution_error',
@@ -362,8 +373,6 @@ function normalizeConnectorCapabilities(config: CatsCompanyConfig): string[] {
     if (text === 'write_file' && config.allowWriteFile) values.add(text);
     if (text === 'execute_shell' && config.allowShell) values.add(text);
   }
-  if (config.allowWriteFile) values.add('write_file');
-  if (config.allowShell) values.add('execute_shell');
   if (values.size === 0) values.add('read_file');
   return Array.from(values);
 }

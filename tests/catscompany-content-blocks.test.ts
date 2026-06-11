@@ -407,11 +407,13 @@ describe('CatsCo content blocks', () => {
   test('sanitizes CatsCo image block metadata to use opaque references', async () => {
     const bot = Object.create(CatsCompanyBot.prototype) as any;
     const originalModel = process.env.GAUZ_LLM_MODEL;
+    const originalApiBase = process.env.GAUZ_LLM_API_BASE;
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-image-ref-'));
     const localPath = path.join(testRoot, 'tmp', 'downloads', 'secret-image.png');
 
     try {
       process.env.GAUZ_LLM_MODEL = 'gpt-4o';
+      process.env.GAUZ_LLM_API_BASE = 'https://api.openai.com/v1';
       fs.mkdirSync(path.dirname(localPath), { recursive: true });
       fs.writeFileSync(
         localPath,
@@ -438,6 +440,11 @@ describe('CatsCo content blocks', () => {
         delete process.env.GAUZ_LLM_MODEL;
       } else {
         process.env.GAUZ_LLM_MODEL = originalModel;
+      }
+      if (originalApiBase === undefined) {
+        delete process.env.GAUZ_LLM_API_BASE;
+      } else {
+        process.env.GAUZ_LLM_API_BASE = originalApiBase;
       }
       fs.rmSync(testRoot, { recursive: true, force: true });
     }

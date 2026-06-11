@@ -10,6 +10,8 @@ export interface FeishuConfig {
   botOpenId?: string;
   /** 机器人别名（当未配置 botOpenId 时用于兜底匹配） */
   botAliases?: string[];
+  /** CatsCo channel binding resolver for QR-bound virtual employees */
+  channelAgentBinding?: import('../core/channel-agent-binding-resolver').ChannelAgentBindingResolverOptions;
   /** Bot Bridge 配置 */
   bridge?: {
     port: number;

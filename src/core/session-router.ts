@@ -25,6 +25,13 @@ export interface CreateSessionRouteInput {
   legacySessionKey?: string;
 }
 
+export interface ChannelAgentRouteBinding {
+  agentId?: string;
+  agentBodyId?: string;
+  identityTrust?: IdentityTrustLevel;
+  identitySource?: string;
+}
+
 export interface ParsedSessionKeyV2 {
   version: 2;
   source: MessageSource;
@@ -92,7 +99,10 @@ export function createCatsCoSessionRoute(envelope: MessageEnvelope): SessionRout
   });
 }
 
-export function createFeishuSessionRoute(message: ParsedFeishuMessage): SessionRoute {
+export function createFeishuSessionRoute(
+  message: ParsedFeishuMessage,
+  binding?: ChannelAgentRouteBinding,
+): SessionRoute {
   const topicType: MessageTopicType = message.chatType === 'group' ? 'group' : 'p2p';
   const topicId = normalizeId(message.chatId) || normalizeId(message.senderId) || 'unknown_chat';
   return createSessionRoute({
@@ -100,9 +110,11 @@ export function createFeishuSessionRoute(message: ParsedFeishuMessage): SessionR
     topicId,
     topicType,
     actorUserId: message.senderId,
+    agentId: binding?.agentId,
+    agentBodyId: binding?.agentBodyId,
     messageId: message.messageId,
-    identityTrust: 'legacy_context',
-    identitySource: 'feishu.event',
+    identityTrust: binding?.identityTrust || 'legacy_context',
+    identitySource: binding?.identitySource || 'feishu.event',
     legacySessionKey: buildLegacyFeishuSessionKey(topicType, topicId, message.senderId),
   });
 }
@@ -126,16 +138,21 @@ export function createFeishuBridgeSessionRoute(input: {
   });
 }
 
-export function createWeixinSessionRoute(message: WeixinMessage): SessionRoute {
+export function createWeixinSessionRoute(
+  message: WeixinMessage,
+  binding?: ChannelAgentRouteBinding,
+): SessionRoute {
   const actorUserId = normalizeId(message.from?.id) || 'unknown_user';
   return createSessionRoute({
     source: 'weixin',
     topicId: actorUserId,
     topicType: 'p2p',
     actorUserId,
+    agentId: binding?.agentId,
+    agentBodyId: binding?.agentBodyId,
     messageId: message.message_id,
-    identityTrust: 'legacy_context',
-    identitySource: 'weixin.ilink',
+    identityTrust: binding?.identityTrust || 'legacy_context',
+    identitySource: binding?.identitySource || 'weixin.ilink',
     legacySessionKey: `user:${actorUserId}`,
   });
 }

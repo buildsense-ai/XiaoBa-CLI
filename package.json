@@ -20,6 +20,8 @@
     "watch": "tsc --watch",
     "test": "node scripts/run-tests.mjs runtime",
     "test:runtime": "node scripts/run-tests.mjs runtime",
+    "test:cross-repo:catsco": "node scripts/cross-repo-catsco-smoke.mjs",
+    "test:e2e:catsco-cross-repo": "tsx scripts/cross-repo-catsco-e2e.ts",
     "test:legacy": "node scripts/run-tests.mjs legacy",
     "test:all": "node scripts/run-tests.mjs all",
     "test:list": "node scripts/run-tests.mjs runtime --list",
@@ -96,6 +98,14 @@
       "output": "release"
     },
     "asar": false,
+    "protocols": [
+      {
+        "name": "CatsCo Link",
+        "schemes": [
+          "catsco"
+        ]
+      }
+    ],
     "publish": {
       "provider": "github",
       "owner": "buildsense-ai",

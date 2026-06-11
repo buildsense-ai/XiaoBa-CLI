@@ -128,12 +128,17 @@ export class CatsCompanyBot {
     status: 'online';
     capabilities: string[];
   };
+  private readonly allowWriteFile: boolean;
+  private readonly allowShell: boolean;
 
   constructor(config: CatsCompanyConfig) {
     if (!config.apiKey) {
       throw new Error('CatsCompanyBot requires a bot API key. Use CatsCoDeviceConnector for device-only mode.');
     }
     const localDeviceId = config.installationId || config.bodyId;
+    const deviceCapabilities = normalizeRuntimeDeviceCapabilities(config);
+    this.allowWriteFile = deviceCapabilities.includes('write_file') && Boolean(config.allowWriteFile);
+    this.allowShell = deviceCapabilities.includes('execute_shell') && Boolean(config.allowShell);
     const deviceRegistration = localDeviceId
       ? {
           device_id: localDeviceId,
@@ -141,7 +146,7 @@ export class CatsCompanyBot {
           body_id: config.bodyId,
           installation_id: config.installationId || config.bodyId,
           status: 'online' as const,
-          capabilities: ['read_file', 'glob', 'grep'],
+          capabilities: deviceCapabilities,
         }
       : undefined;
 
@@ -281,8 +286,19 @@ export class CatsCompanyBot {
     if (!requestID) return;
 
     const validationError = this.validateDeviceRpcToolRequest(request);
-    const result = validationError ? undefined : await this.executeLocalDeviceRpcTool(request);
-    const error = validationError || (!result || result.ok
+    let result: ToolExecutionResult | undefined;
+    let executionError: { code: string; message: string } | undefined;
+    if (!validationError) {
+      try {
+        result = await this.executeLocalDeviceRpcTool(request);
+      } catch (err: any) {
+        executionError = {
+          code: 'tool_execution_error',
+          message: err?.message || String(err || 'Device RPC local tool execution failed.'),
+        };
+      }
+    }
+    const error = validationError || executionError || (!result || result.ok
       ? undefined
       : {
           code: result.errorCode || 'tool_execution_error',
@@ -320,6 +336,27 @@ export class CatsCompanyBot {
         ok: false,
         errorCode: 'PERMISSION_DENIED',
         message: `Device RPC 不允许执行 ${toolName || request.operation || 'unknown'}。`,
+      };
+    }
+    if (!(this.deviceRegistration?.capabilities || []).includes(operation)) {
+      return {
+        ok: false,
+        errorCode: 'PERMISSION_DENIED',
+        message: `当前 CatsCo runtime 未注册远程 ${operation} 能力。`,
+      };
+    }
+    if (operation === 'write_file' && !this.allowWriteFile) {
+      return {
+        ok: false,
+        errorCode: 'PERMISSION_DENIED',
+        message: '当前 CatsCo runtime 未显式开启远程写文件能力。',
+      };
+    }
+    if (operation === 'execute_shell' && !this.allowShell) {
+      return {
+        ok: false,
+        errorCode: 'PERMISSION_DENIED',
+        message: '当前 CatsCo runtime 未显式开启远程 shell 能力。',
       };
     }
 
@@ -1518,4 +1555,19 @@ export class CatsCompanyBot {
       this.pendingAnswerBySession.delete(pending.sessionKey);
     }
   }
+}
+
+function normalizeRuntimeDeviceCapabilities(config: CatsCompanyConfig): string[] {
+  const values = new Set<string>();
+  const configured = config.capabilities && config.capabilities.length > 0
+    ? config.capabilities
+    : ['read_file', 'glob', 'grep'];
+  for (const item of configured) {
+    const text = String(item || '').trim();
+    if (text === 'read_file' || text === 'glob' || text === 'grep') values.add(text);
+    if (text === 'write_file' && config.allowWriteFile) values.add(text);
+    if (text === 'execute_shell' && config.allowShell) values.add(text);
+  }
+  if (values.size === 0) values.add('read_file');
+  return Array.from(values);
 }

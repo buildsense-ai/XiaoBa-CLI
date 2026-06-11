@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 const electronMain = readFileSync(join(process.cwd(), 'electron/main.js'), 'utf-8');
+const packageJson = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8'));
 
 test('electron opens the local dashboard through stable IPv4 loopback', () => {
   assert.match(electronMain, /mainWindow\.loadURL\(`http:\/\/127\.0\.0\.1:\$\{DASHBOARD_PORT\}`\)/);
@@ -46,4 +47,25 @@ test('electron tray uses app icons and notifies after background hide', () => {
   assert.match(electronMain, /tray\.displayBalloon/);
   assert.match(electronMain, /CatsCo 已在后台运行/);
   assert.match(electronMain, /notifyWindowHidden\(\)/);
+});
+
+test('electron registers and handles CatsCo device connector deep links', () => {
+  assert.match(electronMain, /const DEEP_LINK_PROTOCOL = 'catsco'/);
+  assert.match(electronMain, /app\.requestSingleInstanceLock\(\)/);
+  assert.match(electronMain, /app\.setAsDefaultProtocolClient\(DEEP_LINK_PROTOCOL/);
+  assert.match(electronMain, /app\.on\('second-instance'/);
+  assert.match(electronMain, /app\.on\('open-url'/);
+  assert.match(electronMain, /url\.hostname !== 'device-connector' \|\| url\.pathname !== '\/pair'/);
+  assert.match(electronMain, /postLocalDashboardJson\('\/api\/cats\/device-connector\/pair'/);
+  assert.match(electronMain, /postLocalDashboardJson\('\/api\/cats\/device-connector\/ensure-running'/);
+  assert.match(electronMain, /app\.setLoginItemSettings\(\{ openAtLogin: true, openAsHidden: true \}\)/);
+});
+
+test('packaged app declares the CatsCo URL protocol', () => {
+  assert.deepEqual(packageJson.build.protocols, [
+    {
+      name: 'CatsCo Link',
+      schemes: ['catsco'],
+    },
+  ]);
 });
