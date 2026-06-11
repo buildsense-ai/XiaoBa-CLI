@@ -4,6 +4,7 @@ import { Logger } from '../utils/logger';
 import { resolveToolPath } from '../utils/tool-path-resolver';
 import { resolveLocalFileAccess, resolveLocalFileReference } from './local-file-gateway';
 import { resolveOutboundTarget } from './outbound-gateway';
+import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
 
 export class SendFileTool implements Tool {
   definition: ToolDefinition = {
@@ -47,7 +48,9 @@ CatsCo file selection rules:
 
     let absolutePath: string;
     let displayPath: string;
+    let visibleInputPath = file_path;
     let resolvedFromAttachmentRef = false;
+    let authorizedByLocalFileGrant = false;
 
     const reference = resolveLocalFileReference(context, {
       operation: 'send_file',
@@ -63,7 +66,9 @@ CatsCo file selection rules:
       }
       absolutePath = reference.absolutePath;
       displayPath = reference.displayPath;
+      visibleInputPath = reference.displayPath;
       resolvedFromAttachmentRef = true;
+      authorizedByLocalFileGrant = true;
     } else {
       const resolved = resolveToolPath(file_path, context);
       absolutePath = resolved.absolutePath;
@@ -84,7 +89,38 @@ CatsCo file selection rules:
       }
       if (localAccess.displayPath) {
         displayPath = localAccess.displayPath;
+        visibleInputPath = localAccess.displayPath;
       }
+      authorizedByLocalFileGrant = Boolean(localAccess.grant);
+    }
+
+    const earlyTarget = resolveOutboundTarget(context, {
+      operation: 'send_file',
+      missingChannelMessage: '当前不在聊天会话中，无法发送文件',
+    });
+    if (!earlyTarget.ok && /外发目标与当前执行身份不一致/.test(earlyTarget.message)) {
+      return {
+        ok: false,
+        errorCode: earlyTarget.errorCode,
+        message: earlyTarget.message,
+      };
+    }
+
+    if (!authorizedByLocalFileGrant) {
+      const gateway = resolveToolGatewayAccess(context, {
+        toolName: this.definition.name,
+        operation: 'send_file',
+        targetLabel: displayPath,
+      });
+      if (!gateway.ok) {
+        return {
+          ok: false,
+          errorCode: gateway.errorCode,
+          message: gateway.message,
+        };
+      }
+      displayPath = formatCatsCoVisiblePath(context, displayPath, { preserveRelative: true });
+      visibleInputPath = displayPath;
     }
 
     if (!fs.existsSync(absolutePath)) {
@@ -93,7 +129,7 @@ CatsCo file selection rules:
         errorCode: 'FILE_NOT_FOUND',
         message: [
           'File not found.',
-          `Input path: ${file_path}`,
+          `Input path: ${visibleInputPath}`,
           `Resolved path: ${displayPath}`,
         ].join('\n'),
       };
@@ -107,7 +143,7 @@ CatsCo file selection rules:
           errorCode: 'TOOL_EXECUTION_ERROR',
           message: [
             'Path is not a file.',
-            `Input path: ${file_path}`,
+            `Input path: ${visibleInputPath}`,
             `Resolved path: ${displayPath}`,
           ].join('\n'),
         };
@@ -118,7 +154,7 @@ CatsCo file selection rules:
         errorCode: 'FILE_NOT_FOUND',
         message: [
           'File not found.',
-          `Input path: ${file_path}`,
+          `Input path: ${visibleInputPath}`,
           `Resolved path: ${displayPath}`,
         ].join('\n'),
       };
@@ -132,14 +168,14 @@ CatsCo file selection rules:
         errorCode: 'PERMISSION_DENIED',
         message: [
           'File is not readable.',
-          `Input path: ${file_path}`,
+          `Input path: ${visibleInputPath}`,
           `Resolved path: ${displayPath}`,
         ].join('\n'),
       };
     }
 
     const channel = context.channel;
-    const target = resolveOutboundTarget(context, {
+    const target = earlyTarget.ok ? earlyTarget : resolveOutboundTarget(context, {
       operation: 'send_file',
       missingChannelMessage: '当前不在聊天会话中，无法发送文件',
     });

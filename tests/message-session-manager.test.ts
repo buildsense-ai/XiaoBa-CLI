@@ -90,6 +90,46 @@ describe('MessageSessionManager', () => {
     }
   });
 
+  test('restores legacy session history when creating a V2 routed session', async () => {
+    const { MessageSessionManager, SessionStore, createSessionRoute } = loadSessionManagerModules();
+    SessionStore.getInstance().saveContext('user:legacy-route-demo', [
+      { role: 'user', content: 'legacy user message' },
+      { role: 'assistant', content: 'legacy assistant message' },
+    ]);
+    const route = createSessionRoute({
+      source: 'feishu',
+      topicType: 'p2p',
+      topicId: 'chat-route-demo',
+      actorUserId: 'legacy-route-demo',
+      identityTrust: 'legacy_context',
+      legacySessionKey: 'user:legacy-route-demo',
+    });
+    const manager = new MessageSessionManager(buildMockServices(), 'feishu', {
+      systemPromptProviderFactory: (sessionKey: string) => () => `system prompt for ${sessionKey}`,
+    });
+
+    try {
+      const session = manager.getOrCreate(route);
+      await session.init();
+
+      const messages = (session as any).messages;
+      assert.match(messages[0].content, /^system prompt for session:v2:feishu:p2p:chat-route-demo/);
+      assert.match(messages[0].content, /\[surface:feishu:private\]/);
+      assert.equal(messages[1].content, 'legacy user message');
+      assert.equal(messages[2].content, 'legacy assistant message');
+
+      (session as any).messages.push({ role: 'assistant', content: 'new canonical reply' });
+      await manager.destroy();
+
+      assert.deepEqual(
+        SessionStore.getInstance().loadContext(route.sessionKey).map((message: any) => message.content),
+        ['legacy user message', 'legacy assistant message', 'new canonical reply'],
+      );
+    } finally {
+      await manager.destroy();
+    }
+  });
+
   test('injects skill reload handler into newly created sessions', async () => {
     const { MessageSessionManager } = loadSessionManagerModules();
     let reloadCount = 0;
@@ -220,6 +260,7 @@ function loadSessionManagerModules(): any {
     MessageSessionManager: require('../src/core/message-session-manager').MessageSessionManager,
     SubAgentManager: require('../src/core/sub-agent-manager').SubAgentManager,
     SessionStore: require('../src/utils/session-store').SessionStore,
+    createSessionRoute: require('../src/core/session-router').createSessionRoute,
   };
 }
 

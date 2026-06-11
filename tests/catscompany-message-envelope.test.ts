@@ -39,8 +39,10 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
       },
     });
 
-    assert.equal(alice.sessionKey, 'cc_user:usr7');
-    assert.equal(bob.sessionKey, 'cc_user:usr8');
+    assert.equal(alice.sessionKey, 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43');
+    assert.equal(alice.legacySessionKey, 'cc_user:usr7');
+    assert.equal(bob.sessionKey, 'session:v2:catscompany:p2p:p2p_8_43:agent:usr43');
+    assert.equal(bob.legacySessionKey, 'cc_user:usr8');
     assert.equal(alice.identityTrust, 'server_canonical');
     assert.equal(bob.identityTrust, 'server_canonical');
     assert.equal(createExecutionScope(alice).actorUserId, 'usr7');
@@ -65,7 +67,8 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
     });
     const scope = createExecutionScope(envelope);
 
-    assert.equal(envelope.sessionKey, 'cc_group:grp_80');
+    assert.equal(envelope.sessionKey, 'session:v2:catscompany:group:grp_80:agent:usr43');
+    assert.equal(envelope.legacySessionKey, 'cc_group:grp_80');
     assert.equal(scope.topicType, 'group');
     assert.equal(scope.actorUserId, 'usr7');
     assert.equal(scope.agentId, 'usr43');

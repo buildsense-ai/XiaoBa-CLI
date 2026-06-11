@@ -1,6 +1,13 @@
 import { ContentBlock, Message } from '../types';
-import type { ExecutionScope, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
-import { ChannelCallbacks } from '../types/tool';
+import type {
+  ExecutionScope,
+  ScopedDeviceGrant,
+  ScopedDeviceSelection,
+  ScopedLocalDeviceGrant,
+  ScopedLocalFileGrant,
+  SessionRoute,
+} from '../types/session-identity';
+import { ChannelCallbacks, DeviceRpcTransport } from '../types/tool';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
@@ -36,8 +43,12 @@ export interface RunAgentTurnParams {
   runtimeObservationSource?: string;
   callbacks?: AgentTurnCallbacks;
   channel?: ChannelCallbacks;
+  sessionRoute?: SessionRoute;
   executionScope?: ExecutionScope;
   localDeviceGrant?: ScopedLocalDeviceGrant;
+  deviceGrants?: ScopedDeviceGrant[];
+  deviceSelection?: ScopedDeviceSelection;
+  deviceRpc?: DeviceRpcTransport;
   localFileGrants?: ScopedLocalFileGrant[];
   pendingUserInputProvider?: PendingUserInputProvider;
   abortSignal?: AbortSignal;
@@ -58,6 +69,7 @@ export interface AgentTurnRunError extends Error {
 export interface AgentTurnControllerOptions {
   sessionKey: string;
   sessionType?: string;
+  sessionRoute?: SessionRoute;
   services: AgentTurnServices;
   skillRuntime: SessionSkillRuntime;
   planRuntime: PlanRuntime;
@@ -86,6 +98,13 @@ export class AgentTurnController {
 
     const turnContext = await this.options.turnContextBuilder.build({
       sessionKey: this.options.sessionKey,
+      sessionType: this.options.sessionType,
+      sessionRoute: params.sessionRoute ?? this.options.sessionRoute,
+      executionScope: params.executionScope,
+      localDeviceGrant: params.localDeviceGrant,
+      deviceGrants: params.deviceGrants,
+      deviceSelection: params.deviceSelection,
+      localFileGrants: params.localFileGrants,
       durableMessages: params.messages,
       runtimeFeedback: params.runtimeFeedback,
       skillRuntime: this.options.skillRuntime,
@@ -96,6 +115,9 @@ export class AgentTurnController {
       channel: params.channel,
       executionScope: params.executionScope,
       localDeviceGrant: params.localDeviceGrant,
+      deviceGrants: params.deviceGrants,
+      deviceSelection: params.deviceSelection,
+      deviceRpc: params.deviceRpc,
       localFileGrants: params.localFileGrants,
       pendingUserInputProvider: params.pendingUserInputProvider,
       abortSignal: params.abortSignal,
@@ -145,6 +167,9 @@ export class AgentTurnController {
     channel?: ChannelCallbacks;
     executionScope?: ExecutionScope;
     localDeviceGrant?: ScopedLocalDeviceGrant;
+    deviceGrants?: ScopedDeviceGrant[];
+    deviceSelection?: ScopedDeviceSelection;
+    deviceRpc?: DeviceRpcTransport;
     localFileGrants?: ScopedLocalFileGrant[];
     pendingUserInputProvider?: PendingUserInputProvider;
     abortSignal?: AbortSignal;
@@ -177,6 +202,9 @@ export class AgentTurnController {
           channel: options.channel,
           executionScope: options.executionScope,
           localDeviceGrant: options.localDeviceGrant,
+          deviceGrants: options.deviceGrants,
+          deviceSelection: options.deviceSelection,
+          deviceRpc: options.deviceRpc,
           localFileGrants: options.localFileGrants,
         },
       },

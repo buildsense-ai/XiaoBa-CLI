@@ -74,6 +74,7 @@ function createProcessHarness() {
   bot.pendingAnswerBySession = new Map();
   bot.pendingAttachments = new Map();
   bot.messageQueue = new Map();
+  bot.botUid = 'usr43';
   bot.buildMultimodalMessage = async (text: string, attachments: any[]) => {
     multimodalCalls.push({ text, attachments });
     return [
@@ -314,7 +315,7 @@ describe('CatsCo content blocks', () => {
       assert.strictEqual(handledTurns.length, 1);
       const grants = handledTurns[0].options.localFileGrants;
       assert.strictEqual(grants.length, 1);
-      assert.strictEqual(grants[0].sessionKey, 'cc_user:usr1');
+      assert.strictEqual(grants[0].sessionKey, 'session:v2:catscompany:p2p:p2p_1_43:agent:usr43');
       assert.strictEqual(grants[0].topicId, 'p2p_1_43');
       assert.strictEqual(grants[0].actorUserId, 'usr1');
       assert.strictEqual(grants[0].agentBodyId, 'body-main');
@@ -466,7 +467,7 @@ describe('CatsCo content blocks', () => {
 
   test('queued CatsCompany turns keep working callbacks for compaction status', async () => {
     const { bot, handledTurns, sentThinking } = createProcessHarness();
-    bot.messageQueue.set('cc_user:usr1', [{
+    bot.messageQueue.set('session:v2:catscompany:p2p:p2p_1_2:agent:usr43', [{
       userMessage: '排队消息也应该显示压缩状态',
       topic: 'p2p_1_2',
       senderId: 'usr1',
@@ -476,7 +477,7 @@ describe('CatsCo content blocks', () => {
       runtimeFeedback: [],
     }]);
 
-    await (bot as any).drainMessageQueue('cc_user:usr1');
+    await (bot as any).drainMessageQueue('session:v2:catscompany:p2p:p2p_1_2:agent:usr43');
 
     assert.strictEqual(handledTurns.length, 1);
     assert.strictEqual(handledTurns[0].userMessage, '排队消息也应该显示压缩状态');
@@ -524,9 +525,10 @@ describe('CatsCo content blocks', () => {
 
   test('interrupts active session on CatsCompany stream cancel event', () => {
     const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.botUid = 'usr43';
     let interrupted = 0;
     bot.sessionManager = {
-      get: (key: string) => key === 'cc_user:usr1'
+      get: (key: string) => key === 'session:v2:catscompany:p2p:p2p_1_2:agent:usr43'
         ? {
           requestInterrupt: () => {
             interrupted += 1;
@@ -628,7 +630,7 @@ describe('CatsCo content blocks', () => {
     };
 
     await (bot as any).handleSubAgentFeedback(
-      'cc_user:usr38',
+      'session:v2:catscompany:p2p:p2p_38_110:agent:usr43',
       'p2p_38_110',
       'usr38',
       '[子agent1 已完成]\n结果摘要：审查完成',
@@ -656,7 +658,7 @@ describe('CatsCo content blocks', () => {
       text: '处理消息时出错: 子 agent 结果处理失败',
       };
     };
-    bot.messageQueue.set('cc_user:usr38', [{
+    bot.messageQueue.set('session:v2:catscompany:p2p:p2p_38_110:agent:usr43', [{
       userMessage: '[子agent1 已完成]\n结果摘要：审查完成',
       topic: 'p2p_38_110',
       senderId: 'usr38',
@@ -665,7 +667,7 @@ describe('CatsCo content blocks', () => {
       source: 'subagent_feedback',
     }]);
 
-    await (bot as any).drainMessageQueue('cc_user:usr38');
+    await (bot as any).drainMessageQueue('session:v2:catscompany:p2p:p2p_38_110:agent:usr43');
 
     assert.strictEqual(runtimeObservations.length, 1);
     assert.strictEqual(runtimeObservations[0].options.source, 'subagent_result');
