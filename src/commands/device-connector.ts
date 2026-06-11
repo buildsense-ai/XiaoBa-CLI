@@ -154,7 +154,7 @@ export async function deviceConnectorCommand(options: DeviceConnectorCommandOpti
   await connector.start();
 }
 
-async function enrollDeviceConnector(
+export async function enrollDeviceConnector(
   service: ReturnType<typeof createCatsCoLocalConfigService>,
   config: ChatConfig,
   options: DeviceConnectorCommandOptions,
@@ -181,7 +181,14 @@ async function enrollDeviceConnector(
     }),
   });
   if (!res.ok) {
-    throw new Error(`CatsCo Device Connector 配对失败: ${res.status}`);
+    let reason = '';
+    try {
+      const body = await res.json() as any;
+      reason = String(body?.error || body?.message || '').trim();
+    } catch {
+      // Keep the status fallback below when the response is not JSON.
+    }
+    throw new Error(`CatsCo Device Connector 配对失败: ${reason || res.status}`);
   }
   const body = await res.json() as any;
   const token = String(body.connector_token || '').trim();

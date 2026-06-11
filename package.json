@@ -98,6 +98,14 @@
       "output": "release"
     },
     "asar": false,
+    "protocols": [
+      {
+        "name": "CatsCo Link",
+        "schemes": [
+          "catsco"
+        ]
+      }
+    ],
     "publish": {
       "provider": "github",
       "owner": "buildsense-ai",
