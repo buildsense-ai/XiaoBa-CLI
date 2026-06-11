@@ -5,6 +5,7 @@ import * as dotenv from 'dotenv';
 import { EventEmitter } from 'events';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
+import { weixinBindingEnvOverlay } from './weixin-channel-binding';
 
 const isWindows = process.platform === 'win32';
 
@@ -24,9 +25,38 @@ interface ManagedService {
   info: ServiceInfo;
   process?: ChildProcess;
   logs: string[];  // 最近的日志
+  expectedExit?: 'stop' | 'restart';
 }
 
 const MAX_LOG_LINES = 500;
+const MAX_LAST_ERROR_LENGTH = 500;
+
+function stripAnsi(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/\x1B\[[0-9;]*m/g, '');
+}
+
+function sanitizeServiceLogLine(value: string): string {
+  const sanitized = stripAnsi(value)
+    .replace(/cats_svc_[A-Za-z0-9_-]+/g, '[redacted-token]')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[redacted-key]')
+    .replace(/\bAuthorization\s*[:=]\s*(?:[A-Za-z][A-Za-z0-9+.-]*\s+)?[^\s,;'"`<>]+/gi, 'Authorization: [redacted-token]')
+    .replace(/\b(?:Bearer|ApiKey|Token)\s+[A-Za-z0-9._~+/=-]+/gi, match => `${match.split(/\s+/)[0]} [redacted-token]`)
+    .replace(/(["']?)([A-Za-z0-9_.-]*(?:token|api[_-]?key|secret|password)[A-Za-z0-9_.-]*)\1\s*[:=]\s*["']?[^&\s,'"`<>}]+["']?/gi, '$1$2$1=[redacted-token]')
+    .trim();
+  if (sanitized.length <= MAX_LAST_ERROR_LENGTH) return sanitized;
+  return `${sanitized.slice(0, MAX_LAST_ERROR_LENGTH - 1)}…`;
+}
+
+function pickLastErrorLine(logs: string[]): string | undefined {
+  for (let i = logs.length - 1; i >= 0; i -= 1) {
+    const line = sanitizeServiceLogLine(logs[i] || '');
+    if (/\[ERROR\]|\berror\b|错误|失败|过期/i.test(line)) {
+      return line;
+    }
+  }
+  return undefined;
+}
 
 function readEnvFile(root: string): Record<string, string> {
   const envPath = path.join(root, '.env');
@@ -223,6 +253,19 @@ export class ServiceManager extends EventEmitter {
       };
     }
 
+    if (name === 'weixin') {
+      const catsCoRuntime = resolveCatsCoRuntimeConfig({
+        runtimeRoot: spawnCwd,
+        env: envVars,
+        migrateLegacyEnvBinding: true,
+      });
+      envVars = {
+        ...envVars,
+        ...catsCoRuntime.envOverlay,
+        ...weixinBindingEnvOverlay({ runtimeRoot: spawnCwd, env: envVars }),
+      };
+    }
+
     const runtimeEnvironment = resolveRuntimeEnvironment({
       env: envVars,
       appRoot: this.getAppRoot(),
@@ -250,6 +293,7 @@ export class ServiceManager extends EventEmitter {
     }
 
     svc.process = child;
+    svc.expectedExit = undefined;
     svc.info.status = 'running';
     svc.info.pid = child.pid;
     svc.info.startedAt = Date.now();
@@ -267,11 +311,21 @@ export class ServiceManager extends EventEmitter {
     child.stdout?.on('data', appendLog);
     child.stderr?.on('data', appendLog);
 
-    child.on('exit', (code) => {
-      svc.info.status = code === 0 ? 'stopped' : 'error';
+    child.on('exit', (code, signal) => {
+      const expectedExit = svc.expectedExit;
+      svc.expectedExit = undefined;
+      svc.info.status = expectedExit || code === 0
+        ? 'stopped'
+        : 'error';
       svc.info.pid = undefined;
-      if (code !== 0) {
-        svc.info.lastError = `Process exited with code ${code}`;
+      if (expectedExit || code === 0) {
+        svc.info.lastError = undefined;
+      } else {
+        const lastErrorLine = pickLastErrorLine(svc.logs);
+        const exitReason = code === null ? `signal ${signal || 'unknown'}` : `code ${code}`;
+        svc.info.lastError = lastErrorLine
+          ? `${lastErrorLine} (${exitReason})`
+          : `Process exited with ${exitReason}`;
       }
       svc.process = undefined;
       this.emit('service-stopped', name, code);
@@ -314,16 +368,19 @@ export class ServiceManager extends EventEmitter {
 
     if (isWindows) {
       // Windows: 直接用 taskkill 强制终止进程树
+      svc.expectedExit = 'stop';
       this.killProcess(svc.process, true);
     } else {
+      svc.expectedExit = 'stop';
       svc.process.kill('SIGTERM');
 
       // 5秒后强制kill
-      setTimeout(() => {
+      const forceKillTimer = setTimeout(() => {
         if (svc.process && !svc.process.killed) {
           svc.process.kill('SIGKILL');
         }
       }, 5000);
+      forceKillTimer.unref?.();
     }
 
     return this.getService(name)!;
@@ -336,8 +393,10 @@ export class ServiceManager extends EventEmitter {
     if (svc.info.status === 'running' && svc.process) {
       // 先停再启，等进程退出后启动
       svc.process.once('exit', () => {
-        setTimeout(() => this.start(name), 500);
+        const restartTimer = setTimeout(() => this.start(name), 500);
+        restartTimer.unref?.();
       });
+      svc.expectedExit = 'restart';
       this.killProcess(svc.process);
       return this.getService(name)!;
     }
@@ -348,6 +407,7 @@ export class ServiceManager extends EventEmitter {
   stopAll() {
     for (const [name, svc] of this.services) {
       if (svc.info.status === 'running' && svc.process) {
+        svc.expectedExit = 'stop';
         this.killProcess(svc.process, true);
       }
     }

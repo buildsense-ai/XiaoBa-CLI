@@ -48,6 +48,12 @@ import {
   computeLocalSkillContentHash,
   readSkillHubLocalMetadata,
 } from '../../skillhub/local-skill-metadata';
+import {
+  BindWeixinChannelResult,
+  WeixinChannelStatus,
+  bindWeixinChannelToCurrentAgent,
+  getWeixinChannelStatus,
+} from '../weixin-channel-binding';
 // import { ReportGenerator } from '../../utils/report-generator';
 // import { LogUploader } from '../../utils/log-uploader';
 
@@ -202,6 +208,48 @@ function httpError(message: string, status: number): Error {
   const error = new Error(message);
   (error as any).status = status;
   return error;
+}
+
+function sanitizeWeixinChannelStatus(status: WeixinChannelStatus): Record<string, any> {
+  const binding = status.binding
+    ? {
+      channel: status.binding.channel,
+      agentUid: status.binding.agentUid,
+      agentName: status.binding.agentName,
+      agentUsername: status.binding.agentUsername,
+      bodyId: status.binding.bodyId,
+      boundByUserUid: status.binding.boundByUserUid,
+      tokenLast4: status.binding.tokenLast4,
+      legacyEnvKey: status.binding.legacyEnvKey,
+      createdAt: status.binding.createdAt,
+      updatedAt: status.binding.updatedAt,
+    }
+    : undefined;
+  return {
+    configured: status.configured,
+    currentAgent: status.currentAgent,
+    binding,
+    mismatch: status.mismatch,
+    reason: status.reason,
+  };
+}
+
+function sanitizeWeixinBindingResult(result: BindWeixinChannelResult): Record<string, any> {
+  return {
+    binding: sanitizeWeixinChannelStatus({
+      configured: true,
+      currentAgent: {
+        uid: result.binding.agentUid,
+        name: result.binding.agentName,
+        username: result.binding.agentUsername,
+        bodyId: result.binding.bodyId,
+        ownerUid: result.binding.boundByUserUid,
+        ownerUsername: result.binding.boundByUsername,
+      },
+      binding: result.binding,
+    }).binding,
+    updatedEnv: result.updatedEnv,
+  };
 }
 
 function assertCurrentCatsTopic(state: CatsAuthState, topicId: string): void {
@@ -1726,9 +1774,11 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const masked = { ...parsed };
       for (const key of Object.keys(masked)) {
         if (isSensitiveEnvKey(key)) {
-          masked[key] = masked[key] && masked[key].length > 4
-            ? `****${masked[key].slice(-4)}`
-            : '****';
+          masked[key] = masked[key]
+            ? masked[key].length > 4
+              ? `****${masked[key].slice(-4)}`
+              : '****'
+            : '';
         }
       }
       res.json(masked);
@@ -1756,6 +1806,10 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         'FEISHU_BOT_OPEN_ID',
         'FEISHU_BOT_ALIASES',
         'WEIXIN_TOKEN',
+        'WEIXIN_BOUND_AGENT_UID',
+        'WEIXIN_BOUND_AGENT_NAME',
+        'WEIXIN_BOUND_BODY_ID',
+        'WEIXIN_BOUND_BY_USER_UID',
       ]);
       const safeUpdates: Record<string, string> = {};
 
@@ -1916,11 +1970,41 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
 
   // ==================== 微信 Token 获取 ====================
 
+  router.get('/weixin/channel-binding', (_req, res) => {
+    try {
+      res.json(sanitizeWeixinChannelStatus(getWeixinChannelStatus({
+        runtimeRoot: process.cwd(),
+        env: process.env,
+      })));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   router.get('/weixin/qrcode', async (_req, res) => {
     try {
+      const status = getWeixinChannelStatus({
+        runtimeRoot: process.cwd(),
+        env: process.env,
+      });
+      if (!status.currentAgent) {
+        return res.status(409).json({
+          error: status.reason || '请先在 CatsCo Chat 中选择并绑定 agent，再绑定微信通道',
+          channelStatus: sanitizeWeixinChannelStatus(status),
+        });
+      }
       const response = await fetch('https://ilinkai.weixin.qq.com/ilink/bot/get_bot_qrcode?bot_type=3');
-      const data = await response.json();
-      res.json(data);
+      const data = await response.json() as Record<string, any>;
+      if (!response.ok) {
+        return res.status(response.status).json({
+          error: String(data?.error || data?.message || '获取微信二维码失败'),
+        });
+      }
+      res.json({
+        ...data,
+        agent_uid: status.currentAgent.uid,
+        agent: status.currentAgent,
+      });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -1929,10 +2013,48 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
   router.get('/weixin/qrcode-status', async (req, res) => {
     try {
       const qrcode = req.query.qrcode as string;
+      const expectedAgentUid = String(req.query.agent_uid || '').trim();
       if (!qrcode) return res.status(400).json({ error: 'qrcode required' });
-      const response = await fetch(`https://ilinkai.weixin.qq.com/ilink/bot/get_qrcode_status?qrcode=${qrcode}`);
-      const data = await response.json();
-      res.json(data);
+      const status = getWeixinChannelStatus({
+        runtimeRoot: process.cwd(),
+        env: process.env,
+      });
+      if (!status.currentAgent) {
+        return res.status(409).json({
+          error: status.reason || '请先在 CatsCo Chat 中选择并绑定 agent，再绑定微信通道',
+          channelStatus: sanitizeWeixinChannelStatus(status),
+        });
+      }
+      if (expectedAgentUid && expectedAgentUid !== status.currentAgent.uid) {
+        return res.status(409).json({
+          error: `扫码开始时的 agent 是 ${expectedAgentUid}，当前 agent 是 ${status.currentAgent.uid}，请重新扫码`,
+          channelStatus: sanitizeWeixinChannelStatus(status),
+        });
+      }
+      const response = await fetch(`https://ilinkai.weixin.qq.com/ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrcode)}`);
+      const data = await response.json() as Record<string, any>;
+      if (!response.ok) {
+        return res.status(response.status).json({
+          error: String(data?.error || data?.message || '微信授权状态检查失败'),
+        });
+      }
+      const safeData = { ...data };
+      delete safeData.bot_token;
+      const botToken = String(data?.bot_token || '').trim();
+      if (data?.status === 'confirmed' && botToken) {
+        const result = bindWeixinChannelToCurrentAgent({
+          token: botToken,
+          runtimeRoot: process.cwd(),
+          env: process.env,
+          expectedAgentUid: expectedAgentUid || status.currentAgent.uid,
+        });
+        return res.json({
+          ...safeData,
+          token_saved: true,
+          ...sanitizeWeixinBindingResult(result),
+        });
+      }
+      res.json(safeData);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }

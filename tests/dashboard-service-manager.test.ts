@@ -115,6 +115,55 @@ describe('dashboard service manager', () => {
       fs.rmSync(runtimeRoot, { recursive: true, force: true });
     }
   });
+
+  test('preserves the last child error line when a service exits non-zero', async () => {
+    const manager = new ServiceManager(process.cwd());
+    const serviceRecord = (manager as any).services.get('weixin');
+    serviceRecord.info.command = process.execPath;
+    serviceRecord.info.args = [
+      '-e',
+      "console.error('[ERROR] [微信] 会话已过期，请重新登录 Authorization: Bearer wx-secret-token WEIXIN_TOKEN=wx-secret-token sk-live-secret1234567890'); process.exit(78);",
+    ];
+
+    const stopped = new Promise<void>(resolve => {
+      manager.once('service-stopped', () => resolve());
+    });
+
+    manager.start('weixin');
+    await stopped;
+
+    const service = manager.getService('weixin');
+    assert.equal(service?.status, 'error');
+    assert.match(service?.lastError || '', /会话已过期/);
+    assert.match(service?.lastError || '', /code 78/);
+    assert.match(service?.lastError || '', /Authorization: \[redacted-token\]/);
+    assert.match(service?.lastError || '', /WEIXIN_TOKEN=\[redacted-token\]/);
+    assert.match(service?.lastError || '', /\[redacted-key\]/);
+    assert.equal((service?.lastError || '').includes('wx-secret-token'), false);
+    assert.equal((service?.lastError || '').includes('sk-live-secret1234567890'), false);
+  });
+
+  test('treats dashboard-requested service stop as stopped even when the child exits non-zero', async () => {
+    const manager = new ServiceManager(process.cwd());
+    const serviceRecord = (manager as any).services.get('weixin');
+    serviceRecord.info.command = process.execPath;
+    serviceRecord.info.args = [
+      '-e',
+      "console.error('[ERROR] transient startup line'); setInterval(() => {}, 1000);",
+    ];
+
+    const stopped = new Promise<void>(resolve => {
+      manager.once('service-stopped', () => resolve());
+    });
+
+    manager.start('weixin');
+    manager.stop('weixin');
+    await stopped;
+
+    const service = manager.getService('weixin');
+    assert.equal(service?.status, 'stopped');
+    assert.equal(service?.lastError, undefined);
+  });
 });
 
 function normalize(value: string): string {

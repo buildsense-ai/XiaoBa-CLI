@@ -9757,13 +9757,17 @@
 
     // === 微信 Token 获取 ===
     let weixinPollInterval;
+    let weixinPollAgentUid='';
     async function getWeixinToken(){
       try{
         const r=await fetch(API+'/api/weixin/qrcode');
         const d=await r.json();
+        if(!r.ok||d.error)throw new Error(d.error||'获取二维码失败');
         if(d.qrcode){
+          weixinPollAgentUid=String(d.agent_uid||d.agent?.uid||'');
+          const agentName=d.agent?.name||d.agent?.username||weixinPollAgentUid||'当前 Agent';
           document.getElementById('logs-title').textContent='微信扫码授权';
-          document.getElementById('logs-body').innerHTML='<div style="text-align:center;padding:20px"><p style="margin-bottom:16px;color:var(--text)">请用微信扫描下方二维码授权</p><a href="'+d.qrcode_img_content+'" target="_blank" style="display:inline-block;padding:12px 20px;background:var(--accent-gradient);color:white;text-decoration:none;border-radius:12px;font-weight:700">点击打开二维码</a><p style="margin-top:16px;font-size:12px;color:var(--text3)">等待扫码中...</p></div>';
+          document.getElementById('logs-body').innerHTML='<div style="text-align:center;padding:20px"><p style="margin-bottom:8px;color:var(--text);font-weight:800">绑定到 '+escapeHtml(agentName)+'</p><p style="margin-bottom:16px;color:var(--text2)">请用微信扫描下方二维码授权。授权成功后，微信消息会进入这个 Agent。</p><a href="'+escapeHtml(d.qrcode_img_content||'')+'" target="_blank" style="display:inline-block;padding:12px 20px;background:var(--accent-gradient);color:white;text-decoration:none;border-radius:12px;font-weight:700">点击打开二维码</a><p style="margin-top:16px;font-size:12px;color:var(--text3)">等待扫码中...</p></div>';
           document.getElementById('logs-modal').classList.add('show');
           if(weixinPollInterval)clearInterval(weixinPollInterval);
           weixinPollInterval=setInterval(()=>checkWeixinStatus(d.qrcode),2000);
@@ -9772,18 +9776,24 @@
     }
     async function checkWeixinStatus(qrcode){
       try{
-        const r=await fetch(API+'/api/weixin/qrcode-status?qrcode='+qrcode);
+        const agentParam=weixinPollAgentUid?'&agent_uid='+encodeURIComponent(weixinPollAgentUid):'';
+        const r=await fetch(API+'/api/weixin/qrcode-status?qrcode='+encodeURIComponent(qrcode)+agentParam);
         const d=await r.json();
-        if(d.status==='confirmed'&&d.bot_token){
+        if(!r.ok||d.error)throw new Error(d.error||'微信授权状态检查失败');
+        if(d.status==='confirmed'&&d.token_saved){
           clearInterval(weixinPollInterval);
-          document.querySelector('[data-key="WEIXIN_TOKEN"]').value=d.bot_token;
-          document.getElementById('logs-body').innerHTML='<div style="text-align:center;padding:20px;color:var(--green)"><p style="font-size:18px;font-weight:700;margin-bottom:12px">✓ 授权成功</p><p>Token 已自动填入，请点击保存按钮</p></div>';
+          const bound=d.binding?.agentName||d.binding?.agentUsername||d.binding?.agentUid||'当前 Agent';
+          document.getElementById('logs-body').innerHTML='<div style="text-align:center;padding:20px;color:var(--green)"><p style="font-size:18px;font-weight:700;margin-bottom:12px">✓ 授权成功</p><p>微信通道已绑定到 '+escapeHtml(bound)+'，Token 已保存到本地环境。</p></div>';
+          await Promise.allSettled([fetchConfig(), fetchStatus(), fetchReadiness()]);
           setTimeout(()=>document.getElementById('logs-modal').classList.remove('show'),2000);
         }else if(d.status==='expired'){
           clearInterval(weixinPollInterval);
           document.getElementById('logs-body').innerHTML='<div style="text-align:center;padding:20px;color:var(--red)">二维码已过期，请重新获取</div>';
         }
-      }catch(e){}
+      }catch(e){
+        clearInterval(weixinPollInterval);
+        document.getElementById('logs-body').innerHTML='<div style="text-align:center;padding:20px;color:var(--red)">微信授权失败：'+escapeHtml(e.message||String(e))+'</div>';
+      }
     }
 
     // Init
