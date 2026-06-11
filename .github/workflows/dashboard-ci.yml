@@ -1,0 +1,60 @@
+name: Dashboard CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/dashboard-ci.yml'
+      - 'dashboard/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/build-dashboard.js'
+      - 'tests/dashboard-*.test.ts'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/dashboard-ci.yml'
+      - 'dashboard/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/build-dashboard.js'
+      - 'tests/dashboard-*.test.ts'
+
+concurrency:
+  group: dashboard-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '20'
+  NPM_INSTALL_FLAGS: '--prefer-offline --no-audit --fund=false'
+
+jobs:
+  dashboard:
+    name: Build and test dashboard
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci ${{ env.NPM_INSTALL_FLAGS }}
+
+      - name: Build dashboard bundle
+        run: npm run build:dashboard
+
+      - name: Typecheck
+        run: npm run build -- --pretty false
+
+      - name: Run dashboard tests
+        run: npm run test:dashboard
