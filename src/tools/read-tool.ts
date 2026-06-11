@@ -7,6 +7,9 @@ import { createImageBlock } from '../utils/image-utils';
 import { ConfigManager } from '../utils/config';
 import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
 import { analyzeImageWithReaderProxy, ReaderProxyResult } from '../utils/reader-proxy';
+import { resolveLocalFileAccess, resolveLocalFileReference } from './local-file-gateway';
+import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
+import { executeRemoteReadonlyTool } from './device-rpc-tool';
 
 export const DEFAULT_TEXT_READ_LIMIT = 200;
 export const MAX_TEXT_READ_LIMIT = 2000;
@@ -58,7 +61,7 @@ export class ReadTool implements Tool {
       properties: {
         file_path: {
           type: 'string',
-          description: '要读取的文件路径，可以是绝对路径，也可以是相对当前工作目录的路径。',
+          description: '要读取的文件路径或当前 CatsCo 用户轮次中的授权附件引用。可以是绝对路径、相对当前工作目录的路径，或 catsco_attachment:<id>。',
         },
         offset: {
           type: 'number',
@@ -84,37 +87,126 @@ export class ReadTool implements Tool {
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { file_path, offset, limit, pages, prompt, analysis_prompt } = args;
 
-    const absolutePath = path.isAbsolute(file_path)
-      ? file_path
-      : path.join(context.workingDirectory, file_path);
+    if (!file_path || typeof file_path !== 'string') {
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: '文件路径不能为空' };
+    }
 
-    const pathPermission = isReadPathAllowed(absolutePath, context.workingDirectory);
-    if (!pathPermission.allowed) {
-      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
+    let absolutePath: string;
+    let displayPath = file_path;
+    let visiblePath: string;
+    let visibleInputPath = file_path;
+    let resolvedFromAttachmentRef = false;
+    let authorizedByLocalFileGrant = false;
+
+    const reference = resolveLocalFileReference(context, {
+      operation: 'read_file',
+      inputPath: file_path,
+    });
+    if (reference.matched) {
+      if (!reference.ok) {
+        return {
+          ok: false,
+          errorCode: reference.errorCode,
+          message: reference.message,
+        };
+      }
+      absolutePath = reference.absolutePath;
+      displayPath = reference.displayPath;
+      visiblePath = reference.displayPath;
+      visibleInputPath = reference.displayPath;
+      resolvedFromAttachmentRef = true;
+      authorizedByLocalFileGrant = true;
+    } else {
+      absolutePath = path.isAbsolute(file_path)
+        ? file_path
+        : path.join(context.workingDirectory, file_path);
+      visiblePath = absolutePath;
+    }
+
+    if (!resolvedFromAttachmentRef) {
+      const localAccess = resolveLocalFileAccess(context, {
+        operation: 'read_file',
+        absolutePath,
+      });
+      if (!localAccess.ok) {
+        return {
+          ok: false,
+          errorCode: localAccess.errorCode,
+          message: localAccess.message,
+        };
+      }
+      if (localAccess.displayPath) {
+        displayPath = localAccess.displayPath;
+        visiblePath = localAccess.displayPath;
+        visibleInputPath = localAccess.displayPath;
+      }
+      authorizedByLocalFileGrant = Boolean(localAccess.grant);
+    }
+
+    if (!authorizedByLocalFileGrant) {
+      const gateway = resolveToolGatewayAccess(context, {
+        toolName: this.definition.name,
+        operation: 'read_file',
+        targetLabel: displayPath,
+      });
+      if (!gateway.ok) {
+        return {
+          ok: false,
+          errorCode: gateway.errorCode,
+          message: gateway.message,
+        };
+      }
+      const remoteResult = await executeRemoteReadonlyTool(context, gateway, 'read_file', 'read_file', args);
+      if (remoteResult) return remoteResult;
+
+      const pathPermission = isReadPathAllowed(absolutePath, context.workingDirectory);
+      if (!pathPermission.allowed) {
+        return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
+      }
+      displayPath = formatCatsCoVisiblePath(context, displayPath, { preserveRelative: true });
+      visiblePath = formatCatsCoVisiblePath(context, visiblePath);
+      visibleInputPath = formatCatsCoVisiblePath(context, file_path);
     }
 
     if (!fs.existsSync(absolutePath)) {
-      return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `错误：文件不存在: ${absolutePath}` };
+      return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `错误：文件不存在: ${visiblePath}` };
+    }
+
+    try {
+      const stats = fs.statSync(absolutePath);
+      if (!stats.isFile()) {
+        return {
+          ok: false,
+          errorCode: 'TOOL_EXECUTION_ERROR',
+          message: [
+            'Path is not a file.',
+            `Input path: ${visibleInputPath}`,
+            `Resolved path: ${visiblePath}`,
+          ].join('\n'),
+        };
+      }
+    } catch {
+      return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `错误：文件不存在: ${visiblePath}` };
     }
 
     const ext = path.extname(absolutePath).toLowerCase();
 
     if (ext === '.pdf') {
-      const content = this.readPDF(absolutePath, file_path, pages);
+      const content = this.readPDF(absolutePath, displayPath, visiblePath, pages);
       return { ok: true, content };
     }
 
     if (this.isImageExt(ext)) {
-      const content = await this.readImage(absolutePath, file_path, context, prompt || analysis_prompt);
+      const content = await this.readImage(absolutePath, displayPath, visiblePath, context, prompt || analysis_prompt);
       return { ok: true, content: content as any };
     }
 
     if (ext === '.ipynb') {
-      const content = this.readNotebook(absolutePath, file_path);
+      const content = this.readNotebook(absolutePath, displayPath, visiblePath);
       return { ok: true, content };
     }
 
-    const content = await this.readTextFile(absolutePath, file_path, { offset, limit }, context);
+    const content = await this.readTextFile(absolutePath, displayPath, visiblePath, { offset, limit }, context);
     return { ok: true, content };
   }
 
@@ -246,7 +338,7 @@ export class ReadTool implements Tool {
     };
   }
 
-  private formatTextReadResult(filePath: string, absolutePath: string, result: TextReadResult): string {
+  private formatTextReadResult(filePath: string, displayPath: string, result: TextReadResult): string {
     const formattedLines = result.lines
       .map((line, index) => {
         const lineNumber = result.startLine + index;
@@ -279,7 +371,7 @@ export class ReadTool implements Tool {
 
     return [
       `文件: ${filePath}`,
-      `Path: ${absolutePath}`,
+      `Path: ${displayPath}`,
       `总行数: ${totalLinesLabel}`,
       `显示: ${displayRange}`,
       '',
@@ -291,21 +383,22 @@ export class ReadTool implements Tool {
   private async readTextFile(
     absolutePath: string,
     filePath: string,
+    visiblePath: string,
     options: TextReadOptions,
     context: ToolExecutionContext,
   ): Promise<string> {
     const normalizedOptions = this.normalizeTextReadOptions(options);
     const result = await this.collectTextLines(absolutePath, normalizedOptions, context);
-    return this.formatTextReadResult(filePath, absolutePath, result);
+    return this.formatTextReadResult(filePath, visiblePath, result);
   }
 
-  private readPDF(absolutePath: string, filePath: string, pages?: string): string {
+  private readPDF(absolutePath: string, filePath: string, visiblePath: string, pages?: string): string {
     const stats = fs.statSync(absolutePath);
     const sizeMB = (stats.size / 1024 / 1024).toFixed(2);
 
     const lines = [
       `文件: ${filePath}`,
-      `Path: ${absolutePath}`,
+      `Path: ${visiblePath}`,
       '类型: PDF',
       `大小: ${sizeMB} MB`,
       '',
@@ -353,10 +446,10 @@ export class ReadTool implements Tool {
     return explicit || this.getLatestUserText(context);
   }
 
-  private formatImageMetadata(absolutePath: string, filePath: string): string {
+  private formatImageMetadata(absolutePath: string, filePath: string, visiblePath: string): string {
     const stats = fs.statSync(absolutePath);
     const sizeKB = (stats.size / 1024).toFixed(2);
-    return [`文件: ${filePath}`, `Path: ${absolutePath}`, '类型: 图片文件', `大小: ${sizeKB} KB`].join('\n');
+    return [`文件: ${filePath}`, `Path: ${visiblePath}`, '类型: 图片文件', `大小: ${sizeKB} KB`].join('\n');
   }
 
   private formatReaderProxyFailure(proxyResult: ReaderProxyResult, visionCapable: boolean): string {
@@ -413,6 +506,7 @@ export class ReadTool implements Tool {
   private async readImage(
     absolutePath: string,
     filePath: string,
+    visiblePath: string,
     context: ToolExecutionContext,
     prompt?: string,
   ): Promise<any> {
@@ -425,7 +519,7 @@ export class ReadTool implements Tool {
       if (imageBlock) {
         return {
           _imageForNewMessage: true,
-          imageBlock,
+          imageBlock: { ...imageBlock, filePath },
           filePath,
         };
       }
@@ -439,7 +533,7 @@ export class ReadTool implements Tool {
 
     if (proxyResult.ok && proxyResult.analysis) {
       return [
-        this.formatImageMetadata(absolutePath, filePath),
+        this.formatImageMetadata(absolutePath, filePath, visiblePath),
         '',
         visionCapable
           ? '主模型图片块生成失败，已自动改用 Cats reader proxy 解析：'
@@ -449,17 +543,17 @@ export class ReadTool implements Tool {
     }
 
     return [
-      this.formatImageMetadata(absolutePath, filePath),
+      this.formatImageMetadata(absolutePath, filePath, visiblePath),
       '',
       this.formatReaderProxyFailure(proxyResult, visionCapable),
     ].join('\n');
   }
 
-  private readNotebook(absolutePath: string, filePath: string): string {
+  private readNotebook(absolutePath: string, filePath: string, visiblePath: string): string {
     const content = fs.readFileSync(absolutePath, 'utf-8');
     const notebook = JSON.parse(content);
 
-    let result = `文件: ${filePath}\nPath: ${absolutePath}\nJupyter Notebook\n单元格数量: ${notebook.cells?.length || 0}\n\n`;
+    let result = `文件: ${filePath}\nPath: ${visiblePath}\nJupyter Notebook\n单元格数量: ${notebook.cells?.length || 0}\n\n`;
 
     if (notebook.cells && Array.isArray(notebook.cells)) {
       notebook.cells.forEach((cell: any, index: number) => {

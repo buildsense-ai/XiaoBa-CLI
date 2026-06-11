@@ -1,24 +1,41 @@
-import { CatsClient, MessageContext } from './client';
+import { CatsClient, MessageContext, type CatsDeviceRpcMessage } from './client';
 import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo } from './types';
 import { MessageSender } from './message-sender';
 import { extractContentBlocks } from './content-blocks';
+import { createCatsCoMessageEnvelope, createExecutionScope } from './message-envelope';
+import { createCatsCoAttachmentGrant, createCatsCoLocalDeviceGrant } from './local-file-grants';
+import { extractCatsCoDeviceGrants } from './device-grants';
+import { extractCatsCoDeviceSelection } from './device-selection';
 import { MessageSessionManager } from '../core/message-session-manager';
 import { AgentServices, BUSY_MESSAGE, RuntimeFeedbackInput, SessionCallbacks } from '../core/agent-session';
 import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import type { SubAgentInfo } from '../core/sub-agent-session';
-import { ChannelCallbacks } from '../types/tool';
+import { ChannelCallbacks, DeviceRpcTransport, ToolErrorCode, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { ContentBlock } from '../types';
+import type { PendingUserInput } from '../core/conversation-runner';
+import type { DeviceGrantOperation, ExecutionScope, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
 import { randomUUID } from 'crypto';
+import { hostname } from 'os';
 import { ConfigManager } from '../utils/config';
 import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
+import { createCatsCoSessionRoute } from '../core/session-router';
+import { ReadTool } from '../tools/read-tool';
+import { GlobTool } from '../tools/glob-tool';
+import { GrepTool } from '../tools/grep-tool';
+import {
+  isRemoteReadonlyTool,
+  normalizeDeviceRpcToolResultForTransport,
+  normalizeDeviceRpcToolResultPayload,
+} from '../tools/device-rpc-tool';
 
 interface PendingAttachment {
   fileName: string;
   localPath: string;
   type: 'file' | 'image';
   receivedAt: number;
+  localFileGrant?: ScopedLocalFileGrant;
 }
 
 interface PendingAnswer {
@@ -35,6 +52,10 @@ interface QueuedMessage {
   topic: string;
   senderId: string;
   seq: number;
+  executionScope: ParsedCatsMessage['executionScope'];
+  deviceGrants?: ScopedDeviceGrant[];
+  deviceSelection?: ScopedDeviceSelection;
+  localFileGrants?: ScopedLocalFileGrant[];
   receivedAt: number;
   source?: 'user' | 'subagent_feedback';
   runtimeFeedback?: RuntimeFeedbackInput[];
@@ -42,6 +63,8 @@ interface QueuedMessage {
 
 const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 const TYPING_HEARTBEAT_INTERVAL_MS = 5_000;
+const DEVICE_REGISTRATION_REFRESH_MS = 120_000;
+const DEVICE_RPC_DEFAULT_TTL_MS = 60_000;
 const HIDDEN_CATS_TOOL_PROGRESS = new Set([
   'send_text',
   'send_file',
@@ -90,17 +113,46 @@ export class CatsCompanyBot {
   private botUid: string | null = null;
   private runtime: AdapterRuntimeBundle;
   private runtimeProfile: AdapterRuntimeBundle['profile'];
+  private localDeviceGrant?: ScopedLocalDeviceGrant;
+  private deviceRegistrationTimer?: ReturnType<typeof setInterval>;
+  private readonly deviceRegistration?: {
+    device_id: string;
+    display_name?: string;
+    body_id?: string;
+    installation_id?: string;
+    status: 'online';
+    capabilities: string[];
+  };
 
   constructor(config: CatsCompanyConfig) {
+    const localDeviceId = config.installationId || config.bodyId;
+    const deviceRegistration = localDeviceId
+      ? {
+          device_id: localDeviceId,
+          display_name: config.deviceName || process.env.COMPUTERNAME || process.env.HOSTNAME || hostname() || localDeviceId,
+          body_id: config.bodyId,
+          installation_id: config.installationId || config.bodyId,
+          status: 'online' as const,
+          capabilities: ['read_file', 'glob', 'grep'],
+        }
+      : undefined;
+
     this.bot = new CatsClient({
       serverUrl: config.serverUrl,
       apiKey: config.apiKey,
       bodyId: config.bodyId,
       installationId: config.installationId,
+      deviceRegistration,
       httpBaseUrl: config.httpBaseUrl,
     });
 
     this.sender = new MessageSender(this.bot, config.httpBaseUrl, config.apiKey);
+    this.localDeviceGrant = createCatsCoLocalDeviceGrant({
+      bodyId: config.bodyId,
+      installationId: config.installationId,
+      deviceId: config.installationId || config.bodyId,
+    });
+    this.deviceRegistration = deviceRegistration;
 
     const runtime = createCatsCompanyRuntime(config.sessionTTL);
     this.runtime = runtime;
@@ -136,10 +188,18 @@ export class CatsCompanyBot {
       this.runtimeProfile.prompt.displayName = botName;
       process.env.CURRENT_AGENT_DISPLAY_NAME = botName;
       Logger.success(`CatsCo agent 已连接，uid=${info.uid}, name=${botName}`);
+      this.registerCurrentDevice().catch((err: any) => {
+        Logger.warning(`CatsCo 设备注册失败，继续保持聊天连接: ${err?.message || err}`);
+      });
+      this.startDeviceRegistrationRefresh();
     });
 
     this.bot.on('message', async (ctx: MessageContext) => {
       await this.onMessage(ctx);
+    });
+
+    this.bot.on('device_rpc_request', async (request: CatsDeviceRpcMessage) => {
+      await this.handleDeviceRpcRequest(request);
     });
 
     this.bot.on('error', (err: Error) => {
@@ -148,6 +208,291 @@ export class CatsCompanyBot {
 
     this.bot.connect();
     Logger.success('CatsCo agent 已启动，等待消息...');
+  }
+
+  private async registerCurrentDevice(): Promise<void> {
+    if (!this.deviceRegistration?.device_id) return;
+    await this.bot.registerDevice(this.deviceRegistration);
+    Logger.info(`[CatsCompany] 已注册本机设备能力: device=${this.deviceRegistration.device_id}, capabilities=${this.deviceRegistration.capabilities.join(',')}`);
+  }
+
+  private startDeviceRegistrationRefresh(): void {
+    if (!this.deviceRegistration?.device_id) return;
+    this.stopDeviceRegistrationRefresh();
+    this.deviceRegistrationTimer = setInterval(() => {
+      this.registerCurrentDevice().catch((err: any) => {
+        Logger.warning(`CatsCo 设备状态刷新失败: ${err?.message || err}`);
+      });
+    }, DEVICE_REGISTRATION_REFRESH_MS);
+    (this.deviceRegistrationTimer as any).unref?.();
+  }
+
+  private stopDeviceRegistrationRefresh(): void {
+    if (!this.deviceRegistrationTimer) return;
+    clearInterval(this.deviceRegistrationTimer);
+    this.deviceRegistrationTimer = undefined;
+  }
+
+  private buildDeviceRpcTransport(): DeviceRpcTransport {
+    return {
+      executeTool: async ({ toolName, operation, args, grant, timeoutMs }) => {
+        const response = await this.bot.sendDeviceRpcRequest({
+          request_id: `device_rpc_${randomUUID()}`,
+          grant_id: grant.grantId,
+          session_key: grant.sessionKey,
+          topic_id: grant.topicId,
+          topic_type: grant.topicType,
+          actor_user_id: grant.actorUserId,
+          agent_id: grant.agentId,
+          agent_body_id: grant.agentBodyId,
+          device_id: grant.deviceId,
+          device_body_id: grant.deviceBodyId,
+          device_installation_id: grant.deviceInstallationId,
+          operation,
+          tool_name: toolName,
+          payload: { args },
+          expires_at: grant.expiresAt,
+        }, timeoutMs);
+
+        if (response.error) {
+          return {
+            ok: false,
+            errorCode: this.mapDeviceRpcToolErrorCode(response.error.code),
+            message: response.error.message || response.error.code || '远程设备工具执行失败。',
+            retryable: this.isRetryableDeviceRpcError(response.error.code),
+          };
+        }
+        return normalizeDeviceRpcToolResultPayload(response.result);
+      },
+    };
+  }
+
+  private async handleDeviceRpcRequest(request: CatsDeviceRpcMessage): Promise<void> {
+    const requestID = request.request_id;
+    if (!requestID) return;
+
+    const validationError = this.validateDeviceRpcToolRequest(request);
+    const result = validationError ? undefined : await this.executeLocalDeviceRpcTool(request);
+    const error = validationError || (!result || result.ok
+      ? undefined
+      : {
+          code: result.errorCode || 'tool_execution_error',
+          message: result.message,
+        });
+
+    try {
+      await this.bot.sendDeviceRpcResult({
+        request_id: requestID,
+        grant_id: request.grant_id,
+        session_key: request.session_key,
+        topic_id: request.topic_id,
+        topic_type: request.topic_type,
+        actor_user_id: request.actor_user_id,
+        agent_id: request.agent_id,
+        agent_body_id: request.agent_body_id,
+        device_id: this.localDeviceGrant?.deviceId || request.device_id,
+        device_body_id: this.localDeviceGrant?.bodyId || request.device_body_id,
+        device_installation_id: this.localDeviceGrant?.installationId || request.device_installation_id,
+        operation: request.operation,
+        tool_name: request.tool_name,
+        result: error || !result ? undefined : normalizeDeviceRpcToolResultForTransport(result),
+        error,
+      });
+    } catch (err: any) {
+      Logger.warning(`[CatsCompany] Device RPC result 发送失败: request=${requestID}, error=${err?.message || err}`);
+    }
+  }
+
+  private async executeLocalDeviceRpcTool(request: CatsDeviceRpcMessage): Promise<ToolExecutionResult> {
+    const operation = this.normalizeDeviceRpcReadonlyOperation(request.operation);
+    const toolName = String(request.tool_name || operation || '').trim();
+    if (!operation || !isRemoteReadonlyTool(toolName, operation)) {
+      return {
+        ok: false,
+        errorCode: 'PERMISSION_DENIED',
+        message: `Device RPC 不允许执行 ${toolName || request.operation || 'unknown'}。`,
+      };
+    }
+
+    const context = this.buildDeviceRpcToolContext(request, operation);
+    const args = this.extractDeviceRpcToolArgs(request.payload);
+    switch (operation) {
+      case 'read_file':
+        return new ReadTool().execute(args, context);
+      case 'glob':
+        return new GlobTool().execute(args, context);
+      case 'grep':
+        return new GrepTool().execute(args, context);
+      default:
+        return {
+          ok: false,
+          errorCode: 'PERMISSION_DENIED',
+          message: `Device RPC 不允许执行 ${operation}。`,
+        };
+    }
+  }
+
+  private buildDeviceRpcToolContext(
+    request: CatsDeviceRpcMessage,
+    operation: DeviceGrantOperation,
+  ): ToolExecutionContext {
+    const topicType = request.topic_type === 'group' || request.topic_type === 'p2p'
+      ? request.topic_type
+      : 'unknown';
+    const executionScope: ExecutionScope = {
+      source: 'catscompany',
+      sessionKey: String(request.session_key || ''),
+      topicId: String(request.topic_id || ''),
+      topicType,
+      actorUserId: String(request.actor_user_id || ''),
+      agentId: request.agent_id,
+      agentBodyId: request.agent_body_id,
+      permissionsSource: 'device_rpc_forward',
+      identityTrust: 'server_canonical',
+      isTrusted: true,
+    };
+    const now = Date.now();
+    const grant: ScopedDeviceGrant = {
+      kind: 'user_device_grant',
+      source: 'catscompany',
+      grantId: String(request.grant_id || ''),
+      status: 'active',
+      identityTrust: 'server_canonical',
+      identitySource: 'device_rpc_forward',
+      deviceId: String(request.device_id || this.localDeviceGrant?.deviceId || ''),
+      deviceBodyId: request.device_body_id || this.localDeviceGrant?.bodyId,
+      deviceInstallationId: request.device_installation_id || this.localDeviceGrant?.installationId,
+      ownerUserId: executionScope.actorUserId,
+      sessionKey: executionScope.sessionKey,
+      topicId: executionScope.topicId,
+      topicType,
+      actorUserId: executionScope.actorUserId,
+      agentId: executionScope.agentId,
+      agentBodyId: executionScope.agentBodyId,
+      operations: [operation],
+      createdAt: typeof request.created_at === 'number' ? request.created_at : now,
+      expiresAt: typeof request.expires_at === 'number' ? request.expires_at : now + DEVICE_RPC_DEFAULT_TTL_MS,
+    };
+    const deviceSelection: ScopedDeviceSelection = {
+      kind: 'user_device_selection',
+      source: 'catscompany',
+      status: 'selected',
+      selectionSource: 'device_rpc_forward',
+      sessionKey: executionScope.sessionKey,
+      topicId: executionScope.topicId,
+      topicType,
+      actorUserId: executionScope.actorUserId,
+      agentId: executionScope.agentId,
+      identityTrust: 'server_canonical',
+      identitySource: 'device_rpc_forward',
+      selectedDeviceId: grant.deviceId,
+      selectedDeviceBodyId: grant.deviceBodyId,
+      selectedDeviceInstallationId: grant.deviceInstallationId,
+      selectedDeviceOperations: [operation],
+      createdAt: now,
+    };
+    const workingDirectory = process.cwd();
+    return {
+      workingDirectory,
+      workspaceRoot: workingDirectory,
+      conversationHistory: [],
+      sessionId: executionScope.sessionKey,
+      surface: 'catscompany',
+      permissionProfile: 'strict',
+      executionScope,
+      localDeviceGrant: this.localDeviceGrant,
+      deviceGrants: [grant],
+      deviceSelection,
+    };
+  }
+
+  private validateDeviceRpcToolRequest(request: CatsDeviceRpcMessage): { code: string; message: string } | undefined {
+    const targetError = this.validateDeviceRpcTarget(request);
+    if (targetError) return targetError;
+
+    const operation = this.normalizeDeviceRpcReadonlyOperation(request.operation);
+    const toolName = String(request.tool_name || operation || '').trim();
+    if (!operation || !isRemoteReadonlyTool(toolName, operation)) {
+      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, glob, and grep.' };
+    }
+
+    const requiredFields: Array<[keyof CatsDeviceRpcMessage, string]> = [
+      ['grant_id', 'grant_id'],
+      ['session_key', 'session_key'],
+      ['topic_id', 'topic_id'],
+      ['topic_type', 'topic_type'],
+      ['actor_user_id', 'actor_user_id'],
+      ['device_id', 'device_id'],
+    ];
+    for (const [field, label] of requiredFields) {
+      if (!String(request[field] || '').trim()) {
+        return { code: 'invalid_request', message: `Device RPC request missing ${label}.` };
+      }
+    }
+    if (typeof request.expires_at === 'number' && Date.now() > request.expires_at) {
+      return { code: 'request_expired', message: 'Device RPC request has expired.' };
+    }
+    return undefined;
+  }
+
+  private normalizeDeviceRpcReadonlyOperation(value: unknown): DeviceGrantOperation | undefined {
+    const operation = String(value || '').trim();
+    if (operation === 'read_file' || operation === 'glob' || operation === 'grep') {
+      return operation;
+    }
+    return undefined;
+  }
+
+  private extractDeviceRpcToolArgs(payload: unknown): Record<string, unknown> {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
+    const record = payload as Record<string, unknown>;
+    if (record.args && typeof record.args === 'object' && !Array.isArray(record.args)) {
+      return { ...(record.args as Record<string, unknown>) };
+    }
+    return { ...record };
+  }
+
+  private mapDeviceRpcToolErrorCode(code: unknown): ToolErrorCode {
+    const text = String(code || '').toLowerCase();
+    if (text.includes('permission') || text.includes('forbidden') || text.includes('mismatch') || text.includes('unsupported')) {
+      return 'PERMISSION_DENIED';
+    }
+    if (text.includes('timeout') || text.includes('expired')) {
+      return 'EXECUTION_TIMEOUT';
+    }
+    if (text.includes('not_found') || text.includes('offline') || text.includes('unavailable')) {
+      return 'TOOL_EXECUTION_ERROR';
+    }
+    return 'TOOL_EXECUTION_ERROR';
+  }
+
+  private isRetryableDeviceRpcError(code: unknown): boolean {
+    const text = String(code || '').toLowerCase();
+    return text.includes('timeout') || text.includes('offline') || text.includes('unavailable');
+  }
+
+  private validateDeviceRpcTarget(request: CatsDeviceRpcMessage): { code: string; message: string } | undefined {
+    if (!this.localDeviceGrant) {
+      return { code: 'device_not_bound', message: 'Current runtime is not bound to a CatsCo local device.' };
+    }
+    const checks: Array<[unknown, unknown, string]> = [
+      [request.device_id, this.localDeviceGrant.deviceId, 'device_id'],
+      [request.device_installation_id, this.localDeviceGrant.installationId, 'installation_id'],
+      [request.device_body_id, this.localDeviceGrant.bodyId, 'body_id'],
+    ];
+    let matchedAny = false;
+    for (const [requested, local, label] of checks) {
+      const requestedText = String(requested || '').trim();
+      if (!requestedText) continue;
+      const localText = String(local || '').trim();
+      if (!localText || requestedText !== localText) {
+        return { code: 'target_device_mismatch', message: `Device RPC target ${label} does not match this local runtime.` };
+      }
+      matchedAny = true;
+    }
+    return matchedAny
+      ? undefined
+      : { code: 'target_device_mismatch', message: 'Device RPC target does not match this local runtime.' };
   }
 
   // ─── 构建 ChannelCallbacks ──────────────────────
@@ -281,9 +626,7 @@ export class CatsCompanyBot {
     // 过滤 bot 自己发出的消息，防止循环
     if (this.botUid && msg.senderId === this.botUid) return;
 
-    const key = msg.chatType === 'group'
-      ? `cc_group:${msg.topic}`
-      : `cc_user:${msg.senderId}`;
+    const key = msg.envelope.sessionKey;
 
     // ── 拦截：如果当前 session 正在等待回答，按 sender 精确匹配 ──
     const pendingId = this.pendingAnswerBySession.get(key);
@@ -306,13 +649,14 @@ export class CatsCompanyBot {
   }
 
   private async processParsedMessage(msg: ParsedCatsMessage, key: string): Promise<void> {
-    const session = this.sessionManager.getOrCreate(key);
+    const sessionRoute = msg.envelope ? createCatsCoSessionRoute(msg.envelope) : undefined;
+    const session = this.sessionManager.getOrCreate(sessionRoute && sessionRoute.sessionKey === key ? sessionRoute : key);
 
     // 注册持久化回调到 SubAgentManager
     const subAgentManager = SubAgentManager.getInstance();
     subAgentManager.registerPlatformCallbacks(key, {
       injectMessage: async (text: string) => {
-        await this.handleSubAgentFeedback(key, msg.topic, msg.senderId, text);
+        await this.handleSubAgentFeedback(key, msg.topic, msg.senderId, text, msg.executionScope);
       },
       onSubAgentEvent: async (event: any, info?: SubAgentInfo) => {
         await this.handleSubAgentRuntimeEvent(msg.topic, event, info);
@@ -343,6 +687,7 @@ export class CatsCompanyBot {
 
     let userMessage: string | import('../types').ContentBlock[] = msg.text;
     const runtimeFeedback: RuntimeFeedbackInput[] = [];
+    let localFileGrants: ScopedLocalFileGrant[] = [];
 
     const messageFiles = msg.files && msg.files.length > 0 ? msg.files : (msg.file ? [msg.file] : []);
     if (messageFiles.length > 0) {
@@ -362,10 +707,17 @@ export class CatsCompanyBot {
           localPath,
           type: file.type,
           receivedAt: Date.now(),
+          localFileGrant: createCatsCoAttachmentGrant(msg.executionScope, this.localDeviceGrant, {
+            localPath,
+            fileName: file.fileName,
+            type: file.type,
+            workspaceRoot: process.cwd(),
+          }),
         });
       }
 
       if (attachments.length > 0) {
+        localFileGrants = this.collectLocalFileGrants(attachments);
         userMessage = await this.buildMultimodalMessage(msg.text, attachments);
         Logger.info(`[${key}] 原子附件消息（attachments=${attachments.length})`);
       } else {
@@ -374,6 +726,7 @@ export class CatsCompanyBot {
     } else {
       const queuedAttachments = this.consumePendingAttachments(key);
       if (queuedAttachments.length > 0) {
+        localFileGrants = this.collectLocalFileGrants(queuedAttachments);
         userMessage = await this.buildMultimodalMessage(msg.text, queuedAttachments);
         Logger.info(`[${key}] 追加 ${queuedAttachments.length} 个附件`);
       }
@@ -387,6 +740,10 @@ export class CatsCompanyBot {
         topic: msg.topic,
         senderId: msg.senderId,
         seq: msg.seq,
+        executionScope: msg.executionScope,
+        deviceGrants: msg.deviceGrants,
+        deviceSelection: msg.deviceSelection,
+        localFileGrants,
         receivedAt: Date.now(),
         source: 'user',
         runtimeFeedback,
@@ -407,8 +764,15 @@ export class CatsCompanyBot {
     try {
       const result = await session.handleMessage(userMessage, {
         channel,
+        sessionRoute,
+        executionScope: msg.executionScope,
+        localDeviceGrant: this.localDeviceGrant,
+        deviceGrants: msg.deviceGrants,
+        deviceSelection: msg.deviceSelection,
+        deviceRpc: this.buildDeviceRpcTransport(),
+        localFileGrants,
         runtimeFeedback,
-        pendingUserInputProvider: () => this.consumeQueuedUserInput(key),
+        pendingUserInputProvider: () => this.consumeQueuedUserInput(key, msg.executionScope),
         callbacks: this.buildSessionCallbacks(msg.topic),
       });
 
@@ -504,14 +868,33 @@ export class CatsCompanyBot {
     const blockText = blockTextParts.join('\n\n');
     const mergedText = blockText || text;
     if (!mergedText && files.length === 0) return null;
+    const messageText = mergedText
+      || (files.length > 0
+        ? files.map(item => `[${item.type === 'image' ? '图片' : '文件'}] ${item.fileName}`).join('\n')
+        : '');
+    const envelope = createCatsCoMessageEnvelope({
+      topic: ctx.topic,
+      isGroup: ctx.isGroup,
+      senderId: ctx.senderId,
+      seq: ctx.seq,
+      text: messageText,
+      metadata: ctx.metadata,
+      botUid: this.botUid,
+    });
+    const executionScope = createExecutionScope(envelope);
 
     return {
       topic: ctx.topic,
       chatType,
       senderId: ctx.senderId,
       seq: ctx.seq ?? 0,
-      text: mergedText || (files.length > 0 ? files.map(item => `[${item.type === 'image' ? '图片' : '文件'}] ${item.fileName}`).join('\n') : ''),
+      text: messageText,
       rawContent: ctx.content,
+      metadata: ctx.metadata,
+      envelope,
+      executionScope,
+      deviceGrants: extractCatsCoDeviceGrants(ctx.metadata, executionScope),
+      deviceSelection: extractCatsCoDeviceSelection(ctx.metadata, executionScope),
       file: files[0],
       files,
     };
@@ -525,11 +908,12 @@ export class CatsCompanyBot {
     topic: string,
     senderId: string,
     text: string,
+    executionScope?: ParsedCatsMessage['executionScope'],
   ): Promise<void> {
     const session = this.sessionManager.getOrCreate(sessionKey);
 
     if (session.isBusy()) {
-      this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text);
+      this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope);
       Logger.info(`[${sessionKey}] 主会话忙，子智能体反馈已入队`);
       return;
     }
@@ -552,9 +936,12 @@ export class CatsCompanyBot {
         channel,
         callbacks: this.buildSessionCallbacks(topic),
         source: 'subagent_result',
+        executionScope,
+        localDeviceGrant: this.localDeviceGrant,
+        deviceRpc: this.buildDeviceRpcTransport(),
       });
       if (result.text === BUSY_MESSAGE) {
-        this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text);
+        this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope);
         Logger.info(`[${sessionKey}] 主会话竞态忙碌，子智能体反馈已入队`);
         return;
       }
@@ -579,13 +966,24 @@ export class CatsCompanyBot {
     }
   }
 
-  private enqueueSubAgentFeedback(sessionKey: string, topic: string, senderId: string, text: string): void {
+  private enqueueSubAgentFeedback(
+    sessionKey: string,
+    topic: string,
+    senderId: string,
+    text: string,
+    executionScope?: ParsedCatsMessage['executionScope'],
+  ): void {
     const queue = this.messageQueue.get(sessionKey) ?? [];
     queue.push({
       userMessage: text,
       topic,
       senderId,
       seq: 0,
+      executionScope: executionScope ?? createExecutionScope(createCatsCoMessageEnvelope({
+        topic,
+        senderId,
+        text,
+      })),
       receivedAt: Date.now(),
       source: 'subagent_feedback',
     });
@@ -679,9 +1077,16 @@ export class CatsCompanyBot {
   }
 
   private handleCancelMessage(ctx: MessageContext): void {
-    const key = ctx.isGroup
-      ? `cc_group:${ctx.topic}`
-      : `cc_user:${ctx.senderId}`;
+    const envelope = createCatsCoMessageEnvelope({
+      topic: ctx.topic,
+      isGroup: ctx.isGroup,
+      senderId: ctx.senderId,
+      seq: ctx.seq,
+      text: '',
+      metadata: ctx.metadata,
+      botUid: this.botUid,
+    });
+    const key = envelope.sessionKey;
     const session = (this.sessionManager as any).get?.(key) ?? null;
     if (!session) {
       Logger.info(`[${key}] 收到取消事件，但会话不存在`);
@@ -736,11 +1141,21 @@ export class CatsCompanyBot {
           channel,
           callbacks: this.buildSessionCallbacks(msg.topic),
           source: 'subagent_result',
+          executionScope: msg.executionScope,
+          localDeviceGrant: this.localDeviceGrant,
+          deviceSelection: msg.deviceSelection,
+          deviceRpc: this.buildDeviceRpcTransport(),
         })
         : await session.handleMessage(msg.userMessage, {
           channel,
+          executionScope: msg.executionScope,
+          localDeviceGrant: this.localDeviceGrant,
+          deviceGrants: msg.deviceGrants,
+          deviceSelection: msg.deviceSelection,
+          deviceRpc: this.buildDeviceRpcTransport(),
           runtimeFeedback: msg.runtimeFeedback,
-          pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey),
+          localFileGrants: msg.localFileGrants,
+          pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey, msg.executionScope),
           callbacks: this.buildSessionCallbacks(msg.topic),
         });
       if (result.text.startsWith('处理消息时出错:')) {
@@ -764,14 +1179,24 @@ export class CatsCompanyBot {
     await this.drainMessageQueue(sessionKey);
   }
 
-  private consumeQueuedUserInput(sessionKey: string): string | ContentBlock[] | null {
+  private consumeQueuedUserInput(
+    sessionKey: string,
+    currentScope?: ParsedCatsMessage['executionScope'],
+  ): string | ContentBlock[] | PendingUserInput | null {
     const queue = this.messageQueue.get(sessionKey);
     if (!queue || queue.length === 0) return null;
 
-    const userMessages = queue.filter(item => item.source !== 'subagent_feedback');
-    const runtimeMessages = queue.filter(item => item.source === 'subagent_feedback');
-    if (runtimeMessages.length > 0) {
-      this.messageQueue.set(sessionKey, runtimeMessages);
+    const userMessages: QueuedMessage[] = [];
+    let firstRemainingIndex = 0;
+    for (; firstRemainingIndex < queue.length; firstRemainingIndex++) {
+      const item = queue[firstRemainingIndex];
+      if (item.source === 'subagent_feedback') break;
+      if (!this.canMergeQueuedMessage(currentScope, item.executionScope)) break;
+      userMessages.push(item);
+    }
+    const remainingMessages = queue.slice(firstRemainingIndex);
+    if (remainingMessages.length > 0) {
+      this.messageQueue.set(sessionKey, remainingMessages);
     } else {
       this.messageQueue.delete(sessionKey);
     }
@@ -783,7 +1208,31 @@ export class CatsCompanyBot {
     });
 
     Logger.info(`[${sessionKey}] 合并 ${messages.length} 条处理期间新到的用户消息`);
-    return this.mergeQueuedMessages(messages);
+    const content = this.mergeQueuedMessages(messages);
+    const localFileGrants = messages.flatMap(item => item.localFileGrants || []);
+    const deviceGrants = messages.flatMap(item => item.deviceGrants || []);
+    const deviceSelection = [...messages].reverse().find(item => item.deviceSelection)?.deviceSelection;
+    if (localFileGrants.length === 0 && deviceGrants.length === 0 && !deviceSelection) return content;
+    return {
+      content,
+      localFileGrants: localFileGrants.length > 0 ? localFileGrants : undefined,
+      deviceGrants: deviceGrants.length > 0 ? deviceGrants : undefined,
+      deviceSelection,
+    };
+  }
+
+  private canMergeQueuedMessage(
+    currentScope: ParsedCatsMessage['executionScope'] | undefined,
+    queuedScope: ParsedCatsMessage['executionScope'] | undefined,
+  ): boolean {
+    if (!currentScope || !queuedScope) return true;
+    return currentScope.sessionKey === queuedScope.sessionKey
+      && currentScope.topicId === queuedScope.topicId
+      && currentScope.topicType === queuedScope.topicType
+      && currentScope.actorUserId === queuedScope.actorUserId
+      && currentScope.agentId === queuedScope.agentId
+      && currentScope.agentBodyId === queuedScope.agentBodyId
+      && currentScope.identityTrust === queuedScope.identityTrust;
   }
 
   private mergeQueuedMessages(messages: QueuedMessage[]): string | ContentBlock[] {
@@ -824,6 +1273,7 @@ export class CatsCompanyBot {
    * 停止机器人
    */
   async destroy(): Promise<void> {
+    this.stopDeviceRegistrationRefresh();
     this.bot.disconnect();
     await this.sessionManager.destroy();
     for (const pendingId of Array.from(this.pendingAnswers.keys())) {
@@ -849,69 +1299,85 @@ export class CatsCompanyBot {
     return queue;
   }
 
+  private collectLocalFileGrants(attachments: PendingAttachment[]): ScopedLocalFileGrant[] {
+    return attachments
+      .map(attachment => attachment.localFileGrant)
+      .filter((grant): grant is ScopedLocalFileGrant => Boolean(grant));
+  }
+
   private async buildMultimodalMessage(text: string, attachments: PendingAttachment[]): Promise<import('../types').ContentBlock[]> {
     const { createImageBlock } = require('../utils/image-utils');
     const blocks: import('../types').ContentBlock[] = [];
     const config = ConfigManager.getConfigReadonly();
     const primaryModelCanSeeImages = isPrimaryModelVisionCapable(config);
-    const currentImagePaths: string[] = [];
-    const currentFilePaths: string[] = [];
+    const currentImageRefs: string[] = [];
 
     if (text) {
       blocks.push({ type: 'text', text });
     }
 
     for (const att of attachments) {
+      const attachmentReference = this.formatAttachmentReferenceForModel(att);
       if (att.type === 'image') {
         if (!primaryModelCanSeeImages) {
-          currentImagePaths.push(`[Current image] ${att.fileName}\n[Current image path] ${att.localPath}`);
+          currentImageRefs.push(attachmentReference);
           continue;
         }
 
+        blocks.push({ type: 'text', text: attachmentReference });
         const imgBlock = await createImageBlock(att.localPath);
         if (imgBlock) {
-          blocks.push(imgBlock);
+          blocks.push({
+            ...imgBlock,
+            filePath: att.localFileGrant?.attachmentRef || `[CatsCo attachment: ${att.fileName}]`,
+          } as any);
           Logger.info(`[多模态] 已添加图片块: ${att.fileName}, base64长度: ${(imgBlock.source as any)?.data?.length || 0}`);
         } else {
           Logger.warning(`[多模态] 图片块创建失败: ${att.fileName} at ${att.localPath}`);
         }
       } else {
-        blocks.push({ type: 'text', text: `[文件] ${att.fileName}\n[路径] ${att.localPath}` });
+        blocks.push({ type: 'text', text: attachmentReference });
       }
     }
 
     Logger.info(`[多模态] 构建完成，共 ${blocks.length} 个块: ${blocks.map(b => b.type).join(', ')}`);
-    if (currentImagePaths.length > 0) {
+    if (currentImageRefs.length > 0) {
       blocks.push({
         type: 'text',
         text: [
           '[Current user turn contains image attachments]',
           'The primary model cannot directly inspect image pixels in this runtime.',
-          'If the user request depends on image content, call read_file on the current image path below.',
-          'Use only the current image path(s) listed here. Do not use old tmp/downloads paths, old image URLs, old filenames, or prior image descriptions.',
-          currentImagePaths.join('\n\n'),
+          'If the user request depends on image content, call read_file with file_path set to the current authorized attachment reference below.',
+          'Use only the current authorized attachment reference(s) listed here. Do not use old tmp/downloads paths, old image URLs, old filenames, or prior image descriptions.',
+          currentImageRefs.join('\n\n'),
         ].join('\n'),
       });
-      Logger.info(`[CatsCo] Primary model is text-only; exposed ${currentImagePaths.length} current image path(s) for read_file`);
-    }
-
-    if (currentFilePaths.length > 0) {
-      blocks.push({
-        type: 'text',
-        text: [
-          '[Current user turn contains file attachments]',
-          'If file content is needed, use only the current file path(s) below. Do not reuse historical attachment paths.',
-          currentFilePaths.join('\n\n'),
-        ].join('\n'),
-      });
+      Logger.info(`[CatsCo] Primary model is text-only; exposed ${currentImageRefs.length} current attachment reference(s) for read_file`);
     }
 
     return blocks;
   }
 
+  private formatAttachmentReferenceForModel(attachment: PendingAttachment): string {
+    const label = attachment.type === 'image' ? '图片' : '文件';
+    const attachmentRef = attachment.localFileGrant?.attachmentRef;
+    if (!attachmentRef) {
+      return [
+        `[${label}] ${attachment.fileName}`,
+        '[附件授权状态] 当前消息没有生成可读取的本地附件引用。',
+      ].join('\n');
+    }
+
+    return [
+      `[${label}] ${attachment.fileName}`,
+      `[授权附件引用] ${attachmentRef}`,
+      '[使用方式] 如需读取或转发该附件，将 read_file/send_file 的 file_path 设置为这个引用。',
+    ].join('\n');
+  }
+
   private formatAttachmentContext(attachments: PendingAttachment[]): string {
     const lines = attachments.map((attachment, index) => {
-      return `[附件${index + 1}] ${attachment.fileName} (${attachment.type})\n[附件路径] ${attachment.localPath}`;
+      return `[附件${index + 1}]\n${this.formatAttachmentReferenceForModel(attachment)}`;
     });
     return `[用户已上传附件]\n${lines.join('\n')}`;
   }

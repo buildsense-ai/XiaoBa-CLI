@@ -1,3 +1,5 @@
+import type { ExecutionScope, MessageEnvelope, ScopedDeviceGrant, ScopedDeviceSelection } from '../types/session-identity';
+
 /**
  * CatsCo agent 连接配置
  */
@@ -10,6 +12,8 @@ export interface CatsCompanyConfig {
   bodyId?: string;
   /** 当前安装/设备 ID，默认与 bodyId 相同 */
   installationId?: string;
+  /** 用户可见设备名，用于 Dashboard 展示和服务端设备选择 */
+  deviceName?: string;
   /** HTTP 基础地址（用于文件上传），默认从 serverUrl 推导 */
   httpBaseUrl?: string;
   /** 会话过期时间（毫秒），默认 30 分钟 */
@@ -32,6 +36,16 @@ export interface ParsedCatsMessage {
   text: string;
   /** 原始 content（可能是 string 或 RichContent） */
   rawContent: unknown;
+  /** 原始 metadata，由 CatsCo 服务端透传/注入 */
+  metadata?: Record<string, unknown>;
+  /** 标准化后的消息信封 */
+  envelope: MessageEnvelope;
+  /** 当前 turn 的执行身份 */
+  executionScope: ExecutionScope;
+  /** 服务端签发的当前 turn 用户设备授权 */
+  deviceGrants?: ScopedDeviceGrant[];
+  /** 服务端为当前 turn 选择的用户设备，或要求先选择设备 */
+  deviceSelection?: ScopedDeviceSelection;
   /** 文件附件信息（rich content file/image 时存在） */
   file?: CatsFileInfo;
   /** 同一条消息里的全部附件（content_blocks 或 rich content） */

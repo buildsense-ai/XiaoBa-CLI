@@ -1,6 +1,20 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { CatsCompanyBot } from '../src/catscompany';
+
+function canonicalMetadata(actorUserId: string, topicId: string, agentId = 'usr43', bodyId = 'body-main') {
+  return {
+    catsco_identity: {
+      actor: { user_id: actorUserId },
+      agent: { agent_id: agentId, body_id: bodyId },
+      topic: { topic_id: topicId, type: topicId.startsWith('grp_') ? 'group' : 'p2p', channel_seq: 12 },
+      permissions: { source: 'server_canonical_message' },
+    },
+  };
+}
 
 function createProcessHarness() {
   const bot = Object.create(CatsCompanyBot.prototype) as any;
@@ -60,13 +74,14 @@ function createProcessHarness() {
   bot.pendingAnswerBySession = new Map();
   bot.pendingAttachments = new Map();
   bot.messageQueue = new Map();
+  bot.botUid = 'usr43';
   bot.buildMultimodalMessage = async (text: string, attachments: any[]) => {
     multimodalCalls.push({ text, attachments });
     return [
       { type: 'text', text },
       ...attachments.map((attachment) => ({
         type: 'text',
-        text: `[${attachment.type}] ${attachment.fileName} -> ${attachment.localPath}`,
+        text: `[${attachment.type}] ${attachment.fileName} -> ${attachment.localFileGrant?.attachmentRef || '(no authorized attachment reference)'}`,
       })),
     ];
   };
@@ -149,6 +164,29 @@ describe('CatsCo content blocks', () => {
     assert.strictEqual(parsed.files[0].fileName, 'crack.png');
   });
 
+  test('builds CatsCo attachment context with opaque references instead of local paths', async () => {
+    const bot = Object.create(CatsCompanyBot.prototype);
+    const localPath = 'C:\\tmp\\catsco-secret\\tmp\\downloads\\report.pdf';
+    const attachment = {
+      fileName: 'report.pdf',
+      localPath,
+      type: 'file',
+      receivedAt: Date.now(),
+      localFileGrant: {
+        attachmentRef: 'catsco_attachment:visible-ref',
+      },
+    };
+
+    const blocks = await (bot as any).buildMultimodalMessage('请读取这个文件', [attachment]);
+    const prompt = (bot as any).buildAttachmentOnlyPrompt([attachment]);
+    const modelVisible = JSON.stringify(blocks) + '\n' + prompt;
+
+    assert.match(modelVisible, /catsco_attachment:visible-ref/);
+    assert.match(modelVisible, /授权附件引用/);
+    assert.doesNotMatch(modelVisible, /catsco-secret/);
+    assert.doesNotMatch(modelVisible, new RegExp(escapeRegExp(localPath)));
+  });
+
   test('processes multiple attachments as one user turn', async () => {
     const { bot, downloads, multimodalCalls, handledTurns } = createProcessHarness();
 
@@ -189,9 +227,9 @@ describe('CatsCo content blocks', () => {
     assert.strictEqual(handledTurns.length, 1);
     assert.deepStrictEqual(handledTurns[0].userMessage, [
       { type: 'text', text: '一起看这些附件' },
-      { type: 'text', text: '[image] a.png -> C:\\tmp\\catsco-test\\a.png' },
-      { type: 'text', text: '[image] c.png -> C:\\tmp\\catsco-test\\c.png' },
-      { type: 'text', text: '[file] b.pdf -> C:\\tmp\\catsco-test\\b.pdf' },
+      { type: 'text', text: '[image] a.png -> (no authorized attachment reference)' },
+      { type: 'text', text: '[image] c.png -> (no authorized attachment reference)' },
+      { type: 'text', text: '[file] b.pdf -> (no authorized attachment reference)' },
     ]);
     assert.deepStrictEqual(handledTurns[0].options.runtimeFeedback, []);
   });
@@ -233,9 +271,176 @@ describe('CatsCo content blocks', () => {
     assert.strictEqual(handledTurns.length, 1);
     assert.deepStrictEqual(handledTurns[0].userMessage, [
       { type: 'text', text: '非 Dashboard 入口一起看这些附件' },
-      { type: 'text', text: '[image] a.png -> C:\\tmp\\catsco-test\\a.png' },
-      { type: 'text', text: '[file] b.pdf -> C:\\tmp\\catsco-test\\b.pdf' },
+      { type: 'text', text: '[image] a.png -> (no authorized attachment reference)' },
+      { type: 'text', text: '[file] b.pdf -> (no authorized attachment reference)' },
     ]);
+  });
+
+  test('passes scoped local file grants from canonical CatsCompany attachments into the session turn', async () => {
+    const originalCwd = process.cwd();
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-content-grants-'));
+
+    try {
+      process.chdir(testRoot);
+      const { bot, handledTurns } = createProcessHarness();
+      bot.localDeviceGrant = {
+        kind: 'catscompany_body',
+        source: 'catscompany',
+        bodyId: 'body-main',
+        installationId: 'install-main',
+        deviceId: 'install-main',
+        createdAt: Date.now(),
+      };
+      bot.sender.downloadFile = async (_url: string, fileName: string) => {
+        const localPath = path.join(testRoot, 'tmp', 'downloads', fileName);
+        fs.mkdirSync(path.dirname(localPath), { recursive: true });
+        fs.writeFileSync(localPath, 'hello');
+        return localPath;
+      };
+
+      await (bot as any).onMessage({
+        topic: 'p2p_1_43',
+        senderId: 'usr1',
+        text: '[附件] report.pdf',
+        content: '[附件] report.pdf',
+        metadata: canonicalMetadata('usr1', 'p2p_1_43'),
+        content_blocks: [
+          { type: 'text', text: '请读取这个文件' },
+          { type: 'file', payload: { url: '/uploads/files/report.pdf', name: 'report.pdf', size: 34 } },
+        ],
+        isGroup: false,
+        seq: 12,
+      });
+
+      assert.strictEqual(handledTurns.length, 1);
+      const grants = handledTurns[0].options.localFileGrants;
+      assert.strictEqual(grants.length, 1);
+      assert.strictEqual(grants[0].sessionKey, 'session:v2:catscompany:p2p:p2p_1_43:agent:usr43');
+      assert.strictEqual(grants[0].topicId, 'p2p_1_43');
+      assert.strictEqual(grants[0].actorUserId, 'usr1');
+      assert.strictEqual(grants[0].agentBodyId, 'body-main');
+      assert.strictEqual(grants[0].deviceBodyId, 'body-main');
+      assert.strictEqual(grants[0].fileType, 'file');
+      assert.strictEqual(grants[0].fileName, 'report.pdf');
+      const attachmentRef = grants[0].attachmentRef;
+      assert.ok(attachmentRef);
+      assert.match(attachmentRef, /^catsco_attachment:/);
+      assert.strictEqual(grants[0].filePath, fs.realpathSync(path.join(testRoot, 'tmp', 'downloads', 'report.pdf')));
+      const renderedUserMessage = (handledTurns[0].userMessage as any[])
+        .map(block => block.text || '')
+        .join('\n');
+      assert.match(renderedUserMessage, new RegExp(attachmentRef));
+      assert.doesNotMatch(renderedUserMessage, /tmp[\\/]+downloads/);
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(testRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('does not create local file grants for legacy CatsCompany attachments', async () => {
+    const originalCwd = process.cwd();
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-content-grants-'));
+
+    try {
+      process.chdir(testRoot);
+      const { bot, handledTurns } = createProcessHarness();
+      bot.localDeviceGrant = {
+        kind: 'catscompany_body',
+        source: 'catscompany',
+        bodyId: 'body-main',
+        createdAt: Date.now(),
+      };
+      bot.sender.downloadFile = async (_url: string, fileName: string) => {
+        const localPath = path.join(testRoot, 'tmp', 'downloads', fileName);
+        fs.mkdirSync(path.dirname(localPath), { recursive: true });
+        fs.writeFileSync(localPath, 'hello');
+        return localPath;
+      };
+
+      await (bot as any).onMessage({
+        topic: 'p2p_1_43',
+        senderId: 'usr1',
+        text: '[附件] report.pdf',
+        content: '[附件] report.pdf',
+        content_blocks: [
+          { type: 'text', text: '请读取这个文件' },
+          { type: 'file', payload: { url: '/uploads/files/report.pdf', name: 'report.pdf', size: 34 } },
+        ],
+        isGroup: false,
+        seq: 12,
+      });
+
+      assert.strictEqual(handledTurns.length, 1);
+      assert.deepStrictEqual(handledTurns[0].options.localFileGrants, []);
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(testRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('builds attachment messages with opaque references instead of local paths', async () => {
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    const localPath = 'C:\\tmp\\catsco-test\\secret-report.pdf';
+
+    const blocks = await bot.buildMultimodalMessage('请读取这个文件', [{
+      fileName: 'secret-report.pdf',
+      localPath,
+      type: 'file',
+      receivedAt: Date.now(),
+      localFileGrant: {
+        attachmentRef: 'catsco_attachment:opaque-ref',
+      },
+    }]);
+
+    const text = blocks
+      .filter((block: any) => block.type === 'text')
+      .map((block: any) => block.text)
+      .join('\n');
+
+    assert.match(text, /请读取这个文件/);
+    assert.match(text, /catsco_attachment:opaque-ref/);
+    assert.doesNotMatch(text, /secret-report\.pdf -> C:/);
+    assert.doesNotMatch(text, /C:\\tmp\\catsco-test/);
+    assert.doesNotMatch(text, /授权附件路径/);
+  });
+
+  test('sanitizes CatsCo image block metadata to use opaque references', async () => {
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    const originalModel = process.env.GAUZ_LLM_MODEL;
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-image-ref-'));
+    const localPath = path.join(testRoot, 'tmp', 'downloads', 'secret-image.png');
+
+    try {
+      process.env.GAUZ_LLM_MODEL = 'gpt-4o';
+      fs.mkdirSync(path.dirname(localPath), { recursive: true });
+      fs.writeFileSync(
+        localPath,
+        Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=', 'base64'),
+      );
+
+      const blocks = await bot.buildMultimodalMessage('看看这张图', [{
+        fileName: 'secret-image.png',
+        localPath,
+        type: 'image',
+        receivedAt: Date.now(),
+        localFileGrant: {
+          attachmentRef: 'catsco_attachment:image-ref',
+        },
+      }]);
+
+      const imageBlock = blocks.find((block: any) => block.type === 'image') as any;
+      assert.ok(imageBlock);
+      assert.strictEqual(imageBlock.filePath, 'catsco_attachment:image-ref');
+      assert.doesNotMatch(JSON.stringify(blocks), new RegExp(escapeRegExp(localPath)));
+      assert.doesNotMatch(JSON.stringify(blocks), new RegExp(escapeRegExp(testRoot)));
+    } finally {
+      if (originalModel === undefined) {
+        delete process.env.GAUZ_LLM_MODEL;
+      } else {
+        process.env.GAUZ_LLM_MODEL = originalModel;
+      }
+      fs.rmSync(testRoot, { recursive: true, force: true });
+    }
   });
 
   test('plain text messages are processed immediately without attachment coalesce wait', async () => {
@@ -262,7 +467,7 @@ describe('CatsCo content blocks', () => {
 
   test('queued CatsCompany turns keep working callbacks for compaction status', async () => {
     const { bot, handledTurns, sentThinking } = createProcessHarness();
-    bot.messageQueue.set('cc_user:usr1', [{
+    bot.messageQueue.set('session:v2:catscompany:p2p:p2p_1_2:agent:usr43', [{
       userMessage: '排队消息也应该显示压缩状态',
       topic: 'p2p_1_2',
       senderId: 'usr1',
@@ -272,7 +477,7 @@ describe('CatsCo content blocks', () => {
       runtimeFeedback: [],
     }]);
 
-    await (bot as any).drainMessageQueue('cc_user:usr1');
+    await (bot as any).drainMessageQueue('session:v2:catscompany:p2p:p2p_1_2:agent:usr43');
 
     assert.strictEqual(handledTurns.length, 1);
     assert.strictEqual(handledTurns[0].userMessage, '排队消息也应该显示压缩状态');
@@ -320,9 +525,10 @@ describe('CatsCo content blocks', () => {
 
   test('interrupts active session on CatsCompany stream cancel event', () => {
     const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.botUid = 'usr43';
     let interrupted = 0;
     bot.sessionManager = {
-      get: (key: string) => key === 'cc_user:usr1'
+      get: (key: string) => key === 'session:v2:catscompany:p2p:p2p_1_2:agent:usr43'
         ? {
           requestInterrupt: () => {
             interrupted += 1;
@@ -424,7 +630,7 @@ describe('CatsCo content blocks', () => {
     };
 
     await (bot as any).handleSubAgentFeedback(
-      'cc_user:usr38',
+      'session:v2:catscompany:p2p:p2p_38_110:agent:usr43',
       'p2p_38_110',
       'usr38',
       '[子agent1 已完成]\n结果摘要：审查完成',
@@ -452,7 +658,7 @@ describe('CatsCo content blocks', () => {
       text: '处理消息时出错: 子 agent 结果处理失败',
       };
     };
-    bot.messageQueue.set('cc_user:usr38', [{
+    bot.messageQueue.set('session:v2:catscompany:p2p:p2p_38_110:agent:usr43', [{
       userMessage: '[子agent1 已完成]\n结果摘要：审查完成',
       topic: 'p2p_38_110',
       senderId: 'usr38',
@@ -461,7 +667,7 @@ describe('CatsCo content blocks', () => {
       source: 'subagent_feedback',
     }]);
 
-    await (bot as any).drainMessageQueue('cc_user:usr38');
+    await (bot as any).drainMessageQueue('session:v2:catscompany:p2p:p2p_38_110:agent:usr43');
 
     assert.strictEqual(runtimeObservations.length, 1);
     assert.strictEqual(runtimeObservations[0].options.source, 'subagent_result');
@@ -477,3 +683,7 @@ describe('CatsCo content blocks', () => {
     ]);
   });
 });
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

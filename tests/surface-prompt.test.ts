@@ -23,7 +23,7 @@ describe('surface prompt', () => {
     '- tmp/downloads/... is the local cache for files/images received from chat. It is not the user\'s general local file library.',
     '- If the user asks for a new/local file or says they have not sent it before, do not reuse files from tmp/downloads/... or old conversation paths.',
     '- If the user did not provide an exact path, first ask for the location or search likely local folders such as Desktop, Downloads, Documents, Pictures, or an explicit path the user mentioned.',
-    '- Only reuse tmp/downloads/... when the user clearly asks to resend/open an earlier chat attachment.',
+    '- Use current catsco_attachment:<id> references for received attachments; local tmp/downloads paths are backend-only and should not be guessed or reused.',
   ].join('\n');
 
   test('resolves session surface from current session key conventions', () => {
@@ -39,6 +39,14 @@ describe('surface prompt', () => {
     assert.equal(resolveSessionSurface('user:shared-prefix', 'weixin'), 'weixin');
     assert.equal(resolveSessionSurface('user:shared-prefix', 'feishu'), 'feishu');
     assert.equal(resolveSessionSurface('cc_user:shared-prefix', 'catscompany'), 'catscompany');
+  });
+
+  test('resolves V2 session keys without relying on sessionType overrides', () => {
+    assert.equal(resolveSessionSurface('session:v2:feishu:p2p:ou_1'), 'feishu');
+    assert.equal(resolveSessionSurface('session:v2:weixin:p2p:ou_1'), 'weixin');
+    assert.equal(resolveSessionSurface('session:v2:catscompany:group:grp_1:agent:usr43'), 'catscompany');
+    assert.match(composeSurfacePrompt('session:v2:feishu:group:oc_1') || '', /\[surface:feishu:group\]/);
+    assert.match(composeSurfacePrompt('session:v2:feishu:p2p:ou_1') || '', /\[surface:feishu:private\]/);
   });
 
   test('composes current Feishu private and group surface prompts', () => {

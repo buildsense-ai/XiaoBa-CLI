@@ -1,4 +1,5 @@
 import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
+import type { ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalFileGrant } from '../types/session-identity';
 import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { StreamCallbacks } from '../providers/provider';
@@ -20,6 +21,10 @@ import {
   SUBAGENT_TOOL_NAME,
   TRANSIENT_RUNNER_HINT_PREFIX,
 } from './runner-orchestration-policy';
+import {
+  TRANSIENT_RUNTIME_CONTEXT_PREFIX,
+  buildRuntimeContextMessage,
+} from './runtime-context-builder';
 import { calculateSummaryBudgetTokens, resolveModelPromptBudgetTokens } from '../utils/model-context-window';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -83,12 +88,27 @@ export interface RunResult {
   newMessages: Message[];
 }
 
+export interface PendingUserInput {
+  content: string | ContentBlock[];
+  deviceGrants?: ScopedDeviceGrant[];
+  deviceSelection?: ScopedDeviceSelection;
+  localFileGrants?: ScopedLocalFileGrant[];
+}
+
 export type PendingUserInputProvider = () =>
   | string
   | ContentBlock[]
+  | PendingUserInput
   | null
   | undefined
-  | Promise<string | ContentBlock[] | null | undefined>;
+  | Promise<string | ContentBlock[] | PendingUserInput | null | undefined>;
+
+function isPendingUserInput(value: string | ContentBlock[] | PendingUserInput): value is PendingUserInput {
+  return Boolean(value)
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && 'content' in value;
+}
 
 interface ToolExecutionRecord {
   toolCall: ToolCall;
@@ -499,19 +519,81 @@ export class ConversationRunner {
     const pending = await this.pendingUserInputProvider();
     if (!pending) return false;
 
-    const userMessage: Message = { role: 'user', content: pending };
+    const content = isPendingUserInput(pending) ? pending.content : pending;
+    let shouldRefreshRuntimeContext = false;
+    if (isPendingUserInput(pending) && pending.deviceGrants?.length) {
+      this.toolExecutionContext = {
+        ...(this.toolExecutionContext || {}),
+        deviceGrants: [
+          ...(this.toolExecutionContext?.deviceGrants || []),
+          ...pending.deviceGrants,
+        ],
+      };
+      shouldRefreshRuntimeContext = true;
+    }
+    if (isPendingUserInput(pending) && pending.deviceSelection) {
+      this.toolExecutionContext = {
+        ...(this.toolExecutionContext || {}),
+        deviceSelection: pending.deviceSelection,
+      };
+      shouldRefreshRuntimeContext = true;
+    }
+    if (isPendingUserInput(pending) && pending.localFileGrants?.length) {
+      this.toolExecutionContext = {
+        ...(this.toolExecutionContext || {}),
+        localFileGrants: [
+          ...(this.toolExecutionContext?.localFileGrants || []),
+          ...pending.localFileGrants,
+        ],
+      };
+      shouldRefreshRuntimeContext = true;
+    }
+    if (shouldRefreshRuntimeContext) {
+      this.refreshRuntimeContextForPendingInput(messages);
+    }
+
+    const userMessage: Message = { role: 'user', content };
     messages.push(userMessage);
     newMessages.push(userMessage);
 
-    const preview = typeof pending === 'string'
-      ? pending
-      : pending.map(block => block.type === 'text' ? block.text : '[image]').join('');
+    const preview = typeof content === 'string'
+      ? content
+      : content.map(block => block.type === 'text' ? block.text : '[image]').join('');
     Logger.info(
       `[${this.sessionLabel}Turn ${turns}] 已合并处理期间新到的用户消息: ` +
       ConversationRunner.truncateForLog(preview, 240)
     );
 
     return true;
+  }
+
+  private refreshRuntimeContextForPendingInput(messages: Message[]): void {
+    const sessionKey = this.toolExecutionContext?.sessionId
+      || this.toolExecutionContext?.executionScope?.sessionKey;
+    if (!sessionKey) return;
+
+    const runtimeContext = buildRuntimeContextMessage({
+      sessionKey,
+      sessionType: this.toolExecutionContext?.surface,
+      executionScope: this.toolExecutionContext?.executionScope,
+      localDeviceGrant: this.toolExecutionContext?.localDeviceGrant,
+      deviceGrants: this.toolExecutionContext?.deviceGrants,
+      deviceSelection: this.toolExecutionContext?.deviceSelection,
+      localFileGrants: this.toolExecutionContext?.localFileGrants,
+    });
+    if (!runtimeContext) return;
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (
+        message.role === 'system'
+        && typeof message.content === 'string'
+        && message.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX)
+      ) {
+        messages.splice(i, 1);
+      }
+    }
+    messages.push(runtimeContext);
   }
 
   /**

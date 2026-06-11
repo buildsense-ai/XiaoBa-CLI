@@ -1,4 +1,5 @@
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
+import { resolveOutboundTarget } from './outbound-gateway';
 
 /**
  * send_text 工具
@@ -24,16 +25,23 @@ export class SendTextTool implements Tool {
   async execute(args: { text: string }, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { text } = args;
 
-    if (!context.channel) {
-      throw new Error('send_text 需要 channel 上下文');
-    }
-
     if (!text || !text.trim()) {
       throw new Error('text 不能为空');
     }
 
-    const chatId = context.channel.chatId;
-    await context.channel.reply(chatId, text.trim());
+    const target = resolveOutboundTarget(context, {
+      operation: 'send_text',
+      missingChannelMessage: 'send_text 需要 channel 上下文',
+    });
+    if (!target.ok) {
+      return {
+        ok: false,
+        errorCode: target.errorCode,
+        message: target.message,
+      };
+    }
+
+    await context.channel!.reply(target.chatId, text.trim());
 
     return { ok: true, content: '已发送' };
   }

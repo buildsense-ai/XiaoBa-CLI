@@ -1,10 +1,18 @@
 import { Message } from '../types';
+import type {
+  ExecutionScope,
+  ScopedDeviceGrant,
+  ScopedDeviceSelection,
+  ScopedLocalDeviceGrant,
+  ScopedLocalFileGrant,
+  SessionRoute,
+} from '../types/session-identity';
 import * as fs from 'fs';
 import * as path from 'path';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
-import { ChannelCallbacks } from '../types/tool';
+import { ChannelCallbacks, DeviceRpcTransport } from '../types/tool';
 import {
   SessionSkillRuntime,
   SkillReloadHandler,
@@ -27,6 +35,7 @@ import { PlanRuntime } from './plan-runtime';
 import { SubAgentManager } from './sub-agent-manager';
 import type { PendingUserInputProvider } from './conversation-runner';
 import { resolveModelContextWindow } from '../utils/model-context-window';
+import { parseSessionKeyV2 } from './session-router';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
 
@@ -69,6 +78,20 @@ export interface HandleMessageOptions {
   callbacks?: SessionCallbacks;
   /** 平台通道回调，注入到 ToolExecutionContext 供工具使用 */
   channel?: ChannelCallbacks;
+  /** 当前 turn 的会话路由快照，用于模型可见的结构化运行上下文 */
+  sessionRoute?: SessionRoute;
+  /** 当前 turn 的可信执行身份 */
+  executionScope?: ExecutionScope;
+  /** 当前本机运行体授权，例如 CatsCo body/device 绑定。 */
+  localDeviceGrant?: ScopedLocalDeviceGrant;
+  /** 当前 turn 已授权的用户设备资源。 */
+  deviceGrants?: ScopedDeviceGrant[];
+  /** 服务端为当前 turn 选定的用户设备。 */
+  deviceSelection?: ScopedDeviceSelection;
+  /** 当前 turn 可用的远程设备 RPC 通道。 */
+  deviceRpc?: DeviceRpcTransport;
+  /** 当前 turn 已授权的本地文件资源。 */
+  localFileGrants?: ScopedLocalFileGrant[];
   /** 当前 turn 专属、给 agent 可见的运行时反馈 */
   runtimeFeedback?: RuntimeFeedbackInput[];
   /** Pulls user messages that arrived while this session was busy. */
@@ -136,6 +159,7 @@ export class AgentSession {
     public readonly key: string,
     private services: AgentServices,
     private sessionType?: string,
+    private readonly sessionRoute?: SessionRoute,
   ) {
     const type = sessionType || this.extractSessionType(key);
     this.sessionTurnLogger = new SessionTurnLogger(type, key);
@@ -154,6 +178,7 @@ export class AgentSession {
     this.skillRuntime = new SessionSkillRuntime(services.skillManager, key);
     this.lifecycleManager = new SessionLifecycleManager({
       sessionKey: key,
+      legacySessionKey: sessionRoute?.legacySessionKey,
       runtimeFeedbackInbox: this.runtimeFeedbackInbox,
     });
     this.defaultDirectory = this.resolveDefaultDirectory();
@@ -161,6 +186,7 @@ export class AgentSession {
     this.turnController = new AgentTurnController({
       sessionKey: key,
       sessionType,
+      sessionRoute,
       services,
       skillRuntime: this.skillRuntime,
       planRuntime: this.planRuntime,
@@ -226,6 +252,12 @@ export class AgentSession {
   }
 
   private extractSessionType(key: string): string {
+    const parsedV2 = parseSessionKeyV2(key);
+    if (parsedV2) {
+      if (parsedV2.source === 'catscompany') return 'catscompany';
+      if (parsedV2.source === 'feishu') return 'feishu';
+      if (parsedV2.source === 'weixin') return 'weixin';
+    }
     if (key.startsWith('catscompany:')) return 'catscompany';
     if (key.startsWith('feishu:')) return 'feishu';
     if (key.startsWith('user:')) return 'weixin';
@@ -360,12 +392,26 @@ export class AgentSession {
       // 兼容旧签名：如果传入的对象有 onText/onToolStart 等字段，视为 SessionCallbacks
       let callbacks: SessionCallbacks | undefined;
       let channel: ChannelCallbacks | undefined;
+      let sessionRoute: SessionRoute | undefined;
+      let executionScope: ExecutionScope | undefined;
+      let localDeviceGrant: ScopedLocalDeviceGrant | undefined;
+      let deviceGrants: ScopedDeviceGrant[] | undefined;
+      let deviceSelection: ScopedDeviceSelection | undefined;
+      let deviceRpc: DeviceRpcTransport | undefined;
+      let localFileGrants: ScopedLocalFileGrant[] | undefined;
       let runtimeFeedbackInputs: RuntimeFeedbackInput[] = [];
       let pendingUserInputProvider: PendingUserInputProvider | undefined;
 
       if (callbacksOrOptions) {
         if (
           'channel' in callbacksOrOptions
+          || 'sessionRoute' in callbacksOrOptions
+          || 'executionScope' in callbacksOrOptions
+          || 'localDeviceGrant' in callbacksOrOptions
+          || 'deviceGrants' in callbacksOrOptions
+          || 'deviceSelection' in callbacksOrOptions
+          || 'deviceRpc' in callbacksOrOptions
+          || 'localFileGrants' in callbacksOrOptions
           || 'callbacks' in callbacksOrOptions
           || 'runtimeFeedback' in callbacksOrOptions
           || 'pendingUserInputProvider' in callbacksOrOptions
@@ -374,6 +420,13 @@ export class AgentSession {
           const opts = callbacksOrOptions as HandleMessageOptions;
           callbacks = opts.callbacks;
           channel = opts.channel;
+          sessionRoute = opts.sessionRoute;
+          executionScope = opts.executionScope;
+          localDeviceGrant = opts.localDeviceGrant;
+          deviceGrants = opts.deviceGrants;
+          deviceSelection = opts.deviceSelection;
+          deviceRpc = opts.deviceRpc;
+          localFileGrants = opts.localFileGrants;
           runtimeFeedbackInputs = opts.runtimeFeedback || [];
           pendingUserInputProvider = opts.pendingUserInputProvider;
         } else {
@@ -415,6 +468,13 @@ export class AgentSession {
           runtimeObservationSource,
           callbacks,
           channel,
+          sessionRoute,
+          executionScope,
+          localDeviceGrant,
+          deviceGrants,
+          deviceSelection,
+          deviceRpc,
+          localFileGrants,
           pendingUserInputProvider,
           abortSignal: this.activeAbortController.signal,
           shouldContinue: () => !this.interruptRequested,

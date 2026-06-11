@@ -7,6 +7,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { ToolManager } from '../src/tools/tool-manager';
+import type { ExecutionScope } from '../src/types/session-identity';
 
 describe('ToolManager - ToolExecutionResult 统一处理', () => {
   let manager: ToolManager;
@@ -283,6 +284,42 @@ describe('ToolManager - ToolExecutionResult 统一处理', () => {
 
     assert.strictEqual(result.ok, true);
     assert.strictEqual(capturedSignal, controller.signal);
+  });
+
+  test('context overrides do not clear an existing executionScope with undefined', async () => {
+    const executionScope: ExecutionScope = {
+      source: 'catscompany',
+      sessionKey: 'cc_user:usr7',
+      topicId: 'p2p_7_43',
+      topicType: 'p2p',
+      actorUserId: 'usr7',
+      identityTrust: 'server_canonical',
+      isTrusted: true,
+    };
+    const scopedManager = new ToolManager(testRoot, { executionScope }, {
+      enabledToolNames: [],
+    });
+    let capturedScope: ExecutionScope | undefined;
+    scopedManager.registerTool({
+      definition: {
+        name: 'capture_scope',
+        description: 'capture scope',
+        parameters: { type: 'object', properties: {} },
+      },
+      async execute(_args, context) {
+        capturedScope = context.executionScope;
+        return { ok: true, content: 'ok' };
+      },
+    });
+
+    const result = await scopedManager.executeTool(
+      { id: 't19_scope_merge', type: 'function', function: { name: 'capture_scope', arguments: '{}' } },
+      [],
+      { executionScope: undefined },
+    );
+
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(capturedScope, executionScope);
   });
 
   test('Write 别名映射到 write_file 成功', async () => {

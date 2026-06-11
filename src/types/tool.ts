@@ -1,4 +1,11 @@
 import { ContentBlock } from './index';
+import type {
+  ExecutionScope,
+  ScopedDeviceGrant,
+  ScopedDeviceSelection,
+  ScopedLocalDeviceGrant,
+  ScopedLocalFileGrant,
+} from './session-identity';
 import type { PlanRuntime, RuntimePlanSnapshot } from '../core/plan-runtime';
 import type { AIService } from '../utils/ai-service';
 import type { SkillManager } from '../skills/skill-manager';
@@ -83,6 +90,18 @@ export type ToolExecutionResult =
   | { ok: true; content: string | import('./index').ContentBlock[] }
   | { ok: false; errorCode: string; message: string; retryable?: boolean };
 
+export interface DeviceRpcToolRequest {
+  toolName: string;
+  operation: ScopedDeviceGrant['operations'][number];
+  args: Record<string, unknown>;
+  grant: ScopedDeviceGrant;
+  timeoutMs?: number;
+}
+
+export interface DeviceRpcTransport {
+  executeTool(request: DeviceRpcToolRequest): Promise<ToolExecutionResult>;
+}
+
 export type ToolErrorCode =
   | 'TOOL_NOT_FOUND'
   | 'INVALID_TOOL_ARGUMENTS'
@@ -141,6 +160,18 @@ export interface ToolExecutionContext {
   runtimeServices?: RuntimeToolServices;
   /** 平台通道回调（飞书/CatsCompany 等聊天会话时由平台层注入） */
   channel?: ChannelCallbacks;
+  /** 当前 turn 的可信执行身份；后续 ToolGateway/设备授权会基于它做权限判断。 */
+  executionScope?: ExecutionScope;
+  /** 当前本机运行体授权，例如 CatsCo body/device 绑定。 */
+  localDeviceGrant?: ScopedLocalDeviceGrant;
+  /** 当前 turn 已授权的用户设备资源，供未来远程设备工具校验。 */
+  deviceGrants?: ScopedDeviceGrant[];
+  /** 服务端为当前 turn 选定的用户设备，或明确要求先选择设备。 */
+  deviceSelection?: ScopedDeviceSelection;
+  /** CatsCo 远程设备 RPC 通道。工具只能通过窄接口请求后端选定设备执行。 */
+  deviceRpc?: DeviceRpcTransport;
+  /** 当前 turn 已授权的本地文件资源，例如用户本轮上传的 CatsCo 附件缓存。 */
+  localFileGrants?: ScopedLocalFileGrant[];
 }
 
 /**
