@@ -13,9 +13,10 @@ import { ShellTool } from '../src/tools/bash-tool';
 import type {
   ExecutionScope,
   ScopedDeviceGrant,
+  ScopedDeviceSelection,
   ScopedLocalDeviceGrant,
 } from '../src/types/session-identity';
-import type { ToolExecutionContext } from '../src/types/tool';
+import type { DeviceRpcTransport, ToolExecutionContext } from '../src/types/tool';
 
 function scope(overrides: Partial<ExecutionScope> = {}): ExecutionScope {
   return {
@@ -72,10 +73,35 @@ function deviceGrant(operations: ScopedDeviceGrant['operations'], overrides: Par
   };
 }
 
+function deviceSelection(overrides: Partial<ScopedDeviceSelection> = {}): ScopedDeviceSelection {
+  const currentScope = scope();
+  return {
+    kind: 'user_device_selection',
+    source: 'catscompany',
+    status: 'selected',
+    selectionSource: 'single_active_device',
+    sessionKey: currentScope.sessionKey,
+    topicId: currentScope.topicId,
+    topicType: currentScope.topicType,
+    actorUserId: currentScope.actorUserId,
+    agentId: currentScope.agentId,
+    identityTrust: 'server_canonical',
+    identitySource: 'metadata.catsco_identity',
+    selectedDeviceId: 'install-device',
+    selectedDeviceDisplayName: 'Test Device',
+    selectedDeviceBodyId: 'body-device',
+    selectedDeviceInstallationId: 'install-device',
+    selectedDeviceOperations: ['read_file'],
+    ...overrides,
+  };
+}
+
 function context(root: string, options: {
   executionScope?: ExecutionScope;
   localDeviceGrant?: ScopedLocalDeviceGrant;
   deviceGrants?: ScopedDeviceGrant[];
+  deviceSelection?: ScopedDeviceSelection;
+  deviceRpc?: DeviceRpcTransport;
 } = {}): ToolExecutionContext {
   return {
     workingDirectory: root,
@@ -86,6 +112,8 @@ function context(root: string, options: {
     executionScope: options.executionScope ?? scope(),
     localDeviceGrant: options.localDeviceGrant ?? localDevice(),
     deviceGrants: options.deviceGrants,
+    deviceSelection: options.deviceSelection,
+    deviceRpc: options.deviceRpc,
   };
 }
 
@@ -120,6 +148,158 @@ describe('CatsCo ToolGateway', () => {
 
     assert.equal(result.ok, true);
     assert.match(String(result.content), /allowed content/);
+  });
+
+  test('allows read_file when backend-selected device matches the current CatsCo device', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'selected content');
+
+    const result = await new ReadTool().execute({ file_path: filePath }, context(root, {
+      deviceGrants: [deviceGrant(['read_file'])],
+      deviceSelection: deviceSelection(),
+    }));
+
+    assert.equal(result.ok, true);
+    assert.match(String(result.content), /selected content/);
+  });
+
+  test('blocks device tools when backend requires device selection first', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'secret');
+
+    const result = await new ReadTool().execute({ file_path: filePath }, context(root, {
+      deviceGrants: [deviceGrant(['read_file'])],
+      deviceSelection: deviceSelection({
+        status: 'needs_selection',
+        selectedDeviceId: undefined,
+        selectedDeviceBodyId: undefined,
+        selectedDeviceInstallationId: undefined,
+      }),
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+      assert.match(result.message, /尚未选定/);
+      assert.doesNotMatch(result.message, new RegExp(escapeRegExp(filePath)));
+    }
+  });
+
+  test('blocks remote-selected device tools when Device RPC transport is unavailable', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'secret');
+
+    const result = await new ReadTool().execute({ file_path: filePath }, context(root, {
+      deviceGrants: [deviceGrant(['read_file'], {
+        deviceId: 'other-device',
+        deviceDisplayName: 'Other Device',
+        deviceBodyId: 'body-other',
+        deviceInstallationId: 'install-other',
+      })],
+      deviceSelection: deviceSelection({
+        selectedDeviceId: 'other-device',
+        selectedDeviceDisplayName: 'Other Device',
+        selectedDeviceBodyId: 'body-other',
+        selectedDeviceInstallationId: 'install-other',
+      }),
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+      assert.match(result.message, /没有配置远程设备 RPC 通道/);
+      assert.doesNotMatch(result.message, new RegExp(escapeRegExp(filePath)));
+    }
+  });
+
+  test('routes read_file to the backend-selected remote device without local file access', async () => {
+    const root = makeWorkspace();
+    const requestedPath = path.join(root, 'missing-on-agent.txt');
+    let rpcRequest: any;
+    const result = await new ReadTool().execute({ file_path: requestedPath, limit: 20 }, context(root, {
+      deviceGrants: [deviceGrant(['read_file'], {
+        deviceId: 'other-device',
+        deviceDisplayName: 'Other Device',
+        deviceBodyId: 'body-other',
+        deviceInstallationId: 'install-other',
+      })],
+      deviceSelection: deviceSelection({
+        selectedDeviceId: 'other-device',
+        selectedDeviceDisplayName: 'Other Device',
+        selectedDeviceBodyId: 'body-other',
+        selectedDeviceInstallationId: 'install-other',
+        selectedDeviceOperations: ['read_file'],
+      }),
+      deviceRpc: {
+        executeTool: async request => {
+          rpcRequest = request;
+          return { ok: true, content: 'remote file content' };
+        },
+      },
+    }));
+
+    assert.equal(result.ok, true);
+    assert.equal(String(result.content), 'remote file content');
+    assert.equal(rpcRequest.toolName, 'read_file');
+    assert.equal(rpcRequest.operation, 'read_file');
+    assert.equal(rpcRequest.grant.deviceId, 'other-device');
+    assert.deepEqual(rpcRequest.args, { file_path: requestedPath, limit: 20 });
+  });
+
+  test('routes glob and grep to the backend-selected remote device', async () => {
+    const root = makeWorkspace();
+    const calls: Array<{ toolName: string; operation: string; args: Record<string, unknown> }> = [];
+    const deviceRpc: DeviceRpcTransport = {
+      executeTool: async request => {
+        calls.push({
+          toolName: request.toolName,
+          operation: request.operation,
+          args: request.args,
+        });
+        return { ok: true, content: `remote ${request.toolName}` };
+      },
+    };
+    const remoteContext = context(root, {
+      deviceGrants: [
+        deviceGrant(['glob'], {
+          grantId: 'grant-glob',
+          deviceId: 'other-device',
+          deviceDisplayName: 'Other Device',
+          deviceBodyId: 'body-other',
+          deviceInstallationId: 'install-other',
+        }),
+        deviceGrant(['grep'], {
+          grantId: 'grant-grep',
+          deviceId: 'other-device',
+          deviceDisplayName: 'Other Device',
+          deviceBodyId: 'body-other',
+          deviceInstallationId: 'install-other',
+        }),
+      ],
+      deviceSelection: deviceSelection({
+        selectedDeviceId: 'other-device',
+        selectedDeviceDisplayName: 'Other Device',
+        selectedDeviceBodyId: 'body-other',
+        selectedDeviceInstallationId: 'install-other',
+        selectedDeviceOperations: ['glob', 'grep'],
+      }),
+      deviceRpc,
+    });
+
+    const glob = await new GlobTool().execute({ pattern: '**/*.ts', path: '/remote/project' }, remoteContext);
+    const grep = await new GrepTool().execute({ pattern: 'needle', path: '/remote/project', output_mode: 'files' }, remoteContext);
+
+    assert.equal(glob.ok, true);
+    assert.equal(grep.ok, true);
+    assert.deepEqual(calls.map(call => [call.toolName, call.operation]), [
+      ['glob', 'glob'],
+      ['grep', 'grep'],
+    ]);
+    assert.deepEqual(calls[0].args, { pattern: '**/*.ts', path: '/remote/project' });
+    assert.deepEqual(calls[1].args, { pattern: 'needle', path: '/remote/project', output_mode: 'files' });
   });
 
   test('redacts local absolute paths from successful CatsCo device file results', async () => {

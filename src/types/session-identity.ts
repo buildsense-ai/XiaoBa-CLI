@@ -74,6 +74,7 @@ export type LocalFileGrantFileType = 'file' | 'image' | 'unknown';
 export type LocalFileGrantOperation = 'read_file' | 'send_file';
 export type UserDeviceStatus = 'unknown' | 'online' | 'offline';
 export type DeviceGrantStatus = 'active' | 'revoked';
+export type DeviceSelectionStatus = 'selected' | 'needs_selection' | 'unavailable';
 export type DeviceGrantOperation =
   | 'read_file'
   | 'write_file'
@@ -130,6 +131,35 @@ export interface ScopedDeviceGrant {
   operations: DeviceGrantOperation[];
   createdAt: number;
   expiresAt: number;
+}
+
+export interface DeviceSelectionCandidate {
+  deviceId: string;
+  displayName?: string;
+  operations?: DeviceGrantOperation[];
+  lastSeenAt?: number;
+}
+
+export interface ScopedDeviceSelection {
+  kind: 'user_device_selection';
+  source: MessageSource;
+  status: DeviceSelectionStatus;
+  selectionSource?: string;
+  sessionKey: string;
+  topicId: string;
+  topicType: MessageTopicType;
+  actorUserId: string;
+  agentId?: string;
+  identityTrust: IdentityTrustLevel;
+  identitySource?: string;
+  selectedDeviceId?: string;
+  selectedDeviceDisplayName?: string;
+  selectedDeviceBodyId?: string;
+  selectedDeviceInstallationId?: string;
+  selectedDeviceOperations?: DeviceGrantOperation[];
+  candidates?: DeviceSelectionCandidate[];
+  candidateCount?: number;
+  createdAt?: number;
 }
 
 export interface ScopedLocalFileGrant {

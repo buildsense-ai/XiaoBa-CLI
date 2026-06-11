@@ -9,6 +9,7 @@ import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
 import { analyzeImageWithReaderProxy, ReaderProxyResult } from '../utils/reader-proxy';
 import { resolveLocalFileAccess, resolveLocalFileReference } from './local-file-gateway';
 import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
+import { executeRemoteReadonlyTool } from './device-rpc-tool';
 
 export const DEFAULT_TEXT_READ_LIMIT = 200;
 export const MAX_TEXT_READ_LIMIT = 2000;
@@ -120,11 +121,6 @@ export class ReadTool implements Tool {
         ? file_path
         : path.join(context.workingDirectory, file_path);
       visiblePath = absolutePath;
-
-      const pathPermission = isReadPathAllowed(absolutePath, context.workingDirectory);
-      if (!pathPermission.allowed) {
-        return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
-      }
     }
 
     if (!resolvedFromAttachmentRef) {
@@ -159,6 +155,13 @@ export class ReadTool implements Tool {
           errorCode: gateway.errorCode,
           message: gateway.message,
         };
+      }
+      const remoteResult = await executeRemoteReadonlyTool(context, gateway, 'read_file', 'read_file', args);
+      if (remoteResult) return remoteResult;
+
+      const pathPermission = isReadPathAllowed(absolutePath, context.workingDirectory);
+      if (!pathPermission.allowed) {
+        return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
       }
       displayPath = formatCatsCoVisiblePath(context, displayPath, { preserveRelative: true });
       visiblePath = formatCatsCoVisiblePath(context, visiblePath);

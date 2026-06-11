@@ -1,5 +1,5 @@
 import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
-import type { ScopedDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
+import type { ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalFileGrant } from '../types/session-identity';
 import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { StreamCallbacks } from '../providers/provider';
@@ -91,6 +91,7 @@ export interface RunResult {
 export interface PendingUserInput {
   content: string | ContentBlock[];
   deviceGrants?: ScopedDeviceGrant[];
+  deviceSelection?: ScopedDeviceSelection;
   localFileGrants?: ScopedLocalFileGrant[];
 }
 
@@ -530,6 +531,13 @@ export class ConversationRunner {
       };
       shouldRefreshRuntimeContext = true;
     }
+    if (isPendingUserInput(pending) && pending.deviceSelection) {
+      this.toolExecutionContext = {
+        ...(this.toolExecutionContext || {}),
+        deviceSelection: pending.deviceSelection,
+      };
+      shouldRefreshRuntimeContext = true;
+    }
     if (isPendingUserInput(pending) && pending.localFileGrants?.length) {
       this.toolExecutionContext = {
         ...(this.toolExecutionContext || {}),
@@ -570,6 +578,7 @@ export class ConversationRunner {
       executionScope: this.toolExecutionContext?.executionScope,
       localDeviceGrant: this.toolExecutionContext?.localDeviceGrant,
       deviceGrants: this.toolExecutionContext?.deviceGrants,
+      deviceSelection: this.toolExecutionContext?.deviceSelection,
       localFileGrants: this.toolExecutionContext?.localFileGrants,
     });
     if (!runtimeContext) return;
