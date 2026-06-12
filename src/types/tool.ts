@@ -107,6 +107,7 @@ export type ToolErrorCode =
   | 'INVALID_TOOL_ARGUMENTS'
   | 'TOOL_EXECUTION_ERROR'
   | 'RATE_LIMIT'
+  | 'NEEDS_CONFIRMATION'
   | 'PERMISSION_DENIED'
   | 'FILE_NOT_FOUND'
   | 'EXECUTION_TIMEOUT';
@@ -137,6 +138,22 @@ export interface RuntimeToolServices {
   skillManager: SkillManager;
 }
 
+export type ToolRiskLevel = 'low' | 'medium' | 'high';
+
+export interface ToolExecutionConfirmationRequest {
+  toolName: string;
+  risk: ToolRiskLevel;
+  reason: string;
+  args: unknown;
+  surface?: ToolSurface;
+  workingDirectory?: string;
+}
+
+export type ToolExecutionConfirmationResult = boolean | {
+  approved: boolean;
+  reason?: string;
+};
+
 /**
  * 工具执行上下文
  */
@@ -156,6 +173,8 @@ export interface ToolExecutionContext {
   updateCurrentDirectory?: (directory: string) => void;
   /** 子智能体需要主 agent 补充信息时使用；仅 subagent runtime 注入 */
   requestParentInput?: (question: string) => Promise<string>;
+  /** 本地自用的中高风险工具确认；CatsCo/远程委托仍由服务端 grant 控制。 */
+  confirmToolExecution?: (request: ToolExecutionConfirmationRequest) => Promise<ToolExecutionConfirmationResult>;
   /** 当前 runtime 已创建的共享服务，供调度类工具复用，避免重复初始化 */
   runtimeServices?: RuntimeToolServices;
   /** 平台通道回调（飞书/CatsCompany 等聊天会话时由平台层注入） */

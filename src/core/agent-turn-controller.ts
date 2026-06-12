@@ -7,7 +7,12 @@ import type {
   ScopedLocalFileGrant,
   SessionRoute,
 } from '../types/session-identity';
-import { ChannelCallbacks, DeviceRpcTransport } from '../types/tool';
+import {
+  ChannelCallbacks,
+  DeviceRpcTransport,
+  ToolExecutionConfirmationRequest,
+  ToolExecutionConfirmationResult,
+} from '../types/tool';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
@@ -34,6 +39,7 @@ export interface AgentTurnCallbacks {
   onToolEnd?: (name: string, toolUseId: string, result: string) => void;
   onToolDisplay?: (name: string, content: string) => void;
   onRetry?: (attempt: number, maxRetries: number) => void;
+  confirmToolExecution?: (request: ToolExecutionConfirmationRequest) => Promise<ToolExecutionConfirmationResult>;
 }
 
 export interface RunAgentTurnParams {
@@ -120,6 +126,7 @@ export class AgentTurnController {
       deviceRpc: params.deviceRpc,
       localFileGrants: params.localFileGrants,
       pendingUserInputProvider: params.pendingUserInputProvider,
+      confirmToolExecution: params.callbacks?.confirmToolExecution,
       abortSignal: params.abortSignal,
       shouldContinue: params.shouldContinue,
     });
@@ -172,6 +179,7 @@ export class AgentTurnController {
     deviceRpc?: DeviceRpcTransport;
     localFileGrants?: ScopedLocalFileGrant[];
     pendingUserInputProvider?: PendingUserInputProvider;
+    confirmToolExecution?: AgentTurnCallbacks['confirmToolExecution'];
     abortSignal?: AbortSignal;
     shouldContinue: () => boolean;
   }): ConversationRunner {
@@ -206,6 +214,7 @@ export class AgentTurnController {
           deviceSelection: options.deviceSelection,
           deviceRpc: options.deviceRpc,
           localFileGrants: options.localFileGrants,
+          confirmToolExecution: options.confirmToolExecution,
         },
       },
     );

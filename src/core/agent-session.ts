@@ -12,7 +12,12 @@ import * as path from 'path';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
-import { ChannelCallbacks, DeviceRpcTransport } from '../types/tool';
+import {
+  ChannelCallbacks,
+  DeviceRpcTransport,
+  ToolExecutionConfirmationRequest,
+  ToolExecutionConfirmationResult,
+} from '../types/tool';
 import {
   SessionSkillRuntime,
   SkillReloadHandler,
@@ -66,6 +71,7 @@ export interface SessionCallbacks {
   onToolEnd?: (name: string, toolUseId: string, result: string) => void;
   onToolDisplay?: (name: string, content: string) => void;
   onRetry?: (attempt: number, maxRetries: number) => void;
+  confirmToolExecution?: (request: ToolExecutionConfirmationRequest) => Promise<ToolExecutionConfirmationResult>;
 }
 
 export interface InitSessionOptions {

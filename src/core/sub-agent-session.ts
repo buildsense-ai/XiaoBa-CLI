@@ -8,6 +8,7 @@ import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { SubAgentEventType, SubAgentRuntimeEvent } from './sub-agent-events';
+import type { ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult } from '../types/tool';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -282,6 +283,7 @@ export class SubAgentSession {
         permissionProfile: 'strict',
         abortSignal: this.abortController.signal,
         requestParentInput: (question: string) => this.waitForParentInput(question),
+        confirmToolExecution: (request) => this.confirmSubAgentToolExecution(request),
       },
     });
 
@@ -423,6 +425,35 @@ export class SubAgentSession {
       this.clearParentInputReminder();
       throw error;
     }
+  }
+
+  private async confirmSubAgentToolExecution(
+    request: ToolExecutionConfirmationRequest,
+  ): Promise<ToolExecutionConfirmationResult> {
+    if (!this.options.notifyParent) {
+      return { approved: false, reason: '当前子智能体没有主会话确认通道，已取消该工具调用。' };
+    }
+    const argsPreview = JSON.stringify(request.args ?? {});
+    const question = [
+      `子智能体「${this.displayName || this.id}」想执行 ${request.toolName}。`,
+      `风险等级: ${request.risk}`,
+      request.reason,
+      argsPreview && argsPreview !== '{}' ? `参数: ${argsPreview.slice(0, 500)}${argsPreview.length > 500 ? '...' : ''}` : '',
+      '请回复“确认/允许/yes”批准，或回复其他内容取消。',
+    ].filter(Boolean).join('\n');
+    const answer = await this.waitForParentInput(question);
+    const normalized = String(answer || '').trim().toLowerCase();
+    const approved = normalized === 'y'
+      || normalized === 'yes'
+      || normalized === 'ok'
+      || normalized === 'approve'
+      || normalized.includes('确认')
+      || normalized.includes('允许')
+      || normalized.includes('同意')
+      || normalized.includes('批准');
+    return approved
+      ? { approved: true }
+      : { approved: false, reason: `主会话未确认 ${request.toolName}，已取消。` };
   }
 
   async close(): Promise<void> {

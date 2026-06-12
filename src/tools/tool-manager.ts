@@ -20,6 +20,7 @@ import { ShareSkillHubSkillTool } from './share-skillhub-skill-tool';
 import { AskParentTool } from './ask-parent-tool';
 import { DEFAULT_TOOL_NAMES } from './default-tool-names';
 import { mergeToolExecutionContext } from '../utils/tool-context';
+import { confirmLocalToolExecution } from './local-tool-risk';
 
 const INTERNAL_TOOL_NAMES = ['ask_parent'] as const;
 
@@ -187,6 +188,19 @@ export class ToolManager implements ToolExecutor {
           ok: false,
           errorCode: 'INVALID_TOOL_ARGUMENTS',
           retryable: false,
+        };
+      }
+
+      const confirmation = await confirmLocalToolExecution(toolName, args, context);
+      if (confirmation) {
+        return {
+          tool_call_id: toolCall.id,
+          role: 'tool',
+          name: toolCall.function.name,
+          content: confirmation.ok ? confirmation.content : confirmation.message,
+          ok: confirmation.ok,
+          errorCode: confirmation.ok ? undefined : confirmation.errorCode,
+          retryable: confirmation.ok ? undefined : confirmation.retryable,
         };
       }
 
