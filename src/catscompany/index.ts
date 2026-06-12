@@ -65,6 +65,14 @@ const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 const TYPING_HEARTBEAT_INTERVAL_MS = 5_000;
 const DEVICE_REGISTRATION_REFRESH_MS = 120_000;
 const DEVICE_RPC_DEFAULT_TTL_MS = 60_000;
+export const CATSCOMPANY_LOCAL_DEVICE_CAPABILITIES: DeviceGrantOperation[] = [
+  'read_file',
+  'glob',
+  'grep',
+  'write_file',
+  'edit_file',
+  'send_file',
+];
 const HIDDEN_CATS_TOOL_PROGRESS = new Set([
   'send_text',
   'send_file',
@@ -133,7 +141,7 @@ export class CatsCompanyBot {
           body_id: config.bodyId,
           installation_id: config.installationId || config.bodyId,
           status: 'online' as const,
-          capabilities: ['read_file', 'glob', 'grep'],
+          capabilities: [...CATSCOMPANY_LOCAL_DEVICE_CAPABILITIES],
         }
       : undefined;
 
