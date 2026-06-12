@@ -360,39 +360,69 @@ describe('ToolManager', () => {
     assert.equal(confirmed, false);
   });
 
-  test('CatsCo context asks before overwriting local files', async () => {
+  test('CatsCo local owner self runs write edit send and shell without confirmation', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-workspace-'));
     const existing = path.join(workspace, 'a.txt');
     fs.writeFileSync(existing, 'old');
     const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
-    let executed = false;
+    const executed: string[] = [];
     manager.registerTool(fakeTool('write_file', async () => {
-      executed = true;
+      executed.push('write_file');
       return { ok: true, content: 'catsco overwrite ran' };
     }));
-
-    const denied = await manager.executeTool({
-      id: 'call-catsco-overwrite',
-      type: 'function',
-      function: { name: 'write_file', arguments: JSON.stringify({ file_path: existing, content: 'hello' }) },
-    }, [], {
-      surface: 'catscompany',
-      permissionProfile: 'strict',
+    manager.registerTool(fakeTool('edit_file', async () => {
+      executed.push('edit_file');
+      return { ok: true, content: 'catsco edit ran' };
+    }));
+    manager.registerTool(fakeTool('send_file', async () => {
+      executed.push('send_file');
+      return { ok: true, content: 'catsco send ran' };
+    }));
+    manager.registerTool(fakeTool('execute_shell', async () => {
+      executed.push('execute_shell');
+      return { ok: true, content: 'catsco shell ran' };
+    }));
+    let confirmed = false;
+    const catsContext = {
+      surface: 'catscompany' as const,
+      permissionProfile: 'strict' as const,
       workingDirectory: workspace,
       workspaceRoot: workspace,
       executionScope: catsScope(),
       localDeviceGrant: catsLocalDevice(),
-      confirmToolExecution: async request => {
-        assert.equal(request.toolName, 'write_file');
-        assert.equal(request.risk, 'medium');
-        return { approved: false, reason: '用户取消覆盖' };
+      confirmToolExecution: async () => {
+        confirmed = true;
+        return false;
       },
-    });
+    };
 
-    assert.equal(denied.ok, false);
-    assert.equal(denied.errorCode, 'PERMISSION_DENIED');
-    assert.equal(denied.content, '用户取消覆盖');
-    assert.equal(executed, false);
+    const write = await manager.executeTool({
+      id: 'call-catsco-overwrite',
+      type: 'function',
+      function: { name: 'write_file', arguments: JSON.stringify({ file_path: existing, content: 'hello' }) },
+    }, [], catsContext);
+    const edit = await manager.executeTool({
+      id: 'call-catsco-edit',
+      type: 'function',
+      function: { name: 'edit_file', arguments: JSON.stringify({ file_path: existing, old_string: 'old', new_string: 'new' }) },
+    }, [], catsContext);
+    const send = await manager.executeTool({
+      id: 'call-catsco-send',
+      type: 'function',
+      function: { name: 'send_file', arguments: JSON.stringify({ file_path: existing }) },
+    }, [], catsContext);
+    const shell = await manager.executeTool({
+      id: 'call-catsco-shell',
+      type: 'function',
+      function: { name: 'execute_shell', arguments: JSON.stringify({ command: 'Remove-Item -Recurse C:\\danger' }) },
+    }, [], catsContext);
+
+    assert.equal(write.ok, true);
+    assert.equal(edit.ok, true);
+    assert.equal(send.ok, true);
+    assert.equal(shell.ok, true);
+    assert.deepEqual(executed, ['write_file', 'edit_file', 'send_file', 'execute_shell']);
+    assert.equal(confirmed, false);
   });
 
   test('AgentToolExecutor uses the same local confirmation gate', async () => {

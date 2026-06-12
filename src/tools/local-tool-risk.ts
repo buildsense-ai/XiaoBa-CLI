@@ -86,6 +86,10 @@ export function classifyLocalToolRisk(
     return { requiresConfirmation: false, risk: 'low', reason: '只读或状态类工具。' };
   }
 
+  if (isCatsCoLocalOwnerSelfContext(context)) {
+    return { requiresConfirmation: false, risk: 'low', reason: 'CatsCo 本地 owner 自用场景允许直接执行本机工具。' };
+  }
+
   if (toolName === 'read_file' || toolName === 'glob' || toolName === 'grep') {
     const pathRisk = classifyReadTargetsRisk(readonlyToolTargets(toolName, args), context);
     if (pathRisk === 'low') {

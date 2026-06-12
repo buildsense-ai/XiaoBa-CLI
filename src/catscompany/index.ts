@@ -80,6 +80,7 @@ export const CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES: DeviceGrantOperation[
   'write_file',
   'edit_file',
   'send_file',
+  'execute_shell',
 ];
 
 function shouldHideCatsToolProgress(toolName: string): boolean {

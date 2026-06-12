@@ -548,7 +548,23 @@ describe('CatsCo ToolGateway', () => {
     assert.equal(fs.readFileSync(path.join(root, 'local.txt'), 'utf8'), 'before');
   });
 
-  test('blocks execute_shell in CatsCo sessions even when a grant contains execute_shell', async () => {
+  test('allows execute_shell for local owner self on the current device', async () => {
+    const root = makeWorkspace();
+    const result = await new ShellTool().execute({ command: 'echo catsco-shell-ok' }, context(root, {
+      localDeviceGrant: localDevice({
+        ownerUserId: 'usr7',
+        capabilities: ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file', 'execute_shell'],
+      }),
+      deviceSelection: deviceSelection({
+        selectedDeviceOperations: ['read_file'],
+      }),
+    }));
+
+    assert.equal(result.ok, true);
+    if (result.ok) assert.match(result.content, /catsco-shell-ok/);
+  });
+
+  test('blocks execute_shell in external CatsCo sessions even when a grant contains execute_shell', async () => {
     const root = makeWorkspace();
     const result = await new ShellTool().execute({ command: 'echo hello' }, context(root, {
       deviceGrants: [deviceGrant(['execute_shell'])],

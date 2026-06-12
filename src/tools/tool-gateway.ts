@@ -105,7 +105,7 @@ export function resolveToolGatewayAccess(
   if (options.operation === 'execute_shell' && !localOwnerSelf && !options.allowCatsCoShell) {
     return denied([
       'CatsCo 会话暂不允许外部用户或远程委托通过 execute_shell 操作命令行。',
-      '命令执行只允许本机 owner 自用场景在用户确认后执行。',
+      '命令执行只允许本机 owner 自用场景直接执行。',
     ], options.targetLabel);
   }
 
