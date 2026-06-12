@@ -182,11 +182,15 @@ describe('AgentSession lifecycle', () => {
 
     assert.deepStrictEqual(
       restored.map((message: any) => message.content),
-      ['需要读文件', '读完了'],
+      ['需要读文件', null, '[历史工具结果已省略；read_file 已完成。]', '读完了'],
     );
     assert.equal(restored.some((message: any) => Array.isArray(message.providerContent)), false);
-    assert.equal(restored.some((message: any) => message.role === 'tool'), false);
-    assert.equal(restored.some((message: any) => message.tool_calls?.length), false);
+    assert.equal(restored.some((message: any) => message.role === 'tool'), true);
+    assert.equal(restored.some((message: any) => message.tool_calls?.length), true);
+    assert.equal(
+      restored.some((message: any) => message.role === 'tool' && message.tool_call_id === 'toolu_1'),
+      true,
+    );
     assert.equal(restored.some((message: any) => String(message.content || '').includes('provider replay 隐藏内容')), false);
     assert.equal(restored.some((message: any) => String(message.content || '').includes('private tool result')), false);
     assert.doesNotMatch(raw, /hidden chain text/);
@@ -222,10 +226,15 @@ describe('AgentSession lifecycle', () => {
 
     assert.deepStrictEqual(
       restored.map((message: any) => message.content),
-      ['旧历史'],
+      ['旧历史', null, '[历史工具结果已省略；read_file 已完成。]'],
     );
     assert.equal(restored.some((message: any) => Array.isArray(message.providerContent)), false);
-    assert.equal(restored.some((message: any) => message.role === 'tool'), false);
+    assert.equal(restored.some((message: any) => message.role === 'tool'), true);
+    assert.equal(restored.some((message: any) => message.tool_calls?.length), true);
+    assert.equal(
+      restored.some((message: any) => message.role === 'tool' && message.tool_call_id === 'toolu_legacy'),
+      true,
+    );
     assert.doesNotMatch(migratedRaw, /legacy tool result/);
     assert.doesNotMatch(migratedRaw, /legacy hidden chain/);
     assert.doesNotMatch(migratedRaw, /legacy_sig/);

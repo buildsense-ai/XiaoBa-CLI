@@ -34,6 +34,11 @@ function hasHiddenProviderReplay(message: Message): boolean {
     ));
 }
 
+function summarizeHiddenReplayToolResult(message: Message): string {
+  const toolName = String(message.name || 'tool').trim() || 'tool';
+  return `[历史工具结果已省略；${toolName} 已完成。]`;
+}
+
 function sanitizeForPersistence(messages: Message[]): Message[] {
   const hiddenReplayToolCallIds = new Set<string>();
   const durable: Message[] = [];
@@ -44,6 +49,11 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
     }
 
     if (message.role === 'tool' && message.tool_call_id && hiddenReplayToolCallIds.has(message.tool_call_id)) {
+      durable.push({
+        ...message,
+        content: summarizeHiddenReplayToolResult(message),
+        providerContent: undefined,
+      });
       continue;
     }
 
@@ -57,14 +67,11 @@ function sanitizeForPersistence(messages: Message[]): Message[] {
         hiddenReplayToolCallIds.add(toolCall.id);
       }
       const publicText = stripAssistantTranscriptArtifacts(contentToText(message.content));
-      if (publicText) {
-        durable.push({
-          ...message,
-          content: publicText,
-          tool_calls: undefined,
-          providerContent: undefined,
-        });
-      }
+      durable.push({
+        ...message,
+        content: publicText || null,
+        providerContent: undefined,
+      });
       continue;
     }
 
