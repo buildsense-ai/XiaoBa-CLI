@@ -11,7 +11,7 @@ import { AgentServices, BUSY_MESSAGE, RuntimeFeedbackInput, SessionCallbacks } f
 import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import type { SubAgentInfo } from '../core/sub-agent-session';
-import { ChannelCallbacks, DeviceRpcTransport, ToolErrorCode, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
+import { ChannelCallbacks, DeviceRpcTransport, ToolErrorCode, ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { ContentBlock } from '../types';
 import type { PendingUserInput } from '../core/conversation-runner';
 import type { DeviceGrantOperation, ExecutionScope, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
@@ -24,8 +24,10 @@ import { createCatsCoSessionRoute } from '../core/session-router';
 import { ReadTool } from '../tools/read-tool';
 import { GlobTool } from '../tools/glob-tool';
 import { GrepTool } from '../tools/grep-tool';
+import { WriteTool } from '../tools/write-tool';
+import { EditTool } from '../tools/edit-tool';
 import {
-  isRemoteReadonlyTool,
+  isRemoteDeviceRpcTool,
   normalizeDeviceRpcToolResultForTransport,
   normalizeDeviceRpcToolResultPayload,
 } from '../tools/device-rpc-tool';
@@ -71,6 +73,14 @@ const HIDDEN_CATS_TOOL_PROGRESS = new Set([
   'spawn_subagent',
 ]);
 const SUBAGENT_TERMINAL_EVENTS = new Set(['agent_completed', 'agent_failed', 'agent_stopped']);
+export const CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES: DeviceGrantOperation[] = [
+  'read_file',
+  'glob',
+  'grep',
+  'write_file',
+  'edit_file',
+  'send_file',
+];
 
 function shouldHideCatsToolProgress(toolName: string): boolean {
   return HIDDEN_CATS_TOOL_PROGRESS.has(toolName);
@@ -132,8 +142,9 @@ export class CatsCompanyBot {
           display_name: config.deviceName || process.env.COMPUTERNAME || process.env.HOSTNAME || hostname() || localDeviceId,
           body_id: config.bodyId,
           installation_id: config.installationId || config.bodyId,
+          owner_user_id: config.ownerUserId,
           status: 'online' as const,
-          capabilities: ['read_file', 'glob', 'grep'],
+          capabilities: [...CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES],
         }
       : undefined;
 
@@ -151,6 +162,8 @@ export class CatsCompanyBot {
       bodyId: config.bodyId,
       installationId: config.installationId,
       deviceId: config.installationId || config.bodyId,
+      ownerUserId: config.ownerUserId,
+      capabilities: [...CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES],
     });
     this.deviceRegistration = deviceRegistration;
 
@@ -243,6 +256,8 @@ export class CatsCompanyBot {
           topic_id: grant.topicId,
           topic_type: grant.topicType,
           actor_user_id: grant.actorUserId,
+          owner_user_id: grant.ownerUserId,
+          identity_source: grant.identitySource,
           agent_id: grant.agentId,
           agent_body_id: grant.agentBodyId,
           device_id: grant.deviceId,
@@ -272,7 +287,19 @@ export class CatsCompanyBot {
     if (!requestID) return;
 
     const validationError = this.validateDeviceRpcToolRequest(request);
-    const result = validationError ? undefined : await this.executeLocalDeviceRpcTool(request);
+    let result: ToolExecutionResult | undefined;
+    if (!validationError) {
+      try {
+        result = await this.executeLocalDeviceRpcTool(request);
+      } catch (error: any) {
+        result = {
+          ok: false,
+          errorCode: 'TOOL_EXECUTION_ERROR',
+          message: `Device RPC tool execution error: ${error?.message || error || 'unknown error'}`,
+          retryable: false,
+        };
+      }
+    }
     const error = validationError || (!result || result.ok
       ? undefined
       : {
@@ -288,6 +315,8 @@ export class CatsCompanyBot {
         topic_id: request.topic_id,
         topic_type: request.topic_type,
         actor_user_id: request.actor_user_id,
+        owner_user_id: request.owner_user_id,
+        identity_source: request.identity_source,
         agent_id: request.agent_id,
         agent_body_id: request.agent_body_id,
         device_id: this.localDeviceGrant?.deviceId || request.device_id,
@@ -304,9 +333,9 @@ export class CatsCompanyBot {
   }
 
   private async executeLocalDeviceRpcTool(request: CatsDeviceRpcMessage): Promise<ToolExecutionResult> {
-    const operation = this.normalizeDeviceRpcReadonlyOperation(request.operation);
+    const operation = this.normalizeDeviceRpcOperation(request.operation);
     const toolName = String(request.tool_name || operation || '').trim();
-    if (!operation || !isRemoteReadonlyTool(toolName, operation)) {
+    if (!operation || !isRemoteDeviceRpcTool(toolName, operation)) {
       return {
         ok: false,
         errorCode: 'PERMISSION_DENIED',
@@ -323,6 +352,10 @@ export class CatsCompanyBot {
         return new GlobTool().execute(args, context);
       case 'grep':
         return new GrepTool().execute(args, context);
+      case 'write_file':
+        return new WriteTool().execute(args, context);
+      case 'edit_file':
+        return new EditTool().execute(args, context);
       default:
         return {
           ok: false,
@@ -358,11 +391,11 @@ export class CatsCompanyBot {
       grantId: String(request.grant_id || ''),
       status: 'active',
       identityTrust: 'server_canonical',
-      identitySource: 'device_rpc_forward',
+      identitySource: String(request.identity_source || 'device_rpc_forward'),
       deviceId: String(request.device_id || this.localDeviceGrant?.deviceId || ''),
       deviceBodyId: request.device_body_id || this.localDeviceGrant?.bodyId,
       deviceInstallationId: request.device_installation_id || this.localDeviceGrant?.installationId,
-      ownerUserId: executionScope.actorUserId,
+      ownerUserId: String(request.owner_user_id || executionScope.actorUserId || ''),
       sessionKey: executionScope.sessionKey,
       topicId: executionScope.topicId,
       topicType,
@@ -410,10 +443,10 @@ export class CatsCompanyBot {
     const targetError = this.validateDeviceRpcTarget(request);
     if (targetError) return targetError;
 
-    const operation = this.normalizeDeviceRpcReadonlyOperation(request.operation);
+    const operation = this.normalizeDeviceRpcOperation(request.operation);
     const toolName = String(request.tool_name || operation || '').trim();
-    if (!operation || !isRemoteReadonlyTool(toolName, operation)) {
-      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, glob, and grep.' };
+    if (!operation || !isRemoteDeviceRpcTool(toolName, operation)) {
+      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, glob, grep, write_file, and edit_file.' };
     }
 
     const requiredFields: Array<[keyof CatsDeviceRpcMessage, string]> = [
@@ -422,6 +455,7 @@ export class CatsCompanyBot {
       ['topic_id', 'topic_id'],
       ['topic_type', 'topic_type'],
       ['actor_user_id', 'actor_user_id'],
+      ['owner_user_id', 'owner_user_id'],
       ['device_id', 'device_id'],
     ];
     for (const [field, label] of requiredFields) {
@@ -429,15 +463,26 @@ export class CatsCompanyBot {
         return { code: 'invalid_request', message: `Device RPC request missing ${label}.` };
       }
     }
+    const actorUserID = String(request.actor_user_id || '').trim();
+    const ownerUserID = String(request.owner_user_id || '').trim();
+    if (ownerUserID !== actorUserID && String(request.identity_source || '').trim() !== 'channel_identity_link') {
+      return { code: 'invalid_request', message: 'Delegated Device RPC request missing channel_identity_link identity source.' };
+    }
     if (typeof request.expires_at === 'number' && Date.now() > request.expires_at) {
       return { code: 'request_expired', message: 'Device RPC request has expired.' };
     }
     return undefined;
   }
 
-  private normalizeDeviceRpcReadonlyOperation(value: unknown): DeviceGrantOperation | undefined {
+  private normalizeDeviceRpcOperation(value: unknown): DeviceGrantOperation | undefined {
     const operation = String(value || '').trim();
-    if (operation === 'read_file' || operation === 'glob' || operation === 'grep') {
+    if (
+      operation === 'read_file'
+      || operation === 'glob'
+      || operation === 'grep'
+      || operation === 'write_file'
+      || operation === 'edit_file'
+    ) {
       return operation;
     }
     return undefined;
@@ -542,7 +587,7 @@ export class CatsCompanyBot {
     return channel;
   }
 
-  private buildSessionCallbacks(topic: string): SessionCallbacks {
+  private buildSessionCallbacks(topic: string, opts?: { sessionKey?: string; senderId?: string }): SessionCallbacks {
     return {
       onRetry: async (attempt, maxRetries) => {
         try {
@@ -606,6 +651,9 @@ export class CatsCompanyBot {
           Logger.warning(`前端通知发送失败 (tool_result): ${err.message}`);
         }
       },
+      confirmToolExecution: opts?.sessionKey && opts?.senderId
+        ? (request) => this.confirmCatsCoToolExecution(topic, opts.sessionKey!, opts.senderId!, request)
+        : undefined,
     };
   }
 
@@ -773,7 +821,7 @@ export class CatsCompanyBot {
         localFileGrants,
         runtimeFeedback,
         pendingUserInputProvider: () => this.consumeQueuedUserInput(key, msg.executionScope),
-        callbacks: this.buildSessionCallbacks(msg.topic),
+        callbacks: this.buildSessionCallbacks(msg.topic, { sessionKey: key, senderId: msg.senderId }),
       });
 
       // 最终文本回复
@@ -1139,7 +1187,7 @@ export class CatsCompanyBot {
       const result = msg.source === 'subagent_feedback'
         ? await session.handleRuntimeObservation(msg.userMessage as string, {
           channel,
-          callbacks: this.buildSessionCallbacks(msg.topic),
+          callbacks: this.buildSessionCallbacks(msg.topic, { sessionKey, senderId: msg.senderId }),
           source: 'subagent_result',
           executionScope: msg.executionScope,
           localDeviceGrant: this.localDeviceGrant,
@@ -1156,7 +1204,7 @@ export class CatsCompanyBot {
           runtimeFeedback: msg.runtimeFeedback,
           localFileGrants: msg.localFileGrants,
           pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey, msg.executionScope),
-          callbacks: this.buildSessionCallbacks(msg.topic),
+          callbacks: this.buildSessionCallbacks(msg.topic, { sessionKey, senderId: msg.senderId }),
         });
       if (result.text.startsWith('处理消息时出错:')) {
         try {
@@ -1390,6 +1438,83 @@ export class CatsCompanyBot {
       '如果任务不明确，先提出一个最小澄清问题；如果任务足够明确，再自行执行。',
       this.formatAttachmentContext(attachments),
     ].join('\n');
+  }
+
+  private async confirmCatsCoToolExecution(
+    topic: string,
+    sessionKey: string,
+    senderId: string,
+    request: ToolExecutionConfirmationRequest,
+  ): Promise<ToolExecutionConfirmationResult> {
+    const prompt = this.formatToolConfirmationPrompt(request);
+    try {
+      await this.sender.reply(topic, prompt);
+    } catch (err: any) {
+      Logger.warning(`工具确认请求发送失败: ${err?.message || err}`);
+      return { approved: false, reason: '无法发送工具确认请求，已取消本次操作。' };
+    }
+
+    const answer = await new Promise<string>((resolve) => {
+      this.registerPendingAnswer(sessionKey, topic, senderId, resolve);
+    });
+    const decision = this.parseToolConfirmationAnswer(answer);
+    if (decision === 'approve') return true;
+    if (decision === 'deny') {
+      return { approved: false, reason: '用户未确认该工具操作，已取消。' };
+    }
+    return { approved: false, reason: '未收到明确确认，已取消该工具操作。' };
+  }
+
+  private formatToolConfirmationPrompt(request: ToolExecutionConfirmationRequest): string {
+    const riskLabel = request.risk === 'high' ? '高' : request.risk === 'medium' ? '中' : '低';
+    const target = this.formatToolConfirmationTarget(request.args);
+    return [
+      `需要你确认后才能继续执行 ${request.toolName}。`,
+      `风险等级：${riskLabel}`,
+      target ? `操作对象：${target}` : '',
+      request.reason,
+      '请只回复“同意”或“确认执行”继续；回复“取消”或“不确认”则不会执行。',
+    ].filter(Boolean).join('\n');
+  }
+
+  private formatToolConfirmationTarget(args: unknown): string {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return '';
+    const record = args as Record<string, unknown>;
+    const preferredKeys = ['file_path', 'path', 'target', 'command', 'pattern', 'description'];
+    for (const key of preferredKeys) {
+      const value = record[key];
+      if (typeof value === 'string' && value.trim()) {
+        return `${key}=${this.truncateConfirmationValue(value.trim())}`;
+      }
+    }
+    try {
+      return this.truncateConfirmationValue(JSON.stringify(record));
+    } catch {
+      return '';
+    }
+  }
+
+  private truncateConfirmationValue(value: string): string {
+    return value.length <= 160 ? value : `${value.slice(0, 157)}...`;
+  }
+
+  private parseToolConfirmationAnswer(answer: string): 'approve' | 'deny' | 'unknown' {
+    const text = String(answer || '').trim().toLowerCase().replace(/[。.!！\s]+$/g, '');
+    if (!text || text.includes('未在120秒内回复')) return 'unknown';
+    if (/^(取消|不同意|拒绝|不要|不行|否|no|n|cancel|deny|denied)$/i.test(text)
+      || /不\s*确认/.test(text)
+      || /不是\s*确认/.test(text)
+      || /别\s*执行/.test(text)
+      || /不要\s*执行/.test(text)
+      || text.includes('取消')
+      || text.includes('不同意')
+      || text.includes('拒绝')) {
+      return 'deny';
+    }
+    if (/^(同意|确认|确认执行|可以|可以继续|继续|继续执行|执行|yes|y|ok|approve|approved)$/i.test(text)) {
+      return 'approve';
+    }
+    return 'unknown';
   }
 
   private registerPendingAnswer(

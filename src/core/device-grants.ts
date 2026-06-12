@@ -45,6 +45,16 @@ export interface ResolveDeviceGrantOptions {
   now?: number;
 }
 
+const DELEGATED_DEVICE_GRANT_IDENTITY_SOURCES = new Set([
+  'channel_identity_link',
+]);
+
+export function isDelegatedDeviceGrant(grant: Pick<ScopedDeviceGrant, 'identityTrust' | 'identitySource' | 'ownerUserId' | 'actorUserId'>): boolean {
+  return grant.identityTrust === 'server_canonical'
+    && grant.ownerUserId !== grant.actorUserId
+    && DELEGATED_DEVICE_GRANT_IDENTITY_SOURCES.has(String(grant.identitySource || ''));
+}
+
 export function createUserDevice(input: CreateUserDeviceInput): UserDevice | undefined {
   const source = normalizeSource(input.source);
   const ownerUserId = normalizeId(input.ownerUserId);
@@ -188,7 +198,7 @@ export function validateDeviceGrant(
     ['agentBodyId', grant.agentBodyId, scope.agentBodyId],
   ].filter(([, grantValue, scopeValue]) => grantValue !== scopeValue);
 
-  if (grant.ownerUserId !== scope.actorUserId) {
+  if (grant.ownerUserId !== scope.actorUserId && !isDelegatedDeviceGrant(grant)) {
     mismatches.push(['ownerUserId', grant.ownerUserId, scope.actorUserId]);
   }
 

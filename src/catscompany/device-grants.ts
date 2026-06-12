@@ -7,6 +7,7 @@ import type {
   MessageTopicType,
   ScopedDeviceGrant,
 } from '../types/session-identity';
+import { isDelegatedDeviceGrant } from '../core/device-grants';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -82,7 +83,7 @@ function grantMatchesScope(grant: ScopedDeviceGrant, scope: ExecutionScope): boo
     && grant.topicId === scope.topicId
     && grant.topicType === scope.topicType
     && grant.actorUserId === scope.actorUserId
-    && grant.ownerUserId === scope.actorUserId
+    && (grant.ownerUserId === scope.actorUserId || isDelegatedDeviceGrant(grant))
     && grant.agentId === scope.agentId
     && grant.agentBodyId === scope.agentBodyId;
 }
@@ -113,7 +114,7 @@ function normalizeSource(value: string | undefined): MessageSource {
 }
 
 function normalizeStatus(value: string | undefined): DeviceGrantStatus {
-  return value === 'revoked' ? 'revoked' : 'active';
+  return value === 'active' ? 'active' : 'revoked';
 }
 
 function normalizeTrust(value: string | undefined): IdentityTrustLevel {

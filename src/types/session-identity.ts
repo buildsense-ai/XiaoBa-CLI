@@ -89,9 +89,11 @@ export type DeviceGrantOperation =
 export interface ScopedLocalDeviceGrant {
   kind: 'catscompany_body';
   source: MessageSource;
+  ownerUserId?: string;
   bodyId: string;
   installationId?: string;
   deviceId?: string;
+  capabilities?: DeviceGrantOperation[];
   createdAt: number;
 }
 

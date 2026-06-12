@@ -11,6 +11,7 @@ function botWithDevice(captured: { result?: any }): any {
   bot.localDeviceGrant = {
     kind: 'catscompany_body',
     source: 'catscompany',
+    ownerUserId: 'usr7',
     bodyId: 'body-device',
     installationId: 'install-device',
     deviceId: 'install-device',
@@ -33,6 +34,8 @@ function request(overrides: Partial<CatsDeviceRpcMessage> = {}): CatsDeviceRpcMe
     topic_id: 'p2p_7_43',
     topic_type: 'p2p',
     actor_user_id: 'usr7',
+    owner_user_id: 'usr7',
+    identity_source: 'metadata.catsco_identity',
     agent_id: 'usr43',
     agent_body_id: 'body-agent',
     device_id: 'install-device',
@@ -73,7 +76,7 @@ function serverGrant(overrides: Partial<ScopedDeviceGrant> = {}): ScopedDeviceGr
   };
 }
 
-describe('CatsCompany Device RPC readonly tools', () => {
+describe('CatsCompany Device RPC file tools', () => {
   test('maps CatsCo server grant fields into outbound readonly device_rpc requests', async () => {
     const captured: Array<{ request: any; timeoutMs?: number }> = [];
     const bot = Object.create(CatsCompanyBot.prototype) as any;
@@ -88,6 +91,8 @@ describe('CatsCompany Device RPC readonly tools', () => {
           topic_id: requestPayload.topic_id,
           topic_type: requestPayload.topic_type,
           actor_user_id: requestPayload.actor_user_id,
+          owner_user_id: requestPayload.owner_user_id,
+          identity_source: requestPayload.identity_source,
           agent_id: requestPayload.agent_id,
           agent_body_id: requestPayload.agent_body_id,
           device_id: requestPayload.device_id,
@@ -141,6 +146,8 @@ describe('CatsCompany Device RPC readonly tools', () => {
     assert.equal(first.topic_id, grant.topicId);
     assert.equal(first.topic_type, grant.topicType);
     assert.equal(first.actor_user_id, grant.actorUserId);
+    assert.equal(first.owner_user_id, grant.ownerUserId);
+    assert.equal(first.identity_source, grant.identitySource);
     assert.equal(first.agent_id, grant.agentId);
     assert.equal(first.agent_body_id, grant.agentBodyId);
     assert.equal(first.device_id, grant.deviceId);
@@ -171,7 +178,109 @@ describe('CatsCompany Device RPC readonly tools', () => {
     assert.equal(captured.result.device_id, 'install-device');
   });
 
-  test('rejects non-readonly Device RPC operations before local tool execution', async () => {
+  test('executes write_file on the target local device when RPC scope is valid', async () => {
+    const captured: { result?: any } = {};
+    const bot = botWithDevice(captured);
+    const tmpRoot = path.join(process.cwd(), 'tmp');
+    fs.mkdirSync(tmpRoot, { recursive: true });
+    const dir = fs.mkdtempSync(path.join(tmpRoot, 'device-rpc-write-'));
+    const filePath = path.join(dir, 'created.txt');
+
+    await bot.handleDeviceRpcRequest(request({
+      request_id: 'rpc-write-1',
+      operation: 'write_file',
+      tool_name: 'write_file',
+      payload: { args: { file_path: filePath, content: 'hello from rpc' } },
+    }));
+
+    assert.ok(captured.result);
+    assert.equal(captured.result.error, undefined);
+    assert.equal(captured.result.result.ok, true);
+    assert.equal(fs.readFileSync(filePath, 'utf8'), 'hello from rpc');
+  });
+
+  test('executes edit_file on the target local device when RPC scope is valid', async () => {
+    const captured: { result?: any } = {};
+    const bot = botWithDevice(captured);
+    const tmpRoot = path.join(process.cwd(), 'tmp');
+    fs.mkdirSync(tmpRoot, { recursive: true });
+    const dir = fs.mkdtempSync(path.join(tmpRoot, 'device-rpc-edit-'));
+    const filePath = path.join(dir, 'edit.txt');
+    fs.writeFileSync(filePath, 'before');
+
+    await bot.handleDeviceRpcRequest(request({
+      request_id: 'rpc-edit-1',
+      operation: 'edit_file',
+      tool_name: 'edit_file',
+      payload: { args: { file_path: filePath, old_string: 'before', new_string: 'after' } },
+    }));
+
+    assert.ok(captured.result);
+    assert.equal(captured.result.error, undefined);
+    assert.equal(captured.result.result.ok, true);
+    assert.equal(fs.readFileSync(filePath, 'utf8'), 'after');
+  });
+
+  test('rejects Device RPC requests missing owner identity', async () => {
+    const captured: { result?: any } = {};
+    const bot = botWithDevice(captured);
+
+    await bot.handleDeviceRpcRequest(request({
+      request_id: 'rpc-missing-owner-1',
+      owner_user_id: '',
+      operation: 'write_file',
+      tool_name: 'write_file',
+      payload: { args: { file_path: path.join(process.cwd(), 'tmp', 'missing-owner.txt'), content: 'nope' } },
+    }));
+
+    assert.ok(captured.result);
+    assert.equal(captured.result.result, undefined);
+    assert.equal(captured.result.error.code, 'invalid_request');
+    assert.match(captured.result.error.message, /owner_user_id/);
+  });
+
+  test('rejects Device RPC requests for a different device owner', async () => {
+    const captured: { result?: any } = {};
+    const bot = botWithDevice(captured);
+    const filePath = path.join(process.cwd(), 'tmp', 'wrong-owner.txt');
+
+    await bot.handleDeviceRpcRequest(request({
+      request_id: 'rpc-wrong-owner-1',
+      actor_user_id: 'usr8',
+      owner_user_id: 'usr8',
+      operation: 'write_file',
+      tool_name: 'write_file',
+      payload: { args: { file_path: filePath, content: 'nope' } },
+    }));
+
+    assert.ok(captured.result);
+    assert.equal(captured.result.result, undefined);
+    assert.equal(captured.result.error.code, 'PERMISSION_DENIED');
+    assert.match(captured.result.error.message, /owner 不一致|设备 owner/);
+    assert.equal(fs.existsSync(filePath), false);
+  });
+
+  test('rejects delegated Device RPC when owner and actor differ without channel identity source', async () => {
+    const captured: { result?: any } = {};
+    const bot = botWithDevice(captured);
+
+    await bot.handleDeviceRpcRequest(request({
+      request_id: 'rpc-bad-delegation-1',
+      actor_user_id: 'usr100',
+      owner_user_id: 'usr7',
+      identity_source: 'metadata.catsco_identity',
+      operation: 'write_file',
+      tool_name: 'write_file',
+      payload: { args: { file_path: path.join(process.cwd(), 'tmp', 'bad-delegated.txt'), content: 'nope' } },
+    }));
+
+    assert.ok(captured.result);
+    assert.equal(captured.result.result, undefined);
+    assert.equal(captured.result.error.code, 'invalid_request');
+    assert.match(captured.result.error.message, /channel_identity_link/);
+  });
+
+  test('rejects shell Device RPC operations before local tool execution', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
 
@@ -185,7 +294,7 @@ describe('CatsCompany Device RPC readonly tools', () => {
     assert.ok(captured.result);
     assert.equal(captured.result.result, undefined);
     assert.equal(captured.result.error.code, 'unsupported_operation');
-    assert.match(captured.result.error.message, /read_file, glob, and grep/);
+    assert.match(captured.result.error.message, /read_file, glob, grep, write_file, and edit_file/);
   });
 
   test('rejects Device RPC requests for another target device', async () => {

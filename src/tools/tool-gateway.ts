@@ -1,6 +1,6 @@
 import type { DeviceGrantOperation, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant } from '../types/session-identity';
 import type { ToolErrorCode, ToolExecutionContext } from '../types/tool';
-import { resolveDeviceGrant } from '../core/device-grants';
+import { isDelegatedDeviceGrant, resolveDeviceGrant } from '../core/device-grants';
 
 export type ToolGatewayDecision =
   | {
@@ -33,10 +33,21 @@ export interface CatsCoVisiblePathOptions {
   preserveRelative?: boolean;
 }
 
-const REMOTE_READONLY_OPERATIONS = new Set<DeviceGrantOperation>(['read_file', 'glob', 'grep']);
+const REMOTE_DEVICE_RPC_OPERATIONS = new Set<DeviceGrantOperation>(['read_file', 'glob', 'grep', 'write_file', 'edit_file']);
 
 export function isCatsCoToolGatewayContext(context: ToolExecutionContext): boolean {
   return context.surface === 'catscompany' || context.executionScope?.source === 'catscompany';
+}
+
+export function isCatsCoLocalOwnerSelfContext(context: ToolExecutionContext): boolean {
+  if (!isCatsCoToolGatewayContext(context)) return false;
+  const scope = context.executionScope;
+  const localDevice = context.localDeviceGrant;
+  if (!scope || scope.source !== 'catscompany' || scope.identityTrust !== 'server_canonical' || !scope.isTrusted) {
+    return false;
+  }
+  const ownerUserId = localDevice?.ownerUserId;
+  return Boolean(ownerUserId && ownerUserId === scope.actorUserId);
 }
 
 export function formatCatsCoVisiblePath(
@@ -76,13 +87,6 @@ export function resolveToolGatewayAccess(
     return { ok: true, mode: 'local' };
   }
 
-  if (options.operation === 'execute_shell' && !options.allowCatsCoShell) {
-    return denied([
-      'CatsCo 会话暂不允许通过 execute_shell 直接操作本机命令行。',
-      '当前 PR 只开放文件级设备授权；命令执行需要后续独立审批和更细的命令策略。',
-    ], options.targetLabel);
-  }
-
   const scope = context.executionScope;
   if (!scope || scope.source !== 'catscompany') {
     return denied(['当前工具调用缺少 CatsCo 执行身份，已阻止本地设备操作。'], options.targetLabel);
@@ -97,6 +101,14 @@ export function resolveToolGatewayAccess(
     return denied(['当前运行体缺少 CatsCo 本机设备绑定，已阻止本地设备操作。'], options.targetLabel);
   }
 
+  const localOwnerSelf = isCatsCoLocalOwnerSelfContext(context);
+  if (options.operation === 'execute_shell' && !localOwnerSelf && !options.allowCatsCoShell) {
+    return denied([
+      'CatsCo 会话暂不允许外部用户或远程委托通过 execute_shell 操作命令行。',
+      '命令执行只允许本机 owner 自用场景在用户确认后执行。',
+    ], options.targetLabel);
+  }
+
   const selectionScope = validateSelectionScope(context.deviceSelection, scope, options.targetLabel);
   if (!selectionScope.ok) return selectionScope;
 
@@ -105,10 +117,20 @@ export function resolveToolGatewayAccess(
     localDevice,
     options.operation,
     options.targetLabel,
+    { allowLocalSelfOperation: localOwnerSelf },
   );
   if (!selectedTarget.ok) return selectedTarget;
 
   const targetDeviceId = selectedTarget.deviceId || localDevice.deviceId || localDevice.installationId || localDevice.bodyId;
+  if (selectedTarget.mode === 'local' && localOwnerSelf) {
+    return {
+      ok: true,
+      mode: 'local',
+      targetDeviceId,
+      targetDeviceDisplayName: selectedTarget.displayName,
+    };
+  }
+
   const decision = resolveDeviceGrant(context, {
     operation: options.operation,
     deviceId: targetDeviceId,
@@ -122,10 +144,10 @@ export function resolveToolGatewayAccess(
 
   const grant = decision.grant;
   if (selectedTarget.mode === 'remote') {
-    if (!REMOTE_READONLY_OPERATIONS.has(options.operation)) {
+    if (!REMOTE_DEVICE_RPC_OPERATIONS.has(options.operation)) {
       return denied([
         `后端选定的用户设备不是当前运行体，但 ${options.operation} 还没有开放远程执行。`,
-        '当前 PR 只开放 read_file / glob / grep 三个只读远程工具。',
+        '当前只开放 read_file / glob / grep / write_file / edit_file 文件级远程工具；命令执行不走远程 RPC。',
       ], options.targetLabel);
     }
     if (!context.deviceRpc) {
@@ -144,6 +166,18 @@ export function resolveToolGatewayAccess(
       targetDeviceBodyId: selectedTarget.bodyId,
       targetDeviceInstallationId: selectedTarget.installationId,
     };
+  }
+
+  if (localDevice.ownerUserId && grant.ownerUserId !== localDevice.ownerUserId) {
+    return denied([
+      '设备授权归属与当前本机 owner 不一致，已阻止本地设备操作以避免他人会话误操作本机。',
+      `owner: grant=${grant.ownerUserId || '(empty)'} local=${localDevice.ownerUserId}`,
+    ], options.targetLabel);
+  }
+  if (grant.ownerUserId !== grant.actorUserId && !isDelegatedDeviceGrant(grant)) {
+    return denied([
+      '跨用户设备授权缺少服务端委托标记，已阻止本地设备操作。',
+    ], options.targetLabel);
   }
 
   const mismatches: string[] = [];
@@ -191,6 +225,7 @@ function resolveBackendSelectedDevice(
   localDevice: ScopedLocalDeviceGrant,
   operation: DeviceGrantOperation,
   targetLabel?: string,
+  options: { allowLocalSelfOperation?: boolean } = {},
 ): SelectedDeviceDecision {
   if (!selection) {
     return {
@@ -218,6 +253,24 @@ function resolveBackendSelectedDevice(
     return selectedDenied(['后端设备选择缺少 selectedDeviceId，已阻止本地设备操作。'], targetLabel);
   }
 
+  if (matchesLocalDevice(selection, localDevice)) {
+    if (!options.allowLocalSelfOperation
+      && Array.isArray(selection.selectedDeviceOperations)
+      && selection.selectedDeviceOperations.length > 0
+      && !selection.selectedDeviceOperations.includes(operation)) {
+      return selectedDenied([
+        `后端选定设备没有声明支持 ${operation}，已阻止设备工具调用。`,
+        selection.selectedDeviceDisplayName ? `Selected device: ${selection.selectedDeviceDisplayName}` : '',
+      ], targetLabel);
+    }
+    return {
+      ok: true,
+      mode: 'local',
+      deviceId: selectedDeviceId,
+      displayName: selection.selectedDeviceDisplayName,
+    };
+  }
+
   if (Array.isArray(selection.selectedDeviceOperations)
     && selection.selectedDeviceOperations.length > 0
     && !selection.selectedDeviceOperations.includes(operation)) {
@@ -225,15 +278,6 @@ function resolveBackendSelectedDevice(
       `后端选定设备没有声明支持 ${operation}，已阻止设备工具调用。`,
       selection.selectedDeviceDisplayName ? `Selected device: ${selection.selectedDeviceDisplayName}` : '',
     ], targetLabel);
-  }
-
-  if (matchesLocalDevice(selection, localDevice)) {
-    return {
-      ok: true,
-      mode: 'local',
-      deviceId: selectedDeviceId,
-      displayName: selection.selectedDeviceDisplayName,
-    };
   }
 
   return {

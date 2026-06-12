@@ -4,6 +4,7 @@ import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from 
 import { Logger } from '../utils/logger';
 import { isToolAllowed, isPathAllowed } from '../utils/safety';
 import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
+import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
 
 /**
  * Write 工具 - 写入文件内容
@@ -54,6 +55,8 @@ export class WriteTool implements Tool {
     if (!gateway.ok) {
       return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
     }
+    const remoteResult = await executeRemoteDeviceRpcTool(context, gateway, 'write_file', 'write_file', args);
+    if (remoteResult) return remoteResult;
 
     // 获取相对路径用于显示
     const relativePath = path.relative(context.workingDirectory, absolutePath);

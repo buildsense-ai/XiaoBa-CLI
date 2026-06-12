@@ -21,6 +21,7 @@ export interface CatsDeviceRegistration {
   display_name?: string;
   body_id?: string;
   installation_id?: string;
+  owner_user_id?: string;
   status?: 'online' | 'offline';
   capabilities?: string[];
 }
@@ -39,6 +40,8 @@ export interface CatsDeviceRpcMessage {
   topic_id?: string;
   topic_type?: string;
   actor_user_id?: string;
+  owner_user_id?: string;
+  identity_source?: string;
   agent_id?: string;
   agent_body_id?: string;
   device_id?: string;

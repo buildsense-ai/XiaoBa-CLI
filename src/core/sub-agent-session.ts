@@ -442,15 +442,16 @@ export class SubAgentSession {
       '请回复“确认/允许/yes”批准，或回复其他内容取消。',
     ].filter(Boolean).join('\n');
     const answer = await this.waitForParentInput(question);
-    const normalized = String(answer || '').trim().toLowerCase();
-    const approved = normalized === 'y'
-      || normalized === 'yes'
-      || normalized === 'ok'
-      || normalized === 'approve'
-      || normalized.includes('确认')
-      || normalized.includes('允许')
-      || normalized.includes('同意')
-      || normalized.includes('批准');
+    const normalized = String(answer || '').trim().toLowerCase().replace(/[。.!！\s]+$/g, '');
+    const denied = /^(取消|不同意|拒绝|不要|不行|否|no|n|cancel|deny|denied)$/i.test(normalized)
+      || /不\s*确认/.test(normalized)
+      || /不是\s*确认/.test(normalized)
+      || /别\s*执行/.test(normalized)
+      || /不要\s*执行/.test(normalized)
+      || normalized.includes('取消')
+      || normalized.includes('不同意')
+      || normalized.includes('拒绝');
+    const approved = !denied && /^(y|yes|ok|approve|approved|确认|确认执行|允许|允许执行|同意|批准|继续|继续执行)$/i.test(normalized);
     return approved
       ? { approved: true }
       : { approved: false, reason: `主会话未确认 ${request.toolName}，已取消。` };

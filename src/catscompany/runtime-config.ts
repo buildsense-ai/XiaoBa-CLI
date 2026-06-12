@@ -123,6 +123,7 @@ export function resolveCatsCoRuntimeConfig(
   const apiKey = proposedBotBinding || confirmedLocalBotBinding ? rawApiKey : undefined;
   const bodyId = localConfig.device?.bodyId;
   const installationId = localConfig.device?.installationId || bodyId;
+  const ownerUserId = firstNonEmpty(localConfig.currentBot?.boundByUserUid, auth.uid);
 
   const missing: CatsCoRuntimeMissingField[] = [];
   if (!serverUrl) missing.push('serverUrl');
@@ -137,6 +138,7 @@ export function resolveCatsCoRuntimeConfig(
       apiKey,
       bodyId,
       installationId,
+      ownerUserId,
       deviceName: localConfig.device?.name,
       httpBaseUrl,
       sessionTTL: config.catscompany?.sessionTTL,

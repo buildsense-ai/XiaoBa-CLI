@@ -12,6 +12,8 @@ export interface CatsCompanyConfig {
   bodyId?: string;
   /** 当前安装/设备 ID，默认与 bodyId 相同 */
   installationId?: string;
+  /** 当前本机设备归属的 CatsCo 用户 uid，用于区分本地自用与外部委托 */
+  ownerUserId?: string;
   /** 用户可见设备名，用于 Dashboard 展示和服务端设备选择 */
   deviceName?: string;
   /** HTTP 基础地址（用于文件上传），默认从 serverUrl 推导 */

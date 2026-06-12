@@ -7,6 +7,7 @@ import { DEFAULT_TOOL_NAMES } from '../src/tools/default-tool-names';
 import { ToolManager } from '../src/tools/tool-manager';
 import { AgentToolExecutor } from '../src/agents/agent-tool-executor';
 import type { Tool } from '../src/types/tool';
+import type { ExecutionScope, ScopedLocalDeviceGrant } from '../src/types/session-identity';
 
 function fakeTool(name: string, execute: Tool['execute']): Tool {
   return {
@@ -16,6 +17,35 @@ function fakeTool(name: string, execute: Tool['execute']): Tool {
       parameters: { type: 'object', properties: {} },
     },
     execute,
+  };
+}
+
+function catsScope(overrides: Partial<ExecutionScope> = {}): ExecutionScope {
+  return {
+    source: 'catscompany',
+    sessionKey: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
+    topicId: 'p2p_7_43',
+    topicType: 'p2p',
+    actorUserId: 'usr7',
+    agentId: 'usr43',
+    agentBodyId: 'body-local',
+    permissionsSource: 'server_canonical_message',
+    identityTrust: 'server_canonical',
+    isTrusted: true,
+    ...overrides,
+  };
+}
+
+function catsLocalDevice(overrides: Partial<ScopedLocalDeviceGrant> = {}): ScopedLocalDeviceGrant {
+  return {
+    kind: 'catscompany_body',
+    source: 'catscompany',
+    ownerUserId: 'usr7',
+    bodyId: 'body-local',
+    installationId: 'install-local',
+    deviceId: 'install-local',
+    createdAt: Date.now(),
+    ...overrides,
   };
 }
 
@@ -302,18 +332,23 @@ describe('ToolManager', () => {
     assert.equal(executed, false);
   });
 
-  test('CatsCo context is not intercepted by local confirmation layer', async () => {
+  test('CatsCo context can create new ordinary home files without confirmation', async () => {
     const manager = new ToolManager('/tmp/xiaoba-tool-manager', {}, { enabledToolNames: [] });
     let confirmed = false;
     manager.registerTool(fakeTool('write_file', async () => ({ ok: true, content: 'catsco tool ran' })));
+    const target = path.join(os.homedir(), `xiaoba-catsco-new-${Date.now()}.txt`);
 
     const result = await manager.executeTool({
       id: 'call-catsco-write',
       type: 'function',
-      function: { name: 'write_file', arguments: JSON.stringify({ file_path: 'a.txt', content: 'hello' }) },
+      function: { name: 'write_file', arguments: JSON.stringify({ file_path: target, content: 'hello' }) },
     }, [], {
       surface: 'catscompany',
       permissionProfile: 'strict',
+      workingDirectory: '/tmp/xiaoba-tool-manager',
+      workspaceRoot: '/tmp/xiaoba-tool-manager',
+      executionScope: catsScope(),
+      localDeviceGrant: catsLocalDevice(),
       confirmToolExecution: async () => {
         confirmed = true;
         return false;
@@ -323,6 +358,41 @@ describe('ToolManager', () => {
     assert.equal(result.ok, true);
     assert.equal(result.content, 'catsco tool ran');
     assert.equal(confirmed, false);
+  });
+
+  test('CatsCo context asks before overwriting local files', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-workspace-'));
+    const existing = path.join(workspace, 'a.txt');
+    fs.writeFileSync(existing, 'old');
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    let executed = false;
+    manager.registerTool(fakeTool('write_file', async () => {
+      executed = true;
+      return { ok: true, content: 'catsco overwrite ran' };
+    }));
+
+    const denied = await manager.executeTool({
+      id: 'call-catsco-overwrite',
+      type: 'function',
+      function: { name: 'write_file', arguments: JSON.stringify({ file_path: existing, content: 'hello' }) },
+    }, [], {
+      surface: 'catscompany',
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      executionScope: catsScope(),
+      localDeviceGrant: catsLocalDevice(),
+      confirmToolExecution: async request => {
+        assert.equal(request.toolName, 'write_file');
+        assert.equal(request.risk, 'medium');
+        return { approved: false, reason: '用户取消覆盖' };
+      },
+    });
+
+    assert.equal(denied.ok, false);
+    assert.equal(denied.errorCode, 'PERMISSION_DENIED');
+    assert.equal(denied.content, '用户取消覆盖');
+    assert.equal(executed, false);
   });
 
   test('AgentToolExecutor uses the same local confirmation gate', async () => {

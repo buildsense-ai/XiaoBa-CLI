@@ -41,6 +41,7 @@ function localDevice(overrides: Partial<ScopedLocalDeviceGrant> = {}): ScopedLoc
     bodyId: 'body-device',
     installationId: 'install-device',
     deviceId: 'install-device',
+    capabilities: ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file'],
     createdAt: Date.now(),
     ...overrides,
   };
@@ -408,6 +409,145 @@ describe('CatsCo ToolGateway', () => {
     }
   });
 
+  test('allows local owner self to write on the current device without a short-lived grant', async () => {
+    const root = makeWorkspace();
+    const result = await new WriteTool().execute({ file_path: 'owner.txt', content: 'hello owner' }, context(root, {
+      localDeviceGrant: localDevice({ ownerUserId: 'usr7' }),
+      deviceSelection: deviceSelection({
+        selectedDeviceOperations: ['read_file', 'glob', 'grep'],
+      }),
+    }));
+
+    assert.equal(result.ok, true);
+    assert.equal(fs.readFileSync(path.join(root, 'owner.txt'), 'utf8'), 'hello owner');
+  });
+
+  test('rejects external actor grant that points at the local owner device without delegation', async () => {
+    const root = makeWorkspace();
+    const externalScope = scope({ actorUserId: 'usr100' });
+    const result = await new WriteTool().execute({ file_path: 'external.txt', content: 'nope' }, context(root, {
+      executionScope: externalScope,
+      localDeviceGrant: localDevice({ ownerUserId: 'usr7' }),
+      deviceGrants: [deviceGrant(['write_file'], {
+        sessionKey: externalScope.sessionKey,
+        topicId: externalScope.topicId,
+        topicType: externalScope.topicType,
+        actorUserId: externalScope.actorUserId,
+        ownerUserId: externalScope.actorUserId,
+        agentId: externalScope.agentId,
+        agentBodyId: externalScope.agentBodyId,
+      })],
+      deviceSelection: deviceSelection({
+        actorUserId: externalScope.actorUserId,
+        selectedDeviceOperations: ['write_file'],
+      }),
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.message, /owner 不一致/);
+    assert.equal(fs.existsSync(path.join(root, 'external.txt')), false);
+  });
+
+  test('allows server canonical delegated grant to operate the matching local owner device', async () => {
+    const root = makeWorkspace();
+    const delegatedScope = scope({ actorUserId: 'usr100' });
+    const result = await new WriteTool().execute({ file_path: 'delegated.txt', content: 'ok' }, context(root, {
+      executionScope: delegatedScope,
+      localDeviceGrant: localDevice({ ownerUserId: 'usr7' }),
+      deviceGrants: [deviceGrant(['write_file'], {
+        sessionKey: delegatedScope.sessionKey,
+        topicId: delegatedScope.topicId,
+        topicType: delegatedScope.topicType,
+        actorUserId: delegatedScope.actorUserId,
+        ownerUserId: 'usr7',
+        identitySource: 'channel_identity_link',
+        agentId: delegatedScope.agentId,
+        agentBodyId: delegatedScope.agentBodyId,
+      })],
+      deviceSelection: deviceSelection({
+        actorUserId: delegatedScope.actorUserId,
+        selectedDeviceOperations: ['write_file'],
+      }),
+    }));
+
+    assert.equal(result.ok, true);
+    assert.equal(fs.readFileSync(path.join(root, 'delegated.txt'), 'utf8'), 'ok');
+  });
+
+  test('allows write_file when the selected local device advertises write capability', async () => {
+    const root = makeWorkspace();
+    const result = await new WriteTool().execute({ file_path: 'out.txt', content: 'hello' }, context(root, {
+      deviceGrants: [deviceGrant(['write_file'])],
+      deviceSelection: deviceSelection({
+        selectedDeviceOperations: ['read_file', 'glob', 'grep', 'write_file', 'edit_file'],
+      }),
+    }));
+
+    assert.equal(result.ok, true);
+    assert.equal(fs.readFileSync(path.join(root, 'out.txt'), 'utf8'), 'hello');
+  });
+
+  test('routes remote write_file through Device RPC without local fallback', async () => {
+    const root = makeWorkspace();
+    const calls: any[] = [];
+    const result = await new WriteTool().execute({ file_path: 'remote.txt', content: 'from chat' }, context(root, {
+      deviceGrants: [deviceGrant(['write_file'], {
+        deviceId: 'remote-device',
+        deviceBodyId: 'remote-body',
+        deviceInstallationId: 'remote-install',
+      })],
+      deviceSelection: deviceSelection({
+        selectedDeviceId: 'remote-device',
+        selectedDeviceBodyId: 'remote-body',
+        selectedDeviceInstallationId: 'remote-install',
+        selectedDeviceOperations: ['write_file'],
+      }),
+      deviceRpc: {
+        executeTool: async request => {
+          calls.push(request);
+          return { ok: true, content: 'remote wrote file' };
+        },
+      },
+    }));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok ? result.content : '', 'remote wrote file');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].toolName, 'write_file');
+    assert.equal(fs.existsSync(path.join(root, 'remote.txt')), false);
+  });
+
+  test('routes remote edit_file through Device RPC without local fallback', async () => {
+    const root = makeWorkspace();
+    fs.writeFileSync(path.join(root, 'local.txt'), 'before');
+    const calls: any[] = [];
+    const result = await new EditTool().execute({ file_path: 'local.txt', old_string: 'before', new_string: 'after' }, context(root, {
+      deviceGrants: [deviceGrant(['edit_file'], {
+        deviceId: 'remote-device',
+        deviceBodyId: 'remote-body',
+        deviceInstallationId: 'remote-install',
+      })],
+      deviceSelection: deviceSelection({
+        selectedDeviceId: 'remote-device',
+        selectedDeviceBodyId: 'remote-body',
+        selectedDeviceInstallationId: 'remote-install',
+        selectedDeviceOperations: ['edit_file'],
+      }),
+      deviceRpc: {
+        executeTool: async request => {
+          calls.push(request);
+          return { ok: true, content: 'remote edited file' };
+        },
+      },
+    }));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok ? result.content : '', 'remote edited file');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].toolName, 'edit_file');
+    assert.equal(fs.readFileSync(path.join(root, 'local.txt'), 'utf8'), 'before');
+  });
+
   test('blocks execute_shell in CatsCo sessions even when a grant contains execute_shell', async () => {
     const root = makeWorkspace();
     const result = await new ShellTool().execute({ command: 'echo hello' }, context(root, {
@@ -417,7 +557,7 @@ describe('CatsCo ToolGateway', () => {
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.equal(result.errorCode, 'PERMISSION_DENIED');
-      assert.match(result.message, /暂不允许通过 execute_shell/);
+      assert.match(result.message, /暂不允许外部用户或远程委托通过 execute_shell/);
     }
   });
 });

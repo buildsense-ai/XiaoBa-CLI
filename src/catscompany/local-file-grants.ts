@@ -15,6 +15,8 @@ export interface CatsCoDeviceGrantInput {
   bodyId?: string;
   installationId?: string;
   deviceId?: string;
+  ownerUserId?: string;
+  capabilities?: ScopedLocalDeviceGrant['capabilities'];
 }
 
 export interface CatsCoAttachmentGrantInput {
@@ -31,9 +33,11 @@ export function createCatsCoLocalDeviceGrant(input: CatsCoDeviceGrantInput): Sco
   return {
     kind: 'catscompany_body',
     source: 'catscompany',
+    ownerUserId: safeString(input.ownerUserId),
     bodyId,
     installationId: safeString(input.installationId),
     deviceId: safeString(input.deviceId),
+    capabilities: input.capabilities,
     createdAt: Date.now(),
   };
 }

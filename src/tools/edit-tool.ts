@@ -3,6 +3,7 @@ import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { isToolAllowed, isPathAllowed } from '../utils/safety';
 import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
+import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
 
 /**
  * Edit 工具 - 精确字符串替换
@@ -62,6 +63,8 @@ export class EditTool implements Tool {
     if (!gateway.ok) {
       return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
     }
+    const remoteResult = await executeRemoteDeviceRpcTool(context, gateway, 'edit_file', 'edit_file', args);
+    if (remoteResult) return remoteResult;
     const displayPath = formatCatsCoVisiblePath(context, file_path, { preserveRelative: true });
 
     // 检查文件是否存在
