@@ -32,6 +32,8 @@ describe('dashboard typed settings API', () => {
     'CATSCO_RELAY_LLM_API_KEY',
     'CATSCO_RELAY_LLM_MODEL',
     'CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS',
+    'CATSCO_RELAY_LLM_VISION_CAPABLE',
+    'CATSCO_RELAY_LLM_TOOL_CALLING_CAPABLE',
     'CATSCO_HTTP_BASE_URL',
     'CATSCO_SERVER_URL',
     'CATSCO_USER_TOKEN',
@@ -730,18 +732,20 @@ describe('dashboard typed settings API', () => {
       assert.equal(response.status, 200, text);
       const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
 
-      assert.equal(data.provider, 'anthropic');
-      assert.equal(data.apiBase, 'https://relay.catsco.cc/anthropic');
+      assert.equal(data.provider, 'openai');
+      assert.equal(data.apiBase, 'https://relay.catsco.cc/v1');
       assert.equal(data.model, 'deepseek-v4-flash');
       assert.equal(data.selectedModel.id, 'deepseek-v4-flash');
-      assert.equal(data.selectedModel.base_url, 'https://relay.catsco.cc/anthropic');
-      assert.equal(data.selectedModel.sdk_label, 'Anthropic SDK');
-      assert.equal(parsed.GAUZ_LLM_PROVIDER, 'anthropic');
-      assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
+      assert.equal(data.selectedModel.base_url, 'https://relay.catsco.cc/v1');
+      assert.equal(data.selectedModel.sdk_label, 'OpenAI SDK');
+      assert.equal(parsed.GAUZ_LLM_PROVIDER, 'openai');
+      assert.equal(parsed.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/v1');
       assert.equal(parsed.GAUZ_LLM_MODEL, 'deepseek-v4-flash');
       assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '1000000');
       assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-bf-openai-compatible');
       assert.equal(parsed.CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS, '1000000');
+      assert.equal(parsed.CATSCO_RELAY_LLM_VISION_CAPABLE, 'false');
+      assert.equal(parsed.CATSCO_RELAY_LLM_TOOL_CALLING_CAPABLE, 'true');
       assert.equal(data.selectedModel.context_window_tokens, 1000000);
       assert.equal(data.selectedModel.context_label, '1M');
       assert.equal(data.selectedModel.capabilities.vision, false);
@@ -1347,6 +1351,61 @@ describe('dashboard typed settings API', () => {
       });
       assert.equal('tool_calling' in data.selectedModel.capabilities, false);
       assert.deepStrictEqual(data.models[0].capabilities, data.selectedModel.capabilities);
+    } finally {
+      await new Promise<void>(resolve => catsServer.close(() => resolve()));
+    }
+  });
+
+  test('GET /cats/relay/model-config lets upstream capabilities override local relay profiles', async () => {
+    const catsApp = express();
+    catsApp.use(express.json());
+    catsApp.get('/api/relay/config', (_req, res) => {
+      res.json({
+        base_url: 'https://relay.catsco.cc',
+        default_model: 'minimax-m3',
+        self_service_enabled: false,
+        endpoints: [
+          { protocol: 'OpenAI-compatible', base_url: 'https://relay.catsco.cc/v1' },
+          { protocol: 'Anthropic-compatible', base_url: 'https://relay.catsco.cc/anthropic' },
+        ],
+        models: [
+          {
+            id: 'minimax-m3',
+            label: 'MiniMax M3',
+            model: 'MiniMax-M3',
+            provider: 'openai',
+            protocol: 'OpenAI-compatible',
+            enabled: true,
+            capabilities: {
+              vision: false,
+              tool_calling: false,
+            },
+          },
+        ],
+      });
+    });
+    const catsServer = await listen(catsApp);
+    const address = catsServer.address();
+    if (!address || typeof address === 'string') throw new Error('cats server did not bind');
+
+    try {
+      process.env.CATSCO_USER_TOKEN = 'user-token';
+      process.env.CATSCO_USER_UID = '38';
+      process.env.CATSCO_HTTP_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+      const response = await fetch(`${baseUrl}/api/cats/relay/model-config?modelId=minimax-m3`);
+      const text = await response.text();
+      const data = JSON.parse(text) as any;
+
+      assert.equal(response.status, 200, text);
+      assert.equal(data.selectedModel.provider, 'openai');
+      assert.equal(data.selectedModel.base_url, 'https://relay.catsco.cc/v1');
+      assert.equal(data.selectedModel.sdk_label, 'OpenAI SDK');
+      assert.deepStrictEqual(data.selectedModel.capabilities, {
+        tool_calling: false,
+        vision: false,
+        streaming: true,
+      });
     } finally {
       await new Promise<void>(resolve => catsServer.close(() => resolve()));
     }

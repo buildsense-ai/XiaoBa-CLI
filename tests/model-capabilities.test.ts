@@ -103,4 +103,35 @@ describe('model capabilities', () => {
       true,
     );
   });
+
+  test('respects persisted relay capability overrides from CatsCo model catalog', () => {
+    const previousVision = process.env.CATSCO_RELAY_LLM_VISION_CAPABLE;
+    const previousToolCalling = process.env.CATSCO_RELAY_LLM_TOOL_CALLING_CAPABLE;
+    try {
+      process.env.CATSCO_RELAY_LLM_VISION_CAPABLE = 'false';
+      process.env.CATSCO_RELAY_LLM_TOOL_CALLING_CAPABLE = 'false';
+
+      assert.strictEqual(
+        isPrimaryModelVisionCapable({
+          provider: 'anthropic',
+          apiUrl: 'https://relay.catsco.cc/anthropic',
+          model: 'MiniMax-M3',
+        }),
+        false,
+      );
+      assert.strictEqual(
+        isPrimaryModelToolCallingCapable({
+          provider: 'anthropic',
+          apiUrl: 'https://relay.catsco.cc/anthropic',
+          model: 'MiniMax-M3',
+        }),
+        false,
+      );
+    } finally {
+      if (previousVision === undefined) delete process.env.CATSCO_RELAY_LLM_VISION_CAPABLE;
+      else process.env.CATSCO_RELAY_LLM_VISION_CAPABLE = previousVision;
+      if (previousToolCalling === undefined) delete process.env.CATSCO_RELAY_LLM_TOOL_CALLING_CAPABLE;
+      else process.env.CATSCO_RELAY_LLM_TOOL_CALLING_CAPABLE = previousToolCalling;
+    }
+  });
 });

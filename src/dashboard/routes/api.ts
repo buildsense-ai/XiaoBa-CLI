@@ -178,6 +178,8 @@ interface RelayModelConfig {
 }
 
 const MODEL_SOURCE_ENV_KEY = 'CATSCO_MODEL_SOURCE';
+const RELAY_MODEL_VISION_CAPABLE_ENV_KEY = 'CATSCO_RELAY_LLM_VISION_CAPABLE';
+const RELAY_MODEL_TOOL_CALLING_CAPABLE_ENV_KEY = 'CATSCO_RELAY_LLM_TOOL_CALLING_CAPABLE';
 const CUSTOM_MODEL_ENV_KEYS = {
   provider: 'CATSCO_CUSTOM_LLM_PROVIDER',
   apiBase: 'CATSCO_CUSTOM_LLM_API_BASE',
@@ -853,6 +855,12 @@ function normalizeRelayProvider(value: unknown): RelayModelProvider {
   return String(value || '').trim().toLowerCase().includes('openai') ? 'openai' : 'anthropic';
 }
 
+function explicitRelayProvider(item: any): RelayModelProvider | undefined {
+  if (!item || typeof item !== 'object') return undefined;
+  if (item.provider == null && item.protocol == null) return undefined;
+  return normalizeRelayProvider(item.provider ?? item.protocol);
+}
+
 function relayEndpointForProtocol(config: any, protocol: RelayModelProtocol): string {
   const endpoints = Array.isArray(config?.endpoints) ? config.endpoints : [];
   const endpoint = endpoints.find((item: any) => {
@@ -875,17 +883,18 @@ function canonicalRelayModelName(value: unknown): string {
 }
 
 function relayModelCapabilitiesPayload(item: any, profile?: RelayModelProfile): RelayModelConfig['capabilities'] {
-  if (profile) {
-    return {
+  const capabilities = item?.capabilities;
+  const payload: RelayModelConfig['capabilities'] = profile
+    ? {
       tool_calling: profile.capabilities.toolCalling,
       vision: profile.capabilities.vision,
       streaming: profile.capabilities.streaming,
-    };
+    }
+    : {};
+  if (!capabilities || typeof capabilities !== 'object') {
+    return Object.keys(payload).length > 0 ? payload : undefined;
   }
 
-  const capabilities = item?.capabilities;
-  if (!capabilities || typeof capabilities !== 'object') return undefined;
-  const payload: RelayModelConfig['capabilities'] = {};
   const toolCalling = optionalBoolean(capabilities.tool_calling ?? capabilities.toolCalling);
   const vision = optionalBoolean(capabilities.vision);
   const streaming = optionalBoolean(capabilities.streaming);
@@ -911,7 +920,8 @@ function normalizeRelayModelConfig(item: any, config: any, index: number): Relay
   if (!rawModel) return null;
   const profile = findRelayModelProfile(rawModel);
   const model = profile?.model || rawModel;
-  const provider = profile?.preferredProvider
+  const provider = explicitRelayProvider(item)
+    ?? profile?.preferredProvider
     ?? normalizeRelayProvider(item?.provider ?? item?.protocol);
   const protocol = relayModelProviderProtocolLabel(provider);
   const baseUrl = relayEndpointForProtocol(config, provider);
@@ -1192,6 +1202,8 @@ function writeCustomModelStartupConfig(): { profile: ModelLaunchProfile; updated
     ...modelProfileUpdates(CUSTOM_MODEL_ENV_KEYS, profile),
     ...modelProfileUpdates(EFFECTIVE_MODEL_ENV_KEYS, profile),
     [MODEL_SOURCE_ENV_KEY]: 'custom',
+    [RELAY_MODEL_VISION_CAPABLE_ENV_KEY]: undefined,
+    [RELAY_MODEL_TOOL_CALLING_CAPABLE_ENV_KEY]: undefined,
   });
   return { profile, ...result };
 }
@@ -1209,6 +1221,8 @@ function writeRelayModelStartupConfig(model: RelayModelConfig, apiKey: string): 
     ...modelProfileUpdates(RELAY_MODEL_ENV_KEYS, profile),
     ...modelProfileUpdates(EFFECTIVE_MODEL_ENV_KEYS, profile),
     [MODEL_SOURCE_ENV_KEY]: 'relay',
+    [RELAY_MODEL_VISION_CAPABLE_ENV_KEY]: model.capabilities?.vision === undefined ? undefined : String(model.capabilities.vision),
+    [RELAY_MODEL_TOOL_CALLING_CAPABLE_ENV_KEY]: model.capabilities?.tool_calling === undefined ? undefined : String(model.capabilities.tool_calling),
   });
   return {
     updated: [...preserved, ...result.updated],
