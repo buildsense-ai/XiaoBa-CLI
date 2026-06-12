@@ -172,6 +172,23 @@ describe('dashboard typed settings API', () => {
     assert.equal(text.includes('token=secret'), false);
   });
 
+  test('GET /settings exposes fixed custom model context window tiers', async () => {
+    fs.writeFileSync(path.join(testRoot, '.env'), [
+      'GAUZ_LLM_CONTEXT_WINDOW_TOKENS=256000',
+      'CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS=256000',
+      '',
+    ].join('\n'));
+
+    const response = await fetch(`${baseUrl}/api/settings`);
+    const data = await response.json() as any;
+    const contextWindow = data.fields.find((field: any) => field.id === 'model.contextWindowTokens');
+
+    assert.equal(response.status, 200);
+    assert.equal(contextWindow.value, '256000');
+    assert.deepStrictEqual(contextWindow.options, ['128000', '200000', '256000', '512000', '1000000']);
+    assert.equal(data.modelStartup.custom.contextWindowTokens, 256000);
+  });
+
   test('PUT /settings writes allowlisted model settings and refreshes process env', async () => {
     const response = await fetch(`${baseUrl}/api/settings`, {
       method: 'PUT',
@@ -181,6 +198,7 @@ describe('dashboard typed settings API', () => {
           'model.provider': 'anthropic',
           'model.apiBase': 'https://model.example.test/v1/messages',
           'model.model': 'MiniMax-M2.7-highspeed',
+          'model.contextWindowTokens': '512000',
           'model.apiKey': { action: 'replace', value: 'sk-new-secret' },
         },
       }),
@@ -194,17 +212,21 @@ describe('dashboard typed settings API', () => {
     assert.deepStrictEqual(data.updated.sort(), [
       'GAUZ_LLM_API_BASE',
       'GAUZ_LLM_API_KEY',
+      'GAUZ_LLM_CONTEXT_WINDOW_TOKENS',
       'GAUZ_LLM_MODEL',
       'GAUZ_LLM_PROVIDER',
     ].sort());
     assert.equal(text.includes('sk-new-secret'), false);
     assert.equal(parsed.GAUZ_LLM_API_KEY, 'sk-new-secret');
+    assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '512000');
     assert.equal(parsed.CATSCO_MODEL_SOURCE, 'custom');
     assert.equal(parsed.CATSCO_CUSTOM_LLM_PROVIDER, 'anthropic');
     assert.equal(parsed.CATSCO_CUSTOM_LLM_API_BASE, 'https://model.example.test/v1/messages');
     assert.equal(parsed.CATSCO_CUSTOM_LLM_MODEL, 'MiniMax-M2.7-highspeed');
     assert.equal(parsed.CATSCO_CUSTOM_LLM_API_KEY, 'sk-new-secret');
+    assert.equal(parsed.CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS, '512000');
     assert.equal(process.env.GAUZ_LLM_API_KEY, 'sk-new-secret');
+    assert.equal(process.env.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '512000');
 
     const statusResponse = await fetch(`${baseUrl}/api/status`);
     const status = await statusResponse.json() as any;
@@ -320,6 +342,7 @@ describe('dashboard typed settings API', () => {
           'model.provider': 'openai',
           'model.apiBase': 'https://api.deepseek.com/v1',
           'model.model': 'deepseek-chat-v2',
+          'model.contextWindowTokens': '512000',
           'model.apiKey': { action: 'keep' },
         },
       }),
@@ -333,6 +356,8 @@ describe('dashboard typed settings API', () => {
     assert.equal(parsed.CATSCO_CUSTOM_LLM_API_KEY, 'sk-custom-secret');
     assert.equal(parsed.CATSCO_RELAY_LLM_API_KEY, 'sk-bf-relay-secret');
     assert.equal(parsed.CATSCO_CUSTOM_LLM_MODEL, 'deepseek-chat-v2');
+    assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '512000');
+    assert.equal(parsed.CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS, '512000');
   });
 
   test('saving incomplete custom settings keeps active relay startup intact', async () => {
@@ -454,6 +479,20 @@ describe('dashboard typed settings API', () => {
     const unsafeUrl = await unsafeUrlResponse.json() as any;
     assert.equal(unsafeUrlResponse.status, 400);
     assert.match(unsafeUrl.error, /must not include credentials, query, or fragment/);
+    assert.equal(fs.existsSync(path.join(testRoot, '.env')), false);
+
+    const invalidContextResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        settings: {
+          'model.contextWindowTokens': '999999',
+        },
+      }),
+    });
+    const invalidContext = await invalidContextResponse.json() as any;
+    assert.equal(invalidContextResponse.status, 400);
+    assert.match(invalidContext.error, /model\.contextWindowTokens must be one of/);
     assert.equal(fs.existsSync(path.join(testRoot, '.env')), false);
   });
 

@@ -32,7 +32,10 @@ test('Agent Hub keeps connector controls and third-party model config without du
   assert.match(dashboardHtml, /\/api\/cats\/relay\/model-config\/apply/);
   assert.match(dashboardHtml, /service-config/);
   assert.match(dashboardHtml, /CatsCo 中转模型在 CatsCo 页面选择/);
-  assert.match(dashboardHtml, /自定义模型默认使用 128K 安全上下文/);
+  assert.match(dashboardHtml, /CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS/);
+  assert.match(dashboardHtml, /id="model-context-window-setting"/);
+  assert.match(dashboardHtml, /'model\.contextWindowTokens':document\.getElementById\('model-context-window-setting'\)\.value/);
+  assert.match(dashboardHtml, /自定义模型可在 128K 到 1M 间选择上下文/);
   assert.match(dashboardHtml, /上下文 '\+escapeHtml\(contextLabel\)\+'/);
   assert.doesNotMatch(servicesPageHtml, /模型来源与 Runtime Profile/);
   assert.doesNotMatch(servicesPageHtml, /id="settings-setup-panel"/);
