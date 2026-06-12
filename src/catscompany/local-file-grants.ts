@@ -33,7 +33,7 @@ export function createCatsCoLocalDeviceGrant(input: CatsCoDeviceGrantInput): Sco
   return {
     kind: 'catscompany_body',
     source: 'catscompany',
-    ownerUserId: safeString(input.ownerUserId),
+    ownerUserId: normalizeCatsCoUserId(input.ownerUserId),
     bodyId,
     installationId: safeString(input.installationId),
     deviceId: safeString(input.deviceId),
@@ -115,4 +115,10 @@ function safeString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const text = value.trim();
   return text || undefined;
+}
+
+function normalizeCatsCoUserId(value: unknown): string | undefined {
+  const text = safeString(value);
+  if (!text) return undefined;
+  return /^\d+$/.test(text) ? `usr${text}` : text;
 }

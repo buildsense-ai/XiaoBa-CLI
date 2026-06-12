@@ -425,6 +425,38 @@ describe('ToolManager', () => {
     assert.equal(confirmed, false);
   });
 
+  test('CatsCo local owner self accepts numeric local owner ids from saved config', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-owner-id-'));
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    let executed = false;
+    manager.registerTool(fakeTool('write_file', async () => {
+      executed = true;
+      return { ok: true, content: 'catsco write ran' };
+    }));
+    let confirmed = false;
+
+    const result = await manager.executeTool({
+      id: 'call-catsco-numeric-owner',
+      type: 'function',
+      function: { name: 'write_file', arguments: JSON.stringify({ file_path: 'a.txt', content: 'hello' }) },
+    }, [], {
+      surface: 'catscompany',
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      executionScope: catsScope({ actorUserId: 'usr7' }),
+      localDeviceGrant: catsLocalDevice({ ownerUserId: '7' }),
+      confirmToolExecution: async () => {
+        confirmed = true;
+        return false;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(executed, true);
+    assert.equal(confirmed, false);
+  });
+
   test('AgentToolExecutor uses the same local confirmation gate', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-agent-workspace-'));
     fs.writeFileSync(path.join(workspace, 'a.txt'), 'old');

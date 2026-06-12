@@ -422,6 +422,19 @@ describe('CatsCo ToolGateway', () => {
     assert.equal(fs.readFileSync(path.join(root, 'owner.txt'), 'utf8'), 'hello owner');
   });
 
+  test('allows local owner self when saved local config has numeric owner id', async () => {
+    const root = makeWorkspace();
+    const result = await new WriteTool().execute({ file_path: 'owner-numeric.txt', content: 'hello owner' }, context(root, {
+      localDeviceGrant: localDevice({ ownerUserId: '7' }),
+      deviceSelection: deviceSelection({
+        selectedDeviceOperations: ['read_file', 'glob', 'grep'],
+      }),
+    }));
+
+    assert.equal(result.ok, true);
+    assert.equal(fs.readFileSync(path.join(root, 'owner-numeric.txt'), 'utf8'), 'hello owner');
+  });
+
   test('rejects external actor grant that points at the local owner device without delegation', async () => {
     const root = makeWorkspace();
     const externalScope = scope({ actorUserId: 'usr100' });

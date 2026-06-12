@@ -47,7 +47,7 @@ export function isCatsCoLocalOwnerSelfContext(context: ToolExecutionContext): bo
     return false;
   }
   const ownerUserId = localDevice?.ownerUserId;
-  return Boolean(ownerUserId && ownerUserId === scope.actorUserId);
+  return sameCatsCoUserId(ownerUserId, scope.actorUserId);
 }
 
 export function formatCatsCoVisiblePath(
@@ -168,7 +168,7 @@ export function resolveToolGatewayAccess(
     };
   }
 
-  if (localDevice.ownerUserId && grant.ownerUserId !== localDevice.ownerUserId) {
+  if (localDevice.ownerUserId && !sameCatsCoUserId(grant.ownerUserId, localDevice.ownerUserId)) {
     return denied([
       '设备授权归属与当前本机 owner 不一致，已阻止本地设备操作以避免他人会话误操作本机。',
       `owner: grant=${grant.ownerUserId || '(empty)'} local=${localDevice.ownerUserId}`,
@@ -357,4 +357,16 @@ function looksLikeAbsoluteLocalPath(value: string): boolean {
     || /^\\\\/.test(value)
     || /^\//.test(value)
     || /^~[\\/]/.test(value);
+}
+
+function sameCatsCoUserId(left: string | undefined, right: string | undefined): boolean {
+  const normalizedLeft = normalizeCatsCoUserId(left);
+  const normalizedRight = normalizeCatsCoUserId(right);
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
+}
+
+function normalizeCatsCoUserId(value: string | undefined): string {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return /^\d+$/.test(text) ? `usr${text}` : text;
 }
