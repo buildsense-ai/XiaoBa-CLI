@@ -8,14 +8,18 @@ import { resolveOutboundTarget } from './outbound-gateway';
 export class SendTextTool implements Tool {
   definition: ToolDefinition = {
     name: 'send_text',
-    description: '发送一条文本消息给用户。如果内容较长（超过 150 字），应该分成多段，多次调用此工具发送，每段 50-150 字。',
+    description: [
+      '发送一条简短文本消息给用户。',
+      '优先用于结论、确认、进度说明和一句话交付提示。',
+      '不要把完整报告、长表格、长代码或长篇分析拆成多条 send_text 刷屏；这类内容应先用 write_file 生成 HTML/Markdown/CSV 等文件，再用 send_file 发给用户。',
+    ].join('\n'),
     transcriptMode: 'outbound_message',
     parameters: {
       type: 'object',
       properties: {
         text: {
           type: 'string',
-          description: '要发送的文本内容。建议每条 50-150 字，保持语义完整。',
+          description: '要发送的简短文本内容。保持语义完整，适合在聊天气泡中快速扫读。',
         },
       },
       required: ['text'],

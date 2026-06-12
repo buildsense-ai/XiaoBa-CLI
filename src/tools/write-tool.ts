@@ -11,7 +11,7 @@ import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gatewa
 export class WriteTool implements Tool {
   definition: ToolDefinition = {
     name: 'write_file',
-    description: '写入文件内容。可以创建新文件或覆盖现有文件。',
+    description: '写入文件内容。可以创建新文件或覆盖现有文件。适合生成可交付产物，例如 HTML 可视化报告、Markdown 摘要文档、CSV 数据表或代码文件；生成后可用 send_file 发送给用户。',
     parameters: {
       type: 'object',
       properties: {

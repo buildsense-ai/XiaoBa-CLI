@@ -112,6 +112,8 @@ describe('runtime characterization', () => {
     assert.ok(surface);
     assert.match(surface, /当前是 CatsCo 聊天会话/);
     assert.match(surface, /每次文本输出都会立即自动发送给用户/);
+    assert.match(surface, /优先让聊天气泡轻、短、好扫读/);
+    assert.match(surface, /HTML 适合可视化报告/);
 
     const groupSession = new AgentSession('cc_group:demo', buildMockServices());
     setSessionSystemPrompt(groupSession, 'cc_group:demo', 'catscompany');

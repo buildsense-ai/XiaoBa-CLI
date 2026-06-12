@@ -26,6 +26,21 @@ describe('surface prompt', () => {
     '- Use current catsco_attachment:<id> references for received attachments; local tmp/downloads paths are backend-only and should not be guessed or reused.',
   ].join('\n');
 
+  const catscoReplyStyleInstruction = [
+    '【CatsCo 回复呈现】优先让聊天气泡轻、短、好扫读。',
+    '',
+    '默认回复：',
+    '- 先给结论；普通问答用 1-3 句或最多 3 个要点。',
+    '- 不把完整报告、长表格、长代码、长步骤直接堆进聊天气泡。',
+    '- 用户明确要详细解释时，也先给摘要，再按需要展开。',
+    '',
+    '富媒体/产物化：',
+    '- 当内容更像报告、讲义、对比表、页面效果、数据明细、可视化说明或可交付文档时，优先用 write_file 生成文件，再用 send_file 发给用户。',
+    '- HTML 适合可视化报告、流程图、卡片式讲解、网页效果和图文排版；Markdown 适合可复制摘要、说明文档和清单；CSV 适合结构化数据。',
+    '- 发送文件后，聊天里只留一句短说明，例如“我做成了 HTML 报告，点预览看。”',
+    '- 如果还没有生成文件，不要假装已有预览或附件。',
+  ].join('\n');
+
   test('resolves session surface from current session key conventions', () => {
     assert.equal(resolveSessionSurface('user:feishu-user'), 'feishu');
     assert.equal(resolveSessionSurface('group:feishu-group'), 'feishu');
@@ -69,7 +84,7 @@ describe('surface prompt', () => {
 
     assert.equal(
       catsUserPrompt,
-      `[surface:catscompany]\n当前是 CatsCo 聊天会话。\n${autoSendModeInstruction}\n\n${catscoFileSelectionInstruction}`,
+      `[surface:catscompany]\n当前是 CatsCo 聊天会话。\n${autoSendModeInstruction}\n\n${catscoReplyStyleInstruction}\n\n${catscoFileSelectionInstruction}`,
     );
     assert.equal(catsGroupPrompt, catsUserPrompt);
     assert.equal(composeSurfacePrompt('cli'), undefined);

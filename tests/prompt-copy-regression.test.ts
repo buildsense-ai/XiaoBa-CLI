@@ -2,7 +2,9 @@ import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
 import { SubAgentManager } from '../src/core/sub-agent-manager';
 import { SendFileTool } from '../src/tools/send-file-tool';
+import { SendTextTool } from '../src/tools/send-text-tool';
 import { SpawnSubagentTool } from '../src/tools/spawn-subagent-tool';
+import { WriteTool } from '../src/tools/write-tool';
 
 describe('prompt copy regression', () => {
   test('registered tool descriptions do not instruct the model to use a reply tool', () => {
@@ -18,6 +20,24 @@ describe('prompt copy regression', () => {
     assert.match(descriptions, /只有本工具成功返回的展示名和 ID 才算真实已派出/);
     assert.match(descriptions, /不要编造子智能体或 sub-\.\.\. ID/);
     assert.match(descriptions, /简单问答、短链路排查和很快能完成的小任务不要用/);
+  });
+
+  test('outbound tool descriptions prefer concise chat and file artifacts for long deliverables', () => {
+    const sendTextDescription = new SendTextTool().definition.description;
+    const sendFileDescription = new SendFileTool().definition.description;
+    const writeDescription = new WriteTool().definition.description;
+
+    assert.match(sendTextDescription, /简短文本消息/);
+    assert.match(sendTextDescription, /不要把完整报告、长表格、长代码或长篇分析拆成多条 send_text/);
+    assert.match(sendTextDescription, /write_file 生成 HTML\/Markdown\/CSV/);
+    assert.doesNotMatch(sendTextDescription, /超过 150 字/);
+    assert.doesNotMatch(sendTextDescription, /每段 50-150 字/);
+
+    assert.match(sendFileDescription, /generated artifact/);
+    assert.match(sendFileDescription, /HTML is best for visual reports/);
+    assert.match(sendFileDescription, /keep the final visible reply to one short sentence/);
+    assert.match(writeDescription, /HTML 可视化报告/);
+    assert.match(writeDescription, /send_file 发送给用户/);
   });
 
   test('spawn_subagent handoff result does not instruct the model to use a reply tool', async () => {

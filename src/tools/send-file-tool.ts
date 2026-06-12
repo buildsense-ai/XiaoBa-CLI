@@ -13,6 +13,8 @@ export class SendFileTool implements Tool {
 
 Use this only when file_path points to a real local file that should be sent to the user, or to an authorized CatsCo attachment reference from the current user turn. file_path can be absolute, relative to the current directory, or catsco_attachment:<id>.
 
+For CatsCo rich replies, prefer sending a generated artifact instead of a long chat message when the result is a report, handout, comparison table, page mockup, visual explanation, dataset, or other deliverable. Create the artifact with write_file first, then send it with this tool. HTML is best for visual reports and card-style explanations; Markdown is best for copyable summaries and documents; CSV is best for structured data. After sending the file, keep the final visible reply to one short sentence.
+
 CatsCo file selection rules:
 - tmp/downloads/... is an internal cache for files/images received from chat. Prefer current catsco_attachment:<id> references for chat attachments instead of raw cache paths.
 - If the user did not provide an exact local path, ask for the path or search likely local folders first.
