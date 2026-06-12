@@ -231,6 +231,7 @@ function buildModelStartupSnapshot(
   const effective = readModelProfile(EFFECTIVE_MODEL_ENV_KEYS, fileEnv, env);
   const custom = readCustomModelProfile(fileEnv, env);
   const storedRelay = readModelProfile(RELAY_MODEL_ENV_KEYS, fileEnv, env);
+  const requestedSource = firstNonEmpty(fileEnv.CATSCO_MODEL_SOURCE, env.CATSCO_MODEL_SOURCE);
   const relay = storedRelay.configured
     ? storedRelay
     : {
@@ -241,7 +242,12 @@ function buildModelStartupSnapshot(
       apiKeyPresent: storedRelay.apiKeyPresent || (isCatsRelayApiBase(effective.apiBase) && effective.apiKeyPresent),
       configured: isCatsRelayApiBase(effective.apiBase) && effective.configured,
     };
-  const source = isCatsRelayApiBase(effective.apiBase) ? 'relay' : 'custom';
+  const effectiveIsRelay = isCatsRelayApiBase(effective.apiBase);
+  const source = requestedSource === 'custom' && custom.configured
+    ? 'custom'
+    : requestedSource === 'relay' && relay.configured && effectiveIsRelay
+    ? 'relay'
+    : effectiveIsRelay ? 'relay' : 'custom';
 
   return { source, effective, custom, relay };
 }

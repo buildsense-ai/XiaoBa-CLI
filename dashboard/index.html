@@ -7643,6 +7643,9 @@
       const label=selectedModel.label||selectedModel.model||selectedModelId;
       let retrying=false;
       try{
+        pendingStartupSource='relay';
+        pendingRelayModelId=selectedModelId;
+        renderCatsStatus();
         setRelayModelApplyBusy(true);
         setRelayModelApplyStatus('正在启用 CatsCo 中转模型（'+label+'）...','muted',source);
         const r=await fetch(API+'/api/cats/relay/model-config/apply',{
@@ -7707,6 +7710,9 @@
         return;
       }
       try{
+        pendingStartupSource='custom';
+        pendingRelayModelId='';
+        renderCatsStatus();
         setRelayModelApplyBusy(true);
         setRelayModelApplyStatus('正在切换为自定义模型...','muted',source);
         const r=await fetch(API+'/api/model-source/custom/apply',{
@@ -8612,8 +8618,9 @@
         document.getElementById('cats-register-password').value='';
         invalidateRelayModelConfigRequests();
         invalidateCatsStatusRequests();
-        setCatsAction('登录态已保存。请选择要绑定的 CatsCo agent。');
+        setCatsAction('登录态已保存。正在自动绑定 CatsCo agent 并启动 connector...');
         await fetchCatsStatus();
+        await setupCatsBot({forceLegacySetup:true});
         pulsePetState('success', '已登录', 1800);
       }catch(e){
         setCatsAction('连接失败：'+e.message,true);

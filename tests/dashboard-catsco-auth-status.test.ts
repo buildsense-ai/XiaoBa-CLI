@@ -250,6 +250,42 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(env.CATSCOMPANY_USER_DISPLAY_NAME, 'Demo User');
   });
 
+  test('POST /cats/desktop-connect exchanges a web login code and persists CatsCo account aliases', async () => {
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/desktop-connect/exchange') {
+        assert.deepStrictEqual(req.body, { code: 'one-time-code' });
+        return res.json({
+          token: 'desktop-user-token',
+          uid: 91,
+          username: 'desktop',
+          display_name: 'Desktop User',
+          http_base_url: catsBaseUrl,
+          server_url: 'wss://app.catsco.cc/v0/channels',
+        });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/desktop-connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code: 'one-time-code',
+        httpBaseUrl: catsBaseUrl,
+      }),
+    });
+    const data = await response.json() as any;
+    const env = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+    assert.equal(response.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.user.uid, '91');
+    assert.equal(env.CATSCO_USER_TOKEN, 'desktop-user-token');
+    assert.equal(env.CATSCOMPANY_USER_TOKEN, 'desktop-user-token');
+    assert.equal(env.CATSCO_USER_UID, '91');
+    assert.equal(env.CATSCOMPANY_USER_DISPLAY_NAME, 'Desktop User');
+  });
+
   test('POST /cats/setup creates a relay key, writes model config, and starts connector for a new account', async () => {
     if (dashboardServer) {
       await close(dashboardServer);
@@ -387,6 +423,96 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(env.CATSCO_API_KEY, 'cats-agent-key');
     assert.equal(startCalled, 1);
     assert.equal(data.service.status, 'running');
+  });
+
+  test('POST /cats/setup reuses an existing owned bot instead of creating a default bot', async () => {
+    if (dashboardServer) {
+      await close(dashboardServer);
+      dashboardServer = undefined;
+    }
+
+    const service = {
+      name: 'catscompany',
+      label: 'CatsCo agent',
+      command: process.execPath,
+      args: [],
+      status: 'stopped',
+    };
+    const dashboardApp = express();
+    dashboardApp.use(express.json());
+    dashboardApp.use('/api', createApiRouter({
+      getAll: () => [service],
+      getService: (name: string) => (name === 'catscompany' ? service : undefined),
+      start: () => {
+        service.status = 'running';
+        return service;
+      },
+    } as any));
+    dashboardServer = await listen(dashboardApp);
+    dashboardBaseUrl = serverBaseUrl(dashboardServer);
+
+    let createBotCalls = 0;
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/me') {
+        return res.json({ uid: 88, username: 'fresh', display_name: 'Fresh User' });
+      }
+      if (req.path === '/api/bots' && req.method === 'GET') {
+        return res.json({
+          bots: [{
+            id: 188,
+            uid: 188,
+            username: 'existing-agent',
+            display_name: 'Existing Agent',
+            api_key: 'existing-agent-key',
+          }],
+        });
+      }
+      if (req.path === '/api/bots' && req.method === 'POST') {
+        createBotCalls += 1;
+        return res.status(500).json({ error: 'should not create bot' });
+      }
+      if (req.path === '/api/friends/request') {
+        return res.json({ ok: true });
+      }
+      if (req.path === '/api/friends/accept') {
+        assert.equal(req.header('authorization'), 'ApiKey existing-agent-key');
+        return res.json({ ok: true });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    writeEnv([
+      `CATSCO_HTTP_BASE_URL=${catsBaseUrl}`,
+      'CATSCO_SERVER_URL=wss://app.catsco.cc/v0/channels',
+      'CATSCO_USER_TOKEN=user-token',
+      'CATSCO_USER_UID=88',
+      'CATSCO_USER_NAME=fresh',
+      'CATSCO_USER_DISPLAY_NAME=Fresh User',
+      'GAUZ_LLM_PROVIDER=anthropic',
+      'GAUZ_LLM_API_BASE=https://model.example.test/v1/messages',
+      'GAUZ_LLM_API_KEY=sk-test',
+      'GAUZ_LLM_MODEL=test-model',
+    ]);
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/setup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        httpBaseUrl: catsBaseUrl,
+        serverUrl: 'wss://app.catsco.cc/v0/channels',
+        setupRelayModel: false,
+      }),
+    });
+    const text = await response.text();
+    const data = JSON.parse(text) as any;
+    const env = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+    assert.equal(response.status, 200, text);
+    assert.equal(data.ok, true);
+    assert.equal(data.bot.uid, '188');
+    assert.equal(data.bot.display_name, 'Existing Agent');
+    assert.equal(env.CATSCO_BOT_UID, '188');
+    assert.equal(env.CATSCO_API_KEY, 'existing-agent-key');
+    assert.equal(createBotCalls, 0);
   });
 
   test('POST /cats/bind-bot writes relay model config before starting an existing bot binding', async () => {

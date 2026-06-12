@@ -916,6 +916,19 @@ function selectRelayModel(
   return models.find(model => model.default) || models[0];
 }
 
+function preferredRelayModelRequest(requested: unknown): unknown {
+  const explicit = String(requested || '').trim();
+  if (explicit) return explicit;
+  const fileEnv = readEnvFile();
+  return firstNonEmpty(
+    process.env.CATSCO_RELAY_LLM_MODEL,
+    fileEnv.CATSCO_RELAY_LLM_MODEL,
+    isCatsRelayApiBase(firstNonEmpty(process.env.GAUZ_LLM_API_BASE, fileEnv.GAUZ_LLM_API_BASE))
+      ? firstNonEmpty(process.env.GAUZ_LLM_MODEL, fileEnv.GAUZ_LLM_MODEL)
+      : undefined,
+  );
+}
+
 function relayModelPayload(model: RelayModelConfig): Record<string, unknown> {
   const promptBudget = model.contextWindowTokens
     ? calculatePromptBudgetTokens(model.contextWindowTokens, 32_768).promptBudgetTokens
@@ -1285,7 +1298,8 @@ async function setupCatsRelayModelForDesktop(
     };
   }
 
-  const selectedModel = selectRelayModel(config, requestedModel, { strict: Boolean(requestedModel) });
+  const preferredModel = preferredRelayModelRequest(requestedModel);
+  const selectedModel = selectRelayModel(config, preferredModel, { strict: Boolean(String(requestedModel || '').trim()) });
   const ensured = await ensureCatsRelayPlainKey(state, {
     rotateExisting: options.rotateExisting,
   });
@@ -2216,6 +2230,39 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
     res.json({ ok: true, removed });
   });
 
+  router.post('/cats/desktop-connect', async (req, res) => {
+    try {
+      const code = String(req.body?.code || '').trim();
+      if (!code) return res.status(400).json({ error: 'code is required' });
+
+      const state = getCatsAuthState(req.body || {});
+      const login = await catsRequest('POST', state.httpBaseUrl, '/api/desktop-connect/exchange', { code }, undefined, { timeoutMs: 8000 });
+      const nextState: CatsAuthState = {
+        ...state,
+        token: String(login.token || '').trim(),
+        uid: String(login.uid || '').trim(),
+        username: String(login.username || '').trim(),
+        displayName: String(login.display_name || login.displayName || login.username || '').trim(),
+        httpBaseUrl: String(login.http_base_url || login.httpBaseUrl || state.httpBaseUrl || DEFAULT_CATSCO_HTTP_BASE_URL).trim(),
+        serverUrl: String(login.server_url || login.serverUrl || state.serverUrl || DEFAULT_CATSCO_WS_URL).trim(),
+      };
+      persistCatsUserSession(nextState, login);
+      res.json({
+        ok: true,
+        user: {
+          uid: nextState.uid,
+          username: nextState.username,
+          display_name: nextState.displayName,
+        },
+        httpBaseUrl: nextState.httpBaseUrl,
+        serverUrl: nextState.serverUrl,
+      });
+    } catch (e: any) {
+      const payload = catsErrorResponse(e);
+      res.status(payload.status).json(payload.body);
+    }
+  });
+
   router.post('/cats/setup', async (req, res) => {
     try {
       const state = getCatsAuthState(req.body || {});
@@ -2243,7 +2290,8 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         || bots.find((item: any) => String(item.display_name || '') === preferredName)
         || bots.find((item: any) => String(item.username || '') === legacyUsername)
         || bots.find((item: any) => String(item.username || '') === legacyCatsCoUsername)
-        || bots.find((item: any) => String(item.display_name || '') === legacyName);
+        || bots.find((item: any) => String(item.display_name || '') === legacyName)
+        || bots[0];
 
       if (!bot) {
         const created = await catsRequest('POST', state.httpBaseUrl, '/api/bots', {
