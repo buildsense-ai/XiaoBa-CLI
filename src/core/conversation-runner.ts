@@ -27,6 +27,7 @@ import {
 } from './runtime-context-builder';
 import { calculateSummaryBudgetTokens, resolveModelPromptBudgetTokens } from '../utils/model-context-window';
 import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
+import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -321,7 +322,7 @@ export class ConversationRunner {
           };
           messages.push(assistantMessage);
           newMessages.push(assistantMessage);
-          Logger.warning(`[${this.sessionLabel}Turn ${turns}] 图片被模型安全策略拒绝，已发送可见收束提示: ${error.message}`);
+          Logger.warning(`[${this.sessionLabel}Turn ${turns}] 图片被模型安全策略拒绝，已发送可见收束提示: ${formatProviderErrorForLog(error)}`);
           return {
             response: MODEL_IMAGE_SAFETY_MESSAGE,
             finalResponseVisible: true,
@@ -330,7 +331,7 @@ export class ConversationRunner {
           };
         }
         if (hasDeliveredMessageOutThisRun && this.isMessageSurface()) {
-          Logger.warning(`[${this.sessionLabel}Turn ${turns}] 已有外发消息送达，后续推理失败后直接收束: ${error.message}`);
+          Logger.warning(`[${this.sessionLabel}Turn ${turns}] 已有外发消息送达，后续推理失败后直接收束: ${formatProviderErrorForLog(error)}`);
           return {
             response: '',
             finalResponseVisible: false,
