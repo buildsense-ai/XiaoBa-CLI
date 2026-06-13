@@ -25,6 +25,7 @@ import { TurnContextBuilder } from './turn-context-builder';
 import { TurnLogRecorder } from './turn-log-recorder';
 import { PlanRuntime } from './plan-runtime';
 import { getPetService } from '../pet/pet-service';
+import type { RuntimeObservationStore } from './runtime-observation-store';
 
 export interface AgentTurnServices {
   aiService: AIService;
@@ -84,6 +85,9 @@ export interface AgentTurnControllerOptions {
   workspaceRoot: string;
   getCurrentDirectory: () => string;
   updateCurrentDirectory: (directory: string) => void;
+  runtimeObservationStore?: RuntimeObservationStore;
+  runtimeObservationPromptBudget?: number;
+  runtimeObservationMaxItems?: number;
 }
 
 /**
@@ -115,6 +119,9 @@ export class AgentTurnController {
       runtimeFeedback: params.runtimeFeedback,
       skillRuntime: this.options.skillRuntime,
       planRuntime: this.options.planRuntime,
+      runtimeObservationStore: this.options.runtimeObservationStore,
+      runtimeObservationPromptBudget: this.options.runtimeObservationPromptBudget,
+      runtimeObservationMaxItems: this.options.runtimeObservationMaxItems,
     });
 
     const runner = this.createRunner({
@@ -141,6 +148,9 @@ export class AgentTurnController {
         (error as AgentTurnRunError).partialMessages = partialMessages;
       }
       throw error;
+    }
+    if (turnContext.runtimeObservationIdsForPrompt.length > 0) {
+      this.options.runtimeObservationStore?.markInjected(turnContext.runtimeObservationIdsForPrompt);
     }
     const nextMessages = this.options.turnContextBuilder.removeTransientMessages(result.messages);
 

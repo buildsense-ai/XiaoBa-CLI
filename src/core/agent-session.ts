@@ -44,8 +44,14 @@ import { parseSessionKeyV2 } from './session-router';
 import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
 import { toPromptTurnMetadata } from '../utils/prompt-observability';
+import {
+  RuntimeObservationStore,
+  type RuntimeObservation,
+  type RuntimeObservationInput,
+} from './runtime-observation-store';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
+export type { RuntimeObservation, RuntimeObservationInput } from './runtime-observation-store';
 
 export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
 export const ERROR_MESSAGE = '不好意思，刚才处理出了点问题，你再试一次？';
@@ -66,6 +72,9 @@ export interface AgentServices {
 }
 
 export type SystemPromptProvider = () => Promise<string> | string;
+
+export type SessionRuntimeObservationInput =
+  Omit<RuntimeObservationInput, 'sessionId'> & { sessionId?: string };
 
 /** 会话回调（由适配层提供） */
 export interface SessionCallbacks {
@@ -160,6 +169,7 @@ export class AgentSession {
   private contextWindowManager: ContextWindowManager;
   private skillRuntime: SessionSkillRuntime;
   private runtimeFeedbackInbox = new RuntimeFeedbackInbox();
+  private runtimeObservationStore = new RuntimeObservationStore();
   private planRuntime = new PlanRuntime();
   private lifecycleManager: SessionLifecycleManager;
   private readonly defaultDirectory: string;
@@ -205,6 +215,7 @@ export class AgentSession {
       workspaceRoot: this.defaultDirectory,
       getCurrentDirectory: () => this.currentDirectory,
       updateCurrentDirectory: directory => this.updateCurrentDirectory(directory),
+      runtimeObservationStore: this.runtimeObservationStore,
     });
 
     const runtimeFeedbackInbox = this.runtimeFeedbackInbox;
@@ -373,6 +384,16 @@ export class AgentSession {
       this.lastActiveAt = Date.now();
     }
     return enqueued;
+  }
+
+  upsertRuntimeObservation(input: SessionRuntimeObservationInput): RuntimeObservation {
+    const { sessionId, ...observationInput } = input;
+    const observation = this.runtimeObservationStore.upsert({
+      ...observationInput,
+      sessionId: sessionId ?? this.key,
+    });
+    this.lastActiveAt = Date.now();
+    return observation;
   }
 
   /**

@@ -22,6 +22,11 @@ import {
   buildRuntimeContextMessage,
 } from './runtime-context-builder';
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
+import {
+  RUNTIME_OBSERVATIONS_PREFIX,
+  renderRuntimeObservations,
+} from './runtime-observation-store';
+import type { RuntimeObservationStore } from './runtime-observation-store';
 
 const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
@@ -40,11 +45,15 @@ export interface BuildTurnContextParams {
   runtimeFeedback: string[];
   skillRuntime: SessionSkillRuntime;
   planRuntime?: PlanRuntime;
+  runtimeObservationStore?: RuntimeObservationStore;
+  runtimeObservationPromptBudget?: number;
+  runtimeObservationMaxItems?: number;
 }
 
 export interface BuildTurnContextResult {
   messages: Message[];
   runtimeFeedbackForLog: string[];
+  runtimeObservationIdsForPrompt: string[];
 }
 
 /**
@@ -65,16 +74,24 @@ export class TurnContextBuilder {
     if (skillsListMsg) {
       this.insertBeforeLastUser(contextMessages, skillsListMsg);
     }
+    const runtimeObservationIdsForPrompt = this.injectRuntimeObservations(contextMessages, params);
 
     return {
       messages: contextMessages,
       runtimeFeedbackForLog: this.extractRuntimeFeedback(contextMessages),
+      runtimeObservationIdsForPrompt,
     };
   }
 
   removeTransientMessages(messages: Message[]): Message[] {
     return messages.filter(msg => {
       if (msg.__runtimeFeedback) return false;
+      if (msg.__injected && msg.__runtimeObservation) return false;
+      if (
+        msg.__injected
+        && typeof msg.content === 'string'
+        && msg.content.startsWith(RUNTIME_OBSERVATIONS_PREFIX)
+      ) return false;
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_PLAN_STATUS_PREFIX)) return false;
@@ -126,6 +143,24 @@ export class TurnContextBuilder {
     const statusMessage = buildSubAgentStatusMessage(sessionKey);
     if (!statusMessage) return;
     this.insertBeforeLastUser(messages, statusMessage);
+  }
+
+  private injectRuntimeObservations(
+    messages: Message[],
+    params: BuildTurnContextParams,
+  ): string[] {
+    if (!params.runtimeObservationStore) return [];
+
+    const observations = params.runtimeObservationStore.pickForPrompt({
+      sessionId: params.sessionKey,
+      tokenBudget: params.runtimeObservationPromptBudget,
+      maxItems: params.runtimeObservationMaxItems,
+    });
+    const observationMessage = renderRuntimeObservations(observations);
+    if (!observationMessage) return [];
+
+    this.insertBeforeLastUser(messages, observationMessage);
+    return observations.map(observation => observation.id);
   }
 
   private extractRuntimeFeedback(messages: Message[]): string[] {
