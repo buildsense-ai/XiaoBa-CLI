@@ -4,6 +4,7 @@ const fs = require('fs');
 
 const DASHBOARD_PORT = resolveDashboardPort(process.env.XIAOBA_DASHBOARD_PORT);
 const DEEP_LINK_PROTOCOL = 'catsco';
+const TRUSTED_DEEP_LINK_BASE_ORIGINS = new Set(['https://app.catsco.cc']);
 let mainWindow = null;
 let tray = null;
 let autoUpdater = null;
@@ -149,6 +150,32 @@ async function drainPendingDeepLinks() {
   }
 }
 
+function isLoopbackDeepLinkHost(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+}
+
+function trustedDeepLinkBase(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  let url;
+  try {
+    url = new URL(text);
+  } catch (_error) {
+    return '';
+  }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    return '';
+  }
+  if (TRUSTED_DEEP_LINK_BASE_ORIGINS.has(url.origin)) {
+    return url.origin;
+  }
+  if (!app.isPackaged && url.protocol === 'http:' && isLoopbackDeepLinkHost(url.hostname)) {
+    return url.origin;
+  }
+  return '';
+}
+
 async function processDeepLink(value) {
   let parsed;
   try {
@@ -160,7 +187,11 @@ async function processDeepLink(value) {
   if (action !== 'connect') return;
   const code = parsed.searchParams.get('code');
   if (!code) return;
-  const base = parsed.searchParams.get('base') || '';
+  const rawBase = parsed.searchParams.get('base') || '';
+  const base = trustedDeepLinkBase(rawBase);
+  if (rawBase && !base) {
+    console.warn('[desktop-connect] ignored untrusted CatsCo base:', rawBase);
+  }
   const desktopConnectBody = {
     code,
     ...(base ? { httpBaseUrl: base } : {}),

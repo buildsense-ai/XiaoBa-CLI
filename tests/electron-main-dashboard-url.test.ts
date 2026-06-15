@@ -56,6 +56,10 @@ test('electron registers catsco deep links and forwards connect codes to the loc
   assert.match(electronMain, /app\.on\('open-url'/);
   assert.match(electronMain, /deepLinkDrainPromise/);
   assert.match(electronMain, /function scheduleDeepLinkDrain\(\)/);
+  assert.match(electronMain, /TRUSTED_DEEP_LINK_BASE_ORIGINS/);
+  assert.match(electronMain, /function trustedDeepLinkBase\(value\)/);
+  assert.match(electronMain, /https:\/\/app\.catsco\.cc/);
   assert.match(electronMain, /\/cats\/desktop-connect/);
   assert.match(electronMain, /\/cats\/setup/);
+  assert.doesNotMatch(electronMain, /httpBaseUrl: rawBase/);
 });
