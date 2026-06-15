@@ -3,15 +3,36 @@ const path = require('path');
 const fs = require('fs');
 
 const DASHBOARD_PORT = resolveDashboardPort(process.env.XIAOBA_DASHBOARD_PORT);
+const DEEP_LINK_PROTOCOL = 'catsco';
+const TRUSTED_DEEP_LINK_BASE_ORIGINS = new Set(['https://app.catsco.cc']);
 let mainWindow = null;
 let tray = null;
 let autoUpdater = null;
 let hideNoticeShown = false;
+let dashboardServerReady = false;
+const pendingDeepLinks = [];
+let deepLinkDrainPromise = null;
 const REFRESHABLE_BUNDLED_SKILLS = new Set([]);
 const RETIRED_BUNDLED_SKILLS = new Set(['advanced-reader', 'vision-analysis']);
 const SKILL_SYNC_MARKER = '.xiaoba-bundled-skill.json';
 
 applyConfiguredUserDataPath();
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    enqueueDeepLinkFromArgv(argv);
+    showMainWindow();
+  });
+}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  enqueueDeepLink(url);
+  showMainWindow();
+});
 
 function resolveDashboardPort(value) {
   const text = String(value || '').trim();
@@ -78,6 +99,120 @@ function showMainWindow() {
   } else {
     createWindow();
   }
+}
+
+function isCatsCoDeepLink(value) {
+  return typeof value === 'string' && value.toLowerCase().startsWith(`${DEEP_LINK_PROTOCOL}://`);
+}
+
+function enqueueDeepLinkFromArgv(argv) {
+  const link = (argv || []).find(isCatsCoDeepLink);
+  if (link) enqueueDeepLink(link);
+}
+
+function enqueueDeepLink(value) {
+  if (!isCatsCoDeepLink(value)) return;
+  pendingDeepLinks.push(value);
+  if (dashboardServerReady) {
+    scheduleDeepLinkDrain();
+  }
+}
+
+function scheduleDeepLinkDrain() {
+  if (deepLinkDrainPromise) return deepLinkDrainPromise;
+  deepLinkDrainPromise = drainPendingDeepLinks()
+    .catch((error) => {
+      console.error('[desktop-connect] failed to process pending deep links:', error);
+    })
+    .finally(() => {
+      deepLinkDrainPromise = null;
+      if (pendingDeepLinks.length > 0) scheduleDeepLinkDrain();
+    });
+  return deepLinkDrainPromise;
+}
+
+function registerDeepLinkProtocol() {
+  try {
+    if (process.defaultApp && process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(DEEP_LINK_PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
+    } else {
+      app.setAsDefaultProtocolClient(DEEP_LINK_PROTOCOL);
+    }
+  } catch (error) {
+    console.warn('[desktop-connect] failed to register catsco:// protocol:', error?.message || error);
+  }
+}
+
+async function drainPendingDeepLinks() {
+  while (pendingDeepLinks.length > 0) {
+    const link = pendingDeepLinks.shift();
+    await processDeepLink(link);
+  }
+}
+
+function isLoopbackDeepLinkHost(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+}
+
+function trustedDeepLinkBase(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  let url;
+  try {
+    url = new URL(text);
+  } catch (_error) {
+    return '';
+  }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    return '';
+  }
+  if (TRUSTED_DEEP_LINK_BASE_ORIGINS.has(url.origin)) {
+    return url.origin;
+  }
+  if (!app.isPackaged && url.protocol === 'http:' && isLoopbackDeepLinkHost(url.hostname)) {
+    return url.origin;
+  }
+  return '';
+}
+
+async function processDeepLink(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch (_error) {
+    return;
+  }
+  const action = parsed.hostname || parsed.pathname.replace(/^\/+/, '');
+  if (action !== 'connect') return;
+  const code = parsed.searchParams.get('code');
+  if (!code) return;
+  const rawBase = parsed.searchParams.get('base') || '';
+  const base = trustedDeepLinkBase(rawBase);
+  if (rawBase && !base) {
+    console.warn('[desktop-connect] ignored untrusted CatsCo base:', rawBase);
+  }
+  const desktopConnectBody = {
+    code,
+    ...(base ? { httpBaseUrl: base } : {}),
+  };
+  const localApiBase = `http://127.0.0.1:${DASHBOARD_PORT}/api`;
+  await postLocalJson(`${localApiBase}/cats/desktop-connect`, desktopConnectBody);
+  await postLocalJson(`${localApiBase}/cats/setup`, {});
+  showMainWindow();
+}
+
+async function postLocalJson(url, body) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`POST ${url} failed: ${response.status} ${text}`);
+  }
+  return response.json().catch(() => ({}));
 }
 
 function createTrayIcon() {
@@ -771,10 +906,14 @@ if (autoUpdater) {
 
 app.whenReady().then(async () => {
   try {
+    registerDeepLinkProtocol();
     await startServer();
+    dashboardServerReady = true;
     createApplicationMenu();
     createWindow();
     createTray();
+    enqueueDeepLinkFromArgv(process.argv);
+    scheduleDeepLinkDrain();
     
     // 闂備礁鎲￠崙褰掑垂閻楀牊鍙忛柍鍝勬噹鐟欙箓骞栧ǎ顒€鐒烘慨濠囩畺閺岋紕浠︾拠鎻掑濠电偞褰冨鈥愁嚕?
     if (app.isPackaged && autoUpdater) {

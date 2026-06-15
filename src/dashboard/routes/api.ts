@@ -59,6 +59,8 @@ import {
 
 const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cc';
 const DEFAULT_CATSCO_WS_URL = 'wss://app.catsco.cc/v0/channels';
+const TRUSTED_CATSCO_HTTP_ORIGINS = new Set([new URL(DEFAULT_CATSCO_HTTP_BASE_URL).origin]);
+const TRUSTED_CATSCO_WS_URL = new URL(DEFAULT_CATSCO_WS_URL);
 const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
 const SYSTEM_SKILL_DIRS = new Set<string>();
 
@@ -194,6 +196,73 @@ interface ModelLaunchProfile {
 function normalizeBaseUrl(value: unknown, fallback: string): string {
   const text = String(value || '').trim().replace(/\/+$/, '');
   return text || fallback;
+}
+
+function truthyEnv(value: unknown): boolean {
+  return /^(1|true|yes|on)$/i.test(String(value || '').trim());
+}
+
+function canUseLocalCatsCoEndpoint(): boolean {
+  return process.env.NODE_ENV === 'test'
+    || truthyEnv(process.env.CATSCO_ALLOW_LOCAL_ENDPOINTS)
+    || truthyEnv(process.env.CATSCOMPANY_ALLOW_LOCAL_ENDPOINTS);
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+}
+
+function normalizeTrustedCatsHttpBaseUrl(value: unknown): string {
+  const text = String(value || DEFAULT_CATSCO_HTTP_BASE_URL).trim();
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    throw httpError('Untrusted CatsCo HTTP endpoint', 400);
+  }
+
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw httpError('Untrusted CatsCo HTTP endpoint', 400);
+  }
+  if (TRUSTED_CATSCO_HTTP_ORIGINS.has(url.origin)) {
+    return url.origin;
+  }
+  if (canUseLocalCatsCoEndpoint() && isLoopbackHost(url.hostname)) {
+    return url.origin;
+  }
+  throw httpError('Untrusted CatsCo HTTP endpoint', 400);
+}
+
+function normalizeTrustedCatsServerUrl(value: unknown): string {
+  const text = String(value || DEFAULT_CATSCO_WS_URL).trim();
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    throw httpError('Untrusted CatsCo websocket endpoint', 400);
+  }
+
+  if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw httpError('Untrusted CatsCo websocket endpoint', 400);
+  }
+
+  const pathname = url.pathname.replace(/\/+$/, '') || '/';
+  if (url.origin === TRUSTED_CATSCO_WS_URL.origin && pathname === TRUSTED_CATSCO_WS_URL.pathname) {
+    return `${url.protocol}//${url.host}${pathname}`;
+  }
+  if (canUseLocalCatsCoEndpoint() && isLoopbackHost(url.hostname)) {
+    return `${url.protocol}//${url.host}${pathname}`;
+  }
+  throw httpError('Untrusted CatsCo websocket endpoint', 400);
+}
+
+function trustCatsAuthStateEndpoints(state: CatsAuthState): CatsAuthState {
+  return {
+    ...state,
+    httpBaseUrl: normalizeTrustedCatsHttpBaseUrl(state.httpBaseUrl),
+    serverUrl: normalizeTrustedCatsServerUrl(state.serverUrl),
+  };
 }
 
 function p2pTopicId(uid1: string | number, uid2: string | number): string {
@@ -916,6 +985,19 @@ function selectRelayModel(
   return models.find(model => model.default) || models[0];
 }
 
+function preferredRelayModelRequest(requested: unknown): unknown {
+  const explicit = String(requested || '').trim();
+  if (explicit) return explicit;
+  const fileEnv = readEnvFile();
+  return firstNonEmpty(
+    process.env.CATSCO_RELAY_LLM_MODEL,
+    fileEnv.CATSCO_RELAY_LLM_MODEL,
+    isCatsRelayApiBase(firstNonEmpty(process.env.GAUZ_LLM_API_BASE, fileEnv.GAUZ_LLM_API_BASE))
+      ? firstNonEmpty(process.env.GAUZ_LLM_MODEL, fileEnv.GAUZ_LLM_MODEL)
+      : undefined,
+  );
+}
+
 function relayModelPayload(model: RelayModelConfig): Record<string, unknown> {
   const promptBudget = model.contextWindowTokens
     ? calculatePromptBudgetTokens(model.contextWindowTokens, 32_768).promptBudgetTokens
@@ -1285,7 +1367,8 @@ async function setupCatsRelayModelForDesktop(
     };
   }
 
-  const selectedModel = selectRelayModel(config, requestedModel, { strict: Boolean(requestedModel) });
+  const preferredModel = preferredRelayModelRequest(requestedModel);
+  const selectedModel = selectRelayModel(config, preferredModel, { strict: Boolean(String(requestedModel || '').trim()) });
   const ensured = await ensureCatsRelayPlainKey(state, {
     rotateExisting: options.rotateExisting,
   });
@@ -2216,9 +2299,44 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
     res.json({ ok: true, removed });
   });
 
+  router.post('/cats/desktop-connect', async (req, res) => {
+    try {
+      const code = String(req.body?.code || '').trim();
+      if (!code) return res.status(400).json({ error: 'code is required' });
+
+      const state = trustCatsAuthStateEndpoints(getCatsAuthState(req.body || {}));
+      const login = await catsRequest('POST', state.httpBaseUrl, '/api/desktop-connect/exchange', { code }, undefined, { timeoutMs: 8000 });
+      const httpBaseUrl = normalizeTrustedCatsHttpBaseUrl(login.http_base_url || login.httpBaseUrl || state.httpBaseUrl || DEFAULT_CATSCO_HTTP_BASE_URL);
+      const serverUrl = normalizeTrustedCatsServerUrl(login.server_url || login.serverUrl || state.serverUrl || DEFAULT_CATSCO_WS_URL);
+      const nextState: CatsAuthState = {
+        ...state,
+        token: String(login.token || '').trim(),
+        uid: String(login.uid || '').trim(),
+        username: String(login.username || '').trim(),
+        displayName: String(login.display_name || login.displayName || login.username || '').trim(),
+        httpBaseUrl,
+        serverUrl,
+      };
+      persistCatsUserSession(nextState, login);
+      res.json({
+        ok: true,
+        user: {
+          uid: nextState.uid,
+          username: nextState.username,
+          display_name: nextState.displayName,
+        },
+        httpBaseUrl: nextState.httpBaseUrl,
+        serverUrl: nextState.serverUrl,
+      });
+    } catch (e: any) {
+      const payload = catsErrorResponse(e);
+      res.status(payload.status).json(payload.body);
+    }
+  });
+
   router.post('/cats/setup', async (req, res) => {
     try {
-      const state = getCatsAuthState(req.body || {});
+      const state = trustCatsAuthStateEndpoints(getCatsAuthState(req.body || {}));
       if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
       if (req.body?.botUid) {
         return res.status(409).json({ error: 'Legacy setup no longer accepts botUid; use /api/cats/bind-bot' });
@@ -2235,15 +2353,16 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const preferredUsername = sanitizeCatsUsernamePart(String(req.body?.botUsername || `catsco_${userUid}_${deviceId}`))
         || `catsco_${userUid}_${deviceId.replace(/[^a-zA-Z0-9_]/g, '_')}`;
       const preferredName = String(req.body?.botDisplayName || `CatsCo (${deviceName})`).trim() || `CatsCo (${deviceName})`;
-      const legacyUsername = `xiaoba_${userUid}`;
-      const legacyCatsCoUsername = `catsco_${userUid}`;
-      const legacyName = 'XiaoBa';
-      let bot = bots.find((item: any) => String(item.id || item.uid) === String(state.botUid || ''))
-        || bots.find((item: any) => String(item.username || '') === preferredUsername)
-        || bots.find((item: any) => String(item.display_name || '') === preferredName)
-        || bots.find((item: any) => String(item.username || '') === legacyUsername)
-        || bots.find((item: any) => String(item.username || '') === legacyCatsCoUsername)
-        || bots.find((item: any) => String(item.display_name || '') === legacyName);
+      let botSelectionSource: 'last-used' | 'first-owned-bot' | 'created-default' = 'first-owned-bot';
+      let bot = state.botUid
+        ? bots.find((item: any) => String(item.id || item.uid || '') === String(state.botUid))
+        : undefined;
+      if (bot) {
+        botSelectionSource = 'last-used';
+      } else if (bots.length > 0) {
+        bot = bots[0];
+        botSelectionSource = 'first-owned-bot';
+      }
 
       if (!bot) {
         const created = await catsRequest('POST', state.httpBaseUrl, '/api/bots', {
@@ -2257,6 +2376,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
           display_name: preferredName,
           api_key: created.api_key,
         };
+        botSelectionSource = 'created-default';
       }
 
       const botUid = String(bot.id || bot.uid || '');
@@ -2339,6 +2459,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         connectorStarted: result.connectorStarted,
         connectorRestarted: result.connectorRestarted,
         relayModelSetup,
+        botSelectionSource,
         warnings: result.warnings.length > 0 ? result.warnings : undefined,
       });
     } catch (e: any) {
