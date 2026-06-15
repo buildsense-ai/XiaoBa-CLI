@@ -6,6 +6,7 @@ import { ToolExecutor, ToolResult, ToolDefinition, ToolCall, ToolExecutionContex
 import { ChatResponse, Message } from '../src/types';
 import { ToolManager } from '../src/tools/tool-manager';
 import { SkillManager } from '../src/skills/skill-manager';
+import { TRANSIENT_RUNNER_HINT_PREFIX } from '../src/core/runner-orchestration-policy';
 
 function cloneMessages(messages: Message[]): Message[] {
   return JSON.parse(JSON.stringify(messages));
@@ -187,20 +188,28 @@ test('runner injects current directory before the active request context without
   const firstCallMessages = mock.getReceivedMessages()[0];
   assert.match(String(firstCallMessages[0].content), /^\[transient_current_directory\]/);
   assert.equal(firstCallMessages[0].role, 'user');
-  assert.equal(firstCallMessages[1].role, 'user');
-  assert.equal(firstCallMessages[1].content, 'read notes');
+  assert.equal(firstCallMessages[1].role, 'system');
+  assert.ok(String(firstCallMessages[1].content).startsWith(TRANSIENT_RUNNER_HINT_PREFIX));
+  assert.equal(firstCallMessages[2].role, 'user');
+  assert.equal(firstCallMessages[2].content, 'read notes');
 
   const secondCallMessages = mock.getReceivedMessages()[1];
   const cwdIndex = secondCallMessages.findIndex(
     message => typeof message.content === 'string'
       && message.content.startsWith('[transient_current_directory]'),
   );
+  const runnerHintIndex = secondCallMessages.findIndex(
+    message => typeof message.content === 'string'
+      && message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX),
+  );
   const assistantToolIndex = secondCallMessages.findIndex(
     message => message.role === 'assistant'
       && message.tool_calls?.some(toolCall => toolCall.id === 'call_read'),
   );
 
-  assert.equal(cwdIndex, assistantToolIndex - 1);
+  assert.equal(cwdIndex, assistantToolIndex - 2);
+  assert.equal(runnerHintIndex, assistantToolIndex - 1);
+  assert.equal(secondCallMessages[runnerHintIndex].role, 'system');
   assert.equal(secondCallMessages[assistantToolIndex + 1].role, 'tool');
   assert.match(
     String(secondCallMessages[cwdIndex].content),
@@ -241,6 +250,7 @@ test('runner recovers once from empty max_tokens responses before surfacing a fa
     mock.getReceivedMessages()[1].some(message =>
       message.role === 'system'
       && typeof message.content === 'string'
+      && message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)
       && message.content.includes('输出 max_tokens 上限被截断')
     ),
     'second call should include a recovery hint',

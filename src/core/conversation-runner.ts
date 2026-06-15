@@ -9,6 +9,7 @@ import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
 import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
+  buildPerTurnRunnerHint,
   buildPlanSoftNudge,
   buildSubagentSoftNudge,
   nextPlanNudgeToolCount,
@@ -264,14 +265,12 @@ export class ConversationRunner {
         nextSubagentNudgeAt = nextSubagentNudgeToolCount(executedToolCalls);
       }
 
-      const shouldSuppressTransientRunnerHints = this.shouldSuppressTransientRunnerHintsForCache();
-      const transientRunnerHints = shouldSuppressTransientRunnerHints
-        ? []
-        : [
-          ...nextTurnTransientHints,
-          ...orchestrationHints,
-        ];
-      const requestMessages = this.buildProviderInputMessages(messages, transientRunnerHints);
+      const perTurnRunnerHint = buildPerTurnRunnerHint(requestTools);
+      const requestMessages = this.buildProviderInputMessages(messages, [
+        perTurnRunnerHint,
+        ...nextTurnTransientHints,
+        ...orchestrationHints,
+      ]);
       nextTurnTransientHints = [];
       const promptTrimmed = this.ensurePromptBudget(requestMessages, requestTools);
       if (promptTrimmed && callbacks?.onThinking) {
@@ -713,22 +712,22 @@ export class ConversationRunner {
     }
 
     const currentDirectoryHint = this.buildCurrentDirectoryHint();
-    return this.insertCurrentDirectoryHint(
+    return this.insertProviderTransientHints(
+      collapsed,
       [
-        ...collapsed,
+        ...(currentDirectoryHint ? [currentDirectoryHint] : []),
         ...transientHints,
       ],
-      currentDirectoryHint,
     );
   }
 
-  private insertCurrentDirectoryHint(messages: Message[], hint: Message | null): Message[] {
-    if (!hint) return messages;
+  private insertProviderTransientHints(messages: Message[], hints: Message[]): Message[] {
+    if (hints.length === 0) return messages;
 
     const insertIndex = this.findCurrentDirectoryHintInsertIndex(messages);
     return [
       ...messages.slice(0, insertIndex),
-      hint,
+      ...hints,
       ...messages.slice(insertIndex),
     ];
   }
@@ -786,18 +785,6 @@ export class ConversationRunner {
       ].join('\n'),
       __injected: true,
     };
-  }
-
-  private shouldSuppressTransientRunnerHintsForCache(): boolean {
-    if (/^(1|true|yes)$/i.test(process.env.XIAOBA_M3_TRANSIENT_RUNNER_HINTS || '')) {
-      return false;
-    }
-
-    const aiConfig = typeof (this.aiService as any).getConfig === 'function'
-      ? (this.aiService as any).getConfig()
-      : {};
-    const model = String(aiConfig?.model || '');
-    return /minimax[-_\s]?m3/i.test(model);
   }
 
   private isMessageSurface(): boolean {
@@ -880,9 +867,8 @@ export class ConversationRunner {
 
   private buildDuplicateOutboundHint(content: string): Message {
     return {
-      role: 'user',
+      role: 'system',
       content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n你刚刚连续发送了与上一条相同的内容：“${content}”。如果这是用户真正需要的重复确认，可以继续；否则请避免无意义重复，必要时调用 pause_turn 收束。`,
-      __injected: true,
     };
   }
 
@@ -896,13 +882,12 @@ export class ConversationRunner {
 
   private buildEmptyMaxTokensRecoveryHint(): Message {
     return {
-      role: 'user',
+      role: 'system',
       content: [
         TRANSIENT_RUNNER_HINT_PREFIX,
         '上一轮模型响应因为输出 max_tokens 上限被截断，而且没有生成可见文本或工具调用。',
         '不要继续展开隐藏推理。请立即二选一：调用下一步必要工具，或输出简短可见回复说明当前进展和下一步。',
       ].join('\n'),
-      __injected: true,
     };
   }
 

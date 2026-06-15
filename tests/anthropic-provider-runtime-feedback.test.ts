@@ -10,7 +10,7 @@ import { TRANSIENT_SUBAGENT_STATUS_PREFIX } from '../src/core/sub-agent-observat
 import { TRANSIENT_SKILLS_LIST_PREFIX } from '../src/skills/session-skill-runtime';
 
 describe('AnthropicProvider runtime feedback boundary', () => {
-  test('keeps transient runner hints out of the Anthropic system prompt', () => {
+  test('passes system runner hints through the Anthropic system prompt', () => {
     const provider = new AnthropicProvider({
       apiKey: 'test-key',
       apiUrl: 'https://relay.catsco.cc/anthropic/v1/messages',
@@ -24,11 +24,9 @@ describe('AnthropicProvider runtime feedback boundary', () => {
 
     const transformed = (provider as any).transformMessages(messages);
 
-    assert.equal(transformed.system, 'stable system prompt');
-    assert.equal(transformed.system.includes(TRANSIENT_RUNNER_HINT_PREFIX), false);
-    assert.equal(transformed.messages.length, 1);
-    assert.equal(transformed.messages[0].role, 'user');
-    assert.ok(String(transformed.messages[0].content).startsWith(TRANSIENT_RUNNER_HINT_PREFIX));
+    assert.match(transformed.system, /stable system prompt/);
+    assert.equal(transformed.system.includes(TRANSIENT_RUNNER_HINT_PREFIX), true);
+    assert.equal(transformed.messages.length, 0);
     assert.equal(JSON.stringify(transformed).includes('__injected'), false);
   });
 

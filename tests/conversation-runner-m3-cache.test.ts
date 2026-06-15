@@ -1,47 +1,52 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
 import { ConversationRunner } from '../src/core/conversation-runner';
+import { TRANSIENT_RUNNER_HINT_PREFIX } from '../src/core/runner-orchestration-policy';
+import type { Message } from '../src/types';
+import type { ToolDefinition, ToolExecutor } from '../src/types/tool';
 
-function makeRunner(model: string): ConversationRunner {
-  return new ConversationRunner(
-    {
-      getConfig: () => ({ model }),
-    } as any,
-    {
-      getToolDefinitions: () => [],
-      executeTool: async () => ({ ok: true, content: '' }),
-    } as any,
-    { stream: false, enableCompression: false },
-  );
+function makeRunner(
+  model: string,
+  requests: Message[][],
+  tools: ToolDefinition[] = [],
+): ConversationRunner {
+  const aiService = {
+    getConfig: () => ({ provider: 'anthropic', model }),
+    async chat(messages: Message[]) {
+      requests.push(messages.map(message => ({ ...message })));
+      return { content: 'done' };
+    },
+  };
+  const executor: ToolExecutor = {
+    getToolDefinitions: () => tools,
+    executeTool: async () => ({ ok: true, content: '' }),
+  } as any;
+
+  return new ConversationRunner(aiService as any, executor, {
+    stream: false,
+    enableCompression: false,
+  });
 }
 
 describe('ConversationRunner MiniMax-M3 cache behavior', () => {
-  test('suppresses transient runner hints for MiniMax-M3 by default', () => {
-    const previous = process.env.XIAOBA_M3_TRANSIENT_RUNNER_HINTS;
-    delete process.env.XIAOBA_M3_TRANSIENT_RUNNER_HINTS;
-    try {
-      assert.equal((makeRunner('MiniMax-M3') as any).shouldSuppressTransientRunnerHintsForCache(), true);
-      assert.equal((makeRunner('MiniMax-M2.7') as any).shouldSuppressTransientRunnerHintsForCache(), false);
-    } finally {
-      if (previous === undefined) {
-        delete process.env.XIAOBA_M3_TRANSIENT_RUNNER_HINTS;
-      } else {
-        process.env.XIAOBA_M3_TRANSIENT_RUNNER_HINTS = previous;
-      }
-    }
-  });
+  test('sends a system runner hint to MiniMax-M3 requests', async () => {
+    const requests: Message[][] = [];
+    const runner = makeRunner('MiniMax-M3', requests);
 
-  test('allows an explicit MiniMax-M3 transient hint override', () => {
-    const previous = process.env.XIAOBA_M3_TRANSIENT_RUNNER_HINTS;
-    process.env.XIAOBA_M3_TRANSIENT_RUNNER_HINTS = '1';
-    try {
-      assert.equal((makeRunner('MiniMax-M3') as any).shouldSuppressTransientRunnerHintsForCache(), false);
-    } finally {
-      if (previous === undefined) {
-        delete process.env.XIAOBA_M3_TRANSIENT_RUNNER_HINTS;
-      } else {
-        process.env.XIAOBA_M3_TRANSIENT_RUNNER_HINTS = previous;
-      }
-    }
+    const result = await runner.run([{ role: 'user', content: 'check the project' }]);
+
+    assert.equal(result.response, 'done');
+    assert.equal(requests.length, 1);
+
+    const runnerHints = requests[0].filter(message =>
+      typeof message.content === 'string'
+      && message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)
+    );
+    assert.equal(runnerHints.length, 1);
+    assert.equal(runnerHints[0].role, 'system');
+    assert.equal(result.messages.some(message =>
+      typeof message.content === 'string'
+      && message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)
+    ), false);
   });
 });

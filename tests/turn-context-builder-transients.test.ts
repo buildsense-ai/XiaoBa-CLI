@@ -14,6 +14,7 @@ describe('TurnContextBuilder transient cleanup', () => {
       { role: 'system', content: '[transient_plan_status]\nold plan' },
       { role: 'system', content: `${TRANSIENT_SUBAGENT_STATUS_PREFIX}\nold subagent` },
       { role: 'system', content: `${TRANSIENT_SKILLS_LIST_PREFIX}\nold skills` },
+      { role: 'system', content: `${TRANSIENT_RUNNER_HINT_PREFIX}\nsystem runner hint` },
       { role: 'user', content: '[transient_plan_status]\nnew plan', __injected: true },
       { role: 'user', content: `${TRANSIENT_RUNNER_HINT_PREFIX}\nnew hint`, __injected: true },
       { role: 'user', content: '[transient_soft_check]\nnew soft check', __injected: true },

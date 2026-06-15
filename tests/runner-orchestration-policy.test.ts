@@ -3,6 +3,7 @@ import * as assert from 'node:assert';
 import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
+  buildPerTurnRunnerHint,
   buildPlanSoftNudge,
   buildSubagentSoftNudge,
   shouldAddPlanSoftNudge,
@@ -22,6 +23,15 @@ function user(content: string): Message[] {
 }
 
 describe('runner orchestration policy', () => {
+  test('builds a per-turn system runner hint', () => {
+    const hint = buildPerTurnRunnerHint(tools);
+
+    assert.equal(hint.role, 'system');
+    assert.ok(String(hint.content).startsWith(TRANSIENT_RUNNER_HINT_PREFIX));
+    assert.match(String(hint.content), /update_plan/);
+    assert.match(String(hint.content), /spawn_subagent/);
+  });
+
   test('adds a semantic hint for complex work without forcing a tool call', () => {
     const hint = buildInitialDecisionHintIfUseful(user([
       '帮我全面检查当前项目发布前的质量风险，重点看设置页、停止按钮、日志链路和测试覆盖。',
@@ -29,8 +39,7 @@ describe('runner orchestration policy', () => {
     ].join('\n')), tools);
 
     assert.ok(hint);
-    assert.equal(hint?.role, 'user');
-    assert.equal(hint?.__injected, true);
+    assert.equal(hint?.role, 'system');
     assert.ok(String(hint?.content).startsWith(TRANSIENT_RUNNER_HINT_PREFIX));
     assert.match(String(hint?.content), /语义编排提示/);
     assert.match(String(hint?.content), /不是硬性要求|可用编排动作/);
