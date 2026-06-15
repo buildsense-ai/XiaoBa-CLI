@@ -368,7 +368,7 @@ export class ConversationRunner {
         requestTools,
         readFileFoldingOptions,
         executeShellFoldingOptions,
-        resolveAdaptiveToolResultFoldingOptions(),
+        this.resolveAdaptiveToolResultFoldingOptions(requestTools),
       );
       requestMessages = adaptiveFolding.messages;
       if (adaptiveFolding.stats.folded_count > 0) {
@@ -1278,6 +1278,17 @@ export class ConversationRunner {
       `[上下文守门] 裁剪后: messages=${messageTokens}, tools=${toolTokens}, budget=${this.maxPromptTokens}`
     );
     return true;
+  }
+
+  private resolveAdaptiveToolResultFoldingOptions(tools: ToolDefinition[]) {
+    const messageBudget = Math.max(1, this.maxPromptTokens - estimateToolsTokens(tools));
+    const options = resolveAdaptiveToolResultFoldingOptions(process.env, {
+      targetPromptTokens: messageBudget,
+    });
+    return {
+      ...options,
+      targetPromptTokens: Math.min(options.targetPromptTokens, messageBudget),
+    };
   }
 
   private fitToolsToPromptBudget(tools: ToolDefinition[]): ToolDefinition[] {

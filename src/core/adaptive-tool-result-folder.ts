@@ -55,24 +55,26 @@ const DEFAULT_OPTIONS: AdaptiveToolResultFoldingOptions = {
 
 export function resolveAdaptiveToolResultFoldingOptions(
   env: NodeJS.ProcessEnv = process.env,
+  defaults: Partial<AdaptiveToolResultFoldingOptions> = {},
 ): AdaptiveToolResultFoldingOptions {
+  const fallback = { ...DEFAULT_OPTIONS, ...defaults };
   return {
-    enabled: readBooleanEnv(env.XIAOBA_ADAPTIVE_TOOL_RESULT_FOLDING, DEFAULT_OPTIONS.enabled),
+    enabled: readBooleanEnv(env.XIAOBA_ADAPTIVE_TOOL_RESULT_FOLDING, fallback.enabled),
     targetPromptTokens: readPositiveIntegerEnv(
       env.XIAOBA_ADAPTIVE_TOOL_RESULT_FOLD_TARGET_PROMPT_TOKENS,
-      DEFAULT_OPTIONS.targetPromptTokens,
+      fallback.targetPromptTokens,
     ),
     minThresholdTokens: readPositiveIntegerEnv(
       env.XIAOBA_ADAPTIVE_TOOL_RESULT_FOLD_MIN_THRESHOLD_TOKENS,
-      DEFAULT_OPTIONS.minThresholdTokens,
+      fallback.minThresholdTokens,
     ),
     thresholdScale: readThresholdScaleEnv(
       env.XIAOBA_ADAPTIVE_TOOL_RESULT_FOLD_THRESHOLD_SCALE,
-      DEFAULT_OPTIONS.thresholdScale,
+      fallback.thresholdScale,
     ),
     maxPasses: readPositiveIntegerEnv(
       env.XIAOBA_ADAPTIVE_TOOL_RESULT_FOLD_MAX_PASSES,
-      DEFAULT_OPTIONS.maxPasses,
+      fallback.maxPasses,
     ),
   };
 }
