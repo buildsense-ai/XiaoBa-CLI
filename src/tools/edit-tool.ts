@@ -11,25 +11,29 @@ import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
 export class EditTool implements Tool {
   definition: ToolDefinition = {
     name: 'edit_file',
-    description: '对文件进行精确的字符串替换。用于修改代码、配置文件等。必须提供要替换的原始字符串和新字符串。',
+    description: [
+      '在一个已有文本文件中执行精确字符串替换。',
+      'old_string 必须与文件内容完全匹配；默认要求唯一匹配，多处替换时显式设置 replace_all=true。',
+      '适合小范围修改代码、配置或文档；需要重写整个文件时使用 write_file。',
+    ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
         file_path: {
           type: 'string',
-          description: '要编辑的文件路径（绝对路径或相对于工作目录的路径）'
+          description: '要编辑的文件路径。支持绝对路径或相对当前目录的路径。'
         },
         old_string: {
           type: 'string',
-          description: '要被替换的原始字符串（必须在文件中存在）'
+          description: '要替换掉的原始字符串，必须与文件内容完全一致。'
         },
         new_string: {
           type: 'string',
-          description: '替换后的新字符串'
+          description: '替换后的新字符串。'
         },
         replace_all: {
           type: 'boolean',
-          description: '是否替换所有匹配项（默认 false，只替换第一个匹配项）',
+          description: '是否替换所有匹配项。默认 false，此时 old_string 必须唯一。',
           default: false
         }
       },

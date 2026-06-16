@@ -19,21 +19,24 @@ interface GlobResult {
 export class GlobTool implements Tool {
   definition: ToolDefinition = {
     name: 'glob',
-    description: '使用 glob 模式搜索文件。支持通配符如 **/*.ts, src/**/*.js 等。返回匹配的文件路径列表，按修改时间排序。',
+    description: [
+      '按 glob 模式查找文件路径，返回匹配文件列表并按修改时间倒序排列。',
+      '适合先定位候选文件；要搜索文件内容请使用 grep。',
+    ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
         pattern: {
           type: 'string',
-          description: 'Glob 模式，如 "**/*.ts" 或 "src/**/*.js"'
+          description: 'Glob 模式，例如 "**/*.ts"、"src/**/*.js"。'
         },
         path: {
           type: 'string',
-          description: '搜索的起始目录（可选，默认为工作目录）'
+          description: '搜索起始目录。可选，默认当前目录。'
         },
         limit: {
           type: 'number',
-          description: '返回结果的最大数量（默认 100）',
+          description: '返回结果最大数量，默认 100。',
           default: 100
         }
       },

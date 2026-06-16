@@ -12,17 +12,20 @@ import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
 export class WriteTool implements Tool {
   definition: ToolDefinition = {
     name: 'write_file',
-    description: '写入文件内容。可以创建新文件或覆盖现有文件。',
+    description: [
+      '创建或完整覆盖一个 UTF-8 文本文件。',
+      '适合生成新文件或重写整个文件；对已有文件做小范围修改时优先使用 edit_file。',
+    ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
         file_path: {
           type: 'string',
-          description: '要写入的文件路径（绝对路径或相对于工作目录的路径）'
+          description: '要写入的文件路径。支持绝对路径或相对当前目录的路径。'
         },
         content: {
           type: 'string',
-          description: '要写入的内容'
+          description: '要写入文件的完整 UTF-8 文本内容。'
         }
       },
       required: ['file_path', 'content']

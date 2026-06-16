@@ -141,18 +141,16 @@ export class CommonDirectoryTool implements Tool {
   definition: ToolDefinition = {
     name: 'resolve_common_directory',
     description: [
-      'Resolve a common user directory to the real local path for the current operating system.',
-      'Use this before accessing files when the user refers to a common OS directory by natural language, such as Desktop, Downloads, Documents, or their Chinese names.',
-      'Do not guess paths like C:\\Users\\...\\Desktop, ~/Desktop, or /Users/.../Downloads before calling this tool.',
-      'This tool returns one best path using OS-level directory settings when available.',
-      'It does not search arbitrary project folders, app-specific folders, browser-specific download folders, or semantic folders such as company projects or chat files.',
+      '把常见用户目录名称解析为当前系统上的真实本地路径。',
+      '当用户说“桌面”“下载”“文档”等自然语言目录时先用它解析，不要手猜 C:\\Users\\...\\Desktop、~/Desktop 等路径。',
+      '只解析标准 OS 用户目录；不搜索项目目录、应用目录、浏览器下载子目录或语义目录。',
     ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
         directory: {
           type: 'string',
-          description: 'Common directory to resolve. Supported: desktop, downloads, documents, pictures, videos, music, home, temp. Chinese aliases such as desktop/downloads/documents are also accepted.',
+          description: '要解析的目录名。支持 desktop, downloads, documents, pictures, videos, music, home, temp 及常见中文别名。',
         },
       },
       required: ['directory'],

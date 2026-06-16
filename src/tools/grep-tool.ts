@@ -76,24 +76,28 @@ function isCommandAvailable(command: string): boolean {
 export class GrepTool implements Tool {
   definition: ToolDefinition = {
     name: 'grep',
-    description: '在文件中搜索文本内容。支持正则表达式、上下文行、文件类型过滤等。基于 ripgrep (rg) 实现。',
+    description: [
+      '在文件内容中搜索文本或正则表达式。',
+      '适合查找符号、函数名、配置项、错误文本；要按文件名/路径找文件请使用 glob。',
+      '默认返回匹配文件列表；需要具体匹配行时设置 output_mode="content"。',
+    ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
-        pattern: { type: 'string', description: '要搜索的正则表达式模式' },
-        path: { type: 'string', description: '搜索的文件或目录路径（可选，默认为工作目录）' },
-        glob: { type: 'string', description: 'Glob 模式过滤文件，如 "*.js" 或 "*.{ts,tsx}"' },
-        type: { type: 'string', description: '文件类型过滤，如 "js", "py", "rust" 等' },
-        case_insensitive: { type: 'boolean', description: '是否忽略大小写（默认 false）', default: false },
-        context: { type: 'number', description: '显示匹配行前后的上下文行数' },
+        pattern: { type: 'string', description: '要搜索的文本或正则表达式模式。' },
+        path: { type: 'string', description: '搜索的文件或目录路径。可选，默认当前目录。' },
+        glob: { type: 'string', description: '文件路径过滤模式，例如 "*.js" 或 "*.{ts,tsx}"。' },
+        type: { type: 'string', description: 'ripgrep 文件类型过滤，例如 "js", "py", "rust"。' },
+        case_insensitive: { type: 'boolean', description: '是否忽略大小写。默认 false。', default: false },
+        context: { type: 'number', description: 'output_mode="content" 时显示匹配行前后的上下文行数。' },
         output_mode: {
           type: 'string',
-          description: '输出模式: "content" 显示匹配内容, "files" 只显示文件路径, "count" 显示匹配计数',
+          description: '输出模式："files" 只返回文件路径；"content" 返回匹配行；"count" 返回匹配计数。',
           enum: ['content', 'files', 'count'],
           default: 'files'
         },
-        limit: { type: 'number', description: '限制输出行数或文件数（默认 250）。设为 0 表示无限制（谨慎使用）', default: 250 },
-        offset: { type: 'number', description: '跳过前N行/文件，用于分页（默认 0）', default: 0 }
+        limit: { type: 'number', description: '限制输出行数或文件数，默认 250。设为 0 表示不限制输出。', default: 250 },
+        offset: { type: 'number', description: '跳过前 N 行/文件，用于分页。默认 0。', default: 0 }
       },
       required: ['pattern']
     }

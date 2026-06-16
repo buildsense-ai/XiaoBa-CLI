@@ -54,16 +54,16 @@ export class ReadTool implements Tool {
   definition: ToolDefinition = {
     name: 'read_file',
     description: [
-      '读取文件内容，支持文本、代码、PDF、图片和 Jupyter notebook。',
-      '读取图片时：如果当前主模型支持多模态，会直接把图片附加给模型；如果不支持，会自动调用 Cats reader proxy 解析图片并返回文字结果。',
-      '不要再调用 advanced-reader 或 vision-analysis skill 来读图片，图片统一走 read_file。',
+      '读取一个本地文件或当前用户轮次授权的 CatsCo 附件。',
+      '支持文本/代码、PDF、图片和 Jupyter notebook。文本默认只读前若干行，可用 offset/limit 分页。',
+      '图片会按当前模型能力处理：视觉模型收到图片块，非视觉模型收到 reader proxy 的文字解析结果。',
     ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
         file_path: {
           type: 'string',
-          description: '要读取的文件路径或当前 CatsCo 用户轮次中的授权附件引用。可以是绝对路径、相对当前工作目录的路径，或 catsco_attachment:<id>。',
+          description: '要读取的文件路径或授权附件引用。支持绝对路径、相对当前目录路径、catsco_attachment:<id>。',
         },
         offset: {
           type: 'number',
@@ -75,11 +75,11 @@ export class ReadTool implements Tool {
         },
         pages: {
           type: 'string',
-          description: 'PDF 页码范围，例如 "1-5" 或 "3"。当前 read_file 仅记录该参数，不做 PDF 全文解析。',
+          description: 'PDF 页码范围，例如 "1-5" 或 "3"。仅适用于 PDF。',
         },
         prompt: {
           type: 'string',
-          description: '可选。读取图片时的分析目标；不传时会自动使用当前用户消息。',
+          description: '可选。读取图片时的分析目标；不传则使用当前用户请求作为分析目标。',
         },
       },
       required: ['file_path'],

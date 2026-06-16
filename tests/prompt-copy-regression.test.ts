@@ -2,11 +2,13 @@ import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
 import { SubAgentManager } from '../src/core/sub-agent-manager';
 import { SendFileTool } from '../src/tools/send-file-tool';
+import { SendTextTool } from '../src/tools/send-text-tool';
 import { SpawnSubagentTool } from '../src/tools/spawn-subagent-tool';
 
 describe('prompt copy regression', () => {
   test('registered tool descriptions do not instruct the model to use a reply tool', () => {
     const descriptions = [
+      new SendTextTool().definition.description,
       new SendFileTool().definition.description,
       new SpawnSubagentTool().definition.description,
     ].join('\n');
@@ -14,10 +16,14 @@ describe('prompt copy regression', () => {
     assert.doesNotMatch(descriptions, /reply 工具/);
     assert.doesNotMatch(descriptions, /用 reply/);
     assert.doesNotMatch(descriptions, /reply 和 send_file/);
-    assert.match(descriptions, /调用成功后立即返回，不等待任务完成/);
-    assert.match(descriptions, /只有本工具成功返回的展示名和 ID 才算真实已派出/);
+    assert.doesNotMatch(descriptions, /50-150/);
+    assert.doesNotMatch(descriptions, /超过 150 字/);
+    assert.doesNotMatch(descriptions, /分成多段/);
+    assert.match(descriptions, /调用成功后立即返回，不等待完成/);
+    assert.match(descriptions, /只有本工具返回的展示名和 ID 才是真实子智能体引用/);
     assert.match(descriptions, /不要编造子智能体或 sub-\.\.\. ID/);
-    assert.match(descriptions, /简单问答、短链路排查和很快能完成的小任务不要用/);
+    assert.match(descriptions, /当前主线必须由主 agent 继续推进/);
+    assert.match(descriptions, /普通最终回复可以直接作为 assistant 内容返回/);
   });
 
   test('spawn_subagent handoff result does not instruct the model to use a reply tool', async () => {

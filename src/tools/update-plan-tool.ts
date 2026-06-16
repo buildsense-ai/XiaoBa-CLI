@@ -11,22 +11,22 @@ export class UpdatePlanTool implements Tool {
   definition: ToolDefinition = {
     name: 'update_plan',
     description: [
-      '维护当前任务的临时运行时计划。只在复杂、多阶段、跨文件修改、实现加验证或多子 agent 编排时使用。',
-      '每次调用都提交完整 steps 列表；状态只能是 pending/in_progress/completed。计划是临时 UI，不是长期历史。',
-      '在普通回复或代码块里写计划清单不会更新计划卡片；需要让用户看到运行时计划时，必须调用本工具。',
+      '创建、更新或清空当前任务的临时运行时计划卡片。',
+      '每次更新都传完整 steps 列表；每个步骤状态只能是 pending、in_progress 或 completed。',
+      '计划卡片是运行时 UI 状态，不是长期会话历史。',
     ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
         steps: {
           type: 'array',
-          description: '完整计划步骤列表。每次更新都传完整列表，而不是只传变化项。',
+          description: '完整计划步骤列表。每次调用都传当前完整列表，而不是只传变化项。',
           items: {
             type: 'object',
             properties: {
               text: {
                 type: 'string',
-                description: '步骤内容，简短具体。',
+                description: '步骤内容，应简短、具体、可执行。',
               },
               status: {
                 type: 'string',

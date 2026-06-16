@@ -9,24 +9,22 @@ import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gatewa
 export class SendFileTool implements Tool {
   definition: ToolDefinition = {
     name: 'send_file',
-    description: `Send a local file or authorized CatsCo attachment reference to the current chat.
-
-Accepted file_path formats:
-- Absolute or relative path to a readable local file.
-- catsco_attachment:<id> reference authorized by the current user turn.
-
-The tool uploads the file to the active chat and returns the visible path and file name.`,
+    description: [
+      '向当前聊天会话发送一个已存在的本地文件。',
+      'file_path 接受绝对路径、相对当前目录的路径，或当前 CatsCo 用户轮次授权的 catsco_attachment:<id> 引用。',
+      '只发送文件本身；如果只是回复文字，请用普通 assistant 回复或 send_text。',
+    ].join('\n'),
     transcriptMode: 'outbound_file',
     parameters: {
       type: 'object',
       properties: {
         file_path: {
           type: 'string',
-          description: '要发送的文件路径，或当前 CatsCo 用户轮次中的授权附件引用。可以是绝对路径、相对当前目录的路径，或 catsco_attachment:<id>。',
+          description: '要发送的本地文件路径或授权附件引用。支持绝对路径、相对当前目录路径、catsco_attachment:<id>。',
         },
         file_name: {
           type: 'string',
-          description: '文件名（含扩展名），如 "论文精读.md"',
+          description: '发送给用户时显示的文件名，应包含扩展名，例如 "report.md"。',
         },
       },
       required: ['file_path', 'file_name'],
