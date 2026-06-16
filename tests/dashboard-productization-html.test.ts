@@ -129,9 +129,12 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /let catsSetupInFlight=false/);
   assert.match(dashboardHtml, /let relayModelConfigRequestSeq=0/);
   assert.match(dashboardHtml, /function invalidateCatsStatusRequests\(\)/);
+  assert.match(dashboardHtml, /function refreshCatsChatAfterMutation\(options=\{\}\)/);
+  assert.match(dashboardHtml, /function focusCatsMessageInputSoon\(\)/);
   assert.match(dashboardHtml, /function invalidateRelayModelConfigRequests\(\)/);
   assert.match(dashboardHtml, /function isRelayModelConfigRequestCurrent\(requestGeneration, requestSeq, requestAccountKey\)/);
   assert.match(dashboardHtml, /catsStatusMutationInFlight && !priority/);
+  assert.match(dashboardHtml, /if\(stage\.key==='ready' && options\.focusInput!==false\)focusCatsMessageInputSoon\(\)/);
   assert.match(dashboardHtml, /function autoResizeCatsMessageInput\(\)/);
   assert.match(dashboardHtml, /overflowY=input\.scrollHeight>maxHeight\?'auto':'hidden'/);
   assert.match(dashboardHtml, /const connectedCardOwnsAction=connected && \(stage\.action==='setup' \|\| stage\.action==='refresh'\)/);
@@ -171,10 +174,7 @@ test('CatsCo Chat setup refreshes readiness before unlocking the composer', () =
   assert.match(setupBlock, /e\.status===409 && e\.action==='rotate_required'/);
   assert.match(setupBlock, /setCatsStatusMutationBusy\(false\)/);
   assert.match(setupBlock, /setCatsSetupBusy\(false\)/);
-  assert.match(setupBlock, /await fetchStatus\(\)/);
-  assert.match(setupBlock, /await fetchCatsStatus\(\{priority:true\}\)/);
-  assert.match(setupBlock, /renderCatsStatus\(\)/);
-  assert.match(setupBlock, /const stage=buildCatsChatStage\(\)/);
+  assert.match(setupBlock, /const stage=await refreshCatsChatAfterMutation\(\{focusInput:true\}\)/);
   assert.match(setupBlock, /await loadCatsMessages\(true, \{reset:true, forceBottom:true\}\)/);
 });
 
@@ -186,6 +186,11 @@ test('CatsCo bot binding carries selected relay model setup', () => {
   assert.match(bindBlock, /rotateRelayKey:Boolean\(options\?\.rotateRelayKey\)/);
   assert.match(bindBlock, /pendingStartupSource=''/);
   assert.match(bindBlock, /pendingRelayModelId=''/);
+  assert.match(bindBlock, /setCatsStatusMutationBusy\(true\)/);
+  assert.match(bindBlock, /invalidateCatsStatusRequests\(\)/);
+  assert.match(bindBlock, /const stage=await refreshCatsChatAfterMutation\(\{focusInput:true\}\)/);
+  assert.match(bindBlock, /if\(stage\.key==='ready'\)await loadCatsMessages\(true, \{ reset: true, forceBottom: true \}\)/);
+  assert.match(bindBlock, /setCatsStatusMutationBusy\(false\)/);
   assert.match(bindBlock, /e\.status===409 && e\.action==='rotate_required'/);
   assert.match(bindBlock, /bindCatsBot\(botUid, botName, button, \{\.\.\.options, confirm:false, restoreText, rotateRelayKey:true\}\)/);
 });
