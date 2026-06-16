@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 
 const dashboardHtml = readFileSync(join(process.cwd(), 'dashboard/index.html'), 'utf-8');
 const servicesPageHtml = dashboardHtml.match(/<div class="page" id="page-services">[\s\S]*?<div class="page" id="page-companion">/)?.[0] || '';
@@ -32,7 +33,10 @@ test('Agent Hub keeps connector controls and third-party model config without du
   assert.match(dashboardHtml, /\/api\/cats\/relay\/model-config\/apply/);
   assert.match(dashboardHtml, /service-config/);
   assert.match(dashboardHtml, /CatsCo 中转模型在 CatsCo 页面选择/);
-  assert.match(dashboardHtml, /自定义模型默认使用 128K 安全上下文/);
+  assert.match(dashboardHtml, /CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS/);
+  assert.match(dashboardHtml, /id="model-context-window-setting"/);
+  assert.match(dashboardHtml, /'model\.contextWindowTokens':document\.getElementById\('model-context-window-setting'\)\.value/);
+  assert.match(dashboardHtml, /自定义模型可在 128K 到 1M 间选择上下文/);
   assert.match(dashboardHtml, /上下文 '\+escapeHtml\(contextLabel\)\+'/);
   assert.doesNotMatch(servicesPageHtml, /模型来源与 Runtime Profile/);
   assert.doesNotMatch(servicesPageHtml, /id="settings-setup-panel"/);
@@ -75,8 +79,10 @@ test('SkillHub Skills page is separate from Companion Hub and owns publishing co
   assert.match(dashboardHtml, /id="skillhub-search-input"/);
   assert.match(dashboardHtml, /发现技能/);
   assert.match(dashboardHtml, /已安装技能/);
-  assert.match(dashboardHtml, /SkillHub Developer/);
   assert.match(dashboardHtml, /id="skillhub-package-versions-list"/);
+  assert.doesNotMatch(dashboardHtml, /SkillHub Developer/);
+  assert.doesNotMatch(dashboardHtml, /id="skillhub-developer-apply"/);
+  assert.doesNotMatch(dashboardHtml, /id="skillhub-developer-console"/);
   assert.doesNotMatch(dashboardHtml, /data-page="developer"/);
   assert.doesNotMatch(dashboardHtml, /id="page-developer"/);
   assert.match(dashboardHtml, /if \(target === 'skills'\) return switchPage\('store'\);/);
@@ -127,9 +133,12 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /let catsSetupInFlight=false/);
   assert.match(dashboardHtml, /let relayModelConfigRequestSeq=0/);
   assert.match(dashboardHtml, /function invalidateCatsStatusRequests\(\)/);
+  assert.match(dashboardHtml, /function refreshCatsChatAfterMutation\(options=\{\}\)/);
+  assert.match(dashboardHtml, /function focusCatsMessageInputSoon\(\)/);
   assert.match(dashboardHtml, /function invalidateRelayModelConfigRequests\(\)/);
   assert.match(dashboardHtml, /function isRelayModelConfigRequestCurrent\(requestGeneration, requestSeq, requestAccountKey\)/);
   assert.match(dashboardHtml, /catsStatusMutationInFlight && !priority/);
+  assert.match(dashboardHtml, /if\(stage\.key==='ready' && options\.focusInput!==false\)focusCatsMessageInputSoon\(\)/);
   assert.match(dashboardHtml, /function autoResizeCatsMessageInput\(\)/);
   assert.match(dashboardHtml, /overflowY=input\.scrollHeight>maxHeight\?'auto':'hidden'/);
   assert.match(dashboardHtml, /const connectedCardOwnsAction=connected && \(stage\.action==='setup' \|\| stage\.action==='refresh'\)/);
@@ -142,6 +151,59 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /needs-readiness/);
   assert.match(dashboardHtml, /appReadinessLoaded/);
   assert.doesNotMatch(dashboardHtml, /末尾 \+/);
+});
+
+test('relay model cards render SDK labels from model payloads', () => {
+  assert.match(dashboardHtml, /sdk_label:'Anthropic SDK'/);
+  assert.match(dashboardHtml, /const sdkLabel=model\.sdk_label \|\|/);
+  assert.match(dashboardHtml, /escapeHtml\(contextLabel\)\+' · '\+escapeHtml\(sdkLabel\)/);
+  assert.doesNotMatch(dashboardHtml, /escapeHtml\(contextLabel\)\+' · Anthropic SDK'/);
+
+  const functionSource = dashboardHtml.match(
+    /function relayModelChoiceHtml\(model, activeId, catsConnected, context='settings'\)\{[\s\S]*?\n    \}/,
+  )?.[0];
+  assert.ok(functionSource);
+
+  const relayModelChoiceHtml = vm.runInNewContext(`${functionSource}; relayModelChoiceHtml`, {
+    escapeHtml: (value: unknown) => String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;'),
+    formatModelContextLabel: (tokens: unknown, fallback: unknown) => fallback || `${tokens} tokens`,
+    relayActionBusy: () => false,
+    String,
+  }) as (
+    model: Record<string, unknown>,
+    activeId: string,
+    catsConnected: boolean,
+    context?: string,
+  ) => string;
+
+  const html = relayModelChoiceHtml(
+    {
+      id: 'custom-openai',
+      label: 'OpenAI <Relay>',
+      model: 'custom&model',
+      provider: 'anthropic',
+      sdk_label: 'OpenAI SDK',
+      quota_class: 'standard',
+      context_window_tokens: 128000,
+      context_label: '128K',
+    },
+    'custom-openai',
+    true,
+    'chat',
+  );
+
+  assert.match(html, /class="relay-model-choice active"/);
+  assert.match(html, /data-relay-model-id="custom-openai"/);
+  assert.match(html, /data-relay-model-context="chat"/);
+  assert.match(html, /OpenAI &lt;Relay&gt;/);
+  assert.match(html, /custom&amp;model/);
+  assert.match(html, /上下文 128K · OpenAI SDK/);
+  assert.doesNotMatch(html, /Anthropic SDK/);
 });
 
 test('custom model save refreshes simplified state before Chat remains locked', () => {
@@ -169,10 +231,7 @@ test('CatsCo Chat setup refreshes readiness before unlocking the composer', () =
   assert.match(setupBlock, /e\.status===409 && e\.action==='rotate_required'/);
   assert.match(setupBlock, /setCatsStatusMutationBusy\(false\)/);
   assert.match(setupBlock, /setCatsSetupBusy\(false\)/);
-  assert.match(setupBlock, /await fetchStatus\(\)/);
-  assert.match(setupBlock, /await fetchCatsStatus\(\{priority:true\}\)/);
-  assert.match(setupBlock, /renderCatsStatus\(\)/);
-  assert.match(setupBlock, /const stage=buildCatsChatStage\(\)/);
+  assert.match(setupBlock, /const stage=await refreshCatsChatAfterMutation\(\{focusInput:true\}\)/);
   assert.match(setupBlock, /await loadCatsMessages\(true, \{reset:true, forceBottom:true\}\)/);
 });
 
@@ -184,6 +243,11 @@ test('CatsCo bot binding carries selected relay model setup', () => {
   assert.match(bindBlock, /rotateRelayKey:Boolean\(options\?\.rotateRelayKey\)/);
   assert.match(bindBlock, /pendingStartupSource=''/);
   assert.match(bindBlock, /pendingRelayModelId=''/);
+  assert.match(bindBlock, /setCatsStatusMutationBusy\(true\)/);
+  assert.match(bindBlock, /invalidateCatsStatusRequests\(\)/);
+  assert.match(bindBlock, /const stage=await refreshCatsChatAfterMutation\(\{focusInput:true\}\)/);
+  assert.match(bindBlock, /if\(stage\.key==='ready'\)await loadCatsMessages\(true, \{ reset: true, forceBottom: true \}\)/);
+  assert.match(bindBlock, /setCatsStatusMutationBusy\(false\)/);
   assert.match(bindBlock, /e\.status===409 && e\.action==='rotate_required'/);
   assert.match(bindBlock, /bindCatsBot\(botUid, botName, button, \{\.\.\.options, confirm:false, restoreText, rotateRelayKey:true\}\)/);
 });

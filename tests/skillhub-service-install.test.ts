@@ -14,14 +14,17 @@ describe('SkillHub connected install service', () => {
   let testRoot: string;
   let originalCwd: string;
   let originalEnv: string | undefined;
+  let originalSkillsEnv: string | undefined;
   let server: Server | undefined;
   let baseUrl: string;
 
   beforeEach(async () => {
     originalCwd = process.cwd();
     originalEnv = process.env.CATSCO_SKILLHUB_BASE_URL;
+    originalSkillsEnv = process.env.XIAOBA_SKILLS_DIR;
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skillhub-service-'));
     process.chdir(testRoot);
+    process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
     fs.mkdirSync(path.join(testRoot, 'skills'), { recursive: true });
   });
 
@@ -33,6 +36,8 @@ describe('SkillHub connected install service', () => {
     process.chdir(originalCwd);
     if (originalEnv === undefined) delete process.env.CATSCO_SKILLHUB_BASE_URL;
     else process.env.CATSCO_SKILLHUB_BASE_URL = originalEnv;
+    if (originalSkillsEnv === undefined) delete process.env.XIAOBA_SKILLS_DIR;
+    else process.env.XIAOBA_SKILLS_DIR = originalSkillsEnv;
     CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS.splice(0);
     if (fs.existsSync(testRoot)) fs.rmSync(testRoot, { recursive: true, force: true });
   });

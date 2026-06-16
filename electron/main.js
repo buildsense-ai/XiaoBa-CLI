@@ -3,15 +3,34 @@ const path = require('path');
 const fs = require('fs');
 
 const DASHBOARD_PORT = resolveDashboardPort(process.env.XIAOBA_DASHBOARD_PORT);
+const DEEP_LINK_PROTOCOL = 'catsco';
+const TRUSTED_DEEP_LINK_BASE_ORIGINS = new Set(['https://app.catsco.cc']);
 let mainWindow = null;
 let tray = null;
 let autoUpdater = null;
+let dashboardServerHandle = null;
 let hideNoticeShown = false;
-const REFRESHABLE_BUNDLED_SKILLS = new Set([]);
-const RETIRED_BUNDLED_SKILLS = new Set(['advanced-reader', 'vision-analysis']);
-const SKILL_SYNC_MARKER = '.xiaoba-bundled-skill.json';
+let dashboardServerReady = false;
+const pendingDeepLinks = [];
+let deepLinkDrainPromise = null;
 
 applyConfiguredUserDataPath();
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    enqueueDeepLinkFromArgv(argv);
+    showMainWindow();
+  });
+}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  enqueueDeepLink(url);
+  showMainWindow();
+});
 
 function resolveDashboardPort(value) {
   const text = String(value || '').trim();
@@ -78,6 +97,120 @@ function showMainWindow() {
   } else {
     createWindow();
   }
+}
+
+function isCatsCoDeepLink(value) {
+  return typeof value === 'string' && value.toLowerCase().startsWith(`${DEEP_LINK_PROTOCOL}://`);
+}
+
+function enqueueDeepLinkFromArgv(argv) {
+  const link = (argv || []).find(isCatsCoDeepLink);
+  if (link) enqueueDeepLink(link);
+}
+
+function enqueueDeepLink(value) {
+  if (!isCatsCoDeepLink(value)) return;
+  pendingDeepLinks.push(value);
+  if (dashboardServerReady) {
+    scheduleDeepLinkDrain();
+  }
+}
+
+function scheduleDeepLinkDrain() {
+  if (deepLinkDrainPromise) return deepLinkDrainPromise;
+  deepLinkDrainPromise = drainPendingDeepLinks()
+    .catch((error) => {
+      console.error('[desktop-connect] failed to process pending deep links:', error);
+    })
+    .finally(() => {
+      deepLinkDrainPromise = null;
+      if (pendingDeepLinks.length > 0) scheduleDeepLinkDrain();
+    });
+  return deepLinkDrainPromise;
+}
+
+function registerDeepLinkProtocol() {
+  try {
+    if (process.defaultApp && process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(DEEP_LINK_PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
+    } else {
+      app.setAsDefaultProtocolClient(DEEP_LINK_PROTOCOL);
+    }
+  } catch (error) {
+    console.warn('[desktop-connect] failed to register catsco:// protocol:', error?.message || error);
+  }
+}
+
+async function drainPendingDeepLinks() {
+  while (pendingDeepLinks.length > 0) {
+    const link = pendingDeepLinks.shift();
+    await processDeepLink(link);
+  }
+}
+
+function isLoopbackDeepLinkHost(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+}
+
+function trustedDeepLinkBase(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  let url;
+  try {
+    url = new URL(text);
+  } catch (_error) {
+    return '';
+  }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    return '';
+  }
+  if (TRUSTED_DEEP_LINK_BASE_ORIGINS.has(url.origin)) {
+    return url.origin;
+  }
+  if (!app.isPackaged && url.protocol === 'http:' && isLoopbackDeepLinkHost(url.hostname)) {
+    return url.origin;
+  }
+  return '';
+}
+
+async function processDeepLink(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch (_error) {
+    return;
+  }
+  const action = parsed.hostname || parsed.pathname.replace(/^\/+/, '');
+  if (action !== 'connect') return;
+  const code = parsed.searchParams.get('code');
+  if (!code) return;
+  const rawBase = parsed.searchParams.get('base') || '';
+  const base = trustedDeepLinkBase(rawBase);
+  if (rawBase && !base) {
+    console.warn('[desktop-connect] ignored untrusted CatsCo base:', rawBase);
+  }
+  const desktopConnectBody = {
+    code,
+    ...(base ? { httpBaseUrl: base } : {}),
+  };
+  const localApiBase = `http://127.0.0.1:${DASHBOARD_PORT}/api`;
+  await postLocalJson(`${localApiBase}/cats/desktop-connect`, desktopConnectBody);
+  await postLocalJson(`${localApiBase}/cats/setup`, {});
+  showMainWindow();
+}
+
+async function postLocalJson(url, body) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`POST ${url} failed: ${response.status} ${text}`);
+  }
+  return response.json().catch(() => ({}));
 }
 
 function createTrayIcon() {
@@ -348,79 +481,20 @@ function getNodeModulesPath() {
   return path.join(__dirname, '..', 'node_modules');
 }
 
-function shouldCopyBundledSkillEntry(srcPath) {
-  const normalized = srcPath.split(path.sep).join('/');
-  return !normalized.includes('/__pycache__/')
-    && !normalized.endsWith('/__pycache__')
-    && !normalized.endsWith('.pyc')
-    && !normalized.endsWith('.pyo');
-}
-
-function readBundledSkillSyncVersion(fs, dest) {
-  try {
-    const markerPath = path.join(dest, SKILL_SYNC_MARKER);
-    if (!fs.existsSync(markerPath)) return null;
-    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
-    return typeof marker.version === 'string' ? marker.version : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeBundledSkillSyncMarker(fs, dest, skillName) {
-  try {
-    const markerPath = path.join(dest, SKILL_SYNC_MARKER);
-    if (fs.existsSync(markerPath)) fs.rmSync(markerPath, { force: true });
-  } catch (error) {
-    console.warn(`Failed to remove bundled skill sync marker for ${skillName}:`, error);
-  }
-}
-
-function shouldRefreshBundledSkill(fs, skillName, dest) {
-  if (!app.isPackaged) return false;
-  if (!REFRESHABLE_BUNDLED_SKILLS.has(skillName)) return false;
-  return readBundledSkillSyncVersion(fs, dest) !== app.getVersion();
-}
-
-function removeRetiredBundledSkills(fs, skillsPath) {
-  for (const skillName of RETIRED_BUNDLED_SKILLS) {
-    const skillPath = path.join(skillsPath, skillName);
-    const skillMdPath = path.join(skillPath, 'SKILL.md');
-    if (!fs.existsSync(skillMdPath)) continue;
-
-    try {
-      const skillMd = fs.readFileSync(skillMdPath, 'utf8');
-      if (skillMd.includes(`name: ${skillName}`)) {
-        fs.rmSync(skillPath, { recursive: true, force: true });
-      }
-    } catch (error) {
-      console.warn(`Failed to remove retired bundled skill ${skillName}:`, error);
-    }
-  }
-}
-
-function syncBundledSkillDir(fs, skillName, src, dest, overwrite = false) {
-  if (overwrite && fs.existsSync(dest)) {
-    fs.rmSync(dest, { recursive: true, force: true });
-  }
-  fs.cpSync(src, dest, {
-    recursive: true,
-    force: true,
-    filter: shouldCopyBundledSkillEntry,
-  });
-  writeBundledSkillSyncMarker(fs, dest, skillName);
-}
-
 async function startServer() {
   const appRoot = getAppRoot();
 
   // 闂佽崵濮崇粈浣规櫠娴犲鍋柛鈩冾殢閸熷懘鏌曟径鍫濃偓妤冪矙婵犲洦鐓熼柍鍝勶工閺嬫稓绱撳鍛ч柡浣哥Ч瀹曞ジ鎮㈢亸浣稿緧闂備礁鎲￠悧鏇㈠箠鎼淬劌绠栨俊銈呮噺閸嬨劑鏌嶉搹瑙勭erData闂佽瀛╃粙鎺曟懌闂佸搫鍊风欢姘跺箖娴犲惟闁挎洍鍋撻柣鎾存礋閺屸剝鎷呴崫鍕垫毉閻庤鎸风欢姘跺极?
   const userDataPath = app.getPath('userData');
+  const skillsPath = path.join(userDataPath, 'skills');
+  if (!String(process.env.XIAOBA_SKILLS_DIR || '').trim()) {
+    process.env.XIAOBA_SKILLS_DIR = skillsPath;
+  }
+  fs.mkdirSync(process.env.XIAOBA_SKILLS_DIR, { recursive: true });
   // Keep this before createApplicationMenu(): close-to-tray preferences are read from process.cwd()/.xiaoba/catsco.json.
   process.chdir(userDataPath);
 
   // 濠电姷顣介埀顒€鍟块埀顒€缍婇幃妯荤箙缁茬尃rData闂傚倷鐒﹁ぐ鍐嫉椤掑嫭鍎夐柛娑欐綑鐎?env闂備焦瀵х粙鎴炵附閺冨倸鍨濋柣鏇犵％p闂傚倷鐒﹁ぐ鍐嚐椤栫倛鍥蓟閵夈儳顦?env.example
-  const fs = require('fs');
   const envPath = path.join(userDataPath, '.env');
   if (!fs.existsSync(envPath)) {
     const examplePath = path.join(appRoot, '.env.example');
@@ -430,41 +504,7 @@ async function startServer() {
   }
 
   // 闂備礁鎲￠懝楣冨嫉椤掑嫷鏁嗛柣鎰惈缁€鍐煕濞戝崬鐏ｉ柡?skills 闂?userData闂備焦瀵х粙鎴︽偋閸涱垱宕叉慨妯垮煐閸嬧晜绻涢崱妯虹仸闁哄棗绻橀弻鐔煎级閹存繃些闂佷紮绲婚崝搴ㄥ箟濡ゅ懎宸濇い鏍ㄧ〒閺?skills闂?
-  const skillsPath = path.join(userDataPath, 'skills');
-  const bundledSkills = path.join(appRoot, 'skills');
-
-  if (fs.existsSync(bundledSkills)) {
-    fs.mkdirSync(skillsPath, { recursive: true });
-    removeRetiredBundledSkills(fs, skillsPath);
-
-    // 濠电姰鍨煎▔娑氱矓閹绢喖鏄ユ俊銈傚亾鐞氭瑩鐓崶褔鍙勯柛銈咁儔閺屾盯骞囬浣告闂?skill闂備焦瀵х粙鎴︽偋閸涱垳绠斿璺烘湰閸熸椽鏌涢埄鍐噭缁剧偓澹嗛埀顒傛嚀閹猜ゃ亹閸愵喗鍋ら柕濞炬櫅閹瑰爼鏌曟繛褍瀚弳鐘绘⒑?
-    const bundledSkillDirs = fs.readdirSync(bundledSkills, { withFileTypes: true })
-      .filter(d => d.isDirectory());
-
-    for (const dir of bundledSkillDirs) {
-      const src = path.join(bundledSkills, dir.name);
-      const dest = path.join(skillsPath, dir.name);
-
-      // 闂備礁鎲￠悷顖涚濠婂煻鍥蓟閵夈儳顦梺鍝勭墢閺佹悂鎮峰┑瀣€垫繛鎴烆仾椤忓嫸鑰挎い蹇撶墛閸?skill
-      const shouldRefresh = shouldRefreshBundledSkill(fs, dir.name, dest);
-      if (!fs.existsSync(dest)) {
-        syncBundledSkillDir(fs, dir.name, src, dest, false);
-      } else if (shouldRefresh) {
-        syncBundledSkillDir(fs, dir.name, src, dest, true);
-      } else {
-        writeBundledSkillSyncMarker(fs, dest, dir.name);
-      }
-    }
-
-    // 濠电姰鍨煎▔娑氱矓閹绢喖鏄?README
-    const readmeSrc = path.join(bundledSkills, 'README.md');
-    const readmeDest = path.join(skillsPath, 'README.md');
-    if (fs.existsSync(readmeSrc)) {
-      fs.copyFileSync(readmeSrc, readmeDest);
-    }
-  }
-
-  // 濠电姰鍨煎▔娑氱矓閹绢喖鏄?prompts 闂備胶鍎甸弲鈺呭窗閺嶎偆绀?
+  // Skills are user-managed. New installs start empty; SkillHub installs populate this directory.
   const promptsDest = path.join(userDataPath, 'prompts');
   const promptsSrc = path.join(appRoot, 'prompts');
   if (!fs.existsSync(promptsDest) && fs.existsSync(promptsSrc)) {
@@ -505,7 +545,16 @@ async function startServer() {
 
   // 闂備胶鍎甸弲娑㈡偤閵娧勬殰闁圭虎鍠栭幑鍫曟煏婵炲灝鈧洟鎯佸鍫濈骇闁冲搫鍊婚妴鎺楁煃鐠囧眰鍋㈢€规洏鍎甸、娑橆潩椤戭偅顣筧shboard server
   const { startDashboard } = require(path.join(appRoot, 'dist', 'dashboard', 'server'));
-  await startDashboard(DASHBOARD_PORT, { updateController, projectRoot: appRoot });
+  dashboardServerHandle = await startDashboard(DASHBOARD_PORT, { updateController, projectRoot: appRoot });
+}
+
+function stopDashboardServer() {
+  if (!dashboardServerHandle) return;
+  const handle = dashboardServerHandle;
+  dashboardServerHandle = null;
+  handle.stop?.().catch((error) => {
+    console.warn('Failed to stop dashboard server:', error);
+  });
 }
 
 function createWindow() {
@@ -526,12 +575,11 @@ function createWindow() {
 
   mainWindow.loadURL(`http://127.0.0.1:${DASHBOARD_PORT}`);
 
-  mainWindow.on('close', (e) => {
-    if (!app.isQuitting && readCloseToTrayPreference()) {
-      e.preventDefault();
-      mainWindow.hide();
-      notifyWindowHidden();
-    }
+  mainWindow.on('close', (event) => {
+    if (app.isQuitting || !readCloseToTrayPreference()) return;
+    event.preventDefault();
+    mainWindow.hide();
+    notifyWindowHidden();
   });
 
   mainWindow.on('closed', () => {
@@ -771,10 +819,14 @@ if (autoUpdater) {
 
 app.whenReady().then(async () => {
   try {
+    registerDeepLinkProtocol();
     await startServer();
+    dashboardServerReady = true;
     createApplicationMenu();
     createWindow();
     createTray();
+    enqueueDeepLinkFromArgv(process.argv);
+    scheduleDeepLinkDrain();
     
     // 闂備礁鎲￠崙褰掑垂閻楀牊鍙忛柍鍝勬噹鐟欙箓骞栧ǎ顒€鐒烘慨濠囩畺閺岋紕浠︾拠鎻掑濠电偞褰冨鈥愁嚕?
     if (app.isPackaged && autoUpdater) {
@@ -799,4 +851,5 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   app.isQuitting = true;
+  stopDashboardServer();
 });

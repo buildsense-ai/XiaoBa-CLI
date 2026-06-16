@@ -41,6 +41,8 @@ import { SubAgentManager } from './sub-agent-manager';
 import type { PendingUserInputProvider } from './conversation-runner';
 import { resolveModelContextWindow } from '../utils/model-context-window';
 import { parseSessionKeyV2 } from './session-router';
+import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
+import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
 
@@ -322,6 +324,7 @@ export class AgentSession {
       const usage = this.contextWindowManager.getUsageInfo(this.messages);
       Logger.info(`[${this.key}] 恢复后上下文: ${usage.usedTokens}/${usage.maxTokens} tokens (${usage.usagePercent}%)`);
 
+      this.messages = stripAssistantArtifactsFromMessages(this.messages);
       this.messages = await this.contextWindowManager.compactIfNeeded(this.messages, {
         sessionKey: this.key,
         reason: '恢复后',
@@ -455,6 +458,7 @@ export class AgentSession {
       this.activeAbortController = new AbortController();
       this.lastActiveAt = Date.now();
 
+      this.messages = stripAssistantArtifactsFromMessages(this.messages);
       this.messages = await this.contextWindowManager.compactIfNeeded(this.messages, {
         sessionKey: this.key,
         reason: '处理前',
@@ -507,11 +511,17 @@ export class AgentSession {
 
         // 识别多模态相关错误
         const errorMsg = err.message || String(err);
-        const isVisionError = errorMsg.match(/image|vision|multimodal|media_type|base64.*not supported/i);
+        const isImageSafetyError = isModelImageSafetyError(err);
+        const isVisionError = !isImageSafetyError && errorMsg.match(/image|vision|multimodal|media_type|base64.*not supported/i);
         const isModelTimeoutError = this.isModelTimeoutError(err);
+        const relayBudgetErrorReply = this.formatRelayBudgetErrorReply(err);
 
         let errorReply = ERROR_MESSAGE;
-        if (isVisionError) {
+        if (isImageSafetyError) {
+          errorReply = MODEL_IMAGE_SAFETY_MESSAGE;
+        } else if (relayBudgetErrorReply) {
+          errorReply = relayBudgetErrorReply;
+        } else if (isVisionError) {
           errorReply = '当前模型不支持图片识别。请使用支持多模态的模型（如 Claude 3.5 Sonnet 或 GPT-4V），或者用文字描述图片内容。';
         } else if (isModelTimeoutError) {
           errorReply = MODEL_TIMEOUT_MESSAGE;
@@ -520,9 +530,10 @@ export class AgentSession {
         // 添加错误回复到上下文，保持对话连贯性
         this.messages.push({
           role: 'assistant',
-          content: this.formatErrorContextMessage(err, isModelTimeoutError),
+          content: this.formatErrorContextMessage(err, isModelTimeoutError, isImageSafetyError),
+          __internalErrorArtifact: true,
         });
-        this.messages = this.turnContextBuilder.removeTransientMessages(this.messages);
+        this.messages = stripAssistantArtifactsFromMessages(this.turnContextBuilder.removeTransientMessages(this.messages));
         this.lifecycleManager.saveContext(this.messages);
 
         return { text: errorReply, visibleToUser: true };
@@ -730,10 +741,52 @@ export class AgentSession {
     return /API错误\s*\(504\)|request_timed_out|request timed out|default_request_timeout_in_seconds|upstream request timeout|gateway timeout/i.test(text);
   }
 
-  private formatErrorContextMessage(error: any, isModelTimeoutError: boolean): string {
+  private formatRelayBudgetErrorReply(error: any): string | null {
+    const text = String(error?.message || error || '');
+    const status = this.extractErrorStatus(error);
+    const isBudgetError =
+      status === 402
+      || /api错误\s*\(402\)|status(?:\s*code)?\s*[:=]?\s*402\b|http(?:\s*status)?\s*[:=]?\s*402\b|payment[_\s-]?required/i.test(text)
+      || /budget exceeded|quota exceeded|insufficient quota|insufficient balance|credits? exhausted|monthly budget|model budget|relay budget/i.test(text)
+      || /额度.{0,12}(不足|用完|耗尽|超限|达到上限|已用尽)|余额不足|已达.*额度上限/.test(text);
+
+    if (!isBudgetError) {
+      return null;
+    }
+
+    const model = this.currentModelName();
+    const modelLabel = model ? `当前模型 ${model} 的` : '当前模型的';
+    if (/model budget exceeded|model quota|模型.{0,8}额度/i.test(text)) {
+      return `${modelLabel}中转额度已用完，暂时不能继续调用。\n\n你可以切换到还有额度的模型，或到 CatsCompany 中转页面查看额度；如果这是学校/团队账号，请联系管理员调整额度。`;
+    }
+
+    if (/monthly budget exceeded|account budget|user budget|账号.{0,8}额度|本月.{0,8}额度/i.test(text)) {
+      return '当前账号的中转额度已用完，暂时不能继续调用模型。\n\n请到 CatsCompany 中转页面查看额度，或联系管理员调整额度。';
+    }
+
+    return `模型中转额度不足，当前请求没有继续调用${model ? ` ${model}` : ''}。\n\n你可以切换模型、稍后重试，或到 CatsCompany 中转页面查看额度并联系管理员调整。`;
+  }
+
+  private extractErrorStatus(error: any): number | null {
+    const status = error?.status || error?.response?.status || error?.error?.status;
+    return typeof status === 'number' ? status : null;
+  }
+
+  private currentModelName(): string | null {
+    const config = typeof (this.services.aiService as any).getConfig === 'function'
+      ? (this.services.aiService as any).getConfig()
+      : {};
+    const model = String(config?.model || '').trim();
+    return model || null;
+  }
+
+  private formatErrorContextMessage(error: any, isModelTimeoutError: boolean, isImageSafetyError = false): string {
     const detail = this.sanitizeErrorMessage(error?.message || String(error));
     if (isModelTimeoutError) {
       return `[处理中断: 模型中转请求超时。已保留本轮已完成的工具结果和上下文；如果用户要求继续，请基于当前上下文继续，避免重复已经完成的工具步骤。错误摘要: ${detail}]`;
+    }
+    if (isImageSafetyError) {
+      return `[处理中断: 上游模型拒绝了当前对话中的图片。已保留本轮已完成的上下文；如果用户要求继续，请提示用户删除或更换相关图片，或新开对话后继续。错误摘要: ${detail}]`;
     }
     return `[处理失败: ${detail}]`;
   }

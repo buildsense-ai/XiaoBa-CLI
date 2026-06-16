@@ -13,15 +13,20 @@ import { resolveDefaultRuntimeProfile } from '../src/runtime/runtime-profile';
 describe('RuntimeFactory', () => {
   let testRoot: string;
   let originalCwd: string;
+  let originalSkillsEnv: string | undefined;
 
   beforeEach(() => {
     originalCwd = process.cwd();
+    originalSkillsEnv = process.env.XIAOBA_SKILLS_DIR;
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-runtime-factory-'));
     process.chdir(testRoot);
+    process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
   });
 
   afterEach(() => {
     process.chdir(originalCwd);
+    if (originalSkillsEnv === undefined) delete process.env.XIAOBA_SKILLS_DIR;
+    else process.env.XIAOBA_SKILLS_DIR = originalSkillsEnv;
     if (testRoot && fs.existsSync(testRoot)) {
       fs.rmSync(testRoot, { recursive: true, force: true });
     }

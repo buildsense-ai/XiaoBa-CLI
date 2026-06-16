@@ -21,6 +21,7 @@ import {
   TRANSIENT_RUNTIME_CONTEXT_PREFIX,
   buildRuntimeContextMessage,
 } from './runtime-context-builder';
+import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
 
 const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
@@ -53,7 +54,7 @@ export interface BuildTurnContextResult {
  */
 export class TurnContextBuilder {
   async build(params: BuildTurnContextParams): Promise<BuildTurnContextResult> {
-    const contextMessages = [...params.durableMessages];
+    const contextMessages = stripAssistantArtifactsFromMessages(params.durableMessages);
     this.injectRuntimeContext(contextMessages, params);
     this.injectRuntimeFeedback(contextMessages, params.runtimeFeedback);
     this.injectPlanStatus(contextMessages, params.planRuntime);

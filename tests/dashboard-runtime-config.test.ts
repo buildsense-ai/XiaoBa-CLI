@@ -8,16 +8,21 @@ import { createRuntimeConfigSnapshot } from '../src/runtime/runtime-config-snaps
 describe('dashboard runtime config snapshot', () => {
   let testRoot: string;
   let originalCwd: string;
+  let originalSkillsEnv: string | undefined;
 
   beforeEach(() => {
     originalCwd = process.cwd();
+    originalSkillsEnv = process.env.XIAOBA_SKILLS_DIR;
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-runtime-config-'));
     process.chdir(testRoot);
+    process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
     writeSkill('snapshot-demo');
   });
 
   afterEach(() => {
     process.chdir(originalCwd);
+    if (originalSkillsEnv === undefined) delete process.env.XIAOBA_SKILLS_DIR;
+    else process.env.XIAOBA_SKILLS_DIR = originalSkillsEnv;
     if (testRoot && fs.existsSync(testRoot)) {
       fs.rmSync(testRoot, { recursive: true, force: true });
     }

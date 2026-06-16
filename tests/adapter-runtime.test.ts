@@ -9,13 +9,16 @@ describe('adapter runtime', () => {
   let testRoot: string;
   let originalCwd: string;
   let originalProfilePath: string | undefined;
+  let originalSkillsEnv: string | undefined;
 
   beforeEach(() => {
     originalCwd = process.cwd();
     originalProfilePath = process.env.XIAOBA_RUNTIME_PROFILE_PATH;
+    originalSkillsEnv = process.env.XIAOBA_SKILLS_DIR;
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-adapter-runtime-'));
     process.chdir(testRoot);
     process.env.XIAOBA_RUNTIME_PROFILE_PATH = path.join(testRoot, 'missing-runtime-profile.json');
+    process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
   });
 
   afterEach(() => {
@@ -24,6 +27,11 @@ describe('adapter runtime', () => {
       delete process.env.XIAOBA_RUNTIME_PROFILE_PATH;
     } else {
       process.env.XIAOBA_RUNTIME_PROFILE_PATH = originalProfilePath;
+    }
+    if (originalSkillsEnv === undefined) {
+      delete process.env.XIAOBA_SKILLS_DIR;
+    } else {
+      process.env.XIAOBA_SKILLS_DIR = originalSkillsEnv;
     }
     if (testRoot && fs.existsSync(testRoot)) {
       fs.rmSync(testRoot, { recursive: true, force: true });
