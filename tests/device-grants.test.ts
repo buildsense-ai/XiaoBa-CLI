@@ -15,7 +15,7 @@ import type {
 function scope(overrides: Partial<ExecutionScope> = {}): ExecutionScope {
   return {
     source: 'catscompany',
-    sessionKey: 'session:v2:catscompany:group:grp_80:agent:usr43',
+    sessionKey: 'session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43',
     topicId: 'grp_80',
     topicType: 'group',
     actorUserId: 'usr7',
@@ -95,6 +95,31 @@ describe('device grants', () => {
     assert.deepEqual(created.operations, ['read_file', 'execute_shell']);
     assert.equal(created.createdAt, 1_000);
     assert.equal(created.expiresAt, 11_000);
+  });
+
+  test('treats numeric CatsCo ids and usr-prefixed ids as the same user', () => {
+    const created = createDeviceGrant(scope(), device({ ownerUserId: '7' }), {
+      grantId: 'grant-numeric-owner',
+      operations: ['read_file'],
+      now: 1_000,
+      ttlMs: 10_000,
+    });
+
+    assert.ok(created);
+    assert.equal(created.ownerUserId, 'usr7');
+
+    const decision = validateDeviceGrant({
+      executionScope: scope(),
+    }, grant({
+      ownerUserId: '7',
+      actorUserId: '7',
+      agentId: '43',
+    }), {
+      operation: 'read_file',
+      now: 2_000,
+    });
+
+    assert.equal(decision.ok, true);
   });
 
   test('refuses to create grants for empty operations, source mismatch, or a different owner', () => {

@@ -31,6 +31,7 @@ import {
   normalizeDeviceRpcToolResultForTransport,
   normalizeDeviceRpcToolResultPayload,
 } from '../tools/device-rpc-tool';
+import { normalizeCatsCoUserId, sameCatsCoUserId } from './user-id';
 
 interface PendingAttachment {
   fileName: string;
@@ -468,7 +469,7 @@ export class CatsCompanyBot {
     }
     const actorUserID = String(request.actor_user_id || '').trim();
     const ownerUserID = String(request.owner_user_id || '').trim();
-    if (ownerUserID !== actorUserID && String(request.identity_source || '').trim() !== 'channel_identity_link') {
+    if (!sameCatsCoUserId(ownerUserID, actorUserID) && String(request.identity_source || '').trim() !== 'channel_identity_link') {
       return { code: 'invalid_request', message: 'Delegated Device RPC request missing channel_identity_link identity source.' };
     }
     if (typeof request.expires_at === 'number' && Date.now() > request.expires_at) {
@@ -685,7 +686,7 @@ export class CatsCompanyBot {
       const pending = this.pendingAnswers.get(pendingId);
       if (!pending) {
         this.pendingAnswerBySession.delete(key);
-      } else if (msg.senderId === pending.expectedSenderId) {
+      } else if (sameCatsCoUserId(msg.senderId, pending.expectedSenderId)) {
         this.clearPendingAnswerById(pending.id);
         Logger.info(`[${key}] 收到用户对提问的回复: ${msg.text.slice(0, 50)}...`);
         pending.resolve(msg.text);
@@ -1139,6 +1140,12 @@ export class CatsCompanyBot {
     });
     const key = envelope.sessionKey;
     const session = (this.sessionManager as any).get?.(key) ?? null;
+    const pendingId = this.pendingAnswerBySession.get(key);
+    if (pendingId) {
+      const pending = this.pendingAnswers.get(pendingId);
+      this.clearPendingAnswerById(pendingId);
+      pending?.resolve('（用户已取消本轮任务）');
+    }
     if (!session) {
       Logger.info(`[${key}] 收到取消事件，但会话不存在`);
       return;
@@ -1585,7 +1592,7 @@ export class CatsCompanyBot {
       id,
       sessionKey,
       topic,
-      expectedSenderId,
+      expectedSenderId: this.normalizePendingSenderId(expectedSenderId),
       resolve,
       timeoutHandle,
     });
@@ -1596,6 +1603,10 @@ export class CatsCompanyBot {
     const pendingId = this.pendingAnswerBySession.get(sessionKey);
     if (!pendingId) return;
     this.clearPendingAnswerById(pendingId);
+  }
+
+  private normalizePendingSenderId(value: string): string {
+    return normalizeCatsCoUserId(value) || value;
   }
 
   private clearPendingAnswerById(pendingId: string): void {

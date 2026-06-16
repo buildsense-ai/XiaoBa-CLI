@@ -42,7 +42,10 @@ export function createSessionRoute(input: CreateSessionRouteInput): SessionRoute
   const agentBodyId = normalizeOptionalId(input.agentBodyId);
   const identityTrust = input.identityTrust || 'legacy_context';
   const identitySource = normalizeOptionalId(input.identitySource);
-  const sessionKey = buildSessionKeyV2({ source, topicType, topicId, agentId });
+  const sessionTopicId = source === 'catscompany' && topicType === 'group'
+    ? `${topicId}:actor:${actorUserId}`
+    : topicId;
+  const sessionKey = buildSessionKeyV2({ source, topicType, topicId: sessionTopicId, agentId });
   const legacySessionKey = normalizeOptionalId(input.legacySessionKey);
 
   return {
@@ -210,7 +213,7 @@ export function buildLegacyCatsCoSessionKey(
   actorUserId: string,
 ): string {
   if (topicType === 'group') {
-    return `cc_group:${topicId || 'unknown'}`;
+    return `cc_group:${topicId || 'unknown'}:actor:${actorUserId || 'unknown'}`;
   }
   return `cc_user:${actorUserId || 'unknown'}`;
 }

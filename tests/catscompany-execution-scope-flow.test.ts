@@ -170,7 +170,7 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(handledTurns[0].options.executionScope.isTrusted, true);
   });
 
-  test('group turn uses group session key while preserving actor in scope', async () => {
+  test('group turn isolates the session by current speaker while preserving actor in scope', async () => {
     const { bot, handledTurns, sessionKeys } = createHarness();
 
     await (bot as any).onMessage({
@@ -183,7 +183,7 @@ describe('CatsCompany execution scope flow', () => {
       seq: 12,
     });
 
-    assert.deepEqual(sessionKeys, ['session:v2:catscompany:group:grp_80:agent:usr43']);
+    assert.deepEqual(sessionKeys, ['session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43']);
     assert.equal(handledTurns.length, 1);
     assert.equal(handledTurns[0].options.executionScope.topicType, 'group');
     assert.equal(handledTurns[0].options.executionScope.topicId, 'grp_80');
@@ -233,6 +233,28 @@ describe('CatsCompany execution scope flow', () => {
     assert.deepEqual(handledTurns[0].options.deviceSelection?.selectedDeviceOperations, ['read_file', 'send_file']);
   });
 
+  test('accepts device selection when CatsCo ids differ only by usr prefix', async () => {
+    const { bot, handledTurns } = createHarness();
+
+    await (bot as any).onMessage({
+      topic: 'p2p_7_43',
+      senderId: 'usr7',
+      text: '移动端继续操作我的电脑',
+      content: '移动端继续操作我的电脑',
+      metadata: metadataWithDeviceSelection('usr7', 'p2p_7_43', {
+        actorUserId: '7',
+        agentId: '43',
+      }),
+      isGroup: false,
+      seq: 12,
+    });
+
+    assert.equal(handledTurns.length, 1);
+    assert.equal(handledTurns[0].options.deviceSelection?.actorUserId, 'usr7');
+    assert.equal(handledTurns[0].options.deviceSelection?.agentId, 'usr43');
+    assert.equal(handledTurns[0].options.deviceSelection?.selectedDeviceId, 'alice-laptop');
+  });
+
   test('drops device selection that does not match the canonical execution scope', async () => {
     const { bot, handledTurns } = createHarness();
 
@@ -274,7 +296,6 @@ describe('CatsCompany execution scope flow', () => {
 
   test('does not merge queued CatsCo group input from another actor into the current actor scope', () => {
     const { bot } = createHarness();
-    const sessionKey = 'session:v2:catscompany:group:grp_80:agent:usr43';
     const aliceScope = createExecutionScope(createCatsCoMessageEnvelope({
       topic: 'grp_80',
       isGroup: true,
@@ -292,7 +313,9 @@ describe('CatsCompany execution scope flow', () => {
       botUid: 'usr43',
     }));
 
-    bot.messageQueue.set(sessionKey, [{
+    assert.notEqual(aliceScope.sessionKey, bobScope.sessionKey);
+
+    bot.messageQueue.set(bobScope.sessionKey, [{
       userMessage: 'bob follow-up',
       topic: 'grp_80',
       senderId: 'bob',
@@ -302,12 +325,12 @@ describe('CatsCompany execution scope flow', () => {
       source: 'user',
     }]);
 
-    assert.equal((bot as any).consumeQueuedUserInput(sessionKey, aliceScope), null);
-    assert.equal(bot.messageQueue.get(sessionKey)?.length, 1);
+    assert.equal((bot as any).consumeQueuedUserInput(aliceScope.sessionKey, aliceScope), null);
+    assert.equal(bot.messageQueue.get(bobScope.sessionKey)?.length, 1);
 
-    const pendingForBob = (bot as any).consumeQueuedUserInput(sessionKey, bobScope);
+    const pendingForBob = (bot as any).consumeQueuedUserInput(bobScope.sessionKey, bobScope);
     assert.equal(pendingForBob, 'bob follow-up');
-    assert.equal(bot.messageQueue.has(sessionKey), false);
+    assert.equal(bot.messageQueue.has(bobScope.sessionKey), false);
   });
 
   test('preserves device grants when queued CatsCompany user input is merged', () => {

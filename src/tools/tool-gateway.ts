@@ -1,6 +1,7 @@
 import type { DeviceGrantOperation, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant } from '../types/session-identity';
 import type { ToolErrorCode, ToolExecutionContext } from '../types/tool';
 import { isDelegatedDeviceGrant, resolveDeviceGrant } from '../core/device-grants';
+import { sameCatsCoUserId } from '../catscompany/user-id';
 
 export type ToolGatewayDecision =
   | {
@@ -100,6 +101,12 @@ export function resolveToolGatewayAccess(
   if (!localDevice || localDevice.source !== 'catscompany') {
     return denied(['当前运行体缺少 CatsCo 本机设备绑定，已阻止本地设备操作。'], options.targetLabel);
   }
+  if (!localDevice.ownerUserId) {
+    return denied([
+      '当前本机设备缺少 CatsCo owner 身份，已阻止本地设备操作。',
+      '请先用真实 CatsCo 账号连接本机设备，避免移动端或群聊请求误操作未知设备。',
+    ], options.targetLabel);
+  }
 
   const localOwnerSelf = isCatsCoLocalOwnerSelfContext(context);
   if (options.operation === 'execute_shell' && !localOwnerSelf && !options.allowCatsCoShell) {
@@ -174,7 +181,15 @@ export function resolveToolGatewayAccess(
       `owner: grant=${grant.ownerUserId || '(empty)'} local=${localDevice.ownerUserId}`,
     ], options.targetLabel);
   }
-  if (grant.ownerUserId !== grant.actorUserId && !isDelegatedDeviceGrant(grant)) {
+  if (selectedTarget.mode === 'local'
+    && localDevice.ownerUserId
+    && !sameCatsCoUserId(grant.actorUserId, localDevice.ownerUserId)) {
+    return denied([
+      '当前本机设备只允许设备 owner 本人直接执行；外部用户或远程委托不能在这台电脑上执行。',
+      `actor: grant=${grant.actorUserId || '(empty)'} localOwner=${localDevice.ownerUserId}`,
+    ], options.targetLabel);
+  }
+  if (!sameCatsCoUserId(grant.ownerUserId, grant.actorUserId) && !isDelegatedDeviceGrant(grant)) {
     return denied([
       '跨用户设备授权缺少服务端委托标记，已阻止本地设备操作。',
     ], options.targetLabel);
@@ -303,14 +318,19 @@ function validateSelectionScope(
   if (selection.identityTrust !== 'server_canonical') {
     return denied(['后端设备选择不是服务端可信身份生成的，已阻止设备工具调用。'], targetLabel);
   }
-  const mismatches = [
+  const baseScopeChecks: Array<[string, unknown, unknown]> = [
     ['source', selection.source, scope.source],
     ['sessionKey', selection.sessionKey, scope.sessionKey],
     ['topicId', selection.topicId, scope.topicId],
     ['topicType', selection.topicType, scope.topicType],
-    ['actorUserId', selection.actorUserId, scope.actorUserId],
-    ['agentId', selection.agentId, scope.agentId],
-  ].filter(([, selectionValue, scopeValue]) => selectionValue !== scopeValue);
+  ];
+  const mismatches = baseScopeChecks.filter(([, selectionValue, scopeValue]) => selectionValue !== scopeValue);
+  if (!sameCatsCoUserId(selection.actorUserId, scope.actorUserId)) {
+    mismatches.push(['actorUserId', selection.actorUserId, scope.actorUserId]);
+  }
+  if ((selection.agentId || scope.agentId) && !sameCatsCoUserId(selection.agentId, scope.agentId)) {
+    mismatches.push(['agentId', selection.agentId, scope.agentId]);
+  }
   if (mismatches.length === 0) return { ok: true, mode: 'local' };
   return denied([
     '后端设备选择与当前执行身份不一致，已阻止设备工具调用以避免串用户或串会话。',
@@ -319,18 +339,13 @@ function validateSelectionScope(
 }
 
 function matchesLocalDevice(selection: ScopedDeviceSelection, localDevice: ScopedLocalDeviceGrant): boolean {
-  const selectedIds = [
-    selection.selectedDeviceId,
-    selection.selectedDeviceInstallationId,
-    selection.selectedDeviceBodyId,
-  ].filter(Boolean);
-  const localIds = [
-    localDevice.deviceId,
-    localDevice.installationId,
-    localDevice.bodyId,
-  ].filter(Boolean);
-  if (selectedIds.length === 0 || localIds.length === 0) return false;
-  return selectedIds.some(selected => localIds.includes(selected));
+  const checks = [
+    [selection.selectedDeviceId, localDevice.deviceId],
+    [selection.selectedDeviceInstallationId, localDevice.installationId],
+    [selection.selectedDeviceBodyId, localDevice.bodyId],
+  ].filter(([selected]) => Boolean(selected));
+  if (checks.length === 0) return false;
+  return checks.every(([selected, local]) => Boolean(local) && selected === local);
 }
 
 function denied(lines: string[], targetLabel?: string): ToolGatewayDecision {
@@ -357,16 +372,4 @@ function looksLikeAbsoluteLocalPath(value: string): boolean {
     || /^\\\\/.test(value)
     || /^\//.test(value)
     || /^~[\\/]/.test(value);
-}
-
-function sameCatsCoUserId(left: string | undefined, right: string | undefined): boolean {
-  const normalizedLeft = normalizeCatsCoUserId(left);
-  const normalizedRight = normalizeCatsCoUserId(right);
-  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
-}
-
-function normalizeCatsCoUserId(value: string | undefined): string {
-  const text = String(value || '').trim();
-  if (!text) return '';
-  return /^\d+$/.test(text) ? `usr${text}` : text;
 }

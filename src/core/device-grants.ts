@@ -9,6 +9,7 @@ import type {
   UserDeviceStatus,
 } from '../types/session-identity';
 import type { ToolExecutionContext } from '../types/tool';
+import { normalizeCatsCoUserId, sameCatsCoUserId } from '../catscompany/user-id';
 
 export const DEFAULT_DEVICE_GRANT_TTL_MS = 10 * 60 * 1000;
 
@@ -51,13 +52,13 @@ const DELEGATED_DEVICE_GRANT_IDENTITY_SOURCES = new Set([
 
 export function isDelegatedDeviceGrant(grant: Pick<ScopedDeviceGrant, 'identityTrust' | 'identitySource' | 'ownerUserId' | 'actorUserId'>): boolean {
   return grant.identityTrust === 'server_canonical'
-    && grant.ownerUserId !== grant.actorUserId
+    && !sameCatsCoUserId(grant.ownerUserId, grant.actorUserId)
     && DELEGATED_DEVICE_GRANT_IDENTITY_SOURCES.has(String(grant.identitySource || ''));
 }
 
 export function createUserDevice(input: CreateUserDeviceInput): UserDevice | undefined {
   const source = normalizeSource(input.source);
-  const ownerUserId = normalizeId(input.ownerUserId);
+  const ownerUserId = normalizeCatsCoUserId(input.ownerUserId);
   const deviceId = normalizeId(input.deviceId);
   if (!ownerUserId || !deviceId) return undefined;
   const registeredAt = normalizeTime(input.registeredAt) ?? Date.now();
@@ -87,7 +88,7 @@ export function createDeviceGrant(
   const operations = normalizeOperations(options.operations);
   if (operations.length === 0) return undefined;
   if (device.source !== scope.source) return undefined;
-  if (device.ownerUserId !== scope.actorUserId) return undefined;
+  if (!sameCatsCoUserId(device.ownerUserId, scope.actorUserId)) return undefined;
   const now = normalizeTime(options.now) ?? Date.now();
   const ttlMs = normalizeTtl(options.ttlMs);
 
@@ -193,12 +194,18 @@ export function validateDeviceGrant(
     ['sessionKey', grant.sessionKey, scope.sessionKey],
     ['topicId', grant.topicId, scope.topicId],
     ['topicType', grant.topicType, scope.topicType],
-    ['actorUserId', grant.actorUserId, scope.actorUserId],
-    ['agentId', grant.agentId, scope.agentId],
     ['agentBodyId', grant.agentBodyId, scope.agentBodyId],
   ].filter(([, grantValue, scopeValue]) => grantValue !== scopeValue);
 
-  if (grant.ownerUserId !== scope.actorUserId && !isDelegatedDeviceGrant(grant)) {
+  if (!sameCatsCoUserId(grant.actorUserId, scope.actorUserId)) {
+    mismatches.push(['actorUserId', grant.actorUserId, scope.actorUserId]);
+  }
+
+  if (!optionalSameCatsCoUserId(grant.agentId, scope.agentId)) {
+    mismatches.push(['agentId', grant.agentId, scope.agentId]);
+  }
+
+  if (!sameCatsCoUserId(grant.ownerUserId, scope.actorUserId) && !isDelegatedDeviceGrant(grant)) {
     mismatches.push(['ownerUserId', grant.ownerUserId, scope.actorUserId]);
   }
 
@@ -261,6 +268,11 @@ function normalizeId(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const text = value.trim();
   return text || undefined;
+}
+
+function optionalSameCatsCoUserId(left: unknown, right: unknown): boolean {
+  if (!left && !right) return true;
+  return sameCatsCoUserId(left, right);
 }
 
 function normalizeTime(value: unknown): number | undefined {

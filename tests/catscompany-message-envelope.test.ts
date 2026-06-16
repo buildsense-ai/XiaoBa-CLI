@@ -67,12 +67,40 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
     });
     const scope = createExecutionScope(envelope);
 
-    assert.equal(envelope.sessionKey, 'session:v2:catscompany:group:grp_80:agent:usr43');
-    assert.equal(envelope.legacySessionKey, 'cc_group:grp_80');
+    assert.equal(envelope.sessionKey, 'session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43');
+    assert.equal(envelope.legacySessionKey, 'cc_group:grp_80:actor:usr7');
     assert.equal(scope.topicType, 'group');
     assert.equal(scope.actorUserId, 'usr7');
     assert.equal(scope.agentId, 'usr43');
     assert.equal(scope.agentBodyId, 'body-review');
+    assert.equal(scope.isTrusted, true);
+  });
+
+  test('normalizes numeric CatsCo ids to the canonical usr-prefixed form', () => {
+    const envelope = createCatsCoMessageEnvelope({
+      topic: 'p2p_7_43',
+      senderId: '7',
+      seq: 36,
+      text: 'mobile follow-up',
+      botUid: '43',
+      metadata: {
+        catsco_identity: {
+          actor: { user_id: '7', display_name: 'Alice' },
+          agent: { agent_id: '43', body_id: 'body-mobile' },
+          topic: { topic_id: 'p2p_7_43', type: 'p2p', channel_seq: 36 },
+          permissions: { source: 'server_canonical_message' },
+        },
+      },
+    });
+    const scope = createExecutionScope(envelope);
+
+    assert.equal(envelope.actorUserId, 'usr7');
+    assert.equal(envelope.agentId, 'usr43');
+    assert.equal(envelope.sessionKey, 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43');
+    assert.equal(envelope.legacySessionKey, 'cc_user:usr7');
+    assert.equal(scope.actorUserId, 'usr7');
+    assert.equal(scope.agentId, 'usr43');
+    assert.equal(scope.agentBodyId, 'body-mobile');
     assert.equal(scope.isTrusted, true);
   });
 

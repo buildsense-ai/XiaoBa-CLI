@@ -30,7 +30,7 @@ describe('runtime context builder', () => {
       channelSeq: 12,
       identityTrust: 'server_canonical',
       identitySource: 'metadata.catsco_identity',
-      legacySessionKey: 'cc_group:grp_80',
+      legacySessionKey: 'cc_group:grp_80:actor:usr7',
     });
     const executionScope = createExecutionScopeFromRoute(route);
     const grant = localGrant('C:\\secret\\tmp\\downloads\\contract.pdf');
@@ -203,7 +203,7 @@ function localGrant(filePath: string): ScopedLocalFileGrant {
     fileType: 'file',
     size: 100,
     mtimeMs: now,
-    sessionKey: 'session:v2:catscompany:group:grp_80:agent:usr43',
+    sessionKey: 'session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43',
     topicId: 'grp_80',
     topicType: 'group',
     actorUserId: 'usr7',

@@ -7,6 +7,7 @@ import type {
   MessageTopicType,
   ScopedDeviceSelection,
 } from '../types/session-identity';
+import { normalizeCatsCoUserId, sameCatsCoUserId } from './user-id';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -42,7 +43,7 @@ function normalizeDeviceSelection(record: UnknownRecord, scope: ExecutionScope):
 
   const sessionKey = stringField(record, 'sessionKey') || stringField(record, 'session_key');
   const topicId = stringField(record, 'topicId') || stringField(record, 'topic_id');
-  const actorUserId = stringField(record, 'actorUserId') || stringField(record, 'actor_user_id');
+  const actorUserId = normalizeCatsCoUserId(stringField(record, 'actorUserId') || stringField(record, 'actor_user_id'));
   if (!sessionKey || !topicId || !actorUserId) return undefined;
 
   return pruneUndefined({
@@ -54,7 +55,7 @@ function normalizeDeviceSelection(record: UnknownRecord, scope: ExecutionScope):
     topicId,
     topicType: normalizeTopicType(stringField(record, 'topicType') || stringField(record, 'topic_type')),
     actorUserId,
-    agentId: stringField(record, 'agentId') || stringField(record, 'agent_id'),
+    agentId: normalizeCatsCoUserId(stringField(record, 'agentId') || stringField(record, 'agent_id')),
     identityTrust: scope.identityTrust,
     identitySource: 'metadata.catsco_identity',
     selectedDeviceId,
@@ -83,8 +84,13 @@ function selectionMatchesScope(selection: ScopedDeviceSelection | undefined, sco
     && selection!.sessionKey === scope.sessionKey
     && selection!.topicId === scope.topicId
     && selection!.topicType === scope.topicType
-    && selection!.actorUserId === scope.actorUserId
-    && selection!.agentId === scope.agentId;
+    && sameCatsCoUserId(selection!.actorUserId, scope.actorUserId)
+    && optionalSameCatsCoUserId(selection!.agentId, scope.agentId);
+}
+
+function optionalSameCatsCoUserId(left: unknown, right: unknown): boolean {
+  if (!left && !right) return true;
+  return sameCatsCoUserId(left, right);
 }
 
 function normalizeCandidates(value: unknown): DeviceSelectionCandidate[] | undefined {

@@ -10,6 +10,7 @@ import {
   DEFAULT_CATSCO_WS_URL,
   createCatsCoLocalConfigService,
 } from './local-config';
+import { sameCatsCoUserId } from './user-id';
 
 export type CatsCoRuntimeMissingField = 'serverUrl' | 'apiKey' | 'bodyId';
 
@@ -207,7 +208,7 @@ function hasConfirmedLocalBotBinding(localConfig: CatsCoLocalConfig, userUid?: s
     bot?.uid
       && bot.apiKey
       && boundByUserUid
-      && (!expectedUserUid || boundByUserUid === expectedUserUid)
+      && (!expectedUserUid || sameCatsCoUserId(boundByUserUid, expectedUserUid))
       && bot.bindingSource,
   );
 }

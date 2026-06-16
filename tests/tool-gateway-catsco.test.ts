@@ -41,6 +41,7 @@ function localDevice(overrides: Partial<ScopedLocalDeviceGrant> = {}): ScopedLoc
     bodyId: 'body-device',
     installationId: 'install-device',
     deviceId: 'install-device',
+    ownerUserId: 'usr7',
     capabilities: ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file'],
     createdAt: Date.now(),
     ...overrides,
@@ -123,19 +124,15 @@ function makeWorkspace(): string {
 }
 
 describe('CatsCo ToolGateway', () => {
-  test('blocks regular read_file without a current user device grant', async () => {
+  test('allows local owner self to read without a short-lived device grant', async () => {
     const root = makeWorkspace();
     const filePath = path.join(root, 'notes.txt');
     fs.writeFileSync(filePath, 'secret');
 
     const result = await new ReadTool().execute({ file_path: filePath }, context(root));
 
-    assert.equal(result.ok, false);
-    if (!result.ok) {
-      assert.equal(result.errorCode, 'PERMISSION_DENIED');
-      assert.match(result.message, /没有允许当前设备执行 read_file/);
-      assert.doesNotMatch(result.message, new RegExp(escapeRegExp(filePath)));
-    }
+    assert.equal(result.ok, true);
+    assert.match(String(result.content), /secret/);
   });
 
   test('allows regular read_file with a matching CatsCo user device grant', async () => {
@@ -378,35 +375,21 @@ describe('CatsCo ToolGateway', () => {
     }
   });
 
-  test('allows glob only when the CatsCo device grant includes glob operation', async () => {
+  test('allows local owner self to glob without a short-lived device grant', async () => {
     const root = makeWorkspace();
     fs.writeFileSync(path.join(root, 'a.txt'), 'a');
 
-    const denied = await new GlobTool().execute({ pattern: '*.txt' }, context(root, {
-      deviceGrants: [deviceGrant(['read_file'])],
-    }));
-    assert.equal(denied.ok, false);
-    if (!denied.ok) assert.match(denied.message, /执行 glob/);
-
-    const allowed = await new GlobTool().execute({ pattern: '*.txt' }, context(root, {
-      deviceGrants: [deviceGrant(['glob'])],
-    }));
+    const allowed = await new GlobTool().execute({ pattern: '*.txt' }, context(root));
     assert.equal(allowed.ok, true);
     assert.match(String(allowed.content), /a\.txt/);
   });
 
-  test('blocks write_file until the server grants write_file for the current device', async () => {
+  test('allows local owner self to write without a short-lived device grant', async () => {
     const root = makeWorkspace();
-    const result = await new WriteTool().execute({ file_path: 'out.txt', content: 'hello' }, context(root, {
-      deviceGrants: [deviceGrant(['read_file'])],
-    }));
+    const result = await new WriteTool().execute({ file_path: 'out.txt', content: 'hello' }, context(root));
 
-    assert.equal(result.ok, false);
-    if (!result.ok) {
-      assert.equal(result.errorCode, 'PERMISSION_DENIED');
-      assert.match(result.message, /执行 write_file/);
-      assert.equal(fs.existsSync(path.join(root, 'out.txt')), false);
-    }
+    assert.equal(result.ok, true);
+    assert.equal(fs.readFileSync(path.join(root, 'out.txt'), 'utf8'), 'hello');
   });
 
   test('allows local owner self to write on the current device without a short-lived grant', async () => {
@@ -435,6 +418,21 @@ describe('CatsCo ToolGateway', () => {
     assert.equal(fs.readFileSync(path.join(root, 'owner-numeric.txt'), 'utf8'), 'hello owner');
   });
 
+  test('rejects local device execution when the local owner identity is missing', async () => {
+    const root = makeWorkspace();
+    const result = await new WriteTool().execute({ file_path: 'owner-missing.txt', content: 'nope' }, context(root, {
+      localDeviceGrant: localDevice({ ownerUserId: undefined }),
+      deviceGrants: [deviceGrant(['write_file'])],
+      deviceSelection: deviceSelection({
+        selectedDeviceOperations: ['read_file', 'glob', 'grep', 'write_file'],
+      }),
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.message, /缺少 CatsCo owner/);
+    assert.equal(fs.existsSync(path.join(root, 'owner-missing.txt')), false);
+  });
+
   test('rejects external actor grant that points at the local owner device without delegation', async () => {
     const root = makeWorkspace();
     const externalScope = scope({ actorUserId: 'usr100' });
@@ -461,7 +459,7 @@ describe('CatsCo ToolGateway', () => {
     assert.equal(fs.existsSync(path.join(root, 'external.txt')), false);
   });
 
-  test('allows server canonical delegated grant to operate the matching local owner device', async () => {
+  test('rejects delegated external actor attempts to execute on the current local owner device', async () => {
     const root = makeWorkspace();
     const delegatedScope = scope({ actorUserId: 'usr100' });
     const result = await new WriteTool().execute({ file_path: 'delegated.txt', content: 'ok' }, context(root, {
@@ -483,8 +481,27 @@ describe('CatsCo ToolGateway', () => {
       }),
     }));
 
-    assert.equal(result.ok, true);
-    assert.equal(fs.readFileSync(path.join(root, 'delegated.txt'), 'utf8'), 'ok');
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.message, /只允许设备 owner 本人/);
+    assert.equal(fs.existsSync(path.join(root, 'delegated.txt')), false);
+  });
+
+  test('rejects local execution when selected device identifiers conflict', async () => {
+    const root = makeWorkspace();
+    const result = await new WriteTool().execute({ file_path: 'conflict.txt', content: 'nope' }, context(root, {
+      localDeviceGrant: localDevice({ ownerUserId: 'usr7' }),
+      deviceGrants: [deviceGrant(['write_file'])],
+      deviceSelection: deviceSelection({
+        selectedDeviceId: 'install-device',
+        selectedDeviceBodyId: 'other-body',
+        selectedDeviceInstallationId: 'install-device',
+        selectedDeviceOperations: ['write_file'],
+      }),
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.message, /不是当前运行体/);
+    assert.equal(fs.existsSync(path.join(root, 'conflict.txt')), false);
   });
 
   test('allows write_file when the selected local device advertises write capability', async () => {
@@ -579,8 +596,20 @@ describe('CatsCo ToolGateway', () => {
 
   test('blocks execute_shell in external CatsCo sessions even when a grant contains execute_shell', async () => {
     const root = makeWorkspace();
+    const externalScope = scope({
+      actorUserId: 'usr100',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+      topicId: 'p2p_100_43',
+    });
     const result = await new ShellTool().execute({ command: 'echo hello' }, context(root, {
-      deviceGrants: [deviceGrant(['execute_shell'])],
+      executionScope: externalScope,
+      deviceGrants: [deviceGrant(['execute_shell'], {
+        sessionKey: externalScope.sessionKey,
+        topicId: externalScope.topicId,
+        actorUserId: externalScope.actorUserId,
+        ownerUserId: 'usr7',
+        identitySource: 'channel_identity_link',
+      })],
     }));
 
     assert.equal(result.ok, false);

@@ -533,9 +533,10 @@ describe('CatsCo content blocks', () => {
   test('interrupts active session on CatsCompany stream cancel event', () => {
     const bot = Object.create(CatsCompanyBot.prototype) as any;
     bot.botUid = 'usr43';
+    const sessionKey = 'session:v2:catscompany:p2p:p2p_1_2:agent:usr43';
     let interrupted = 0;
     bot.sessionManager = {
-      get: (key: string) => key === 'session:v2:catscompany:p2p:p2p_1_2:agent:usr43'
+      get: (key: string) => key === sessionKey
         ? {
           requestInterrupt: () => {
             interrupted += 1;
@@ -543,6 +544,22 @@ describe('CatsCo content blocks', () => {
         }
         : null,
     };
+    let resolvedAnswer = '';
+    const timeoutHandle = setTimeout(() => undefined, 10_000);
+    bot.pendingAnswers = new Map([[
+      'pending-1',
+      {
+        id: 'pending-1',
+        sessionKey,
+        topic: 'p2p_1_2',
+        expectedSenderId: 'usr1',
+        resolve: (text: string) => {
+          resolvedAnswer = text;
+        },
+        timeoutHandle,
+      },
+    ]]);
+    bot.pendingAnswerBySession = new Map([[sessionKey, 'pending-1']]);
 
     bot.handleCancelMessage({
       topic: 'p2p_1_2',
@@ -556,6 +573,45 @@ describe('CatsCo content blocks', () => {
     });
 
     assert.strictEqual(interrupted, 1);
+    assert.strictEqual(bot.pendingAnswers.size, 0);
+    assert.strictEqual(bot.pendingAnswerBySession.size, 0);
+    assert.match(resolvedAnswer, /取消/);
+  });
+
+  test('matches pending tool confirmations by canonical CatsCo user id', async () => {
+    const { bot, handledTurns } = createProcessHarness();
+    const sessionKey = 'session:v2:catscompany:p2p:p2p_1_43:agent:usr43';
+    let resolvedAnswer = '';
+    const timeoutHandle = setTimeout(() => undefined, 10_000);
+    bot.pendingAnswers = new Map([[
+      'pending-1',
+      {
+        id: 'pending-1',
+        sessionKey,
+        topic: 'p2p_1_43',
+        expectedSenderId: 'usr1',
+        resolve: (text: string) => {
+          resolvedAnswer = text;
+        },
+        timeoutHandle,
+      },
+    ]]);
+    bot.pendingAnswerBySession = new Map([[sessionKey, 'pending-1']]);
+
+    await (bot as any).onMessage({
+      topic: 'p2p_1_43',
+      senderId: '1',
+      text: '同意',
+      content: '同意',
+      metadata: canonicalMetadata('1', 'p2p_1_43'),
+      isGroup: false,
+      seq: 13,
+    });
+
+    assert.strictEqual(resolvedAnswer, '同意');
+    assert.strictEqual(bot.pendingAnswers.size, 0);
+    assert.strictEqual(bot.pendingAnswerBySession.size, 0);
+    assert.strictEqual(handledTurns.length, 0);
   });
 
   test('subagent runtime events are sent as CatsCompany working metadata', async () => {

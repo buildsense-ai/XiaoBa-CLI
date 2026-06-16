@@ -280,6 +280,26 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.match(captured.result.error.message, /channel_identity_link/);
   });
 
+  test('accepts Device RPC self-owner requests when CatsCo ids differ only by usr prefix', async () => {
+    const captured: { result?: any } = {};
+    const bot = botWithDevice(captured);
+    const filePath = path.join(process.cwd(), 'tmp', 'numeric-self-owner.txt');
+
+    await bot.handleDeviceRpcRequest(request({
+      request_id: 'rpc-numeric-self-owner-1',
+      actor_user_id: '7',
+      owner_user_id: 'usr7',
+      operation: 'write_file',
+      tool_name: 'write_file',
+      payload: { args: { file_path: filePath, content: 'ok' } },
+    }));
+
+    assert.ok(captured.result);
+    assert.equal(captured.result.error, undefined);
+    assert.equal(captured.result.result.ok, true);
+    assert.equal(fs.readFileSync(filePath, 'utf8'), 'ok');
+  });
+
   test('rejects shell Device RPC operations before local tool execution', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);

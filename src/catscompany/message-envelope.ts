@@ -3,6 +3,7 @@ import {
   buildLegacyCatsCoSessionKey,
   createSessionRoute,
 } from '../core/session-router';
+import { normalizeCatsCoUserId, sameCatsCoUserId } from './user-id';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -18,7 +19,9 @@ export interface CatsCoEnvelopeInput {
 
 export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): MessageEnvelope {
   const topicId = safeString(input.topic) || 'unknown_topic';
-  const senderId = safeString(input.senderId) || 'unknown';
+  const rawSenderId = safeString(input.senderId);
+  const senderId = normalizeCatsCoUserId(rawSenderId) || rawSenderId || 'unknown';
+  const botUid = normalizeCatsCoUserId(safeString(input.botUid)) || safeString(input.botUid);
   const topicType = inferTopicType(topicId, input.isGroup);
   const metadata = input.metadata;
   const catscoIdentity = asRecord(metadata?.catsco_identity);
@@ -29,7 +32,7 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
   const identityTopic = asRecord(catscoIdentity?.topic);
   const permissions = asRecord(catscoIdentity?.permissions);
 
-  const canonicalActorId = stringField(actor, 'user_id');
+  const canonicalActorId = normalizeCatsCoUserId(stringField(actor, 'user_id'));
   const canonicalTopicId = stringField(identityTopic, 'topic_id');
   const canonicalTopicType = normalizeTopicType(stringField(identityTopic, 'type'));
   const permissionsSource = stringField(permissions, 'source');
@@ -42,7 +45,7 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
   if (metadataLooksCanonical && canonicalTopicId && canonicalTopicId !== topicId) {
     warnings.push('catsco_identity topic_id does not match message topic');
   }
-  if (metadataLooksCanonical && canonicalActorId && senderId !== 'unknown' && canonicalActorId !== senderId) {
+  if (metadataLooksCanonical && canonicalActorId && senderId !== 'unknown' && !sameCatsCoUserId(canonicalActorId, senderId)) {
     warnings.push('catsco_identity actor.user_id does not match message sender');
   }
 
@@ -51,16 +54,16 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
     && metadataLooksCanonical
     && canonicalActorId
     && canonicalTopicId === topicId
-    && (senderId === 'unknown' || canonicalActorId === senderId),
+    && (senderId === 'unknown' || sameCatsCoUserId(canonicalActorId, senderId)),
   );
 
   const actorUserId = isCanonicalTrusted ? canonicalActorId! : senderId;
   const resolvedTopicType = isCanonicalTrusted && canonicalTopicType !== 'unknown'
     ? canonicalTopicType
     : topicType;
-  const agentId = isCanonicalTrusted
-    ? firstNonEmpty(stringField(agent, 'agent_id'), safeString(input.botUid))
-    : safeString(input.botUid);
+  const agentId = normalizeCatsCoUserId(isCanonicalTrusted
+    ? firstNonEmpty(stringField(agent, 'agent_id'), botUid)
+    : botUid);
   const agentBodyId = isCanonicalTrusted ? stringField(agent, 'body_id') : undefined;
   const channelSeq = isCanonicalTrusted
     ? canonicalChannelSeq ?? normalizeSeq(input.seq)

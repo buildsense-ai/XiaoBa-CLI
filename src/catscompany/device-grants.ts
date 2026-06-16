@@ -8,6 +8,7 @@ import type {
   ScopedDeviceGrant,
 } from '../types/session-identity';
 import { isDelegatedDeviceGrant } from '../core/device-grants';
+import { normalizeCatsCoUserId, sameCatsCoUserId } from './user-id';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -41,10 +42,10 @@ function normalizeDeviceGrant(value: unknown): ScopedDeviceGrant | undefined {
 
   const grantId = stringField(record, 'grantId') || stringField(record, 'grant_id');
   const deviceId = stringField(record, 'deviceId') || stringField(record, 'device_id');
-  const ownerUserId = stringField(record, 'ownerUserId') || stringField(record, 'owner_user_id');
+  const ownerUserId = normalizeCatsCoUserId(stringField(record, 'ownerUserId') || stringField(record, 'owner_user_id'));
   const sessionKey = stringField(record, 'sessionKey') || stringField(record, 'session_key');
   const topicId = stringField(record, 'topicId') || stringField(record, 'topic_id');
-  const actorUserId = stringField(record, 'actorUserId') || stringField(record, 'actor_user_id');
+  const actorUserId = normalizeCatsCoUserId(stringField(record, 'actorUserId') || stringField(record, 'actor_user_id'));
   const operations = normalizeOperations(record.operations);
   const createdAt = numberField(record, 'createdAt') ?? numberField(record, 'created_at');
   const expiresAt = numberField(record, 'expiresAt') ?? numberField(record, 'expires_at');
@@ -67,7 +68,7 @@ function normalizeDeviceGrant(value: unknown): ScopedDeviceGrant | undefined {
     topicId,
     topicType: normalizeTopicType(stringField(record, 'topicType') || stringField(record, 'topic_type')),
     actorUserId,
-    agentId: stringField(record, 'agentId') || stringField(record, 'agent_id'),
+    agentId: normalizeCatsCoUserId(stringField(record, 'agentId') || stringField(record, 'agent_id')),
     agentBodyId: stringField(record, 'agentBodyId') || stringField(record, 'agent_body_id'),
     operations,
     createdAt,
@@ -82,10 +83,15 @@ function grantMatchesScope(grant: ScopedDeviceGrant, scope: ExecutionScope): boo
     && grant.sessionKey === scope.sessionKey
     && grant.topicId === scope.topicId
     && grant.topicType === scope.topicType
-    && grant.actorUserId === scope.actorUserId
-    && (grant.ownerUserId === scope.actorUserId || isDelegatedDeviceGrant(grant))
-    && grant.agentId === scope.agentId
+    && sameCatsCoUserId(grant.actorUserId, scope.actorUserId)
+    && (sameCatsCoUserId(grant.ownerUserId, scope.actorUserId) || isDelegatedDeviceGrant(grant))
+    && optionalSameCatsCoUserId(grant.agentId, scope.agentId)
     && grant.agentBodyId === scope.agentBodyId;
+}
+
+function optionalSameCatsCoUserId(left: unknown, right: unknown): boolean {
+  if (!left && !right) return true;
+  return sameCatsCoUserId(left, right);
 }
 
 function normalizeOperations(value: unknown): DeviceGrantOperation[] {
