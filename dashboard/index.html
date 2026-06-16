@@ -7199,6 +7199,13 @@
       {id:'deepseek-v4-flash',label:'DeepSeek V4 Flash',model:'deepseek-v4-flash',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'flash-low',context_window_tokens:1000000,context_label:'1M'},
       {id:'glm-5.1',label:'GLM 5.1',model:'glm-5.1',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'standard',context_window_tokens:200000,context_label:'200K'},
     ];
+    const CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS=[
+      {value:'128000',label:'128K',hint:'安全默认'},
+      {value:'200000',label:'200K',hint:'常见中长上下文'},
+      {value:'256000',label:'256K',hint:'长文档'},
+      {value:'512000',label:'512K',hint:'超长文档'},
+      {value:'1000000',label:'1M',hint:'百万上下文'},
+    ];
     const serviceConfigGroups={
       catscompany:{
         title:'CatsCo 连接配置',
@@ -7349,6 +7356,24 @@
       return String(n);
     }
 
+    function customModelContextWindowValue(){
+      const custom=customStartupProfile();
+      const raw=String(custom.contextWindowTokens || settingValue('model.contextWindowTokens') || '128000');
+      return CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS.some(option=>option.value===raw)?raw:'128000';
+    }
+
+    function customModelContextWindowLabel(){
+      return formatModelContextLabel(Number(customModelContextWindowValue()));
+    }
+
+    function customModelContextWindowOptionsHtml(selectedValue){
+      return CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS.map(option=>(
+        '<option value="'+escapeHtml(option.value)+'" '+(option.value===selectedValue?'selected':'')+'>'
+        +escapeHtml(option.label+' · '+option.hint)
+        +'</option>'
+      )).join('');
+    }
+
     function modelStartupSnapshot(){
       return dashboardSettingsSnapshot?.modelStartup || {};
     }
@@ -7408,8 +7433,9 @@
       const configured=isCustomStartupConfigured();
       const provider=custom.provider || settingValue('model.provider') || 'anthropic';
       const model=custom.model || settingValue('model.model') || '未配置';
+      const contextLabel=customModelContextWindowLabel();
       const meta=configured
-        ? '自定义配置 · 安全上下文 128K · '+(provider==='openai'?'OpenAI SDK':'Anthropic SDK')
+        ? '自定义配置 · 上下文 '+contextLabel+' · '+(provider==='openai'?'OpenAI SDK':'Anthropic SDK')
         : '去设置填写 endpoint / key';
       return '<button class="relay-model-choice '+(active?' active':'')+(configured?'':' needs-config')+'" type="button" data-custom-startup-action="true" data-custom-startup-context="'+escapeHtml(context)+'" '+(relayActionBusy()?'disabled':'')+' onclick="enableCustomStartupModelFromButton(this)">'
         +'<span class="relay-model-label">自定义模型</span>'
@@ -7463,6 +7489,7 @@
         provider: document.getElementById('model-provider-setting')?.value,
         apiBase: document.getElementById('model-api-base-setting')?.value,
         model: document.getElementById('model-name-setting')?.value,
+        contextWindowTokens: document.getElementById('model-context-window-setting')?.value,
         secret: document.getElementById('model-secret-setting')?.value,
         clearSecret: document.getElementById('model-secret-clear-setting')?.checked,
       };
@@ -7481,6 +7508,7 @@
           ['model-provider-setting',draft.provider],
           ['model-api-base-setting',draft.apiBase],
           ['model-name-setting',draft.model],
+          ['model-context-window-setting',draft.contextWindowTokens],
           ['model-secret-setting',draft.secret],
         ];
         pairs.forEach(([id,value])=>{
@@ -7518,16 +7546,17 @@
       const hideInternalGateway=isInternalModelGateway(apiBaseValue);
       const apiBaseDisplayValue=hideInternalGateway?'':apiBaseValue;
       const apiBasePlaceholder=hideInternalGateway?'已配置 CatsCo 内部兼容网关（隐藏）':'https://example.com/v1/messages';
+      const selectedContextWindow=customModelContextWindowValue();
       const draft=captureCustomModelDraft();
 
       p.innerHTML=`<div class="model-source-layout">
-        <div class="runtime-note">中转模型和自定义模型会分别保存。CatsCo 中转会按所选模型自动调整上下文；自定义模型默认按 128K 安全上下文运行，若模型实际窗口更小，请减少历史或在高级环境变量里降低 GAUZ_LLM_CONTEXT_WINDOW_TOKENS。</div>
+        <div class="runtime-note">中转模型和自定义模型会分别保存。CatsCo 中转会按所选模型自动调整上下文；自定义模型按下方选择的上下文窗口运行。若模型真实窗口更小，请选择更小档位避免超限。</div>
         <details class="model-source-card warning" id="custom-model-settings"${customModelSettingsOpen?' open':''}>
           <summary>
             <div class="model-source-head">
               <div>
                 <div class="model-source-title">自定义模型（第三方）</div>
-                <div class="model-source-copy">只有手动接入第三方模型时需要填写。CatsCo 中转模型请在 CatsCo 页面选择；自定义模型默认使用 128K 安全上下文。</div>
+                <div class="model-source-copy">只有手动接入第三方模型时需要填写。CatsCo 中转模型请在 CatsCo 页面选择；自定义模型可在 128K 到 1M 间选择上下文。</div>
               </div>
               ${runtimeTag(credentialMeta, keyField.present?'green':'gray')}
             </div>
@@ -7536,6 +7565,7 @@
             <div class="config-row"><label class="config-label">兼容类型</label><select class="config-select" id="model-provider-setting"><option value="anthropic"${settingValue('model.provider')==='anthropic'?' selected':''}>Anthropic-compatible</option><option value="openai"${settingValue('model.provider')==='openai'?' selected':''}>OpenAI-compatible</option></select></div>
             <div class="config-row"><label class="config-label">模型地址</label><input class="config-input" id="model-api-base-setting" value="${escapeHtml(apiBaseDisplayValue)}" placeholder="${escapeHtml(apiBasePlaceholder)}" data-hidden-internal="${hideInternalGateway?'true':'false'}" /></div>
             <div class="config-row"><label class="config-label">模型名称</label><input class="config-input" id="model-name-setting" value="${escapeHtml(settingValue('model.model'))}" placeholder="model-name" /></div>
+            <div class="config-row"><label class="config-label">上下文窗口</label><select class="config-select" id="model-context-window-setting">${customModelContextWindowOptionsHtml(selectedContextWindow)}</select></div>
             <div class="config-row"><label class="config-label">访问凭证</label><input class="config-input" id="model-secret-setting" type="password" value="" placeholder="${keyField.present?'留空表示保持现有凭证':'输入访问凭证'}" /></div>
             <div class="model-secret-row">
               <label><input type="checkbox" id="model-secret-clear-setting" /> 清除已保存的访问凭证</label>
@@ -7545,7 +7575,7 @@
               <button class="btn btn-primary" onclick="saveCustomModelSettings()">保存自定义模型</button>
               <span class="config-saved" id="model-source-saved">已保存</span>
             </div>
-            <div id="model-source-status" style="color:var(--text2);font-size:13px">凭证仅保存到本地 .env；自定义模型默认 128K 安全上下文，新 session 或下一次启动 connector 后生效。</div>
+            <div id="model-source-status" style="color:var(--text2);font-size:13px">凭证仅保存到本地 .env；自定义模型上下文会写入本地配置，新 session 或下一次启动 connector 后生效。</div>
           </div>
         </details>
       </div>`;
@@ -7637,6 +7667,7 @@
             'model.provider':document.getElementById('model-provider-setting').value,
             'model.apiBase':apiBaseValue,
             'model.model':document.getElementById('model-name-setting').value.trim(),
+            'model.contextWindowTokens':document.getElementById('model-context-window-setting').value,
             'model.apiKey':secretUpdate,
           }
         }
@@ -7650,6 +7681,7 @@
         provider:settings['model.provider'],
         apiBase:settings['model.apiBase'],
         model:settings['model.model'],
+        contextWindowTokens:settings['model.contextWindowTokens'],
         secretAction:secret.action,
       });
     }
@@ -7846,6 +7878,7 @@
       const provider=document.getElementById('model-provider-setting');
       const apiBase=document.getElementById('model-api-base-setting');
       const model=document.getElementById('model-name-setting');
+      const contextWindow=document.getElementById('model-context-window-setting');
       const secret=document.getElementById('model-secret-setting');
       const clear=document.getElementById('model-secret-clear-setting');
       const schedule=()=>{
@@ -7856,6 +7889,7 @@
       if(provider)provider.addEventListener('change',schedule);
       if(apiBase)apiBase.addEventListener('input',schedule);
       if(model)model.addEventListener('input',schedule);
+      if(contextWindow)contextWindow.addEventListener('change',schedule);
       if(secret)secret.addEventListener('change',schedule);
       if(clear)clear.addEventListener('change',schedule);
     }

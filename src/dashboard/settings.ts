@@ -42,6 +42,7 @@ export interface DashboardModelProfileSnapshot {
   provider?: string;
   apiBase?: string;
   model?: string;
+  contextWindowTokens?: number;
   apiKeyPresent: boolean;
   configured: boolean;
 }
@@ -72,6 +73,14 @@ interface NormalizedSettingUpdate {
   secretAction?: SecretSettingAction;
 }
 
+export const CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS = [
+  '128000',
+  '200000',
+  '256000',
+  '512000',
+  '1000000',
+];
+
 export const DASHBOARD_SETTING_DEFINITIONS: DashboardSettingDefinition[] = [
   {
     id: 'model.provider',
@@ -101,6 +110,16 @@ export const DASHBOARD_SETTING_DEFINITIONS: DashboardSettingDefinition[] = [
     envKey: 'GAUZ_LLM_MODEL',
     type: 'string',
     required: true,
+  },
+  {
+    id: 'model.contextWindowTokens',
+    group: 'model',
+    label: '上下文窗口',
+    description: '自定义模型可用上下文窗口。若模型真实窗口更小，请选择更小档位避免超限。',
+    envKey: 'GAUZ_LLM_CONTEXT_WINDOW_TOKENS',
+    type: 'enum',
+    required: true,
+    options: CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS,
   },
   {
     id: 'model.apiKey',
@@ -142,6 +161,7 @@ const CUSTOM_MODEL_ENV_KEYS: Record<string, string> = {
   'model.provider': 'CATSCO_CUSTOM_LLM_PROVIDER',
   'model.apiBase': 'CATSCO_CUSTOM_LLM_API_BASE',
   'model.model': 'CATSCO_CUSTOM_LLM_MODEL',
+  'model.contextWindowTokens': 'CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS',
   'model.apiKey': 'CATSCO_CUSTOM_LLM_API_KEY',
 };
 
@@ -150,6 +170,7 @@ const EFFECTIVE_MODEL_ENV_KEYS = {
   apiBase: 'GAUZ_LLM_API_BASE',
   model: 'GAUZ_LLM_MODEL',
   apiKey: 'GAUZ_LLM_API_KEY',
+  contextWindowTokens: 'GAUZ_LLM_CONTEXT_WINDOW_TOKENS',
 } as const;
 
 const RELAY_MODEL_ENV_KEYS = {
@@ -157,6 +178,7 @@ const RELAY_MODEL_ENV_KEYS = {
   apiBase: 'CATSCO_RELAY_LLM_API_BASE',
   model: 'CATSCO_RELAY_LLM_MODEL',
   apiKey: 'CATSCO_RELAY_LLM_API_KEY',
+  contextWindowTokens: 'CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS',
 } as const;
 
 const MODEL_SOURCE_ENV_KEY = 'CATSCO_MODEL_SOURCE';
@@ -200,10 +222,12 @@ function readModelProfile(
   const apiBase = firstNonEmpty(fileEnv[keys.apiBase], env[keys.apiBase]);
   const model = firstNonEmpty(fileEnv[keys.model], env[keys.model]);
   const apiKey = firstNonEmpty(fileEnv[keys.apiKey], env[keys.apiKey]);
+  const contextWindowTokens = parsePositiveInteger(firstNonEmpty(fileEnv[keys.contextWindowTokens], env[keys.contextWindowTokens]));
   return {
     provider,
     apiBase: sanitizeUrlSettingValue(apiBase ?? ''),
     model,
+    contextWindowTokens,
     apiKeyPresent: Boolean(apiKey),
     configured: Boolean(provider && apiBase && model && apiKey),
   };
@@ -217,10 +241,15 @@ function readCustomModelProfile(
   const apiBase = firstNonEmpty(fileEnv.CATSCO_CUSTOM_LLM_API_BASE, env.CATSCO_CUSTOM_LLM_API_BASE);
   const model = firstNonEmpty(fileEnv.CATSCO_CUSTOM_LLM_MODEL, env.CATSCO_CUSTOM_LLM_MODEL);
   const apiKey = firstNonEmpty(fileEnv.CATSCO_CUSTOM_LLM_API_KEY, env.CATSCO_CUSTOM_LLM_API_KEY);
+  const contextWindowTokens = parsePositiveInteger(firstNonEmpty(
+    fileEnv.CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS,
+    env.CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS,
+  ));
   return {
     provider,
     apiBase: sanitizeUrlSettingValue(apiBase ?? ''),
     model,
+    contextWindowTokens,
     apiKeyPresent: Boolean(apiKey),
     configured: Boolean(provider && apiBase && model && apiKey),
   };
@@ -524,6 +553,14 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
     if (text) return text;
   }
   return undefined;
+}
+
+function parsePositiveInteger(value: unknown): number | undefined {
+  const text = String(value ?? '').trim();
+  if (!text) return undefined;
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.floor(parsed);
 }
 
 function serializeEnvValue(value: string): string {
