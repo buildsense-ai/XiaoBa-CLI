@@ -180,13 +180,23 @@ describe('AgentSession lifecycle', () => {
       'utf-8',
     );
 
+    assert.deepStrictEqual(
+      restored.map((message: any) => message.content),
+      ['需要读文件', null, '[历史工具结果已省略；read_file 已完成。]', '读完了'],
+    );
     assert.equal(restored.some((message: any) => Array.isArray(message.providerContent)), false);
-    assert.equal(restored.some((message: any) => message.role === 'tool'), false);
-    assert.equal(restored.some((message: any) => message.tool_calls?.length), false);
-    assert.match(String(restored[1]?.content || ''), /provider replay 隐藏内容未写入本地会话/);
-    assert.match(String(restored[1]?.content || ''), /private tool result/);
+    assert.equal(restored.some((message: any) => message.role === 'tool'), true);
+    assert.equal(restored.some((message: any) => message.tool_calls?.length), true);
+    assert.equal(
+      restored.some((message: any) => message.role === 'tool' && message.tool_call_id === 'toolu_1'),
+      true,
+    );
+    assert.equal(restored.some((message: any) => String(message.content || '').includes('provider replay 隐藏内容')), false);
+    assert.equal(restored.some((message: any) => String(message.content || '').includes('private tool result')), false);
     assert.doesNotMatch(raw, /hidden chain text/);
     assert.doesNotMatch(raw, /sig_secret/);
+    assert.doesNotMatch(raw, /provider replay 隐藏内容/);
+    assert.doesNotMatch(raw, /private tool result/);
   });
 
   test('loading legacy sessions migrates provider replay hidden thinking off disk', async () => {
@@ -214,11 +224,123 @@ describe('AgentSession lifecycle', () => {
     const restored = SessionStore.getInstance().loadContext('user:lifecycle-legacy-provider-replay');
     const migratedRaw = fs.readFileSync(sessionFile, 'utf-8');
 
+    assert.deepStrictEqual(
+      restored.map((message: any) => message.content),
+      ['旧历史', null, '[历史工具结果已省略；read_file 已完成。]'],
+    );
     assert.equal(restored.some((message: any) => Array.isArray(message.providerContent)), false);
-    assert.equal(restored.some((message: any) => message.role === 'tool'), false);
-    assert.match(migratedRaw, /legacy tool result/);
+    assert.equal(restored.some((message: any) => message.role === 'tool'), true);
+    assert.equal(restored.some((message: any) => message.tool_calls?.length), true);
+    assert.equal(
+      restored.some((message: any) => message.role === 'tool' && message.tool_call_id === 'toolu_legacy'),
+      true,
+    );
+    assert.doesNotMatch(migratedRaw, /legacy tool result/);
     assert.doesNotMatch(migratedRaw, /legacy hidden chain/);
     assert.doesNotMatch(migratedRaw, /legacy_sig/);
+    assert.doesNotMatch(migratedRaw, /provider replay 隐藏内容/);
+  });
+
+  test('loading already-migrated provider replay placeholders strips them from assistant text', async () => {
+    const { SessionStore } = loadSessionModules();
+    const sessionFile = path.join(testRoot, 'data', 'sessions', 'user_lifecycle-placeholder-leak.jsonl');
+    fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+    fs.writeFileSync(sessionFile, [
+      JSON.stringify({ role: 'user', content: '旧会话继续' }),
+      JSON.stringify({
+        role: 'assistant',
+        content: '[历史工具调用已完成；provider replay 隐藏内容未写入本地会话。 工具调用: write_file。]\n[历史工具结果摘要]\n[工具 write_file] 写入了 report.md',
+      }),
+      JSON.stringify({
+        role: 'assistant',
+        content: '保留这句公开回复\n[历史工具调用已完成；provider replay 隐藏内容未写入本地会话。 工具调用: read_file。]\n继续保留这句',
+      }),
+    ].join('\n') + '\n', 'utf-8');
+
+    const restored = SessionStore.getInstance().loadContext('user:lifecycle-placeholder-leak');
+    const migratedRaw = fs.readFileSync(sessionFile, 'utf-8');
+
+    assert.deepStrictEqual(
+      restored.map((message: any) => message.content),
+      ['旧会话继续', '保留这句公开回复\n继续保留这句'],
+    );
+    assert.doesNotMatch(migratedRaw, /历史工具调用已完成/);
+    assert.doesNotMatch(migratedRaw, /历史工具结果摘要/);
+    assert.doesNotMatch(migratedRaw, /写入了 report\.md/);
+  });
+
+  test('loading legacy sessions strips internal runtime error placeholders from assistant text', async () => {
+    const { SessionStore } = loadSessionModules();
+    const sessionFile = path.join(testRoot, 'data', 'sessions', 'user_lifecycle-runtime-error-leak.jsonl');
+    fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+    fs.writeFileSync(sessionFile, [
+      JSON.stringify({ role: 'user', content: '继续处理' }),
+      JSON.stringify({
+        role: 'assistant',
+        content: '[处理失败: API错误 (500): 500 {"type":"error","error":{"message":"anthropic: MaxRetriesExceededError: HTTPSConnectionPool(host=\'api.anthropic.com\')"}}]',
+      }),
+      JSON.stringify({ role: 'assistant', content: '[处理失败: unknown provider failure]' }),
+      JSON.stringify({
+        role: 'assistant',
+        content: '[处理中断: 模型中转请求超时。错误摘要: request timed out]',
+      }),
+      JSON.stringify({
+        role: 'assistant',
+        content: '保留公开说明\n继续保留说明',
+      }),
+    ].join('\n') + '\n', 'utf-8');
+
+    const restored = SessionStore.getInstance().loadContext('user:lifecycle-runtime-error-leak');
+    const migratedRaw = fs.readFileSync(sessionFile, 'utf-8');
+
+    assert.deepStrictEqual(
+      restored.map((message: any) => message.content),
+      ['继续处理', '保留公开说明\n继续保留说明'],
+    );
+    assert.doesNotMatch(migratedRaw, /处理失败/);
+    assert.doesNotMatch(migratedRaw, /处理中断/);
+    assert.doesNotMatch(migratedRaw, /api\.anthropic\.com/);
+    assert.doesNotMatch(migratedRaw, /MaxRetriesExceededError/);
+  });
+
+  test('loading sessions preserves ordinary assistant text that only resembles an error note', async () => {
+    const { SessionStore } = loadSessionModules();
+    const sessionFile = path.join(testRoot, 'data', 'sessions', 'user_lifecycle-error-looking-text.jsonl');
+    fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+    fs.writeFileSync(sessionFile, [
+      JSON.stringify({ role: 'user', content: '解释这段日志格式' }),
+      JSON.stringify({
+        role: 'assistant',
+        content: '这是一段普通说明：\n[处理失败: 这是用户文档里的示例文本]\n它不应该被删除。',
+      }),
+      JSON.stringify({
+        role: 'assistant',
+        content: '这也是普通说明：\n[处理失败: API错误 (500): 用户文档里的示例文本]\n[历史工具结果摘要]\n这里是文档摘录。',
+      }),
+      JSON.stringify({
+        role: 'assistant',
+        content: '[历史工具结果摘要]\n这是用户文档标题，不是 provider replay。',
+      }),
+      JSON.stringify({
+        role: 'assistant',
+        content: '错误排查说明：\n[处理失败: API错误 (500): anthropic: MaxRetriesExceededError 是用户粘贴的日志示例]\n保留分析。',
+      }),
+      JSON.stringify({ role: 'user', content: '[处理失败: API错误 (500): 用户自己发来的文本也要保留]' }),
+    ].join('\n') + '\n', 'utf-8');
+
+    const restored = SessionStore.getInstance().loadContext('user:lifecycle-error-looking-text');
+
+    assert.deepStrictEqual(
+      restored.map((message: any) => message.content),
+      [
+        '解释这段日志格式',
+        '这是一段普通说明：\n[处理失败: 这是用户文档里的示例文本]\n它不应该被删除。',
+        '这也是普通说明：\n[处理失败: API错误 (500): 用户文档里的示例文本]\n[历史工具结果摘要]\n这里是文档摘录。',
+        '[历史工具结果摘要]\n这是用户文档标题，不是 provider replay。',
+        '错误排查说明：\n[处理失败: API错误 (500): anthropic: MaxRetriesExceededError 是用户粘贴的日志示例]\n保留分析。',
+        '[处理失败: API错误 (500): 用户自己发来的文本也要保留]',
+      ],
+    );
   });
 
   test('handleMessage persists each completed turn before cleanup', async () => {
@@ -293,6 +415,32 @@ describe('AgentSession lifecycle', () => {
     ]);
   });
 
+  test('handleMessage strips internal error artifacts before context compaction sees them', async () => {
+    const { AgentSession } = loadSessionModules();
+    const session = new AgentSession('catscompany:lifecycle-precompact-sanitize', buildMockServices(), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+    (session as any).messages.push(
+      { role: 'user', content: '旧问题' },
+      { role: 'assistant', content: '[处理失败: API错误 (500): 500 {"type":"error"}]' },
+      { role: 'assistant', content: '普通回复保留' },
+    );
+
+    let preCompactMessages: any[] = [];
+    (session as any).contextWindowManager.compactIfNeeded = async (messages: any[], options: any) => {
+      if (options.reason === '处理前') {
+        preCompactMessages = messages.map(message => ({ ...message }));
+      }
+      return messages;
+    };
+
+    await session.handleMessage('继续');
+
+    assert.equal(preCompactMessages.some(message =>
+      typeof message.content === 'string' && message.content.includes('处理失败')
+    ), false);
+    assert.equal(preCompactMessages.some(message => message.content === '普通回复保留'), true);
+  });
+
   test('handleMessage preserves completed tool context when model relay times out', async () => {
     const { AgentSession, SessionStore, MODEL_TIMEOUT_MESSAGE } = loadSessionModules();
     let aiCalls = 0;
@@ -353,16 +501,25 @@ describe('AgentSession lifecycle', () => {
     const retainedMessages = (session as any).messages as any[];
     assert.equal(retainedMessages.some(message => message.content === 'notes content'), true);
     assert.equal(retainedMessages.some(message =>
+      message.role === 'assistant'
+      && message.tool_calls?.[0]?.id === 'call_read'
+    ), true);
+    assert.equal(retainedMessages.some(message =>
+      message.role === 'tool'
+      && message.tool_call_id === 'call_read'
+      && message.content === 'notes content'
+    ), true);
+    assert.equal(retainedMessages.some(message =>
       typeof message.content === 'string'
       && message.content.includes('模型中转请求超时')
-    ), true);
+    ), false);
 
     const restored = SessionStore.getInstance().loadContext('catscompany:lifecycle-timeout-recovery');
     assert.equal(restored.some(message => message.content === 'notes content'), true);
     assert.equal(restored.some(message =>
       typeof message.content === 'string'
       && message.content.includes('避免重复已经完成的工具步骤')
-    ), true);
+    ), false);
   });
 
   test('cleanup persists without invoking hidden AI wakeup checks', async () => {
