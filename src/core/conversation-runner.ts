@@ -28,6 +28,7 @@ import {
 import { calculateSummaryBudgetTokens, resolveModelPromptBudgetTokens } from '../utils/model-context-window';
 import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
 import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
+import { renderDefaultPromptFile } from '../utils/prompt-template';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -883,9 +884,7 @@ export class ConversationRunner {
       role: 'user',
       content: [
         TRANSIENT_CURRENT_DIRECTORY_PREFIX,
-        'Runtime context only. Not a user request. Do not answer.',
-        `cwd: ${currentDirectory}`,
-        'Use only for relative file paths.',
+        renderDefaultPromptFile('transient/current-directory.md', { currentDirectory }),
       ].join('\n'),
       __injected: true,
     };
@@ -972,7 +971,7 @@ export class ConversationRunner {
   private buildDuplicateOutboundHint(content: string): Message {
     return {
       role: 'system',
-      content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n你刚刚连续发送了与上一条相同的内容：“${content}”。如果这是用户真正需要的重复确认，可以继续；否则请避免无意义重复，必要时调用 pause_turn 收束。`,
+      content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n${renderDefaultPromptFile('transient/runner-duplicate-outbound.md', { content })}`,
     };
   }
 
@@ -989,8 +988,7 @@ export class ConversationRunner {
       role: 'system',
       content: [
         TRANSIENT_RUNNER_HINT_PREFIX,
-        '上一轮模型响应因为输出 max_tokens 上限被截断，而且没有生成可见文本或工具调用。',
-        '不要继续展开隐藏推理。请立即二选一：调用下一步必要工具，或输出简短可见回复说明当前进展和下一步。',
+        renderDefaultPromptFile('transient/runner-empty-max-tokens.md', {}),
       ].join('\n'),
     };
   }

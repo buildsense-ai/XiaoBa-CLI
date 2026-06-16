@@ -1,5 +1,6 @@
 import { ContentBlock, Message } from '../types';
 import { ToolDefinition } from '../types/tool';
+import { renderDefaultPromptFile } from '../utils/prompt-template';
 
 export const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 export const SUBAGENT_TOOL_NAME = 'spawn_subagent';
@@ -36,21 +37,14 @@ export function buildInitialDecisionHintIfUseful(messages: Message[], tools: Too
   const available = getAvailableOrchestrationTools(tools);
   if (available.length === 0) return null;
 
-  const lines = looksLikeComplexDelegationCandidate(userText)
-    ? [
-      '语义编排提示：这看起来是多阶段、多维度或可能等待较久的任务。',
-      '先判断是否需要运行时计划、后台子任务，以及主线/支线如何拆分。',
-      '子 agent 是侧路加速，不替代主线；派出后主线仍应继续推进不依赖结果的工作。',
-    ]
-    : [
-      '语义编排提示：先判断这轮是简单单点、主线可直接推进，还是多阶段/可并行任务。',
-      '简单任务直接做，不要为了形式调用 plan/subagent。',
-    ];
-
-  return makeRunnerHint([
-    ...lines,
-    buildAvailableToolHint(available),
-  ]);
+  return makeRunnerHintFromTemplate(
+    looksLikeComplexDelegationCandidate(userText)
+      ? 'transient/orchestration-initial-complex.md'
+      : 'transient/orchestration-initial-simple.md',
+    {
+      availableToolHint: buildAvailableToolHint(available),
+    },
+  );
 }
 
 export function buildExplicitPlanRequestHintIfUseful(messages: Message[], tools: ToolDefinition[]): Message | null {
@@ -59,11 +53,7 @@ export function buildExplicitPlanRequestHintIfUseful(messages: Message[], tools:
   const userText = getLastUserText(messages);
   if (!looksLikeExplicitPlanRequest(userText)) return null;
 
-  return makeRunnerHint([
-    '用户明确要求列计划/plan。若这是执行路线图，请优先调用 update_plan 更新计划卡片。',
-    '不要只在普通回复或 markdown 清单里写计划；那不会更新 Plan UI。',
-    '如果用户是在问 plan 机制而不是让你执行计划，可以直接解释。',
-  ]);
+  return makeRunnerHintFromTemplate('transient/orchestration-explicit-plan-request.md', {});
 }
 
 export function shouldAddPlanSoftNudge(
@@ -80,13 +70,13 @@ export function shouldAddPlanSoftNudge(
 }
 
 export function buildPlanSoftNudge(turns: number, executedToolCalls: number, nudgeCount: number): Message {
-  return makeRunnerHint([
-    `已进行 ${turns} 轮、${executedToolCalls} 次工具执行，还没有维护运行时计划。`,
-    nudgeCount === 0
+  return makeRunnerHintFromTemplate('transient/orchestration-plan-nudge.md', {
+    turns,
+    executedToolCalls,
+    advice: nudgeCount === 0
       ? '如果任务仍较大或用户会等较久，考虑调用 update_plan 更新临时计划。'
       : '如果任务仍多阶段或多方向，重新评估是否需要调用 update_plan。',
-    '这不是硬性要求；如果单线推进更快，可以继续执行。',
-  ]);
+  });
 }
 
 export function shouldAddSubagentSoftNudge(
@@ -103,13 +93,13 @@ export function shouldAddSubagentSoftNudge(
 }
 
 export function buildSubagentSoftNudge(turns: number, executedToolCalls: number, nudgeCount: number): Message {
-  return makeRunnerHint([
-    `已进行 ${turns} 轮、${executedToolCalls} 次工具执行，还没有派出子 agent。`,
-    nudgeCount === 0
+  return makeRunnerHintFromTemplate('transient/orchestration-subagent-nudge.md', {
+    turns,
+    executedToolCalls,
+    advice: nudgeCount === 0
       ? '如果剩余工作有独立、耗时、可并行支线，考虑派出一个或多个子 agent。'
       : '如果仍在单线程处理多个独立维度，重新评估是否拆出子 agent。',
-    '这不是硬性要求；如果主线自己做更快，可以继续主线工作。',
-  ]);
+  });
 }
 
 export function nextPlanNudgeToolCount(current: number): number {
@@ -125,6 +115,14 @@ export function makeRunnerHint(lines: string[]): Message {
     role: 'system',
     content: [TRANSIENT_RUNNER_HINT_PREFIX, ...lines].join('\n'),
   };
+}
+
+function makeRunnerHintFromTemplate(
+  relativePath: string,
+  values: Record<string, string | number | boolean | undefined | null>,
+): Message {
+  const text = renderDefaultPromptFile(relativePath, values);
+  return makeRunnerHint(text ? text.split('\n') : []);
 }
 
 function getAvailableOrchestrationTools(tools: ToolDefinition[]): string[] {

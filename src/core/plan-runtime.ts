@@ -1,3 +1,5 @@
+import { renderDefaultPromptFile } from '../utils/prompt-template';
+
 export type PlanStepStatus = 'pending' | 'in_progress' | 'completed';
 
 export interface RuntimePlanStep {
@@ -65,12 +67,9 @@ export class PlanRuntime {
           : '[pending]';
       return `${index + 1}. ${marker} ${step.text}`;
     });
-    return [
-      '当前运行时计划：',
-      ...lines,
-      '',
-      '这是当前任务的临时计划状态，不是用户的新需求。继续推进时请保持计划准确；小任务不需要维护计划。',
-    ].join('\n');
+    return renderDefaultPromptFile('transient/plan-status.md', {
+      steps: lines.join('\n'),
+    });
   }
 }
 

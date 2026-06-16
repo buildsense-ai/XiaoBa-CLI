@@ -67,6 +67,20 @@ for (const promptPath of [
   'prompts/runtime-context.md',
   'prompts/compact-system.md',
   'prompts/subagents/system.md',
+  'prompts/transient/current-directory.md',
+  'prompts/transient/runtime-context-rules.md',
+  'prompts/transient/skills-list.md',
+  'prompts/transient/subagent-status.md',
+  'prompts/transient/plan-status.md',
+  'prompts/transient/runner-duplicate-outbound.md',
+  'prompts/transient/runner-empty-max-tokens.md',
+  'prompts/transient/orchestration-initial-complex.md',
+  'prompts/transient/orchestration-initial-simple.md',
+  'prompts/transient/orchestration-explicit-plan-request.md',
+  'prompts/transient/orchestration-plan-nudge.md',
+  'prompts/transient/orchestration-subagent-nudge.md',
+  'prompts/sidecars/chime-in-judge.md',
+  'prompts/sidecars/daily-report.md',
 ]) {
   if (!fs.existsSync(path.join(root, promptPath))) {
     fail(`${promptPath} should exist for packaged runtime prompt loading`);

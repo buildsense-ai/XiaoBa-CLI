@@ -9,6 +9,7 @@ import type {
   ScopedLocalFileGrant,
   SessionRoute,
 } from '../types/session-identity';
+import { readDefaultPromptLines } from '../utils/prompt-template';
 import { parseSessionKeyV2 } from './session-router';
 
 export const TRANSIENT_RUNTIME_CONTEXT_PREFIX = '[transient_runtime_context]';
@@ -167,13 +168,7 @@ export function buildRuntimeContextSnapshot(params: BuildRuntimeContextParams): 
       deviceSelection: sanitizeDeviceSelection(params.deviceSelection),
       localFiles: sanitizeLocalFiles(params.localFileGrants),
     }),
-    rules: [
-      'Treat session.topic as the current conversation target and turn.actorUserId as the current speaker.',
-      'Do not ask the user to provide internal IDs from this context; use tools and backend scope when needed.',
-      'Use execution.deviceSelection as the backend-selected target when a tool requires a user device.',
-      'If execution.deviceSelection.status is needs_selection or unavailable, ask the user to choose an available device by display name before using device tools.',
-      'Do not infer or expose local filesystem paths. Use attachment refs when a tool requires a file reference.',
-    ],
+    rules: readDefaultPromptLines('transient/runtime-context-rules.md'),
   }) as RuntimeContextSnapshot;
 }
 

@@ -20,6 +20,8 @@
 | `subagents/system.md` | 子 agent 通用运行规则。 | `SubAgentSession.buildSubAgentSystemPrompt()` |
 | `subagents/roles/*.md` | 子 agent 角色一句话定义。 | `agentRoleLine()` |
 | `subagents/ask-parent-*.md` | 子 agent 是否可向主 agent 提问的提示模板。 | `SubAgentSession.buildSubAgentSystemPrompt()` |
+| `transient/*.md` | 每轮可丢弃的稳定注入模板，例如当前目录说明、计划状态说明、子 agent 状态说明、runner 恢复提示、编排 soft nudge。 | `TurnContextBuilder`、`ConversationRunner`、`runner-orchestration-policy` |
+| `sidecars/*.md` | 非主会话的侧路模型调用 system prompt，例如群聊插嘴判断、日报生成。 | `ChimeInJudge`、`DailyReportGenerator` |
 
 ## 运行时拼装方式
 
@@ -68,6 +70,10 @@ prompts/runtime-context.md 渲染后的内容
 - 上下文压缩的摘要要求。
 - 普通主会话的人格和工作方式。
 - 某类 transient context 的稳定说明文字。
+- runner 恢复提示、计划/子 agent 状态的解释文字、编排 soft nudge。
+- 侧路模型调用的 system prompt，例如插嘴判断和日报生成。
+
+固定注入也属于这一类：如果一段 system 消息每次内容都相同，或只是把少量变量填进固定句式，就应该优先抽到 `prompts/`。代码只保留“什么时候注入、变量从哪里来、结构怎么拼”的逻辑。
 
 ### 2. 暂时留在 src 的内容
 
@@ -82,9 +88,9 @@ prompts/runtime-context.md 渲染后的内容
 - `[transient_runtime_context]` 的 JSON snapshot。
 - 当前设备授权、附件 ref、候选设备列表。
 - plan steps、subagent 状态列表。
-- runner 根据实际错误生成的恢复 hint。
+- runner 根据实际错误生成的变量内容。
 
-如果其中有稳定自然语言规则，可以后续再单独抽一个模板文件，但结构化事实本身仍由代码生成。
+如果其中有稳定自然语言规则，只抽规则或模板；结构化事实本身仍由代码生成。例如 `prompts/transient/plan-status.md` 负责说明“这是临时计划状态”，但具体步骤列表仍由 `PlanRuntime` 生成。
 
 ### 3. 不属于 prompts 的内容
 
@@ -99,9 +105,12 @@ prompts/runtime-context.md 渲染后的内容
 - 按场景分目录，例如：
   - `subagents/`
   - `compact-system.md`
-  - 未来如果继续抽 transient 模板，可使用 `transient/`。
+  - `transient/`
+  - `sidecars/`
 - 一个文件只负责一个明确场景，不混合多个互不相关的规则。
 - 模板变量要少而清晰，变量名使用 camelCase，例如 `{{displayName}}`、`{{customInstructions}}`。
+- `transient/` 文件必须搭配稳定 prefix 使用，例如 `[transient_runner_hint]`、`[transient_plan_status]`。prefix 留在代码里，便于上下文裁剪和过滤。
+- `sidecars/` 只放独立模型调用的 system prompt，不放主会话规则。
 
 ## 修改 prompt 的测试要求
 
@@ -120,6 +129,12 @@ git diff --check
 npm.cmd run test:runtime
 ```
 
+改到 `transient/` 模板时，至少补跑相关定向测试：
+
+```powershell
+node --import tsx --test tests/runtime-context-builder.test.ts tests/runner-orchestration-policy.test.ts tests/conversation-runner-transcript-normalization.test.ts tests/subagent-runtime-events.test.ts
+```
+
 ## 打包要求
 
 Electron 打包必须包含 `prompts/**/*`。当前 `package.json` 的 electron-builder `build.files` 已包含：
@@ -132,6 +147,7 @@ Electron 打包必须包含 `prompts/**/*`。当前 `package.json` 的 electron-
 
 - `build.files` 是否包含 `prompts/**/*`。
 - `system-prompt.md`、`runtime-context.md`、`compact-system.md`、`subagents/system.md` 是否存在。
+- 当前代码直接读取的 `transient/`、`sidecars/` 模板是否存在。
 
 ## 安全和内容约束
 
