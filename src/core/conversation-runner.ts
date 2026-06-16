@@ -223,7 +223,6 @@ export class ConversationRunner {
     let hasUpdatedPlan = false;
     let hasSpawnedSubagent = false;
     let hasRecordedDecision = false;
-    let hasShownInitialOrchestrationHint = false;
     let planSoftNudgeCount = 0;
     let subagentSoftNudgeCount = 0;
     let nextPlanNudgeAt = nextPlanNudgeToolCount(0);
@@ -280,13 +279,10 @@ export class ConversationRunner {
       }
 
       const orchestrationHints: Message[] = [];
-      if (turns === 1 && !hasShownInitialOrchestrationHint) {
-        const explicitPlanHint = buildExplicitPlanRequestHintIfUseful(messages, requestTools);
-        const decisionHint = buildInitialDecisionHintIfUseful(messages, requestTools);
-        if (explicitPlanHint) orchestrationHints.push(explicitPlanHint);
-        if (decisionHint) orchestrationHints.push(decisionHint);
-        hasShownInitialOrchestrationHint = orchestrationHints.length > 0;
-      }
+      const explicitPlanHint = buildExplicitPlanRequestHintIfUseful(messages, requestTools);
+      const decisionHint = buildInitialDecisionHintIfUseful(messages, requestTools);
+      if (explicitPlanHint) orchestrationHints.push(explicitPlanHint);
+      if (decisionHint) orchestrationHints.push(decisionHint);
       if (shouldAddPlanSoftNudge(requestTools, turns, executedToolCalls, hasUpdatedPlan || hasRecordedDecision, nextPlanNudgeAt)) {
         orchestrationHints.push(buildPlanSoftNudge(turns, executedToolCalls, planSoftNudgeCount));
         planSoftNudgeCount++;
