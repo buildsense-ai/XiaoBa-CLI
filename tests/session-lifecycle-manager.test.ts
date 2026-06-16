@@ -575,6 +575,26 @@ describe('AgentSession lifecycle', () => {
     assert.equal(result.text, ERROR_MESSAGE);
   });
 
+  test('handleMessage surfaces transient provider failures without leaking raw upstream payload', async () => {
+    const { AgentSession } = loadSessionModules();
+    const session = new AgentSession('catscompany:lifecycle-transient-provider', buildMockServices({
+      aiService: {
+        getConfig() {
+          return { model: 'MiniMax-M3' };
+        },
+        async chatStream() {
+          throw new Error('API错误 (500): 500 {"type":"error","error":{"type":"api_error","message":"unknown error, 520 (1000)"},"request_id":"req_123"}');
+        },
+      },
+    }), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    const result = await session.handleMessage('continue');
+
+    assert.match(result.text, /当前模型 MiniMax-M3 的服务临时异常/);
+    assert.doesNotMatch(result.text, /unknown error|request_id|API错误|520/);
+  });
+
   test('cleanup persists without invoking hidden AI wakeup checks', async () => {
     const { AgentSession, SessionStore } = loadSessionModules();
     let aiCalls = 0;
@@ -643,6 +663,7 @@ function loadSessionModules(): any {
     AgentSession: require('../src/core/agent-session').AgentSession,
     ERROR_MESSAGE: require('../src/core/agent-session').ERROR_MESSAGE,
     MODEL_TIMEOUT_MESSAGE: require('../src/core/agent-session').MODEL_TIMEOUT_MESSAGE,
+    MODEL_TRANSIENT_ERROR_MESSAGE: require('../src/core/agent-session').MODEL_TRANSIENT_ERROR_MESSAGE,
     CONTEXT_COMPACTION_START_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_START_MESSAGE,
     CONTEXT_COMPACTION_COMPLETE_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_COMPLETE_MESSAGE,
     SessionStore: require('../src/utils/session-store').SessionStore,

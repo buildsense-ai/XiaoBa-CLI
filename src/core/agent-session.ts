@@ -49,6 +49,7 @@ export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-fee
 export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
 export const ERROR_MESSAGE = '不好意思，刚才处理出了点问题，你再试一次？';
 export const MODEL_TIMEOUT_MESSAGE = '模型中转请求超时了，我已经保留本轮已完成的工具结果和上下文。你可以直接说“继续”，我会从这里接上。';
+export const MODEL_TRANSIENT_ERROR_MESSAGE = '当前模型服务临时异常，刚才这次请求没有完成。我已经保留上下文；你可以稍后重试，或临时切换到其他模型继续。';
 export const CONTEXT_COMPACTION_START_MESSAGE = '正在压缩上下文，整理较早的对话内容。';
 export const CONTEXT_COMPACTION_COMPLETE_MESSAGE = '上下文压缩完成，继续处理当前请求。';
 export const CONTEXT_COMPACTION_ERROR_MESSAGE = '上下文压缩失败，已保留原上下文继续处理。';
@@ -514,6 +515,7 @@ export class AgentSession {
         const isImageSafetyError = isModelImageSafetyError(err);
         const isVisionError = !isImageSafetyError && errorMsg.match(/image|vision|multimodal|media_type|base64.*not supported/i);
         const isModelTimeoutError = this.isModelTimeoutError(err);
+        const isTransientProviderError = this.isTransientProviderError(err);
         const relayBudgetErrorReply = this.formatRelayBudgetErrorReply(err);
 
         let errorReply = ERROR_MESSAGE;
@@ -525,12 +527,18 @@ export class AgentSession {
           errorReply = '当前模型不支持图片识别。请使用支持多模态的模型（如 Claude 3.5 Sonnet 或 GPT-4V），或者用文字描述图片内容。';
         } else if (isModelTimeoutError) {
           errorReply = MODEL_TIMEOUT_MESSAGE;
+        } else if (isTransientProviderError) {
+          errorReply = this.formatTransientProviderErrorReply();
         }
 
         // 添加错误回复到上下文，保持对话连贯性
         this.messages.push({
           role: 'assistant',
-          content: this.formatErrorContextMessage(err, isModelTimeoutError, isImageSafetyError),
+          content: this.formatErrorContextMessage(err, {
+            isModelTimeoutError,
+            isImageSafetyError,
+            isTransientProviderError,
+          }),
           __internalErrorArtifact: true,
         });
         this.messages = stripAssistantArtifactsFromMessages(this.turnContextBuilder.removeTransientMessages(this.messages));
@@ -741,6 +749,16 @@ export class AgentSession {
     return /API错误\s*\(504\)|request_timed_out|request timed out|default_request_timeout_in_seconds|upstream request timeout|gateway timeout/i.test(text);
   }
 
+  private isTransientProviderError(error: any): boolean {
+    const status = this.extractErrorStatus(error);
+    if (status && [500, 502, 503, 504, 520, 524, 529].includes(status)) {
+      return true;
+    }
+
+    const text = String(error?.message || error || '');
+    return /unknown error,\s*520|overloaded_error|service unavailable|bad gateway|gateway timeout|upstream (?:error|timeout)|MaxRetriesExceededError|Connection error|ECONNRESET|ETIMEDOUT|EAI_AGAIN|fetch failed|socket hang up|network error|premature close/i.test(text);
+  }
+
   private formatRelayBudgetErrorReply(error: any): string | null {
     const text = String(error?.message || error || '');
     const status = this.extractErrorStatus(error);
@@ -769,7 +787,13 @@ export class AgentSession {
 
   private extractErrorStatus(error: any): number | null {
     const status = error?.status || error?.response?.status || error?.error?.status;
-    return typeof status === 'number' ? status : null;
+    if (typeof status === 'number') return status;
+
+    const text = String(error?.message || error || '');
+    const match = text.match(/(?:API错误|HTTP|status(?:\s*code)?)\s*[\(:= ]\s*(\d{3})\b/i);
+    if (!match) return null;
+    const parsed = Number(match[1]);
+    return Number.isFinite(parsed) ? parsed : null;
   }
 
   private currentModelName(): string | null {
@@ -780,13 +804,30 @@ export class AgentSession {
     return model || null;
   }
 
-  private formatErrorContextMessage(error: any, isModelTimeoutError: boolean, isImageSafetyError = false): string {
+  private formatTransientProviderErrorReply(): string {
+    const model = this.currentModelName();
+    return model
+      ? `当前模型 ${model} 的服务临时异常，刚才这次请求没有完成。我已经保留上下文；你可以稍后重试，或临时切换到其他模型继续。`
+      : MODEL_TRANSIENT_ERROR_MESSAGE;
+  }
+
+  private formatErrorContextMessage(
+    error: any,
+    flags: {
+      isModelTimeoutError?: boolean;
+      isImageSafetyError?: boolean;
+      isTransientProviderError?: boolean;
+    },
+  ): string {
     const detail = this.sanitizeErrorMessage(error?.message || String(error));
-    if (isModelTimeoutError) {
+    if (flags.isModelTimeoutError) {
       return `[处理中断: 模型中转请求超时。已保留本轮已完成的工具结果和上下文；如果用户要求继续，请基于当前上下文继续，避免重复已经完成的工具步骤。错误摘要: ${detail}]`;
     }
-    if (isImageSafetyError) {
+    if (flags.isImageSafetyError) {
       return `[处理中断: 上游模型拒绝了当前对话中的图片。已保留本轮已完成的上下文；如果用户要求继续，请提示用户删除或更换相关图片，或新开对话后继续。错误摘要: ${detail}]`;
+    }
+    if (flags.isTransientProviderError) {
+      return `[处理中断: 模型服务临时异常或上游网关错误。已保留本轮上下文；如果用户要求继续，请从当前状态继续，不要重复已经完成的工具步骤。错误摘要: ${detail}]`;
     }
     return `[处理失败: ${detail}]`;
   }
