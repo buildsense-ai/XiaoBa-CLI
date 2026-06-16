@@ -595,6 +595,26 @@ describe('AgentSession lifecycle', () => {
     assert.doesNotMatch(result.text, /unknown error|request_id|API错误|520/);
   });
 
+  test('handleMessage treats wrapped 503 request errors as transient provider failures', async () => {
+    const { AgentSession } = loadSessionModules();
+    const session = new AgentSession('catscompany:lifecycle-transient-503', buildMockServices({
+      aiService: {
+        getConfig() {
+          return { model: 'gpt-5.5' };
+        },
+        async chatStream() {
+          throw new Error('API错误 (503): 503 请求错误(状态码: 503)');
+        },
+      },
+    }), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    const result = await session.handleMessage('继续');
+
+    assert.match(result.text, /当前模型 gpt-5\.5 的服务临时异常/);
+    assert.doesNotMatch(result.text, /API错误|状态码|503/);
+  });
+
   test('cleanup persists without invoking hidden AI wakeup checks', async () => {
     const { AgentSession, SessionStore } = loadSessionModules();
     let aiCalls = 0;
