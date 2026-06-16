@@ -75,8 +75,10 @@ test('SkillHub Skills page is separate from Companion Hub and owns publishing co
   assert.match(dashboardHtml, /id="skillhub-search-input"/);
   assert.match(dashboardHtml, /发现技能/);
   assert.match(dashboardHtml, /已安装技能/);
-  assert.match(dashboardHtml, /SkillHub Developer/);
   assert.match(dashboardHtml, /id="skillhub-package-versions-list"/);
+  assert.doesNotMatch(dashboardHtml, /SkillHub Developer/);
+  assert.doesNotMatch(dashboardHtml, /id="skillhub-developer-apply"/);
+  assert.doesNotMatch(dashboardHtml, /id="skillhub-developer-console"/);
   assert.doesNotMatch(dashboardHtml, /data-page="developer"/);
   assert.doesNotMatch(dashboardHtml, /id="page-developer"/);
   assert.match(dashboardHtml, /if \(target === 'skills'\) return switchPage\('store'\);/);
