@@ -1,5 +1,5 @@
 import { Message } from '../types';
-import { renderDefaultPromptFile } from '../utils/prompt-template';
+import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
 import { SubAgentManager } from './sub-agent-manager';
 
 export const TRANSIENT_SUBAGENT_STATUS_PREFIX = '[transient_subagent_status]';
@@ -33,7 +33,7 @@ export function buildSubAgentStatusMessage(
     role: 'system',
     content: [
       TRANSIENT_SUBAGENT_STATUS_PREFIX,
-      renderDefaultPromptFile('transient/subagent-status.md', {
+      renderRequiredDefaultPromptFile('transient/subagent-status.md', {
         sections: sections.join('\n\n'),
       }),
     ].join('\n\n'),

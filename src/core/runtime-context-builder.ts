@@ -9,7 +9,7 @@ import type {
   ScopedLocalFileGrant,
   SessionRoute,
 } from '../types/session-identity';
-import { readDefaultPromptLines } from '../utils/prompt-template';
+import { readRequiredDefaultPromptLines } from '../utils/prompt-template';
 import { parseSessionKeyV2 } from './session-router';
 
 export const TRANSIENT_RUNTIME_CONTEXT_PREFIX = '[transient_runtime_context]';
@@ -168,7 +168,7 @@ export function buildRuntimeContextSnapshot(params: BuildRuntimeContextParams): 
       deviceSelection: sanitizeDeviceSelection(params.deviceSelection),
       localFiles: sanitizeLocalFiles(params.localFileGrants),
     }),
-    rules: readDefaultPromptLines('transient/runtime-context-rules.md'),
+    rules: readRequiredDefaultPromptLines('transient/runtime-context-rules.md'),
   }) as RuntimeContextSnapshot;
 }
 

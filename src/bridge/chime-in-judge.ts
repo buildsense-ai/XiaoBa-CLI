@@ -1,6 +1,6 @@
 import { AIService } from '../utils/ai-service';
 import { Logger } from '../utils/logger';
-import { readDefaultPromptFile } from '../utils/prompt-template';
+import { readRequiredDefaultPromptFile } from '../utils/prompt-template';
 
 const MAX_CONTEXT_MESSAGES = 10;
 const JUDGE_MAX_TOKENS = 20;
@@ -70,7 +70,7 @@ export class ChimeInJudge {
   async shouldChimeIn(latestMessage: string): Promise<boolean> {
     try {
       const response = await this.judgeAI.chat([
-        { role: 'system', content: readDefaultPromptFile('sidecars/chime-in-judge.md') },
+        { role: 'system', content: readRequiredDefaultPromptFile('sidecars/chime-in-judge.md') },
         {
           role: 'user',
           content: buildJudgeUserPrompt(

@@ -56,9 +56,9 @@ assertIncludes('GitHub release title', readText('.github/workflows/release.yml')
 assertIncludes('Windows install shortcut', readText('install.ps1'), 'CatsCo Dashboard');
 assertIncludes('Unix install launcher', readText('install.sh'), 'CatsCo Dashboard');
 assertIncludes(
-  'runtime current-directory prompt',
+  'runtime context date variable',
   readText('prompts/runtime-context.md'),
-  '当前目录会在每次模型请求中作为临时上下文消息提供',
+  '{{date}}',
 );
 assertIncludes('electron build files', JSON.stringify(packageJson.build?.files || []), 'prompts/**/*');
 
@@ -67,6 +67,13 @@ for (const promptPath of [
   'prompts/runtime-context.md',
   'prompts/compact-system.md',
   'prompts/subagents/system.md',
+  'prompts/subagents/ask-parent-enabled.md',
+  'prompts/subagents/ask-parent-disabled.md',
+  'prompts/subagents/roles/explorer.md',
+  'prompts/subagents/roles/reviewer.md',
+  'prompts/subagents/roles/skill.md',
+  'prompts/subagents/roles/tester.md',
+  'prompts/subagents/roles/worker.md',
   'prompts/transient/current-directory.md',
   'prompts/transient/runtime-context-rules.md',
   'prompts/transient/skills-list.md',

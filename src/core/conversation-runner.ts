@@ -28,7 +28,7 @@ import {
 import { calculateSummaryBudgetTokens, resolveModelPromptBudgetTokens } from '../utils/model-context-window';
 import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
 import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
-import { renderDefaultPromptFile } from '../utils/prompt-template';
+import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -884,7 +884,7 @@ export class ConversationRunner {
       role: 'user',
       content: [
         TRANSIENT_CURRENT_DIRECTORY_PREFIX,
-        renderDefaultPromptFile('transient/current-directory.md', { currentDirectory }),
+        renderRequiredDefaultPromptFile('transient/current-directory.md', { currentDirectory }),
       ].join('\n'),
       __injected: true,
     };
@@ -971,7 +971,7 @@ export class ConversationRunner {
   private buildDuplicateOutboundHint(content: string): Message {
     return {
       role: 'system',
-      content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n${renderDefaultPromptFile('transient/runner-duplicate-outbound.md', { content })}`,
+      content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n${renderRequiredDefaultPromptFile('transient/runner-duplicate-outbound.md', { content })}`,
     };
   }
 
@@ -988,7 +988,7 @@ export class ConversationRunner {
       role: 'system',
       content: [
         TRANSIENT_RUNNER_HINT_PREFIX,
-        renderDefaultPromptFile('transient/runner-empty-max-tokens.md', {}),
+        renderRequiredDefaultPromptFile('transient/runner-empty-max-tokens.md', {}),
       ].join('\n'),
     };
   }

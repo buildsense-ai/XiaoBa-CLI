@@ -11,12 +11,39 @@ export function readPromptFile(promptsDir: string, relativePath: string): string
   }
 }
 
+export function readRequiredPromptFile(promptsDir: string, relativePath: string): string {
+  const filePath = path.join(promptsDir, relativePath);
+  try {
+    const text = normalizePromptText(fs.readFileSync(filePath, 'utf-8'));
+    if (!text) {
+      throw new Error(`Prompt file is empty: ${relativePath}`);
+    }
+    return text;
+  } catch (error: any) {
+    if (error?.message?.startsWith('Prompt file is empty:')) {
+      throw error;
+    }
+    throw new Error(`Required prompt file is missing or unreadable: ${relativePath}`);
+  }
+}
+
 export function readDefaultPromptFile(relativePath: string): string {
   return readPromptFile(DEFAULT_PROMPTS_DIR, relativePath);
 }
 
+export function readRequiredDefaultPromptFile(relativePath: string): string {
+  return readRequiredPromptFile(DEFAULT_PROMPTS_DIR, relativePath);
+}
+
 export function readDefaultPromptLines(relativePath: string): string[] {
   return readDefaultPromptFile(relativePath)
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+}
+
+export function readRequiredDefaultPromptLines(relativePath: string): string[] {
+  return readRequiredDefaultPromptFile(relativePath)
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean);
@@ -27,6 +54,13 @@ export function renderDefaultPromptFile(
   values: Record<string, string | number | boolean | undefined | null>,
 ): string {
   return renderPromptTemplate(readDefaultPromptFile(relativePath), values);
+}
+
+export function renderRequiredDefaultPromptFile(
+  relativePath: string,
+  values: Record<string, string | number | boolean | undefined | null>,
+): string {
+  return renderPromptTemplate(readRequiredDefaultPromptFile(relativePath), values);
 }
 
 export function renderPromptTemplate(

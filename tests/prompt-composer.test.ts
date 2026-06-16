@@ -72,20 +72,15 @@ describe('PromptComposer', () => {
     assert.doesNotMatch(prompt, /Legacy behavior prompt/);
   });
 
-  test('omits base prompt when system prompt file is missing', () => {
-    const prompt = PromptComposer.composeSystemPrompt({
-      promptsDir: testRoot,
-      env: {},
-      now: new Date('2026-05-01T12:00:00.000Z'),
-    });
-
-    assert.equal(prompt, [
-      '当前日期：2026-05-01',
-      '当前目录会在每次模型请求中作为临时上下文消息提供。相对文件路径和 shell 路径默认以该当前目录为准。',
-      '如果用户要求检查项目、仓库或源码，先把当前目录视为最可能的项目根目录。',
-      '不要把 Electron userData、AppData、日志目录或缓存目录误认为源码仓库，除非用户明确要求查看这些运行时文件。',
-      '如果当前目录不像用户要求的产品或服务，先做小范围路径检查，或询问正确仓库位置。',
-    ].join('\n'));
+  test('throws when required system prompt file is missing', () => {
+    assert.throws(
+      () => PromptComposer.composeSystemPrompt({
+        promptsDir: testRoot,
+        env: {},
+        now: new Date('2026-05-01T12:00:00.000Z'),
+      }),
+      /Required prompt file is missing or unreadable: system-prompt\.md/,
+    );
   });
 
   test('trims platform and blank display name whitespace', () => {

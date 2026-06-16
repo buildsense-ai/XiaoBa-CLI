@@ -8,7 +8,7 @@ import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { SubAgentEventType, SubAgentRuntimeEvent } from './sub-agent-events';
-import { readPromptFile, renderPromptTemplate } from '../utils/prompt-template';
+import { readRequiredPromptFile, renderPromptTemplate } from '../utils/prompt-template';
 import type { ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult } from '../types/tool';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -641,14 +641,14 @@ function buildSubAgentSystemPrompt(
 ): string {
   const roleLine = agentRoleLine(agentType);
   const promptsDir = PromptManager.getPromptsDir();
-  const template = readPromptFile(
+  const template = readRequiredPromptFile(
     promptsDir,
     'subagents/system.md',
   );
   return renderPromptTemplate(template, {
     roleLine,
     temporaryDirectory,
-    askParentInstruction: readPromptFile(
+    askParentInstruction: readRequiredPromptFile(
       promptsDir,
       allowedTools.includes('ask_parent')
         ? 'subagents/ask-parent-enabled.md'
@@ -664,7 +664,7 @@ function buildSubAgentSystemPrompt(
 }
 
 function agentRoleLine(agentType: SubAgentType): string {
-  return readPromptFile(
+  return readRequiredPromptFile(
     PromptManager.getPromptsDir(),
     `subagents/roles/${agentType}.md`,
   );

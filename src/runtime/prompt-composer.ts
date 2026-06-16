@@ -1,5 +1,5 @@
 import { RuntimeProfile } from './runtime-profile';
-import { readPromptFile, renderPromptTemplate } from '../utils/prompt-template';
+import { readRequiredPromptFile, renderPromptTemplate } from '../utils/prompt-template';
 
 export interface ComposeSystemPromptOptions {
   promptsDir: string;
@@ -61,14 +61,14 @@ export class PromptComposer {
   }
 
   static getBaseSystemPrompt(promptsDir: string): string {
-    return readPromptFile(promptsDir, 'system-prompt.md');
+    return readRequiredPromptFile(promptsDir, 'system-prompt.md');
   }
 
   static getRuntimeContextPrompt(
     promptsDir: string,
     values: { displayName?: string; platform?: string; date: string },
   ): string {
-    const template = readPromptFile(
+    const template = readRequiredPromptFile(
       promptsDir,
       'runtime-context.md',
     );

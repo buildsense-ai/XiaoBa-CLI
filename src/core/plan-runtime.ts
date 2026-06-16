@@ -1,4 +1,4 @@
-import { renderDefaultPromptFile } from '../utils/prompt-template';
+import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
 
 export type PlanStepStatus = 'pending' | 'in_progress' | 'completed';
 
@@ -67,7 +67,7 @@ export class PlanRuntime {
           : '[pending]';
       return `${index + 1}. ${marker} ${step.text}`;
     });
-    return renderDefaultPromptFile('transient/plan-status.md', {
+    return renderRequiredDefaultPromptFile('transient/plan-status.md', {
       steps: lines.join('\n'),
     });
   }

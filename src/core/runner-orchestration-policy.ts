@@ -1,6 +1,6 @@
 import { ContentBlock, Message } from '../types';
 import { ToolDefinition } from '../types/tool';
-import { renderDefaultPromptFile } from '../utils/prompt-template';
+import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
 
 export const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 export const SUBAGENT_TOOL_NAME = 'spawn_subagent';
@@ -121,7 +121,7 @@ function makeRunnerHintFromTemplate(
   relativePath: string,
   values: Record<string, string | number | boolean | undefined | null>,
 ): Message {
-  const text = renderDefaultPromptFile(relativePath, values);
+  const text = renderRequiredDefaultPromptFile(relativePath, values);
   return makeRunnerHint(text ? text.split('\n') : []);
 }
 

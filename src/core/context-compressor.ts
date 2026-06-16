@@ -3,7 +3,7 @@ import { AIService } from '../utils/ai-service';
 import { estimateMessagesTokens, estimateTokens } from './token-estimator';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
-import { DEFAULT_PROMPTS_DIR, readPromptFile, renderPromptTemplate } from '../utils/prompt-template';
+import { DEFAULT_PROMPTS_DIR, readRequiredPromptFile, renderPromptTemplate } from '../utils/prompt-template';
 
 const COMPACT_BOUNDARY_PREFIX = '[compact_boundary]';
 
@@ -226,7 +226,7 @@ export function truncateForSummary(messages: Message[], budget: number = SUMMARY
  * 生成压缩用的 system prompt
  */
 export function buildCompactSystemPrompt(customInstructions?: string): string {
-  const template = readPromptFile(DEFAULT_PROMPTS_DIR, 'compact-system.md');
+  const template = readRequiredPromptFile(DEFAULT_PROMPTS_DIR, 'compact-system.md');
   return renderPromptTemplate(template, {
     customInstructions: customInstructions?.trim(),
   });

@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { AIService } from './ai-service';
-import { readDefaultPromptFile } from './prompt-template';
+import { readRequiredDefaultPromptFile } from './prompt-template';
 import {
   isSessionTurnEntry,
   readSessionLogFile,
@@ -152,7 +152,7 @@ export class DailyReportGenerator {
 
     try {
       const response = await this.aiService.chat([
-        { role: 'system', content: readDefaultPromptFile('sidecars/daily-report.md') },
+        { role: 'system', content: readRequiredDefaultPromptFile('sidecars/daily-report.md') },
         { role: 'user', content: prompt },
       ]);
 
