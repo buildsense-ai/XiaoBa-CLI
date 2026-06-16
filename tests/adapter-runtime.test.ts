@@ -96,7 +96,7 @@ describe('adapter runtime', () => {
     const prompt = await provider();
 
     assert.doesNotMatch(prompt, /Late Feishu Name/);
-    assert.match(prompt, /Current directory is provided in a transient message/);
+    assert.match(prompt, /当前目录会在每次模型请求中作为临时上下文消息提供/);
     assert.doesNotMatch(prompt.replace(/\\/g, '/'), /mutated/);
   });
 
@@ -113,7 +113,7 @@ describe('adapter runtime', () => {
     const prompt = await provider();
 
     assert.match(prompt, /你在这个平台上的名字是：Cats Runtime Bot/);
-    assert.match(prompt, /Current directory is provided in a transient message/);
+    assert.match(prompt, /当前目录会在每次模型请求中作为临时上下文消息提供/);
     assert.doesNotMatch(prompt.replace(/\\/g, '/'), /mutated/);
   });
 

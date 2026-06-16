@@ -63,8 +63,7 @@ export class ContextDebugLogger {
       const t = estimateMessageTokens(msg);
 
       if (msg.role === 'system') {
-        if (c.startsWith('[surface:')) modules.surface_rule = { tokens: t, content: c };
-        else if (c.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX)) modules.runtime_context = { tokens: t, content: c };
+        if (c.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX)) modules.runtime_context = { tokens: t, content: c };
         else if (c.startsWith('[session_context]')) modules.session_context = { tokens: t, content: c };
         else if (c.includes('[long_term_memory]')) modules.recall = { tokens: t, content: c, facts_count: recallMeta?.factsCount ?? 0 };
         else if (c.includes('[transient_subagent_status]')) modules.subagent_status = { tokens: t, content: c };

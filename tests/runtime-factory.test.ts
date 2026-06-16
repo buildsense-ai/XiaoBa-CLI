@@ -103,7 +103,7 @@ describe('RuntimeFactory', () => {
     assert.equal(messages[0].role, 'system');
     assert.match(messages[0].content, /你在这个平台上的名字是：Factory Bot/);
     assert.match(messages[0].content, /当前平台：cli/);
-    assert.match(messages[0].content, /Current directory is provided in a transient message/);
+    assert.match(messages[0].content, /当前目录会在每次模型请求中作为临时上下文消息提供/);
     assert.doesNotMatch(
       messages[0].content.replace(/\\/g, '/'),
       new RegExp(escapeRegExp(path.resolve(testRoot).replace(/\\/g, '/'))),
@@ -132,7 +132,7 @@ describe('RuntimeFactory', () => {
     await runtime.session.init();
     const messages = (runtime.session as any).messages;
 
-    assert.match(messages[0].content, /Current directory is provided in a transient message/);
+    assert.match(messages[0].content, /当前目录会在每次模型请求中作为临时上下文消息提供/);
     assert.doesNotMatch(
       messages[0].content.replace(/\\/g, '/'),
       new RegExp(escapeRegExp(path.resolve(originalWorkingDirectory).replace(/\\/g, '/'))),
@@ -293,7 +293,7 @@ describe('RuntimeFactory', () => {
 
     assert.match(prompt, /Feishu Bot/);
     assert.match(prompt, /当前平台：feishu/);
-    assert.match(prompt, /Current directory is provided in a transient message/);
+    assert.match(prompt, /当前目录会在每次模型请求中作为临时上下文消息提供/);
     assert.doesNotMatch(
       prompt.replace(/\\/g, '/'),
       new RegExp(escapeRegExp(path.resolve(originalWorkingDirectory).replace(/\\/g, '/'))),

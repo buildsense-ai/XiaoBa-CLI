@@ -76,7 +76,6 @@ export class RuntimeFactory {
     const promptProfile = this.snapshotProfile(profile);
     return () => PromptComposer.composeSystemPromptFromProfile({
       promptsDir: PromptManager.getPromptsDir(),
-      defaultSystemPrompt: PromptManager.getDefaultSystemPrompt(),
       profile: promptProfile,
     });
   }

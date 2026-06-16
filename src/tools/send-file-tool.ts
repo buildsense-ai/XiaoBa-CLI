@@ -11,13 +11,11 @@ export class SendFileTool implements Tool {
     name: 'send_file',
     description: `Send a local file or authorized CatsCo attachment reference to the current chat.
 
-Use this only when file_path points to a real local file that should be sent to the user, or to an authorized CatsCo attachment reference from the current user turn. file_path can be absolute, relative to the current directory, or catsco_attachment:<id>.
+Accepted file_path formats:
+- Absolute or relative path to a readable local file.
+- catsco_attachment:<id> reference authorized by the current user turn.
 
-CatsCo file selection rules:
-- tmp/downloads/... is an internal cache for files/images received from chat. Prefer current catsco_attachment:<id> references for chat attachments instead of raw cache paths.
-- If the user did not provide an exact local path, ask for the path or search likely local folders first.
-    - Do not invent or reuse old catsco_attachment:<id> references, old tmp/downloads paths, old URLs, or old filenames.
-    - After sending a file, keep the final reply short.`,
+The tool uploads the file to the active chat and returns the visible path and file name.`,
     transcriptMode: 'outbound_file',
     parameters: {
       type: 'object',

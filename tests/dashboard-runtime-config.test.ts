@@ -65,7 +65,7 @@ describe('dashboard runtime config snapshot', () => {
     assert.equal(snapshot.workingDirectory.path, fs.realpathSync(testRoot));
     assert.equal(snapshot.workingDirectory.exists, true);
     assert.match(snapshot.systemPrompt.text, /你在这个平台上的名字是：Desk Assistant/);
-    assert.match(snapshot.systemPrompt.text, /Current directory is provided in a transient message/);
+    assert.match(snapshot.systemPrompt.text, /当前目录会在每次模型请求中作为临时上下文消息提供/);
     assert.doesNotMatch(snapshot.systemPrompt.text.replace(/\\/g, '/'), new RegExp(escapeRegExp(fs.realpathSync(testRoot).replace(/\\/g, '/'))));
     assert.equal(snapshot.logging.sessionLogDir, path.join(fs.realpathSync(testRoot), 'logs/sessions'));
     assert.equal(snapshot.logging.upload.enabled, true);

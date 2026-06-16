@@ -1,17 +1,14 @@
-import * as fs from 'fs';
-import * as path from 'path';
 import { RuntimeProfile } from './runtime-profile';
+import { readPromptFile, renderPromptTemplate } from '../utils/prompt-template';
 
 export interface ComposeSystemPromptOptions {
   promptsDir: string;
-  defaultSystemPrompt: string;
   env?: NodeJS.ProcessEnv;
   now?: Date;
 }
 
 export interface ComposeSystemPromptFromProfileOptions {
   promptsDir: string;
-  defaultSystemPrompt: string;
   profile: RuntimeProfile;
   now?: Date;
 }
@@ -25,11 +22,10 @@ export class PromptComposer {
       || env.BOT_BRIDGE_NAME
       || ''
     ).trim();
-    const platform = env.CURRENT_PLATFORM || '';
+    const platform = (env.CURRENT_PLATFORM || '').trim();
 
     return this.composeSystemPromptParts({
       promptsDir: options.promptsDir,
-      defaultSystemPrompt: options.defaultSystemPrompt,
       displayName,
       platform,
       now,
@@ -39,9 +35,8 @@ export class PromptComposer {
   static composeSystemPromptFromProfile(options: ComposeSystemPromptFromProfileOptions): string {
     return this.composeSystemPromptParts({
       promptsDir: options.promptsDir,
-      defaultSystemPrompt: options.defaultSystemPrompt,
       displayName: (options.profile.prompt.displayName || '').trim(),
-      platform: options.profile.prompt.platform || '',
+      platform: (options.profile.prompt.platform || '').trim(),
       workspacePath: options.profile.workingDirectory,
       now: options.now ?? new Date(),
     });
@@ -49,35 +44,34 @@ export class PromptComposer {
 
   private static composeSystemPromptParts(options: {
     promptsDir: string;
-    defaultSystemPrompt: string;
     displayName: string;
     platform: string;
     workspacePath?: string;
     now: Date;
   }): string {
-    const basePrompt = this.getBaseSystemPrompt(options.promptsDir, options.defaultSystemPrompt).trim();
-    const displayName = options.displayName;
-    const platform = options.platform;
+    const basePrompt = this.getBaseSystemPrompt(options.promptsDir);
     const today = options.now.toISOString().slice(0, 10);
-
-    const runtimeInfo = [
-      displayName ? `你在这个平台上的名字是：${displayName}` : '',
-      platform ? `当前平台：${platform}` : '',
-      `当前日期：${today}`,
-      'Current directory is provided in a transient message for each model request. Use that current directory for relative file and shell paths.',
-      'If the user asks you to inspect a project, repository, or source code, treat the current directory as the likely project root first.',
-      'Do not mistake Electron userData, AppData, logs, or cache directories for the source repository unless the user explicitly asks about those runtime files.',
-      'If the current directory does not appear to contain the requested product or service, do a small path check or ask for the correct repository instead of repeatedly scanning the wrong directory.',
-    ].filter(Boolean).join('\n');
+    const runtimeInfo = this.getRuntimeContextPrompt(options.promptsDir, {
+      displayName: options.displayName,
+      platform: options.platform,
+      date: today,
+    });
 
     return [basePrompt, runtimeInfo].filter(Boolean).join('\n\n');
   }
 
-  static getBaseSystemPrompt(promptsDir: string, defaultSystemPrompt: string): string {
-    try {
-      return fs.readFileSync(path.join(promptsDir, 'system-prompt.md'), 'utf-8');
-    } catch {
-      return defaultSystemPrompt;
-    }
+  static getBaseSystemPrompt(promptsDir: string): string {
+    return readPromptFile(promptsDir, 'system-prompt.md');
+  }
+
+  static getRuntimeContextPrompt(
+    promptsDir: string,
+    values: { displayName?: string; platform?: string; date: string },
+  ): string {
+    const template = readPromptFile(
+      promptsDir,
+      'runtime-context.md',
+    );
+    return renderPromptTemplate(template, values);
   }
 }

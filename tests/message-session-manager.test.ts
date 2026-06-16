@@ -37,7 +37,7 @@ describe('MessageSessionManager', () => {
       const messages = (session as any).messages;
       assert.equal(messages[0].role, 'system');
       assert.match(messages[0].content, /^system prompt for user:adapter-demo/);
-      assert.match(messages[0].content, /\[surface:feishu:private\]/);
+      assert.doesNotMatch(messages[0].content, /\[surface:/);
     } finally {
       await manager.destroy();
     }
@@ -56,7 +56,7 @@ describe('MessageSessionManager', () => {
 
       const messages = (session as any).messages;
       assert.match(messages[0].content, /^system prompt for user:context-demo/);
-      assert.match(messages[0].content, /\[surface:feishu:private\]/);
+      assert.doesNotMatch(messages[0].content, /\[surface:/);
       assert.equal(messages[1].content, 'adapter context');
       assert.equal(messages[1].__injected, true);
     } finally {
@@ -114,7 +114,7 @@ describe('MessageSessionManager', () => {
 
       const messages = (session as any).messages;
       assert.match(messages[0].content, /^system prompt for session:v2:feishu:p2p:chat-route-demo/);
-      assert.match(messages[0].content, /\[surface:feishu:private\]/);
+      assert.doesNotMatch(messages[0].content, /\[surface:/);
       assert.equal(messages[1].content, 'legacy user message');
       assert.equal(messages[2].content, 'legacy assistant message');
 
