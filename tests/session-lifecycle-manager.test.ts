@@ -522,6 +522,59 @@ describe('AgentSession lifecycle', () => {
     ), false);
   });
 
+  test('handleMessage surfaces relay budget exhaustion without leaking raw provider errors', async () => {
+    const { AgentSession } = loadSessionModules();
+    const session = new AgentSession('catscompany:lifecycle-model-budget', buildMockServices({
+      aiService: {
+        getConfig() {
+          return { model: 'MiniMax-M3' };
+        },
+        async chatStream() {
+          throw new Error('API错误 (402): {"type":"error","error":{"message":"model budget exceeded"}}');
+        },
+      },
+    }), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    const result = await session.handleMessage('continue');
+
+    assert.match(result.text, /当前模型 MiniMax-M3 的中转额度已用完/);
+    assert.doesNotMatch(result.text, /model budget exceeded|API错误/i);
+  });
+
+  test('handleMessage surfaces account budget exhaustion when model config is unavailable', async () => {
+    const { AgentSession } = loadSessionModules();
+    const session = new AgentSession('catscompany:lifecycle-account-budget', buildMockServices({
+      aiService: {
+        async chatStream() {
+          throw new Error('Request failed: Payment Required: monthly budget exceeded');
+        },
+      },
+    }), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    const result = await session.handleMessage('continue');
+
+    assert.match(result.text, /当前账号的中转额度已用完/);
+    assert.doesNotMatch(result.text, /当前模型 当前模型/);
+  });
+
+  test('handleMessage does not treat unrelated 402 text as relay budget exhaustion', async () => {
+    const { AgentSession, ERROR_MESSAGE } = loadSessionModules();
+    const session = new AgentSession('catscompany:lifecycle-nonbudget-402', buildMockServices({
+      aiService: {
+        async chatStream() {
+          throw new Error('API错误 (400): request body mentions 402 tokens but schema is invalid');
+        },
+      },
+    }), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    const result = await session.handleMessage('continue');
+
+    assert.equal(result.text, ERROR_MESSAGE);
+  });
+
   test('cleanup persists without invoking hidden AI wakeup checks', async () => {
     const { AgentSession, SessionStore } = loadSessionModules();
     let aiCalls = 0;
@@ -588,6 +641,7 @@ function loadSessionModules(): any {
   }
   return {
     AgentSession: require('../src/core/agent-session').AgentSession,
+    ERROR_MESSAGE: require('../src/core/agent-session').ERROR_MESSAGE,
     MODEL_TIMEOUT_MESSAGE: require('../src/core/agent-session').MODEL_TIMEOUT_MESSAGE,
     CONTEXT_COMPACTION_START_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_START_MESSAGE,
     CONTEXT_COMPACTION_COMPLETE_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_COMPLETE_MESSAGE,
