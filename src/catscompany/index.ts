@@ -11,7 +11,7 @@ import { AgentServices, BUSY_MESSAGE, RuntimeFeedbackInput, SessionCallbacks } f
 import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import type { SubAgentInfo } from '../core/sub-agent-session';
-import { ChannelCallbacks, DeviceRpcTransport, ToolErrorCode, ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
+import { ChannelCallbacks, DeviceRpcTransport, ToolErrorCode, ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext, ToolExecutionResult, ToolRiskLevel } from '../types/tool';
 import { ContentBlock } from '../types';
 import type { PendingUserInput } from '../core/conversation-runner';
 import type { DeviceGrantOperation, ExecutionScope, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
@@ -116,6 +116,8 @@ export class CatsCompanyBot {
   private pendingAnswers = new Map<string, PendingAnswer>();
   /** key = sessionKey, value = pendingAnswerId */
   private pendingAnswerBySession = new Map<string, string>();
+  /** key = sessionKey/runId, value = 本轮已确认的最高风险等级 */
+  private toolConfirmationApprovals = new Map<string, { riskRank: number; expiresAt: number }>();
   /** 等待用户后续指令的附件队列，key 为 sessionKey */
   private pendingAttachments = new Map<string, PendingAttachment[]>();
   /** 主会话忙时的消息队列，key = sessionKey */
@@ -1447,23 +1449,36 @@ export class CatsCompanyBot {
     senderId: string,
     request: ToolExecutionConfirmationRequest,
   ): Promise<ToolExecutionConfirmationResult> {
+    const approvalKey = this.toolConfirmationApprovalKey(sessionKey, request);
+    const riskRank = this.toolConfirmationRiskRank(request.risk);
+    if (this.hasCachedToolConfirmationApproval(approvalKey, riskRank)) {
+      return true;
+    }
+
     const prompt = this.formatToolConfirmationPrompt(request);
     try {
       await this.sender.reply(topic, prompt);
     } catch (err: any) {
       Logger.warning(`工具确认请求发送失败: ${err?.message || err}`);
-      return { approved: false, reason: '无法发送工具确认请求，已取消本次操作。' };
+      return { approved: false, reason: '无法发送工具确认请求，已取消本次操作。', controlSignal: 'cancel_turn' };
     }
 
     const answer = await new Promise<string>((resolve) => {
       this.registerPendingAnswer(sessionKey, topic, senderId, resolve);
     });
     const decision = this.parseToolConfirmationAnswer(answer);
-    if (decision === 'approve') return true;
-    if (decision === 'deny') {
-      return { approved: false, reason: '用户未确认该工具操作，已取消。' };
+    if (decision === 'approve') {
+      this.toolConfirmationApprovals.set(approvalKey, {
+        riskRank,
+        expiresAt: Date.now() + 2 * 60 * 1000,
+      });
+      return true;
     }
-    return { approved: false, reason: '未收到明确确认，已取消该工具操作。' };
+    this.toolConfirmationApprovals.delete(approvalKey);
+    if (decision === 'deny') {
+      return { approved: false, reason: '用户未确认该工具操作，已取消本轮任务。', controlSignal: 'cancel_turn' };
+    }
+    return { approved: false, reason: '未收到明确确认，已取消本轮任务。', controlSignal: 'cancel_turn' };
   }
 
   private formatToolConfirmationPrompt(request: ToolExecutionConfirmationRequest): string {
@@ -1474,8 +1489,35 @@ export class CatsCompanyBot {
       `风险等级：${riskLabel}`,
       target ? `操作对象：${target}` : '',
       request.reason,
+      '确认后，本轮任务中同等级或更低风险的连续工具会直接继续。',
       '请只回复“同意”或“确认执行”继续；回复“取消”或“不确认”则不会执行。',
     ].filter(Boolean).join('\n');
+  }
+
+  private toolConfirmationApprovalKey(sessionKey: string, request: ToolExecutionConfirmationRequest): string {
+    const runId = String(request.runId || '').trim();
+    return `${sessionKey}::${runId || 'run'}`;
+  }
+
+  private hasCachedToolConfirmationApproval(key: string, requiredRiskRank: number): boolean {
+    const now = Date.now();
+    this.cleanupExpiredToolConfirmationApprovals(now);
+    const cached = this.toolConfirmationApprovals.get(key);
+    return Boolean(cached && cached.expiresAt > now && cached.riskRank >= requiredRiskRank);
+  }
+
+  private cleanupExpiredToolConfirmationApprovals(now: number = Date.now()): void {
+    for (const [key, cached] of this.toolConfirmationApprovals.entries()) {
+      if (cached.expiresAt <= now) {
+        this.toolConfirmationApprovals.delete(key);
+      }
+    }
+  }
+
+  private toolConfirmationRiskRank(risk: ToolRiskLevel): number {
+    if (risk === 'high') return 3;
+    if (risk === 'medium') return 2;
+    return 1;
   }
 
   private formatToolConfirmationTarget(args: unknown): string {

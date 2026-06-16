@@ -108,6 +108,7 @@ function createHarness(options: { busy?: boolean } = {}) {
   };
   bot.pendingAnswers = new Map();
   bot.pendingAnswerBySession = new Map();
+  bot.toolConfirmationApprovals = new Map();
   bot.pendingAttachments = new Map();
   bot.messageQueue = new Map();
   bot.botUid = 'usr43';
@@ -376,5 +377,95 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(typeof pending, 'object');
     assert.equal(pending.content, '补充读取文件');
     assert.equal(pending.deviceSelection.selectedDeviceId, 'alice-laptop');
+  });
+
+  test('reuses one CatsCo tool confirmation for the same run and risk level', async () => {
+    const { bot } = createHarness();
+    const prompts: string[] = [];
+    bot.sender.reply = async (_topic: string, text: string) => {
+      prompts.push(text);
+    };
+
+    const first = (bot as any).confirmCatsCoToolExecution('p2p_7_43', 'session-key', 'usr7', {
+      toolName: 'read_file',
+      risk: 'medium',
+      reason: '读取工作区外路径',
+      args: { file_path: 'C:\\Users\\alice\\Desktop' },
+      runId: 'run-1',
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const pending = Array.from(bot.pendingAnswers.values())[0];
+    pending.resolve('同意');
+    (bot as any).clearPendingAnswerById(pending.id);
+    assert.equal(await first, true);
+
+    const second = await (bot as any).confirmCatsCoToolExecution('p2p_7_43', 'session-key', 'usr7', {
+      toolName: 'glob',
+      risk: 'medium',
+      reason: '搜索同一任务路径',
+      args: { path: 'C:\\Users\\alice\\Desktop' },
+      runId: 'run-1',
+    });
+
+    assert.equal(second, true);
+    assert.equal(prompts.length, 1);
+  });
+
+  test('asks again when a CatsCo tool chain upgrades risk in the same run', async () => {
+    const { bot } = createHarness();
+    const prompts: string[] = [];
+    bot.sender.reply = async (_topic: string, text: string) => {
+      prompts.push(text);
+    };
+
+    const first = (bot as any).confirmCatsCoToolExecution('p2p_7_43', 'session-key', 'usr7', {
+      toolName: 'read_file',
+      risk: 'medium',
+      reason: '读取工作区外路径',
+      args: { file_path: 'C:\\Users\\alice\\Desktop' },
+      runId: 'run-risk-upgrade',
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    let pending = Array.from(bot.pendingAnswers.values())[0];
+    pending.resolve('同意');
+    (bot as any).clearPendingAnswerById(pending.id);
+    assert.equal(await first, true);
+
+    const second = (bot as any).confirmCatsCoToolExecution('p2p_7_43', 'session-key', 'usr7', {
+      toolName: 'execute_shell',
+      risk: 'high',
+      reason: '执行本机命令',
+      args: { command: 'Remove-Item old.log' },
+      runId: 'run-risk-upgrade',
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    pending = Array.from(bot.pendingAnswers.values())[0];
+    pending.resolve('确认执行');
+    (bot as any).clearPendingAnswerById(pending.id);
+
+    assert.equal(await second, true);
+    assert.equal(prompts.length, 2);
+  });
+
+  test('CatsCo tool confirmation denial cancels the current run', async () => {
+    const { bot } = createHarness();
+
+    const denied = (bot as any).confirmCatsCoToolExecution('p2p_7_43', 'session-key', 'usr7', {
+      toolName: 'execute_shell',
+      risk: 'medium',
+      reason: '命令会在本机执行',
+      args: { command: 'dir' },
+      runId: 'run-deny',
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const pending = Array.from(bot.pendingAnswers.values())[0];
+    pending.resolve('取消');
+    (bot as any).clearPendingAnswerById(pending.id);
+
+    assert.deepEqual(await denied, {
+      approved: false,
+      reason: '用户未确认该工具操作，已取消本轮任务。',
+      controlSignal: 'cancel_turn',
+    });
   });
 });

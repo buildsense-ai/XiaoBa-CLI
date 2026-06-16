@@ -89,6 +89,7 @@ export class AgentToolExecutor implements ToolExecutor {
           ok: confirmation.ok,
           errorCode: confirmation.ok ? undefined : confirmation.errorCode,
           retryable: confirmation.ok ? undefined : confirmation.retryable,
+          controlSignal: confirmation.ok ? undefined : confirmation.controlSignal,
         };
       }
 
@@ -103,6 +104,7 @@ export class AgentToolExecutor implements ToolExecutor {
           ok: false,
           errorCode: output.errorCode,
           retryable: output.retryable,
+          controlSignal: output.controlSignal,
         };
       }
 

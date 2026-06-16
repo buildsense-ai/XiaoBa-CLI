@@ -64,16 +64,19 @@ export async function confirmLocalToolExecution(
     reason: decision.reason,
     surface: context.surface,
     workingDirectory: context.workingDirectory,
+    runId: context.runId,
   });
   const approved = typeof result === 'boolean' ? result : result?.approved === true;
   if (approved) return undefined;
 
   const reason = typeof result === 'object' ? result.reason : '';
+  const controlSignal = typeof result === 'object' ? result.controlSignal : undefined;
   return {
     ok: false,
     errorCode: 'PERMISSION_DENIED',
     retryable: false,
     message: reason || `用户未确认 ${toolName}，工具调用已取消。`,
+    controlSignal: controlSignal || 'cancel_turn',
   };
 }
 

@@ -201,6 +201,7 @@ export class ToolManager implements ToolExecutor {
           ok: confirmation.ok,
           errorCode: confirmation.ok ? undefined : confirmation.errorCode,
           retryable: confirmation.ok ? undefined : confirmation.retryable,
+          controlSignal: confirmation.ok ? undefined : confirmation.controlSignal,
         };
       }
 
@@ -216,6 +217,7 @@ export class ToolManager implements ToolExecutor {
           ok: false,
           errorCode: output.errorCode,
           retryable: output.retryable ?? isRateLimitLikeMessage(output.message),
+          controlSignal: output.controlSignal,
         };
       }
 

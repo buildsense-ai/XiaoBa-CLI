@@ -1,7 +1,7 @@
 import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
 import type { ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalFileGrant } from '../types/session-identity';
 import { AIService } from '../utils/ai-service';
-import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
+import { ToolCall, ToolControlMode, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { StreamCallbacks } from '../providers/provider';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
@@ -151,6 +151,7 @@ export class ConversationRunner {
   private maxTurns?: number;
   private sessionLabel: string;
   private pendingUserInputProvider?: PendingUserInputProvider;
+  private lastGeneratedRunId?: string;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -193,6 +194,17 @@ export class ConversationRunner {
    * @returns 最终文本回复和完整消息列表
    */
   async run(messages: Message[], callbacks?: RunnerCallbacks): Promise<RunResult> {
+    const existingRunId = this.toolExecutionContext?.runId;
+    const runId = existingRunId && existingRunId !== this.lastGeneratedRunId
+      ? existingRunId
+      : `run_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    if (!existingRunId || existingRunId === this.lastGeneratedRunId) {
+      this.lastGeneratedRunId = runId;
+    }
+    this.toolExecutionContext = {
+      ...(this.toolExecutionContext || {}),
+      runId,
+    };
     const allTools = this.toolExecutor.getToolDefinitions();
     const supportsToolCalling = (this.aiService as any).isToolCallingSupported?.() !== false;
     const activeTools = supportsToolCalling ? allTools : [];
@@ -401,7 +413,7 @@ export class ConversationRunner {
         providerContent: response.providerContent,
       };
       const executionRecords: ToolExecutionRecord[] = [];
-      let shouldPauseTurn = false;
+      let stopControlSignal: ToolControlMode | undefined;
 
       for (const toolCall of response.toolCalls) {
         if (this.shouldContinue && !this.shouldContinue()) {
@@ -454,8 +466,12 @@ export class ConversationRunner {
           newMessages: (result as any).newMessages, // 保存图片等额外消息
         });
 
+        if (result.controlSignal === 'cancel_turn') {
+          stopControlSignal = 'cancel_turn';
+          break;
+        }
         if (result.controlSignal === 'pause_turn' && !result.errorCode) {
-          shouldPauseTurn = true;
+          stopControlSignal = 'pause_turn';
           break;
         }
       }
@@ -488,8 +504,8 @@ export class ConversationRunner {
         }
       }
 
-      if (shouldPauseTurn) {
-        Logger.info(`[${this.sessionLabel}Turn ${turns}] pause_turn 已触发，本轮收束`);
+      if (stopControlSignal) {
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] ${stopControlSignal} 已触发，本轮收束`);
         return {
           response: '',
           finalResponseVisible: false,

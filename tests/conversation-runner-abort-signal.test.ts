@@ -116,6 +116,73 @@ test('ConversationRunner omits tool definitions when the model config disables t
   assert.deepEqual(observedTools, []);
 });
 
+test('ConversationRunner stops the current turn when a tool returns cancel_turn', async () => {
+  const tool: ToolDefinition = {
+    name: 'write_file',
+    description: 'Write a file',
+    parameters: {
+      type: 'object',
+      properties: {},
+    },
+  };
+  let aiCalls = 0;
+  const aiService = {
+    async chat(_messages: Message[], _tools: ToolDefinition[]) {
+      aiCalls++;
+      if (aiCalls > 1) {
+        throw new Error('model should not be called again after cancel_turn');
+      }
+      return {
+        content: '',
+        toolCalls: [
+          {
+            id: 'call-write',
+            type: 'function',
+            function: { name: 'write_file', arguments: JSON.stringify({ file_path: 'a.txt', content: 'hello' }) },
+          },
+          {
+            id: 'call-shell',
+            type: 'function',
+            function: { name: 'execute_shell', arguments: JSON.stringify({ command: 'echo should-not-run' }) },
+          },
+        ],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      };
+    },
+  };
+  const executedTools: string[] = [];
+  const toolExecutor: ToolExecutor = {
+    getToolDefinitions() {
+      return [tool];
+    },
+    async executeTool(toolCall: ToolCall): Promise<ToolResult> {
+      executedTools.push(toolCall.function.name);
+      return {
+        tool_call_id: toolCall.id,
+        role: 'tool',
+        name: toolCall.function.name,
+        content: '用户取消',
+        ok: false,
+        errorCode: 'PERMISSION_DENIED',
+        retryable: false,
+        controlSignal: 'cancel_turn',
+      };
+    },
+  };
+
+  const runner = new ConversationRunner(aiService as any, toolExecutor, {
+    stream: false,
+    enableCompression: false,
+  });
+
+  const result = await runner.run([{ role: 'user', content: '写一个文件再执行命令' }]);
+
+  assert.equal(result.response, '');
+  assert.equal(result.finalResponseVisible, false);
+  assert.equal(aiCalls, 1);
+  assert.deepEqual(executedTools, ['write_file']);
+});
+
 async function waitFor(predicate: () => boolean, maxAttempts = 50): Promise<void> {
   for (let i = 0; i < maxAttempts; i++) {
     if (predicate()) return;

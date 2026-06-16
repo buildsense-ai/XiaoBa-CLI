@@ -31,7 +31,7 @@ export interface ToolParameter {
  * 工具定义
  */
 export type ToolTranscriptMode = 'default' | 'outbound_message' | 'outbound_file' | 'suppress';
-export type ToolControlMode = 'pause_turn';
+export type ToolControlMode = 'pause_turn' | 'cancel_turn';
 
 export interface ToolDefinition {
   name: string;
@@ -88,7 +88,7 @@ export interface ToolResult {
  */
 export type ToolExecutionResult =
   | { ok: true; content: string | import('./index').ContentBlock[] }
-  | { ok: false; errorCode: string; message: string; retryable?: boolean };
+  | { ok: false; errorCode: string; message: string; retryable?: boolean; controlSignal?: ToolControlMode };
 
 export interface DeviceRpcToolRequest {
   toolName: string;
@@ -147,11 +147,13 @@ export interface ToolExecutionConfirmationRequest {
   args: unknown;
   surface?: ToolSurface;
   workingDirectory?: string;
+  runId?: string;
 }
 
 export type ToolExecutionConfirmationResult = boolean | {
   approved: boolean;
   reason?: string;
+  controlSignal?: ToolControlMode;
 };
 
 /**

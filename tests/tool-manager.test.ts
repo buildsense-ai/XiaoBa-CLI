@@ -165,6 +165,7 @@ describe('ToolManager', () => {
     assert.equal(denied.ok, false);
     assert.equal(denied.errorCode, 'PERMISSION_DENIED');
     assert.equal(denied.content, '需要用户选择文件');
+    assert.equal(denied.controlSignal, 'cancel_turn');
     assert.equal(executed, false);
   });
 
@@ -186,6 +187,7 @@ describe('ToolManager', () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.errorCode, 'PERMISSION_DENIED');
+    assert.equal(result.controlSignal, 'cancel_turn');
   });
 
   test('strict local glob absolute pattern outside workspace requires confirmation', async () => {
@@ -269,6 +271,7 @@ describe('ToolManager', () => {
     assert.equal(denied.ok, false);
     assert.equal(denied.errorCode, 'PERMISSION_DENIED');
     assert.equal(denied.content, '用户取消');
+    assert.equal(denied.controlSignal, 'cancel_turn');
     assert.equal(executed, false);
 
     const approved = await manager.executeTool({
@@ -481,6 +484,7 @@ describe('ToolManager', () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.errorCode, 'PERMISSION_DENIED');
+    assert.equal(result.controlSignal, 'cancel_turn');
     assert.equal(executed, false);
   });
 });
