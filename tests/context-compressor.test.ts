@@ -148,25 +148,25 @@ describe('parseCompactSummary', () => {
 describe('buildCompactSystemPrompt', () => {
   test('生成包含禁止工具调用的说明', () => {
     const prompt = buildCompactSystemPrompt();
-    assert.ok(prompt.includes('Do NOT call any tools'), '应包含禁止工具调用');
+    assert.ok(prompt.includes('不要调用任何工具'), '应包含禁止工具调用');
   });
 
   test('生成包含摘要范围要求', () => {
     const prompt = buildCompactSystemPrompt();
-    assert.ok(prompt.includes('Cover:'), '应包含摘要范围标题');
-    assert.ok(prompt.includes("The user's explicit requests"), '应包含用户意图要求');
-    assert.ok(prompt.includes('Pending tasks'), '应包含待办要求');
+    assert.ok(prompt.includes('摘要必须覆盖'), '应包含摘要范围标题');
+    assert.ok(prompt.includes('用户明确提出的请求'), '应包含用户意图要求');
+    assert.ok(prompt.includes('尚未完成的待办'), '应包含待办要求');
   });
 
   test('customInstructions 追加到 prompt', () => {
     const prompt = buildCompactSystemPrompt('聚焦代码变更');
-    assert.ok(prompt.includes('Additional Instructions'), '应包含追加标记');
+    assert.ok(prompt.includes('补充要求'), '应包含追加标记');
     assert.ok(prompt.includes('聚焦代码变更'), '应包含自定义指令');
   });
 
   test('空白 customInstructions 不追加', () => {
     const prompt = buildCompactSystemPrompt('   ');
-    assert.ok(!prompt.includes('Additional Instructions'));
+    assert.ok(!prompt.includes('补充要求'));
   });
 });
 
