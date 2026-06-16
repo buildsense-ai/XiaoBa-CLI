@@ -57,13 +57,26 @@ assertIncludes('Windows install shortcut', readText('install.ps1'), 'CatsCo Dash
 assertIncludes('Unix install launcher', readText('install.sh'), 'CatsCo Dashboard');
 assertIncludes(
   'runtime current-directory prompt',
-  readText('src/runtime/prompt-composer.ts'),
-  'Current directory is provided in a transient message',
+  readText('prompts/runtime-context.md'),
+  '当前目录会在每次模型请求中作为临时上下文消息提供',
 );
+assertIncludes('electron build files', JSON.stringify(packageJson.build?.files || []), 'prompts/**/*');
+
+for (const promptPath of [
+  'prompts/system-prompt.md',
+  'prompts/runtime-context.md',
+  'prompts/compact-system.md',
+  'prompts/subagents/system.md',
+]) {
+  if (!fs.existsSync(path.join(root, promptPath))) {
+    fail(`${promptPath} should exist for packaged runtime prompt loading`);
+  }
+}
 
 const filesToScan = [
   'package.json',
   'electron-builder.config.cjs',
+  ...walk('prompts'),
   ...walk('dashboard'),
   ...walk('electron'),
   ...walk('src'),
