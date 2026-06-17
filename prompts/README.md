@@ -175,13 +175,27 @@ Electron 打包必须包含 `prompts/**/*`。当前 `package.json` 的 electron-
 - 不把用户隐私文件内容、图片 base64、聊天原文样本放进 prompt 文件。
 - 尽量避免过度长篇规则；长规则会挤占模型上下文，也会降低后续调试可控性。
 
-## 后续可观测性建议
+## Prompt 可观测性
 
-为了方便评估 prompt 效果，后续可以在每次模型请求日志里记录：
+为了方便评估 prompt 效果，运行时会在 session JSONL 里记录轻量 prompt 指纹，不记录完整 prompt 正文：
 
-- `prompt_files`：本轮加载了哪些 prompt 文件。
-- `prompt_hash`：最终 system prompt 的 hash。
-- `prompt_version`：可选的人工版本号。
-- `model` / `provider` / `context_window`：用于对比同一 prompt 在不同模型上的表现。
+- 会话初始化时写入一条 `entry_type: "prompt_trace"`：
+  - `prompt.system.short_hash`：最终 system prompt 文本的短 hash。
+  - `prompt.system.chars` / `lines`：最终 system prompt 的规模。
+  - `prompt.bundle.short_hash`：当前 `prompts/**/*.md` 文件集合的短 hash。
+  - `prompt.bundle.files[]`：prompt 文件路径、hash、字节数、字符数和行数。
+  - `prompt.loaded_files[]`：当前主会话 system prompt 直接加载的模板文件。
+- 每条 `entry_type: "turn"` 会带一个轻量 `prompt` 字段：
+  - `system_hash`
+  - `system_chars`
+  - `bundle_hash`
+  - `bundle_file_count`
+  - `prompt_version`
 
-这样后面做 A/B 测试或回溯用户反馈时，可以知道“这次回复到底用的是哪版提示词”。
+`prompt_version` 默认是 `local`。如果要做人工版本或 A/B 实验，可以启动时设置：
+
+```bash
+CATSCO_PROMPT_VERSION=brief-v2
+```
+
+这样同一份用户请求在不同 prompt 下的日志可以按 `prompt_version` 和 hash 对齐比较。正文仍只从 `prompts/` 读取，不会每轮写入日志，避免日志变大或泄露长提示词内容。

@@ -1,5 +1,9 @@
 import { PromptComposer } from '../runtime/prompt-composer';
 import { DEFAULT_PROMPTS_DIR } from './prompt-template';
+import {
+  PromptTraceSnapshot,
+  buildPromptTraceSnapshot,
+} from './prompt-observability';
 
 /**
  * System Prompt 管理器
@@ -25,5 +29,24 @@ export class PromptManager {
 
   static getPromptsDir(): string {
     return this.promptsDir;
+  }
+
+  static buildPromptTraceSnapshot(
+    systemPrompt: string,
+    options: {
+      source?: string;
+      loadedFiles?: string[];
+      env?: NodeJS.ProcessEnv;
+      now?: Date;
+    } = {},
+  ): PromptTraceSnapshot {
+    return buildPromptTraceSnapshot({
+      promptsDir: this.promptsDir,
+      systemPrompt,
+      source: options.source || 'prompt-manager',
+      loadedFiles: options.loadedFiles || ['runtime-context.md', 'system-prompt.md'],
+      env: options.env,
+      now: options.now,
+    });
   }
 }

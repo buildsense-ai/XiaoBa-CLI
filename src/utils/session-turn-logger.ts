@@ -3,6 +3,8 @@ import * as path from 'path';
 import { Message, ContentBlock } from '../types';
 import type {
   SessionLogEntry,
+  SessionPromptTraceLogEntry,
+  SessionPromptTurnLog,
   SessionRuntimeLogEntry,
   SessionSubAgentEventLogEntry,
   SessionToolCallLog,
@@ -10,11 +12,13 @@ import type {
 } from './session-log-schema';
 import type { SubAgentRuntimeEvent } from '../core/sub-agent-events';
 import type { SubAgentInfo } from '../core/sub-agent-session';
+import type { PromptTraceSnapshot } from './prompt-observability';
 
 export type {
   LegacySessionTurnLogEntry,
   ParsedSessionLogEntry,
   SessionLogEntry,
+  SessionPromptTurnLog,
   SessionRuntimeLogEntry,
   SessionSubAgentEventLogEntry,
   SessionToolCallLog,
@@ -28,6 +32,7 @@ const MAX_RUNTIME_FEEDBACK_LENGTH = Number(process.env.XIAOBA_SESSION_RUNTIME_FE
 export interface LogTurnOptions {
   runtimeFeedback?: string[];
   runtimeObservationSource?: string;
+  prompt?: SessionPromptTurnLog;
 }
 
 /**
@@ -96,9 +101,21 @@ export class SessionTurnLogger {
         })),
       },
       tokens,
+      ...(options.prompt && { prompt: options.prompt }),
     };
 
     this.appendLog(turnLog);
+  }
+
+  logPromptTrace(snapshot: PromptTraceSnapshot): void {
+    const entry: SessionPromptTraceLogEntry = {
+      entry_type: 'prompt_trace',
+      timestamp: new Date().toISOString(),
+      session_id: this.sessionId,
+      session_type: this.sessionType,
+      prompt: snapshot,
+    };
+    this.appendLog(entry);
   }
 
   logRuntime(level: string, message: string): void {
