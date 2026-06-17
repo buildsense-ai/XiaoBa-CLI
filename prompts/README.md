@@ -61,6 +61,13 @@ prompts/runtime-context.md 渲染后的内容
 
 读取和渲染由 `src/utils/prompt-template.ts` 负责。该模块会统一去掉行尾空白、合并过多空行，并 trim 文本。
 
+## 生效粒度
+
+- 主会话的 `system-prompt.md` 和 `runtime-context.md` 在会话初始化时读取并注入第一条 system 消息。改完这两个文件后，需要重启进程并开启新会话，或清空/重置当前会话，才会让已经初始化的会话用上新版本。
+- 恢复历史时不会长期保存旧 system prompt；持久化历史会过滤 system 消息，重启后恢复的会话会重新读取当前 prompt 文件。
+- `transient/`、`compact-system.md`、`subagents/`、`sidecars/` 多数是在每次对应调用时读取。改完文件后，下一次触发对应注入、压缩、子 agent 或 sidecar 调用就会使用新文本。
+- 开发目录和当前打包形态会从应用目录下的 `prompts/` 读取。安装版虽然也能读随包带上的文件，但不建议把安装目录当作用户自定义配置目录；后续如果要支持用户自定义 prompt，应单独提供受控的外部 promptsDir。
+
 ## 动态注入怎么处理
 
 动态注入分三类，不要一股脑全部搬进 prompt 文件。
@@ -108,6 +115,7 @@ prompts/runtime-context.md 渲染后的内容
 - 用户界面文案：留在 dashboard/electron/web 相关代码或前端资源。
 - 日志、错误码、告警文案：留在对应运行时或运维模块。
 - provider 请求体转换：留在 `src/providers/*`。
+- 消息平台 surface 行为（最终回复如何发出、文件如何外发、权限如何确认）由 runner、channel 和工具执行层保证；不要再为 Feishu/CatsCo/Weixin 维护平台专属大段 system prompt。
 
 ## 新增 prompt 的命名规范
 
