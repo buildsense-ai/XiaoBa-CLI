@@ -6161,7 +6161,7 @@
       }
     }
 
-    async function refreshPromptWorkbench(selectPath){
+    async function refreshPromptWorkbench(selectPath, options={}){
       const root=document.getElementById('prompt-workbench');
       if(root && !promptEditorState)root.innerHTML='<div class="loading">加载提示词...</div>';
       try{
@@ -6175,7 +6175,7 @@
           promptEditorFile=await parseSimpleResponse(await fetch(API+'/api/prompts/file?path='+encodeURIComponent(promptEditorSelectedPath)));
         }
         promptEditorDirty=false;
-        renderPromptWorkbench();
+        renderPromptWorkbench(options);
       }catch(e){
         if(root)root.innerHTML='<div class="runtime-note danger">提示词加载失败：'+escapeHtml(e.message||String(e))+'</div>';
       }
@@ -6185,16 +6185,40 @@
       if(promptEditorDirty && !confirm('当前 prompt 有未保存改动，确定切换文件吗？'))return;
       promptEditorSelectedPath=path;
       promptEditorDirty=false;
-      await refreshPromptWorkbench(path);
+      await refreshPromptWorkbench(path, {preserveFileListScroll:true});
     }
 
-    function renderPromptWorkbench(){
+    function capturePromptWorkbenchScroll(){
+      const list=document.querySelector('#prompt-workbench .prompt-file-list');
+      const textarea=document.getElementById('prompt-editor-textarea');
+      return {
+        fileList:list?list.scrollTop:0,
+        textarea:textarea?textarea.scrollTop:0
+      };
+    }
+
+    function restorePromptWorkbenchScroll(scrollState, options={}){
+      if(!scrollState)return;
+      requestAnimationFrame(()=>{
+        const list=document.querySelector('#prompt-workbench .prompt-file-list');
+        if(list && options.preserveFileListScroll!==false){
+          list.scrollTop=scrollState.fileList||0;
+        }
+        const textarea=document.getElementById('prompt-editor-textarea');
+        if(textarea && options.preserveEditorScroll){
+          textarea.scrollTop=scrollState.textarea||0;
+        }
+      });
+    }
+
+    function renderPromptWorkbench(options={}){
       const root=document.getElementById('prompt-workbench');
       if(!root)return;
       if(!promptEditorState){
         root.innerHTML='<div class="loading">加载提示词...</div>';
         return;
       }
+      const scrollState=capturePromptWorkbenchScroll();
       const trace=promptEditorState.trace||{};
       const system=trace.system||{};
       const bundle=trace.bundle||{};
@@ -6214,6 +6238,7 @@
           '<div class="prompt-file-list">'+(listHtml||'<div class="loading">没有可编辑的 prompt 文件</div>')+'</div>'+
           editorHtml+
         '</div>';
+      restorePromptWorkbenchScroll(scrollState, options);
     }
 
     function loadPromptGroupOpenState(){
@@ -6238,7 +6263,7 @@
     function togglePromptFileGroup(group){
       promptGroupOpenState[group]=!promptGroupOpenState[group];
       savePromptGroupOpenState();
-      renderPromptWorkbench();
+      renderPromptWorkbench({preserveFileListScroll:true});
     }
 
     function renderPromptFileTree(files){
@@ -6367,7 +6392,10 @@
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({path:promptEditorSelectedPath,content:textarea.value})
         }));
-        await refreshPromptWorkbench(promptEditorSelectedPath);
+        await refreshPromptWorkbench(promptEditorSelectedPath, {
+          preserveFileListScroll:true,
+          preserveEditorScroll:true
+        });
         const nextStatus=document.getElementById('prompt-editor-status');
         if(nextStatus)nextStatus.textContent='已保存覆盖版本。重启 connector 或新建 session 后生效。';
       }catch(e){
@@ -6382,7 +6410,10 @@
       try{
         if(status)status.textContent='正在重置...';
         promptEditorFile=await parseSimpleResponse(await fetch(API+'/api/prompts/file?path='+encodeURIComponent(promptEditorSelectedPath),{method:'DELETE'}));
-        await refreshPromptWorkbench(promptEditorSelectedPath);
+        await refreshPromptWorkbench(promptEditorSelectedPath, {
+          preserveFileListScroll:true,
+          preserveEditorScroll:true
+        });
         const nextStatus=document.getElementById('prompt-editor-status');
         if(nextStatus)nextStatus.textContent='已恢复内置版本。重启 connector 或新建 session 后生效。';
       }catch(e){
