@@ -66,7 +66,35 @@ prompts/runtime-context.md 渲染后的内容
 - 主会话的 `system-prompt.md` 和 `runtime-context.md` 在会话初始化时读取并注入第一条 system 消息。改完这两个文件后，需要重启进程并开启新会话，或清空/重置当前会话，才会让已经初始化的会话用上新版本。
 - 恢复历史时不会长期保存旧 system prompt；持久化历史会过滤 system 消息，重启后恢复的会话会重新读取当前 prompt 文件。
 - `transient/`、`compact-system.md`、`subagents/`、`sidecars/` 多数是在每次对应调用时读取。改完文件后，下一次触发对应注入、压缩、子 agent 或 sidecar 调用就会使用新文本。
-- 开发目录和当前打包形态会从应用目录下的 `prompts/` 读取。安装版虽然也能读随包带上的文件，但不建议把安装目录当作用户自定义配置目录；后续如果要支持用户自定义 prompt，应单独提供受控的外部 promptsDir。
+- 运行时以应用目录下的 `prompts/` 作为内置基线；如果本地覆盖目录里存在同名 `.md` 文件，则优先读取覆盖版本。
+- Dashboard 的“提示词 / Prompt Lab”页面会写入覆盖目录，不会修改安装包或仓库里的基线文件。
+
+## 本地覆盖目录
+
+Prompt 覆盖目录用于快速试 prompt、回滚和做版本对比：
+
+- 开发版 Electron 默认目录：`.dev-user-data/prompt-overrides`。
+- 打包版默认目录：用户数据目录下的 `prompt-overrides`。
+- 也可以用环境变量显式指定：
+
+```powershell
+$env:XIAOBA_PROMPT_OVERRIDES_DIR="D:\CatsCoPromptOverrides"
+```
+
+或：
+
+```powershell
+$env:XIAOBA_RUNTIME_ROOT="D:\CatsCoRuntime"
+```
+
+此时默认覆盖目录为 `D:\CatsCoRuntime\prompt-overrides`。
+
+覆盖规则：
+
+- 只允许覆盖内置基线中已经存在的 `.md` prompt 文件。
+- 覆盖文件必须保持相同相对路径，例如 `transient/current-directory.md`。
+- 删除覆盖文件后会自动恢复读取内置基线。
+- `Prompt Lab` 页面中的“重置为内置”只删除覆盖文件，不会删除内置 prompt。
 
 ## 动态注入怎么处理
 
@@ -191,6 +219,7 @@ Electron 打包必须包含 `prompts/**/*`。当前 `package.json` 的 electron-
   - `bundle_hash`
   - `bundle_file_count`
   - `prompt_version`
+- 如果某个文件来自本地覆盖，`prompt.bundle.files[]` 中会带 `overridden: true`，并且该文件 hash 按实际生效内容计算。
 
 `prompt_version` 默认是 `local`。如果要做人工版本或 A/B 实验，可以启动时设置：
 
@@ -199,3 +228,13 @@ CATSCO_PROMPT_VERSION=brief-v2
 ```
 
 这样同一份用户请求在不同 prompt 下的日志可以按 `prompt_version` 和 hash 对齐比较。正文仍只从 `prompts/` 读取，不会每轮写入日志，避免日志变大或泄露长提示词内容。
+
+Dashboard 的 `Prompt Lab` 页面会显示当前：
+
+- system hash
+- bundle hash
+- prompt version
+- 覆盖目录
+- 每个 prompt 文件是否有 override
+
+保存后需要重启 connector 或开启新 session，日志里的 `prompt_trace` 才会记录新的 hash。

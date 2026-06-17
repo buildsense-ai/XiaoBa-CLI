@@ -1,5 +1,5 @@
 import { PromptComposer } from '../runtime/prompt-composer';
-import { DEFAULT_PROMPTS_DIR } from './prompt-template';
+import { getPromptBaseDir } from './prompt-template';
 import {
   PromptTraceSnapshot,
   buildPromptTraceSnapshot,
@@ -9,13 +9,14 @@ import {
  * System Prompt 管理器
  */
 export class PromptManager {
-  private static promptsDir = DEFAULT_PROMPTS_DIR;
+  private static promptsDir = getPromptBaseDir();
+  private static envPromptsDir = PromptManager.promptsDir;
 
   /**
    * 获取基础 system prompt
    */
   static getBaseSystemPrompt(): string {
-    return PromptComposer.getBaseSystemPrompt(this.promptsDir);
+    return PromptComposer.getBaseSystemPrompt(this.getPromptsDir());
   }
 
   /**
@@ -23,11 +24,16 @@ export class PromptManager {
    */
   static async buildSystemPrompt(): Promise<string> {
     return PromptComposer.composeSystemPrompt({
-      promptsDir: this.promptsDir,
+      promptsDir: this.getPromptsDir(),
     });
   }
 
   static getPromptsDir(): string {
+    const currentEnvPromptsDir = getPromptBaseDir();
+    if (this.promptsDir === this.envPromptsDir) {
+      this.promptsDir = currentEnvPromptsDir;
+    }
+    this.envPromptsDir = currentEnvPromptsDir;
     return this.promptsDir;
   }
 
@@ -41,7 +47,7 @@ export class PromptManager {
     } = {},
   ): PromptTraceSnapshot {
     return buildPromptTraceSnapshot({
-      promptsDir: this.promptsDir,
+      promptsDir: this.getPromptsDir(),
       systemPrompt,
       source: options.source || 'prompt-manager',
       loadedFiles: options.loadedFiles || ['runtime-context.md', 'system-prompt.md'],

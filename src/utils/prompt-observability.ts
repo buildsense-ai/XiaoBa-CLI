@@ -1,6 +1,11 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  getPromptOverridesDir,
+  readPromptFile,
+  resolvePromptPathWithin,
+} from './prompt-template';
 
 export interface PromptFileDigest {
   path: string;
@@ -9,6 +14,7 @@ export interface PromptFileDigest {
   bytes: number;
   chars: number;
   lines: number;
+  overridden?: boolean;
 }
 
 export interface PromptTraceSnapshot {
@@ -90,24 +96,25 @@ export function listPromptFiles(promptsDir: string): PromptFileDigest[] {
   const root = path.resolve(promptsDir);
   if (!fs.existsSync(root)) return [];
 
-  const files: PromptFileDigest[] = [];
+  const relativePaths: string[] = [];
   walk(root, filePath => {
     if (path.extname(filePath).toLowerCase() !== '.md') return;
-    const relativePath = normalizeRelativePath(path.relative(root, filePath));
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const bytes = fs.statSync(filePath).size;
+    relativePaths.push(normalizeRelativePath(path.relative(root, filePath)));
+  });
+
+  return relativePaths.sort((a, b) => a.localeCompare(b)).map(relativePath => {
+    const content = readPromptFile(root, relativePath);
     const sha256 = hashText(content);
-    files.push({
+    return {
       path: relativePath,
       sha256,
       short_hash: shortHash(sha256),
-      bytes,
+      bytes: Buffer.byteLength(content, 'utf-8'),
       chars: content.length,
       lines: countLines(content),
-    });
+      ...(isPromptOverridden(root, relativePath) ? { overridden: true } : {}),
+    } as PromptFileDigest;
   });
-
-  return files.sort((a, b) => a.path.localeCompare(b.path));
 }
 
 export function hashText(text: string): string {
@@ -136,6 +143,16 @@ function walk(directory: string, visit: (filePath: string) => void): void {
 
 function normalizeRelativePath(value: string): string {
   return value.split(path.sep).join('/');
+}
+
+function isPromptOverridden(promptsDir: string, relativePath: string): boolean {
+  const overridesDir = getPromptOverridesDir();
+  if (!overridesDir) return false;
+  try {
+    return fs.existsSync(resolvePromptPathWithin(overridesDir, relativePath));
+  } catch {
+    return false;
+  }
 }
 
 function labelPromptDir(promptsDir: string): string {
