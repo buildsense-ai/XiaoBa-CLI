@@ -14,29 +14,30 @@ export class MemorySearchTool implements Tool {
   definition: ToolDefinition = {
     name: 'memory_search',
     description: [
-      'Search prior session turn logs for memory relevant to the current task.',
-      'Use specific keywords, not broad phrases. Multiple keywords use OR recall.',
-      'Returns compact JSON containing canonical refs and matched keywords only.',
+      '搜索历史 session turn 日志，召回与当前任务相关的记忆。',
+      'keywords 是独立关键词数组，多个关键词按 OR 召回；底层是子串匹配，不会自动分词，也不是语义搜索。',
+      '不要把多个词用空格拼成一个 keyword；请把它们拆成多个数组元素。',
+      '返回紧凑 JSON，只包含 canonical refs 和命中的关键词。',
     ].join(' '),
     parameters: {
       type: 'object',
       properties: {
         keywords: {
           type: 'array',
-          description: 'Specific keywords or fixed terms to search for. Avoid generic words.',
+          description: '要搜索的具体关键词、固定术语、工具名、文件名或项目名。每个数组元素都是一个独立 substring query；不要传入长句或用空格拼接多个词。',
           items: { type: 'string' },
         },
         start_time: {
           type: 'string',
-          description: 'Optional inclusive ISO time or YYYY-MM-DD lower bound.',
+          description: '可选的包含式时间下界，支持 ISO time 或 YYYY-MM-DD。',
         },
         end_time: {
           type: 'string',
-          description: 'Optional inclusive ISO time or YYYY-MM-DD upper bound.',
+          description: '可选的包含式时间上界，支持 ISO time 或 YYYY-MM-DD。',
         },
         limit: {
           type: 'number',
-          description: 'Maximum returned refs. Default 80, hard max 120.',
+          description: '最多返回多少个 refs。默认 80，硬上限 120。',
           default: 80,
         },
       },
@@ -73,17 +74,17 @@ export class MemorySearchTool implements Tool {
 export class MemoryReadTurnTool implements Tool {
   definition: ToolDefinition = {
     name: 'memory_read_turn',
-    description: 'Read one memory episode by canonical ref. Returns compact JSON with ref, text, and truncation flag.',
+    description: '按 canonical ref 读取一个历史 episode。返回紧凑 JSON，包含 ref、text，以及可选的 truncated 标记。',
     parameters: {
       type: 'object',
       properties: {
         ref: {
           type: 'string',
-          description: 'Canonical memory ref, e.g. catscompany/2026-06-16/file.jsonl#42.',
+          description: 'canonical memory ref，例如 catscompany/2026-06-16/file.jsonl#42。',
         },
         budget_chars: {
           type: 'number',
-          description: 'Approximate maximum characters returned. Default 12000, hard max 40000.',
+          description: '返回文本的近似字符预算。默认 12000，硬上限 40000。',
           default: 12000,
         },
       },
@@ -108,27 +109,27 @@ export class MemoryReadTurnTool implements Tool {
 export class MemoryNeighborsTool implements Tool {
   definition: ToolDefinition = {
     name: 'memory_neighbors',
-    description: 'Read nearby memory episodes from the same log file by canonical ref.',
+    description: '按 canonical ref 读取同一个日志文件中的相邻历史 episodes，用于沿线追踪上下文。',
     parameters: {
       type: 'object',
       properties: {
         ref: {
           type: 'string',
-          description: 'Canonical memory ref.',
+          description: 'canonical memory ref。',
         },
         previous: {
           type: 'number',
-          description: 'How many preceding episodes to include. Default 1, hard max 20.',
+          description: '要包含多少个前序 episodes。默认 1，硬上限 20。',
           default: 1,
         },
         next: {
           type: 'number',
-          description: 'How many following episodes to include. Default 1, hard max 20.',
+          description: '要包含多少个后续 episodes。默认 1，硬上限 20。',
           default: 1,
         },
         budget_chars: {
           type: 'number',
-          description: 'Approximate total character budget. Default 20000, hard max 60000.',
+          description: '总返回文本的近似字符预算。默认 20000，硬上限 60000。',
           default: 20000,
         },
       },
@@ -156,9 +157,9 @@ export class FinishMemorySearchTool implements Tool {
   definition: ToolDefinition = {
     name: 'finish_memory_search',
     description: [
-      'Finish the memory search branch.',
-      'Call this exactly once when you have enough memory evidence or when no useful memory exists.',
-      'The successful call ends the branch immediately.',
+      '结束 memory search branch。',
+      '当你已经拿到足够的记忆证据，或确认没有有用记忆时，调用这个工具。',
+      '调用成功后 branch 会立刻结束。',
     ].join(' '),
     controlMode: 'pause_turn',
     parameters: {
@@ -166,11 +167,11 @@ export class FinishMemorySearchTool implements Tool {
       properties: {
         summary: {
           type: 'string',
-          description: 'Concise task-focused memory summary. Say no useful memory was found if applicable.',
+          description: '面向当前任务的简洁记忆总结；没有有用记忆时也要简短说明。',
         },
         refs: {
           type: 'array',
-          description: 'Canonical refs supporting the summary. Empty when no useful memory was found.',
+          description: '支撑 summary 的 canonical refs。没有有用记忆时传空数组。',
           items: { type: 'string' },
         },
       },

@@ -53,9 +53,9 @@ export class MemorySearchBranchSession extends BranchSession {
         this.messages.push({
           role: 'user',
           content: [
-            'Your previous response was not delivered to the main agent.',
-            'This branch can only finish by calling finish_memory_search.',
-            'Call finish_memory_search now with the best available summary and refs.',
+            '你刚才的回复不会传递给主 agent。',
+            '这个 branch 只能通过调用 finish_memory_search 结束。',
+            '请现在用当前已有的最佳总结和 refs 调用 finish_memory_search。',
           ].join(' '),
         });
       }
@@ -156,20 +156,30 @@ export class MemorySearchBranchSession extends BranchSession {
 
 function buildMemorySearchSystemPrompt(): string {
   return [
-    'You are MemorySearchBranchSession, a background memory retrieval branch.',
-    'You do not answer the user directly. Your only job is to help the main agent with relevant prior session memory.',
+    '你是 MemorySearchBranchSession，一个后台运行的记忆检索 branch。',
+    '你不会直接回复用户。你的唯一任务是为主 agent 检索、分析并总结相关的历史会话记忆。',
     '',
-    'Workflow:',
-    '1. Read the current user input and the compact recent context.',
-    '2. Extract specific keywords and fixed technical terms. Avoid generic words and avoid long phrase queries unless the phrase is a fixed name.',
-    '3. Search from recent to older ranges. Choose start_time and end_time yourself when useful.',
-    '4. Use memory_search for broad recall. It returns JSON refs only. Use memory_read_turn or memory_neighbors to inspect promising refs.',
-    '5. Analyze the retrieved turns for what helps the current task. Do not merely copy raw snippets.',
-    '6. End only by calling finish_memory_search with a concise summary and canonical refs. If nothing useful exists, call finish_memory_search with an empty refs array.',
+    '工作流程：',
+    '1. 先阅读当前用户输入和精简 recent context，判断当前任务真正需要哪些历史信息。',
+    '2. 提取具体关键词、实体名、工具名、文件名、项目名、固定术语和用户反复使用的短表达。避免使用过于宽泛的词。',
+    '3. 按“近到远、窄到宽”的思路搜索。你可以根据当前时间和任务自行选择 start_time / end_time。',
+    '4. 先用 memory_search 做粗召回；它只返回 JSON refs 和命中的关键词。再用 memory_read_turn 或 memory_neighbors 阅读值得确认的 refs。',
+    '5. 读取后要分析这些历史内容如何帮助当前任务，不要只搬运原文片段。',
+    '6. 只能通过调用 finish_memory_search 结束。找到有用记忆时，给出面向当前任务的简洁总结和 canonical refs；没有有用记忆时，也调用 finish_memory_search，并使用空 refs 数组。',
     '',
-    'Tool result convention: memory tools return compact JSON strings. Parse them and continue.',
-    'Canonical refs are editable: if you see ...#42, you may read ...#41 or ...#43 to inspect adjacent episodes.',
-    'Current time: ' + new Date().toISOString(),
+    'memory_search 的搜索机制非常重要：',
+    '- 它不是语义搜索，也不会自动分词；底层只是对子串做匹配。',
+    '- keywords 数组里的每一项都是一个独立的 substring query。',
+    '- 多个 keywords 是 OR 召回；一个 episode 命中任意 keyword 就会返回，且同一个 episode 只返回一次。',
+    '- 不要把多个中文词或多个概念用空格拼进同一个 keyword；那会被当成一个完整字符串，导致大量漏召回。',
+    '- 好例子：["生日", "包间", "蛋糕", "低预算", "6-8人", "安静"]。',
+    '- 坏例子：["生日 包间 蛋糕 低预算 6-8人 安静"]。',
+    '- 例外：固定名称、工具名、文件名、项目名可以作为完整 keyword，例如 "agent-browser"、"MemorySearchBranchSession"。',
+    '',
+    '工具结果约定：memory tools 都返回紧凑 JSON 字符串。你需要解析 JSON 后继续判断。',
+    'canonical refs 可以手动调整：如果看到 ...#42，你可以读取 ...#41 或 ...#43 来查看相邻 episode。',
+    '最终 summary 应该是给主 agent 使用的任务辅助记忆总结，优先用清晰自然的中文表达。',
+    '当前时间：' + new Date().toISOString(),
   ].join('\n');
 }
 
