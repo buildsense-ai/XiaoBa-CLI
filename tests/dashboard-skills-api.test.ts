@@ -11,18 +11,22 @@ describe('dashboard skills API', () => {
   let testRoot: string;
   let originalCwd: string;
   let originalSkillsDir: string | undefined;
+  let originalAppRoot: string | undefined;
   let server: Server | undefined;
   let baseUrl: string;
 
   beforeEach(async () => {
     originalCwd = process.cwd();
     originalSkillsDir = process.env.XIAOBA_SKILLS_DIR;
+    originalAppRoot = process.env.XIAOBA_APP_ROOT;
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dashboard-skills-api-'));
     process.chdir(testRoot);
-    process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
+    process.env.XIAOBA_APP_ROOT = path.join(testRoot, 'app');
+    process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'user-skills');
 
-    writeSkill('skills/user-tool/SKILL.md', 'user-tool', 'User managed skill');
-    writeSkill('skills/local-tool/SKILL.md', 'local-tool', 'Local skill');
+    writeSkill('user-skills/user-tool/SKILL.md', 'user-tool', 'User managed skill');
+    writeSkill('user-skills/local-tool/SKILL.md', 'local-tool', 'Local skill');
+    writeSkill('app/skills/catsco-prompt-editor/SKILL.md', 'catsco-prompt-editor', 'Prompt editor seed skill');
 
     const app = express();
     app.use(express.json());
@@ -43,6 +47,11 @@ describe('dashboard skills API', () => {
       delete process.env.XIAOBA_SKILLS_DIR;
     } else {
       process.env.XIAOBA_SKILLS_DIR = originalSkillsDir;
+    }
+    if (originalAppRoot === undefined) {
+      delete process.env.XIAOBA_APP_ROOT;
+    } else {
+      process.env.XIAOBA_APP_ROOT = originalAppRoot;
     }
     if (testRoot && fs.existsSync(testRoot)) {
       fs.rmSync(testRoot, { recursive: true, force: true });
@@ -77,24 +86,50 @@ describe('dashboard skills API', () => {
 
     assert.equal(response.status, 200);
     assert.equal(data.ok, true);
-    assert.equal(data.path, path.join(testRoot, 'skills'));
+    assert.equal(data.path, path.join(testRoot, 'user-skills'));
   });
 
   test('allows user skill removal', async () => {
     const deleteUser = await fetch(`${baseUrl}/api/skills/user-tool`, { method: 'DELETE' });
     assert.equal(deleteUser.status, 200);
-    assert.equal(fs.existsSync(path.join(testRoot, 'skills/user-tool')), false);
+    assert.equal(fs.existsSync(path.join(testRoot, 'user-skills/user-tool')), false);
   });
 
   test('local skills can be disabled and deleted', async () => {
     const disable = await fetch(`${baseUrl}/api/skills/local-tool/disable`, { method: 'POST' });
     assert.equal(disable.status, 200);
-    assert.equal(fs.existsSync(path.join(testRoot, 'skills/local-tool/SKILL.md')), false);
-    assert.equal(fs.existsSync(path.join(testRoot, 'skills/local-tool/SKILL.md.disabled')), true);
+    assert.equal(fs.existsSync(path.join(testRoot, 'user-skills/local-tool/SKILL.md')), false);
+    assert.equal(fs.existsSync(path.join(testRoot, 'user-skills/local-tool/SKILL.md.disabled')), true);
 
     const deleteDisabled = await fetch(`${baseUrl}/api/skills/local-tool`, { method: 'DELETE' });
     assert.equal(deleteDisabled.status, 200);
-    assert.equal(fs.existsSync(path.join(testRoot, 'skills/local-tool')), false);
+    assert.equal(fs.existsSync(path.join(testRoot, 'user-skills/local-tool')), false);
+  });
+
+  test('installs the prompt editor seed skill into the user skills directory', async () => {
+    const targetFile = path.join(testRoot, 'user-skills/catsco-prompt-editor/SKILL.md');
+    fs.rmSync(path.dirname(targetFile), { recursive: true, force: true });
+
+    const install = await fetch(`${baseUrl}/api/prompts/editor-skill/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const data = await install.json() as any;
+
+    assert.equal(install.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.installed, true);
+    assert.equal(fs.existsSync(targetFile), true);
+
+    const secondInstall = await fetch(`${baseUrl}/api/prompts/editor-skill/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const secondData = await secondInstall.json() as any;
+    assert.equal(secondInstall.status, 200);
+    assert.equal(secondData.existing, true);
   });
 
   function writeSkill(relativePath: string, name: string, description: string): void {

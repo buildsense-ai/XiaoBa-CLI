@@ -5267,6 +5267,7 @@
           </div>
           <div class="settings-actions">
             <button class="btn" onclick="copyPromptOverridesPath()">复制覆盖目录</button>
+            <button class="btn" onclick="installPromptEditorSkill()">安装编辑 Skill</button>
             <button class="btn btn-primary" onclick="refreshPromptWorkbench()">刷新</button>
           </div>
         </div>
@@ -6234,7 +6235,7 @@
           promptTraceCard('Overrides', promptEditorState.writable?'可写':'未配置', promptEditorState.overrides_dir||'-')+
         '</div>'+
         renderPromptBranchAgentControls()+
-        '<div class="runtime-note">保存只写入本地覆盖目录，不改安装包内置 prompts。主会话会在下一条用户消息开始前检查 prompt hash 并热加载；正在执行中的请求不会中途切换。</div>'+
+        '<div class="runtime-note">保存只写入本地覆盖目录，不改安装包内置 prompts。主会话会在下一条用户消息开始前检查 prompt hash 并热加载；正在执行中的请求不会中途切换。建议让 Companion/旁路 agent 使用 catsco-prompt-editor skill 提议和确认改动，主 agent 继续专注当前工作。</div>'+
         '<div class="prompt-editor-layout">'+
           '<div class="prompt-file-list">'+(listHtml||'<div class="loading">没有可编辑的 prompt 文件</div>')+'</div>'+
           editorHtml+
@@ -6459,6 +6460,27 @@
         alert('已复制 prompt 覆盖目录');
       }catch(e){
         alert('复制失败：'+(e.message||String(e)));
+      }
+    }
+
+    async function installPromptEditorSkill(overwrite=false){
+      try{
+        let data=await parseSimpleResponse(await fetch(API+'/api/prompts/editor-skill/install',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({overwrite})
+        }));
+        if(data.existing && !overwrite){
+          const disabled=data.disabled?'，但当前是停用状态':'';
+          if(confirm('本地已存在 catsco-prompt-editor'+disabled+'。是否覆盖为当前推荐版本？')){
+            return installPromptEditorSkill(true);
+          }
+          return;
+        }
+        alert(data.installed?'已安装 catsco-prompt-editor，可在 SkillHub 页面分享或启停。':'catsco-prompt-editor 已存在。');
+        await fetchSkills();
+      }catch(e){
+        alert('安装 Prompt 编辑 Skill 失败：'+formatDashboardApiError(e,'/api/prompts/editor-skill/install'));
       }
     }
 

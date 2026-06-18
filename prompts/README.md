@@ -246,3 +246,19 @@ Dashboard 的 `Prompt Lab` 页面会显示当前：
 - 当前正在执行中的请求继续使用启动那一轮时的 prompt，不会半途切换。
 
 如果改的是环境变量、模型配置或 connector 进程级配置，仍需要按对应配置的要求重启 connector。
+
+## Prompt 编辑工作流
+
+Prompt 改进分三层处理：
+
+1. **热加载层**：主会话在下一条用户消息或顶层 runtime observation 开始前检查 prompt hash。主 system 文本变化时替换 durable history 里的主 system message；正在执行中的工具循环不半途切换。
+2. **编辑 Skill 层**：`skills/catsco-prompt-editor/` 是一个 seed skill，用于指导旁路 agent 或虚拟宠物安全修改 prompt。它默认不自动写入用户 skills 目录；在 Dashboard 的 `Prompt Lab` 点击“安装编辑 Skill”后，会复制到本地用户 skills 目录，再由 SkillHub 页面分享或启停。
+3. **Companion 层**：虚拟宠物或旁路 agent 可以加载 `catsco-prompt-editor`，读取 Prompt Lab 状态，提出小范围 prompt diff，并通过 UI/确认框询问用户是否应用。主 agent 不应该在正常工作轮里自行重写自己的 system prompt。
+
+推荐流程：
+
+- 先用日志中的 `system_hash`、`bundle_hash`、`prompt_version` 判断当前效果对应哪一版 prompt。
+- 让 `catsco-prompt-editor` 只修改一个最相关的 `.md` 文件，并先展示目标、风险和预期行为变化。
+- 用户确认后写入本地覆盖目录。
+- 下一条用户消息自动使用新 prompt；如果要减少旧上下文干扰，可以在 CatsCo 会话里 `/clear` 或新开会话做 A/B。
+- 稳定后再把修改同步回仓库基线 prompt，或把 skill 发布到 SkillHub 供其他虚拟宠物/旁路 agent 安装。
