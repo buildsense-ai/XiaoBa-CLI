@@ -26,6 +26,7 @@ import { GlobTool } from '../tools/glob-tool';
 import { GrepTool } from '../tools/grep-tool';
 import { WriteTool } from '../tools/write-tool';
 import { EditTool } from '../tools/edit-tool';
+import { ShellTool } from '../tools/bash-tool';
 import {
   isRemoteDeviceRpcTool,
   normalizeDeviceRpcToolResultForTransport,
@@ -358,6 +359,8 @@ export class CatsCompanyBot {
         return new WriteTool().execute(args, context);
       case 'edit_file':
         return new EditTool().execute(args, context);
+      case 'execute_shell':
+        return new ShellTool().execute(args, context);
       default:
         return {
           ok: false,
@@ -448,7 +451,7 @@ export class CatsCompanyBot {
     const operation = this.normalizeDeviceRpcOperation(request.operation);
     const toolName = String(request.tool_name || operation || '').trim();
     if (!operation || !isRemoteDeviceRpcTool(toolName, operation)) {
-      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, glob, grep, write_file, and edit_file.' };
+      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, glob, grep, write_file, edit_file, and execute_shell.' };
     }
 
     const requiredFields: Array<[keyof CatsDeviceRpcMessage, string]> = [
@@ -484,6 +487,7 @@ export class CatsCompanyBot {
       || operation === 'grep'
       || operation === 'write_file'
       || operation === 'edit_file'
+      || operation === 'execute_shell'
     ) {
       return operation;
     }

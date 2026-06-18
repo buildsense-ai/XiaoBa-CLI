@@ -33,7 +33,7 @@ export interface CatsCoVisiblePathOptions {
   preserveRelative?: boolean;
 }
 
-const REMOTE_DEVICE_RPC_OPERATIONS = new Set<DeviceGrantOperation>(['read_file', 'glob', 'grep', 'write_file', 'edit_file']);
+const REMOTE_DEVICE_RPC_OPERATIONS = new Set<DeviceGrantOperation>(['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'execute_shell']);
 
 export function isCatsCoToolGatewayContext(context: ToolExecutionContext): boolean {
   return context.surface === 'catscompany' || context.executionScope?.source === 'catscompany';
@@ -47,7 +47,13 @@ export function isCatsCoLocalOwnerSelfContext(context: ToolExecutionContext): bo
     return false;
   }
   const ownerUserId = localDevice?.ownerUserId;
-  return sameCatsCoUserId(ownerUserId, scope.actorUserId);
+  if (scope.deviceOwnerUserId && !sameCatsCoUserId(scope.deviceOwnerUserId, ownerUserId)) {
+    return false;
+  }
+  if (sameCatsCoUserId(ownerUserId, scope.actorUserId)) {
+    return true;
+  }
+  return false;
 }
 
 export function formatCatsCoVisiblePath(
@@ -102,12 +108,8 @@ export function resolveToolGatewayAccess(
   }
 
   const localOwnerSelf = isCatsCoLocalOwnerSelfContext(context);
-  if (options.operation === 'execute_shell' && !localOwnerSelf && !options.allowCatsCoShell) {
-    return denied([
-      'CatsCo 会话暂不允许外部用户或远程委托通过 execute_shell 操作命令行。',
-      '命令执行只允许本机 owner 自用场景直接执行。',
-    ], options.targetLabel);
-  }
+  const rpcForwardLocal = isCatsCoDeviceRpcForwardLocalContext(context, options.operation);
+  const requireSelectedDevice = requiresExplicitBackendDeviceSelection(scope, localDevice, rpcForwardLocal);
 
   const selectionScope = validateSelectionScope(context.deviceSelection, scope, options.targetLabel);
   if (!selectionScope.ok) return selectionScope;
@@ -117,12 +119,15 @@ export function resolveToolGatewayAccess(
     localDevice,
     options.operation,
     options.targetLabel,
-    { allowLocalSelfOperation: localOwnerSelf },
+    {
+      allowLocalSelfOperation: localOwnerSelf || rpcForwardLocal,
+      requireSelection: requireSelectedDevice,
+    },
   );
   if (!selectedTarget.ok) return selectedTarget;
 
   const targetDeviceId = selectedTarget.deviceId || localDevice.deviceId || localDevice.installationId || localDevice.bodyId;
-  if (selectedTarget.mode === 'local' && localOwnerSelf) {
+  if (selectedTarget.mode === 'local' && (localOwnerSelf || rpcForwardLocal)) {
     return {
       ok: true,
       mode: 'local',
@@ -147,7 +152,7 @@ export function resolveToolGatewayAccess(
     if (!REMOTE_DEVICE_RPC_OPERATIONS.has(options.operation)) {
       return denied([
         `后端选定的用户设备不是当前运行体，但 ${options.operation} 还没有开放远程执行。`,
-        '当前只开放 read_file / glob / grep / write_file / edit_file 文件级远程工具；命令执行不走远程 RPC。',
+        '当前只开放 read_file / glob / grep / write_file / edit_file / execute_shell 远程工具。',
       ], options.targetLabel);
     }
     if (!context.deviceRpc) {
@@ -166,6 +171,20 @@ export function resolveToolGatewayAccess(
       targetDeviceBodyId: selectedTarget.bodyId,
       targetDeviceInstallationId: selectedTarget.installationId,
     };
+  }
+
+  if (!context.deviceSelection && requiresBackendSelectedDeviceForLocalExecution(scope, localDevice, grant, rpcForwardLocal)) {
+    return denied([
+      '后端没有选定当前说话人的目标设备，已阻止本地设备操作。',
+      '共享虚拟员工不能默认使用云端运行体本机，必须由服务端选择当前用户自己的在线设备。',
+    ], options.targetLabel);
+  }
+
+  if (options.operation === 'execute_shell' && !localOwnerSelf && !rpcForwardLocal && !options.allowCatsCoShell) {
+    return denied([
+      'CatsCo 会话暂不允许外部用户或远程委托通过 execute_shell 操作命令行。',
+      '命令执行只允许本机 owner 自用场景直接执行。',
+    ], options.targetLabel);
   }
 
   if (localDevice.ownerUserId && !sameCatsCoUserId(grant.ownerUserId, localDevice.ownerUserId)) {
@@ -225,9 +244,15 @@ function resolveBackendSelectedDevice(
   localDevice: ScopedLocalDeviceGrant,
   operation: DeviceGrantOperation,
   targetLabel?: string,
-  options: { allowLocalSelfOperation?: boolean } = {},
+  options: { allowLocalSelfOperation?: boolean; requireSelection?: boolean } = {},
 ): SelectedDeviceDecision {
   if (!selection) {
+    if (options.requireSelection) {
+      return selectedDenied([
+        '后端没有选定当前说话人的目标设备，已阻止本地设备操作。',
+        '共享虚拟员工或移动端渠道不能默认使用云端运行体本机，必须由服务端选择当前用户自己的在线设备。',
+      ], targetLabel);
+    }
     return {
       ok: true,
       mode: 'local',
@@ -319,18 +344,21 @@ function validateSelectionScope(
 }
 
 function matchesLocalDevice(selection: ScopedDeviceSelection, localDevice: ScopedLocalDeviceGrant): boolean {
-  const selectedIds = [
-    selection.selectedDeviceId,
-    selection.selectedDeviceInstallationId,
-    selection.selectedDeviceBodyId,
-  ].filter(Boolean);
-  const localIds = [
-    localDevice.deviceId,
-    localDevice.installationId,
-    localDevice.bodyId,
-  ].filter(Boolean);
-  if (selectedIds.length === 0 || localIds.length === 0) return false;
-  return selectedIds.some(selected => localIds.includes(selected));
+  let matched = false;
+  if (selection.selectedDeviceId) {
+    const localDeviceIds = [localDevice.deviceId, localDevice.installationId].filter(Boolean);
+    if (!localDeviceIds.includes(selection.selectedDeviceId)) return false;
+    matched = true;
+  }
+  if (selection.selectedDeviceInstallationId) {
+    if (!localDevice.installationId || selection.selectedDeviceInstallationId !== localDevice.installationId) return false;
+    matched = true;
+  }
+  if (selection.selectedDeviceBodyId) {
+    if (!localDevice.bodyId || selection.selectedDeviceBodyId !== localDevice.bodyId) return false;
+    matched = true;
+  }
+  return matched;
 }
 
 function denied(lines: string[], targetLabel?: string): ToolGatewayDecision {
@@ -357,6 +385,118 @@ function looksLikeAbsoluteLocalPath(value: string): boolean {
     || /^\\\\/.test(value)
     || /^\//.test(value)
     || /^~[\\/]/.test(value);
+}
+
+function isCatsCoDeviceRpcForwardLocalContext(
+  context: ToolExecutionContext,
+  operation: DeviceGrantOperation,
+): boolean {
+  if (!isCatsCoToolGatewayContext(context)) return false;
+  const scope = context.executionScope;
+  const localDevice = context.localDeviceGrant;
+  if (!scope || scope.permissionsSource !== 'device_rpc_forward') return false;
+  if (scope.identityTrust !== 'server_canonical' || !scope.isTrusted || !localDevice?.ownerUserId) return false;
+  return (context.deviceGrants || []).some(grant =>
+    isCanonicalGrantForLocalOwnerDevice(grant, localDevice, localDevice.ownerUserId!, operation),
+  );
+}
+
+function isExternalActorOnLocalBody(
+  scope: NonNullable<ToolExecutionContext['executionScope']>,
+  localDevice: ScopedLocalDeviceGrant,
+): boolean {
+  return Boolean(
+    localDevice.ownerUserId
+    && scope.actorUserId
+    && !sameCatsCoUserId(localDevice.ownerUserId, scope.actorUserId),
+  );
+}
+
+function requiresBackendSelectedDeviceForLocalExecution(
+  scope: NonNullable<ToolExecutionContext['executionScope']>,
+  localDevice: ScopedLocalDeviceGrant,
+  grant: ScopedDeviceGrant,
+  rpcForwardLocal: boolean,
+): boolean {
+  if (rpcForwardLocal) return false;
+  if (scope.deviceOwnerUserId) return true;
+  if (isMobileChannelSource(scope.channelSource)) return true;
+  if (isChannelOwnerSource(scope.deviceOwnerSource)) return true;
+  if (isExternalActorOnLocalBody(scope, localDevice)) return true;
+  if (isDelegatedDeviceGrant(grant) || isChannelLinkedDeviceGrant(grant)) return true;
+  if (!localDevice.ownerUserId && !isPlainServerMetadataDeviceGrant(grant)) return true;
+  return false;
+}
+
+function requiresExplicitBackendDeviceSelection(
+  scope: NonNullable<ToolExecutionContext['executionScope']>,
+  localDevice: ScopedLocalDeviceGrant,
+  rpcForwardLocal: boolean,
+): boolean {
+  if (rpcForwardLocal) return false;
+  if (scope.deviceOwnerUserId) return true;
+  if (isMobileChannelSource(scope.channelSource)) return true;
+  if (isChannelOwnerSource(scope.deviceOwnerSource)) return true;
+  if (isExternalActorOnLocalBody(scope, localDevice)) return true;
+  return false;
+}
+
+function isChannelLinkedDeviceGrant(grant: Pick<ScopedDeviceGrant, 'identitySource'>): boolean {
+  const source = String(grant.identitySource || '').toLowerCase();
+  return source.includes('channel') || source.includes('feishu') || source.includes('weixin');
+}
+
+function isChannelOwnerSource(value: string | undefined): boolean {
+  const source = String(value || '').toLowerCase();
+  return source.includes('channel') || source.includes('feishu') || source.includes('weixin');
+}
+
+function isMobileChannelSource(value: string | undefined): boolean {
+  const source = String(value || '').toLowerCase();
+  return source === 'weixin' || source === 'wechat' || source === 'feishu' || source === 'lark';
+}
+
+function isPlainServerMetadataDeviceGrant(grant: Pick<ScopedDeviceGrant, 'identitySource' | 'ownerUserId' | 'actorUserId'>): boolean {
+  const source = String(grant.identitySource || '').toLowerCase();
+  return grant.ownerUserId === grant.actorUserId
+    && (source === 'metadata.catsco_identity' || source === 'server_canonical_message');
+}
+
+function isCanonicalGrantForLocalOwnerDevice(
+  grant: ScopedDeviceGrant,
+  localDevice: ScopedLocalDeviceGrant,
+  ownerUserId: string,
+  operation: DeviceGrantOperation,
+): boolean {
+  if (grant.status !== 'active') return false;
+  if (grant.identityTrust !== 'server_canonical') return false;
+  if (!grant.operations.includes(operation)) return false;
+  if (!sameCatsCoUserId(grant.ownerUserId, ownerUserId)) return false;
+  if (!sameCatsCoUserId(grant.ownerUserId, grant.actorUserId) && !isDelegatedDeviceGrant(grant)) {
+    return false;
+  }
+  return deviceGrantTargetsLocalDevice(grant, localDevice);
+}
+
+function deviceGrantTargetsLocalDevice(
+  grant: Pick<ScopedDeviceGrant, 'deviceId' | 'deviceBodyId' | 'deviceInstallationId'>,
+  localDevice: ScopedLocalDeviceGrant,
+): boolean {
+  let matched = false;
+  const localDeviceIds = [localDevice.deviceId, localDevice.installationId].filter(Boolean);
+  if (grant.deviceId) {
+    if (!localDeviceIds.includes(grant.deviceId)) return false;
+    matched = true;
+  }
+  if (grant.deviceInstallationId) {
+    if (!localDevice.installationId || grant.deviceInstallationId !== localDevice.installationId) return false;
+    matched = true;
+  }
+  if (grant.deviceBodyId) {
+    if (!localDevice.bodyId || grant.deviceBodyId !== localDevice.bodyId) return false;
+    matched = true;
+  }
+  return matched;
 }
 
 function sameCatsCoUserId(left: string | undefined, right: string | undefined): boolean {

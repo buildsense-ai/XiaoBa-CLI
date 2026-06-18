@@ -21,6 +21,9 @@ export interface MessageEnvelope {
   rawText: string;
   rawMetadata?: Record<string, unknown>;
   permissionsSource?: string;
+  deviceOwnerUserId?: string;
+  deviceOwnerSource?: string;
+  channelSource?: string;
   identityTrust: IdentityTrustLevel;
   identitySource?: string;
   warnings?: string[];
@@ -37,6 +40,9 @@ export interface ExecutionScope {
   agentBodyId?: string;
   channelSeq?: number;
   permissionsSource?: string;
+  deviceOwnerUserId?: string;
+  deviceOwnerSource?: string;
+  channelSource?: string;
   identityTrust: IdentityTrustLevel;
   isTrusted: boolean;
 }

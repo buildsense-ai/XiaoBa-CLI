@@ -76,6 +76,39 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
     assert.equal(scope.isTrusted, true);
   });
 
+  test('trusts canonical identity when sender id omits usr prefix', () => {
+    const envelope = createCatsCoMessageEnvelope({
+      topic: 'p2p_7_43',
+      senderId: '7',
+      seq: 32,
+      text: 'mobile hello',
+      botUid: 'usr43',
+      metadata: {
+        source_channel: 'weixin',
+        catsco_identity: {
+          actor: { user_id: 'usr7', display_name: 'Alice' },
+          agent: { agent_id: 'usr43', body_id: 'body-cloud' },
+          topic: { topic_id: 'p2p_7_43', type: 'p2p', channel_seq: 32 },
+          permissions: {
+            source: 'server_canonical_message',
+            device_owner_user_id: 'usr7',
+            device_owner_source: 'channel_identity_link',
+          },
+        },
+      },
+    });
+    const scope = createExecutionScope(envelope);
+
+    assert.equal(envelope.identityTrust, 'server_canonical');
+    assert.equal(envelope.actorUserId, 'usr7');
+    assert.equal(scope.actorUserId, 'usr7');
+    assert.equal(scope.deviceOwnerUserId, 'usr7');
+    assert.equal(scope.deviceOwnerSource, 'channel_identity_link');
+    assert.equal(scope.channelSource, 'weixin');
+    assert.equal(scope.isTrusted, true);
+    assert.ok(!envelope.warnings?.some(warning => warning.includes('actor.user_id')));
+  });
+
   test('does not trust spoofed catsco_identity when it conflicts with sender', () => {
     const envelope = createCatsCoMessageEnvelope({
       topic: 'p2p_7_43',

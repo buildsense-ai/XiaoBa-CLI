@@ -42,7 +42,10 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
   if (metadataLooksCanonical && canonicalTopicId && canonicalTopicId !== topicId) {
     warnings.push('catsco_identity topic_id does not match message topic');
   }
-  if (metadataLooksCanonical && canonicalActorId && senderId !== 'unknown' && canonicalActorId !== senderId) {
+  const senderMatchesCanonicalActor = senderId === 'unknown'
+    || sameCatsCoUserId(canonicalActorId, senderId);
+
+  if (metadataLooksCanonical && canonicalActorId && !senderMatchesCanonicalActor) {
     warnings.push('catsco_identity actor.user_id does not match message sender');
   }
 
@@ -51,7 +54,7 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
     && metadataLooksCanonical
     && canonicalActorId
     && canonicalTopicId === topicId
-    && (senderId === 'unknown' || canonicalActorId === senderId),
+    && senderMatchesCanonicalActor,
   );
 
   const actorUserId = isCanonicalTrusted ? canonicalActorId! : senderId;
@@ -62,6 +65,19 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
     ? firstNonEmpty(stringField(agent, 'agent_id'), safeString(input.botUid))
     : safeString(input.botUid);
   const agentBodyId = isCanonicalTrusted ? stringField(agent, 'body_id') : undefined;
+  const deviceOwnerUserId = isCanonicalTrusted
+    ? stringField(permissions, 'device_owner_user_id')
+    : undefined;
+  const deviceOwnerSource = isCanonicalTrusted
+    ? stringField(permissions, 'device_owner_source')
+    : undefined;
+  const channelSource = isCanonicalTrusted
+    ? firstNonEmpty(
+      stringField(metadata, 'source_channel'),
+      stringField(metadata, 'channel_source'),
+      stringField(metadata, 'channel'),
+    )
+    : undefined;
   const channelSeq = isCanonicalTrusted
     ? canonicalChannelSeq ?? normalizeSeq(input.seq)
     : normalizeSeq(input.seq);
@@ -99,6 +115,9 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
     rawText: input.text,
     rawMetadata: metadata,
     permissionsSource: isCanonicalTrusted ? permissionsSource : undefined,
+    deviceOwnerUserId,
+    deviceOwnerSource,
+    channelSource,
     identityTrust,
     identitySource: isCanonicalTrusted ? 'metadata.catsco_identity' : undefined,
     warnings: warnings.length > 0 ? warnings : undefined,
@@ -117,6 +136,9 @@ export function createExecutionScope(envelope: MessageEnvelope): ExecutionScope 
     agentBodyId: envelope.agentBodyId,
     channelSeq: envelope.channelSeq,
     permissionsSource: envelope.permissionsSource,
+    deviceOwnerUserId: envelope.deviceOwnerUserId,
+    deviceOwnerSource: envelope.deviceOwnerSource,
+    channelSource: envelope.channelSource,
     identityTrust: envelope.identityTrust,
     isTrusted: envelope.identityTrust === 'server_canonical',
   };
@@ -194,4 +216,16 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
     if (value) return value;
   }
   return undefined;
+}
+
+function sameCatsCoUserId(left: string | undefined, right: string | undefined): boolean {
+  const normalizedLeft = normalizeCatsCoUserId(left);
+  const normalizedRight = normalizeCatsCoUserId(right);
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
+}
+
+function normalizeCatsCoUserId(value: string | undefined): string {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return /^\d+$/.test(text) ? `usr${text}` : text;
 }

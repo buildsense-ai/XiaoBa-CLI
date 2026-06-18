@@ -37,16 +37,6 @@ export class WriteTool implements Tool {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${toolPermission.reason}` };
     }
 
-    // 解析文件路径
-    const absolutePath = path.isAbsolute(file_path)
-      ? file_path
-      : path.join(context.workingDirectory, file_path);
-
-    const pathPermission = isPathAllowed(absolutePath, context.workingDirectory);
-    if (!pathPermission.allowed) {
-      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
-    }
-
     const gateway = resolveToolGatewayAccess(context, {
       toolName: this.definition.name,
       operation: 'write_file',
@@ -57,6 +47,16 @@ export class WriteTool implements Tool {
     }
     const remoteResult = await executeRemoteDeviceRpcTool(context, gateway, 'write_file', 'write_file', args);
     if (remoteResult) return remoteResult;
+
+    // 解析文件路径
+    const absolutePath = path.isAbsolute(file_path)
+      ? file_path
+      : path.join(context.workingDirectory, file_path);
+
+    const pathPermission = isPathAllowed(absolutePath, context.workingDirectory);
+    if (!pathPermission.allowed) {
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
+    }
 
     // 获取相对路径用于显示
     const relativePath = path.relative(context.workingDirectory, absolutePath);

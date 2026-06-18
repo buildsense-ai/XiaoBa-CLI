@@ -45,16 +45,6 @@ export class EditTool implements Tool {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${toolPermission.reason}` };
     }
 
-    // 解析文件路径
-    const absolutePath = path.isAbsolute(file_path)
-      ? file_path
-      : path.join(context.workingDirectory, file_path);
-
-    const pathPermission = isPathAllowed(absolutePath, context.workingDirectory);
-    if (!pathPermission.allowed) {
-      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
-    }
-
     const gateway = resolveToolGatewayAccess(context, {
       toolName: this.definition.name,
       operation: 'edit_file',
@@ -65,6 +55,16 @@ export class EditTool implements Tool {
     }
     const remoteResult = await executeRemoteDeviceRpcTool(context, gateway, 'edit_file', 'edit_file', args);
     if (remoteResult) return remoteResult;
+
+    // 解析文件路径
+    const absolutePath = path.isAbsolute(file_path)
+      ? file_path
+      : path.join(context.workingDirectory, file_path);
+
+    const pathPermission = isPathAllowed(absolutePath, context.workingDirectory);
+    if (!pathPermission.allowed) {
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
+    }
     const displayPath = formatCatsCoVisiblePath(context, file_path, { preserveRelative: true });
 
     // 检查文件是否存在

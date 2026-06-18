@@ -280,7 +280,7 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.match(captured.result.error.message, /channel_identity_link/);
   });
 
-  test('rejects shell Device RPC operations before local tool execution', async () => {
+  test('executes shell Device RPC operations on the selected local device', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
 
@@ -288,13 +288,13 @@ describe('CatsCompany Device RPC file tools', () => {
       request_id: 'rpc-shell-1',
       operation: 'execute_shell',
       tool_name: 'execute_shell',
-      payload: { args: { command: 'echo unsafe' } },
+      payload: { args: { command: 'node -e "console.log(\'rpc-shell-ok\')"' } },
     }));
 
     assert.ok(captured.result);
-    assert.equal(captured.result.result, undefined);
-    assert.equal(captured.result.error.code, 'unsupported_operation');
-    assert.match(captured.result.error.message, /read_file, glob, grep, write_file, and edit_file/);
+    assert.equal(captured.result.error, undefined);
+    assert.equal(captured.result.result.ok, true);
+    assert.match(captured.result.result.content, /rpc-shell-ok/);
   });
 
   test('rejects Device RPC requests for another target device', async () => {

@@ -14,13 +14,14 @@ export function isRemoteReadonlyTool(toolName: string, operation: DeviceGrantOpe
 export function isRemoteDeviceRpcTool(toolName: string, operation: DeviceGrantOperation): boolean {
   return isRemoteReadonlyTool(toolName, operation)
     || (toolName === 'write_file' && operation === 'write_file')
-    || (toolName === 'edit_file' && operation === 'edit_file');
+    || (toolName === 'edit_file' && operation === 'edit_file')
+    || (toolName === 'execute_shell' && operation === 'execute_shell');
 }
 
 export async function executeRemoteDeviceRpcTool(
   context: ToolExecutionContext,
   gateway: ToolGatewayDecision,
-  toolName: 'read_file' | 'glob' | 'grep' | 'write_file' | 'edit_file',
+  toolName: 'read_file' | 'glob' | 'grep' | 'write_file' | 'edit_file' | 'execute_shell',
   operation: DeviceGrantOperation,
   args: Record<string, unknown>,
 ): Promise<ToolExecutionResult | undefined> {
@@ -30,7 +31,7 @@ export async function executeRemoteDeviceRpcTool(
     return {
       ok: false,
       errorCode: 'PERMISSION_DENIED',
-      message: `远程设备 RPC 当前只允许 read_file / glob / grep / write_file / edit_file，已阻止 ${toolName}。`,
+      message: `远程设备 RPC 当前只允许 read_file / glob / grep / write_file / edit_file / execute_shell，已阻止 ${toolName}。`,
     };
   }
 

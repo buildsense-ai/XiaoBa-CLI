@@ -530,6 +530,71 @@ describe('CatsCo ToolGateway', () => {
     assert.equal(fs.existsSync(path.join(root, 'remote.txt')), false);
   });
 
+  test('routes mobile channel write_file to the speaker owner device instead of the cloud body', async () => {
+    const root = makeWorkspace();
+    const marker = path.join(root, 'must-not-create-on-cloud.txt');
+    const channelScope = scope({
+      actorUserId: 'usr100',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+      topicId: 'p2p_100_43',
+      deviceOwnerUserId: 'usr100',
+      deviceOwnerSource: 'channel_identity_link',
+      channelSource: 'weixin',
+    });
+    const calls: any[] = [];
+
+    const result = await new WriteTool().execute({ file_path: marker, content: 'from mobile' }, context(root, {
+      executionScope: channelScope,
+      localDeviceGrant: localDevice({
+        ownerUserId: 'usr9',
+        bodyId: 'cloud-body',
+        installationId: 'cloud-install',
+        deviceId: 'cloud-install',
+        capabilities: ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file', 'execute_shell'],
+      }),
+      deviceGrants: [deviceGrant(['write_file'], {
+        grantId: 'speaker-write-grant',
+        identitySource: 'channel_identity_link',
+        deviceId: 'speaker-device',
+        deviceBodyId: 'speaker-body',
+        deviceInstallationId: 'speaker-install',
+        ownerUserId: 'usr100',
+        actorUserId: 'usr100',
+        sessionKey: channelScope.sessionKey,
+        topicId: channelScope.topicId,
+        topicType: channelScope.topicType,
+        agentId: channelScope.agentId,
+        agentBodyId: channelScope.agentBodyId,
+      })],
+      deviceSelection: deviceSelection({
+        sessionKey: channelScope.sessionKey,
+        topicId: channelScope.topicId,
+        topicType: channelScope.topicType,
+        actorUserId: channelScope.actorUserId,
+        agentId: channelScope.agentId,
+        selectedDeviceId: 'speaker-device',
+        selectedDeviceBodyId: 'speaker-body',
+        selectedDeviceInstallationId: 'speaker-install',
+        selectedDeviceDisplayName: 'Speaker Laptop',
+        selectedDeviceOperations: ['write_file'],
+      }),
+      deviceRpc: {
+        executeTool: async request => {
+          calls.push(request);
+          return { ok: true, content: 'remote write ok' };
+        },
+      },
+    }));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok ? result.content : '', 'remote write ok');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].toolName, 'write_file');
+    assert.equal(calls[0].grant.ownerUserId, 'usr100');
+    assert.equal(calls[0].grant.deviceId, 'speaker-device');
+    assert.equal(fs.existsSync(marker), false);
+  });
+
   test('routes remote edit_file through Device RPC without local fallback', async () => {
     const root = makeWorkspace();
     fs.writeFileSync(path.join(root, 'local.txt'), 'before');
@@ -575,6 +640,232 @@ describe('CatsCo ToolGateway', () => {
 
     assert.equal(result.ok, true);
     if (result.ok) assert.match(result.content, /catsco-shell-ok/);
+  });
+
+  test('routes execute_shell for a mobile channel speaker to the selected user device', async () => {
+    const root = makeWorkspace();
+    const marker = path.join(root, 'should-not-run-locally.txt');
+    const channelScope = scope({
+      actorUserId: 'usr100',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+      topicId: 'p2p_100_43',
+      deviceOwnerUserId: 'usr100',
+      deviceOwnerSource: 'channel_identity_link',
+      channelSource: 'weixin',
+    });
+    const calls: any[] = [];
+    const result = await new ShellTool().execute({ command: `node -e "require('fs').writeFileSync('${marker.replace(/\\/g, '\\\\')}', 'wrong')"` }, context(root, {
+      executionScope: channelScope,
+      localDeviceGrant: localDevice({
+        ownerUserId: 'usr9',
+        capabilities: ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file', 'execute_shell'],
+      }),
+      deviceGrants: [deviceGrant(['execute_shell'], {
+        grantId: 'channel-owner-grant',
+        identitySource: 'channel_identity_link',
+        deviceId: 'speaker-device',
+        deviceBodyId: 'speaker-body',
+        deviceInstallationId: 'speaker-install',
+        ownerUserId: 'usr100',
+        actorUserId: 'usr100',
+        sessionKey: channelScope.sessionKey,
+        topicId: channelScope.topicId,
+        topicType: channelScope.topicType,
+        agentId: channelScope.agentId,
+        agentBodyId: channelScope.agentBodyId,
+      })],
+      deviceSelection: deviceSelection({
+        sessionKey: channelScope.sessionKey,
+        topicId: channelScope.topicId,
+        topicType: channelScope.topicType,
+        actorUserId: channelScope.actorUserId,
+        agentId: channelScope.agentId,
+        selectedDeviceId: 'speaker-device',
+        selectedDeviceBodyId: 'speaker-body',
+        selectedDeviceInstallationId: 'speaker-install',
+        selectedDeviceDisplayName: 'Speaker Laptop',
+        selectedDeviceOperations: ['execute_shell'],
+      }),
+      deviceRpc: {
+        executeTool: async request => {
+          calls.push(request);
+          return { ok: true, content: 'remote shell ok' };
+        },
+      },
+    }));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok ? result.content : '', 'remote shell ok');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].toolName, 'execute_shell');
+    assert.equal(calls[0].operation, 'execute_shell');
+    assert.equal(fs.existsSync(marker), false);
+  });
+
+  test('blocks shared mobile shell access when backend did not select the speaker device', async () => {
+    const root = makeWorkspace();
+    const marker = path.join(root, 'must-not-create-on-cloud.txt');
+    const channelScope = scope({
+      actorUserId: 'usr100',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+      topicId: 'p2p_100_43',
+      deviceOwnerUserId: 'usr100',
+      deviceOwnerSource: 'channel_identity_link',
+      channelSource: 'weixin',
+    });
+    const result = await new ShellTool().execute({ command: `node -e "require('fs').writeFileSync('${marker.replace(/\\/g, '\\\\')}', 'wrong')"` }, context(root, {
+      executionScope: channelScope,
+      localDeviceGrant: localDevice({
+        ownerUserId: 'usr9',
+        capabilities: ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file', 'execute_shell'],
+      }),
+      deviceGrants: [deviceGrant(['execute_shell'], {
+        grantId: 'channel-owner-grant',
+        identitySource: 'channel_identity_link',
+        ownerUserId: 'usr100',
+        actorUserId: 'usr100',
+        sessionKey: channelScope.sessionKey,
+        topicId: channelScope.topicId,
+        topicType: channelScope.topicType,
+        agentId: channelScope.agentId,
+        agentBodyId: channelScope.agentBodyId,
+      })],
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+      assert.match(result.message, /后端没有选定当前说话人的目标设备/);
+    }
+    assert.equal(fs.existsSync(marker), false);
+  });
+
+  test('blocks channel write_file on cloud body when local device owner is missing and no speaker device is selected', async () => {
+    const root = makeWorkspace();
+    const marker = path.join(root, 'must-not-create-on-cloud.txt');
+    const channelScope = scope({
+      actorUserId: 'usr100',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+      topicId: 'p2p_100_43',
+      deviceOwnerUserId: 'usr100',
+      deviceOwnerSource: 'channel_identity_link',
+      channelSource: 'weixin',
+    });
+    const result = await new WriteTool().execute({ file_path: marker, content: 'wrong-device' }, context(root, {
+      executionScope: channelScope,
+      localDeviceGrant: localDevice({
+        ownerUserId: undefined,
+        capabilities: ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file', 'execute_shell'],
+      }),
+      deviceGrants: [deviceGrant(['write_file'], {
+        grantId: 'channel-owner-grant',
+        identitySource: 'channel_identity_link',
+        ownerUserId: 'usr100',
+        actorUserId: 'usr100',
+        sessionKey: channelScope.sessionKey,
+        topicId: channelScope.topicId,
+        topicType: channelScope.topicType,
+        agentId: channelScope.agentId,
+        agentBodyId: channelScope.agentBodyId,
+      })],
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+      assert.match(result.message, /后端没有选定当前说话人的目标设备/);
+    }
+    assert.equal(fs.existsSync(marker), false);
+  });
+
+  test('blocks delegated local execution when selected device does not declare the requested operation', async () => {
+    const root = makeWorkspace();
+    const marker = path.join(root, 'must-not-write.txt');
+    const channelScope = scope({
+      actorUserId: 'usr101',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_101_43:agent:usr43',
+      topicId: 'p2p_101_43',
+      deviceOwnerUserId: 'usr100',
+      deviceOwnerSource: 'channel_identity_link',
+      channelSource: 'weixin',
+    });
+    const result = await new WriteTool().execute({ file_path: marker, content: 'wrong-device' }, context(root, {
+      executionScope: channelScope,
+      localDeviceGrant: localDevice({
+        ownerUserId: 'usr100',
+        capabilities: ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file', 'execute_shell'],
+      }),
+      deviceGrants: [deviceGrant(['write_file'], {
+        grantId: 'channel-owner-grant',
+        identitySource: 'channel_identity_link',
+        ownerUserId: 'usr100',
+        actorUserId: 'usr101',
+        sessionKey: channelScope.sessionKey,
+        topicId: channelScope.topicId,
+        topicType: channelScope.topicType,
+        agentId: channelScope.agentId,
+        agentBodyId: channelScope.agentBodyId,
+      })],
+      deviceSelection: deviceSelection({
+        sessionKey: channelScope.sessionKey,
+        topicId: channelScope.topicId,
+        topicType: channelScope.topicType,
+        actorUserId: channelScope.actorUserId,
+        agentId: channelScope.agentId,
+        selectedDeviceOperations: ['read_file'],
+      }),
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+      assert.match(result.message, /没有声明支持 write_file/);
+    }
+    assert.equal(fs.existsSync(marker), false);
+  });
+
+  test('blocks mobile channel linked grant when it targets another local device', async () => {
+    const root = makeWorkspace();
+    const channelScope = scope({
+      actorUserId: 'usr100',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+      topicId: 'p2p_100_43',
+    });
+    const result = await new ShellTool().execute({ command: 'echo should-not-run' }, context(root, {
+      executionScope: channelScope,
+      localDeviceGrant: localDevice({
+        ownerUserId: 'usr9',
+        capabilities: ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file', 'execute_shell'],
+      }),
+      deviceGrants: [deviceGrant(['execute_shell'], {
+        grantId: 'other-device-grant',
+        identitySource: 'channel_identity_link',
+        ownerUserId: 'usr9',
+        actorUserId: 'usr100',
+        deviceId: 'other-device',
+        deviceBodyId: 'other-body',
+        deviceInstallationId: 'other-install',
+        sessionKey: channelScope.sessionKey,
+        topicId: channelScope.topicId,
+        topicType: channelScope.topicType,
+        agentId: channelScope.agentId,
+        agentBodyId: channelScope.agentBodyId,
+      })],
+      deviceSelection: deviceSelection({
+        sessionKey: channelScope.sessionKey,
+        topicId: channelScope.topicId,
+        topicType: channelScope.topicType,
+        actorUserId: channelScope.actorUserId,
+        agentId: channelScope.agentId,
+        selectedDeviceOperations: ['execute_shell'],
+      }),
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+      assert.match(result.message, /没有允许当前设备执行 execute_shell/);
+    }
   });
 
   test('blocks execute_shell in external CatsCo sessions even when a grant contains execute_shell', async () => {
