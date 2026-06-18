@@ -1682,6 +1682,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
 
   router.put('/prompts/file', (req, res) => {
     try {
+      if (!requireJsonWrite(req, res)) return;
       res.json(writePromptOverride(String(req.body?.path || ''), String(req.body?.content ?? '')));
     } catch (e: any) {
       res.status(400).json({ error: e?.message || String(e) });
@@ -1698,6 +1699,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
 
   router.post('/prompts/editor-skill/install', (req, res) => {
     try {
+      if (!requireJsonWrite(req, res)) return;
       res.json(installPromptEditorSeedSkill({
         overwrite: req.body?.overwrite === true,
       }));
@@ -3182,6 +3184,12 @@ function installPromptEditorSeedSkill(options: { overwrite?: boolean } = {}): an
     name: PROMPT_EDITOR_SKILL_NAME,
     path: targetSkillFile,
   };
+}
+
+function requireJsonWrite(req: any, res: any): boolean {
+  if (req.is('application/json')) return true;
+  res.status(415).json({ error: 'application/json required' });
+  return false;
 }
 
 function resolvePromptEditorSeedSkillDir(): string {

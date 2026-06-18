@@ -162,6 +162,24 @@ describe('dashboard skills API', () => {
     assert.equal(fs.existsSync(path.join(targetDir, 'notes.txt')), false);
   });
 
+  test('prompt write endpoints require JSON requests', async () => {
+    const install = await fetch(`${baseUrl}/api/prompts/editor-skill/install`, {
+      method: 'POST',
+    });
+    assert.equal(install.status, 415);
+
+    const writePrompt = await fetch(`${baseUrl}/api/prompts/file`, {
+      method: 'PUT',
+      body: 'path=system-prompt.md&content=bad',
+    });
+    assert.equal(writePrompt.status, 415);
+
+    const applyProposal = await fetch(`${baseUrl}/api/pet/prompt-proposal/apply`, {
+      method: 'POST',
+    });
+    assert.equal(applyProposal.status, 415);
+  });
+
   function writeSkill(relativePath: string, name: string, description: string): void {
     const filePath = path.join(testRoot, relativePath);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });

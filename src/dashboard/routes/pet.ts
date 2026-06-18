@@ -43,6 +43,7 @@ export function registerPetRoutes(router: Router): void {
 
   router.post('/pet/prompt-proposal/apply', async (req, res) => {
     try {
+      if (!requireJsonWrite(req, res)) return;
       res.json(await applyPromptCompanionProposal(String(req.body?.id || '')));
     } catch (error: any) {
       res.status(400).json({ error: error?.message || String(error) });
@@ -51,9 +52,16 @@ export function registerPetRoutes(router: Router): void {
 
   router.post('/pet/prompt-proposal/dismiss', async (req, res) => {
     try {
+      if (!requireJsonWrite(req, res)) return;
       res.json(await dismissPromptCompanionProposal(String(req.body?.id || '')));
     } catch (error: any) {
       res.status(400).json({ error: error?.message || String(error) });
     }
   });
+}
+
+function requireJsonWrite(req: any, res: any): boolean {
+  if (req.is('application/json')) return true;
+  res.status(415).json({ error: 'application/json required' });
+  return false;
 }
