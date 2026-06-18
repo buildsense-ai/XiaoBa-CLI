@@ -5263,7 +5263,7 @@
           <div class="settings-heading">
             <div class="settings-kicker">Prompt Lab</div>
             <div class="section-title" style="margin-bottom:0">提示词调试</div>
-            <div class="settings-meta">编辑本地覆盖版本，重启 connector 或新建 session 后生效；日志会记录 system 和 bundle hash。</div>
+            <div class="settings-meta">编辑本地覆盖版本，下一条用户消息开始前热加载；日志会记录 system 和 bundle hash。</div>
           </div>
           <div class="settings-actions">
             <button class="btn" onclick="copyPromptOverridesPath()">复制覆盖目录</button>
@@ -6234,7 +6234,7 @@
           promptTraceCard('Overrides', promptEditorState.writable?'可写':'未配置', promptEditorState.overrides_dir||'-')+
         '</div>'+
         renderPromptBranchAgentControls()+
-        '<div class="runtime-note">保存只写入本地覆盖目录，不改安装包内置 prompts。当前运行中的 connector 需要重启，已存在 session 也要新建后才会重新读取 system prompt。</div>'+
+        '<div class="runtime-note">保存只写入本地覆盖目录，不改安装包内置 prompts。主会话会在下一条用户消息开始前检查 prompt hash 并热加载；正在执行中的请求不会中途切换。</div>'+
         '<div class="prompt-editor-layout">'+
           '<div class="prompt-file-list">'+(listHtml||'<div class="loading">没有可编辑的 prompt 文件</div>')+'</div>'+
           editorHtml+
@@ -6367,7 +6367,7 @@
         '</div>'+
         '<textarea class="config-input prompt-editor-textarea" id="prompt-editor-textarea" spellcheck="false" oninput="markPromptEditorDirty()">'+escapeHtml(file.content||'')+'</textarea>'+
         '<div class="prompt-editor-actions">'+
-          '<div class="prompt-editor-status" id="prompt-editor-status">'+(promptEditorState?.writable?'编辑后保存覆盖版本；重启 connector 后生效。':'当前环境没有配置覆盖目录，不能保存。')+'</div>'+
+          '<div class="prompt-editor-status" id="prompt-editor-status">'+(promptEditorState?.writable?'编辑后保存覆盖版本；下一条用户消息开始前生效。':'当前环境没有配置覆盖目录，不能保存。')+'</div>'+
           '<div class="settings-actions">'+
             '<button class="btn" onclick="resetPromptEditorFile()"'+resetDisabled+'>重置为内置</button>'+
             '<button class="btn btn-primary" id="prompt-editor-save-btn" onclick="savePromptEditorFile()"'+saveDisabled+'>保存覆盖</button>'+
@@ -6409,7 +6409,7 @@
     function markPromptEditorDirty(){
       promptEditorDirty=true;
       const status=document.getElementById('prompt-editor-status');
-      if(status)status.textContent='有未保存改动。保存后需要重启 connector 或新建 session。';
+      if(status)status.textContent='有未保存改动。保存后会在下一条用户消息开始前热加载。';
     }
 
     async function savePromptEditorFile(){
@@ -6428,7 +6428,7 @@
           preserveEditorScroll:true
         });
         const nextStatus=document.getElementById('prompt-editor-status');
-        if(nextStatus)nextStatus.textContent='已保存覆盖版本。重启 connector 或新建 session 后生效。';
+        if(nextStatus)nextStatus.textContent='已保存覆盖版本。下一条用户消息开始前会热加载。';
       }catch(e){
         if(status)status.textContent='保存失败：'+(e.message||String(e));
       }
@@ -6446,7 +6446,7 @@
           preserveEditorScroll:true
         });
         const nextStatus=document.getElementById('prompt-editor-status');
-        if(nextStatus)nextStatus.textContent='已恢复内置版本。重启 connector 或新建 session 后生效。';
+        if(nextStatus)nextStatus.textContent='已恢复内置版本。下一条用户消息开始前会热加载。';
       }catch(e){
         if(status)status.textContent='重置失败：'+(e.message||String(e));
       }
