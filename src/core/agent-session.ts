@@ -43,6 +43,7 @@ import { resolveModelContextWindow } from '../utils/model-context-window';
 import { parseSessionKeyV2 } from './session-router';
 import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
+import { toPromptTurnMetadata } from '../utils/prompt-observability';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
 
@@ -300,6 +301,14 @@ export class AgentSession {
     const systemPrompt = this.systemPromptOverride
       ? await this.systemPromptOverride()
       : await PromptManager.buildSystemPrompt();
+    const promptTrace = PromptManager.buildPromptTraceSnapshot(systemPrompt, {
+      source: this.systemPromptOverride ? 'session-provider' : 'prompt-manager',
+    });
+    this.sessionTurnLogger.logPromptTrace(promptTrace);
+    this.turnLogRecorder.setPromptMetadata(toPromptTurnMetadata(promptTrace));
+    Logger.info(
+      `[会话 ${this.key}] Prompt trace: system=${promptTrace.system.short_hash}, bundle=${promptTrace.bundle.short_hash}, files=${promptTrace.bundle.file_count}, version=${promptTrace.prompt_version}`,
+    );
     this.initialized = true;
     const initialSystemMessages: Message[] = [];
     if (systemPrompt.trim()) {

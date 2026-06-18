@@ -486,6 +486,7 @@ async function startServer() {
 
   // 闂佽崵濮崇粈浣规櫠娴犲鍋柛鈩冾殢閸熷懘鏌曟径鍫濃偓妤冪矙婵犲洦鐓熼柍鍝勶工閺嬫稓绱撳鍛ч柡浣哥Ч瀹曞ジ鎮㈢亸浣稿緧闂備礁鎲￠悧鏇㈠箠鎼淬劌绠栨俊銈呮噺閸嬨劑鏌嶉搹瑙勭erData闂佽瀛╃粙鎺曟懌闂佸搫鍊风欢姘跺箖娴犲惟闁挎洍鍋撻柣鎾存礋閺屸剝鎷呴崫鍕垫毉閻庤鎸风欢姘跺极?
   const userDataPath = app.getPath('userData');
+  process.env.XIAOBA_USER_DATA_DIR = userDataPath;
   const skillsPath = path.join(userDataPath, 'skills');
   if (!String(process.env.XIAOBA_SKILLS_DIR || '').trim()) {
     process.env.XIAOBA_SKILLS_DIR = skillsPath;
@@ -518,6 +519,9 @@ async function startServer() {
   process.env.XIAOBA_APP_ROOT = appRoot;
   process.env.XIAOBA_IS_PACKAGED = app.isPackaged ? '1' : '0';
   process.env.XIAOBA_RUNTIME_ROOT = getRuntimeRoot();
+  if (!String(process.env.XIAOBA_PROMPT_OVERRIDES_DIR || '').trim()) {
+    process.env.XIAOBA_PROMPT_OVERRIDES_DIR = path.join(userDataPath, 'prompt-overrides');
+  }
 
   // 闂備胶鎳撻悘姘跺箰閸濄儮鍋撻崹顐€块柟顔ㄥ洤閱囨い鎺戝€婚悰銉╂煟閻樿京顦﹀褌绮欓幃?NODE_PATH 闂佽崵濮崇拋鏌ュ疾濞戙垺鍋ゆ繛鍡樺姈娴溿倖绻涢幋鐐茬劰闁哄被鍊濋弻銈団偓鍦Т琚氭繝銏ｎ潐閿曘垹鐣?node_modules
   const nodeModulesPath = getNodeModulesPath();

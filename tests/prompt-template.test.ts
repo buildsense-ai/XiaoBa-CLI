@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   normalizePromptText,
+  readRequiredDefaultPromptFile,
   readRequiredPromptFile,
   renderPromptTemplate,
 } from '../src/utils/prompt-template';
@@ -56,4 +57,41 @@ describe('prompt-template', () => {
     ].join('\n'));
     assert.doesNotMatch(rendered, /Missing section/);
   });
+
+  test('default prompt reads local override when configured', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-prompt-base-'));
+    const overrides = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-prompt-overrides-'));
+    const previous = {
+      XIAOBA_PROMPTS_DIR: process.env.XIAOBA_PROMPTS_DIR,
+      XIAOBA_PROMPT_OVERRIDES_DIR: process.env.XIAOBA_PROMPT_OVERRIDES_DIR,
+      XIAOBA_RUNTIME_ROOT: process.env.XIAOBA_RUNTIME_ROOT,
+      XIAOBA_DISABLE_PROMPT_OVERRIDES: process.env.XIAOBA_DISABLE_PROMPT_OVERRIDES,
+    };
+    try {
+      process.env.XIAOBA_PROMPTS_DIR = base;
+      process.env.XIAOBA_PROMPT_OVERRIDES_DIR = overrides;
+      delete process.env.XIAOBA_RUNTIME_ROOT;
+      delete process.env.XIAOBA_DISABLE_PROMPT_OVERRIDES;
+
+      fs.writeFileSync(path.join(base, 'system-prompt.md'), 'base prompt\n', 'utf-8');
+      assert.equal(readRequiredDefaultPromptFile('system-prompt.md'), 'base prompt');
+
+      fs.writeFileSync(path.join(overrides, 'system-prompt.md'), 'override prompt\n', 'utf-8');
+      assert.equal(readRequiredDefaultPromptFile('system-prompt.md'), 'override prompt');
+    } finally {
+      restoreEnv(previous);
+      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(overrides, { recursive: true, force: true });
+    }
+  });
 });
+
+function restoreEnv(previous: Record<string, string | undefined>): void {
+  for (const [key, value] of Object.entries(previous)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+}

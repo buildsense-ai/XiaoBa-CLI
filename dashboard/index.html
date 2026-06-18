@@ -796,6 +796,201 @@
       color: var(--red);
     }
 
+    .prompt-workbench {
+      display: grid;
+      gap: 18px;
+    }
+
+    .prompt-trace-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .prompt-trace-card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--surface-muted);
+      padding: 14px;
+      min-width: 0;
+    }
+
+    .prompt-trace-label {
+      color: var(--text3);
+      font-size: 11px;
+      font-weight: 800;
+      margin-bottom: 8px;
+    }
+
+    .prompt-trace-value {
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+
+    .prompt-editor-layout {
+      display: grid;
+      grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+      gap: 16px;
+      align-items: stretch;
+    }
+
+    .prompt-file-list,
+    .prompt-editor-pane {
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: var(--surface-strong);
+      box-shadow: var(--shadow-sm), var(--glow);
+      min-width: 0;
+    }
+
+    .prompt-file-list {
+      padding: 10px;
+      max-height: min(68vh, 720px);
+      overflow: auto;
+    }
+
+    .prompt-file-group {
+      display: grid;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+
+    .prompt-file-group-title {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      color: var(--text2);
+      padding: 8px 8px 6px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 900;
+      text-align: left;
+      cursor: pointer;
+      letter-spacing: 0;
+    }
+
+    .prompt-file-group-title:hover {
+      color: var(--text);
+    }
+
+    .prompt-file-group-title .chevron {
+      width: 14px;
+      color: var(--text3);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .prompt-file-item {
+      width: 100%;
+      border: 1px solid transparent;
+      border-radius: 12px;
+      background: transparent;
+      padding: 10px 11px;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+      display: grid;
+      gap: 5px;
+      font: inherit;
+    }
+
+    .prompt-file-item.nested {
+      margin-left: 14px;
+      width: calc(100% - 14px);
+    }
+
+    .prompt-file-item:hover {
+      background: var(--surface-muted);
+      border-color: var(--border-light);
+    }
+
+    .prompt-file-item.active {
+      background: rgba(59, 130, 246, 0.09);
+      border-color: rgba(59, 130, 246, 0.24);
+    }
+
+    .prompt-file-name {
+      font-size: 12px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+
+    .prompt-file-meta {
+      color: var(--text3);
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.4;
+    }
+
+    .prompt-editor-pane {
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .prompt-editor-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .prompt-editor-title {
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+
+    .prompt-editor-meta {
+      color: var(--text2);
+      font-size: 12px;
+      line-height: 1.5;
+      margin-top: 5px;
+    }
+
+    .prompt-editor-textarea {
+      width: 100%;
+      min-height: 460px;
+      resize: vertical;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 13px;
+      line-height: 1.65;
+      white-space: pre;
+      overflow: auto;
+    }
+
+    .prompt-editor-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .prompt-editor-status {
+      color: var(--text2);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.5;
+    }
+
+    @media (max-width: 980px) {
+      .prompt-trace-grid,
+      .prompt-editor-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .prompt-file-list {
+        max-height: 280px;
+      }
+    }
+
     .model-source-layout {
       display: grid;
       gap: 14px;
@@ -4867,6 +5062,9 @@
       <a class="nav-item" onclick="switchPage('store')" data-page="store">
         <span class="nav-icon">+</span> <span>Skills</span>
       </a>
+      <a class="nav-item" onclick="switchPage('prompts')" data-page="prompts">
+        <span class="nav-icon">#</span> <span>提示词</span>
+      </a>
       <a class="nav-item" onclick="switchPage('companion')" data-page="companion">
         <span class="nav-icon">*</span> <span>伙伴中心</span>
       </a>
@@ -5057,6 +5255,24 @@
             <div class="settings-meta" style="margin-bottom:14px">管理你发布到 SkillHub 的 Skill 和版本。下架会隐藏公开安装；删除会移除服务器版本和包文件。</div>
             <div class="portal-list" id="skillhub-package-versions-list"><div class="loading">暂无发布版本</div></div>
           </div>
+      </div>
+
+      <!-- Page: Prompts -->
+      <div class="page" id="page-prompts">
+        <div class="settings-header">
+          <div class="settings-heading">
+            <div class="settings-kicker">Prompt Lab</div>
+            <div class="section-title" style="margin-bottom:0">提示词调试</div>
+            <div class="settings-meta">编辑本地覆盖版本，重启 connector 或新建 session 后生效；日志会记录 system 和 bundle hash。</div>
+          </div>
+          <div class="settings-actions">
+            <button class="btn" onclick="copyPromptOverridesPath()">复制覆盖目录</button>
+            <button class="btn btn-primary" onclick="refreshPromptWorkbench()">刷新</button>
+          </div>
+        </div>
+        <div class="prompt-workbench" id="prompt-workbench">
+          <div class="loading">加载提示词...</div>
+        </div>
       </div>
 
       <!-- Page: Chat -->
@@ -5292,7 +5508,7 @@
     let appReadinessSnapshot = {};
     let appReadinessLoaded = false;
     let appReadinessError = '';
-    const pageTitles = { services:'Agent Hub', store:'SkillHub', companion:'Companion Hub', chat:'CatsCo' };
+    const pageTitles = { services:'Agent Hub', store:'SkillHub', prompts:'Prompt Lab', companion:'Companion Hub', chat:'CatsCo' };
     let catsAuthMode = 'login';
     let catsState = {};
     let catsNextAction = 'none';
@@ -5345,6 +5561,7 @@
     const PET_PROFILE_KEY = 'xiaoba.petProfile';
     const PET_PROCESS_KEY = 'xiaoba.petProcess';
     const PET_POSITION_KEY = 'xiaoba.petPosition';
+    const PROMPT_GROUP_STATE_KEY = 'xiaoba.promptGroupOpenState';
     const DASHBOARD_FONT_SCALE_KEY = 'xiaoba.dashboardFontScale';
     const DASHBOARD_FONT_SCALE_MIN = 85;
     const DASHBOARD_FONT_SCALE_MAX = 150;
@@ -5384,6 +5601,11 @@
     let skillHubAutoConnectInFlight = null;
     let skillHubRegistryCache = [];
     let localSkillsCache = [];
+    let promptEditorState = null;
+    let promptEditorFile = null;
+    let promptEditorSelectedPath = 'system-prompt.md';
+    let promptEditorDirty = false;
+    let promptGroupOpenState = loadPromptGroupOpenState();
 
     function loadPetProfile() {
       try {
@@ -5931,9 +6153,281 @@
       } else if (name === 'store') {
         refreshSkillHubPage();
         fetchSkillHubDeveloper();
+      } else if (name === 'prompts') {
+        refreshPromptWorkbench();
       } else if (name === 'services') {
         fetchStatus();
         refreshSettingsPage();
+      }
+    }
+
+    async function refreshPromptWorkbench(selectPath, options={}){
+      const root=document.getElementById('prompt-workbench');
+      if(root && !promptEditorState)root.innerHTML='<div class="loading">加载提示词...</div>';
+      try{
+        promptEditorState=await parseSimpleResponse(await fetch(API+'/api/prompts'));
+        const paths=(promptEditorState.files||[]).map(file=>file.path);
+        if(selectPath)promptEditorSelectedPath=selectPath;
+        if(!paths.includes(promptEditorSelectedPath)){
+          promptEditorSelectedPath=paths.includes('system-prompt.md')?'system-prompt.md':(paths[0]||'');
+        }
+        if(promptEditorSelectedPath){
+          promptEditorFile=await parseSimpleResponse(await fetch(API+'/api/prompts/file?path='+encodeURIComponent(promptEditorSelectedPath)));
+        }
+        promptEditorDirty=false;
+        renderPromptWorkbench(options);
+      }catch(e){
+        if(root)root.innerHTML='<div class="runtime-note danger">提示词加载失败：'+escapeHtml(e.message||String(e))+'</div>';
+      }
+    }
+
+    async function selectPromptEditorFile(path){
+      if(promptEditorDirty && !confirm('当前 prompt 有未保存改动，确定切换文件吗？'))return;
+      promptEditorSelectedPath=path;
+      promptEditorDirty=false;
+      await refreshPromptWorkbench(path, {preserveFileListScroll:true});
+    }
+
+    function capturePromptWorkbenchScroll(){
+      const list=document.querySelector('#prompt-workbench .prompt-file-list');
+      const textarea=document.getElementById('prompt-editor-textarea');
+      return {
+        fileList:list?list.scrollTop:0,
+        textarea:textarea?textarea.scrollTop:0
+      };
+    }
+
+    function restorePromptWorkbenchScroll(scrollState, options={}){
+      if(!scrollState)return;
+      requestAnimationFrame(()=>{
+        const list=document.querySelector('#prompt-workbench .prompt-file-list');
+        if(list && options.preserveFileListScroll!==false){
+          list.scrollTop=scrollState.fileList||0;
+        }
+        const textarea=document.getElementById('prompt-editor-textarea');
+        if(textarea && options.preserveEditorScroll){
+          textarea.scrollTop=scrollState.textarea||0;
+        }
+      });
+    }
+
+    function renderPromptWorkbench(options={}){
+      const root=document.getElementById('prompt-workbench');
+      if(!root)return;
+      if(!promptEditorState){
+        root.innerHTML='<div class="loading">加载提示词...</div>';
+        return;
+      }
+      const scrollState=capturePromptWorkbenchScroll();
+      const trace=promptEditorState.trace||{};
+      const system=trace.system||{};
+      const bundle=trace.bundle||{};
+      const files=promptEditorState.files||[];
+      const selected=promptEditorFile;
+      const listHtml=renderPromptFileTree(files);
+      const editorHtml=selected?renderPromptEditorPane(selected):'<div class="prompt-editor-pane"><div class="loading">请选择 prompt 文件</div></div>';
+      root.innerHTML=
+        '<div class="prompt-trace-grid">'+
+          promptTraceCard('System hash', system.short_hash||'-', (system.chars||0)+' 字符')+
+          promptTraceCard('Bundle hash', bundle.short_hash||'-', (bundle.file_count||0)+' 个文件')+
+          promptTraceCard('Version', trace.prompt_version||'local', trace.source||'-')+
+          promptTraceCard('Overrides', promptEditorState.writable?'可写':'未配置', promptEditorState.overrides_dir||'-')+
+        '</div>'+
+        '<div class="runtime-note">保存只写入本地覆盖目录，不改安装包内置 prompts。当前运行中的 connector 需要重启，已存在 session 也要新建后才会重新读取 system prompt。</div>'+
+        '<div class="prompt-editor-layout">'+
+          '<div class="prompt-file-list">'+(listHtml||'<div class="loading">没有可编辑的 prompt 文件</div>')+'</div>'+
+          editorHtml+
+        '</div>';
+      restorePromptWorkbenchScroll(scrollState, options);
+    }
+
+    function loadPromptGroupOpenState(){
+      try{
+        return {
+          core:true,
+          docs:false,
+          sidecars:true,
+          subagents:true,
+          transient:true,
+          ...JSON.parse(localStorage.getItem(PROMPT_GROUP_STATE_KEY)||'{}')
+        };
+      }catch(_e){
+        return {core:true,docs:false,sidecars:true,subagents:true,transient:true};
+      }
+    }
+
+    function savePromptGroupOpenState(){
+      try{localStorage.setItem(PROMPT_GROUP_STATE_KEY,JSON.stringify(promptGroupOpenState));}catch(_e){}
+    }
+
+    function togglePromptFileGroup(group){
+      promptGroupOpenState[group]=!promptGroupOpenState[group];
+      savePromptGroupOpenState();
+      renderPromptWorkbench({preserveFileListScroll:true});
+    }
+
+    function renderPromptFileTree(files){
+      const groups=new Map();
+      (files||[]).forEach(file=>{
+        const group=promptFileGroup(file.path);
+        if(!groups.has(group))groups.set(group,[]);
+        groups.get(group).push(file);
+      });
+      const order=['core','docs','sidecars','subagents','transient'];
+      const extra=[...groups.keys()].filter(group=>!order.includes(group)).sort();
+      return [...order,...extra]
+        .filter(group=>groups.has(group))
+        .map(group=>renderPromptFileGroup(group,groups.get(group)))
+        .join('');
+    }
+
+    function promptFileGroup(filePath){
+      if(filePath==='system-prompt.md'||filePath==='runtime-context.md'||filePath==='compact-system.md')return 'core';
+      if(filePath==='README.md')return 'docs';
+      return String(filePath||'').split('/')[0]||'other';
+    }
+
+    function promptGroupLabel(group){
+      const labels={
+        core:'核心提示词',
+        docs:'文档',
+        sidecars:'sidecars',
+        subagents:'subagents',
+        transient:'transient'
+      };
+      return labels[group]||group;
+    }
+
+    function promptGroupHint(group,count){
+      const hints={
+        core:'主会话和压缩的关键入口',
+        docs:'规范说明',
+        sidecars:'独立小模型调用',
+        subagents:'子 agent 角色和边界',
+        transient:'每轮临时注入模板'
+      };
+      return (hints[group]||'目录')+' · '+count+' 个文件';
+    }
+
+    function renderPromptFileGroup(group,files){
+      const open=promptGroupOpenState[group]!==false;
+      const chevron=open?'v':'>';
+      const items=open?files.map(file=>renderPromptFileItem(file,group)).join(''):'';
+      return '<div class="prompt-file-group">'+
+        '<button class="prompt-file-group-title" type="button" onclick="togglePromptFileGroup(\''+escapeHtml(group)+'\')">'+
+          '<span class="chevron">'+chevron+'</span><span>'+escapeHtml(promptGroupLabel(group))+'</span>'+
+          '<span class="prompt-file-meta">'+escapeHtml(promptGroupHint(group,files.length))+'</span>'+
+        '</button>'+
+        items+
+      '</div>';
+    }
+
+    function renderPromptFileItem(file,group){
+      const active=file.path===promptEditorSelectedPath?' active':'';
+      const nested=group==='core'||group==='docs'?'':' nested';
+      const badge=file.overridden?'<span class="tag green">override</span>':'';
+      const label=promptFileLabel(file.path,group);
+      const subpath=promptFileSubpath(file.path,group);
+      const meta=[file.effective?.short_hash||'-', (file.effective?.lines||0)+' 行', subpath].filter(Boolean).join(' · ');
+      return '<button class="prompt-file-item'+nested+active+'" type="button" onclick="selectPromptEditorFile(decodeURIComponent(\''+encodeURIComponent(file.path)+'\'))">'+
+        '<span class="prompt-file-name">'+escapeHtml(label)+'</span>'+
+        '<span class="prompt-file-meta">'+escapeHtml(meta)+' '+badge+'</span>'+
+      '</button>';
+    }
+
+    function promptFileLabel(filePath,group){
+      if(group==='core'||group==='docs')return filePath;
+      const parts=String(filePath||'').split('/').filter(Boolean);
+      return parts.slice(1).join('/')||filePath;
+    }
+
+    function promptFileSubpath(filePath,group){
+      if(group==='core'||group==='docs')return '';
+      const parts=String(filePath||'').split('/').filter(Boolean);
+      return parts.length>2?parts.slice(0,-1).join('/'):'';
+    }
+
+    function promptTraceCard(label, value, meta){
+      return '<div class="prompt-trace-card">'+
+        '<div class="prompt-trace-label">'+escapeHtml(label)+'</div>'+
+        '<div class="prompt-trace-value">'+escapeHtml(value)+'</div>'+
+        '<div class="settings-meta" style="margin-top:6px">'+escapeHtml(meta||'')+'</div>'+
+      '</div>';
+    }
+
+    function renderPromptEditorPane(file){
+      const saveDisabled=promptEditorState?.writable?'':' disabled';
+      const resetDisabled=file.overridden?'':' disabled';
+      return '<div class="prompt-editor-pane">'+
+        '<div class="prompt-editor-head">'+
+          '<div><div class="prompt-editor-title">'+escapeHtml(file.path)+'</div>'+
+          '<div class="prompt-editor-meta">当前 '+escapeHtml(file.effective.short_hash)+' · 基线 '+escapeHtml(file.base.short_hash)+' · '+(file.overridden?'已有本地覆盖':'使用内置基线')+'</div></div>'+
+          (file.overridden?'<span class="tag green">override</span>':'<span class="tag">base</span>')+
+        '</div>'+
+        '<textarea class="config-input prompt-editor-textarea" id="prompt-editor-textarea" spellcheck="false" oninput="markPromptEditorDirty()">'+escapeHtml(file.content||'')+'</textarea>'+
+        '<div class="prompt-editor-actions">'+
+          '<div class="prompt-editor-status" id="prompt-editor-status">'+(promptEditorState?.writable?'编辑后保存覆盖版本；重启 connector 后生效。':'当前环境没有配置覆盖目录，不能保存。')+'</div>'+
+          '<div class="settings-actions">'+
+            '<button class="btn" onclick="resetPromptEditorFile()"'+resetDisabled+'>重置为内置</button>'+
+            '<button class="btn btn-primary" id="prompt-editor-save-btn" onclick="savePromptEditorFile()"'+saveDisabled+'>保存覆盖</button>'+
+          '</div>'+
+        '</div>'+
+      '</div>';
+    }
+
+    function markPromptEditorDirty(){
+      promptEditorDirty=true;
+      const status=document.getElementById('prompt-editor-status');
+      if(status)status.textContent='有未保存改动。保存后需要重启 connector 或新建 session。';
+    }
+
+    async function savePromptEditorFile(){
+      const textarea=document.getElementById('prompt-editor-textarea');
+      if(!textarea || !promptEditorSelectedPath)return;
+      const status=document.getElementById('prompt-editor-status');
+      try{
+        if(status)status.textContent='正在保存...';
+        promptEditorFile=await parseSimpleResponse(await fetch(API+'/api/prompts/file',{
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({path:promptEditorSelectedPath,content:textarea.value})
+        }));
+        await refreshPromptWorkbench(promptEditorSelectedPath, {
+          preserveFileListScroll:true,
+          preserveEditorScroll:true
+        });
+        const nextStatus=document.getElementById('prompt-editor-status');
+        if(nextStatus)nextStatus.textContent='已保存覆盖版本。重启 connector 或新建 session 后生效。';
+      }catch(e){
+        if(status)status.textContent='保存失败：'+(e.message||String(e));
+      }
+    }
+
+    async function resetPromptEditorFile(){
+      if(!promptEditorSelectedPath)return;
+      if(!confirm('确定删除这个 prompt 的本地覆盖，恢复使用内置版本吗？'))return;
+      const status=document.getElementById('prompt-editor-status');
+      try{
+        if(status)status.textContent='正在重置...';
+        promptEditorFile=await parseSimpleResponse(await fetch(API+'/api/prompts/file?path='+encodeURIComponent(promptEditorSelectedPath),{method:'DELETE'}));
+        await refreshPromptWorkbench(promptEditorSelectedPath, {
+          preserveFileListScroll:true,
+          preserveEditorScroll:true
+        });
+        const nextStatus=document.getElementById('prompt-editor-status');
+        if(nextStatus)nextStatus.textContent='已恢复内置版本。重启 connector 或新建 session 后生效。';
+      }catch(e){
+        if(status)status.textContent='重置失败：'+(e.message||String(e));
+      }
+    }
+
+    async function copyPromptOverridesPath(){
+      try{
+        if(!promptEditorState)promptEditorState=await parseSimpleResponse(await fetch(API+'/api/prompts'));
+        await copyTextToClipboard(promptEditorState.overrides_dir||'');
+        alert('已复制 prompt 覆盖目录');
+      }catch(e){
+        alert('复制失败：'+(e.message||String(e)));
       }
     }
 

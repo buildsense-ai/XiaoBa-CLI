@@ -58,6 +58,12 @@ import {
   readSkillHubLocalMetadata,
 } from '../../skillhub/local-skill-metadata';
 import {
+  deletePromptOverride,
+  getPromptEditorFile,
+  getPromptEditorState,
+  writePromptOverride,
+} from '../../utils/prompt-editor';
+import {
   BindWeixinChannelResult,
   WeixinChannelStatus,
   bindWeixinChannelToCurrentAgent,
@@ -1620,6 +1626,38 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       }));
     } catch (e: any) {
       res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.get('/prompts', async (_req, res) => {
+    try {
+      res.json(await getPromptEditorState());
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.get('/prompts/file', (req, res) => {
+    try {
+      res.json(getPromptEditorFile(String(req.query.path || '')));
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.put('/prompts/file', (req, res) => {
+    try {
+      res.json(writePromptOverride(String(req.body?.path || ''), String(req.body?.content ?? '')));
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.delete('/prompts/file', (req, res) => {
+    try {
+      res.json(deletePromptOverride(String(req.query.path || '')));
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || String(e) });
     }
   });
 

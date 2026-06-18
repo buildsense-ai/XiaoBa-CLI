@@ -46,6 +46,38 @@ describe('session-log-schema', () => {
       level: 'INFO',
       message: 'runtime',
     };
+    const promptTrace = {
+      entry_type: 'prompt_trace',
+      timestamp: '2026-05-01T08:00:01.500Z',
+      session_id: 'user:current',
+      session_type: 'chat',
+      prompt: {
+        source: 'prompt-manager',
+        prompt_version: 'local',
+        prompts_dir: '/tmp/prompts',
+        generated_at: '2026-05-01T08:00:01.000Z',
+        system: {
+          sha256: 'a'.repeat(64),
+          short_hash: 'a'.repeat(12),
+          chars: 20,
+          lines: 2,
+        },
+        bundle: {
+          sha256: 'b'.repeat(64),
+          short_hash: 'b'.repeat(12),
+          file_count: 1,
+          files: [{
+            path: 'system-prompt.md',
+            sha256: 'a'.repeat(64),
+            short_hash: 'a'.repeat(12),
+            bytes: 20,
+            chars: 20,
+            lines: 2,
+          }],
+        },
+        loaded_files: ['system-prompt.md'],
+      },
+    };
     const legacyTurn = {
       turn: 2,
       timestamp: '2026-05-01T08:00:02.000Z',
@@ -64,14 +96,17 @@ describe('session-log-schema', () => {
     const entries = parseSessionLogContent([
       JSON.stringify(currentTurn),
       JSON.stringify(runtime),
+      JSON.stringify(promptTrace),
       JSON.stringify(legacyTurn),
       JSON.stringify(malformedTurn),
     ].join('\r\n'));
 
-    assert.equal(entries.length, 4);
-    assert.deepStrictEqual(entries.map(entry => isSessionTurnEntry(entry)), [true, false, true, false]);
+    assert.equal(entries.length, 5);
+    assert.deepStrictEqual(entries.map(entry => isSessionTurnEntry(entry)), [true, false, false, true, false]);
     assert.deepStrictEqual((entries[0] as any).user.runtime_feedback, ['[运行时反馈] runtime\n错误: failed']);
     assert.equal((entries[0] as any).user.runtime_observation_source, 'subagent_result');
+    assert.equal((entries[2] as any).entry_type, 'prompt_trace');
+    assert.equal((entries[2] as any).prompt.system.short_hash, 'a'.repeat(12));
   });
 
   test('resolves session id from content and falls back when content has no session id', () => {
