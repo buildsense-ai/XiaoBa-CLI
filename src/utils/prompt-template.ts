@@ -20,6 +20,24 @@ export function getPromptOverridesDir(env: NodeJS.ProcessEnv = process.env): str
   return runtimeRoot ? path.resolve(runtimeRoot, 'prompt-overrides') : undefined;
 }
 
+export function isSafePromptOverridesDir(promptsDir: string, overridesDir: string): boolean {
+  const base = canonicalPath(promptsDir);
+  const overrides = canonicalPath(overridesDir);
+  if (base === overrides) return false;
+  return !isPathInside(base, overrides) && !isPathInside(overrides, base);
+}
+
+export function assertSafePromptOverridesDir(promptsDir: string): string {
+  const overridesDir = getPromptOverridesDir();
+  if (!overridesDir) {
+    throw new Error('Prompt override directory is not configured');
+  }
+  if (!isSafePromptOverridesDir(promptsDir, overridesDir)) {
+    throw new Error('Prompt override directory must be separate from the bundled prompts directory');
+  }
+  return overridesDir;
+}
+
 export function normalizePromptRelativePath(relativePath: string): string {
   const input = String(relativePath || '').replace(/\\/g, '/').trim();
   const normalized = path.posix.normalize(input);
@@ -59,6 +77,7 @@ export function resolvePromptPathWithin(rootDir: string, relativePath: string): 
 export function resolvePromptOverrideFilePath(promptsDir: string, relativePath: string): string | undefined {
   if (!shouldUsePromptOverrides(promptsDir)) return undefined;
   const overridesDir = getPromptOverridesDir();
+  if (overridesDir && !isSafePromptOverridesDir(promptsDir, overridesDir)) return undefined;
   return overridesDir ? resolvePromptPathWithin(overridesDir, relativePath) : undefined;
 }
 
@@ -154,4 +173,18 @@ function shouldUsePromptOverrides(promptsDir: string): boolean {
   if (!overridesDir) return false;
   const resolved = path.resolve(promptsDir);
   return resolved === path.resolve(getPromptBaseDir()) || resolved === path.resolve(DEFAULT_PROMPTS_DIR);
+}
+
+function canonicalPath(value: string): string {
+  const resolved = path.resolve(value);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function isPathInside(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
 }

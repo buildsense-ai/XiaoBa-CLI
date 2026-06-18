@@ -54,6 +54,49 @@ describe('prompt companion advisor', { concurrency: false }, () => {
     assert.equal(fs.readFileSync(path.join(testRoot, 'prompts', 'system-prompt.md'), 'utf8'), '# CatsCo\n\n你是 CatsCo。');
   });
 
+  test('requires a cached proposal id before applying', async () => {
+    const {
+      applyPromptCompanionProposal,
+    } = loadModule('../src/pet/prompt-companion');
+
+    await assert.rejects(
+      () => applyPromptCompanionProposal(''),
+      /Prompt proposal id is required/,
+    );
+    await assert.rejects(
+      () => applyPromptCompanionProposal('brief-response-v1'),
+      /Prompt proposal is not available/,
+    );
+  });
+
+  test('caches empty proposal checks to avoid repeated advisor work', async () => {
+    const {
+      getPromptCompanionProposal,
+    } = loadModule('../src/pet/prompt-companion');
+    writePrompt('system-prompt.md', [
+      '# CatsCo',
+      '',
+      '<!-- catsco:companion-brief-response-v1 -->',
+      '## 默认表达',
+      '- 已存在。',
+      '',
+      '<!-- catsco:companion-error-recovery-v1 -->',
+      '## 异常恢复',
+      '- 已存在。',
+    ].join('\n'));
+
+    const first = await getPromptCompanionProposal();
+    assert.equal(first.proposal, null);
+    const statePath = path.join(testRoot, 'pet', 'prompt-companion-state.json');
+    const firstState = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.match(firstState.cached_skip?.signals_hash || '', /^[a-f0-9]{64}$/);
+
+    const second = await getPromptCompanionProposal();
+    assert.equal(second.proposal, null);
+    const secondState = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.equal(secondState.cached_skip.signals_hash, firstState.cached_skip.signals_hash);
+  });
+
   test('supports bounded delete advisor patches', async () => {
     const { __promptCompanionTest } = loadModule('../src/pet/prompt-companion');
     const current = [
@@ -83,6 +126,25 @@ describe('prompt companion advisor', { concurrency: false }, () => {
       find: current,
     });
     assert.equal(unsafePatch, null);
+
+    const duplicatePatch = __promptCompanionTest.buildAdvisorPatch(`${current}\n\n## 过时规则\n- 这段已经重复，可以删除。`, {
+      operation: 'delete',
+      find: '## 过时规则\n- 这段已经重复，可以删除。',
+    });
+    assert.equal(duplicatePatch, null);
+
+    const protectedPatch = __promptCompanionTest.buildAdvisorPatch(current, {
+      operation: 'delete',
+      find: '保留核心身份和工作方式。',
+    });
+    assert.equal(protectedPatch, null);
+
+    const duplicateReplace = __promptCompanionTest.buildAdvisorPatch('重复规则\n重复规则', {
+      operation: 'replace',
+      find: '重复规则',
+      replace: '新的规则',
+    });
+    assert.equal(duplicateReplace, null);
   });
 
   function writePrompt(relativePath: string, content: string): void {

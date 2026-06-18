@@ -132,6 +132,36 @@ describe('dashboard skills API', () => {
     assert.equal(secondData.existing, true);
   });
 
+  test('does not remove an existing prompt editor directory without overwrite', async () => {
+    const targetDir = path.join(testRoot, 'user-skills/catsco-prompt-editor');
+    fs.rmSync(targetDir, { recursive: true, force: true });
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.writeFileSync(path.join(targetDir, 'notes.txt'), 'keep me', 'utf8');
+
+    const install = await fetch(`${baseUrl}/api/prompts/editor-skill/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const data = await install.json() as any;
+
+    assert.equal(install.status, 200);
+    assert.equal(data.existing, true);
+    assert.equal(data.installed, false);
+    assert.equal(fs.readFileSync(path.join(targetDir, 'notes.txt'), 'utf8'), 'keep me');
+
+    const overwrite = await fetch(`${baseUrl}/api/prompts/editor-skill/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ overwrite: true }),
+    });
+    const overwriteData = await overwrite.json() as any;
+    assert.equal(overwrite.status, 200);
+    assert.equal(overwriteData.installed, true);
+    assert.equal(fs.existsSync(path.join(targetDir, 'SKILL.md')), true);
+    assert.equal(fs.existsSync(path.join(targetDir, 'notes.txt')), false);
+  });
+
   function writeSkill(relativePath: string, name: string, description: string): void {
     const filePath = path.join(testRoot, relativePath);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });

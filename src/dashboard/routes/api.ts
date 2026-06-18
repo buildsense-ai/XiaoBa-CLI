@@ -3147,7 +3147,8 @@ function installPromptEditorSeedSkill(options: { overwrite?: boolean } = {}): an
   const targetDir = resolveChildDirectory(skillsRoot, PROMPT_EDITOR_SKILL_NAME);
   const targetSkillFile = path.join(targetDir, 'SKILL.md');
   const disabledSkillFile = targetSkillFile + '.disabled';
-  const existing = fs.existsSync(targetSkillFile) || fs.existsSync(disabledSkillFile);
+  const targetDirExists = fs.existsSync(targetDir);
+  const existing = targetDirExists || fs.existsSync(targetSkillFile) || fs.existsSync(disabledSkillFile);
 
   if (existing && !options.overwrite) {
     return {
@@ -3155,12 +3156,14 @@ function installPromptEditorSeedSkill(options: { overwrite?: boolean } = {}): an
       installed: false,
       existing: true,
       name: PROMPT_EDITOR_SKILL_NAME,
-      path: fs.existsSync(targetSkillFile) ? targetSkillFile : disabledSkillFile,
+      path: fs.existsSync(targetSkillFile)
+        ? targetSkillFile
+        : (fs.existsSync(disabledSkillFile) ? disabledSkillFile : targetDir),
       disabled: !fs.existsSync(targetSkillFile),
     };
   }
 
-  if (fs.existsSync(targetDir)) {
+  if (targetDirExists) {
     fs.rmSync(targetDir, { recursive: true, force: true });
   }
   fs.mkdirSync(path.dirname(targetSkillFile), { recursive: true });

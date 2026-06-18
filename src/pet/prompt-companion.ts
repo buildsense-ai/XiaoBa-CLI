@@ -63,6 +63,10 @@ interface PromptCompanionState {
   dismissed: Record<string, string>;
   applied: Record<string, string>;
   cached?: PromptCompanionProposal;
+  cached_skip?: {
+    created_at: string;
+    signals_hash: string;
+  };
 }
 
 export async function getPromptCompanionProposal(options: {
@@ -73,6 +77,9 @@ export async function getPromptCompanionProposal(options: {
   const events = getPetService().timeline(50);
   const signals = buildSignals(events, state.trace, readRecentSessionSignals());
   const stateFile = readState();
+  if (!options.id && getUsableCachedSkip(stateFile, signals)) {
+    return { proposal: null, signals };
+  }
   const cached = getUsableCachedProposal(stateFile, state, options.id);
   if (cached) {
     const key = dismissalKey(cached);
@@ -88,8 +95,16 @@ export async function getPromptCompanionProposal(options: {
     signals,
   });
 
-  if (!proposal) return { proposal: null, signals };
+  if (!proposal) {
+    stateFile.cached_skip = {
+      created_at: new Date().toISOString(),
+      signals_hash: signalHash(signals),
+    };
+    writeState(stateFile);
+    return { proposal: null, signals };
+  }
   stateFile.cached = proposal;
+  delete stateFile.cached_skip;
   writeState(stateFile);
   const key = dismissalKey(proposal);
   if (!options.includeDismissed && stateFile.dismissed[key]) {
@@ -104,12 +119,18 @@ export async function applyPromptCompanionProposal(id: string): Promise<{
   proposal: PromptCompanionProposal;
   file: ReturnType<typeof writePromptOverride>;
 }> {
-  const { proposal } = await getPromptCompanionProposal({ includeDismissed: true, id });
+  const normalizedId = String(id || '').trim();
+  if (!normalizedId) throw new Error('Prompt proposal id is required');
+
+  const editorState = await getPromptEditorState();
+  const state = readState();
+  const proposal = getUsableCachedProposal(state, editorState, normalizedId);
   if (!proposal) throw new Error(`Prompt proposal is not available: ${id}`);
 
   const file = writePromptOverride(proposal.path, proposal.proposed_content);
-  const state = readState();
   state.applied[dismissalKey(proposal)] = new Date().toISOString();
+  delete state.cached;
+  delete state.cached_skip;
   writeState(state);
 
   getPetService().recordEvent({
@@ -127,11 +148,16 @@ export async function dismissPromptCompanionProposal(id: string): Promise<{
   dismissed: true;
   proposal: PromptCompanionProposal;
 }> {
-  const { proposal } = await getPromptCompanionProposal({ includeDismissed: true, id });
+  const normalizedId = String(id || '').trim();
+  if (!normalizedId) throw new Error('Prompt proposal id is required');
+
+  const editorState = await getPromptEditorState();
+  const state = readState();
+  const proposal = getUsableCachedProposal(state, editorState, normalizedId);
   if (!proposal) throw new Error(`Prompt proposal is not available: ${id}`);
 
-  const state = readState();
   state.dismissed[dismissalKey(proposal)] = new Date().toISOString();
+  delete state.cached;
   writeState(state);
   return { ok: true, dismissed: true, proposal };
 }
@@ -267,7 +293,7 @@ function buildAdvisorPatch(current: string, parsed: any): { operation: PromptCom
   if (operation === 'replace') {
     const find = sanitizePatchText(parsed.find, 1800);
     const replacement = sanitizePatchText(parsed.replace, 2400);
-    if (!find || !replacement || !current.includes(find)) return null;
+    if (!find || !replacement || !hasUniqueMatch(current, find)) return null;
     const proposed = current.replace(find, replacement);
     return { operation: 'replace', proposed, preview: `- ${find}\n+ ${replacement}` };
   }
@@ -307,10 +333,27 @@ function sanitizePatchText(value: unknown, maxLength: number): string {
 
 function canDeletePromptText(current: string, find: string): boolean {
   const source = String(current || '').trim();
-  if (!source || !source.includes(find)) return false;
+  if (!source || !hasUniqueMatch(source, find)) return false;
   if (source === find.trim()) return false;
-  if (find.length > Math.max(600, Math.floor(source.length * 0.35))) return false;
+  if (find.length > Math.min(600, Math.max(80, Math.floor(source.length * 0.2)))) return false;
+  if (find.split('\n').length > 12) return false;
+  if (containsProtectedPromptText(find)) return false;
+  if (!looksLikeStalePromptText(find)) return false;
   return true;
+}
+
+function hasUniqueMatch(source: string, find: string): boolean {
+  if (!source || !find) return false;
+  const first = source.indexOf(find);
+  return first >= 0 && source.indexOf(find, first + find.length) < 0;
+}
+
+function containsProtectedPromptText(text: string): boolean {
+  return /你是\s*CatsCo|Your AI Assistant|工具权限|权限边界|安全|不得|不要.*泄露|secret|api[_-]?key|token/i.test(text);
+}
+
+function looksLikeStalePromptText(text: string): boolean {
+  return /catsco:companion-|过时|重复|冗余|冲突|废弃|obsolete|deprecated|duplicate|redundant|conflict/i.test(text);
 }
 
 function normalizePromptAfterDelete(value: string): string {
@@ -330,6 +373,7 @@ function isUsablePromptAfterDelete(current: string, proposed: string): boolean {
 
 function normalizeAdvisorTargetPath(value: unknown, state: PromptEditorStateSnapshot): string {
   const target = String(value || DEFAULT_TARGET_PROMPT).replace(/\\/g, '/').trim();
+  if (target === 'sidecars/prompt-companion-advisor.md') return '';
   const available = new Set((state.files || []).map(file => file.path));
   return available.has(target) ? target : '';
 }
@@ -439,6 +483,14 @@ function getUsableCachedProposal(
   return proposal;
 }
 
+function getUsableCachedSkip(state: PromptCompanionState, signals: PromptCompanionSignals): boolean {
+  const cached = state.cached_skip;
+  if (!cached) return false;
+  if (cached.signals_hash !== signalHash(signals)) return false;
+  const created = Date.parse(cached.created_at || '');
+  return Number.isFinite(created) && Date.now() - created <= CACHE_TTL_MS;
+}
+
 function buildSignals(
   events: PetEvent[],
   trace: Awaited<ReturnType<typeof getPromptEditorState>>['trace'],
@@ -497,6 +549,7 @@ function resolveSessionLogsDir(env: NodeJS.ProcessEnv = process.env): string {
 function listRecentSessionLogFiles(root: string, limit: number): string[] {
   if (!fs.existsSync(root)) return [];
   const files: { path: string; mtime: number }[] = [];
+  const maxScanned = Math.max(64, limit * 16);
   walkFiles(root, filePath => {
     if (path.extname(filePath).toLowerCase() !== '.jsonl') return;
     try {
@@ -504,7 +557,7 @@ function listRecentSessionLogFiles(root: string, limit: number): string[] {
     } catch (_error) {
       // Ignore disappearing log files.
     }
-  });
+  }, maxScanned);
   return files
     .sort((a, b) => b.mtime - a.mtime)
     .slice(0, Math.max(1, limit))
@@ -535,11 +588,22 @@ function looksLikeFailedAssistantText(text: string): boolean {
   return /\[处理失败|API错误|请求失败|Connection error|MaxRetriesExceeded|rate limit|上下文|context/i.test(text || '');
 }
 
-function walkFiles(directory: string, visit: (filePath: string) => void): void {
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+function walkFiles(directory: string, visit: (filePath: string) => void, maxFiles = 256, state = { seen: 0 }): void {
+  if (state.seen >= maxFiles) return;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (state.seen >= maxFiles) return;
     const filePath = path.join(directory, entry.name);
-    if (entry.isDirectory()) walkFiles(filePath, visit);
-    else if (entry.isFile()) visit(filePath);
+    if (entry.isDirectory()) walkFiles(filePath, visit, maxFiles, state);
+    else if (entry.isFile()) {
+      state.seen += 1;
+      visit(filePath);
+    }
   }
 }
 
@@ -579,6 +643,7 @@ function readState(): PromptCompanionState {
       dismissed: parsed.dismissed && typeof parsed.dismissed === 'object' ? parsed.dismissed : {},
       applied: parsed.applied && typeof parsed.applied === 'object' ? parsed.applied : {},
       cached: parsed.cached,
+      cached_skip: parsed.cached_skip,
     };
   } catch (_error) {
     return { dismissed: {}, applied: {} };
@@ -593,6 +658,10 @@ function writeState(state: PromptCompanionState): void {
 
 function hashText(text: string): string {
   return crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
+function signalHash(signals: PromptCompanionSignals): string {
+  return hashText(JSON.stringify(signals));
 }
 
 function sanitizeSingleLine(value: string, maxLength: number): string {
