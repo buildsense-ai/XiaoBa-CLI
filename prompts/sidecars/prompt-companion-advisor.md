@@ -28,10 +28,22 @@
   "replace": "替换后的短文本"
 }
 
+也可以删除过时、重复或互相冲突的短片段：
+{
+  "skip": false,
+  "target_path": "system-prompt.md",
+  "operation": "delete",
+  "title": "40 字以内标题",
+  "reason": "为什么删除这段更好，180 字以内",
+  "risk": "风险和注意点，160 字以内",
+  "find": "原文件中必须完整存在、且需要删除的短文本"
+}
+
 约束：
 - 只提出一处小改动。
 - 不要重写整篇 prompt。
 - target_path 必须来自用户消息里的 editable_paths。
-- append 用 append_section；replace 必须精确提供 find 和 replace。
+- append 用 append_section；replace 必须精确提供 find 和 replace；delete 必须精确提供 find。
+- delete 只能删除短小、明确过时/重复/冲突的片段，不能删除核心身份、工具原则、权限边界或整篇 prompt。
 - 不要写入密钥、用户隐私、长日志、具体聊天内容或机器路径。
-- append_section 或 replace 应该是稳定规则，不是一次性任务说明。
+- append_section、replace 或 delete 的 find 应该对应稳定规则，不是一次性任务说明。

@@ -26,13 +26,16 @@ const BRIEF_MARKER = '<!-- catsco:companion-brief-response-v1 -->';
 const RECOVERY_MARKER = '<!-- catsco:companion-error-recovery-v1 -->';
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const ADVISOR_MAX_TOKENS = 900;
+const ADVISOR_SCHEMA_VERSION = 'prompt-companion-v2';
 type PromptEditorStateSnapshot = Awaited<ReturnType<typeof getPromptEditorState>>;
+type PromptCompanionOperation = 'append' | 'replace' | 'delete';
 
 export interface PromptCompanionProposal {
+  schema_version: string;
   id: string;
   title: string;
   path: string;
-  operation: 'append' | 'replace';
+  operation: PromptCompanionOperation;
   reason: string;
   risk: string;
   base_hash: string;
@@ -235,10 +238,12 @@ function buildAdvisorUserPrompt(state: PromptEditorStateSnapshot, signals: Promp
     editable_paths: editablePaths,
     constraints: [
       '只能修改 editable_paths 里的现有 .md 文件。',
-      '优先提出一处小改动；operation 可为 append 或 replace。',
-      'append 用 append_section；replace 必须提供原文精确 find 和替换文本 replace。',
+      '优先提出一处小改动；operation 可为 append、replace 或 delete。',
+      'append 用 append_section；replace 必须提供原文精确 find 和替换文本 replace；delete 必须提供原文精确 find。',
       '不要重写整篇 prompt；不要输出完整文件。',
+      'delete 只用于删除过时、重复或互相冲突的短片段，不能删除整篇 prompt 或大段核心规则。',
       '不要加入密钥、用户隐私、长日志或具体聊天内容。',
+      'append_section、replace 或 delete 的 find 应该对应稳定规则，不是一次性任务说明。',
       '如果没有明显收益，返回 {"skip":true}。',
     ],
     signals,
@@ -257,7 +262,7 @@ function parseAdvisorJson(text: string): any | null {
   }
 }
 
-function buildAdvisorPatch(current: string, parsed: any): { operation: 'append' | 'replace'; proposed: string; preview: string } | null {
+function buildAdvisorPatch(current: string, parsed: any): { operation: PromptCompanionOperation; proposed: string; preview: string } | null {
   const operation = String(parsed.operation || 'append').toLowerCase();
   if (operation === 'replace') {
     const find = sanitizePatchText(parsed.find, 1800);
@@ -265,6 +270,14 @@ function buildAdvisorPatch(current: string, parsed: any): { operation: 'append' 
     if (!find || !replacement || !current.includes(find)) return null;
     const proposed = current.replace(find, replacement);
     return { operation: 'replace', proposed, preview: `- ${find}\n+ ${replacement}` };
+  }
+
+  if (operation === 'delete') {
+    const find = sanitizePatchText(parsed.find, 1800);
+    if (!find || !canDeletePromptText(current, find)) return null;
+    const proposed = normalizePromptAfterDelete(current.replace(find, ''));
+    if (!isUsablePromptAfterDelete(current, proposed)) return null;
+    return { operation: 'delete', proposed, preview: `- ${find}` };
   }
 
   const appendSection = sanitizeAdvisorSection(parsed.append_section);
@@ -290,6 +303,29 @@ function sanitizePatchText(value: unknown, maxLength: number): string {
   if (!text || text.length > maxLength) return '';
   if (/api[_-]?key|secret|token|password|sk-[a-z0-9_-]{12,}/i.test(text)) return '';
   return text;
+}
+
+function canDeletePromptText(current: string, find: string): boolean {
+  const source = String(current || '').trim();
+  if (!source || !source.includes(find)) return false;
+  if (source === find.trim()) return false;
+  if (find.length > Math.max(600, Math.floor(source.length * 0.35))) return false;
+  return true;
+}
+
+function normalizePromptAfterDelete(value: string): string {
+  return String(value || '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{4,}/g, '\n\n\n')
+    .trim();
+}
+
+function isUsablePromptAfterDelete(current: string, proposed: string): boolean {
+  const before = String(current || '').trim();
+  const after = String(proposed || '').trim();
+  if (!after || after === before) return false;
+  if (before.length > 200 && after.length < Math.max(120, Math.floor(before.length * 0.5))) return false;
+  return true;
 }
 
 function normalizeAdvisorTargetPath(value: unknown, state: PromptEditorStateSnapshot): string {
@@ -370,6 +406,7 @@ function createProposal(options: {
   signals: PromptCompanionSignals;
 }): PromptCompanionProposal {
   return {
+    schema_version: ADVISOR_SCHEMA_VERSION,
     id: options.id,
     title: options.title,
     path: options.path || DEFAULT_TARGET_PROMPT,
@@ -393,6 +430,7 @@ function getUsableCachedProposal(
 ): PromptCompanionProposal | null {
   const proposal = state.cached;
   if (!proposal) return null;
+  if (proposal.schema_version !== ADVISOR_SCHEMA_VERSION) return null;
   const file = (editorState.files || []).find(item => item.path === proposal.path);
   if (!file || file.effective.short_hash !== proposal.base_hash) return null;
   if (requestedId && proposal.id !== requestedId) return null;
@@ -564,3 +602,7 @@ function sanitizeSingleLine(value: string, maxLength: number): string {
     .trim()
     .slice(0, maxLength);
 }
+
+export const __promptCompanionTest = {
+  buildAdvisorPatch,
+};

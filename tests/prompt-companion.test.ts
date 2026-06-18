@@ -54,6 +54,37 @@ describe('prompt companion advisor', { concurrency: false }, () => {
     assert.equal(fs.readFileSync(path.join(testRoot, 'prompts', 'system-prompt.md'), 'utf8'), '# CatsCo\n\n你是 CatsCo。');
   });
 
+  test('supports bounded delete advisor patches', async () => {
+    const { __promptCompanionTest } = loadModule('../src/pet/prompt-companion');
+    const current = [
+      '# CatsCo',
+      '',
+      '保留核心身份和工作方式。',
+      '',
+      '## 过时规则',
+      '- 这段已经重复，可以删除。',
+      '',
+      '## 当前规则',
+      '- 这段需要保留。',
+    ].join('\n');
+
+    const patch = __promptCompanionTest.buildAdvisorPatch(current, {
+      operation: 'delete',
+      find: '## 过时规则\n- 这段已经重复，可以删除。',
+    });
+
+    assert.equal(patch?.operation, 'delete');
+    assert.doesNotMatch(patch?.proposed || '', /过时规则/);
+    assert.match(patch?.proposed || '', /当前规则/);
+    assert.match(patch?.preview || '', /^- ## 过时规则/);
+
+    const unsafePatch = __promptCompanionTest.buildAdvisorPatch(current, {
+      operation: 'delete',
+      find: current,
+    });
+    assert.equal(unsafePatch, null);
+  });
+
   function writePrompt(relativePath: string, content: string): void {
     const filePath = path.join(testRoot, 'prompts', relativePath);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });

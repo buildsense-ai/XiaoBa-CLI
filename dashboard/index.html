@@ -5866,9 +5866,10 @@
       }
       if (card) card.classList.remove('empty');
       const p = promptCompanionProposal;
+      const operationLabel = p.operation === 'replace' ? '精确替换' : (p.operation === 'delete' ? '删除片段' : '追加规则');
       box.innerHTML =
         '<div class="companion-prompt-title">'+escapeHtml(p.title||'Prompt 调优建议')+'</div>'+
-        '<div class="companion-prompt-copy">目标：<code>'+escapeHtml(p.path||'system-prompt.md')+'</code> · '+escapeHtml(p.operation==='replace'?'精确替换':'追加规则')+'</div>'+
+        '<div class="companion-prompt-copy">目标：<code>'+escapeHtml(p.path||'system-prompt.md')+'</code> · '+escapeHtml(operationLabel)+'</div>'+
         '<div class="companion-prompt-copy">'+escapeHtml(p.reason||'宠物 advisor 提出了一条小改动。')+'</div>'+
         '<div class="companion-prompt-copy">'+escapeHtml(p.risk||'应用前请预览。')+'</div>'+
         '<div class="companion-prompt-preview">'+escapeHtml(p.preview||'')+'</div>'+
