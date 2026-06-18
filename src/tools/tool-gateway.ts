@@ -33,7 +33,7 @@ export interface CatsCoVisiblePathOptions {
   preserveRelative?: boolean;
 }
 
-const REMOTE_DEVICE_RPC_OPERATIONS = new Set<DeviceGrantOperation>(['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'execute_shell']);
+const REMOTE_DEVICE_RPC_OPERATIONS = new Set<DeviceGrantOperation>(['read_file', 'resolve_common_directory', 'glob', 'grep', 'write_file', 'edit_file', 'execute_shell']);
 
 export function isCatsCoToolGatewayContext(context: ToolExecutionContext): boolean {
   return context.surface === 'catscompany' || context.executionScope?.source === 'catscompany';
@@ -152,7 +152,7 @@ export function resolveToolGatewayAccess(
     if (!REMOTE_DEVICE_RPC_OPERATIONS.has(options.operation)) {
       return denied([
         `后端选定的用户设备不是当前运行体，但 ${options.operation} 还没有开放远程执行。`,
-        '当前只开放 read_file / glob / grep / write_file / edit_file / execute_shell 远程工具。',
+        '当前只开放 read_file / resolve_common_directory / glob / grep / write_file / edit_file / execute_shell 远程工具。',
       ], options.targetLabel);
     }
     if (!context.deviceRpc) {

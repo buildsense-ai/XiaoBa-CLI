@@ -3,6 +3,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
+import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
+import { resolveToolGatewayAccess } from './tool-gateway';
 
 export type CommonDirectoryKind =
   | 'desktop'
@@ -14,7 +16,7 @@ export type CommonDirectoryKind =
   | 'home'
   | 'temp';
 
-interface DirectoryResolution {
+export interface DirectoryResolution {
   kind: CommonDirectoryKind;
   path: string;
   source: string;
@@ -161,28 +163,58 @@ export class CommonDirectoryTool implements Tool {
     const input = typeof args?.directory === 'string' ? args.directory : '';
     const kind = normalizeCommonDirectory(input);
     if (!kind) {
-      return {
-        ok: false,
-        errorCode: 'INVALID_TOOL_ARGUMENTS',
-        message: `Unknown common directory: ${input || '(empty)'}\nSupported: desktop, downloads, documents, pictures, videos, music, home, temp`,
-      };
+      return invalidCommonDirectoryResult(input);
     }
 
-    const result = resolveCommonDirectory(kind);
-    return {
-      ok: true,
-      content: [
-        'Resolved common directory:',
-        `kind: ${result.kind}`,
-        `path: ${result.path}`,
-        `source: ${result.source}`,
-        `exists: ${result.exists}`,
-        `platform: ${result.platform}`,
-        '',
-        'Use this exact path as the base directory for follow-up file operations.',
-      ].join('\n'),
-    };
+    const gateway = resolveToolGatewayAccess(_context, {
+      toolName: 'resolve_common_directory',
+      operation: 'resolve_common_directory',
+      targetLabel: kind,
+    });
+    if (!gateway.ok) return gateway;
+
+    const remote = await executeRemoteDeviceRpcTool(
+      _context,
+      gateway,
+      'resolve_common_directory',
+      'resolve_common_directory',
+      { directory: kind },
+    );
+    if (remote) return remote;
+
+    return resolveCommonDirectoryToolArgs({ directory: kind });
   }
+}
+
+export function resolveCommonDirectoryToolArgs(args: any): ToolExecutionResult {
+  const input = typeof args?.directory === 'string' ? args.directory : '';
+  const kind = normalizeCommonDirectory(input);
+  if (!kind) return invalidCommonDirectoryResult(input);
+  return {
+    ok: true,
+    content: formatCommonDirectoryResolution(resolveCommonDirectory(kind)),
+  };
+}
+
+export function formatCommonDirectoryResolution(result: DirectoryResolution): string {
+  return [
+    'Resolved common directory:',
+    `kind: ${result.kind}`,
+    `path: ${result.path}`,
+    `source: ${result.source}`,
+    `exists: ${result.exists}`,
+    `platform: ${result.platform}`,
+    '',
+    'Use this exact path as the base directory for follow-up file operations.',
+  ].join('\n');
+}
+
+function invalidCommonDirectoryResult(input: string): ToolExecutionResult {
+  return {
+    ok: false,
+    errorCode: 'INVALID_TOOL_ARGUMENTS',
+    message: `Unknown common directory: ${input || '(empty)'}\nSupported: desktop, downloads, documents, pictures, videos, music, home, temp`,
+  };
 }
 
 function buildResolution(kind: CommonDirectoryKind, directoryPath: string, source: string): DirectoryResolution {

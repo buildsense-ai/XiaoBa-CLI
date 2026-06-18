@@ -83,6 +83,7 @@ export type DeviceGrantStatus = 'active' | 'revoked';
 export type DeviceSelectionStatus = 'selected' | 'needs_selection' | 'unavailable';
 export type DeviceGrantOperation =
   | 'read_file'
+  | 'resolve_common_directory'
   | 'write_file'
   | 'edit_file'
   | 'send_file'
