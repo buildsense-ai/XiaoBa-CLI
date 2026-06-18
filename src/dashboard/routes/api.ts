@@ -1691,7 +1691,8 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
 
   router.delete('/prompts/file', (req, res) => {
     try {
-      res.json(deletePromptOverride(String(req.query.path || '')));
+      if (!requireJsonWrite(req, res)) return;
+      res.json(deletePromptOverride(String(req.body?.path || req.query.path || '')));
     } catch (e: any) {
       res.status(400).json({ error: e?.message || String(e) });
     }

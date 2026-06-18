@@ -6639,7 +6639,11 @@
       const status=document.getElementById('prompt-editor-status');
       try{
         if(status)status.textContent='正在重置...';
-        promptEditorFile=await parseSimpleResponse(await fetch(API+'/api/prompts/file?path='+encodeURIComponent(promptEditorSelectedPath),{method:'DELETE'}));
+        promptEditorFile=await parseSimpleResponse(await fetch(API+'/api/prompts/file',{
+          method:'DELETE',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({path:promptEditorSelectedPath})
+        }));
         await refreshPromptWorkbench(promptEditorSelectedPath, {
           preserveFileListScroll:true,
           preserveEditorScroll:true

@@ -174,6 +174,11 @@ describe('dashboard skills API', () => {
     });
     assert.equal(writePrompt.status, 415);
 
+    const deletePrompt = await fetch(`${baseUrl}/api/prompts/file?path=system-prompt.md`, {
+      method: 'DELETE',
+    });
+    assert.equal(deletePrompt.status, 415);
+
     const applyProposal = await fetch(`${baseUrl}/api/pet/prompt-proposal/apply`, {
       method: 'POST',
     });
