@@ -72,6 +72,13 @@ test('Companion Hub presents pet growth and action preview', () => {
   assert.doesNotMatch(dashboardHtml, /id="pet-token-xp"/);
 });
 
+test('Companion prompt ask preserves the current proposal when no new diff is generated', () => {
+  assert.match(dashboardHtml, /let promptCompanionAdvisorNotice = ''/);
+  assert.match(dashboardHtml, /else if \(note\) \{\s*promptCompanionAdvisorNotice = promptCompanionProposal/);
+  assert.match(dashboardHtml, /已保留当前建议/);
+  assert.match(dashboardHtml, /else \{\s*promptCompanionProposal = null;\s*promptCompanionAdvisorNotice = '';\s*\}/);
+});
+
 test('SkillHub Skills page is separate from Companion Hub and owns publishing controls', () => {
   assert.match(dashboardHtml, /onclick="switchPage\('store'\)" data-page="store"/);
   assert.match(dashboardHtml, /<div class="page" id="page-store">/);

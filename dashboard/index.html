@@ -5723,6 +5723,7 @@
     let promptGroupOpenState = loadPromptGroupOpenState();
     let promptCompanionProposal = null;
     let promptCompanionSignals = null;
+    let promptCompanionAdvisorNotice = '';
     let promptCompanionBusy = false;
     let promptCompanionRequestSeq = 0;
 
@@ -5898,8 +5899,19 @@
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
         if (requestSeq !== promptCompanionRequestSeq) return;
-        promptCompanionProposal = data.proposal || null;
+        const nextProposal = data.proposal || null;
         promptCompanionSignals = data.signals || null;
+        if (nextProposal) {
+          promptCompanionProposal = nextProposal;
+          promptCompanionAdvisorNotice = note ? '已根据你的补充生成新的可预览 diff。' : '';
+        } else if (note) {
+          promptCompanionAdvisorNotice = promptCompanionProposal
+            ? '这次询问没有生成新的可应用 diff，已保留当前建议。可以换个更具体的方向继续问。'
+            : '这次询问没有生成可应用的小 diff。可以换个更具体的方向继续问，或先观察更多会话。';
+        } else {
+          promptCompanionProposal = null;
+          promptCompanionAdvisorNotice = '';
+        }
         renderPromptCompanionProposal();
       } catch (error) {
         if (requestSeq === promptCompanionRequestSeq) renderPromptCompanionError(error);
@@ -5928,7 +5940,10 @@
         const checked = promptCompanionSignals
           ? '已检查最近 '+Number(promptCompanionSignals.recent_session_turns||0)+' 轮 session、'+Number(promptCompanionSignals.recent_runtime_errors||0)+' 条 runtime 错误、'+Number(promptCompanionSignals.recent_runtime_warnings||0)+' 条 runtime 警告和 '+Number(promptCompanionSignals.recent_events||0)+' 条宠物事件，暂时没有新建议。'
           : '宠物会旁路观察当前会话、session/runtime log 和最近工作，需要时给出可确认的 prompt 小改动。';
-        box.innerHTML = '<div class="companion-prompt-copy">'+escapeHtml(checked)+'</div>';
+        const notice = promptCompanionAdvisorNotice
+          ? '<div class="runtime-note">'+escapeHtml(promptCompanionAdvisorNotice)+'</div>'
+          : '';
+        box.innerHTML = notice+'<div class="companion-prompt-copy">'+escapeHtml(checked)+'</div>';
         if (floating) floating.innerHTML = '';
         return;
       }
@@ -5940,7 +5955,11 @@
         + Number(signals.recent_runtime_errors||0)+' 条 runtime 错误 · '
         + Number(signals.recent_runtime_warnings||0)+' 条 runtime 警告 · '
         + Number(signals.recent_events||0)+' 条宠物事件';
+      const advisorNotice = promptCompanionAdvisorNotice
+        ? '<div class="runtime-note">'+escapeHtml(promptCompanionAdvisorNotice)+'</div>'
+        : '';
       box.innerHTML =
+        advisorNotice+
         '<div class="companion-prompt-title">'+escapeHtml(p.title||'Prompt 调优建议')+'</div>'+
         '<div class="companion-prompt-copy">目标：<code>'+escapeHtml(p.path||'system-prompt.md')+'</code> · '+escapeHtml(operationLabel)+'</div>'+
         '<div class="companion-prompt-copy">'+escapeHtml(signalCopy)+'</div>'+
@@ -5996,6 +6015,7 @@
         });
         const data = await parseSimpleResponse(res);
         promptCompanionProposal = null;
+        promptCompanionAdvisorNotice = '';
         promptCompanionSignals = data.proposal?.signals || promptCompanionSignals;
         setPetState('success', { message:'Prompt 建议已应用，下一条消息生效。', holdMs:2600 });
         renderPromptCompanionProposal();
@@ -6018,6 +6038,7 @@
         });
         await parseSimpleResponse(res);
         promptCompanionProposal = null;
+        promptCompanionAdvisorNotice = '';
         renderPromptCompanionProposal();
       } catch (error) {
         alert('忽略 Prompt 建议失败：' + (error.message || String(error)));
