@@ -1,4 +1,5 @@
 import { RuntimeProfile } from './runtime-profile';
+import { loadPromptModePrompt, normalizePromptModeId } from './prompt-modes';
 import { readRequiredPromptFile, renderPromptTemplate } from '../utils/prompt-template';
 
 export interface ComposeSystemPromptOptions {
@@ -16,19 +17,20 @@ export interface ComposeSystemPromptFromProfileOptions {
 export class PromptComposer {
   static composeSystemPrompt(options: ComposeSystemPromptOptions): string {
     const env = options.env ?? process.env;
-    const now = options.now ?? new Date();
     const displayName = (
       env.CURRENT_AGENT_DISPLAY_NAME
       || env.BOT_BRIDGE_NAME
       || ''
     ).trim();
     const platform = (env.CURRENT_PLATFORM || '').trim();
+    const promptMode = normalizePromptModeId(env.XIAOBA_PROMPT_MODE);
 
     return this.composeSystemPromptParts({
       promptsDir: options.promptsDir,
       displayName,
       platform,
-      now,
+      promptMode,
+      now: options.now,
     });
   }
 
@@ -37,8 +39,9 @@ export class PromptComposer {
       promptsDir: options.promptsDir,
       displayName: (options.profile.prompt.displayName || '').trim(),
       platform: (options.profile.prompt.platform || '').trim(),
+      promptMode: options.profile.prompt.mode,
       workspacePath: options.profile.workingDirectory,
-      now: options.now ?? new Date(),
+      now: options.now,
     });
   }
 
@@ -46,18 +49,20 @@ export class PromptComposer {
     promptsDir: string;
     displayName: string;
     platform: string;
+    promptMode?: string;
     workspacePath?: string;
-    now: Date;
+    now?: Date;
   }): string {
     const basePrompt = this.getBaseSystemPrompt(options.promptsDir);
-    const today = options.now.toISOString().slice(0, 10);
+    const modePrompt = loadPromptModePrompt(options.promptsDir, options.promptMode);
+    const today = (options.now ?? new Date()).toISOString().slice(0, 10);
     const runtimeInfo = this.getRuntimeContextPrompt(options.promptsDir, {
       displayName: options.displayName,
       platform: options.platform,
       date: today,
     });
 
-    return [basePrompt, runtimeInfo].filter(Boolean).join('\n\n');
+    return [basePrompt, modePrompt, runtimeInfo].filter(Boolean).join('\n\n');
   }
 
   static getBaseSystemPrompt(promptsDir: string): string {

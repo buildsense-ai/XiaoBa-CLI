@@ -10,6 +10,7 @@ import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
 import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
+  buildPerTurnRunnerHint,
   buildPlanSoftNudge,
   buildSubagentSoftNudge,
   nextPlanNudgeToolCount,
@@ -25,10 +26,20 @@ import {
   TRANSIENT_RUNTIME_CONTEXT_PREFIX,
   buildRuntimeContextMessage,
 } from './runtime-context-builder';
+import {
+  TRANSIENT_TOOL_GUIDANCE_PREFIX,
+  buildTransientToolGuidance,
+} from './transient-tool-guidance';
+import {
+  TRANSIENT_CURRENT_DIRECTORY_PREFIX,
+  buildTransientEnvironmentHint,
+} from './transient-environment';
+import { resolveProviderTransientPolicy } from './transient-injection-policy';
 import { calculateSummaryBudgetTokens, resolveModelPromptBudgetTokens } from '../utils/model-context-window';
 import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
 import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
 import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
+import { PromptTraceLogger } from '../utils/prompt-trace-logger';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -53,7 +64,6 @@ function normalizeToolName(name: string): string {
 
 const MIN_MESSAGE_BUDGET = 2000;
 const OVERFLOW_REDUCTION_RATIO = 0.6;
-const TRANSIENT_CURRENT_DIRECTORY_PREFIX = '[transient_current_directory]';
 const MAX_EMPTY_MAX_TOKEN_RECOVERIES = 1;
 const EMPTY_MAX_TOKENS_MESSAGE = '模型这轮输出达到了 max_tokens 上限，但没有生成可见回复或工具调用。已保留当前上下文；请回复“继续”，我会从刚才的位置继续推进。';
 export const PROMPT_BUDGET_TRIM_MESSAGE = '当前上下文超过模型窗口，已裁剪较早的历史内容以继续处理。';
@@ -154,6 +164,7 @@ export class ConversationRunner {
   private maxTurns?: number;
   private sessionLabel: string;
   private pendingUserInputProvider?: PendingUserInputProvider;
+  private promptTraceLogger: PromptTraceLogger;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -186,6 +197,11 @@ export class ConversationRunner {
       maxContextTokens: this.maxPromptTokens,
       compactionThreshold: 0.5,
       summaryContentBudget: calculateSummaryBudgetTokens(this.maxPromptTokens),
+    });
+    this.promptTraceLogger = new PromptTraceLogger({
+      sessionId: this.toolExecutionContext?.sessionId,
+      surface: this.toolExecutionContext?.surface,
+      modelConfig: this.resolveModelConfig(),
     });
   }
 
@@ -287,16 +303,38 @@ export class ConversationRunner {
         nextSubagentNudgeAt = nextSubagentNudgeToolCount(executedToolCalls);
       }
 
+      const currentDirectory = this.getCurrentDirectoryForHint();
+      const transientPolicy = resolveProviderTransientPolicy({
+        messages,
+        tools: requestTools,
+        turn: turns,
+        executedToolCalls,
+        surface: this.toolExecutionContext?.surface,
+        currentDirectory,
+        orchestrationHintCount: orchestrationHints.length,
+      });
+      const perTurnRunnerHint = transientPolicy.injectRunnerHint
+        ? buildPerTurnRunnerHint(requestTools)
+        : null;
+      const toolGuidance = transientPolicy.injectToolGuidance
+        ? buildTransientToolGuidance(requestTools)
+        : null;
       const requestMessages = this.buildProviderInputMessages(messages, [
+        ...(perTurnRunnerHint ? [perTurnRunnerHint] : []),
+        ...(toolGuidance ? [toolGuidance] : []),
         ...nextTurnTransientHints,
         ...orchestrationHints,
-      ]);
+      ], {
+        includeCurrentDirectoryHint: transientPolicy.injectEnvironment,
+        currentDirectory,
+      });
       nextTurnTransientHints = [];
       const promptTrimmed = this.ensurePromptBudget(requestMessages, requestTools);
       if (promptTrimmed && callbacks?.onThinking) {
         await callbacks.onThinking(PROMPT_BUDGET_TRIM_MESSAGE);
       }
       this.logProviderMessagesForDebug(requestMessages, requestTools, turns);
+      this.promptTraceLogger.recordRequest(turns, requestMessages, requestTools);
       const aiStartTime = Date.now();
       Logger.info(`[${this.sessionLabel}Turn ${turns}] 调用AI推理 (可用工具: ${requestTools.length}个)`);
 
@@ -304,8 +342,10 @@ export class ConversationRunner {
       try {
         response = await this.requestModelResponse(requestMessages, requestTools, callbacks);
         const aiDuration = Date.now() - aiStartTime;
+        this.promptTraceLogger.recordResponse(turns, response, aiDuration);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI推理完成，耗时: ${aiDuration}ms`);
       } catch (error: any) {
+        this.promptTraceLogger.recordError(turns, error);
         if (this.isMessageSurface() && isModelImageSafetyError(error)) {
           if (this.toolExecutionContext?.channel && this.toolExecutionContext?.surface !== 'catscompany') {
             try {
@@ -460,6 +500,7 @@ export class ConversationRunner {
         }
         const toolDuration = Date.now() - toolStart;
         Metrics.recordToolCall(toolName, toolDuration);
+        this.promptTraceLogger.recordToolResult(turns, toolCall, result, toolDuration);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
         callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
 
@@ -782,12 +823,22 @@ export class ConversationRunner {
     return !outboundMessages.some(message => message.content === assistantMsg.content);
   }
 
-  private buildProviderInputMessages(messages: Message[], transientHints: Message[]): Message[] {
+  private buildProviderInputMessages(
+    messages: Message[],
+    transientHints: Message[],
+    options: {
+      includeCurrentDirectoryHint?: boolean;
+      currentDirectory?: string;
+    } = {},
+  ): Message[] {
     const sanitizedBase = messages.filter(message => {
       if (typeof message.content !== 'string') {
         return true;
       }
       if (message.content.startsWith(TRANSIENT_CURRENT_DIRECTORY_PREFIX)) {
+        return false;
+      }
+      if (message.__injected && message.content.startsWith(TRANSIENT_TOOL_GUIDANCE_PREFIX)) {
         return false;
       }
       if (message.role !== 'system') {
@@ -816,23 +867,25 @@ export class ConversationRunner {
       collapsed.push(message);
     }
 
-    const currentDirectoryHint = this.buildCurrentDirectoryHint();
-    return this.insertCurrentDirectoryHint(
+    const currentDirectoryHint = options.includeCurrentDirectoryHint
+      ? this.buildCurrentDirectoryHint(options.currentDirectory)
+      : null;
+    return this.insertProviderTransientHints(
+      collapsed,
       [
-        ...collapsed,
+        ...(currentDirectoryHint ? [currentDirectoryHint] : []),
         ...transientHints,
       ],
-      currentDirectoryHint,
     );
   }
 
-  private insertCurrentDirectoryHint(messages: Message[], hint: Message | null): Message[] {
-    if (!hint) return messages;
+  private insertProviderTransientHints(messages: Message[], hints: Message[]): Message[] {
+    if (hints.length === 0) return messages;
 
     const insertIndex = this.findCurrentDirectoryHintInsertIndex(messages);
     return [
       ...messages.slice(0, insertIndex),
-      hint,
+      ...hints,
       ...messages.slice(insertIndex),
     ];
   }
@@ -847,7 +900,7 @@ export class ConversationRunner {
       const suffix = messages.slice(i + 1);
       const suffixBelongsToToolExchange = suffix.length > 0 && suffix.every(item => {
         if (item.role === 'tool') return true;
-        return this.isTransientRunnerHint(item);
+        return this.isTransientRunnerHint(item) || this.isTransientToolGuidance(item);
       });
 
       if (suffixBelongsToToolExchange) {
@@ -856,7 +909,11 @@ export class ConversationRunner {
     }
 
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'user' && !this.isCurrentDirectoryHint(messages[i])) {
+      if (
+        messages[i].role === 'user'
+        && !messages[i].__injected
+        && !this.isCurrentDirectoryHint(messages[i])
+      ) {
         return i;
       }
     }
@@ -870,24 +927,30 @@ export class ConversationRunner {
       && message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX);
   }
 
+  private isTransientToolGuidance(message: Message): boolean {
+    return Boolean(message.__injected)
+      && typeof message.content === 'string'
+      && message.content.startsWith(TRANSIENT_TOOL_GUIDANCE_PREFIX);
+  }
+
   private isCurrentDirectoryHint(message: Message): boolean {
     return typeof message.content === 'string'
       && message.content.startsWith(TRANSIENT_CURRENT_DIRECTORY_PREFIX);
   }
 
-  private buildCurrentDirectoryHint(): Message | null {
-    const currentDirectory = this.toolExecutionContext?.getCurrentDirectory?.()
+  private getCurrentDirectoryForHint(): string | undefined {
+    return this.toolExecutionContext?.getCurrentDirectory?.()
       || this.toolExecutionContext?.workingDirectory;
-    if (!currentDirectory) return null;
+  }
 
-    return {
-      role: 'user',
-      content: [
-        TRANSIENT_CURRENT_DIRECTORY_PREFIX,
-        renderRequiredDefaultPromptFile('transient/current-directory.md', { currentDirectory }),
-      ].join('\n'),
-      __injected: true,
-    };
+  private buildCurrentDirectoryHint(currentDirectory?: string): Message | null {
+    const modelConfig = (this.aiService as any).getConfig?.();
+    return buildTransientEnvironmentHint({
+      currentDirectory,
+      surface: this.toolExecutionContext?.surface,
+      provider: modelConfig?.provider,
+      model: modelConfig?.model,
+    });
   }
 
   private isMessageSurface(): boolean {

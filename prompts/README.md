@@ -2,6 +2,8 @@
 
 这个目录是 CatsCo 可编辑提示词的统一入口。目标是让提示词迭代、对比测试和后续工具接入尽量只改 `prompts/`，让 `src/` 保持负责拼装、结构化数据和运行时逻辑。
 
+整体分层格式见 [prompt-stack-format.md](../docs/prompt-stack-format.md)。简要原则是：稳定 system prompt 只放长期行为规则，模式包承载垂直场景，动态状态通过 transient 注入进入单轮请求。
+
 ## 核心原则
 
 - **文字放 prompts，逻辑放 src。** 稳定的指令、角色、风格、摘要要求、子 agent 行为模板应放在这里。

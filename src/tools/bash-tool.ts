@@ -50,13 +50,18 @@ export class ShellTool implements Tool {
           type: 'number',
           description: '超时时间，单位毫秒。默认 30000。',
         },
+        confirm_dangerous: {
+          type: 'boolean',
+          description: 'Set true only after the user explicitly requested or confirmed a risky destructive command such as recursive deletion, git reset --hard, git clean, or force push.',
+          default: false,
+        },
       },
       required: ['command'],
     },
   };
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
-    const { command, description, timeout = 30000 } = args;
+    const { command, description, timeout = 30000, confirm_dangerous = false } = args;
 
     if (context.abortSignal?.aborted) {
       return { ok: false, errorCode: 'EXECUTION_TIMEOUT', message: `命令已取消，未开始执行:\n$ ${command}` };
@@ -67,7 +72,9 @@ export class ShellTool implements Tool {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `Execution blocked: ${toolPermission.reason}` };
     }
 
-    const commandPermission = isBashCommandAllowed(command);
+    const commandPermission = isBashCommandAllowed(command, {
+      confirmed: confirm_dangerous === true,
+    });
     if (!commandPermission.allowed) {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `Execution blocked: ${commandPermission.reason}` };
     }

@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { ChatConfig } from '../types';
 import { DEFAULT_TOOL_NAMES } from '../tools/default-tool-names';
+import { PromptModeId, normalizePromptModeId } from './prompt-modes';
 
 export type RuntimeSurface = 'cli' | 'feishu' | 'catscompany' | 'weixin' | 'agent' | 'unknown';
 
@@ -8,6 +9,7 @@ export interface RuntimePromptProfile {
   source: 'prompt-manager';
   displayName?: string;
   platform?: string;
+  mode?: PromptModeId;
 }
 
 export interface RuntimeToolProfile {
@@ -68,6 +70,7 @@ export function resolveDefaultRuntimeProfile(
   const displayName = (options.displayName || envDisplayName || 'CatsCo').trim();
   const surface = options.surface ?? resolveSurfaceFromEnv(env);
   const platform = env.CURRENT_PLATFORM || undefined;
+  const promptMode = normalizePromptModeId(env.XIAOBA_PROMPT_MODE);
 
   return {
     id: options.id ?? `xiaoba-${surface}`,
@@ -79,6 +82,7 @@ export function resolveDefaultRuntimeProfile(
       source: 'prompt-manager',
       displayName: envDisplayName || undefined,
       platform,
+      ...(promptMode ? { mode: promptMode } : {}),
     },
     tools: {
       enabled: [...(options.tools ?? DEFAULT_RUNTIME_TOOL_NAMES)],
@@ -140,6 +144,14 @@ export function validateRuntimeProfile(profile: RuntimeProfile): RuntimeProfileV
 
     seenToolNames.add(toolName);
   });
+
+  if (profile.prompt.mode && !normalizePromptModeId(profile.prompt.mode)) {
+    issues.push({
+      path: 'prompt.mode',
+      message: `Unknown prompt mode: ${profile.prompt.mode}`,
+      value: profile.prompt.mode,
+    });
+  }
 
   return issues;
 }

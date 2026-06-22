@@ -21,6 +21,23 @@ describe('SessionSkillRuntime', () => {
     assert.match(String(message.content), /skill 工具/);
   });
 
+  test('builds a filtered transient skills list when names are provided', () => {
+    const runtime = new SessionSkillRuntime(buildSkillManager({
+      userInvocableSkills: [
+        buildSkill('coding-context', 'Coding skill'),
+        buildSkill('officecli', 'Office skill'),
+      ],
+    }) as any, 'session-demo');
+
+    const message = runtime.buildSkillsListMessage({
+      skillNames: ['coding-context'],
+    });
+
+    assert.ok(message);
+    assert.match(String(message.content), /coding-context: Coding skill/);
+    assert.doesNotMatch(String(message.content), /officecli: Office skill/);
+  });
+
   test('lists skills as names only for slash skills command', () => {
     const runtime = new SessionSkillRuntime(buildSkillManager({
       skills: {

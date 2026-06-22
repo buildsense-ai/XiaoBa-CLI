@@ -9,6 +9,7 @@ import {
   RuntimeSurface,
   resolveDefaultRuntimeProfile,
 } from './runtime-profile';
+import { normalizePromptModeId } from './prompt-modes';
 
 export const RUNTIME_PROFILE_SCHEMA_VERSION = 1;
 export const DEFAULT_RUNTIME_PROFILE_FILENAME = 'runtime-profile.json';
@@ -22,6 +23,7 @@ export interface RuntimeProfileFileModelConfig extends Pick<RuntimeModelProfile,
 export interface RuntimeProfileFilePromptConfig {
   displayName?: string;
   platform?: string;
+  mode?: string;
 }
 
 export interface RuntimeProfileFileToolConfig {
@@ -201,6 +203,14 @@ export function applyRuntimeProfileFileConfig(
     if (isNonEmptyString(config.prompt.platform)) {
       profile.prompt.platform = config.prompt.platform.trim();
     }
+    if (isNonEmptyString(config.prompt.mode)) {
+      const mode = normalizePromptModeId(config.prompt.mode);
+      if (mode) {
+        profile.prompt.mode = mode;
+      } else {
+        (profile.prompt as any).mode = config.prompt.mode.trim();
+      }
+    }
   }
   if (config.tools?.enabled) {
     profile.tools.enabled = [...config.tools.enabled];
@@ -357,6 +367,7 @@ function copyPrompt(
   const prompt: RuntimeProfileFilePromptConfig = {};
   copyString(source.prompt, prompt as Record<string, unknown>, 'displayName', 'profile.prompt.displayName', issues);
   copyString(source.prompt, prompt as Record<string, unknown>, 'platform', 'profile.prompt.platform', issues);
+  copyString(source.prompt, prompt as Record<string, unknown>, 'mode', 'profile.prompt.mode', issues);
   target.prompt = prompt;
 }
 

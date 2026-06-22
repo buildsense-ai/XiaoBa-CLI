@@ -8,6 +8,8 @@ export interface CatsCompanyConfig {
   serverUrl: string;
   /** Bot API Key，如 "cc_8_abc123..." */
   apiKey: string;
+  /** Stable bot identity used to isolate persisted chat context. */
+  botUid?: string;
   /** 当前本地运行体 ID，用于防止同一个 bot 被多个本地 body 混用 */
   bodyId?: string;
   /** 当前安装/设备 ID，默认与 bodyId 相同 */

@@ -1,0 +1,353 @@
+import { ContentBlock, Message } from '../types';
+import { ToolDefinition, ToolSurface } from '../types/tool';
+import {
+  PromptModeId,
+  detectPromptMode,
+  normalizePromptModeId,
+} from '../runtime/prompt-modes';
+
+export type TransientIntentKind =
+  | 'coding'
+  | 'office'
+  | 'classroom'
+  | 'team'
+  | 'skill'
+  | 'workspace'
+  | 'plain-chat';
+
+export interface TransientTurnIntent {
+  kind: TransientIntentKind;
+  latestUserText: string;
+  detectedMode?: PromptModeId;
+  fixedMode?: PromptModeId;
+  actionable: boolean;
+  workspaceRelevant: boolean;
+  skillRelevant: boolean;
+  complexWork: boolean;
+  plainChat: boolean;
+  skillNames?: string[];
+}
+
+export interface TurnContextTransientPolicy {
+  intent: TransientTurnIntent;
+  injectModeHint: boolean;
+  injectSkillsList: boolean;
+  skillNames?: string[];
+}
+
+export interface ProviderTransientPolicy {
+  intent: TransientTurnIntent;
+  injectEnvironment: boolean;
+  injectToolGuidance: boolean;
+  injectRunnerHint: boolean;
+  reasons: string[];
+}
+
+export interface ProviderTransientPolicyOptions {
+  messages: Message[];
+  tools: ToolDefinition[];
+  turn: number;
+  executedToolCalls: number;
+  surface?: ToolSurface;
+  currentDirectory?: string;
+  orchestrationHintCount?: number;
+}
+
+const FILE_AND_SHELL_TOOLS = new Set([
+  'glob',
+  'grep',
+  'read_file',
+  'edit_file',
+  'write_file',
+  'resolve_common_directory',
+  'execute_shell',
+]);
+
+const WORK_TOOL_NAMES = new Set([
+  ...FILE_AND_SHELL_TOOLS,
+  'skill',
+  'share_skillhub_skill',
+  'send_file',
+]);
+
+const ORCHESTRATION_TOOL_NAMES = new Set([
+  'update_plan',
+  'record_decision',
+  'spawn_subagent',
+  'check_subagent',
+  'resume_subagent',
+  'stop_subagent',
+]);
+
+const ACTION_SIGNAL =
+  /帮我|看一下|看下|看看|检查|排查|定位|修复|修一下|修改|改一下|实现|优化|重构|跑一下|运行|执行|构建|编译|测试|读取|读一下|打开|搜索|整理|生成|创建|写入|保存|导出|review|inspect|debug|fix|edit|modify|implement|run|execute|build|test|read|open|search|create|generate/i;
+
+const TOOL_ACTION_SIGNAL =
+  /检查|排查|定位|修复|修改|跑一下|运行|执行|构建|编译|测试|读取|读一下|打开|搜索|写入|保存|导出|inspect|debug|fix|edit|modify|run|execute|build|test|read|open|search/i;
+
+const WORKSPACE_SIGNAL =
+  /代码|源码|仓库|文件|目录|路径|本地|报错|异常|日志|接口|路由|组件|依赖|配置|命令|终端|shell|powershell|bash|npm|pnpm|yarn|git|commit|PR|TypeScript|JavaScript|Python|Docker|Kubernetes|数据库|SQL|API|repo|repository|workspace|file|folder|path|terminal|package\.json|tsconfig|src[\\/]|tests?[\\/]|\.tsx?\b|\.jsx?\b|\.py\b|\.json\b|\.ya?ml\b|\.md\b|\.txt\b|\.log\b/i;
+
+const OFFICE_SIGNAL =
+  /文档|表格|演示|报告|PPT|Word|Excel|PowerPoint|docx|xlsx|pptx|PDF|格式|排版|图表|office/i;
+
+const BROWSER_SIGNAL =
+  /浏览器|网页|网站|页面|点击|表单|截图|打开链接|url|browser|website|web page|screenshot/i;
+
+const MEMORY_SIGNAL =
+  /记忆|回忆|之前|过去|历史|上次|以前|搜一下.*对话|查找.*对话|memory|remember|previous conversation/i;
+
+const SELF_EVOLUTION_SIGNAL =
+  /创建.*skill|新建.*skill|自我进化|扩展能力|写.*工具|新增.*工具|self[-_ ]?evolution/i;
+
+const SKILL_SIGNAL =
+  /skill|技能|能力列表|工具列表|会什么|能做什么|调用.*工具|使用.*工具|agent-browser|coding-context|memory-search|officecli|self-evolution/i;
+
+const COMPLEX_WORK_SIGNAL =
+  /完整|全面|系统性|评估|优化|重构|方案|策略|架构|多阶段|长期|端到端|测试覆盖|上线|发布|梳理|审查|review|comprehensive|end-to-end|architecture|strategy/i;
+
+const CONCEPTUAL_SIGNAL =
+  /是什么|什么意思|怎么理解|解释一下|讲讲|原理|区别|为什么|what is|explain|difference between|how does/i;
+
+export function resolveTurnContextTransientPolicy(messages: Message[]): TurnContextTransientPolicy {
+  const intent = analyzeTransientIntent(messages);
+  const injectModeHint = Boolean(
+    intent.detectedMode
+    && intent.detectedMode !== intent.fixedMode,
+  );
+  const injectSkillsList = intent.skillRelevant;
+
+  return {
+    intent,
+    injectModeHint,
+    injectSkillsList,
+    ...(intent.skillNames ? { skillNames: intent.skillNames } : {}),
+  };
+}
+
+export function resolveProviderTransientPolicy(
+  options: ProviderTransientPolicyOptions,
+): ProviderTransientPolicy {
+  const intent = analyzeTransientIntent(options.messages);
+  const toolNames = new Set(options.tools.map(tool => tool.name));
+  const hasWorkTools = [...toolNames].some(name => WORK_TOOL_NAMES.has(name));
+  const hasFileOrShellTools = [...toolNames].some(name => FILE_AND_SHELL_TOOLS.has(name));
+  const hasOrchestrationTools = [...toolNames].some(name => ORCHESTRATION_TOOL_NAMES.has(name));
+  const toolLoopActive = options.executedToolCalls > 0 || hasRecentToolExchange(options.messages);
+  const isMessageSurface = options.surface === 'catscompany'
+    || options.surface === 'feishu'
+    || options.surface === 'weixin';
+
+  const reasons: string[] = [];
+  const injectEnvironment = Boolean(
+    options.currentDirectory
+    && hasFileOrShellTools
+    && (intent.workspaceRelevant || toolLoopActive),
+  );
+  if (injectEnvironment) reasons.push('workspace-context');
+
+  const injectToolGuidance = Boolean(
+    hasWorkTools
+    && (
+      intent.workspaceRelevant
+      || intent.skillRelevant
+      || toolLoopActive
+    ),
+  );
+  if (injectToolGuidance) reasons.push('tool-aware-work');
+
+  const hasSpecificOrchestrationHint = (options.orchestrationHintCount ?? 0) > 0;
+  const injectRunnerHint = Boolean(
+    hasOrchestrationTools
+    && !hasSpecificOrchestrationHint
+    && !isMessageSurface
+    && options.turn === 1
+    && intent.complexWork
+    && intent.actionable,
+  );
+  if (injectRunnerHint) reasons.push('complex-work-orchestration');
+
+  return {
+    intent,
+    injectEnvironment,
+    injectToolGuidance,
+    injectRunnerHint,
+    reasons,
+  };
+}
+
+export function analyzeTransientIntent(messages: Message[]): TransientTurnIntent {
+  const latestUserText = findLatestRealUserText(messages);
+  const detected = latestUserText ? detectPromptMode(latestUserText) : undefined;
+  const fixedMode = detectFixedPromptMode(messages);
+  const recentToolContext = hasRecentToolExchange(messages);
+  const hasActionSignal = ACTION_SIGNAL.test(latestUserText);
+  const hasToolActionSignal = TOOL_ACTION_SIGNAL.test(latestUserText);
+  const hasWorkspaceSignal = WORKSPACE_SIGNAL.test(latestUserText);
+  const hasOfficeSignal = OFFICE_SIGNAL.test(latestUserText);
+  const hasBrowserSignal = BROWSER_SIGNAL.test(latestUserText);
+  const hasMemorySignal = MEMORY_SIGNAL.test(latestUserText);
+  const hasSelfEvolutionSignal = SELF_EVOLUTION_SIGNAL.test(latestUserText);
+  const hasSkillSignal = SKILL_SIGNAL.test(latestUserText);
+  const conceptualOnly = CONCEPTUAL_SIGNAL.test(latestUserText)
+    && !hasActionSignal
+    && !hasWorkspaceSignal
+    && !hasOfficeSignal
+    && !hasBrowserSignal
+    && !hasMemorySignal
+    && !hasSelfEvolutionSignal
+    && !hasSkillSignal;
+
+  const actionable = !conceptualOnly && (
+    hasActionSignal
+    || hasWorkspaceSignal
+    || hasOfficeSignal
+    || hasBrowserSignal
+    || hasMemorySignal
+    || hasSelfEvolutionSignal
+    || hasSkillSignal
+    || recentToolContext
+  );
+  const workspaceRelevant = !conceptualOnly && (
+    hasWorkspaceSignal
+    || hasToolActionSignal
+    || (hasOfficeSignal && (!detected?.mode || detected.mode === 'office'))
+    || hasBrowserSignal
+    || recentToolContext
+    || (detected?.mode === 'coding-agent' && actionable)
+  );
+  const skillNames = selectSkillNames({
+    detectedMode: detected?.mode,
+    hasWorkspaceSignal,
+    hasOfficeSignal,
+    hasBrowserSignal,
+    hasMemorySignal,
+    hasSelfEvolutionSignal,
+    hasSkillSignal,
+    actionable,
+  });
+  const skillRelevant = hasSkillSignal
+    || hasBrowserSignal
+    || hasMemorySignal
+    || hasSelfEvolutionSignal
+    || (detected?.mode === 'coding-agent' && actionable)
+    || (detected?.mode === 'office' && actionable);
+  const complexWork = !conceptualOnly && (
+    COMPLEX_WORK_SIGNAL.test(latestUserText)
+    || (latestUserText.length >= 120 && actionable)
+  );
+
+  const kind = resolveIntentKind({
+    detectedMode: detected?.mode,
+    hasSkillSignal,
+    hasBrowserSignal,
+    hasMemorySignal,
+    hasSelfEvolutionSignal,
+    workspaceRelevant,
+    actionable,
+  });
+
+  return {
+    kind,
+    latestUserText,
+    ...(detected?.mode ? { detectedMode: detected.mode } : {}),
+    ...(fixedMode ? { fixedMode } : {}),
+    actionable,
+    workspaceRelevant,
+    skillRelevant,
+    complexWork,
+    plainChat: kind === 'plain-chat',
+    ...(skillNames.length > 0 ? { skillNames } : {}),
+  };
+}
+
+export function detectFixedPromptMode(messages: Message[]): PromptModeId | undefined {
+  for (const message of messages) {
+    if (message.role !== 'system' || typeof message.content !== 'string') continue;
+    const match = message.content.match(/\[mode:([a-z0-9-]+)\]/i);
+    const mode = normalizePromptModeId(match?.[1]);
+    if (mode) return mode;
+  }
+  return undefined;
+}
+
+function resolveIntentKind(options: {
+  detectedMode?: PromptModeId;
+  hasSkillSignal: boolean;
+  hasBrowserSignal: boolean;
+  hasMemorySignal: boolean;
+  hasSelfEvolutionSignal: boolean;
+  workspaceRelevant: boolean;
+  actionable: boolean;
+}): TransientIntentKind {
+  if (options.detectedMode === 'coding-agent') return 'coding';
+  if (options.detectedMode === 'office') return 'office';
+  if (options.detectedMode === 'classroom') return 'classroom';
+  if (options.detectedMode === 'team-assistant') return 'team';
+  if (
+    options.hasSkillSignal
+    || options.hasBrowserSignal
+    || options.hasMemorySignal
+    || options.hasSelfEvolutionSignal
+  ) {
+    return 'skill';
+  }
+  if (options.workspaceRelevant || options.actionable) return 'workspace';
+  return 'plain-chat';
+}
+
+function selectSkillNames(options: {
+  detectedMode?: PromptModeId;
+  hasWorkspaceSignal: boolean;
+  hasOfficeSignal: boolean;
+  hasBrowserSignal: boolean;
+  hasMemorySignal: boolean;
+  hasSelfEvolutionSignal: boolean;
+  hasSkillSignal: boolean;
+  actionable: boolean;
+}): string[] {
+  if (options.hasSkillSignal && !options.hasBrowserSignal && !options.hasMemorySignal && !options.hasSelfEvolutionSignal) {
+    return [];
+  }
+
+  const names = new Set<string>();
+  if (options.detectedMode === 'coding-agent' && options.actionable) names.add('coding-context');
+  if (options.hasWorkspaceSignal && options.actionable) names.add('coding-context');
+  if (
+    options.actionable
+    && (
+      options.detectedMode === 'office'
+      || (options.hasOfficeSignal && !options.detectedMode)
+    )
+  ) names.add('officecli');
+  if (options.hasBrowserSignal) names.add('agent-browser');
+  if (options.hasMemorySignal) names.add('memory-search');
+  if (options.hasSelfEvolutionSignal) names.add('self-evolution');
+  return [...names];
+}
+
+function findLatestRealUserText(messages: Message[]): string {
+  for (let idx = messages.length - 1; idx >= 0; idx--) {
+    const message = messages[idx];
+    if (message.role !== 'user' || message.__injected) continue;
+    const text = contentToString(message.content).trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+function hasRecentToolExchange(messages: Message[]): boolean {
+  return messages.slice(-12).some(message => (
+    message.role === 'tool'
+    || Boolean(message.tool_calls?.length)
+  ));
+}
+
+function contentToString(content: string | ContentBlock[] | null): string {
+  if (!content) return '';
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map(block => block.type === 'text' ? block.text : '[image]')
+    .join('\n');
+}
