@@ -22,6 +22,10 @@ import {
   buildRuntimeContextMessage,
 } from './runtime-context-builder';
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
+import {
+  IN_CONTEXT_DELIVERY_EXAMPLES_PREFIX,
+  TRANSIENT_DELIVERY_POLICY_PREFIX,
+} from './transient-delivery-policy';
 
 const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
@@ -75,6 +79,14 @@ export class TurnContextBuilder {
   removeTransientMessages(messages: Message[]): Message[] {
     return messages.filter(msg => {
       if (msg.__runtimeFeedback) return false;
+      if (
+        msg.__injected
+        && typeof msg.content === 'string'
+        && (
+          msg.content.startsWith(TRANSIENT_DELIVERY_POLICY_PREFIX)
+          || msg.content.startsWith(IN_CONTEXT_DELIVERY_EXAMPLES_PREFIX)
+        )
+      ) return false;
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_PLAN_STATUS_PREFIX)) return false;

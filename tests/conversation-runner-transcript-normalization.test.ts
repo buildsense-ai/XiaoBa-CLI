@@ -7,6 +7,10 @@ import { ChatResponse, Message } from '../src/types';
 import { ToolManager } from '../src/tools/tool-manager';
 import { SkillManager } from '../src/skills/skill-manager';
 import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../src/utils/model-error-classifier';
+import {
+  IN_CONTEXT_DELIVERY_EXAMPLES_PREFIX,
+  TRANSIENT_DELIVERY_POLICY_PREFIX,
+} from '../src/core/transient-delivery-policy';
 
 function cloneMessages(messages: Message[]): Message[] {
   return JSON.parse(JSON.stringify(messages));
@@ -211,6 +215,57 @@ test('runner injects current directory before the active request context without
     secondCallMessages[secondCallMessages.length - 1].role,
     'tool',
     'after a tool exchange, the tool_result should remain the final message instead of the cwd hint',
+  );
+});
+
+test('runner injects delivery examples and policy before long-output user requests only for provider input', async () => {
+  const mock = createMockAI([makeFinalResponse('已生成报告。')]);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'write_file',
+      description: 'write file',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string' },
+          content: { type: 'string' },
+        },
+      },
+    }],
+    { write_file: 'file written' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, {
+    stream: true,
+    enableCompression: false,
+    toolExecutionContext: {
+      workingDirectory: 'C:\\Users\\test\\workspace',
+      surface: 'weixin',
+    },
+  });
+
+  const result = await runner.run([{ role: 'user', content: '帮我写一份完整的项目复盘报告' }]);
+
+  const firstCallMessages = mock.getReceivedMessages()[0];
+  assert.equal(String(firstCallMessages[0].content).startsWith(IN_CONTEXT_DELIVERY_EXAMPLES_PREFIX), true);
+  assert.equal(String(firstCallMessages[1].content).startsWith(TRANSIENT_DELIVERY_POLICY_PREFIX), true);
+  const realUserIndex = firstCallMessages.findIndex(
+    message => message.role === 'user' && message.content === '帮我写一份完整的项目复盘报告',
+  );
+  const cwdIndex = firstCallMessages.findIndex(
+    message => typeof message.content === 'string'
+      && message.content.startsWith('[transient_current_directory]'),
+  );
+  assert.equal(cwdIndex, realUserIndex - 1);
+  assert.equal(
+    result.messages.some(message => (
+      typeof message.content === 'string'
+      && (
+        message.content.startsWith(IN_CONTEXT_DELIVERY_EXAMPLES_PREFIX)
+        || message.content.startsWith(TRANSIENT_DELIVERY_POLICY_PREFIX)
+      )
+    )),
+    false,
+    'delivery transient context should not be persisted into runner messages',
   );
 });
 

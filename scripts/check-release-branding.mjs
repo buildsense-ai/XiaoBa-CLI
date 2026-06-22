@@ -81,6 +81,8 @@ for (const promptPath of [
   'prompts/transient/plan-status.md',
   'prompts/transient/runner-duplicate-outbound.md',
   'prompts/transient/runner-empty-max-tokens.md',
+  'prompts/transient/delivery-policy.md',
+  'prompts/transient/delivery-examples.md',
   'prompts/transient/orchestration-initial-complex.md',
   'prompts/transient/orchestration-initial-simple.md',
   'prompts/transient/orchestration-explicit-plan-request.md',

@@ -29,6 +29,11 @@ import { calculateSummaryBudgetTokens, resolveModelPromptBudgetTokens } from '..
 import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
 import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
 import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
+import {
+  IN_CONTEXT_DELIVERY_EXAMPLES_PREFIX,
+  TRANSIENT_DELIVERY_POLICY_PREFIX,
+  buildTransientDeliveryHints,
+} from './transient-delivery-policy';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -288,6 +293,13 @@ export class ConversationRunner {
       }
 
       const requestMessages = this.buildProviderInputMessages(messages, [
+        ...buildTransientDeliveryHints({
+          messages,
+          tools: requestTools,
+          surface: this.toolExecutionContext?.surface,
+          turn: turns,
+          executedToolCalls,
+        }),
         ...nextTurnTransientHints,
         ...orchestrationHints,
       ]);
@@ -787,6 +799,9 @@ export class ConversationRunner {
       if (typeof message.content !== 'string') {
         return true;
       }
+      if (this.isDeliveryTransientHint(message)) {
+        return false;
+      }
       if (message.content.startsWith(TRANSIENT_CURRENT_DIRECTORY_PREFIX)) {
         return false;
       }
@@ -816,14 +831,34 @@ export class ConversationRunner {
       collapsed.push(message);
     }
 
-    const currentDirectoryHint = this.buildCurrentDirectoryHint();
-    return this.insertCurrentDirectoryHint(
+    const userTransientHints = transientHints.filter(message => (
+      message.role === 'user' && message.__injected
+    ));
+    const tailTransientHints = transientHints.filter(message => !(
+      message.role === 'user' && message.__injected
+    ));
+    const withUserTransientHints = this.insertProviderUserTransientHints(
       [
         ...collapsed,
-        ...transientHints,
+        ...tailTransientHints,
       ],
+      userTransientHints,
+    );
+    const currentDirectoryHint = this.buildCurrentDirectoryHint();
+    return this.insertCurrentDirectoryHint(
+      withUserTransientHints,
       currentDirectoryHint,
     );
+  }
+
+  private insertProviderUserTransientHints(messages: Message[], hints: Message[]): Message[] {
+    if (hints.length === 0) return messages;
+    const insertIndex = this.findCurrentDirectoryHintInsertIndex(messages);
+    return [
+      ...messages.slice(0, insertIndex),
+      ...hints,
+      ...messages.slice(insertIndex),
+    ];
   }
 
   private insertCurrentDirectoryHint(messages: Message[], hint: Message | null): Message[] {
@@ -873,6 +908,15 @@ export class ConversationRunner {
   private isCurrentDirectoryHint(message: Message): boolean {
     return typeof message.content === 'string'
       && message.content.startsWith(TRANSIENT_CURRENT_DIRECTORY_PREFIX);
+  }
+
+  private isDeliveryTransientHint(message: Message): boolean {
+    return Boolean(message.__injected)
+      && typeof message.content === 'string'
+      && (
+        message.content.startsWith(TRANSIENT_DELIVERY_POLICY_PREFIX)
+        || message.content.startsWith(IN_CONTEXT_DELIVERY_EXAMPLES_PREFIX)
+      );
   }
 
   private buildCurrentDirectoryHint(): Message | null {
