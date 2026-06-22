@@ -47,6 +47,12 @@ export interface PromptCompanionProposal {
   created_at: string;
 }
 
+export interface PromptCompanionAdvisorReply {
+  skipped: boolean;
+  message: string;
+  suggestion?: string;
+}
+
 export interface PromptCompanionSignals {
   recent_events: number;
   recent_errors: number;
@@ -71,11 +77,16 @@ interface PromptCompanionState {
   };
 }
 
+interface PromptCompanionBuildResult {
+  proposal: PromptCompanionProposal | null;
+  advisor?: PromptCompanionAdvisorReply;
+}
+
 export async function getPromptCompanionProposal(options: {
   includeDismissed?: boolean;
   id?: string;
   note?: string;
-} = {}): Promise<{ proposal: PromptCompanionProposal | null; signals: PromptCompanionSignals }> {
+} = {}): Promise<{ proposal: PromptCompanionProposal | null; signals: PromptCompanionSignals; advisor?: PromptCompanionAdvisorReply }> {
   const state = await getPromptEditorState();
   const events = getPetService().timeline(50);
   const signals = buildSignals(events, state.trace, readRecentSessionSignals());
@@ -93,12 +104,13 @@ export async function getPromptCompanionProposal(options: {
     return { proposal: cached, signals };
   }
 
-  const proposal = await buildAdvisorProposal({
+  const buildResult = await buildAdvisorProposal({
     requestedId: options.id,
     note: advisorNote,
     state,
     signals,
   });
+  const proposal = buildResult.proposal;
 
   if (!proposal) {
     if (!advisorNote) {
@@ -108,16 +120,16 @@ export async function getPromptCompanionProposal(options: {
       };
     }
     writeState(stateFile);
-    return { proposal: null, signals };
+    return { proposal: null, signals, advisor: buildResult.advisor };
   }
   stateFile.cached = proposal;
   delete stateFile.cached_skip;
   writeState(stateFile);
   const key = dismissalKey(proposal);
   if (!options.includeDismissed && stateFile.dismissed[key]) {
-    return { proposal: null, signals };
+    return { proposal: null, signals, advisor: buildResult.advisor };
   }
-  return { proposal, signals };
+  return { proposal, signals, advisor: buildResult.advisor };
 }
 
 export async function applyPromptCompanionProposal(id: string): Promise<{
@@ -174,13 +186,18 @@ async function buildAdvisorProposal(options: {
   note?: string;
   state: PromptEditorStateSnapshot;
   signals: PromptCompanionSignals;
-}): Promise<PromptCompanionProposal | null> {
+}): Promise<PromptCompanionBuildResult> {
   if (!options.requestedId) {
-    const llmProposal = await tryBuildLlmProposal(options);
-    if (llmProposal) return llmProposal;
-    if (options.note) return null;
+    const llmResult = await tryBuildLlmProposal(options);
+    if (llmResult.proposal || llmResult.advisor) return llmResult;
+    if (options.note) {
+      return {
+        proposal: null,
+        advisor: createManualNoDiffAdvisor(),
+      };
+    }
   }
-  return buildFallbackProposal(options);
+  return { proposal: buildFallbackProposal(options) };
 }
 
 function buildFallbackProposal(options: {
@@ -219,9 +236,9 @@ async function tryBuildLlmProposal(options: {
   note?: string;
   state: PromptEditorStateSnapshot;
   signals: PromptCompanionSignals;
-}): Promise<PromptCompanionProposal | null> {
+}): Promise<PromptCompanionBuildResult> {
   if (/^(0|false|off|no)$/i.test(String(process.env.XIAOBA_PROMPT_COMPANION_LLM || 'true').trim())) {
-    return null;
+    return { proposal: null };
   }
 
   try {
@@ -231,14 +248,25 @@ async function tryBuildLlmProposal(options: {
       { role: 'user', content: buildAdvisorUserPrompt(options.state, options.signals, options.note) },
     ]);
     const parsed = parseAdvisorJson(response.content || '');
-    if (!parsed || parsed.skip) return null;
+    if (!parsed) {
+      return {
+        proposal: null,
+        advisor: options.note ? createManualNoDiffAdvisor('旁路模型没有返回可解析的 JSON，所以这次没有生成 prompt diff。') : undefined,
+      };
+    }
+    if (parsed.skip) {
+      return {
+        proposal: null,
+        advisor: createAdvisorReply(parsed, createManualNoDiffAdvisor()),
+      };
+    }
     const targetPath = normalizeAdvisorTargetPath(parsed.target_path, options.state);
-    if (!targetPath) return null;
+    if (!targetPath) return { proposal: null, advisor: createRejectedAdvisor('旁路模型给了改动方向，但目标文件不在可编辑 prompt 列表里。') };
     const file = getPromptEditorFile(targetPath);
     const current = file.content || '';
     const patch = buildAdvisorPatch(current, parsed);
-    if (!patch) return null;
-    return createProposal({
+    if (!patch) return { proposal: null, advisor: createRejectedAdvisor('旁路模型给了改动方向，但 diff 没通过安全校验或无法精确命中原文。') };
+    const proposal = createProposal({
       id: `advisor-${hashText(`${targetPath}\n${patch.preview}`).slice(0, 10)}`,
       title: sanitizeSingleLine(parsed.title || 'Prompt 调优建议', 40),
       reason: sanitizeSingleLine(parsed.reason || '宠物 advisor 根据最近运行信号提出了一条 prompt 小改动。', 180),
@@ -252,9 +280,19 @@ async function tryBuildLlmProposal(options: {
       preview: patch.preview,
       signals: options.signals,
     });
+    return {
+      proposal,
+      advisor: createAdvisorReply(parsed, {
+        skipped: false,
+        message: '已根据你的补充生成一条可预览的小 diff。',
+      }),
+    };
   } catch (error: any) {
     Logger.warning(`[PromptCompanion] LLM advisor failed, fallback will be used: ${error?.message || String(error)}`);
-    return null;
+    return {
+      proposal: null,
+      advisor: options.note ? createManualNoDiffAdvisor('旁路模型调用失败，所以这次没有生成 prompt diff。') : undefined,
+    };
   }
 }
 
@@ -290,6 +328,45 @@ function buildAdvisorUserPrompt(state: PromptEditorStateSnapshot, signals: Promp
     signals,
     prompt_excerpts: excerpts,
   }, null, 2);
+}
+
+function createAdvisorReply(parsed: any, fallback: PromptCompanionAdvisorReply): PromptCompanionAdvisorReply {
+  const message = sanitizeAdvisorReplyText(
+    parsed.message || parsed.skip_reason || parsed.reason || fallback.message,
+    240,
+  ) || fallback.message;
+  const suggestion = sanitizeAdvisorReplyText(
+    parsed.suggestion || parsed.next_question || parsed.hint || fallback.suggestion || '',
+    220,
+  );
+  return {
+    skipped: Boolean(parsed.skip),
+    message,
+    ...(suggestion ? { suggestion } : {}),
+  };
+}
+
+function createManualNoDiffAdvisor(message = '这更像一次运行链路诊断，不一定适合直接写进长期 system prompt。'): PromptCompanionAdvisorReply {
+  return {
+    skipped: true,
+    message,
+    suggestion: '如果你想让它形成改动，可以这样问：请把“遇到网络/工具问题时如何说明和恢复”写成一条长期规则，只改 system-prompt.md。',
+  };
+}
+
+function createRejectedAdvisor(message: string): PromptCompanionAdvisorReply {
+  return {
+    skipped: true,
+    message,
+    suggestion: '可以指定目标文件和稳定规则，例如：只改 system-prompt.md，追加一条“网络异常时先说明卡点和下一步”的短规则。',
+  };
+}
+
+function sanitizeAdvisorReplyText(value: unknown, maxLength: number): string {
+  const text = sanitizeSingleLine(String(value || ''), maxLength);
+  if (!text) return '';
+  if (/api[_-]?key|secret|password|sk-[a-z0-9_-]{12,}|token\s*[:=]/i.test(text)) return '';
+  return text;
 }
 
 function parseAdvisorJson(text: string): any | null {

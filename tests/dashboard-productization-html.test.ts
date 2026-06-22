@@ -74,6 +74,10 @@ test('Companion Hub presents pet growth and action preview', () => {
 
 test('Companion prompt ask preserves the current proposal when no new diff is generated', () => {
   assert.match(dashboardHtml, /let promptCompanionAdvisorNotice = ''/);
+  assert.match(dashboardHtml, /const advisor = data\.advisor \|\| null/);
+  assert.match(dashboardHtml, /function formatPromptCompanionAdvisorNotice\(advisor, fallback\)/);
+  assert.match(dashboardHtml, /<strong>旁路回复：<\/strong>/);
+  assert.match(dashboardHtml, /建议问法：/);
   assert.match(dashboardHtml, /else if \(note\) \{\s*promptCompanionAdvisorNotice = promptCompanionProposal/);
   assert.match(dashboardHtml, /已保留当前建议/);
   assert.match(dashboardHtml, /else \{\s*promptCompanionProposal = null;\s*promptCompanionAdvisorNotice = '';\s*\}/);

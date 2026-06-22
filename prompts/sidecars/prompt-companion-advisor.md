@@ -3,7 +3,11 @@
 只输出 JSON，不要输出 Markdown 解释。
 
 如果不需要改动，输出：
-{"skip":true}
+{
+  "skip": true,
+  "message": "为什么这次不适合直接改 prompt，160 字以内",
+  "suggestion": "如果用户想推动成 prompt diff，下一句可以怎么问，160 字以内"
+}
 
 如果需要改动，输出：
 {
@@ -11,6 +15,7 @@
   "target_path": "system-prompt.md",
   "operation": "append",
   "title": "40 字以内标题",
+  "message": "给用户看的简短说明，说明这次采纳了什么方向，160 字以内",
   "reason": "为什么这条改动值得做，180 字以内",
   "risk": "风险和注意点，160 字以内",
   "append_section": "要追加到 system-prompt.md 末尾的一小段 Markdown，必须短小、通用、可回滚"
@@ -22,6 +27,7 @@
   "target_path": "runtime-context.md",
   "operation": "replace",
   "title": "40 字以内标题",
+  "message": "给用户看的简短说明，说明这次采纳了什么方向，160 字以内",
   "reason": "为什么这条改动值得做，180 字以内",
   "risk": "风险和注意点，160 字以内",
   "find": "原文件中必须完整存在的短文本",
@@ -34,6 +40,7 @@
   "target_path": "system-prompt.md",
   "operation": "delete",
   "title": "40 字以内标题",
+  "message": "给用户看的简短说明，说明这次采纳了什么方向，160 字以内",
   "reason": "为什么删除这段更好，180 字以内",
   "risk": "风险和注意点，160 字以内",
   "find": "原文件中必须完整存在、且需要删除的短文本"
@@ -47,4 +54,4 @@
 - delete 只能删除短小、明确过时/重复/冲突的片段，不能删除核心身份、工具原则、权限边界或整篇 prompt。
 - 不要写入密钥、用户隐私、长日志、具体聊天内容或机器路径。
 - append_section、replace 或 delete 的 find 应该对应稳定规则，不是一次性任务说明。
-- 如果用户消息里的 user_note 不为空，把它当作调优方向；如果和安全边界冲突，就返回 {"skip":true}。
+- 如果用户消息里的 user_note 不为空，把它当作调优方向；如果不适合改 prompt 或和安全边界冲突，返回 skip，并用 message/suggestion 简短解释，不要沉默。

@@ -121,6 +121,9 @@ describe('prompt companion advisor', { concurrency: false }, () => {
 
     const result = await getPromptCompanionProposal({ note: '请只看最近回复太长的问题，不要给默认建议。' });
     assert.equal(result.proposal, null);
+    assert.equal(result.advisor?.skipped, true);
+    assert.match(result.advisor?.message || '', /运行链路诊断|system prompt/);
+    assert.match(result.advisor?.suggestion || '', /system-prompt\.md/);
 
     const statePath = path.join(testRoot, 'pet', 'prompt-companion-state.json');
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
