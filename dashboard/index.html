@@ -6008,7 +6008,7 @@
       if (!promptCompanionProposal) {
         if (card) card.classList.add('empty');
         const checked = promptCompanionSignals
-          ? '已检查最近 '+Number(promptCompanionSignals.recent_session_turns||0)+' 轮 session、'+Number(promptCompanionSignals.recent_runtime_errors||0)+' 条 runtime 错误、'+Number(promptCompanionSignals.recent_runtime_warnings||0)+' 条 runtime 警告和 '+Number(promptCompanionSignals.recent_events||0)+' 条宠物事件，暂时没有新建议。'
+          ? buildPromptCompanionNoProposalCopy(promptCompanionSignals)
           : '宠物会旁路观察当前会话、session/runtime log 和最近工作，需要时给出可确认的 prompt 小改动。';
         box.innerHTML = renderPromptCompanionAdvisorNotice()+'<div class="companion-prompt-copy">'+escapeHtml(checked)+'</div>';
         if (floating) floating.innerHTML = '';
@@ -6056,6 +6056,18 @@
             '</div>'+
           '</div>';
       }
+    }
+
+    function buildPromptCompanionNoProposalCopy(signals) {
+      const turns = Number(signals?.recent_session_turns || 0);
+      const runtimeErrors = Number(signals?.recent_runtime_errors || 0);
+      const runtimeWarnings = Number(signals?.recent_runtime_warnings || 0);
+      const events = Number(signals?.recent_events || 0);
+      const checked = '已检查最近 '+turns+' 轮 session、'+runtimeErrors+' 条 runtime 错误、'+runtimeWarnings+' 条 runtime 警告和 '+events+' 条宠物事件';
+      if (runtimeErrors > 0 || runtimeWarnings > 0 || events > 0) {
+        return checked+'。有运行信号，但暂时没有可安全应用的 prompt 小改动；可以在下面输入具体问题让旁路模型先定位原因。';
+      }
+      return checked+'，暂时没有发现需要改 prompt 的稳定问题。';
     }
 
     function openPromptCompanionPanel() {

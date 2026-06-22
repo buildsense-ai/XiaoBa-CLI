@@ -79,6 +79,8 @@ test('Companion prompt ask preserves the current proposal when no new diff is ge
   assert.match(dashboardHtml, /promptCompanionAdvisor = advisor/);
   assert.match(dashboardHtml, /function formatPromptCompanionAdvisorNotice\(advisor, fallback\)/);
   assert.match(dashboardHtml, /function renderPromptCompanionStage\(title, bodyHtml\)/);
+  assert.match(dashboardHtml, /function buildPromptCompanionNoProposalCopy\(signals\)/);
+  assert.match(dashboardHtml, /有运行信号，但暂时没有可安全应用的 prompt 小改动/);
   assert.match(dashboardHtml, /function renderPromptCompanionAdvisorDiagnosis\(\)/);
   assert.match(dashboardHtml, /1\. 问题定位/);
   assert.match(dashboardHtml, /2\. 拟改内容/);
