@@ -38,12 +38,14 @@ describe('prompt companion advisor', { concurrency: false }, () => {
     } = loadModule('../src/pet/prompt-companion');
 
     writeSessionTurnLog('[处理失败: API错误 (500): temporary failure]');
+    appendRuntimeLog('error', 'API调用失败: upstream 502');
 
     const first = await getPromptCompanionProposal();
     assert.equal(first.proposal?.id, 'error-recovery-v1');
     assert.equal(first.proposal?.path, 'system-prompt.md');
     assert.equal(first.proposal?.operation, 'append');
     assert.match(first.proposal?.preview || '', /异常恢复/);
+    assert.equal(first.signals.recent_runtime_errors, 1);
 
     const applied = await applyPromptCompanionProposal(first.proposal!.id);
     assert.equal(applied.applied, true);
@@ -95,6 +97,35 @@ describe('prompt companion advisor', { concurrency: false }, () => {
     assert.equal(second.proposal, null);
     const secondState = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     assert.equal(secondState.cached_skip.signals_hash, firstState.cached_skip.signals_hash);
+  });
+
+  test('runtime-only errors prefer recovery guidance', async () => {
+    const {
+      getPromptCompanionProposal,
+    } = loadModule('../src/pet/prompt-companion');
+
+    appendRuntimeLog('error', 'HTTP 502 from provider gateway');
+
+    const result = await getPromptCompanionProposal();
+    assert.equal(result.proposal?.id, 'error-recovery-v1');
+    assert.equal(result.proposal?.trigger, 'recent_errors');
+    assert.equal(result.signals.recent_runtime_errors, 1);
+    assert.match(result.proposal?.reason || '', /runtime log/);
+  });
+
+  test('manual advisor notes do not fall back to generic cached suggestions', async () => {
+    const {
+      getPromptCompanionProposal,
+      __promptCompanionTest,
+    } = loadModule('../src/pet/prompt-companion');
+
+    const result = await getPromptCompanionProposal({ note: '请只看最近回复太长的问题，不要给默认建议。' });
+    assert.equal(result.proposal, null);
+
+    const statePath = path.join(testRoot, 'pet', 'prompt-companion-state.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.equal(state.cached_skip, undefined);
+    assert.equal(__promptCompanionTest.sanitizeAdvisorNote('token: secret-value'), '');
   });
 
   test('supports bounded delete advisor patches', async () => {
@@ -165,6 +196,19 @@ describe('prompt companion advisor', { concurrency: false }, () => {
       user: { text: 'hello' },
       assistant: { text: assistantText, tool_calls: [] },
       tokens: { prompt: 10, completion: 2 },
+    })}\n`, 'utf8');
+  }
+
+  function appendRuntimeLog(level: string, message: string): void {
+    const filePath = path.join(testRoot, 'logs', 'sessions', 'catscompany', '2026-06-18', 'session.jsonl');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.appendFileSync(filePath, `${JSON.stringify({
+      entry_type: 'runtime',
+      timestamp: new Date().toISOString(),
+      session_id: 'session:test',
+      session_type: 'catscompany',
+      level,
+      message,
     })}\n`, 'utf8');
   }
 });

@@ -55,6 +55,8 @@ export interface PromptCompanionSignals {
   recent_session_turns: number;
   recent_session_failures: number;
   recent_session_tool_calls: number;
+  recent_runtime_errors: number;
+  recent_runtime_warnings: number;
   prompt_system_hash: string;
   prompt_bundle_hash: string;
 }
@@ -72,15 +74,17 @@ interface PromptCompanionState {
 export async function getPromptCompanionProposal(options: {
   includeDismissed?: boolean;
   id?: string;
+  note?: string;
 } = {}): Promise<{ proposal: PromptCompanionProposal | null; signals: PromptCompanionSignals }> {
   const state = await getPromptEditorState();
   const events = getPetService().timeline(50);
   const signals = buildSignals(events, state.trace, readRecentSessionSignals());
   const stateFile = readState();
-  if (!options.id && getUsableCachedSkip(stateFile, signals)) {
+  const advisorNote = sanitizeAdvisorNote(options.note);
+  if (!options.id && !advisorNote && getUsableCachedSkip(stateFile, signals)) {
     return { proposal: null, signals };
   }
-  const cached = getUsableCachedProposal(stateFile, state, options.id);
+  const cached = advisorNote ? null : getUsableCachedProposal(stateFile, state, options.id);
   if (cached) {
     const key = dismissalKey(cached);
     if (!options.includeDismissed && stateFile.dismissed[key]) {
@@ -91,15 +95,18 @@ export async function getPromptCompanionProposal(options: {
 
   const proposal = await buildAdvisorProposal({
     requestedId: options.id,
+    note: advisorNote,
     state,
     signals,
   });
 
   if (!proposal) {
-    stateFile.cached_skip = {
-      created_at: new Date().toISOString(),
-      signals_hash: signalHash(signals),
-    };
+    if (!advisorNote) {
+      stateFile.cached_skip = {
+        created_at: new Date().toISOString(),
+        signals_hash: signalHash(signals),
+      };
+    }
     writeState(stateFile);
     return { proposal: null, signals };
   }
@@ -164,18 +171,21 @@ export async function dismissPromptCompanionProposal(id: string): Promise<{
 
 async function buildAdvisorProposal(options: {
   requestedId?: string;
+  note?: string;
   state: PromptEditorStateSnapshot;
   signals: PromptCompanionSignals;
 }): Promise<PromptCompanionProposal | null> {
   if (!options.requestedId) {
     const llmProposal = await tryBuildLlmProposal(options);
     if (llmProposal) return llmProposal;
+    if (options.note) return null;
   }
   return buildFallbackProposal(options);
 }
 
 function buildFallbackProposal(options: {
   requestedId?: string;
+  note?: string;
   state: PromptEditorStateSnapshot;
   signals: PromptCompanionSignals;
 }): PromptCompanionProposal | null {
@@ -184,7 +194,8 @@ function buildFallbackProposal(options: {
   const baseHash = file.effective.short_hash;
   const wantsRecovery = options.signals.recent_errors > 0
     || options.signals.recent_skill_failures > 0
-    || options.signals.recent_session_failures > 0;
+    || options.signals.recent_session_failures > 0
+    || options.signals.recent_runtime_errors > 0;
 
   if (wantsRecovery && !current.includes(RECOVERY_MARKER)) {
     const proposal = createRecoveryProposal(current, baseHash, options.signals);
@@ -205,6 +216,7 @@ function buildFallbackProposal(options: {
 }
 
 async function tryBuildLlmProposal(options: {
+  note?: string;
   state: PromptEditorStateSnapshot;
   signals: PromptCompanionSignals;
 }): Promise<PromptCompanionProposal | null> {
@@ -216,7 +228,7 @@ async function tryBuildLlmProposal(options: {
     const ai = new AIService({ maxTokens: ADVISOR_MAX_TOKENS });
     const response = await ai.chat([
       { role: 'system', content: readRequiredDefaultPromptFile('sidecars/prompt-companion-advisor.md') },
-      { role: 'user', content: buildAdvisorUserPrompt(options.state, options.signals) },
+      { role: 'user', content: buildAdvisorUserPrompt(options.state, options.signals, options.note) },
     ]);
     const parsed = parseAdvisorJson(response.content || '');
     if (!parsed || parsed.skip) return null;
@@ -231,7 +243,7 @@ async function tryBuildLlmProposal(options: {
       title: sanitizeSingleLine(parsed.title || 'Prompt 调优建议', 40),
       reason: sanitizeSingleLine(parsed.reason || '宠物 advisor 根据最近运行信号提出了一条 prompt 小改动。', 180),
       risk: sanitizeSingleLine(parsed.risk || '需要人工确认；只写入本地 prompt 覆盖。', 160),
-      trigger: options.signals.recent_errors > 0 || options.signals.recent_session_failures > 0 ? 'recent_errors' : 'baseline',
+      trigger: options.signals.recent_errors > 0 || options.signals.recent_session_failures > 0 || options.signals.recent_runtime_errors > 0 ? 'recent_errors' : 'baseline',
       path: targetPath,
       operation: patch.operation,
       baseHash: file.effective.short_hash,
@@ -246,7 +258,7 @@ async function tryBuildLlmProposal(options: {
   }
 }
 
-function buildAdvisorUserPrompt(state: PromptEditorStateSnapshot, signals: PromptCompanionSignals): string {
+function buildAdvisorUserPrompt(state: PromptEditorStateSnapshot, signals: PromptCompanionSignals, note?: string): string {
   const editablePaths = (state.files || []).map(file => file.path);
   const excerpts = editablePaths
     .filter(path => shouldIncludePromptExcerpt(path))
@@ -261,6 +273,7 @@ function buildAdvisorUserPrompt(state: PromptEditorStateSnapshot, signals: Promp
     });
   return JSON.stringify({
     goal: '根据 CatsCo 最近运行信号，判断是否需要调用 catsco-prompt-editor 风格的 prompt 小改动。',
+    user_note: note || '',
     editable_paths: editablePaths,
     constraints: [
       '只能修改 editable_paths 里的现有 .md 文件。',
@@ -270,6 +283,8 @@ function buildAdvisorUserPrompt(state: PromptEditorStateSnapshot, signals: Promp
       'delete 只用于删除过时、重复或互相冲突的短片段，不能删除整篇 prompt 或大段核心规则。',
       '不要加入密钥、用户隐私、长日志或具体聊天内容。',
       'append_section、replace 或 delete 的 find 应该对应稳定规则，不是一次性任务说明。',
+      '如果 user_note 为空，主要根据最近 session log、runtime log 和宠物事件信号判断。',
+      '如果 user_note 不为空，把它当作用户给旁路 advisor 的调优方向，但仍必须遵守所有安全和小改动约束。',
       '如果没有明显收益，返回 {"skip":true}。',
     ],
     signals,
@@ -425,9 +440,11 @@ function createRecoveryProposal(current: string, baseHash: string, signals: Prom
       ? `最近观察到 ${signals.recent_errors} 次异常事件，建议让 agent 更清楚地解释失败和下一步。`
       : signals.recent_session_failures > 0
         ? `最近 session log 中有 ${signals.recent_session_failures} 轮失败回复，建议让 agent 更清楚地解释失败和下一步。`
+      : signals.recent_runtime_errors > 0
+        ? `最近 runtime log 中有 ${signals.recent_runtime_errors} 条错误信号，建议让 agent 更清楚地解释失败和下一步。`
       : '宠物建议预先补一条异常恢复规则，减少用户看到生硬错误。',
     risk: '低风险：只影响异常提示方式，不改变工具权限或执行逻辑。',
-    trigger: (signals.recent_errors > 0 || signals.recent_session_failures > 0) ? 'recent_errors' : 'baseline',
+    trigger: (signals.recent_errors > 0 || signals.recent_session_failures > 0 || signals.recent_runtime_errors > 0) ? 'recent_errors' : 'baseline',
     baseHash,
     current,
     proposed,
@@ -507,6 +524,8 @@ function buildSignals(
     recent_session_turns: sessionSignals.turns,
     recent_session_failures: sessionSignals.failures,
     recent_session_tool_calls: sessionSignals.toolCalls,
+    recent_runtime_errors: sessionSignals.runtimeErrors,
+    recent_runtime_warnings: sessionSignals.runtimeWarnings,
     prompt_system_hash: trace.system?.short_hash || '',
     prompt_bundle_hash: trace.bundle?.short_hash || '',
   };
@@ -517,17 +536,24 @@ interface SessionSignals {
   turns: number;
   failures: number;
   toolCalls: number;
+  runtimeErrors: number;
+  runtimeWarnings: number;
 }
 
 function readRecentSessionSignals(): SessionSignals {
   const files = listRecentSessionLogFiles(resolveSessionLogsDir(), 8);
-  const signals: SessionSignals = { logs: files.length, turns: 0, failures: 0, toolCalls: 0 };
+  const signals: SessionSignals = { logs: files.length, turns: 0, failures: 0, toolCalls: 0, runtimeErrors: 0, runtimeWarnings: 0 };
   for (const filePath of files) {
     for (const entry of readPartialSessionLog(filePath)) {
       if (isSessionTurnEntry(entry)) {
         signals.turns += 1;
         signals.toolCalls += entry.assistant.tool_calls.length;
         if (looksLikeFailedAssistantText(entry.assistant.text)) signals.failures += 1;
+      } else if (entry.entry_type === 'runtime') {
+        const level = String((entry as any).level || '').toLowerCase();
+        const text = String((entry as any).message || '');
+        if (level === 'error' || looksLikeRuntimeError(text)) signals.runtimeErrors += 1;
+        else if (level === 'warn' || level === 'warning') signals.runtimeWarnings += 1;
       } else if (entry.entry_type === 'prompt_trace') {
         const promptTrace = entry as SessionPromptTraceLogEntry;
         if (promptTrace.prompt?.system?.short_hash) {
@@ -586,6 +612,10 @@ function readPartialSessionLog(filePath: string): ParsedSessionLogEntry[] {
 
 function looksLikeFailedAssistantText(text: string): boolean {
   return /\[处理失败|API错误|请求失败|Connection error|MaxRetriesExceeded|rate limit|上下文|context/i.test(text || '');
+}
+
+function looksLikeRuntimeError(text: string): boolean {
+  return /\b(error|failed|failure|exception|timeout|timed out|rate limit|429|500|502|503|504)\b|API错误|请求失败|处理失败|超时|失败|异常/i.test(text || '');
 }
 
 function walkFiles(directory: string, visit: (filePath: string) => void, maxFiles = 256, state = { seen: 0 }): void {
@@ -672,6 +702,18 @@ function sanitizeSingleLine(value: string, maxLength: number): string {
     .slice(0, maxLength);
 }
 
+function sanitizeAdvisorNote(value: unknown): string {
+  const text = String(value || '')
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  if (/api[_-]?key|secret|password|sk-[a-z0-9_-]{12,}|token\s*[:=]/i.test(text)) return '';
+  return text.slice(0, 600);
+}
+
 export const __promptCompanionTest = {
   buildAdvisorPatch,
+  buildAdvisorUserPrompt,
+  sanitizeAdvisorNote,
 };

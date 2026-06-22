@@ -4472,6 +4472,11 @@
       align-items: start;
     }
 
+    .companion-left-stack {
+      display: grid;
+      gap: 14px;
+    }
+
     .companion-card {
       background: #fff;
       border: 1px solid var(--border);
@@ -4560,6 +4565,39 @@
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
+    }
+
+    .companion-prompt-chat {
+      display: grid;
+      gap: 8px;
+      padding-top: 4px;
+    }
+
+    .companion-prompt-chat textarea {
+      width: 100%;
+      min-height: 74px;
+      max-height: 150px;
+      resize: vertical;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.84);
+      font-size: 13px;
+      line-height: 1.45;
+      outline: none;
+    }
+
+    .companion-prompt-chat textarea:focus {
+      border-color: rgba(37, 99, 235, 0.36);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
+    }
+
+    .companion-prompt-chat-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
     }
 
     .floating-prompt-proposal {
@@ -5171,33 +5209,52 @@
           </div>
         </div>
         <div class="companion-hero">
-          <section class="pet-stage companion-card companion-profile-card" aria-label="CatsCo 宠物伙伴">
-            <div class="companion-profile-head">
-              <div>
-                <div class="companion-eyebrow">CatsCo Companion</div>
-                <div class="companion-name" id="pet-profile-name">CatsCo</div>
+          <div class="companion-left-stack">
+            <section class="pet-stage companion-card companion-profile-card" aria-label="CatsCo 宠物伙伴">
+              <div class="companion-profile-head">
+                <div>
+                  <div class="companion-eyebrow">CatsCo Companion</div>
+                  <div class="companion-name" id="pet-profile-name">CatsCo</div>
+                </div>
+                <span class="pet-state-pill" id="pet-state-pill">待机中</span>
               </div>
-              <span class="pet-state-pill" id="pet-state-pill">待机中</span>
-            </div>
-            <div class="companion-level-title">
-              <span id="pet-level-label">Lv.1</span>
-              <span id="pet-title-label">新手伙伴</span>
-            </div>
-            <div class="companion-state-copy" id="pet-state-copy">正在等待下一项任务。</div>
-
-            <div class="companion-pet-visual" id="companion-pet-visual">
-              <div class="companion-pet-bubble" id="companion-pet-bubble">等待下一项任务</div>
-              <img class="pet-frame" id="pet-frame" src="pet/idle/01.png" alt="CatsCo companion" />
-            </div>
-
-            <div class="companion-level">
-              <div class="companion-level-meta">
-                <span>等级进度</span>
-                <span id="pet-xp-label">0 / 50 XP</span>
+              <div class="companion-level-title">
+                <span id="pet-level-label">Lv.1</span>
+                <span id="pet-title-label">新手伙伴</span>
               </div>
-              <div class="companion-xp-track"><div class="companion-xp-bar" id="pet-xp-bar"></div></div>
-            </div>
-          </section>
+              <div class="companion-state-copy" id="pet-state-copy">正在等待下一项任务。</div>
+
+              <div class="companion-pet-visual" id="companion-pet-visual">
+                <div class="companion-pet-bubble" id="companion-pet-bubble">等待下一项任务</div>
+                <img class="pet-frame" id="pet-frame" src="pet/idle/01.png" alt="CatsCo companion" />
+              </div>
+
+              <div class="companion-level">
+                <div class="companion-level-meta">
+                  <span>等级进度</span>
+                  <span id="pet-xp-label">0 / 50 XP</span>
+                </div>
+                <div class="companion-xp-track"><div class="companion-xp-bar" id="pet-xp-bar"></div></div>
+              </div>
+            </section>
+
+            <section class="companion-card companion-prompt-card empty" id="companion-prompt-card">
+              <div class="companion-section-head">
+                <div class="companion-section-title">Prompt 调优建议</div>
+                <button class="companion-text-action" onclick="fetchPromptCompanionProposal(true)">刷新</button>
+              </div>
+              <div id="companion-prompt-proposal">
+                <div class="companion-prompt-copy">宠物会旁路观察当前会话、session/runtime log 和最近工作，需要时给出可确认的 prompt 小改动。</div>
+              </div>
+              <form class="companion-prompt-chat" onsubmit="event.preventDefault();fetchPromptCompanionProposal(true)">
+                <textarea id="companion-prompt-note" maxlength="600" placeholder="跟旁路模型说一句：比如“看最近这轮为什么回复太长，建议只改表达规则”。" onkeydown="handlePromptCompanionNoteKey(event)"></textarea>
+                <div class="companion-prompt-chat-row">
+                  <div class="companion-prompt-copy">只会生成可预览的小 diff，应用前会再次确认。</div>
+                  <button class="btn" type="submit">询问</button>
+                </div>
+              </form>
+            </section>
+          </div>
 
           <aside class="companion-side-stack">
           <section class="companion-card companion-next-card">
@@ -5232,16 +5289,6 @@
                 <div class="companion-metric-label">当前形态</div>
                 <div class="companion-metric-value" id="pet-form-label">基础小猫</div>
               </div>
-            </div>
-          </section>
-
-          <section class="companion-card companion-prompt-card empty" id="companion-prompt-card">
-            <div class="companion-section-head">
-              <div class="companion-section-title">Prompt 调优建议</div>
-              <button class="companion-text-action" onclick="fetchPromptCompanionProposal(true)">刷新</button>
-            </div>
-            <div id="companion-prompt-proposal">
-              <div class="companion-prompt-copy">宠物会旁路观察最近运行信号，需要时给出可确认的 prompt 小改动。</div>
             </div>
           </section>
 
@@ -5677,6 +5724,18 @@
     let promptCompanionProposal = null;
     let promptCompanionSignals = null;
     let promptCompanionBusy = false;
+    let promptCompanionRequestSeq = 0;
+
+    function getPromptCompanionNote() {
+      const input = document.getElementById('companion-prompt-note');
+      return input ? String(input.value || '').trim().slice(0, 600) : '';
+    }
+
+    function handlePromptCompanionNoteKey(event) {
+      if (event.key !== 'Enter' || !(event.ctrlKey || event.metaKey)) return;
+      event.preventDefault();
+      fetchPromptCompanionProposal(true);
+    }
 
     function loadPetProfile() {
       try {
@@ -5825,24 +5884,33 @@
     async function fetchPromptCompanionProposal(manual=false) {
       if (promptCompanionBusy && !manual) return;
       promptCompanionBusy = true;
+      const requestSeq = ++promptCompanionRequestSeq;
       try {
         if (manual) renderPromptCompanionLoading();
-        const res = await fetch(API + '/api/pet/prompt-proposal');
+        const note = manual ? getPromptCompanionNote() : '';
+        const res = note
+          ? await fetch(API + '/api/pet/prompt-proposal', {
+              method: 'POST',
+              headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({ note })
+            })
+          : await fetch(API + '/api/pet/prompt-proposal');
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
+        if (requestSeq !== promptCompanionRequestSeq) return;
         promptCompanionProposal = data.proposal || null;
         promptCompanionSignals = data.signals || null;
         renderPromptCompanionProposal();
       } catch (error) {
-        renderPromptCompanionError(error);
+        if (requestSeq === promptCompanionRequestSeq) renderPromptCompanionError(error);
       } finally {
-        promptCompanionBusy = false;
+        if (requestSeq === promptCompanionRequestSeq) promptCompanionBusy = false;
       }
     }
 
     function renderPromptCompanionLoading() {
       const box = document.getElementById('companion-prompt-proposal');
-      if (box) box.innerHTML = '<div class="companion-prompt-copy">正在让宠物 advisor 检查最近运行信号...</div>';
+      if (box) box.innerHTML = '<div class="companion-prompt-copy">正在让宠物 advisor 检查当前会话、session/runtime log 和最近工作...</div>';
     }
 
     function renderPromptCompanionError(error) {
@@ -5858,8 +5926,8 @@
       if (!promptCompanionProposal) {
         if (card) card.classList.add('empty');
         const checked = promptCompanionSignals
-          ? '已检查最近 '+Number(promptCompanionSignals.recent_session_turns||0)+' 轮 session 和 '+Number(promptCompanionSignals.recent_events||0)+' 条宠物事件，暂时没有新建议。'
-          : '宠物会旁路观察最近运行信号，需要时给出可确认的 prompt 小改动。';
+          ? '已检查最近 '+Number(promptCompanionSignals.recent_session_turns||0)+' 轮 session、'+Number(promptCompanionSignals.recent_runtime_errors||0)+' 条 runtime 错误、'+Number(promptCompanionSignals.recent_runtime_warnings||0)+' 条 runtime 警告和 '+Number(promptCompanionSignals.recent_events||0)+' 条宠物事件，暂时没有新建议。'
+          : '宠物会旁路观察当前会话、session/runtime log 和最近工作，需要时给出可确认的 prompt 小改动。';
         box.innerHTML = '<div class="companion-prompt-copy">'+escapeHtml(checked)+'</div>';
         if (floating) floating.innerHTML = '';
         return;
@@ -5867,9 +5935,15 @@
       if (card) card.classList.remove('empty');
       const p = promptCompanionProposal;
       const operationLabel = p.operation === 'replace' ? '精确替换' : (p.operation === 'delete' ? '删除片段' : '追加规则');
+      const signals = p.signals || promptCompanionSignals || {};
+      const signalCopy = '依据：'+Number(signals.recent_session_turns||0)+' 轮 session · '
+        + Number(signals.recent_runtime_errors||0)+' 条 runtime 错误 · '
+        + Number(signals.recent_runtime_warnings||0)+' 条 runtime 警告 · '
+        + Number(signals.recent_events||0)+' 条宠物事件';
       box.innerHTML =
         '<div class="companion-prompt-title">'+escapeHtml(p.title||'Prompt 调优建议')+'</div>'+
         '<div class="companion-prompt-copy">目标：<code>'+escapeHtml(p.path||'system-prompt.md')+'</code> · '+escapeHtml(operationLabel)+'</div>'+
+        '<div class="companion-prompt-copy">'+escapeHtml(signalCopy)+'</div>'+
         '<div class="companion-prompt-copy">'+escapeHtml(p.reason||'宠物 advisor 提出了一条小改动。')+'</div>'+
         '<div class="companion-prompt-copy">'+escapeHtml(p.risk||'应用前请预览。')+'</div>'+
         '<div class="companion-prompt-preview">'+escapeHtml(p.preview||'')+'</div>'+

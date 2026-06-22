@@ -41,6 +41,18 @@ export function registerPetRoutes(router: Router): void {
     }
   });
 
+  router.post('/pet/prompt-proposal', async (req, res) => {
+    try {
+      if (!requireJsonWrite(req, res)) return;
+      res.json(await getPromptCompanionProposal({
+        includeDismissed: Boolean(req.body?.include_dismissed),
+        note: String(req.body?.note || ''),
+      }));
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message || String(error) });
+    }
+  });
+
   router.post('/pet/prompt-proposal/apply', async (req, res) => {
     try {
       if (!requireJsonWrite(req, res)) return;
