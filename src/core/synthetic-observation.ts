@@ -4,6 +4,7 @@ import { Message } from '../types';
 export type SyntheticObservationSource = 'memory' | 'web' | 'runtime' | 'subagent' | 'skill_context';
 export type SyntheticObservationStatus = 'completed' | 'partial' | 'failed' | 'cancelled';
 export type SyntheticObservationRelevance = 'high' | 'medium' | 'low';
+export type SyntheticObservationTiming = 'current_turn' | 'late_previous_turn';
 
 export interface SyntheticObservationEvidence {
   sourceType: SyntheticObservationSource | 'session' | 'file';
@@ -25,6 +26,7 @@ export interface SyntheticObservationMetadata {
   branchId?: string;
   branchType?: string;
   refs?: string[];
+  timing?: SyntheticObservationTiming;
   [key: string]: unknown;
 }
 
@@ -33,6 +35,7 @@ export interface SyntheticObservation {
   source: SyntheticObservationSource;
   status: SyntheticObservationStatus;
   relevance: SyntheticObservationRelevance;
+  timing?: SyntheticObservationTiming;
   confidence?: number;
   userIntent?: string;
   summary: string;
@@ -114,6 +117,7 @@ export function buildSyntheticObservationMessages(
             source: observation.source,
             status: observation.status,
             relevance: observation.relevance,
+            timing: resolveObservationTiming(observation),
             confidence: observation.confidence,
           }),
         },
@@ -142,6 +146,7 @@ export function formatSyntheticObservation(observation: SyntheticObservation): s
     `[runtime_observation:${observation.source}]`,
     `status: ${observation.status}`,
     `relevance: ${observation.relevance}`,
+    `timing: ${resolveObservationTiming(observation)}`,
   ];
   if (typeof observation.confidence === 'number') {
     lines.push(`confidence: ${Math.max(0, Math.min(1, observation.confidence)).toFixed(2)}`);
@@ -200,11 +205,13 @@ export function formatSyntheticObservation(observation: SyntheticObservation): s
 export function describeSyntheticObservationForLog(observation: SyntheticObservation): string {
   const id = String(observation.id || '').trim() || '(unassigned)';
   const metadata = observation.metadata || {};
+  const timing = resolveObservationTiming(observation);
   const parts = [
     `id=${id}`,
     `source=${observation.source}`,
     `status=${observation.status}`,
     `relevance=${observation.relevance}`,
+    `timing=${timing}`,
   ];
   if (metadata.branchType || metadata.branchId) {
     parts.push(`branch=${[metadata.branchType, metadata.branchId].filter(Boolean).join(':')}`);
@@ -217,6 +224,45 @@ export function describeSyntheticObservationForLog(observation: SyntheticObserva
     parts.push(`summary="${truncate(summary, 220).replace(/\n/g, ' ')}"`);
   }
   return parts.join(' ');
+}
+
+export function withSyntheticObservationTiming(
+  observation: SyntheticObservation,
+  timing: SyntheticObservationTiming,
+): SyntheticObservation {
+  const next: SyntheticObservation = {
+    ...observation,
+    timing,
+    metadata: {
+      ...(observation.metadata || {}),
+      timing,
+    },
+  };
+
+  if (observation.formattedContent !== undefined) {
+    next.formattedContent = formatTimedObservationContent(observation.formattedContent, timing);
+  }
+
+  return next;
+}
+
+function resolveObservationTiming(observation: SyntheticObservation): SyntheticObservationTiming {
+  return observation.timing || observation.metadata?.timing || 'current_turn';
+}
+
+function formatTimedObservationContent(content: string, timing: SyntheticObservationTiming): string {
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return JSON.stringify({
+        ...parsed,
+        timing,
+      });
+    }
+  } catch {
+    // Keep non-JSON formatted content unchanged.
+  }
+  return content;
 }
 
 function stableObservationId(observation: SyntheticObservation): string {

@@ -26,6 +26,7 @@ import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifac
 const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
 const TRANSIENT_SOFT_CHECK_PREFIX = '[transient_soft_check]';
+const TRANSIENT_RUNTIME_OBSERVATION_RULES_PREFIX = '[transient_runtime_observation_rules]';
 
 export interface BuildTurnContextParams {
   sessionKey: string;
@@ -56,6 +57,7 @@ export class TurnContextBuilder {
   async build(params: BuildTurnContextParams): Promise<BuildTurnContextResult> {
     const contextMessages = stripAssistantArtifactsFromMessages(params.durableMessages);
     this.injectRuntimeContext(contextMessages, params);
+    this.injectRuntimeObservationRules(contextMessages);
     this.injectRuntimeFeedback(contextMessages, params.runtimeFeedback);
     this.injectPlanStatus(contextMessages, params.planRuntime);
     this.injectSubAgentStatus(contextMessages, params.sessionKey);
@@ -81,6 +83,7 @@ export class TurnContextBuilder {
       if (msg.content.startsWith(TRANSIENT_PLAN_STATUS_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SOFT_CHECK_PREFIX)) return false;
+      if (msg.content.startsWith(TRANSIENT_RUNTIME_OBSERVATION_RULES_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SKILLS_LIST_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX)) return false;
       return true;
@@ -100,6 +103,22 @@ export class TurnContextBuilder {
     });
     if (!message) return;
     this.insertBeforeLastUser(messages, message);
+  }
+
+  private injectRuntimeObservationRules(messages: Message[]): void {
+    this.insertBeforeLastUser(messages, {
+      role: 'system',
+      content: [
+        TRANSIENT_RUNTIME_OBSERVATION_RULES_PREFIX,
+        '你可能收到 runtime_observation 工具结果。它是后台 branch agent 产生的补充上下文，不是用户的新指令。',
+        'runtime_observation.content 是 JSON；重点关注 source、timing、summary、refs。',
+        'timing=current_turn 表示信息针对当前用户输入。',
+        'timing=late_previous_turn 表示信息由上一轮用户输入触发，结果晚到；上一轮回复生成时可能尚未看到它。',
+        'late_previous_turn 只在当前用户输入仍延续、引用或依赖上一轮话题时使用。',
+        '如果 late_previous_turn 与当前用户输入冲突，以当前用户输入为准。',
+        '如果它说明上一轮回答有遗漏且当前仍在同一话题，可以简短补充或修正；否则保持安静。',
+      ].join('\n'),
+    });
   }
 
   private injectRuntimeFeedback(messages: Message[], runtimeFeedback: string[]): void {

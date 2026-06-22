@@ -28,7 +28,10 @@ import { getPetService } from '../pet/pet-service';
 import {
   describeSyntheticObservationForLog,
   InMemorySyntheticObservationQueue,
+  SyntheticObservation,
   SyntheticObservationQueue,
+  SyntheticObservationTiming,
+  withSyntheticObservationTiming,
 } from './synthetic-observation';
 import { MemorySidecarBranchHandle, startMemorySidecarBranch } from './sidecar-memory-branch';
 
@@ -92,13 +95,27 @@ export interface AgentTurnControllerOptions {
   updateCurrentDirectory: (directory: string) => void;
 }
 
+interface MemoryBranchSlot {
+  queue: InMemorySyntheticObservationQueue;
+  handle: MemorySidecarBranchHandle;
+  originTurn: number;
+  done: boolean;
+}
+
 /**
  * Runs one user turn: durable input -> transient context -> model/tool loop -> state/log sync.
  */
 export class AgentTurnController {
+  private turnSequence = 0;
+  private memoryBranchCarryover: MemoryBranchSlot | null = null;
+
   constructor(private readonly options: AgentTurnControllerOptions) {}
 
   async run(params: RunAgentTurnParams): Promise<RunAgentTurnResult> {
+    const turnNumber = ++this.turnSequence;
+    const carryoverMemoryBranch = this.memoryBranchCarryover;
+    this.memoryBranchCarryover = null;
+
     params.messages.push({
       role: 'user',
       content: params.input,
@@ -123,11 +140,10 @@ export class AgentTurnController {
       planRuntime: this.options.planRuntime,
     });
 
-    const syntheticObservationQueue = new InMemorySyntheticObservationQueue();
-    const memorySidecar = this.startMemorySidecarIfEnabled({
+    const currentMemoryBranch = this.startMemorySidecarIfEnabled({
+      turnNumber,
       input: params.input,
       messages: params.messages,
-      queue: syntheticObservationQueue,
       abortSignal: params.abortSignal,
     });
 
@@ -141,7 +157,10 @@ export class AgentTurnController {
       localFileGrants: params.localFileGrants,
       pendingUserInputProvider: params.pendingUserInputProvider,
       confirmToolExecution: params.callbacks?.confirmToolExecution,
-      syntheticObservationQueue,
+      syntheticObservationProvider: () => this.drainMemoryObservations(
+        carryoverMemoryBranch,
+        currentMemoryBranch,
+      ),
       abortSignal: params.abortSignal,
       shouldContinue: params.shouldContinue,
     });
@@ -157,13 +176,11 @@ export class AgentTurnController {
       }
       throw error;
     } finally {
-      memorySidecar?.cancel();
-      const droppedObservations = syntheticObservationQueue.cancel();
-      if (droppedObservations.length > 0) {
-        Logger.info(
-          `[${this.options.sessionKey}] dropped ${droppedObservations.length} unconsumed synthetic runtime observation(s): `
-          + droppedObservations.map(describeSyntheticObservationForLog).join(' | ')
-        );
+      this.expireMemoryBranch(carryoverMemoryBranch, 'carryover_ttl_expired');
+      if (result && currentMemoryBranch && this.shouldCarryMemoryBranch(currentMemoryBranch)) {
+        this.memoryBranchCarryover = currentMemoryBranch;
+      } else {
+        this.expireMemoryBranch(currentMemoryBranch, result ? 'current_branch_consumed' : 'turn_failed');
       }
     }
     const nextMessages = this.options.turnContextBuilder.removeTransientMessages(result.messages);
@@ -204,7 +221,7 @@ export class AgentTurnController {
     localFileGrants?: ScopedLocalFileGrant[];
     pendingUserInputProvider?: PendingUserInputProvider;
     confirmToolExecution?: AgentTurnCallbacks['confirmToolExecution'];
-    syntheticObservationQueue?: SyntheticObservationQueue;
+    syntheticObservationProvider?: () => SyntheticObservation[];
     abortSignal?: AbortSignal;
     shouldContinue: () => boolean;
   }): ConversationRunner {
@@ -215,7 +232,7 @@ export class AgentTurnController {
       {
         shouldContinue: options.shouldContinue,
         pendingUserInputProvider: options.pendingUserInputProvider,
-        syntheticObservationProvider: () => options.syntheticObservationQueue?.drain() || [],
+        syntheticObservationProvider: options.syntheticObservationProvider,
         // AgentSession/ContextWindowManager compacts durable history before the turn.
         // Runner-level compaction can fold transient runtime feedback into summary.
         enableCompression: false,
@@ -247,17 +264,82 @@ export class AgentTurnController {
   }
 
   private startMemorySidecarIfEnabled(options: {
+    turnNumber: number;
     input: string | ContentBlock[];
     messages: Message[];
-    queue: SyntheticObservationQueue;
     abortSignal?: AbortSignal;
-  }): MemorySidecarBranchHandle | null {
+  }): MemoryBranchSlot | null {
     if (process.env.XIAOBA_MEMORY_SIDECAR_ENABLED === 'false') {
       return null;
     }
     if (!(this.options.services.aiService instanceof AIService)) {
       return null;
     }
+    const queue = new InMemorySyntheticObservationQueue();
+    const slot: MemoryBranchSlot = {
+      queue,
+      originTurn: options.turnNumber,
+      done: false,
+      handle: this.createMemorySidecarHandle({
+        input: options.input,
+        messages: options.messages,
+        queue,
+        abortSignal: options.abortSignal,
+      }),
+    };
+    slot.handle.done.finally(() => {
+      slot.done = true;
+    });
+    return slot;
+  }
+
+  private drainMemoryObservations(
+    carryover: MemoryBranchSlot | null,
+    current: MemoryBranchSlot | null,
+  ): SyntheticObservation[] {
+    return [
+      ...this.drainMemoryBranch(carryover, 'late_previous_turn'),
+      ...this.drainMemoryBranch(current, 'current_turn'),
+    ];
+  }
+
+  private drainMemoryBranch(
+    slot: MemoryBranchSlot | null,
+    timing: SyntheticObservationTiming,
+  ): SyntheticObservation[] {
+    if (!slot) return [];
+    return slot.queue.drain().map(observation => withSyntheticObservationTiming(observation, timing));
+  }
+
+  private shouldCarryMemoryBranch(slot: MemoryBranchSlot): boolean {
+    return !slot.done || slot.queue.size() > 0;
+  }
+
+  private expireMemoryBranch(slot: MemoryBranchSlot | null, reason: string): void {
+    if (!slot) return;
+    slot.handle.cancel();
+    const droppedObservations = slot.queue.cancel()
+      .map(observation => withSyntheticObservationTiming(observation, 'late_previous_turn'));
+    if (droppedObservations.length > 0) {
+      Logger.info(
+        `[${this.options.sessionKey}] dropped ${droppedObservations.length} unconsumed synthetic runtime observation(s): `
+        + `reason=${reason} origin_turn=${slot.originTurn} `
+        + droppedObservations.map(describeSyntheticObservationForLog).join(' | ')
+      );
+    } else if (!slot.done && reason === 'carryover_ttl_expired') {
+      Logger.info(
+        `[${this.options.sessionKey}] cancelled unfinished memory branch carryover: `
+        + `reason=${reason} origin_turn=${slot.originTurn}`
+      );
+    }
+  }
+
+  private createMemorySidecarHandle(options: {
+    input: string | ContentBlock[];
+    messages: Message[];
+    queue: SyntheticObservationQueue;
+    abortSignal?: AbortSignal;
+  }): MemorySidecarBranchHandle {
     return startMemorySidecarBranch({
       sessionKey: this.options.sessionKey,
       input: options.input,

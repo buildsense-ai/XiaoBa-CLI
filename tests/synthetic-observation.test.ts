@@ -6,6 +6,7 @@ import {
   InMemorySyntheticObservationQueue,
   SYNTHETIC_OBSERVATION_TOOL_NAME,
   SyntheticObservation,
+  withSyntheticObservationTiming,
 } from '../src/core/synthetic-observation';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { Message } from '../src/types';
@@ -47,8 +48,10 @@ describe('synthetic observations', () => {
     assert.equal(messages[0].tool_calls?.[0].function.name, SYNTHETIC_OBSERVATION_TOOL_NAME);
     assert.equal(messages[1].name, SYNTHETIC_OBSERVATION_TOOL_NAME);
     assert.equal(messages[1].tool_call_id, messages[0].tool_calls?.[0].id);
+    assert.equal(JSON.parse(messages[0].tool_calls?.[0].function.arguments || '{}').timing, 'current_turn');
     assert.match(String(messages[1].content), /Earlier session decided/);
     assert.match(String(messages[1].content), /Decision: keep dashboard filters compact/);
+    assert.match(String(messages[1].content), /timing: current_turn/);
   });
 
   test('queue drains once, dedupes ids, and discards after cancellation', () => {
@@ -101,6 +104,29 @@ describe('synthetic observations', () => {
       source: 'memory',
       summary: 'compact memory summary',
       refs: ['chat/2026-06-16/demo.jsonl#1'],
+    });
+  });
+
+  test('can mark formatted observations as late previous turn without breaking the tool pair', () => {
+    const compact = withSyntheticObservationTiming({
+      ...observation('late-json'),
+      formattedContent: JSON.stringify({
+        source: 'memory',
+        summary: 'late memory summary',
+        refs: ['chat/2026-06-16/demo.jsonl#1'],
+      }),
+    }, 'late_previous_turn');
+
+    const messages = buildSyntheticObservationMessages([compact]);
+    assert.equal(messages[0].role, 'assistant');
+    assert.equal(messages[1].role, 'tool');
+    assert.equal(messages[1].tool_call_id, messages[0].tool_calls?.[0].id);
+    assert.equal(JSON.parse(messages[0].tool_calls?.[0].function.arguments || '{}').timing, 'late_previous_turn');
+    assert.deepEqual(JSON.parse(String(messages[1].content)), {
+      source: 'memory',
+      summary: 'late memory summary',
+      refs: ['chat/2026-06-16/demo.jsonl#1'],
+      timing: 'late_previous_turn',
     });
   });
 
