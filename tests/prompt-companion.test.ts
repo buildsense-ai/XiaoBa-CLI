@@ -137,6 +137,53 @@ describe('prompt companion advisor', { concurrency: false }, () => {
     assert.equal(__promptCompanionTest.sanitizeAdvisorNote('token: secret-value'), '');
   });
 
+  test('collects redacted session quality signals without exposing chat text', async () => {
+    const {
+      getPromptCompanionProposal,
+      __promptCompanionTest,
+    } = loadModule('../src/pet/prompt-companion');
+
+    appendSessionTurnLog({
+      turn: 1,
+      userText: '谢谢',
+      assistantText: '不客气！',
+      toolCalls: [],
+    });
+    appendSessionTurnLog({
+      turn: 2,
+      userText: '帮我看看当前 git 状态',
+      assistantText: '工作区干净。',
+      toolCalls: [],
+    });
+    appendSessionTurnLog({
+      turn: 3,
+      userText: '帮我查一下 prompt 文件',
+      assistantText: '命令失败了。',
+      toolCalls: [{
+        id: 'call-1',
+        name: 'execute_shell',
+        arguments: '{"command":"head -40 src/utils/prompt-manager.ts"}',
+        result: '无法将“head”项识别为 cmdlet、函数、脚本文件或可运行程序的名称。',
+      }],
+    });
+
+    const result = await getPromptCompanionProposal();
+    assert.equal(result.signals.recent_session_quality_flags.ack_replied, 1);
+    assert.equal(result.signals.recent_session_quality_flags.current_state_without_tool, 1);
+    assert.equal(result.signals.recent_session_quality_flags.shell_portability_error, 1);
+    assert.match(result.signals.recent_session_quality_notes.join('\n'), /short acknowledgement/);
+    assert.doesNotMatch(result.signals.recent_session_quality_notes.join('\n'), /谢谢|git 状态|head -40/);
+
+    const prompt = __promptCompanionTest.buildAdvisorUserPrompt(
+      await import('../src/utils/prompt-editor').then(mod => mod.getPromptEditorState()),
+      result.signals,
+      '请关注当前状态类问题',
+    );
+    assert.match(prompt, /recent_session_quality_flags/);
+    assert.match(prompt, /ack_replied/);
+    assert.doesNotMatch(prompt, /谢谢|git 状态|head -40/);
+  });
+
   test('supports bounded delete advisor patches', async () => {
     const { __promptCompanionTest } = loadModule('../src/pet/prompt-companion');
     const current = [
@@ -204,6 +251,26 @@ describe('prompt companion advisor', { concurrency: false }, () => {
       session_type: 'catscompany',
       user: { text: 'hello' },
       assistant: { text: assistantText, tool_calls: [] },
+      tokens: { prompt: 10, completion: 2 },
+    })}\n`, 'utf8');
+  }
+
+  function appendSessionTurnLog(options: {
+    turn: number;
+    userText: string;
+    assistantText: string;
+    toolCalls: Array<Record<string, unknown>>;
+  }): void {
+    const filePath = path.join(testRoot, 'logs', 'sessions', 'catscompany', '2026-06-18', 'session.jsonl');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.appendFileSync(filePath, `${JSON.stringify({
+      entry_type: 'turn',
+      turn: options.turn,
+      timestamp: new Date().toISOString(),
+      session_id: 'session:test',
+      session_type: 'catscompany',
+      user: { text: options.userText },
+      assistant: { text: options.assistantText, tool_calls: options.toolCalls },
       tokens: { prompt: 10, completion: 2 },
     })}\n`, 'utf8');
   }

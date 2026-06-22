@@ -26,7 +26,7 @@ const BRIEF_MARKER = '<!-- catsco:companion-brief-response-v1 -->';
 const RECOVERY_MARKER = '<!-- catsco:companion-error-recovery-v1 -->';
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const ADVISOR_MAX_TOKENS = 900;
-const ADVISOR_SCHEMA_VERSION = 'prompt-companion-v3';
+const ADVISOR_SCHEMA_VERSION = 'prompt-companion-v4';
 type PromptEditorStateSnapshot = Awaited<ReturnType<typeof getPromptEditorState>>;
 type PromptCompanionOperation = 'append' | 'replace' | 'delete';
 
@@ -69,6 +69,8 @@ export interface PromptCompanionSignals {
   recent_session_tool_calls: number;
   recent_runtime_errors: number;
   recent_runtime_warnings: number;
+  recent_session_quality_flags: Record<string, number>;
+  recent_session_quality_notes: string[];
   prompt_system_hash: string;
   prompt_bundle_hash: string;
 }
@@ -336,6 +338,8 @@ function buildAdvisorUserPrompt(state: PromptEditorStateSnapshot, signals: Promp
       '先诊断问题，再描述改动：issue 写问题，evidence 写你根据什么判断，change_summary 写准备怎么改，不要混成一句。',
       '如果 user_note 为空，主要根据最近 session log、runtime log 和宠物事件信号判断。',
       '如果 user_note 不为空，把它当作用户给旁路 advisor 的调优方向，但仍必须遵守所有安全和小改动约束。',
+      'recent_session_quality_flags 和 recent_session_quality_notes 是从 session 内容脱敏聚合出的质量信号，优先用于判断回复内容问题；不要要求或复述原始聊天文本。',
+      '不要凭质量标签推断具体操作系统、shell 或命令族；除非信号明确给出，只能写“当前 shell 的等价命令/更可移植命令”。',
       '如果没有明显收益，返回 {"skip":true}。',
     ],
     signals,
@@ -654,6 +658,8 @@ function buildSignals(
     recent_session_tool_calls: sessionSignals.toolCalls,
     recent_runtime_errors: sessionSignals.runtimeErrors,
     recent_runtime_warnings: sessionSignals.runtimeWarnings,
+    recent_session_quality_flags: sessionSignals.qualityFlags,
+    recent_session_quality_notes: sessionSignals.qualityNotes,
     prompt_system_hash: trace.system?.short_hash || '',
     prompt_bundle_hash: trace.bundle?.short_hash || '',
   };
@@ -666,17 +672,29 @@ interface SessionSignals {
   toolCalls: number;
   runtimeErrors: number;
   runtimeWarnings: number;
+  qualityFlags: Record<string, number>;
+  qualityNotes: string[];
 }
 
 function readRecentSessionSignals(): SessionSignals {
   const files = listRecentSessionLogFiles(resolveSessionLogsDir(), 8);
-  const signals: SessionSignals = { logs: files.length, turns: 0, failures: 0, toolCalls: 0, runtimeErrors: 0, runtimeWarnings: 0 };
+  const signals: SessionSignals = {
+    logs: files.length,
+    turns: 0,
+    failures: 0,
+    toolCalls: 0,
+    runtimeErrors: 0,
+    runtimeWarnings: 0,
+    qualityFlags: {},
+    qualityNotes: [],
+  };
   for (const filePath of files) {
     for (const entry of readPartialSessionLog(filePath)) {
       if (isSessionTurnEntry(entry)) {
         signals.turns += 1;
         signals.toolCalls += entry.assistant.tool_calls.length;
         if (looksLikeFailedAssistantText(entry.assistant.text)) signals.failures += 1;
+        collectTurnQualitySignals(entry, signals);
       } else if (entry.entry_type === 'runtime') {
         const level = String((entry as any).level || '').toLowerCase();
         const text = String((entry as any).message || '');
@@ -692,6 +710,63 @@ function readRecentSessionSignals(): SessionSignals {
     }
   }
   return signals;
+}
+
+function collectTurnQualitySignals(entry: ParsedSessionLogEntry, signals: SessionSignals): void {
+  if (!isSessionTurnEntry(entry)) return;
+  const userText = normalizeQualityText(entry.user.text);
+  const assistantText = normalizeQualityText(entry.assistant.text);
+  const toolCalls = Array.isArray(entry.assistant.tool_calls) ? entry.assistant.tool_calls : [];
+
+  if (isShortAcknowledgement(userText) && assistantText) {
+    addQualitySignal(signals, 'ack_replied', `turn ${entry.turn}: short acknowledgement still received an assistant reply`);
+  }
+  if (asksForCurrentState(userText) && toolCalls.length === 0 && assistantText) {
+    addQualitySignal(signals, 'current_state_without_tool', `turn ${entry.turn}: current-state request had no tool call`);
+  }
+  if (asksForBriefReply(userText) && assistantText.length > 1200) {
+    addQualitySignal(signals, 'brief_request_long_reply', `turn ${entry.turn}: brief-reply request produced a long answer`);
+  }
+  if (looksLikeFailedAssistantText(assistantText)) {
+    addQualitySignal(signals, 'final_error_reply', `turn ${entry.turn}: final reply exposed a failure message`);
+  }
+  for (const toolCall of toolCalls) {
+    const toolName = String(toolCall?.name || '');
+    const result = normalizeQualityText(String(toolCall?.result || ''));
+    if (toolName === 'execute_shell' && looksLikeShellPortabilityError(result)) {
+      addQualitySignal(signals, 'shell_portability_error', `turn ${entry.turn}: shell command failed because a command was unavailable`);
+    }
+  }
+}
+
+function addQualitySignal(signals: SessionSignals, key: string, note: string): void {
+  signals.qualityFlags[key] = (signals.qualityFlags[key] || 0) + 1;
+  if (signals.qualityNotes.length >= 8) return;
+  if (!signals.qualityNotes.includes(note)) signals.qualityNotes.push(note);
+}
+
+function normalizeQualityText(text: string): string {
+  return String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isShortAcknowledgement(text: string): boolean {
+  if (!text || text.length > 18) return false;
+  return /^(好|好的|好呀|好嘞|嗯|嗯嗯|行|可以|收到|明白|懂了|谢谢|谢了|辛苦了|ok|okay|thx|thanks)[。！!,.，\s]*$/i.test(text);
+}
+
+function asksForCurrentState(text: string): boolean {
+  return /(当前|现在|刚才|最新|最近|本地|工作区|状态|日志|目录|文件|git|diff|status|branch|分支|有没有|还在|启动|运行)/i.test(text)
+    && /(看|查|确认|检查|诊断|分析|告诉|列|同步|rebase|启动|清理|改了|变更)/i.test(text);
+}
+
+function asksForBriefReply(text: string): boolean {
+  return /(简短|简单|别写长|不要长报告|快速|一句|几句|短答|过一遍|少点|精简)/i.test(text);
+}
+
+function looksLikeShellPortabilityError(text: string): boolean {
+  return /无法将.+项识别为|is not recognized as|not recognized as|不是内部或外部命令|command not found/i.test(text);
 }
 
 function resolveSessionLogsDir(env: NodeJS.ProcessEnv = process.env): string {
