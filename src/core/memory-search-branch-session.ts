@@ -55,7 +55,7 @@ export class MemorySearchBranchSession extends BranchSession {
           content: [
             '你刚才的回复不会传递给主 agent。',
             '这个 branch 只能通过调用 finish_memory_search 结束。',
-            '请现在用当前已有的最佳总结和 refs 调用 finish_memory_search。',
+            '请现在用当前已有的最佳总结和 refs 调用 finish_memory_search；如果没有值得注入的信息，请设置 inject:false 并传空 refs。',
           ].join(' '),
         });
       }
@@ -70,6 +70,15 @@ export class MemorySearchBranchSession extends BranchSession {
       }
       if (!this.shouldContinue()) {
         this.logger.write('finished_after_cancel', {
+          inject: this.finishPayload.inject,
+          refs: this.finishPayload.refs,
+          summary: this.finishPayload.summary,
+        });
+        return;
+      }
+      if (!this.finishPayload.inject) {
+        this.logger.write('suppressed_observation', {
+          reason: 'inject_false',
           refs: this.finishPayload.refs,
           summary: this.finishPayload.summary,
         });
@@ -165,7 +174,8 @@ function buildMemorySearchSystemPrompt(): string {
     '3. 按“近到远、窄到宽”的思路搜索。你可以根据当前时间和任务自行选择 start_time / end_time。',
     '4. 先用 memory_search 做粗召回；它只返回 JSON refs 和命中的关键词。再用 memory_read_turn 或 memory_neighbors 阅读值得确认的 refs。',
     '5. 读取后要分析这些历史内容如何帮助当前任务，不要只搬运原文片段。',
-    '6. 只能通过调用 finish_memory_search 结束。找到有用记忆时，给出面向当前任务的简洁总结和 canonical refs；没有有用记忆时，也调用 finish_memory_search，并使用空 refs 数组。',
+    '6. 只能通过调用 finish_memory_search 结束。找到有用记忆时，给出面向当前任务的简洁总结和 canonical refs；没有值得额外注入给主 agent 的有用记忆时，也调用 finish_memory_search，设置 inject:false，并使用空 refs 数组。',
+    '如果 summary 依赖任何历史 turn，必须提供 refs，且不要设置 inject:false。',
     '',
     'memory_search 的搜索机制非常重要：',
     '- 它不是语义搜索，也不会自动分词；底层只是对子串做匹配。',

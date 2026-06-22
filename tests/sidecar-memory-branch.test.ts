@@ -54,6 +54,27 @@ class MemoryBranchAI {
   }
 }
 
+class NoInjectMemoryBranchAI {
+  calls: Message[][] = [];
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
+    this.calls.push(JSON.parse(JSON.stringify(messages)));
+    return {
+      content: null,
+      toolCalls: [makeToolCall('finish_1', 'finish_memory_search', {
+        summary: 'No extra memory worth injecting.',
+        refs: [],
+        inject: false,
+      })],
+      usage,
+    };
+  }
+}
+
 describe('memory sidecar branch', () => {
   let testRoot: string;
 
@@ -113,6 +134,25 @@ describe('memory sidecar branch', () => {
     assert.equal(aiService.calls.length, 2);
   });
 
+  test('suppresses observations when branch finishes with inject false', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const aiService = new NoInjectMemoryBranchAI();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'test-session',
+      input: 'quick question with no useful prior memory',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: aiService as any,
+      queue,
+    });
+
+    await handle.done;
+
+    assert.equal(queue.drain().length, 0);
+    assert.equal(aiService.calls.length, 1);
+    assert.match(readBranchLogs(testRoot), /suppressed_observation/);
+  });
+
   test('cancelled branch does not publish late memory observations', async () => {
     const queue = new InMemorySyntheticObservationQueue();
     const aiService = {
@@ -142,3 +182,16 @@ describe('memory sidecar branch', () => {
     assert.equal(queue.drain().length, 0);
   });
 });
+
+function readBranchLogs(root: string): string {
+  const branchRoot = path.join(root, 'logs', 'branches', 'memory');
+  if (!fs.existsSync(branchRoot)) return '';
+  const chunks: string[] = [];
+  for (const dateDir of fs.readdirSync(branchRoot)) {
+    const fullDateDir = path.join(branchRoot, dateDir);
+    for (const fileName of fs.readdirSync(fullDateDir)) {
+      chunks.push(fs.readFileSync(path.join(fullDateDir, fileName), 'utf-8'));
+    }
+  }
+  return chunks.join('\n');
+}

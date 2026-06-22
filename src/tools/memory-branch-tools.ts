@@ -4,6 +4,7 @@ import { jsonToolError, jsonToolResult, MemoryLogStore } from '../core/memory-lo
 export interface MemorySearchFinishPayload {
   summary: string;
   refs: string[];
+  inject: boolean;
 }
 
 export type MemorySearchFinishHandler = (payload: MemorySearchFinishPayload) => void;
@@ -159,6 +160,7 @@ export class FinishMemorySearchTool implements Tool {
     description: [
       '结束 memory search branch。',
       '当你已经拿到足够的记忆证据，或确认没有有用记忆时，调用这个工具。',
+      '正常找到有用记忆时不需要设置 inject；如果没有值得注入给主 agent 的额外记忆，设置 inject:false 并传空 refs。',
       '调用成功后 branch 会立刻结束。',
     ].join(' '),
     controlMode: 'pause_turn',
@@ -173,6 +175,10 @@ export class FinishMemorySearchTool implements Tool {
           type: 'array',
           description: '支撑 summary 的 canonical refs。没有有用记忆时传空数组。',
           items: { type: 'string' },
+        },
+        inject: {
+          type: 'boolean',
+          description: '可选。默认 true。只有确认没有值得注入给主 agent 的额外记忆时设置为 false；此时 refs 必须为空。',
         },
       },
       required: ['summary', 'refs'],
@@ -209,17 +215,29 @@ function validateFinishArgs(args: any):
   if (!Array.isArray(args?.refs)) {
     return { ok: false, error: 'refs must be an array of canonical memory refs' };
   }
-  const refs = args.refs.map((ref: unknown) => String(ref || '').trim()).filter(Boolean);
+  if (typeof args?.inject !== 'undefined' && typeof args.inject !== 'boolean') {
+    return { ok: false, error: 'inject must be a boolean when provided' };
+  }
+  const inject = args?.inject !== false;
+  const refs: string[] = args.refs.map((ref: unknown) => String(ref || '').trim()).filter(Boolean);
   for (const ref of refs) {
     if (!CANONICAL_REF_PATTERN.test(ref)) {
       return { ok: false, error: `invalid canonical ref: ${ref}` };
     }
   }
+  const uniqueRefs: string[] = Array.from(new Set(refs));
+  if (inject && uniqueRefs.length === 0) {
+    return { ok: false, error: 'refs must include at least one canonical memory ref unless inject is false' };
+  }
+  if (!inject && uniqueRefs.length > 0) {
+    return { ok: false, error: 'refs must be empty when inject is false' };
+  }
   return {
     ok: true,
     payload: {
       summary,
-      refs: Array.from(new Set(refs)),
+      refs: uniqueRefs,
+      inject,
     },
   };
 }

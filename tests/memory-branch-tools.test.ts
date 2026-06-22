@@ -119,6 +119,13 @@ describe('memory branch tools', () => {
     assert.equal(invalid.ok, false);
     assert.match(JSON.parse(String(invalid.message)).error, /invalid canonical ref/);
 
+    const emptyDefaultInject = await tool.execute({
+      summary: 'No useful memory.',
+      refs: [],
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(emptyDefaultInject.ok, false);
+    assert.match(JSON.parse(String(emptyDefaultInject.message)).error, /unless inject is false/);
+
     const valid = await tool.execute({
       summary: 'Prior decision found.',
       refs: ['chat/2026-06-16/demo.jsonl#2', 'chat/2026-06-16/demo.jsonl#2'],
@@ -127,8 +134,29 @@ describe('memory branch tools', () => {
     assert.deepEqual(captured, {
       summary: 'Prior decision found.',
       refs: ['chat/2026-06-16/demo.jsonl#2'],
+      inject: true,
     });
     assert.deepEqual(JSON.parse(String(valid.content)), { ok: true });
+
+    const suppressed = await tool.execute({
+      summary: 'No extra memory worth injecting.',
+      refs: [],
+      inject: false,
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(suppressed.ok, true);
+    assert.deepEqual(captured, {
+      summary: 'No extra memory worth injecting.',
+      refs: [],
+      inject: false,
+    });
+
+    const contradictory = await tool.execute({
+      summary: 'Found something but asked not to inject.',
+      refs: ['chat/2026-06-16/demo.jsonl#2'],
+      inject: false,
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(contradictory.ok, false);
+    assert.match(JSON.parse(String(contradictory.message)).error, /refs must be empty/);
   });
 
   test('read applies field-level truncation for oversized single episodes', async () => {
