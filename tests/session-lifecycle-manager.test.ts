@@ -107,6 +107,38 @@ describe('AgentSession lifecycle', () => {
     assert.equal(SessionStore.getInstance().loadRuntimeState('user:lifecycle-cwd').currentDirectory, defaultDir);
   });
 
+  test('stale current directory inside Electron userData resets to default workspace', async () => {
+    const { AgentSession, SessionStore } = loadSessionModules();
+    const originalUserDataDir = process.env.XIAOBA_USER_DATA_DIR;
+    const defaultDir = fs.mkdtempSync(path.join(testRoot, 'workspace-'));
+    const userDataDir = fs.mkdtempSync(path.join(testRoot, 'user-data-'));
+    const staleDir = path.join(userDataDir, 'nested');
+    fs.mkdirSync(staleDir);
+    const services = buildMockServices({
+      toolManager: {
+        getWorkspaceRoot() { return defaultDir; },
+        getToolDefinitions() { return []; },
+        executeTool() { throw new Error('not expected'); },
+      },
+    });
+
+    try {
+      process.env.XIAOBA_USER_DATA_DIR = userDataDir;
+      SessionStore.getInstance().saveRuntimeState('user:lifecycle-stale-cwd', { currentDirectory: staleDir });
+
+      const session = new AgentSession('user:lifecycle-stale-cwd', services, 'feishu');
+
+      assert.equal((session as any).currentDirectory, defaultDir);
+      assert.equal(
+        SessionStore.getInstance().loadRuntimeState('user:lifecycle-stale-cwd').currentDirectory,
+        defaultDir,
+      );
+    } finally {
+      if (originalUserDataDir === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+      else process.env.XIAOBA_USER_DATA_DIR = originalUserDataDir;
+    }
+  });
+
   test('reset and clear discard pending runtime feedback', async () => {
     const { AgentSession } = loadSessionModules();
     const resetSession = new AgentSession('user:lifecycle-feedback-reset', buildMockServices(), 'feishu');

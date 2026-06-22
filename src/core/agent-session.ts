@@ -233,11 +233,32 @@ export class AgentSession {
 
   private loadInitialCurrentDirectory(): string {
     const stored = this.lifecycleManager.loadCurrentDirectory();
-    if (stored && this.isExistingDirectory(stored)) {
-      return path.resolve(stored);
+    if (stored) {
+      const resolved = path.resolve(stored);
+      if (this.isExistingDirectory(resolved) && !this.isStaleRuntimeDataDirectory(resolved)) {
+        return resolved;
+      }
     }
     this.lifecycleManager.saveCurrentDirectory(this.defaultDirectory);
     return this.defaultDirectory;
+  }
+
+  private isStaleRuntimeDataDirectory(directory: string): boolean {
+    const userDataDir = process.env.XIAOBA_USER_DATA_DIR?.trim();
+    if (!userDataDir) return false;
+
+    const resolvedUserData = path.resolve(userDataDir);
+    const resolvedDefaultDirectory = path.resolve(this.defaultDirectory);
+    if (this.isSameOrInsideDirectory(resolvedDefaultDirectory, resolvedUserData)) {
+      return false;
+    }
+
+    return this.isSameOrInsideDirectory(path.resolve(directory), resolvedUserData);
+  }
+
+  private isSameOrInsideDirectory(candidate: string, parent: string): boolean {
+    const relative = path.relative(parent, candidate);
+    return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
   }
 
   private isExistingDirectory(directory: string): boolean {

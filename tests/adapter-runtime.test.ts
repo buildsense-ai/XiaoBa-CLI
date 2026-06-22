@@ -10,15 +10,21 @@ describe('adapter runtime', () => {
   let originalCwd: string;
   let originalProfilePath: string | undefined;
   let originalSkillsEnv: string | undefined;
+  let originalAppRootEnv: string | undefined;
+  let originalIsPackagedEnv: string | undefined;
 
   beforeEach(() => {
     originalCwd = process.cwd();
     originalProfilePath = process.env.XIAOBA_RUNTIME_PROFILE_PATH;
     originalSkillsEnv = process.env.XIAOBA_SKILLS_DIR;
+    originalAppRootEnv = process.env.XIAOBA_APP_ROOT;
+    originalIsPackagedEnv = process.env.XIAOBA_IS_PACKAGED;
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-adapter-runtime-'));
     process.chdir(testRoot);
     process.env.XIAOBA_RUNTIME_PROFILE_PATH = path.join(testRoot, 'missing-runtime-profile.json');
     process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
+    delete process.env.XIAOBA_APP_ROOT;
+    delete process.env.XIAOBA_IS_PACKAGED;
   });
 
   afterEach(() => {
@@ -32,6 +38,16 @@ describe('adapter runtime', () => {
       delete process.env.XIAOBA_SKILLS_DIR;
     } else {
       process.env.XIAOBA_SKILLS_DIR = originalSkillsEnv;
+    }
+    if (originalAppRootEnv === undefined) {
+      delete process.env.XIAOBA_APP_ROOT;
+    } else {
+      process.env.XIAOBA_APP_ROOT = originalAppRootEnv;
+    }
+    if (originalIsPackagedEnv === undefined) {
+      delete process.env.XIAOBA_IS_PACKAGED;
+    } else {
+      process.env.XIAOBA_IS_PACKAGED = originalIsPackagedEnv;
     }
     if (testRoot && fs.existsSync(testRoot)) {
       fs.rmSync(testRoot, { recursive: true, force: true });
@@ -52,6 +68,23 @@ describe('adapter runtime', () => {
     assert.deepStrictEqual(runtime.services.skillManager.getAllSkills(), []);
     assert.equal(runtime.sessionManagerOptions.ttl, 1234);
     assert.ok(runtime.sessionManagerOptions.systemPromptProviderFactory);
+  });
+
+  test('uses app root as default working directory when Electron dev cwd is userData', () => {
+    const appRoot = path.join(testRoot, 'app-root');
+    const userData = path.join(testRoot, 'user-data');
+    fs.mkdirSync(appRoot);
+    fs.mkdirSync(userData);
+    process.chdir(userData);
+    process.env.XIAOBA_APP_ROOT = appRoot;
+    process.env.XIAOBA_IS_PACKAGED = '0';
+
+    const runtime = createAdapterRuntime({
+      surface: 'catscompany',
+    });
+
+    assert.equal(runtime.profile.workingDirectory, appRoot);
+    assert.equal((runtime.services.toolManager as any).workingDirectory, appRoot);
   });
 
   test('uses runtime profile file while keeping adapter surface authoritative', () => {
