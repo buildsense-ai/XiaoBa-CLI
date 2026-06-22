@@ -4551,6 +4551,28 @@
       line-height: 1.55;
     }
 
+    .companion-prompt-stage {
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.62);
+      padding: 10px 12px;
+      display: grid;
+      gap: 6px;
+    }
+
+    .companion-prompt-stage-title {
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 850;
+      line-height: 1.35;
+    }
+
+    .companion-prompt-stage-body {
+      color: var(--text2);
+      font-size: 13px;
+      line-height: 1.58;
+    }
+
     .companion-prompt-preview {
       border: 1px dashed var(--border);
       border-radius: 10px;
@@ -5723,6 +5745,7 @@
     let promptGroupOpenState = loadPromptGroupOpenState();
     let promptCompanionProposal = null;
     let promptCompanionSignals = null;
+    let promptCompanionAdvisor = null;
     let promptCompanionAdvisorNotice = '';
     let promptCompanionBusy = false;
     let promptCompanionRequestSeq = 0;
@@ -5902,6 +5925,7 @@
         const nextProposal = data.proposal || null;
         const advisor = data.advisor || null;
         promptCompanionSignals = data.signals || null;
+        promptCompanionAdvisor = advisor;
         if (nextProposal) {
           promptCompanionProposal = nextProposal;
           promptCompanionAdvisorNotice = note ? formatPromptCompanionAdvisorNotice(advisor, '已根据你的补充生成新的可预览 diff。') : '';
@@ -5911,6 +5935,7 @@
             : formatPromptCompanionAdvisorNotice(advisor, '这次询问没有生成可应用的小 diff。可以换个更具体的方向继续问，或先观察更多会话。');
         } else {
           promptCompanionProposal = null;
+          promptCompanionAdvisor = null;
           promptCompanionAdvisorNotice = '';
         }
         renderPromptCompanionProposal();
@@ -5940,8 +5965,38 @@
       return text;
     }
 
+    function renderPromptCompanionStage(title, bodyHtml) {
+      if (!bodyHtml) return '';
+      return '<div class="companion-prompt-stage">'+
+        '<div class="companion-prompt-stage-title">'+escapeHtml(title)+'</div>'+
+        '<div class="companion-prompt-stage-body">'+bodyHtml+'</div>'+
+      '</div>';
+    }
+
+    function renderPromptCompanionLine(label, value) {
+      const text = String(value || '').trim();
+      if (!text) return '';
+      return '<div><strong>'+escapeHtml(label)+'：</strong>'+escapeHtml(text)+'</div>';
+    }
+
+    function renderPromptCompanionAdvisorDiagnosis() {
+      const advisor = promptCompanionAdvisor || {};
+      const issue = String(advisor.issue || '').trim();
+      const evidence = String(advisor.evidence || '').trim();
+      const message = String(advisor.message || promptCompanionAdvisorNotice || '').trim();
+      const suggestion = String(advisor.suggestion || '').trim();
+      let html = '';
+      const diagnosis = renderPromptCompanionLine('问题', issue)
+        + renderPromptCompanionLine('依据', evidence)
+        + (message ? '<div>'+escapeHtml(message).replace(/\n/g, '<br>')+'</div>' : '');
+      if (diagnosis) html += renderPromptCompanionStage('1. 问题定位', diagnosis);
+      if (suggestion) html += renderPromptCompanionStage('下一步问法', escapeHtml(suggestion));
+      return html;
+    }
+
     function renderPromptCompanionAdvisorNotice() {
       if (!promptCompanionAdvisorNotice) return '';
+      if (promptCompanionAdvisor) return renderPromptCompanionAdvisorDiagnosis();
       return '<div class="runtime-note"><strong>旁路回复：</strong><br>'+escapeHtml(promptCompanionAdvisorNotice).replace(/\n/g, '<br>')+'</div>';
     }
 
@@ -5967,19 +6022,30 @@
         + Number(signals.recent_runtime_errors||0)+' 条 runtime 错误 · '
         + Number(signals.recent_runtime_warnings||0)+' 条 runtime 警告 · '
         + Number(signals.recent_events||0)+' 条宠物事件';
+      const issue = p.issue || p.reason || '宠物 advisor 发现一条可以通过 prompt 小改动改善的问题。';
+      const evidence = p.evidence || signalCopy.replace(/^依据：/, '');
+      const changeSummary = p.change_summary || p.reason || '生成一处可预览的小 diff，应用前需要确认。';
       box.innerHTML =
-        renderPromptCompanionAdvisorNotice()+
         '<div class="companion-prompt-title">'+escapeHtml(p.title||'Prompt 调优建议')+'</div>'+
-        '<div class="companion-prompt-copy">目标：<code>'+escapeHtml(p.path||'system-prompt.md')+'</code> · '+escapeHtml(operationLabel)+'</div>'+
-        '<div class="companion-prompt-copy">'+escapeHtml(signalCopy)+'</div>'+
-        '<div class="companion-prompt-copy">'+escapeHtml(p.reason||'宠物 advisor 提出了一条小改动。')+'</div>'+
-        '<div class="companion-prompt-copy">'+escapeHtml(p.risk||'应用前请预览。')+'</div>'+
-        '<div class="companion-prompt-preview">'+escapeHtml(p.preview||'')+'</div>'+
-        '<div class="companion-prompt-actions">'+
-          '<button class="btn btn-primary" onclick="applyPromptCompanionProposal()">应用</button>'+
-          '<button class="btn" onclick="previewPromptCompanionProposal()">预览</button>'+
-          '<button class="btn btn-ghost" onclick="dismissPromptCompanionProposal()">忽略</button>'+
-        '</div>';
+        renderPromptCompanionStage('1. 问题定位',
+          renderPromptCompanionLine('问题', issue)+
+          renderPromptCompanionLine('定位依据', evidence)+
+          '<div>'+escapeHtml(signalCopy)+'</div>'
+        )+
+        renderPromptCompanionStage('2. 拟改内容',
+          '<div>目标：<code>'+escapeHtml(p.path||'system-prompt.md')+'</code> · '+escapeHtml(operationLabel)+'</div>'+
+          renderPromptCompanionLine('改动内容', changeSummary)+
+          renderPromptCompanionLine('原因', p.reason||'宠物 advisor 提出了一条小改动。')+
+          '<div class="companion-prompt-preview">'+escapeHtml(p.preview||'')+'</div>'
+        )+
+        renderPromptCompanionStage('3. 确认应用',
+          renderPromptCompanionLine('注意', p.risk||'应用前请预览。')+
+          '<div class="companion-prompt-actions">'+
+            '<button class="btn btn-primary" onclick="applyPromptCompanionProposal()">应用</button>'+
+            '<button class="btn" onclick="previewPromptCompanionProposal()">预览</button>'+
+            '<button class="btn btn-ghost" onclick="dismissPromptCompanionProposal()">忽略</button>'+
+          '</div>'
+        );
       if (floating) {
         floating.innerHTML =
           '<div class="floating-prompt-proposal">'+
@@ -6024,6 +6090,7 @@
         });
         const data = await parseSimpleResponse(res);
         promptCompanionProposal = null;
+        promptCompanionAdvisor = null;
         promptCompanionAdvisorNotice = '';
         promptCompanionSignals = data.proposal?.signals || promptCompanionSignals;
         setPetState('success', { message:'Prompt 建议已应用，下一条消息生效。', holdMs:2600 });
@@ -6047,6 +6114,7 @@
         });
         await parseSimpleResponse(res);
         promptCompanionProposal = null;
+        promptCompanionAdvisor = null;
         promptCompanionAdvisorNotice = '';
         renderPromptCompanionProposal();
       } catch (error) {

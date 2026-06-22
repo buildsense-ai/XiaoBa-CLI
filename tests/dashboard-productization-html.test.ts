@@ -73,14 +73,23 @@ test('Companion Hub presents pet growth and action preview', () => {
 });
 
 test('Companion prompt ask preserves the current proposal when no new diff is generated', () => {
+  assert.match(dashboardHtml, /let promptCompanionAdvisor = null/);
   assert.match(dashboardHtml, /let promptCompanionAdvisorNotice = ''/);
   assert.match(dashboardHtml, /const advisor = data\.advisor \|\| null/);
+  assert.match(dashboardHtml, /promptCompanionAdvisor = advisor/);
   assert.match(dashboardHtml, /function formatPromptCompanionAdvisorNotice\(advisor, fallback\)/);
+  assert.match(dashboardHtml, /function renderPromptCompanionStage\(title, bodyHtml\)/);
+  assert.match(dashboardHtml, /function renderPromptCompanionAdvisorDiagnosis\(\)/);
+  assert.match(dashboardHtml, /1\. 问题定位/);
+  assert.match(dashboardHtml, /2\. 拟改内容/);
+  assert.match(dashboardHtml, /3\. 确认应用/);
+  assert.match(dashboardHtml, /定位依据/);
+  assert.match(dashboardHtml, /改动内容/);
   assert.match(dashboardHtml, /<strong>旁路回复：<\/strong>/);
   assert.match(dashboardHtml, /建议问法：/);
   assert.match(dashboardHtml, /else if \(note\) \{\s*promptCompanionAdvisorNotice = promptCompanionProposal/);
   assert.match(dashboardHtml, /已保留当前建议/);
-  assert.match(dashboardHtml, /else \{\s*promptCompanionProposal = null;\s*promptCompanionAdvisorNotice = '';\s*\}/);
+  assert.match(dashboardHtml, /else \{\s*promptCompanionProposal = null;\s*promptCompanionAdvisor = null;\s*promptCompanionAdvisorNotice = '';\s*\}/);
 });
 
 test('SkillHub Skills page is separate from Companion Hub and owns publishing controls', () => {

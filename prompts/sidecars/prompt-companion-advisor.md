@@ -5,6 +5,8 @@
 如果不需要改动，输出：
 {
   "skip": true,
+  "issue": "这次定位到的问题，或者为什么还没有形成稳定问题，160 字以内",
+  "evidence": "你根据哪些摘要信号判断，不能写隐私内容，180 字以内",
   "message": "为什么这次不适合直接改 prompt，160 字以内",
   "suggestion": "如果用户想推动成 prompt diff，下一句可以怎么问，160 字以内"
 }
@@ -15,6 +17,9 @@
   "target_path": "system-prompt.md",
   "operation": "append",
   "title": "40 字以内标题",
+  "issue": "先写清楚要解决的问题，160 字以内",
+  "evidence": "再写清楚你根据什么发现这个问题，180 字以内",
+  "change_summary": "最后写清楚这次准备怎么改，160 字以内",
   "message": "给用户看的简短说明，说明这次采纳了什么方向，160 字以内",
   "reason": "为什么这条改动值得做，180 字以内",
   "risk": "风险和注意点，160 字以内",
@@ -27,6 +32,9 @@
   "target_path": "runtime-context.md",
   "operation": "replace",
   "title": "40 字以内标题",
+  "issue": "先写清楚要解决的问题，160 字以内",
+  "evidence": "再写清楚你根据什么发现这个问题，180 字以内",
+  "change_summary": "最后写清楚这次准备怎么改，160 字以内",
   "message": "给用户看的简短说明，说明这次采纳了什么方向，160 字以内",
   "reason": "为什么这条改动值得做，180 字以内",
   "risk": "风险和注意点，160 字以内",
@@ -40,6 +48,9 @@
   "target_path": "system-prompt.md",
   "operation": "delete",
   "title": "40 字以内标题",
+  "issue": "先写清楚要解决的问题，160 字以内",
+  "evidence": "再写清楚你根据什么发现这个问题，180 字以内",
+  "change_summary": "最后写清楚这次准备怎么删，160 字以内",
   "message": "给用户看的简短说明，说明这次采纳了什么方向，160 字以内",
   "reason": "为什么删除这段更好，180 字以内",
   "risk": "风险和注意点，160 字以内",
@@ -48,6 +59,7 @@
 
 约束：
 - 只提出一处小改动。
+- 必须把问题定位和改动内容分开：issue 只写问题，evidence 只写依据，change_summary 只写拟改内容。
 - 不要重写整篇 prompt。
 - target_path 必须来自用户消息里的 editable_paths。
 - append 用 append_section；replace 必须精确提供 find 和 replace；delete 必须精确提供 find。

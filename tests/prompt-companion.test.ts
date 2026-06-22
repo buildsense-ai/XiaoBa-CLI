@@ -44,6 +44,9 @@ describe('prompt companion advisor', { concurrency: false }, () => {
     assert.equal(first.proposal?.id, 'error-recovery-v1');
     assert.equal(first.proposal?.path, 'system-prompt.md');
     assert.equal(first.proposal?.operation, 'append');
+    assert.match(first.proposal?.issue || '', /失败|错误|卡点/);
+    assert.match(first.proposal?.evidence || '', /runtime log|异常|失败/);
+    assert.match(first.proposal?.change_summary || '', /异常恢复|重试|替代方案/);
     assert.match(first.proposal?.preview || '', /异常恢复/);
     assert.equal(first.signals.recent_runtime_errors, 1);
 
@@ -111,6 +114,7 @@ describe('prompt companion advisor', { concurrency: false }, () => {
     assert.equal(result.proposal?.trigger, 'recent_errors');
     assert.equal(result.signals.recent_runtime_errors, 1);
     assert.match(result.proposal?.reason || '', /runtime log/);
+    assert.match(result.proposal?.evidence || '', /runtime log/);
   });
 
   test('manual advisor notes do not fall back to generic cached suggestions', async () => {
@@ -122,6 +126,8 @@ describe('prompt companion advisor', { concurrency: false }, () => {
     const result = await getPromptCompanionProposal({ note: '请只看最近回复太长的问题，不要给默认建议。' });
     assert.equal(result.proposal, null);
     assert.equal(result.advisor?.skipped, true);
+    assert.match(result.advisor?.issue || '', /稳定|prompt/);
+    assert.match(result.advisor?.evidence || '', /摘要|依据|补充/);
     assert.match(result.advisor?.message || '', /运行链路诊断|system prompt/);
     assert.match(result.advisor?.suggestion || '', /system-prompt\.md/);
 
