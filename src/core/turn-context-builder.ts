@@ -27,6 +27,7 @@ import {
   buildTransientModeHintFromMessages,
 } from '../runtime/prompt-modes';
 import { TRANSIENT_TOOL_GUIDANCE_PREFIX } from './transient-tool-guidance';
+import { TRANSIENT_VISIBLE_OUTPUT_GUIDANCE_PREFIX } from './visible-output-guidance';
 import { resolveTurnContextTransientPolicy } from './transient-injection-policy';
 
 const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
@@ -98,6 +99,11 @@ export class TurnContextBuilder {
         msg.__injected
         && typeof msg.content === 'string'
         && msg.content.startsWith(TRANSIENT_TOOL_GUIDANCE_PREFIX)
+      ) return false;
+      if (
+        msg.__injected
+        && typeof msg.content === 'string'
+        && msg.content.startsWith(TRANSIENT_VISIBLE_OUTPUT_GUIDANCE_PREFIX)
       ) return false;
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;

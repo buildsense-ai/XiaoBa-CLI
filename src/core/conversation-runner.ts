@@ -31,6 +31,10 @@ import {
   buildTransientToolGuidance,
 } from './transient-tool-guidance';
 import {
+  TRANSIENT_VISIBLE_OUTPUT_GUIDANCE_PREFIX,
+  buildVisibleOutputGuidance,
+} from './visible-output-guidance';
+import {
   TRANSIENT_CURRENT_DIRECTORY_PREFIX,
   buildTransientEnvironmentHint,
 } from './transient-environment';
@@ -319,9 +323,17 @@ export class ConversationRunner {
       const toolGuidance = transientPolicy.injectToolGuidance
         ? buildTransientToolGuidance(requestTools)
         : null;
+      const visibleOutputGuidance = transientPolicy.injectVisibleOutputGuidance
+        ? buildVisibleOutputGuidance({
+          surface: this.toolExecutionContext?.surface,
+          tools: requestTools,
+          intent: transientPolicy.intent,
+        })
+        : null;
       const requestMessages = this.buildProviderInputMessages(messages, [
         ...(perTurnRunnerHint ? [perTurnRunnerHint] : []),
         ...(toolGuidance ? [toolGuidance] : []),
+        ...(visibleOutputGuidance ? [visibleOutputGuidance] : []),
         ...nextTurnTransientHints,
         ...orchestrationHints,
       ], {
@@ -841,6 +853,9 @@ export class ConversationRunner {
       if (message.__injected && message.content.startsWith(TRANSIENT_TOOL_GUIDANCE_PREFIX)) {
         return false;
       }
+      if (message.__injected && message.content.startsWith(TRANSIENT_VISIBLE_OUTPUT_GUIDANCE_PREFIX)) {
+        return false;
+      }
       if (message.role !== 'system') {
         return true;
       }
@@ -1151,7 +1166,6 @@ export class ConversationRunner {
       if (this.stream) {
         const streamCallbacks: StreamCallbacks = {
           onText: (text) => callbacks?.onText?.(text),
-          onRetry: (attempt, maxRetries) => callbacks?.onRetry?.(attempt, maxRetries),
         };
         return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
       }
@@ -1171,6 +1185,7 @@ export class ConversationRunner {
       if (this.stream) {
         const streamCallbacks: StreamCallbacks = {
           onText: (text) => callbacks?.onText?.(text),
+          onRetry: (attempt, maxRetries) => callbacks?.onRetry?.(attempt, maxRetries),
         };
         return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
       }

@@ -5,6 +5,7 @@ import {
   detectPromptMode,
   normalizePromptModeId,
 } from '../runtime/prompt-modes';
+import { shouldInjectVisibleOutputGuidance } from './visible-output-guidance';
 
 export type TransientIntentKind =
   | 'coding'
@@ -40,6 +41,7 @@ export interface ProviderTransientPolicy {
   injectEnvironment: boolean;
   injectToolGuidance: boolean;
   injectRunnerHint: boolean;
+  injectVisibleOutputGuidance: boolean;
   reasons: string[];
 }
 
@@ -167,11 +169,20 @@ export function resolveProviderTransientPolicy(
   );
   if (injectRunnerHint) reasons.push('complex-work-orchestration');
 
+  const injectVisibleOutputGuidance = shouldInjectVisibleOutputGuidance({
+    surface: options.surface,
+    intent,
+    turn: options.turn,
+    executedToolCalls: options.executedToolCalls,
+  });
+  if (injectVisibleOutputGuidance) reasons.push('visible-output-preference');
+
   return {
     intent,
     injectEnvironment,
     injectToolGuidance,
     injectRunnerHint,
+    injectVisibleOutputGuidance,
     reasons,
   };
 }
