@@ -6,8 +6,14 @@ import * as path from 'path';
 import { DEFAULT_TOOL_NAMES } from '../src/tools/default-tool-names';
 import { ToolManager } from '../src/tools/tool-manager';
 import { AgentToolExecutor } from '../src/agents/agent-tool-executor';
-import type { Tool } from '../src/types/tool';
-import type { ExecutionScope, ScopedLocalDeviceGrant } from '../src/types/session-identity';
+import type { Tool, ToolExecutionContext } from '../src/types/tool';
+import type {
+  DeviceGrantOperation,
+  ExecutionScope,
+  ScopedDeviceGrant,
+  ScopedDeviceSelection,
+  ScopedLocalDeviceGrant,
+} from '../src/types/session-identity';
 
 function fakeTool(name: string, execute: Tool['execute']): Tool {
   return {
@@ -45,6 +51,62 @@ function catsLocalDevice(overrides: Partial<ScopedLocalDeviceGrant> = {}): Scope
     installationId: 'install-local',
     deviceId: 'install-local',
     createdAt: Date.now(),
+    ...overrides,
+  };
+}
+
+function catsDeviceGrant(
+  scope: ExecutionScope,
+  operations: DeviceGrantOperation[],
+  overrides: Partial<ScopedDeviceGrant> = {},
+): ScopedDeviceGrant {
+  return {
+    kind: 'user_device_grant',
+    source: 'catscompany',
+    grantId: 'device-grant-main',
+    status: 'active',
+    identityTrust: 'server_canonical',
+    identitySource: 'metadata.catsco_identity',
+    deviceId: 'install-local',
+    deviceDisplayName: 'Local Device',
+    deviceBodyId: 'body-local',
+    deviceInstallationId: 'install-local',
+    ownerUserId: scope.actorUserId,
+    sessionKey: scope.sessionKey,
+    topicId: scope.topicId,
+    topicType: scope.topicType,
+    actorUserId: scope.actorUserId,
+    agentId: scope.agentId,
+    agentBodyId: scope.agentBodyId,
+    operations,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + 60_000,
+    ...overrides,
+  };
+}
+
+function catsDeviceSelection(
+  scope: ExecutionScope,
+  operations: DeviceGrantOperation[],
+  overrides: Partial<ScopedDeviceSelection> = {},
+): ScopedDeviceSelection {
+  return {
+    kind: 'user_device_selection',
+    source: 'catscompany',
+    status: 'selected',
+    selectionSource: 'single_active_device',
+    sessionKey: scope.sessionKey,
+    topicId: scope.topicId,
+    topicType: scope.topicType,
+    actorUserId: scope.actorUserId,
+    agentId: scope.agentId,
+    identityTrust: 'server_canonical',
+    identitySource: 'metadata.catsco_identity',
+    selectedDeviceId: 'install-local',
+    selectedDeviceDisplayName: 'Local Device',
+    selectedDeviceBodyId: 'body-local',
+    selectedDeviceInstallationId: 'install-local',
+    selectedDeviceOperations: operations,
     ...overrides,
   };
 }
@@ -455,6 +517,88 @@ describe('ToolManager', () => {
     assert.equal(result.ok, true);
     assert.equal(executed, true);
     assert.equal(confirmed, false);
+  });
+
+  test('CatsCo server-authorized remote file tools skip local confirmation', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-remote-file-'));
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    const executed: string[] = [];
+    manager.registerTool(fakeTool('write_file', async () => {
+      executed.push('write_file');
+      return { ok: true, content: 'remote write requested' };
+    }));
+    manager.registerTool(fakeTool('glob', async () => {
+      executed.push('glob');
+      return { ok: true, content: 'remote glob requested' };
+    }));
+
+    const channelScope = catsScope({
+      actorUserId: 'usr100',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+      topicId: 'p2p_100_43',
+      deviceOwnerUserId: 'usr100',
+      deviceOwnerSource: 'channel_identity_link',
+      channelSource: 'weixin',
+    });
+    let confirmations = 0;
+    const remoteContext: Partial<ToolExecutionContext> = {
+      surface: 'catscompany',
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      executionScope: channelScope,
+      localDeviceGrant: catsLocalDevice({
+        ownerUserId: 'usr9',
+        bodyId: 'cloud-body',
+        installationId: 'cloud-install',
+        deviceId: 'cloud-install',
+      }),
+      deviceGrants: [catsDeviceGrant(channelScope, ['write_file', 'glob'], {
+        grantId: 'speaker-file-grant',
+        identitySource: 'channel_identity_link',
+        deviceId: 'speaker-device',
+        deviceDisplayName: 'Speaker Laptop',
+        deviceBodyId: 'speaker-body',
+        deviceInstallationId: 'speaker-install',
+        ownerUserId: 'usr100',
+        actorUserId: 'usr100',
+      })],
+      deviceSelection: catsDeviceSelection(channelScope, ['write_file', 'glob'], {
+        selectedDeviceId: 'speaker-device',
+        selectedDeviceDisplayName: 'Speaker Laptop',
+        selectedDeviceBodyId: 'speaker-body',
+        selectedDeviceInstallationId: 'speaker-install',
+      }),
+      deviceRpc: {
+        executeTool: async () => ({ ok: true, content: 'remote ok' }),
+      },
+      confirmToolExecution: async () => {
+        confirmations += 1;
+        return false;
+      },
+    };
+
+    const write = await manager.executeTool({
+      id: 'call-remote-write',
+      type: 'function',
+      function: {
+        name: 'write_file',
+        arguments: JSON.stringify({ file_path: 'C:\\Users\\Alice\\Desktop\\note.txt', content: 'hello' }),
+      },
+    }, [], remoteContext);
+    const glob = await manager.executeTool({
+      id: 'call-remote-glob',
+      type: 'function',
+      function: {
+        name: 'glob',
+        arguments: JSON.stringify({ pattern: '*', path: 'C:\\Users\\Alice\\Desktop' }),
+      },
+    }, [], remoteContext);
+
+    assert.equal(write.ok, true);
+    assert.equal(glob.ok, true);
+    assert.deepEqual(executed, ['write_file', 'glob']);
+    assert.equal(confirmations, 0);
   });
 
   test('AgentToolExecutor uses the same local confirmation gate', async () => {
