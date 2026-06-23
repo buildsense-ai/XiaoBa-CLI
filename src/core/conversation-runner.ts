@@ -29,6 +29,10 @@ import { calculateSummaryBudgetTokens, resolveModelPromptBudgetTokens } from '..
 import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
 import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
 import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
+import {
+  buildSyntheticObservationMessages,
+  SyntheticObservation,
+} from './synthetic-observation';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -113,6 +117,8 @@ function isPendingUserInput(value: string | ContentBlock[] | PendingUserInput): 
     && 'content' in value;
 }
 
+export type SyntheticObservationProvider = () => SyntheticObservation[];
+
 interface ToolExecutionRecord {
   toolCall: ToolCall;
   toolName: string;
@@ -136,6 +142,8 @@ export interface RunnerOptions {
   toolExecutionContext?: Partial<ToolExecutionContext>;
   /** Pulls user messages that arrived while the current run was busy. */
   pendingUserInputProvider?: PendingUserInputProvider;
+  /** Non-blocking runtime observations produced by sidecar branches. */
+  syntheticObservationProvider?: SyntheticObservationProvider;
 }
 
 /**
@@ -154,6 +162,7 @@ export class ConversationRunner {
   private maxTurns?: number;
   private sessionLabel: string;
   private pendingUserInputProvider?: PendingUserInputProvider;
+  private syntheticObservationProvider?: SyntheticObservationProvider;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -176,6 +185,7 @@ export class ConversationRunner {
     this.enableCompression = options?.enableCompression ?? true;
     this.toolExecutionContext = options?.toolExecutionContext;
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
+    this.syntheticObservationProvider = options?.syntheticObservationProvider;
     this.maxTurns = options?.maxTurns;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
@@ -235,6 +245,7 @@ export class ConversationRunner {
           newMessages,
         };
       }
+      this.injectSyntheticObservations(messages, turns);
       const requestTools = this.fitToolsToPromptBudget(activeTools);
       if (requestTools.length < activeTools.length && !notifiedToolBudgetDisabled) {
         notifiedToolBudgetDisabled = true;
@@ -622,6 +633,24 @@ export class ConversationRunner {
       }
     }
     messages.push(runtimeContext);
+  }
+
+  private injectSyntheticObservations(messages: Message[], turn: number): void {
+    if (!this.syntheticObservationProvider) return;
+    let observations: SyntheticObservation[] = [];
+    try {
+      observations = this.syntheticObservationProvider();
+    } catch (error: any) {
+      Logger.warning(`[${this.sessionLabel}Turn ${turn}] synthetic observation drain failed: ${error.message}`);
+      return;
+    }
+    if (observations.length === 0) return;
+
+    const syntheticMessages = buildSyntheticObservationMessages(observations);
+    messages.push(...syntheticMessages);
+    Logger.info(
+      `[${this.sessionLabel}Turn ${turn}] injected ${observations.length} synthetic runtime observation(s)`
+    );
   }
 
   /**

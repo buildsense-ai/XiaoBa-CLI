@@ -25,6 +25,8 @@ import { TurnContextBuilder } from './turn-context-builder';
 import { TurnLogRecorder } from './turn-log-recorder';
 import { PlanRuntime } from './plan-runtime';
 import { getPetService } from '../pet/pet-service';
+import { InMemorySyntheticObservationQueue, SyntheticObservationQueue } from './synthetic-observation';
+import { MemorySidecarBranchHandle, startMemorySidecarBranch } from './sidecar-memory-branch';
 
 export interface AgentTurnServices {
   aiService: AIService;
@@ -117,6 +119,14 @@ export class AgentTurnController {
       planRuntime: this.options.planRuntime,
     });
 
+    const syntheticObservationQueue = new InMemorySyntheticObservationQueue();
+    const memorySidecar = this.startMemorySidecarIfEnabled({
+      input: params.input,
+      messages: params.messages,
+      queue: syntheticObservationQueue,
+      abortSignal: params.abortSignal,
+    });
+
     const runner = this.createRunner({
       channel: params.channel,
       executionScope: params.executionScope,
@@ -127,6 +137,7 @@ export class AgentTurnController {
       localFileGrants: params.localFileGrants,
       pendingUserInputProvider: params.pendingUserInputProvider,
       confirmToolExecution: params.callbacks?.confirmToolExecution,
+      syntheticObservationQueue,
       abortSignal: params.abortSignal,
       shouldContinue: params.shouldContinue,
     });
@@ -141,6 +152,9 @@ export class AgentTurnController {
         (error as AgentTurnRunError).partialMessages = partialMessages;
       }
       throw error;
+    } finally {
+      syntheticObservationQueue.cancel();
+      memorySidecar?.cancel();
     }
     const nextMessages = this.options.turnContextBuilder.removeTransientMessages(result.messages);
 
@@ -180,6 +194,7 @@ export class AgentTurnController {
     localFileGrants?: ScopedLocalFileGrant[];
     pendingUserInputProvider?: PendingUserInputProvider;
     confirmToolExecution?: AgentTurnCallbacks['confirmToolExecution'];
+    syntheticObservationQueue?: SyntheticObservationQueue;
     abortSignal?: AbortSignal;
     shouldContinue: () => boolean;
   }): ConversationRunner {
@@ -190,6 +205,7 @@ export class AgentTurnController {
       {
         shouldContinue: options.shouldContinue,
         pendingUserInputProvider: options.pendingUserInputProvider,
+        syntheticObservationProvider: () => options.syntheticObservationQueue?.drain() || [],
         // AgentSession/ContextWindowManager compacts durable history before the turn.
         // Runner-level compaction can fold transient runtime feedback into summary.
         enableCompression: false,
@@ -218,6 +234,25 @@ export class AgentTurnController {
         },
       },
     );
+  }
+
+  private startMemorySidecarIfEnabled(options: {
+    input: string | ContentBlock[];
+    messages: Message[];
+    queue: SyntheticObservationQueue;
+    abortSignal?: AbortSignal;
+  }): MemorySidecarBranchHandle | null {
+    if (process.env.XIAOBA_MEMORY_SIDECAR_ENABLED === 'false') {
+      return null;
+    }
+    return startMemorySidecarBranch({
+      sessionKey: this.options.sessionKey,
+      input: options.input,
+      recentMessages: options.messages,
+      workingDirectory: this.options.getCurrentDirectory(),
+      queue: options.queue,
+      signal: options.abortSignal,
+    });
   }
 
   private toRunnerCallbacks(callbacks?: AgentTurnCallbacks): RunnerCallbacks {
