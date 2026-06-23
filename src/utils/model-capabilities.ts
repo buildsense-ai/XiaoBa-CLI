@@ -1,4 +1,5 @@
 import { ChatConfig } from '../types';
+import { findRelayModelProfile } from './relay-model-profiles';
 
 const KNOWN_TEXT_ONLY_MODEL_PATTERNS = [
   /deepseek/i,
@@ -31,10 +32,28 @@ function includesAny(value: string, patterns: RegExp[]): boolean {
   return patterns.some(pattern => pattern.test(value));
 }
 
+function optionalBooleanEnv(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return undefined;
+  const text = value.trim().toLowerCase();
+  if (['true', '1', 'yes', 'y', 'on'].includes(text)) return true;
+  if (['false', '0', 'no', 'n', 'off'].includes(text)) return false;
+  return undefined;
+}
+
 export function isPrimaryModelVisionCapable(config: Pick<ChatConfig, 'apiUrl' | 'model' | 'provider'>): boolean {
   const apiUrl = (config.apiUrl || '').toLowerCase();
   const model = (config.model || '').trim();
   const modelKey = model.toLowerCase();
+  const isRelay = apiUrl.includes('relay.catsco.cc');
+  if (isRelay) {
+    const explicitRelayVision = optionalBooleanEnv(process.env.CATSCO_RELAY_LLM_VISION_CAPABLE);
+    if (explicitRelayVision !== undefined) return explicitRelayVision;
+    const relayProfile = findRelayModelProfile(model);
+    if (relayProfile) {
+      return relayProfile.capabilities.vision;
+    }
+  }
 
   // Anthropic-compatible endpoints from text-only providers often reject image blocks.
   if (apiUrl.includes('deepseek.com') || apiUrl.includes('minimaxi.com')) {
@@ -49,6 +68,14 @@ export function isPrimaryModelVisionCapable(config: Pick<ChatConfig, 'apiUrl' | 
 }
 
 export function isPrimaryModelToolCallingCapable(config: Pick<ChatConfig, 'apiUrl' | 'model' | 'provider'>): boolean {
-  void config;
+  const apiUrl = (config.apiUrl || '').toLowerCase();
+  if (apiUrl.includes('relay.catsco.cc')) {
+    const explicitToolCalling = optionalBooleanEnv(process.env.CATSCO_RELAY_LLM_TOOL_CALLING_CAPABLE);
+    if (explicitToolCalling !== undefined) return explicitToolCalling;
+    const relayProfile = findRelayModelProfile(config.model);
+    if (relayProfile) {
+      return relayProfile.capabilities.toolCalling;
+    }
+  }
   return true;
 }

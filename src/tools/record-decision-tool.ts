@@ -25,8 +25,8 @@ export class RecordDecisionTool implements Tool {
   definition: ToolDefinition = {
     name: 'record_decision',
     description: [
-      '把当前简短行动决策写入日志，不发送给用户，成功结果不进入后续 transcript。',
-      '只在复杂任务关键转折点使用；简单任务不要用。写工程摘要，不写隐藏推理链。',
+      '把当前行动决策写入本地运行日志。',
+      '不发送给用户，成功结果不进入后续 transcript。记录工程摘要，不记录隐藏推理链。',
     ].join('\n'),
     transcriptMode: 'suppress',
     parameters: {
@@ -34,11 +34,11 @@ export class RecordDecisionTool implements Tool {
       properties: {
         summary: {
           type: 'string',
-          description: '一句话概括当前决策，例如“这轮先用 plan 展示路线，并把设置页和子 agent 链路拆出去并行检查”。',
+          description: '一句话概括当前行动决策。',
         },
         reason: {
           type: 'string',
-          description: '简短说明为什么这样做；不需要展开完整推理。',
+          description: '可选。简短说明决策依据；不要展开隐藏推理链。',
         },
         plan_decision: {
           type: 'string',

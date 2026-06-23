@@ -18,17 +18,21 @@ export class SkillTool implements Tool {
 
   definition: ToolDefinition = {
     name: 'skill',
-    description: '调用已注册的 skill。Skills 是预定义的任务模板，可以执行复杂的多步骤任务。',
+    description: [
+      '加载并返回一个已注册 skill 的任务说明内容。',
+      '适合用户明确要求使用某个 skill，或当前任务确实匹配已知 skill 流程时使用。',
+      '本工具只提供 skill 指令内容；后续执行仍由主 agent 继续完成。',
+    ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
         skill: {
           type: 'string',
-          description: '已注册的 Skill 名称（例如当前 skills 目录里存在的任务模板）'
+          description: '已注册的 skill 名称。'
         },
         args: {
           type: 'string',
-          description: 'Skill 参数（可选）'
+          description: '传给 skill 模板的可选原始参数文本。'
         }
       },
       required: ['skill']

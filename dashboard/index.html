@@ -796,6 +796,201 @@
       color: var(--red);
     }
 
+    .prompt-workbench {
+      display: grid;
+      gap: 18px;
+    }
+
+    .prompt-trace-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .prompt-trace-card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--surface-muted);
+      padding: 14px;
+      min-width: 0;
+    }
+
+    .prompt-trace-label {
+      color: var(--text3);
+      font-size: 11px;
+      font-weight: 800;
+      margin-bottom: 8px;
+    }
+
+    .prompt-trace-value {
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+
+    .prompt-editor-layout {
+      display: grid;
+      grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+      gap: 16px;
+      align-items: stretch;
+    }
+
+    .prompt-file-list,
+    .prompt-editor-pane {
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: var(--surface-strong);
+      box-shadow: var(--shadow-sm), var(--glow);
+      min-width: 0;
+    }
+
+    .prompt-file-list {
+      padding: 10px;
+      max-height: min(68vh, 720px);
+      overflow: auto;
+    }
+
+    .prompt-file-group {
+      display: grid;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+
+    .prompt-file-group-title {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      color: var(--text2);
+      padding: 8px 8px 6px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 900;
+      text-align: left;
+      cursor: pointer;
+      letter-spacing: 0;
+    }
+
+    .prompt-file-group-title:hover {
+      color: var(--text);
+    }
+
+    .prompt-file-group-title .chevron {
+      width: 14px;
+      color: var(--text3);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .prompt-file-item {
+      width: 100%;
+      border: 1px solid transparent;
+      border-radius: 12px;
+      background: transparent;
+      padding: 10px 11px;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+      display: grid;
+      gap: 5px;
+      font: inherit;
+    }
+
+    .prompt-file-item.nested {
+      margin-left: 14px;
+      width: calc(100% - 14px);
+    }
+
+    .prompt-file-item:hover {
+      background: var(--surface-muted);
+      border-color: var(--border-light);
+    }
+
+    .prompt-file-item.active {
+      background: rgba(59, 130, 246, 0.09);
+      border-color: rgba(59, 130, 246, 0.24);
+    }
+
+    .prompt-file-name {
+      font-size: 12px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+
+    .prompt-file-meta {
+      color: var(--text3);
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.4;
+    }
+
+    .prompt-editor-pane {
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .prompt-editor-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .prompt-editor-title {
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+
+    .prompt-editor-meta {
+      color: var(--text2);
+      font-size: 12px;
+      line-height: 1.5;
+      margin-top: 5px;
+    }
+
+    .prompt-editor-textarea {
+      width: 100%;
+      min-height: 460px;
+      resize: vertical;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 13px;
+      line-height: 1.65;
+      white-space: pre;
+      overflow: auto;
+    }
+
+    .prompt-editor-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .prompt-editor-status {
+      color: var(--text2);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.5;
+    }
+
+    @media (max-width: 980px) {
+      .prompt-trace-grid,
+      .prompt-editor-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .prompt-file-list {
+        max-height: 280px;
+      }
+    }
+
     .model-source-layout {
       display: grid;
       gap: 14px;
@@ -4867,6 +5062,9 @@
       <a class="nav-item" onclick="switchPage('store')" data-page="store">
         <span class="nav-icon">+</span> <span>Skills</span>
       </a>
+      <a class="nav-item" onclick="switchPage('prompts')" data-page="prompts">
+        <span class="nav-icon">#</span> <span>提示词</span>
+      </a>
       <a class="nav-item" onclick="switchPage('companion')" data-page="companion">
         <span class="nav-icon">*</span> <span>伙伴中心</span>
       </a>
@@ -5037,7 +5235,10 @@
           <details class="config-section" open>
             <summary class="settings-advanced-summary">
               <span>已安装技能</span>
-              <span class="tag">local</span>
+              <span style="display:flex;align-items:center;gap:8px">
+                <span class="tag">local</span>
+                <button class="btn" id="copy-skills-root-btn" type="button" onclick="event.preventDefault();event.stopPropagation();copySkillsRootPath()">Copy Skills path</button>
+              </span>
             </summary>
             <div class="settings-advanced-body">
               <div class="skills-grid" id="store-grid"><div class="loading">加载中...</div></div>
@@ -5045,70 +5246,32 @@
           </details>
         </div>
 
-        <div class="settings-header" style="margin-top:28px">
-          <div class="settings-heading">
-            <div class="settings-kicker">SkillHub Developer</div>
-            <div class="section-title" style="margin-bottom:0">发布管理</div>
-            <div class="settings-meta">登录 SkillHub 后可申请开发者权限、提交 Skill、管理自己的已发布版本。</div>
-          </div>
-          <button class="btn" onclick="fetchSkillHubDeveloper()">刷新</button>
-        </div>
-
         <div class="config-section" id="skillhub-account-card">
           <div class="loading">正在检查 SkillHub 登录状态...</div>
         </div>
 
-        <div class="config-section" id="skillhub-developer-status">
-          <div class="loading">正在读取开发者状态...</div>
-        </div>
+          <div class="config-section">
+            <div class="config-group-title-main">我的发布</div>
+            <div class="settings-meta" style="margin-bottom:14px">管理你发布到 SkillHub 的 Skill 和版本。下架会隐藏公开安装；删除会移除服务器版本和包文件。</div>
+            <div class="portal-list" id="skillhub-package-versions-list"><div class="loading">暂无发布版本</div></div>
+          </div>
+      </div>
 
-        <div class="config-section" id="skillhub-developer-apply">
-          <div class="config-group-title-main">申请成为开发者</div>
-          <div class="settings-meta" style="margin-bottom:14px">普通账号申请通过后，云端会给账号增加 developer 角色。</div>
-          <div class="chat-form-row" style="margin-bottom:10px">
-            <input class="config-input" id="skillhub-apply-name" placeholder="开发者显示名称" />
-            <input class="config-input" id="skillhub-apply-namespace" placeholder="命名空间，例如 contract-team" />
+      <!-- Page: Prompts -->
+      <div class="page" id="page-prompts">
+        <div class="settings-header">
+          <div class="settings-heading">
+            <div class="settings-kicker">Prompt Lab</div>
+            <div class="section-title" style="margin-bottom:0">提示词调试</div>
+            <div class="settings-meta">编辑本地覆盖版本，重启 connector 或新建 session 后生效；日志会记录 system 和 bundle hash。</div>
           </div>
-          <div class="chat-form-row" style="margin-bottom:10px">
-            <input class="config-input" id="skillhub-apply-contact" placeholder="联系邮箱 / 微信 / 电话" />
-            <input class="config-input" id="skillhub-apply-homepage" placeholder="主页或组织链接（可选）" />
-          </div>
-          <textarea class="config-input" id="skillhub-apply-reason" rows="3" placeholder="简单说明你要发布哪些类型的 Skill"></textarea>
-          <div class="config-actions" style="margin-top:12px">
-            <button class="btn btn-primary" onclick="applySkillHubDeveloper()">提交申请</button>
+          <div class="settings-actions">
+            <button class="btn" onclick="copyPromptOverridesPath()">复制覆盖目录</button>
+            <button class="btn btn-primary" onclick="refreshPromptWorkbench()">刷新</button>
           </div>
         </div>
-
-        <div class="config-section" id="skillhub-developer-console">
-          <div class="config-group-title-main">提交 Skill 审核</div>
-          <div class="settings-meta" style="margin-bottom:14px">选择本地 Skill 文件夹，填写基本信息；Agent 会读取文件、生成 manifest 草稿并提交云端扫描审核。</div>
-          <div class="settings-step-grid">
-            <label><span class="wizard-label">本地 Skill 文件夹</span><input class="config-input" id="skillhub-local-path" placeholder="例如 E:\skills\contract-review" /></label>
-            <label><span class="wizard-label">版本</span><input class="config-input" id="skillhub-version" value="1.0.0" /></label>
-            <label><span class="wizard-label">Skill 名称</span><input class="config-input" id="skillhub-name" placeholder="合同审查助手" /></label>
-            <label><span class="wizard-label">分类</span><input class="config-input" id="skillhub-category" placeholder="法务 / 办公 / 工程造价" /></label>
-            <label style="grid-column:1/-1"><span class="wizard-label">简介</span><input class="config-input" id="skillhub-description" placeholder="说明这个 Skill 解决什么问题" /></label>
-            <label style="grid-column:1/-1"><span class="wizard-label">关键词</span><input class="config-input" id="skillhub-keywords" placeholder="合同审查，采购合同，条款风险" /></label>
-            <label style="grid-column:1/-1"><span class="wizard-label">触发示例</span><textarea class="config-input" id="skillhub-triggers" rows="3" placeholder="帮我审查这份采购合同&#10;找出合同里的付款风险&#10;检查协议条款是否合理"></textarea></label>
-            <label><span class="wizard-label">权限</span><input class="config-input" id="skillhub-permissions" value="filesystem.read.user_selected" /></label>
-            <label><span class="wizard-label">仓库链接（可选）</span><input class="config-input" id="skillhub-repository-url" placeholder="https://github.com/org/repo" /></label>
-          </div>
-          <div class="config-actions" style="margin-top:14px">
-            <button class="btn" onclick="createSkillHubManifestDraft()">生成 skill.json 草稿</button>
-            <button class="btn btn-primary" onclick="submitSkillHubReview()">提交审核</button>
-          </div>
-          <pre class="manifest-preview" id="skillhub-manifest-preview" style="margin-top:14px">尚未生成 manifest。</pre>
-        </div>
-
-        <div class="config-section">
-          <div class="config-group-title-main">我的提交</div>
-          <div class="portal-list" id="skillhub-submissions-list"><div class="loading">暂无数据</div></div>
-        </div>
-
-        <div class="config-section">
-          <div class="config-group-title-main">My Published Versions</div>
-          <div class="settings-meta" style="margin-bottom:14px">Published SkillHub versions can be managed here. Public users can install any published version.</div>
-          <div class="portal-list" id="skillhub-package-versions-list"><div class="loading">No published versions</div></div>
+        <div class="prompt-workbench" id="prompt-workbench">
+          <div class="loading">加载提示词...</div>
         </div>
       </div>
 
@@ -5345,7 +5508,7 @@
     let appReadinessSnapshot = {};
     let appReadinessLoaded = false;
     let appReadinessError = '';
-    const pageTitles = { services:'Agent Hub', store:'SkillHub', companion:'Companion Hub', chat:'CatsCo' };
+    const pageTitles = { services:'Agent Hub', store:'SkillHub', prompts:'Prompt Lab', companion:'Companion Hub', chat:'CatsCo' };
     let catsAuthMode = 'login';
     let catsState = {};
     let catsNextAction = 'none';
@@ -5398,6 +5561,7 @@
     const PET_PROFILE_KEY = 'xiaoba.petProfile';
     const PET_PROCESS_KEY = 'xiaoba.petProcess';
     const PET_POSITION_KEY = 'xiaoba.petPosition';
+    const PROMPT_GROUP_STATE_KEY = 'xiaoba.promptGroupOpenState';
     const DASHBOARD_FONT_SCALE_KEY = 'xiaoba.dashboardFontScale';
     const DASHBOARD_FONT_SCALE_MIN = 85;
     const DASHBOARD_FONT_SCALE_MAX = 150;
@@ -5434,9 +5598,14 @@
     let lastCatsMessageSignature = '';
     let catsWorkingActive = false;
     let skillHubState = { authenticated:false, roles:[], permissions:[], installed:[] };
+    let skillHubAutoConnectInFlight = null;
     let skillHubRegistryCache = [];
     let localSkillsCache = [];
-    let skillHubDraftManifest = null;
+    let promptEditorState = null;
+    let promptEditorFile = null;
+    let promptEditorSelectedPath = 'system-prompt.md';
+    let promptEditorDirty = false;
+    let promptGroupOpenState = loadPromptGroupOpenState();
 
     function loadPetProfile() {
       try {
@@ -5984,9 +6153,281 @@
       } else if (name === 'store') {
         refreshSkillHubPage();
         fetchSkillHubDeveloper();
+      } else if (name === 'prompts') {
+        refreshPromptWorkbench();
       } else if (name === 'services') {
         fetchStatus();
         refreshSettingsPage();
+      }
+    }
+
+    async function refreshPromptWorkbench(selectPath, options={}){
+      const root=document.getElementById('prompt-workbench');
+      if(root && !promptEditorState)root.innerHTML='<div class="loading">加载提示词...</div>';
+      try{
+        promptEditorState=await parseSimpleResponse(await fetch(API+'/api/prompts'));
+        const paths=(promptEditorState.files||[]).map(file=>file.path);
+        if(selectPath)promptEditorSelectedPath=selectPath;
+        if(!paths.includes(promptEditorSelectedPath)){
+          promptEditorSelectedPath=paths.includes('system-prompt.md')?'system-prompt.md':(paths[0]||'');
+        }
+        if(promptEditorSelectedPath){
+          promptEditorFile=await parseSimpleResponse(await fetch(API+'/api/prompts/file?path='+encodeURIComponent(promptEditorSelectedPath)));
+        }
+        promptEditorDirty=false;
+        renderPromptWorkbench(options);
+      }catch(e){
+        if(root)root.innerHTML='<div class="runtime-note danger">提示词加载失败：'+escapeHtml(e.message||String(e))+'</div>';
+      }
+    }
+
+    async function selectPromptEditorFile(path){
+      if(promptEditorDirty && !confirm('当前 prompt 有未保存改动，确定切换文件吗？'))return;
+      promptEditorSelectedPath=path;
+      promptEditorDirty=false;
+      await refreshPromptWorkbench(path, {preserveFileListScroll:true});
+    }
+
+    function capturePromptWorkbenchScroll(){
+      const list=document.querySelector('#prompt-workbench .prompt-file-list');
+      const textarea=document.getElementById('prompt-editor-textarea');
+      return {
+        fileList:list?list.scrollTop:0,
+        textarea:textarea?textarea.scrollTop:0
+      };
+    }
+
+    function restorePromptWorkbenchScroll(scrollState, options={}){
+      if(!scrollState)return;
+      requestAnimationFrame(()=>{
+        const list=document.querySelector('#prompt-workbench .prompt-file-list');
+        if(list && options.preserveFileListScroll!==false){
+          list.scrollTop=scrollState.fileList||0;
+        }
+        const textarea=document.getElementById('prompt-editor-textarea');
+        if(textarea && options.preserveEditorScroll){
+          textarea.scrollTop=scrollState.textarea||0;
+        }
+      });
+    }
+
+    function renderPromptWorkbench(options={}){
+      const root=document.getElementById('prompt-workbench');
+      if(!root)return;
+      if(!promptEditorState){
+        root.innerHTML='<div class="loading">加载提示词...</div>';
+        return;
+      }
+      const scrollState=capturePromptWorkbenchScroll();
+      const trace=promptEditorState.trace||{};
+      const system=trace.system||{};
+      const bundle=trace.bundle||{};
+      const files=promptEditorState.files||[];
+      const selected=promptEditorFile;
+      const listHtml=renderPromptFileTree(files);
+      const editorHtml=selected?renderPromptEditorPane(selected):'<div class="prompt-editor-pane"><div class="loading">请选择 prompt 文件</div></div>';
+      root.innerHTML=
+        '<div class="prompt-trace-grid">'+
+          promptTraceCard('System hash', system.short_hash||'-', (system.chars||0)+' 字符')+
+          promptTraceCard('Bundle hash', bundle.short_hash||'-', (bundle.file_count||0)+' 个文件')+
+          promptTraceCard('Version', trace.prompt_version||'local', trace.source||'-')+
+          promptTraceCard('Overrides', promptEditorState.writable?'可写':'未配置', promptEditorState.overrides_dir||'-')+
+        '</div>'+
+        '<div class="runtime-note">保存只写入本地覆盖目录，不改安装包内置 prompts。当前运行中的 connector 需要重启，已存在 session 也要新建后才会重新读取 system prompt。</div>'+
+        '<div class="prompt-editor-layout">'+
+          '<div class="prompt-file-list">'+(listHtml||'<div class="loading">没有可编辑的 prompt 文件</div>')+'</div>'+
+          editorHtml+
+        '</div>';
+      restorePromptWorkbenchScroll(scrollState, options);
+    }
+
+    function loadPromptGroupOpenState(){
+      try{
+        return {
+          core:true,
+          docs:false,
+          sidecars:true,
+          subagents:true,
+          transient:true,
+          ...JSON.parse(localStorage.getItem(PROMPT_GROUP_STATE_KEY)||'{}')
+        };
+      }catch(_e){
+        return {core:true,docs:false,sidecars:true,subagents:true,transient:true};
+      }
+    }
+
+    function savePromptGroupOpenState(){
+      try{localStorage.setItem(PROMPT_GROUP_STATE_KEY,JSON.stringify(promptGroupOpenState));}catch(_e){}
+    }
+
+    function togglePromptFileGroup(group){
+      promptGroupOpenState[group]=!promptGroupOpenState[group];
+      savePromptGroupOpenState();
+      renderPromptWorkbench({preserveFileListScroll:true});
+    }
+
+    function renderPromptFileTree(files){
+      const groups=new Map();
+      (files||[]).forEach(file=>{
+        const group=promptFileGroup(file.path);
+        if(!groups.has(group))groups.set(group,[]);
+        groups.get(group).push(file);
+      });
+      const order=['core','docs','sidecars','subagents','transient'];
+      const extra=[...groups.keys()].filter(group=>!order.includes(group)).sort();
+      return [...order,...extra]
+        .filter(group=>groups.has(group))
+        .map(group=>renderPromptFileGroup(group,groups.get(group)))
+        .join('');
+    }
+
+    function promptFileGroup(filePath){
+      if(filePath==='system-prompt.md'||filePath==='runtime-context.md'||filePath==='compact-system.md')return 'core';
+      if(filePath==='README.md')return 'docs';
+      return String(filePath||'').split('/')[0]||'other';
+    }
+
+    function promptGroupLabel(group){
+      const labels={
+        core:'核心提示词',
+        docs:'文档',
+        sidecars:'sidecars',
+        subagents:'subagents',
+        transient:'transient'
+      };
+      return labels[group]||group;
+    }
+
+    function promptGroupHint(group,count){
+      const hints={
+        core:'主会话和压缩的关键入口',
+        docs:'规范说明',
+        sidecars:'独立小模型调用',
+        subagents:'子 agent 角色和边界',
+        transient:'每轮临时注入模板'
+      };
+      return (hints[group]||'目录')+' · '+count+' 个文件';
+    }
+
+    function renderPromptFileGroup(group,files){
+      const open=promptGroupOpenState[group]!==false;
+      const chevron=open?'v':'>';
+      const items=open?files.map(file=>renderPromptFileItem(file,group)).join(''):'';
+      return '<div class="prompt-file-group">'+
+        '<button class="prompt-file-group-title" type="button" onclick="togglePromptFileGroup(\''+escapeHtml(group)+'\')">'+
+          '<span class="chevron">'+chevron+'</span><span>'+escapeHtml(promptGroupLabel(group))+'</span>'+
+          '<span class="prompt-file-meta">'+escapeHtml(promptGroupHint(group,files.length))+'</span>'+
+        '</button>'+
+        items+
+      '</div>';
+    }
+
+    function renderPromptFileItem(file,group){
+      const active=file.path===promptEditorSelectedPath?' active':'';
+      const nested=group==='core'||group==='docs'?'':' nested';
+      const badge=file.overridden?'<span class="tag green">override</span>':'';
+      const label=promptFileLabel(file.path,group);
+      const subpath=promptFileSubpath(file.path,group);
+      const meta=[file.effective?.short_hash||'-', (file.effective?.lines||0)+' 行', subpath].filter(Boolean).join(' · ');
+      return '<button class="prompt-file-item'+nested+active+'" type="button" onclick="selectPromptEditorFile(decodeURIComponent(\''+encodeURIComponent(file.path)+'\'))">'+
+        '<span class="prompt-file-name">'+escapeHtml(label)+'</span>'+
+        '<span class="prompt-file-meta">'+escapeHtml(meta)+' '+badge+'</span>'+
+      '</button>';
+    }
+
+    function promptFileLabel(filePath,group){
+      if(group==='core'||group==='docs')return filePath;
+      const parts=String(filePath||'').split('/').filter(Boolean);
+      return parts.slice(1).join('/')||filePath;
+    }
+
+    function promptFileSubpath(filePath,group){
+      if(group==='core'||group==='docs')return '';
+      const parts=String(filePath||'').split('/').filter(Boolean);
+      return parts.length>2?parts.slice(0,-1).join('/'):'';
+    }
+
+    function promptTraceCard(label, value, meta){
+      return '<div class="prompt-trace-card">'+
+        '<div class="prompt-trace-label">'+escapeHtml(label)+'</div>'+
+        '<div class="prompt-trace-value">'+escapeHtml(value)+'</div>'+
+        '<div class="settings-meta" style="margin-top:6px">'+escapeHtml(meta||'')+'</div>'+
+      '</div>';
+    }
+
+    function renderPromptEditorPane(file){
+      const saveDisabled=promptEditorState?.writable?'':' disabled';
+      const resetDisabled=file.overridden?'':' disabled';
+      return '<div class="prompt-editor-pane">'+
+        '<div class="prompt-editor-head">'+
+          '<div><div class="prompt-editor-title">'+escapeHtml(file.path)+'</div>'+
+          '<div class="prompt-editor-meta">当前 '+escapeHtml(file.effective.short_hash)+' · 基线 '+escapeHtml(file.base.short_hash)+' · '+(file.overridden?'已有本地覆盖':'使用内置基线')+'</div></div>'+
+          (file.overridden?'<span class="tag green">override</span>':'<span class="tag">base</span>')+
+        '</div>'+
+        '<textarea class="config-input prompt-editor-textarea" id="prompt-editor-textarea" spellcheck="false" oninput="markPromptEditorDirty()">'+escapeHtml(file.content||'')+'</textarea>'+
+        '<div class="prompt-editor-actions">'+
+          '<div class="prompt-editor-status" id="prompt-editor-status">'+(promptEditorState?.writable?'编辑后保存覆盖版本；重启 connector 后生效。':'当前环境没有配置覆盖目录，不能保存。')+'</div>'+
+          '<div class="settings-actions">'+
+            '<button class="btn" onclick="resetPromptEditorFile()"'+resetDisabled+'>重置为内置</button>'+
+            '<button class="btn btn-primary" id="prompt-editor-save-btn" onclick="savePromptEditorFile()"'+saveDisabled+'>保存覆盖</button>'+
+          '</div>'+
+        '</div>'+
+      '</div>';
+    }
+
+    function markPromptEditorDirty(){
+      promptEditorDirty=true;
+      const status=document.getElementById('prompt-editor-status');
+      if(status)status.textContent='有未保存改动。保存后需要重启 connector 或新建 session。';
+    }
+
+    async function savePromptEditorFile(){
+      const textarea=document.getElementById('prompt-editor-textarea');
+      if(!textarea || !promptEditorSelectedPath)return;
+      const status=document.getElementById('prompt-editor-status');
+      try{
+        if(status)status.textContent='正在保存...';
+        promptEditorFile=await parseSimpleResponse(await fetch(API+'/api/prompts/file',{
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({path:promptEditorSelectedPath,content:textarea.value})
+        }));
+        await refreshPromptWorkbench(promptEditorSelectedPath, {
+          preserveFileListScroll:true,
+          preserveEditorScroll:true
+        });
+        const nextStatus=document.getElementById('prompt-editor-status');
+        if(nextStatus)nextStatus.textContent='已保存覆盖版本。重启 connector 或新建 session 后生效。';
+      }catch(e){
+        if(status)status.textContent='保存失败：'+(e.message||String(e));
+      }
+    }
+
+    async function resetPromptEditorFile(){
+      if(!promptEditorSelectedPath)return;
+      if(!confirm('确定删除这个 prompt 的本地覆盖，恢复使用内置版本吗？'))return;
+      const status=document.getElementById('prompt-editor-status');
+      try{
+        if(status)status.textContent='正在重置...';
+        promptEditorFile=await parseSimpleResponse(await fetch(API+'/api/prompts/file?path='+encodeURIComponent(promptEditorSelectedPath),{method:'DELETE'}));
+        await refreshPromptWorkbench(promptEditorSelectedPath, {
+          preserveFileListScroll:true,
+          preserveEditorScroll:true
+        });
+        const nextStatus=document.getElementById('prompt-editor-status');
+        if(nextStatus)nextStatus.textContent='已恢复内置版本。重启 connector 或新建 session 后生效。';
+      }catch(e){
+        if(status)status.textContent='重置失败：'+(e.message||String(e));
+      }
+    }
+
+    async function copyPromptOverridesPath(){
+      try{
+        if(!promptEditorState)promptEditorState=await parseSimpleResponse(await fetch(API+'/api/prompts'));
+        await copyTextToClipboard(promptEditorState.overrides_dir||'');
+        alert('已复制 prompt 覆盖目录');
+      }catch(e){
+        alert('复制失败：'+(e.message||String(e)));
       }
     }
 
@@ -6264,30 +6705,68 @@
       const name = skillJsArg(sk.name);
       const actions = [];
       if (sk.canDisable === false) {
-        actions.push('<button class="btn" disabled>Protected</button>');
+        actions.push('<button class="btn" disabled>受保护</button>');
       } else {
-        actions.push('<button class="btn" onclick="toggleSkill(\''+name+'\',' +(sk.enabled!==false)+')">'+(sk.enabled===false?'Enable':'Disable')+'</button>');
+        actions.push('<button class="btn" onclick="toggleSkill(\''+name+'\',' +(sk.enabled!==false)+')">'+(sk.enabled===false?'启用':'停用')+'</button>');
       }
       if (sk.canShare) {
-        actions.push('<button class="btn btn-primary" onclick="shareLocalSkillToSkillHub(\''+name+'\')">Share</button>');
+        actions.push('<button class="btn btn-primary" onclick="shareLocalSkillToSkillHub(\''+name+'\')">分享</button>');
       }
       if (sk.canDelete) {
-        actions.push('<button class="btn btn-danger" onclick="deleteSkill(\''+name+'\')">Delete</button>');
+        actions.push('<button class="btn btn-danger" onclick="deleteSkill(\''+name+'\')">删除</button>');
       }
       return '<div class="skill-actions">'+actions.join('')+'</div>';
     }
 
+    async function copySkillsRootPath() {
+      const btn = document.getElementById('copy-skills-root-btn');
+      const originalText = btn ? btn.textContent : '';
+      try {
+        const data = await parseSimpleResponse(await fetch(API + '/api/skills-root'));
+        await copyTextToClipboard(data.path || '');
+        if (btn) {
+          btn.textContent = 'Copied';
+          setTimeout(() => { btn.textContent = originalText || 'Copy Skills path'; }, 1400);
+        }
+      } catch (e) {
+        alert('Copy Skills path failed: ' + (e.message || String(e)));
+      }
+    }
+
+    async function copyTextToClipboard(text) {
+      if (!text) throw new Error('Empty path');
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        document.execCommand('copy');
+      } finally {
+        document.body.removeChild(textarea);
+      }
+    }
+
     function renderSkillHubLocalMeta(sk) {
       if (!sk.skillHub) return '';
-      const modified = sk.skillHub.modified === true
-        ? '<span class="tag warm">local changes</span>'
-        : sk.skillHub.modified === false
-          ? '<span class="tag green">synced</span>'
-          : '<span class="tag">not checked</span>';
+      const syncStatus = sk.skillHub.syncStatus || (sk.skillHub.modified === true ? 'local_changes' : sk.skillHub.modified === false ? 'synced' : 'check_failed');
+      const syncTag = syncStatus === 'synced'
+        ? '<span class="tag green" title="本地内容与云端版本一致">已同步</span>'
+        : syncStatus === 'local_changes'
+          ? '<span class="tag warm" title="云端版本存在，但本地内容已经改过">本地有改动</span>'
+          : syncStatus === 'source_removed'
+            ? '<span class="tag warm" title="云端版本不存在、已下架或已删除">云端版本不可用</span>'
+            : '<span class="tag" title="'+escapeHtml(sk.skillHub.syncError || '网络或 API 校验失败')+'">校验失败</span>';
       const parts = [
-        sk.skillHub.author ? '<span class="tag">by '+escapeHtml(sk.skillHub.author)+'</span>' : '',
+        sk.skillHub.author ? '<span class="tag">作者：'+escapeHtml(sk.skillHub.author)+'</span>' : '',
         sk.skillHub.version ? '<span class="tag">v'+escapeHtml(sk.skillHub.version)+'</span>' : '',
-        modified,
+        syncTag,
       ].filter(Boolean);
       return '<div class="skill-meta">'+parts.join('')+'</div>';
     }
@@ -6296,57 +6775,63 @@
       const g = document.getElementById('skills-grid');
       if (!g) return;
       if (!skills.length) { g.innerHTML = '<div class="loading">No Skills</div>'; return; }
-      g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">disabled</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">user</span>':'')+(sk.autoInvocable?'<span class="tag active">auto</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+renderSkillHubLocalMeta(sk)+renderSkillGrowth(sk.name)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+'</div>').join('');
+      g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">已停用</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div>'+renderSkillHubLocalMeta(sk)+renderSkillGrowth(sk.name)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+renderSkillActionButtons(sk)+'</div>').join('');
     }
 
     function renderLocalSkillStore(skills) {
       const g = document.getElementById('store-grid');
       if (!g) return;
       if (!skills.length) { g.innerHTML = '<div class="loading">No Skills</div>'; return; }
-      g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">disabled</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div><div class="skill-meta">'+(sk.userInvocable?'<span class="tag active">user</span>':'')+(sk.autoInvocable?'<span class="tag active">auto</span>':'')+(sk.maxTurns?'<span class="tag">max '+sk.maxTurns+' turns</span>':'')+'</div>'+renderSkillHubLocalMeta(sk)+renderSkillGrowth(sk.name)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+renderSkillActionButtons(sk)+'</div>').join('');
+      g.innerHTML = skills.map(sk => '<div class="skill-card'+(sk.enabled===false?' disabled':'')+'"><div class="skill-name">'+sk.name+renderSkillSourceTag(sk)+(sk.enabled===false?' <span class="tag" style="background:rgba(220,93,115,0.12);color:var(--red)">已停用</span>':'')+'</div><div class="skill-desc">'+(sk.description||'')+'</div>'+renderSkillHubLocalMeta(sk)+renderSkillGrowth(sk.name)+(sk.files?'<div class="skill-files">'+sk.files.join(', ')+'</div>':'')+renderSkillActionButtons(sk)+'</div>').join('');
     }
 
     async function shareLocalSkillToSkillHub(skillName) {
       if (!skillName) return;
-      if (!confirm('Share this local Skill to SkillHub?\n\n' + skillName)) return;
+      if (!confirm('分享这个本地 Skill 到 SkillHub？\n\n' + skillName)) return;
       try {
-        let data = await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/share-local-skill', {
+        await ensureSkillHubAuthenticated();
+        let data = await parseSimpleResponse(await fetch(API + '/api/skillhub/share-local-skill', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({ skillName }),
         }));
         if (data.requiresConfirmation) {
-          const latest = data.latestVersion ? ('\nLatest version: ' + data.latestVersion) : '';
-          if (!confirm('A SkillHub skill with the same name already exists, but the local content is different.' + latest + '\n\nPublish this as a new patch version?')) return;
-          data = await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/share-local-skill', {
+          const latest = data.latestVersion ? ('\n云端最新版本：' + data.latestVersion) : '';
+          if (!confirm('SkillHub 上已有同名 Skill，但本地内容不同。' + latest + '\n\n是否发布为新的 patch 版本？')) return;
+          data = await parseSimpleResponse(await fetch(API + '/api/skillhub/share-local-skill', {
             method:'POST',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({ skillName, confirmVersionPublish: true }),
           }));
         }
         if (data.existing) {
-          alert('SkillHub already has this exact Skill content: ' + (data.latestVersion || skillName));
+          alert('SkillHub 已有完全相同的内容：' + (data.latestVersion || skillName));
           await refreshSkillHubPage();
           return;
         }
         const submission = data.submission || {};
-        alert('SkillHub share submitted: ' + (submission.id || submission.submissionId || skillName));
+        alert('已分享到 SkillHub：' + (submission.id || submission.submissionId || skillName));
         await Promise.allSettled([fetchSkillHubDeveloper(), refreshSkillHubPage()]);
       } catch (e) {
-        alert('SkillHub share failed: ' + (e.message || String(e)));
+        alert('分享失败：' + (e.message || String(e)));
       }
     }
 
     async function refreshSkillHubPage() {
-      await Promise.allSettled([fetchSkills(), fetchSkillHubStatus()]);
+      await Promise.allSettled([fetchSkills(), fetchSkillHubStatus({ autoConnect: true })]);
       await searchSkillHub('', true);
     }
 
-    async function fetchSkillHubStatus() {
+    async function fetchSkillHubStatus(options) {
       const card = document.getElementById('skillhub-account-card');
+      const autoConnect = options?.autoConnect === true;
       try {
         const data = await parseSimpleResponse(await fetch(API + '/api/skillhub/status'));
         skillHubState = data || { authenticated:false, roles:[], permissions:[], installed:[] };
+        if (!skillHubState.authenticated && autoConnect) {
+          await autoConnectSkillHubWithCatsCo();
+          return;
+        }
         renderSkillHubAccount();
       } catch (e) {
         if (card) card.innerHTML = '<div class="runtime-note danger">SkillHub 状态加载失败：'+escapeHtml(e.message || String(e))+'</div>';
@@ -6362,7 +6847,6 @@
         card.innerHTML =
           '<div class="settings-setup-head"><div><div class="settings-setup-title">已登录 SkillHub</div><div class="settings-setup-copy">'+escapeHtml(user.displayName || user.email || 'CatsCo 用户')+' · '+escapeHtml((skillHubState.roles || ['user']).join(', '))+'</div></div><span class="tag green">connected</span></div>'+
           '<div class="config-actions" style="margin-top:14px">'+
-          '<button class="btn" onclick="fetchSkillHubDeveloper()">刷新开发者状态</button>'+
           '<button class="btn" onclick="logoutSkillHub()">退出登录</button>'+
           '</div>'+
           (!skillHubState.trustReady?'<div class="runtime-note warning" style="margin-top:12px">当前 Agent 构建还没有内置 SkillHub root public key。正式发布前需要运行 trust-root 脚本写入官方 root 公钥。</div>':'');
@@ -6373,7 +6857,6 @@
         '<div class="settings-setup-head"><div><div class="settings-setup-title">连接 SkillHub</div><div class="settings-setup-copy">公开 Skill 可直接搜索和安装；上传和版本管理会复用当前 CatsCo 登录账号。</div></div><span class="tag warm">catsco login</span></div>'+
         '<div class="config-actions" style="margin-top:14px">'+
         '<button class="btn btn-primary" onclick="connectSkillHubWithCatsCo()">使用 CatsCo 账号连接</button>'+
-        '<button class="btn" onclick="fetchSkillHubDeveloper()">刷新状态</button>'+
         '</div>'+
         '<details style="margin-top:14px"><summary class="settings-meta">备用：使用 SkillHub 邮箱密码登录</summary>'+
         '<div class="chat-form-row" style="margin-top:14px;margin-bottom:10px">'+
@@ -6450,6 +6933,78 @@
       }
     }
 
+    function renderSkillHubAccount() {
+      const card = document.getElementById('skillhub-account-card');
+      if (!card) return;
+      if (skillHubState.authenticated) {
+        const user = skillHubState.user || {};
+        card.innerHTML =
+          '<div class="settings-setup-head"><div><div class="settings-setup-title">SkillHub 已连接 CatsCo</div><div class="settings-setup-copy">'+escapeHtml(user.displayName || user.email || 'CatsCo 用户')+' · '+escapeHtml((skillHubState.roles || ['user']).join(', '))+'</div></div><span class="tag green">connected</span></div>'+
+          '<div class="config-actions" style="margin-top:14px">'+
+          '<button class="btn" onclick="refreshSkillHubPage()">刷新</button>'+
+          '</div>'+
+          (!skillHubState.trustReady?'<div class="runtime-note warning" style="margin-top:12px">当前构建还没有内置 SkillHub root public key。</div>':'');
+        return;
+      }
+
+      const error = skillHubState.error ? '<div class="runtime-note warning" style="margin-top:12px">'+escapeHtml(skillHubState.error)+'</div>' : '';
+      card.innerHTML =
+        '<div class="settings-setup-head"><div><div class="settings-setup-title">SkillHub 使用 CatsCo 账号</div><div class="settings-setup-copy">公开 Skill 可直接搜索和安装；分享和版本管理会自动复用当前 CatsCo 登录。</div></div><span class="tag warm">catsco login</span></div>'+
+        '<div class="config-actions" style="margin-top:14px">'+
+        '<button class="btn btn-primary" onclick="switchPage(\'chat\')">去 CatsCo 登录</button>'+
+        '<button class="btn" onclick="connectSkillHubWithCatsCo()">重试连接</button>'+
+        '</div>'+error;
+    }
+
+    async function ensureSkillHubAuthenticated() {
+      if (skillHubState.authenticated) return skillHubState;
+      return autoConnectSkillHubWithCatsCo({ throwOnError: true });
+    }
+
+    async function autoConnectSkillHubWithCatsCo(options) {
+      if (skillHubAutoConnectInFlight) return skillHubAutoConnectInFlight;
+      skillHubAutoConnectInFlight = connectSkillHubWithCatsCo({
+        quiet: true,
+        throwOnError: Boolean(options?.throwOnError),
+      }).finally(() => {
+        skillHubAutoConnectInFlight = null;
+      });
+      return skillHubAutoConnectInFlight;
+    }
+
+    async function connectSkillHubWithCatsCo(options) {
+      const quiet = Boolean(options?.quiet);
+      const throwOnError = Boolean(options?.throwOnError);
+      try {
+        skillHubState = await parseSimpleResponse(await fetch(API + '/api/skillhub/auth/catsco', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({}),
+        }));
+        renderSkillHubAccount();
+        await fetchSkillHubDeveloper();
+        await searchSkillHub('', true);
+        return skillHubState;
+      } catch (e) {
+        const message = e.message || String(e);
+        const loginRequired = /catsco.*login|required|token|401|登录/i.test(message);
+        skillHubState = {
+          authenticated:false,
+          roles:[],
+          permissions:[],
+          installed: skillHubState.installed || [],
+          error: loginRequired ? '请先在 CatsCo 页面完成登录。' : ('SkillHub 连接失败：' + message),
+        };
+        renderSkillHubAccount();
+        if (throwOnError) throw e;
+        if (!quiet) {
+          const loginHint = loginRequired ? '\n\n请先在 CatsCo 页面完成登录。' : '';
+          alert('连接 SkillHub 失败：' + message + loginHint);
+        }
+        return skillHubState;
+      }
+    }
+
     async function searchSkillHub(queryOverride, quiet) {
       const input = document.getElementById('skillhub-search-input');
       const query = queryOverride !== undefined ? queryOverride : (input ? input.value.trim() : '');
@@ -6483,16 +7038,19 @@
         const latestVersion = String(item.latestVersion || '');
         const key = skillId + '@' + latestVersion;
         const installed = installedIds.has(key);
-        const tags = [item.author?.name ? '<span class="tag">by '+escapeHtml(item.author.name)+'</span>' : '', ...(item.categories || []), ...(item.tags || [])].slice(0, 5).map(tag => String(tag).startsWith('<span') ? tag : '<span class="tag">'+escapeHtml(tag)+'</span>').join('');
+        const tags = [
+          item.author?.name ? '<span class="tag">作者：'+escapeHtml(item.author.name)+'</span>' : '',
+          latestVersion ? '<span class="tag">v'+escapeHtml(latestVersion)+'</span>' : '',
+        ].filter(Boolean).join('');
         const installAttrs = installed || !skillId
           ? 'disabled'
           : 'data-skillhub-install="true" data-skill-id="'+escapeHtml(skillId)+'" data-version="'+escapeHtml(latestVersion)+'"';
         return '<div class="skill-card">'+
           '<div class="skill-name">'+escapeHtml(item.displayName || item.name || skillId)+' <span class="tag green">SkillHub</span></div>'+
           '<div class="skill-desc">'+escapeHtml(item.description || '')+'</div>'+
-          '<div class="skill-meta">'+tags+'<span class="tag">v'+escapeHtml(latestVersion || '-')+'</span></div>'+
+          '<div class="skill-meta">'+tags+'</div>'+
           '<div class="skill-files">'+escapeHtml((item.triggerExamples || []).slice(0, 3).join(', '))+'</div>'+
-          '<div class="skill-actions"><button class="btn btn-primary" '+installAttrs+'>'+(installed?'Installed':'Install')+'</button><button class="btn" data-skillhub-versions="true" data-skill-id="'+escapeHtml(skillId)+'">Versions</button></div>'+
+          '<div class="skill-actions"><button class="btn btn-primary" '+installAttrs+'>'+(installed?'已安装':'安装')+'</button><button class="btn" data-skillhub-versions="true" data-skill-id="'+escapeHtml(skillId)+'">版本</button></div>'+
         '</div>';
       }).join('');
     }
@@ -6525,20 +7083,61 @@
       yankOwnSkillHubVersion(packageVersionId);
     }
 
+    function handleSkillHubRestoreVersionClick(event) {
+      const button = event.target?.closest?.('[data-skillhub-restore-version]');
+      if (!button || button.disabled) return;
+      event.preventDefault();
+      const packageVersionId = button.dataset.packageVersionId || '';
+      if (!packageVersionId) return;
+      restoreOwnSkillHubVersion(packageVersionId);
+    }
+
+    function handleSkillHubDeleteVersionClick(event) {
+      const button = event.target?.closest?.('[data-skillhub-delete-version]');
+      if (!button || button.disabled) return;
+      event.preventDefault();
+      const packageVersionId = button.dataset.packageVersionId || '';
+      if (!packageVersionId) return;
+      deleteOwnSkillHubVersion(packageVersionId);
+    }
+
     async function installSkillHubSkill(skillId, version) {
-      pulsePetState('thinking', 'Installing Skill...', 1600);
+      pulsePetState('thinking', '正在安装 Skill...', 1600);
       try {
         const data = await parseSimpleResponse(await fetch(API + '/api/skillhub/install', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({ skillId, version }),
         }));
-        pulsePetState('success', 'Skill installed', 2200);
-        alert('Install complete: ' + (data.skill?.name || skillId));
+        pulsePetState('success', 'Skill 已安装', 2200);
+        alert('安装完成：' + (data.skill?.name || skillId));
         await refreshSkillHubPage();
       } catch (e) {
-        pulsePetState('error', 'Install failed', 2600);
-        alert('Install failed: ' + (e.message || String(e)));
+        pulsePetState('error', '安装失败', 2600);
+        alert('安装失败：' + (e.message || String(e)));
+      }
+    }
+
+    function skillHubStatusTag(status) {
+      const value = String(status || 'published');
+      if (value === 'published') return '<span class="tag green">已公开</span>';
+      if (value === 'yanked') return '<span class="tag warm">已下架</span>';
+      return '<span class="tag">'+escapeHtml(value)+'</span>';
+    }
+
+    function skillHubStatusText(status) {
+      const value = String(status || 'published');
+      if (value === 'published') return '已公开';
+      if (value === 'yanked') return '已下架';
+      return value || '-';
+    }
+
+    function skillHubFormatDate(value) {
+      if (!value) return '';
+      try {
+        return new Date(value).toLocaleString();
+      } catch (_e) {
+        return String(value);
       }
     }
 
@@ -6547,8 +7146,8 @@
       const modal = document.getElementById('skillhub-versions-modal');
       const title = document.getElementById('skillhub-versions-title');
       const body = document.getElementById('skillhub-versions-body');
-      if (title) title.textContent = 'SkillHub Versions: ' + skillId;
-      if (body) body.innerHTML = '<div class="loading">Loading versions...</div>';
+      if (title) title.textContent = 'SkillHub 版本：' + skillId;
+      if (body) body.innerHTML = '<div class="loading">正在加载版本...</div>';
       if (modal) modal.classList.add('show');
       try {
         const [data, ownerData] = await Promise.all([
@@ -6561,30 +7160,36 @@
         const ownerVersions = new Map((ownerData.packageVersions || []).map(item => [String(item.skillId || '') + '@' + String(item.latestVersion || item.version || ''), item]));
         if (!body) return;
         if (!versions.length) {
-          body.innerHTML = '<div class="loading">No versions found.</div>';
+          body.innerHTML = '<div class="loading">暂无版本</div>';
           return;
         }
         body.innerHTML = versions.map(item => {
           const version = String(item.latestVersion || item.version || '');
           const ownerVersion = ownerVersions.get(String(skillId) + '@' + version);
-          const published = item.publishedAt ? '<span class="tag">'+escapeHtml(item.publishedAt)+'</span>' : '';
-          const downloads = '<span class="tag">downloads '+Number(item.downloadCount || 0)+'</span>';
-          const status = item.status && item.status !== 'published' ? '<span class="tag warm">'+escapeHtml(item.status)+'</span>' : '<span class="tag green">published</span>';
+          const published = item.publishedAt ? '<span class="tag">'+escapeHtml(skillHubFormatDate(item.publishedAt))+'</span>' : '';
+          const downloads = '<span class="tag">下载 '+Number(item.downloadCount || 0)+'</span>';
+          const status = skillHubStatusTag(item.status);
           const installAttrs = version
             ? 'data-skillhub-install="true" data-skill-id="'+escapeHtml(skillId)+'" data-version="'+escapeHtml(version)+'"'
             : 'disabled';
           const packageVersionId = ownerVersion?.packageVersionId || ownerVersion?.id || '';
           const removeButton = packageVersionId && (ownerVersion?.status || 'published') === 'published'
-            ? '<button class="btn btn-danger" data-skillhub-yank-version="true" data-package-version-id="'+escapeHtml(packageVersionId)+'">Remove version</button>'
+            ? '<button class="btn btn-danger" data-skillhub-yank-version="true" data-package-version-id="'+escapeHtml(packageVersionId)+'">下架版本</button>'
+            : '';
+          const restoreButton = packageVersionId && (ownerVersion?.status || 'published') !== 'published'
+            ? '<button class="btn btn-success" data-skillhub-restore-version="true" data-package-version-id="'+escapeHtml(packageVersionId)+'">重新公开</button>'
+            : '';
+          const deleteButton = packageVersionId
+            ? '<button class="btn btn-danger" data-skillhub-delete-version="true" data-package-version-id="'+escapeHtml(packageVersionId)+'">删除版本</button>'
             : '';
           return '<div class="portal-row">'+
             '<strong>v'+escapeHtml(version || '-')+'</strong>'+
             '<div class="skill-meta">'+status+published+downloads+'</div>'+
-            '<div class="config-actions" style="margin-top:10px"><button class="btn btn-primary" '+installAttrs+'>Install this version</button>'+removeButton+'</div>'+
+            '<div class="config-actions" style="margin-top:10px"><button class="btn btn-primary" '+installAttrs+'>安装此版本</button>'+removeButton+restoreButton+deleteButton+'</div>'+
           '</div>';
         }).join('');
       } catch (e) {
-        if (body) body.innerHTML = '<div class="runtime-note danger">Load versions failed: '+escapeHtml(e.message || String(e))+'</div>';
+        if (body) body.innerHTML = '<div class="runtime-note danger">版本加载失败：'+escapeHtml(e.message || String(e))+'</div>';
       }
     }
 
@@ -6594,147 +7199,131 @@
     }
 
     async function fetchSkillHubDeveloper() {
-      const statusBox = document.getElementById('skillhub-developer-status');
       try {
         const data = await parseSimpleResponse(await fetch(API + '/api/skillhub/developer'));
         renderSkillHubDeveloper(data);
       } catch (e) {
-        if (statusBox) statusBox.innerHTML = '<div class="runtime-note danger">Developer Hub 加载失败：'+escapeHtml(e.message || String(e))+'</div>';
+        console.warn('SkillHub published versions load failed:', e);
       }
     }
 
+    function groupSkillHubOwnedVersions(versions) {
+      const groups = new Map();
+      for (const item of versions || []) {
+        const skillId = String(item.skillId || item.name || '-');
+        const group = groups.get(skillId) || {
+          skillId,
+          displayName: item.displayName || item.name || skillId.split('/').pop() || skillId,
+          author: item.author?.name || item.authorName || '',
+          versions: [],
+          downloads: 0,
+          latestVersion: '',
+          latestPublishedAt: '',
+        };
+        group.versions.push(item);
+        group.downloads += Number(item.downloadCount || 0);
+        const version = String(item.latestVersion || item.version || '');
+        if (!group.latestVersion || String(item.publishedAt || '') > String(group.latestPublishedAt || '')) {
+          group.latestVersion = version;
+          group.latestPublishedAt = item.publishedAt || '';
+        }
+        groups.set(skillId, group);
+      }
+      return Array.from(groups.values()).sort((a, b) => String(b.latestPublishedAt || '').localeCompare(String(a.latestPublishedAt || '')));
+    }
+
+    function renderOwnedSkillVersionRow(item) {
+      const packageVersionId = item.packageVersionId || item.id || '';
+      const version = item.latestVersion || item.version || '-';
+      const downloads = Number(item.downloadCount || 0);
+      const published = skillHubFormatDate(item.publishedAt);
+      const status = item.status || 'published';
+      const yankButton = packageVersionId && status === 'published'
+        ? '<button class="btn btn-danger" data-skillhub-yank-version="true" data-package-version-id="'+escapeHtml(packageVersionId)+'">下架</button>'
+        : '';
+      const restoreButton = packageVersionId && status !== 'published'
+        ? '<button class="btn btn-success" data-skillhub-restore-version="true" data-package-version-id="'+escapeHtml(packageVersionId)+'">重新公开</button>'
+        : '';
+      const deleteButton = packageVersionId
+        ? '<button class="btn btn-danger" data-skillhub-delete-version="true" data-package-version-id="'+escapeHtml(packageVersionId)+'">删除</button>'
+        : '';
+      return '<div class="portal-row" style="margin-top:8px">'+
+        '<strong>v'+escapeHtml(version)+'</strong>'+
+        '<div class="skill-meta">'+skillHubStatusTag(status)+'<span class="tag">下载 '+downloads+'</span>'+(published?'<span class="tag">'+escapeHtml(published)+'</span>':'')+'</div>'+
+        '<div class="config-actions" style="margin-top:8px">'+yankButton+restoreButton+deleteButton+'</div>'+
+      '</div>';
+    }
+
+    function renderOwnedSkillGroup(group) {
+      const versionCount = group.versions.length;
+      return '<div class="portal-row">'+
+        '<div class="settings-setup-head">'+
+          '<div><strong>'+escapeHtml(group.displayName || group.skillId)+'</strong><div class="settings-meta">'+escapeHtml(group.skillId)+'</div></div>'+
+          '<span class="tag green">我的发布</span>'+
+        '</div>'+
+        '<div class="skill-growth" style="margin-top:12px">'+
+          '<div class="skill-growth-stat"><div class="skill-growth-label">最新版本</div><div class="skill-growth-value">v'+escapeHtml(group.latestVersion || '-')+'</div></div>'+
+          '<div class="skill-growth-stat"><div class="skill-growth-label">版本数</div><div class="skill-growth-value">'+versionCount+'</div></div>'+
+          '<div class="skill-growth-stat"><div class="skill-growth-label">下载</div><div class="skill-growth-value">'+Number(group.downloads || 0)+'</div></div>'+
+        '</div>'+
+        '<div style="margin-top:12px">'+group.versions.map(renderOwnedSkillVersionRow).join('')+'</div>'+
+      '</div>';
+    }
+
     function renderSkillHubDeveloper(data) {
-      const statusBox = document.getElementById('skillhub-developer-status');
-      const applyBox = document.getElementById('skillhub-developer-apply');
-      const consoleBox = document.getElementById('skillhub-developer-console');
-      const list = document.getElementById('skillhub-submissions-list');
       const versionList = document.getElementById('skillhub-package-versions-list');
-      const roles = data.roles || [];
-      const authenticated = Boolean(data.authenticated);
-      const developer = roles.includes('developer');
-      if (statusBox) {
-        statusBox.innerHTML = authenticated
-          ? '<div class="settings-setup-head"><div><div class="settings-setup-title">'+(developer?'开发者权限已启用':'当前账号还不是开发者')+'</div><div class="settings-setup-copy">'+escapeHtml(data.user?.displayName || data.user?.email || 'CatsCo 用户')+' · '+escapeHtml(roles.join(', ') || 'user')+'</div></div><span class="tag '+(developer?'green':'warm')+'">'+(developer?'developer':'user')+'</span></div>'
-          : '<div class="runtime-note warning">请先在本页登录 SkillHub，然后再申请开发者权限。</div>';
+      if (versionList) {
+        const groups = groupSkillHubOwnedVersions(data.packageVersions || []);
+        versionList.innerHTML = groups.length
+          ? groups.map(renderOwnedSkillGroup).join('')
+          : '<div class="loading">&#26242;&#26080;&#21457;&#24067;&#29256;&#26412;</div>';
       }
-      if (applyBox) applyBox.style.display = authenticated && !developer ? 'block' : 'none';
-      if (consoleBox) consoleBox.style.display = developer ? 'block' : 'none';
-      if (list) {
-        const submissions = data.submissions || [];
-        list.innerHTML = submissions.length ? submissions.map(item => {
-          const manifest = item.normalizedManifest || item.manifest || {};
-          return '<div class="portal-row"><strong>'+escapeHtml(manifest.displayName || manifest.name || item.id)+'</strong><div class="settings-meta">'+escapeHtml(item.status || '-')+' · '+escapeHtml(manifest.version || '')+'</div></div>';
-          }).join('') : '<div class="loading">暂无提交记录</div>';
-        }
-        if (versionList) {
-          const versions = data.packageVersions || [];
-          versionList.innerHTML = versions.length ? versions.map(item => {
-            const author = item.author?.name ? 'by ' + item.author.name : '';
-            const published = item.publishedAt ? ' · ' + item.publishedAt : '';
-            const downloads = Number(item.downloadCount || 0);
-            const packageVersionId = item.packageVersionId || item.id || '';
-            const actions = item.status === 'published' && packageVersionId
-              ? '<div class="config-actions" style="margin-top:8px"><button class="btn btn-danger" data-skillhub-yank-version="true" data-package-version-id="'+escapeHtml(packageVersionId)+'">Remove version</button></div>'
-              : '';
-            return '<div class="portal-row"><strong>'+escapeHtml(item.skillId || item.name || '-')+'</strong><div class="settings-meta">v'+escapeHtml(item.latestVersion || item.version || '-')+' · '+escapeHtml(item.status || 'published')+' · downloads '+downloads+published+'</div><div class="settings-meta">'+escapeHtml(author)+' · owner managed</div>'+actions+'</div>';
-          }).join('') : '<div class="loading">No published versions</div>';
-        }
-      }
+    }
 
     async function yankOwnSkillHubVersion(packageVersionId) {
       if (!packageVersionId) return;
-      if (!confirm('Remove this published SkillHub version from public search and downloads?')) return;
+      if (!confirm('下架这个 SkillHub 版本？下架后不会出现在公开搜索和安装列表中，但版本记录仍保留。')) return;
       try {
-        await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/package-versions/' + encodeURIComponent(packageVersionId) + '/yank', {
+        await parseSimpleResponse(await fetch(API + '/api/skillhub/me/package-versions/' + encodeURIComponent(packageVersionId) + '/yank', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({ reason:'removed by owner from dashboard' }),
+          body:JSON.stringify({ reason:'owner removed from dashboard' }),
         }));
         await fetchSkillHubDeveloper();
         await refreshSkillHubPage();
       } catch (e) {
-        alert('Remove failed: ' + (e.message || String(e)));
+        alert('下架失败：' + (e.message || String(e)));
       }
     }
 
-    async function applySkillHubDeveloper() {
+    async function restoreOwnSkillHubVersion(packageVersionId) {
+      if (!packageVersionId) return;
+      if (!confirm('重新公开这个 SkillHub 版本？公开后其他用户可以搜索和安装它。')) return;
       try {
-        const payload = {
-          displayName: document.getElementById('skillhub-apply-name')?.value.trim(),
-          namespace: document.getElementById('skillhub-apply-namespace')?.value.trim(),
-          contact: document.getElementById('skillhub-apply-contact')?.value.trim(),
-          websiteUrl: document.getElementById('skillhub-apply-homepage')?.value.trim(),
-          reason: document.getElementById('skillhub-apply-reason')?.value.trim(),
-        };
-        await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/apply', {
+        await parseSimpleResponse(await fetch(API + '/api/skillhub/me/package-versions/' + encodeURIComponent(packageVersionId) + '/restore', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify(payload),
+          body:JSON.stringify({}),
         }));
-        alert('申请已提交，等待管理员审核。');
-        fetchSkillHubDeveloper();
+        await fetchSkillHubDeveloper();
+        await refreshSkillHubPage();
       } catch (e) {
-        alert('提交申请失败：' + (e.message || String(e)));
+        alert('重新公开失败：' + (e.message || String(e)));
       }
     }
 
-    function collectSkillHubDeveloperForm() {
-      return {
-        localPath: document.getElementById('skillhub-local-path')?.value.trim(),
-        name: document.getElementById('skillhub-name')?.value.trim(),
-        displayName: document.getElementById('skillhub-name')?.value.trim(),
-        version: document.getElementById('skillhub-version')?.value.trim(),
-        description: document.getElementById('skillhub-description')?.value.trim(),
-        category: document.getElementById('skillhub-category')?.value.trim(),
-        keywords: document.getElementById('skillhub-keywords')?.value.trim(),
-        triggerExamples: document.getElementById('skillhub-triggers')?.value.trim(),
-        permissions: document.getElementById('skillhub-permissions')?.value.trim(),
-        repositoryUrl: document.getElementById('skillhub-repository-url')?.value.trim(),
-      };
-    }
-
-    async function createSkillHubManifestDraft() {
-      const preview = document.getElementById('skillhub-manifest-preview');
-      if (preview) preview.textContent = '正在生成 manifest...';
+    async function deleteOwnSkillHubVersion(packageVersionId) {
+      if (!packageVersionId) return;
+      if (!confirm('永久删除这个 SkillHub 版本？删除后其他用户将无法安装该版本。')) return;
       try {
-        const data = await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/manifest-draft', {
-          method:'POST',
+        await parseSimpleResponse(await fetch(API + '/api/skillhub/me/package-versions/' + encodeURIComponent(packageVersionId), {
+          method:'DELETE',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify(collectSkillHubDeveloperForm()),
         }));
-        skillHubDraftManifest = data.manifest;
-        applySkillHubManifestToForm(skillHubDraftManifest);
-        if (preview) preview.textContent = JSON.stringify(skillHubDraftManifest, null, 2);
+        await fetchSkillHubDeveloper();
+        await refreshSkillHubPage();
       } catch (e) {
-        if (preview) preview.textContent = '生成失败：' + (e.message || String(e));
-      }
-    }
-
-    function applySkillHubManifestToForm(manifest) {
-      if (!manifest) return;
-      const set = (id, value) => { const el = document.getElementById(id); if (el && value !== undefined && value !== null) el.value = Array.isArray(value) ? value.join('，') : String(value); };
-      set('skillhub-name', manifest.displayName || manifest.name);
-      set('skillhub-version', manifest.version);
-      set('skillhub-description', manifest.description);
-      set('skillhub-category', (manifest.categories || [])[0]);
-      set('skillhub-keywords', manifest.keywords || []);
-      set('skillhub-triggers', (manifest.triggerExamples || []).join('\n'));
-    }
-
-    async function submitSkillHubReview() {
-      if (!confirm('提交后会上传这个 Skill 文件夹到 SkillHub 云端进行扫描和审核，是否继续？')) return;
-      try {
-        const payload = { ...collectSkillHubDeveloperForm(), manifest: skillHubDraftManifest || undefined };
-        await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/submissions', {
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify(payload),
-        }));
-        alert('已提交审核。');
-        skillHubDraftManifest = null;
-        fetchSkillHubDeveloper();
-      } catch (e) {
-        alert('提交审核失败：' + (e.message || String(e)));
+        alert('删除失败：' + (e.message || String(e)));
       }
     }
 
@@ -7099,10 +7688,17 @@
     let catsSetupInFlight=false;
     const CUSTOM_MODEL_AUTO_SAVE_DELAY=900;
     const RELAY_FALLBACK_MODELS=[
-      {id:'minimax-m2.7',label:'MiniMax M2.7',model:'MiniMax-M2.7',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'standard',context_window_tokens:204800,context_label:'204.8K',default:true},
-      {id:'minimax-m3',label:'MiniMax M3',model:'MiniMax-M3',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'multimodal',context_window_tokens:1000000,context_label:'1M'},
-      {id:'deepseek-v4-flash',label:'DeepSeek V4 Flash',model:'deepseek-v4-flash',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'flash-low',context_window_tokens:1000000,context_label:'1M'},
-      {id:'glm-5.1',label:'GLM 5.1',model:'glm-5.1',provider:'anthropic',base_url:'https://relay.catsco.cc/anthropic',quota_class:'standard',context_window_tokens:200000,context_label:'200K'},
+      {id:'minimax-m2.7',label:'MiniMax M2.7',model:'MiniMax-M2.7',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'standard',context_window_tokens:204800,context_label:'204.8K',default:true},
+      {id:'minimax-m3',label:'MiniMax M3',model:'MiniMax-M3',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'multimodal',context_window_tokens:1000000,context_label:'1M'},
+      {id:'deepseek-v4-flash',label:'DeepSeek V4 Flash',model:'deepseek-v4-flash',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'flash-low',context_window_tokens:1000000,context_label:'1M'},
+      {id:'glm-5.1',label:'GLM 5.1',model:'glm-5.1',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'standard',context_window_tokens:200000,context_label:'200K'},
+    ];
+    const CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS=[
+      {value:'128000',label:'128K',hint:'安全默认'},
+      {value:'200000',label:'200K',hint:'常见中长上下文'},
+      {value:'256000',label:'256K',hint:'长文档'},
+      {value:'512000',label:'512K',hint:'超长文档'},
+      {value:'1000000',label:'1M',hint:'百万上下文'},
     ];
     const serviceConfigGroups={
       catscompany:{
@@ -7254,6 +7850,24 @@
       return String(n);
     }
 
+    function customModelContextWindowValue(){
+      const custom=customStartupProfile();
+      const raw=String(custom.contextWindowTokens || settingValue('model.contextWindowTokens') || '128000');
+      return CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS.some(option=>option.value===raw)?raw:'128000';
+    }
+
+    function customModelContextWindowLabel(){
+      return formatModelContextLabel(Number(customModelContextWindowValue()));
+    }
+
+    function customModelContextWindowOptionsHtml(selectedValue){
+      return CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS.map(option=>(
+        '<option value="'+escapeHtml(option.value)+'" '+(option.value===selectedValue?'selected':'')+'>'
+        +escapeHtml(option.label+' · '+option.hint)
+        +'</option>'
+      )).join('');
+    }
+
     function modelStartupSnapshot(){
       return dashboardSettingsSnapshot?.modelStartup || {};
     }
@@ -7299,11 +7913,12 @@
       const active=id===activeId;
       const quota=model.quota_class==='flash-low'?'低额度 Flash':model.quota_class==='multimodal'?'多模态':'标准额度';
       const contextLabel=formatModelContextLabel(model.context_window_tokens, model.context_label);
+      const sdkLabel=model.sdk_label || (String(model.provider||model.protocol||'').toLowerCase().includes('openai')?'OpenAI SDK':'Anthropic SDK');
       const disabled=relayActionBusy() || (context!=='chat' && !catsConnected);
       return '<button class="relay-model-choice'+(active?' active':'')+'" type="button" data-relay-model-id="'+escapeHtml(id)+'" data-relay-model-context="'+escapeHtml(context)+'" '+(disabled?'disabled':'')+' onclick="enableCatsRelayModelFromButton(this)">'
         +'<span class="relay-model-label">'+escapeHtml(model.label||model.model||id)+'</span>'
         +'<span class="relay-model-name">'+escapeHtml(model.model||id)+'</span>'
-        +'<span class="relay-model-meta">'+escapeHtml(quota)+' · 上下文 '+escapeHtml(contextLabel)+' · Anthropic SDK</span>'
+        +'<span class="relay-model-meta">'+escapeHtml(quota)+' · 上下文 '+escapeHtml(contextLabel)+' · '+escapeHtml(sdkLabel)+'</span>'
         +'</button>';
     }
 
@@ -7312,8 +7927,9 @@
       const configured=isCustomStartupConfigured();
       const provider=custom.provider || settingValue('model.provider') || 'anthropic';
       const model=custom.model || settingValue('model.model') || '未配置';
+      const contextLabel=customModelContextWindowLabel();
       const meta=configured
-        ? '自定义配置 · 安全上下文 128K · '+(provider==='openai'?'OpenAI SDK':'Anthropic SDK')
+        ? '自定义配置 · 上下文 '+contextLabel+' · '+(provider==='openai'?'OpenAI SDK':'Anthropic SDK')
         : '去设置填写 endpoint / key';
       return '<button class="relay-model-choice '+(active?' active':'')+(configured?'':' needs-config')+'" type="button" data-custom-startup-action="true" data-custom-startup-context="'+escapeHtml(context)+'" '+(relayActionBusy()?'disabled':'')+' onclick="enableCustomStartupModelFromButton(this)">'
         +'<span class="relay-model-label">自定义模型</span>'
@@ -7367,6 +7983,7 @@
         provider: document.getElementById('model-provider-setting')?.value,
         apiBase: document.getElementById('model-api-base-setting')?.value,
         model: document.getElementById('model-name-setting')?.value,
+        contextWindowTokens: document.getElementById('model-context-window-setting')?.value,
         secret: document.getElementById('model-secret-setting')?.value,
         clearSecret: document.getElementById('model-secret-clear-setting')?.checked,
       };
@@ -7385,6 +8002,7 @@
           ['model-provider-setting',draft.provider],
           ['model-api-base-setting',draft.apiBase],
           ['model-name-setting',draft.model],
+          ['model-context-window-setting',draft.contextWindowTokens],
           ['model-secret-setting',draft.secret],
         ];
         pairs.forEach(([id,value])=>{
@@ -7422,16 +8040,17 @@
       const hideInternalGateway=isInternalModelGateway(apiBaseValue);
       const apiBaseDisplayValue=hideInternalGateway?'':apiBaseValue;
       const apiBasePlaceholder=hideInternalGateway?'已配置 CatsCo 内部兼容网关（隐藏）':'https://example.com/v1/messages';
+      const selectedContextWindow=customModelContextWindowValue();
       const draft=captureCustomModelDraft();
 
       p.innerHTML=`<div class="model-source-layout">
-        <div class="runtime-note">中转模型和自定义模型会分别保存。CatsCo 中转会按所选模型自动调整上下文；自定义模型默认按 128K 安全上下文运行，若模型实际窗口更小，请减少历史或在高级环境变量里降低 GAUZ_LLM_CONTEXT_WINDOW_TOKENS。</div>
+        <div class="runtime-note">中转模型和自定义模型会分别保存。CatsCo 中转会按所选模型自动调整上下文；自定义模型按下方选择的上下文窗口运行。若模型真实窗口更小，请选择更小档位避免超限。</div>
         <details class="model-source-card warning" id="custom-model-settings"${customModelSettingsOpen?' open':''}>
           <summary>
             <div class="model-source-head">
               <div>
                 <div class="model-source-title">自定义模型（第三方）</div>
-                <div class="model-source-copy">只有手动接入第三方模型时需要填写。CatsCo 中转模型请在 CatsCo 页面选择；自定义模型默认使用 128K 安全上下文。</div>
+                <div class="model-source-copy">只有手动接入第三方模型时需要填写。CatsCo 中转模型请在 CatsCo 页面选择；自定义模型可在 128K 到 1M 间选择上下文。</div>
               </div>
               ${runtimeTag(credentialMeta, keyField.present?'green':'gray')}
             </div>
@@ -7440,6 +8059,7 @@
             <div class="config-row"><label class="config-label">兼容类型</label><select class="config-select" id="model-provider-setting"><option value="anthropic"${settingValue('model.provider')==='anthropic'?' selected':''}>Anthropic-compatible</option><option value="openai"${settingValue('model.provider')==='openai'?' selected':''}>OpenAI-compatible</option></select></div>
             <div class="config-row"><label class="config-label">模型地址</label><input class="config-input" id="model-api-base-setting" value="${escapeHtml(apiBaseDisplayValue)}" placeholder="${escapeHtml(apiBasePlaceholder)}" data-hidden-internal="${hideInternalGateway?'true':'false'}" /></div>
             <div class="config-row"><label class="config-label">模型名称</label><input class="config-input" id="model-name-setting" value="${escapeHtml(settingValue('model.model'))}" placeholder="model-name" /></div>
+            <div class="config-row"><label class="config-label">上下文窗口</label><select class="config-select" id="model-context-window-setting">${customModelContextWindowOptionsHtml(selectedContextWindow)}</select></div>
             <div class="config-row"><label class="config-label">访问凭证</label><input class="config-input" id="model-secret-setting" type="password" value="" placeholder="${keyField.present?'留空表示保持现有凭证':'输入访问凭证'}" /></div>
             <div class="model-secret-row">
               <label><input type="checkbox" id="model-secret-clear-setting" /> 清除已保存的访问凭证</label>
@@ -7449,7 +8069,7 @@
               <button class="btn btn-primary" onclick="saveCustomModelSettings()">保存自定义模型</button>
               <span class="config-saved" id="model-source-saved">已保存</span>
             </div>
-            <div id="model-source-status" style="color:var(--text2);font-size:13px">凭证仅保存到本地 .env；自定义模型默认 128K 安全上下文，新 session 或下一次启动 connector 后生效。</div>
+            <div id="model-source-status" style="color:var(--text2);font-size:13px">凭证仅保存到本地 .env；自定义模型上下文会写入本地配置，新 session 或下一次启动 connector 后生效。</div>
           </div>
         </details>
       </div>`;
@@ -7541,6 +8161,7 @@
             'model.provider':document.getElementById('model-provider-setting').value,
             'model.apiBase':apiBaseValue,
             'model.model':document.getElementById('model-name-setting').value.trim(),
+            'model.contextWindowTokens':document.getElementById('model-context-window-setting').value,
             'model.apiKey':secretUpdate,
           }
         }
@@ -7554,6 +8175,7 @@
         provider:settings['model.provider'],
         apiBase:settings['model.apiBase'],
         model:settings['model.model'],
+        contextWindowTokens:settings['model.contextWindowTokens'],
         secretAction:secret.action,
       });
     }
@@ -7643,7 +8265,12 @@
       const label=selectedModel.label||selectedModel.model||selectedModelId;
       let retrying=false;
       try{
+        pendingStartupSource='relay';
+        pendingRelayModelId=selectedModelId;
+        renderCatsStatus();
         setRelayModelApplyBusy(true);
+        setCatsStatusMutationBusy(true);
+        invalidateCatsStatusRequests();
         setRelayModelApplyStatus('正在启用 CatsCo 中转模型（'+label+'）...','muted',source);
         const r=await fetch(API+'/api/cats/relay/model-config/apply',{
           method:'POST',
@@ -7660,6 +8287,7 @@
           if(ok){
             retrying=true;
             setRelayModelApplyBusy(false);
+            setCatsStatusMutationBusy(false);
             return enableCatsRelayModel(selectedModelId,{...options,rotateExisting:true});
           }
           setRelayModelApplyStatus('已取消。你也可以在 CatsCompany 中转站页面复制现有配置后手动填写。','muted',source);
@@ -7677,14 +8305,17 @@
         }
         pendingStartupSource='';
         pendingRelayModelId='';
-        await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchReadiness(),fetchCatsStatus()]);
+        await refreshCatsChatAfterMutation({focusInput:source==='chat'});
         const successMessage=data.message||('已启用 CatsCo 中转模型：'+(data.selectedModel?.label||label));
         setRelayModelApplyStatus(successMessage,'success',source);
         setModelSourceStatus(data.connectorRestarted||data.connectorStarted?'已写入并已请求 connector 使用新配置。':'已写入 CatsCo 中转模型配置。','success');
       }catch(e){
         setRelayModelApplyStatus('启用失败：'+formatDashboardApiError(e,'/api/cats/relay/model-config/apply'),'error',source);
       }finally{
-        if(!retrying)setRelayModelApplyBusy(false);
+        if(!retrying){
+          setCatsStatusMutationBusy(false);
+          setRelayModelApplyBusy(false);
+        }
       }
     }
 
@@ -7707,7 +8338,12 @@
         return;
       }
       try{
+        pendingStartupSource='custom';
+        pendingRelayModelId='';
+        renderCatsStatus();
         setRelayModelApplyBusy(true);
+        setCatsStatusMutationBusy(true);
+        invalidateCatsStatusRequests();
         setRelayModelApplyStatus('正在切换为自定义模型...','muted',source);
         const r=await fetch(API+'/api/model-source/custom/apply',{
           method:'POST',
@@ -7720,13 +8356,14 @@
         if(!r.ok||data.error)throw new Error(data.error||'切换自定义模型失败');
         pendingStartupSource='';
         pendingRelayModelId='';
-        await Promise.all([fetchDashboardSettings(),fetchStatus(),fetchReadiness(),fetchCatsStatus()]);
+        await refreshCatsChatAfterMutation({focusInput:source==='chat'});
         const message=data.message||('已切换为自定义模型：'+(data.model||''));
         setRelayModelApplyStatus(message,'success',source);
         setModelSourceStatus(data.connectorRestarted||data.connectorStarted?'已请求 connector 使用自定义模型。':'已切换为自定义模型启动。','success');
       }catch(e){
         setRelayModelApplyStatus('切换失败：'+formatDashboardApiError(e,'/api/model-source/custom/apply'),'error',source);
       }finally{
+        setCatsStatusMutationBusy(false);
         setRelayModelApplyBusy(false);
       }
     }
@@ -7735,6 +8372,7 @@
       const provider=document.getElementById('model-provider-setting');
       const apiBase=document.getElementById('model-api-base-setting');
       const model=document.getElementById('model-name-setting');
+      const contextWindow=document.getElementById('model-context-window-setting');
       const secret=document.getElementById('model-secret-setting');
       const clear=document.getElementById('model-secret-clear-setting');
       const schedule=()=>{
@@ -7745,6 +8383,7 @@
       if(provider)provider.addEventListener('change',schedule);
       if(apiBase)apiBase.addEventListener('input',schedule);
       if(model)model.addEventListener('input',schedule);
+      if(contextWindow)contextWindow.addEventListener('change',schedule);
       if(secret)secret.addEventListener('change',schedule);
       if(clear)clear.addEventListener('change',schedule);
     }
@@ -8263,6 +8902,29 @@
       catsStatusMutationInFlight=Boolean(busy);
     }
 
+    function focusCatsMessageInputSoon(){
+      const focusInput=()=>{
+        const input=document.getElementById('cats-message-input');
+        if(input && !input.disabled){
+          input.focus({preventScroll:true});
+          autoResizeCatsMessageInput();
+        }
+      };
+      if(typeof requestAnimationFrame==='function')requestAnimationFrame(focusInput);
+      else setTimeout(focusInput,0);
+    }
+
+    async function refreshCatsChatAfterMutation(options={}){
+      await fetchDashboardSettings();
+      await fetchStatus();
+      await fetchCatsStatus({priority:true});
+      await fetchReadiness();
+      renderCatsStatus();
+      const stage=buildCatsChatStage();
+      if(stage.key==='ready' && options.focusInput!==false)focusCatsMessageInputSoon();
+      return stage;
+    }
+
     async function fetchCatsStatus(options={}){
       const priority=Boolean(options.priority);
       if(catsStatusMutationInFlight && !priority)return;
@@ -8464,6 +9126,8 @@
         btn.disabled = true;
         btn.textContent = '绑定中...';
       }
+      setCatsStatusMutationBusy(true);
+      invalidateCatsStatusRequests();
       const setupRelayModel=shouldSetupRelayOnCatsSetup();
       setCatsAction(setupRelayModel?`正在确认中转模型、绑定 ${name} 并启动 connector...`:`正在绑定 ${name} 并按当前自定义模型启动 connector...`);
 
@@ -8493,18 +9157,17 @@
           service: data.service,
         };
         closeBotSelector();
-        await fetchStatus();
-        await fetchCatsStatus({priority:true});
-        renderCatsStatus();
+        const stage=await refreshCatsChatAfterMutation({focusInput:true});
         const warningText=catsSetupWarningText(data);
         const readyMessage=data.message || `已绑定 ${name}。可以直接开始对话。`;
         setCatsAction(warningText?readyMessage+' 但有提示：'+warningText:readyMessage);
         pulsePetState('success', '已绑定', 1800);
-        await loadCatsMessages(true, { reset: true, forceBottom: true });
+        if(stage.key==='ready')await loadCatsMessages(true, { reset: true, forceBottom: true });
       } catch (e) {
         if(e.status===409 && e.action==='rotate_required'){
           const ok=confirm('你的 CatsCo 中转 Key 已存在，但当前无法读取明文。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');
           if(ok){
+            setCatsStatusMutationBusy(false);
             await bindCatsBot(botUid, botName, button, {...options, confirm:false, restoreText, rotateRelayKey:true});
             return;
           }
@@ -8517,6 +9180,7 @@
           btn.disabled = false;
           btn.textContent = restoreText;
         }
+        setCatsStatusMutationBusy(false);
       }
     }
 
@@ -8612,8 +9276,9 @@
         document.getElementById('cats-register-password').value='';
         invalidateRelayModelConfigRequests();
         invalidateCatsStatusRequests();
-        setCatsAction('登录态已保存。请选择要绑定的 CatsCo agent。');
+        setCatsAction('登录态已保存。正在自动绑定 CatsCo agent 并启动 connector...');
         await fetchCatsStatus();
+        await setupCatsBot({forceLegacySetup:true});
         pulsePetState('success', '已登录', 1800);
       }catch(e){
         setCatsAction('连接失败：'+e.message,true);
@@ -8653,10 +9318,7 @@
         pendingStartupSource='';
         pendingRelayModelId='';
         catsState={...catsState,...data, connected:true, configured:true, botUid:data.bot?.uid||data.botUid, topicId:data.topicId, user:data.user, service:data.service};
-        await fetchStatus();
-        await fetchCatsStatus({priority:true});
-        renderCatsStatus();
-        const stage=buildCatsChatStage();
+        const stage=await refreshCatsChatAfterMutation({focusInput:true});
         const warningText=catsSetupWarningText(data);
         if(stage.key==='ready'){
           const readyMessage=data.connectorRestarted?'已重启 connector，可以直接开始对话。':'已连接。可以直接开始对话。';
@@ -9822,7 +10484,11 @@
     document.getElementById('skillhub-registry-grid')?.addEventListener('click', handleSkillHubVersionsClick);
     document.getElementById('skillhub-versions-body')?.addEventListener('click', handleSkillHubInstallClick);
     document.getElementById('skillhub-versions-body')?.addEventListener('click', handleSkillHubYankVersionClick);
+    document.getElementById('skillhub-versions-body')?.addEventListener('click', handleSkillHubRestoreVersionClick);
+    document.getElementById('skillhub-versions-body')?.addEventListener('click', handleSkillHubDeleteVersionClick);
     document.getElementById('skillhub-package-versions-list')?.addEventListener('click', handleSkillHubYankVersionClick);
+    document.getElementById('skillhub-package-versions-list')?.addEventListener('click', handleSkillHubRestoreVersionClick);
+    document.getElementById('skillhub-package-versions-list')?.addEventListener('click', handleSkillHubDeleteVersionClick);
     document.addEventListener('keydown',handleDashboardFontScaleShortcut);
     window.addEventListener('resize',()=>{refreshDashboardFontScaleForViewport(); autoResizeCatsMessageInput();});
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeLogs();closeUpdateModal();closeCatsMediaPreview();closeSkillHubVersionsModal();}});

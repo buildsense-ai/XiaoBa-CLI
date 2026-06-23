@@ -41,7 +41,7 @@ describe('runtime characterization', () => {
     assert.doesNotMatch(prompt, /你是小八/);
     assert.match(prompt, /当前平台：characterization/);
     assert.match(prompt, new RegExp(`当前日期：${today}`));
-    assert.match(prompt, /Current directory is provided in a transient message/);
+    assert.match(prompt, /当前目录会在每次模型请求中作为临时上下文消息提供/);
     assert.doesNotMatch(prompt, /~\/Documents\/xiaoba/);
     assert.doesNotMatch(prompt, /必须多次调用 send_text/);
     assert.doesNotMatch(prompt, /150字以上/);
@@ -77,53 +77,37 @@ describe('runtime characterization', () => {
     );
   });
 
-  test('session system prompt provider injects Feishu surface context for user and group sessions', async () => {
+  test('session system prompt provider does not inject Feishu surface prompt text', async () => {
     const { AgentSession } = loadAgentSessionModules();
 
     const privateSession = new AgentSession('user:feishu-test', buildMockServices());
     setSessionSystemPrompt(privateSession, 'user:feishu-test', 'feishu');
     await privateSession.init();
-    const privateSurface = getSystemMessages(privateSession)
-      .find(content => content.includes('[surface:feishu:private]'));
-
-    assert.ok(privateSurface);
-    assert.match(privateSurface, /当前是飞书私聊会话/);
-    assert.match(privateSurface, /每次文本输出都会立即自动发送给用户/);
 
     const groupSession = new AgentSession('group:feishu-test', buildMockServices());
     setSessionSystemPrompt(groupSession, 'group:feishu-test', 'feishu');
     await groupSession.init();
-    const groupSurface = getSystemMessages(groupSession)
-      .find(content => content.includes('[surface:feishu:group]'));
 
-    assert.ok(groupSurface);
-    assert.match(groupSurface, /当前是飞书群聊会话/);
+    assert.equal(getSystemMessages(privateSession).some(content => content.includes('[surface:')), false);
+    assert.equal(getSystemMessages(groupSession).some(content => content.includes('[surface:')), false);
   });
 
-  test('session system prompt provider injects CatsCo surface context for cc sessions', async () => {
+  test('session system prompt provider does not inject CatsCo surface prompt text', async () => {
     const { AgentSession } = loadAgentSessionModules();
 
     const session = new AgentSession('cc_user:demo', buildMockServices());
     setSessionSystemPrompt(session, 'cc_user:demo', 'catscompany');
     await session.init();
-    const surface = getSystemMessages(session)
-      .find(content => content.includes('[surface:catscompany]'));
-
-    assert.ok(surface);
-    assert.match(surface, /当前是 CatsCo 聊天会话/);
-    assert.match(surface, /每次文本输出都会立即自动发送给用户/);
 
     const groupSession = new AgentSession('cc_group:demo', buildMockServices());
     setSessionSystemPrompt(groupSession, 'cc_group:demo', 'catscompany');
     await groupSession.init();
 
-    assert.equal(
-      getSystemMessages(groupSession).some(content => content.includes('[surface:catscompany]')),
-      true,
-    );
+    assert.equal(getSystemMessages(session).some(content => content.includes('[surface:')), false);
+    assert.equal(getSystemMessages(groupSession).some(content => content.includes('[surface:')), false);
   });
 
-  test('session system prompt provider uses sessionType to inject Weixin surface context for user-prefixed sessions', async () => {
+  test('session system prompt provider does not inject Weixin surface prompt text', async () => {
     const { AgentSession } = loadAgentSessionModules();
 
     const session = new AgentSession('user:weixin-demo', buildMockServices(), 'weixin');
@@ -132,9 +116,7 @@ describe('runtime characterization', () => {
     const systemMessages = getSystemMessages(session);
 
     assert.equal(systemMessages.some(content => content.includes('[surface:feishu')), false);
-    const surface = systemMessages.find(content => content.includes('[surface:weixin]'));
-    assert.ok(surface);
-    assert.match(surface, /当前是微信聊天会话/);
+    assert.equal(systemMessages.some(content => content.includes('[surface:weixin]')), false);
   });
 
   test('session system prompt provider does not inject chat surface context for plain cli sessions', async () => {

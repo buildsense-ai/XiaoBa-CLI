@@ -12,7 +12,48 @@ export interface CatsClientConfig {
   apiKey: string;
   bodyId?: string;
   installationId?: string;
+  deviceRegistration?: CatsDeviceRegistration;
   httpBaseUrl?: string;
+}
+
+export interface CatsDeviceRegistration {
+  device_id: string;
+  display_name?: string;
+  body_id?: string;
+  installation_id?: string;
+  owner_user_id?: string;
+  status?: 'online' | 'offline';
+  capabilities?: string[];
+}
+
+export interface CatsDeviceRpcError {
+  code: string;
+  message: string;
+}
+
+export interface CatsDeviceRpcMessage {
+  id?: string;
+  type: 'request' | 'result';
+  request_id: string;
+  grant_id?: string;
+  session_key?: string;
+  topic_id?: string;
+  topic_type?: string;
+  actor_user_id?: string;
+  owner_user_id?: string;
+  identity_source?: string;
+  agent_id?: string;
+  agent_body_id?: string;
+  device_id?: string;
+  device_body_id?: string;
+  device_installation_id?: string;
+  operation?: string;
+  tool_name?: string;
+  payload?: Record<string, unknown>;
+  result?: unknown;
+  error?: CatsDeviceRpcError;
+  created_at?: number;
+  expires_at?: number;
 }
 
 export interface MessageContext {
@@ -107,6 +148,7 @@ export class CatsClient extends EventEmitter {
   private msgId = 0;
   private closed = false;
   private pendingAcks = new Map<string, PendingAck>();
+  private pendingDeviceRpc = new Map<string, PendingDeviceRpc>();
   private pingTimer: NodeJS.Timeout | null = null;
   private pongTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
@@ -152,7 +194,14 @@ export class CatsClient extends EventEmitter {
 
     this.ws.on('open', () => {
       this.reconnectAttempts = 0;
-      this.send({ hi: { id: '1', ver: CATSCOMPANY_PROTOCOL_VERSION, ua: CATSCOMPANY_CLIENT_UA } });
+      this.send({
+        hi: {
+          id: '1',
+          ver: CATSCOMPANY_PROTOCOL_VERSION,
+          ua: CATSCOMPANY_CLIENT_UA,
+          device: this.config.deviceRegistration,
+        },
+      });
       this.startHeartbeat();
     });
 
@@ -177,6 +226,10 @@ export class CatsClient extends EventEmitter {
         undefined,
         { retryableWithHttp: this.supportsClientMessageDedupe }
       ));
+      this.rejectPendingDeviceRpc(new CatsSendError(
+        'timeout',
+        'WebSocket 在收到 Device RPC 结果前关闭'
+      ));
       if (!this.closed) this.scheduleReconnect();
     });
   }
@@ -194,6 +247,9 @@ export class CatsClient extends EventEmitter {
           && msg.ctrl.params.features.includes('client_msg_id');
         if (this.supportsClientMessageDedupe) {
           Logger.info('[CatsCompany] 服务端支持 client_msg_id 幂等发送');
+        }
+        if (Array.isArray(msg.ctrl.params?.features) && msg.ctrl.params.features.includes('device_rpc')) {
+          Logger.info('[CatsCompany] 服务端支持 device_rpc 远程设备传输');
         }
         this.emit('ready', { uid: this.uid, name: this.name });
         this.autoAcceptFriendRequests().catch(console.error);
@@ -214,6 +270,8 @@ export class CatsClient extends EventEmitter {
           }
         }
       }
+    } else if (msg.device_rpc) {
+      this.handleDeviceRpcMessage(msg.device_rpc);
     } else if (msg.data) {
       Logger.info(
         `[CatsCompany] 收到消息: topic=${msg.data.topic || '-'}, ` +
@@ -245,6 +303,45 @@ export class CatsClient extends EventEmitter {
         Logger.info(`[CatsCompany] 收到 presence: what=${msg.pres.what}, src=${msg.pres.src || '-'}`);
       }
     }
+  }
+
+  private handleDeviceRpcMessage(raw: any): void {
+    const message = normalizeDeviceRpcMessage(raw);
+    if (!message) {
+      Logger.warning('[CatsCompany] 收到无效 device_rpc 消息，已忽略');
+      return;
+    }
+    if (message.type === 'result') {
+      const pending = this.pendingDeviceRpc.get(message.request_id);
+      if (pending) {
+        if (!deviceRpcResultMatchesPending(message, pending.request)) {
+          clearTimeout(pending.timer);
+          this.pendingDeviceRpc.delete(message.request_id);
+          pending.reject(new CatsSendError(
+            'ack',
+            `Device RPC ${message.request_id} result scope does not match pending request`,
+            409
+          ));
+        } else if (pending.acknowledged) {
+          this.resolvePendingDeviceRpc(message.request_id, pending, message);
+        } else {
+          pending.result = message;
+        }
+      }
+      this.emit('device_rpc_result', message);
+      return;
+    }
+    this.emit('device_rpc_request', message);
+  }
+
+  private resolvePendingDeviceRpc(
+    requestID: string,
+    pending: PendingDeviceRpc,
+    result: CatsDeviceRpcMessage
+  ): void {
+    clearTimeout(pending.timer);
+    this.pendingDeviceRpc.delete(requestID);
+    pending.resolve(result);
   }
 
   async sendMessage(topic: string, text: string): Promise<number> {
@@ -287,21 +384,112 @@ export class CatsClient extends EventEmitter {
       },
     });
 
+    return this.sendEnvelopeWithAck(msgId, { pub }, {
+      clientMsgID,
+      retryableWithHttp: this.supportsClientMessageDedupe,
+      timeoutMessage: 'WebSocket 已发送消息，但 10 秒内没有收到 CatsCompany 服务器确认',
+    });
+  }
+
+  async sendDeviceRpcRequest(
+    request: Omit<CatsDeviceRpcMessage, 'id' | 'type'> & { request_id?: string },
+    timeoutMs = 60000
+  ): Promise<CatsDeviceRpcMessage> {
+    const requestID = request.request_id || buildDeviceRpcRequestID();
+    if (this.pendingDeviceRpc.has(requestID)) {
+      throw new CatsSendError('ack', `Device RPC request_id already pending: ${requestID}`, 409);
+    }
+    const msgId = `${++this.msgId}`;
+    const deviceRpc: CatsDeviceRpcMessage = {
+      ...request,
+      id: msgId,
+      type: 'request',
+      request_id: requestID,
+    };
+
+    const resultPromise = new Promise<CatsDeviceRpcMessage>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingDeviceRpc.delete(requestID);
+        reject(new CatsSendError(
+          'timeout',
+          `Device RPC ${requestID} 在 ${timeoutMs}ms 内没有收到设备结果`
+        ));
+      }, timeoutMs);
+      this.pendingDeviceRpc.set(requestID, {
+        request: deviceRpc,
+        resolve,
+        reject,
+        timer,
+        acknowledged: false,
+      });
+    });
+
+    try {
+      await this.sendEnvelopeWithAck(msgId, { device_rpc: deviceRpc }, {
+        timeoutMessage: 'WebSocket 已发送 Device RPC 请求，但 10 秒内没有收到 CatsCompany 服务器确认',
+      });
+    } catch (err) {
+      const pending = this.pendingDeviceRpc.get(requestID);
+      if (pending) {
+        clearTimeout(pending.timer);
+        this.pendingDeviceRpc.delete(requestID);
+        throw err;
+      }
+      throw err;
+    }
+
+    const pending = this.pendingDeviceRpc.get(requestID);
+    if (pending) {
+      pending.acknowledged = true;
+      if (pending.result) {
+        this.resolvePendingDeviceRpc(requestID, pending, pending.result);
+      }
+    }
+    return resultPromise;
+  }
+
+  async sendDeviceRpcResult(result: Omit<CatsDeviceRpcMessage, 'id' | 'type'>): Promise<void> {
+    const requestID = String(result.request_id || '').trim();
+    if (!requestID) {
+      throw new Error('Device RPC result request_id is required');
+    }
+    const msgId = `${++this.msgId}`;
+    await this.sendEnvelopeWithAck(msgId, {
+      device_rpc: {
+        ...result,
+        id: msgId,
+        type: 'result',
+        request_id: requestID,
+      },
+    }, {
+      timeoutMessage: 'WebSocket 已发送 Device RPC 结果，但 10 秒内没有收到 CatsCompany 服务器确认',
+    });
+  }
+
+  private sendEnvelopeWithAck(
+    msgId: string,
+    envelope: Record<string, unknown>,
+    options: {
+      clientMsgID?: string;
+      retryableWithHttp?: boolean;
+      timeoutMessage?: string;
+    } = {}
+  ): Promise<number> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingAcks.delete(msgId);
         this.forceReconnect('ack timeout');
         reject(new CatsSendError(
           'timeout',
-          'WebSocket 已发送消息，但 10 秒内没有收到 CatsCompany 服务器确认',
+          options.timeoutMessage || 'WebSocket 已发送消息，但 10 秒内没有收到 CatsCompany 服务器确认',
           undefined,
-          { clientMsgID, retryableWithHttp: this.supportsClientMessageDedupe }
+          { clientMsgID: options.clientMsgID, retryableWithHttp: options.retryableWithHttp ?? false }
         ));
       }, 10000);
 
-      this.pendingAcks.set(msgId, { resolve, reject, timer, clientMsgID });
+      this.pendingAcks.set(msgId, { resolve, reject, timer, clientMsgID: options.clientMsgID });
       try {
-        this.sendOrThrow({ pub });
+        this.sendOrThrow(envelope);
       } catch (err: any) {
         clearTimeout(timer);
         this.pendingAcks.delete(msgId);
@@ -343,11 +531,26 @@ export class CatsClient extends EventEmitter {
 
   async uploadFile(filePath: string, type: 'image' | 'file' = 'file'): Promise<UploadResult> {
     return uploadCatsLocalFile({
-      httpBaseUrl: this.config.httpBaseUrl || 'https://app.catsco.cc',
+      httpBaseUrl: this.httpBaseUrl(),
       filePath,
       type,
       authHeader: `ApiKey ${this.config.apiKey}`,
     });
+  }
+
+  async registerDevice(registration: CatsDeviceRegistration): Promise<unknown> {
+    const res = await fetch(`${this.httpBaseUrl()}/api/devices/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `ApiKey ${this.config.apiKey}`,
+      },
+      body: JSON.stringify(registration),
+    });
+    if (!res.ok) {
+      throw new Error(`CatsCompany device registration failed: ${res.status}`);
+    }
+    return res.json().catch(() => ({}));
   }
 
   async sendImage(topic: string, upload: UploadResult): Promise<number> {
@@ -413,6 +616,14 @@ export class CatsClient extends EventEmitter {
     }
   }
 
+  private rejectPendingDeviceRpc(err: Error): void {
+    for (const [requestID, pending] of this.pendingDeviceRpc.entries()) {
+      clearTimeout(pending.timer);
+      this.pendingDeviceRpc.delete(requestID);
+      pending.reject(err);
+    }
+  }
+
   private forceReconnect(reason: string): void {
     Logger.warning(`[CatsCompany] ${reason}，主动重建 WebSocket 连接`);
     if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
@@ -465,10 +676,38 @@ export class CatsClient extends EventEmitter {
     }
   }
 
+  private httpBaseUrl(): string {
+    return this.config.httpBaseUrl || inferHttpBaseUrl(this.config.serverUrl) || 'https://app.catsco.cc';
+  }
+
   disconnect(): void {
     this.closed = true;
     this.stopHeartbeat();
     this.ws?.close();
+  }
+}
+
+interface PendingDeviceRpc {
+  request: CatsDeviceRpcMessage;
+  resolve: (message: CatsDeviceRpcMessage) => void;
+  reject: (err: Error) => void;
+  timer: NodeJS.Timeout;
+  acknowledged: boolean;
+  result?: CatsDeviceRpcMessage;
+}
+
+function inferHttpBaseUrl(serverUrl: string): string | undefined {
+  try {
+    const url = new URL(serverUrl);
+    if (url.protocol === 'ws:') url.protocol = 'http:';
+    else if (url.protocol === 'wss:') url.protocol = 'https:';
+    else if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined;
+    url.pathname = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return undefined;
   }
 }
 
@@ -477,4 +716,48 @@ function buildClientMessageID(): string {
     return `catsco-${crypto.randomUUID()}`;
   }
   return `catsco-${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
+}
+
+function buildDeviceRpcRequestID(): string {
+  if (typeof crypto.randomUUID === 'function') {
+    return `device_rpc_${crypto.randomUUID()}`;
+  }
+  return `device_rpc_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+}
+
+function normalizeDeviceRpcMessage(raw: any): CatsDeviceRpcMessage | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const type = String(raw.type || '').trim();
+  const requestID = String(raw.request_id || '').trim();
+  if ((type !== 'request' && type !== 'result') || !requestID) return undefined;
+  const message: CatsDeviceRpcMessage = {
+    ...raw,
+    type,
+    request_id: requestID,
+  };
+  if (raw.payload && typeof raw.payload === 'object' && !Array.isArray(raw.payload)) {
+    message.payload = raw.payload;
+  }
+  return message;
+}
+
+function deviceRpcResultMatchesPending(result: CatsDeviceRpcMessage, request: CatsDeviceRpcMessage): boolean {
+  return deviceRpcOptionalFieldMatches(result.grant_id, request.grant_id)
+    && deviceRpcOptionalFieldMatches(result.session_key, request.session_key)
+    && deviceRpcOptionalFieldMatches(result.topic_id, request.topic_id)
+    && deviceRpcOptionalFieldMatches(result.topic_type, request.topic_type)
+    && deviceRpcOptionalFieldMatches(result.actor_user_id, request.actor_user_id)
+    && deviceRpcOptionalFieldMatches(result.agent_id, request.agent_id)
+    && deviceRpcOptionalFieldMatches(result.agent_body_id, request.agent_body_id)
+    && deviceRpcOptionalFieldMatches(result.device_id, request.device_id)
+    && deviceRpcOptionalFieldMatches(result.device_body_id, request.device_body_id)
+    && deviceRpcOptionalFieldMatches(result.device_installation_id, request.device_installation_id)
+    && deviceRpcOptionalFieldMatches(result.operation, request.operation)
+    && deviceRpcOptionalFieldMatches(result.tool_name, request.tool_name);
+}
+
+function deviceRpcOptionalFieldMatches(actual: unknown, expected: unknown): boolean {
+  const actualText = typeof actual === 'string' ? actual.trim() : '';
+  const expectedText = typeof expected === 'string' ? expected.trim() : '';
+  return !actualText || !expectedText || actualText === expectedText;
 }

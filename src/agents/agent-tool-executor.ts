@@ -1,5 +1,6 @@
 import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor, ToolExecutionResult } from '../types/tool';
 import { mergeToolExecutionContext } from '../utils/tool-context';
+import { confirmLocalToolExecution } from '../tools/local-tool-risk';
 
 const TOOL_NAME_ALIASES: Record<string, string> = {
   Bash: 'execute_shell',
@@ -75,6 +76,19 @@ export class AgentToolExecutor implements ToolExecutor {
           ok: false,
           errorCode: 'INVALID_TOOL_ARGUMENTS',
           retryable: false,
+        };
+      }
+
+      const confirmation = await confirmLocalToolExecution(name, args, context);
+      if (confirmation) {
+        return {
+          tool_call_id: toolCall.id,
+          role: 'tool',
+          name: requestedName,
+          content: confirmation.ok ? confirmation.content : confirmation.message,
+          ok: confirmation.ok,
+          errorCode: confirmation.ok ? undefined : confirmation.errorCode,
+          retryable: confirmation.ok ? undefined : confirmation.retryable,
         };
       }
 

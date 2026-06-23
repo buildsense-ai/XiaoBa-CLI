@@ -10,6 +10,13 @@ import { ChannelCallbacks } from '../types/tool';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
 import { promises as fs } from 'fs';
 import path from 'path';
+import {
+  createExecutionScopeFromRoute,
+  createSessionRoute,
+  createWeixinSessionRoute,
+  parseSessionKeyV2,
+} from '../core/session-router';
+import type { SessionRoute } from '../types/session-identity';
 
 const CHANNEL_VERSION = 'xiaoba-weixin/1.0';
 const DEFAULT_LONGPOLL_MS = 30000;
@@ -17,6 +24,8 @@ const DEFAULT_LONGPOLL_MS = 30000;
 interface QueuedMessage {
   userText: string;
   chatId: string;
+  userId: string;
+  sessionRoute: SessionRoute;
   source?: 'user' | 'subagent_feedback';
   runtimeFeedback?: RuntimeFeedbackInput[];
 }
@@ -119,17 +128,15 @@ export class WeixinBot {
     }
   }
 
-  private buildChannel(chatId: string, sessionKey: string): ChannelCallbacks {
+  private buildChannel(chatId: string, sessionKey: string, userId: string): ChannelCallbacks {
     return {
       chatId,
       reply: async (cid: string, text: string) => {
-        const userId = sessionKey.replace('user:', '');
-        const contextToken = this.contextTokens.get(sessionKey);
+        const contextToken = this.contextTokens.get(sessionKey) || this.contextTokens.get(`user:${userId}`);
         await this.sender.sendText(userId, text, contextToken);
       },
       sendFile: async (cid: string, filePath: string, fileName: string) => {
-        const userId = sessionKey.replace('user:', '');
-        const contextToken = this.contextTokens.get(sessionKey);
+        const contextToken = this.contextTokens.get(sessionKey) || this.contextTokens.get(`user:${userId}`);
         await this.sender.sendFile(userId, filePath, fileName, contextToken);
       },
     };
@@ -204,20 +211,23 @@ export class WeixinBot {
     const from = msg.from_user_id?.trim();
     if (!from) return;
 
-    const sessionKey = `user:${from}`;
-    if (msg.context_token) {
-      this.contextTokens.set(sessionKey, msg.context_token);
-      await this.saveState();
-    }
-
     const parsed = this.handler.parseMessage(msg);
     if (!parsed || this.handler.shouldIgnoreMessage(parsed)) return;
 
-    const session = this.sessionManager.getOrCreate(sessionKey);
-    const channel = this.buildChannel(msg.to_user_id, sessionKey);
+    const route = createWeixinSessionRoute(parsed);
+    const sessionKey = route.sessionKey;
+    const userId = route.actorUserId;
+    if (msg.context_token) {
+      this.contextTokens.set(sessionKey, msg.context_token);
+      this.contextTokens.set(route.legacySessionKey || `user:${userId}`, msg.context_token);
+      await this.saveState();
+    }
+
+    const session = this.sessionManager.getOrCreate(route);
+    const channel = this.buildChannel(route.topicId, sessionKey, userId);
     SubAgentManager.getInstance().registerPlatformCallbacks(sessionKey, {
       injectMessage: async (text: string) => {
-        await this.handleSubAgentFeedback(sessionKey, msg.to_user_id, text);
+        await this.handleSubAgentFeedback(sessionKey, route.topicId, userId, text, route);
       },
     });
     const expectedMediaCount = (parsed.item_list || []).filter(item =>
@@ -258,7 +268,9 @@ export class WeixinBot {
       const queue = this.messageQueue.get(sessionKey) ?? [];
       queue.push({
         userText,
-        chatId: msg.to_user_id,
+        chatId: route.topicId,
+        userId,
+        sessionRoute: route,
         source: 'user',
         runtimeFeedback,
       });
@@ -267,29 +279,43 @@ export class WeixinBot {
       return;
     }
 
-    const result = await session.handleMessage(userText, { channel, runtimeFeedback });
+    const result = await session.handleMessage(userText, {
+      channel,
+      sessionRoute: route,
+      executionScope: createExecutionScopeFromRoute(route),
+      runtimeFeedback,
+    });
     if (result.text === BUSY_MESSAGE || result.text === ERROR_MESSAGE) {
-      await channel.reply(msg.to_user_id, result.text);
+      await channel.reply(route.topicId, result.text);
     }
     await this.drainMessageQueue(sessionKey);
   }
 
-  private async handleSubAgentFeedback(sessionKey: string, chatId: string, text: string): Promise<void> {
+  private async handleSubAgentFeedback(
+    sessionKey: string,
+    chatId: string,
+    userId: string,
+    text: string,
+    sessionRoute?: SessionRoute,
+  ): Promise<void> {
     const session = this.sessionManager.getOrCreate(sessionKey);
+    const route = sessionRoute ?? this.createRouteFromSessionKey(sessionKey, userId);
 
     if (session.isBusy()) {
-      this.enqueueSubAgentFeedback(sessionKey, chatId, text);
+      this.enqueueSubAgentFeedback(sessionKey, chatId, userId, text, route);
       Logger.info(`[${sessionKey}] 主会话忙，微信子智能体反馈已入队`);
       return;
     }
 
-    const channel = this.buildChannel(chatId, sessionKey);
+    const channel = this.buildChannel(chatId, sessionKey, userId);
     const result = await session.handleRuntimeObservation(text, {
       channel,
+      sessionRoute: route,
+      executionScope: createExecutionScopeFromRoute(route),
       source: 'subagent_result',
     });
     if (result.text === BUSY_MESSAGE) {
-      this.enqueueSubAgentFeedback(sessionKey, chatId, text);
+      this.enqueueSubAgentFeedback(sessionKey, chatId, userId, text, route);
       return;
     }
     if (result.text === ERROR_MESSAGE) {
@@ -298,11 +324,20 @@ export class WeixinBot {
     await this.drainMessageQueue(sessionKey);
   }
 
-  private enqueueSubAgentFeedback(sessionKey: string, chatId: string, text: string): void {
+  private enqueueSubAgentFeedback(
+    sessionKey: string,
+    chatId: string,
+    userId: string,
+    text: string,
+    sessionRoute?: SessionRoute,
+  ): void {
+    const route = sessionRoute ?? this.createRouteFromSessionKey(sessionKey, userId);
     const queue = this.messageQueue.get(sessionKey) ?? [];
     queue.push({
       userText: text,
       chatId,
+      userId,
+      sessionRoute: route,
       source: 'subagent_feedback',
     });
     this.messageQueue.set(sessionKey, queue);
@@ -324,14 +359,19 @@ export class WeixinBot {
       return;
     }
 
-    const channel = this.buildChannel(msg.chatId, sessionKey);
+    const channel = this.buildChannel(msg.chatId, sessionKey, msg.userId);
+    const executionScope = createExecutionScopeFromRoute(msg.sessionRoute);
     const result = msg.source === 'subagent_feedback'
       ? await session.handleRuntimeObservation(msg.userText, {
         channel,
+        sessionRoute: msg.sessionRoute,
+        executionScope,
         source: 'subagent_result',
       })
       : await session.handleMessage(msg.userText, {
         channel,
+        sessionRoute: msg.sessionRoute,
+        executionScope,
         runtimeFeedback: msg.runtimeFeedback,
       });
 
@@ -339,6 +379,21 @@ export class WeixinBot {
       await channel.reply(msg.chatId, result.text);
     }
     await this.drainMessageQueue(sessionKey);
+  }
+
+  private createRouteFromSessionKey(sessionKey: string, userId: string): SessionRoute {
+    const parsed = parseSessionKeyV2(sessionKey);
+    const legacyUserId = sessionKey.startsWith('user:') ? sessionKey.slice('user:'.length) : '';
+    return createSessionRoute({
+      source: parsed?.source || 'weixin',
+      topicId: parsed?.topicId || legacyUserId || userId || 'unknown_user',
+      topicType: parsed?.topicType || 'p2p',
+      actorUserId: userId || legacyUserId || 'unknown_user',
+      agentId: parsed?.agentId,
+      identityTrust: 'legacy_context',
+      identitySource: 'weixin.runtime',
+      legacySessionKey: parsed ? (userId ? `user:${userId}` : undefined) : sessionKey,
+    });
   }
 
   destroy(): void {

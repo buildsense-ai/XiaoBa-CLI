@@ -1,11 +1,9 @@
 import { AIService } from '../utils/ai-service';
 import { Logger } from '../utils/logger';
+import { readRequiredDefaultPromptFile } from '../utils/prompt-template';
 
 const MAX_CONTEXT_MESSAGES = 10;
 const JUDGE_MAX_TOKENS = 20;
-
-const JUDGE_SYSTEM_PROMPT = `你是一个群聊参与判断器。你的任务是判断 bot 是否应该主动回应当前消息。
-只回答 yes 或 no，不要解释。`;
 
 function buildJudgeUserPrompt(
   botName: string,
@@ -72,7 +70,7 @@ export class ChimeInJudge {
   async shouldChimeIn(latestMessage: string): Promise<boolean> {
     try {
       const response = await this.judgeAI.chat([
-        { role: 'system', content: JUDGE_SYSTEM_PROMPT },
+        { role: 'system', content: readRequiredDefaultPromptFile('sidecars/chime-in-judge.md') },
         {
           role: 'user',
           content: buildJudgeUserPrompt(

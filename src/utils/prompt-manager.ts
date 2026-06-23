@@ -1,17 +1,22 @@
-import * as path from 'path';
 import { PromptComposer } from '../runtime/prompt-composer';
+import { getPromptBaseDir } from './prompt-template';
+import {
+  PromptTraceSnapshot,
+  buildPromptTraceSnapshot,
+} from './prompt-observability';
 
 /**
  * System Prompt 管理器
  */
 export class PromptManager {
-  private static promptsDir = path.join(__dirname, '../../prompts');
+  private static promptsDir = getPromptBaseDir();
+  private static envPromptsDir = PromptManager.promptsDir;
 
   /**
    * 获取基础 system prompt
    */
   static getBaseSystemPrompt(): string {
-    return PromptComposer.getBaseSystemPrompt(this.promptsDir, this.getDefaultSystemPrompt());
+    return PromptComposer.getBaseSystemPrompt(this.getPromptsDir());
   }
 
   /**
@@ -19,27 +24,35 @@ export class PromptManager {
    */
   static async buildSystemPrompt(): Promise<string> {
     return PromptComposer.composeSystemPrompt({
-      promptsDir: this.promptsDir,
-      defaultSystemPrompt: this.getDefaultSystemPrompt(),
+      promptsDir: this.getPromptsDir(),
     });
   }
 
   static getPromptsDir(): string {
+    const currentEnvPromptsDir = getPromptBaseDir();
+    if (this.promptsDir === this.envPromptsDir) {
+      this.promptsDir = currentEnvPromptsDir;
+    }
+    this.envPromptsDir = currentEnvPromptsDir;
     return this.promptsDir;
   }
 
-  /**
-   * 默认 system prompt（当文件不存在时使用）
-   */
-  static getDefaultSystemPrompt(): string {
-    return `你是用户的私人助理。
-
-你和用户交流时，保持自然、直接、可信。
-
-工作原则：
-1. 只根据当前对话、真实上下文和当前运行时提供的能力行动。
-2. 不编造自己拥有的工具、技能、历史记忆或已完成的工作。
-3. 先理解问题，再决定是否需要行动或回复。
-4. 当前这一轮没有新信息时，不要为了显得热情而额外寒暄。`;
+  static buildPromptTraceSnapshot(
+    systemPrompt: string,
+    options: {
+      source?: string;
+      loadedFiles?: string[];
+      env?: NodeJS.ProcessEnv;
+      now?: Date;
+    } = {},
+  ): PromptTraceSnapshot {
+    return buildPromptTraceSnapshot({
+      promptsDir: this.getPromptsDir(),
+      systemPrompt,
+      source: options.source || 'prompt-manager',
+      loadedFiles: options.loadedFiles || ['runtime-context.md', 'system-prompt.md'],
+      env: options.env,
+      now: options.now,
+    });
   }
 }

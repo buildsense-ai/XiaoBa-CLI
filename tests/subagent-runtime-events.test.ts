@@ -445,6 +445,113 @@ describe('subagent runtime events', () => {
     }
   });
 
+  test('CatsCo device-scoped spawn_subagent defaults to ask_parent only', async () => {
+    const originalGetInstance = SubAgentManager.getInstance;
+    let capturedAllowedTools: unknown;
+
+    (SubAgentManager as any).getInstance = () => ({
+      spawn(
+        _parentSessionKey: string,
+        request: any,
+      ) {
+        capturedAllowedTools = request.allowedTools;
+        return {
+          id: 'sub-catsco-isolated',
+          agentType: request.agentType,
+          skillName: request.agentType,
+          toolScope: 'read_only',
+          allowedTools: request.allowedTools,
+          taskDescription: request.taskDescription,
+          status: 'running',
+          createdAt: Date.now(),
+          progressLog: [],
+          outputFiles: [],
+        };
+      },
+    });
+
+    try {
+      const result = await new SpawnSubagentTool().execute({
+        agent_type: 'explorer',
+        task: '审查当前问题',
+        context: '只看主会话提供的信息，不操作本机文件',
+      }, {
+        workingDirectory: process.cwd(),
+        conversationHistory: [],
+        sessionId: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
+        surface: 'catscompany',
+        executionScope: {
+          source: 'catscompany',
+          sessionKey: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
+          topicId: 'p2p_7_43',
+          topicType: 'p2p',
+          actorUserId: 'usr7',
+          agentId: 'usr43',
+          agentBodyId: 'body-main',
+          identityTrust: 'server_canonical',
+          isTrusted: true,
+        },
+        localDeviceGrant: {
+          kind: 'catscompany_body',
+          source: 'catscompany',
+          bodyId: 'body-main',
+          createdAt: Date.now(),
+        },
+        runtimeServices: {
+          aiService: {} as any,
+          skillManager: {} as any,
+        },
+      });
+
+      assert.equal(result.ok, true);
+      assert.deepEqual(capturedAllowedTools, ['ask_parent']);
+    } finally {
+      (SubAgentManager as any).getInstance = originalGetInstance;
+    }
+  });
+
+  test('CatsCo device-scoped spawn_subagent rejects local file tool delegation', async () => {
+    const result = await new SpawnSubagentTool().execute({
+      agent_type: 'explorer',
+      allowed_tools: ['read_file', 'ask_parent'],
+      task: '读取本机文件',
+      context: '请读取用户设备文件',
+    }, {
+      workingDirectory: process.cwd(),
+      conversationHistory: [],
+      sessionId: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
+      surface: 'catscompany',
+      executionScope: {
+        source: 'catscompany',
+        sessionKey: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
+        topicId: 'p2p_7_43',
+        topicType: 'p2p',
+        actorUserId: 'usr7',
+        agentId: 'usr43',
+        agentBodyId: 'body-main',
+        identityTrust: 'server_canonical',
+        isTrusted: true,
+      },
+      localDeviceGrant: {
+        kind: 'catscompany_body',
+        source: 'catscompany',
+        bodyId: 'body-main',
+        createdAt: Date.now(),
+      },
+      runtimeServices: {
+        aiService: {} as any,
+        skillManager: {} as any,
+      },
+    });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+      assert.match(result.message, /不会传递给子智能体/);
+      assert.match(result.message, /read_file/);
+    }
+  });
+
   test('spawn_subagent rejects unsafe tools before creating a subagent', async () => {
     const result = await new SpawnSubagentTool().execute({
       agent_type: 'worker',

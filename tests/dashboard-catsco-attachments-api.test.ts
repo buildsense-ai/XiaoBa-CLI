@@ -55,7 +55,19 @@ describe('dashboard CatsCo attachment API', () => {
       if (originalEnv[key] === undefined) delete process.env[key];
       else process.env[key] = originalEnv[key];
     }
-    fs.rmSync(testRoot, { recursive: true, force: true });
+    try {
+      fs.rmSync(testRoot, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 50,
+      });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform !== 'win32' || (code !== 'EPERM' && code !== 'ENOTEMPTY')) {
+        throw error;
+      }
+    }
   });
 
   test('streams a local file to CatsCo and sends the attachment as the user', async () => {

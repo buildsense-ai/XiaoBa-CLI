@@ -8,6 +8,24 @@ export interface SessionToolCallLog {
   duration_ms?: number;
 }
 
+export interface SessionPromptFileLog {
+  path: string;
+  sha256: string;
+  short_hash: string;
+  bytes: number;
+  chars: number;
+  lines: number;
+}
+
+export interface SessionPromptTurnLog {
+  source: string;
+  prompt_version: string;
+  system_hash: string;
+  system_chars: number;
+  bundle_hash: string;
+  bundle_file_count: number;
+}
+
 export interface SessionTurnLogEntry {
   entry_type: 'turn';
   turn: number;
@@ -28,6 +46,7 @@ export interface SessionTurnLogEntry {
     prompt: number;
     completion: number;
   };
+  prompt?: SessionPromptTurnLog;
 }
 
 export interface SessionRuntimeLogEntry {
@@ -58,11 +77,41 @@ export interface SessionSubAgentEventLogEntry {
   };
 }
 
+export interface SessionPromptTraceLogEntry {
+  entry_type: 'prompt_trace';
+  timestamp: string;
+  session_id: string;
+  session_type: string;
+  prompt: {
+    source: string;
+    prompt_version: string;
+    prompts_dir: string;
+    generated_at: string;
+    system: {
+      sha256: string;
+      short_hash: string;
+      chars: number;
+      lines: number;
+    };
+    bundle: {
+      sha256: string;
+      short_hash: string;
+      file_count: number;
+      files: SessionPromptFileLog[];
+    };
+    loaded_files: string[];
+  };
+}
+
 export interface LegacySessionTurnLogEntry extends Omit<SessionTurnLogEntry, 'entry_type'> {
   entry_type?: undefined;
 }
 
-export type SessionLogEntry = SessionTurnLogEntry | SessionRuntimeLogEntry | SessionSubAgentEventLogEntry;
+export type SessionLogEntry =
+  | SessionTurnLogEntry
+  | SessionRuntimeLogEntry
+  | SessionSubAgentEventLogEntry
+  | SessionPromptTraceLogEntry;
 export type ParsedSessionLogEntry = SessionLogEntry | LegacySessionTurnLogEntry;
 
 export function parseSessionLogContent(content: string): ParsedSessionLogEntry[] {

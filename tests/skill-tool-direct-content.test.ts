@@ -8,11 +8,14 @@ import { SkillTool } from '../src/tools/skill-tool';
 describe('skill tool direct content mode', () => {
   let testRoot: string;
   let originalCwd: string;
+  let originalSkillsEnv: string | undefined;
 
   beforeEach(() => {
     originalCwd = process.cwd();
+    originalSkillsEnv = process.env.XIAOBA_SKILLS_DIR;
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skill-tool-'));
     process.chdir(testRoot);
+    process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
     fs.mkdirSync(path.join(testRoot, 'skills', 'lin', 'demo'), { recursive: true });
     fs.writeFileSync(
       path.join(testRoot, 'skills', 'lin', 'demo', 'SKILL.md'),
@@ -30,6 +33,8 @@ describe('skill tool direct content mode', () => {
 
   afterEach(() => {
     process.chdir(originalCwd);
+    if (originalSkillsEnv === undefined) delete process.env.XIAOBA_SKILLS_DIR;
+    else process.env.XIAOBA_SKILLS_DIR = originalSkillsEnv;
     fs.rmSync(testRoot, { recursive: true, force: true });
   });
 

@@ -1,7 +1,53 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { DEFAULT_TOOL_NAMES } from '../src/tools/default-tool-names';
 import { ToolManager } from '../src/tools/tool-manager';
+import { AgentToolExecutor } from '../src/agents/agent-tool-executor';
+import type { Tool } from '../src/types/tool';
+import type { ExecutionScope, ScopedLocalDeviceGrant } from '../src/types/session-identity';
+
+function fakeTool(name: string, execute: Tool['execute']): Tool {
+  return {
+    definition: {
+      name,
+      description: name,
+      parameters: { type: 'object', properties: {} },
+    },
+    execute,
+  };
+}
+
+function catsScope(overrides: Partial<ExecutionScope> = {}): ExecutionScope {
+  return {
+    source: 'catscompany',
+    sessionKey: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
+    topicId: 'p2p_7_43',
+    topicType: 'p2p',
+    actorUserId: 'usr7',
+    agentId: 'usr43',
+    agentBodyId: 'body-local',
+    permissionsSource: 'server_canonical_message',
+    identityTrust: 'server_canonical',
+    isTrusted: true,
+    ...overrides,
+  };
+}
+
+function catsLocalDevice(overrides: Partial<ScopedLocalDeviceGrant> = {}): ScopedLocalDeviceGrant {
+  return {
+    kind: 'catscompany_body',
+    source: 'catscompany',
+    ownerUserId: 'usr7',
+    bodyId: 'body-local',
+    installationId: 'install-local',
+    deviceId: 'install-local',
+    createdAt: Date.now(),
+    ...overrides,
+  };
+}
 
 describe('ToolManager', () => {
   test('registers all default tools when no enabled list is provided', () => {
@@ -68,5 +114,373 @@ describe('ToolManager', () => {
 
     assert.equal(result.ok, true);
     assert.match(result.content, /收到问题：继续吗/);
+  });
+
+  test('strict local low-risk tools do not require confirmation', async () => {
+    const manager = new ToolManager('/tmp/xiaoba-tool-manager', {}, { enabledToolNames: [] });
+    let confirmed = false;
+    manager.registerTool(fakeTool('read_file', async () => ({ ok: true, content: 'read ok' })));
+
+    const result = await manager.executeTool({
+      id: 'call-read',
+      type: 'function',
+      function: { name: 'read_file', arguments: JSON.stringify({ file_path: 'a.txt' }) },
+    }, [], {
+      permissionProfile: 'strict',
+      confirmToolExecution: async () => {
+        confirmed = true;
+        return false;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.content, 'read ok');
+    assert.equal(confirmed, false);
+  });
+
+  test('strict local read outside the workspace requires confirmation', async () => {
+    const workspace = path.resolve('/tmp/xiaoba-tool-manager');
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    let executed = false;
+    manager.registerTool(fakeTool('read_file', async () => {
+      executed = true;
+      return { ok: true, content: 'read ok' };
+    }));
+
+    const denied = await manager.executeTool({
+      id: 'call-read-outside',
+      type: 'function',
+      function: { name: 'read_file', arguments: JSON.stringify({ file_path: path.resolve('/tmp/outside-secret.txt') }) },
+    }, [], {
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      confirmToolExecution: async request => {
+        assert.equal(request.toolName, 'read_file');
+        assert.equal(request.risk, 'medium');
+        return { approved: false, reason: '需要用户选择文件' };
+      },
+    });
+
+    assert.equal(denied.ok, false);
+    assert.equal(denied.errorCode, 'PERMISSION_DENIED');
+    assert.equal(denied.content, '需要用户选择文件');
+    assert.equal(executed, false);
+  });
+
+  test('strict local sensitive reads require high-risk confirmation', async () => {
+    const manager = new ToolManager('/tmp/xiaoba-tool-manager', {}, { enabledToolNames: [] });
+    manager.registerTool(fakeTool('read_file', async () => ({ ok: true, content: 'read ok' })));
+
+    const result = await manager.executeTool({
+      id: 'call-read-env',
+      type: 'function',
+      function: { name: 'read_file', arguments: JSON.stringify({ file_path: '.env' }) },
+    }, [], {
+      permissionProfile: 'strict',
+      confirmToolExecution: async request => {
+        assert.equal(request.risk, 'high');
+        return false;
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'PERMISSION_DENIED');
+  });
+
+  test('strict local glob absolute pattern outside workspace requires confirmation', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-workspace-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-outside-'));
+    const outsidePattern = path.join(outside, '**', '*.json');
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    let executed = false;
+    manager.registerTool(fakeTool('glob', async () => {
+      executed = true;
+      return { ok: true, content: 'glob ok' };
+    }));
+
+    const result = await manager.executeTool({
+      id: 'call-glob-absolute',
+      type: 'function',
+      function: { name: 'glob', arguments: JSON.stringify({ pattern: outsidePattern }) },
+    }, [], {
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      confirmToolExecution: async request => {
+        assert.equal(request.toolName, 'glob');
+        assert.equal(request.risk, 'medium');
+        return { approved: false, reason: '搜索范围不在当前工作区' };
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'PERMISSION_DENIED');
+    assert.equal(result.content, '搜索范围不在当前工作区');
+    assert.equal(executed, false);
+  });
+
+  test('strict local write can create new ordinary workspace files without confirmation', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-workspace-'));
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    let confirmed = false;
+    manager.registerTool(fakeTool('write_file', async () => ({ ok: true, content: 'write ok' })));
+
+    const result = await manager.executeTool({
+      id: 'call-write-new',
+      type: 'function',
+      function: { name: 'write_file', arguments: JSON.stringify({ file_path: 'new-note.txt', content: 'hello' }) },
+    }, [], {
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      confirmToolExecution: async () => {
+        confirmed = true;
+        return false;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.content, 'write ok');
+    assert.equal(confirmed, false);
+  });
+
+  test('strict local write waits for confirmation and respects denial', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-workspace-'));
+    fs.writeFileSync(path.join(workspace, 'a.txt'), 'old');
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    let executed = false;
+    manager.registerTool(fakeTool('write_file', async () => {
+      executed = true;
+      return { ok: true, content: 'write ok' };
+    }));
+
+    const denied = await manager.executeTool({
+      id: 'call-write',
+      type: 'function',
+      function: { name: 'write_file', arguments: JSON.stringify({ file_path: 'a.txt', content: 'hello' }) },
+    }, [], {
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      confirmToolExecution: async () => ({ approved: false, reason: '用户取消' }),
+    });
+
+    assert.equal(denied.ok, false);
+    assert.equal(denied.errorCode, 'PERMISSION_DENIED');
+    assert.equal(denied.content, '用户取消');
+    assert.equal(executed, false);
+
+    const approved = await manager.executeTool({
+      id: 'call-write-2',
+      type: 'function',
+      function: { name: 'write_file', arguments: JSON.stringify({ file_path: 'a.txt', content: 'hello' }) },
+    }, [], {
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      confirmToolExecution: async request => {
+        assert.equal(request.toolName, 'write_file');
+        assert.equal(request.risk, 'medium');
+        return true;
+      },
+    });
+
+    assert.equal(approved.ok, true);
+    assert.equal(approved.content, 'write ok');
+    assert.equal(executed, true);
+  });
+
+  test('strict local write returns retryable confirmation request without provider', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-workspace-'));
+    fs.writeFileSync(path.join(workspace, 'a.txt'), 'old');
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    manager.registerTool(fakeTool('write_file', async () => ({ ok: true, content: 'write ok' })));
+
+    const result = await manager.executeTool({
+      id: 'call-write',
+      type: 'function',
+      function: { name: 'write_file', arguments: JSON.stringify({ file_path: 'a.txt', content: 'hello' }) },
+    }, [], {
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'NEEDS_CONFIRMATION');
+    assert.equal(result.retryable, true);
+    assert.match(String(result.content), /需要用户确认/);
+  });
+
+  test('strict local unknown tools require confirmation instead of defaulting to low risk', async () => {
+    const manager = new ToolManager('/tmp/xiaoba-tool-manager', {}, { enabledToolNames: [] });
+    let executed = false;
+    manager.registerTool(fakeTool('custom_mutating_tool', async () => {
+      executed = true;
+      return { ok: true, content: 'custom ok' };
+    }));
+
+    const result = await manager.executeTool({
+      id: 'call-custom',
+      type: 'function',
+      function: { name: 'custom_mutating_tool', arguments: JSON.stringify({}) },
+    }, [], { permissionProfile: 'strict' });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'NEEDS_CONFIRMATION');
+    assert.equal(executed, false);
+  });
+
+  test('CatsCo context can create new ordinary home files without confirmation', async () => {
+    const manager = new ToolManager('/tmp/xiaoba-tool-manager', {}, { enabledToolNames: [] });
+    let confirmed = false;
+    manager.registerTool(fakeTool('write_file', async () => ({ ok: true, content: 'catsco tool ran' })));
+    const target = path.join(os.homedir(), `xiaoba-catsco-new-${Date.now()}.txt`);
+
+    const result = await manager.executeTool({
+      id: 'call-catsco-write',
+      type: 'function',
+      function: { name: 'write_file', arguments: JSON.stringify({ file_path: target, content: 'hello' }) },
+    }, [], {
+      surface: 'catscompany',
+      permissionProfile: 'strict',
+      workingDirectory: '/tmp/xiaoba-tool-manager',
+      workspaceRoot: '/tmp/xiaoba-tool-manager',
+      executionScope: catsScope(),
+      localDeviceGrant: catsLocalDevice(),
+      confirmToolExecution: async () => {
+        confirmed = true;
+        return false;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.content, 'catsco tool ran');
+    assert.equal(confirmed, false);
+  });
+
+  test('CatsCo local owner self runs write edit send and shell without confirmation', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-workspace-'));
+    const existing = path.join(workspace, 'a.txt');
+    fs.writeFileSync(existing, 'old');
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    const executed: string[] = [];
+    manager.registerTool(fakeTool('write_file', async () => {
+      executed.push('write_file');
+      return { ok: true, content: 'catsco overwrite ran' };
+    }));
+    manager.registerTool(fakeTool('edit_file', async () => {
+      executed.push('edit_file');
+      return { ok: true, content: 'catsco edit ran' };
+    }));
+    manager.registerTool(fakeTool('send_file', async () => {
+      executed.push('send_file');
+      return { ok: true, content: 'catsco send ran' };
+    }));
+    manager.registerTool(fakeTool('execute_shell', async () => {
+      executed.push('execute_shell');
+      return { ok: true, content: 'catsco shell ran' };
+    }));
+    let confirmed = false;
+    const catsContext = {
+      surface: 'catscompany' as const,
+      permissionProfile: 'strict' as const,
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      executionScope: catsScope(),
+      localDeviceGrant: catsLocalDevice(),
+      confirmToolExecution: async () => {
+        confirmed = true;
+        return false;
+      },
+    };
+
+    const write = await manager.executeTool({
+      id: 'call-catsco-overwrite',
+      type: 'function',
+      function: { name: 'write_file', arguments: JSON.stringify({ file_path: existing, content: 'hello' }) },
+    }, [], catsContext);
+    const edit = await manager.executeTool({
+      id: 'call-catsco-edit',
+      type: 'function',
+      function: { name: 'edit_file', arguments: JSON.stringify({ file_path: existing, old_string: 'old', new_string: 'new' }) },
+    }, [], catsContext);
+    const send = await manager.executeTool({
+      id: 'call-catsco-send',
+      type: 'function',
+      function: { name: 'send_file', arguments: JSON.stringify({ file_path: existing }) },
+    }, [], catsContext);
+    const shell = await manager.executeTool({
+      id: 'call-catsco-shell',
+      type: 'function',
+      function: { name: 'execute_shell', arguments: JSON.stringify({ command: 'Remove-Item -Recurse C:\\danger' }) },
+    }, [], catsContext);
+
+    assert.equal(write.ok, true);
+    assert.equal(edit.ok, true);
+    assert.equal(send.ok, true);
+    assert.equal(shell.ok, true);
+    assert.deepEqual(executed, ['write_file', 'edit_file', 'send_file', 'execute_shell']);
+    assert.equal(confirmed, false);
+  });
+
+  test('CatsCo local owner self accepts numeric local owner ids from saved config', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-owner-id-'));
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    let executed = false;
+    manager.registerTool(fakeTool('write_file', async () => {
+      executed = true;
+      return { ok: true, content: 'catsco write ran' };
+    }));
+    let confirmed = false;
+
+    const result = await manager.executeTool({
+      id: 'call-catsco-numeric-owner',
+      type: 'function',
+      function: { name: 'write_file', arguments: JSON.stringify({ file_path: 'a.txt', content: 'hello' }) },
+    }, [], {
+      surface: 'catscompany',
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      executionScope: catsScope({ actorUserId: 'usr7' }),
+      localDeviceGrant: catsLocalDevice({ ownerUserId: '7' }),
+      confirmToolExecution: async () => {
+        confirmed = true;
+        return false;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(executed, true);
+    assert.equal(confirmed, false);
+  });
+
+  test('AgentToolExecutor uses the same local confirmation gate', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-agent-workspace-'));
+    fs.writeFileSync(path.join(workspace, 'a.txt'), 'old');
+    let executed = false;
+    const executor = new AgentToolExecutor([
+      fakeTool('write_file', async () => {
+        executed = true;
+        return { ok: true, content: 'agent write ok' };
+      }),
+    ], workspace);
+
+    const result = await executor.executeTool({
+      id: 'agent-write',
+      type: 'function',
+      function: { name: 'write_file', arguments: JSON.stringify({ file_path: 'a.txt', content: 'hello' }) },
+    }, [], {
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      confirmToolExecution: async () => false,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'PERMISSION_DENIED');
+    assert.equal(executed, false);
   });
 });

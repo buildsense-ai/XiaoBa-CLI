@@ -10,13 +10,16 @@ import { createApiRouter } from '../src/dashboard/routes/api';
 describe('dashboard skills API', () => {
   let testRoot: string;
   let originalCwd: string;
+  let originalSkillsDir: string | undefined;
   let server: Server | undefined;
   let baseUrl: string;
 
   beforeEach(async () => {
     originalCwd = process.cwd();
+    originalSkillsDir = process.env.XIAOBA_SKILLS_DIR;
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dashboard-skills-api-'));
     process.chdir(testRoot);
+    process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
 
     writeSkill('skills/user-tool/SKILL.md', 'user-tool', 'User managed skill');
     writeSkill('skills/local-tool/SKILL.md', 'local-tool', 'Local skill');
@@ -36,6 +39,11 @@ describe('dashboard skills API', () => {
       server = undefined;
     }
     process.chdir(originalCwd);
+    if (originalSkillsDir === undefined) {
+      delete process.env.XIAOBA_SKILLS_DIR;
+    } else {
+      process.env.XIAOBA_SKILLS_DIR = originalSkillsDir;
+    }
     if (testRoot && fs.existsSync(testRoot)) {
       fs.rmSync(testRoot, { recursive: true, force: true });
     }
@@ -61,6 +69,15 @@ describe('dashboard skills API', () => {
       canDelete: true,
       canShare: true,
     });
+  });
+
+  test('returns skills root without being captured by skill name route', async () => {
+    const response = await fetch(`${baseUrl}/api/skills-root`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.path, path.join(testRoot, 'skills'));
   });
 
   test('allows user skill removal', async () => {

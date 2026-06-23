@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    name: Build and runtime tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout XiaoBa-CLI
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Release branding check
+        run: npm run release:check
+
+      - name: Build
+        run: npm run build
+
+      - name: Runtime tests
+        run: npm test
+
+  cross-repo-catsco:
+    name: CatsCo cross-repo smoke and e2e
+    runs-on: ubuntu-latest
+    needs: runtime
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: cats_xiaoba_e2e
+          POSTGRES_USER: catsco
+          POSTGRES_PASSWORD: catsco_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U catsco -d cats_xiaoba_e2e"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout XiaoBa-CLI
+        uses: actions/checkout@v4
+        with:
+          path: XiaoBa-CLI
+
+      - name: Detect cross-repo scripts
+        id: scripts
+        working-directory: XiaoBa-CLI
+        run: |
+          if [ -f scripts/cross-repo-catsco-smoke.mjs ]; then
+            echo "smoke=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "smoke=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -f scripts/cross-repo-catsco-e2e.ts ]; then
+            echo "e2e=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "e2e=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout cats-company
+        if: steps.scripts.outputs.smoke == 'true' || steps.scripts.outputs.e2e == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: buildsense-ai/cats-company
+          ref: ${{ vars.CATSCOMPANY_SMOKE_REF || 'codex/feishu-cloud-oauth-events' }}
+          path: cats-company
+
+      - name: Set up Node.js
+        if: steps.scripts.outputs.smoke == 'true' || steps.scripts.outputs.e2e == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: XiaoBa-CLI/package-lock.json
+
+      - name: Set up Go
+        if: steps.scripts.outputs.smoke == 'true' || steps.scripts.outputs.e2e == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cats-company/go.mod
+          cache-dependency-path: cats-company/go.sum
+
+      - name: Install XiaoBa dependencies
+        if: steps.scripts.outputs.smoke == 'true' || steps.scripts.outputs.e2e == 'true'
+        working-directory: XiaoBa-CLI
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Cross-repo CatsCo smoke
+        if: steps.scripts.outputs.smoke == 'true'
+        working-directory: XiaoBa-CLI
+        env:
+          CATSCOMPANY_REPO: ../cats-company
+        run: npm run test:cross-repo:catsco
+
+      - name: Cross-repo CatsCo e2e
+        if: steps.scripts.outputs.e2e == 'true'
+        working-directory: XiaoBa-CLI
+        env:
+          CATSCOMPANY_REPO: ../cats-company
+          CATSCOMPANY_E2E_DB_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_xiaoba_e2e?sslmode=disable
+        run: npm run test:e2e:catsco-cross-repo

@@ -8,6 +8,8 @@ import { ConversationRunner, RunnerCallbacks } from './conversation-runner';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { SubAgentEventType, SubAgentRuntimeEvent } from './sub-agent-events';
+import { readRequiredPromptFile, renderPromptTemplate } from '../utils/prompt-template';
+import type { ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult } from '../types/tool';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -282,6 +284,7 @@ export class SubAgentSession {
         permissionProfile: 'strict',
         abortSignal: this.abortController.signal,
         requestParentInput: (question: string) => this.waitForParentInput(question),
+        confirmToolExecution: (request) => this.confirmSubAgentToolExecution(request),
       },
     });
 
@@ -423,6 +426,36 @@ export class SubAgentSession {
       this.clearParentInputReminder();
       throw error;
     }
+  }
+
+  private async confirmSubAgentToolExecution(
+    request: ToolExecutionConfirmationRequest,
+  ): Promise<ToolExecutionConfirmationResult> {
+    if (!this.options.notifyParent) {
+      return { approved: false, reason: '当前子智能体没有主会话确认通道，已取消该工具调用。' };
+    }
+    const argsPreview = JSON.stringify(request.args ?? {});
+    const question = [
+      `子智能体「${this.displayName || this.id}」想执行 ${request.toolName}。`,
+      `风险等级: ${request.risk}`,
+      request.reason,
+      argsPreview && argsPreview !== '{}' ? `参数: ${argsPreview.slice(0, 500)}${argsPreview.length > 500 ? '...' : ''}` : '',
+      '请回复“确认/允许/yes”批准，或回复其他内容取消。',
+    ].filter(Boolean).join('\n');
+    const answer = await this.waitForParentInput(question);
+    const normalized = String(answer || '').trim().toLowerCase().replace(/[。.!！\s]+$/g, '');
+    const denied = /^(取消|不同意|拒绝|不要|不行|否|no|n|cancel|deny|denied)$/i.test(normalized)
+      || /不\s*确认/.test(normalized)
+      || /不是\s*确认/.test(normalized)
+      || /别\s*执行/.test(normalized)
+      || /不要\s*执行/.test(normalized)
+      || normalized.includes('取消')
+      || normalized.includes('不同意')
+      || normalized.includes('拒绝');
+    const approved = !denied && /^(y|yes|ok|approve|approved|确认|确认执行|允许|允许执行|同意|批准|继续|继续执行)$/i.test(normalized);
+    return approved
+      ? { approved: true }
+      : { approved: false, reason: `主会话未确认 ${request.toolName}，已取消。` };
   }
 
   async close(): Promise<void> {
@@ -607,39 +640,34 @@ function buildSubAgentSystemPrompt(
   maxTurns?: number,
 ): string {
   const roleLine = agentRoleLine(agentType);
-  return [
-    '[subagent_runtime]',
+  const promptsDir = PromptManager.getPromptsDir();
+  const template = readRequiredPromptFile(
+    promptsDir,
+    'subagents/system.md',
+  );
+  return renderPromptTemplate(template, {
     roleLine,
-    '你只会看到主 agent 传入的任务和上下文，不会自动继承主会话完整历史；不要假设有未提供的信息。',
-    '你是后台子智能体，不直接面向用户输出消息，也不调用 send_text/send_file。',
-    '把高噪音探索、工具输出和中间推理保留在你自己的上下文里；最终只输出简明结果、关键证据、风险和产物路径。',
-    `临时 scratch 目录: ${temporaryDirectory}。中间文件放这里；需要长期保留或交付给用户的产物不要只放在 scratch 目录中。`,
-    allowedTools.includes('ask_parent')
-      ? '如果信息不足，先基于可用工具自行调查；只有真正需要主 agent 或用户决策时才用 ask_parent 明确提出问题并等待恢复。'
-      : '如果信息不足，先基于可用工具自行调查；本次未授权 ask_parent，请在最终结果里说明缺口和需要主 agent 判断的事项。',
-    `工具权限范围: ${toolScope}。实际可用工具: ${allowedTools.length > 0 ? allowedTools.join(', ') : '无'}。不要尝试派生新的子智能体。`,
-    maxTurns
+    temporaryDirectory,
+    askParentInstruction: readRequiredPromptFile(
+      promptsDir,
+      allowedTools.includes('ask_parent')
+        ? 'subagents/ask-parent-enabled.md'
+        : 'subagents/ask-parent-disabled.md',
+    ),
+    toolScope,
+    allowedTools: allowedTools.length > 0 ? allowedTools.join(', ') : '无',
+    maxTurnsInstruction: maxTurns
       ? `本次主 agent 设置的工具推理轮次预算: ${maxTurns}。接近预算时请优先总结已知结论和缺口。`
-      : '本次没有固定的类型轮次上限；由你自己在信息足够时及时总结结束。',
-    subAgentPrompt ? `主 agent 额外指令:\n${subAgentPrompt.trim()}` : '',
-  ].join('\n');
+      : '本次没有固定的工具推理轮次上限；信息足够时及时总结结束。',
+    subAgentPrompt: subAgentPrompt?.trim(),
+  });
 }
 
 function agentRoleLine(agentType: SubAgentType): string {
-  switch (agentType) {
-    case 'explorer':
-      return '角色: explorer。只读探索代码和事实，输出路径、证据和结论，不修改文件。';
-    case 'reviewer':
-      return '角色: reviewer。审查风险、缺陷、测试缺口和可维护性问题，不修改文件。';
-    case 'tester':
-      return '角色: tester。运行必要测试或检查命令，聚焦失败原因和可复现输出，不修改源码。';
-    case 'worker':
-      return '角色: worker。可以在授权范围内做小而清晰的实现改动，并说明改了哪些文件。';
-    case 'skill':
-      return '角色: skill worker。按照已激活 skill 的流程完成任务，并给出压缩结果。';
-    default:
-      return '角色: background worker。完成独立子任务并返回压缩结果。';
-  }
+  return readRequiredPromptFile(
+    PromptManager.getPromptsDir(),
+    `subagents/roles/${agentType}.md`,
+  );
 }
 
 function truncateForEvent(text: string, maxLength: number): string {

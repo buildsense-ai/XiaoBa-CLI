@@ -13,7 +13,7 @@ import { resolveModelContextWindow } from './model-context-window';
  * 内部委托给对应的 Provider 实现
  */
 /** 可重试的 HTTP 状态码 */
-const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504, 529]);
+const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504, 520, 524, 529]);
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
 
@@ -100,9 +100,9 @@ export class AIService {
   }
 
   /**
-   * 流式调用
-   * 默认不重试，避免部分 token 已输出后出现重复文本。
-   * 如需强制开启重试，可设置 GAUZ_STREAM_RETRY=true（需自行保证幂等）。
+   * 流式调用。
+   * 默认只在没有任何文本输出前重试，避免用户看到重复片段。
+   * 如需强制开启完整流式重试，可设置 GAUZ_STREAM_RETRY=true（需自行保证幂等）。
    */
   async chatStream(
     messages: Message[],
@@ -115,18 +115,18 @@ export class AIService {
     }
 
     const allowStreamRetry = process.env.GAUZ_STREAM_RETRY === 'true';
-    const providerCallbacks = this.createProviderStreamCallbacks(callbacks);
+    let hasStreamedText = false;
+    const providerCallbacks = this.createProviderStreamCallbacks(callbacks, () => {
+      hasStreamedText = true;
+    });
 
     try {
-      if (allowStreamRetry) {
-        return await this.withRetry(
-          () => this.provider.chatStream(messages, tools, providerCallbacks, options),
-          callbacks,
-          options.signal,
-        );
-      }
-      this.throwIfAborted(options.signal);
-      return await this.provider.chatStream(messages, tools, providerCallbacks, options);
+      return await this.withRetry(
+        () => this.provider.chatStream(messages, tools, providerCallbacks, options),
+        callbacks,
+        options.signal,
+        () => allowStreamRetry || !hasStreamedText,
+      );
     } catch (error: any) {
       const wrapped = this.wrapError(error);
       callbacks?.onError?.(wrapped);
@@ -134,13 +134,16 @@ export class AIService {
     }
   }
 
-  private createProviderStreamCallbacks(callbacks?: StreamCallbacks): StreamCallbacks | undefined {
+  private createProviderStreamCallbacks(callbacks?: StreamCallbacks, onTextObserved?: () => void): StreamCallbacks | undefined {
     if (!callbacks) {
       return undefined;
     }
 
     return {
-      onText: callbacks.onText,
+      onText: (text: string) => {
+        if (text) onTextObserved?.();
+        callbacks.onText?.(text);
+      },
       onComplete: callbacks.onComplete,
     };
   }
@@ -195,7 +198,13 @@ export class AIService {
     }
 
     const message = String(error?.message || '');
-    if (/timeout|timed out|socket hang up|network error|fetch failed|premature close|ECONNREFUSED/i.test(message)) {
+    const hasRetryableStatusText =
+      /(?:API错误|HTTP|status(?:\s*code)?|response status)\s*[\(:= ]\s*(?:500|502|503|504|520|524|529)\b/i.test(message)
+      || /^\s*(?:500|502|503|504|520|524|529)\b/.test(message);
+    if (
+      hasRetryableStatusText
+      || /timeout|timed out|socket hang up|network error|fetch failed|premature close|ECONNREFUSED|bad gateway|gateway timeout|service unavailable|unknown error,\s*520/i.test(message)
+    ) {
       return true;
     }
 
@@ -215,6 +224,12 @@ export class AIService {
     if (typeof status === 'number') {
       return status;
     }
+    const text = String(error?.message || error || '');
+    const match = text.match(/(?:API错误|HTTP|status(?:\s*code)?)\s*[\(:= ]\s*(\d{3})\b/i);
+    if (match) {
+      const parsed = Number(match[1]);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
     return null;
   }
 
@@ -233,7 +248,12 @@ export class AIService {
   /**
    * 带指数退避的重试包装器
    */
-  private async withRetry<T>(fn: () => Promise<T>, callbacks?: StreamCallbacks, signal?: AbortSignal): Promise<T> {
+  private async withRetry<T>(
+    fn: () => Promise<T>,
+    callbacks?: StreamCallbacks,
+    signal?: AbortSignal,
+    shouldRetry?: (error: any, attempt: number) => boolean,
+  ): Promise<T> {
     let lastError: any;
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -247,7 +267,7 @@ export class AIService {
           throw this.createAbortError();
         }
 
-        if (attempt >= MAX_RETRIES || !this.isRetryable(error)) {
+        if (attempt >= MAX_RETRIES || !this.isRetryable(error) || shouldRetry?.(error, attempt) === false) {
           throw error;
         }
 
