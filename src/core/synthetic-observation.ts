@@ -21,6 +21,13 @@ export interface SyntheticObservationUse {
   missingInfo?: string[];
 }
 
+export interface SyntheticObservationMetadata {
+  branchId?: string;
+  branchType?: string;
+  refs?: string[];
+  [key: string]: unknown;
+}
+
 export interface SyntheticObservation {
   id?: string;
   source: SyntheticObservationSource;
@@ -37,18 +44,19 @@ export interface SyntheticObservation {
     toolsUsed?: string[];
     durationMs?: number;
   };
+  metadata?: SyntheticObservationMetadata;
+  formattedContent?: string;
   createdAt?: number;
 }
 
 export interface SyntheticObservationQueue {
   push(observation: SyntheticObservation): boolean;
   drain(): SyntheticObservation[];
-  cancel(): void;
+  cancel(): SyntheticObservation[];
   size(): number;
 }
 
 export const SYNTHETIC_OBSERVATION_TOOL_NAME = 'runtime_observation';
-const MAX_SYNTHETIC_OBSERVATION_CHARS = 8000;
 
 export class InMemorySyntheticObservationQueue implements SyntheticObservationQueue {
   private observations: SyntheticObservation[] = [];
@@ -75,9 +83,11 @@ export class InMemorySyntheticObservationQueue implements SyntheticObservationQu
     return drained;
   }
 
-  cancel(): void {
+  cancel(): SyntheticObservation[] {
+    const dropped = this.observations;
     this.cancelled = true;
     this.observations = [];
+    return dropped;
   }
 
   size(): number {
@@ -124,6 +134,10 @@ export function buildSyntheticObservationMessages(
 }
 
 export function formatSyntheticObservation(observation: SyntheticObservation): string {
+  if (observation.formattedContent !== undefined) {
+    return observation.formattedContent;
+  }
+
   const lines: string[] = [
     `[runtime_observation:${observation.source}]`,
     `status: ${observation.status}`,
@@ -180,7 +194,29 @@ export function formatSyntheticObservation(observation: SyntheticObservation): s
     if (typeof observation.debug.durationMs === 'number') lines.push(`duration_ms: ${observation.debug.durationMs}`);
   }
 
-  return truncate(lines.join('\n'), MAX_SYNTHETIC_OBSERVATION_CHARS);
+  return lines.join('\n');
+}
+
+export function describeSyntheticObservationForLog(observation: SyntheticObservation): string {
+  const id = String(observation.id || '').trim() || '(unassigned)';
+  const metadata = observation.metadata || {};
+  const parts = [
+    `id=${id}`,
+    `source=${observation.source}`,
+    `status=${observation.status}`,
+    `relevance=${observation.relevance}`,
+  ];
+  if (metadata.branchType || metadata.branchId) {
+    parts.push(`branch=${[metadata.branchType, metadata.branchId].filter(Boolean).join(':')}`);
+  }
+  if (Array.isArray(metadata.refs) && metadata.refs.length > 0) {
+    parts.push(`refs=${metadata.refs.slice(0, 6).join(',')}${metadata.refs.length > 6 ? `,+${metadata.refs.length - 6}` : ''}`);
+  }
+  const summary = normalizeLine(observation.summary);
+  if (summary) {
+    parts.push(`summary="${truncate(summary, 220).replace(/\n/g, ' ')}"`);
+  }
+  return parts.join(' ');
 }
 
 function stableObservationId(observation: SyntheticObservation): string {

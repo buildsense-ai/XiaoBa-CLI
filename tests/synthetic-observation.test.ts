@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import {
   buildSyntheticObservationMessages,
+  describeSyntheticObservationForLog,
   InMemorySyntheticObservationQueue,
   SYNTHETIC_OBSERVATION_TOOL_NAME,
   SyntheticObservation,
@@ -62,9 +63,74 @@ describe('synthetic observations', () => {
     assert.equal(queue.drain().length, 0);
 
     assert.equal(queue.push(observation('after-drain')), true);
-    queue.cancel();
+    const dropped = queue.cancel();
+    assert.equal(dropped.length, 1);
+    assert.equal(dropped[0].id, 'after-drain');
     assert.equal(queue.drain().length, 0);
     assert.equal(queue.push(observation('after-cancel')), false);
+  });
+
+  test('describes observations with branch metadata for logs', () => {
+    const logLine = describeSyntheticObservationForLog({
+      ...observation('memory-ready'),
+      metadata: {
+        branchType: 'memory',
+        branchId: 'memory-abc',
+        refs: ['chat/2026-06-16/demo.jsonl#1'],
+      },
+    });
+
+    assert.match(logLine, /id=memory-ready/);
+    assert.match(logLine, /source=memory/);
+    assert.match(logLine, /branch=memory:memory-abc/);
+    assert.match(logLine, /refs=chat\/2026-06-16\/demo\.jsonl#1/);
+  });
+
+  test('uses formatted content override for compact JSON observations', () => {
+    const compact = {
+      ...observation('compact-json'),
+      formattedContent: JSON.stringify({
+        source: 'memory',
+        summary: 'compact memory summary',
+        refs: ['chat/2026-06-16/demo.jsonl#1'],
+      }),
+    };
+
+    const messages = buildSyntheticObservationMessages([compact]);
+    assert.deepEqual(JSON.parse(String(messages[1].content)), {
+      source: 'memory',
+      summary: 'compact memory summary',
+      refs: ['chat/2026-06-16/demo.jsonl#1'],
+    });
+  });
+
+  test('does not truncate model-visible formatted observation content', () => {
+    const summary = 'memory detail '.repeat(900);
+    const formattedContent = JSON.stringify({
+      source: 'memory',
+      summary,
+      refs: ['chat/2026-06-16/demo.jsonl#1'],
+    });
+    const messages = buildSyntheticObservationMessages([{
+      ...observation('long-json'),
+      formattedContent,
+    }]);
+
+    assert.equal(messages[1].content, formattedContent);
+    assert.equal(JSON.parse(String(messages[1].content)).summary, summary);
+    assert.doesNotMatch(String(messages[1].content), /truncated/);
+  });
+
+  test('does not truncate generated observation text content', () => {
+    const longSummary = 'prior context '.repeat(900).trim();
+    const messages = buildSyntheticObservationMessages([{
+      ...observation('long-text'),
+      summary: longSummary,
+    }]);
+
+    assert.match(String(messages[1].content), new RegExp(longSummary.slice(0, 200)));
+    assert.ok(String(messages[1].content).includes(longSummary));
+    assert.doesNotMatch(String(messages[1].content), /truncated/);
   });
 
   test('turn context cleanup strips synthetic observations from durable history', () => {

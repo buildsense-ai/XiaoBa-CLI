@@ -31,6 +31,7 @@ import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer
 import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
 import {
   buildSyntheticObservationMessages,
+  describeSyntheticObservationForLog,
   SyntheticObservation,
 } from './synthetic-observation';
 import * as fs from 'fs';
@@ -645,7 +646,8 @@ export class ConversationRunner {
     const syntheticMessages = buildSyntheticObservationMessages(observations);
     messages.push(...syntheticMessages);
     Logger.info(
-      `[${this.sessionLabel}Turn ${turn}] injected ${observations.length} synthetic runtime observation(s)`
+      `[${this.sessionLabel}Turn ${turn}] injected ${observations.length} synthetic runtime observation(s): `
+      + observations.map(describeSyntheticObservationForLog).join(' | ')
     );
   }
 

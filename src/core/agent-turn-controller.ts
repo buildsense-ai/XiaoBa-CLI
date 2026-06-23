@@ -25,7 +25,11 @@ import { TurnContextBuilder } from './turn-context-builder';
 import { TurnLogRecorder } from './turn-log-recorder';
 import { PlanRuntime } from './plan-runtime';
 import { getPetService } from '../pet/pet-service';
-import { InMemorySyntheticObservationQueue, SyntheticObservationQueue } from './synthetic-observation';
+import {
+  describeSyntheticObservationForLog,
+  InMemorySyntheticObservationQueue,
+  SyntheticObservationQueue,
+} from './synthetic-observation';
 import { MemorySidecarBranchHandle, startMemorySidecarBranch } from './sidecar-memory-branch';
 
 export interface AgentTurnServices {
@@ -153,8 +157,14 @@ export class AgentTurnController {
       }
       throw error;
     } finally {
-      syntheticObservationQueue.cancel();
       memorySidecar?.cancel();
+      const droppedObservations = syntheticObservationQueue.cancel();
+      if (droppedObservations.length > 0) {
+        Logger.info(
+          `[${this.options.sessionKey}] dropped ${droppedObservations.length} unconsumed synthetic runtime observation(s): `
+          + droppedObservations.map(describeSyntheticObservationForLog).join(' | ')
+        );
+      }
     }
     const nextMessages = this.options.turnContextBuilder.removeTransientMessages(result.messages);
 
@@ -245,11 +255,15 @@ export class AgentTurnController {
     if (process.env.XIAOBA_MEMORY_SIDECAR_ENABLED === 'false') {
       return null;
     }
+    if (!(this.options.services.aiService instanceof AIService)) {
+      return null;
+    }
     return startMemorySidecarBranch({
       sessionKey: this.options.sessionKey,
       input: options.input,
       recentMessages: options.messages,
       workingDirectory: this.options.getCurrentDirectory(),
+      aiService: this.options.services.aiService,
       queue: options.queue,
       signal: options.abortSignal,
     });
