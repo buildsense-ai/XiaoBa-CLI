@@ -1,6 +1,7 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { AgentTurnController } from '../src/core/agent-turn-controller';
+import { BRANCH_AGENTS_ENABLED_ENV } from '../src/core/branch-agent-settings';
 import { InMemorySyntheticObservationQueue, SYNTHETIC_OBSERVATION_TOOL_NAME, SyntheticObservation } from '../src/core/synthetic-observation';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { Message } from '../src/types';
@@ -46,6 +47,42 @@ class CapturingAIService {
 }
 
 describe('AgentTurnController memory branch carryover', () => {
+  test('does not start memory sidecar when the global branch switch is disabled', () => {
+    const previous = process.env[BRANCH_AGENTS_ENABLED_ENV];
+    process.env[BRANCH_AGENTS_ENABLED_ENV] = 'false';
+    try {
+      const controller = new AgentTurnController({
+        sessionKey: 'session:v2:catscompany:group:grp_test:agent:usr1',
+        sessionType: 'catscompany',
+        services: {
+          aiService: {} as any,
+          toolManager: {} as any,
+          skillManager: {} as any,
+        },
+        skillRuntime: {} as any,
+        planRuntime: undefined as any,
+        turnContextBuilder: new TurnContextBuilder(),
+        turnLogRecorder: {} as any,
+        workspaceRoot: process.cwd(),
+        getCurrentDirectory: () => process.cwd(),
+        updateCurrentDirectory: () => undefined,
+      });
+
+      const slot = (controller as any).startMemorySidecarIfEnabled({
+        turnNumber: 1,
+        input: 'hello',
+        messages: [],
+      });
+      assert.equal(slot, null);
+    } finally {
+      if (previous === undefined) {
+        delete process.env[BRANCH_AGENTS_ENABLED_ENV];
+      } else {
+        process.env[BRANCH_AGENTS_ENABLED_ENV] = previous;
+      }
+    }
+  });
+
   test('injects previous-turn memory as a legal late synthetic tool pair and expires it after one turn', async () => {
     const aiService = new CapturingAIService();
     const queues: InMemorySyntheticObservationQueue[] = [];

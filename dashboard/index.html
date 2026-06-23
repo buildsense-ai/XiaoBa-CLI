@@ -6233,6 +6233,7 @@
           promptTraceCard('Version', trace.prompt_version||'local', trace.source||'-')+
           promptTraceCard('Overrides', promptEditorState.writable?'可写':'未配置', promptEditorState.overrides_dir||'-')+
         '</div>'+
+        renderPromptBranchAgentControls()+
         '<div class="runtime-note">保存只写入本地覆盖目录，不改安装包内置 prompts。当前运行中的 connector 需要重启，已存在 session 也要新建后才会重新读取 system prompt。</div>'+
         '<div class="prompt-editor-layout">'+
           '<div class="prompt-file-list">'+(listHtml||'<div class="loading">没有可编辑的 prompt 文件</div>')+'</div>'+
@@ -6373,6 +6374,36 @@
           '</div>'+
         '</div>'+
       '</div>';
+    }
+
+    function renderPromptBranchAgentControls(){
+      const state=promptEditorState?.branch_agents||{};
+      const enabled=state.enabled!==false;
+      const badge=enabled?'<span class="tag green">enabled</span>':'<span class="tag warm">disabled</span>';
+      const buttonLabel=enabled?'关闭 Branch Agent':'启用 Branch Agent';
+      const nextValue=enabled?'false':'true';
+      return '<div class="runtime-note" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">'+
+        '<div><strong>Branch Agent</strong> '+badge+
+        '<div class="settings-meta" style="margin-top:6px">控制所有后台 branch agent。关闭后不会启动 memory/web 等并行 branch，也不会消费上一轮 carryover；当前正在运行的 turn 不会被打断。</div>'+
+        '<div class="settings-meta" id="prompt-branch-agent-status" style="margin-top:4px">'+escapeHtml(state.env_key||'XIAOBA_BRANCH_AGENTS_ENABLED')+'</div></div>'+
+        '<button class="btn '+(enabled?'':'btn-primary')+'" onclick="setBranchAgentsEnabled('+nextValue+')">'+buttonLabel+'</button>'+
+      '</div>';
+    }
+
+    async function setBranchAgentsEnabled(enabled){
+      const status=document.getElementById('prompt-branch-agent-status');
+      try{
+        if(status)status.textContent='正在保存...';
+        const data=await parseSimpleResponse(await fetch(API+'/api/prompts/branch-agents',{
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({enabled:Boolean(enabled)})
+        }));
+        promptEditorState={...(promptEditorState||{}),branch_agents:data};
+        renderPromptWorkbench({preserveFileListScroll:true,preserveEditorScroll:true});
+      }catch(e){
+        if(status)status.textContent='保存失败：'+(e.message||String(e));
+      }
     }
 
     function markPromptEditorDirty(){

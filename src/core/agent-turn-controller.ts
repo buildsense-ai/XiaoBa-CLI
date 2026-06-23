@@ -35,6 +35,7 @@ import {
   withSyntheticObservationTiming,
 } from './synthetic-observation';
 import { MemorySidecarBranchHandle, startMemorySidecarBranch } from './sidecar-memory-branch';
+import { isBranchAgentsEnabled } from './branch-agent-settings';
 
 export interface AgentTurnServices {
   aiService: AIService;
@@ -114,8 +115,13 @@ export class AgentTurnController {
 
   async run(params: RunAgentTurnParams): Promise<RunAgentTurnResult> {
     const turnNumber = ++this.turnSequence;
-    const carryoverMemoryBranch = this.memoryBranchCarryover;
+    const previousCarryoverMemoryBranch = this.memoryBranchCarryover;
+    const branchAgentsEnabled = isBranchAgentsEnabled();
+    const carryoverMemoryBranch = branchAgentsEnabled ? previousCarryoverMemoryBranch : null;
     this.memoryBranchCarryover = null;
+    if (!branchAgentsEnabled) {
+      this.expireMemoryBranch(previousCarryoverMemoryBranch, 'branch_agents_disabled');
+    }
 
     params.messages.push({
       role: 'user',
@@ -270,6 +276,9 @@ export class AgentTurnController {
     messages: Message[];
     abortSignal?: AbortSignal;
   }): MemoryBranchSlot | null {
+    if (!isBranchAgentsEnabled()) {
+      return null;
+    }
     if (process.env.XIAOBA_MEMORY_SIDECAR_ENABLED === 'false') {
       return null;
     }
