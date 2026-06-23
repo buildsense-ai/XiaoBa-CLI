@@ -57,7 +57,8 @@ export function buildTransientEnvironmentHint(
 export function resolveShellName(env: NodeJS.ProcessEnv = process.env): string {
   const raw = env.SHELL || env.ComSpec || env.COMSPEC || env.PSModulePath && 'powershell' || '';
   if (!raw) return 'unknown';
-  return path.basename(raw).replace(/\.(exe|cmd|bat)$/i, '') || raw;
+  const basename = path.posix.basename(raw.replace(/\\/g, '/'));
+  return basename.replace(/\.(exe|cmd|bat)$/i, '') || raw;
 }
 
 export function resolveGitRepositoryInfo(currentDirectory: string): GitRepositoryInfo | null {
