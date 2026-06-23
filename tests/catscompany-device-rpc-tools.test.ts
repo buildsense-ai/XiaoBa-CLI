@@ -280,7 +280,7 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.match(captured.result.error.message, /channel_identity_link/);
   });
 
-  test('executes shell Device RPC operations on the selected local device', async () => {
+  test('rejects shell Device RPC operations on the selected local device', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
 
@@ -292,9 +292,10 @@ describe('CatsCompany Device RPC file tools', () => {
     }));
 
     assert.ok(captured.result);
-    assert.equal(captured.result.error, undefined);
-    assert.equal(captured.result.result.ok, true);
-    assert.match(captured.result.result.content, /rpc-shell-ok/);
+    assert.equal(captured.result.result, undefined);
+    assert.equal(captured.result.error.code, 'unsupported_operation');
+    assert.match(captured.result.error.message, /read_file, glob, grep, write_file, and edit_file/);
+    assert.doesNotMatch(captured.result.error.message, /execute_shell/);
   });
 
   test('rejects Device RPC requests for another target device', async () => {

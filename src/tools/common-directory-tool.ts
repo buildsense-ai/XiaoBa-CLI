@@ -143,6 +143,7 @@ export class CommonDirectoryTool implements Tool {
     description: [
       '把常见用户目录名称解析为当前系统上的真实本地路径。',
       '当用户说“桌面”“下载”“文档”等自然语言目录时先用它解析，不要手猜 C:\\Users\\...\\Desktop、~/Desktop 等路径。',
+      '解析后如果要查看目录文件，请用 glob；如果要创建文件，请用 write_file。不要为了普通文件操作改用 execute_shell。',
       '只解析标准 OS 用户目录；不搜索项目目录、应用目录、浏览器下载子目录或语义目录。',
     ].join('\n'),
     parameters: {
@@ -180,6 +181,9 @@ export class CommonDirectoryTool implements Tool {
         `platform: ${result.platform}`,
         '',
         'Use this exact path as the base directory for follow-up file operations.',
+        'To list files here, call glob with this path and an appropriate pattern such as "*".',
+        'To create or overwrite a text file here, call write_file with a file_path under this path.',
+        'Do not use execute_shell for routine file listing or file creation.',
       ].join('\n'),
     };
   }
