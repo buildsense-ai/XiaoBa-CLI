@@ -10,7 +10,7 @@ import {
   MemorySearchTool,
 } from '../tools/memory-branch-tools';
 import { SyntheticObservation, SyntheticObservationQueue } from './synthetic-observation';
-import { BranchSession } from './branch-session';
+import { ObservationBranchDisposition, ObservationBranchSession } from './observation-branch-session';
 import { MemoryLogStore } from './memory-log-store';
 
 export interface MemorySearchBranchSessionOptions {
@@ -24,9 +24,8 @@ export interface MemorySearchBranchSessionOptions {
   logEnabled?: boolean;
 }
 
-export class MemorySearchBranchSession extends BranchSession {
+export class MemorySearchBranchSession extends ObservationBranchSession<MemorySearchFinishPayload> {
   private readonly store: MemoryLogStore;
-  private finishPayload: MemorySearchFinishPayload | null = null;
 
   constructor(private readonly memoryOptions: MemorySearchBranchSessionOptions) {
     super({
@@ -34,84 +33,11 @@ export class MemorySearchBranchSession extends BranchSession {
       type: 'memory',
       aiService: memoryOptions.aiService,
       workingDirectory: memoryOptions.workingDirectory,
+      queue: memoryOptions.queue,
       signal: memoryOptions.signal,
       logEnabled: memoryOptions.logEnabled,
     });
     this.store = new MemoryLogStore(memoryOptions.workingDirectory);
-  }
-
-  async run(): Promise<void> {
-    try {
-      while (this.shouldContinue() && !this.finishPayload) {
-        const outcome = await this.runConversation();
-        if (this.finishPayload || !this.shouldContinue()) break;
-
-        const strayOutput = String(outcome.result?.response || '').trim();
-        if (strayOutput) {
-          this.logger.write('stray_assistant_output', { text: strayOutput });
-        }
-        this.messages.push({
-          role: 'user',
-          content: [
-            '你刚才的回复不会传递给主 agent。',
-            '这个 branch 只能通过调用 finish_memory_search 结束。',
-            '请现在用当前已有的最佳总结和 refs 调用 finish_memory_search；如果只找到 recent context 已经覆盖的信息，或没有值得注入的信息，请设置 inject:false 并传空 refs。',
-          ].join(' '),
-        });
-      }
-
-      if (!this.finishPayload) {
-        if (!this.shouldContinue()) {
-          this.logger.write('cancelled_before_finish', {
-            message_count: this.messages.length,
-          });
-        }
-        return;
-      }
-      if (!this.shouldContinue()) {
-        this.logger.write('finished_after_cancel', {
-          inject: this.finishPayload.inject,
-          refs: this.finishPayload.refs,
-          summary: this.finishPayload.summary,
-        });
-        return;
-      }
-      if (!this.finishPayload.inject) {
-        this.logger.write('suppressed_observation', {
-          reason: 'inject_false',
-          refs: this.finishPayload.refs,
-          summary: this.finishPayload.summary,
-        });
-        return;
-      }
-      const observation = this.buildObservation(this.finishPayload);
-      const pushed = this.memoryOptions.queue.push(observation);
-      if (pushed) {
-        this.logger.write('published_observation', {
-          observation_id: observation.id,
-          refs: this.finishPayload.refs,
-          summary: this.finishPayload.summary,
-          tool_result_content: observation.formattedContent,
-        });
-      } else {
-        this.logger.write('discarded_observation', {
-          observation_id: observation.id,
-          reason: 'queue_closed_or_duplicate',
-          refs: this.finishPayload.refs,
-          summary: this.finishPayload.summary,
-          tool_result_content: observation.formattedContent,
-        });
-      }
-    } catch (error: any) {
-      if (this.isAbortError(error) || !this.shouldContinue()) {
-        this.logger.write('cancelled_before_finish', {
-          message_count: this.messages.length,
-          has_finish_payload: Boolean(this.finishPayload),
-        });
-      } else {
-        this.logFailure(error);
-      }
-    }
   }
 
   protected async buildInitialMessages(): Promise<Message[]> {
@@ -137,12 +63,33 @@ export class MemorySearchBranchSession extends BranchSession {
       new MemoryReadTurnTool(this.store),
       new MemoryNeighborsTool(this.store),
       new FinishMemorySearchTool(payload => {
-        this.finishPayload = payload;
+        this.complete(payload);
       }),
     ];
   }
 
-  private buildObservation(payload: MemorySearchFinishPayload): SyntheticObservation {
+  protected buildFinishReminderMessage(): Message {
+    return {
+      role: 'user',
+      content: [
+        '你刚才的回复不会传递给主 agent。',
+        '这个 branch 只能通过调用 finish_memory_search 结束。',
+        '请现在用当前已有的最佳总结和 refs 调用 finish_memory_search；如果只找到 recent context 已经覆盖的信息，或没有值得注入的信息，请设置 inject:false 并传空 refs。',
+      ].join(' '),
+    };
+  }
+
+  protected getObservationDisposition(payload: MemorySearchFinishPayload): ObservationBranchDisposition {
+    return {
+      inject: payload.inject,
+      logPayload: {
+        refs: payload.refs,
+        summary: payload.summary,
+      },
+    };
+  }
+
+  protected buildObservation(payload: MemorySearchFinishPayload): SyntheticObservation {
     return {
       id: `memory-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
       source: 'memory',
