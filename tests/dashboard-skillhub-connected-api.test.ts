@@ -14,6 +14,7 @@ describe('dashboard connected SkillHub API', () => {
   let testRoot: string;
   let originalCwd: string;
   let originalEnv: string | undefined;
+  let originalSkillsEnv: string | undefined;
   let dashboardServer: Server | undefined;
   let cloudServer: Server | undefined;
   let catsServer: Server | undefined;
@@ -24,8 +25,10 @@ describe('dashboard connected SkillHub API', () => {
   beforeEach(async () => {
     originalCwd = process.cwd();
     originalEnv = process.env.CATSCO_SKILLHUB_BASE_URL;
+    originalSkillsEnv = process.env.XIAOBA_SKILLS_DIR;
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dashboard-skillhub-connected-'));
     process.chdir(testRoot);
+    process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
     fs.mkdirSync(path.join(testRoot, 'skills'), { recursive: true });
   });
 
@@ -54,6 +57,8 @@ describe('dashboard connected SkillHub API', () => {
     delete process.env.CATSCO_USER_UID;
     delete process.env.CATSCO_USER_NAME;
     delete process.env.CATSCO_USER_DISPLAY_NAME;
+    if (originalSkillsEnv === undefined) delete process.env.XIAOBA_SKILLS_DIR;
+    else process.env.XIAOBA_SKILLS_DIR = originalSkillsEnv;
     CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS.splice(0);
     if (fs.existsSync(testRoot)) fs.rmSync(testRoot, { recursive: true, force: true });
   });
@@ -82,10 +87,8 @@ describe('dashboard connected SkillHub API', () => {
       websiteUrl: 'https://example.com',
       reason: '发布合同审查和文档处理类 Skill。',
     });
-    assert.equal(application.status, 201);
-    assert.equal(application.body.application.namespace, 'contract-team');
-    assert.equal(application.body.application.contact, 'dev@example.com');
-    assert.equal(application.body.application.websiteUrl, 'https://example.com');
+    assert.equal(application.status, 410);
+    assert.equal(application.body.code, 'skillhub.developer_flow_retired');
 
     const search = await get('/api/skillhub/search?q=合同');
     assert.equal(search.status, 200);
@@ -115,7 +118,7 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(fs.existsSync(path.join(install.body.skill.path, 'SKILL.md')), true);
   });
 
-  test('quick shares an installed local skill through SkillHub submissions', async () => {
+  test('quick shares an installed local skill as a regular authenticated SkillHub user', async () => {
     fs.mkdirSync(path.join(testRoot, 'skills', 'quick-demo'), { recursive: true });
     fs.writeFileSync(path.join(testRoot, 'skills', 'quick-demo', 'SKILL.md'), [
       '---',
@@ -126,6 +129,10 @@ describe('dashboard connected SkillHub API', () => {
       '# Quick Demo',
       '',
     ].join('\n'));
+    fs.writeFileSync(path.join(testRoot, 'skills', 'quick-demo', 'REVIEW.json'), '{}\n');
+    fs.writeFileSync(path.join(testRoot, 'skills', 'quick-demo', 'SBOM.json'), '{}\n');
+    fs.writeFileSync(path.join(testRoot, 'skills', 'quick-demo', '.xiaoba-bundled-skill.json'), '{}\n');
+    fs.writeFileSync(path.join(testRoot, 'skills', 'quick-demo', '.xiaoba-skillhub-install.json'), '{}\n');
 
     const fixture = createFixture();
     await startCloud(fixture);
@@ -133,7 +140,7 @@ describe('dashboard connected SkillHub API', () => {
     await startDashboard();
 
     await post('/api/skillhub/auth/login', { email: 'demo@example.com', password: 'passw0rd!!' });
-    const share = await post('/api/skillhub/developer/share-local-skill', { skillName: 'quick-demo' });
+    const share = await post('/api/skillhub/share-local-skill', { skillName: 'quick-demo' });
     assert.equal(share.status, 201);
     assert.equal(share.body.ok, true);
     assert.equal(share.body.skill.id, 'lin/quick-demo');
@@ -144,7 +151,12 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(share.body.submission.normalizedManifest.id, 'lin/quick-demo');
     assert.equal(share.body.submission.request.manifest.minAgentVersion, '0.0.0');
     assert.deepEqual(share.body.submission.request.manifest.platforms, []);
-    assert.equal(share.body.submission.request.source.files.some((file: any) => file.path === 'SKILL.md'), true);
+    const uploadedPaths = share.body.submission.request.source.files.map((file: any) => file.path);
+    assert.equal(uploadedPaths.includes('SKILL.md'), true);
+    assert.equal(uploadedPaths.includes('REVIEW.json'), false);
+    assert.equal(uploadedPaths.includes('SBOM.json'), false);
+    assert.equal(uploadedPaths.includes('.xiaoba-bundled-skill.json'), false);
+    assert.equal(uploadedPaths.includes('.xiaoba-skillhub-install.json'), false);
     const skillText = fs.readFileSync(path.join(testRoot, 'skills', 'quick-demo', 'SKILL.md'), 'utf8');
     assert.match(skillText, /skillhub_author:\s+["']?lin["']?/);
     assert.match(skillText, /skillhub_version:\s+["']?1\.0\.0["']?/);
@@ -280,7 +292,7 @@ describe('dashboard connected SkillHub API', () => {
         },
       });
     });
-    app.post('/api/developer/submissions', (req, res) => {
+    app.post('/api/skills/share', (req, res) => {
       const manifest = {
         ...req.body.manifest,
         id: `lin/${req.body.manifest.name}`,
@@ -301,6 +313,9 @@ describe('dashboard connected SkillHub API', () => {
           request: req.body,
         },
       });
+    });
+    app.post('/api/developer/submissions', (_req, res) => {
+      res.status(403).json({ error: 'developer submissions should not be used for quick share' });
     });
     app.get('/api/skills', (_req, res) => res.json({ skills: [fixture.entry] }));
     app.get('/api/trust/public-keys', (_req, res) => res.json(fixture.trust));

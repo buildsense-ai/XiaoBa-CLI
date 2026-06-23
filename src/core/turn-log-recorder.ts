@@ -1,5 +1,6 @@
 import type { ContentBlock, Message } from '../types';
 import {
+  SessionPromptTurnLog,
   SessionToolCallLog,
   SessionTurnLogger,
 } from '../utils/session-turn-logger';
@@ -20,7 +21,13 @@ export interface RecordTurnParams {
  * Converts a completed turn into the stable session JSONL schema.
  */
 export class TurnLogRecorder {
+  private prompt?: SessionPromptTurnLog;
+
   constructor(private readonly logger: SessionTurnLogger) {}
+
+  setPromptMetadata(prompt: SessionPromptTurnLog | undefined): void {
+    this.prompt = prompt;
+  }
 
   recordTurn(params: RecordTurnParams): void {
     this.logger.logTurn(
@@ -31,6 +38,7 @@ export class TurnLogRecorder {
       {
         runtimeFeedback: params.runtimeFeedback,
         runtimeObservationSource: params.runtimeObservationSource,
+        prompt: this.prompt,
       },
     );
   }

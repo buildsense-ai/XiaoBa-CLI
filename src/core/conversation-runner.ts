@@ -1,4 +1,5 @@
 import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
+import type { ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalFileGrant } from '../types/session-identity';
 import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { StreamCallbacks } from '../providers/provider';
@@ -20,7 +21,14 @@ import {
   SUBAGENT_TOOL_NAME,
   TRANSIENT_RUNNER_HINT_PREFIX,
 } from './runner-orchestration-policy';
+import {
+  TRANSIENT_RUNTIME_CONTEXT_PREFIX,
+  buildRuntimeContextMessage,
+} from './runtime-context-builder';
 import { calculateSummaryBudgetTokens, resolveModelPromptBudgetTokens } from '../utils/model-context-window';
+import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
+import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
+import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -83,12 +91,27 @@ export interface RunResult {
   newMessages: Message[];
 }
 
+export interface PendingUserInput {
+  content: string | ContentBlock[];
+  deviceGrants?: ScopedDeviceGrant[];
+  deviceSelection?: ScopedDeviceSelection;
+  localFileGrants?: ScopedLocalFileGrant[];
+}
+
 export type PendingUserInputProvider = () =>
   | string
   | ContentBlock[]
+  | PendingUserInput
   | null
   | undefined
-  | Promise<string | ContentBlock[] | null | undefined>;
+  | Promise<string | ContentBlock[] | PendingUserInput | null | undefined>;
+
+function isPendingUserInput(value: string | ContentBlock[] | PendingUserInput): value is PendingUserInput {
+  return Boolean(value)
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && 'content' in value;
+}
 
 interface ToolExecutionRecord {
   toolCall: ToolCall;
@@ -283,8 +306,33 @@ export class ConversationRunner {
         const aiDuration = Date.now() - aiStartTime;
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI推理完成，耗时: ${aiDuration}ms`);
       } catch (error: any) {
+        if (this.isMessageSurface() && isModelImageSafetyError(error)) {
+          if (this.toolExecutionContext?.channel && this.toolExecutionContext?.surface !== 'catscompany') {
+            try {
+              await this.toolExecutionContext.channel.reply(
+                this.toolExecutionContext.channel.chatId,
+                MODEL_IMAGE_SAFETY_MESSAGE,
+              );
+            } catch (err: any) {
+              Logger.error(`[${this.sessionLabel}Turn ${turns}] 图片安全提示发送失败: ${err.message}`);
+            }
+          }
+          const assistantMessage: Message = {
+            role: 'assistant',
+            content: MODEL_IMAGE_SAFETY_MESSAGE,
+          };
+          messages.push(assistantMessage);
+          newMessages.push(assistantMessage);
+          Logger.warning(`[${this.sessionLabel}Turn ${turns}] 图片被模型安全策略拒绝，已发送可见收束提示: ${formatProviderErrorForLog(error)}`);
+          return {
+            response: MODEL_IMAGE_SAFETY_MESSAGE,
+            finalResponseVisible: true,
+            messages,
+            newMessages,
+          };
+        }
         if (hasDeliveredMessageOutThisRun && this.isMessageSurface()) {
-          Logger.warning(`[${this.sessionLabel}Turn ${turns}] 已有外发消息送达，后续推理失败后直接收束: ${error.message}`);
+          Logger.warning(`[${this.sessionLabel}Turn ${turns}] 已有外发消息送达，后续推理失败后直接收束: ${formatProviderErrorForLog(error)}`);
           return {
             response: '',
             finalResponseVisible: false,
@@ -499,19 +547,81 @@ export class ConversationRunner {
     const pending = await this.pendingUserInputProvider();
     if (!pending) return false;
 
-    const userMessage: Message = { role: 'user', content: pending };
+    const content = isPendingUserInput(pending) ? pending.content : pending;
+    let shouldRefreshRuntimeContext = false;
+    if (isPendingUserInput(pending) && pending.deviceGrants?.length) {
+      this.toolExecutionContext = {
+        ...(this.toolExecutionContext || {}),
+        deviceGrants: [
+          ...(this.toolExecutionContext?.deviceGrants || []),
+          ...pending.deviceGrants,
+        ],
+      };
+      shouldRefreshRuntimeContext = true;
+    }
+    if (isPendingUserInput(pending) && pending.deviceSelection) {
+      this.toolExecutionContext = {
+        ...(this.toolExecutionContext || {}),
+        deviceSelection: pending.deviceSelection,
+      };
+      shouldRefreshRuntimeContext = true;
+    }
+    if (isPendingUserInput(pending) && pending.localFileGrants?.length) {
+      this.toolExecutionContext = {
+        ...(this.toolExecutionContext || {}),
+        localFileGrants: [
+          ...(this.toolExecutionContext?.localFileGrants || []),
+          ...pending.localFileGrants,
+        ],
+      };
+      shouldRefreshRuntimeContext = true;
+    }
+    if (shouldRefreshRuntimeContext) {
+      this.refreshRuntimeContextForPendingInput(messages);
+    }
+
+    const userMessage: Message = { role: 'user', content };
     messages.push(userMessage);
     newMessages.push(userMessage);
 
-    const preview = typeof pending === 'string'
-      ? pending
-      : pending.map(block => block.type === 'text' ? block.text : '[image]').join('');
+    const preview = typeof content === 'string'
+      ? content
+      : content.map(block => block.type === 'text' ? block.text : '[image]').join('');
     Logger.info(
       `[${this.sessionLabel}Turn ${turns}] 已合并处理期间新到的用户消息: ` +
       ConversationRunner.truncateForLog(preview, 240)
     );
 
     return true;
+  }
+
+  private refreshRuntimeContextForPendingInput(messages: Message[]): void {
+    const sessionKey = this.toolExecutionContext?.sessionId
+      || this.toolExecutionContext?.executionScope?.sessionKey;
+    if (!sessionKey) return;
+
+    const runtimeContext = buildRuntimeContextMessage({
+      sessionKey,
+      sessionType: this.toolExecutionContext?.surface,
+      executionScope: this.toolExecutionContext?.executionScope,
+      localDeviceGrant: this.toolExecutionContext?.localDeviceGrant,
+      deviceGrants: this.toolExecutionContext?.deviceGrants,
+      deviceSelection: this.toolExecutionContext?.deviceSelection,
+      localFileGrants: this.toolExecutionContext?.localFileGrants,
+    });
+    if (!runtimeContext) return;
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (
+        message.role === 'system'
+        && typeof message.content === 'string'
+        && message.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX)
+      ) {
+        messages.splice(i, 1);
+      }
+    }
+    messages.push(runtimeContext);
   }
 
   /**
@@ -774,9 +884,7 @@ export class ConversationRunner {
       role: 'user',
       content: [
         TRANSIENT_CURRENT_DIRECTORY_PREFIX,
-        'Runtime context only. Not a user request. Do not answer.',
-        `cwd: ${currentDirectory}`,
-        'Use only for relative file paths.',
+        renderRequiredDefaultPromptFile('transient/current-directory.md', { currentDirectory }),
       ].join('\n'),
       __injected: true,
     };
@@ -863,7 +971,7 @@ export class ConversationRunner {
   private buildDuplicateOutboundHint(content: string): Message {
     return {
       role: 'system',
-      content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n你刚刚连续发送了与上一条相同的内容：“${content}”。如果这是用户真正需要的重复确认，可以继续；否则请避免无意义重复，必要时调用 pause_turn 收束。`,
+      content: `${TRANSIENT_RUNNER_HINT_PREFIX}\n${renderRequiredDefaultPromptFile('transient/runner-duplicate-outbound.md', { content })}`,
     };
   }
 
@@ -880,8 +988,7 @@ export class ConversationRunner {
       role: 'system',
       content: [
         TRANSIENT_RUNNER_HINT_PREFIX,
-        '上一轮模型响应因为输出 max_tokens 上限被截断，而且没有生成可见文本或工具调用。',
-        '不要继续展开隐藏推理。请立即二选一：调用下一步必要工具，或输出简短可见回复说明当前进展和下一步。',
+        renderRequiredDefaultPromptFile('transient/runner-empty-max-tokens.md', {}),
       ].join('\n'),
     };
   }

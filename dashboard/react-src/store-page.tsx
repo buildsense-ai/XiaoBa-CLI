@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 type AnyRecord = Record<string, any>;
@@ -28,16 +28,10 @@ type SkillHubAccountPayload = {
   loading?: boolean;
 };
 
-type SkillHubManifestPreviewPayload = {
-  text?: string;
-  tone?: string;
-};
-
 type StorePageState = {
   accountPayload?: SkillHubAccountPayload;
   developerData?: AnyRecord;
   localSkillStorePayload?: LocalSkillStorePayload;
-  manifestPreview: SkillHubManifestPreviewPayload;
   registryPayload?: SkillHubRegistryPayload;
   storeDraft: Record<string, string>;
 };
@@ -49,11 +43,8 @@ declare global {
     __catscoRenderLocalSkillStore?: (payload: LocalSkillStorePayload) => void;
     __catscoRenderSkillHubAccount?: (payload: SkillHubAccountPayload) => void;
     __catscoRenderSkillHubDeveloper?: (payload: AnyRecord) => void;
-    __catscoRenderSkillHubManifestPreview?: (payload: SkillHubManifestPreviewPayload) => void;
     __catscoSetStoreDraft?: (payload: Record<string, string>) => void;
-    applySkillHubDeveloper?: () => void;
     connectSkillHubWithCatsCo?: () => void;
-    createSkillHubManifestDraft?: () => void;
     deleteSkill?: (name: string) => void;
     fetchSkillHubDeveloper?: () => void;
     installSkillHubSkill?: (skillId: string, version?: string) => void;
@@ -64,7 +55,6 @@ declare global {
     searchSkillHub?: (queryOverride?: string, quiet?: boolean) => void;
     shareLocalSkillToSkillHub?: (name: string) => void;
     showSkillHubVersions?: (skillId: string) => void;
-    submitSkillHubReview?: () => void;
     toggleSkill?: (name: string, enabled: boolean) => void;
     yankOwnSkillHubVersion?: (packageVersionId: string) => void;
   }
@@ -73,7 +63,6 @@ declare global {
 let storePageRoot: Root | undefined;
 let storePageElement: HTMLElement | undefined;
 let storePageState: StorePageState = {
-  manifestPreview: { text: '尚未生成 manifest。' },
   storeDraft: {
     'skillhub-permissions': 'filesystem.read.user_selected',
     'skillhub-version': '1.0.0',
@@ -117,11 +106,6 @@ function storeDraftFieldProps(id: string, fallback = '') {
 
 function StorePage({ state }: { state: StorePageState }) {
   const developerData = state.developerData;
-  const roles = asList(developerData?.roles).map(item => toText(item)).filter(Boolean);
-  const authenticated = Boolean(developerData?.authenticated);
-  const developer = roles.includes('developer');
-  const manifestTone = state.manifestPreview.tone || '';
-  const manifestColor = manifestTone === 'error' ? 'var(--red)' : manifestTone === 'success' ? 'var(--green)' : 'var(--text2)';
 
   return (
     <>
@@ -133,11 +117,11 @@ function StorePage({ state }: { state: StorePageState }) {
               Skills
             </div>
             <div className="settings-meta">
-              公开 Skill 无需登录即可搜索和安装；登录后可分享本地 Skill 并管理已发布版本。
+              ?? Skill ???????????????????? Skill ?????????
             </div>
           </div>
           <button className="btn" type="button" onClick={() => window.refreshSkillHubPage?.()}>
-            刷新
+            ??
           </button>
         </div>
 
@@ -146,13 +130,13 @@ function StorePage({ state }: { state: StorePageState }) {
             className="config-input"
             id="skillhub-search-input"
             {...storeDraftFieldProps('skillhub-search-input')}
-            placeholder="搜索合同审查、PPT、工程量清单..."
+            placeholder="???????PPT??????..."
             onKeyDown={event => {
               if (event.key === 'Enter') window.searchSkillHub?.();
             }}
           />
           <button className="btn btn-primary" type="button" onClick={() => window.searchSkillHub?.()}>
-            搜索
+            ??
           </button>
           <button
             className="btn"
@@ -162,13 +146,13 @@ function StorePage({ state }: { state: StorePageState }) {
               window.searchSkillHub?.('', true);
             }}
           >
-            清空
+            ??
           </button>
         </div>
 
         <details className="config-section" open>
           <summary className="settings-advanced-summary">
-            <span>发现技能</span>
+            <span>????</span>
             <span className="tag">cloud registry</span>
           </summary>
           <div className="settings-advanced-body">
@@ -176,7 +160,7 @@ function StorePage({ state }: { state: StorePageState }) {
               {state.registryPayload ? (
                 <SkillHubRegistryGrid {...state.registryPayload} />
               ) : (
-                <div className="loading">搜索云端已审核 Skill。</div>
+                <div className="loading">??????? Skill?</div>
               )}
             </div>
           </div>
@@ -184,7 +168,7 @@ function StorePage({ state }: { state: StorePageState }) {
 
         <details className="config-section" open>
           <summary className="settings-advanced-summary">
-            <span>已安装技能</span>
+            <span>?????</span>
             <span className="tag">local</span>
           </summary>
           <div className="settings-advanced-body">
@@ -192,166 +176,37 @@ function StorePage({ state }: { state: StorePageState }) {
               {state.localSkillStorePayload ? (
                 <LocalSkillGrid {...state.localSkillStorePayload} />
               ) : (
-                <div className="loading">加载中...</div>
+                <div className="loading">???...</div>
               )}
             </div>
           </div>
         </details>
       </div>
 
-      <div className="settings-header" style={{ marginTop: 28 }}>
-        <div className="settings-heading">
-          <div className="settings-kicker">SkillHub Developer</div>
-          <div className="section-title" style={{ marginBottom: 0 }}>
-            发布管理
-          </div>
-          <div className="settings-meta">
-            登录 SkillHub 后可申请开发者权限、提交 Skill、管理自己的已发布版本。
-          </div>
-        </div>
-        <button className="btn" type="button" onClick={() => window.fetchSkillHubDeveloper?.()}>
-          刷新
-        </button>
-      </div>
-
       <div className="config-section" data-react-skillhub-account="mounted" id="skillhub-account-card">
         {state.accountPayload ? (
           <SkillHubAccountCard {...state.accountPayload} />
         ) : (
-          <div className="loading">正在检查 SkillHub 登录状态...</div>
+          <div className="loading">???? SkillHub ????...</div>
         )}
       </div>
 
-      <div className="config-section" data-react-skillhub-developer-status="mounted" id="skillhub-developer-status">
-        {developerData ? <SkillHubDeveloperStatus data={developerData} /> : <div className="loading">正在读取开发者状态...</div>}
-      </div>
-
-      <div
-        className="config-section"
-        id="skillhub-developer-apply"
-        style={{ display: developerData && authenticated && !developer ? 'block' : 'none' }}
-      >
-        <div className="config-group-title-main">申请成为开发者</div>
-        <div className="settings-meta" style={{ marginBottom: 14 }}>
-          普通账号申请通过后，云端会给账号增加 developer 角色。
-        </div>
-        <div className="chat-form-row" style={{ marginBottom: 10 }}>
-          <input className="config-input" id="skillhub-apply-name" {...storeDraftFieldProps('skillhub-apply-name')} placeholder="开发者显示名称" />
-          <input className="config-input" id="skillhub-apply-namespace" {...storeDraftFieldProps('skillhub-apply-namespace')} placeholder="命名空间，例如 contract-team" />
-        </div>
-        <div className="chat-form-row" style={{ marginBottom: 10 }}>
-          <input className="config-input" id="skillhub-apply-contact" {...storeDraftFieldProps('skillhub-apply-contact')} placeholder="联系邮箱 / 微信 / 电话" />
-          <input className="config-input" id="skillhub-apply-homepage" {...storeDraftFieldProps('skillhub-apply-homepage')} placeholder="主页或组织链接（可选）" />
-        </div>
-        <textarea
-          className="config-input"
-          id="skillhub-apply-reason"
-          {...storeDraftFieldProps('skillhub-apply-reason')}
-          rows={3}
-          placeholder="简单说明你要发布哪些类型的 Skill"
-        />
-        <div className="config-actions" style={{ marginTop: 12 }}>
-          <button className="btn btn-primary" type="button" onClick={() => window.applySkillHubDeveloper?.()}>
-            提交申请
-          </button>
-        </div>
-      </div>
-
-      <div className="config-section" id="skillhub-developer-console" style={{ display: developer ? 'block' : 'none' }}>
-        <div className="config-group-title-main">提交 Skill 审核</div>
-        <div className="settings-meta" style={{ marginBottom: 14 }}>
-          选择本地 Skill 文件夹，填写基本信息；Agent 会读取文件、生成 manifest 草稿并提交云端扫描审核。
-        </div>
-        <div className="settings-step-grid">
-          <label>
-            <span className="wizard-label">本地 Skill 文件夹</span>
-            <input className="config-input" id="skillhub-local-path" {...storeDraftFieldProps('skillhub-local-path')} placeholder={String.raw`例如 E:\skills\contract-review`} />
-          </label>
-          <label>
-            <span className="wizard-label">版本</span>
-            <input className="config-input" id="skillhub-version" {...storeDraftFieldProps('skillhub-version', '1.0.0')} />
-          </label>
-          <label>
-            <span className="wizard-label">Skill 名称</span>
-            <input className="config-input" id="skillhub-name" {...storeDraftFieldProps('skillhub-name')} placeholder="合同审查助手" />
-          </label>
-          <label>
-            <span className="wizard-label">分类</span>
-            <input className="config-input" id="skillhub-category" {...storeDraftFieldProps('skillhub-category')} placeholder="法务 / 办公 / 工程造价" />
-          </label>
-          <label style={{ gridColumn: '1/-1' }}>
-            <span className="wizard-label">简介</span>
-            <input className="config-input" id="skillhub-description" {...storeDraftFieldProps('skillhub-description')} placeholder="说明这个 Skill 解决什么问题" />
-          </label>
-          <label style={{ gridColumn: '1/-1' }}>
-            <span className="wizard-label">关键词</span>
-            <input className="config-input" id="skillhub-keywords" {...storeDraftFieldProps('skillhub-keywords')} placeholder="合同审查，采购合同，条款风险" />
-          </label>
-          <label style={{ gridColumn: '1/-1' }}>
-            <span className="wizard-label">触发示例</span>
-            <textarea
-              className="config-input"
-              id="skillhub-triggers"
-              {...storeDraftFieldProps('skillhub-triggers')}
-              rows={3}
-              placeholder={'帮我审查这份采购合同\n找出合同里的付款风险\n检查协议条款是否合理'}
-            />
-          </label>
-          <label>
-            <span className="wizard-label">权限</span>
-            <input className="config-input" id="skillhub-permissions" {...storeDraftFieldProps('skillhub-permissions', 'filesystem.read.user_selected')} />
-          </label>
-          <label>
-            <span className="wizard-label">仓库链接（可选）</span>
-            <input className="config-input" id="skillhub-repository-url" {...storeDraftFieldProps('skillhub-repository-url')} placeholder="https://github.com/org/repo" />
-          </label>
-        </div>
-        <div className="config-actions" style={{ marginTop: 14 }}>
-          <button className="btn" type="button" onClick={() => window.createSkillHubManifestDraft?.()}>
-            生成 skill.json 草稿
-          </button>
-          <button className="btn btn-primary" type="button" onClick={() => window.submitSkillHubReview?.()}>
-            提交审核
-          </button>
-        </div>
-        <pre
-          className="manifest-preview"
-          data-react-skillhub-manifest-preview="mounted"
-          id="skillhub-manifest-preview"
-          style={{ color: manifestColor, marginTop: 14 }}
-        >
-          {state.manifestPreview.text || '尚未生成 manifest。'}
-        </pre>
-      </div>
-
       <div className="config-section">
-        <div className="config-group-title-main">我的提交</div>
-        <div className="portal-list" data-react-skillhub-submissions="mounted" id="skillhub-submissions-list">
-          {developerData ? (
-            <SkillHubSubmissionsList submissions={developerData.submissions || []} />
-          ) : (
-            <div className="loading">暂无数据</div>
-          )}
-        </div>
-      </div>
-
-      <div className="config-section">
-        <div className="config-group-title-main">My Published Versions</div>
+        <div className="config-group-title-main">????</div>
         <div className="settings-meta" style={{ marginBottom: 14 }}>
-          Published SkillHub versions can be managed here. Public users can install any published version.
+          ?????? SkillHub ? Skill ?????????????????????????????
         </div>
         <div className="portal-list" data-react-skillhub-package-versions="mounted" id="skillhub-package-versions-list">
           {developerData ? (
             <SkillHubPackageVersionsList versions={developerData.packageVersions || []} />
           ) : (
-            <div className="loading">No published versions</div>
+            <div className="loading">??????</div>
           )}
         </div>
       </div>
     </>
   );
 }
-
 function roleList(value: unknown) {
   const roles = asList(value).map(item => toText(item)).filter(Boolean);
   return roles.length ? roles.join(', ') : 'user';
@@ -374,7 +229,7 @@ function SkillHubAccountCard({ skillHubState = {}, message, tone, loading = fals
           <div>
             <div className="settings-setup-title">Signed in to SkillHub</div>
             <div className="settings-setup-copy">
-              {toText(user.displayName, toText(user.email, 'CatsCo user'))} · {roles}
+              {toText(user.displayName, toText(user.email, 'CatsCo user'))} 路 {roles}
             </div>
           </div>
           <span className="tag green">connected</span>
@@ -437,61 +292,6 @@ function SkillHubAccountCard({ skillHubState = {}, message, tone, loading = fals
   );
 }
 
-function SkillHubDeveloperStatus({ data }: { data: AnyRecord }) {
-  if (data.loading) {
-    return <div className="loading">{toText(data.message, 'Loading developer status...')}</div>;
-  }
-  if (data.message) {
-    return <RuntimeNotice message={toText(data.message)} tone={toText(data.tone)} />;
-  }
-  const roles = asList(data.roles).map(item => toText(item)).filter(Boolean);
-  const authenticated = Boolean(data.authenticated);
-  const developer = roles.includes('developer');
-  const user = toRecord(data.user) || {};
-  if (!authenticated) {
-    return (
-      <div className="runtime-note warning">
-        Sign in to SkillHub on this page before applying for developer access.
-      </div>
-    );
-  }
-  return (
-    <div className="settings-setup-head">
-      <div>
-        <div className="settings-setup-title">
-          {developer ? 'Developer access enabled' : 'Current account is not a developer'}
-        </div>
-        <div className="settings-setup-copy">
-          {toText(user.displayName, toText(user.email, 'CatsCo user'))} · {roleList(roles)}
-        </div>
-      </div>
-      <span className={`tag ${developer ? 'green' : 'warm'}`}>{developer ? 'developer' : 'user'}</span>
-    </div>
-  );
-}
-
-function SkillHubSubmissionsList({ submissions = [] }: { submissions?: AnyRecord[] }) {
-  if (!submissions.length) {
-    return <div className="loading">No submissions</div>;
-  }
-  return (
-    <>
-      {submissions.map((item, index) => {
-        const manifest = toRecord(item.normalizedManifest) || toRecord(item.manifest) || {};
-        const title = toText(manifest.displayName, toText(manifest.name, toText(item.id, 'Submission')));
-        return (
-          <div className="portal-row" key={`${toText(item.id, title)}-${index}`}>
-            <strong>{title}</strong>
-            <div className="settings-meta">
-              {toText(item.status, '-')} · {toText(manifest.version)}
-            </div>
-          </div>
-        );
-      })}
-    </>
-  );
-}
-
 function SkillHubPackageVersionsList({ versions = [] }: { versions?: AnyRecord[] }) {
   if (!versions.length) {
     return <div className="loading">No published versions</div>;
@@ -507,11 +307,11 @@ function SkillHubPackageVersionsList({ versions = [] }: { versions?: AnyRecord[]
           <div className="portal-row" key={`${toText(item.skillId, toText(item.name, 'version'))}-${index}`}>
             <strong>{toText(item.skillId, toText(item.name, '-'))}</strong>
             <div className="settings-meta">
-              v{toText(item.latestVersion, toText(item.version, '-'))} · {status} · downloads {downloads}
-              {item.publishedAt ? ` · ${toText(item.publishedAt)}` : ''}
+              v{toText(item.latestVersion, toText(item.version, '-'))} 路 {status} 路 downloads {downloads}
+              {item.publishedAt ? ` 路 ${toText(item.publishedAt)}` : ''}
             </div>
             <div className="settings-meta">
-              {author ? `by ${author}` : ''} · owner managed
+              {author ? `by ${author}` : ''} 路 owner managed
             </div>
             {status === 'published' && packageVersionId ? (
               <div className="config-actions" style={{ marginTop: 8 }}>
@@ -803,11 +603,6 @@ function renderSkillHubDeveloperPanel(data: AnyRecord) {
   renderStorePage();
 }
 
-function renderSkillHubManifestPreview({ text = '', tone = '' }: SkillHubManifestPreviewPayload) {
-  storePageState = { ...storePageState, manifestPreview: { text, tone } };
-  renderStorePage();
-}
-
 function getStoreDraft() {
   return { ...storePageState.storeDraft };
 }
@@ -829,7 +624,6 @@ if (typeof window !== 'undefined') {
   window.__catscoRenderLocalSkillStore = renderLocalSkillStoreGrid;
   window.__catscoRenderSkillHubAccount = renderSkillHubAccountCard;
   window.__catscoRenderSkillHubDeveloper = renderSkillHubDeveloperPanel;
-  window.__catscoRenderSkillHubManifestPreview = renderSkillHubManifestPreview;
   window.__catscoSetStoreDraft = setStoreDraft;
 }
 

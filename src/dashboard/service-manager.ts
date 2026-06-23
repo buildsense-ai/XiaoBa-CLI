@@ -223,7 +223,7 @@ export class ServiceManager extends EventEmitter {
   start(name: string): ServiceInfo {
     const svc = this.services.get(name);
     if (!svc) throw new Error(`Service "${name}" not found`);
-    if (svc.info.status === 'running') throw new Error(`Service "${name}" is already running`);
+    if (svc.info.status === 'running') return this.getService(name)!;
 
     // cwd 统一用 process.cwd()，Electron 主进程已 chdir 到 userData 目录
     // 这样子进程创建的 skill 文件和 Dashboard 读取的在同一个目录
@@ -393,7 +393,18 @@ export class ServiceManager extends EventEmitter {
     if (svc.info.status === 'running' && svc.process) {
       // 先停再启，等进程退出后启动
       svc.process.once('exit', () => {
-        const restartTimer = setTimeout(() => this.start(name), 500);
+        const restartTimer = setTimeout(() => {
+          try {
+            this.start(name);
+          } catch (error) {
+            const current = this.services.get(name);
+            if (current) {
+              current.info.status = 'error';
+              current.info.lastError = error instanceof Error ? error.message : String(error);
+            }
+            this.emit('service-error', name, error);
+          }
+        }, 500);
         restartTimer.unref?.();
       });
       svc.expectedExit = 'restart';

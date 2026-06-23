@@ -14,6 +14,7 @@ describe('PromptComposer', () => {
 
   beforeEach(() => {
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-prompt-composer-'));
+    writePrompt('runtime-context.md', DEFAULT_RUNTIME_CONTEXT_PROMPT);
   });
 
   afterEach(() => {
@@ -27,7 +28,6 @@ describe('PromptComposer', () => {
 
     const prompt = PromptComposer.composeSystemPrompt({
       promptsDir: testRoot,
-      defaultSystemPrompt: 'Fallback prompt',
       env: {
         CURRENT_AGENT_DISPLAY_NAME: 'Desk Bot',
         CURRENT_PLATFORM: 'feishu',
@@ -41,10 +41,10 @@ describe('PromptComposer', () => {
         '你在这个平台上的名字是：Desk Bot',
         '当前平台：feishu',
         '当前日期：2026-05-01',
-        'Current directory is provided in a transient message for each model request. Use that current directory for relative file and shell paths.',
-        'If the user asks you to inspect a project, repository, or source code, treat the current directory as the likely project root first.',
-        'Do not mistake Electron userData, AppData, logs, or cache directories for the source repository unless the user explicitly asks about those runtime files.',
-        'If the current directory does not appear to contain the requested product or service, do a small path check or ask for the correct repository instead of repeatedly scanning the wrong directory.',
+        '当前目录会在每次模型请求中作为临时上下文消息提供。相对文件路径和 shell 路径默认以该当前目录为准。',
+        '如果用户要求检查项目、仓库或源码，先把当前目录视为最可能的项目根目录。',
+        '不要把 Electron userData、AppData、日志目录或缓存目录误认为源码仓库，除非用户明确要求查看这些运行时文件。',
+        '如果当前目录不像用户要求的产品或服务，先做小范围路径检查，或询问正确仓库位置。',
       ].join('\n'),
     ].join('\n\n'));
   });
@@ -55,7 +55,6 @@ describe('PromptComposer', () => {
 
     const prompt = PromptComposer.composeSystemPrompt({
       promptsDir: testRoot,
-      defaultSystemPrompt: 'Fallback prompt',
       env: {},
       now: new Date('2026-05-01T12:00:00.000Z'),
     });
@@ -64,41 +63,31 @@ describe('PromptComposer', () => {
       'Base prompt',
       [
         '当前日期：2026-05-01',
-        'Current directory is provided in a transient message for each model request. Use that current directory for relative file and shell paths.',
-        'If the user asks you to inspect a project, repository, or source code, treat the current directory as the likely project root first.',
-        'Do not mistake Electron userData, AppData, logs, or cache directories for the source repository unless the user explicitly asks about those runtime files.',
-        'If the current directory does not appear to contain the requested product or service, do a small path check or ask for the correct repository instead of repeatedly scanning the wrong directory.',
+        '当前目录会在每次模型请求中作为临时上下文消息提供。相对文件路径和 shell 路径默认以该当前目录为准。',
+        '如果用户要求检查项目、仓库或源码，先把当前目录视为最可能的项目根目录。',
+        '不要把 Electron userData、AppData、日志目录或缓存目录误认为源码仓库，除非用户明确要求查看这些运行时文件。',
+        '如果当前目录不像用户要求的产品或服务，先做小范围路径检查，或询问正确仓库位置。',
       ].join('\n'),
     ].join('\n\n'));
     assert.doesNotMatch(prompt, /Legacy behavior prompt/);
   });
 
-  test('falls back to default system prompt when system prompt file is missing', () => {
-    const prompt = PromptComposer.composeSystemPrompt({
-      promptsDir: testRoot,
-      defaultSystemPrompt: 'Fallback prompt',
-      env: {},
-      now: new Date('2026-05-01T12:00:00.000Z'),
-    });
-
-    assert.match(prompt, /^Fallback prompt\n\n当前日期：2026-05-01/);
+  test('throws when required system prompt file is missing', () => {
+    assert.throws(
+      () => PromptComposer.composeSystemPrompt({
+        promptsDir: testRoot,
+        env: {},
+        now: new Date('2026-05-01T12:00:00.000Z'),
+      }),
+      /Required prompt file is missing or unreadable: system-prompt\.md/,
+    );
   });
 
-  test('PromptManager fallback default prompt is not hardcoded to XiaoBa identity', () => {
-    delete require.cache[require.resolve('../src/utils/prompt-manager')];
-    const { PromptManager } = require('../src/utils/prompt-manager');
-    const fallbackPrompt = PromptManager.getDefaultSystemPrompt();
-
-    assert.match(fallbackPrompt, /你是用户的私人助理/);
-    assert.doesNotMatch(fallbackPrompt, /你是小八/);
-  });
-
-  test('keeps current env whitespace behavior', () => {
+  test('trims platform and blank display name whitespace', () => {
     writePrompt('system-prompt.md', 'Base prompt');
 
     const blankDisplayNamePrompt = PromptComposer.composeSystemPrompt({
       promptsDir: testRoot,
-      defaultSystemPrompt: 'Fallback prompt',
       env: {
         CURRENT_AGENT_DISPLAY_NAME: '   ',
         BOT_BRIDGE_NAME: 'Bridge Bot',
@@ -108,9 +97,9 @@ describe('PromptComposer', () => {
     });
 
     assert.doesNotMatch(blankDisplayNamePrompt, /你在这个平台上的名字是/);
-    assert.match(blankDisplayNamePrompt, /当前平台： feishu /);
-    assert.match(blankDisplayNamePrompt, /Current directory is provided in a transient message/);
-    assert.match(blankDisplayNamePrompt, /Do not mistake Electron userData/);
+    assert.match(blankDisplayNamePrompt, /当前平台：feishu/);
+    assert.match(blankDisplayNamePrompt, /当前目录会在每次模型请求中作为临时上下文消息提供/);
+    assert.match(blankDisplayNamePrompt, /Electron userData/);
   });
 
   test('PromptManager delegates to PromptComposer without changing output', async () => {
@@ -133,7 +122,6 @@ describe('PromptComposer', () => {
 
       const composerPrompt = PromptComposer.composeSystemPrompt({
         promptsDir: testRoot,
-        defaultSystemPrompt: (PromptManager as any).getDefaultSystemPrompt(),
         env: process.env,
         now: new Date(`${dateMatch[1]}T12:00:00.000Z`),
       });
@@ -160,15 +148,14 @@ describe('PromptComposer', () => {
 
     const prompt = PromptComposer.composeSystemPromptFromProfile({
       promptsDir: testRoot,
-      defaultSystemPrompt: 'Fallback prompt',
       profile,
       now,
     });
 
     assert.match(prompt, /你在这个平台上的名字是：Desk Bot/);
     assert.match(prompt, /当前平台：feishu/);
-    assert.match(prompt, /Current directory is provided in a transient message/);
-    assert.match(prompt, /likely project root first/);
+    assert.match(prompt, /当前目录会在每次模型请求中作为临时上下文消息提供/);
+    assert.match(prompt, /最可能的项目根目录/);
     assert.doesNotMatch(prompt.replace(/\\/g, '/'), /\/tmp\/xiaoba-runtime-profile/);
   });
 
@@ -178,7 +165,6 @@ describe('PromptComposer', () => {
 
     const prompt = PromptComposer.composeSystemPrompt({
       promptsDir: testRoot,
-      defaultSystemPrompt: 'Fallback prompt',
       env: {},
       now,
     });
@@ -187,15 +173,15 @@ describe('PromptComposer', () => {
       'Base prompt',
       [
         '当前日期：2026-05-01',
-        'Current directory is provided in a transient message for each model request. Use that current directory for relative file and shell paths.',
-        'If the user asks you to inspect a project, repository, or source code, treat the current directory as the likely project root first.',
-        'Do not mistake Electron userData, AppData, logs, or cache directories for the source repository unless the user explicitly asks about those runtime files.',
-        'If the current directory does not appear to contain the requested product or service, do a small path check or ask for the correct repository instead of repeatedly scanning the wrong directory.',
+        '当前目录会在每次模型请求中作为临时上下文消息提供。相对文件路径和 shell 路径默认以该当前目录为准。',
+        '如果用户要求检查项目、仓库或源码，先把当前目录视为最可能的项目根目录。',
+        '不要把 Electron userData、AppData、日志目录或缓存目录误认为源码仓库，除非用户明确要求查看这些运行时文件。',
+        '如果当前目录不像用户要求的产品或服务，先做小范围路径检查，或询问正确仓库位置。',
       ].join('\n'),
     ].join('\n\n'));
   });
 
-  test('profile-aware composition trims displayName but keeps platform whitespace', () => {
+  test('profile-aware composition trims displayName and platform whitespace', () => {
     writePrompt('system-prompt.md', 'Base prompt');
     const profile = resolveDefaultRuntimeProfile({
       displayName: 'Top Level Name',
@@ -208,15 +194,14 @@ describe('PromptComposer', () => {
 
     const prompt = PromptComposer.composeSystemPromptFromProfile({
       promptsDir: testRoot,
-      defaultSystemPrompt: 'Fallback prompt',
       profile,
       now: new Date('2026-05-01T12:00:00.000Z'),
     });
 
     assert.match(prompt, /你在这个平台上的名字是：Desk Bot/);
-    assert.match(prompt, /当前平台： feishu /);
-    assert.match(prompt, /Current directory is provided in a transient message/);
-    assert.match(prompt, /logs, or cache directories/);
+    assert.match(prompt, /当前平台：feishu/);
+    assert.match(prompt, /当前目录会在每次模型请求中作为临时上下文消息提供/);
+    assert.match(prompt, /日志目录或缓存目录/);
     assert.doesNotMatch(prompt.replace(/\\/g, '/'), /\/tmp\/xiaoba-runtime-profile/);
   });
 
@@ -224,3 +209,12 @@ describe('PromptComposer', () => {
     fs.writeFileSync(path.join(testRoot, filename), content, 'utf-8');
   }
 });
+
+const DEFAULT_RUNTIME_CONTEXT_PROMPT = `{{#displayName}}你在这个平台上的名字是：{{displayName}}
+{{/displayName}}{{#platform}}当前平台：{{platform}}
+{{/platform}}当前日期：{{date}}
+当前目录会在每次模型请求中作为临时上下文消息提供。相对文件路径和 shell 路径默认以该当前目录为准。
+如果用户要求检查项目、仓库或源码，先把当前目录视为最可能的项目根目录。
+不要把 Electron userData、AppData、日志目录或缓存目录误认为源码仓库，除非用户明确要求查看这些运行时文件。
+如果当前目录不像用户要求的产品或服务，先做小范围路径检查，或询问正确仓库位置。
+`;

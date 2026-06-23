@@ -1,10 +1,28 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import * as path from 'path';
 import { ConversationRunner } from '../src/core/conversation-runner';
+import { TRANSIENT_RUNTIME_CONTEXT_PREFIX } from '../src/core/runtime-context-builder';
 import { Message } from '../src/types';
-import { ToolCall, ToolDefinition, ToolExecutor, ToolResult } from '../src/types/tool';
+import type { ExecutionScope, ScopedDeviceGrant, ScopedLocalFileGrant } from '../src/types/session-identity';
+import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult } from '../src/types/tool';
 
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
+
+function scope(): ExecutionScope {
+  return {
+    source: 'catscompany',
+    sessionKey: 'cc_user:usr7',
+    topicId: 'p2p_7_43',
+    topicType: 'p2p',
+    actorUserId: 'usr7',
+    agentId: 'usr43',
+    agentBodyId: 'body-main',
+    permissionsSource: 'metadata.catsco_identity',
+    identityTrust: 'server_canonical',
+    isTrusted: true,
+  };
+}
 
 function createNoopToolExecutor(): ToolExecutor {
   const noopTool: ToolDefinition = {
@@ -22,6 +40,57 @@ function createNoopToolExecutor(): ToolExecutor {
       content: 'ok',
       ok: true,
     }),
+  };
+}
+
+function grant(filePath: string): ScopedLocalFileGrant {
+  const now = Date.now();
+  return {
+    kind: 'catscompany_attachment',
+    source: 'catscompany',
+    attachmentRef: `catsco_attachment:${filePath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') || 'file'}`,
+    filePath,
+    fileName: filePath.split(/[\\/]/).pop() || 'file.txt',
+    fileType: 'file',
+    size: 1,
+    mtimeMs: now,
+    sessionKey: 'cc_user:usr7',
+    topicId: 'p2p_7_43',
+    topicType: 'p2p',
+    actorUserId: 'usr7',
+    agentId: 'usr43',
+    agentBodyId: 'body-main',
+    deviceBodyId: 'body-main',
+    identityTrust: 'server_canonical',
+    operations: ['read_file', 'send_file'],
+    createdAt: now,
+    expiresAt: now + 60_000,
+  };
+}
+
+function deviceGrant(deviceId: string): ScopedDeviceGrant {
+  const now = Date.now();
+  return {
+    kind: 'user_device_grant',
+    source: 'catscompany',
+    grantId: `device_grant:${deviceId}`,
+    status: 'active',
+    identityTrust: 'server_canonical',
+    identitySource: 'metadata.catsco_identity',
+    deviceId,
+    deviceDisplayName: deviceId,
+    deviceBodyId: 'body-main',
+    deviceInstallationId: `install:${deviceId}`,
+    ownerUserId: 'usr7',
+    sessionKey: 'cc_user:usr7',
+    topicId: 'p2p_7_43',
+    topicType: 'p2p',
+    actorUserId: 'usr7',
+    agentId: 'usr43',
+    agentBodyId: 'body-main',
+    operations: ['read_file'],
+    createdAt: now,
+    expiresAt: now + 60_000,
   };
 }
 
@@ -91,4 +160,178 @@ describe('ConversationRunner pending input', () => {
     assert.ok(requests[1].some(msg => msg.role === 'tool' && msg.content === 'ok'));
     assert.ok(requests[1].some(msg => msg.role === 'user' && msg.content === 'new query after tool turn'));
   });
+
+  test('merges pending local file grants into later tool execution context without clearing existing grants', async () => {
+    const requests: Message[][] = [];
+    const aiService = {
+      chat: async (messages: Message[]) => {
+        requests.push(messages.map(msg => ({ ...msg })));
+        if (requests.length === 1) {
+          return {
+            content: null,
+            toolCalls: [{
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'noop', arguments: '{}' },
+            }],
+            usage,
+          };
+        }
+        if (requests.length === 2) {
+          return {
+            content: null,
+            toolCalls: [{
+              id: 'call_2',
+              type: 'function',
+              function: { name: 'noop', arguments: '{}' },
+            }],
+            usage,
+          };
+        }
+        return { content: 'done', toolCalls: [], usage };
+      },
+    } as any;
+    const contexts: Array<Partial<ToolExecutionContext> | undefined> = [];
+    const executor: ToolExecutor = {
+      getToolDefinitions: () => [{
+        name: 'noop',
+        description: 'noop',
+        parameters: { type: 'object', properties: {} },
+      }],
+      executeTool: async (toolCall, _history, contextOverrides) => {
+        contexts.push(contextOverrides);
+        return {
+          tool_call_id: toolCall.id,
+          role: 'tool',
+          name: toolCall.function.name,
+          content: 'ok',
+          ok: true,
+        };
+      },
+    };
+
+    let pendingUsed = false;
+    const initialGrant = grant('tmp/downloads/initial.md');
+    const pendingGrant = grant('tmp/downloads/pending.md');
+    const runner = new ConversationRunner(aiService, executor, {
+      stream: false,
+      toolExecutionContext: {
+        localFileGrants: [initialGrant],
+      },
+      pendingUserInputProvider: () => {
+        if (pendingUsed) return null;
+        pendingUsed = true;
+        return {
+          content: 'new attachment while busy',
+          localFileGrants: [pendingGrant],
+        };
+      },
+    });
+
+    const result = await runner.run([{ role: 'user', content: 'run a tool' }]);
+
+    assert.equal(result.response, 'done');
+    assert.equal(contexts.length, 2);
+    assert.deepEqual(contexts[0]?.localFileGrants, [initialGrant]);
+    assert.deepEqual(contexts[1]?.localFileGrants, [initialGrant, pendingGrant]);
+  });
+
+  test('merges pending device grants into later tool execution context without clearing existing grants', async () => {
+    const requests: Message[][] = [];
+    const aiService = {
+      chat: async (messages: Message[]) => {
+        requests.push(messages.map(msg => ({ ...msg })));
+        if (requests.length === 1) {
+          return {
+            content: null,
+            toolCalls: [{
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'noop', arguments: '{}' },
+            }],
+            usage,
+          };
+        }
+        if (requests.length === 2) {
+          return {
+            content: null,
+            toolCalls: [{
+              id: 'call_2',
+              type: 'function',
+              function: { name: 'noop', arguments: '{}' },
+            }],
+            usage,
+          };
+        }
+        return { content: 'done', toolCalls: [], usage };
+      },
+    } as any;
+    const contexts: Array<Partial<ToolExecutionContext> | undefined> = [];
+    const executor: ToolExecutor = {
+      getToolDefinitions: () => [{
+        name: 'noop',
+        description: 'noop',
+        parameters: { type: 'object', properties: {} },
+      }],
+      executeTool: async (toolCall, _history, contextOverrides) => {
+        contexts.push(contextOverrides);
+        return {
+          tool_call_id: toolCall.id,
+          role: 'tool',
+          name: toolCall.function.name,
+          content: 'ok',
+          ok: true,
+        };
+      },
+    };
+
+    let pendingUsed = false;
+    const initialGrant = deviceGrant('device-initial');
+    const pendingGrant = deviceGrant('device-pending');
+    const runner = new ConversationRunner(aiService, executor, {
+      stream: false,
+      toolExecutionContext: {
+        sessionId: 'cc_user:usr7',
+        surface: 'catscompany',
+        executionScope: scope(),
+        deviceGrants: [initialGrant],
+      },
+      pendingUserInputProvider: () => {
+        if (pendingUsed) return null;
+        pendingUsed = true;
+        return {
+          content: 'new device grant while busy',
+          deviceGrants: [pendingGrant],
+        };
+      },
+    });
+
+    const result = await runner.run([{ role: 'user', content: 'run a tool' }]);
+
+    assert.equal(result.response, 'done');
+    assert.equal(contexts.length, 2);
+    assert.deepEqual(contexts[0]?.deviceGrants, [initialGrant]);
+    assert.deepEqual(contexts[1]?.deviceGrants, [initialGrant, pendingGrant]);
+
+    const refreshedContext = requests[1].find(isRuntimeContextMessage);
+    assert.ok(refreshedContext);
+    const snapshot = parseRuntimeContext(refreshedContext);
+    assert.deepEqual(
+      snapshot.execution.userDevices.map((device: any) => device.deviceId),
+      ['device-initial', 'device-pending'],
+    );
+    assert.doesNotMatch(refreshedContext.content as string, /install:device-/);
+    assert.doesNotMatch(refreshedContext.content as string, /body-main/);
+  });
 });
+
+function isRuntimeContextMessage(message: Message): boolean {
+  return message.role === 'system'
+    && typeof message.content === 'string'
+    && message.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX);
+}
+
+function parseRuntimeContext(message: Message): any {
+  const content = String(message.content || '');
+  return JSON.parse(content.slice(TRANSIENT_RUNTIME_CONTEXT_PREFIX.length).trim());
+}

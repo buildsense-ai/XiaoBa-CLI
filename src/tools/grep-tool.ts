@@ -3,6 +3,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { isReadPathAllowed } from '../utils/safety';
+import { formatCatsCoVisiblePath, redactCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
+import { executeRemoteReadonlyTool } from './device-rpc-tool';
 
 const VCS_DIRECTORIES_TO_EXCLUDE = ['.git', '.svn', '.hg', '.bzr'] as const;
 const DEFAULT_LIMIT = 250;
@@ -74,24 +76,28 @@ function isCommandAvailable(command: string): boolean {
 export class GrepTool implements Tool {
   definition: ToolDefinition = {
     name: 'grep',
-    description: '在文件中搜索文本内容。支持正则表达式、上下文行、文件类型过滤等。基于 ripgrep (rg) 实现。',
+    description: [
+      '在文件内容中搜索文本或正则表达式。',
+      '适合查找符号、函数名、配置项、错误文本；要按文件名/路径找文件请使用 glob。',
+      '默认返回匹配文件列表；需要具体匹配行时设置 output_mode="content"。',
+    ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
-        pattern: { type: 'string', description: '要搜索的正则表达式模式' },
-        path: { type: 'string', description: '搜索的文件或目录路径（可选，默认为工作目录）' },
-        glob: { type: 'string', description: 'Glob 模式过滤文件，如 "*.js" 或 "*.{ts,tsx}"' },
-        type: { type: 'string', description: '文件类型过滤，如 "js", "py", "rust" 等' },
-        case_insensitive: { type: 'boolean', description: '是否忽略大小写（默认 false）', default: false },
-        context: { type: 'number', description: '显示匹配行前后的上下文行数' },
+        pattern: { type: 'string', description: '要搜索的文本或正则表达式模式。' },
+        path: { type: 'string', description: '搜索的文件或目录路径。可选，默认当前目录。' },
+        glob: { type: 'string', description: '文件路径过滤模式，例如 "*.js" 或 "*.{ts,tsx}"。' },
+        type: { type: 'string', description: 'ripgrep 文件类型过滤，例如 "js", "py", "rust"。' },
+        case_insensitive: { type: 'boolean', description: '是否忽略大小写。默认 false。', default: false },
+        context: { type: 'number', description: 'output_mode="content" 时显示匹配行前后的上下文行数。' },
         output_mode: {
           type: 'string',
-          description: '输出模式: "content" 显示匹配内容, "files" 只显示文件路径, "count" 显示匹配计数',
+          description: '输出模式："files" 只返回文件路径；"content" 返回匹配行；"count" 返回匹配计数。',
           enum: ['content', 'files', 'count'],
           default: 'files'
         },
-        limit: { type: 'number', description: '限制输出行数或文件数（默认 250）。设为 0 表示无限制（谨慎使用）', default: 250 },
-        offset: { type: 'number', description: '跳过前N行/文件，用于分页（默认 0）', default: 0 }
+        limit: { type: 'number', description: '限制输出行数或文件数，默认 250。设为 0 表示不限制输出。', default: 250 },
+        offset: { type: 'number', description: '跳过前 N 行/文件，用于分页。默认 0。', default: 0 }
       },
       required: ['pattern']
     }
@@ -99,6 +105,17 @@ export class GrepTool implements Tool {
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { pattern, path: searchPath } = args;
+
+    const gateway = resolveToolGatewayAccess(context, {
+      toolName: this.definition.name,
+      operation: 'grep',
+      targetLabel: searchPath || '.',
+    });
+    if (!gateway.ok) {
+      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
+    }
+    const remoteResult = await executeRemoteReadonlyTool(context, gateway, 'grep', 'grep', args);
+    if (remoteResult) return remoteResult;
 
     const resolvedSearchPath = searchPath
       ? (path.isAbsolute(searchPath) ? searchPath : path.join(context.workingDirectory, searchPath))
@@ -108,12 +125,13 @@ export class GrepTool implements Tool {
     if (!pathPermission.allowed) {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
     }
+    const visibleSearchPath = formatCatsCoVisiblePath(context, searchPath || '.', { preserveRelative: true });
 
     // 按优先级尝试各个 fallback
     const fallbacks = [
-      { name: 'ripgrep (rg)', fn: () => this.executeWithRipgrep(args, resolvedSearchPath, context) },
-      { name: 'system grep', fn: () => this.executeWithSystemGrep(args, resolvedSearchPath, context) },
-      { name: 'Node.js glob', fn: () => this.executeWithNodeJS(args, resolvedSearchPath, context) },
+      { name: 'ripgrep (rg)', fn: () => this.executeWithRipgrep(args, resolvedSearchPath, context, visibleSearchPath) },
+      { name: 'system grep', fn: () => this.executeWithSystemGrep(args, resolvedSearchPath, context, visibleSearchPath) },
+      { name: 'Node.js glob', fn: () => this.executeWithNodeJS(args, resolvedSearchPath, context, visibleSearchPath) },
     ];
 
     let lastError: Error | null = null;
@@ -135,11 +153,12 @@ export class GrepTool implements Tool {
     }
 
     // 所有 fallback 都失败
-    const errorMsg = lastError?.message || '所有搜索方法都失败了';
+    const rawErrorMsg = lastError?.message || '所有搜索方法都失败了';
+    const errorMsg = redactCatsCoVisiblePath(context, rawErrorMsg, resolvedSearchPath, visibleSearchPath);
     return { ok: false, errorCode: 'EXECUTION_ERROR', message: errorMsg };
   }
 
-  private async executeWithRipgrep(args: any, searchPath: string, context: ToolExecutionContext): Promise<FallbackResult> {
+  private async executeWithRipgrep(args: any, searchPath: string, context: ToolExecutionContext, visibleSearchPath?: string): Promise<FallbackResult> {
     const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
     const rgArgs: string[] = ['--color=never', '--no-heading', '--hidden'];
 
@@ -159,11 +178,11 @@ export class GrepTool implements Tool {
 
     try {
       const output = execFileSync('rg', rgArgs, { cwd: context.workingDirectory, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] }) as string;
-      return { content: this.processOutput(output, args, context) };
+      return { content: this.processOutput(output, args, context, visibleSearchPath) };
     } catch (error: any) {
       if (error.status === 1) {
         // 无匹配，返回格式化的"未找到"
-        return { content: this.formatNoMatch(pattern, originalPath, globPattern, fileType) };
+        return { content: this.formatNoMatch(pattern, visibleSearchPath ?? originalPath, globPattern, fileType) };
       }
       // exit code 2 或其他错误，抛出让 execute 统一处理
       const errorMsg = error.stderr || `rg 执行失败 (exit ${error.status})`;
@@ -171,7 +190,7 @@ export class GrepTool implements Tool {
     }
   }
 
-  private async executeWithSystemGrep(args: any, searchPath: string, context: ToolExecutionContext): Promise<FallbackResult> {
+  private async executeWithSystemGrep(args: any, searchPath: string, context: ToolExecutionContext, visibleSearchPath?: string): Promise<FallbackResult> {
     const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
     const grepArgs: string[] = [];
 
@@ -194,17 +213,17 @@ export class GrepTool implements Tool {
         processedOutput = lines.filter(line => globRegex.test(path.basename(line.split(':')[0]))).join('\n');
       }
 
-      return { content: this.processOutput(processedOutput, args, context) };
+      return { content: this.processOutput(processedOutput, args, context, visibleSearchPath) };
     } catch (error: any) {
       if (error.status === 1) {
-        return { content: this.formatNoMatch(pattern, originalPath, globPattern, fileType) };
+        return { content: this.formatNoMatch(pattern, visibleSearchPath ?? originalPath, globPattern, fileType) };
       }
       const errorMsg = error.stderr || `grep 执行失败 (exit ${error.status})`;
       throw new Error(errorMsg);
     }
   }
 
-  private async executeWithNodeJS(args: any, searchPath: string, context: ToolExecutionContext): Promise<FallbackResult> {
+  private async executeWithNodeJS(args: any, searchPath: string, context: ToolExecutionContext, visibleSearchPath?: string): Promise<FallbackResult> {
     const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
 
     if (!fs.existsSync(searchPath)) {
@@ -245,10 +264,10 @@ export class GrepTool implements Tool {
     };
 
     walkDir(searchPath);
-    return { content: this.processOutput(results.join('\n'), args, context) };
+    return { content: this.processOutput(results.join('\n'), args, context, visibleSearchPath) };
   }
 
-  private processOutput(output: string, args: any, context: ToolExecutionContext): string {
+  private processOutput(output: string, args: any, context: ToolExecutionContext, visibleSearchPath?: string): string {
     const { pattern, path: originalPath, glob: globPattern, type: fileType, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
     const allLines = output.trim().split('\n').filter(Boolean);
     const { items: limitedLines, appliedLimit } = applyHeadLimit(allLines, limit, offset);
@@ -276,7 +295,7 @@ export class GrepTool implements Tool {
       result.numFiles = result.filenames.length;
     }
 
-    return this.formatResult(result, pattern, originalPath, globPattern, fileType);
+    return this.formatResult(result, pattern, visibleSearchPath ?? originalPath, globPattern, fileType);
   }
 
   private formatNoMatch(pattern: string, searchPath: string | undefined, globPattern: string | undefined, fileType: string | undefined): string {

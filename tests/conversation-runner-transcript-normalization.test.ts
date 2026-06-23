@@ -6,6 +6,7 @@ import { ToolExecutor, ToolResult, ToolDefinition, ToolCall, ToolExecutionContex
 import { ChatResponse, Message } from '../src/types';
 import { ToolManager } from '../src/tools/tool-manager';
 import { SkillManager } from '../src/skills/skill-manager';
+import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../src/utils/model-error-classifier';
 
 function cloneMessages(messages: Message[]): Message[] {
   return JSON.parse(JSON.stringify(messages));
@@ -210,6 +211,112 @@ test('runner injects current directory before the active request context without
     secondCallMessages[secondCallMessages.length - 1].role,
     'tool',
     'after a tool exchange, the tool_result should remain the final message instead of the cwd hint',
+  );
+});
+
+test('runner surfaces image safety errors after outbound messages on message surfaces', async () => {
+  const toolCall = makeToolCall('call_send', 'send_text', { text: '我先把前半段发给你。' });
+  const receivedMessages: Message[][] = [];
+  const sentReplies: string[] = [];
+  let calls = 0;
+  const aiService = {
+    async chat(messages: Message[]) {
+      return this.chatStream(messages);
+    },
+    async chatStream(messages: Message[]) {
+      receivedMessages.push(cloneMessages(messages));
+      calls++;
+      if (calls === 1) {
+        return makeToolResponse(toolCall);
+      }
+      throw new Error('API错误 (500): 500 {"type":"error","error":{"type":"api_error","message":"input_new_sensitive, messages[86] content[3] image is sensitive, please check your input (1026)"}}');
+    },
+  };
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'send_text',
+      description: 'send visible message',
+      transcriptMode: 'outbound_message',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string' },
+        },
+        required: ['text'],
+      },
+    }],
+    { send_text: '消息已发送' },
+  );
+  const runner = new ConversationRunner(aiService as any, toolExecutor, {
+    stream: true,
+    enableCompression: false,
+    toolExecutionContext: {
+      surface: 'catscompany',
+      channel: {
+        chatId: 'p2p_1_2',
+        reply: async (_chatId: string, text: string) => {
+          sentReplies.push(text);
+        },
+      },
+    } as any,
+  });
+
+  const result = await runner.run([{ role: 'user', content: '读图后分段发结果' }]);
+
+  assert.equal(calls, 2);
+  assert.equal(result.finalResponseVisible, true);
+  assert.equal(result.response, MODEL_IMAGE_SAFETY_MESSAGE);
+  assert.equal(
+    result.messages.some(message => message.role === 'assistant' && message.content === MODEL_IMAGE_SAFETY_MESSAGE),
+    true,
+  );
+  assert.equal(
+    result.messages.some(message => message.role === 'assistant' && message.content === '我先把前半段发给你。'),
+    true,
+  );
+  assert.equal(receivedMessages.length, 2);
+  assert.deepEqual(sentReplies, [], 'CatsCompany outer adapter sends visible result, runner must not double-send');
+});
+
+test('runner replies image safety errors directly on non-CatsCompany message surfaces', async () => {
+  const sentReplies: string[] = [];
+  const aiService = {
+    async chat() {
+      throw new Error('API错误 (500): {"error":{"message":"input_new_sensitive, messages[3] content[1] image is sensitive"}}');
+    },
+    async chatStream() {
+      throw new Error('API错误 (500): {"error":{"message":"input_new_sensitive, messages[3] content[1] image is sensitive"}}');
+    },
+  };
+  const runner = new ConversationRunner(aiService as any, new MockToolExecutor([], {}), {
+    stream: true,
+    enableCompression: false,
+    toolExecutionContext: {
+      surface: 'feishu',
+      channel: {
+        chatId: 'chat_1',
+        reply: async (_chatId: string, text: string) => {
+          sentReplies.push(text);
+        },
+      },
+    } as any,
+  });
+
+  const result = await runner.run([{ role: 'user', content: '看图' }]);
+
+  assert.equal(result.finalResponseVisible, true);
+  assert.equal(result.response, MODEL_IMAGE_SAFETY_MESSAGE);
+  assert.deepEqual(sentReplies, [MODEL_IMAGE_SAFETY_MESSAGE]);
+});
+
+test('image safety classifier requires image evidence', () => {
+  assert.equal(
+    isModelImageSafetyError(new Error('API错误 (500): {"message":"input_new_sensitive, text is sensitive"}')),
+    false,
+  );
+  assert.equal(
+    isModelImageSafetyError(new Error('API错误 (500): {"message":"input_new_sensitive, messages[86] content[3] image is sensitive"}')),
+    true,
   );
 });
 

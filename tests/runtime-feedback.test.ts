@@ -230,6 +230,45 @@ describe('runtime feedback', () => {
 
     assert.equal(aiCalls, 1);
   });
+
+  test('internal runtime error placeholders are not replayed into the next model turn', async () => {
+    const { AgentSession } = loadAgentSessionModules();
+    let aiCalls = 0;
+    let capturedMessages: any[] = [];
+    const session = new AgentSession('user:runtime-error-artifact-demo', buildMockServices({
+      aiService: {
+        async chatStream(messages: any[]) {
+          aiCalls++;
+          if (aiCalls === 1) {
+            throw new Error('API错误 (500): 500 {"type":"error","error":{"message":"anthropic: MaxRetriesExceededError: HTTPSConnectionPool(host=\'api.anthropic.com\')"}}');
+          }
+          capturedMessages = messages.map(message => ({ ...message }));
+          return {
+            content: '已继续处理',
+            toolCalls: [],
+            usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+          };
+        },
+      },
+    }), 'catscompany');
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    await session.handleMessage('先触发一次失败');
+    assert.equal((session as any).messages.some((message: any) =>
+      typeof message.content === 'string' && message.content.includes('api.anthropic.com')
+    ), false);
+
+    const result = await session.handleMessage('继续发文件');
+
+    assert.equal(result.text, '已继续处理');
+    assert.equal(capturedMessages.some(message =>
+      typeof message.content === 'string' && /\[(?:处理失败|处理中断):/.test(message.content)
+    ), false);
+    assert.equal(capturedMessages.some(message =>
+      typeof message.content === 'string' && message.content.includes('api.anthropic.com')
+    ), false);
+    assert.equal(aiCalls, 2);
+  });
 });
 
 function loadAgentSessionModules(): any {

@@ -31,6 +31,15 @@ import {
   writeDashboardEnvUpdates,
 } from '../settings';
 import {
+  RELAY_MODEL_PROFILES,
+  findRelayModelProfile,
+  relayModelProviderBaseUrl,
+  relayModelProviderProtocolLabel,
+  relayModelProviderSdkLabel,
+  type RelayModelProfile,
+  type RelayModelProvider,
+} from '../../utils/relay-model-profiles';
+import {
   RuntimeProfileEditInput,
   hasRuntimeProfileRollback,
   previewRuntimeProfileEdit,
@@ -49,6 +58,12 @@ import {
   readSkillHubLocalMetadata,
 } from '../../skillhub/local-skill-metadata';
 import {
+  deletePromptOverride,
+  getPromptEditorFile,
+  getPromptEditorState,
+  writePromptOverride,
+} from '../../utils/prompt-editor';
+import {
   BindWeixinChannelResult,
   WeixinChannelStatus,
   bindWeixinChannelToCurrentAgent,
@@ -59,6 +74,8 @@ import {
 
 const DEFAULT_CATSCO_HTTP_BASE_URL = 'https://app.catsco.cc';
 const DEFAULT_CATSCO_WS_URL = 'wss://app.catsco.cc/v0/channels';
+const TRUSTED_CATSCO_HTTP_ORIGINS = new Set([new URL(DEFAULT_CATSCO_HTTP_BASE_URL).origin]);
+const TRUSTED_CATSCO_WS_URL = new URL(DEFAULT_CATSCO_WS_URL);
 const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
 const SYSTEM_SKILL_DIRS = new Set<string>();
 
@@ -151,16 +168,24 @@ interface RelayModelConfig {
   label: string;
   model: string;
   family?: string;
-  provider: 'anthropic' | 'openai';
+  provider: RelayModelProvider;
   protocol: string;
   baseUrl: string;
+  sdkLabel: string;
   enabled: boolean;
   default: boolean;
   quotaClass?: string;
   contextWindowTokens?: number;
+  capabilities?: {
+    tool_calling?: boolean;
+    vision?: boolean;
+    streaming?: boolean;
+  };
 }
 
 const MODEL_SOURCE_ENV_KEY = 'CATSCO_MODEL_SOURCE';
+const RELAY_MODEL_VISION_CAPABLE_ENV_KEY = 'CATSCO_RELAY_LLM_VISION_CAPABLE';
+const RELAY_MODEL_TOOL_CALLING_CAPABLE_ENV_KEY = 'CATSCO_RELAY_LLM_TOOL_CALLING_CAPABLE';
 const CUSTOM_MODEL_ENV_KEYS = {
   provider: 'CATSCO_CUSTOM_LLM_PROVIDER',
   apiBase: 'CATSCO_CUSTOM_LLM_API_BASE',
@@ -194,6 +219,73 @@ interface ModelLaunchProfile {
 function normalizeBaseUrl(value: unknown, fallback: string): string {
   const text = String(value || '').trim().replace(/\/+$/, '');
   return text || fallback;
+}
+
+function truthyEnv(value: unknown): boolean {
+  return /^(1|true|yes|on)$/i.test(String(value || '').trim());
+}
+
+function canUseLocalCatsCoEndpoint(): boolean {
+  return process.env.NODE_ENV === 'test'
+    || truthyEnv(process.env.CATSCO_ALLOW_LOCAL_ENDPOINTS)
+    || truthyEnv(process.env.CATSCOMPANY_ALLOW_LOCAL_ENDPOINTS);
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+}
+
+function normalizeTrustedCatsHttpBaseUrl(value: unknown): string {
+  const text = String(value || DEFAULT_CATSCO_HTTP_BASE_URL).trim();
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    throw httpError('Untrusted CatsCo HTTP endpoint', 400);
+  }
+
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw httpError('Untrusted CatsCo HTTP endpoint', 400);
+  }
+  if (TRUSTED_CATSCO_HTTP_ORIGINS.has(url.origin)) {
+    return url.origin;
+  }
+  if (canUseLocalCatsCoEndpoint() && isLoopbackHost(url.hostname)) {
+    return url.origin;
+  }
+  throw httpError('Untrusted CatsCo HTTP endpoint', 400);
+}
+
+function normalizeTrustedCatsServerUrl(value: unknown): string {
+  const text = String(value || DEFAULT_CATSCO_WS_URL).trim();
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    throw httpError('Untrusted CatsCo websocket endpoint', 400);
+  }
+
+  if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw httpError('Untrusted CatsCo websocket endpoint', 400);
+  }
+
+  const pathname = url.pathname.replace(/\/+$/, '') || '/';
+  if (url.origin === TRUSTED_CATSCO_WS_URL.origin && pathname === TRUSTED_CATSCO_WS_URL.pathname) {
+    return `${url.protocol}//${url.host}${pathname}`;
+  }
+  if (canUseLocalCatsCoEndpoint() && isLoopbackHost(url.hostname)) {
+    return `${url.protocol}//${url.host}${pathname}`;
+  }
+  throw httpError('Untrusted CatsCo websocket endpoint', 400);
+}
+
+function trustCatsAuthStateEndpoints(state: CatsAuthState): CatsAuthState {
+  return {
+    ...state,
+    httpBaseUrl: normalizeTrustedCatsHttpBaseUrl(state.httpBaseUrl),
+    serverUrl: normalizeTrustedCatsServerUrl(state.serverUrl),
+  };
 }
 
 function p2pTopicId(uid1: string | number, uid2: string | number): string {
@@ -762,11 +854,17 @@ async function commitCatsBotBindingAndStartConnector(
 
 function normalizeRelayModelProtocol(value: unknown): RelayModelProtocol {
   const text = String(value || '').trim().toLowerCase();
-  return text === 'openai' ? 'openai' : 'anthropic';
+  return text.includes('openai') ? 'openai' : 'anthropic';
 }
 
-function normalizeRelayProvider(value: unknown): 'anthropic' | 'openai' {
-  return String(value || '').trim().toLowerCase() === 'openai' ? 'openai' : 'anthropic';
+function normalizeRelayProvider(value: unknown): RelayModelProvider {
+  return String(value || '').trim().toLowerCase().includes('openai') ? 'openai' : 'anthropic';
+}
+
+function explicitRelayProvider(item: any): RelayModelProvider | undefined {
+  if (!item || typeof item !== 'object') return undefined;
+  if (item.provider == null && item.protocol == null) return undefined;
+  return normalizeRelayProvider(item.provider ?? item.protocol);
 }
 
 function relayEndpointForProtocol(config: any, protocol: RelayModelProtocol): string {
@@ -776,7 +874,9 @@ function relayEndpointForProtocol(config: any, protocol: RelayModelProtocol): st
     return protocol === 'openai' ? label.includes('openai') : label.includes('anthropic');
   });
   const baseUrl = normalizeBaseUrl(config?.base_url, 'https://relay.catsco.cc');
-  const fallback = protocol === 'openai' ? `${baseUrl}/v1` : `${baseUrl}/anthropic`;
+  const fallback = baseUrl === 'https://relay.catsco.cc'
+    ? relayModelProviderBaseUrl(protocol)
+    : protocol === 'openai' ? `${baseUrl}/v1` : `${baseUrl}/anthropic`;
   return normalizeBaseUrl(endpoint?.base_url, fallback);
 }
 
@@ -788,86 +888,90 @@ function canonicalRelayModelName(value: unknown): string {
   return model;
 }
 
+function relayModelCapabilitiesPayload(item: any, profile?: RelayModelProfile): RelayModelConfig['capabilities'] {
+  const capabilities = item?.capabilities;
+  const payload: RelayModelConfig['capabilities'] = profile
+    ? {
+      tool_calling: profile.capabilities.toolCalling,
+      vision: profile.capabilities.vision,
+      streaming: profile.capabilities.streaming,
+    }
+    : {};
+  if (!capabilities || typeof capabilities !== 'object') {
+    return Object.keys(payload).length > 0 ? payload : undefined;
+  }
+
+  const toolCalling = optionalBoolean(capabilities.tool_calling ?? capabilities.toolCalling);
+  const vision = optionalBoolean(capabilities.vision);
+  const streaming = optionalBoolean(capabilities.streaming);
+  if (toolCalling !== undefined) payload.tool_calling = toolCalling;
+  if (vision !== undefined) payload.vision = vision;
+  if (streaming !== undefined) payload.streaming = streaming;
+  return Object.keys(payload).length > 0 ? payload : undefined;
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value !== 0;
+  if (typeof value === 'string') {
+    const text = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'y', 'on'].includes(text)) return true;
+    if (['false', '0', 'no', 'n', 'off'].includes(text)) return false;
+  }
+  return undefined;
+}
+
 function normalizeRelayModelConfig(item: any, config: any, index: number): RelayModelConfig | null {
-  const model = canonicalRelayModelName(item?.model);
-  if (!model) return null;
-  const provider: 'anthropic' = 'anthropic';
-  const protocol = 'Anthropic-compatible';
-  const baseUrl = relayEndpointForProtocol(config, 'anthropic');
+  const rawModel = canonicalRelayModelName(item?.model);
+  if (!rawModel) return null;
+  const profile = findRelayModelProfile(rawModel);
+  const model = profile?.model || rawModel;
+  const provider = explicitRelayProvider(item)
+    ?? profile?.preferredProvider
+    ?? normalizeRelayProvider(item?.provider ?? item?.protocol);
+  const protocol = relayModelProviderProtocolLabel(provider);
+  const baseUrl = relayEndpointForProtocol(config, provider);
   const contextWindowTokens = parsePositiveInteger(item?.context_window_tokens)
     ?? parsePositiveInteger(item?.contextWindowTokens)
+    ?? profile?.contextWindowTokens
     ?? resolveKnownModelContextWindowTokens(model);
   return {
-    id: String(item?.id || model || `relay-model-${index}`).trim(),
-    label: String(item?.label || model).trim(),
+    id: String(item?.id || profile?.id || model || `relay-model-${index}`).trim(),
+    label: String(item?.label || profile?.label || model).trim(),
     model,
-    family: String(item?.family || '').trim() || undefined,
+    family: String(item?.family || profile?.family || '').trim() || undefined,
     provider,
     protocol,
     baseUrl,
+    sdkLabel: relayModelProviderSdkLabel(provider),
     enabled: item?.enabled !== false,
     default: item?.default === true,
-    quotaClass: String(item?.quota_class || item?.quotaClass || '').trim() || undefined,
+    quotaClass: String(item?.quota_class || item?.quotaClass || profile?.quotaClass || '').trim() || undefined,
     contextWindowTokens,
+    capabilities: relayModelCapabilitiesPayload(item, profile),
   };
 }
 
 function fallbackRelayModelCatalog(config: any): RelayModelConfig[] {
-  const baseUrl = relayEndpointForProtocol(config, 'anthropic');
-  return [
-    {
-      id: 'minimax-m2.7',
-      label: 'MiniMax M2.7',
-      model: 'MiniMax-M2.7',
-      family: 'minimax',
-      provider: 'anthropic',
-      protocol: 'Anthropic-compatible',
-      baseUrl,
-      enabled: true,
-      default: true,
-      quotaClass: 'standard',
-      contextWindowTokens: 204_800,
+  return RELAY_MODEL_PROFILES.map((profile, index) => ({
+    id: profile.id,
+    label: profile.label,
+    model: profile.model,
+    family: profile.family,
+    provider: profile.preferredProvider,
+    protocol: relayModelProviderProtocolLabel(profile.preferredProvider),
+    baseUrl: relayEndpointForProtocol(config, profile.preferredProvider),
+    sdkLabel: relayModelProviderSdkLabel(profile.preferredProvider),
+    enabled: true,
+    default: index === 0,
+    quotaClass: profile.quotaClass,
+    contextWindowTokens: profile.contextWindowTokens,
+    capabilities: {
+      tool_calling: profile.capabilities.toolCalling,
+      vision: profile.capabilities.vision,
+      streaming: profile.capabilities.streaming,
     },
-    {
-      id: 'minimax-m3',
-      label: 'MiniMax M3',
-      model: 'MiniMax-M3',
-      family: 'minimax',
-      provider: 'anthropic',
-      protocol: 'Anthropic-compatible',
-      baseUrl,
-      enabled: true,
-      default: false,
-      quotaClass: 'multimodal',
-      contextWindowTokens: 1_000_000,
-    },
-    {
-      id: 'deepseek-v4-flash',
-      label: 'DeepSeek V4 Flash',
-      model: 'deepseek-v4-flash',
-      family: 'deepseek',
-      provider: 'anthropic',
-      protocol: 'Anthropic-compatible',
-      baseUrl,
-      enabled: true,
-      default: false,
-      quotaClass: 'flash-low',
-      contextWindowTokens: 1_000_000,
-    },
-    {
-      id: 'glm-5.1',
-      label: 'GLM 5.1',
-      model: 'glm-5.1',
-      family: 'glm',
-      provider: 'anthropic',
-      protocol: 'Anthropic-compatible',
-      baseUrl,
-      enabled: true,
-      default: false,
-      quotaClass: 'standard',
-      contextWindowTokens: 200_000,
-    },
-  ];
+  }));
 }
 
 function relayModelCatalog(config: any): RelayModelConfig[] {
@@ -916,6 +1020,19 @@ function selectRelayModel(
   return models.find(model => model.default) || models[0];
 }
 
+function preferredRelayModelRequest(requested: unknown): unknown {
+  const explicit = String(requested || '').trim();
+  if (explicit) return explicit;
+  const fileEnv = readEnvFile();
+  return firstNonEmpty(
+    process.env.CATSCO_RELAY_LLM_MODEL,
+    fileEnv.CATSCO_RELAY_LLM_MODEL,
+    isCatsRelayApiBase(firstNonEmpty(process.env.GAUZ_LLM_API_BASE, fileEnv.GAUZ_LLM_API_BASE))
+      ? firstNonEmpty(process.env.GAUZ_LLM_MODEL, fileEnv.GAUZ_LLM_MODEL)
+      : undefined,
+  );
+}
+
 function relayModelPayload(model: RelayModelConfig): Record<string, unknown> {
   const promptBudget = model.contextWindowTokens
     ? calculatePromptBudgetTokens(model.contextWindowTokens, 32_768).promptBudgetTokens
@@ -928,12 +1045,14 @@ function relayModelPayload(model: RelayModelConfig): Record<string, unknown> {
     provider: model.provider,
     protocol: model.protocol,
     base_url: model.baseUrl,
+    sdk_label: model.sdkLabel,
     enabled: model.enabled,
     default: model.default,
     quota_class: model.quotaClass,
     context_window_tokens: model.contextWindowTokens,
     prompt_budget_tokens: promptBudget,
     context_label: model.contextWindowTokens ? formatContextWindowTokens(model.contextWindowTokens) : undefined,
+    capabilities: model.capabilities,
   };
 }
 
@@ -1028,6 +1147,12 @@ function requestedSecretAction(input: any): 'keep' | 'replace' | 'clear' {
   return 'keep';
 }
 
+function requestedCustomContextWindowTokens(input: any): number | undefined {
+  if (!input?.settings || typeof input.settings !== 'object') return undefined;
+  if (!Object.prototype.hasOwnProperty.call(input.settings, 'model.contextWindowTokens')) return undefined;
+  return parsePositiveInteger(input.settings['model.contextWindowTokens']);
+}
+
 function sanitizePublicUrl(value: unknown): string | undefined {
   const text = String(value || '').trim();
   if (!text) return undefined;
@@ -1055,7 +1180,9 @@ function mirrorCurrentModelAsCustomStartup(input: any, previous: ModelLaunchProf
   const custom: ModelLaunchProfile = {
     ...current,
     apiKey,
-    contextWindowTokens: storedCustom.contextWindowTokens ?? CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS,
+    contextWindowTokens: requestedCustomContextWindowTokens(input)
+      ?? storedCustom.contextWindowTokens
+      ?? CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS,
   };
 
   if (!isCompleteModelProfile(custom) && (previousSource === 'relay' || isCatsRelayApiBase(previous.apiBase))) {
@@ -1089,6 +1216,8 @@ function writeCustomModelStartupConfig(): { profile: ModelLaunchProfile; updated
     ...modelProfileUpdates(CUSTOM_MODEL_ENV_KEYS, profile),
     ...modelProfileUpdates(EFFECTIVE_MODEL_ENV_KEYS, profile),
     [MODEL_SOURCE_ENV_KEY]: 'custom',
+    [RELAY_MODEL_VISION_CAPABLE_ENV_KEY]: undefined,
+    [RELAY_MODEL_TOOL_CALLING_CAPABLE_ENV_KEY]: undefined,
   });
   return { profile, ...result };
 }
@@ -1106,6 +1235,8 @@ function writeRelayModelStartupConfig(model: RelayModelConfig, apiKey: string): 
     ...modelProfileUpdates(RELAY_MODEL_ENV_KEYS, profile),
     ...modelProfileUpdates(EFFECTIVE_MODEL_ENV_KEYS, profile),
     [MODEL_SOURCE_ENV_KEY]: 'relay',
+    [RELAY_MODEL_VISION_CAPABLE_ENV_KEY]: model.capabilities?.vision === undefined ? undefined : String(model.capabilities.vision),
+    [RELAY_MODEL_TOOL_CALLING_CAPABLE_ENV_KEY]: model.capabilities?.tool_calling === undefined ? undefined : String(model.capabilities.tool_calling),
   });
   return {
     updated: [...preserved, ...result.updated],
@@ -1285,7 +1416,8 @@ async function setupCatsRelayModelForDesktop(
     };
   }
 
-  const selectedModel = selectRelayModel(config, requestedModel, { strict: Boolean(requestedModel) });
+  const preferredModel = preferredRelayModelRequest(requestedModel);
+  const selectedModel = selectRelayModel(config, preferredModel, { strict: Boolean(String(requestedModel || '').trim()) });
   const ensured = await ensureCatsRelayPlainKey(state, {
     rotateExisting: options.rotateExisting,
   });
@@ -1494,6 +1626,38 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       }));
     } catch (e: any) {
       res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.get('/prompts', async (_req, res) => {
+    try {
+      res.json(await getPromptEditorState());
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.get('/prompts/file', (req, res) => {
+    try {
+      res.json(getPromptEditorFile(String(req.query.path || '')));
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.put('/prompts/file', (req, res) => {
+    try {
+      res.json(writePromptOverride(String(req.body?.path || ''), String(req.body?.content ?? '')));
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.delete('/prompts/file', (req, res) => {
+    try {
+      res.json(deletePromptOverride(String(req.query.path || '')));
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || String(e) });
     }
   });
 
@@ -1736,6 +1900,8 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         provider: result.profile.provider,
         apiBase: sanitizePublicUrl(result.profile.apiBase),
         model: result.profile.model,
+        contextWindowTokens: result.profile.contextWindowTokens,
+        contextLabel: result.profile.contextWindowTokens ? formatContextWindowTokens(result.profile.contextWindowTokens) : undefined,
         updated: result.updated,
         cleared: result.cleared,
         restartRequired: activation.wasRunning && !activation.restartRequested,
@@ -1854,6 +2020,16 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const manager = new SkillManager();
       await manager.loadSkills();
       res.json(await Promise.all(manager.getAllSkills().map(skillToDashboardPayload)));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.get('/skills-root', async (_req, res) => {
+    try {
+      const skillsRoot = PathResolver.getSkillsPath();
+      PathResolver.ensureDir(skillsRoot);
+      res.json({ ok: true, path: skillsRoot });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -2170,11 +2346,11 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         username,
         password,
         code,
-      });
+      }, undefined, { timeoutMs: 10000 });
       const login = await catsRequest('POST', state.httpBaseUrl, '/api/auth/login', {
         account: email,
         password,
-      });
+      }, undefined, { timeoutMs: 10000 });
       persistCatsUserSession(state, login);
       res.json({
         ok: true,
@@ -2196,7 +2372,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const password = String(req.body?.password || '');
       if (!account || !password) return res.status(400).json({ error: 'account and password are required' });
 
-      const login = await catsRequest('POST', state.httpBaseUrl, '/api/auth/login', { account, password });
+      const login = await catsRequest('POST', state.httpBaseUrl, '/api/auth/login', { account, password }, undefined, { timeoutMs: 10000 });
       persistCatsUserSession(state, login);
       res.json({
         ok: true,
@@ -2216,9 +2392,44 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
     res.json({ ok: true, removed });
   });
 
+  router.post('/cats/desktop-connect', async (req, res) => {
+    try {
+      const code = String(req.body?.code || '').trim();
+      if (!code) return res.status(400).json({ error: 'code is required' });
+
+      const state = trustCatsAuthStateEndpoints(getCatsAuthState(req.body || {}));
+      const login = await catsRequest('POST', state.httpBaseUrl, '/api/desktop-connect/exchange', { code }, undefined, { timeoutMs: 8000 });
+      const httpBaseUrl = normalizeTrustedCatsHttpBaseUrl(login.http_base_url || login.httpBaseUrl || state.httpBaseUrl || DEFAULT_CATSCO_HTTP_BASE_URL);
+      const serverUrl = normalizeTrustedCatsServerUrl(login.server_url || login.serverUrl || state.serverUrl || DEFAULT_CATSCO_WS_URL);
+      const nextState: CatsAuthState = {
+        ...state,
+        token: String(login.token || '').trim(),
+        uid: String(login.uid || '').trim(),
+        username: String(login.username || '').trim(),
+        displayName: String(login.display_name || login.displayName || login.username || '').trim(),
+        httpBaseUrl,
+        serverUrl,
+      };
+      persistCatsUserSession(nextState, login);
+      res.json({
+        ok: true,
+        user: {
+          uid: nextState.uid,
+          username: nextState.username,
+          display_name: nextState.displayName,
+        },
+        httpBaseUrl: nextState.httpBaseUrl,
+        serverUrl: nextState.serverUrl,
+      });
+    } catch (e: any) {
+      const payload = catsErrorResponse(e);
+      res.status(payload.status).json(payload.body);
+    }
+  });
+
   router.post('/cats/setup', async (req, res) => {
     try {
-      const state = getCatsAuthState(req.body || {});
+      const state = trustCatsAuthStateEndpoints(getCatsAuthState(req.body || {}));
       if (!state.token) return res.status(401).json({ error: 'CatsCo user token is missing' });
       if (req.body?.botUid) {
         return res.status(409).json({ error: 'Legacy setup no longer accepts botUid; use /api/cats/bind-bot' });
@@ -2235,15 +2446,16 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       const preferredUsername = sanitizeCatsUsernamePart(String(req.body?.botUsername || `catsco_${userUid}_${deviceId}`))
         || `catsco_${userUid}_${deviceId.replace(/[^a-zA-Z0-9_]/g, '_')}`;
       const preferredName = String(req.body?.botDisplayName || `CatsCo (${deviceName})`).trim() || `CatsCo (${deviceName})`;
-      const legacyUsername = `xiaoba_${userUid}`;
-      const legacyCatsCoUsername = `catsco_${userUid}`;
-      const legacyName = 'XiaoBa';
-      let bot = bots.find((item: any) => String(item.id || item.uid) === String(state.botUid || ''))
-        || bots.find((item: any) => String(item.username || '') === preferredUsername)
-        || bots.find((item: any) => String(item.display_name || '') === preferredName)
-        || bots.find((item: any) => String(item.username || '') === legacyUsername)
-        || bots.find((item: any) => String(item.username || '') === legacyCatsCoUsername)
-        || bots.find((item: any) => String(item.display_name || '') === legacyName);
+      let botSelectionSource: 'last-used' | 'first-owned-bot' | 'created-default' = 'first-owned-bot';
+      let bot = state.botUid
+        ? bots.find((item: any) => String(item.id || item.uid || '') === String(state.botUid))
+        : undefined;
+      if (bot) {
+        botSelectionSource = 'last-used';
+      } else if (bots.length > 0) {
+        bot = bots[0];
+        botSelectionSource = 'first-owned-bot';
+      }
 
       if (!bot) {
         const created = await catsRequest('POST', state.httpBaseUrl, '/api/bots', {
@@ -2257,6 +2469,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
           display_name: preferredName,
           api_key: created.api_key,
         };
+        botSelectionSource = 'created-default';
       }
 
       const botUid = String(bot.id || bot.uid || '');
@@ -2339,6 +2552,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
         connectorStarted: result.connectorStarted,
         connectorRestarted: result.connectorRestarted,
         relayModelSetup,
+        botSelectionSource,
         warnings: result.warnings.length > 0 ? result.warnings : undefined,
       });
     } catch (e: any) {
@@ -2913,15 +3127,32 @@ async function getSkillHubInstallInfo(skill: Skill): Promise<any> {
     version: metadata.version,
     uploadedAt: metadata.uploadedAt,
     modified: 'unknown',
+    syncStatus: 'check_failed',
+    syncLabel: '未校验',
   };
   try {
     const version = await new SkillHubService().getPublishedVersion(skillId, metadata.version);
     if (version?.contentHash) {
       const localHash = computeLocalSkillContentHash(path.dirname(skill.filePath));
-      info.modified = localHash === version.contentHash ? false : true;
+      const modified = localHash !== version.contentHash;
+      info.modified = modified;
+      info.syncStatus = modified ? 'local_changes' : 'synced';
+      info.syncLabel = modified ? '本地有改动' : '已同步';
+    } else {
+      info.modified = 'unknown';
+      info.syncStatus = 'check_failed';
+      info.syncLabel = '未校验';
     }
-  } catch {
+  } catch (error: any) {
     info.modified = 'unknown';
+    if (Number(error?.status) === 404) {
+      info.syncStatus = 'source_removed';
+      info.syncLabel = '云端版本不可用';
+    } else {
+      info.syncStatus = 'check_failed';
+      info.syncLabel = '校验失败';
+      info.syncError = error?.message || String(error);
+    }
   }
   return info;
 }

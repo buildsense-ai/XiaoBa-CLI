@@ -9,13 +9,16 @@ describe('adapter runtime', () => {
   let testRoot: string;
   let originalCwd: string;
   let originalProfilePath: string | undefined;
+  let originalSkillsEnv: string | undefined;
 
   beforeEach(() => {
     originalCwd = process.cwd();
     originalProfilePath = process.env.XIAOBA_RUNTIME_PROFILE_PATH;
+    originalSkillsEnv = process.env.XIAOBA_SKILLS_DIR;
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-adapter-runtime-'));
     process.chdir(testRoot);
     process.env.XIAOBA_RUNTIME_PROFILE_PATH = path.join(testRoot, 'missing-runtime-profile.json');
+    process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
   });
 
   afterEach(() => {
@@ -24,6 +27,11 @@ describe('adapter runtime', () => {
       delete process.env.XIAOBA_RUNTIME_PROFILE_PATH;
     } else {
       process.env.XIAOBA_RUNTIME_PROFILE_PATH = originalProfilePath;
+    }
+    if (originalSkillsEnv === undefined) {
+      delete process.env.XIAOBA_SKILLS_DIR;
+    } else {
+      process.env.XIAOBA_SKILLS_DIR = originalSkillsEnv;
     }
     if (testRoot && fs.existsSync(testRoot)) {
       fs.rmSync(testRoot, { recursive: true, force: true });
@@ -88,7 +96,7 @@ describe('adapter runtime', () => {
     const prompt = await provider();
 
     assert.doesNotMatch(prompt, /Late Feishu Name/);
-    assert.match(prompt, /Current directory is provided in a transient message/);
+    assert.match(prompt, /当前目录会在每次模型请求中作为临时上下文消息提供/);
     assert.doesNotMatch(prompt.replace(/\\/g, '/'), /mutated/);
   });
 
@@ -105,7 +113,7 @@ describe('adapter runtime', () => {
     const prompt = await provider();
 
     assert.match(prompt, /你在这个平台上的名字是：Cats Runtime Bot/);
-    assert.match(prompt, /Current directory is provided in a transient message/);
+    assert.match(prompt, /当前目录会在每次模型请求中作为临时上下文消息提供/);
     assert.doesNotMatch(prompt.replace(/\\/g, '/'), /mutated/);
   });
 

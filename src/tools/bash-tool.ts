@@ -8,6 +8,8 @@ import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from 
 import { Logger } from '../utils/logger';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { isToolAllowed, isBashCommandAllowed } from '../utils/safety';
+import { resolveToolGatewayAccess } from './tool-gateway';
+import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
 
 const execAsync = promisify(exec);
 const CWD_MARKER_PREFIX = '__XIAOBA_CWD_MARKER__';
@@ -29,23 +31,24 @@ export class ShellTool implements Tool {
   definition: ToolDefinition = {
     name: 'execute_shell',
     description: [
-      'Execute a single command in the system shell. On Windows this tool uses PowerShell when available and falls back to cmd.exe only if PowerShell cannot start.',
-      'Commands start from the current directory. Each call uses a fresh shell process; only the final current directory is persisted across calls. Environment variables, aliases, functions, and activated virtual environments are not persisted.',
+      '执行一条非交互式系统命令。',
+      '命令从当前目录启动；每次调用都是新的 shell 进程，只有最终当前目录会保留到后续工具调用。',
+      '环境变量、alias、函数和已激活虚拟环境不会自动跨调用保留；需要时在同一条 command 中显式设置。',
     ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
         command: {
           type: 'string',
-          description: 'Command to execute',
+          description: '要执行的完整命令。避免需要人工交互的命令。',
         },
         description: {
           type: 'string',
-          description: 'Optional short description of what the command does',
+          description: '可选。对这条命令用途的一句话说明，用于日志展示。',
         },
         timeout: {
           type: 'number',
-          description: 'Timeout in milliseconds, default 30000ms',
+          description: '超时时间，单位毫秒。默认 30000。',
         },
       },
       required: ['command'],
@@ -68,6 +71,16 @@ export class ShellTool implements Tool {
     if (!commandPermission.allowed) {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `Execution blocked: ${commandPermission.reason}` };
     }
+
+    const gateway = resolveToolGatewayAccess(context, {
+      toolName: this.definition.name,
+      operation: 'execute_shell',
+    });
+    if (!gateway.ok) {
+      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
+    }
+    const remoteResult = await executeRemoteDeviceRpcTool(context, gateway, 'execute_shell', 'execute_shell', args);
+    if (remoteResult) return remoteResult;
 
     if (description) {
       Logger.info(`Executing command: ${description}`);

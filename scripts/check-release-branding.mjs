@@ -56,14 +56,48 @@ assertIncludes('GitHub release title', readText('.github/workflows/release.yml')
 assertIncludes('Windows install shortcut', readText('install.ps1'), 'CatsCo Dashboard');
 assertIncludes('Unix install launcher', readText('install.sh'), 'CatsCo Dashboard');
 assertIncludes(
-  'runtime current-directory prompt',
-  readText('src/runtime/prompt-composer.ts'),
-  'Current directory is provided in a transient message',
+  'runtime context date variable',
+  readText('prompts/runtime-context.md'),
+  '{{date}}',
 );
+assertIncludes('electron build files', JSON.stringify(packageJson.build?.files || []), 'prompts/**/*');
+
+for (const promptPath of [
+  'prompts/system-prompt.md',
+  'prompts/runtime-context.md',
+  'prompts/compact-system.md',
+  'prompts/subagents/system.md',
+  'prompts/subagents/ask-parent-enabled.md',
+  'prompts/subagents/ask-parent-disabled.md',
+  'prompts/subagents/roles/explorer.md',
+  'prompts/subagents/roles/reviewer.md',
+  'prompts/subagents/roles/skill.md',
+  'prompts/subagents/roles/tester.md',
+  'prompts/subagents/roles/worker.md',
+  'prompts/transient/current-directory.md',
+  'prompts/transient/runtime-context-rules.md',
+  'prompts/transient/skills-list.md',
+  'prompts/transient/subagent-status.md',
+  'prompts/transient/plan-status.md',
+  'prompts/transient/runner-duplicate-outbound.md',
+  'prompts/transient/runner-empty-max-tokens.md',
+  'prompts/transient/orchestration-initial-complex.md',
+  'prompts/transient/orchestration-initial-simple.md',
+  'prompts/transient/orchestration-explicit-plan-request.md',
+  'prompts/transient/orchestration-plan-nudge.md',
+  'prompts/transient/orchestration-subagent-nudge.md',
+  'prompts/sidecars/chime-in-judge.md',
+  'prompts/sidecars/daily-report.md',
+]) {
+  if (!fs.existsSync(path.join(root, promptPath))) {
+    fail(`${promptPath} should exist for packaged runtime prompt loading`);
+  }
+}
 
 const filesToScan = [
   'package.json',
   'electron-builder.config.cjs',
+  ...walk('prompts'),
   ...walk('dashboard'),
   ...walk('electron'),
   ...walk('src'),

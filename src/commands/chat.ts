@@ -1,9 +1,11 @@
 import * as readline from 'readline';
+import inquirer from 'inquirer';
 import ora from 'ora';
 import { Logger } from '../utils/logger';
 import { CommandOptions } from '../types';
 import { styles } from '../theme/colors';
 import { AgentSession, SessionCallbacks } from '../core/agent-session';
+import type { ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult } from '../types/tool';
 import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/runtime-command-support';
 import { RuntimeFactory } from '../runtime/runtime-factory';
 import { resolveRuntimeProfileFromConfig } from '../runtime/runtime-profile-config';
@@ -82,10 +84,47 @@ function createStreamingCallbacks(spinner: ora.Ora): { callbacks: SessionCallbac
       spinner.stop();
       console.log(content);
       spinner.start();
-    }
+    },
+    confirmToolExecution: async (request) => confirmCliToolExecution(request, spinner),
   };
 
   return { callbacks, didStream: () => streamed };
+}
+
+async function confirmCliToolExecution(
+  request: ToolExecutionConfirmationRequest,
+  spinner: ora.Ora,
+): Promise<ToolExecutionConfirmationResult> {
+  spinner.stop();
+  const riskLabel = request.risk === 'high' ? '高风险' : request.risk === 'medium' ? '需要确认' : '低风险';
+  console.log('');
+  Logger.warning(`${riskLabel}工具操作: ${request.toolName}`);
+  Logger.info(request.reason);
+  if (request.workingDirectory) {
+    Logger.info(`当前目录: ${request.workingDirectory}`);
+  }
+  const argsPreview = JSON.stringify(request.args ?? {}, null, 2);
+  if (argsPreview && argsPreview !== '{}') {
+    Logger.info(`参数: ${argsPreview.length > 800 ? `${argsPreview.slice(0, 800)}...` : argsPreview}`);
+  }
+
+  if (!process.stdin.isTTY) {
+    spinner.start();
+    return { approved: false, reason: '当前环境无法显示确认提示，已取消该工具调用。' };
+  }
+
+  const { approved } = await inquirer.prompt([
+    {
+      type: 'confirm',
+      name: 'approved',
+      message: `允许执行 ${request.toolName} 吗？`,
+      default: request.risk !== 'high',
+    },
+  ]);
+  spinner.start();
+  return approved
+    ? { approved: true }
+    : { approved: false, reason: `用户取消了 ${request.toolName}。` };
 }
 
 async function sendSingleMessage(

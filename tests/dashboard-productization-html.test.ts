@@ -126,7 +126,14 @@ test('SkillHub store is separate from Companion Hub and owns publishing controls
   assert.match(scriptFiles.skillhub, /async function installSkillHubSkill\(skillId, version\)/);
   assert.match(scriptFiles.skillhub, /async function showSkillHubVersions\(skillId\)/);
   assert.match(scriptFiles.skillhub, /async function yankOwnSkillHubVersion\(packageVersionId\)/);
-  assert.doesNotMatch(dashboardSource, /data-page="developer"|id="page-developer"/);
+  assert.doesNotMatch(
+    dashboardSource,
+    /SkillHub Developer|id="skillhub-developer-apply"|id="skillhub-developer-console"|data-page="developer"|id="page-developer"/,
+  );
+  assert.doesNotMatch(
+    scriptFiles.skillhub,
+    /applySkillHubDeveloper|createSkillHubManifestDraft|submitSkillHubReview|renderSkillHubManifestPreviewState/,
+  );
 });
 
 test('CatsCo Chat readiness, setup, and composer are split between React UI and script state', () => {

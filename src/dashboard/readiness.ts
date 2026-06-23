@@ -214,7 +214,8 @@ function buildModelChecks(
   const apiKey = firstNonEmpty(env.GAUZ_LLM_API_KEY, config.apiKey);
   const catsCoToken = firstNonEmpty(env.CATSCO_USER_TOKEN, env.CATSCOMPANY_USER_TOKEN);
   const catsCoUserUid = firstNonEmpty(env.CATSCO_USER_UID, env.CATSCOMPANY_USER_UID);
-  const relayConfigured = isCatsRelayModelConfigured(provider, apiBase, model, apiKey);
+  const modelSource = String(env.CATSCO_MODEL_SOURCE || '').trim().toLowerCase();
+  const relayConfigured = modelSource !== 'custom' && isCatsRelayModelConfigured(provider, apiBase, model, apiKey);
   const relayCheck = relayConfigured
     ? passCheck(
       'model.managed.relay',

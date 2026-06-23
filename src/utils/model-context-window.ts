@@ -1,5 +1,6 @@
 import { ChatConfig } from '../types';
 import { resolveMaxTokens } from '../providers/output-limits';
+import { RELAY_MODEL_PROFILES } from './relay-model-profiles';
 
 export interface ModelContextWindowSpec {
   id: string;
@@ -28,32 +29,19 @@ const MAX_SUMMARY_BUDGET_TOKENS = 300_000;
 const SUMMARY_BUDGET_RATIO = 0.35;
 const SUMMARY_WRAPPER_RESERVE_TOKENS = 8_192;
 
-export const RELAY_MODEL_CONTEXT_WINDOW_SPECS: ModelContextWindowSpec[] = [
-  {
-    id: 'minimax-m3',
-    label: 'MiniMax M3',
-    modelPatterns: [/^minimax-m3$/i],
-    contextWindowTokens: 1_000_000,
-  },
-  {
-    id: 'minimax-m2.7',
-    label: 'MiniMax M2.7',
-    modelPatterns: [/^minimax-m2\.7(?:-highspeed)?$/i],
-    contextWindowTokens: 204_800,
-  },
-  {
-    id: 'deepseek-v4-flash',
-    label: 'DeepSeek V4 Flash',
-    modelPatterns: [/^deepseek-v4-flash$/i],
-    contextWindowTokens: 1_000_000,
-  },
-  {
-    id: 'glm-5.1',
-    label: 'GLM 5.1',
-    modelPatterns: [/^glm-5\.1$/i],
-    contextWindowTokens: 200_000,
-  },
-];
+const RELAY_MODEL_ALIASES: Record<string, RegExp[]> = {
+  'minimax-m2.7': [/^minimax-m2\.7(?:-highspeed)?$/i],
+};
+
+export const RELAY_MODEL_CONTEXT_WINDOW_SPECS: ModelContextWindowSpec[] = RELAY_MODEL_PROFILES.map(profile => ({
+  id: profile.id,
+  label: profile.label,
+  modelPatterns: [
+    new RegExp(`^${profile.model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+    ...(RELAY_MODEL_ALIASES[profile.id] || []),
+  ],
+  contextWindowTokens: profile.contextWindowTokens,
+}));
 
 export function parsePositiveInteger(value: unknown): number | undefined {
   const text = String(value ?? '').trim();

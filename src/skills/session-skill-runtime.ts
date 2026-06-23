@@ -1,4 +1,5 @@
 import { Message } from '../types';
+import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
 import { SkillManager } from './skill-manager';
 
 export const TRANSIENT_SKILLS_LIST_PREFIX = '[transient_skills_list]';
@@ -34,7 +35,7 @@ export class SessionSkillRuntime {
 
     return {
       role: 'system',
-      content: `${TRANSIENT_SKILLS_LIST_PREFIX}\n你可以使用以下 skills（必须通过 skill 工具调用）：\n\n${skillList}`,
+      content: `${TRANSIENT_SKILLS_LIST_PREFIX}\n${renderRequiredDefaultPromptFile('transient/skills-list.md', { skillList })}`,
     };
   }
 

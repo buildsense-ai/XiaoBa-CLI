@@ -2,6 +2,8 @@ import { AgentSession, AgentServices, SystemPromptProvider } from './agent-sessi
 import { Logger } from '../utils/logger';
 import { composeSessionSystemPromptProvider } from './session-system-prompt';
 import { SubAgentManager } from './sub-agent-manager';
+import type { SessionRoute } from '../types/session-identity';
+import { isSessionRoute } from './session-router';
 
 /** 默认会话过期时间：60 分钟 */
 const DEFAULT_SESSION_TTL = 60 * 60 * 1000;
@@ -11,6 +13,8 @@ export interface MessageSessionManagerOptions {
   systemPromptProviderFactory?: (sessionKey: string) => SystemPromptProvider;
   skillReloadHandler?: () => Promise<void>;
 }
+
+export type SessionKeyInput = string | SessionRoute;
 
 /**
  * MessageSessionManager - 统一的消息会话生命周期管理器
@@ -53,7 +57,8 @@ export class MessageSessionManager {
   }
 
   /** 获取已存在的会话；不会因为查询而新建会话 */
-  get(key: string): AgentSession | null {
+  get(input: SessionKeyInput): AgentSession | null {
+    const { key } = this.normalizeSessionInput(input);
     const session = this.sessions.get(key) || null;
     if (session) {
       session.lastActiveAt = Date.now();
@@ -70,10 +75,11 @@ export class MessageSessionManager {
    * 获取或创建会话
    * @param key - 会话唯一标识（如 cc_user:usr3, feishu_group:chat123）
    */
-  getOrCreate(key: string): AgentSession {
+  getOrCreate(input: SessionKeyInput): AgentSession {
+    const { key, route } = this.normalizeSessionInput(input);
     let session = this.sessions.get(key);
     if (!session) {
-      session = new AgentSession(key, this.agentServices, this.sessionType);
+      session = new AgentSession(key, this.agentServices, this.sessionType, route);
       if (this.systemPromptProviderFactory) {
         session.setSystemPromptProvider(composeSessionSystemPromptProvider(
           this.systemPromptProviderFactory(key),
@@ -98,6 +104,13 @@ export class MessageSessionManager {
   injectContext(key: string, text: string): void {
     const session = this.getOrCreate(key);
     session.injectContext(text);
+  }
+
+  private normalizeSessionInput(input: SessionKeyInput): { key: string; route?: SessionRoute } {
+    if (isSessionRoute(input)) {
+      return { key: input.sessionKey, route: input };
+    }
+    return { key: input };
   }
 
   /** 启动定期清理（每分钟检查一次） */

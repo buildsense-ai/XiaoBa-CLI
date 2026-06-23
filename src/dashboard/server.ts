@@ -19,10 +19,14 @@ export interface DashboardControllers {
   projectRoot?: string;
 }
 
+export interface DashboardServerHandle {
+  stop: () => Promise<void>;
+}
+
 export async function startDashboard(
   port: number = DEFAULT_PORT,
   controllers: DashboardControllers = {}
-): Promise<void> {
+): Promise<DashboardServerHandle> {
   const app = express();
   const envPackaged = /^(1|true|yes)$/i.test(process.env.XIAOBA_IS_PACKAGED || '');
   const projectRoot = controllers.projectRoot || (envPackaged ? process.env.XIAOBA_APP_ROOT : undefined) || process.cwd();
@@ -63,4 +67,17 @@ export async function startDashboard(
     // Some environments do not expose IPv6 loopback. The IPv4 listener above is enough.
   });
   activeServers.push(localhostIpv6Server);
+
+  return {
+    async stop(): Promise<void> {
+      serviceManager.stopAll();
+      await Promise.all(activeServers.splice(0).map(closeServer));
+    },
+  };
+}
+
+function closeServer(server: Server): Promise<void> {
+  return new Promise(resolve => {
+    server.close(() => resolve());
+  });
 }

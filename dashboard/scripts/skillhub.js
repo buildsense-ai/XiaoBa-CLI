@@ -14,10 +14,6 @@ function renderSkillHubVersionsState(payload = {}) {
   window.__catscoRenderSkillHubVersions?.(payload);
 }
 
-function renderSkillHubManifestPreviewState(payload = {}) {
-  window.__catscoRenderSkillHubManifestPreview?.(payload);
-}
-
 function skillHubStoreDraft(){
   return window.__catscoGetStoreDraft?.()||{};
 }
@@ -250,89 +246,5 @@ async function yankOwnSkillHubVersion(packageVersionId) {
     await refreshSkillHubPage();
   } catch (e) {
     alert('Remove failed: ' + (e.message || String(e)));
-  }
-}
-
-async function applySkillHubDeveloper() {
-  try {
-    const payload = {
-      displayName: skillHubDraftValue('skillhub-apply-name').trim(),
-      namespace: skillHubDraftValue('skillhub-apply-namespace').trim(),
-      contact: skillHubDraftValue('skillhub-apply-contact').trim(),
-      websiteUrl: skillHubDraftValue('skillhub-apply-homepage').trim(),
-      reason: skillHubDraftValue('skillhub-apply-reason').trim(),
-    };
-    await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/apply', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(payload),
-    }));
-    alert('申请已提交，等待管理员审核。');
-    fetchSkillHubDeveloper();
-  } catch (e) {
-    alert('提交申请失败：' + (e.message || String(e)));
-  }
-}
-
-function collectSkillHubDeveloperForm() {
-  return {
-    localPath: skillHubDraftValue('skillhub-local-path').trim(),
-    name: skillHubDraftValue('skillhub-name').trim(),
-    displayName: skillHubDraftValue('skillhub-name').trim(),
-    version: skillHubDraftValue('skillhub-version').trim(),
-    description: skillHubDraftValue('skillhub-description').trim(),
-    category: skillHubDraftValue('skillhub-category').trim(),
-    keywords: skillHubDraftValue('skillhub-keywords').trim(),
-    triggerExamples: skillHubDraftValue('skillhub-triggers').trim(),
-    permissions: skillHubDraftValue('skillhub-permissions').trim(),
-    repositoryUrl: skillHubDraftValue('skillhub-repository-url').trim(),
-  };
-}
-
-async function createSkillHubManifestDraft() {
-  const renderPreview = (text, tone = '') => {
-    renderSkillHubManifestPreviewState({ text, tone });
-  };
-  renderPreview('Generating manifest...', 'muted');
-  try {
-    const data = await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/manifest-draft', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(collectSkillHubDeveloperForm()),
-    }));
-    skillHubDraftManifest = data.manifest;
-    applySkillHubManifestToForm(skillHubDraftManifest);
-    renderPreview(JSON.stringify(skillHubDraftManifest, null, 2));
-  } catch (e) {
-    renderPreview('Generate failed: ' + (e.message || String(e)), 'error');
-  }
-}
-
-function applySkillHubManifestToForm(manifest) {
-  if (!manifest) return;
-  window.__catscoSetStoreDraft?.({
-    'skillhub-name': String(manifest.displayName || manifest.name || ''),
-    'skillhub-version': String(manifest.version || ''),
-    'skillhub-description': String(manifest.description || ''),
-    'skillhub-category': String((manifest.categories || [])[0] || ''),
-    'skillhub-keywords': Array.isArray(manifest.keywords) ? manifest.keywords.join('，') : String(manifest.keywords || ''),
-    'skillhub-triggers': (manifest.triggerExamples || []).join('\n'),
-  });
-}
-
-async function submitSkillHubReview() {
-  if (!confirm('提交后会上传这个 Skill 文件夹到 SkillHub 云端进行扫描和审核，是否继续？')) return;
-  try {
-    const payload = { ...collectSkillHubDeveloperForm(), manifest: skillHubDraftManifest || undefined };
-    await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/submissions', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(payload),
-    }));
-    alert('已提交审核。');
-    skillHubDraftManifest = null;
-    fetchSkillHubDeveloper();
-  } catch (e) {
-    alert('提交审核失败：' + (e.message || String(e)));
   }
 }

@@ -8,16 +8,21 @@ import { createRuntimeConfigSnapshot } from '../src/runtime/runtime-config-snaps
 describe('dashboard runtime config snapshot', () => {
   let testRoot: string;
   let originalCwd: string;
+  let originalSkillsEnv: string | undefined;
 
   beforeEach(() => {
     originalCwd = process.cwd();
+    originalSkillsEnv = process.env.XIAOBA_SKILLS_DIR;
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-runtime-config-'));
     process.chdir(testRoot);
+    process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
     writeSkill('snapshot-demo');
   });
 
   afterEach(() => {
     process.chdir(originalCwd);
+    if (originalSkillsEnv === undefined) delete process.env.XIAOBA_SKILLS_DIR;
+    else process.env.XIAOBA_SKILLS_DIR = originalSkillsEnv;
     if (testRoot && fs.existsSync(testRoot)) {
       fs.rmSync(testRoot, { recursive: true, force: true });
     }
@@ -60,7 +65,7 @@ describe('dashboard runtime config snapshot', () => {
     assert.equal(snapshot.workingDirectory.path, fs.realpathSync(testRoot));
     assert.equal(snapshot.workingDirectory.exists, true);
     assert.match(snapshot.systemPrompt.text, /你在这个平台上的名字是：Desk Assistant/);
-    assert.match(snapshot.systemPrompt.text, /Current directory is provided in a transient message/);
+    assert.match(snapshot.systemPrompt.text, /当前目录会在每次模型请求中作为临时上下文消息提供/);
     assert.doesNotMatch(snapshot.systemPrompt.text.replace(/\\/g, '/'), new RegExp(escapeRegExp(fs.realpathSync(testRoot).replace(/\\/g, '/'))));
     assert.equal(snapshot.logging.sessionLogDir, path.join(fs.realpathSync(testRoot), 'logs/sessions'));
     assert.equal(snapshot.logging.upload.enabled, true);
