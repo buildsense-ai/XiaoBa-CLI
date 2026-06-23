@@ -7,6 +7,7 @@ export const MAX_DEVICE_RPC_TOOL_CONTENT_CHARS = 48_000;
 
 export function isRemoteReadonlyTool(toolName: string, operation: DeviceGrantOperation): boolean {
   return (toolName === 'read_file' && operation === 'read_file')
+    || (toolName === 'resolve_common_directory' && operation === 'resolve_common_directory')
     || (toolName === 'glob' && operation === 'glob')
     || (toolName === 'grep' && operation === 'grep');
 }
@@ -20,7 +21,7 @@ export function isRemoteDeviceRpcTool(toolName: string, operation: DeviceGrantOp
 export async function executeRemoteDeviceRpcTool(
   context: ToolExecutionContext,
   gateway: ToolGatewayDecision,
-  toolName: 'read_file' | 'glob' | 'grep' | 'write_file' | 'edit_file' | 'execute_shell',
+  toolName: 'read_file' | 'resolve_common_directory' | 'glob' | 'grep' | 'write_file' | 'edit_file' | 'execute_shell',
   operation: DeviceGrantOperation,
   args: Record<string, unknown>,
 ): Promise<ToolExecutionResult | undefined> {
@@ -30,7 +31,7 @@ export async function executeRemoteDeviceRpcTool(
     return {
       ok: false,
       errorCode: 'PERMISSION_DENIED',
-      message: `远程设备 RPC 当前只允许 read_file / glob / grep / write_file / edit_file，已阻止 ${toolName}。请用 glob 查看文件列表，用 write_file 创建或覆盖文本文件。`,
+      message: `远程设备 RPC 当前只允许 read_file / resolve_common_directory / glob / grep / write_file / edit_file，已阻止 ${toolName}。请用 resolve_common_directory 解析常见目录，用 glob 查看文件列表，用 write_file 创建或覆盖文本文件。`,
     };
   }
 

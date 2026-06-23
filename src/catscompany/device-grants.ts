@@ -99,6 +99,7 @@ function normalizeOperations(value: unknown): DeviceGrantOperation[] {
 
 function isDeviceGrantOperation(value: unknown): value is DeviceGrantOperation {
   return value === 'read_file'
+    || value === 'resolve_common_directory'
     || value === 'write_file'
     || value === 'edit_file'
     || value === 'send_file'

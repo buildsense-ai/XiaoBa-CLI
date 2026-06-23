@@ -10,6 +10,7 @@ import { GlobTool } from '../src/tools/glob-tool';
 import { GrepTool } from '../src/tools/grep-tool';
 import { SendFileTool } from '../src/tools/send-file-tool';
 import { ShellTool } from '../src/tools/bash-tool';
+import { CommonDirectoryTool } from '../src/tools/common-directory-tool';
 import type {
   ExecutionScope,
   ScopedDeviceGrant,
@@ -41,7 +42,7 @@ function localDevice(overrides: Partial<ScopedLocalDeviceGrant> = {}): ScopedLoc
     bodyId: 'body-device',
     installationId: 'install-device',
     deviceId: 'install-device',
-    capabilities: ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file'],
+    capabilities: ['read_file', 'resolve_common_directory', 'glob', 'grep', 'write_file', 'edit_file', 'send_file'],
     createdAt: Date.now(),
     ...overrides,
   };
@@ -248,6 +249,52 @@ describe('CatsCo ToolGateway', () => {
     assert.equal(rpcRequest.operation, 'read_file');
     assert.equal(rpcRequest.grant.deviceId, 'other-device');
     assert.deepEqual(rpcRequest.args, { file_path: requestedPath, limit: 20 });
+  });
+
+  test('routes resolve_common_directory to the backend-selected remote device before path guessing', async () => {
+    const root = makeWorkspace();
+    let rpcRequest: any;
+    const result = await new CommonDirectoryTool().execute({ directory: 'desktop' }, context(root, {
+      deviceGrants: [deviceGrant(['resolve_common_directory'], {
+        deviceId: 'speaker-device',
+        deviceDisplayName: 'Speaker Laptop',
+        deviceBodyId: 'speaker-body',
+        deviceInstallationId: 'speaker-install',
+      })],
+      deviceSelection: deviceSelection({
+        selectedDeviceId: 'speaker-device',
+        selectedDeviceDisplayName: 'Speaker Laptop',
+        selectedDeviceBodyId: 'speaker-body',
+        selectedDeviceInstallationId: 'speaker-install',
+        selectedDeviceOperations: ['resolve_common_directory'],
+      }),
+      deviceRpc: {
+        executeTool: async request => {
+          rpcRequest = request;
+          return {
+            ok: true,
+            content: [
+              'Resolved common directory:',
+              'kind: desktop',
+              'path: C:\\Users\\Speaker\\Desktop',
+              'source: windows_user_shell_folders',
+              'exists: true',
+              'platform: win32',
+              '',
+              'Use this exact path as the base directory for follow-up file operations.',
+            ].join('\n'),
+          };
+        },
+      },
+    }));
+
+    assert.equal(result.ok, true);
+    assert.match(String(result.content), /C:\\Users\\Speaker\\Desktop/);
+    assert.doesNotMatch(String(result.content), /Administrator/);
+    assert.equal(rpcRequest.toolName, 'resolve_common_directory');
+    assert.equal(rpcRequest.operation, 'resolve_common_directory');
+    assert.equal(rpcRequest.grant.deviceId, 'speaker-device');
+    assert.deepEqual(rpcRequest.args, { directory: 'desktop' });
   });
 
   test('routes glob and grep to the backend-selected remote device', async () => {

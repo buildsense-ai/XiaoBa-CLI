@@ -69,7 +69,7 @@ function serverGrant(overrides: Partial<ScopedDeviceGrant> = {}): ScopedDeviceGr
     actorUserId: 'usr7',
     agentId: 'usr43',
     agentBodyId: 'body-agent',
-    operations: ['read_file', 'glob', 'grep'],
+    operations: ['read_file', 'resolve_common_directory', 'glob', 'grep'],
     createdAt: Date.now(),
     expiresAt: Date.now() + 60_000,
     ...overrides,
@@ -77,7 +77,7 @@ function serverGrant(overrides: Partial<ScopedDeviceGrant> = {}): ScopedDeviceGr
 }
 
 describe('CatsCompany Device RPC file tools', () => {
-  test('maps CatsCo server grant fields into outbound readonly device_rpc requests', async () => {
+  test('maps CatsCo server grant fields into outbound device_rpc requests', async () => {
     const captured: Array<{ request: any; timeoutMs?: number }> = [];
     const bot = Object.create(CatsCompanyBot.prototype) as any;
     bot.bot = {
@@ -120,6 +120,12 @@ describe('CatsCompany Device RPC file tools', () => {
       args: { pattern: '**/*.xlsx', path: 'catsco_attachment:project' },
       grant,
     });
+    const resolveDir = await transport.executeTool({
+      toolName: 'resolve_common_directory',
+      operation: 'resolve_common_directory',
+      args: { directory: 'desktop' },
+      grant,
+    });
     const grep = await transport.executeTool({
       toolName: 'grep',
       operation: 'grep',
@@ -129,13 +135,16 @@ describe('CatsCompany Device RPC file tools', () => {
 
     assert.equal(read.ok, true);
     assert.equal(glob.ok, true);
+    assert.equal(resolveDir.ok, true);
     assert.equal(grep.ok, true);
     assert.equal(read.ok ? read.content : '', 'remote read_file');
     assert.equal(glob.ok ? glob.content : '', 'remote glob');
+    assert.equal(resolveDir.ok ? resolveDir.content : '', 'remote resolve_common_directory');
     assert.equal(grep.ok ? grep.content : '', 'remote grep');
     assert.deepEqual(captured.map(item => [item.request.tool_name, item.request.operation]), [
       ['read_file', 'read_file'],
       ['glob', 'glob'],
+      ['resolve_common_directory', 'resolve_common_directory'],
       ['grep', 'grep'],
     ]);
 
@@ -156,6 +165,25 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.equal(first.expires_at, grant.expiresAt);
     assert.deepEqual(first.payload, { args: { file_path: 'catsco_attachment:quote.xlsx', limit: 20 } });
     assert.equal(captured[0].timeoutMs, 12_345);
+  });
+
+  test('executes resolve_common_directory on the target local device and returns a normalized result', async () => {
+    const captured: { result?: any } = {};
+    const bot = botWithDevice(captured);
+
+    await bot.handleDeviceRpcRequest(request({
+      request_id: 'rpc-resolve-directory-1',
+      operation: 'resolve_common_directory',
+      tool_name: 'resolve_common_directory',
+      payload: { args: { directory: 'home' } },
+    }));
+
+    assert.ok(captured.result);
+    assert.equal(captured.result.error, undefined);
+    assert.equal(captured.result.result.ok, true);
+    assert.match(String(captured.result.result.content), /Resolved common directory:/);
+    assert.match(String(captured.result.result.content), /kind: home/);
+    assert.equal(captured.result.device_id, 'install-device');
   });
 
   test('executes read_file on the target local device and returns a normalized result', async () => {
@@ -294,7 +322,7 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.ok(captured.result);
     assert.equal(captured.result.result, undefined);
     assert.equal(captured.result.error.code, 'unsupported_operation');
-    assert.match(captured.result.error.message, /read_file, glob, grep, write_file, and edit_file/);
+    assert.match(captured.result.error.message, /read_file, resolve_common_directory, glob, grep, write_file, and edit_file/);
     assert.doesNotMatch(captured.result.error.message, /execute_shell/);
   });
 
