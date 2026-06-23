@@ -6,6 +6,7 @@ import { RuntimeFeedbackInbox } from './runtime-feedback-inbox';
 export interface SessionLifecycleManagerOptions {
   sessionKey: string;
   legacySessionKey?: string;
+  allowLegacySessionFallback?: boolean;
   runtimeFeedbackInbox: RuntimeFeedbackInbox;
   sessionStore?: SessionStore;
 }
@@ -66,7 +67,9 @@ export class SessionLifecycleManager {
   clear(): ResetSessionStateResult {
     this.sessionStore.deleteSession(this.options.sessionKey);
     this.sessionStore.deleteRuntimeState(this.options.sessionKey);
-    if (this.options.legacySessionKey && this.options.legacySessionKey !== this.options.sessionKey) {
+    if (this.shouldUseLegacySessionFallback()
+      && this.options.legacySessionKey
+      && this.options.legacySessionKey !== this.options.sessionKey) {
       this.sessionStore.deleteSession(this.options.legacySessionKey);
       this.sessionStore.deleteRuntimeState(this.options.legacySessionKey);
     }
@@ -80,7 +83,9 @@ export class SessionLifecycleManager {
   loadCurrentDirectory(): string | undefined {
     const current = this.sessionStore.loadRuntimeState(this.options.sessionKey).currentDirectory;
     if (current) return current;
-    if (!this.options.legacySessionKey || this.options.legacySessionKey === this.options.sessionKey) {
+    if (!this.shouldUseLegacySessionFallback()
+      || !this.options.legacySessionKey
+      || this.options.legacySessionKey === this.options.sessionKey) {
       return undefined;
     }
     return this.sessionStore.loadRuntimeState(this.options.legacySessionKey).currentDirectory;
@@ -107,10 +112,17 @@ export class SessionLifecycleManager {
     if (this.sessionStore.hasSession(this.options.sessionKey)) {
       return this.options.sessionKey;
     }
+    if (!this.shouldUseLegacySessionFallback()) {
+      return undefined;
+    }
     const legacy = this.options.legacySessionKey;
     if (legacy && legacy !== this.options.sessionKey && this.sessionStore.hasSession(legacy)) {
       return legacy;
     }
     return undefined;
+  }
+
+  private shouldUseLegacySessionFallback(): boolean {
+    return this.options.allowLegacySessionFallback !== false;
   }
 }

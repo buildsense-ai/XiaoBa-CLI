@@ -189,6 +189,7 @@ export class AgentSession {
     this.lifecycleManager = new SessionLifecycleManager({
       sessionKey: key,
       legacySessionKey: sessionRoute?.legacySessionKey,
+      allowLegacySessionFallback: this.shouldAllowLegacySessionFallback(sessionRoute),
       runtimeFeedbackInbox: this.runtimeFeedbackInbox,
     });
     this.defaultDirectory = this.resolveDefaultDirectory();
@@ -238,6 +239,12 @@ export class AgentSession {
     }
     this.lifecycleManager.saveCurrentDirectory(this.defaultDirectory);
     return this.defaultDirectory;
+  }
+
+  private shouldAllowLegacySessionFallback(route?: SessionRoute): boolean {
+    // CatsCo legacy keys do not include enough topic/agent identity, so V2 sessions
+    // must not restore them as if they were the same conversation.
+    return route?.source !== 'catscompany';
   }
 
   private isExistingDirectory(directory: string): boolean {
