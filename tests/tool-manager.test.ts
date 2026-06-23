@@ -523,14 +523,13 @@ describe('ToolManager', () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-remote-file-'));
     const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
     const executed: string[] = [];
-    manager.registerTool(fakeTool('write_file', async () => {
-      executed.push('write_file');
-      return { ok: true, content: 'remote write requested' };
-    }));
-    manager.registerTool(fakeTool('glob', async () => {
-      executed.push('glob');
-      return { ok: true, content: 'remote glob requested' };
-    }));
+    const operations: DeviceGrantOperation[] = ['read_file', 'glob', 'grep', 'write_file', 'edit_file'];
+    for (const operation of operations) {
+      manager.registerTool(fakeTool(operation, async () => {
+        executed.push(operation);
+        return { ok: true, content: `remote ${operation} requested` };
+      }));
+    }
 
     const channelScope = catsScope({
       actorUserId: 'usr100',
@@ -553,7 +552,7 @@ describe('ToolManager', () => {
         installationId: 'cloud-install',
         deviceId: 'cloud-install',
       }),
-      deviceGrants: [catsDeviceGrant(channelScope, ['write_file', 'glob'], {
+      deviceGrants: [catsDeviceGrant(channelScope, operations, {
         grantId: 'speaker-file-grant',
         identitySource: 'channel_identity_link',
         deviceId: 'speaker-device',
@@ -563,7 +562,7 @@ describe('ToolManager', () => {
         ownerUserId: 'usr100',
         actorUserId: 'usr100',
       })],
-      deviceSelection: catsDeviceSelection(channelScope, ['write_file', 'glob'], {
+      deviceSelection: catsDeviceSelection(channelScope, operations, {
         selectedDeviceId: 'speaker-device',
         selectedDeviceDisplayName: 'Speaker Laptop',
         selectedDeviceBodyId: 'speaker-body',
@@ -578,12 +577,12 @@ describe('ToolManager', () => {
       },
     };
 
-    const write = await manager.executeTool({
-      id: 'call-remote-write',
+    const read = await manager.executeTool({
+      id: 'call-remote-read',
       type: 'function',
       function: {
-        name: 'write_file',
-        arguments: JSON.stringify({ file_path: 'C:\\Users\\Alice\\Desktop\\note.txt', content: 'hello' }),
+        name: 'read_file',
+        arguments: JSON.stringify({ file_path: 'C:\\Users\\Alice\\Desktop\\note.txt' }),
       },
     }, [], remoteContext);
     const glob = await manager.executeTool({
@@ -594,10 +593,42 @@ describe('ToolManager', () => {
         arguments: JSON.stringify({ pattern: '*', path: 'C:\\Users\\Alice\\Desktop' }),
       },
     }, [], remoteContext);
+    const grep = await manager.executeTool({
+      id: 'call-remote-grep',
+      type: 'function',
+      function: {
+        name: 'grep',
+        arguments: JSON.stringify({ pattern: 'needle', path: 'C:\\Users\\Alice\\Desktop', output_mode: 'files' }),
+      },
+    }, [], remoteContext);
+    const write = await manager.executeTool({
+      id: 'call-remote-write',
+      type: 'function',
+      function: {
+        name: 'write_file',
+        arguments: JSON.stringify({ file_path: 'C:\\Users\\Alice\\Desktop\\note.txt', content: 'hello' }),
+      },
+    }, [], remoteContext);
+    const edit = await manager.executeTool({
+      id: 'call-remote-edit',
+      type: 'function',
+      function: {
+        name: 'edit_file',
+        arguments: JSON.stringify({ file_path: 'C:\\Users\\Alice\\Desktop\\note.txt', old_string: 'hello', new_string: 'hi' }),
+      },
+    }, [], remoteContext);
 
+    assert.equal(read.ok, true);
+    assert.equal(read.content, 'remote read_file requested');
     assert.equal(write.ok, true);
+    assert.equal(write.content, 'remote write_file requested');
     assert.equal(glob.ok, true);
-    assert.deepEqual(executed, ['write_file', 'glob']);
+    assert.equal(glob.content, 'remote glob requested');
+    assert.equal(grep.ok, true);
+    assert.equal(grep.content, 'remote grep requested');
+    assert.equal(edit.ok, true);
+    assert.equal(edit.content, 'remote edit_file requested');
+    assert.deepEqual(executed, operations);
     assert.equal(confirmations, 0);
   });
 
