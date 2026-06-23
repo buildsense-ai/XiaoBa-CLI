@@ -26,6 +26,7 @@ import { TurnLogRecorder } from './turn-log-recorder';
 import { PlanRuntime } from './plan-runtime';
 import { getPetService } from '../pet/pet-service';
 import {
+  buildSyntheticObservationLifecycleEvent,
   describeSyntheticObservationForLog,
   InMemorySyntheticObservationQueue,
   SyntheticObservation,
@@ -308,7 +309,9 @@ export class AgentTurnController {
     timing: SyntheticObservationTiming,
   ): SyntheticObservation[] {
     if (!slot) return [];
-    return slot.queue.drain().map(observation => withSyntheticObservationTiming(observation, timing));
+    return slot.queue.drain().map(observation =>
+      this.withMemoryBranchObservationMetadata(observation, timing, slot.originTurn)
+    );
   }
 
   private shouldCarryMemoryBranch(slot: MemoryBranchSlot): boolean {
@@ -319,13 +322,28 @@ export class AgentTurnController {
     if (!slot) return;
     slot.handle.cancel();
     const droppedObservations = slot.queue.cancel()
-      .map(observation => withSyntheticObservationTiming(observation, 'late_previous_turn'));
+      .map(observation => this.withMemoryBranchObservationMetadata(
+        observation,
+        'late_previous_turn',
+        slot.originTurn,
+      ));
     if (droppedObservations.length > 0) {
       Logger.info(
         `[${this.options.sessionKey}] dropped ${droppedObservations.length} unconsumed synthetic runtime observation(s): `
         + `reason=${reason} origin_turn=${slot.originTurn} `
         + droppedObservations.map(describeSyntheticObservationForLog).join(' | ')
       );
+      for (const observation of droppedObservations) {
+        Logger.runtimeEvent(
+          'INFO',
+          `[${this.options.sessionKey}] synthetic_observation_lifecycle dropped id=${observation.id || '(unassigned)'}`,
+          buildSyntheticObservationLifecycleEvent(observation, {
+            outcome: 'dropped',
+            reason,
+            originTurn: slot.originTurn,
+          }),
+        );
+      }
     } else if (!slot.done && reason === 'carryover_ttl_expired') {
       Logger.info(
         `[${this.options.sessionKey}] cancelled unfinished memory branch carryover: `
@@ -349,6 +367,21 @@ export class AgentTurnController {
       queue: options.queue,
       signal: options.abortSignal,
     });
+  }
+
+  private withMemoryBranchObservationMetadata(
+    observation: SyntheticObservation,
+    timing: SyntheticObservationTiming,
+    originTurn: number,
+  ): SyntheticObservation {
+    const timed = withSyntheticObservationTiming(observation, timing);
+    return {
+      ...timed,
+      metadata: {
+        ...(timed.metadata || {}),
+        originTurn,
+      },
+    };
   }
 
   private toRunnerCallbacks(callbacks?: AgentTurnCallbacks): RunnerCallbacks {

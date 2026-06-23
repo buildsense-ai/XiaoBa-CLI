@@ -30,6 +30,7 @@ import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/mo
 import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
 import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
 import {
+  buildSyntheticObservationLifecycleEvent,
   buildSyntheticObservationMessages,
   describeSyntheticObservationForLog,
   SyntheticObservation,
@@ -649,6 +650,16 @@ export class ConversationRunner {
       `[${this.sessionLabel}Turn ${turn}] injected ${observations.length} synthetic runtime observation(s): `
       + observations.map(describeSyntheticObservationForLog).join(' | ')
     );
+    for (const observation of observations) {
+      Logger.runtimeEvent(
+        'INFO',
+        `[${this.sessionLabel}Turn ${turn}] synthetic_observation_lifecycle injected id=${observation.id || '(unassigned)'}`,
+        buildSyntheticObservationLifecycleEvent(observation, {
+          outcome: 'injected',
+          reason: 'provider_call_drain',
+        }),
+      );
+    }
   }
 
   /**

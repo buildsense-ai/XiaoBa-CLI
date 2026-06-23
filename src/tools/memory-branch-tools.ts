@@ -160,7 +160,8 @@ export class FinishMemorySearchTool implements Tool {
     description: [
       '结束 memory search branch。',
       '当你已经拿到足够的记忆证据，或确认没有有用记忆时，调用这个工具。',
-      '正常找到有用记忆时不需要设置 inject；如果没有值得注入给主 agent 的额外记忆，设置 inject:false 并传空 refs。',
+      '正常找到有新增价值的记忆时不需要设置 inject，并必须提供支撑 summary 的 refs。',
+      '如果只找到 recent context 已覆盖的信息，或没有值得注入给主 agent 的额外记忆，设置 inject:false 并传空 refs。',
       '调用成功后 branch 会立刻结束。',
     ].join(' '),
     controlMode: 'pause_turn',
@@ -169,16 +170,16 @@ export class FinishMemorySearchTool implements Tool {
       properties: {
         summary: {
           type: 'string',
-          description: '面向当前任务的简洁记忆总结；没有有用记忆时也要简短说明。',
+          description: '面向当前任务的简洁记忆总结。保留当前任务需要的具体锚点；没有新增有用记忆时也要简短说明。',
         },
         refs: {
           type: 'array',
-          description: '支撑 summary 的 canonical refs。没有有用记忆时传空数组。',
+          description: '支撑 summary 的 canonical refs。inject:true 时至少一个；inject:false 时传空数组。',
           items: { type: 'string' },
         },
         inject: {
           type: 'boolean',
-          description: '可选。默认 true。只有确认没有值得注入给主 agent 的额外记忆时设置为 false；此时 refs 必须为空。',
+          description: '可选。默认 true。只有确认没有新增价值、只重复 recent context、或没有值得注入的额外记忆时设置为 false；此时 refs 必须为空。',
         },
       },
       required: ['summary', 'refs'],

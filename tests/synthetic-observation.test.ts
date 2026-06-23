@@ -1,6 +1,7 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import {
+  buildSyntheticObservationLifecycleEvent,
   buildSyntheticObservationMessages,
   describeSyntheticObservationForLog,
   InMemorySyntheticObservationQueue,
@@ -87,6 +88,35 @@ describe('synthetic observations', () => {
     assert.match(logLine, /source=memory/);
     assert.match(logLine, /branch=memory:memory-abc/);
     assert.match(logLine, /refs=chat\/2026-06-16\/demo\.jsonl#1/);
+  });
+
+  test('builds compact lifecycle events for log analysis', () => {
+    const event = buildSyntheticObservationLifecycleEvent({
+      ...observation('memory-ready'),
+      timing: 'late_previous_turn',
+      metadata: {
+        branchType: 'memory',
+        branchId: 'memory-abc',
+        refs: ['chat/2026-06-16/demo.jsonl#1'],
+        originTurn: 7,
+      },
+    }, {
+      outcome: 'dropped',
+      reason: 'carryover_ttl_expired',
+    });
+
+    assert.equal(event.type, 'synthetic_observation_lifecycle');
+    assert.deepEqual(event.payload, {
+      outcome: 'dropped',
+      observation_id: 'memory-ready',
+      source: 'memory',
+      timing: 'late_previous_turn',
+      reason: 'carryover_ttl_expired',
+      origin_turn: 7,
+      branch_id: 'memory-abc',
+      branch_type: 'memory',
+      refs: ['chat/2026-06-16/demo.jsonl#1'],
+    });
   });
 
   test('uses formatted content override for compact JSON observations', () => {

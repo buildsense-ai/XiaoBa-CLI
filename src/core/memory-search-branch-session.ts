@@ -55,7 +55,7 @@ export class MemorySearchBranchSession extends BranchSession {
           content: [
             '你刚才的回复不会传递给主 agent。',
             '这个 branch 只能通过调用 finish_memory_search 结束。',
-            '请现在用当前已有的最佳总结和 refs 调用 finish_memory_search；如果没有值得注入的信息，请设置 inject:false 并传空 refs。',
+            '请现在用当前已有的最佳总结和 refs 调用 finish_memory_search；如果只找到 recent context 已经覆盖的信息，或没有值得注入的信息，请设置 inject:false 并传空 refs。',
           ].join(' '),
         });
       }
@@ -176,6 +176,19 @@ function buildMemorySearchSystemPrompt(): string {
     '5. 读取后要分析这些历史内容如何帮助当前任务，不要只搬运原文片段。',
     '6. 只能通过调用 finish_memory_search 结束。找到有用记忆时，给出面向当前任务的简洁总结和 canonical refs；没有值得额外注入给主 agent 的有用记忆时，也调用 finish_memory_search，设置 inject:false，并使用空 refs 数组。',
     '如果 summary 依赖任何历史 turn，必须提供 refs，且不要设置 inject:false。',
+    '',
+    '注入价值判断：',
+    '- recent_completed_turns 已经会提供给主 agent。不要把它们已经覆盖的内容当作新增记忆返回。',
+    '- 如果搜索结果只是在重复最近一两轮的短对话，且没有额外的工具结果、旧决策、用户修正或压缩风险，请使用 inject:false。',
+    '- 适合注入的内容包括：跨会话信息、更早的同话题决策、用户后来修正过的约束、工具调用结果、被压缩后容易丢失的事实、当前任务需要避免冲突或重复讨论的信息。',
+    '- 如果找到了足够支撑当前任务的高价值 refs，应及时 finish_memory_search；不要为了重复确认而继续读取大量近邻。',
+    '- 如果 late/older memory 与当前用户输入冲突，summary 要明确提示冲突，并让主 agent 以当前用户输入为准。',
+    '',
+    'summary 写法：',
+    '- summary 是给主 agent 用的任务辅助记忆，不是搜索过程汇报。',
+    '- 保留对当前任务有区分度的具体锚点，例如项目名、文件名、工具名、错误、地点、人物、数量、硬约束、已定结论、被否掉的方案或下一步。',
+    '- 不要强行套固定字段；只写当前任务真正相关的锚点。',
+    '- 如果没有新增价值，summary 简短说明原因，并使用 inject:false、空 refs。',
     '',
     'memory_search 的搜索机制非常重要：',
     '- 它不是语义搜索，也不会自动分词；底层只是对子串做匹配。',

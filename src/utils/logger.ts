@@ -4,6 +4,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { styles } from '../theme/colors';
 import ora, { Ora } from 'ora';
 import type { SessionTurnLogger } from './session-turn-logger';
+import type { SessionRuntimeLogEvent } from './session-log-schema';
 
 interface LoggerContextStore {
   sessionId?: string;
@@ -22,10 +23,10 @@ export class Logger {
     return str.replace(/\x1B\[[0-9;]*m/g, '');
   }
 
-  private static writeToFile(level: string, message: string): void {
+  private static writeToFile(level: string, message: string, event?: SessionRuntimeLogEvent): void {
     const store = this.logContext.getStore();
     if (store?.sessionLogger) {
-      store.sessionLogger.logRuntime(level, this.stripAnsi(message));
+      store.sessionLogger.logRuntime(level, this.stripAnsi(message), event);
       return;
     }
 
@@ -36,6 +37,10 @@ export class Logger {
     const now = new Date();
     const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}.${String(now.getMilliseconds()).padStart(3, '0')}`;
     this.logStream.write(`[${ts}] [${level}] ${this.stripAnsi(message)}\n`);
+  }
+
+  static runtimeEvent(level: string, message: string, event: SessionRuntimeLogEvent): void {
+    this.writeToFile(level, message, event);
   }
 
   static withSessionContext<T>(sessionId: string | undefined, fn: () => T): T;

@@ -6,6 +6,7 @@ import type {
   SessionPromptTraceLogEntry,
   SessionPromptTurnLog,
   SessionRuntimeLogEntry,
+  SessionRuntimeLogEvent,
   SessionSubAgentEventLogEntry,
   SessionToolCallLog,
   SessionTurnLogEntry,
@@ -20,6 +21,7 @@ export type {
   SessionLogEntry,
   SessionPromptTurnLog,
   SessionRuntimeLogEntry,
+  SessionRuntimeLogEvent,
   SessionSubAgentEventLogEntry,
   SessionToolCallLog,
   SessionTurnLogEntry,
@@ -125,7 +127,7 @@ export class SessionTurnLogger {
     this.appendLog(entry);
   }
 
-  logRuntime(level: string, message: string): void {
+  logRuntime(level: string, message: string, event?: SessionRuntimeLogEvent): void {
     const runtimeEntry: SessionRuntimeLogEntry = {
       entry_type: 'runtime',
       timestamp: new Date().toISOString(),
@@ -133,6 +135,7 @@ export class SessionTurnLogger {
       session_type: this.sessionType,
       level,
       message,
+      ...(event && { event }),
     };
     this.appendLog(runtimeEntry);
   }

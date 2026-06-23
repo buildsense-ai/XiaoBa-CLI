@@ -5,6 +5,7 @@ export type SyntheticObservationSource = 'memory' | 'web' | 'runtime' | 'subagen
 export type SyntheticObservationStatus = 'completed' | 'partial' | 'failed' | 'cancelled';
 export type SyntheticObservationRelevance = 'high' | 'medium' | 'low';
 export type SyntheticObservationTiming = 'current_turn' | 'late_previous_turn';
+export type SyntheticObservationLifecycleOutcome = 'injected' | 'dropped';
 
 export interface SyntheticObservationEvidence {
   sourceType: SyntheticObservationSource | 'session' | 'file';
@@ -27,6 +28,7 @@ export interface SyntheticObservationMetadata {
   branchType?: string;
   refs?: string[];
   timing?: SyntheticObservationTiming;
+  originTurn?: number;
   [key: string]: unknown;
 }
 
@@ -224,6 +226,40 @@ export function describeSyntheticObservationForLog(observation: SyntheticObserva
     parts.push(`summary="${truncate(summary, 220).replace(/\n/g, ' ')}"`);
   }
   return parts.join(' ');
+}
+
+export function buildSyntheticObservationLifecycleEvent(
+  observation: SyntheticObservation,
+  options: {
+    outcome: SyntheticObservationLifecycleOutcome;
+    reason?: string;
+    originTurn?: number;
+  },
+): { type: string; payload: Record<string, unknown> } {
+  const metadata = observation.metadata || {};
+  const refs = Array.isArray(metadata.refs)
+    ? metadata.refs.filter((ref): ref is string => typeof ref === 'string' && ref.length > 0)
+    : [];
+  const originTurn = typeof options.originTurn === 'number'
+    ? options.originTurn
+    : typeof metadata.originTurn === 'number'
+      ? metadata.originTurn
+      : undefined;
+  const payload: Record<string, unknown> = {
+    outcome: options.outcome,
+    observation_id: String(observation.id || '').trim() || '(unassigned)',
+    source: observation.source,
+    timing: resolveObservationTiming(observation),
+  };
+  if (options.reason) payload.reason = options.reason;
+  if (typeof originTurn === 'number') payload.origin_turn = originTurn;
+  if (typeof metadata.branchId === 'string' && metadata.branchId) payload.branch_id = metadata.branchId;
+  if (typeof metadata.branchType === 'string' && metadata.branchType) payload.branch_type = metadata.branchType;
+  if (refs.length > 0) payload.refs = refs;
+  return {
+    type: 'synthetic_observation_lifecycle',
+    payload,
+  };
 }
 
 export function withSyntheticObservationTiming(
