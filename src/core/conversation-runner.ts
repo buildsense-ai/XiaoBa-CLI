@@ -59,6 +59,7 @@ import {
   describeSyntheticObservationForLog,
   SyntheticObservation,
 } from './synthetic-observation';
+import { TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX } from './prompt-mode-runtime';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -165,6 +166,7 @@ function isPendingUserInput(value: string | ContentBlock[] | PendingUserInput): 
 }
 
 export type SyntheticObservationProvider = () => SyntheticObservation[];
+export type RuntimeTransientProvider = () => Message[];
 
 interface ToolExecutionRecord {
   toolCall: ToolCall;
@@ -193,6 +195,8 @@ export interface RunnerOptions {
   syntheticObservationProvider?: SyntheticObservationProvider;
   /** Internal id that ties all messages created by one externally visible user turn together. */
   episodeId?: string;
+  /** Non-durable runtime system context produced by sidecar branches. */
+  runtimeTransientProvider?: RuntimeTransientProvider;
 }
 
 /**
@@ -214,6 +218,7 @@ export class ConversationRunner {
   private promptTraceLogger: PromptTraceLogger;
   private syntheticObservationProvider?: SyntheticObservationProvider;
   private episodeId?: string;
+  private runtimeTransientProvider?: RuntimeTransientProvider;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -238,6 +243,7 @@ export class ConversationRunner {
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
     this.syntheticObservationProvider = options?.syntheticObservationProvider;
     this.episodeId = options?.episodeId;
+    this.runtimeTransientProvider = options?.runtimeTransientProvider;
     this.maxTurns = options?.maxTurns;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
@@ -302,6 +308,7 @@ export class ConversationRunner {
         };
       }
       this.injectSyntheticObservations(messages, turns);
+      const runtimeTransientHints = this.drainRuntimeTransientMessages(turns);
       const requestTools = this.fitToolsToPromptBudget(activeTools);
       if (requestTools.length < activeTools.length && !notifiedToolBudgetDisabled) {
         notifiedToolBudgetDisabled = true;
@@ -365,6 +372,7 @@ export class ConversationRunner {
         ? buildPerTurnRunnerHint(requestTools)
         : null;
       let requestMessages = this.buildProviderInputMessages(messages, [
+        ...runtimeTransientHints,
         ...(perTurnRunnerHint ? [perTurnRunnerHint] : []),
         ...nextTurnTransientHints,
         ...orchestrationHints,
@@ -1004,6 +1012,7 @@ export class ConversationRunner {
         return true;
       }
       return !message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)
+        && !message.content.startsWith(TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX)
         && !message.content.startsWith(TRANSIENT_CURRENT_DIRECTORY_PREFIX);
     });
 
@@ -1084,6 +1093,16 @@ export class ConversationRunner {
     return message.role === 'system'
       && typeof message.content === 'string'
       && message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX);
+  }
+
+  private drainRuntimeTransientMessages(turn: number): Message[] {
+    if (!this.runtimeTransientProvider) return [];
+    try {
+      return this.runtimeTransientProvider();
+    } catch (error: any) {
+      Logger.warning(`[${this.sessionLabel}Turn ${turn}] runtime transient drain failed: ${error.message}`);
+      return [];
+    }
   }
 
   private isCurrentDirectoryHint(message: Message): boolean {

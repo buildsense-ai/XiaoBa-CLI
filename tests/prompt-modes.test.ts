@@ -171,4 +171,47 @@ describe('prompt modes', () => {
       && message.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
     )), false);
   });
+
+  test('prompt mode routing suppresses selectable mode list but not fixed mode notice', async () => {
+    const builder = new TurnContextBuilder();
+    const routed = await builder.build({
+      sessionKey: 'cli',
+      durableMessages: [
+        { role: 'system', content: 'base system' },
+        { role: 'user', content: 'debug this build' },
+      ],
+      runtimeFeedback: [],
+      skillRuntime: {
+        reloadSkills: async () => {},
+        buildSkillsListMessage: () => undefined,
+      } as any,
+      promptModeRoutingEnabled: true,
+    });
+
+    assert.equal(routed.messages.some(message => (
+      message.role === 'system'
+      && typeof message.content === 'string'
+      && message.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
+    )), false);
+
+    const fixed = await builder.build({
+      sessionKey: 'cli',
+      durableMessages: [
+        { role: 'system', content: 'base system\n[mode:coding-agent]\nfixed coding instructions' },
+        { role: 'user', content: 'debug this build' },
+      ],
+      runtimeFeedback: [],
+      skillRuntime: {
+        reloadSkills: async () => {},
+        buildSkillsListMessage: () => undefined,
+      } as any,
+      promptModeRoutingEnabled: true,
+    });
+
+    assert.equal(fixed.messages.some(message => (
+      message.role === 'system'
+      && typeof message.content === 'string'
+      && message.content.startsWith(TRANSIENT_FIXED_PROMPT_MODE_PREFIX)
+    )), true);
+  });
 });

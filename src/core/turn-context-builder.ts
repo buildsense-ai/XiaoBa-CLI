@@ -22,6 +22,7 @@ import {
   buildRuntimeContextMessage,
 } from './runtime-context-builder';
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
+import { TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX } from './prompt-mode-runtime';
 import {
   TRANSIENT_FIXED_PROMPT_MODE_PREFIX,
   TRANSIENT_PROMPT_MODES_LIST_PREFIX,
@@ -51,6 +52,7 @@ export interface BuildTurnContextParams {
   runtimeFeedback: string[];
   skillRuntime: SessionSkillRuntime;
   planRuntime?: PlanRuntime;
+  promptModeRoutingEnabled?: boolean;
 }
 
 export interface BuildTurnContextResult {
@@ -71,7 +73,7 @@ export class TurnContextBuilder {
     this.injectRuntimeFeedback(contextMessages, params.runtimeFeedback);
     this.injectPlanStatus(contextMessages, params.planRuntime);
     this.injectSubAgentStatus(contextMessages, params.sessionKey);
-    this.injectPromptModesList(contextMessages);
+    this.injectPromptModesList(contextMessages, params.promptModeRoutingEnabled === true);
     const transientPolicy = resolveTurnContextTransientPolicy(contextMessages);
     if (transientPolicy.injectSkillsList) {
       await params.skillRuntime.reloadSkills();
@@ -102,6 +104,11 @@ export class TurnContextBuilder {
         (msg.__injected || msg.role === 'system')
         && typeof msg.content === 'string'
         && msg.content.startsWith(TRANSIENT_FIXED_PROMPT_MODE_PREFIX)
+      ) return false;
+      if (
+        msg.role === 'system'
+        && typeof msg.content === 'string'
+        && msg.content.startsWith(TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX)
       ) return false;
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
@@ -174,12 +181,13 @@ export class TurnContextBuilder {
     this.insertBeforeLastUser(messages, statusMessage);
   }
 
-  private injectPromptModesList(messages: Message[]): void {
+  private injectPromptModesList(messages: Message[], routingEnabled = false): void {
     const fixedMode = findFixedPromptModeState(messages);
     if (fixedMode) {
       this.insertBeforeLastUser(messages, buildFixedPromptModeMessage(fixedMode));
       return;
     }
+    if (routingEnabled) return;
 
     const modeList = buildPromptModesListMessage({
       previousMode: findPreviousPromptModeState(messages),
