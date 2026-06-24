@@ -102,6 +102,16 @@ export function buildSubagentSoftNudge(turns: number, executedToolCalls: number,
   });
 }
 
+export function buildPerTurnRunnerHint(tools: ToolDefinition[]): Message {
+  const available = getAvailableOrchestrationTools(tools);
+  return makeRunnerHint([
+    '复杂任务可考虑维护计划或拆出独立支线；简单任务直接推进，不要为了形式调用编排工具。',
+    available.length > 0
+      ? buildAvailableToolHint(available)
+      : '当前没有可用编排工具；按主线直接推进。',
+  ]);
+}
+
 export function nextPlanNudgeToolCount(current: number): number {
   return Math.max(current + PLAN_SOFT_NUDGE_TOOL_INTERVAL, PLAN_SOFT_NUDGE_MIN_TOOL_CALLS);
 }

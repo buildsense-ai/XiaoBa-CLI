@@ -54,6 +54,7 @@ describe('RuntimeProfile', () => {
     const env = {
       CURRENT_AGENT_DISPLAY_NAME: 'Desk Bot',
       CURRENT_PLATFORM: '飞书',
+      XIAOBA_PROMPT_MODE: 'classroom',
     };
 
     const profile = resolveDefaultRuntimeProfile({ env });
@@ -63,6 +64,7 @@ describe('RuntimeProfile', () => {
     assert.equal(profile.surface, 'feishu');
     assert.equal(profile.prompt.displayName, 'Desk Bot');
     assert.equal(profile.prompt.platform, '飞书');
+    assert.equal(profile.prompt.mode, 'classroom');
   });
 
   test('resolves CatsCo env surface to legacy catscompany surface id', () => {
@@ -174,6 +176,9 @@ describe('RuntimeProfile', () => {
         tools: {
           enabled: ['read_file', 'execute_shell'],
         },
+        prompt: {
+          mode: 'coding-agent',
+        },
         skills: {
           enabled: false,
         },
@@ -202,6 +207,7 @@ describe('RuntimeProfile', () => {
     assert.equal(resolved.profile.workingDirectory, workspace);
     assert.equal(resolved.profile.prompt.displayName, 'Profile Bot');
     assert.equal(resolved.profile.prompt.platform, '飞书');
+    assert.equal(resolved.profile.prompt.mode, 'coding-agent');
     assert.deepStrictEqual(resolved.profile.model, {
       provider: 'openai',
       model: 'profile-model',
@@ -261,6 +267,19 @@ describe('RuntimeProfile', () => {
     assert.equal(resolved.profile.model.model, 'safe-model');
     assert.equal((resolved.profile.model as any).apiKey, undefined);
     assert.equal(JSON.stringify(resolved.config).includes('secret-key'), false);
+  });
+
+  test('reports unknown prompt modes in validation', () => {
+    const profile = resolveDefaultRuntimeProfile({
+      env: {},
+    });
+    (profile.prompt as any).mode = 'mystery-mode';
+
+    assert.deepStrictEqual(validateRuntimeProfile(profile), [{
+      path: 'prompt.mode',
+      message: 'Unknown prompt mode: mystery-mode',
+      value: 'mystery-mode',
+    }]);
   });
 
   test('resolves runtime profile config path from explicit path, env, or home default', () => {

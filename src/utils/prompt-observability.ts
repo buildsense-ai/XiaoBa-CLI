@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   getPromptOverridesDir,
+  isSafePromptOverridesDir,
   readPromptFile,
   resolvePromptPathWithin,
 } from './prompt-template';
@@ -148,6 +149,7 @@ function normalizeRelativePath(value: string): string {
 function isPromptOverridden(promptsDir: string, relativePath: string): boolean {
   const overridesDir = getPromptOverridesDir();
   if (!overridesDir) return false;
+  if (!isSafePromptOverridesDir(promptsDir, overridesDir)) return false;
   try {
     return fs.existsSync(resolvePromptPathWithin(overridesDir, relativePath));
   } catch {

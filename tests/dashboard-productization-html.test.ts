@@ -27,6 +27,7 @@ const scriptFiles = {
   markdown: read('dashboard/scripts/cats-chat-markdown.js'),
   messages: read('dashboard/scripts/cats-chat-messages.js'),
   modelSettings: read('dashboard/scripts/model-settings.js'),
+  promptCompanion: read('dashboard/scripts/prompt-companion.js'),
   serviceUpdate: read('dashboard/scripts/service-update.js'),
   settingsState: read('dashboard/scripts/settings-state.js'),
   skillhub: read('dashboard/scripts/skillhub.js'),
@@ -57,6 +58,7 @@ test('dashboard index is a small React shell with split runtime scripts', () => 
     'cats-chat-markdown',
     'cats-chat-messages',
     'cats-chat-attachments',
+    'prompt-companion',
     'weixin',
     'bootstrap',
   ]) {
@@ -107,12 +109,38 @@ test('Companion Hub is a React pet view with preview and floating controls', () 
   assert.match(reactFiles.companion, /id="companion-pet-bubble"/);
   assert.match(reactFiles.companion, /id="pet-frame-strip"/);
   assert.match(reactFiles.companion, /id="floating-pet-root"|id="floating-pet"/);
+  assert.match(reactFiles.companion, /id="companion-prompt-card"/);
+  assert.match(reactFiles.companion, /id="companion-prompt-proposal"/);
+  assert.match(reactFiles.companion, /id="floating-prompt-proposal"/);
   assert.match(reactFiles.companion, /window\.previewPetAction\?\.\(action\.state\)/);
   assert.match(scriptFiles.basePet, /function previewPetAction/);
   assert.match(scriptFiles.basePet, /let previewPetState/);
   assert.match(scriptFiles.basePet, /function restorePetRealState/);
   assert.match(scriptFiles.basePet, /function shouldInterruptPetPreview/);
   assert.doesNotMatch(reactFiles.companion, /pet-token-xp/);
+});
+
+test('Companion prompt advisor is React-rendered while preserving current proposals', () => {
+  assert.match(reactFiles.companion, /type PromptCompanionAdvisor/);
+  assert.match(reactFiles.companion, /function PromptCompanionAdvisorNotice/);
+  assert.match(reactFiles.companion, /function PromptCompanionStage/);
+  assert.match(reactFiles.companion, /function buildPromptCompanionNoProposalCopy/);
+  assert.match(reactFiles.companion, /Runtime signals exist, but there is no safe prompt patch yet/);
+  assert.match(reactFiles.companion, /<PromptCompanionStage title="1\. Issue">/);
+  assert.match(reactFiles.companion, /<PromptCompanionStage title="2\. Proposed change">/);
+  assert.match(reactFiles.companion, /<PromptCompanionStage title="3\. Confirm">/);
+  assert.match(reactFiles.companion, /window\.__catscoRenderPromptCompanion = renderPromptCompanion/);
+  assert.match(scriptFiles.promptCompanion, /let promptCompanionAdvisor = null/);
+  assert.match(scriptFiles.promptCompanion, /let promptCompanionAdvisorNotice = ''/);
+  assert.match(scriptFiles.promptCompanion, /const advisor = data\.advisor \|\| null/);
+  assert.match(scriptFiles.promptCompanion, /promptCompanionAdvisor = advisor/);
+  assert.match(scriptFiles.promptCompanion, /function formatPromptCompanionAdvisorNotice\(advisor, fallback\)/);
+  assert.match(scriptFiles.promptCompanion, /function buildPromptCompanionNoProposalCopy\(signals\)/);
+  assert.match(scriptFiles.promptCompanion, /else if \(note\) \{\s*promptCompanionAdvisorNotice = promptCompanionProposal/);
+  assert.match(scriptFiles.promptCompanion, /kept current suggestion/);
+  assert.match(scriptFiles.promptCompanion, /else \{\s*promptCompanionProposal = null;\s*promptCompanionAdvisor = null;\s*promptCompanionAdvisorNotice = '';\s*\}/);
+  assert.match(scriptFiles.bootstrap, /fetchPromptCompanionProposal\(\)/);
+  assert.doesNotMatch(scriptFiles.promptCompanion, /document\.|querySelector|getElementById|classList|innerHTML|insertAdjacentHTML|activeElement|closest\(/);
 });
 
 test('SkillHub store is separate from Companion Hub and owns publishing controls', () => {

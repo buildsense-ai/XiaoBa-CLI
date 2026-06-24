@@ -4272,11 +4272,124 @@
       align-items: start;
     }
 
+    .companion-left-stack {
+      display: grid;
+      gap: 14px;
+      min-width: 0;
+    }
+
     .companion-card {
       background: #fff;
       border: 1px solid var(--border);
       border-radius: 12px;
       box-shadow: var(--shadow-sm);
+    }
+
+    .companion-prompt-card {
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .companion-prompt-title {
+      color: var(--text);
+      font-size: 15px;
+      font-weight: 850;
+      line-height: 1.35;
+    }
+
+    .companion-prompt-copy,
+    .companion-prompt-preview {
+      color: var(--text2);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .companion-prompt-stage {
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.62);
+      padding: 10px 12px;
+      display: grid;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .companion-prompt-stage-title {
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 850;
+      line-height: 1.35;
+    }
+
+    .companion-prompt-stage-body {
+      color: var(--text2);
+      font-size: 13px;
+      line-height: 1.58;
+    }
+
+    .companion-prompt-preview {
+      border: 1px dashed var(--border);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.72);
+      padding: 10px;
+      max-height: 150px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+
+    .companion-prompt-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .companion-prompt-chat {
+      display: grid;
+      gap: 8px;
+      padding-top: 4px;
+    }
+
+    .companion-prompt-chat textarea {
+      width: 100%;
+      min-height: 74px;
+      max-height: 150px;
+      resize: vertical;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.84);
+      font-size: 13px;
+      line-height: 1.45;
+      outline: none;
+    }
+
+    .companion-prompt-chat textarea:focus {
+      border-color: rgba(37, 99, 235, 0.36);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
+    }
+
+    .companion-prompt-chat-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .floating-prompt-proposal {
+      border-top: 1px solid var(--border);
+      margin-top: 8px;
+      padding-top: 10px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .floating-prompt-proposal-title {
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 850;
+      line-height: 1.35;
     }
 
     .pet-stage.companion-card {

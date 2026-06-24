@@ -88,6 +88,7 @@ for (const promptPath of [
   'prompts/transient/orchestration-subagent-nudge.md',
   'prompts/sidecars/chime-in-judge.md',
   'prompts/sidecars/daily-report.md',
+  'prompts/sidecars/prompt-companion-advisor.md',
 ]) {
   if (!fs.existsSync(path.join(root, promptPath))) {
     fail(`${promptPath} should exist for packaged runtime prompt loading`);

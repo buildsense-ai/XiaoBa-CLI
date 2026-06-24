@@ -7,6 +7,7 @@ import { ChatResponse, Message } from '../src/types';
 import { ToolManager } from '../src/tools/tool-manager';
 import { SkillManager } from '../src/skills/skill-manager';
 import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../src/utils/model-error-classifier';
+import { TRANSIENT_RUNNER_HINT_PREFIX } from '../src/core/runner-orchestration-policy';
 
 function cloneMessages(messages: Message[]): Message[] {
   return JSON.parse(JSON.stringify(messages));
@@ -104,6 +105,48 @@ function createMockAI(responses: ChatResponse[]) {
   };
 }
 
+test('runner exposes assistant text before tool calls separately from working status', async () => {
+  const responses = [
+    {
+      content: '我先查一下天气。',
+      toolCalls: [makeToolCall('call_1', 'execute_shell', { command: 'echo weather' })],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+      },
+    },
+    makeFinalResponse('天气结果已整理。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'execute_shell',
+      description: 'run command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }],
+    { execute_shell: 'weather ok' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const assistantText: string[] = [];
+  const thinking: string[] = [];
+
+  const result = await runner.run([{ role: 'user', content: '查天气' }], {
+    onAssistantText: text => assistantText.push(text),
+    onThinking: text => thinking.push(text),
+  });
+
+  assert.deepEqual(assistantText, ['我先查一下天气。']);
+  assert.deepEqual(thinking, []);
+  assert.equal(result.response, '天气结果已整理。');
+});
+
 test('runner normalizes send_text tool into assistant transcript without tool_result pollution', async () => {
   const responses = [
     makeToolResponse(makeToolCall('call_1', 'send_text', { text: '老师好！' })),
@@ -188,13 +231,24 @@ test('runner injects current directory before the active request context without
   const firstCallMessages = mock.getReceivedMessages()[0];
   assert.match(String(firstCallMessages[0].content), /^\[transient_current_directory\]/);
   assert.equal(firstCallMessages[0].role, 'user');
-  assert.equal(firstCallMessages[1].role, 'user');
-  assert.equal(firstCallMessages[1].content, 'read notes');
+  const firstRealUserIndex = firstCallMessages.findIndex(message =>
+    message.role === 'user' && message.content === 'read notes'
+  );
+  const firstRunnerHintIndex = firstCallMessages.findIndex(message =>
+    typeof message.content === 'string'
+      && message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)
+  );
+  assert.equal(firstRealUserIndex, 1);
+  assert.equal(firstRunnerHintIndex, -1);
 
   const secondCallMessages = mock.getReceivedMessages()[1];
   const cwdIndex = secondCallMessages.findIndex(
     message => typeof message.content === 'string'
       && message.content.startsWith('[transient_current_directory]'),
+  );
+  const runnerHintIndex = secondCallMessages.findIndex(
+    message => typeof message.content === 'string'
+      && message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX),
   );
   const assistantToolIndex = secondCallMessages.findIndex(
     message => message.role === 'assistant'
@@ -202,10 +256,11 @@ test('runner injects current directory before the active request context without
   );
 
   assert.equal(cwdIndex, assistantToolIndex - 1);
+  assert.equal(runnerHintIndex, -1);
   assert.equal(secondCallMessages[assistantToolIndex + 1].role, 'tool');
   assert.match(
     String(secondCallMessages[cwdIndex].content),
-    /^\[transient_current_directory\]\nRuntime context only\. Not a user request\. Do not answer\.\ncwd: C:\\Users\\test\\workspace\nUse only for relative file paths\.$/,
+    /^\[transient_current_directory\]\nRuntime context only\. Not a user request\. Do not answer\.\ndate: \d{4}-\d{2}-\d{2}\ncwd: C:\\Users\\test\\workspace\nos: .+\nshell: .+\nUse cwd for relative file and shell paths\.$/,
   );
   assert.equal(
     secondCallMessages[secondCallMessages.length - 1].role,

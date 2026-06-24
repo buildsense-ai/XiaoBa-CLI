@@ -22387,6 +22387,15 @@
       stateCopy: "\u6B63\u5728\u7B49\u5F85\u4E0B\u4E00\u9879\u4EFB\u52A1\u3002",
       stateLabel: "\u5F85\u673A\u4E2D"
     },
+    promptCompanion: {
+      advisor: null,
+      advisorNotice: "",
+      error: "",
+      loading: false,
+      note: "",
+      proposal: null,
+      signals: null
+    },
     process: { floatingItems: [], pageItems: [] },
     profile: {
       floatingLevelLabel: "Lv.1",
@@ -22468,6 +22477,117 @@
   function PetUnlockCard({ currentXp, meta, name, remaining, statLabel }) {
     return /* @__PURE__ */ import_react2.default.createElement(import_react2.default.Fragment, null, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-next-name" }, name), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-next-copy" }, meta), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-next-stats" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-next-stat" }, /* @__PURE__ */ import_react2.default.createElement("span", null, "Current XP"), /* @__PURE__ */ import_react2.default.createElement("strong", null, statLabel)), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-next-stat" }, /* @__PURE__ */ import_react2.default.createElement("span", null, "Remaining"), /* @__PURE__ */ import_react2.default.createElement("strong", null, remaining, " XP"))));
   }
+  function promptSignalCount(signals, key) {
+    const value = Number(signals?.[key] || 0);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  }
+  function buildPromptCompanionNoProposalCopy(signals) {
+    const turns = promptSignalCount(signals, "recent_session_turns");
+    const runtimeErrors = promptSignalCount(signals, "recent_runtime_errors");
+    const runtimeWarnings = promptSignalCount(signals, "recent_runtime_warnings");
+    const events = promptSignalCount(signals, "recent_events");
+    const checked = `Checked ${turns} recent turns, ${runtimeErrors} runtime errors, ${runtimeWarnings} runtime warnings, and ${events} companion events`;
+    if (runtimeErrors > 0 || runtimeWarnings > 0 || events > 0) {
+      return `${checked}. Runtime signals exist, but there is no safe prompt patch yet. Ask a more specific question below to help the advisor localize it.`;
+    }
+    return `${checked}. No stable prompt issue was found yet.`;
+  }
+  function promptOperationLabel(operation) {
+    if (operation === "replace") return "replace";
+    if (operation === "delete") return "delete";
+    return "append";
+  }
+  function PromptCompanionLine({ label, value }) {
+    const text = String(value || "").trim();
+    if (!text) return null;
+    return /* @__PURE__ */ import_react2.default.createElement("div", null, /* @__PURE__ */ import_react2.default.createElement("strong", null, label, ": "), text);
+  }
+  function PromptCompanionStage({ title, children }) {
+    if (!children) return null;
+    return /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-prompt-stage" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-prompt-stage-title" }, title), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-prompt-stage-body" }, children));
+  }
+  function PromptCompanionAdvisorNotice({ advisor, notice }) {
+    const message = String(advisor?.message || notice || "").trim();
+    const issue = String(advisor?.issue || "").trim();
+    const evidence = String(advisor?.evidence || "").trim();
+    const suggestion = String(advisor?.suggestion || "").trim();
+    if (!message && !issue && !evidence && !suggestion) return null;
+    if (!advisor) {
+      return /* @__PURE__ */ import_react2.default.createElement("div", { className: "runtime-note" }, /* @__PURE__ */ import_react2.default.createElement("strong", null, "Advisor reply:"), /* @__PURE__ */ import_react2.default.createElement("br", null), message);
+    }
+    return /* @__PURE__ */ import_react2.default.createElement(import_react2.default.Fragment, null, /* @__PURE__ */ import_react2.default.createElement(PromptCompanionStage, { title: "1. Issue" }, /* @__PURE__ */ import_react2.default.createElement(PromptCompanionLine, { label: "Issue", value: issue }), /* @__PURE__ */ import_react2.default.createElement(PromptCompanionLine, { label: "Evidence", value: evidence }), message ? /* @__PURE__ */ import_react2.default.createElement("div", null, message) : null), suggestion ? /* @__PURE__ */ import_react2.default.createElement(PromptCompanionStage, { title: "Next question" }, /* @__PURE__ */ import_react2.default.createElement("div", null, suggestion)) : null);
+  }
+  function PromptCompanionProposalView({
+    advisor,
+    notice,
+    proposal,
+    signals
+  }) {
+    const mergedSignals = proposal.signals || signals || {};
+    const signalCopy = `Signals: ${promptSignalCount(mergedSignals, "recent_session_turns")} turns, ${promptSignalCount(
+      mergedSignals,
+      "recent_runtime_errors"
+    )} runtime errors, ${promptSignalCount(mergedSignals, "recent_runtime_warnings")} runtime warnings, ${promptSignalCount(
+      mergedSignals,
+      "recent_events"
+    )} companion events`;
+    const issue = proposal.issue || proposal.reason || "The advisor found a prompt issue that can be improved with a small patch.";
+    const evidence = proposal.evidence || signalCopy.replace(/^Signals: /, "");
+    const changeSummary = proposal.change_summary || proposal.reason || "Generated a small previewable diff.";
+    return /* @__PURE__ */ import_react2.default.createElement(import_react2.default.Fragment, null, /* @__PURE__ */ import_react2.default.createElement(PromptCompanionAdvisorNotice, { advisor, notice }), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-prompt-title" }, proposal.title || "Prompt tuning suggestion"), /* @__PURE__ */ import_react2.default.createElement(PromptCompanionStage, { title: "1. Issue" }, /* @__PURE__ */ import_react2.default.createElement(PromptCompanionLine, { label: "Issue", value: issue }), /* @__PURE__ */ import_react2.default.createElement(PromptCompanionLine, { label: "Evidence", value: evidence }), /* @__PURE__ */ import_react2.default.createElement("div", null, signalCopy)), /* @__PURE__ */ import_react2.default.createElement(PromptCompanionStage, { title: "2. Proposed change" }, /* @__PURE__ */ import_react2.default.createElement("div", null, "Target: ", /* @__PURE__ */ import_react2.default.createElement("code", null, proposal.path || "system-prompt.md"), " - ", promptOperationLabel(proposal.operation)), /* @__PURE__ */ import_react2.default.createElement(PromptCompanionLine, { label: "Change", value: changeSummary }), /* @__PURE__ */ import_react2.default.createElement(PromptCompanionLine, { label: "Reason", value: proposal.reason || "The advisor proposed a small prompt change." }), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-prompt-preview" }, proposal.preview || "")), /* @__PURE__ */ import_react2.default.createElement(PromptCompanionStage, { title: "3. Confirm" }, /* @__PURE__ */ import_react2.default.createElement(PromptCompanionLine, { label: "Risk", value: proposal.risk || "Preview before applying." }), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-prompt-actions" }, /* @__PURE__ */ import_react2.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.applyPromptCompanionProposal?.() }, "Apply"), /* @__PURE__ */ import_react2.default.createElement("button", { className: "btn", type: "button", onClick: () => window.previewPromptCompanionProposal?.() }, "Preview"), /* @__PURE__ */ import_react2.default.createElement("button", { className: "btn btn-ghost", type: "button", onClick: () => window.dismissPromptCompanionProposal?.() }, "Dismiss"))));
+  }
+  function PromptCompanionCard({ state }) {
+    const hasProposal = Boolean(state.proposal);
+    const defaultCopy = "The companion watches recent runtime and session signals, then suggests a small prompt patch only when it is safe.";
+    return /* @__PURE__ */ import_react2.default.createElement("section", { className: `companion-card companion-prompt-card${hasProposal ? "" : " empty"}`, id: "companion-prompt-card" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-head" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-title" }, "Prompt tuning suggestion"), /* @__PURE__ */ import_react2.default.createElement("button", { className: "companion-text-action", type: "button", onClick: () => window.fetchPromptCompanionProposal?.(true) }, "Refresh")), /* @__PURE__ */ import_react2.default.createElement("div", { id: "companion-prompt-proposal", "data-react-prompt-companion": "mounted" }, state.loading ? /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-prompt-copy" }, "Checking recent session and runtime signals...") : null, state.error ? /* @__PURE__ */ import_react2.default.createElement("div", { className: "runtime-note danger" }, "Prompt suggestion failed: ", state.error) : null, !state.loading && !state.error && state.proposal ? /* @__PURE__ */ import_react2.default.createElement(
+      PromptCompanionProposalView,
+      {
+        advisor: state.advisor,
+        notice: state.advisorNotice,
+        proposal: state.proposal,
+        signals: state.signals
+      }
+    ) : null, !state.loading && !state.error && !state.proposal ? /* @__PURE__ */ import_react2.default.createElement(import_react2.default.Fragment, null, /* @__PURE__ */ import_react2.default.createElement(PromptCompanionAdvisorNotice, { advisor: state.advisor, notice: state.advisorNotice }), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-prompt-copy" }, state.signals ? buildPromptCompanionNoProposalCopy(state.signals) : defaultCopy)) : null), /* @__PURE__ */ import_react2.default.createElement(
+      "form",
+      {
+        className: "companion-prompt-chat",
+        onSubmit: (event) => {
+          event.preventDefault();
+          window.fetchPromptCompanionProposal?.(true);
+        }
+      },
+      /* @__PURE__ */ import_react2.default.createElement(
+        "textarea",
+        {
+          id: "companion-prompt-note",
+          maxLength: 600,
+          onChange: (event) => setPromptCompanionNote(event.currentTarget.value),
+          onKeyDown: (event) => {
+            if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
+            event.preventDefault();
+            window.fetchPromptCompanionProposal?.(true);
+          },
+          placeholder: "Ask the side advisor what to inspect before proposing a tiny prompt patch.",
+          value: state.note
+        }
+      ),
+      /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-prompt-chat-row" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-prompt-copy" }, "Only previewable small diffs are proposed. Applying asks for confirmation."), /* @__PURE__ */ import_react2.default.createElement("button", { className: "btn", type: "submit" }, "Ask"))
+    ));
+  }
+  function FloatingPromptProposal({ prompt }) {
+    if (!prompt.proposal) return null;
+    return /* @__PURE__ */ import_react2.default.createElement("div", { id: "floating-prompt-proposal" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "floating-prompt-proposal" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "floating-prompt-proposal-title" }, prompt.proposal.title || "Prompt suggestion available"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "floating-pet-panel-actions" }, /* @__PURE__ */ import_react2.default.createElement(
+      "button",
+      {
+        type: "button",
+        onClick: () => {
+          window.previewPromptCompanionProposal?.();
+          window.closeFloatingPetMenu?.();
+        }
+      },
+      "Preview"
+    ), /* @__PURE__ */ import_react2.default.createElement("button", { type: "button", onClick: () => window.openPromptCompanionPanel?.() }, "Open"))));
+  }
   function FloatingPet({ state }) {
     const petState = state.petState;
     const shellRef = (0, import_react2.useRef)(null);
@@ -22503,7 +22623,7 @@
         style: floatingPetStyle(state.floatingUi)
       },
       /* @__PURE__ */ import_react2.default.createElement("div", { className: "floating-pet-bubble", id: "floating-pet-bubble" }, petState.floatingBubble || petState.companionBubble || petState.stateCopy || "idle"),
-      /* @__PURE__ */ import_react2.default.createElement("div", { className: "floating-pet-panel", id: "floating-pet-panel" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "floating-pet-panel-head" }, /* @__PURE__ */ import_react2.default.createElement("div", null, /* @__PURE__ */ import_react2.default.createElement("div", { className: "floating-pet-panel-title" }, "\u6700\u8FD1\u5DE5\u4F5C"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "floating-pet-panel-subtitle", id: "floating-pet-panel-state" }, petState.panelState || petState.stateLabel || "idle")), /* @__PURE__ */ import_react2.default.createElement("span", { className: "pet-state-pill", id: "floating-pet-panel-level" }, state.profile.floatingLevelLabel || state.profile.levelLabel || "Lv.1")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-process-list", "data-react-pet-process": "mounted", id: "floating-process-list" }, /* @__PURE__ */ import_react2.default.createElement(PetProcessList, { items: state.process.floatingItems || [], variant: "floating" })), /* @__PURE__ */ import_react2.default.createElement("div", { className: "floating-pet-panel-actions" }, /* @__PURE__ */ import_react2.default.createElement(
+      /* @__PURE__ */ import_react2.default.createElement("div", { className: "floating-pet-panel", id: "floating-pet-panel" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "floating-pet-panel-head" }, /* @__PURE__ */ import_react2.default.createElement("div", null, /* @__PURE__ */ import_react2.default.createElement("div", { className: "floating-pet-panel-title" }, "\u6700\u8FD1\u5DE5\u4F5C"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "floating-pet-panel-subtitle", id: "floating-pet-panel-state" }, petState.panelState || petState.stateLabel || "idle")), /* @__PURE__ */ import_react2.default.createElement("span", { className: "pet-state-pill", id: "floating-pet-panel-level" }, state.profile.floatingLevelLabel || state.profile.levelLabel || "Lv.1")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-process-list", "data-react-pet-process": "mounted", id: "floating-process-list" }, /* @__PURE__ */ import_react2.default.createElement(PetProcessList, { items: state.process.floatingItems || [], variant: "floating" })), /* @__PURE__ */ import_react2.default.createElement(FloatingPromptProposal, { prompt: state.promptCompanion }), /* @__PURE__ */ import_react2.default.createElement("div", { className: "floating-pet-panel-actions" }, /* @__PURE__ */ import_react2.default.createElement(
         "button",
         {
           type: "button",
@@ -22581,10 +22701,36 @@
     };
     renderCompanionViews();
   }
+  function renderPromptCompanion(payload) {
+    companionPageState = {
+      ...companionPageState,
+      promptCompanion: {
+        ...companionPageState.promptCompanion,
+        ...payload
+      }
+    };
+    renderCompanionViews();
+  }
+  function setPromptCompanionNote(note) {
+    companionPageState = {
+      ...companionPageState,
+      promptCompanion: {
+        ...companionPageState.promptCompanion,
+        note
+      }
+    };
+    renderCompanionViews();
+  }
+  function getPromptCompanionNote() {
+    return companionPageState.promptCompanion.note || "";
+  }
+  function clearPromptCompanionNote() {
+    setPromptCompanionNote("");
+  }
   function CompanionPage({ state }) {
     const profile = state.profile;
     const petState = state.petState;
-    return /* @__PURE__ */ import_react2.default.createElement(import_react2.default.Fragment, null, /* @__PURE__ */ import_react2.default.createElement("div", { className: "settings-header" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "settings-heading" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "settings-kicker" }, "Companion Hub"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "section-title", style: { marginBottom: 0 } }, "\u4F19\u4F34 ", /* @__PURE__ */ import_react2.default.createElement("span", { className: "badge" }, "\u52A8\u4F5C\u5E93 22 \u5E27")))), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-hero" }, /* @__PURE__ */ import_react2.default.createElement("section", { className: "pet-stage companion-card companion-profile-card", "aria-label": "CatsCo \u5BA0\u7269\u4F19\u4F34" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-profile-head" }, /* @__PURE__ */ import_react2.default.createElement("div", null, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-eyebrow" }, "CatsCo Companion"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-name", "data-react-pet-profile": "mounted", id: "pet-profile-name" }, profile.name || "CatsCo")), /* @__PURE__ */ import_react2.default.createElement("span", { className: "pet-state-pill", "data-react-pet-state": "mounted", id: "pet-state-pill" }, petState.stateLabel || "\u5F85\u673A\u4E2D")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-level-title" }, /* @__PURE__ */ import_react2.default.createElement("span", { "data-react-pet-profile": "mounted", id: "pet-level-label" }, profile.levelLabel || "Lv.1"), /* @__PURE__ */ import_react2.default.createElement("span", { "data-react-pet-profile": "mounted", id: "pet-title-label" }, profile.titleLabel || "\u65B0\u624B\u4F19\u4F34")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-state-copy", "data-react-pet-state": "mounted", id: "pet-state-copy" }, petState.stateCopy || "\u6B63\u5728\u7B49\u5F85\u4E0B\u4E00\u9879\u4EFB\u52A1\u3002"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-pet-visual", id: "companion-pet-visual" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-pet-bubble", "data-react-pet-state": "mounted", id: "companion-pet-bubble" }, petState.companionBubble || petState.stateCopy || "\u7B49\u5F85\u4E0B\u4E00\u9879\u4EFB\u52A1"), /* @__PURE__ */ import_react2.default.createElement("img", { className: "pet-frame", id: "pet-frame", src: state.pageFrameSrc, alt: "CatsCo companion" })), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-level" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-level-meta" }, /* @__PURE__ */ import_react2.default.createElement("span", null, "\u7B49\u7EA7\u8FDB\u5EA6"), /* @__PURE__ */ import_react2.default.createElement("span", { "data-react-pet-profile": "mounted", id: "pet-xp-label" }, profile.xpLabel || "0 / 50 XP")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-xp-track", "data-react-pet-profile": "mounted", id: "pet-xp-track" }, /* @__PURE__ */ import_react2.default.createElement(PetXpBar, { percent: profile.xpPercent || 0 })))), /* @__PURE__ */ import_react2.default.createElement("aside", { className: "companion-side-stack" }, /* @__PURE__ */ import_react2.default.createElement("section", { className: "companion-card companion-next-card" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-head" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-title" }, "\u4E0B\u4E00\u89E3\u9501"), /* @__PURE__ */ import_react2.default.createElement("span", { className: "tag", "data-react-pet-unlock": "mounted", id: "companion-next-level-tag" }, state.unlock.tagLabel || "Lv.2")), /* @__PURE__ */ import_react2.default.createElement("div", { "data-react-pet-unlock": "mounted", id: "companion-next-unlock" }, /* @__PURE__ */ import_react2.default.createElement(PetUnlockCard, { ...state.unlock }))), /* @__PURE__ */ import_react2.default.createElement("section", { className: "companion-card companion-summary-card" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-head" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-title" }, "\u6210\u957F\u6458\u8981")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metrics" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric-label" }, "\u4ECA\u65E5\u6210\u957F"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric-value", "data-react-pet-profile": "mounted", id: "pet-today-xp" }, profile.todayXpLabel || "0 XP")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric-label" }, "\u80FD\u529B\u8C03\u7528"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric-value", "data-react-pet-profile": "mounted", id: "pet-skill-xp" }, profile.skillXpLabel || "0 \u6B21")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric-label" }, "\u5F53\u524D\u5F62\u6001"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric-value", "data-react-pet-profile": "mounted", id: "pet-form-label" }, profile.formLabel || "\u57FA\u7840\u5C0F\u732B")))), /* @__PURE__ */ import_react2.default.createElement("section", { className: "companion-card companion-recent-card" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-head" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-title" }, "\u6700\u8FD1\u5DE5\u4F5C"), /* @__PURE__ */ import_react2.default.createElement("button", { className: "companion-text-action", type: "button", onClick: () => window.clearPetProcess?.() }, "\u6E05\u7A7A")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-process-list", "data-react-pet-process": "mounted", id: "companion-process-list" }, /* @__PURE__ */ import_react2.default.createElement(PetProcessList, { items: state.process.pageItems || [], variant: "page" }))), /* @__PURE__ */ import_react2.default.createElement("section", { className: "companion-card companion-actions-card" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-action-library" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-head" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-title" }, "\u5F53\u524D\u52A8\u4F5C\u5E93"), /* @__PURE__ */ import_react2.default.createElement("span", { className: "tag" }, "22 \u5E27")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "pet-action-grid companion-action-tags" }, PET_ACTIONS.map((action) => /* @__PURE__ */ import_react2.default.createElement(
+    return /* @__PURE__ */ import_react2.default.createElement(import_react2.default.Fragment, null, /* @__PURE__ */ import_react2.default.createElement("div", { className: "settings-header" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "settings-heading" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "settings-kicker" }, "Companion Hub"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "section-title", style: { marginBottom: 0 } }, "\u4F19\u4F34 ", /* @__PURE__ */ import_react2.default.createElement("span", { className: "badge" }, "\u52A8\u4F5C\u5E93 22 \u5E27")))), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-hero" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-left-stack" }, /* @__PURE__ */ import_react2.default.createElement("section", { className: "pet-stage companion-card companion-profile-card", "aria-label": "CatsCo \u5BA0\u7269\u4F19\u4F34" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-profile-head" }, /* @__PURE__ */ import_react2.default.createElement("div", null, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-eyebrow" }, "CatsCo Companion"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-name", "data-react-pet-profile": "mounted", id: "pet-profile-name" }, profile.name || "CatsCo")), /* @__PURE__ */ import_react2.default.createElement("span", { className: "pet-state-pill", "data-react-pet-state": "mounted", id: "pet-state-pill" }, petState.stateLabel || "\u5F85\u673A\u4E2D")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-level-title" }, /* @__PURE__ */ import_react2.default.createElement("span", { "data-react-pet-profile": "mounted", id: "pet-level-label" }, profile.levelLabel || "Lv.1"), /* @__PURE__ */ import_react2.default.createElement("span", { "data-react-pet-profile": "mounted", id: "pet-title-label" }, profile.titleLabel || "\u65B0\u624B\u4F19\u4F34")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-state-copy", "data-react-pet-state": "mounted", id: "pet-state-copy" }, petState.stateCopy || "\u6B63\u5728\u7B49\u5F85\u4E0B\u4E00\u9879\u4EFB\u52A1\u3002"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-pet-visual", id: "companion-pet-visual" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-pet-bubble", "data-react-pet-state": "mounted", id: "companion-pet-bubble" }, petState.companionBubble || petState.stateCopy || "\u7B49\u5F85\u4E0B\u4E00\u9879\u4EFB\u52A1"), /* @__PURE__ */ import_react2.default.createElement("img", { className: "pet-frame", id: "pet-frame", src: state.pageFrameSrc, alt: "CatsCo companion" })), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-level" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-level-meta" }, /* @__PURE__ */ import_react2.default.createElement("span", null, "\u7B49\u7EA7\u8FDB\u5EA6"), /* @__PURE__ */ import_react2.default.createElement("span", { "data-react-pet-profile": "mounted", id: "pet-xp-label" }, profile.xpLabel || "0 / 50 XP")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-xp-track", "data-react-pet-profile": "mounted", id: "pet-xp-track" }, /* @__PURE__ */ import_react2.default.createElement(PetXpBar, { percent: profile.xpPercent || 0 })))), /* @__PURE__ */ import_react2.default.createElement(PromptCompanionCard, { state: state.promptCompanion })), /* @__PURE__ */ import_react2.default.createElement("aside", { className: "companion-side-stack" }, /* @__PURE__ */ import_react2.default.createElement("section", { className: "companion-card companion-next-card" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-head" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-title" }, "\u4E0B\u4E00\u89E3\u9501"), /* @__PURE__ */ import_react2.default.createElement("span", { className: "tag", "data-react-pet-unlock": "mounted", id: "companion-next-level-tag" }, state.unlock.tagLabel || "Lv.2")), /* @__PURE__ */ import_react2.default.createElement("div", { "data-react-pet-unlock": "mounted", id: "companion-next-unlock" }, /* @__PURE__ */ import_react2.default.createElement(PetUnlockCard, { ...state.unlock }))), /* @__PURE__ */ import_react2.default.createElement("section", { className: "companion-card companion-summary-card" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-head" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-title" }, "\u6210\u957F\u6458\u8981")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metrics" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric-label" }, "\u4ECA\u65E5\u6210\u957F"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric-value", "data-react-pet-profile": "mounted", id: "pet-today-xp" }, profile.todayXpLabel || "0 XP")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric-label" }, "\u80FD\u529B\u8C03\u7528"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric-value", "data-react-pet-profile": "mounted", id: "pet-skill-xp" }, profile.skillXpLabel || "0 \u6B21")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric-label" }, "\u5F53\u524D\u5F62\u6001"), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-metric-value", "data-react-pet-profile": "mounted", id: "pet-form-label" }, profile.formLabel || "\u57FA\u7840\u5C0F\u732B")))), /* @__PURE__ */ import_react2.default.createElement("section", { className: "companion-card companion-recent-card" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-head" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-title" }, "\u6700\u8FD1\u5DE5\u4F5C"), /* @__PURE__ */ import_react2.default.createElement("button", { className: "companion-text-action", type: "button", onClick: () => window.clearPetProcess?.() }, "\u6E05\u7A7A")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-process-list", "data-react-pet-process": "mounted", id: "companion-process-list" }, /* @__PURE__ */ import_react2.default.createElement(PetProcessList, { items: state.process.pageItems || [], variant: "page" }))), /* @__PURE__ */ import_react2.default.createElement("section", { className: "companion-card companion-actions-card" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-action-library" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-head" }, /* @__PURE__ */ import_react2.default.createElement("div", { className: "companion-section-title" }, "\u5F53\u524D\u52A8\u4F5C\u5E93"), /* @__PURE__ */ import_react2.default.createElement("span", { className: "tag" }, "22 \u5E27")), /* @__PURE__ */ import_react2.default.createElement("div", { className: "pet-action-grid companion-action-tags" }, PET_ACTIONS.map((action) => /* @__PURE__ */ import_react2.default.createElement(
       PetActionButton,
       {
         active: state.petActionUi.activeState === action.state,
@@ -22625,6 +22771,9 @@
     window.__catscoRenderPetState = renderPetState;
     window.__catscoRenderPetUnlock = renderPetUnlock;
     window.__catscoRenderFloatingPetUi = renderFloatingPetUi;
+    window.__catscoRenderPromptCompanion = renderPromptCompanion;
+    window.__catscoGetPromptCompanionNote = getPromptCompanionNote;
+    window.__catscoClearPromptCompanionNote = clearPromptCompanionNote;
   }
 
   // dashboard/react-src/global-modals.tsx

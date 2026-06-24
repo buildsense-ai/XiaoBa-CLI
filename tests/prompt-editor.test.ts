@@ -72,6 +72,36 @@ describe('prompt-editor', () => {
       fs.rmSync(overrides, { recursive: true, force: true });
     }
   });
+
+  test('rejects override directory that points at bundled prompts', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-prompt-editor-base-'));
+    const previous = capturePromptEnv();
+    try {
+      process.env.XIAOBA_PROMPTS_DIR = base;
+      process.env.XIAOBA_PROMPT_OVERRIDES_DIR = base;
+      delete process.env.XIAOBA_RUNTIME_ROOT;
+      delete process.env.XIAOBA_DISABLE_PROMPT_OVERRIDES;
+      fs.writeFileSync(path.join(base, 'system-prompt.md'), 'base prompt\n', 'utf-8');
+      fs.writeFileSync(path.join(base, 'runtime-context.md'), 'runtime prompt\n', 'utf-8');
+
+      const state = await getPromptEditorState();
+      assert.equal(state.writable, false);
+      assert.equal(getPromptEditorFile('system-prompt.md').overridden, false);
+      assert.throws(
+        () => writePromptOverride('system-prompt.md', 'custom prompt'),
+        /Prompt override directory must be separate/,
+      );
+      assert.equal(fs.readFileSync(path.join(base, 'system-prompt.md'), 'utf-8'), 'base prompt\n');
+      assert.throws(
+        () => deletePromptOverride('system-prompt.md'),
+        /Prompt override directory must be separate/,
+      );
+      assert.equal(fs.existsSync(path.join(base, 'system-prompt.md')), true);
+    } finally {
+      restorePromptEnv(previous);
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
 });
 
 function capturePromptEnv(): Record<string, string | undefined> {

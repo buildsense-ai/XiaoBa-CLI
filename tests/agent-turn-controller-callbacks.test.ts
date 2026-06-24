@@ -7,4 +7,5 @@ const source = readFileSync(join(process.cwd(), 'src/core/agent-turn-controller.
 
 test('AgentTurnController forwards thinking callbacks to ConversationRunner', () => {
   assert.match(source, /onThinking:\s*callbacks\?\.onThinking/);
+  assert.match(source, /onAssistantText:\s*callbacks\?\.onAssistantText/);
 });

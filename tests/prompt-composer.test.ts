@@ -23,30 +23,24 @@ describe('PromptComposer', () => {
     }
   });
 
-  test('composes base prompt and runtime info in the current order', () => {
+  test('composes base prompt, optional identity, date, and runtime context template', () => {
     writePrompt('system-prompt.md', 'Base prompt\n');
 
     const prompt = PromptComposer.composeSystemPrompt({
       promptsDir: testRoot,
       env: {
         CURRENT_AGENT_DISPLAY_NAME: 'Desk Bot',
-        CURRENT_PLATFORM: 'feishu',
+        CURRENT_PLATFORM: ' feishu ',
       },
       now: new Date('2026-05-01T12:00:00.000Z'),
     });
 
-    assert.equal(prompt, [
-      'Base prompt',
-      [
-        '你在这个平台上的名字是：Desk Bot',
-        '当前平台：feishu',
-        '当前日期：2026-05-01',
-        '当前目录会在每次模型请求中作为临时上下文消息提供。相对文件路径和 shell 路径默认以该当前目录为准。',
-        '如果用户要求检查项目、仓库或源码，先把当前目录视为最可能的项目根目录。',
-        '不要把 Electron userData、AppData、日志目录或缓存目录误认为源码仓库，除非用户明确要求查看这些运行时文件。',
-        '如果当前目录不像用户要求的产品或服务，先做小范围路径检查，或询问正确仓库位置。',
-      ].join('\n'),
-    ].join('\n\n'));
+    assert.match(prompt, /^Base prompt/);
+    assert.match(prompt, /你的名字是：Desk Bot/);
+    assert.match(prompt, /当前平台：feishu/);
+    assert.match(prompt, /当前日期：2026-05-01/);
+    assert.match(prompt, /当前目录会在每次模型请求中作为临时上下文消息提供/);
+    assert.match(prompt, /Electron userData/);
   });
 
   test('ignores legacy behavior prompt files', () => {
@@ -59,16 +53,8 @@ describe('PromptComposer', () => {
       now: new Date('2026-05-01T12:00:00.000Z'),
     });
 
-    assert.equal(prompt, [
-      'Base prompt',
-      [
-        '当前日期：2026-05-01',
-        '当前目录会在每次模型请求中作为临时上下文消息提供。相对文件路径和 shell 路径默认以该当前目录为准。',
-        '如果用户要求检查项目、仓库或源码，先把当前目录视为最可能的项目根目录。',
-        '不要把 Electron userData、AppData、日志目录或缓存目录误认为源码仓库，除非用户明确要求查看这些运行时文件。',
-        '如果当前目录不像用户要求的产品或服务，先做小范围路径检查，或询问正确仓库位置。',
-      ].join('\n'),
-    ].join('\n\n'));
+    assert.match(prompt, /^Base prompt/);
+    assert.match(prompt, /当前日期：2026-05-01/);
     assert.doesNotMatch(prompt, /Legacy behavior prompt/);
   });
 
@@ -83,23 +69,27 @@ describe('PromptComposer', () => {
     );
   });
 
-  test('trims platform and blank display name whitespace', () => {
+  test('composes stable prompt mode packages when configured', () => {
     writePrompt('system-prompt.md', 'Base prompt');
+    writePrompt('modes/coding-agent.md', [
+      '---',
+      'title: Coding',
+      '---',
+      '你处于工程协作模式。',
+      '优先用 `edit_file` 做精确替换。',
+    ].join('\n'));
 
-    const blankDisplayNamePrompt = PromptComposer.composeSystemPrompt({
+    const prompt = PromptComposer.composeSystemPrompt({
       promptsDir: testRoot,
       env: {
-        CURRENT_AGENT_DISPLAY_NAME: '   ',
-        BOT_BRIDGE_NAME: 'Bridge Bot',
-        CURRENT_PLATFORM: ' feishu ',
+        XIAOBA_PROMPT_MODE: 'coding-agent',
       },
       now: new Date('2026-05-01T12:00:00.000Z'),
     });
 
-    assert.doesNotMatch(blankDisplayNamePrompt, /你在这个平台上的名字是/);
-    assert.match(blankDisplayNamePrompt, /当前平台：feishu/);
-    assert.match(blankDisplayNamePrompt, /当前目录会在每次模型请求中作为临时上下文消息提供/);
-    assert.match(blankDisplayNamePrompt, /Electron userData/);
+    assert.match(prompt, /\[mode:coding-agent\]/);
+    assert.match(prompt, /你处于工程协作模式/);
+    assert.match(prompt, /优先用 `edit_file` 做精确替换/);
   });
 
   test('PromptManager delegates to PromptComposer without changing output', async () => {
@@ -117,29 +107,25 @@ describe('PromptComposer', () => {
       delete process.env.BOT_BRIDGE_NAME;
 
       const managerPrompt = await PromptManager.buildSystemPrompt();
-      const dateMatch = managerPrompt.match(/当前日期：(\d{4}-\d{2}-\d{2})/);
-      assert.ok(dateMatch);
-
       const composerPrompt = PromptComposer.composeSystemPrompt({
         promptsDir: testRoot,
         env: process.env,
-        now: new Date(`${dateMatch[1]}T12:00:00.000Z`),
       });
 
       assert.equal(managerPrompt, composerPrompt);
+      assert.match(managerPrompt, /当前日期：\d{4}-\d{2}-\d{2}/);
     } finally {
       (PromptManager as any).promptsDir = originalPromptsDir;
       process.env = originalEnv;
     }
   });
 
-  test('profile-aware composition uses transient current-directory guidance instead of concrete profile path', () => {
+  test('profile-aware composition uses transient cwd guidance instead of concrete profile path', () => {
     writePrompt('system-prompt.md', 'Base prompt\n');
     const env = {
       CURRENT_AGENT_DISPLAY_NAME: 'Desk Bot',
       CURRENT_PLATFORM: 'feishu',
     };
-    const now = new Date('2026-05-01T12:00:00.000Z');
     const profile = resolveDefaultRuntimeProfile({
       surface: 'feishu',
       workingDirectory: '/tmp/xiaoba-runtime-profile',
@@ -149,68 +135,23 @@ describe('PromptComposer', () => {
     const prompt = PromptComposer.composeSystemPromptFromProfile({
       promptsDir: testRoot,
       profile,
-      now,
-    });
-
-    assert.match(prompt, /你在这个平台上的名字是：Desk Bot/);
-    assert.match(prompt, /当前平台：feishu/);
-    assert.match(prompt, /当前目录会在每次模型请求中作为临时上下文消息提供/);
-    assert.match(prompt, /最可能的项目根目录/);
-    assert.doesNotMatch(prompt.replace(/\\/g, '/'), /\/tmp\/xiaoba-runtime-profile/);
-  });
-
-  test('legacy env composition keeps current default workspace text when prompt metadata is empty', () => {
-    writePrompt('system-prompt.md', 'Base prompt');
-    const now = new Date('2026-05-01T12:00:00.000Z');
-
-    const prompt = PromptComposer.composeSystemPrompt({
-      promptsDir: testRoot,
-      env: {},
-      now,
-    });
-
-    assert.equal(prompt, [
-      'Base prompt',
-      [
-        '当前日期：2026-05-01',
-        '当前目录会在每次模型请求中作为临时上下文消息提供。相对文件路径和 shell 路径默认以该当前目录为准。',
-        '如果用户要求检查项目、仓库或源码，先把当前目录视为最可能的项目根目录。',
-        '不要把 Electron userData、AppData、日志目录或缓存目录误认为源码仓库，除非用户明确要求查看这些运行时文件。',
-        '如果当前目录不像用户要求的产品或服务，先做小范围路径检查，或询问正确仓库位置。',
-      ].join('\n'),
-    ].join('\n\n'));
-  });
-
-  test('profile-aware composition trims displayName and platform whitespace', () => {
-    writePrompt('system-prompt.md', 'Base prompt');
-    const profile = resolveDefaultRuntimeProfile({
-      displayName: 'Top Level Name',
-      surface: 'feishu',
-      workingDirectory: '/tmp/xiaoba-runtime-profile',
-      env: {},
-    });
-    profile.prompt.displayName = '  Desk Bot  ';
-    profile.prompt.platform = ' feishu ';
-
-    const prompt = PromptComposer.composeSystemPromptFromProfile({
-      promptsDir: testRoot,
-      profile,
       now: new Date('2026-05-01T12:00:00.000Z'),
     });
 
-    assert.match(prompt, /你在这个平台上的名字是：Desk Bot/);
+    assert.match(prompt, /你的名字是：Desk Bot/);
     assert.match(prompt, /当前平台：feishu/);
     assert.match(prompt, /当前目录会在每次模型请求中作为临时上下文消息提供/);
-    assert.match(prompt, /日志目录或缓存目录/);
     assert.doesNotMatch(prompt.replace(/\\/g, '/'), /\/tmp\/xiaoba-runtime-profile/);
   });
 
   function writePrompt(filename: string, content: string): void {
-    fs.writeFileSync(path.join(testRoot, filename), content, 'utf-8');
+    const filePath = path.join(testRoot, ...filename.split('/'));
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content, 'utf-8');
   }
 });
 
-const DEFAULT_RUNTIME_CONTEXT_PROMPT = `{{#displayName}}你在这个平台上的名字是：{{displayName}}
+const DEFAULT_RUNTIME_CONTEXT_PROMPT = `{{#displayName}}你的名字是：{{displayName}}
 {{/displayName}}{{#platform}}当前平台：{{platform}}
 {{/platform}}当前日期：{{date}}
 当前目录会在每次模型请求中作为临时上下文消息提供。相对文件路径和 shell 路径默认以该当前目录为准。

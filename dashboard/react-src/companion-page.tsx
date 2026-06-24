@@ -79,6 +79,48 @@ type FloatingPetRect = {
   width: number;
 };
 
+type PromptCompanionSignals = {
+  recent_events?: number;
+  recent_runtime_errors?: number;
+  recent_runtime_warnings?: number;
+  recent_session_turns?: number;
+};
+
+type PromptCompanionAdvisor = {
+  evidence?: string;
+  issue?: string;
+  message?: string;
+  suggestion?: string;
+};
+
+type PromptCompanionProposal = {
+  change_summary?: string;
+  evidence?: string;
+  id?: string;
+  issue?: string;
+  operation?: string;
+  path?: string;
+  preview?: string;
+  proposed_content?: string;
+  reason?: string;
+  risk?: string;
+  signals?: PromptCompanionSignals;
+  title?: string;
+};
+
+type PromptCompanionPayload = {
+  advisor?: PromptCompanionAdvisor | null;
+  advisorNotice?: string;
+  error?: string;
+  loading?: boolean;
+  proposal?: PromptCompanionProposal | null;
+  signals?: PromptCompanionSignals | null;
+};
+
+type PromptCompanionState = PromptCompanionPayload & {
+  note: string;
+};
+
 type CompanionPageState = {
   floatingFrameSrc: string;
   floatingUi: FloatingPetUiState;
@@ -86,6 +128,7 @@ type CompanionPageState = {
   petActionUi: PetActionUiPayload;
   pageFrameSrc: string;
   petState: PetStatePayload;
+  promptCompanion: PromptCompanionState;
   process: PetProcessPayload;
   profile: PetProfilePayload;
   unlock: PetUnlockPayload;
@@ -101,13 +144,21 @@ declare global {
     __catscoRenderPetState?: (payload: PetStatePayload) => void;
     __catscoRenderPetUnlock?: (payload: PetUnlockPayload) => void;
     __catscoRenderFloatingPetUi?: (payload: FloatingPetUiPayload) => void;
+    __catscoRenderPromptCompanion?: (payload: PromptCompanionPayload) => void;
+    __catscoGetPromptCompanionNote?: () => string;
+    __catscoClearPromptCompanionNote?: () => void;
     __catscoGetFloatingPetRect?: () => FloatingPetRect | null;
     clampFloatingPetToViewport?: (rect?: FloatingPetRect) => void;
     clearPetProcess?: () => void;
     closeFloatingPetMenu?: () => void;
+    applyPromptCompanionProposal?: () => void;
+    dismissPromptCompanionProposal?: () => void;
     endFloatingPetDrag?: (event: PointerEvent, handle: HTMLElement, rect?: FloatingPetRect) => void;
+    fetchPromptCompanionProposal?: (manual?: boolean) => void;
     handlePetActionPreviewKey?: (event: KeyboardEvent, state: string) => void;
     moveFloatingPetDrag?: (event: PointerEvent) => void;
+    openPromptCompanionPanel?: () => void;
+    previewPromptCompanionProposal?: () => void;
     previewPetAction?: (state: string) => void;
     resetFloatingPetPosition?: () => void;
     startFloatingPetDrag?: (event: PointerEvent, handle: HTMLElement, rect?: FloatingPetRect) => void;
@@ -137,6 +188,15 @@ let companionPageState: CompanionPageState = {
     panelState: 'idle',
     stateCopy: '正在等待下一项任务。',
     stateLabel: '待机中',
+  },
+  promptCompanion: {
+    advisor: null,
+    advisorNotice: '',
+    error: '',
+    loading: false,
+    note: '',
+    proposal: null,
+    signals: null,
   },
   process: { floatingItems: [], pageItems: [] },
   profile: {
@@ -284,6 +344,224 @@ function PetUnlockCard({ currentXp, meta, name, remaining, statLabel }: PetUnloc
   );
 }
 
+function promptSignalCount(signals: PromptCompanionSignals | null | undefined, key: keyof PromptCompanionSignals) {
+  const value = Number(signals?.[key] || 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function buildPromptCompanionNoProposalCopy(signals?: PromptCompanionSignals | null) {
+  const turns = promptSignalCount(signals, 'recent_session_turns');
+  const runtimeErrors = promptSignalCount(signals, 'recent_runtime_errors');
+  const runtimeWarnings = promptSignalCount(signals, 'recent_runtime_warnings');
+  const events = promptSignalCount(signals, 'recent_events');
+  const checked = `Checked ${turns} recent turns, ${runtimeErrors} runtime errors, ${runtimeWarnings} runtime warnings, and ${events} companion events`;
+  if (runtimeErrors > 0 || runtimeWarnings > 0 || events > 0) {
+    return `${checked}. Runtime signals exist, but there is no safe prompt patch yet. Ask a more specific question below to help the advisor localize it.`;
+  }
+  return `${checked}. No stable prompt issue was found yet.`;
+}
+
+function promptOperationLabel(operation?: string) {
+  if (operation === 'replace') return 'replace';
+  if (operation === 'delete') return 'delete';
+  return 'append';
+}
+
+function PromptCompanionLine({ label, value }: { label: string; value?: string }) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  return (
+    <div>
+      <strong>{label}: </strong>
+      {text}
+    </div>
+  );
+}
+
+function PromptCompanionStage({ title, children }: { children?: React.ReactNode; title: string }) {
+  if (!children) return null;
+  return (
+    <div className="companion-prompt-stage">
+      <div className="companion-prompt-stage-title">{title}</div>
+      <div className="companion-prompt-stage-body">{children}</div>
+    </div>
+  );
+}
+
+function PromptCompanionAdvisorNotice({ advisor, notice }: { advisor?: PromptCompanionAdvisor | null; notice?: string }) {
+  const message = String(advisor?.message || notice || '').trim();
+  const issue = String(advisor?.issue || '').trim();
+  const evidence = String(advisor?.evidence || '').trim();
+  const suggestion = String(advisor?.suggestion || '').trim();
+  if (!message && !issue && !evidence && !suggestion) return null;
+  if (!advisor) {
+    return (
+      <div className="runtime-note">
+        <strong>Advisor reply:</strong>
+        <br />
+        {message}
+      </div>
+    );
+  }
+  return (
+    <>
+      <PromptCompanionStage title="1. Issue">
+        <PromptCompanionLine label="Issue" value={issue} />
+        <PromptCompanionLine label="Evidence" value={evidence} />
+        {message ? <div>{message}</div> : null}
+      </PromptCompanionStage>
+      {suggestion ? (
+        <PromptCompanionStage title="Next question">
+          <div>{suggestion}</div>
+        </PromptCompanionStage>
+      ) : null}
+    </>
+  );
+}
+
+function PromptCompanionProposalView({
+  advisor,
+  notice,
+  proposal,
+  signals,
+}: {
+  advisor?: PromptCompanionAdvisor | null;
+  notice?: string;
+  proposal: PromptCompanionProposal;
+  signals?: PromptCompanionSignals | null;
+}) {
+  const mergedSignals = proposal.signals || signals || {};
+  const signalCopy = `Signals: ${promptSignalCount(mergedSignals, 'recent_session_turns')} turns, ${promptSignalCount(
+    mergedSignals,
+    'recent_runtime_errors',
+  )} runtime errors, ${promptSignalCount(mergedSignals, 'recent_runtime_warnings')} runtime warnings, ${promptSignalCount(
+    mergedSignals,
+    'recent_events',
+  )} companion events`;
+  const issue = proposal.issue || proposal.reason || 'The advisor found a prompt issue that can be improved with a small patch.';
+  const evidence = proposal.evidence || signalCopy.replace(/^Signals: /, '');
+  const changeSummary = proposal.change_summary || proposal.reason || 'Generated a small previewable diff.';
+  return (
+    <>
+      <PromptCompanionAdvisorNotice advisor={advisor} notice={notice} />
+      <div className="companion-prompt-title">{proposal.title || 'Prompt tuning suggestion'}</div>
+      <PromptCompanionStage title="1. Issue">
+        <PromptCompanionLine label="Issue" value={issue} />
+        <PromptCompanionLine label="Evidence" value={evidence} />
+        <div>{signalCopy}</div>
+      </PromptCompanionStage>
+      <PromptCompanionStage title="2. Proposed change">
+        <div>
+          Target: <code>{proposal.path || 'system-prompt.md'}</code> - {promptOperationLabel(proposal.operation)}
+        </div>
+        <PromptCompanionLine label="Change" value={changeSummary} />
+        <PromptCompanionLine label="Reason" value={proposal.reason || 'The advisor proposed a small prompt change.'} />
+        <div className="companion-prompt-preview">{proposal.preview || ''}</div>
+      </PromptCompanionStage>
+      <PromptCompanionStage title="3. Confirm">
+        <PromptCompanionLine label="Risk" value={proposal.risk || 'Preview before applying.'} />
+        <div className="companion-prompt-actions">
+          <button className="btn btn-primary" type="button" onClick={() => window.applyPromptCompanionProposal?.()}>
+            Apply
+          </button>
+          <button className="btn" type="button" onClick={() => window.previewPromptCompanionProposal?.()}>
+            Preview
+          </button>
+          <button className="btn btn-ghost" type="button" onClick={() => window.dismissPromptCompanionProposal?.()}>
+            Dismiss
+          </button>
+        </div>
+      </PromptCompanionStage>
+    </>
+  );
+}
+
+function PromptCompanionCard({ state }: { state: PromptCompanionState }) {
+  const hasProposal = Boolean(state.proposal);
+  const defaultCopy = 'The companion watches recent runtime and session signals, then suggests a small prompt patch only when it is safe.';
+  return (
+    <section className={`companion-card companion-prompt-card${hasProposal ? '' : ' empty'}`} id="companion-prompt-card">
+      <div className="companion-section-head">
+        <div className="companion-section-title">Prompt tuning suggestion</div>
+        <button className="companion-text-action" type="button" onClick={() => window.fetchPromptCompanionProposal?.(true)}>
+          Refresh
+        </button>
+      </div>
+      <div id="companion-prompt-proposal" data-react-prompt-companion="mounted">
+        {state.loading ? <div className="companion-prompt-copy">Checking recent session and runtime signals...</div> : null}
+        {state.error ? <div className="runtime-note danger">Prompt suggestion failed: {state.error}</div> : null}
+        {!state.loading && !state.error && state.proposal ? (
+          <PromptCompanionProposalView
+            advisor={state.advisor}
+            notice={state.advisorNotice}
+            proposal={state.proposal}
+            signals={state.signals}
+          />
+        ) : null}
+        {!state.loading && !state.error && !state.proposal ? (
+          <>
+            <PromptCompanionAdvisorNotice advisor={state.advisor} notice={state.advisorNotice} />
+            <div className="companion-prompt-copy">
+              {state.signals ? buildPromptCompanionNoProposalCopy(state.signals) : defaultCopy}
+            </div>
+          </>
+        ) : null}
+      </div>
+      <form
+        className="companion-prompt-chat"
+        onSubmit={event => {
+          event.preventDefault();
+          window.fetchPromptCompanionProposal?.(true);
+        }}
+      >
+        <textarea
+          id="companion-prompt-note"
+          maxLength={600}
+          onChange={event => setPromptCompanionNote(event.currentTarget.value)}
+          onKeyDown={event => {
+            if (event.key !== 'Enter' || !(event.ctrlKey || event.metaKey)) return;
+            event.preventDefault();
+            window.fetchPromptCompanionProposal?.(true);
+          }}
+          placeholder="Ask the side advisor what to inspect before proposing a tiny prompt patch."
+          value={state.note}
+        />
+        <div className="companion-prompt-chat-row">
+          <div className="companion-prompt-copy">Only previewable small diffs are proposed. Applying asks for confirmation.</div>
+          <button className="btn" type="submit">
+            Ask
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function FloatingPromptProposal({ prompt }: { prompt: PromptCompanionState }) {
+  if (!prompt.proposal) return null;
+  return (
+    <div id="floating-prompt-proposal">
+      <div className="floating-prompt-proposal">
+        <div className="floating-prompt-proposal-title">{prompt.proposal.title || 'Prompt suggestion available'}</div>
+        <div className="floating-pet-panel-actions">
+          <button
+            type="button"
+            onClick={() => {
+              window.previewPromptCompanionProposal?.();
+              window.closeFloatingPetMenu?.();
+            }}
+          >
+            Preview
+          </button>
+          <button type="button" onClick={() => window.openPromptCompanionPanel?.()}>
+            Open
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function FloatingPet({ state }: { state: CompanionPageState }) {
   const petState = state.petState;
   const shellRef = useRef<HTMLDivElement | null>(null);
@@ -339,6 +617,7 @@ function FloatingPet({ state }: { state: CompanionPageState }) {
         <div className="companion-process-list" data-react-pet-process="mounted" id="floating-process-list">
           <PetProcessList items={state.process.floatingItems || []} variant="floating" />
         </div>
+        <FloatingPromptProposal prompt={state.promptCompanion} />
         <div className="floating-pet-panel-actions">
           <button
             type="button"
@@ -430,6 +709,36 @@ function renderFloatingPetUi(payload: FloatingPetUiPayload) {
   renderCompanionViews();
 }
 
+function renderPromptCompanion(payload: PromptCompanionPayload) {
+  companionPageState = {
+    ...companionPageState,
+    promptCompanion: {
+      ...companionPageState.promptCompanion,
+      ...payload,
+    },
+  };
+  renderCompanionViews();
+}
+
+function setPromptCompanionNote(note: string) {
+  companionPageState = {
+    ...companionPageState,
+    promptCompanion: {
+      ...companionPageState.promptCompanion,
+      note,
+    },
+  };
+  renderCompanionViews();
+}
+
+function getPromptCompanionNote() {
+  return companionPageState.promptCompanion.note || '';
+}
+
+function clearPromptCompanionNote() {
+  setPromptCompanionNote('');
+}
+
 function CompanionPage({ state }: { state: CompanionPageState }) {
   const profile = state.profile;
   const petState = state.petState;
@@ -445,7 +754,8 @@ function CompanionPage({ state }: { state: CompanionPageState }) {
       </div>
 
       <div className="companion-hero">
-        <section className="pet-stage companion-card companion-profile-card" aria-label="CatsCo 宠物伙伴">
+        <div className="companion-left-stack">
+          <section className="pet-stage companion-card companion-profile-card" aria-label="CatsCo 宠物伙伴">
           <div className="companion-profile-head">
             <div>
               <div className="companion-eyebrow">CatsCo Companion</div>
@@ -482,7 +792,10 @@ function CompanionPage({ state }: { state: CompanionPageState }) {
               <PetXpBar percent={profile.xpPercent || 0} />
             </div>
           </div>
-        </section>
+          </section>
+
+          <PromptCompanionCard state={state.promptCompanion} />
+        </div>
 
         <aside className="companion-side-stack">
           <section className="companion-card companion-next-card">
@@ -597,4 +910,7 @@ export function mountCompanionPage() {
   window.__catscoRenderPetState = renderPetState;
   window.__catscoRenderPetUnlock = renderPetUnlock;
   window.__catscoRenderFloatingPetUi = renderFloatingPetUi;
+  window.__catscoRenderPromptCompanion = renderPromptCompanion;
+  window.__catscoGetPromptCompanionNote = getPromptCompanionNote;
+  window.__catscoClearPromptCompanionNote = clearPromptCompanionNote;
 }

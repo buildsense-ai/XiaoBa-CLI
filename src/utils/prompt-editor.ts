@@ -2,7 +2,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { PromptManager } from './prompt-manager';
 import {
+  assertSafePromptOverridesDir,
   getPromptOverridesDir,
+  isSafePromptOverridesDir,
   normalizePromptRelativePath,
   normalizePromptText,
   readPromptFile,
@@ -54,11 +56,12 @@ export async function getPromptEditorState(): Promise<PromptEditorState> {
   const systemPrompt = await PromptManager.buildSystemPrompt();
   const files = listPromptEditorFiles();
   const overridesDir = getPromptOverridesDir();
+  const writable = Boolean(overridesDir && isSafePromptOverridesDir(baseDir, overridesDir));
 
   return {
     base_dir: labelLocalPath(baseDir),
     overrides_dir: overridesDir ? labelLocalPath(overridesDir) : undefined,
-    writable: Boolean(overridesDir),
+    writable,
     trace: buildPromptTraceSnapshot({
       promptsDir: baseDir,
       systemPrompt,
@@ -102,10 +105,8 @@ export function writePromptOverride(relativePath: string, content: string): Prom
     throw new Error('Prompt content cannot be empty');
   }
 
-  const overridesDir = getPromptOverridesDir();
-  if (!overridesDir) {
-    throw new Error('Prompt override directory is not configured');
-  }
+  const baseDir = PromptManager.getPromptsDir();
+  const overridesDir = assertSafePromptOverridesDir(baseDir);
 
   const outputPath = resolvePromptPathWithin(overridesDir, normalized);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
@@ -115,8 +116,10 @@ export function writePromptOverride(relativePath: string, content: string): Prom
 
 export function deletePromptOverride(relativePath: string): PromptEditorFileDetail {
   const normalized = normalizeEditablePromptPath(relativePath);
+  const baseDir = PromptManager.getPromptsDir();
   const overridesDir = getPromptOverridesDir();
   if (overridesDir) {
+    assertSafePromptOverridesDir(baseDir);
     const filePath = resolvePromptPathWithin(overridesDir, normalized);
     fs.rmSync(filePath, { force: true });
     pruneEmptyPromptDirs(path.dirname(filePath), overridesDir);
@@ -178,6 +181,7 @@ function listBasePromptPaths(baseDir: string): string[] {
 function promptOverrideExists(relativePath: string): boolean {
   const overridesDir = getPromptOverridesDir();
   if (!overridesDir) return false;
+  if (!isSafePromptOverridesDir(PromptManager.getPromptsDir(), overridesDir)) return false;
   return fs.existsSync(resolvePromptPathWithin(overridesDir, relativePath));
 }
 

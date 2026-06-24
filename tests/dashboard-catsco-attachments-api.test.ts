@@ -29,6 +29,7 @@ function serverUrl(server: Server): string {
 
 async function removeTempRoot(root: string): Promise<void> {
   let lastError: unknown;
+  const retryableCodes = new Set(['ENOTEMPTY', 'EBUSY', 'EPERM']);
   for (let attempt = 0; attempt < 12; attempt += 1) {
     try {
       await fs.promises.rm(root, {
@@ -38,7 +39,8 @@ async function removeTempRoot(root: string): Promise<void> {
         retryDelay: 100,
       });
       return;
-    } catch (error) {
+    } catch (error: any) {
+      if (!retryableCodes.has(error?.code)) throw error;
       lastError = error;
       await new Promise(resolve => setTimeout(resolve, 100));
     }

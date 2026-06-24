@@ -87,4 +87,27 @@ describe('SendTextTool outbound scope checks', () => {
     assert.equal(result.ok, true);
     assert.deepEqual(sent, [{ chatId: 'p2p_7_43', text: '请重新发送一下' }]);
   });
+
+  test('propagates channel send failures to the tool caller', async () => {
+    const tool = new SendTextTool();
+    const context: ToolExecutionContext = {
+      workingDirectory: process.cwd(),
+      workspaceRoot: process.cwd(),
+      conversationHistory: [],
+      surface: 'catscompany',
+      executionScope: scope(),
+      channel: {
+        chatId: 'p2p_7_43',
+        reply: async () => {
+          throw new Error('ack timeout');
+        },
+        sendFile: async () => undefined,
+      },
+    };
+
+    await assert.rejects(
+      () => tool.execute({ text: '会发送失败' }, context),
+      /ack timeout/,
+    );
+  });
 });

@@ -85,6 +85,33 @@ test('does not fold read_file result from the current tool loop', () => {
   assert.equal(result.messages[2].content, raw);
 });
 
+test('can delayed-fold older current-run read_file results while protecting recent results', () => {
+  const firstRaw = makeReadFileOutput('E:/repo/current-old.ts', 90);
+  const secondRaw = makeReadFileOutput('E:/repo/current-recent.ts', 90);
+  const messages: Message[] = [
+    { role: 'user', content: 'read several files in one request' },
+    makeToolCallMessage('call_current_old', 'E:/repo/current-old.ts'),
+    { role: 'tool', name: 'read_file', tool_call_id: 'call_current_old', content: firstRaw },
+    { role: 'assistant', content: 'old read complete' },
+    makeToolCallMessage('call_current_recent', 'E:/repo/current-recent.ts'),
+    { role: 'tool', name: 'read_file', tool_call_id: 'call_current_recent', content: secondRaw },
+  ];
+
+  const result = foldHistoricalReadFileMessages(messages, {
+    thresholdTokens: 20,
+    foldCurrentRun: true,
+    protectedCurrentRunToolResultIndexes: new Set([5]),
+  });
+
+  assert.equal(result.stats.candidate_count, 1);
+  assert.equal(result.stats.current_turn_candidate_count, 1);
+  assert.equal(result.stats.folded_count, 1);
+  assert.equal(result.stats.folded_current_turn_count, 1);
+  assert.equal(result.stats.protected_current_turn_count, 1);
+  assert.ok(String(result.messages[2].content).startsWith(FOLDED_READ_FILE_PREFIX));
+  assert.equal(result.messages[5].content, secondRaw);
+});
+
 test('can keep the most recent historical read_file result raw', () => {
   const firstRaw = makeReadFileOutput('E:/repo/old.ts', 90);
   const secondRaw = makeReadFileOutput('E:/repo/recent.ts', 90);
@@ -168,4 +195,57 @@ test('runner folds only provider input and leaves durable session messages raw',
   const providerToolResult = captured[0].find(message => message.role === 'tool');
   assert.ok(String(providerToolResult?.content).startsWith(FOLDED_READ_FILE_PREFIX));
   assert.equal(messages[2].content, raw);
+});
+
+test('runner delayed-folds older current-run tool results and keeps recent ones raw', async () => {
+  const previousThreshold = process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS;
+  const previousCurrentRunFolding = process.env.XIAOBA_CURRENT_RUN_TOOL_RESULT_FOLDING;
+  const previousKeepRecent = process.env.XIAOBA_CURRENT_RUN_TOOL_RESULT_FOLD_KEEP_RECENT;
+  process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS = '20';
+  process.env.XIAOBA_CURRENT_RUN_TOOL_RESULT_FOLDING = '1';
+  process.env.XIAOBA_CURRENT_RUN_TOOL_RESULT_FOLD_KEEP_RECENT = '1';
+
+  const firstRaw = makeReadFileOutput('E:/repo/current-provider-old.ts', 90);
+  const secondRaw = makeReadFileOutput('E:/repo/current-provider-recent.ts', 90);
+  const messages: Message[] = [
+    { role: 'user', content: 'read multiple files before answering' },
+    makeToolCallMessage('call_current_provider_old', 'E:/repo/current-provider-old.ts'),
+    { role: 'tool', name: 'read_file', tool_call_id: 'call_current_provider_old', content: firstRaw },
+    { role: 'assistant', content: 'old read complete' },
+    makeToolCallMessage('call_current_provider_recent', 'E:/repo/current-provider-recent.ts'),
+    { role: 'tool', name: 'read_file', tool_call_id: 'call_current_provider_recent', content: secondRaw },
+  ];
+  const captured: Message[][] = [];
+  const aiService = {
+    async chat(requestMessages: Message[]) {
+      captured.push(JSON.parse(JSON.stringify(requestMessages)));
+      return { content: 'done' };
+    },
+  };
+  const executor: ToolExecutor = {
+    getToolDefinitions: () => [],
+    executeTool: async () => ({ tool_call_id: 'unused', role: 'tool', name: 'unused', content: 'unused' }),
+  };
+
+  try {
+    const runner = new ConversationRunner(aiService as any, executor, {
+      stream: false,
+      enableCompression: false,
+    });
+    await runner.run(messages);
+  } finally {
+    if (previousThreshold === undefined) delete process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS;
+    else process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS = previousThreshold;
+    if (previousCurrentRunFolding === undefined) delete process.env.XIAOBA_CURRENT_RUN_TOOL_RESULT_FOLDING;
+    else process.env.XIAOBA_CURRENT_RUN_TOOL_RESULT_FOLDING = previousCurrentRunFolding;
+    if (previousKeepRecent === undefined) delete process.env.XIAOBA_CURRENT_RUN_TOOL_RESULT_FOLD_KEEP_RECENT;
+    else process.env.XIAOBA_CURRENT_RUN_TOOL_RESULT_FOLD_KEEP_RECENT = previousKeepRecent;
+  }
+
+  const providerOld = captured[0].find(message => message.tool_call_id === 'call_current_provider_old');
+  const providerRecent = captured[0].find(message => message.tool_call_id === 'call_current_provider_recent');
+  assert.ok(String(providerOld?.content).startsWith(FOLDED_READ_FILE_PREFIX));
+  assert.equal(providerRecent?.content, secondRaw);
+  assert.equal(messages[2].content, firstRaw);
+  assert.equal(messages[5].content, secondRaw);
 });
