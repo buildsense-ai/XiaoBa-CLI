@@ -857,7 +857,7 @@ export class CatsCompanyBot {
       // 最终文本回复
       if (result.visibleToUser && result.text) {
         try {
-          await this.sender.sendText(msg.topic, result.text);
+          await this.sender.reply(msg.topic, result.text);
         } catch (err: any) {
           Logger.warning(`前端通知发送失败 (text): ${err.message}`);
         }
@@ -1031,7 +1031,7 @@ export class CatsCompanyBot {
         }
       } else if (result.visibleToUser && result.text) {
         try {
-          await this.sender.sendText(topic, result.text);
+          await this.sender.reply(topic, result.text);
         } catch (err: any) {
           Logger.warning(`子智能体结果回复发送失败: ${err.message}`);
         }
@@ -1244,7 +1244,7 @@ export class CatsCompanyBot {
         }
       } else if (result.text !== BUSY_MESSAGE && result.visibleToUser && result.text) {
         try {
-          await this.sender.sendText(msg.topic, result.text);
+          await this.sender.reply(msg.topic, result.text);
         } catch (err: any) {
           Logger.warning(`队列消息回复发送失败: ${err.message}`);
         }

@@ -5,6 +5,8 @@ import { Logger } from '../utils/logger';
 import { RuntimePlanSnapshot } from '../core/plan-runtime';
 
 const MAX_MSG_LENGTH = 4000;
+const IDEAL_REPLY_SEGMENT_LENGTH = 520;
+const MAX_REPLY_SEGMENT_LENGTH = 1200;
 
 type CatsMessageType = 'thinking' | 'tool_use' | 'tool_result' | 'runtime_plan' | 'text' | 'image' | 'file';
 
@@ -210,7 +212,7 @@ export class MessageSender {
   }
 
   async reply(topic: string, text: string): Promise<void> {
-    const segments = this.splitText(text, MAX_MSG_LENGTH);
+    const segments = this.splitReplyText(text);
     for (const seg of segments) {
       await this.sendText(topic, seg);
     }
@@ -220,6 +222,53 @@ export class MessageSender {
     try {
       this.bot.sendTyping(topic);
     } catch {}
+  }
+
+  private splitReplyText(text: string): string[] {
+    const normalized = String(text || '').trim();
+    if (!normalized) return [];
+    if (normalized.length <= IDEAL_REPLY_SEGMENT_LENGTH) return [normalized];
+
+    const blocks = normalized.split(/\n{2,}/).map(block => block.trim()).filter(Boolean);
+    if (blocks.length <= 1) {
+      return this.splitText(normalized, MAX_REPLY_SEGMENT_LENGTH);
+    }
+
+    const segments: string[] = [];
+    let current = '';
+
+    const pushCurrent = () => {
+      const trimmed = current.trim();
+      if (trimmed) segments.push(trimmed);
+      current = '';
+    };
+
+    for (const block of blocks) {
+      if (block.length > MAX_REPLY_SEGMENT_LENGTH) {
+        pushCurrent();
+        segments.push(...this.splitText(block, MAX_REPLY_SEGMENT_LENGTH));
+        continue;
+      }
+
+      if (!current) {
+        current = block;
+        continue;
+      }
+
+      const candidate = `${current}\n\n${block}`;
+      if (candidate.length > IDEAL_REPLY_SEGMENT_LENGTH && current.length >= 220) {
+        pushCurrent();
+        current = block;
+      } else if (candidate.length > MAX_REPLY_SEGMENT_LENGTH) {
+        pushCurrent();
+        current = block;
+      } else {
+        current = candidate;
+      }
+    }
+
+    pushCurrent();
+    return segments.length > 0 ? segments : [normalized];
   }
 
   private splitText(text: string, maxLen: number): string[] {

@@ -11,6 +11,7 @@ export class SendTextTool implements Tool {
     description: [
       '向当前聊天会话发送一条用户可见的文本消息。',
       '只用于需要通过平台通道主动外发消息的 runtime；普通最终回复可以直接作为 assistant 内容返回。',
+      '传入完整文本即可；聊天通道会按段落边界自动拆分较长消息，不要为了分条而重复调用。',
       '不要用它记录内部笔记、计划或工具结果。',
     ].join('\n'),
     transcriptMode: 'outbound_message',
