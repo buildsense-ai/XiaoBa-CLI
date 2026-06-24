@@ -48,5 +48,8 @@ describe('CommonDirectoryTool', () => {
     assert.match(result.content as string, /Resolved common directory:/);
     assert.match(result.content as string, /kind: home/);
     assert.match(result.content as string, /Use this exact path as the base directory/);
+    assert.match(result.content as string, /call glob with this path/);
+    assert.match(result.content as string, /call write_file with a file_path under this path/);
+    assert.match(result.content as string, /Do not use execute_shell/);
   });
 });

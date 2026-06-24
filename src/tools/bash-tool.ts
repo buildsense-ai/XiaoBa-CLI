@@ -34,6 +34,7 @@ export class ShellTool implements Tool {
       '执行一条非交互式系统命令。',
       '命令从当前目录启动；每次调用都是新的 shell 进程，只有最终当前目录会保留到后续工具调用。',
       '环境变量、alias、函数和已激活虚拟环境不会自动跨调用保留；需要时在同一条 command 中显式设置。',
+      '在 CatsCo/远程用户设备场景中，不要用它做普通文件查看或创建；查看文件列表用 glob，创建/覆盖文本文件用 write_file，编辑文件用 edit_file。',
     ].join('\n'),
     parameters: {
       type: 'object',
