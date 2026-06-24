@@ -227,11 +227,23 @@ export class MessageSender {
   private splitReplyText(text: string): string[] {
     const normalized = String(text || '').trim();
     if (!normalized) return [];
-    if (normalized.length <= IDEAL_REPLY_SEGMENT_LENGTH) return [normalized];
+    const rawBlocks = normalized.split(/\n{2,}/).map(block => block.trim()).filter(Boolean);
+    if (
+      normalized.length <= IDEAL_REPLY_SEGMENT_LENGTH
+      && (rawBlocks.length <= 1 || normalized.length <= 260)
+    ) {
+      return [normalized];
+    }
 
-    const blocks = normalized.split(/\n{2,}/).map(block => block.trim()).filter(Boolean);
+    const blocks = rawBlocks
+      .map(block => this.formatReplyBlock(block))
+      .filter(Boolean);
     if (blocks.length <= 1) {
-      return this.splitText(normalized, MAX_REPLY_SEGMENT_LENGTH);
+      return this.splitText(this.formatReplyBlock(normalized), MAX_REPLY_SEGMENT_LENGTH);
+    }
+
+    if (blocks.length <= 6) {
+      return blocks.flatMap(block => this.splitText(block, MAX_REPLY_SEGMENT_LENGTH));
     }
 
     const segments: string[] = [];
@@ -269,6 +281,22 @@ export class MessageSender {
 
     pushCurrent();
     return segments.length > 0 ? segments : [normalized];
+  }
+
+  private formatReplyBlock(block: string): string {
+    const trimmed = String(block || '').trim();
+    if (!trimmed) return '';
+    if (!this.shouldIndentReplyBlock(trimmed)) return trimmed;
+    return trimmed.startsWith('　　') ? trimmed : `　　${trimmed}`;
+  }
+
+  private shouldIndentReplyBlock(block: string): boolean {
+    const firstLine = block.split(/\r?\n/, 1)[0].trimStart();
+    if (!firstLine) return false;
+    if (firstLine.startsWith('　　')) return false;
+    if (/^(```|~~~|>|#{1,6}\s|[-*+]\s|\d+[\.\)、]\s?|\|)/.test(firstLine)) return false;
+    if (/^(?:[A-Za-z]:\\|\\\\|\/|[A-Za-z0-9_.-]+\.(?:js|ts|md|json|html|css|py)\b)/.test(firstLine)) return false;
+    return true;
   }
 
   private splitText(text: string, maxLen: number): string[] {

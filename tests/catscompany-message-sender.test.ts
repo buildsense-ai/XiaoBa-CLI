@@ -105,11 +105,39 @@ describe('CatsCompany MessageSender reply segmentation', () => {
 
     await sender.reply('p2p_1_2', text);
 
-    assert.ok(sent.length >= 2, `expected multiple messages, got ${sent.length}`);
+    assert.equal(sent.length, 4);
     assert.ok(sent.every(item => item.type === 'text'));
     assert.ok(sent.every(item => String(item.content).length <= 1200));
-    assert.match(String(sent[0].content), /创建内容/);
-    assert.match(String(sent[sent.length - 1].content), /下一步建议/);
-    assert.equal(sent.map(item => String(item.content)).join('\n\n'), text);
+    assert.match(String(sent[0].content), /^　　创建内容/);
+    assert.match(String(sent[sent.length - 1].content), /^　　下一步建议/);
+    assert.equal(
+      sent.map(item => String(item.content).replace(/^　　/, '')).join('\n\n'),
+      text,
+    );
+  });
+
+  test('does not indent list or code-like reply blocks', async () => {
+    const sent: any[] = [];
+    const sender = new MessageSender({
+      sendStructuredMessage: async (payload: any) => {
+        sent.push(payload);
+        return sent.length;
+      },
+    } as any, 'https://app.example.test', 'cc_test');
+
+    const text = [
+      '这是普通说明段落，长度故意写长一点，用来触发长回复分段。它应该被补上段首两个全角空格，避免网页里大段文字贴边显示。这里继续补充一些内容，模拟真实任务完成后解释背景、结果、限制和下一步，让总长度稳定超过自动分段阈值。',
+      '- 第一项：列表不应该被补段首空格，否则 Markdown 列表会变形。\n- 第二项：继续保持列表结构。',
+      '```js\nconsole.log("code block should stay as-is");\n```',
+      '最后一个普通段落也应该补上段首缩进，确保自然段和特殊块的格式能区分开来。这里再补一段说明，确保测试不会因为样例太短而绕过长回复格式化路径。',
+    ].join('\n\n');
+
+    await sender.reply('p2p_1_2', text);
+
+    assert.equal(sent.length, 4);
+    assert.match(String(sent[0].content), /^　　这是普通说明段落/);
+    assert.match(String(sent[1].content), /^- 第一项/);
+    assert.match(String(sent[2].content), /^```js/);
+    assert.match(String(sent[3].content), /^　　最后一个普通段落/);
   });
 });
