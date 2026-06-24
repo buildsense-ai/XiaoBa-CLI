@@ -51,11 +51,13 @@ describe('runtime characterization', () => {
     const { PromptManager } = require('../src/utils/prompt-manager');
 
     const prompt = await PromptManager.buildSystemPrompt();
-    assert.match(prompt, /你是 XiaoBa\/CatsCo 的协作助手，认真、可靠、能持续协作/);
+    const today = new Date().toISOString().slice(0, 10);
+
+    assert.match(prompt, /你是用户的私人助理，认真、可靠、能持续协作/);
     assert.match(prompt, /你在这个平台上的名字是：RuntimeTestAgent/);
     assert.doesNotMatch(prompt, /你是小八/);
     assert.match(prompt, /当前平台：characterization/);
-    assert.match(prompt, /当前日期：\d{4}-\d{2}-\d{2}/);
+    assert.match(prompt, new RegExp(`当前日期：${today}`));
     assert.match(prompt, /当前目录会在每次模型请求中作为临时上下文消息提供/);
     assert.doesNotMatch(prompt, /~\/Documents\/xiaoba/);
     assert.doesNotMatch(prompt, /必须多次调用 send_text/);
