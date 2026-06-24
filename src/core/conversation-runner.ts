@@ -2,7 +2,7 @@ import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
 import type { ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalFileGrant } from '../types/session-identity';
 import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
-import { StreamCallbacks } from '../providers/provider';
+import { AIRequestOptions, StreamCallbacks } from '../providers/provider';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
@@ -22,6 +22,8 @@ import {
   foldToolResultsTowardPromptBudget,
   resolveAdaptiveToolResultFoldingOptions,
 } from './adaptive-tool-result-folder';
+import { createSafePromptHashRequestId, isSafePromptHashEnabled, logSafePromptHash } from '../utils/safe-prompt-hash';
+import { TransientObserver, isTransientObserveEnabled } from '../utils/transient-observation';
 import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
@@ -57,6 +59,7 @@ import {
   describeSyntheticObservationForLog,
   SyntheticObservation,
 } from './synthetic-observation';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -169,6 +172,8 @@ export interface RunnerOptions {
   pendingUserInputProvider?: PendingUserInputProvider;
   /** Non-blocking runtime observations produced by sidecar branches. */
   syntheticObservationProvider?: SyntheticObservationProvider;
+  /** Transient injection observer for cache diagnostics. */
+  transientObserver?: TransientObserver;
 }
 
 /**
@@ -189,6 +194,7 @@ export class ConversationRunner {
   private pendingUserInputProvider?: PendingUserInputProvider;
   private promptTraceLogger: PromptTraceLogger;
   private syntheticObservationProvider?: SyntheticObservationProvider;
+  private transientObserver?: TransientObserver;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -213,6 +219,7 @@ export class ConversationRunner {
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
     this.syntheticObservationProvider = options?.syntheticObservationProvider;
     this.maxTurns = options?.maxTurns;
+    this.transientObserver = options?.transientObserver;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.sessionLabel = this.toolExecutionContext?.sessionId
@@ -338,10 +345,22 @@ export class ConversationRunner {
       const perTurnRunnerHint = transientPolicy.injectRunnerHint
         ? buildPerTurnRunnerHint(requestTools)
         : null;
-      let requestMessages = this.buildProviderInputMessages(messages, [
+      const transientRunnerHints = [
         ...(perTurnRunnerHint ? [perTurnRunnerHint] : []),
         ...nextTurnTransientHints,
         ...orchestrationHints,
+      ];
+      if (this.transientObserver) {
+        for (const hint of transientRunnerHints) {
+          const content = typeof hint.content === 'string' ? hint.content : '';
+          const prefix = content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)
+            ? TRANSIENT_RUNNER_HINT_PREFIX
+            : content.slice(0, content.indexOf(']') + 1) || '[unknown]';
+          this.transientObserver.recordInjected(prefix, hint.role, 'tail', content.length);
+        }
+      }
+      let requestMessages = this.buildProviderInputMessages(messages, [
+        ...transientRunnerHints,
       ], {
         includeCurrentDirectoryHint: transientPolicy.injectEnvironment,
         currentDirectory,
@@ -428,6 +447,62 @@ export class ConversationRunner {
       if (promptTrimmed && callbacks?.onThinking) {
         await callbacks.onThinking(PROMPT_BUDGET_TRIM_MESSAGE);
       }
+      const safePromptHashEnabled = isSafePromptHashEnabled();
+      const debugOptions: AIRequestOptions = safePromptHashEnabled
+        ? {
+          debugRequestId: createSafePromptHashRequestId(),
+          debugSessionId: this.toolExecutionContext?.sessionId,
+          debugSurface: this.toolExecutionContext?.surface,
+          debugTurn: turns,
+        }
+        : {};
+      if (safePromptHashEnabled) {
+        const aiConfig: ChatConfig = typeof (this.aiService as any).getConfig === 'function'
+          ? this.aiService.getConfig()
+          : {};
+        const requestMessageTokens = estimateMessagesTokens(requestMessages);
+        const requestToolTokens = estimateToolsTokens(requestTools);
+        logSafePromptHash({
+          boundary: 'xiaoba.runner.request',
+          requestId: debugOptions.debugRequestId,
+          sessionId: debugOptions.debugSessionId,
+          surface: debugOptions.debugSurface,
+          turn: turns,
+          provider: aiConfig.provider ?? '',
+          model: aiConfig.model ?? '',
+          stream: this.stream,
+        }, {
+          messages: requestMessages,
+          tools: requestTools,
+          extra: {
+            prompt_trimmed: promptTrimmed,
+            message_count: requestMessages.length,
+            tool_count: requestTools.length,
+            message_tokens_est: requestMessageTokens,
+            tool_tokens_est: requestToolTokens,
+            total_tokens_est: requestMessageTokens + requestToolTokens,
+            max_prompt_tokens: this.maxPromptTokens,
+            context_window_tokens: aiConfig.contextWindowTokens ?? null,
+          },
+        });
+      }
+      if (this.transientObserver && isTransientObserveEnabled()) {
+        const aiConfig: ChatConfig = typeof (this.aiService as any).getConfig === 'function'
+          ? this.aiService.getConfig()
+          : {};
+        const systemMessages = requestMessages.filter(m => m.role === 'system');
+        const systemText = systemMessages.map(m => typeof m.content === 'string' ? m.content : '').join('\n\n');
+        const systemHash = createHash('sha256').update(systemText).digest('hex').slice(0, 16);
+        this.transientObserver.log({
+          turn: turns,
+          sessionId: this.toolExecutionContext?.sessionId,
+          provider: aiConfig.provider,
+          model: aiConfig.model ?? '',
+          requestId: debugOptions.debugRequestId,
+          systemHash,
+          systemLen: systemText.length,
+        });
+      }
       this.logProviderMessagesForDebug(requestMessages, requestTools, turns);
       this.promptTraceLogger.recordRequest(turns, requestMessages, requestTools);
       const aiStartTime = Date.now();
@@ -435,7 +510,7 @@ export class ConversationRunner {
 
       let response;
       try {
-        response = await this.requestModelResponse(requestMessages, requestTools, callbacks);
+        response = await this.requestModelResponse(requestMessages, requestTools, callbacks, debugOptions);
         const aiDuration = Date.now() - aiStartTime;
         this.promptTraceLogger.recordResponse(turns, response, aiDuration);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI推理完成，耗时: ${aiDuration}ms`);
@@ -960,14 +1035,16 @@ export class ConversationRunner {
       if (typeof message.content !== 'string') {
         return true;
       }
+      if (this.isTransientRunnerHint(message)) {
+        return false;
+      }
       if (message.content.startsWith(TRANSIENT_CURRENT_DIRECTORY_PREFIX)) {
         return false;
       }
       if (message.role !== 'system') {
         return true;
       }
-      return !message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)
-        && !message.content.startsWith(TRANSIENT_CURRENT_DIRECTORY_PREFIX);
+      return !message.content.startsWith(TRANSIENT_CURRENT_DIRECTORY_PREFIX);
     });
 
     const collapsed: Message[] = [];
@@ -1044,9 +1121,9 @@ export class ConversationRunner {
   }
 
   private isTransientRunnerHint(message: Message): boolean {
-    return message.role === 'system'
-      && typeof message.content === 'string'
-      && message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX);
+    return typeof message.content === 'string'
+      && message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)
+      && (message.role === 'system' || message.__injected === true);
   }
 
   private isCurrentDirectoryHint(message: Message): boolean {
@@ -1259,9 +1336,11 @@ export class ConversationRunner {
     messages: Message[],
     activeTools: ToolDefinition[],
     callbacks?: RunnerCallbacks,
+    debugOptions: AIRequestOptions = {},
   ) {
-    const requestOptions = {
+    const requestOptions: AIRequestOptions = {
       signal: this.toolExecutionContext?.abortSignal,
+      ...debugOptions,
     };
     try {
       if (this.stream) {

@@ -25,6 +25,7 @@ import { TurnContextBuilder } from './turn-context-builder';
 import { TurnLogRecorder } from './turn-log-recorder';
 import { PlanRuntime } from './plan-runtime';
 import { getPetService } from '../pet/pet-service';
+import { createTransientObserver, isTransientObserveEnabled } from '../utils/transient-observation';
 import {
   buildSyntheticObservationLifecycleEvent,
   describeSyntheticObservationForLog,
@@ -123,6 +124,7 @@ export class AgentTurnController {
     if (!branchAgentsEnabled) {
       this.expireMemoryBranch(previousCarryoverMemoryBranch, 'branch_agents_disabled');
     }
+    const transientObserver = isTransientObserveEnabled() ? createTransientObserver() : undefined;
 
     params.messages.push({
       role: 'user',
@@ -146,6 +148,7 @@ export class AgentTurnController {
       runtimeFeedback: params.runtimeFeedback,
       skillRuntime: this.options.skillRuntime,
       planRuntime: this.options.planRuntime,
+      observer: transientObserver,
     });
 
     const currentMemoryBranch = this.startMemorySidecarIfEnabled({
@@ -171,6 +174,7 @@ export class AgentTurnController {
       ),
       abortSignal: params.abortSignal,
       shouldContinue: params.shouldContinue,
+      observer: transientObserver,
     });
 
     let result;
@@ -232,6 +236,7 @@ export class AgentTurnController {
     syntheticObservationProvider?: () => SyntheticObservation[];
     abortSignal?: AbortSignal;
     shouldContinue: () => boolean;
+    observer?: ReturnType<typeof createTransientObserver>;
   }): ConversationRunner {
     const surface = resolveSessionSurface(this.options.sessionKey, this.options.sessionType);
     return new ConversationRunner(
@@ -244,6 +249,7 @@ export class AgentTurnController {
         // AgentSession/ContextWindowManager compacts durable history before the turn.
         // Runner-level compaction can fold transient runtime feedback into summary.
         enableCompression: false,
+        transientObserver: options.observer,
         toolExecutionContext: {
           sessionId: this.options.sessionKey,
           surface,

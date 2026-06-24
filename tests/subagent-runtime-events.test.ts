@@ -118,13 +118,13 @@ describe('subagent runtime events', () => {
       });
 
       const eventIndex = result.messages.findIndex(message => (
-        message.role === 'system'
-        && typeof message.content === 'string'
+        typeof message.content === 'string'
         && message.content.startsWith('[transient_subagent_status]')
       ));
       const userIndex = result.messages.findIndex(message => message.role === 'user' && message.content === '用户新问题');
 
       assert.ok(eventIndex >= 0, 'subagent status observation should be injected');
+      assert.equal(result.messages[eventIndex].__injected, true);
       assert.ok(eventIndex < userIndex, 'subagent observation should appear before latest user message');
       assert.match(String(result.messages[eventIndex].content), /完成 dashboard 账号链路审查/);
       assert.doesNotMatch(
