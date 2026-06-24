@@ -17,6 +17,10 @@ export interface StreamCallbacks {
 
 export interface AIRequestOptions {
   signal?: AbortSignal;
+  debugRequestId?: string;
+  debugSessionId?: string;
+  debugSurface?: string;
+  debugTurn?: number;
 }
 
 /**
