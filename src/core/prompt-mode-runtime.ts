@@ -60,9 +60,18 @@ export class PromptModeRuntime {
     return this.active ? { ...this.active } : null;
   }
 
+  getRemainingTurns(turnNumber = this.currentTurn): number | null {
+    if (!this.active) return null;
+    return Math.max(0, this.maxActiveTurns - (turnNumber - this.active.updatedTurn));
+  }
+
   clear(reason = 'cleared'): void {
     if (this.active) {
       Logger.info(`[prompt-mode-runtime] cleared active mode ${this.active.mode}: ${reason}`);
+      this.logRuntimeEvent('clear', this.active, {
+        reason,
+        remainingTurns: this.getRemainingTurns(),
+      });
     }
     this.active = null;
   }
@@ -82,12 +91,20 @@ export class PromptModeRuntime {
     const action = payload.action;
     if (action === 'ignore') {
       Logger.info(`[prompt-mode-runtime] router ignored mode change confidence=${payload.confidence.toFixed(2)} reason=${payload.reason}`);
+      this.logRuntimeEvent('ignore', this.active, {
+        confidence: payload.confidence,
+        reason: payload.reason,
+      });
       return;
     }
 
     if (action === 'clear') {
       if (payload.confidence < this.clearConfidence) {
         Logger.info(`[prompt-mode-runtime] ignored low-confidence clear confidence=${payload.confidence.toFixed(2)} reason=${payload.reason}`);
+        this.logRuntimeEvent('ignore_clear', this.active, {
+          confidence: payload.confidence,
+          reason: payload.reason,
+        });
         return;
       }
       this.clear(`router_clear confidence=${payload.confidence.toFixed(2)} reason=${payload.reason}`);
@@ -96,12 +113,22 @@ export class PromptModeRuntime {
 
     if (payload.confidence < this.activateConfidence) {
       Logger.info(`[prompt-mode-runtime] ignored low-confidence activate mode=${payload.mode || '(none)'} confidence=${payload.confidence.toFixed(2)} reason=${payload.reason}`);
+      this.logRuntimeEvent('ignore_activate', this.active, {
+        mode: payload.mode,
+        confidence: payload.confidence,
+        reason: payload.reason,
+      });
       return;
     }
 
     const definition = getPromptModeDefinition(payload.mode, this.promptsDir);
     if (!definition) {
       Logger.warning(`[prompt-mode-runtime] ignored unknown prompt mode "${payload.mode || ''}" from router`);
+      this.logRuntimeEvent('ignore_unknown_mode', this.active, {
+        mode: payload.mode,
+        confidence: payload.confidence,
+        reason: payload.reason,
+      });
       return;
     }
 
@@ -116,6 +143,10 @@ export class PromptModeRuntime {
       updatedTurn: turnNumber,
     };
     Logger.info(`[prompt-mode-runtime] active mode=${definition.id} confidence=${payload.confidence.toFixed(2)} reason=${payload.reason}`);
+    this.logRuntimeEvent('activate', this.active, {
+      remainingTurns: this.getRemainingTurns(turnNumber),
+      expiresAfterTurn: this.active.updatedTurn + this.maxActiveTurns,
+    });
   }
 
   buildTransientMessage(options: {
@@ -141,7 +172,9 @@ export class PromptModeRuntime {
         `Active prompt mode: ${this.active.mode} (${this.active.title}).`,
         `Selected asynchronously by runtime mode router with confidence ${this.active.confidence.toFixed(2)}.`,
         `Reason: ${this.active.reason}`,
+        `Remaining active turns before TTL: ${this.getRemainingTurns(turnNumber)}.`,
         'Apply this mode where it fits the current user request. If the user has clearly changed topic, follow the user and do not force this mode.',
+        'If the user explicitly asks to leave or disable this mode, call prompt_mode with mode "clear" before answering.',
         '',
         content,
       ].join('\n'),
@@ -152,7 +185,37 @@ export class PromptModeRuntime {
     if (!this.active) return;
     if (turnNumber - this.active.updatedTurn <= this.maxActiveTurns) return;
     Logger.info(`[prompt-mode-runtime] expired active mode ${this.active.mode} after ${this.maxActiveTurns} turns`);
+    this.logRuntimeEvent('expire', this.active, {
+      turnNumber,
+      maxActiveTurns: this.maxActiveTurns,
+    });
     this.active = null;
+  }
+
+  private logRuntimeEvent(
+    action: string,
+    state: PromptModeRuntimeState | null,
+    extra: Record<string, unknown> = {},
+  ): void {
+    Logger.runtimeEvent(
+      'INFO',
+      `[prompt-mode-runtime] ${action}${state ? ` mode=${state.mode}` : ''}`,
+      {
+        type: 'prompt_mode_runtime',
+        payload: {
+          action,
+          activeMode: state ? {
+            mode: state.mode,
+            title: state.title,
+            confidence: state.confidence,
+            reason: state.reason,
+            activatedTurn: state.activatedTurn,
+            updatedTurn: state.updatedTurn,
+          } : null,
+          ...extra,
+        },
+      },
+    );
   }
 }
 

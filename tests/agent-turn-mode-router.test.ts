@@ -11,6 +11,7 @@ import { TRANSIENT_FIXED_PROMPT_MODE_PREFIX, TRANSIENT_PROMPT_MODES_LIST_PREFIX 
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { PlanRuntime } from '../src/core/plan-runtime';
 import { Message } from '../src/types';
+import { AIService } from '../src/utils/ai-service';
 
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
 
@@ -33,10 +34,13 @@ class CapturingAIService {
 
 describe('AgentTurnController prompt mode router integration', () => {
   let previousBranchEnv: string | undefined;
+  let previousRouterEnv: string | undefined;
 
   beforeEach(() => {
     previousBranchEnv = process.env[BRANCH_AGENTS_ENABLED_ENV];
+    previousRouterEnv = process.env.XIAOBA_PROMPT_MODE_ROUTER_ENABLED;
     process.env[BRANCH_AGENTS_ENABLED_ENV] = 'true';
+    delete process.env.XIAOBA_PROMPT_MODE_ROUTER_ENABLED;
   });
 
   afterEach(() => {
@@ -45,6 +49,22 @@ describe('AgentTurnController prompt mode router integration', () => {
     } else {
       process.env[BRANCH_AGENTS_ENABLED_ENV] = previousBranchEnv;
     }
+    if (previousRouterEnv === undefined) {
+      delete process.env.XIAOBA_PROMPT_MODE_ROUTER_ENABLED;
+    } else {
+      process.env.XIAOBA_PROMPT_MODE_ROUTER_ENABLED = previousRouterEnv;
+    }
+  });
+
+  test('mode router requires explicit environment opt-in', () => {
+    const aiService = Object.create(AIService.prototype);
+    const controller = buildController(aiService);
+
+    assert.equal((controller as any).isPromptModeRouterEnabled(true, undefined), false);
+    process.env.XIAOBA_PROMPT_MODE_ROUTER_ENABLED = 'false';
+    assert.equal((controller as any).isPromptModeRouterEnabled(true, undefined), false);
+    process.env.XIAOBA_PROMPT_MODE_ROUTER_ENABLED = 'true';
+    assert.equal((controller as any).isPromptModeRouterEnabled(true, undefined), true);
   });
 
   test('carries a late mode router result into the next user turn', async () => {
@@ -133,7 +153,7 @@ describe('AgentTurnController prompt mode router integration', () => {
   });
 });
 
-function buildController(aiService: CapturingAIService): AgentTurnController {
+function buildController(aiService: any): AgentTurnController {
   return new AgentTurnController({
     sessionKey: 'session:v2:catscompany:group:grp_test:agent:usr1',
     sessionType: 'catscompany',

@@ -13,6 +13,7 @@ export class PromptModeTool implements Tool {
     description: [
       'Load the full instruction content for a registered prompt mode.',
       'Use this only when a runtime mode hint or the user request makes a mode clearly useful.',
+      'Use mode "clear" only when the user explicitly asks to leave or disable the current async prompt mode.',
       'If the candidate mode is only weakly related, ignore the hint and do not call this tool.',
     ].join('\n'),
     parameters: {
@@ -20,7 +21,7 @@ export class PromptModeTool implements Tool {
       properties: {
         mode: {
           type: 'string',
-          description: 'Prompt mode id, for example coding-agent, office, classroom, or team-assistant.',
+          description: 'Prompt mode id, for example coding-agent, office, classroom, or team-assistant. Use "clear" to clear the current async active mode.',
         },
       },
       required: ['mode'],
@@ -38,6 +39,26 @@ export class PromptModeTool implements Tool {
     }
 
     const promptsDir = getPromptBaseDir();
+    const fixedMode = findFixedPromptModeState(context.conversationHistory || [], promptsDir);
+    if (isPromptModeClearRequest(mode)) {
+      if (fixedMode) {
+        return {
+          ok: false,
+          errorCode: 'PERMISSION_DENIED',
+          message: `Cannot clear fixed prompt mode "${fixedMode.mode}" through prompt_mode. Change the runtime profile/fixed prompt mode instead.`,
+        };
+      }
+
+      const activeMode = readActiveModeId(context.promptModeRuntime?.getActiveMode?.());
+      context.promptModeRuntime?.clear('prompt_mode_tool_clear');
+      return {
+        ok: true,
+        content: activeMode
+          ? `Cleared active prompt mode "${activeMode}".`
+          : 'No async active prompt mode was set.',
+      };
+    }
+
     const definition = getPromptModeDefinition(mode, promptsDir);
     if (!definition) {
       const available = listPromptModeDefinitions(promptsDir)
@@ -50,7 +71,6 @@ export class PromptModeTool implements Tool {
       };
     }
 
-    const fixedMode = findFixedPromptModeState(context.conversationHistory || [], promptsDir);
     if (fixedMode && fixedMode.mode === definition.id) {
       return {
         ok: true,
@@ -89,4 +109,15 @@ export class PromptModeTool implements Tool {
       ].join('\n\n'),
     };
   }
+}
+
+function isPromptModeClearRequest(mode: string): boolean {
+  const normalized = mode.trim().toLowerCase();
+  return normalized === 'clear' || normalized === 'none' || normalized === 'off';
+}
+
+function readActiveModeId(activeMode: unknown): string | undefined {
+  if (!activeMode || typeof activeMode !== 'object') return undefined;
+  const mode = (activeMode as { mode?: unknown }).mode;
+  return typeof mode === 'string' && mode.trim() ? mode.trim() : undefined;
 }

@@ -320,6 +320,7 @@ export class AgentTurnController {
           getCurrentDirectory: this.options.getCurrentDirectory,
           updateCurrentDirectory: this.options.updateCurrentDirectory,
           planRuntime: this.options.planRuntime,
+          promptModeRuntime: this.promptModeRuntime,
           runtimeServices: {
             aiService: this.options.services.aiService,
             skillManager: this.options.services.skillManager,
@@ -561,7 +562,7 @@ export class AgentTurnController {
   ): boolean {
     if (fixedMode) return false;
     if (!branchAgentsEnabled) return false;
-    if (process.env.XIAOBA_PROMPT_MODE_ROUTER_ENABLED === 'false') return false;
+    if (process.env.XIAOBA_PROMPT_MODE_ROUTER_ENABLED !== 'true') return false;
     if (!(this.options.services.aiService instanceof AIService)) return false;
     if (listPromptModeDefinitions().length === 0) return false;
     return true;
