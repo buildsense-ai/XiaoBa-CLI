@@ -10409,7 +10409,7 @@
         }
         const block=group.block||group.result||{};
         const type=group.type||block.type||'Working';
-        const title=type==='thinking'?'Thinking':type==='assistant_text'?'Assistant':type==='tool_result'?'Tool Result':type;
+        const title=type==='thinking'?'状态':type==='assistant_text'?'Assistant':type==='tool_result'?'Tool Result':type;
         const text=type==='tool_result'
           ? truncateCatsWorkingText(catsWorkingCode(block.content||block.text||block.output||block.result))
           : truncateCatsWorkingText(catsWorkingSummary(block),900);

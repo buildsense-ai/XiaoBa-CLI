@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { CatsCompanyBot } from '../src/catscompany';
+import { extractContentBlocks } from '../src/catscompany/content-blocks';
 import { ConfigManager } from '../src/utils/config';
 
 const ONE_PIXEL_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
@@ -116,6 +117,28 @@ function createProcessHarness() {
 }
 
 describe('CatsCo content blocks', () => {
+  test('does not render assistant pre-tool text as working thinking', () => {
+    const blocks = extractContentBlocks([{
+      role: 'assistant',
+      content: '我先查一下天气。',
+      tool_calls: [{
+        id: 'call_1',
+        type: 'function',
+        function: {
+          name: 'execute_shell',
+          arguments: JSON.stringify({ command: 'echo weather' }),
+        },
+      }],
+    } as any]);
+
+    assert.deepStrictEqual(blocks, [{
+      type: 'tool_use',
+      id: 'call_1',
+      name: 'execute_shell',
+      input: { command: 'echo weather' },
+    }]);
+  });
+
   test('parses text and multiple attachments from one CatsCompany message', () => {
     const bot = Object.create(CatsCompanyBot.prototype);
 
