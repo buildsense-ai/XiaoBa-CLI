@@ -7,6 +7,7 @@ import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
 import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
+import { foldHistoricalReadFileMessages, resolveReadFileMessageFoldingOptions } from './read-file-message-folder';
 import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
@@ -77,7 +78,9 @@ export const PROMPT_TOOLS_DISABLED_MESSAGE = '当前模型上下文不足以加�
 export interface RunnerCallbacks {
   /** 流式文本片段 */
   onText?: (text: string) => void;
-  /** AI 思考过程 */
+  /** 模型在工具调用前给出的用户可见中途文本 */
+  onAssistantText?: (text: string) => void | Promise<void>;
+  /** 运行状态提示，例如压缩、裁剪、工具不可用 */
   onThinking?: (thinking: string) => void;
   /** 工具开始执行 */
   onToolStart?: (name: string, toolUseId: string, input: any) => void;
@@ -321,7 +324,7 @@ export class ConversationRunner {
       const perTurnRunnerHint = transientPolicy.injectRunnerHint
         ? buildPerTurnRunnerHint(requestTools)
         : null;
-      const requestMessages = this.buildProviderInputMessages(messages, [
+      let requestMessages = this.buildProviderInputMessages(messages, [
         ...(perTurnRunnerHint ? [perTurnRunnerHint] : []),
         ...nextTurnTransientHints,
         ...orchestrationHints,
@@ -330,6 +333,18 @@ export class ConversationRunner {
         currentDirectory,
       });
       nextTurnTransientHints = [];
+      const readFileFolding = foldHistoricalReadFileMessages(
+        requestMessages,
+        resolveReadFileMessageFoldingOptions(),
+      );
+      requestMessages = readFileFolding.messages;
+      if (readFileFolding.stats.folded_count > 0) {
+        Logger.info(
+          `[${this.sessionLabel}Turn ${turns}] read_file 历史折叠: `
+          + `folded=${readFileFolding.stats.folded_count}, `
+          + `saved≈${readFileFolding.stats.saved_tokens_est} tokens`,
+        );
+      }
       const promptTrimmed = this.ensurePromptBudget(requestMessages, requestTools);
       if (promptTrimmed && callbacks?.onThinking) {
         await callbacks.onThinking(PROMPT_BUDGET_TRIM_MESSAGE);
@@ -455,8 +470,9 @@ export class ConversationRunner {
 
       if (response.content) {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI文本: ${ConversationRunner.truncateForLog(response.content, 300)}`);
-        // 发送 thinking 回调
-        if (callbacks?.onThinking) {
+        if (callbacks?.onAssistantText) {
+          await callbacks.onAssistantText(response.content);
+        } else if (callbacks?.onThinking) {
           await callbacks.onThinking(response.content);
         }
       }

@@ -14,6 +14,12 @@ function canonicalMetadata(actorUserId: string, topicId: string, agentId = 'usr4
   };
 }
 
+function expectedCatsCoSessionKey(actorUserId: string, topicId: string, agentId = 'usr43') {
+  const topicType = topicId.startsWith('grp_') ? 'group' : 'p2p';
+  const sessionTopicId = topicType === 'group' ? `${topicId}:actor:${actorUserId}` : topicId;
+  return `session:v2:catscompany:${topicType}:${encodeURIComponent(sessionTopicId)}:agent:${encodeURIComponent(agentId)}`;
+}
+
 function deviceGrant(overrides: Record<string, unknown> = {}) {
   return {
     kind: 'user_device_grant',
@@ -52,7 +58,7 @@ function metadataWithDeviceSelection(actorUserId: string, topicId: string, selec
     kind: 'user_device_selection',
     source: 'catscompany',
     status: 'selected',
-    sessionKey: `session:v2:catscompany:${topicId.startsWith('grp_') ? 'group' : 'p2p'}:${topicId}:agent:${agentId}`,
+    sessionKey: expectedCatsCoSessionKey(actorUserId, topicId, agentId),
     topicId,
     topicType: topicId.startsWith('grp_') ? 'group' : 'p2p',
     actorUserId,
@@ -132,10 +138,14 @@ describe('CatsCompany execution scope flow', () => {
     assert.deepEqual(sessionKeys, ['session:v2:catscompany:p2p:p2p_7_43:agent:usr43']);
     assert.equal(sessionInputs[0].version, 2);
     assert.equal(sessionInputs[0].legacySessionKey, 'cc_user:usr7');
+    assert.equal(sessionInputs[0].legacyRestoreKey, 'cc_user:usr7');
+    assert.equal(sessionInputs[0].legacyCleanupKey, 'cc_user:usr7');
     assert.equal(handledTurns.length, 1);
     assert.equal(handledTurns[0].options.sessionRoute.sessionKey, 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43');
     assert.equal(handledTurns[0].options.executionScope.sessionKey, 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43');
     assert.equal(handledTurns[0].options.executionScope.legacySessionKey, 'cc_user:usr7');
+    assert.equal(handledTurns[0].options.executionScope.legacyRestoreKey, 'cc_user:usr7');
+    assert.equal(handledTurns[0].options.executionScope.legacyCleanupKey, 'cc_user:usr7');
     assert.equal(handledTurns[0].options.executionScope.actorUserId, 'usr7');
     assert.equal(handledTurns[0].options.executionScope.agentId, 'usr43');
     assert.equal(handledTurns[0].options.executionScope.agentBodyId, 'body-main');
@@ -169,7 +179,7 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(handledTurns[0].options.executionScope.isTrusted, true);
   });
 
-  test('group turn uses group session key while preserving actor in scope', async () => {
+  test('group turn uses actor-scoped group session key while preserving raw topic in scope', async () => {
     const { bot, handledTurns, sessionKeys } = createHarness();
 
     await (bot as any).onMessage({
@@ -182,8 +192,16 @@ describe('CatsCompany execution scope flow', () => {
       seq: 12,
     });
 
-    assert.deepEqual(sessionKeys, ['session:v2:catscompany:group:grp_80:agent:usr43']);
+    assert.deepEqual(sessionKeys, ['session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43']);
     assert.equal(handledTurns.length, 1);
+    assert.equal(handledTurns[0].options.sessionRoute.sessionKey, 'session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43');
+    assert.equal(handledTurns[0].options.sessionRoute.legacySessionKey, undefined);
+    assert.equal(handledTurns[0].options.sessionRoute.legacyRestoreKey, undefined);
+    assert.equal(handledTurns[0].options.sessionRoute.legacyCleanupKey, 'cc_group:grp_80');
+    assert.equal(handledTurns[0].options.executionScope.sessionKey, 'session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43');
+    assert.equal(handledTurns[0].options.executionScope.legacySessionKey, undefined);
+    assert.equal(handledTurns[0].options.executionScope.legacyRestoreKey, undefined);
+    assert.equal(handledTurns[0].options.executionScope.legacyCleanupKey, 'cc_group:grp_80');
     assert.equal(handledTurns[0].options.executionScope.topicType, 'group');
     assert.equal(handledTurns[0].options.executionScope.topicId, 'grp_80');
     assert.equal(handledTurns[0].options.executionScope.actorUserId, 'usr7');
@@ -206,6 +224,34 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(handledTurns[0].options.deviceGrants?.length, 1);
     assert.equal(handledTurns[0].options.deviceGrants[0].deviceId, 'alice-laptop');
     assert.deepEqual(handledTurns[0].options.deviceGrants[0].operations, ['read_file', 'send_file']);
+  });
+
+  test('passes actor-scoped group device grants into CatsCompany session turn', async () => {
+    const { bot, handledTurns } = createHarness();
+
+    await (bot as any).onMessage({
+      topic: 'grp_80',
+      senderId: 'usr7',
+      text: '在我的桌面创建文件夹',
+      content: '在我的桌面创建文件夹',
+      metadata: metadataWithDeviceGrants('usr7', 'grp_80', [
+        deviceGrant({
+          sessionKey: expectedCatsCoSessionKey('usr7', 'grp_80'),
+          topicId: 'grp_80',
+          topicType: 'group',
+        }),
+      ]),
+      isGroup: true,
+      seq: 12,
+    });
+
+    assert.equal(handledTurns.length, 1);
+    assert.equal(handledTurns[0].options.executionScope.sessionKey, expectedCatsCoSessionKey('usr7', 'grp_80'));
+    assert.equal(handledTurns[0].options.executionScope.topicId, 'grp_80');
+    assert.equal(handledTurns[0].options.deviceGrants?.length, 1);
+    assert.equal(handledTurns[0].options.deviceGrants[0].sessionKey, expectedCatsCoSessionKey('usr7', 'grp_80'));
+    assert.equal(handledTurns[0].options.deviceGrants[0].topicId, 'grp_80');
+    assert.equal(handledTurns[0].options.deviceGrants[0].actorUserId, 'usr7');
   });
 
   test('passes server canonical device selection into CatsCompany session turn', async () => {
@@ -273,7 +319,6 @@ describe('CatsCompany execution scope flow', () => {
 
   test('does not merge queued CatsCo group input from another actor into the current actor scope', () => {
     const { bot } = createHarness();
-    const sessionKey = 'session:v2:catscompany:group:grp_80:agent:usr43';
     const aliceScope = createExecutionScope(createCatsCoMessageEnvelope({
       topic: 'grp_80',
       isGroup: true,
@@ -291,7 +336,9 @@ describe('CatsCompany execution scope flow', () => {
       botUid: 'usr43',
     }));
 
-    bot.messageQueue.set(sessionKey, [{
+    assert.notEqual(aliceScope.sessionKey, bobScope.sessionKey);
+
+    bot.messageQueue.set(bobScope.sessionKey, [{
       userMessage: 'bob follow-up',
       topic: 'grp_80',
       senderId: 'bob',
@@ -301,12 +348,12 @@ describe('CatsCompany execution scope flow', () => {
       source: 'user',
     }]);
 
-    assert.equal((bot as any).consumeQueuedUserInput(sessionKey, aliceScope), null);
-    assert.equal(bot.messageQueue.get(sessionKey)?.length, 1);
+    assert.equal((bot as any).consumeQueuedUserInput(aliceScope.sessionKey, aliceScope), null);
+    assert.equal(bot.messageQueue.get(bobScope.sessionKey)?.length, 1);
 
-    const pendingForBob = (bot as any).consumeQueuedUserInput(sessionKey, bobScope);
+    const pendingForBob = (bot as any).consumeQueuedUserInput(bobScope.sessionKey, bobScope);
     assert.equal(pendingForBob, 'bob follow-up');
-    assert.equal(bot.messageQueue.has(sessionKey), false);
+    assert.equal(bot.messageQueue.has(bobScope.sessionKey), false);
   });
 
   test('preserves device grants when queued CatsCompany user input is merged', () => {

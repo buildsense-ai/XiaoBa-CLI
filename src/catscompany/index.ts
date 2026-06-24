@@ -91,6 +91,18 @@ function shouldHideCatsToolProgress(toolName: string): boolean {
   return HIDDEN_CATS_TOOL_PROGRESS.has(toolName);
 }
 
+export function isCatsCompanyPassiveAcknowledgement(text: string): boolean {
+  const compact = String(text || '')
+    .toLowerCase()
+    .replace(/[\s。.!！,，、~～]+/g, '');
+  if (!compact || compact.length > 18) return false;
+  if (/[?？]/.test(text)) return false;
+
+  const ack = '(?:嗯|嗯嗯|收到|明白|懂了)';
+  const thanks = '(?:谢谢|谢了|谢谢啦|辛苦了|感谢|thx|thanks)';
+  return new RegExp(`^(?:${ack}|${thanks}|${ack}${thanks}|${thanks}${ack})$`, 'i').test(compact);
+}
+
 function compactCatsSubAgentSummary(text: string, maxLength = 4000): string {
   const normalized = text.replace(/\s+\n/g, '\n').trim();
   if (normalized.length <= maxLength) return normalized;
@@ -575,6 +587,7 @@ export class CatsCompanyBot {
           await this.sender.reply(topic, text);
         } catch (err: any) {
           Logger.warning(`消息发送失败 (reply): ${err.message}`);
+          throw err;
         }
       },
       sendFile: async (_targetTopic: string, filePath: string, fileName: string) => {
@@ -606,6 +619,13 @@ export class CatsCompanyBot {
           await this.sender.reply(topic, `⚠️ 大模型请求失败，正在重试 (${attempt}/${maxRetries})...`);
         } catch (err: any) {
           Logger.warning(`重试提示发送失败: ${err.message}`);
+        }
+      },
+      onAssistantText: async (text: string) => {
+        try {
+          await this.sender.reply(topic, text);
+        } catch (err: any) {
+          Logger.warning(`前端通知发送失败 (assistant_text): ${err.message}`);
         }
       },
       onThinking: async (thinking: string) => {
@@ -743,13 +763,19 @@ export class CatsCompanyBot {
       if (result.handled) return;
     }
 
+    const messageFiles = msg.files && msg.files.length > 0 ? msg.files : (msg.file ? [msg.file] : []);
+    const hasPendingAttachments = (this.pendingAttachments.get(key)?.length || 0) > 0;
+    if (isCatsCompanyPassiveAcknowledgement(msg.text) && messageFiles.length === 0 && !hasPendingAttachments) {
+      Logger.info(`[${key}] 收到纯确认/感谢消息，已静默跳过推理`);
+      return;
+    }
+
     Logger.info(`[${key}] 收到消息: ${msg.text.slice(0, 50)}...`);
 
     let userMessage: string | import('../types').ContentBlock[] = msg.text;
     const runtimeFeedback: RuntimeFeedbackInput[] = [];
     let localFileGrants: ScopedLocalFileGrant[] = [];
 
-    const messageFiles = msg.files && msg.files.length > 0 ? msg.files : (msg.file ? [msg.file] : []);
     if (messageFiles.length > 0) {
       const attachments: PendingAttachment[] = [];
       for (const file of messageFiles) {
@@ -839,7 +865,7 @@ export class CatsCompanyBot {
       // 最终文本回复
       if (result.visibleToUser && result.text) {
         try {
-          await this.sender.sendText(msg.topic, result.text);
+          await this.sender.reply(msg.topic, result.text);
         } catch (err: any) {
           Logger.warning(`前端通知发送失败 (text): ${err.message}`);
         }
@@ -1013,7 +1039,7 @@ export class CatsCompanyBot {
         }
       } else if (result.visibleToUser && result.text) {
         try {
-          await this.sender.sendText(topic, result.text);
+          await this.sender.reply(topic, result.text);
         } catch (err: any) {
           Logger.warning(`子智能体结果回复发送失败: ${err.message}`);
         }
@@ -1226,7 +1252,7 @@ export class CatsCompanyBot {
         }
       } else if (result.text !== BUSY_MESSAGE && result.visibleToUser && result.text) {
         try {
-          await this.sender.sendText(msg.topic, result.text);
+          await this.sender.reply(msg.topic, result.text);
         } catch (err: any) {
           Logger.warning(`队列消息回复发送失败: ${err.message}`);
         }

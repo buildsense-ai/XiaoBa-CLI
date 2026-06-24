@@ -4472,6 +4472,11 @@
       align-items: start;
     }
 
+    .companion-left-stack {
+      display: grid;
+      gap: 14px;
+    }
+
     .companion-card {
       background: #fff;
       border: 1px solid var(--border);
@@ -4515,10 +4520,121 @@
     .companion-next-card,
     .companion-summary-card,
     .companion-recent-card,
-    .companion-actions-card {
+    .companion-actions-card,
+    .companion-prompt-card {
       padding: 18px;
       display: grid;
       gap: 14px;
+    }
+
+    .companion-prompt-card {
+      border-color: rgba(16, 185, 129, 0.26);
+      background: linear-gradient(180deg, rgba(236, 253, 245, 0.92), #fff);
+    }
+
+    .companion-prompt-card.empty {
+      border-color: var(--border);
+      background: #fff;
+    }
+
+    .companion-prompt-title {
+      color: var(--text);
+      font-size: 15px;
+      font-weight: 850;
+      line-height: 1.35;
+    }
+
+    .companion-prompt-copy,
+    .companion-prompt-preview {
+      color: var(--text2);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .companion-prompt-stage {
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.62);
+      padding: 10px 12px;
+      display: grid;
+      gap: 6px;
+    }
+
+    .companion-prompt-stage-title {
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 850;
+      line-height: 1.35;
+    }
+
+    .companion-prompt-stage-body {
+      color: var(--text2);
+      font-size: 13px;
+      line-height: 1.58;
+    }
+
+    .companion-prompt-preview {
+      border: 1px dashed var(--border);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.72);
+      padding: 10px;
+      max-height: 150px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+
+    .companion-prompt-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .companion-prompt-chat {
+      display: grid;
+      gap: 8px;
+      padding-top: 4px;
+    }
+
+    .companion-prompt-chat textarea {
+      width: 100%;
+      min-height: 74px;
+      max-height: 150px;
+      resize: vertical;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.84);
+      font-size: 13px;
+      line-height: 1.45;
+      outline: none;
+    }
+
+    .companion-prompt-chat textarea:focus {
+      border-color: rgba(37, 99, 235, 0.36);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
+    }
+
+    .companion-prompt-chat-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .floating-prompt-proposal {
+      border-top: 1px solid var(--border);
+      margin-top: 8px;
+      padding-top: 10px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .floating-prompt-proposal-title {
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 850;
+      line-height: 1.35;
     }
 
     .companion-level-title {
@@ -5115,33 +5231,52 @@
           </div>
         </div>
         <div class="companion-hero">
-          <section class="pet-stage companion-card companion-profile-card" aria-label="CatsCo 宠物伙伴">
-            <div class="companion-profile-head">
-              <div>
-                <div class="companion-eyebrow">CatsCo Companion</div>
-                <div class="companion-name" id="pet-profile-name">CatsCo</div>
+          <div class="companion-left-stack">
+            <section class="pet-stage companion-card companion-profile-card" aria-label="CatsCo 宠物伙伴">
+              <div class="companion-profile-head">
+                <div>
+                  <div class="companion-eyebrow">CatsCo Companion</div>
+                  <div class="companion-name" id="pet-profile-name">CatsCo</div>
+                </div>
+                <span class="pet-state-pill" id="pet-state-pill">待机中</span>
               </div>
-              <span class="pet-state-pill" id="pet-state-pill">待机中</span>
-            </div>
-            <div class="companion-level-title">
-              <span id="pet-level-label">Lv.1</span>
-              <span id="pet-title-label">新手伙伴</span>
-            </div>
-            <div class="companion-state-copy" id="pet-state-copy">正在等待下一项任务。</div>
-
-            <div class="companion-pet-visual" id="companion-pet-visual">
-              <div class="companion-pet-bubble" id="companion-pet-bubble">等待下一项任务</div>
-              <img class="pet-frame" id="pet-frame" src="pet/idle/01.png" alt="CatsCo companion" />
-            </div>
-
-            <div class="companion-level">
-              <div class="companion-level-meta">
-                <span>等级进度</span>
-                <span id="pet-xp-label">0 / 50 XP</span>
+              <div class="companion-level-title">
+                <span id="pet-level-label">Lv.1</span>
+                <span id="pet-title-label">新手伙伴</span>
               </div>
-              <div class="companion-xp-track"><div class="companion-xp-bar" id="pet-xp-bar"></div></div>
-            </div>
-          </section>
+              <div class="companion-state-copy" id="pet-state-copy">正在等待下一项任务。</div>
+
+              <div class="companion-pet-visual" id="companion-pet-visual">
+                <div class="companion-pet-bubble" id="companion-pet-bubble">等待下一项任务</div>
+                <img class="pet-frame" id="pet-frame" src="pet/idle/01.png" alt="CatsCo companion" />
+              </div>
+
+              <div class="companion-level">
+                <div class="companion-level-meta">
+                  <span>等级进度</span>
+                  <span id="pet-xp-label">0 / 50 XP</span>
+                </div>
+                <div class="companion-xp-track"><div class="companion-xp-bar" id="pet-xp-bar"></div></div>
+              </div>
+            </section>
+
+            <section class="companion-card companion-prompt-card empty" id="companion-prompt-card">
+              <div class="companion-section-head">
+                <div class="companion-section-title">Prompt 调优建议</div>
+                <button class="companion-text-action" onclick="fetchPromptCompanionProposal(true)">刷新</button>
+              </div>
+              <div id="companion-prompt-proposal">
+                <div class="companion-prompt-copy">宠物会旁路观察当前会话、session/runtime log 和最近工作，需要时给出可确认的 prompt 小改动。</div>
+              </div>
+              <form class="companion-prompt-chat" onsubmit="event.preventDefault();fetchPromptCompanionProposal(true)">
+                <textarea id="companion-prompt-note" maxlength="600" placeholder="跟旁路模型说一句：比如“看最近这轮为什么回复太长，建议只改表达规则”。" onkeydown="handlePromptCompanionNoteKey(event)"></textarea>
+                <div class="companion-prompt-chat-row">
+                  <div class="companion-prompt-copy">只会生成可预览的小 diff，应用前会再次确认。</div>
+                  <button class="btn" type="submit">询问</button>
+                </div>
+              </form>
+            </section>
+          </div>
 
           <aside class="companion-side-stack">
           <section class="companion-card companion-next-card">
@@ -5263,10 +5398,11 @@
           <div class="settings-heading">
             <div class="settings-kicker">Prompt Lab</div>
             <div class="section-title" style="margin-bottom:0">提示词调试</div>
-            <div class="settings-meta">编辑本地覆盖版本，重启 connector 或新建 session 后生效；日志会记录 system 和 bundle hash。</div>
+            <div class="settings-meta">编辑本地覆盖版本，下一条用户消息开始前热加载；日志会记录 system 和 bundle hash。</div>
           </div>
           <div class="settings-actions">
             <button class="btn" onclick="copyPromptOverridesPath()">复制覆盖目录</button>
+            <button class="btn" onclick="installPromptEditorSkill()">安装编辑 Skill</button>
             <button class="btn btn-primary" onclick="refreshPromptWorkbench()">刷新</button>
           </div>
         </div>
@@ -5396,6 +5532,7 @@
         <span class="pet-state-pill" id="floating-pet-panel-level">Lv.1</span>
       </div>
       <div class="companion-process-list" id="floating-process-list"></div>
+      <div id="floating-prompt-proposal"></div>
       <div class="floating-pet-panel-actions">
         <button type="button" onclick="switchPage('companion');closeFloatingPetMenu()">打开伙伴页</button>
         <button type="button" onclick="resetFloatingPetPosition()">归位</button>
@@ -5606,6 +5743,23 @@
     let promptEditorSelectedPath = 'system-prompt.md';
     let promptEditorDirty = false;
     let promptGroupOpenState = loadPromptGroupOpenState();
+    let promptCompanionProposal = null;
+    let promptCompanionSignals = null;
+    let promptCompanionAdvisor = null;
+    let promptCompanionAdvisorNotice = '';
+    let promptCompanionBusy = false;
+    let promptCompanionRequestSeq = 0;
+
+    function getPromptCompanionNote() {
+      const input = document.getElementById('companion-prompt-note');
+      return input ? String(input.value || '').trim().slice(0, 600) : '';
+    }
+
+    function handlePromptCompanionNoteKey(event) {
+      if (event.key !== 'Enter' || !(event.ctrlKey || event.metaKey)) return;
+      event.preventDefault();
+      fetchPromptCompanionProposal(true);
+    }
 
     function loadPetProfile() {
       try {
@@ -5748,6 +5902,235 @@
         applyPetProgress(progress);
       } catch (_error) {
         // Keep the companion panel stable if growth stats are temporarily unavailable.
+      }
+    }
+
+    async function fetchPromptCompanionProposal(manual=false) {
+      if (promptCompanionBusy && !manual) return;
+      promptCompanionBusy = true;
+      const requestSeq = ++promptCompanionRequestSeq;
+      try {
+        if (manual) renderPromptCompanionLoading();
+        const note = manual ? getPromptCompanionNote() : '';
+        const res = manual
+          ? await fetch(API + '/api/pet/prompt-proposal', {
+              method: 'POST',
+              headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({ note })
+            })
+          : await fetch(API + '/api/pet/prompt-proposal');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (requestSeq !== promptCompanionRequestSeq) return;
+        const nextProposal = data.proposal || null;
+        const advisor = data.advisor || null;
+        promptCompanionSignals = data.signals || null;
+        promptCompanionAdvisor = advisor;
+        if (nextProposal) {
+          promptCompanionProposal = nextProposal;
+          promptCompanionAdvisorNotice = note ? formatPromptCompanionAdvisorNotice(advisor, '已根据你的补充生成新的可预览 diff。') : '';
+        } else if (note) {
+          promptCompanionAdvisorNotice = promptCompanionProposal
+            ? formatPromptCompanionAdvisorNotice(advisor, '这次询问没有生成新的可应用 diff，已保留当前建议。可以换个更具体的方向继续问。')
+            : formatPromptCompanionAdvisorNotice(advisor, '这次询问没有生成可应用的小 diff。可以换个更具体的方向继续问，或先观察更多会话。');
+        } else {
+          promptCompanionProposal = null;
+          promptCompanionAdvisor = null;
+          promptCompanionAdvisorNotice = '';
+        }
+        renderPromptCompanionProposal();
+      } catch (error) {
+        if (requestSeq === promptCompanionRequestSeq) renderPromptCompanionError(error);
+      } finally {
+        if (requestSeq === promptCompanionRequestSeq) promptCompanionBusy = false;
+      }
+    }
+
+    function renderPromptCompanionLoading() {
+      const box = document.getElementById('companion-prompt-proposal');
+      if (box) box.innerHTML = '<div class="companion-prompt-copy">正在让宠物 advisor 检查当前会话、session/runtime log 和最近工作...</div>';
+    }
+
+    function renderPromptCompanionError(error) {
+      const box = document.getElementById('companion-prompt-proposal');
+      if (box) box.innerHTML = '<div class="runtime-note danger">Prompt 建议加载失败：'+escapeHtml(error?.message||String(error))+'</div>';
+    }
+
+    function formatPromptCompanionAdvisorNotice(advisor, fallback) {
+      if (!advisor || typeof advisor !== 'object') return fallback;
+      const message = String(advisor.message || '').trim();
+      const suggestion = String(advisor.suggestion || '').trim();
+      let text = message || fallback;
+      if (suggestion) text += '\n建议问法：' + suggestion;
+      return text;
+    }
+
+    function renderPromptCompanionStage(title, bodyHtml) {
+      if (!bodyHtml) return '';
+      return '<div class="companion-prompt-stage">'+
+        '<div class="companion-prompt-stage-title">'+escapeHtml(title)+'</div>'+
+        '<div class="companion-prompt-stage-body">'+bodyHtml+'</div>'+
+      '</div>';
+    }
+
+    function renderPromptCompanionLine(label, value) {
+      const text = String(value || '').trim();
+      if (!text) return '';
+      return '<div><strong>'+escapeHtml(label)+'：</strong>'+escapeHtml(text)+'</div>';
+    }
+
+    function renderPromptCompanionAdvisorDiagnosis() {
+      const advisor = promptCompanionAdvisor || {};
+      const issue = String(advisor.issue || '').trim();
+      const evidence = String(advisor.evidence || '').trim();
+      const message = String(advisor.message || promptCompanionAdvisorNotice || '').trim();
+      const suggestion = String(advisor.suggestion || '').trim();
+      let html = '';
+      const diagnosis = renderPromptCompanionLine('问题', issue)
+        + renderPromptCompanionLine('依据', evidence)
+        + (message ? '<div>'+escapeHtml(message).replace(/\n/g, '<br>')+'</div>' : '');
+      if (diagnosis) html += renderPromptCompanionStage('1. 问题定位', diagnosis);
+      if (suggestion) html += renderPromptCompanionStage('下一步问法', escapeHtml(suggestion));
+      return html;
+    }
+
+    function renderPromptCompanionAdvisorNotice() {
+      if (!promptCompanionAdvisorNotice) return '';
+      if (promptCompanionAdvisor) return renderPromptCompanionAdvisorDiagnosis();
+      return '<div class="runtime-note"><strong>旁路回复：</strong><br>'+escapeHtml(promptCompanionAdvisorNotice).replace(/\n/g, '<br>')+'</div>';
+    }
+
+    function renderPromptCompanionProposal() {
+      const card = document.getElementById('companion-prompt-card');
+      const box = document.getElementById('companion-prompt-proposal');
+      const floating = document.getElementById('floating-prompt-proposal');
+      if (!box) return;
+      if (!promptCompanionProposal) {
+        if (card) card.classList.add('empty');
+        const checked = promptCompanionSignals
+          ? buildPromptCompanionNoProposalCopy(promptCompanionSignals)
+          : '宠物会旁路观察当前会话、session/runtime log 和最近工作，需要时给出可确认的 prompt 小改动。';
+        box.innerHTML = renderPromptCompanionAdvisorNotice()+'<div class="companion-prompt-copy">'+escapeHtml(checked)+'</div>';
+        if (floating) floating.innerHTML = '';
+        return;
+      }
+      if (card) card.classList.remove('empty');
+      const p = promptCompanionProposal;
+      const operationLabel = p.operation === 'replace' ? '精确替换' : (p.operation === 'delete' ? '删除片段' : '追加规则');
+      const signals = p.signals || promptCompanionSignals || {};
+      const signalCopy = '依据：'+Number(signals.recent_session_turns||0)+' 轮 session · '
+        + Number(signals.recent_runtime_errors||0)+' 条 runtime 错误 · '
+        + Number(signals.recent_runtime_warnings||0)+' 条 runtime 警告 · '
+        + Number(signals.recent_events||0)+' 条宠物事件';
+      const issue = p.issue || p.reason || '宠物 advisor 发现一条可以通过 prompt 小改动改善的问题。';
+      const evidence = p.evidence || signalCopy.replace(/^依据：/, '');
+      const changeSummary = p.change_summary || p.reason || '生成一处可预览的小 diff，应用前需要确认。';
+      box.innerHTML =
+        '<div class="companion-prompt-title">'+escapeHtml(p.title||'Prompt 调优建议')+'</div>'+
+        renderPromptCompanionStage('1. 问题定位',
+          renderPromptCompanionLine('问题', issue)+
+          renderPromptCompanionLine('定位依据', evidence)+
+          '<div>'+escapeHtml(signalCopy)+'</div>'
+        )+
+        renderPromptCompanionStage('2. 拟改内容',
+          '<div>目标：<code>'+escapeHtml(p.path||'system-prompt.md')+'</code> · '+escapeHtml(operationLabel)+'</div>'+
+          renderPromptCompanionLine('改动内容', changeSummary)+
+          renderPromptCompanionLine('原因', p.reason||'宠物 advisor 提出了一条小改动。')+
+          '<div class="companion-prompt-preview">'+escapeHtml(p.preview||'')+'</div>'
+        )+
+        renderPromptCompanionStage('3. 确认应用',
+          renderPromptCompanionLine('注意', p.risk||'应用前请预览。')+
+          '<div class="companion-prompt-actions">'+
+            '<button class="btn btn-primary" onclick="applyPromptCompanionProposal()">应用</button>'+
+            '<button class="btn" onclick="previewPromptCompanionProposal()">预览</button>'+
+            '<button class="btn btn-ghost" onclick="dismissPromptCompanionProposal()">忽略</button>'+
+          '</div>'
+        );
+      if (floating) {
+        floating.innerHTML =
+          '<div class="floating-prompt-proposal">'+
+            '<div class="floating-prompt-proposal-title">'+escapeHtml(p.title||'有一条 Prompt 建议')+'</div>'+
+            '<div class="floating-pet-panel-actions">'+
+              '<button type="button" onclick="previewPromptCompanionProposal();closeFloatingPetMenu()">预览</button>'+
+              '<button type="button" onclick="openPromptCompanionPanel()">查看</button>'+
+            '</div>'+
+          '</div>';
+      }
+    }
+
+    function buildPromptCompanionNoProposalCopy(signals) {
+      const turns = Number(signals?.recent_session_turns || 0);
+      const runtimeErrors = Number(signals?.recent_runtime_errors || 0);
+      const runtimeWarnings = Number(signals?.recent_runtime_warnings || 0);
+      const events = Number(signals?.recent_events || 0);
+      const checked = '已检查最近 '+turns+' 轮 session、'+runtimeErrors+' 条 runtime 错误、'+runtimeWarnings+' 条 runtime 警告和 '+events+' 条宠物事件';
+      if (runtimeErrors > 0 || runtimeWarnings > 0 || events > 0) {
+        return checked+'。有运行信号，但暂时没有可安全应用的 prompt 小改动；可以在下面输入具体问题让旁路模型先定位原因。';
+      }
+      return checked+'，暂时没有发现需要改 prompt 的稳定问题。';
+    }
+
+    function openPromptCompanionPanel() {
+      switchPage('companion');
+      closeFloatingPetMenu();
+    }
+
+    async function previewPromptCompanionProposal() {
+      const p = promptCompanionProposal;
+      if (!p) return;
+      closeFloatingPetMenu();
+      switchPage('prompts');
+      await refreshPromptWorkbench(p.path || 'system-prompt.md', { preserveFileListScroll:true });
+      const textarea = document.getElementById('prompt-editor-textarea');
+      if (textarea) {
+        textarea.value = p.proposed_content || textarea.value;
+        markPromptEditorDirty();
+        const status = document.getElementById('prompt-editor-status');
+        if (status) status.textContent = '正在预览宠物建议，尚未保存。确认后可点击保存覆盖，或返回 Companion 点应用。';
+      }
+    }
+
+    async function applyPromptCompanionProposal() {
+      const p = promptCompanionProposal;
+      if (!p) return;
+      if (!confirm('应用这条 Prompt 调优建议？保存后会从下一条用户消息开始热加载。')) return;
+      try {
+        const res = await fetch(API + '/api/pet/prompt-proposal/apply', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ id: p.id })
+        });
+        const data = await parseSimpleResponse(res);
+        promptCompanionProposal = null;
+        promptCompanionAdvisor = null;
+        promptCompanionAdvisorNotice = '';
+        promptCompanionSignals = data.proposal?.signals || promptCompanionSignals;
+        setPetState('success', { message:'Prompt 建议已应用，下一条消息生效。', holdMs:2600 });
+        renderPromptCompanionProposal();
+        if (document.getElementById('page-prompts')?.classList.contains('active')) {
+          await refreshPromptWorkbench(data.proposal?.path || 'system-prompt.md', { preserveFileListScroll:true, preserveEditorScroll:true });
+        }
+      } catch (error) {
+        alert('应用 Prompt 建议失败：' + (error.message || String(error)));
+      }
+    }
+
+    async function dismissPromptCompanionProposal() {
+      const p = promptCompanionProposal;
+      if (!p) return;
+      try {
+        const res = await fetch(API + '/api/pet/prompt-proposal/dismiss', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ id: p.id })
+        });
+        await parseSimpleResponse(res);
+        promptCompanionProposal = null;
+        promptCompanionAdvisor = null;
+        promptCompanionAdvisorNotice = '';
+        renderPromptCompanionProposal();
+      } catch (error) {
+        alert('忽略 Prompt 建议失败：' + (error.message || String(error)));
       }
     }
 
@@ -6234,7 +6617,7 @@
           promptTraceCard('Overrides', promptEditorState.writable?'可写':'未配置', promptEditorState.overrides_dir||'-')+
         '</div>'+
         renderPromptBranchAgentControls()+
-        '<div class="runtime-note">保存只写入本地覆盖目录，不改安装包内置 prompts。当前运行中的 connector 需要重启，已存在 session 也要新建后才会重新读取 system prompt。</div>'+
+        '<div class="runtime-note">保存只写入本地覆盖目录，不改安装包内置 prompts。主会话会在下一条用户消息开始前检查 prompt hash 并热加载；正在执行中的请求不会中途切换。建议让 Companion/旁路 agent 使用 catsco-prompt-editor skill 提议和确认改动，主 agent 继续专注当前工作。</div>'+
         '<div class="prompt-editor-layout">'+
           '<div class="prompt-file-list">'+(listHtml||'<div class="loading">没有可编辑的 prompt 文件</div>')+'</div>'+
           editorHtml+
@@ -6367,7 +6750,7 @@
         '</div>'+
         '<textarea class="config-input prompt-editor-textarea" id="prompt-editor-textarea" spellcheck="false" oninput="markPromptEditorDirty()">'+escapeHtml(file.content||'')+'</textarea>'+
         '<div class="prompt-editor-actions">'+
-          '<div class="prompt-editor-status" id="prompt-editor-status">'+(promptEditorState?.writable?'编辑后保存覆盖版本；重启 connector 后生效。':'当前环境没有配置覆盖目录，不能保存。')+'</div>'+
+          '<div class="prompt-editor-status" id="prompt-editor-status">'+(promptEditorState?.writable?'编辑后保存覆盖版本；下一条用户消息开始前生效。':'当前环境没有配置覆盖目录，不能保存。')+'</div>'+
           '<div class="settings-actions">'+
             '<button class="btn" onclick="resetPromptEditorFile()"'+resetDisabled+'>重置为内置</button>'+
             '<button class="btn btn-primary" id="prompt-editor-save-btn" onclick="savePromptEditorFile()"'+saveDisabled+'>保存覆盖</button>'+
@@ -6409,7 +6792,7 @@
     function markPromptEditorDirty(){
       promptEditorDirty=true;
       const status=document.getElementById('prompt-editor-status');
-      if(status)status.textContent='有未保存改动。保存后需要重启 connector 或新建 session。';
+      if(status)status.textContent='有未保存改动。保存后会在下一条用户消息开始前热加载。';
     }
 
     async function savePromptEditorFile(){
@@ -6428,7 +6811,7 @@
           preserveEditorScroll:true
         });
         const nextStatus=document.getElementById('prompt-editor-status');
-        if(nextStatus)nextStatus.textContent='已保存覆盖版本。重启 connector 或新建 session 后生效。';
+        if(nextStatus)nextStatus.textContent='已保存覆盖版本。下一条用户消息开始前会热加载。';
       }catch(e){
         if(status)status.textContent='保存失败：'+(e.message||String(e));
       }
@@ -6440,13 +6823,17 @@
       const status=document.getElementById('prompt-editor-status');
       try{
         if(status)status.textContent='正在重置...';
-        promptEditorFile=await parseSimpleResponse(await fetch(API+'/api/prompts/file?path='+encodeURIComponent(promptEditorSelectedPath),{method:'DELETE'}));
+        promptEditorFile=await parseSimpleResponse(await fetch(API+'/api/prompts/file',{
+          method:'DELETE',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({path:promptEditorSelectedPath})
+        }));
         await refreshPromptWorkbench(promptEditorSelectedPath, {
           preserveFileListScroll:true,
           preserveEditorScroll:true
         });
         const nextStatus=document.getElementById('prompt-editor-status');
-        if(nextStatus)nextStatus.textContent='已恢复内置版本。重启 connector 或新建 session 后生效。';
+        if(nextStatus)nextStatus.textContent='已恢复内置版本。下一条用户消息开始前会热加载。';
       }catch(e){
         if(status)status.textContent='重置失败：'+(e.message||String(e));
       }
@@ -6459,6 +6846,27 @@
         alert('已复制 prompt 覆盖目录');
       }catch(e){
         alert('复制失败：'+(e.message||String(e)));
+      }
+    }
+
+    async function installPromptEditorSkill(overwrite=false){
+      try{
+        let data=await parseSimpleResponse(await fetch(API+'/api/prompts/editor-skill/install',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({overwrite})
+        }));
+        if(data.existing && !overwrite){
+          const disabled=data.disabled?'，但当前是停用状态':'';
+          if(confirm('本地已存在 catsco-prompt-editor'+disabled+'。是否覆盖为当前推荐版本？')){
+            return installPromptEditorSkill(true);
+          }
+          return;
+        }
+        alert(data.installed?'已安装 catsco-prompt-editor，可在 SkillHub 页面分享或启停。':'catsco-prompt-editor 已存在。');
+        await fetchSkills();
+      }catch(e){
+        alert('安装 Prompt 编辑 Skill 失败：'+formatDashboardApiError(e,'/api/prompts/editor-skill/install'));
       }
     }
 
@@ -10001,7 +10409,7 @@
         }
         const block=group.block||group.result||{};
         const type=group.type||block.type||'Working';
-        const title=type==='thinking'?'Thinking':type==='assistant_text'?'Assistant':type==='tool_result'?'Tool Result':type;
+        const title=type==='thinking'?'状态':type==='assistant_text'?'Assistant':type==='tool_result'?'Tool Result':type;
         const text=type==='tool_result'
           ? truncateCatsWorkingText(catsWorkingCode(block.content||block.text||block.output||block.result))
           : truncateCatsWorkingText(catsWorkingSummary(block),900);
@@ -10492,9 +10900,9 @@
     // Init
     loadDashboardFontScale();
     preloadPetFrames();renderPetProfile();renderPetProcess();initFloatingPetDrag();setPetState('idle');
-    fetchConfig();fetchStatus();fetchSkills();fetchSkillHubStatus();fetchDashboardSettings();fetchUpdateStatus(true);fetchCatsStatus();fetchPetStatus();fetchPetTimeline();fetchPetProgress();
+    fetchConfig();fetchStatus();fetchSkills();fetchSkillHubStatus();fetchDashboardSettings();fetchUpdateStatus(true);fetchCatsStatus();fetchPetStatus();fetchPetTimeline();fetchPetProgress();fetchPromptCompanionProposal();
     if(document.getElementById('page-chat')?.classList.contains('active') && !catsPollTimer) catsPollTimer = setInterval(fetchCatsStatus, 5000);
-    setInterval(fetchStatus,5000);setInterval(fetchSkills,30000);setInterval(()=>fetchUpdateStatus(true),5000);setInterval(()=>{fetchPetStatus();fetchPetTimeline();fetchPetProgress();},2500);
+    setInterval(fetchStatus,5000);setInterval(fetchSkills,30000);setInterval(()=>fetchUpdateStatus(true),5000);setInterval(()=>{fetchPetStatus();fetchPetTimeline();fetchPetProgress();},2500);setInterval(()=>fetchPromptCompanionProposal(),30000);
     const catsMessagesBox = document.getElementById('cats-messages');
     catsMessagesBox.addEventListener('scroll', handleCatsMessagesScroll, { passive: true });
     const catsMessageInput = document.getElementById('cats-message-input');

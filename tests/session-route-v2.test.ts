@@ -83,6 +83,30 @@ describe('SessionRoute V2', () => {
     assert.equal(route.identity.identityTrust, 'legacy_context');
   });
 
+  test('keeps CatsCo group legacy cleanup separate from restore', () => {
+    const envelope = createCatsCoMessageEnvelope({
+      topic: 'grp_80',
+      isGroup: true,
+      senderId: 'usr7',
+      text: 'group',
+      botUid: 'usr43',
+      metadata: {
+        catsco_identity: {
+          actor: { user_id: 'usr7' },
+          agent: { agent_id: 'usr43', body_id: 'body-main' },
+          topic: { topic_id: 'grp_80', type: 'group', channel_seq: 1 },
+          permissions: { source: 'server_canonical_message' },
+        },
+      },
+    });
+    const route = createCatsCoSessionRoute(envelope);
+
+    assert.equal(route.sessionKey, 'session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43');
+    assert.equal(route.legacySessionKey, undefined);
+    assert.equal(route.legacyRestoreKey, undefined);
+    assert.equal(route.legacyCleanupKey, 'cc_group:grp_80');
+  });
+
   test('routes Feishu bridge broadcasts as group conversations', () => {
     const route = createFeishuBridgeSessionRoute({
       chatId: 'oc_group',

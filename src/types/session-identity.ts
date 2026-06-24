@@ -11,6 +11,8 @@ export interface MessageEnvelope {
   source: MessageSource;
   sessionKey: string;
   legacySessionKey?: string;
+  legacyRestoreKey?: string;
+  legacyCleanupKey?: string;
   messageId?: string;
   topicId: string;
   topicType: MessageTopicType;
@@ -33,6 +35,8 @@ export interface ExecutionScope {
   source: MessageSource;
   sessionKey: string;
   legacySessionKey?: string;
+  legacyRestoreKey?: string;
+  legacyCleanupKey?: string;
   topicId: string;
   topicType: MessageTopicType;
   actorUserId: string;
@@ -63,6 +67,8 @@ export interface SessionRoute {
   source: MessageSource;
   sessionKey: string;
   legacySessionKey?: string;
+  legacyRestoreKey?: string;
+  legacyCleanupKey?: string;
   topicId: string;
   topicType: MessageTopicType;
   actorUserId: string;

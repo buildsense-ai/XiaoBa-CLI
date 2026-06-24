@@ -130,6 +130,58 @@ describe('MessageSessionManager', () => {
     }
   });
 
+  test('does not restore broad CatsCo legacy history for V2 sessions', async () => {
+    const { MessageSessionManager, SessionStore, createSessionRoute } = loadSessionManagerModules();
+    SessionStore.getInstance().saveContext('cc_user:usr99', [
+      { role: 'user', content: 'legacy CatsCo history from another bot' },
+      { role: 'assistant', content: 'legacy CatsCo reply' },
+    ]);
+    const routes = [
+      createSessionRoute({
+        source: 'catscompany',
+        topicType: 'p2p',
+        topicId: 'p2p_99_298',
+        actorUserId: 'usr99',
+        agentId: 'usr298',
+        identityTrust: 'legacy_context',
+        legacySessionKey: 'cc_user:usr99',
+      }),
+      createSessionRoute({
+        source: 'catscompany',
+        topicType: 'p2p',
+        topicId: 'p2p_99_299',
+        actorUserId: 'usr99',
+        agentId: 'usr299',
+        identityTrust: 'legacy_context',
+        legacySessionKey: 'cc_user:usr99',
+      }),
+      createSessionRoute({
+        source: 'catscompany',
+        topicType: 'p2p',
+        topicId: 'p2p_99_unknown',
+        actorUserId: 'usr99',
+        identityTrust: 'legacy_context',
+        legacySessionKey: 'cc_user:usr99',
+      }),
+    ];
+    const manager = new MessageSessionManager(buildMockServices(), 'catscompany', {
+      systemPromptProviderFactory: (sessionKey: string) => () => `system prompt for ${sessionKey}`,
+    });
+
+    try {
+      for (const route of routes) {
+        const session = manager.getOrCreate(route);
+        await session.init();
+        const contents = ((session as any).messages as any[]).map(message => message.content);
+
+        assert.equal(contents.includes('legacy CatsCo history from another bot'), false);
+        assert.match(contents[0], new RegExp(`^system prompt for ${route.sessionKey}`));
+      }
+    } finally {
+      await manager.destroy();
+    }
+  });
+
   test('injects skill reload handler into newly created sessions', async () => {
     const { MessageSessionManager } = loadSessionManagerModules();
     let reloadCount = 0;

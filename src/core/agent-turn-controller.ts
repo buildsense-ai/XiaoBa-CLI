@@ -45,6 +45,7 @@ export interface AgentTurnServices {
 
 export interface AgentTurnCallbacks {
   onText?: (text: string) => void;
+  onAssistantText?: (text: string) => void | Promise<void>;
   onThinking?: (thinking: string) => void;
   onToolStart?: (name: string, toolUseId: string, input: any) => void;
   onToolEnd?: (name: string, toolUseId: string, result: string) => void;
@@ -396,6 +397,7 @@ export class AgentTurnController {
   private toRunnerCallbacks(callbacks?: AgentTurnCallbacks): RunnerCallbacks {
     return {
       onText: callbacks?.onText,
+      onAssistantText: callbacks?.onAssistantText,
       onThinking: callbacks?.onThinking,
       onToolStart: callbacks?.onToolStart,
       onToolEnd: callbacks?.onToolEnd,

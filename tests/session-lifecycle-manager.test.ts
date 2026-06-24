@@ -107,6 +107,52 @@ describe('AgentSession lifecycle', () => {
     assert.equal(SessionStore.getInstance().loadRuntimeState('user:lifecycle-cwd').currentDirectory, defaultDir);
   });
 
+  test('CatsCo group cleanup-only legacy key is not used for restore fallback', async () => {
+    const { AgentSession, SessionStore, createSessionRoute } = loadSessionModules();
+    const defaultDir = fs.mkdtempSync(path.join(testRoot, 'default-'));
+    const legacyDir = fs.mkdtempSync(path.join(testRoot, 'legacy-'));
+    const store = SessionStore.getInstance();
+    store.saveContext('cc_group:grp_80', [
+      { role: 'user', content: 'legacy group history' },
+    ]);
+    store.saveRuntimeState('cc_group:grp_80', { currentDirectory: legacyDir });
+
+    const route = createSessionRoute({
+      source: 'catscompany',
+      topicType: 'group',
+      topicId: 'grp_80',
+      sessionTopicId: 'grp_80:actor:alice',
+      actorUserId: 'alice',
+      agentId: 'usr43',
+      identityTrust: 'server_canonical',
+      legacyCleanupKey: 'cc_group:grp_80',
+    });
+    assert.equal(route.legacySessionKey, undefined);
+    assert.equal(route.legacyRestoreKey, undefined);
+    assert.equal(route.legacyCleanupKey, 'cc_group:grp_80');
+
+    const session = new AgentSession(route.sessionKey, buildMockServices({
+      toolManager: {
+        getWorkspaceRoot() { return defaultDir; },
+        getToolDefinitions() { return []; },
+        executeTool() { throw new Error('not expected'); },
+      },
+    }), 'catscompany', route);
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    assert.equal(session.restoreFromStore(), false);
+    assert.equal((session as any).currentDirectory, defaultDir);
+    await session.init();
+    assert.equal(
+      (session as any).messages.some((message: any) => message.content === 'legacy group history'),
+      false,
+    );
+
+    session.clear();
+    assert.equal(store.hasSession('cc_group:grp_80'), false);
+    assert.deepEqual(store.loadRuntimeState('cc_group:grp_80'), {});
+  });
+
   test('reset and clear discard pending runtime feedback', async () => {
     const { AgentSession } = loadSessionModules();
     const resetSession = new AgentSession('user:lifecycle-feedback-reset', buildMockServices(), 'feishu');
@@ -676,6 +722,7 @@ function loadSessionModules(): any {
     '../src/core/agent-session',
     '../src/core/session-lifecycle-manager',
     '../src/utils/session-store',
+    '../src/core/session-router',
   ]) {
     delete require.cache[require.resolve(modulePath)];
   }
@@ -687,6 +734,7 @@ function loadSessionModules(): any {
     CONTEXT_COMPACTION_START_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_START_MESSAGE,
     CONTEXT_COMPACTION_COMPLETE_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_COMPLETE_MESSAGE,
     SessionStore: require('../src/utils/session-store').SessionStore,
+    createSessionRoute: require('../src/core/session-router').createSessionRoute,
   };
 }
 

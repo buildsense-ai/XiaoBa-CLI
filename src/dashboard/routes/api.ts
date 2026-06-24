@@ -83,6 +83,7 @@ const TRUSTED_CATSCO_HTTP_ORIGINS = new Set([new URL(DEFAULT_CATSCO_HTTP_BASE_UR
 const TRUSTED_CATSCO_WS_URL = new URL(DEFAULT_CATSCO_WS_URL);
 const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
 const SYSTEM_SKILL_DIRS = new Set<string>();
+const PROMPT_EDITOR_SKILL_NAME = 'catsco-prompt-editor';
 
 type SkillSource = 'system' | 'bundled' | 'user';
 
@@ -1681,6 +1682,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
 
   router.put('/prompts/file', (req, res) => {
     try {
+      if (!requireJsonWrite(req, res)) return;
       res.json(writePromptOverride(String(req.body?.path || ''), String(req.body?.content ?? '')));
     } catch (e: any) {
       res.status(400).json({ error: e?.message || String(e) });
@@ -1689,7 +1691,19 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
 
   router.delete('/prompts/file', (req, res) => {
     try {
-      res.json(deletePromptOverride(String(req.query.path || '')));
+      if (!requireJsonWrite(req, res)) return;
+      res.json(deletePromptOverride(String(req.body?.path || req.query.path || '')));
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.post('/prompts/editor-skill/install', (req, res) => {
+    try {
+      if (!requireJsonWrite(req, res)) return;
+      res.json(installPromptEditorSeedSkill({
+        overwrite: req.body?.overwrite === true,
+      }));
     } catch (e: any) {
       res.status(400).json({ error: e?.message || String(e) });
     }
@@ -3122,6 +3136,88 @@ function sanitizeServerUrl(serverUrl?: string): string | undefined {
   } catch {
     return '[configured]';
   }
+}
+
+function installPromptEditorSeedSkill(options: { overwrite?: boolean } = {}): any {
+  const sourceDir = resolvePromptEditorSeedSkillDir();
+  const sourceSkillFile = path.join(sourceDir, 'SKILL.md');
+  if (!fs.existsSync(sourceSkillFile)) {
+    throw new Error('Prompt editor seed skill is missing from this build.');
+  }
+
+  const skillsRoot = PathResolver.getSkillsPath();
+  PathResolver.ensureDir(skillsRoot);
+  const targetDir = resolveChildDirectory(skillsRoot, PROMPT_EDITOR_SKILL_NAME);
+  const targetSkillFile = path.join(targetDir, 'SKILL.md');
+  const disabledSkillFile = targetSkillFile + '.disabled';
+  const targetDirExists = fs.existsSync(targetDir);
+  const existing = targetDirExists || fs.existsSync(targetSkillFile) || fs.existsSync(disabledSkillFile);
+
+  if (existing && !options.overwrite) {
+    return {
+      ok: true,
+      installed: false,
+      existing: true,
+      name: PROMPT_EDITOR_SKILL_NAME,
+      path: fs.existsSync(targetSkillFile)
+        ? targetSkillFile
+        : (fs.existsSync(disabledSkillFile) ? disabledSkillFile : targetDir),
+      disabled: !fs.existsSync(targetSkillFile),
+    };
+  }
+
+  if (targetDirExists) {
+    fs.rmSync(targetDir, { recursive: true, force: true });
+  }
+  fs.mkdirSync(path.dirname(targetSkillFile), { recursive: true });
+  fs.cpSync(sourceDir, targetDir, {
+    recursive: true,
+    filter: source => {
+      const name = path.basename(source).toLowerCase();
+      return name !== '.git' && name !== 'node_modules' && name !== '__pycache__';
+    },
+  });
+
+  return {
+    ok: true,
+    installed: true,
+    existing: false,
+    name: PROMPT_EDITOR_SKILL_NAME,
+    path: targetSkillFile,
+  };
+}
+
+function requireJsonWrite(req: any, res: any): boolean {
+  if (req.is('application/json')) return true;
+  res.status(415).json({ error: 'application/json required' });
+  return false;
+}
+
+function resolvePromptEditorSeedSkillDir(): string {
+  const candidates = [
+    process.env.XIAOBA_APP_ROOT,
+    process.cwd(),
+    path.resolve(__dirname, '../../..'),
+  ].filter((value): value is string => Boolean(value));
+
+  for (const candidate of candidates) {
+    const skillDir = path.join(path.resolve(candidate), 'skills', PROMPT_EDITOR_SKILL_NAME);
+    if (fs.existsSync(path.join(skillDir, 'SKILL.md'))) {
+      return skillDir;
+    }
+  }
+
+  return path.join(path.resolve(candidates[0] || process.cwd()), 'skills', PROMPT_EDITOR_SKILL_NAME);
+}
+
+function resolveChildDirectory(rootDir: string, childName: string): string {
+  const root = path.resolve(rootDir);
+  const target = path.resolve(root, childName);
+  const relative = path.relative(root, target);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(`Unsafe target path: ${childName}`);
+  }
+  return target;
 }
 
 // ==================== Helpers ====================
