@@ -3,6 +3,7 @@ import { getPetService } from '../../pet/pet-service';
 import {
   applyPromptCompanionProposal,
   dismissPromptCompanionProposal,
+  getCachedPromptCompanionProposal,
   getPromptCompanionProposal,
 } from '../../pet/prompt-companion';
 
@@ -35,7 +36,7 @@ export function registerPetRoutes(router: Router): void {
 
   router.get('/pet/prompt-proposal', async (_req, res) => {
     try {
-      res.json(await getPromptCompanionProposal());
+      res.json(await getCachedPromptCompanionProposal());
     } catch (error: any) {
       res.status(500).json({ error: error?.message || String(error) });
     }

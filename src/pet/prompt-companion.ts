@@ -140,6 +140,23 @@ export async function getPromptCompanionProposal(options: {
   return { proposal, signals, advisor: buildResult.advisor };
 }
 
+export async function getCachedPromptCompanionProposal(options: {
+  includeDismissed?: boolean;
+  id?: string;
+} = {}): Promise<{ proposal: PromptCompanionProposal | null; signals: PromptCompanionSignals }> {
+  const state = await getPromptEditorState();
+  const events = getPetService().timeline(50);
+  const signals = buildSignals(events, state.trace, readRecentSessionSignals());
+  const stateFile = readState();
+  const cached = getUsableCachedProposal(stateFile, state, options.id);
+  if (!cached) return { proposal: null, signals };
+  const key = dismissalKey(cached);
+  if (!options.includeDismissed && stateFile.dismissed[key]) {
+    return { proposal: null, signals };
+  }
+  return { proposal: cached, signals };
+}
+
 export async function applyPromptCompanionProposal(id: string): Promise<{
   ok: true;
   applied: true;

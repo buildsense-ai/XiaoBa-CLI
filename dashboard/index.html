@@ -5912,7 +5912,7 @@
       try {
         if (manual) renderPromptCompanionLoading();
         const note = manual ? getPromptCompanionNote() : '';
-        const res = note
+        const res = manual
           ? await fetch(API + '/api/pet/prompt-proposal', {
               method: 'POST',
               headers: {'Content-Type':'application/json'},

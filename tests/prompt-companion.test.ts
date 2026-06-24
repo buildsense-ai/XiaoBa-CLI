@@ -74,6 +74,25 @@ describe('prompt companion advisor', { concurrency: false }, () => {
     );
   });
 
+  test('cached proposal reads do not create new advisor work', async () => {
+    const {
+      getCachedPromptCompanionProposal,
+      getPromptCompanionProposal,
+    } = loadModule('../src/pet/prompt-companion');
+
+    appendRuntimeLog('error', 'HTTP 502 from provider gateway');
+
+    const cachedBefore = await getCachedPromptCompanionProposal();
+    assert.equal(cachedBefore.proposal, null);
+    assert.equal(cachedBefore.signals.recent_runtime_errors, 1);
+
+    const generated = await getPromptCompanionProposal();
+    assert.equal(generated.proposal?.id, 'error-recovery-v1');
+
+    const cachedAfter = await getCachedPromptCompanionProposal();
+    assert.equal(cachedAfter.proposal?.id, 'error-recovery-v1');
+  });
+
   test('caches empty proposal checks to avoid repeated advisor work', async () => {
     const {
       getPromptCompanionProposal,
