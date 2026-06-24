@@ -9,6 +9,7 @@ import {
   resolvePromptPathWithin,
 } from './prompt-template';
 import { buildPromptTraceSnapshot, hashText } from './prompt-observability';
+import { BRANCH_AGENTS_ENABLED_ENV, isBranchAgentsEnabled } from '../core/branch-agent-settings';
 
 const MAX_PROMPT_EDIT_BYTES = 256 * 1024;
 
@@ -35,6 +36,12 @@ export interface PromptEditorState {
   writable: boolean;
   trace: ReturnType<typeof buildPromptTraceSnapshot>;
   files: PromptEditorFile[];
+  branch_agents: PromptBranchAgentsState;
+}
+
+export interface PromptBranchAgentsState {
+  enabled: boolean;
+  env_key: string;
 }
 
 export interface PromptEditorFileDetail extends PromptEditorFile {
@@ -59,6 +66,14 @@ export async function getPromptEditorState(): Promise<PromptEditorState> {
       loadedFiles: ['runtime-context.md', 'system-prompt.md'],
     }),
     files,
+    branch_agents: getPromptBranchAgentsState(),
+  };
+}
+
+export function getPromptBranchAgentsState(): PromptBranchAgentsState {
+  return {
+    enabled: isBranchAgentsEnabled(),
+    env_key: BRANCH_AGENTS_ENABLED_ENV,
   };
 }
 

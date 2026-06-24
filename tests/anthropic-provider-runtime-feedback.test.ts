@@ -2,6 +2,11 @@ import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
 import { AnthropicProvider } from '../src/providers/anthropic-provider';
 import { Message } from '../src/types';
+import {
+  buildSyntheticObservationMessages,
+  SYNTHETIC_OBSERVATION_TOOL_NAME,
+  withSyntheticObservationTiming,
+} from '../src/core/synthetic-observation';
 
 describe('AnthropicProvider runtime feedback boundary', () => {
   test('transforms runtime feedback without leaking internal message fields', () => {
@@ -40,6 +45,63 @@ describe('AnthropicProvider runtime feedback boundary', () => {
     assert.equal(JSON.stringify(transformed).includes('__runtimeObservation'), false);
     assert.equal(JSON.stringify(transformed).includes('runtimeObservationSource'), false);
     assert.equal(JSON.stringify(transformed).includes('must not leak'), false);
+  });
+
+  test('transforms synthetic runtime observations as adjacent tool_use and tool_result messages', () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://example.test/v1/messages',
+      model: 'claude-sonnet-4-20250514',
+    });
+
+    const syntheticPair = buildSyntheticObservationMessages([
+      withSyntheticObservationTiming({
+        id: 'late-memory',
+        source: 'memory',
+        status: 'completed',
+        relevance: 'medium',
+        summary: 'Prior dinner planning memory.',
+        formattedContent: JSON.stringify({
+          source: 'memory',
+          summary: 'Prior dinner planning memory.',
+          refs: ['catscompany/2026-06-16/demo.jsonl#7'],
+        }),
+      }, 'late_previous_turn'),
+    ]);
+
+    const transformed = (provider as any).transformMessages([
+      { role: 'user', content: 'continue the dinner plan' },
+      ...syntheticPair,
+    ] as Message[]);
+
+    const toolUseId = syntheticPair[0].tool_calls?.[0].id;
+    assert.deepStrictEqual(transformed.messages[1], {
+      role: 'assistant',
+      content: [{
+        type: 'tool_use',
+        id: toolUseId,
+        name: SYNTHETIC_OBSERVATION_TOOL_NAME,
+        input: {
+          source: 'memory',
+          status: 'completed',
+          relevance: 'medium',
+          timing: 'late_previous_turn',
+        },
+      }],
+    });
+    assert.deepStrictEqual(transformed.messages[2], {
+      role: 'user',
+      content: [{
+        type: 'tool_result',
+        tool_use_id: toolUseId,
+        content: JSON.stringify({
+          source: 'memory',
+          summary: 'Prior dinner planning memory.',
+          refs: ['catscompany/2026-06-16/demo.jsonl#7'],
+          timing: 'late_previous_turn',
+        }),
+      }],
+    });
   });
 
   test('preserves stop reason and joins multiple text blocks', () => {

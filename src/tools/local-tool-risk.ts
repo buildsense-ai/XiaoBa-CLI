@@ -1,5 +1,6 @@
+import type { DeviceGrantOperation } from '../types/session-identity';
 import type { ToolExecutionContext, ToolExecutionResult, ToolRiskLevel } from '../types/tool';
-import { isCatsCoLocalOwnerSelfContext } from './tool-gateway';
+import { isCatsCoLocalOwnerSelfContext, resolveToolGatewayAccess } from './tool-gateway';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -21,6 +22,10 @@ const LOW_RISK_TOOLS = new Set([
   'ask_parent',
   'send_text',
   'skill',
+  'memory_search',
+  'memory_read_turn',
+  'memory_neighbors',
+  'finish_memory_search',
 ]);
 
 const CONFIRM_TOOLS = new Set([
@@ -31,6 +36,14 @@ const CONFIRM_TOOLS = new Set([
   'spawn_subagent',
   'share_skillhub_skill',
 ]);
+
+const REMOTE_DEVICE_FILE_TOOL_OPERATIONS: Record<string, DeviceGrantOperation> = {
+  read_file: 'read_file',
+  glob: 'glob',
+  grep: 'grep',
+  write_file: 'write_file',
+  edit_file: 'edit_file',
+};
 
 export async function confirmLocalToolExecution(
   toolName: string,
@@ -90,6 +103,15 @@ export function classifyLocalToolRisk(
     return { requiresConfirmation: false, risk: 'low', reason: 'CatsCo 本地 owner 自用场景允许直接执行本机工具。' };
   }
 
+  const remoteFileOperation = REMOTE_DEVICE_FILE_TOOL_OPERATIONS[toolName];
+  if (remoteFileOperation && isServerAuthorizedRemoteDeviceOperation(toolName, remoteFileOperation, context)) {
+    return {
+      requiresConfirmation: false,
+      risk: 'low',
+      reason: '服务端已选定远程设备并下发短期 device grant，普通文件工具不需要本机二次确认。',
+    };
+  }
+
   if (toolName === 'read_file' || toolName === 'glob' || toolName === 'grep') {
     const pathRisk = classifyReadTargetsRisk(readonlyToolTargets(toolName, args), context);
     if (pathRisk === 'low') {
@@ -103,6 +125,13 @@ export function classifyLocalToolRisk(
 
   if (toolName === 'execute_shell') {
     const command = stringField(args, 'command') || stringField(args, 'cmd') || stringField(args, 'script');
+    if (isServerAuthorizedRemoteDeviceOperation(toolName, 'execute_shell', context)) {
+      return {
+        requiresConfirmation: false,
+        risk: 'high',
+        reason: '服务端已选定远程设备并下发 execute_shell device grant，命令由 Device RPC 直接转发。',
+      };
+    }
     if (looksDangerousShell(command)) {
       return { requiresConfirmation: true, risk: 'high', reason: '命令可能删除、覆盖、关闭系统或下载并执行脚本。' };
     }
@@ -130,6 +159,19 @@ export function classifyLocalToolRisk(
   }
 
   return { requiresConfirmation: true, risk: 'medium', reason: '未知工具未声明风险等级，需要用户确认。' };
+}
+
+function isServerAuthorizedRemoteDeviceOperation(
+  toolName: string,
+  operation: DeviceGrantOperation,
+  context: ToolExecutionContext,
+): boolean {
+  if (!context.deviceRpc) return false;
+  const decision = resolveToolGatewayAccess(context, {
+    toolName,
+    operation,
+  });
+  return decision.ok && decision.mode === 'remote';
 }
 
 function stringField(value: unknown, key: string): string {

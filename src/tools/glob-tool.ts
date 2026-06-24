@@ -22,6 +22,7 @@ export class GlobTool implements Tool {
     description: [
       '按 glob 模式查找文件路径，返回匹配文件列表并按修改时间倒序排列。',
       '适合先定位候选文件；要搜索文件内容请使用 grep。',
+      '当用户问“桌面/下载/文档里有哪些文件”时，先用 resolve_common_directory 解析目录，再用本工具列出文件；不要用 execute_shell 跑 dir/ls。',
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -32,7 +33,7 @@ export class GlobTool implements Tool {
         },
         path: {
           type: 'string',
-          description: '搜索起始目录。可选，默认当前目录。'
+          description: '搜索起始目录。可选，默认当前目录。可以使用 resolve_common_directory 返回的绝对路径。'
         },
         limit: {
           type: 'number',
