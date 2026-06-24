@@ -181,6 +181,7 @@ function listBasePromptPaths(baseDir: string): string[] {
 function promptOverrideExists(relativePath: string): boolean {
   const overridesDir = getPromptOverridesDir();
   if (!overridesDir) return false;
+  if (!isSafePromptOverridesDir(PromptManager.getPromptsDir(), overridesDir)) return false;
   return fs.existsSync(resolvePromptPathWithin(overridesDir, relativePath));
 }
 

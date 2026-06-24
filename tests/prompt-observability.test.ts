@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   buildPromptTraceSnapshot,
+  listPromptFiles,
   toPromptTurnMetadata,
 } from '../src/utils/prompt-observability';
 
@@ -49,6 +50,28 @@ describe('prompt-observability', () => {
         bundle_file_count: 3,
       });
     } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('does not mark prompts as overridden when override directory is unsafe', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-prompt-observability-unsafe-'));
+    const previous = process.env.XIAOBA_PROMPT_OVERRIDES_DIR;
+    try {
+      process.env.XIAOBA_PROMPT_OVERRIDES_DIR = root;
+      fs.writeFileSync(path.join(root, 'system-prompt.md'), 'Base prompt\n', 'utf-8');
+
+      const files = listPromptFiles(root);
+
+      assert.equal(files.length, 1);
+      assert.equal(files[0].path, 'system-prompt.md');
+      assert.equal(files[0].overridden, undefined);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.XIAOBA_PROMPT_OVERRIDES_DIR;
+      } else {
+        process.env.XIAOBA_PROMPT_OVERRIDES_DIR = previous;
+      }
       fs.rmSync(root, { recursive: true, force: true });
     }
   });

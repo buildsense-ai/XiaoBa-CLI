@@ -171,6 +171,7 @@ export async function applyPromptCompanionProposal(id: string): Promise<{
   const proposal = getUsableCachedProposal(state, editorState, normalizedId);
   if (!proposal) throw new Error(`Prompt proposal is not available: ${id}`);
 
+  assertSafePromptCompanionProposal(proposal, getPromptEditorFile(proposal.path).content || '');
   const file = writePromptOverride(proposal.path, proposal.proposed_content);
   state.applied[dismissalKey(proposal)] = new Date().toISOString();
   delete state.cached;
@@ -439,7 +440,9 @@ function buildAdvisorPatch(current: string, parsed: any): { operation: PromptCom
     const find = sanitizePatchText(parsed.find, 1800);
     const replacement = sanitizePatchText(parsed.replace, 2400);
     if (!find || !replacement || !hasUniqueMatch(current, find)) return null;
+    if (containsProtectedPromptText(find) || containsUnsafePromptInstruction(replacement)) return null;
     const proposed = current.replace(find, replacement);
+    if (!isSafePromptAdvisorPatch(current, proposed)) return null;
     return { operation: 'replace', proposed, preview: `- ${find}\n+ ${replacement}` };
   }
 
@@ -453,7 +456,9 @@ function buildAdvisorPatch(current: string, parsed: any): { operation: PromptCom
 
   const appendSection = sanitizeAdvisorSection(parsed.append_section);
   if (!appendSection) return null;
+  if (containsUnsafePromptInstruction(appendSection)) return null;
   const proposed = appendSectionToPrompt(current, appendSection);
+  if (!isSafePromptAdvisorPatch(current, proposed)) return null;
   return { operation: 'append', proposed, preview: appendSection };
 }
 
@@ -495,6 +500,49 @@ function hasUniqueMatch(source: string, find: string): boolean {
 
 function containsProtectedPromptText(text: string): boolean {
   return /你是\s*CatsCo|Your AI Assistant|工具权限|权限边界|安全|不得|不要.*泄露|secret|api[_-]?key|token/i.test(text);
+}
+
+function containsUnsafePromptInstruction(text: string): boolean {
+  return /忽略.{0,16}(安全|权限|边界|限制|校验|保护)|绕过.{0,16}(安全|权限|边界|限制|校验|保护)|禁用.{0,16}(安全|权限|边界|限制|校验|保护)|不需要.{0,8}(权限|确认|校验)|无需.{0,8}(权限|确认|校验)|允许.{0,16}(泄露|输出.*secret|输出.*token|越权|任意.*文件|任意.*命令)|ignore.{0,24}(safety|permission|policy|guardrail|secret)|bypass.{0,24}(safety|permission|policy|guardrail)|disable.{0,24}(safety|permission|policy|guardrail)|泄露.{0,12}(secret|token|api[_-]?key|密钥)|sk-[a-z0-9_-]{12,}/i.test(text);
+}
+
+function isSafePromptAdvisorPatch(current: string, proposed: string): boolean {
+  if (!proposed.trim() || proposed === current) return false;
+  if (containsUnsafePromptInstruction(collectAddedPromptText(current, proposed))) return false;
+  if (removesProtectedPromptText(current, proposed)) return false;
+  return true;
+}
+
+function assertSafePromptCompanionProposal(proposal: PromptCompanionProposal, current: string): void {
+  if (!isSafePromptAdvisorPatch(current, proposal.proposed_content)) {
+    throw new Error('Prompt proposal failed safety validation');
+  }
+}
+
+function collectAddedPromptText(current: string, proposed: string): string {
+  const before = new Map<string, number>();
+  for (const line of String(current || '').split('\n')) {
+    before.set(line, (before.get(line) || 0) + 1);
+  }
+  const added: string[] = [];
+  for (const line of String(proposed || '').split('\n')) {
+    const count = before.get(line) || 0;
+    if (count > 0) {
+      before.set(line, count - 1);
+    } else {
+      added.push(line);
+    }
+  }
+  return added.join('\n');
+}
+
+function removesProtectedPromptText(current: string, proposed: string): boolean {
+  const proposedText = String(proposed || '');
+  return String(current || '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line && containsProtectedPromptText(line))
+    .some(line => !proposedText.includes(line));
 }
 
 function looksLikeStalePromptText(text: string): boolean {

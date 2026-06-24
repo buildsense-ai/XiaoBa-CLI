@@ -86,6 +86,7 @@ describe('prompt-editor', () => {
 
       const state = await getPromptEditorState();
       assert.equal(state.writable, false);
+      assert.equal(getPromptEditorFile('system-prompt.md').overridden, false);
       assert.throws(
         () => writePromptOverride('system-prompt.md', 'custom prompt'),
         /Prompt override directory must be separate/,

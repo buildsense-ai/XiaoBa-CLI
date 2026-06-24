@@ -98,7 +98,7 @@ export function isCatsCompanyPassiveAcknowledgement(text: string): boolean {
   if (!compact || compact.length > 18) return false;
   if (/[?？]/.test(text)) return false;
 
-  const ack = '(?:好|好的|好呀|好嘞|嗯|嗯嗯|行|可以|收到|明白|懂了|ok|okay)';
+  const ack = '(?:嗯|嗯嗯|收到|明白|懂了)';
   const thanks = '(?:谢谢|谢了|谢谢啦|辛苦了|感谢|thx|thanks)';
   return new RegExp(`^(?:${ack}|${thanks}|${ack}${thanks}|${thanks}${ack})$`, 'i').test(compact);
 }
@@ -587,6 +587,7 @@ export class CatsCompanyBot {
           await this.sender.reply(topic, text);
         } catch (err: any) {
           Logger.warning(`消息发送失败 (reply): ${err.message}`);
+          throw err;
         }
       },
       sendFile: async (_targetTopic: string, filePath: string, fileName: string) => {

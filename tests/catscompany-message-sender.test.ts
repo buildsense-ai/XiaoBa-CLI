@@ -193,4 +193,48 @@ describe('CatsCompany MessageSender reply segmentation', () => {
     assert.match(String(sent[2].content), /^```js/);
     assert.match(String(sent[3].content), /^　　最后一个普通段落/);
   });
+
+  test('preserves copyable JSON replies without natural-language indentation or splitting', async () => {
+    const sent: any[] = [];
+    const sender = new MessageSender({
+      sendStructuredMessage: async (payload: any) => {
+        sent.push(payload);
+        return sent.length;
+      },
+    } as any, 'https://app.example.test', 'cc_test');
+
+    const json = JSON.stringify({
+      status: 'ok',
+      items: Array.from({ length: 30 }, (_value, index) => ({
+        id: index + 1,
+        title: `测试项 ${index + 1}`,
+        result: 'passed',
+      })),
+    }, null, 2);
+
+    await sender.reply('p2p_1_2', json);
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].content, json);
+    assert.doesNotMatch(String(sent[0].content), /^　　/);
+    assert.deepEqual(JSON.parse(sent[0].content), JSON.parse(json));
+  });
+
+  test('preserves SQL replies as copyable text', async () => {
+    const sent: any[] = [];
+    const sender = new MessageSender({
+      sendStructuredMessage: async (payload: any) => {
+        sent.push(payload);
+        return sent.length;
+      },
+    } as any, 'https://app.example.test', 'cc_test');
+
+    const sql = 'SELECT user_id, SUM(cost_cny) AS total_cost FROM relay_usage WHERE created_at >= CURRENT_DATE GROUP BY user_id ORDER BY total_cost DESC;';
+
+    await sender.reply('p2p_1_2', sql);
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].content, sql);
+    assert.doesNotMatch(String(sent[0].content), /^　　/);
+  });
 });
