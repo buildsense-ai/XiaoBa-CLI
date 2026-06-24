@@ -713,7 +713,7 @@ describe('CatsCo content blocks', () => {
   });
 
   test('subagent feedback visible reply is sent back to CatsCompany', async () => {
-    const { bot, runtimeObservations, sentTexts, sentThinking, session } = createProcessHarness();
+    const { bot, runtimeObservations, replies, sentThinking, session } = createProcessHarness();
     session.handleRuntimeObservation = async (text: string, options: any) => {
       runtimeObservations.push({ text, options });
       return { visibleToUser: true, text: '已根据子 agent 结果处理完。' };
@@ -734,7 +734,7 @@ describe('CatsCo content blocks', () => {
       sentThinking.map(({ topic, text }) => ({ topic, text })),
       [{ topic: 'p2p_38_110', text: '子 agent 回流压缩状态' }],
     );
-    assert.deepStrictEqual(sentTexts, [
+    assert.deepStrictEqual(replies, [
       { topic: 'p2p_38_110', text: '已根据子 agent 结果处理完。' },
     ]);
   });
