@@ -103,6 +103,43 @@ describe('CatsCompany MessageSender reply segmentation', () => {
     assert.equal(sent[1].content, '2）无产物溯源会让承诺看起来像已完成。');
   });
 
+  test('splits inline ordered replies when the model keeps items on one line', async () => {
+    const sent: any[] = [];
+    const sender = new MessageSender({
+      sendStructuredMessage: async (payload: any) => {
+        sent.push(payload);
+        return sent.length;
+      },
+    } as any, 'https://app.example.test', 'cc_test');
+
+    await sender.reply('p2p_1_2', '第一，测试已经全绿。第二，后续风险是承诺没有产物溯源。');
+
+    assert.equal(sent.length, 2);
+    assert.equal(sent[0].content, '第一，测试已经全绿。');
+    assert.equal(sent[1].content, '第二，后续风险是承诺没有产物溯源。');
+  });
+
+  test('splits long natural language paragraphs by sentence boundaries', async () => {
+    const sent: any[] = [];
+    const sender = new MessageSender({
+      sendStructuredMessage: async (payload: any) => {
+        sent.push(payload);
+        return sent.length;
+      },
+    } as any, 'https://app.example.test', 'cc_test');
+
+    const sentence = '这是一段没有空行的中文说明，用来模拟模型把背景、结论、风险和下一步全部挤在同一个自然段里。';
+    await sender.reply('p2p_1_2', sentence.repeat(12));
+
+    assert.ok(sent.length > 1);
+    assert.ok(sent.every(item => String(item.content).startsWith('　　')));
+    assert.ok(sent.every(item => String(item.content).length <= 560));
+    assert.equal(
+      sent.map(item => String(item.content).replace(/^　　/, '')).join(''),
+      sentence.repeat(12),
+    );
+  });
+
   test('splits long structured replies into multiple readable text messages', async () => {
     const sent: any[] = [];
     const sender = new MessageSender({

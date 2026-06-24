@@ -229,6 +229,8 @@ export class MessageSender {
     if (!normalized) return [];
     const shortListSegments = this.splitShortListReply(normalized);
     if (shortListSegments) return shortListSegments;
+    const inlineListSegments = this.splitInlineOrderedReply(normalized);
+    if (inlineListSegments) return inlineListSegments;
 
     const rawBlocks = normalized.split(/\n{2,}/).map(block => block.trim()).filter(Boolean);
     if (
@@ -242,11 +244,11 @@ export class MessageSender {
       .map(block => this.formatReplyBlock(block))
       .filter(Boolean);
     if (blocks.length <= 1) {
-      return this.splitText(this.formatReplyBlock(normalized), MAX_REPLY_SEGMENT_LENGTH);
+      return this.splitReplyBlock(rawBlocks[0] || normalized);
     }
 
     if (blocks.length <= 6) {
-      return blocks.flatMap(block => this.splitText(block, MAX_REPLY_SEGMENT_LENGTH));
+      return rawBlocks.flatMap(block => this.splitReplyBlock(block));
     }
 
     const segments: string[] = [];
@@ -286,6 +288,12 @@ export class MessageSender {
     return segments.length > 0 ? segments : [normalized];
   }
 
+  private splitReplyBlock(block: string): string[] {
+    const naturalSegments = this.splitNaturalLanguageReply(block);
+    if (naturalSegments) return naturalSegments;
+    return this.splitText(this.formatReplyBlock(block), MAX_REPLY_SEGMENT_LENGTH);
+  }
+
   private splitShortListReply(text: string): string[] | null {
     if (text.length > IDEAL_REPLY_SEGMENT_LENGTH) return null;
     if (/```|~~~/.test(text)) return null;
@@ -300,6 +308,71 @@ export class MessageSender {
     if (!lines.every(line => /^(?:\d+[\.\)、）]\s?|[-*+•]\s+)/.test(line))) return null;
 
     return lines;
+  }
+
+  private splitInlineOrderedReply(text: string): string[] | null {
+    if (text.length > IDEAL_REPLY_SEGMENT_LENGTH) return null;
+    if (/```|~~~/.test(text)) return null;
+
+    const trimmed = text.trim();
+    if (/\r?\n/.test(trimmed)) return null;
+    const parts = trimmed
+      .split(/(?=(?:第一|第二|第三|第四|第五|首先|其次|最后)[，、:：])/)
+      .map(part => part.trim())
+      .filter(Boolean);
+
+    if (parts.length < 2 || parts.length > 5) return null;
+    if (!parts.every(part => /^(?:第一|第二|第三|第四|第五|首先|其次|最后)[，、:：]/.test(part))) return null;
+    if (!parts.every(part => part.length <= 180)) return null;
+
+    return parts;
+  }
+
+  private splitNaturalLanguageReply(block: string): string[] | null {
+    const trimmed = String(block || '').trim();
+    if (trimmed.length <= IDEAL_REPLY_SEGMENT_LENGTH) return null;
+    if (/```|~~~/.test(trimmed)) return null;
+    if (trimmed.split(/\r?\n/).length > 1) return null;
+    if (!this.shouldIndentReplyBlock(trimmed)) return null;
+
+    const segments: string[] = [];
+    let remaining = trimmed;
+    while (remaining.length > 0) {
+      if (remaining.length <= IDEAL_REPLY_SEGMENT_LENGTH) {
+        segments.push(remaining);
+        break;
+      }
+
+      const cutAt = this.findNaturalLanguageCut(remaining, IDEAL_REPLY_SEGMENT_LENGTH);
+      segments.push(remaining.slice(0, cutAt).trim());
+      remaining = remaining.slice(cutAt).trim();
+    }
+
+    if (segments.length <= 1) return null;
+    return segments.map(segment => this.formatReplyBlock(segment));
+  }
+
+  private findNaturalLanguageCut(text: string, maxLen: number): number {
+    const minLen = 260;
+    const hard = this.findLastMatchEnd(text, /[。！？；;!?]/g, minLen, maxLen);
+    if (hard > 0) return hard;
+
+    const soft = this.findLastMatchEnd(text, /[，,、]/g, Math.min(360, maxLen), maxLen);
+    if (soft > 0) return soft;
+
+    return Math.min(maxLen, text.length);
+  }
+
+  private findLastMatchEnd(text: string, pattern: RegExp, minLen: number, maxLen: number): number {
+    const sample = text.slice(0, maxLen + 1);
+    let best = -1;
+    let match: RegExpExecArray | null;
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(sample)) !== null) {
+      const end = match.index + match[0].length;
+      if (end >= minLen && end <= maxLen) best = end;
+    }
+    return best;
   }
 
   private formatReplyBlock(block: string): string {
