@@ -2,19 +2,20 @@ import { createHash } from 'crypto';
 import { Message } from '../types';
 import { estimateTokens } from './token-estimator';
 
-export const FOLDED_READ_FILE_PREFIX = '[folded_read_file]';
+export const FOLDED_EXECUTE_SHELL_PREFIX = '[folded_execute_shell]';
 
-export interface ReadFileMessageFoldingOptions {
+export interface ExecuteShellMessageFoldingOptions {
   enabled: boolean;
   thresholdTokens: number;
-  maxPreviewLines: number;
-  maxSymbolLines: number;
-  keepRecentHistoricalReads: number;
+  maxHeadLines: number;
+  maxTailLines: number;
+  maxKeyLines: number;
+  keepRecentHistoricalShells: number;
   foldCurrentRun: boolean;
   protectedCurrentRunToolResultIndexes?: ReadonlySet<number>;
 }
 
-export interface ReadFileMessageFoldingStats {
+export interface ExecuteShellMessageFoldingStats {
   enabled: boolean;
   candidate_count: number;
   current_turn_candidate_count: number;
@@ -27,12 +28,12 @@ export interface ReadFileMessageFoldingStats {
   folded_tokens_est: number;
   saved_tokens_est: number;
   threshold_tokens: number;
-  keep_recent_historical_reads: number;
+  keep_recent_historical_shells: number;
 }
 
-export interface ReadFileMessageFoldingResult {
+export interface ExecuteShellMessageFoldingResult {
   messages: Message[];
-  stats: ReadFileMessageFoldingStats;
+  stats: ExecuteShellMessageFoldingStats;
 }
 
 interface FoldCandidate {
@@ -44,44 +45,59 @@ interface FoldCandidate {
   toolCall?: NonNullable<Message['tool_calls']>[number];
 }
 
-const DEFAULT_OPTIONS: ReadFileMessageFoldingOptions = {
+interface ShellMetadata {
+  command?: string;
+  description?: string;
+  timeout?: number;
+  cwd?: string;
+  status?: 'succeeded' | 'failed' | 'unknown';
+  elapsed?: string;
+  outputLines?: string;
+}
+
+const DEFAULT_OPTIONS: ExecuteShellMessageFoldingOptions = {
   enabled: true,
   thresholdTokens: 2000,
-  maxPreviewLines: 8,
-  maxSymbolLines: 18,
-  keepRecentHistoricalReads: 0,
+  maxHeadLines: 12,
+  maxTailLines: 24,
+  maxKeyLines: 32,
+  keepRecentHistoricalShells: 0,
   foldCurrentRun: false,
 };
 
-export function resolveReadFileMessageFoldingOptions(
+export function resolveExecuteShellMessageFoldingOptions(
   env: NodeJS.ProcessEnv = process.env,
-): ReadFileMessageFoldingOptions {
+): ExecuteShellMessageFoldingOptions {
   return {
-    enabled: readBooleanEnv(env.XIAOBA_READ_FILE_MESSAGE_FOLDING, DEFAULT_OPTIONS.enabled),
+    enabled: readBooleanEnv(env.XIAOBA_EXECUTE_SHELL_MESSAGE_FOLDING, DEFAULT_OPTIONS.enabled),
     thresholdTokens: readPositiveIntegerEnv(
-      env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS,
+      env.XIAOBA_EXECUTE_SHELL_FOLD_THRESHOLD_TOKENS,
       DEFAULT_OPTIONS.thresholdTokens,
     ),
-    maxPreviewLines: readPositiveIntegerEnv(
-      env.XIAOBA_READ_FILE_FOLD_PREVIEW_LINES,
-      DEFAULT_OPTIONS.maxPreviewLines,
+    maxHeadLines: readPositiveIntegerEnv(
+      env.XIAOBA_EXECUTE_SHELL_FOLD_HEAD_LINES,
+      DEFAULT_OPTIONS.maxHeadLines,
     ),
-    maxSymbolLines: readPositiveIntegerEnv(
-      env.XIAOBA_READ_FILE_FOLD_SYMBOL_LINES,
-      DEFAULT_OPTIONS.maxSymbolLines,
+    maxTailLines: readPositiveIntegerEnv(
+      env.XIAOBA_EXECUTE_SHELL_FOLD_TAIL_LINES,
+      DEFAULT_OPTIONS.maxTailLines,
     ),
-    keepRecentHistoricalReads: readNonNegativeIntegerEnv(
-      env.XIAOBA_READ_FILE_FOLD_KEEP_RECENT,
-      DEFAULT_OPTIONS.keepRecentHistoricalReads,
+    maxKeyLines: readPositiveIntegerEnv(
+      env.XIAOBA_EXECUTE_SHELL_FOLD_KEY_LINES,
+      DEFAULT_OPTIONS.maxKeyLines,
+    ),
+    keepRecentHistoricalShells: readNonNegativeIntegerEnv(
+      env.XIAOBA_EXECUTE_SHELL_FOLD_KEEP_RECENT,
+      DEFAULT_OPTIONS.keepRecentHistoricalShells,
     ),
     foldCurrentRun: DEFAULT_OPTIONS.foldCurrentRun,
   };
 }
 
-export function foldHistoricalReadFileMessages(
+export function foldHistoricalExecuteShellMessages(
   messages: Message[],
-  options: Partial<ReadFileMessageFoldingOptions> = {},
-): ReadFileMessageFoldingResult {
+  options: Partial<ExecuteShellMessageFoldingOptions> = {},
+): ExecuteShellMessageFoldingResult {
   const resolved = { ...DEFAULT_OPTIONS, ...options };
   const baseStats = emptyStats(resolved);
   if (!resolved.enabled || messages.length === 0) {
@@ -99,7 +115,7 @@ export function foldHistoricalReadFileMessages(
   let protectedCurrentTurnCount = 0;
 
   messages.forEach((message, index) => {
-    if (!isReadFileToolResult(message)) return;
+    if (!isExecuteShellToolResult(message)) return;
     const currentRun = index > lastUserIndex;
     if (currentRun && !resolved.foldCurrentRun) {
       skippedCurrentTurnCount++;
@@ -112,7 +128,7 @@ export function foldHistoricalReadFileMessages(
     }
 
     const rawText = typeof message.content === 'string' ? message.content : '';
-    if (!rawText || rawText.startsWith(FOLDED_READ_FILE_PREFIX)) return;
+    if (!rawText || rawText.startsWith(FOLDED_EXECUTE_SHELL_PREFIX)) return;
 
     const rawTokens = estimateTokens(rawText);
     if (rawTokens < resolved.thresholdTokens) return;
@@ -135,7 +151,7 @@ export function foldHistoricalReadFileMessages(
 
   const historicalCandidates = candidates.filter(candidate => !candidate.currentRun);
   const currentRunCandidates = candidates.filter(candidate => candidate.currentRun);
-  const keepRecent = Math.min(resolved.keepRecentHistoricalReads, historicalCandidates.length);
+  const keepRecent = Math.min(resolved.keepRecentHistoricalShells, historicalCandidates.length);
   const candidatesToFold = [
     ...historicalCandidates.slice(0, historicalCandidates.length - keepRecent),
     ...currentRunCandidates,
@@ -148,7 +164,7 @@ export function foldHistoricalReadFileMessages(
 
   const foldedByIndex = new Map<number, string>();
   for (const candidate of candidatesToFold) {
-    const folded = buildFoldedReadFileContent(candidate, resolved);
+    const folded = buildFoldedExecuteShellContent(candidate, resolved);
     foldedByIndex.set(candidate.index, folded);
     stats.folded_count++;
     if (candidate.currentRun) stats.folded_current_turn_count++;
@@ -169,7 +185,7 @@ export function foldHistoricalReadFileMessages(
   return { messages: foldedMessages, stats };
 }
 
-function emptyStats(options: ReadFileMessageFoldingOptions): ReadFileMessageFoldingStats {
+function emptyStats(options: ExecuteShellMessageFoldingOptions): ExecuteShellMessageFoldingStats {
   return {
     enabled: options.enabled,
     candidate_count: 0,
@@ -183,57 +199,62 @@ function emptyStats(options: ReadFileMessageFoldingOptions): ReadFileMessageFold
     folded_tokens_est: 0,
     saved_tokens_est: 0,
     threshold_tokens: options.thresholdTokens,
-    keep_recent_historical_reads: options.keepRecentHistoricalReads,
+    keep_recent_historical_shells: options.keepRecentHistoricalShells,
   };
 }
 
-function buildFoldedReadFileContent(
+function buildFoldedExecuteShellContent(
   candidate: FoldCandidate,
-  options: ReadFileMessageFoldingOptions,
+  options: ExecuteShellMessageFoldingOptions,
 ): string {
-  const metadata = extractReadFileMetadata(candidate.rawText, candidate.toolCall);
-  const lines = extractNumberedLines(candidate.rawText);
-  const previewLines = selectPreviewLines(lines, options.maxPreviewLines);
-  const symbolLines = selectSymbolLines(lines, options.maxSymbolLines);
+  const metadata = extractShellMetadata(candidate.rawText, candidate.toolCall);
+  const lines = candidate.rawText.split(/\r?\n/);
+  const headLines = selectHeadLines(lines, options.maxHeadLines);
+  const tailLines = selectTailLines(lines, options.maxTailLines, options.maxHeadLines);
+  const keyLines = selectKeyLines(lines, options.maxKeyLines);
   const hash = createHash('sha256')
-    .update(metadata.path || '')
+    .update(metadata.command || '')
     .update('\0')
     .update(candidate.rawText)
     .digest('hex');
+
   const foldedParts = [
-    FOLDED_READ_FILE_PREFIX,
-    `artifact_id: rf_${hash.slice(0, 16)}`,
-    metadata.file ? `file: ${metadata.file}` : '',
-    metadata.path ? `path: ${metadata.path}` : '',
-    metadata.display ? `range: ${metadata.display}` : '',
-    metadata.totalLines ? `total_lines: ${metadata.totalLines}` : '',
+    FOLDED_EXECUTE_SHELL_PREFIX,
+    `artifact_id: sh_${hash.slice(0, 16)}`,
+    metadata.command ? `command: ${oneLine(metadata.command, 1600)}` : '',
+    metadata.description ? `description: ${oneLine(metadata.description, 400)}` : '',
+    metadata.cwd ? `cwd: ${metadata.cwd}` : '',
+    metadata.timeout ? `timeout_ms: ${metadata.timeout}` : '',
+    metadata.status ? `status: ${metadata.status}` : '',
+    metadata.elapsed ? `elapsed: ${metadata.elapsed}` : '',
+    metadata.outputLines ? `output_lines: ${metadata.outputLines}` : '',
     `original_chars: ${candidate.rawText.length}`,
+    `original_lines: ${lines.length}`,
     `original_tokens_est: ${candidate.rawTokens}`,
     `sha256: ${hash}`,
     '',
-    'summary: Historical read_file output was folded out of the provider prompt. Re-read this file/range before exact edits or quoting.',
-    previewLines.length > 0 ? ['preview:', ...previewLines.map(line => `  ${line}`)].join('\n') : '',
-    symbolLines.length > 0 ? ['key_symbols:', ...symbolLines.map(line => `  ${line}`)].join('\n') : '',
+    'summary: Historical execute_shell output was folded out of the provider prompt. Re-run the command or inspect logs before relying on omitted lines.',
+    headLines.length > 0 ? ['head:', ...headLines.map(line => `  ${line}`)].join('\n') : '',
+    tailLines.length > 0 ? ['tail:', ...tailLines.map(line => `  ${line}`)].join('\n') : '',
+    keyLines.length > 0 ? ['key_lines:', ...keyLines.map(line => `  ${line}`)].join('\n') : '',
   ];
 
   return foldedParts.filter(part => part !== '').join('\n');
 }
 
-function extractReadFileMetadata(
+function extractShellMetadata(
   rawText: string,
   toolCall?: NonNullable<Message['tool_calls']>[number],
-): {
-  file?: string;
-  path?: string;
-  display?: string;
-  totalLines?: string;
-} {
+): ShellMetadata {
   const args = parseToolArguments(toolCall);
   return {
-    file: firstNonEmpty(readHeader(rawText, '文件'), readHeader(rawText, 'File'), stringArg(args, 'file_path'), stringArg(args, 'path')),
-    path: firstNonEmpty(readHeader(rawText, 'Path'), stringArg(args, 'file_path'), stringArg(args, 'path')),
-    display: firstNonEmpty(readHeader(rawText, '显示'), buildDisplayFromArgs(args)),
-    totalLines: readHeader(rawText, '总行数'),
+    command: firstNonEmpty(stringArg(args, 'command'), readCommand(rawText)),
+    description: stringArg(args, 'description'),
+    timeout: numberArg(args, 'timeout'),
+    cwd: firstNonEmpty(stringArg(args, 'cwd'), stringArg(args, 'workingDirectory')),
+    status: readStatus(rawText),
+    elapsed: readHeader(rawText, 'Elapsed'),
+    outputLines: readHeader(rawText, 'Output lines'),
   };
 }
 
@@ -247,15 +268,17 @@ function collectToolCallsById(messages: Message[]): Map<string, NonNullable<Mess
   return result;
 }
 
-function isReadFileToolResult(message: Message): boolean {
+function isExecuteShellToolResult(message: Message): boolean {
   if (message.role !== 'tool') return false;
   if (Array.isArray(message.content)) return false;
-  return normalizeToolName(message.name || '') === 'read_file';
+  return normalizeToolName(message.name || '') === 'execute_shell';
 }
 
 function normalizeToolName(name: string): string {
   const normalized = String(name || '').trim();
-  if (normalized === 'Read') return 'read_file';
+  if (['Bash', 'bash', 'Shell', 'shell', 'execute_bash'].includes(normalized)) {
+    return 'execute_shell';
+  }
   return normalized;
 }
 
@@ -270,35 +293,42 @@ function findLastRealUserIndex(messages: Message[]): number {
   return -1;
 }
 
-function extractNumberedLines(rawText: string): string[] {
-  return rawText
-    .split(/\r?\n/)
-    .filter(line => /^\s*\d+\s*→\s?/.test(line))
-    .map(line => line.trim());
+function selectHeadLines(lines: string[], maxHeadLines: number): string[] {
+  return lines.slice(0, maxHeadLines).map(trimForFoldedOutput);
 }
 
-function selectPreviewLines(lines: string[], maxPreviewLines: number): string[] {
-  if (lines.length <= maxPreviewLines * 2) return lines;
-  return [
-    ...lines.slice(0, maxPreviewLines),
-    '...',
-    ...lines.slice(-maxPreviewLines),
-  ];
+function selectTailLines(lines: string[], maxTailLines: number, headLineCount: number): string[] {
+  if (lines.length <= headLineCount + maxTailLines) return [];
+  return lines.slice(-maxTailLines).map(trimForFoldedOutput);
 }
 
-function selectSymbolLines(lines: string[], maxSymbolLines: number): string[] {
-  const symbolPattern = /\b(export\s+)?(class|interface|type|enum|function|const|let|var|def|async\s+function)\b|^\s*\d+\s*→\s*(public|private|protected)\s+/;
+function selectKeyLines(lines: string[], maxKeyLines: number): string[] {
+  const keyPattern = /\b(error|warn|warning|fail|failed|failure|exception|traceback|fatal|panic|timeout|timed out|denied|not found|cannot|can't|undefined|typeerror|assertionerror|npm err|exit code)\b|(^|\s)(ERR!|FAIL|ERROR|WARN)(\s|$)|([A-Za-z]:\\|\/)[^\s:]+:\d+/i;
   const seen = new Set<string>();
   const result: string[] = [];
   for (const line of lines) {
-    if (!symbolPattern.test(line)) continue;
-    const compact = line.replace(/\s+/g, ' ').trim();
-    if (seen.has(compact)) continue;
+    if (!keyPattern.test(line)) continue;
+    const compact = trimForFoldedOutput(line);
+    if (!compact || seen.has(compact)) continue;
     seen.add(compact);
     result.push(compact);
-    if (result.length >= maxSymbolLines) break;
+    if (result.length >= maxKeyLines) break;
   }
   return result;
+}
+
+function readCommand(rawText: string): string | undefined {
+  const lines = rawText.split(/\r?\n/);
+  for (const line of lines) {
+    if (line.startsWith('$ ')) return line.slice(2).trim() || undefined;
+  }
+  return undefined;
+}
+
+function readStatus(rawText: string): ShellMetadata['status'] {
+  if (/^Command succeeded:/m.test(rawText)) return 'succeeded';
+  if (/^Command failed:/m.test(rawText)) return 'failed';
+  return 'unknown';
 }
 
 function readHeader(rawText: string, label: string): string | undefined {
@@ -324,16 +354,23 @@ function stringArg(args: Record<string, unknown>, key: string): string | undefin
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function buildDisplayFromArgs(args: Record<string, unknown>): string | undefined {
-  const offset = Number(args.offset);
-  const limit = Number(args.limit);
-  if (!Number.isFinite(offset) || offset <= 0) return undefined;
-  if (!Number.isFinite(limit) || limit <= 0) return `${Math.floor(offset)}-?`;
-  return `${Math.floor(offset)}-${Math.floor(offset + limit - 1)}`;
+function numberArg(args: Record<string, unknown>, key: string): number | undefined {
+  const value = Number(args[key]);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
   return values.find(value => Boolean(value && value.trim()));
+}
+
+function oneLine(value: string, maxLength: number): string {
+  return trimForFoldedOutput(value.replace(/\r?\n/g, ' ; '), maxLength);
+}
+
+function trimForFoldedOutput(line: string, maxLength = 500): string {
+  const trimmed = line.replace(/\s+$/g, '');
+  if (trimmed.length <= maxLength) return trimmed;
+  return `${trimmed.slice(0, maxLength - 20)}...(truncated ${trimmed.length} chars)`;
 }
 
 function readBooleanEnv(value: string | undefined, fallback: boolean): boolean {
