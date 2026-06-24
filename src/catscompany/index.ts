@@ -140,6 +140,7 @@ export class CatsCompanyBot {
   };
 
   constructor(config: CatsCompanyConfig) {
+    this.botUid = String(config.botUid || '').trim() || null;
     const localDeviceId = config.installationId || config.bodyId;
     const deviceRegistration = localDeviceId
       ? {
@@ -200,7 +201,7 @@ export class CatsCompanyBot {
 
     // 注册事件
     this.bot.on('ready', (info: { uid: string; name: string }) => {
-      this.botUid = info.uid;
+      this.botUid = String(info.uid || '').trim() || this.botUid;
       const botName = info.name.trim() || '(未设置)';
       this.runtimeProfile.displayName = botName;
       this.runtimeProfile.prompt.displayName = botName;

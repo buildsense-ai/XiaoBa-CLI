@@ -29,6 +29,12 @@ import { calculateSummaryBudgetTokens, resolveModelPromptBudgetTokens } from '..
 import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
 import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
 import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
+import {
+  buildSyntheticObservationLifecycleEvent,
+  buildSyntheticObservationMessages,
+  describeSyntheticObservationForLog,
+  SyntheticObservation,
+} from './synthetic-observation';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -113,6 +119,8 @@ function isPendingUserInput(value: string | ContentBlock[] | PendingUserInput): 
     && 'content' in value;
 }
 
+export type SyntheticObservationProvider = () => SyntheticObservation[];
+
 interface ToolExecutionRecord {
   toolCall: ToolCall;
   toolName: string;
@@ -136,6 +144,8 @@ export interface RunnerOptions {
   toolExecutionContext?: Partial<ToolExecutionContext>;
   /** Pulls user messages that arrived while the current run was busy. */
   pendingUserInputProvider?: PendingUserInputProvider;
+  /** Non-blocking runtime observations produced by sidecar branches. */
+  syntheticObservationProvider?: SyntheticObservationProvider;
 }
 
 /**
@@ -154,6 +164,7 @@ export class ConversationRunner {
   private maxTurns?: number;
   private sessionLabel: string;
   private pendingUserInputProvider?: PendingUserInputProvider;
+  private syntheticObservationProvider?: SyntheticObservationProvider;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -176,6 +187,7 @@ export class ConversationRunner {
     this.enableCompression = options?.enableCompression ?? true;
     this.toolExecutionContext = options?.toolExecutionContext;
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
+    this.syntheticObservationProvider = options?.syntheticObservationProvider;
     this.maxTurns = options?.maxTurns;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
@@ -213,7 +225,6 @@ export class ConversationRunner {
     let hasUpdatedPlan = false;
     let hasSpawnedSubagent = false;
     let hasRecordedDecision = false;
-    let hasShownInitialOrchestrationHint = false;
     let planSoftNudgeCount = 0;
     let subagentSoftNudgeCount = 0;
     let nextPlanNudgeAt = nextPlanNudgeToolCount(0);
@@ -235,6 +246,7 @@ export class ConversationRunner {
           newMessages,
         };
       }
+      this.injectSyntheticObservations(messages, turns);
       const requestTools = this.fitToolsToPromptBudget(activeTools);
       if (requestTools.length < activeTools.length && !notifiedToolBudgetDisabled) {
         notifiedToolBudgetDisabled = true;
@@ -269,13 +281,10 @@ export class ConversationRunner {
       }
 
       const orchestrationHints: Message[] = [];
-      if (turns === 1 && !hasShownInitialOrchestrationHint) {
-        const explicitPlanHint = buildExplicitPlanRequestHintIfUseful(messages, requestTools);
-        const decisionHint = buildInitialDecisionHintIfUseful(messages, requestTools);
-        if (explicitPlanHint) orchestrationHints.push(explicitPlanHint);
-        if (decisionHint) orchestrationHints.push(decisionHint);
-        hasShownInitialOrchestrationHint = orchestrationHints.length > 0;
-      }
+      const explicitPlanHint = buildExplicitPlanRequestHintIfUseful(messages, requestTools);
+      const decisionHint = buildInitialDecisionHintIfUseful(messages, requestTools);
+      if (explicitPlanHint) orchestrationHints.push(explicitPlanHint);
+      if (decisionHint) orchestrationHints.push(decisionHint);
       if (shouldAddPlanSoftNudge(requestTools, turns, executedToolCalls, hasUpdatedPlan || hasRecordedDecision, nextPlanNudgeAt)) {
         orchestrationHints.push(buildPlanSoftNudge(turns, executedToolCalls, planSoftNudgeCount));
         planSoftNudgeCount++;
@@ -622,6 +631,35 @@ export class ConversationRunner {
       }
     }
     messages.push(runtimeContext);
+  }
+
+  private injectSyntheticObservations(messages: Message[], turn: number): void {
+    if (!this.syntheticObservationProvider) return;
+    let observations: SyntheticObservation[] = [];
+    try {
+      observations = this.syntheticObservationProvider();
+    } catch (error: any) {
+      Logger.warning(`[${this.sessionLabel}Turn ${turn}] synthetic observation drain failed: ${error.message}`);
+      return;
+    }
+    if (observations.length === 0) return;
+
+    const syntheticMessages = buildSyntheticObservationMessages(observations);
+    messages.push(...syntheticMessages);
+    Logger.info(
+      `[${this.sessionLabel}Turn ${turn}] injected ${observations.length} synthetic runtime observation(s): `
+      + observations.map(describeSyntheticObservationForLog).join(' | ')
+    );
+    for (const observation of observations) {
+      Logger.runtimeEvent(
+        'INFO',
+        `[${this.sessionLabel}Turn ${turn}] synthetic_observation_lifecycle injected id=${observation.id || '(unassigned)'}`,
+        buildSyntheticObservationLifecycleEvent(observation, {
+          outcome: 'injected',
+          reason: 'provider_call_drain',
+        }),
+      );
+    }
   }
 
   /**

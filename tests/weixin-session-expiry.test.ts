@@ -36,7 +36,12 @@ describe('weixin session expiry', () => {
       assert.equal(fs.existsSync(tokensPath), false);
     } finally {
       bot?.destroy();
-      fs.rmSync(stateDir, { recursive: true, force: true });
+      await fs.promises.rm(stateDir, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
     }
   });
 });

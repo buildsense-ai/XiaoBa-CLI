@@ -22,6 +22,10 @@ const LOW_RISK_TOOLS = new Set([
   'ask_parent',
   'send_text',
   'skill',
+  'memory_search',
+  'memory_read_turn',
+  'memory_neighbors',
+  'finish_memory_search',
 ]);
 
 const CONFIRM_TOOLS = new Set([

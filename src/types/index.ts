@@ -26,6 +26,9 @@ export interface Message {
   runtimeObservationSource?: string;
   /** 标记内部错误占位，仅用于本地恢复/继续，不应进入模型上下文或持久历史。 */
   __internalErrorArtifact?: boolean;
+  /** Synthetic tool-call/tool-result pair used as transient runtime context. */
+  __syntheticObservation?: boolean;
+  syntheticObservationId?: string;
   /** Provider 原始 assistant content blocks，仅用于下次请求回放，不展示给用户。 */
   providerContent?: ProviderContentBlock[];
 }

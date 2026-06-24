@@ -59,10 +59,15 @@ import {
 } from '../../skillhub/local-skill-metadata';
 import {
   deletePromptOverride,
+  getPromptBranchAgentsState,
   getPromptEditorFile,
   getPromptEditorState,
   writePromptOverride,
 } from '../../utils/prompt-editor';
+import {
+  BRANCH_AGENTS_ENABLED_ENV,
+  serializeBranchAgentsEnabled,
+} from '../../core/branch-agent-settings';
 import {
   BindWeixinChannelResult,
   WeixinChannelStatus,
@@ -1634,6 +1639,35 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       res.json(await getPromptEditorState());
     } catch (e: any) {
       res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.get('/prompts/branch-agents', (_req, res) => {
+    try {
+      res.json(getPromptBranchAgentsState());
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.put('/prompts/branch-agents', (req, res) => {
+    try {
+      if (typeof req.body?.enabled !== 'boolean') {
+        return res.status(400).json({ error: 'enabled must be a boolean' });
+      }
+      const value = serializeBranchAgentsEnabled(req.body.enabled);
+      const result = writeDashboardEnvUpdates(process.cwd(), {
+        [BRANCH_AGENTS_ENABLED_ENV]: value,
+      });
+      process.env[BRANCH_AGENTS_ENABLED_ENV] = value;
+      res.json({
+        ok: true,
+        ...getPromptBranchAgentsState(),
+        updated: result.updated,
+        cleared: result.cleared,
+      });
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || String(e) });
     }
   });
 

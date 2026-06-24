@@ -8,6 +8,7 @@ export interface SessionLifecycleManagerOptions {
   legacySessionKey?: string;
   legacyRestoreKey?: string;
   legacyCleanupKey?: string;
+  allowLegacySessionFallback?: boolean;
   runtimeFeedbackInbox: RuntimeFeedbackInbox;
   sessionStore?: SessionStore;
 }
@@ -82,6 +83,9 @@ export class SessionLifecycleManager {
   loadCurrentDirectory(): string | undefined {
     const current = this.sessionStore.loadRuntimeState(this.options.sessionKey).currentDirectory;
     if (current) return current;
+    if (!this.shouldUseLegacySessionFallback()) {
+      return undefined;
+    }
     const legacyRestoreKey = this.resolveLegacyRestoreKey();
     if (!legacyRestoreKey || legacyRestoreKey === this.options.sessionKey) {
       return undefined;
@@ -110,6 +114,9 @@ export class SessionLifecycleManager {
     if (this.sessionStore.hasSession(this.options.sessionKey)) {
       return this.options.sessionKey;
     }
+    if (!this.shouldUseLegacySessionFallback()) {
+      return undefined;
+    }
     const legacy = this.resolveLegacyRestoreKey();
     if (legacy && legacy !== this.options.sessionKey && this.sessionStore.hasSession(legacy)) {
       return legacy;
@@ -133,5 +140,9 @@ export class SessionLifecycleManager {
       uniqueKeys.add(key);
     }
     return Array.from(uniqueKeys);
+  }
+
+  private shouldUseLegacySessionFallback(): boolean {
+    return this.options.allowLegacySessionFallback !== false;
   }
 }

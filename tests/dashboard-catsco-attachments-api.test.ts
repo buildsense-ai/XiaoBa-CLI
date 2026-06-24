@@ -55,7 +55,12 @@ describe('dashboard CatsCo attachment API', () => {
       if (originalEnv[key] === undefined) delete process.env[key];
       else process.env[key] = originalEnv[key];
     }
-    fs.rmSync(testRoot, { recursive: true, force: true });
+    await fs.promises.rm(testRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
   });
 
   test('streams a local file to CatsCo and sends the attachment as the user', async () => {
