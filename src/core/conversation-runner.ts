@@ -27,10 +27,6 @@ import {
   buildRuntimeContextMessage,
 } from './runtime-context-builder';
 import {
-  TRANSIENT_TOOL_GUIDANCE_PREFIX,
-  buildTransientToolGuidance,
-} from './transient-tool-guidance';
-import {
   TRANSIENT_CURRENT_DIRECTORY_PREFIX,
   buildTransientEnvironmentHint,
 } from './transient-environment';
@@ -325,12 +321,8 @@ export class ConversationRunner {
       const perTurnRunnerHint = transientPolicy.injectRunnerHint
         ? buildPerTurnRunnerHint(requestTools)
         : null;
-      const toolGuidance = transientPolicy.injectToolGuidance
-        ? buildTransientToolGuidance(requestTools)
-        : null;
       const requestMessages = this.buildProviderInputMessages(messages, [
         ...(perTurnRunnerHint ? [perTurnRunnerHint] : []),
-        ...(toolGuidance ? [toolGuidance] : []),
         ...nextTurnTransientHints,
         ...orchestrationHints,
       ], {
@@ -876,9 +868,6 @@ export class ConversationRunner {
       if (message.content.startsWith(TRANSIENT_CURRENT_DIRECTORY_PREFIX)) {
         return false;
       }
-      if (message.__injected && message.content.startsWith(TRANSIENT_TOOL_GUIDANCE_PREFIX)) {
-        return false;
-      }
       if (message.role !== 'system') {
         return true;
       }
@@ -938,7 +927,7 @@ export class ConversationRunner {
       const suffix = messages.slice(i + 1);
       const suffixBelongsToToolExchange = suffix.length > 0 && suffix.every(item => {
         if (item.role === 'tool') return true;
-        return this.isTransientRunnerHint(item) || this.isTransientToolGuidance(item);
+        return this.isTransientRunnerHint(item);
       });
 
       if (suffixBelongsToToolExchange) {
@@ -963,12 +952,6 @@ export class ConversationRunner {
     return message.role === 'system'
       && typeof message.content === 'string'
       && message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX);
-  }
-
-  private isTransientToolGuidance(message: Message): boolean {
-    return Boolean(message.__injected)
-      && typeof message.content === 'string'
-      && message.content.startsWith(TRANSIENT_TOOL_GUIDANCE_PREFIX);
   }
 
   private isCurrentDirectoryHint(message: Message): boolean {

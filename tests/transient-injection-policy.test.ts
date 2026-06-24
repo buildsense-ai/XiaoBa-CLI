@@ -28,7 +28,7 @@ const defaultTools = [
   tool('spawn_subagent'),
 ];
 
-test('plain chat does not request transient mode, skills, cwd, tool guidance, or runner hint', () => {
+test('plain chat does not request transient mode, skills, cwd, or runner hint', () => {
   const messages: Message[] = [{ role: 'user', content: '早，今天状态怎么样？' }];
 
   const turnPolicy = resolveTurnContextTransientPolicy(messages);
@@ -44,11 +44,10 @@ test('plain chat does not request transient mode, skills, cwd, tool guidance, or
   assert.equal(turnPolicy.intent.kind, 'plain-chat');
   assert.equal(turnPolicy.injectSkillsList, false);
   assert.equal(providerPolicy.injectEnvironment, false);
-  assert.equal(providerPolicy.injectToolGuidance, false);
   assert.equal(providerPolicy.injectRunnerHint, false);
 });
 
-test('coding work requests get workspace and tool guidance plus a narrow coding skill list', () => {
+test('coding work requests get workspace context plus a narrow coding skill list', () => {
   const messages: Message[] = [
     { role: 'user', content: '这个项目 npm run build 报错，帮我定位原因' },
   ];
@@ -67,10 +66,9 @@ test('coding work requests get workspace and tool guidance plus a narrow coding 
   assert.equal(turnPolicy.injectSkillsList, true);
   assert.deepEqual(turnPolicy.skillNames, ['coding-context']);
   assert.equal(providerPolicy.injectEnvironment, true);
-  assert.equal(providerPolicy.injectToolGuidance, true);
 });
 
-test('fixed system mode suppresses duplicate auto mode hints but keeps coding tool context', () => {
+test('fixed system mode suppresses duplicate auto mode hints but keeps coding workspace context', () => {
   const messages: Message[] = [
     { role: 'system', content: '[mode:coding-agent]\nbase coding prompt' },
     { role: 'user', content: '修一下 src/api/user.ts 的测试失败' },
@@ -89,10 +87,9 @@ test('fixed system mode suppresses duplicate auto mode hints but keeps coding to
   assert.equal(turnPolicy.intent.fixedMode, 'coding-agent');
   assert.equal(turnPolicy.injectSkillsList, true);
   assert.equal(providerPolicy.injectEnvironment, true);
-  assert.equal(providerPolicy.injectToolGuidance, true);
 });
 
-test('tool loops keep cwd and tool guidance even when the latest user text is terse', () => {
+test('tool loops keep cwd even when the latest user text is terse', () => {
   const messages: Message[] = [
     { role: 'user', content: '继续' },
     {
@@ -119,7 +116,6 @@ test('tool loops keep cwd and tool guidance even when the latest user text is te
 
   assert.equal(intent.workspaceRelevant, true);
   assert.equal(providerPolicy.injectEnvironment, true);
-  assert.equal(providerPolicy.injectToolGuidance, true);
 });
 
 test('complex work can request a runner hint when no more specific orchestration hint exists', () => {

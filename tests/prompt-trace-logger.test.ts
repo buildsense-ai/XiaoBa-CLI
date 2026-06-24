@@ -120,7 +120,7 @@ test('prompt trace records summarized prompt, response, and tool result without 
     assert.deepEqual(firstRequest.tools.names, ['read_file']);
     assert.equal(firstRequest.model.api_url, 'https://example.test/v1/chat/completions');
     assert.ok(firstRequest.prompt.transient_prefixes['[transient_current_directory]']);
-    assert.ok(firstRequest.prompt.transient_prefixes['[transient_tool_guidance]']);
+    assert.equal(firstRequest.prompt.transient_prefixes['[transient_tool_guidance]'], undefined);
 
     const serialized = JSON.stringify(entries);
     assert.doesNotMatch(serialized, /sk-usersecret/);

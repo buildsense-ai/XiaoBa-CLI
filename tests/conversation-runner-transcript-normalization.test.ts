@@ -192,26 +192,17 @@ test('runner injects current directory before the active request context without
   const firstRealUserIndex = firstCallMessages.findIndex(message =>
     message.role === 'user' && message.content === 'read notes'
   );
-  const firstToolGuidanceIndex = firstCallMessages.findIndex(message =>
-    typeof message.content === 'string'
-      && message.content.startsWith('[transient_tool_guidance]')
-  );
   const firstRunnerHintIndex = firstCallMessages.findIndex(message =>
     typeof message.content === 'string'
       && message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)
   );
-  assert.equal(firstRealUserIndex, 2);
+  assert.equal(firstRealUserIndex, 1);
   assert.equal(firstRunnerHintIndex, -1);
-  assert.equal(firstToolGuidanceIndex, 1);
 
   const secondCallMessages = mock.getReceivedMessages()[1];
   const cwdIndex = secondCallMessages.findIndex(
     message => typeof message.content === 'string'
       && message.content.startsWith('[transient_current_directory]'),
-  );
-  const toolGuidanceIndex = secondCallMessages.findIndex(
-    message => typeof message.content === 'string'
-      && message.content.startsWith('[transient_tool_guidance]'),
   );
   const runnerHintIndex = secondCallMessages.findIndex(
     message => typeof message.content === 'string'
@@ -222,9 +213,8 @@ test('runner injects current directory before the active request context without
       && message.tool_calls?.some(toolCall => toolCall.id === 'call_read'),
   );
 
-  assert.equal(cwdIndex, assistantToolIndex - 2);
+  assert.equal(cwdIndex, assistantToolIndex - 1);
   assert.equal(runnerHintIndex, -1);
-  assert.equal(toolGuidanceIndex, assistantToolIndex - 1);
   assert.equal(secondCallMessages[assistantToolIndex + 1].role, 'tool');
   assert.match(
     String(secondCallMessages[cwdIndex].content),

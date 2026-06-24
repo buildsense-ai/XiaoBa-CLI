@@ -30,7 +30,6 @@ import {
   findFixedPromptModeState,
   findPreviousPromptModeState,
 } from '../runtime/prompt-modes';
-import { TRANSIENT_TOOL_GUIDANCE_PREFIX } from './transient-tool-guidance';
 import { resolveTurnContextTransientPolicy } from './transient-injection-policy';
 
 const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
@@ -93,11 +92,6 @@ export class TurnContextBuilder {
     return messages.filter(msg => {
       if (msg.__syntheticObservation) return false;
       if (msg.__runtimeFeedback) return false;
-      if (
-        msg.__injected
-        && typeof msg.content === 'string'
-        && msg.content.startsWith(TRANSIENT_TOOL_GUIDANCE_PREFIX)
-      ) return false;
       if (
         msg.role === 'system'
         && typeof msg.content === 'string'

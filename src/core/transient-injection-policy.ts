@@ -35,7 +35,6 @@ export interface TurnContextTransientPolicy {
 export interface ProviderTransientPolicy {
   intent: TransientTurnIntent;
   injectEnvironment: boolean;
-  injectToolGuidance: boolean;
   injectRunnerHint: boolean;
   reasons: string[];
 }
@@ -58,13 +57,6 @@ const FILE_AND_SHELL_TOOLS = new Set([
   'write_file',
   'resolve_common_directory',
   'execute_shell',
-]);
-
-const WORK_TOOL_NAMES = new Set([
-  ...FILE_AND_SHELL_TOOLS,
-  'skill',
-  'share_skillhub_skill',
-  'send_file',
 ]);
 
 const ORCHESTRATION_TOOL_NAMES = new Set([
@@ -122,7 +114,6 @@ export function resolveProviderTransientPolicy(
 ): ProviderTransientPolicy {
   const intent = analyzeTransientIntent(options.messages);
   const toolNames = new Set(options.tools.map(tool => tool.name));
-  const hasWorkTools = [...toolNames].some(name => WORK_TOOL_NAMES.has(name));
   const hasFileOrShellTools = [...toolNames].some(name => FILE_AND_SHELL_TOOLS.has(name));
   const hasOrchestrationTools = [...toolNames].some(name => ORCHESTRATION_TOOL_NAMES.has(name));
   const toolLoopActive = options.executedToolCalls > 0 || hasRecentToolExchange(options.messages);
@@ -138,16 +129,6 @@ export function resolveProviderTransientPolicy(
   );
   if (injectEnvironment) reasons.push('workspace-context');
 
-  const injectToolGuidance = Boolean(
-    hasWorkTools
-    && (
-      intent.workspaceRelevant
-      || intent.skillRelevant
-      || toolLoopActive
-    ),
-  );
-  if (injectToolGuidance) reasons.push('tool-aware-work');
-
   const hasSpecificOrchestrationHint = (options.orchestrationHintCount ?? 0) > 0;
   const injectRunnerHint = Boolean(
     hasOrchestrationTools
@@ -162,7 +143,6 @@ export function resolveProviderTransientPolicy(
   return {
     intent,
     injectEnvironment,
-    injectToolGuidance,
     injectRunnerHint,
     reasons,
   };
