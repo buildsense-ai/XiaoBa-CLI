@@ -93,12 +93,12 @@ export class TurnContextBuilder {
       if (msg.__syntheticObservation) return false;
       if (msg.__runtimeFeedback) return false;
       if (
-        msg.role === 'system'
+        (msg.__injected || msg.role === 'system')
         && typeof msg.content === 'string'
         && msg.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
       ) return false;
       if (
-        msg.role === 'system'
+        (msg.__injected || msg.role === 'system')
         && typeof msg.content === 'string'
         && msg.content.startsWith(TRANSIENT_FIXED_PROMPT_MODE_PREFIX)
       ) return false;

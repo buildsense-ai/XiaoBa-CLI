@@ -100,13 +100,14 @@ export function buildFixedPromptModeMessage(
   fixedMode: FixedPromptModeState,
 ): Message {
   return {
-    role: 'system',
+    role: 'user',
     content: [
       TRANSIENT_FIXED_PROMPT_MODE_PREFIX,
       `Fixed prompt mode active: ${fixedMode.mode} (${fixedMode.title}).`,
       'This mode is already part of the system prompt.',
       'Do not call prompt_mode or load another prompt mode unless the user explicitly asks to change the fixed profile.',
     ].join('\n'),
+    __injected: true,
   };
 }
 
@@ -160,7 +161,7 @@ export function buildPromptModesListMessage(
     : '';
 
   return {
-    role: 'system',
+    role: 'user',
     content: [
       TRANSIENT_PROMPT_MODES_LIST_PREFIX,
       'Available prompt modes. This is routing context, not a user request.',
@@ -170,6 +171,7 @@ export function buildPromptModesListMessage(
       '',
       modeList,
     ].join('\n'),
+    __injected: true,
   };
 }
 

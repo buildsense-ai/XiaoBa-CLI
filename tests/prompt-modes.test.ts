@@ -42,7 +42,7 @@ describe('prompt modes', () => {
     }
   });
 
-  test('injects prompt mode list as transient system context, not a guessed mode', async () => {
+  test('injects prompt mode list as injected transient context, not a guessed mode', async () => {
     const builder = new TurnContextBuilder();
     const durableMessages: Message[] = [
       { role: 'system', content: 'base system' },
@@ -60,7 +60,8 @@ describe('prompt modes', () => {
     });
 
     const modeList = result.messages.find(message => (
-      message.role === 'system'
+      message.role === 'user'
+      && message.__injected
       && typeof message.content === 'string'
       && message.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
     ));
@@ -120,7 +121,8 @@ describe('prompt modes', () => {
     });
 
     const modeList = result.messages.find(message => (
-      message.role === 'system'
+      message.role === 'user'
+      && message.__injected
       && typeof message.content === 'string'
       && message.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
     ));
@@ -153,7 +155,8 @@ describe('prompt modes', () => {
     });
 
     const fixedMessage = result.messages.find(message => (
-      message.role === 'system'
+      message.role === 'user'
+      && message.__injected
       && typeof message.content === 'string'
       && message.content.startsWith(TRANSIENT_FIXED_PROMPT_MODE_PREFIX)
     ));
@@ -162,7 +165,8 @@ describe('prompt modes', () => {
     assert.match(String(fixedMessage.content), /Fixed prompt mode active: coding-agent/);
     assert.match(String(fixedMessage.content), /already part of the system prompt/);
     assert.equal(result.messages.some(message => (
-      message.role === 'system'
+      message.role === 'user'
+      && message.__injected
       && typeof message.content === 'string'
       && message.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
     )), false);
