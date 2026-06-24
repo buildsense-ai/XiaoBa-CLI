@@ -67,6 +67,7 @@ import {
   SyntheticObservation,
 } from './synthetic-observation';
 import { TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX } from './prompt-mode-runtime';
+import { VisibleProgressEvent } from './visible-progress-types';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -177,6 +178,7 @@ function isPendingUserInput(value: string | ContentBlock[] | PendingUserInput): 
 
 export type SyntheticObservationProvider = () => SyntheticObservation[];
 export type RuntimeTransientProvider = () => Message[];
+export type VisibleProgressEventSink = (event: VisibleProgressEvent) => void;
 
 interface ToolExecutionRecord {
   toolCall: ToolCall;
@@ -207,6 +209,8 @@ export interface RunnerOptions {
   runtimeTransientProvider?: RuntimeTransientProvider;
   /** Internal id that ties all messages created by one externally visible user turn together. */
   episodeId?: string;
+  /** User-visible progress events consumed by a sidecar rewriter. */
+  visibleProgressEventSink?: VisibleProgressEventSink;
 }
 
 /**
@@ -229,6 +233,7 @@ export class ConversationRunner {
   private syntheticObservationProvider?: SyntheticObservationProvider;
   private runtimeTransientProvider?: RuntimeTransientProvider;
   private episodeId?: string;
+  private visibleProgressEventSink?: VisibleProgressEventSink;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -254,6 +259,7 @@ export class ConversationRunner {
     this.syntheticObservationProvider = options?.syntheticObservationProvider;
     this.runtimeTransientProvider = options?.runtimeTransientProvider;
     this.episodeId = options?.episodeId;
+    this.visibleProgressEventSink = options?.visibleProgressEventSink;
     this.maxTurns = options?.maxTurns;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
@@ -640,13 +646,20 @@ export class ConversationRunner {
           Logger.warning(`[${this.sessionLabel}Turn ${turns}] 已过滤工具前文本里的内部历史回放占位文本`);
         }
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI文本: ${ConversationRunner.truncateForLog(visiblePrelude, 300)}`);
-        const shouldSurfacePrelude = this.shouldSurfaceToolPrelude(visiblePrelude);
-        if (callbacks?.onAssistantText && shouldSurfacePrelude) {
-          await callbacks.onAssistantText(visiblePrelude);
-        } else if (!callbacks?.onAssistantText && callbacks?.onThinking && shouldSurfacePrelude) {
-          await callbacks.onThinking(visiblePrelude);
+        if (this.visibleProgressEventSink) {
+          this.emitVisibleProgressEvent({
+            type: 'model_prelude',
+            text: visiblePrelude,
+          });
         } else {
-          Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具前文本已作为内部进度保留，未发送给用户`);
+          const shouldSurfacePrelude = this.shouldSurfaceToolPrelude(visiblePrelude);
+          if (callbacks?.onAssistantText && shouldSurfacePrelude) {
+            await callbacks.onAssistantText(visiblePrelude);
+          } else if (!callbacks?.onAssistantText && callbacks?.onThinking && shouldSurfacePrelude) {
+            await callbacks.onThinking(visiblePrelude);
+          } else {
+            Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具前文本已作为内部进度保留，未发送给用户`);
+          }
         }
       }
       const toolNames = response.toolCalls.map(tc => tc.function.name).join(', ');
@@ -686,6 +699,11 @@ export class ConversationRunner {
             retryable: false,
           };
         } else {
+          this.emitVisibleProgressEvent({
+            type: 'tool_started',
+            toolName,
+            toolDescription: this.extractToolDescription(toolInput),
+          });
           callbacks?.onToolStart?.(toolName, toolUseId, toolInput);
           Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
           result = await this.executeToolWithRetry(
@@ -708,6 +726,16 @@ export class ConversationRunner {
         this.promptTraceLogger.recordToolResult(turns, toolCall, result, toolDuration);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
         if (toolWasExposed) {
+          this.emitVisibleProgressEvent({
+            type: 'tool_finished',
+            toolName,
+            ok: result.ok !== false && !result.errorCode,
+            errorCode: result.errorCode,
+            durationMs: toolDuration,
+            resultSummary: result.ok === false || result.errorCode
+              ? ConversationRunner.truncateForLog(contentToString(result.content), 180)
+              : undefined,
+          });
           callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
         }
 
@@ -1253,6 +1281,21 @@ export class ConversationRunner {
       Logger.warning(`[${this.sessionLabel}Turn ${turn}] runtime transient drain failed: ${error.message}`);
       return [];
     }
+  }
+
+  private emitVisibleProgressEvent(event: VisibleProgressEvent): void {
+    if (!this.visibleProgressEventSink) return;
+    try {
+      this.visibleProgressEventSink(event);
+    } catch (error: any) {
+      Logger.warning(`[${this.sessionLabel}] visible progress event failed: ${error.message}`);
+    }
+  }
+
+  private extractToolDescription(input: unknown): string | undefined {
+    if (!input || typeof input !== 'object') return undefined;
+    const value = (input as Record<string, unknown>).description;
+    return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : undefined;
   }
 
   private isCurrentDirectoryHint(message: Message): boolean {

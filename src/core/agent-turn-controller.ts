@@ -22,7 +22,7 @@ import { SkillManager } from '../skills/skill-manager';
 import { SessionSkillRuntime } from '../skills/session-skill-runtime';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
-import { ConversationRunner, RunnerCallbacks, PendingUserInputProvider } from './conversation-runner';
+import { ConversationRunner, RunnerCallbacks, PendingUserInputProvider, VisibleProgressEventSink } from './conversation-runner';
 import { resolveSessionSurface } from './session-surface';
 import { TurnContextBuilder } from './turn-context-builder';
 import { TurnLogRecorder } from './turn-log-recorder';
@@ -42,6 +42,7 @@ import { ModeRouterSidecarBranchHandle, startModeRouterSidecarBranch } from './s
 import { isBranchAgentsEnabled } from './branch-agent-settings';
 import { PromptModeRuntime } from './prompt-mode-runtime';
 import { findFixedPromptModeState, listPromptModeDefinitions, FixedPromptModeState } from '../runtime/prompt-modes';
+import { VisibleProgressRuntime } from './visible-progress-runtime';
 
 export interface AgentTurnServices {
   aiService: AIService;
@@ -197,6 +198,14 @@ export class AgentTurnController {
       messages: params.messages,
       abortSignal: params.abortSignal,
     });
+    const visibleProgressRuntime = this.startVisibleProgressRuntimeIfEnabled({
+      branchAgentsEnabled,
+      input: params.input,
+      messages: params.messages,
+      callbacks: params.callbacks,
+      abortSignal: params.abortSignal,
+    });
+    visibleProgressRuntime?.recordEvent({ type: 'turn_started' });
 
     const runner = this.createRunner({
       channel: params.channel,
@@ -222,6 +231,9 @@ export class AgentTurnController {
         turnNumber,
         fixedMode,
       ),
+      visibleProgressEventSink: visibleProgressRuntime
+        ? event => visibleProgressRuntime.recordEvent(event)
+        : undefined,
       abortSignal: params.abortSignal,
       shouldContinue: params.shouldContinue,
     });
@@ -238,6 +250,7 @@ export class AgentTurnController {
       }
       throw error;
     } finally {
+      visibleProgressRuntime?.close(result ? 'turn_completed' : 'turn_failed');
       this.expireMemoryBranch(carryoverMemoryBranch, 'carryover_ttl_expired');
       this.expireModeRouterBranch(carryoverModeRouter, 'carryover_ttl_expired');
       if (result && currentMemoryBranch && this.shouldCarryMemoryBranch(currentMemoryBranch)) {
@@ -306,6 +319,7 @@ export class AgentTurnController {
     episodeId?: string;
     syntheticObservationProvider?: () => SyntheticObservation[];
     runtimeTransientProvider?: () => Message[];
+    visibleProgressEventSink?: VisibleProgressEventSink;
     abortSignal?: AbortSignal;
     shouldContinue: () => boolean;
   }): ConversationRunner {
@@ -319,6 +333,7 @@ export class AgentTurnController {
         syntheticObservationProvider: options.syntheticObservationProvider,
         runtimeTransientProvider: options.runtimeTransientProvider,
         episodeId: options.episodeId,
+        visibleProgressEventSink: options.visibleProgressEventSink,
         // AgentSession/ContextWindowManager compacts durable history before the turn.
         // Runner-level compaction can fold transient runtime feedback into summary.
         enableCompression: false,
@@ -418,6 +433,37 @@ export class AgentTurnController {
       slot.done = true;
     });
     return slot;
+  }
+
+  private startVisibleProgressRuntimeIfEnabled(options: {
+    branchAgentsEnabled: boolean;
+    input: string | ContentBlock[];
+    messages: Message[];
+    callbacks?: AgentTurnCallbacks;
+    abortSignal?: AbortSignal;
+  }): VisibleProgressRuntime | null {
+    if (!options.callbacks?.onThinking) {
+      return null;
+    }
+    if (!options.branchAgentsEnabled) {
+      return null;
+    }
+    if (process.env.XIAOBA_VISIBLE_PROGRESS_AGENT_ENABLED === 'false') {
+      return null;
+    }
+    if (!(this.options.services.aiService instanceof AIService)) {
+      return null;
+    }
+    return new VisibleProgressRuntime({
+      sessionKey: this.options.sessionKey,
+      input: options.input,
+      recentMessages: options.messages,
+      workingDirectory: this.options.getCurrentDirectory(),
+      aiService: this.options.services.aiService,
+      surface: resolveSessionSurface(this.options.sessionKey, this.options.sessionType),
+      signal: options.abortSignal,
+      onProgress: options.callbacks.onThinking,
+    });
   }
 
   private drainMemoryObservations(

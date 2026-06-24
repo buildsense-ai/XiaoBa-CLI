@@ -27,6 +27,7 @@ const LOW_RISK_TOOLS = new Set([
   'memory_neighbors',
   'finish_memory_search',
   'finish_prompt_mode_routing',
+  'finish_visible_progress',
 ]);
 
 const CONFIRM_TOOLS = new Set([
