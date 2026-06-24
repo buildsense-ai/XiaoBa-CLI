@@ -138,10 +138,14 @@ describe('CatsCompany execution scope flow', () => {
     assert.deepEqual(sessionKeys, ['session:v2:catscompany:p2p:p2p_7_43:agent:usr43']);
     assert.equal(sessionInputs[0].version, 2);
     assert.equal(sessionInputs[0].legacySessionKey, 'cc_user:usr7');
+    assert.equal(sessionInputs[0].legacyRestoreKey, 'cc_user:usr7');
+    assert.equal(sessionInputs[0].legacyCleanupKey, 'cc_user:usr7');
     assert.equal(handledTurns.length, 1);
     assert.equal(handledTurns[0].options.sessionRoute.sessionKey, 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43');
     assert.equal(handledTurns[0].options.executionScope.sessionKey, 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43');
     assert.equal(handledTurns[0].options.executionScope.legacySessionKey, 'cc_user:usr7');
+    assert.equal(handledTurns[0].options.executionScope.legacyRestoreKey, 'cc_user:usr7');
+    assert.equal(handledTurns[0].options.executionScope.legacyCleanupKey, 'cc_user:usr7');
     assert.equal(handledTurns[0].options.executionScope.actorUserId, 'usr7');
     assert.equal(handledTurns[0].options.executionScope.agentId, 'usr43');
     assert.equal(handledTurns[0].options.executionScope.agentBodyId, 'body-main');
@@ -191,7 +195,13 @@ describe('CatsCompany execution scope flow', () => {
     assert.deepEqual(sessionKeys, ['session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43']);
     assert.equal(handledTurns.length, 1);
     assert.equal(handledTurns[0].options.sessionRoute.sessionKey, 'session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43');
+    assert.equal(handledTurns[0].options.sessionRoute.legacySessionKey, undefined);
+    assert.equal(handledTurns[0].options.sessionRoute.legacyRestoreKey, undefined);
+    assert.equal(handledTurns[0].options.sessionRoute.legacyCleanupKey, 'cc_group:grp_80');
     assert.equal(handledTurns[0].options.executionScope.sessionKey, 'session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43');
+    assert.equal(handledTurns[0].options.executionScope.legacySessionKey, undefined);
+    assert.equal(handledTurns[0].options.executionScope.legacyRestoreKey, undefined);
+    assert.equal(handledTurns[0].options.executionScope.legacyCleanupKey, 'cc_group:grp_80');
     assert.equal(handledTurns[0].options.executionScope.topicType, 'group');
     assert.equal(handledTurns[0].options.executionScope.topicId, 'grp_80');
     assert.equal(handledTurns[0].options.executionScope.actorUserId, 'usr7');

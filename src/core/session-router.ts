@@ -24,6 +24,8 @@ export interface CreateSessionRouteInput {
   identityTrust?: IdentityTrustLevel;
   identitySource?: string;
   legacySessionKey?: string;
+  legacyRestoreKey?: string;
+  legacyCleanupKey?: string;
 }
 
 export interface ParsedSessionKeyV2 {
@@ -45,13 +47,19 @@ export function createSessionRoute(input: CreateSessionRouteInput): SessionRoute
   const identityTrust = input.identityTrust || 'legacy_context';
   const identitySource = normalizeOptionalId(input.identitySource);
   const sessionKey = buildSessionKeyV2({ source, topicType, topicId: sessionTopicId, agentId });
-  const legacySessionKey = normalizeOptionalId(input.legacySessionKey);
+  const legacySessionKey = normalizeOptionalId(input.legacyRestoreKey)
+    || normalizeOptionalId(input.legacySessionKey);
+  const legacyRestoreKey = legacySessionKey;
+  const legacyCleanupKey = normalizeOptionalId(input.legacyCleanupKey)
+    || legacyRestoreKey;
 
   return {
     version: 2,
     source,
     sessionKey,
     legacySessionKey,
+    legacyRestoreKey,
+    legacyCleanupKey,
     topicId,
     topicType,
     actorUserId,
@@ -88,6 +96,17 @@ export function buildCatsCoSessionTopicId(
 }
 
 export function createCatsCoSessionRoute(envelope: MessageEnvelope): SessionRoute {
+  const fallbackLegacyKey = buildLegacyCatsCoSessionKey(
+    envelope.topicType,
+    envelope.topicId,
+    envelope.actorUserId,
+  );
+  const legacyRestoreKey = envelope.legacyRestoreKey
+    || envelope.legacySessionKey
+    || (normalizeTopicType(envelope.topicType) === 'group' ? undefined : fallbackLegacyKey);
+  const legacyCleanupKey = envelope.legacyCleanupKey
+    || envelope.legacySessionKey
+    || fallbackLegacyKey;
   return createSessionRoute({
     source: 'catscompany',
     topicId: envelope.topicId,
@@ -104,11 +123,8 @@ export function createCatsCoSessionRoute(envelope: MessageEnvelope): SessionRout
     channelSeq: envelope.channelSeq,
     identityTrust: envelope.identityTrust,
     identitySource: envelope.identitySource,
-    legacySessionKey: envelope.legacySessionKey || buildLegacyCatsCoSessionKey(
-      envelope.topicType,
-      envelope.topicId,
-      envelope.actorUserId,
-    ),
+    legacyRestoreKey,
+    legacyCleanupKey,
   });
 }
 
@@ -165,6 +181,8 @@ export function createExecutionScopeFromRoute(route: SessionRoute): ExecutionSco
     source: route.source,
     sessionKey: route.sessionKey,
     legacySessionKey: route.legacySessionKey,
+    legacyRestoreKey: route.legacyRestoreKey,
+    legacyCleanupKey: route.legacyCleanupKey,
     topicId: route.topicId,
     topicType: route.topicType,
     actorUserId: route.actorUserId,
