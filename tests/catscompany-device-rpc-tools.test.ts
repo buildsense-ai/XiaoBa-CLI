@@ -69,7 +69,7 @@ function serverGrant(overrides: Partial<ScopedDeviceGrant> = {}): ScopedDeviceGr
     actorUserId: 'usr7',
     agentId: 'usr43',
     agentBodyId: 'body-agent',
-    operations: ['read_file', 'resolve_common_directory', 'glob', 'grep'],
+    operations: ['read_file', 'resolve_common_directory', 'glob', 'grep', 'execute_shell'],
     createdAt: Date.now(),
     expiresAt: Date.now() + 60_000,
     ...overrides,
@@ -132,20 +132,29 @@ describe('CatsCompany Device RPC file tools', () => {
       args: { pattern: '合同', path: 'catsco_attachment:project', output_mode: 'files' },
       grant,
     });
+    const shell = await transport.executeTool({
+      toolName: 'execute_shell',
+      operation: 'execute_shell',
+      args: { command: 'echo remote-shell' },
+      grant,
+    });
 
     assert.equal(read.ok, true);
     assert.equal(glob.ok, true);
     assert.equal(resolveDir.ok, true);
     assert.equal(grep.ok, true);
+    assert.equal(shell.ok, true);
     assert.equal(read.ok ? read.content : '', 'remote read_file');
     assert.equal(glob.ok ? glob.content : '', 'remote glob');
     assert.equal(resolveDir.ok ? resolveDir.content : '', 'remote resolve_common_directory');
     assert.equal(grep.ok ? grep.content : '', 'remote grep');
+    assert.equal(shell.ok ? shell.content : '', 'remote execute_shell');
     assert.deepEqual(captured.map(item => [item.request.tool_name, item.request.operation]), [
       ['read_file', 'read_file'],
       ['glob', 'glob'],
       ['resolve_common_directory', 'resolve_common_directory'],
       ['grep', 'grep'],
+      ['execute_shell', 'execute_shell'],
     ]);
 
     const first = captured[0].request;
@@ -308,7 +317,7 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.match(captured.result.error.message, /channel_identity_link/);
   });
 
-  test('rejects shell Device RPC operations on the selected local device', async () => {
+  test('executes shell Device RPC operations on the selected local device', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
 
@@ -320,10 +329,9 @@ describe('CatsCompany Device RPC file tools', () => {
     }));
 
     assert.ok(captured.result);
-    assert.equal(captured.result.result, undefined);
-    assert.equal(captured.result.error.code, 'unsupported_operation');
-    assert.match(captured.result.error.message, /read_file, resolve_common_directory, glob, grep, write_file, and edit_file/);
-    assert.doesNotMatch(captured.result.error.message, /execute_shell/);
+    assert.equal(captured.result.error, undefined);
+    assert.equal(captured.result.result.ok, true);
+    assert.match(String(captured.result.result.content), /rpc-shell-ok/);
   });
 
   test('rejects Device RPC requests for another target device', async () => {

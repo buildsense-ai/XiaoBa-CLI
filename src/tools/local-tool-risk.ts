@@ -100,7 +100,7 @@ export function classifyLocalToolRisk(
   }
 
   const remoteFileOperation = REMOTE_DEVICE_FILE_TOOL_OPERATIONS[toolName];
-  if (remoteFileOperation && isServerAuthorizedRemoteDeviceFileOperation(toolName, remoteFileOperation, context)) {
+  if (remoteFileOperation && isServerAuthorizedRemoteDeviceOperation(toolName, remoteFileOperation, context)) {
     return {
       requiresConfirmation: false,
       risk: 'low',
@@ -121,6 +121,13 @@ export function classifyLocalToolRisk(
 
   if (toolName === 'execute_shell') {
     const command = stringField(args, 'command') || stringField(args, 'cmd') || stringField(args, 'script');
+    if (isServerAuthorizedRemoteDeviceOperation(toolName, 'execute_shell', context)) {
+      return {
+        requiresConfirmation: false,
+        risk: 'high',
+        reason: '服务端已选定远程设备并下发 execute_shell device grant，命令由 Device RPC 直接转发。',
+      };
+    }
     if (looksDangerousShell(command)) {
       return { requiresConfirmation: true, risk: 'high', reason: '命令可能删除、覆盖、关闭系统或下载并执行脚本。' };
     }
@@ -150,7 +157,7 @@ export function classifyLocalToolRisk(
   return { requiresConfirmation: true, risk: 'medium', reason: '未知工具未声明风险等级，需要用户确认。' };
 }
 
-function isServerAuthorizedRemoteDeviceFileOperation(
+function isServerAuthorizedRemoteDeviceOperation(
   toolName: string,
   operation: DeviceGrantOperation,
   context: ToolExecutionContext,

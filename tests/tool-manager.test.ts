@@ -8,7 +8,6 @@ import { ToolManager } from '../src/tools/tool-manager';
 import { AgentToolExecutor } from '../src/agents/agent-tool-executor';
 import type { Tool, ToolExecutionContext } from '../src/types/tool';
 import type {
-  DeviceGrantOperation,
   ExecutionScope,
   ScopedDeviceGrant,
   ScopedDeviceSelection,
@@ -57,7 +56,7 @@ function catsLocalDevice(overrides: Partial<ScopedLocalDeviceGrant> = {}): Scope
 
 function catsDeviceGrant(
   scope: ExecutionScope,
-  operations: DeviceGrantOperation[],
+  operations: ScopedDeviceGrant['operations'],
   overrides: Partial<ScopedDeviceGrant> = {},
 ): ScopedDeviceGrant {
   return {
@@ -87,7 +86,7 @@ function catsDeviceGrant(
 
 function catsDeviceSelection(
   scope: ExecutionScope,
-  operations: DeviceGrantOperation[],
+  operations: ScopedDeviceGrant['operations'],
   overrides: Partial<ScopedDeviceSelection> = {},
 ): ScopedDeviceSelection {
   return {
@@ -523,7 +522,7 @@ describe('ToolManager', () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-remote-file-'));
     const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
     const executed: string[] = [];
-    const operations: DeviceGrantOperation[] = ['read_file', 'glob', 'grep', 'write_file', 'edit_file'];
+    const operations: ScopedDeviceGrant['operations'] = ['read_file', 'glob', 'grep', 'write_file', 'edit_file'];
     for (const operation of operations) {
       manager.registerTool(fakeTool(operation, async () => {
         executed.push(operation);
@@ -629,6 +628,75 @@ describe('ToolManager', () => {
     assert.equal(edit.ok, true);
     assert.equal(edit.content, 'remote edit_file requested');
     assert.deepEqual(executed, operations);
+    assert.equal(confirmations, 0);
+  });
+
+  test('CatsCo server-authorized remote execute_shell skips local confirmation', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-remote-shell-'));
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    let executed = false;
+    manager.registerTool(fakeTool('execute_shell', async () => {
+      executed = true;
+      return { ok: true, content: 'remote shell requested' };
+    }));
+
+    const channelScope = catsScope({
+      actorUserId: 'usr100',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+      topicId: 'p2p_100_43',
+      deviceOwnerUserId: 'usr100',
+      deviceOwnerSource: 'channel_identity_link',
+      channelSource: 'weixin',
+    });
+    const remoteContext: Partial<ToolExecutionContext> = {
+      surface: 'catscompany',
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      executionScope: channelScope,
+      localDeviceGrant: catsLocalDevice({
+        ownerUserId: 'usr9',
+        bodyId: 'cloud-body',
+        installationId: 'cloud-install',
+        deviceId: 'cloud-install',
+      }),
+      deviceGrants: [catsDeviceGrant(channelScope, ['execute_shell'], {
+        grantId: 'speaker-shell-grant',
+        identitySource: 'channel_identity_link',
+        deviceId: 'speaker-device',
+        deviceDisplayName: 'Speaker Laptop',
+        deviceBodyId: 'speaker-body',
+        deviceInstallationId: 'speaker-install',
+        ownerUserId: 'usr100',
+        actorUserId: 'usr100',
+      })],
+      deviceSelection: catsDeviceSelection(channelScope, ['execute_shell'], {
+        selectedDeviceId: 'speaker-device',
+        selectedDeviceDisplayName: 'Speaker Laptop',
+        selectedDeviceBodyId: 'speaker-body',
+        selectedDeviceInstallationId: 'speaker-install',
+      }),
+      deviceRpc: {
+        executeTool: async () => ({ ok: true, content: 'remote shell ok' }),
+      },
+    };
+    let confirmations = 0;
+
+    const result = await manager.executeTool({
+      id: 'call-remote-shell',
+      type: 'function',
+      function: { name: 'execute_shell', arguments: JSON.stringify({ command: 'echo remote-shell' }) },
+    }, [], {
+      ...remoteContext,
+      confirmToolExecution: async () => {
+        confirmations += 1;
+        return false;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.content, 'remote shell requested');
+    assert.equal(executed, true);
     assert.equal(confirmations, 0);
   });
 

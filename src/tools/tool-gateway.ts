@@ -40,6 +40,7 @@ const REMOTE_DEVICE_RPC_OPERATIONS = new Set<DeviceGrantOperation>([
   'grep',
   'write_file',
   'edit_file',
+  'execute_shell',
 ]);
 
 export function isCatsCoToolGatewayContext(context: ToolExecutionContext): boolean {

@@ -689,7 +689,7 @@ describe('CatsCo ToolGateway', () => {
     if (result.ok) assert.match(result.content, /catsco-shell-ok/);
   });
 
-  test('blocks remote execute_shell for a mobile channel speaker even when selected', async () => {
+  test('routes remote execute_shell for a mobile channel speaker when selected and granted', async () => {
     const root = makeWorkspace();
     const marker = path.join(root, 'should-not-run-locally.txt');
     const channelScope = scope({
@@ -741,14 +741,13 @@ describe('CatsCo ToolGateway', () => {
       },
     }));
 
-    assert.equal(result.ok, false);
-    if (!result.ok) {
-      assert.equal(result.errorCode, 'PERMISSION_DENIED');
-      assert.match(result.message, /execute_shell 还没有开放远程执行/);
-      assert.match(result.message, /查看目录文件请使用 glob/);
-      assert.match(result.message, /创建或覆盖文本文件请使用 write_file/);
-    }
-    assert.equal(calls.length, 0);
+    assert.equal(result.ok, true);
+    assert.equal(result.ok ? result.content : '', 'remote shell ok');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].toolName, 'execute_shell');
+    assert.equal(calls[0].operation, 'execute_shell');
+    assert.equal(calls[0].grant.ownerUserId, 'usr100');
+    assert.equal(calls[0].grant.deviceId, 'speaker-device');
     assert.equal(fs.existsSync(marker), false);
   });
 
