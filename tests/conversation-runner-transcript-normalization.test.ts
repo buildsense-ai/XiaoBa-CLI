@@ -104,6 +104,48 @@ function createMockAI(responses: ChatResponse[]) {
   };
 }
 
+test('runner exposes assistant text before tool calls separately from working status', async () => {
+  const responses = [
+    {
+      content: '我先查一下天气。',
+      toolCalls: [makeToolCall('call_1', 'execute_shell', { command: 'echo weather' })],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+      },
+    },
+    makeFinalResponse('天气结果已整理。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'execute_shell',
+      description: 'run command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }],
+    { execute_shell: 'weather ok' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const assistantText: string[] = [];
+  const thinking: string[] = [];
+
+  const result = await runner.run([{ role: 'user', content: '查天气' }], {
+    onAssistantText: text => assistantText.push(text),
+    onThinking: text => thinking.push(text),
+  });
+
+  assert.deepEqual(assistantText, ['我先查一下天气。']);
+  assert.deepEqual(thinking, []);
+  assert.equal(result.response, '天气结果已整理。');
+});
+
 test('runner normalizes send_text tool into assistant transcript without tool_result pollution', async () => {
   const responses = [
     makeToolResponse(makeToolCall('call_1', 'send_text', { text: '老师好！' })),

@@ -621,6 +621,13 @@ export class CatsCompanyBot {
           Logger.warning(`重试提示发送失败: ${err.message}`);
         }
       },
+      onAssistantText: async (text: string) => {
+        try {
+          await this.sender.reply(topic, text);
+        } catch (err: any) {
+          Logger.warning(`前端通知发送失败 (assistant_text): ${err.message}`);
+        }
+      },
       onThinking: async (thinking: string) => {
         try {
           await this.sender.sendThinking(topic, thinking);

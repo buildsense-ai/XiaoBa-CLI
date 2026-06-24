@@ -71,6 +71,7 @@ export type SystemPromptProvider = () => Promise<string> | string;
 /** 会话回调（由适配层提供） */
 export interface SessionCallbacks {
   onText?: (text: string) => void;
+  onAssistantText?: (text: string) => void | Promise<void>;
   onThinking?: (thinking: string) => void | Promise<void>;
   onToolStart?: (name: string, toolUseId: string, input: any) => void;
   onToolEnd?: (name: string, toolUseId: string, result: string) => void;

@@ -534,7 +534,7 @@ describe('CatsCo content blocks', () => {
   });
 
   test('plain text messages are processed immediately without attachment coalesce wait', async () => {
-    const { bot, handledTurns, sentThinking } = createProcessHarness();
+    const { bot, handledTurns, sentThinking, replies } = createProcessHarness();
 
     await (bot as any).onMessage({
       topic: 'p2p_1_2',
@@ -548,7 +548,13 @@ describe('CatsCo content blocks', () => {
     assert.strictEqual(handledTurns.length, 1);
     assert.strictEqual(handledTurns[0].userMessage, '这条纯文本不应该等待附件');
     assert.strictEqual(typeof handledTurns[0].options.callbacks?.onThinking, 'function');
+    assert.strictEqual(typeof handledTurns[0].options.callbacks?.onAssistantText, 'function');
+    await handledTurns[0].options.callbacks.onAssistantText('工具调用前的可见回复');
     await handledTurns[0].options.callbacks.onThinking('纯文本压缩状态');
+    assert.deepStrictEqual(
+      replies.map(({ topic, text }) => ({ topic, text })),
+      [{ topic: 'p2p_1_2', text: '工具调用前的可见回复' }],
+    );
     assert.deepStrictEqual(
       sentThinking.map(({ topic, text }) => ({ topic, text })),
       [{ topic: 'p2p_1_2', text: '纯文本压缩状态' }],
