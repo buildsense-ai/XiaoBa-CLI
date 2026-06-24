@@ -2,7 +2,6 @@ import { ContentBlock, Message } from '../types';
 import { ToolDefinition, ToolSurface } from '../types/tool';
 import {
   PromptModeId,
-  detectPromptMode,
   normalizePromptModeId,
 } from '../runtime/prompt-modes';
 
@@ -18,7 +17,6 @@ export type TransientIntentKind =
 export interface TransientTurnIntent {
   kind: TransientIntentKind;
   latestUserText: string;
-  detectedMode?: PromptModeId;
   fixedMode?: PromptModeId;
   actionable: boolean;
   workspaceRelevant: boolean;
@@ -30,7 +28,6 @@ export interface TransientTurnIntent {
 
 export interface TurnContextTransientPolicy {
   intent: TransientTurnIntent;
-  injectModeHint: boolean;
   injectSkillsList: boolean;
   skillNames?: string[];
 }
@@ -111,15 +108,10 @@ const CONCEPTUAL_SIGNAL =
 
 export function resolveTurnContextTransientPolicy(messages: Message[]): TurnContextTransientPolicy {
   const intent = analyzeTransientIntent(messages);
-  const injectModeHint = Boolean(
-    intent.detectedMode
-    && intent.detectedMode !== intent.fixedMode,
-  );
   const injectSkillsList = intent.skillRelevant;
 
   return {
     intent,
-    injectModeHint,
     injectSkillsList,
     ...(intent.skillNames ? { skillNames: intent.skillNames } : {}),
   };
@@ -178,7 +170,6 @@ export function resolveProviderTransientPolicy(
 
 export function analyzeTransientIntent(messages: Message[]): TransientTurnIntent {
   const latestUserText = findLatestRealUserText(messages);
-  const detected = latestUserText ? detectPromptMode(latestUserText) : undefined;
   const fixedMode = detectFixedPromptMode(messages);
   const recentToolContext = hasRecentToolExchange(messages);
   const hasActionSignal = ACTION_SIGNAL.test(latestUserText);
@@ -211,13 +202,11 @@ export function analyzeTransientIntent(messages: Message[]): TransientTurnIntent
   const workspaceRelevant = !conceptualOnly && (
     hasWorkspaceSignal
     || hasToolActionSignal
-    || (hasOfficeSignal && (!detected?.mode || detected.mode === 'office'))
+    || hasOfficeSignal
     || hasBrowserSignal
     || recentToolContext
-    || (detected?.mode === 'coding-agent' && actionable)
   );
   const skillNames = selectSkillNames({
-    detectedMode: detected?.mode,
     hasWorkspaceSignal,
     hasOfficeSignal,
     hasBrowserSignal,
@@ -230,16 +219,16 @@ export function analyzeTransientIntent(messages: Message[]): TransientTurnIntent
     || hasBrowserSignal
     || hasMemorySignal
     || hasSelfEvolutionSignal
-    || (detected?.mode === 'coding-agent' && actionable)
-    || (detected?.mode === 'office' && actionable);
+    || (hasWorkspaceSignal && actionable)
+    || (hasOfficeSignal && actionable);
   const complexWork = !conceptualOnly && (
     COMPLEX_WORK_SIGNAL.test(latestUserText)
     || (latestUserText.length >= 120 && actionable)
   );
 
   const kind = resolveIntentKind({
-    detectedMode: detected?.mode,
     hasSkillSignal,
+    hasOfficeSignal,
     hasBrowserSignal,
     hasMemorySignal,
     hasSelfEvolutionSignal,
@@ -250,7 +239,6 @@ export function analyzeTransientIntent(messages: Message[]): TransientTurnIntent
   return {
     kind,
     latestUserText,
-    ...(detected?.mode ? { detectedMode: detected.mode } : {}),
     ...(fixedMode ? { fixedMode } : {}),
     actionable,
     workspaceRelevant,
@@ -272,18 +260,15 @@ export function detectFixedPromptMode(messages: Message[]): PromptModeId | undef
 }
 
 function resolveIntentKind(options: {
-  detectedMode?: PromptModeId;
   hasSkillSignal: boolean;
+  hasOfficeSignal: boolean;
   hasBrowserSignal: boolean;
   hasMemorySignal: boolean;
   hasSelfEvolutionSignal: boolean;
   workspaceRelevant: boolean;
   actionable: boolean;
 }): TransientIntentKind {
-  if (options.detectedMode === 'coding-agent') return 'coding';
-  if (options.detectedMode === 'office') return 'office';
-  if (options.detectedMode === 'classroom') return 'classroom';
-  if (options.detectedMode === 'team-assistant') return 'team';
+  if (options.hasOfficeSignal) return 'office';
   if (
     options.hasSkillSignal
     || options.hasBrowserSignal
@@ -297,7 +282,6 @@ function resolveIntentKind(options: {
 }
 
 function selectSkillNames(options: {
-  detectedMode?: PromptModeId;
   hasWorkspaceSignal: boolean;
   hasOfficeSignal: boolean;
   hasBrowserSignal: boolean;
@@ -311,14 +295,10 @@ function selectSkillNames(options: {
   }
 
   const names = new Set<string>();
-  if (options.detectedMode === 'coding-agent' && options.actionable) names.add('coding-context');
   if (options.hasWorkspaceSignal && options.actionable) names.add('coding-context');
   if (
     options.actionable
-    && (
-      options.detectedMode === 'office'
-      || (options.hasOfficeSignal && !options.detectedMode)
-    )
+    && options.hasOfficeSignal
   ) names.add('officecli');
   if (options.hasBrowserSignal) names.add('agent-browser');
   if (options.hasMemorySignal) names.add('memory-search');

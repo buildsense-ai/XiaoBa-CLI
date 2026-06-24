@@ -18,6 +18,7 @@ import { UpdatePlanTool } from './update-plan-tool';
 import { RecordDecisionTool } from './record-decision-tool';
 import { ShareSkillHubSkillTool } from './share-skillhub-skill-tool';
 import { AskParentTool } from './ask-parent-tool';
+import { PromptModeTool } from './prompt-mode-tool';
 import { DEFAULT_TOOL_NAMES } from './default-tool-names';
 import { mergeToolExecutionContext } from '../utils/tool-context';
 import { confirmLocalToolExecution } from './local-tool-risk';
@@ -93,6 +94,7 @@ export class ToolManager implements ToolExecutor {
       new UpdatePlanTool(),
       new RecordDecisionTool(),
       new ShareSkillHubSkillTool(),
+      new PromptModeTool(),
       new SkillTool(),
     ];
 

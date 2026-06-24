@@ -1,23 +1,52 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
-import { TRANSIENT_MODE_HINT_PREFIX, detectPromptMode } from '../src/runtime/prompt-modes';
+import {
+  TRANSIENT_FIXED_PROMPT_MODE_PREFIX,
+  TRANSIENT_PROMPT_MODES_LIST_PREFIX,
+  buildPromptModesListMessage,
+  clearPromptModeRegistryCache,
+  findFixedPromptModeState,
+  findPreviousPromptModeState,
+  listPromptModeDefinitions,
+  loadPromptModePrompt,
+} from '../src/runtime/prompt-modes';
 import type { Message } from '../src/types';
 
 describe('prompt modes', () => {
-  test('detects task modes from user text', () => {
-    assert.equal(detectPromptMode('帮我看一下这个 npm build 报错')?.mode, 'coding-agent');
-    assert.equal(detectPromptMode('帮老师生成一份课堂练习题')?.mode, 'classroom');
-    assert.equal(detectPromptMode('把这个 PPT 报告整理一下')?.mode, 'office');
-    assert.equal(detectPromptMode('整理会议纪要和任务负责人')?.mode, 'team-assistant');
-    assert.equal(detectPromptMode('今天天气怎么样'), undefined);
+  test('loads prompt modes from mode files instead of TypeScript enums', () => {
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-prompt-modes-'));
+    try {
+      fs.mkdirSync(path.join(testRoot, 'modes'), { recursive: true });
+      fs.writeFileSync(path.join(testRoot, 'modes', 'research.md'), [
+        '---',
+        'id: research',
+        'name: Research mode',
+        'description: Literature and citation work',
+        '---',
+        '',
+        'Use careful research behavior.',
+      ].join('\n'), 'utf-8');
+      clearPromptModeRegistryCache();
+
+      assert.deepEqual(listPromptModeDefinitions(testRoot).map(mode => mode.id), ['research']);
+      assert.match(buildPromptModesListMessage({ promptsDir: testRoot })?.content || '', /research: Research mode/);
+      assert.match(loadPromptModePrompt(testRoot, 'research') || '', /\[mode:research\]/);
+      assert.match(loadPromptModePrompt(testRoot, 'research') || '', /Use careful research behavior/);
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true });
+      clearPromptModeRegistryCache();
+    }
   });
 
-  test('injects dynamic mode hint as transient user context, not system', async () => {
+  test('injects prompt mode list as transient system context, not a guessed mode', async () => {
     const builder = new TurnContextBuilder();
     const durableMessages: Message[] = [
       { role: 'system', content: 'base system' },
-      { role: 'user', content: '帮我看一下这个项目为什么测试失败' },
+      { role: 'user', content: '帮我看一下这个 npm build 报错' },
     ];
 
     const result = await builder.build({
@@ -30,25 +59,112 @@ describe('prompt modes', () => {
       } as any,
     });
 
-    const modeHint = result.messages.find(message => (
-      message.__injected
-      && message.role === 'user'
-      && typeof message.content === 'string'
-      && message.content.startsWith(TRANSIENT_MODE_HINT_PREFIX)
-    ));
-
-    assert.ok(modeHint);
-    assert.match(String(modeHint.content), /Matched mode: coding-agent/);
-    assert.equal(result.messages.some(message => (
+    const modeList = result.messages.find(message => (
       message.role === 'system'
       && typeof message.content === 'string'
-      && message.content.startsWith(TRANSIENT_MODE_HINT_PREFIX)
-    )), false);
+      && message.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
+    ));
+
+    assert.ok(modeList);
+    assert.match(String(modeList.content), /Available prompt modes/);
+    assert.match(String(modeList.content), /coding-agent: 工程协作模式/);
+    assert.match(String(modeList.content), /call the prompt_mode tool/);
+    assert.doesNotMatch(String(modeList.content), /Matched aliases:/);
+    assert.doesNotMatch(String(modeList.content), /Candidate mode:/);
 
     const durable = builder.removeTransientMessages(result.messages);
     assert.equal(durable.some(message => (
       typeof message.content === 'string'
-      && message.content.startsWith(TRANSIENT_MODE_HINT_PREFIX)
+      && message.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
+    )), false);
+  });
+
+  test('injects previously active prompt mode as facts, not an automatic decision', async () => {
+    const builder = new TurnContextBuilder();
+    const durableMessages: Message[] = [
+      { role: 'system', content: 'base system' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'call_mode',
+          type: 'function',
+          function: {
+            name: 'prompt_mode',
+            arguments: JSON.stringify({ mode: 'coding-agent' }),
+          },
+        }],
+      },
+      {
+        role: 'tool',
+        name: 'prompt_mode',
+        tool_call_id: 'call_mode',
+        content: 'Prompt mode "coding-agent" loaded.\n\n[mode:coding-agent]\nfull instructions',
+      },
+      { role: 'assistant', content: '我看一下。' },
+      { role: 'user', content: '继续' },
+    ];
+
+    const previous = findPreviousPromptModeState(durableMessages);
+    assert.equal(previous?.mode, 'coding-agent');
+    assert.equal(previous?.turnsSinceLoaded, 1);
+
+    const result = await builder.build({
+      sessionKey: 'cli',
+      durableMessages,
+      runtimeFeedback: [],
+      skillRuntime: {
+        reloadSkills: async () => {},
+        buildSkillsListMessage: () => undefined,
+      } as any,
+    });
+
+    const modeList = result.messages.find(message => (
+      message.role === 'system'
+      && typeof message.content === 'string'
+      && message.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
+    ));
+
+    assert.ok(modeList);
+    assert.match(String(modeList.content), /Previously active prompt mode: coding-agent/);
+    assert.match(String(modeList.content), /last loaded 1 user turn ago/);
+    assert.match(String(modeList.content), /Use the previous mode only if/);
+    assert.match(String(modeList.content), /If the user changed task, ignore it/);
+  });
+
+  test('fixed prompt mode suppresses selectable mode list', async () => {
+    const builder = new TurnContextBuilder();
+    const durableMessages: Message[] = [
+      { role: 'system', content: 'base system\n[mode:coding-agent]\nfixed coding instructions' },
+      { role: 'user', content: '帮我整理一个 PPT' },
+    ];
+
+    const fixed = findFixedPromptModeState(durableMessages);
+    assert.equal(fixed?.mode, 'coding-agent');
+
+    const result = await builder.build({
+      sessionKey: 'cli',
+      durableMessages,
+      runtimeFeedback: [],
+      skillRuntime: {
+        reloadSkills: async () => {},
+        buildSkillsListMessage: () => undefined,
+      } as any,
+    });
+
+    const fixedMessage = result.messages.find(message => (
+      message.role === 'system'
+      && typeof message.content === 'string'
+      && message.content.startsWith(TRANSIENT_FIXED_PROMPT_MODE_PREFIX)
+    ));
+
+    assert.ok(fixedMessage);
+    assert.match(String(fixedMessage.content), /Fixed prompt mode active: coding-agent/);
+    assert.match(String(fixedMessage.content), /already part of the system prompt/);
+    assert.equal(result.messages.some(message => (
+      message.role === 'system'
+      && typeof message.content === 'string'
+      && message.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
     )), false);
   });
 });

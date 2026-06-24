@@ -1,5 +1,5 @@
 import { RuntimeProfile } from './runtime-profile';
-import { loadPromptModePrompt, normalizePromptModeId } from './prompt-modes';
+import { loadPromptModePrompt } from './prompt-modes';
 import { readRequiredPromptFile, renderPromptTemplate } from '../utils/prompt-template';
 
 export interface ComposeSystemPromptOptions {
@@ -23,7 +23,7 @@ export class PromptComposer {
       || ''
     ).trim();
     const platform = (env.CURRENT_PLATFORM || '').trim();
-    const promptMode = normalizePromptModeId(env.XIAOBA_PROMPT_MODE);
+    const promptMode = (env.XIAOBA_PROMPT_MODE || '').trim();
 
     return this.composeSystemPromptParts({
       promptsDir: options.promptsDir,

@@ -23,8 +23,12 @@ import {
 } from './runtime-context-builder';
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
 import {
-  TRANSIENT_MODE_HINT_PREFIX,
-  buildTransientModeHintFromMessages,
+  TRANSIENT_FIXED_PROMPT_MODE_PREFIX,
+  TRANSIENT_PROMPT_MODES_LIST_PREFIX,
+  buildFixedPromptModeMessage,
+  buildPromptModesListMessage,
+  findFixedPromptModeState,
+  findPreviousPromptModeState,
 } from '../runtime/prompt-modes';
 import { TRANSIENT_TOOL_GUIDANCE_PREFIX } from './transient-tool-guidance';
 import { resolveTurnContextTransientPolicy } from './transient-injection-policy';
@@ -65,11 +69,8 @@ export class TurnContextBuilder {
     this.injectRuntimeFeedback(contextMessages, params.runtimeFeedback);
     this.injectPlanStatus(contextMessages, params.planRuntime);
     this.injectSubAgentStatus(contextMessages, params.sessionKey);
+    this.injectPromptModesList(contextMessages);
     const transientPolicy = resolveTurnContextTransientPolicy(contextMessages);
-    if (transientPolicy.injectModeHint) {
-      this.injectModeHint(contextMessages);
-    }
-
     if (transientPolicy.injectSkillsList) {
       await params.skillRuntime.reloadSkills();
       const skillsListMsg = params.skillRuntime.buildSkillsListMessage({
@@ -92,12 +93,17 @@ export class TurnContextBuilder {
       if (
         msg.__injected
         && typeof msg.content === 'string'
-        && msg.content.startsWith(TRANSIENT_MODE_HINT_PREFIX)
+        && msg.content.startsWith(TRANSIENT_TOOL_GUIDANCE_PREFIX)
       ) return false;
       if (
-        msg.__injected
+        msg.role === 'system'
         && typeof msg.content === 'string'
-        && msg.content.startsWith(TRANSIENT_TOOL_GUIDANCE_PREFIX)
+        && msg.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
+      ) return false;
+      if (
+        msg.role === 'system'
+        && typeof msg.content === 'string'
+        && msg.content.startsWith(TRANSIENT_FIXED_PROMPT_MODE_PREFIX)
       ) return false;
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
@@ -152,10 +158,18 @@ export class TurnContextBuilder {
     this.insertBeforeLastUser(messages, statusMessage);
   }
 
-  private injectModeHint(messages: Message[]): void {
-    const modeHint = buildTransientModeHintFromMessages(messages);
-    if (!modeHint) return;
-    this.insertBeforeLastUser(messages, modeHint);
+  private injectPromptModesList(messages: Message[]): void {
+    const fixedMode = findFixedPromptModeState(messages);
+    if (fixedMode) {
+      this.insertBeforeLastUser(messages, buildFixedPromptModeMessage(fixedMode));
+      return;
+    }
+
+    const modeList = buildPromptModesListMessage({
+      previousMode: findPreviousPromptModeState(messages),
+    });
+    if (!modeList) return;
+    this.insertBeforeLastUser(messages, modeList);
   }
 
   private extractRuntimeFeedback(messages: Message[]): string[] {

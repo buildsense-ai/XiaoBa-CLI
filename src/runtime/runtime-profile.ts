@@ -2,6 +2,7 @@ import * as path from 'path';
 import { ChatConfig } from '../types';
 import { DEFAULT_TOOL_NAMES } from '../tools/default-tool-names';
 import { PromptModeId, normalizePromptModeId } from './prompt-modes';
+import { getPromptBaseDir } from '../utils/prompt-template';
 
 export type RuntimeSurface = 'cli' | 'feishu' | 'catscompany' | 'weixin' | 'agent' | 'unknown';
 
@@ -70,7 +71,7 @@ export function resolveDefaultRuntimeProfile(
   const displayName = (options.displayName || envDisplayName || 'CatsCo').trim();
   const surface = options.surface ?? resolveSurfaceFromEnv(env);
   const platform = env.CURRENT_PLATFORM || undefined;
-  const promptMode = normalizePromptModeId(env.XIAOBA_PROMPT_MODE);
+  const promptMode = normalizePromptModeId(env.XIAOBA_PROMPT_MODE, getPromptBaseDir(env));
 
   return {
     id: options.id ?? `xiaoba-${surface}`,

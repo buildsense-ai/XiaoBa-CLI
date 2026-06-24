@@ -42,7 +42,6 @@ test('plain chat does not request transient mode, skills, cwd, tool guidance, or
   });
 
   assert.equal(turnPolicy.intent.kind, 'plain-chat');
-  assert.equal(turnPolicy.injectModeHint, false);
   assert.equal(turnPolicy.injectSkillsList, false);
   assert.equal(providerPolicy.injectEnvironment, false);
   assert.equal(providerPolicy.injectToolGuidance, false);
@@ -64,8 +63,7 @@ test('coding work requests get workspace and tool guidance plus a narrow coding 
     surface: 'cli',
   });
 
-  assert.equal(turnPolicy.intent.kind, 'coding');
-  assert.equal(turnPolicy.injectModeHint, true);
+  assert.equal(turnPolicy.intent.kind, 'workspace');
   assert.equal(turnPolicy.injectSkillsList, true);
   assert.deepEqual(turnPolicy.skillNames, ['coding-context']);
   assert.equal(providerPolicy.injectEnvironment, true);
@@ -89,7 +87,6 @@ test('fixed system mode suppresses duplicate auto mode hints but keeps coding to
   });
 
   assert.equal(turnPolicy.intent.fixedMode, 'coding-agent');
-  assert.equal(turnPolicy.injectModeHint, false);
   assert.equal(turnPolicy.injectSkillsList, true);
   assert.equal(providerPolicy.injectEnvironment, true);
   assert.equal(providerPolicy.injectToolGuidance, true);
