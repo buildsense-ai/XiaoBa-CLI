@@ -14,6 +14,7 @@ export const SESSION_KEY_V2_PREFIX = 'session:v2';
 export interface CreateSessionRouteInput {
   source: MessageSource;
   topicId: string;
+  sessionTopicId?: string;
   topicType: MessageTopicType;
   actorUserId: string;
   agentId?: string;
@@ -38,11 +39,12 @@ export function createSessionRoute(input: CreateSessionRouteInput): SessionRoute
   const topicType = normalizeTopicType(input.topicType);
   const actorUserId = normalizeId(input.actorUserId) || 'unknown_actor';
   const topicId = normalizeId(input.topicId) || actorUserId;
+  const sessionTopicId = normalizeId(input.sessionTopicId) || topicId;
   const agentId = normalizeOptionalId(input.agentId);
   const agentBodyId = normalizeOptionalId(input.agentBodyId);
   const identityTrust = input.identityTrust || 'legacy_context';
   const identitySource = normalizeOptionalId(input.identitySource);
-  const sessionKey = buildSessionKeyV2({ source, topicType, topicId, agentId });
+  const sessionKey = buildSessionKeyV2({ source, topicType, topicId: sessionTopicId, agentId });
   const legacySessionKey = normalizeOptionalId(input.legacySessionKey);
 
   return {
@@ -72,10 +74,28 @@ export function createSessionRoute(input: CreateSessionRouteInput): SessionRoute
   };
 }
 
+export function buildCatsCoSessionTopicId(
+  topicType: MessageTopicType,
+  topicId: string,
+  actorUserId: string,
+): string {
+  const normalizedTopicId = normalizeId(topicId) || 'unknown_topic';
+  const normalizedActorUserId = normalizeId(actorUserId);
+  if (normalizeTopicType(topicType) === 'group' && normalizedActorUserId) {
+    return `${normalizedTopicId}:actor:${normalizedActorUserId}`;
+  }
+  return normalizedTopicId;
+}
+
 export function createCatsCoSessionRoute(envelope: MessageEnvelope): SessionRoute {
   return createSessionRoute({
     source: 'catscompany',
     topicId: envelope.topicId,
+    sessionTopicId: buildCatsCoSessionTopicId(
+      envelope.topicType,
+      envelope.topicId,
+      envelope.actorUserId,
+    ),
     topicType: envelope.topicType,
     actorUserId: envelope.actorUserId,
     agentId: envelope.agentId,

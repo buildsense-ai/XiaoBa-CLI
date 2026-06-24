@@ -1,5 +1,6 @@
 import type { ExecutionScope, IdentityTrustLevel, MessageEnvelope, MessageTopicType } from '../types/session-identity';
 import {
+  buildCatsCoSessionTopicId,
   buildLegacyCatsCoSessionKey,
   createSessionRoute,
 } from '../core/session-router';
@@ -90,6 +91,7 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
   const route = createSessionRoute({
     source: 'catscompany',
     topicId,
+    sessionTopicId: buildCatsCoSessionTopicId(resolvedTopicType, topicId, actorUserId),
     topicType: resolvedTopicType,
     actorUserId,
     agentId,

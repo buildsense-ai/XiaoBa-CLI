@@ -67,7 +67,7 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
     });
     const scope = createExecutionScope(envelope);
 
-    assert.equal(envelope.sessionKey, 'session:v2:catscompany:group:grp_80:agent:usr43');
+    assert.equal(envelope.sessionKey, 'session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43');
     assert.equal(envelope.legacySessionKey, 'cc_group:grp_80');
     assert.equal(scope.topicType, 'group');
     assert.equal(scope.actorUserId, 'usr7');
