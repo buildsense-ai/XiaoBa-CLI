@@ -56,6 +56,12 @@ export interface SessionRuntimeLogEntry {
   session_type: string;
   level: string;
   message: string;
+  event?: SessionRuntimeLogEvent;
+}
+
+export interface SessionRuntimeLogEvent {
+  type: string;
+  payload?: Record<string, unknown>;
 }
 
 export interface SessionSubAgentEventLogEntry {

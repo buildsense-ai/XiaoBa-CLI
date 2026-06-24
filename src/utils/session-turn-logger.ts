@@ -6,6 +6,7 @@ import type {
   SessionPromptTraceLogEntry,
   SessionPromptTurnLog,
   SessionRuntimeLogEntry,
+  SessionRuntimeLogEvent,
   SessionSubAgentEventLogEntry,
   SessionToolCallLog,
   SessionTurnLogEntry,
@@ -20,14 +21,22 @@ export type {
   SessionLogEntry,
   SessionPromptTurnLog,
   SessionRuntimeLogEntry,
+  SessionRuntimeLogEvent,
   SessionSubAgentEventLogEntry,
   SessionToolCallLog,
   SessionTurnLogEntry,
 } from './session-log-schema';
 
 const SESSION_LOG_DIR = path.resolve('logs/sessions');
-const MAX_TOOL_RESULT_LENGTH = Number(process.env.XIAOBA_SESSION_TOOL_RESULT_LIMIT || 10000);
+const MAX_TOOL_RESULT_LENGTH = parseOptionalLimit(process.env.XIAOBA_SESSION_TOOL_RESULT_LIMIT);
 const MAX_RUNTIME_FEEDBACK_LENGTH = Number(process.env.XIAOBA_SESSION_RUNTIME_FEEDBACK_LIMIT || 4000);
+
+function parseOptionalLimit(raw: string | undefined): number | null {
+  if (!raw || !raw.trim()) return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
 
 export interface LogTurnOptions {
   runtimeFeedback?: string[];
@@ -118,7 +127,7 @@ export class SessionTurnLogger {
     this.appendLog(entry);
   }
 
-  logRuntime(level: string, message: string): void {
+  logRuntime(level: string, message: string, event?: SessionRuntimeLogEvent): void {
     const runtimeEntry: SessionRuntimeLogEntry = {
       entry_type: 'runtime',
       timestamp: new Date().toISOString(),
@@ -126,6 +135,7 @@ export class SessionTurnLogger {
       session_type: this.sessionType,
       level,
       message,
+      ...(event && { event }),
     };
     this.appendLog(runtimeEntry);
   }
@@ -167,7 +177,8 @@ export class SessionTurnLogger {
       .map((block, idx) => `image_${idx}`);
   }
 
-  private truncate(text: string, maxLength: number): string {
+  private truncate(text: string, maxLength: number | null): string {
+    if (maxLength === null) return text;
     if (text.length <= maxLength) return text;
     return text.slice(0, maxLength) + '... [truncated]';
   }

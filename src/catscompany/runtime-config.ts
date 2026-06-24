@@ -136,6 +136,7 @@ export function resolveCatsCoRuntimeConfig(
     ? {
       serverUrl,
       apiKey,
+      botUid,
       bodyId,
       installationId,
       ownerUserId,

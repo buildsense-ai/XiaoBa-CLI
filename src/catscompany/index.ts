@@ -27,6 +27,7 @@ import { GrepTool } from '../tools/grep-tool';
 import { WriteTool } from '../tools/write-tool';
 import { EditTool } from '../tools/edit-tool';
 import { ShellTool } from '../tools/bash-tool';
+import { resolveCommonDirectoryToolArgs } from '../tools/common-directory-tool';
 import {
   isRemoteDeviceRpcTool,
   normalizeDeviceRpcToolResultForTransport,
@@ -77,6 +78,7 @@ const HIDDEN_CATS_TOOL_PROGRESS = new Set([
 const SUBAGENT_TERMINAL_EVENTS = new Set(['agent_completed', 'agent_failed', 'agent_stopped']);
 export const CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES: DeviceGrantOperation[] = [
   'read_file',
+  'resolve_common_directory',
   'glob',
   'grep',
   'write_file',
@@ -87,6 +89,18 @@ export const CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES: DeviceGrantOperation[
 
 function shouldHideCatsToolProgress(toolName: string): boolean {
   return HIDDEN_CATS_TOOL_PROGRESS.has(toolName);
+}
+
+export function isCatsCompanyPassiveAcknowledgement(text: string): boolean {
+  const compact = String(text || '')
+    .toLowerCase()
+    .replace(/[\s。.!！,，、~～]+/g, '');
+  if (!compact || compact.length > 18) return false;
+  if (/[?？]/.test(text)) return false;
+
+  const ack = '(?:嗯|嗯嗯|收到|明白|懂了)';
+  const thanks = '(?:谢谢|谢了|谢谢啦|辛苦了|感谢|thx|thanks)';
+  return new RegExp(`^(?:${ack}|${thanks}|${ack}${thanks}|${thanks}${ack})$`, 'i').test(compact);
 }
 
 function compactCatsSubAgentSummary(text: string, maxLength = 4000): string {
@@ -138,6 +152,7 @@ export class CatsCompanyBot {
   };
 
   constructor(config: CatsCompanyConfig) {
+    this.botUid = String(config.botUid || '').trim() || null;
     const localDeviceId = config.installationId || config.bodyId;
     const deviceRegistration = localDeviceId
       ? {
@@ -198,7 +213,7 @@ export class CatsCompanyBot {
 
     // 注册事件
     this.bot.on('ready', (info: { uid: string; name: string }) => {
-      this.botUid = info.uid;
+      this.botUid = String(info.uid || '').trim() || this.botUid;
       const botName = info.name.trim() || '(未设置)';
       this.runtimeProfile.displayName = botName;
       this.runtimeProfile.prompt.displayName = botName;
@@ -351,6 +366,8 @@ export class CatsCompanyBot {
     switch (operation) {
       case 'read_file':
         return new ReadTool().execute(args, context);
+      case 'resolve_common_directory':
+        return resolveCommonDirectoryToolArgs(args);
       case 'glob':
         return new GlobTool().execute(args, context);
       case 'grep':
@@ -451,7 +468,7 @@ export class CatsCompanyBot {
     const operation = this.normalizeDeviceRpcOperation(request.operation);
     const toolName = String(request.tool_name || operation || '').trim();
     if (!operation || !isRemoteDeviceRpcTool(toolName, operation)) {
-      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, glob, grep, write_file, edit_file, and execute_shell.' };
+      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, resolve_common_directory, glob, grep, write_file, edit_file, and execute_shell.' };
     }
 
     const requiredFields: Array<[keyof CatsDeviceRpcMessage, string]> = [
@@ -483,6 +500,7 @@ export class CatsCompanyBot {
     const operation = String(value || '').trim();
     if (
       operation === 'read_file'
+      || operation === 'resolve_common_directory'
       || operation === 'glob'
       || operation === 'grep'
       || operation === 'write_file'
@@ -569,6 +587,7 @@ export class CatsCompanyBot {
           await this.sender.reply(topic, text);
         } catch (err: any) {
           Logger.warning(`消息发送失败 (reply): ${err.message}`);
+          throw err;
         }
       },
       sendFile: async (_targetTopic: string, filePath: string, fileName: string) => {
@@ -600,6 +619,13 @@ export class CatsCompanyBot {
           await this.sender.reply(topic, `⚠️ 大模型请求失败，正在重试 (${attempt}/${maxRetries})...`);
         } catch (err: any) {
           Logger.warning(`重试提示发送失败: ${err.message}`);
+        }
+      },
+      onAssistantText: async (text: string) => {
+        try {
+          await this.sender.reply(topic, text);
+        } catch (err: any) {
+          Logger.warning(`前端通知发送失败 (assistant_text): ${err.message}`);
         }
       },
       onThinking: async (thinking: string) => {
@@ -737,13 +763,19 @@ export class CatsCompanyBot {
       if (result.handled) return;
     }
 
+    const messageFiles = msg.files && msg.files.length > 0 ? msg.files : (msg.file ? [msg.file] : []);
+    const hasPendingAttachments = (this.pendingAttachments.get(key)?.length || 0) > 0;
+    if (isCatsCompanyPassiveAcknowledgement(msg.text) && messageFiles.length === 0 && !hasPendingAttachments) {
+      Logger.info(`[${key}] 收到纯确认/感谢消息，已静默跳过推理`);
+      return;
+    }
+
     Logger.info(`[${key}] 收到消息: ${msg.text.slice(0, 50)}...`);
 
     let userMessage: string | import('../types').ContentBlock[] = msg.text;
     const runtimeFeedback: RuntimeFeedbackInput[] = [];
     let localFileGrants: ScopedLocalFileGrant[] = [];
 
-    const messageFiles = msg.files && msg.files.length > 0 ? msg.files : (msg.file ? [msg.file] : []);
     if (messageFiles.length > 0) {
       const attachments: PendingAttachment[] = [];
       for (const file of messageFiles) {
@@ -833,7 +865,7 @@ export class CatsCompanyBot {
       // 最终文本回复
       if (result.visibleToUser && result.text) {
         try {
-          await this.sender.sendText(msg.topic, result.text);
+          await this.sender.reply(msg.topic, result.text);
         } catch (err: any) {
           Logger.warning(`前端通知发送失败 (text): ${err.message}`);
         }
@@ -1007,7 +1039,7 @@ export class CatsCompanyBot {
         }
       } else if (result.visibleToUser && result.text) {
         try {
-          await this.sender.sendText(topic, result.text);
+          await this.sender.reply(topic, result.text);
         } catch (err: any) {
           Logger.warning(`子智能体结果回复发送失败: ${err.message}`);
         }
@@ -1220,7 +1252,7 @@ export class CatsCompanyBot {
         }
       } else if (result.text !== BUSY_MESSAGE && result.visibleToUser && result.text) {
         try {
-          await this.sender.sendText(msg.topic, result.text);
+          await this.sender.reply(msg.topic, result.text);
         } catch (err: any) {
           Logger.warning(`队列消息回复发送失败: ${err.message}`);
         }

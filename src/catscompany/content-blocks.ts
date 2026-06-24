@@ -3,7 +3,6 @@
  * 用于 code mode 的 working process 展示。
  *
  * 映射规则：
- * - assistant.content（有 tool_calls 时）→ thinking block
  * - assistant.tool_calls[i]              → tool_use block
  * - tool message                         → tool_result block
  * - 最终 assistant.content（无 tool_calls）不提取（属于最终回复）
@@ -37,11 +36,6 @@ export function extractContentBlocks(newMessages: Message[]): CatsContentBlock[]
   for (const msg of newMessages) {
     if (msg.role === 'assistant') {
       const hasToolCalls = msg.tool_calls && msg.tool_calls.length > 0;
-
-      // assistant 的文本内容（有 tool_calls 时视为 thinking）
-      if (hasToolCalls && msg.content && typeof msg.content === 'string' && msg.content.trim()) {
-        blocks.push({ type: 'thinking', thinking: msg.content.trim() });
-      }
 
       // tool_calls → tool_use blocks
       if (hasToolCalls) {

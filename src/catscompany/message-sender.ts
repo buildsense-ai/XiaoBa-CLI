@@ -5,6 +5,8 @@ import { Logger } from '../utils/logger';
 import { RuntimePlanSnapshot } from '../core/plan-runtime';
 
 const MAX_MSG_LENGTH = 4000;
+const IDEAL_REPLY_SEGMENT_LENGTH = 520;
+const MAX_REPLY_SEGMENT_LENGTH = 1200;
 
 type CatsMessageType = 'thinking' | 'tool_use' | 'tool_result' | 'runtime_plan' | 'text' | 'image' | 'file';
 
@@ -210,7 +212,7 @@ export class MessageSender {
   }
 
   async reply(topic: string, text: string): Promise<void> {
-    const segments = this.splitText(text, MAX_MSG_LENGTH);
+    const segments = this.splitReplyText(text);
     for (const seg of segments) {
       await this.sendText(topic, seg);
     }
@@ -220,6 +222,213 @@ export class MessageSender {
     try {
       this.bot.sendTyping(topic);
     } catch {}
+  }
+
+  private splitReplyText(text: string): string[] {
+    const normalized = String(text || '').trim();
+    if (!normalized) return [];
+    if (this.isStructuredReplyBlock(normalized)) {
+      return this.splitText(normalized, MAX_MSG_LENGTH);
+    }
+    const shortListSegments = this.splitShortListReply(normalized);
+    if (shortListSegments) return shortListSegments;
+    const inlineListSegments = this.splitInlineOrderedReply(normalized);
+    if (inlineListSegments) return inlineListSegments;
+
+    const rawBlocks = normalized.split(/\n{2,}/).map(block => block.trim()).filter(Boolean);
+    if (
+      normalized.length <= IDEAL_REPLY_SEGMENT_LENGTH
+      && (rawBlocks.length <= 1 || normalized.length <= 260)
+    ) {
+      return [normalized];
+    }
+
+    const blocks = rawBlocks
+      .map(block => this.formatReplyBlock(block))
+      .filter(Boolean);
+    if (blocks.length <= 1) {
+      return this.splitReplyBlock(rawBlocks[0] || normalized);
+    }
+
+    if (blocks.length <= 6) {
+      return rawBlocks.flatMap(block => this.splitReplyBlock(block));
+    }
+
+    const segments: string[] = [];
+    let current = '';
+
+    const pushCurrent = () => {
+      const trimmed = current.trim();
+      if (trimmed) segments.push(trimmed);
+      current = '';
+    };
+
+    for (const block of blocks) {
+      if (block.length > MAX_REPLY_SEGMENT_LENGTH) {
+        pushCurrent();
+        segments.push(...this.splitText(
+          block,
+          this.isStructuredReplyBlock(block) ? MAX_MSG_LENGTH : MAX_REPLY_SEGMENT_LENGTH,
+        ));
+        continue;
+      }
+
+      if (!current) {
+        current = block;
+        continue;
+      }
+
+      const candidate = `${current}\n\n${block}`;
+      if (candidate.length > IDEAL_REPLY_SEGMENT_LENGTH && current.length >= 220) {
+        pushCurrent();
+        current = block;
+      } else if (candidate.length > MAX_REPLY_SEGMENT_LENGTH) {
+        pushCurrent();
+        current = block;
+      } else {
+        current = candidate;
+      }
+    }
+
+    pushCurrent();
+    return segments.length > 0 ? segments : [normalized];
+  }
+
+  private splitReplyBlock(block: string): string[] {
+    if (this.isStructuredReplyBlock(block)) {
+      return this.splitText(String(block || '').trim(), MAX_MSG_LENGTH);
+    }
+    const naturalSegments = this.splitNaturalLanguageReply(block);
+    if (naturalSegments) return naturalSegments;
+    return this.splitText(this.formatReplyBlock(block), MAX_REPLY_SEGMENT_LENGTH);
+  }
+
+  private splitShortListReply(text: string): string[] | null {
+    if (text.length > IDEAL_REPLY_SEGMENT_LENGTH) return null;
+    if (/```|~~~/.test(text)) return null;
+
+    const lines = text
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean);
+
+    if (lines.length < 2 || lines.length > 5) return null;
+    if (!lines.every(line => line.length <= 160)) return null;
+    if (!lines.every(line => /^(?:\d+[\.\)、）]\s?|[-*+•]\s+)/.test(line))) return null;
+
+    return lines;
+  }
+
+  private splitInlineOrderedReply(text: string): string[] | null {
+    if (text.length > IDEAL_REPLY_SEGMENT_LENGTH) return null;
+    if (/```|~~~/.test(text)) return null;
+
+    const trimmed = text.trim();
+    if (/\r?\n/.test(trimmed)) return null;
+    const parts = trimmed
+      .split(/(?=(?:第一|第二|第三|第四|第五|首先|其次|最后)[，、:：])/)
+      .map(part => part.trim())
+      .filter(Boolean);
+
+    if (parts.length < 2 || parts.length > 5) return null;
+    if (!parts.every(part => /^(?:第一|第二|第三|第四|第五|首先|其次|最后)[，、:：]/.test(part))) return null;
+    if (!parts.every(part => part.length <= 180)) return null;
+
+    return parts;
+  }
+
+  private splitNaturalLanguageReply(block: string): string[] | null {
+    const trimmed = String(block || '').trim();
+    if (trimmed.length <= IDEAL_REPLY_SEGMENT_LENGTH) return null;
+    if (/```|~~~/.test(trimmed)) return null;
+    if (trimmed.split(/\r?\n/).length > 1) return null;
+    if (!this.shouldIndentReplyBlock(trimmed)) return null;
+
+    const segments: string[] = [];
+    let remaining = trimmed;
+    while (remaining.length > 0) {
+      if (remaining.length <= IDEAL_REPLY_SEGMENT_LENGTH) {
+        segments.push(remaining);
+        break;
+      }
+
+      const cutAt = this.findNaturalLanguageCut(remaining, IDEAL_REPLY_SEGMENT_LENGTH);
+      segments.push(remaining.slice(0, cutAt).trim());
+      remaining = remaining.slice(cutAt).trim();
+    }
+
+    if (segments.length <= 1) return null;
+    return segments.map(segment => this.formatReplyBlock(segment));
+  }
+
+  private findNaturalLanguageCut(text: string, maxLen: number): number {
+    const minLen = 260;
+    const hard = this.findLastMatchEnd(text, /[。！？；;!?]/g, minLen, maxLen);
+    if (hard > 0) return hard;
+
+    const soft = this.findLastMatchEnd(text, /[，,、]/g, Math.min(360, maxLen), maxLen);
+    if (soft > 0) return soft;
+
+    return Math.min(maxLen, text.length);
+  }
+
+  private findLastMatchEnd(text: string, pattern: RegExp, minLen: number, maxLen: number): number {
+    const sample = text.slice(0, maxLen + 1);
+    let best = -1;
+    let match: RegExpExecArray | null;
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(sample)) !== null) {
+      const end = match.index + match[0].length;
+      if (end >= minLen && end <= maxLen) best = end;
+    }
+    return best;
+  }
+
+  private formatReplyBlock(block: string): string {
+    const trimmed = String(block || '').trim();
+    if (!trimmed) return '';
+    if (!this.shouldIndentReplyBlock(trimmed)) return trimmed;
+    return trimmed.startsWith('　　') ? trimmed : `　　${trimmed}`;
+  }
+
+  private shouldIndentReplyBlock(block: string): boolean {
+    const firstLine = block.split(/\r?\n/, 1)[0].trimStart();
+    if (!firstLine) return false;
+    if (firstLine.startsWith('　　')) return false;
+    if (/^(```|~~~|>|#{1,6}\s|[-*+]\s|\d+[\.\)、]\s?|\|)/.test(firstLine)) return false;
+    if (/^(?:[A-Za-z]:\\|\\\\|\/|[A-Za-z0-9_.-]+\.(?:js|ts|md|json|html|css|py)\b)/.test(firstLine)) return false;
+    if (this.isStructuredReplyBlock(block)) return false;
+    return true;
+  }
+
+  private isStructuredReplyBlock(block: string): boolean {
+    const trimmed = String(block || '').trim();
+    if (!trimmed) return false;
+    if (/^```|^~~~/.test(trimmed)) return true;
+    if (this.isJsonReplyBlock(trimmed)) return true;
+    if (/^(?:select|with|insert|update|delete|create|alter|drop|explain)\b[\s\S]*\b(?:from|set|values|table|where|join|returning|select)\b/i.test(trimmed)) {
+      return true;
+    }
+    if (/^<(?!!--)(?:!doctype\s+html|html\b|[a-z][\w:-]*(?:\s|>|\/>))[\s\S]*>$/i.test(trimmed)) {
+      return true;
+    }
+    const lines = trimmed.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    if (lines.length >= 2 && lines.every(line => /^[A-Z_][A-Z0-9_]*=/.test(line))) return true;
+    if (lines.length >= 3 && lines.every(line => /^[\w.-]+\s*:\s+.+/.test(line))) return true;
+    if (lines.length >= 2 && lines.every(line => line.includes(',')) && new Set(lines.map(line => line.split(',').length)).size === 1) {
+      return true;
+    }
+    return false;
+  }
+
+  private isJsonReplyBlock(text: string): boolean {
+    if (!/^(?:\{[\s\S]*\}|\[[\s\S]*\])$/.test(text)) return false;
+    try {
+      JSON.parse(text);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private splitText(text: string, maxLen: number): string[] {

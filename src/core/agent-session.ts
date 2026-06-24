@@ -43,6 +43,7 @@ import { resolveModelContextWindow } from '../utils/model-context-window';
 import { parseSessionKeyV2 } from './session-router';
 import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
+import type { PromptTraceSnapshot } from '../utils/prompt-observability';
 import { toPromptTurnMetadata } from '../utils/prompt-observability';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
@@ -70,6 +71,7 @@ export type SystemPromptProvider = () => Promise<string> | string;
 /** 会话回调（由适配层提供） */
 export interface SessionCallbacks {
   onText?: (text: string) => void;
+  onAssistantText?: (text: string) => void | Promise<void>;
   onThinking?: (thinking: string) => void | Promise<void>;
   onToolStart?: (name: string, toolUseId: string, input: any) => void;
   onToolEnd?: (name: string, toolUseId: string, result: string) => void;
@@ -149,6 +151,7 @@ export class AgentSession {
   private initialized = false;
   private busy = false;
   private systemPromptOverride?: SystemPromptProvider;
+  private promptTrace?: PromptTraceSnapshot;
   /** 外部请求中断当前 run（例如用户在 busy 时发送"停止"） */
   private interruptRequested = false;
   private activeAbortController: AbortController | null = null;
@@ -189,6 +192,9 @@ export class AgentSession {
     this.lifecycleManager = new SessionLifecycleManager({
       sessionKey: key,
       legacySessionKey: sessionRoute?.legacySessionKey,
+      legacyRestoreKey: sessionRoute?.legacyRestoreKey,
+      legacyCleanupKey: sessionRoute?.legacyCleanupKey,
+      allowLegacySessionFallback: this.shouldAllowLegacySessionFallback(sessionRoute),
       runtimeFeedbackInbox: this.runtimeFeedbackInbox,
     });
     this.defaultDirectory = this.resolveDefaultDirectory();
@@ -235,7 +241,7 @@ export class AgentSession {
     const stored = this.lifecycleManager.loadCurrentDirectory();
     if (stored) {
       const resolved = path.resolve(stored);
-      if (this.isExistingDirectory(resolved) && !this.isStaleRuntimeDataDirectory(resolved)) {
+      if (this.isExistingDirectory(resolved)) {
         return resolved;
       }
     }
@@ -243,22 +249,10 @@ export class AgentSession {
     return this.defaultDirectory;
   }
 
-  private isStaleRuntimeDataDirectory(directory: string): boolean {
-    const userDataDir = process.env.XIAOBA_USER_DATA_DIR?.trim();
-    if (!userDataDir) return false;
-
-    const resolvedUserData = path.resolve(userDataDir);
-    const resolvedDefaultDirectory = path.resolve(this.defaultDirectory);
-    if (this.isSameOrInsideDirectory(resolvedDefaultDirectory, resolvedUserData)) {
-      return false;
-    }
-
-    return this.isSameOrInsideDirectory(path.resolve(directory), resolvedUserData);
-  }
-
-  private isSameOrInsideDirectory(candidate: string, parent: string): boolean {
-    const relative = path.relative(parent, candidate);
-    return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+  private shouldAllowLegacySessionFallback(route?: SessionRoute): boolean {
+    // CatsCo legacy keys do not include enough topic/agent identity, so V2 sessions
+    // must not restore them as if they were the same conversation.
+    return route?.source !== 'catscompany';
   }
 
   private isExistingDirectory(directory: string): boolean {
@@ -316,20 +310,11 @@ export class AgentSession {
 
   // ─── 初始化 ─────────────────────────────────────────
 
-  /** 构建系统提示词（幂等，仅首次生效） */
+  /** 构建系统提示词（幂等初始化；已初始化会话在下一轮开始前可热加载） */
   async init(options: InitSessionOptions = {}): Promise<void> {
     if (this.initialized) return;
-    const systemPrompt = this.systemPromptOverride
-      ? await this.systemPromptOverride()
-      : await PromptManager.buildSystemPrompt();
-    const promptTrace = PromptManager.buildPromptTraceSnapshot(systemPrompt, {
-      source: this.systemPromptOverride ? 'session-provider' : 'prompt-manager',
-    });
-    this.sessionTurnLogger.logPromptTrace(promptTrace);
-    this.turnLogRecorder.setPromptMetadata(toPromptTurnMetadata(promptTrace));
-    Logger.info(
-      `[会话 ${this.key}] Prompt trace: system=${promptTrace.system.short_hash}, bundle=${promptTrace.bundle.short_hash}, files=${promptTrace.bundle.file_count}, version=${promptTrace.prompt_version}`,
-    );
+    const { systemPrompt, promptTrace } = await this.buildCurrentSystemPrompt();
+    this.applyPromptTrace(promptTrace, 'init');
     this.initialized = true;
     const initialSystemMessages: Message[] = [];
     if (systemPrompt.trim()) {
@@ -489,6 +474,12 @@ export class AgentSession {
       this.activeAbortController = new AbortController();
       this.lastActiveAt = Date.now();
 
+      try {
+        await this.refreshSystemPromptIfNeeded();
+      } catch (error: any) {
+        Logger.warning(`[会话 ${this.key}] Prompt 热加载失败，继续使用上一版: ${error?.message || error}`);
+      }
+
       this.messages = stripAssistantArtifactsFromMessages(this.messages);
       this.messages = await this.contextWindowManager.compactIfNeeded(this.messages, {
         sessionKey: this.key,
@@ -644,6 +635,8 @@ export class AgentSession {
     this.resetCurrentDirectory();
     const state = this.lifecycleManager.reset();
     this.initialized = state.initialized;
+    this.promptTrace = undefined;
+    this.turnLogRecorder.setPromptMetadata(undefined);
     this.lastActiveAt = state.lastActiveAt;
   }
 
@@ -655,6 +648,8 @@ export class AgentSession {
     const state = this.lifecycleManager.clear();
     this.resetCurrentDirectory();
     this.initialized = state.initialized;
+    this.promptTrace = undefined;
+    this.turnLogRecorder.setPromptMetadata(undefined);
     this.lastActiveAt = state.lastActiveAt;
   }
 
@@ -718,6 +713,93 @@ export class AgentSession {
 
   private consumeRuntimeFeedback(inputs: RuntimeFeedbackInput[] = []): string[] {
     return this.runtimeFeedbackInbox.consume(inputs);
+  }
+
+  private async buildCurrentSystemPrompt(): Promise<{ systemPrompt: string; promptTrace: PromptTraceSnapshot }> {
+    const systemPrompt = this.systemPromptOverride
+      ? await this.systemPromptOverride()
+      : await PromptManager.buildSystemPrompt();
+    const promptTrace = PromptManager.buildPromptTraceSnapshot(systemPrompt, {
+      source: this.systemPromptOverride ? 'session-provider' : 'prompt-manager',
+    });
+    return { systemPrompt, promptTrace };
+  }
+
+  private async refreshSystemPromptIfNeeded(): Promise<void> {
+    if (!this.initialized || !this.promptTrace) return;
+
+    const { systemPrompt, promptTrace } = await this.buildCurrentSystemPrompt();
+    const changed = this.diffPromptTrace(promptTrace);
+    if (!changed.any) return;
+
+    if (changed.system) {
+      this.replacePrimarySystemPrompt(systemPrompt);
+    }
+    this.applyPromptTrace(promptTrace, 'reload');
+
+    const changedParts = [
+      changed.system ? 'system' : '',
+      changed.bundle ? 'bundle' : '',
+      changed.version ? 'version' : '',
+      changed.promptsDir ? 'prompts_dir' : '',
+    ].filter(Boolean).join(',');
+    Logger.info(`[会话 ${this.key}] Prompt 热加载: changed=${changedParts || 'unknown'}`);
+  }
+
+  private diffPromptTrace(next: PromptTraceSnapshot): {
+    any: boolean;
+    system: boolean;
+    bundle: boolean;
+    version: boolean;
+    promptsDir: boolean;
+  } {
+    const current = this.promptTrace;
+    if (!current) {
+      return { any: true, system: true, bundle: true, version: true, promptsDir: true };
+    }
+    const system = current.system.sha256 !== next.system.sha256;
+    const bundle = current.bundle.sha256 !== next.bundle.sha256;
+    const version = current.prompt_version !== next.prompt_version;
+    const promptsDir = current.prompts_dir !== next.prompts_dir;
+    return {
+      any: system || bundle || version || promptsDir,
+      system,
+      bundle,
+      version,
+      promptsDir,
+    };
+  }
+
+  private replacePrimarySystemPrompt(systemPrompt: string): void {
+    const nextPrompt = systemPrompt.trim();
+    const existingIndex = this.messages.findIndex(message => (
+      message.role === 'system'
+      && !message.__injected
+    ));
+
+    if (!nextPrompt) {
+      if (existingIndex >= 0) {
+        this.messages.splice(existingIndex, 1);
+      }
+      return;
+    }
+
+    const nextMessage: Message = { role: 'system', content: systemPrompt };
+    if (existingIndex >= 0) {
+      this.messages[existingIndex] = nextMessage;
+      return;
+    }
+    this.messages.unshift(nextMessage);
+  }
+
+  private applyPromptTrace(promptTrace: PromptTraceSnapshot, reason: 'init' | 'reload'): void {
+    this.promptTrace = promptTrace;
+    this.sessionTurnLogger.logPromptTrace(promptTrace);
+    this.turnLogRecorder.setPromptMetadata(toPromptTurnMetadata(promptTrace));
+    const label = reason === 'reload' ? 'Prompt trace reload' : 'Prompt trace';
+    Logger.info(
+      `[会话 ${this.key}] ${label}: system=${promptTrace.system.short_hash}, bundle=${promptTrace.bundle.short_hash}, files=${promptTrace.bundle.file_count}, version=${promptTrace.prompt_version}`,
+    );
   }
 
   private createContextCompactionNotifier(callbacks?: SessionCallbacks): ((event: ContextCompactionStatusEvent) => Promise<void>) | undefined {

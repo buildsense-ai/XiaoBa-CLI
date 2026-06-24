@@ -47,6 +47,9 @@ describe('runtime characterization', () => {
     assert.doesNotMatch(prompt, /150字以上/);
     assert.doesNotMatch(prompt, /500字以上/);
     assert.doesNotMatch(prompt, /send_file 工具写成文件发送/);
+    assert.match(prompt, /已生成、已发送、见附件、可预览、可下载/);
+    assert.match(prompt, /send_text` 只能发送普通文本/);
+    assert.match(prompt, /微信、飞书等轻量聊天通道优先短消息和普通文件/);
   });
 
   test('ToolManager registers the current default tool set', () => {

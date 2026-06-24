@@ -41,8 +41,12 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
 
     assert.equal(alice.sessionKey, 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43');
     assert.equal(alice.legacySessionKey, 'cc_user:usr7');
+    assert.equal(alice.legacyRestoreKey, 'cc_user:usr7');
+    assert.equal(alice.legacyCleanupKey, 'cc_user:usr7');
     assert.equal(bob.sessionKey, 'session:v2:catscompany:p2p:p2p_8_43:agent:usr43');
     assert.equal(bob.legacySessionKey, 'cc_user:usr8');
+    assert.equal(bob.legacyRestoreKey, 'cc_user:usr8');
+    assert.equal(bob.legacyCleanupKey, 'cc_user:usr8');
     assert.equal(alice.identityTrust, 'server_canonical');
     assert.equal(bob.identityTrust, 'server_canonical');
     assert.equal(createExecutionScope(alice).actorUserId, 'usr7');
@@ -67,8 +71,13 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
     });
     const scope = createExecutionScope(envelope);
 
-    assert.equal(envelope.sessionKey, 'session:v2:catscompany:group:grp_80:agent:usr43');
-    assert.equal(envelope.legacySessionKey, 'cc_group:grp_80');
+    assert.equal(envelope.sessionKey, 'session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43');
+    assert.equal(envelope.legacySessionKey, undefined);
+    assert.equal(envelope.legacyRestoreKey, undefined);
+    assert.equal(envelope.legacyCleanupKey, 'cc_group:grp_80');
+    assert.equal(scope.legacySessionKey, undefined);
+    assert.equal(scope.legacyRestoreKey, undefined);
+    assert.equal(scope.legacyCleanupKey, 'cc_group:grp_80');
     assert.equal(scope.topicType, 'group');
     assert.equal(scope.actorUserId, 'usr7');
     assert.equal(scope.agentId, 'usr43');

@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { CatsCompanyBot } from '../src/catscompany';
+import { extractContentBlocks } from '../src/catscompany/content-blocks';
 import { ConfigManager } from '../src/utils/config';
 
 const ONE_PIXEL_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
@@ -116,6 +117,28 @@ function createProcessHarness() {
 }
 
 describe('CatsCo content blocks', () => {
+  test('does not render assistant pre-tool text as working thinking', () => {
+    const blocks = extractContentBlocks([{
+      role: 'assistant',
+      content: '我先查一下天气。',
+      tool_calls: [{
+        id: 'call_1',
+        type: 'function',
+        function: {
+          name: 'execute_shell',
+          arguments: JSON.stringify({ command: 'echo weather' }),
+        },
+      }],
+    } as any]);
+
+    assert.deepStrictEqual(blocks, [{
+      type: 'tool_use',
+      id: 'call_1',
+      name: 'execute_shell',
+      input: { command: 'echo weather' },
+    }]);
+  });
+
   test('parses text and multiple attachments from one CatsCompany message', () => {
     const bot = Object.create(CatsCompanyBot.prototype);
 
@@ -534,7 +557,7 @@ describe('CatsCo content blocks', () => {
   });
 
   test('plain text messages are processed immediately without attachment coalesce wait', async () => {
-    const { bot, handledTurns, sentThinking } = createProcessHarness();
+    const { bot, handledTurns, sentThinking, replies } = createProcessHarness();
 
     await (bot as any).onMessage({
       topic: 'p2p_1_2',
@@ -548,7 +571,13 @@ describe('CatsCo content blocks', () => {
     assert.strictEqual(handledTurns.length, 1);
     assert.strictEqual(handledTurns[0].userMessage, '这条纯文本不应该等待附件');
     assert.strictEqual(typeof handledTurns[0].options.callbacks?.onThinking, 'function');
+    assert.strictEqual(typeof handledTurns[0].options.callbacks?.onAssistantText, 'function');
+    await handledTurns[0].options.callbacks.onAssistantText('工具调用前的可见回复');
     await handledTurns[0].options.callbacks.onThinking('纯文本压缩状态');
+    assert.deepStrictEqual(
+      replies.map(({ topic, text }) => ({ topic, text })),
+      [{ topic: 'p2p_1_2', text: '工具调用前的可见回复' }],
+    );
     assert.deepStrictEqual(
       sentThinking.map(({ topic, text }) => ({ topic, text })),
       [{ topic: 'p2p_1_2', text: '纯文本压缩状态' }],
@@ -713,7 +742,7 @@ describe('CatsCo content blocks', () => {
   });
 
   test('subagent feedback visible reply is sent back to CatsCompany', async () => {
-    const { bot, runtimeObservations, sentTexts, sentThinking, session } = createProcessHarness();
+    const { bot, runtimeObservations, replies, sentThinking, session } = createProcessHarness();
     session.handleRuntimeObservation = async (text: string, options: any) => {
       runtimeObservations.push({ text, options });
       return { visibleToUser: true, text: '已根据子 agent 结果处理完。' };
@@ -734,7 +763,7 @@ describe('CatsCo content blocks', () => {
       sentThinking.map(({ topic, text }) => ({ topic, text })),
       [{ topic: 'p2p_38_110', text: '子 agent 回流压缩状态' }],
     );
-    assert.deepStrictEqual(sentTexts, [
+    assert.deepStrictEqual(replies, [
       { topic: 'p2p_38_110', text: '已根据子 agent 结果处理完。' },
     ]);
   });

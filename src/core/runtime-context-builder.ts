@@ -138,7 +138,10 @@ export function buildRuntimeContextSnapshot(params: BuildRuntimeContextParams): 
     schema: 'xiaoba.runtime_context.v1',
     session: pruneUndefined({
       key: params.sessionKey,
-      legacyKey: scope?.legacySessionKey ?? route?.legacySessionKey,
+      legacyKey: scope?.legacyRestoreKey
+        ?? scope?.legacySessionKey
+        ?? route?.legacyRestoreKey
+        ?? route?.legacySessionKey,
       source,
       topic: {
         id: topicId,

@@ -15,13 +15,14 @@ export class WriteTool implements Tool {
     description: [
       '创建或完整覆盖一个 UTF-8 文本文件。',
       '适合生成新文件或重写整个文件；对已有文件做小范围修改时优先使用 edit_file。',
+      '当用户要求在桌面、下载、文档等常见目录创建文件时，先用 resolve_common_directory 解析目录，再把目标文件路径传给本工具；不要用 execute_shell 创建普通文本文件。',
     ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
         file_path: {
           type: 'string',
-          description: '要写入的文件路径。支持绝对路径或相对当前目录的路径。'
+          description: '要写入的文件路径。支持绝对路径或相对当前目录的路径；可以使用 resolve_common_directory 返回的路径拼出目标文件。'
         },
         content: {
           type: 'string',

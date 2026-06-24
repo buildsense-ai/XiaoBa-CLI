@@ -107,13 +107,13 @@ describe('AgentSession lifecycle', () => {
     assert.equal(SessionStore.getInstance().loadRuntimeState('user:lifecycle-cwd').currentDirectory, defaultDir);
   });
 
-  test('stale current directory inside Electron userData resets to default workspace', async () => {
+  test('current directory inside Electron userData is preserved when explicitly persisted', async () => {
     const { AgentSession, SessionStore } = loadSessionModules();
     const originalUserDataDir = process.env.XIAOBA_USER_DATA_DIR;
     const defaultDir = fs.mkdtempSync(path.join(testRoot, 'workspace-'));
     const userDataDir = fs.mkdtempSync(path.join(testRoot, 'user-data-'));
-    const staleDir = path.join(userDataDir, 'nested');
-    fs.mkdirSync(staleDir);
+    const storedDir = path.join(userDataDir, 'nested');
+    fs.mkdirSync(storedDir);
     const services = buildMockServices({
       toolManager: {
         getWorkspaceRoot() { return defaultDir; },
@@ -124,19 +124,65 @@ describe('AgentSession lifecycle', () => {
 
     try {
       process.env.XIAOBA_USER_DATA_DIR = userDataDir;
-      SessionStore.getInstance().saveRuntimeState('user:lifecycle-stale-cwd', { currentDirectory: staleDir });
+      SessionStore.getInstance().saveRuntimeState('user:lifecycle-user-data-cwd', { currentDirectory: storedDir });
 
-      const session = new AgentSession('user:lifecycle-stale-cwd', services, 'feishu');
+      const session = new AgentSession('user:lifecycle-user-data-cwd', services, 'feishu');
 
-      assert.equal((session as any).currentDirectory, defaultDir);
+      assert.equal((session as any).currentDirectory, storedDir);
       assert.equal(
-        SessionStore.getInstance().loadRuntimeState('user:lifecycle-stale-cwd').currentDirectory,
-        defaultDir,
+        SessionStore.getInstance().loadRuntimeState('user:lifecycle-user-data-cwd').currentDirectory,
+        storedDir,
       );
     } finally {
       if (originalUserDataDir === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
       else process.env.XIAOBA_USER_DATA_DIR = originalUserDataDir;
     }
+  });
+
+  test('CatsCo group cleanup-only legacy key is not used for restore fallback', async () => {
+    const { AgentSession, SessionStore, createSessionRoute } = loadSessionModules();
+    const defaultDir = fs.mkdtempSync(path.join(testRoot, 'default-'));
+    const legacyDir = fs.mkdtempSync(path.join(testRoot, 'legacy-'));
+    const store = SessionStore.getInstance();
+    store.saveContext('cc_group:grp_80', [
+      { role: 'user', content: 'legacy group history' },
+    ]);
+    store.saveRuntimeState('cc_group:grp_80', { currentDirectory: legacyDir });
+
+    const route = createSessionRoute({
+      source: 'catscompany',
+      topicType: 'group',
+      topicId: 'grp_80',
+      sessionTopicId: 'grp_80:actor:alice',
+      actorUserId: 'alice',
+      agentId: 'usr43',
+      identityTrust: 'server_canonical',
+      legacyCleanupKey: 'cc_group:grp_80',
+    });
+    assert.equal(route.legacySessionKey, undefined);
+    assert.equal(route.legacyRestoreKey, undefined);
+    assert.equal(route.legacyCleanupKey, 'cc_group:grp_80');
+
+    const session = new AgentSession(route.sessionKey, buildMockServices({
+      toolManager: {
+        getWorkspaceRoot() { return defaultDir; },
+        getToolDefinitions() { return []; },
+        executeTool() { throw new Error('not expected'); },
+      },
+    }), 'catscompany', route);
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    assert.equal(session.restoreFromStore(), false);
+    assert.equal((session as any).currentDirectory, defaultDir);
+    await session.init();
+    assert.equal(
+      (session as any).messages.some((message: any) => message.content === 'legacy group history'),
+      false,
+    );
+
+    session.clear();
+    assert.equal(store.hasSession('cc_group:grp_80'), false);
+    assert.deepEqual(store.loadRuntimeState('cc_group:grp_80'), {});
   });
 
   test('reset and clear discard pending runtime feedback', async () => {
@@ -708,6 +754,7 @@ function loadSessionModules(): any {
     '../src/core/agent-session',
     '../src/core/session-lifecycle-manager',
     '../src/utils/session-store',
+    '../src/core/session-router',
   ]) {
     delete require.cache[require.resolve(modulePath)];
   }
@@ -719,6 +766,7 @@ function loadSessionModules(): any {
     CONTEXT_COMPACTION_START_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_START_MESSAGE,
     CONTEXT_COMPACTION_COMPLETE_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_COMPLETE_MESSAGE,
     SessionStore: require('../src/utils/session-store').SessionStore,
+    createSessionRoute: require('../src/core/session-router').createSessionRoute,
   };
 }
 

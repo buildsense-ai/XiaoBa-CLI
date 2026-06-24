@@ -14,6 +14,7 @@ export const SESSION_KEY_V2_PREFIX = 'session:v2';
 export interface CreateSessionRouteInput {
   source: MessageSource;
   topicId: string;
+  sessionTopicId?: string;
   topicType: MessageTopicType;
   actorUserId: string;
   agentId?: string;
@@ -23,6 +24,8 @@ export interface CreateSessionRouteInput {
   identityTrust?: IdentityTrustLevel;
   identitySource?: string;
   legacySessionKey?: string;
+  legacyRestoreKey?: string;
+  legacyCleanupKey?: string;
 }
 
 export interface ParsedSessionKeyV2 {
@@ -38,18 +41,25 @@ export function createSessionRoute(input: CreateSessionRouteInput): SessionRoute
   const topicType = normalizeTopicType(input.topicType);
   const actorUserId = normalizeId(input.actorUserId) || 'unknown_actor';
   const topicId = normalizeId(input.topicId) || actorUserId;
+  const sessionTopicId = normalizeId(input.sessionTopicId) || topicId;
   const agentId = normalizeOptionalId(input.agentId);
   const agentBodyId = normalizeOptionalId(input.agentBodyId);
   const identityTrust = input.identityTrust || 'legacy_context';
   const identitySource = normalizeOptionalId(input.identitySource);
-  const sessionKey = buildSessionKeyV2({ source, topicType, topicId, agentId });
-  const legacySessionKey = normalizeOptionalId(input.legacySessionKey);
+  const sessionKey = buildSessionKeyV2({ source, topicType, topicId: sessionTopicId, agentId });
+  const legacySessionKey = normalizeOptionalId(input.legacyRestoreKey)
+    || normalizeOptionalId(input.legacySessionKey);
+  const legacyRestoreKey = legacySessionKey;
+  const legacyCleanupKey = normalizeOptionalId(input.legacyCleanupKey)
+    || legacyRestoreKey;
 
   return {
     version: 2,
     source,
     sessionKey,
     legacySessionKey,
+    legacyRestoreKey,
+    legacyCleanupKey,
     topicId,
     topicType,
     actorUserId,
@@ -72,10 +82,39 @@ export function createSessionRoute(input: CreateSessionRouteInput): SessionRoute
   };
 }
 
+export function buildCatsCoSessionTopicId(
+  topicType: MessageTopicType,
+  topicId: string,
+  actorUserId: string,
+): string {
+  const normalizedTopicId = normalizeId(topicId) || 'unknown_topic';
+  const normalizedActorUserId = normalizeId(actorUserId);
+  if (normalizeTopicType(topicType) === 'group' && normalizedActorUserId) {
+    return `${normalizedTopicId}:actor:${normalizedActorUserId}`;
+  }
+  return normalizedTopicId;
+}
+
 export function createCatsCoSessionRoute(envelope: MessageEnvelope): SessionRoute {
+  const fallbackLegacyKey = buildLegacyCatsCoSessionKey(
+    envelope.topicType,
+    envelope.topicId,
+    envelope.actorUserId,
+  );
+  const legacyRestoreKey = envelope.legacyRestoreKey
+    || envelope.legacySessionKey
+    || (normalizeTopicType(envelope.topicType) === 'group' ? undefined : fallbackLegacyKey);
+  const legacyCleanupKey = envelope.legacyCleanupKey
+    || envelope.legacySessionKey
+    || fallbackLegacyKey;
   return createSessionRoute({
     source: 'catscompany',
     topicId: envelope.topicId,
+    sessionTopicId: buildCatsCoSessionTopicId(
+      envelope.topicType,
+      envelope.topicId,
+      envelope.actorUserId,
+    ),
     topicType: envelope.topicType,
     actorUserId: envelope.actorUserId,
     agentId: envelope.agentId,
@@ -84,11 +123,8 @@ export function createCatsCoSessionRoute(envelope: MessageEnvelope): SessionRout
     channelSeq: envelope.channelSeq,
     identityTrust: envelope.identityTrust,
     identitySource: envelope.identitySource,
-    legacySessionKey: envelope.legacySessionKey || buildLegacyCatsCoSessionKey(
-      envelope.topicType,
-      envelope.topicId,
-      envelope.actorUserId,
-    ),
+    legacyRestoreKey,
+    legacyCleanupKey,
   });
 }
 
@@ -145,6 +181,8 @@ export function createExecutionScopeFromRoute(route: SessionRoute): ExecutionSco
     source: route.source,
     sessionKey: route.sessionKey,
     legacySessionKey: route.legacySessionKey,
+    legacyRestoreKey: route.legacyRestoreKey,
+    legacyCleanupKey: route.legacyCleanupKey,
     topicId: route.topicId,
     topicType: route.topicType,
     actorUserId: route.actorUserId,

@@ -7,6 +7,7 @@ import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
 import { estimateMessagesTokens, estimateToolsTokens } from './token-estimator';
+import { foldHistoricalReadFileMessages, resolveReadFileMessageFoldingOptions } from './read-file-message-folder';
 import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
@@ -29,6 +30,12 @@ import { calculateSummaryBudgetTokens, resolveModelPromptBudgetTokens } from '..
 import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/model-error-classifier';
 import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
 import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
+import {
+  buildSyntheticObservationLifecycleEvent,
+  buildSyntheticObservationMessages,
+  describeSyntheticObservationForLog,
+  SyntheticObservation,
+} from './synthetic-observation';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -65,7 +72,9 @@ export const PROMPT_TOOLS_DISABLED_MESSAGE = '当前模型上下文不足以加�
 export interface RunnerCallbacks {
   /** 流式文本片段 */
   onText?: (text: string) => void;
-  /** AI 思考过程 */
+  /** 模型在工具调用前给出的用户可见中途文本 */
+  onAssistantText?: (text: string) => void | Promise<void>;
+  /** 运行状态提示，例如压缩、裁剪、工具不可用 */
   onThinking?: (thinking: string) => void;
   /** 工具开始执行 */
   onToolStart?: (name: string, toolUseId: string, input: any) => void;
@@ -113,6 +122,8 @@ function isPendingUserInput(value: string | ContentBlock[] | PendingUserInput): 
     && 'content' in value;
 }
 
+export type SyntheticObservationProvider = () => SyntheticObservation[];
+
 interface ToolExecutionRecord {
   toolCall: ToolCall;
   toolName: string;
@@ -136,6 +147,8 @@ export interface RunnerOptions {
   toolExecutionContext?: Partial<ToolExecutionContext>;
   /** Pulls user messages that arrived while the current run was busy. */
   pendingUserInputProvider?: PendingUserInputProvider;
+  /** Non-blocking runtime observations produced by sidecar branches. */
+  syntheticObservationProvider?: SyntheticObservationProvider;
 }
 
 /**
@@ -154,6 +167,7 @@ export class ConversationRunner {
   private maxTurns?: number;
   private sessionLabel: string;
   private pendingUserInputProvider?: PendingUserInputProvider;
+  private syntheticObservationProvider?: SyntheticObservationProvider;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -176,6 +190,7 @@ export class ConversationRunner {
     this.enableCompression = options?.enableCompression ?? true;
     this.toolExecutionContext = options?.toolExecutionContext;
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
+    this.syntheticObservationProvider = options?.syntheticObservationProvider;
     this.maxTurns = options?.maxTurns;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
@@ -213,7 +228,6 @@ export class ConversationRunner {
     let hasUpdatedPlan = false;
     let hasSpawnedSubagent = false;
     let hasRecordedDecision = false;
-    let hasShownInitialOrchestrationHint = false;
     let planSoftNudgeCount = 0;
     let subagentSoftNudgeCount = 0;
     let nextPlanNudgeAt = nextPlanNudgeToolCount(0);
@@ -235,6 +249,7 @@ export class ConversationRunner {
           newMessages,
         };
       }
+      this.injectSyntheticObservations(messages, turns);
       const requestTools = this.fitToolsToPromptBudget(activeTools);
       if (requestTools.length < activeTools.length && !notifiedToolBudgetDisabled) {
         notifiedToolBudgetDisabled = true;
@@ -269,13 +284,10 @@ export class ConversationRunner {
       }
 
       const orchestrationHints: Message[] = [];
-      if (turns === 1 && !hasShownInitialOrchestrationHint) {
-        const explicitPlanHint = buildExplicitPlanRequestHintIfUseful(messages, requestTools);
-        const decisionHint = buildInitialDecisionHintIfUseful(messages, requestTools);
-        if (explicitPlanHint) orchestrationHints.push(explicitPlanHint);
-        if (decisionHint) orchestrationHints.push(decisionHint);
-        hasShownInitialOrchestrationHint = orchestrationHints.length > 0;
-      }
+      const explicitPlanHint = buildExplicitPlanRequestHintIfUseful(messages, requestTools);
+      const decisionHint = buildInitialDecisionHintIfUseful(messages, requestTools);
+      if (explicitPlanHint) orchestrationHints.push(explicitPlanHint);
+      if (decisionHint) orchestrationHints.push(decisionHint);
       if (shouldAddPlanSoftNudge(requestTools, turns, executedToolCalls, hasUpdatedPlan || hasRecordedDecision, nextPlanNudgeAt)) {
         orchestrationHints.push(buildPlanSoftNudge(turns, executedToolCalls, planSoftNudgeCount));
         planSoftNudgeCount++;
@@ -287,11 +299,23 @@ export class ConversationRunner {
         nextSubagentNudgeAt = nextSubagentNudgeToolCount(executedToolCalls);
       }
 
-      const requestMessages = this.buildProviderInputMessages(messages, [
+      let requestMessages = this.buildProviderInputMessages(messages, [
         ...nextTurnTransientHints,
         ...orchestrationHints,
       ]);
       nextTurnTransientHints = [];
+      const readFileFolding = foldHistoricalReadFileMessages(
+        requestMessages,
+        resolveReadFileMessageFoldingOptions(),
+      );
+      requestMessages = readFileFolding.messages;
+      if (readFileFolding.stats.folded_count > 0) {
+        Logger.info(
+          `[${this.sessionLabel}Turn ${turns}] read_file 历史折叠: `
+          + `folded=${readFileFolding.stats.folded_count}, `
+          + `saved≈${readFileFolding.stats.saved_tokens_est} tokens`,
+        );
+      }
       const promptTrimmed = this.ensurePromptBudget(requestMessages, requestTools);
       if (promptTrimmed && callbacks?.onThinking) {
         await callbacks.onThinking(PROMPT_BUDGET_TRIM_MESSAGE);
@@ -414,8 +438,9 @@ export class ConversationRunner {
 
       if (response.content) {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI文本: ${ConversationRunner.truncateForLog(response.content, 300)}`);
-        // 发送 thinking 回调
-        if (callbacks?.onThinking) {
+        if (callbacks?.onAssistantText) {
+          await callbacks.onAssistantText(response.content);
+        } else if (callbacks?.onThinking) {
           await callbacks.onThinking(response.content);
         }
       }
@@ -622,6 +647,35 @@ export class ConversationRunner {
       }
     }
     messages.push(runtimeContext);
+  }
+
+  private injectSyntheticObservations(messages: Message[], turn: number): void {
+    if (!this.syntheticObservationProvider) return;
+    let observations: SyntheticObservation[] = [];
+    try {
+      observations = this.syntheticObservationProvider();
+    } catch (error: any) {
+      Logger.warning(`[${this.sessionLabel}Turn ${turn}] synthetic observation drain failed: ${error.message}`);
+      return;
+    }
+    if (observations.length === 0) return;
+
+    const syntheticMessages = buildSyntheticObservationMessages(observations);
+    messages.push(...syntheticMessages);
+    Logger.info(
+      `[${this.sessionLabel}Turn ${turn}] injected ${observations.length} synthetic runtime observation(s): `
+      + observations.map(describeSyntheticObservationForLog).join(' | ')
+    );
+    for (const observation of observations) {
+      Logger.runtimeEvent(
+        'INFO',
+        `[${this.sessionLabel}Turn ${turn}] synthetic_observation_lifecycle injected id=${observation.id || '(unassigned)'}`,
+        buildSyntheticObservationLifecycleEvent(observation, {
+          outcome: 'injected',
+          reason: 'provider_call_drain',
+        }),
+      );
+    }
   }
 
   /**

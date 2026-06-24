@@ -6,6 +6,9 @@ import { RuntimeFeedbackInbox } from './runtime-feedback-inbox';
 export interface SessionLifecycleManagerOptions {
   sessionKey: string;
   legacySessionKey?: string;
+  legacyRestoreKey?: string;
+  legacyCleanupKey?: string;
+  allowLegacySessionFallback?: boolean;
   runtimeFeedbackInbox: RuntimeFeedbackInbox;
   sessionStore?: SessionStore;
 }
@@ -66,9 +69,9 @@ export class SessionLifecycleManager {
   clear(): ResetSessionStateResult {
     this.sessionStore.deleteSession(this.options.sessionKey);
     this.sessionStore.deleteRuntimeState(this.options.sessionKey);
-    if (this.options.legacySessionKey && this.options.legacySessionKey !== this.options.sessionKey) {
-      this.sessionStore.deleteSession(this.options.legacySessionKey);
-      this.sessionStore.deleteRuntimeState(this.options.legacySessionKey);
+    for (const cleanupKey of this.resolveLegacyCleanupKeys()) {
+      this.sessionStore.deleteSession(cleanupKey);
+      this.sessionStore.deleteRuntimeState(cleanupKey);
     }
     return this.reset();
   }
@@ -80,10 +83,14 @@ export class SessionLifecycleManager {
   loadCurrentDirectory(): string | undefined {
     const current = this.sessionStore.loadRuntimeState(this.options.sessionKey).currentDirectory;
     if (current) return current;
-    if (!this.options.legacySessionKey || this.options.legacySessionKey === this.options.sessionKey) {
+    if (!this.shouldUseLegacySessionFallback()) {
       return undefined;
     }
-    return this.sessionStore.loadRuntimeState(this.options.legacySessionKey).currentDirectory;
+    const legacyRestoreKey = this.resolveLegacyRestoreKey();
+    if (!legacyRestoreKey || legacyRestoreKey === this.options.sessionKey) {
+      return undefined;
+    }
+    return this.sessionStore.loadRuntimeState(legacyRestoreKey).currentDirectory;
   }
 
   saveCurrentDirectory(currentDirectory: string): void {
@@ -107,10 +114,35 @@ export class SessionLifecycleManager {
     if (this.sessionStore.hasSession(this.options.sessionKey)) {
       return this.options.sessionKey;
     }
-    const legacy = this.options.legacySessionKey;
+    if (!this.shouldUseLegacySessionFallback()) {
+      return undefined;
+    }
+    const legacy = this.resolveLegacyRestoreKey();
     if (legacy && legacy !== this.options.sessionKey && this.sessionStore.hasSession(legacy)) {
       return legacy;
     }
     return undefined;
+  }
+
+  private resolveLegacyRestoreKey(): string | undefined {
+    return this.options.legacyRestoreKey || this.options.legacySessionKey;
+  }
+
+  private resolveLegacyCleanupKeys(): string[] {
+    const keys = [
+      this.options.legacyCleanupKey,
+      this.options.legacyRestoreKey,
+      this.options.legacySessionKey,
+    ];
+    const uniqueKeys = new Set<string>();
+    for (const key of keys) {
+      if (!key || key === this.options.sessionKey) continue;
+      uniqueKeys.add(key);
+    }
+    return Array.from(uniqueKeys);
+  }
+
+  private shouldUseLegacySessionFallback(): boolean {
+    return this.options.allowLegacySessionFallback !== false;
   }
 }

@@ -2,13 +2,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { PromptManager } from './prompt-manager';
 import {
+  assertSafePromptOverridesDir,
   getPromptOverridesDir,
+  isSafePromptOverridesDir,
   normalizePromptRelativePath,
   normalizePromptText,
   readPromptFile,
   resolvePromptPathWithin,
 } from './prompt-template';
 import { buildPromptTraceSnapshot, hashText } from './prompt-observability';
+import { BRANCH_AGENTS_ENABLED_ENV, isBranchAgentsEnabled } from '../core/branch-agent-settings';
 
 const MAX_PROMPT_EDIT_BYTES = 256 * 1024;
 
@@ -35,6 +38,12 @@ export interface PromptEditorState {
   writable: boolean;
   trace: ReturnType<typeof buildPromptTraceSnapshot>;
   files: PromptEditorFile[];
+  branch_agents: PromptBranchAgentsState;
+}
+
+export interface PromptBranchAgentsState {
+  enabled: boolean;
+  env_key: string;
 }
 
 export interface PromptEditorFileDetail extends PromptEditorFile {
@@ -47,11 +56,12 @@ export async function getPromptEditorState(): Promise<PromptEditorState> {
   const systemPrompt = await PromptManager.buildSystemPrompt();
   const files = listPromptEditorFiles();
   const overridesDir = getPromptOverridesDir();
+  const writable = Boolean(overridesDir && isSafePromptOverridesDir(baseDir, overridesDir));
 
   return {
     base_dir: labelLocalPath(baseDir),
     overrides_dir: overridesDir ? labelLocalPath(overridesDir) : undefined,
-    writable: Boolean(overridesDir),
+    writable,
     trace: buildPromptTraceSnapshot({
       promptsDir: baseDir,
       systemPrompt,
@@ -59,6 +69,14 @@ export async function getPromptEditorState(): Promise<PromptEditorState> {
       loadedFiles: ['runtime-context.md', 'system-prompt.md'],
     }),
     files,
+    branch_agents: getPromptBranchAgentsState(),
+  };
+}
+
+export function getPromptBranchAgentsState(): PromptBranchAgentsState {
+  return {
+    enabled: isBranchAgentsEnabled(),
+    env_key: BRANCH_AGENTS_ENABLED_ENV,
   };
 }
 
@@ -87,10 +105,8 @@ export function writePromptOverride(relativePath: string, content: string): Prom
     throw new Error('Prompt content cannot be empty');
   }
 
-  const overridesDir = getPromptOverridesDir();
-  if (!overridesDir) {
-    throw new Error('Prompt override directory is not configured');
-  }
+  const baseDir = PromptManager.getPromptsDir();
+  const overridesDir = assertSafePromptOverridesDir(baseDir);
 
   const outputPath = resolvePromptPathWithin(overridesDir, normalized);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
@@ -100,8 +116,10 @@ export function writePromptOverride(relativePath: string, content: string): Prom
 
 export function deletePromptOverride(relativePath: string): PromptEditorFileDetail {
   const normalized = normalizeEditablePromptPath(relativePath);
+  const baseDir = PromptManager.getPromptsDir();
   const overridesDir = getPromptOverridesDir();
   if (overridesDir) {
+    assertSafePromptOverridesDir(baseDir);
     const filePath = resolvePromptPathWithin(overridesDir, normalized);
     fs.rmSync(filePath, { force: true });
     pruneEmptyPromptDirs(path.dirname(filePath), overridesDir);
@@ -163,6 +181,7 @@ function listBasePromptPaths(baseDir: string): string[] {
 function promptOverrideExists(relativePath: string): boolean {
   const overridesDir = getPromptOverridesDir();
   if (!overridesDir) return false;
+  if (!isSafePromptOverridesDir(PromptManager.getPromptsDir(), overridesDir)) return false;
   return fs.existsSync(resolvePromptPathWithin(overridesDir, relativePath));
 }
 

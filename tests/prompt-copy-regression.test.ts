@@ -24,6 +24,8 @@ describe('prompt copy regression', () => {
     assert.match(descriptions, /不要编造子智能体或 sub-\.\.\. ID/);
     assert.match(descriptions, /当前主线必须由主 agent 继续推进/);
     assert.match(descriptions, /普通最终回复可以直接作为 assistant 内容返回/);
+    assert.match(descriptions, /只代表普通文本已发送/);
+    assert.match(descriptions, /不要用它声称文件、附件、预览、HTML 报告或其他富媒体产物已经生成或交付/);
   });
 
   test('spawn_subagent handoff result does not instruct the model to use a reply tool', async () => {

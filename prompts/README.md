@@ -63,7 +63,9 @@ prompts/runtime-context.md 渲染后的内容
 
 ## 生效粒度
 
-- 主会话的 `system-prompt.md` 和 `runtime-context.md` 在会话初始化时读取并注入第一条 system 消息。改完这两个文件后，需要重启进程并开启新会话，或清空/重置当前会话，才会让已经初始化的会话用上新版本。
+- 主会话的 `system-prompt.md` 和 `runtime-context.md` 会组成第一条 durable system 消息。会话初始化时会读取一次；之后每次新的用户消息或顶层 runtime observation 开始前，会重新计算 prompt hash。
+- 如果主 system prompt hash 变化，运行时会在这一轮开始前替换 durable history 里的主 system 消息。正在进行中的工具循环不会中途切换 prompt，保证同一轮推理稳定。
+- 如果只改了 `sidecars/`、`subagents/`、`transient/` 等非主 system 文件，主 system 文本不会被替换，但 prompt bundle hash 会在下一轮更新到日志 metadata，便于追踪“这一轮运行时对应哪批 prompt 文件”。
 - 恢复历史时不会长期保存旧 system prompt；持久化历史会过滤 system 消息，重启后恢复的会话会重新读取当前 prompt 文件。
 - `transient/`、`compact-system.md`、`subagents/`、`sidecars/` 多数是在每次对应调用时读取。改完文件后，下一次触发对应注入、压缩、子 agent 或 sidecar 调用就会使用新文本。
 - 运行时以应用目录下的 `prompts/` 作为内置基线；如果本地覆盖目录里存在同名 `.md` 文件，则优先读取覆盖版本。
@@ -237,4 +239,26 @@ Dashboard 的 `Prompt Lab` 页面会显示当前：
 - 覆盖目录
 - 每个 prompt 文件是否有 override
 
-保存后需要重启 connector 或开启新 session，日志里的 `prompt_trace` 才会记录新的 hash。
+保存后不需要重启 connector。主会话会在下一条用户消息或顶层 runtime observation 开始前重新计算 hash：
+
+- 主 system 文本变化时，替换当前 session 里的主 system message。
+- bundle/version/目录变化时，更新后续 turn 的 prompt metadata。
+- 当前正在执行中的请求继续使用启动那一轮时的 prompt，不会半途切换。
+
+如果改的是环境变量、模型配置或 connector 进程级配置，仍需要按对应配置的要求重启 connector。
+
+## Prompt 编辑工作流
+
+Prompt 改进分三层处理：
+
+1. **热加载层**：主会话在下一条用户消息或顶层 runtime observation 开始前检查 prompt hash。主 system 文本变化时替换 durable history 里的主 system message；正在执行中的工具循环不半途切换。
+2. **编辑 Skill 层**：`skills/catsco-prompt-editor/` 是一个 seed skill，用于指导旁路 agent 或虚拟宠物安全修改 prompt。它默认不自动写入用户 skills 目录；在 Dashboard 的 `Prompt Lab` 点击“安装编辑 Skill”后，会复制到本地用户 skills 目录，再由 SkillHub 页面分享或启停。
+3. **Companion 层**：虚拟宠物或旁路 agent 可以加载 `catsco-prompt-editor`，读取 Prompt Lab 状态，提出小范围 prompt diff，并通过 UI/确认框询问用户是否应用。主 agent 不应该在正常工作轮里自行重写自己的 system prompt。
+
+推荐流程：
+
+- 先用日志中的 `system_hash`、`bundle_hash`、`prompt_version` 判断当前效果对应哪一版 prompt。
+- 让 `catsco-prompt-editor` 只修改一个最相关的 `.md` 文件，并先展示目标、风险和预期行为变化。
+- 用户确认后写入本地覆盖目录。
+- 下一条用户消息自动使用新 prompt；如果要减少旧上下文干扰，可以在 CatsCo 会话里 `/clear` 或新开会话做 A/B。
+- 稳定后再把修改同步回仓库基线 prompt，或把 skill 发布到 SkillHub 供其他虚拟宠物/旁路 agent 安装。
