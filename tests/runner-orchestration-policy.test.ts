@@ -28,6 +28,7 @@ describe('runner orchestration policy', () => {
 
     assert.equal(hint.role, 'system');
     assert.ok(String(hint.content).startsWith(TRANSIENT_RUNNER_HINT_PREFIX));
+    assert.doesNotMatch(String(hint.content), /每一轮/);
     assert.match(String(hint.content), /update_plan/);
     assert.match(String(hint.content), /spawn_subagent/);
   });

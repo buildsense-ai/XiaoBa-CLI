@@ -105,9 +105,7 @@ export function buildSubagentSoftNudge(turns: number, executedToolCalls: number,
 export function buildPerTurnRunnerHint(tools: ToolDefinition[]): Message {
   const available = getAvailableOrchestrationTools(tools);
   return makeRunnerHint([
-    '运行时编排提示：每一轮都先判断当前任务应直接推进、维护计划，还是拆出可并行支线。',
-    '简单单点任务直接处理；不要为了形式调用 plan/subagent。',
-    '子 agent 是侧路加速，不替代主线；派出后主线仍应继续推进可独立完成的工作。',
+    '复杂任务可考虑维护计划或拆出独立支线；简单任务直接推进，不要为了形式调用编排工具。',
     available.length > 0
       ? buildAvailableToolHint(available)
       : '当前没有可用编排工具；按主线直接推进。',
