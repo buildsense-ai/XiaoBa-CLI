@@ -32,7 +32,7 @@ export interface AdapterRuntimeBundle {
 export function createAdapterRuntime(options: AdapterRuntimeOptions): AdapterRuntimeBundle {
   const { profile } = resolveRuntimeProfileFromConfig({
     surface: options.surface,
-    workingDirectory: options.workingDirectory ?? process.cwd(),
+    ...(options.workingDirectory !== undefined ? { workingDirectory: options.workingDirectory } : {}),
   });
   const services = RuntimeFactory.createServicesSync(profile);
   const systemPromptProviderFactory = createPromptProviderFactory(

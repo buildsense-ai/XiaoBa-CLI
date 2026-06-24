@@ -446,7 +446,7 @@ export class CatsCompanyBot {
       selectedDeviceOperations: [operation],
       createdAt: now,
     };
-    const workingDirectory = process.cwd();
+    const workingDirectory = this.runtimeProfile?.workingDirectory || this.runtime?.profile?.workingDirectory || process.cwd();
     return {
       workingDirectory,
       workspaceRoot: workingDirectory,

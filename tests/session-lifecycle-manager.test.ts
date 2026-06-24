@@ -107,6 +107,38 @@ describe('AgentSession lifecycle', () => {
     assert.equal(SessionStore.getInstance().loadRuntimeState('user:lifecycle-cwd').currentDirectory, defaultDir);
   });
 
+  test('current directory inside Electron userData is preserved when explicitly persisted', async () => {
+    const { AgentSession, SessionStore } = loadSessionModules();
+    const originalUserDataDir = process.env.XIAOBA_USER_DATA_DIR;
+    const defaultDir = fs.mkdtempSync(path.join(testRoot, 'workspace-'));
+    const userDataDir = fs.mkdtempSync(path.join(testRoot, 'user-data-'));
+    const storedDir = path.join(userDataDir, 'nested');
+    fs.mkdirSync(storedDir);
+    const services = buildMockServices({
+      toolManager: {
+        getWorkspaceRoot() { return defaultDir; },
+        getToolDefinitions() { return []; },
+        executeTool() { throw new Error('not expected'); },
+      },
+    });
+
+    try {
+      process.env.XIAOBA_USER_DATA_DIR = userDataDir;
+      SessionStore.getInstance().saveRuntimeState('user:lifecycle-user-data-cwd', { currentDirectory: storedDir });
+
+      const session = new AgentSession('user:lifecycle-user-data-cwd', services, 'feishu');
+
+      assert.equal((session as any).currentDirectory, storedDir);
+      assert.equal(
+        SessionStore.getInstance().loadRuntimeState('user:lifecycle-user-data-cwd').currentDirectory,
+        storedDir,
+      );
+    } finally {
+      if (originalUserDataDir === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+      else process.env.XIAOBA_USER_DATA_DIR = originalUserDataDir;
+    }
+  });
+
   test('CatsCo group cleanup-only legacy key is not used for restore fallback', async () => {
     const { AgentSession, SessionStore, createSessionRoute } = loadSessionModules();
     const defaultDir = fs.mkdtempSync(path.join(testRoot, 'default-'));

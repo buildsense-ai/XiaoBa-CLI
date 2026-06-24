@@ -239,8 +239,11 @@ export class AgentSession {
 
   private loadInitialCurrentDirectory(): string {
     const stored = this.lifecycleManager.loadCurrentDirectory();
-    if (stored && this.isExistingDirectory(stored)) {
-      return path.resolve(stored);
+    if (stored) {
+      const resolved = path.resolve(stored);
+      if (this.isExistingDirectory(resolved)) {
+        return resolved;
+      }
     }
     this.lifecycleManager.saveCurrentDirectory(this.defaultDirectory);
     return this.defaultDirectory;
