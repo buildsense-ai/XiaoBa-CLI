@@ -87,6 +87,22 @@ describe('CatsCompany MessageSender retry behavior', () => {
 });
 
 describe('CatsCompany MessageSender reply segmentation', () => {
+  test('splits short enumerated replies into separate messages', async () => {
+    const sent: any[] = [];
+    const sender = new MessageSender({
+      sendStructuredMessage: async (payload: any) => {
+        sent.push(payload);
+        return sent.length;
+      },
+    } as any, 'https://app.example.test', 'cc_test');
+
+    await sender.reply('p2p_1_2', '1）测试 126/0 全绿。\n2）无产物溯源会让承诺看起来像已完成。');
+
+    assert.equal(sent.length, 2);
+    assert.equal(sent[0].content, '1）测试 126/0 全绿。');
+    assert.equal(sent[1].content, '2）无产物溯源会让承诺看起来像已完成。');
+  });
+
   test('splits long structured replies into multiple readable text messages', async () => {
     const sent: any[] = [];
     const sender = new MessageSender({

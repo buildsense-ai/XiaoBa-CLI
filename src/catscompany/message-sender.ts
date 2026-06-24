@@ -227,6 +227,9 @@ export class MessageSender {
   private splitReplyText(text: string): string[] {
     const normalized = String(text || '').trim();
     if (!normalized) return [];
+    const shortListSegments = this.splitShortListReply(normalized);
+    if (shortListSegments) return shortListSegments;
+
     const rawBlocks = normalized.split(/\n{2,}/).map(block => block.trim()).filter(Boolean);
     if (
       normalized.length <= IDEAL_REPLY_SEGMENT_LENGTH
@@ -281,6 +284,22 @@ export class MessageSender {
 
     pushCurrent();
     return segments.length > 0 ? segments : [normalized];
+  }
+
+  private splitShortListReply(text: string): string[] | null {
+    if (text.length > IDEAL_REPLY_SEGMENT_LENGTH) return null;
+    if (/```|~~~/.test(text)) return null;
+
+    const lines = text
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean);
+
+    if (lines.length < 2 || lines.length > 5) return null;
+    if (!lines.every(line => line.length <= 160)) return null;
+    if (!lines.every(line => /^(?:\d+[\.\)、）]\s?|[-*+•]\s+)/.test(line))) return null;
+
+    return lines;
   }
 
   private formatReplyBlock(block: string): string {
