@@ -368,7 +368,7 @@ export class ConversationRunner {
         requestTools,
         readFileFoldingOptions,
         executeShellFoldingOptions,
-        this.resolveAdaptiveToolResultFoldingOptions(requestTools),
+        this.resolveAdaptiveToolResultFoldingOptions(),
       );
       requestMessages = adaptiveFolding.messages;
       if (adaptiveFolding.stats.folded_count > 0) {
@@ -1280,14 +1280,14 @@ export class ConversationRunner {
     return true;
   }
 
-  private resolveAdaptiveToolResultFoldingOptions(tools: ToolDefinition[]) {
-    const messageBudget = Math.max(1, this.maxPromptTokens - estimateToolsTokens(tools));
+  private resolveAdaptiveToolResultFoldingOptions() {
+    const promptBudget = Math.max(1, this.maxPromptTokens);
     const options = resolveAdaptiveToolResultFoldingOptions(process.env, {
-      targetPromptTokens: messageBudget,
+      targetPromptTokens: promptBudget,
     });
     return {
       ...options,
-      targetPromptTokens: Math.min(options.targetPromptTokens, messageBudget),
+      targetPromptTokens: Math.min(options.targetPromptTokens, promptBudget),
     };
   }
 

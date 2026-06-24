@@ -171,6 +171,77 @@ test('adaptive tool result folding uses runner message budget before mechanical 
   assert.equal(messages[2].content, raw);
 });
 
+test('adaptive tool result folding does not double-count tool schema budget', async () => {
+  const previousReadThreshold = process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS;
+  const previousAdaptiveEnabled = process.env.XIAOBA_ADAPTIVE_TOOL_RESULT_FOLDING;
+  const previousAdaptiveTarget = process.env.XIAOBA_ADAPTIVE_TOOL_RESULT_FOLD_TARGET_PROMPT_TOKENS;
+  process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS = '2000';
+  process.env.XIAOBA_ADAPTIVE_TOOL_RESULT_FOLDING = '1';
+  delete process.env.XIAOBA_ADAPTIVE_TOOL_RESULT_FOLD_TARGET_PROMPT_TOKENS;
+
+  const raw = makeReadFileOutput('E:/repo/under-budget.ts', 4000);
+  const messages: Message[] = [
+    { role: 'user', content: 'old request' },
+    makeToolCallMessage('call_under_budget_read', 'read_file', { file_path: 'E:/repo/under-budget.ts' }),
+    { role: 'tool', name: 'read_file', tool_call_id: 'call_under_budget_read', content: raw },
+    { role: 'assistant', content: 'old read complete' },
+    { role: 'user', content: 'current question '.repeat(500) },
+  ];
+  const tools: ToolDefinition[] = [{
+    name: 'large_tool',
+    description: 'tool schema '.repeat(250).slice(0, 3000),
+    parameters: {
+      type: 'object',
+      properties: {
+        payload: {
+          type: 'string',
+          description: 'payload '.repeat(100).slice(0, 700),
+        },
+      },
+    },
+  }];
+  const toolTokens = estimateToolsTokens(tools);
+  const totalPromptTokens = estimateMessagesTokens(messages) + toolTokens;
+  assert.ok(totalPromptTokens <= 5_000, `prompt should start under budget, got ${totalPromptTokens}`);
+  assert.ok(totalPromptTokens > 5_000 - toolTokens, 'fixture should catch accidental double-counting of tools');
+
+  const capturedMessages: Message[][] = [];
+  const capturedTools: ToolDefinition[][] = [];
+  const aiService = {
+    async chat(requestMessages: Message[], requestTools: ToolDefinition[]) {
+      capturedMessages.push(JSON.parse(JSON.stringify(requestMessages)));
+      capturedTools.push(JSON.parse(JSON.stringify(requestTools)));
+      return { content: 'done' };
+    },
+  };
+  const executor: ToolExecutor = {
+    getToolDefinitions: () => tools,
+    executeTool: async () => ({ content: 'unused' }),
+  };
+
+  try {
+    const runner = new ConversationRunner(aiService as any, executor, {
+      maxContextTokens: 5_000,
+      stream: false,
+      enableCompression: false,
+    });
+    await runner.run(messages);
+  } finally {
+    if (previousReadThreshold === undefined) delete process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS;
+    else process.env.XIAOBA_READ_FILE_FOLD_THRESHOLD_TOKENS = previousReadThreshold;
+    if (previousAdaptiveEnabled === undefined) delete process.env.XIAOBA_ADAPTIVE_TOOL_RESULT_FOLDING;
+    else process.env.XIAOBA_ADAPTIVE_TOOL_RESULT_FOLDING = previousAdaptiveEnabled;
+    if (previousAdaptiveTarget === undefined) delete process.env.XIAOBA_ADAPTIVE_TOOL_RESULT_FOLD_TARGET_PROMPT_TOKENS;
+    else process.env.XIAOBA_ADAPTIVE_TOOL_RESULT_FOLD_TARGET_PROMPT_TOKENS = previousAdaptiveTarget;
+  }
+
+  const providerToolResult = capturedMessages[0].find(message => message.tool_call_id === 'call_under_budget_read');
+  assert.equal(providerToolResult?.content, raw);
+  assert.ok(
+    estimateMessagesTokens(capturedMessages[0]) + estimateToolsTokens(capturedTools[0]) <= 5_000,
+  );
+});
+
 test('mechanical prompt trimming removes dangling tool result messages', () => {
   const runner = makeRunner(1_200);
   const messages: Message[] = [
