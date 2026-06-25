@@ -147,6 +147,55 @@ test('runner exposes assistant text before tool calls separately from working st
   assert.equal(result.response, '天气结果已整理。');
 });
 
+test('runner suppresses verbose diagnostic text before tool calls', async () => {
+  const diagnostic = [
+    '2. **超长混合代码块完整** — 看 split 输出，第一段含多个空行。',
+    '',
+    '问题：seg 里 b.start 是代码块开始位置，实际却被硬切到了代码块中间。',
+    '继续调试正则和硬切分支。',
+  ].join('\n');
+  const responses = [
+    {
+      content: diagnostic,
+      toolCalls: [makeToolCall('call_1', 'execute_shell', { command: 'node test.js' })],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 80,
+        totalTokens: 180,
+      },
+    },
+    makeFinalResponse('测试已修到全绿。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'execute_shell',
+      description: 'run command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }],
+    { execute_shell: 'ok' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const assistantText: string[] = [];
+  const thinking: string[] = [];
+
+  const result = await runner.run([{ role: 'user', content: '跑长任务' }], {
+    onAssistantText: text => assistantText.push(text),
+    onThinking: text => thinking.push(text),
+  });
+
+  assert.deepEqual(assistantText, []);
+  assert.deepEqual(thinking, []);
+  assert.equal(result.response, '测试已修到全绿。');
+  assert.equal(toolExecutor.getExecutionCount('execute_shell'), 1);
+});
+
 test('runner normalizes send_text tool into assistant transcript without tool_result pollution', async () => {
   const responses = [
     makeToolResponse(makeToolCall('call_1', 'send_text', { text: '老师好！' })),
