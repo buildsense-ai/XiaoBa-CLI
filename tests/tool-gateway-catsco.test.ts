@@ -139,6 +139,26 @@ describe('CatsCo ToolGateway', () => {
     }
   });
 
+  test('allows virtual employee local body tools when user device selection is unavailable', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'agent body content');
+
+    const result = await new ReadTool().execute({ file_path: filePath }, context(root, {
+      executionScope: scope({ agentBodyId: 'body-device' }),
+      localDeviceGrant: localDevice({ ownerUserId: 'usr9' }),
+      deviceSelection: deviceSelection({
+        status: 'unavailable',
+        selectedDeviceId: undefined,
+        selectedDeviceBodyId: undefined,
+        selectedDeviceInstallationId: undefined,
+      }),
+    }));
+
+    assert.equal(result.ok, true);
+    assert.match(result.ok ? String(result.content) : '', /agent body content/);
+  });
+
   test('allows regular read_file with a matching CatsCo user device grant', async () => {
     const root = makeWorkspace();
     const filePath = path.join(root, 'notes.txt');
@@ -687,6 +707,20 @@ describe('CatsCo ToolGateway', () => {
 
     assert.equal(result.ok, true);
     if (result.ok) assert.match(result.content, /catsco-shell-ok/);
+  });
+
+  test('allows virtual employee local body execute_shell without user-device grant', async () => {
+    const root = makeWorkspace();
+    const result = await new ShellTool().execute({ command: 'echo catsco-agent-body-shell-ok' }, context(root, {
+      executionScope: scope({ agentBodyId: 'body-device' }),
+      localDeviceGrant: localDevice({
+        ownerUserId: 'usr9',
+        capabilities: ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file', 'execute_shell'],
+      }),
+    }));
+
+    assert.equal(result.ok, true);
+    if (result.ok) assert.match(result.content, /catsco-agent-body-shell-ok/);
   });
 
   test('routes remote execute_shell for a mobile channel speaker when selected and granted', async () => {
