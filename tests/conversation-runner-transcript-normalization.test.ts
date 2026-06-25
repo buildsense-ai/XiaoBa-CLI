@@ -238,6 +238,49 @@ test('runner suppresses short debugging diagnosis before tool calls', async () =
   assert.equal(result.response, '已修好。');
 });
 
+test('runner still surfaces concise progress before tool calls', async () => {
+  const responses = [
+    {
+      content: '正在跑测试。',
+      toolCalls: [makeToolCall('call_1', 'execute_shell', { command: 'node test.js' })],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 8,
+        totalTokens: 108,
+      },
+    },
+    makeFinalResponse('测试已通过。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'execute_shell',
+      description: 'run command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }],
+    { execute_shell: 'ok' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const assistantText: string[] = [];
+  const thinking: string[] = [];
+
+  const result = await runner.run([{ role: 'user', content: '跑测试' }], {
+    onAssistantText: text => assistantText.push(text),
+    onThinking: text => thinking.push(text),
+  });
+
+  assert.deepEqual(assistantText, ['正在跑测试。']);
+  assert.deepEqual(thinking, []);
+  assert.equal(result.response, '测试已通过。');
+  assert.equal(toolExecutor.getExecutionCount('execute_shell'), 1);
+});
+
 test('runner does not leak suppressed tool prelude through thinking callbacks', async () => {
   const responses = [
     {

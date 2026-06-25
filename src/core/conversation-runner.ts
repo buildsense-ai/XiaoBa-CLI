@@ -101,7 +101,7 @@ const TOOL_PRELUDE_INTERNAL_PATTERNS = [
   /\bactual=/i,
   /\bexpected=/i,
   /\b\d+\s*\/\s*\d+\b/,
-  /根因|原因|问题|诊断|bug|报错|错误|异常|失败|断言|测试|调试|正则|期望|实际|可能是|应该|测试要求|代码块被切|硬切|贪心/,
+  /根因|原因|问题|诊断|bug|报错|错误|异常|失败|断言|调试|正则|期望|实际|可能是|应该|测试要求|代码块被切|硬切|贪心/,
 ];
 
 const TOOL_PRELUDE_PROGRESS_PATTERN =
