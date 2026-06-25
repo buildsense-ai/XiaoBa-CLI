@@ -196,6 +196,87 @@ test('runner suppresses verbose diagnostic text before tool calls', async () => 
   assert.equal(toolExecutor.getExecutionCount('execute_shell'), 1);
 });
 
+test('runner suppresses short debugging diagnosis before tool calls', async () => {
+  const responses = [
+    {
+      content: '继续调试测试失败项，先看断言和实际输出。',
+      toolCalls: [makeToolCall('call_1', 'execute_shell', { command: 'node test.js' })],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+      },
+    },
+    makeFinalResponse('已修好。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'execute_shell',
+      description: 'run command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }],
+    { execute_shell: 'ok' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const assistantText: string[] = [];
+  const thinking: string[] = [];
+
+  const result = await runner.run([{ role: 'user', content: '继续排查' }], {
+    onAssistantText: text => assistantText.push(text),
+    onThinking: text => thinking.push(text),
+  });
+
+  assert.deepEqual(assistantText, []);
+  assert.deepEqual(thinking, []);
+  assert.equal(result.response, '已修好。');
+});
+
+test('runner does not leak suppressed tool prelude through thinking callbacks', async () => {
+  const responses = [
+    {
+      content: '103/4。剩 html 转义和 3 个失败断言，继续调试。',
+      toolCalls: [makeToolCall('call_1', 'execute_shell', { command: 'node test.js' })],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+      },
+    },
+    makeFinalResponse('已完成。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'execute_shell',
+      description: 'run command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }],
+    { execute_shell: 'ok' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const thinking: string[] = [];
+
+  const result = await runner.run([{ role: 'user', content: '跑测试' }], {
+    onThinking: text => thinking.push(text),
+  });
+
+  assert.deepEqual(thinking, []);
+  assert.equal(result.response, '已完成。');
+});
+
 test('runner normalizes send_text tool into assistant transcript without tool_result pollution', async () => {
   const responses = [
     makeToolResponse(makeToolCall('call_1', 'send_text', { text: '老师好！' })),
