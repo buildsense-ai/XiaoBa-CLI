@@ -486,6 +486,130 @@ describe('ToolManager', () => {
     assert.equal(confirmed, false);
   });
 
+  test('CatsCo virtual employee local body runs shell without confirmation for non-owner actors', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-agent-body-'));
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    let executed = false;
+    manager.registerTool(fakeTool('execute_shell', async () => {
+      executed = true;
+      return { ok: true, content: 'agent body shell ran' };
+    }));
+    let confirmed = false;
+
+    const result = await manager.executeTool({
+      id: 'call-catsco-agent-body-shell',
+      type: 'function',
+      function: { name: 'execute_shell', arguments: JSON.stringify({ command: 'Remove-Item -Recurse C:\\danger' }) },
+    }, [], {
+      surface: 'catscompany',
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      executionScope: catsScope({
+        actorUserId: 'usr100',
+        sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+        topicId: 'p2p_100_43',
+      }),
+      localDeviceGrant: catsLocalDevice({ ownerUserId: 'usr7' }),
+      confirmToolExecution: async () => {
+        confirmed = true;
+        return false;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.content, 'agent body shell ran');
+    assert.equal(executed, true);
+    assert.equal(confirmed, false);
+  });
+
+  test('CatsCo non-agent-local-body shell contexts still require strict confirmation', async () => {
+    const cases: Array<{
+      name: string;
+      executionScope: ExecutionScope;
+      localDeviceGrant: ScopedLocalDeviceGrant;
+    }> = [
+      {
+        name: 'agent body mismatch',
+        executionScope: catsScope({
+          actorUserId: 'usr100',
+          sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+          topicId: 'p2p_100_43',
+          agentBodyId: 'body-other',
+        }),
+        localDeviceGrant: catsLocalDevice({ ownerUserId: 'usr7' }),
+      },
+      {
+        name: 'untrusted identity',
+        executionScope: catsScope({
+          actorUserId: 'usr100',
+          sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+          topicId: 'p2p_100_43',
+          identityTrust: 'untrusted',
+          isTrusted: false,
+        }),
+        localDeviceGrant: catsLocalDevice({ ownerUserId: 'usr7' }),
+      },
+      {
+        name: 'non-CatsCo local device',
+        executionScope: catsScope({
+          actorUserId: 'usr100',
+          sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+          topicId: 'p2p_100_43',
+        }),
+        localDeviceGrant: catsLocalDevice({
+          ownerUserId: 'usr7',
+          source: 'cli',
+        } as Partial<ScopedLocalDeviceGrant>),
+      },
+      {
+        name: 'missing local body id',
+        executionScope: catsScope({
+          actorUserId: 'usr100',
+          sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+          topicId: 'p2p_100_43',
+        }),
+        localDeviceGrant: catsLocalDevice({
+          ownerUserId: 'usr7',
+          bodyId: undefined,
+        } as Partial<ScopedLocalDeviceGrant>),
+      },
+    ];
+
+    for (const item of cases) {
+      const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-non-agent-body-'));
+      const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+      let executed = false;
+      let confirmations = 0;
+      manager.registerTool(fakeTool('execute_shell', async () => {
+        executed = true;
+        return { ok: true, content: 'should not run without confirmation' };
+      }));
+
+      const result = await manager.executeTool({
+        id: `call-catsco-shell-${item.name.replace(/\W+/g, '-')}`,
+        type: 'function',
+        function: { name: 'execute_shell', arguments: JSON.stringify({ command: 'echo should-confirm' }) },
+      }, [], {
+        surface: 'catscompany',
+        permissionProfile: 'strict',
+        workingDirectory: workspace,
+        workspaceRoot: workspace,
+        executionScope: item.executionScope,
+        localDeviceGrant: item.localDeviceGrant,
+        confirmToolExecution: async () => {
+          confirmations += 1;
+          return false;
+        },
+      });
+
+      assert.equal(result.ok, false, item.name);
+      assert.equal(result.errorCode, 'PERMISSION_DENIED', item.name);
+      assert.equal(executed, false, item.name);
+      assert.equal(confirmations, 1, item.name);
+    }
+  });
+
   test('CatsCo local owner self accepts numeric local owner ids from saved config', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-owner-id-'));
     const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
