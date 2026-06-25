@@ -41,6 +41,7 @@ import {
   TRANSIENT_RUNTIME_CONTEXT_PREFIX,
   buildRuntimeContextMessage,
 } from './runtime-context-builder';
+import { buildPendingUserInputBoundaryMessage } from './pending-user-input-boundary';
 import {
   TRANSIENT_CURRENT_DIRECTORY_PREFIX,
   buildTransientEnvironmentHint,
@@ -721,6 +722,7 @@ export class ConversationRunner {
       this.refreshRuntimeContextForPendingInput(messages);
     }
 
+    messages.push(buildPendingUserInputBoundaryMessage());
     const userMessage: Message = {
       role: 'user',
       content,

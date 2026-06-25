@@ -3,6 +3,8 @@ import * as assert from 'node:assert';
 import * as path from 'path';
 import { ConversationRunner } from '../src/core/conversation-runner';
 import { TRANSIENT_RUNTIME_CONTEXT_PREFIX } from '../src/core/runtime-context-builder';
+import { TRANSIENT_PENDING_USER_INPUT_PREFIX } from '../src/core/pending-user-input-boundary';
+import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { Message } from '../src/types';
 import type { ExecutionScope, ScopedDeviceGrant, ScopedLocalFileGrant } from '../src/types/session-identity';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult } from '../src/types/tool';
@@ -121,6 +123,7 @@ describe('ConversationRunner pending input', () => {
     assert.strictEqual(result.response, 'merged reply');
     assert.strictEqual(requests.length, 2);
     assert.ok(requests[1].some(msg => msg.role === 'user' && msg.content === 'follow-up while busy'));
+    assertPendingBoundaryBeforeUser(requests[1], 'follow-up while busy');
   });
 
   test('marks pending input with the active episode metadata', async () => {
@@ -196,6 +199,22 @@ describe('ConversationRunner pending input', () => {
     assert.strictEqual(requests.length, 2);
     assert.ok(requests[1].some(msg => msg.role === 'tool' && msg.content === 'ok'));
     assert.ok(requests[1].some(msg => msg.role === 'user' && msg.content === 'new query after tool turn'));
+    assertPendingBoundaryBeforeUser(requests[1], 'new query after tool turn');
+  });
+
+  test('does not persist pending input boundary in durable history', async () => {
+    const messages: Message[] = [
+      { role: 'system', content: 'base system' },
+      { role: 'system', content: `${TRANSIENT_PENDING_USER_INPUT_PREFIX}\nlatest message wins` },
+      { role: 'user', content: 'follow-up while busy' },
+    ];
+
+    const durable = new TurnContextBuilder().removeTransientMessages(messages);
+
+    assert.deepEqual(durable, [
+      { role: 'system', content: 'base system' },
+      { role: 'user', content: 'follow-up while busy' },
+    ]);
   });
 
   test('merges pending local file grants into later tool execution context without clearing existing grants', async () => {
@@ -371,4 +390,20 @@ function isRuntimeContextMessage(message: Message): boolean {
 function parseRuntimeContext(message: Message): any {
   const content = String(message.content || '');
   return JSON.parse(content.slice(TRANSIENT_RUNTIME_CONTEXT_PREFIX.length).trim());
+}
+
+function assertPendingBoundaryBeforeUser(messages: Message[], userContent: string): void {
+  const boundaryIndex = messages.findIndex(message =>
+    message.role === 'system'
+    && typeof message.content === 'string'
+    && message.content.startsWith(TRANSIENT_PENDING_USER_INPUT_PREFIX)
+  );
+  const userIndex = messages.findIndex(message =>
+    message.role === 'user'
+    && message.content === userContent
+  );
+
+  assert.ok(boundaryIndex >= 0, 'pending boundary should be sent before merged input');
+  assert.ok(userIndex >= 0, 'pending user input should be sent');
+  assert.equal(boundaryIndex + 1, userIndex);
 }
