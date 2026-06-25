@@ -40,6 +40,26 @@ function mockAIService(summaryText: string): AIService {
   } as unknown as AIService;
 }
 
+function mockAIServiceWithCapture(summaryText: string): { service: AIService; requests: Message[][] } {
+  const requests: Message[][] = [];
+  const service = {
+    chat: async () => ({
+      content: `<summary>\n${summaryText}\n</summary>`,
+      usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+    }),
+    chatStream: async (_messages: Message[], _tools?: any, callbacks?: any) => {
+      requests.push(_messages.map(message => ({ ...message })));
+      const content = `<summary>\n${summaryText}\n</summary>`;
+      callbacks?.onText?.(content);
+      return {
+        content,
+        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      };
+    },
+  } as unknown as AIService;
+  return { service, requests };
+}
+
 // ─── contentToString ─────────────────────────────────────
 
 describe('contentToString', () => {
@@ -180,7 +200,7 @@ describe('ContextCompressor.compact', () => {
   });
 
   test('全量压缩：session 被摘要，system 保留', async () => {
-    const compressor = new ContextCompressor(aiService);
+    const compressor = new ContextCompressor(aiService, { preserveRecentEpisodes: 0 });
     const messages: Message[] = [
       system('你是小八'),
       system('[session_context] adapter context'),
@@ -214,7 +234,7 @@ describe('ContextCompressor.compact', () => {
   });
 
   test('全量压缩：结果中无任何 tool_call_id 引用', async () => {
-    const compressor = new ContextCompressor(aiService);
+    const compressor = new ContextCompressor(aiService, { preserveRecentEpisodes: 0 });
     const messages: Message[] = [
       user('读文件'),
       assistant('ok', [{ id: 'tc1', type: 'function', function: { name: 'read', arguments: '{}' } }]),
@@ -234,7 +254,7 @@ describe('ContextCompressor.compact', () => {
   });
 
   test('空 session 时返回原消息', async () => {
-    const compressor = new ContextCompressor(aiService);
+    const compressor = new ContextCompressor(aiService, { preserveRecentEpisodes: 0 });
     const messages: Message[] = [system('base')];
     const result = await compressor.compact(messages);
     assert.deepEqual(result, messages);
@@ -254,7 +274,7 @@ describe('ContextCompressor.compact', () => {
   });
 
   test('压缩结果：system + boundary + summary', async () => {
-    const compressor = new ContextCompressor(aiService);
+    const compressor = new ContextCompressor(aiService, { preserveRecentEpisodes: 0 });
     const messages: Message[] = [system('你是小八'), user('hello'), assistant('hi')];
     const result = await compressor.compact(messages);
 
@@ -271,7 +291,7 @@ describe('ContextCompressor.compact', () => {
   });
 
   test('boundary 记录原始消息数和 token', async () => {
-    const compressor = new ContextCompressor(aiService);
+    const compressor = new ContextCompressor(aiService, { preserveRecentEpisodes: 0 });
     const messages: Message[] = [
       system('base'),
       user('msg1'),
@@ -286,6 +306,120 @@ describe('ContextCompressor.compact', () => {
     assert.ok(boundary !== undefined);
     assert.ok((boundary!.content as string).includes('messages summarized'));
     assert.ok((boundary!.content as string).includes('Pre-compact tokens:'));
+  });
+
+  test('preserves a short marked recent episode verbatim and excludes it from summary input', async () => {
+    const capture = mockAIServiceWithCapture('summary-body');
+    const compressor = new ContextCompressor(capture.service, { preserveRecentEpisodes: 1 });
+    const messages: Message[] = [
+      system('base'),
+      user('old request'),
+      assistant('old answer'),
+      { role: 'user', content: 'recent root', __episodeId: 'episode:recent', __episodeInputKind: 'root' },
+      {
+        role: 'assistant',
+        content: 'calling tool',
+        tool_calls: [{
+          id: 'call_recent',
+          type: 'function',
+          function: { name: 'read_notes', arguments: '{"path":"notes.md"}' },
+        }],
+        __episodeId: 'episode:recent',
+      },
+      { role: 'tool', name: 'read_notes', tool_call_id: 'call_recent', content: 'tool full result', __episodeId: 'episode:recent' },
+      { role: 'assistant', content: 'recent final', __episodeId: 'episode:recent' },
+    ];
+
+    const result = await compressor.compact(messages);
+    const summaryRequestText = String(capture.requests[0][1].content);
+
+    assert.match(summaryRequestText, /old request/);
+    assert.doesNotMatch(summaryRequestText, /recent root/);
+    assert.doesNotMatch(summaryRequestText, /tool full result/);
+    assert.doesNotMatch(summaryRequestText, /recent final/);
+
+    const preserved = result.filter(message => message.__episodeId === 'episode:recent');
+    assert.equal(preserved.length, 4);
+    assert.deepEqual(preserved.map(message => message.role), ['user', 'assistant', 'tool', 'assistant']);
+    assert.equal(preserved[0].content, 'recent root');
+    assert.equal(preserved[0].__episodeInputKind, 'root');
+    assert.equal(preserved[1].tool_calls?.[0].function.name, 'read_notes');
+    assert.equal(preserved[2].content, 'tool full result');
+    assert.equal(preserved[3].content, 'recent final');
+  });
+
+  test('preserves the two latest short marked episodes when both fit the budget', async () => {
+    const capture = mockAIServiceWithCapture('summary-body');
+    const compressor = new ContextCompressor(capture.service, { preserveRecentEpisodes: 2 });
+    const messages: Message[] = [
+      system('base'),
+      user('old request'),
+      assistant('old answer'),
+      { role: 'user', content: 'episode one root', __episodeId: 'episode:one', __episodeInputKind: 'root' },
+      { role: 'assistant', content: 'episode one final', __episodeId: 'episode:one' },
+      { role: 'user', content: 'episode two root', __episodeId: 'episode:two', __episodeInputKind: 'root' },
+      { role: 'assistant', content: 'episode two final', __episodeId: 'episode:two' },
+    ];
+
+    const result = await compressor.compact(messages);
+    const preservedOne = result.filter(message => message.__episodeId === 'episode:one');
+    const preservedTwo = result.filter(message => message.__episodeId === 'episode:two');
+
+    assert.equal(preservedOne.length, 2);
+    assert.equal(preservedTwo.length, 2);
+    assert.deepEqual(preservedOne.map(message => message.content), ['episode one root', 'episode one final']);
+    assert.deepEqual(preservedTwo.map(message => message.content), ['episode two root', 'episode two final']);
+    assert.doesNotMatch(String(capture.requests[0][1].content), /episode one root|episode two root/);
+  });
+
+  test('turns an oversized marked episode into a text capsule instead of partial tool messages', async () => {
+    const capture = mockAIServiceWithCapture('summary-body');
+    const compressor = new ContextCompressor(capture.service, {
+      maxContextTokens: 1000,
+      preserveRecentEpisodes: 1,
+      preserveRecentEpisodeTokenBudget: 50,
+      recentEpisodeCapsuleMaxChars: 3000,
+    });
+    const longRoot = `root request ${'x'.repeat(4000)}`;
+    const messages: Message[] = [
+      system('base'),
+      user('old request'),
+      assistant('old answer'),
+      { role: 'user', content: longRoot, __episodeId: 'episode:big', __episodeInputKind: 'root' },
+      {
+        role: 'assistant',
+        content: 'calling search',
+        tool_calls: [{
+          id: 'call_big',
+          type: 'function',
+          function: { name: 'search_notes', arguments: '{"query":"birthday dinner"}' },
+        }],
+        __episodeId: 'episode:big',
+      },
+      { role: 'tool', name: 'search_notes', tool_call_id: 'call_big', content: `search result ${'y'.repeat(2000)}`, __episodeId: 'episode:big' },
+      { role: 'user', content: 'pending correction', __episodeId: 'episode:big', __episodeInputKind: 'pending' },
+      { role: 'assistant', content: 'final answer with constraints', __episodeId: 'episode:big' },
+    ];
+
+    const result = await compressor.compact(messages);
+    const capsule = result.find(message =>
+      message.role === 'user'
+      && typeof message.content === 'string'
+      && message.content.startsWith('[recent_episode_context]')
+    );
+
+    assert.ok(capsule, 'capsule should be present');
+    const capsuleText = String(capsule!.content);
+    assert.match(capsuleText, /USER_ROOT/);
+    assert.match(capsuleText, /USER_PENDING/);
+    assert.match(capsuleText, /ASSISTANT_FINAL/);
+    assert.match(capsuleText, /TOOLS/);
+    assert.match(capsuleText, /search_notes/);
+    assert.match(capsuleText, /birthday dinner/);
+    assert.match(capsuleText, /final answer with constraints/);
+    assert.equal(result.some(message => message.role === 'tool'), false);
+    assert.equal(result.some(message => message.role === 'assistant'), false);
+    assert.match(String(capture.requests[0][1].content), /\[recent_episode_context\]/);
   });
 
   test('needsCompaction 正确判断', async () => {
@@ -324,7 +458,7 @@ describe('全流程：压缩 → push current_input → 推理', () => {
     ];
 
     const aiService = mockAIService('用户问了三个问题，已全部回答。第三个问题是关于XXX。');
-    const compressor = new ContextCompressor(aiService);
+    const compressor = new ContextCompressor(aiService, { preserveRecentEpisodes: 0 });
 
     // Step 1: 压缩
     const afterCompact = await compressor.compact(historyMessages);

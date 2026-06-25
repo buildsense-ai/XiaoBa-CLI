@@ -169,6 +169,8 @@ export interface RunnerOptions {
   pendingUserInputProvider?: PendingUserInputProvider;
   /** Non-blocking runtime observations produced by sidecar branches. */
   syntheticObservationProvider?: SyntheticObservationProvider;
+  /** Internal id that ties all messages created by one externally visible user turn together. */
+  episodeId?: string;
 }
 
 /**
@@ -189,6 +191,7 @@ export class ConversationRunner {
   private pendingUserInputProvider?: PendingUserInputProvider;
   private promptTraceLogger: PromptTraceLogger;
   private syntheticObservationProvider?: SyntheticObservationProvider;
+  private episodeId?: string;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -212,6 +215,7 @@ export class ConversationRunner {
     this.toolExecutionContext = options?.toolExecutionContext;
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
     this.syntheticObservationProvider = options?.syntheticObservationProvider;
+    this.episodeId = options?.episodeId;
     this.maxTurns = options?.maxTurns;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
@@ -717,7 +721,14 @@ export class ConversationRunner {
       this.refreshRuntimeContextForPendingInput(messages);
     }
 
-    const userMessage: Message = { role: 'user', content };
+    const userMessage: Message = {
+      role: 'user',
+      content,
+      ...(this.episodeId ? {
+        __episodeId: this.episodeId,
+        __episodeInputKind: 'pending' as const,
+      } : {}),
+    };
     messages.push(userMessage);
     newMessages.push(userMessage);
 

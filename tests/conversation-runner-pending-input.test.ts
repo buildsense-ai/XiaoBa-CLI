@@ -123,6 +123,43 @@ describe('ConversationRunner pending input', () => {
     assert.ok(requests[1].some(msg => msg.role === 'user' && msg.content === 'follow-up while busy'));
   });
 
+  test('marks pending input with the active episode metadata', async () => {
+    const requests: Message[][] = [];
+    const aiService = {
+      chat: async (messages: Message[]) => {
+        requests.push(messages.map(msg => ({ ...msg })));
+        return requests.length === 1
+          ? { content: 'first reply', toolCalls: [], usage }
+          : { content: 'merged reply', toolCalls: [], usage };
+      },
+    } as any;
+
+    let pendingUsed = false;
+    const runner = new ConversationRunner(aiService, createNoopToolExecutor(), {
+      stream: false,
+      episodeId: 'episode:test',
+      pendingUserInputProvider: () => {
+        if (pendingUsed) return null;
+        pendingUsed = true;
+        return 'follow-up while busy';
+      },
+    });
+
+    await runner.run([{
+      role: 'user',
+      content: 'first question',
+      __episodeId: 'episode:test',
+      __episodeInputKind: 'root',
+    }]);
+
+    const root = requests[1].find(msg => msg.role === 'user' && msg.content === 'first question');
+    const pending = requests[1].find(msg => msg.role === 'user' && msg.content === 'follow-up while busy');
+    assert.equal(root?.__episodeId, 'episode:test');
+    assert.equal(root?.__episodeInputKind, 'root');
+    assert.equal(pending?.__episodeId, 'episode:test');
+    assert.equal(pending?.__episodeInputKind, 'pending');
+  });
+
   test('adds pending input after a tool turn before asking the model again', async () => {
     const requests: Message[][] = [];
     const aiService = {
