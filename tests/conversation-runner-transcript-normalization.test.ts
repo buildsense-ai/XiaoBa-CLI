@@ -260,7 +260,7 @@ test('runner injects current directory before the active request context without
   assert.equal(secondCallMessages[assistantToolIndex + 1].role, 'tool');
   assert.match(
     String(secondCallMessages[cwdIndex].content),
-    /^\[transient_current_directory\]\nRuntime context only\. Not a user request\. Do not answer\.\ndate: \d{4}-\d{2}-\d{2}\ncwd: C:\\Users\\test\\workspace\nos: .+\nshell: .+\nUse cwd for relative file and shell paths\.$/,
+    /^\[transient_current_directory\]\nRuntime context only\. Not a user request\. Do not answer\.\ncwd: C:\\Users\\test\\workspace\nos: .+\nshell: .+\nUse cwd for relative file and shell paths\.$/,
   );
   assert.equal(
     secondCallMessages[secondCallMessages.length - 1].role,

@@ -1082,7 +1082,6 @@ export class ConversationRunner {
     const modelConfig = (this.aiService as any).getConfig?.();
     return buildTransientEnvironmentHint({
       currentDirectory,
-      surface: this.toolExecutionContext?.surface,
       provider: modelConfig?.provider,
       model: modelConfig?.model,
     });
