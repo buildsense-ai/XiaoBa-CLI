@@ -52,6 +52,7 @@ import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/mo
 import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
 import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
 import { PromptTraceLogger } from '../utils/prompt-trace-logger';
+import { prependToolTargetContext } from '../tools/tool-target-context';
 import {
   buildSyntheticObservationLifecycleEvent,
   buildSyntheticObservationMessages,
@@ -636,9 +637,9 @@ export class ConversationRunner {
           hasDeliveredMessageOutThisRun = true;
         }
 
-        const toolContent = result.content;
+        const toolContent = prependToolTargetContext(result.content, result.targetContext);
 
-        this.handleToolDisplay(toolCall, contentToString(toolContent), callbacks);
+        this.handleToolDisplay(toolCall, contentToString(result.content), callbacks);
         executionRecords.push({
           toolCall,
           toolName,

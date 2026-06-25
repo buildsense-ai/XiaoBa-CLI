@@ -43,4 +43,10 @@ test('shell name resolver accepts common Windows and POSIX env fields', () => {
   assert.equal(resolveShellName({ ComSpec: 'C:\\Windows\\System32\\cmd.exe' }), 'cmd');
   assert.equal(resolveShellName({ SHELL: '/bin/zsh' }), 'zsh');
   assert.equal(resolveShellName({ PSModulePath: 'C:\\Users\\test\\Documents\\PowerShell\\Modules' }), 'powershell');
+  if (process.platform === 'win32') {
+    assert.equal(resolveShellName({
+      ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+      PSModulePath: 'C:\\Users\\test\\Documents\\PowerShell\\Modules',
+    }), 'powershell');
+  }
 });

@@ -33,6 +33,10 @@ import {
   normalizeDeviceRpcToolResultForTransport,
   normalizeDeviceRpcToolResultPayload,
 } from '../tools/device-rpc-tool';
+import {
+  annotateToolExecutionResultWithTargetContext,
+  stripToolTargetContextForDisplay,
+} from '../tools/tool-target-context';
 import { formatPathForLog } from '../utils/log-redaction';
 
 interface PendingAttachment {
@@ -363,28 +367,42 @@ export class CatsCompanyBot {
 
     const context = this.buildDeviceRpcToolContext(request, operation);
     const args = this.extractDeviceRpcToolArgs(request.payload);
+    let result: ToolExecutionResult;
     switch (operation) {
       case 'read_file':
-        return new ReadTool().execute(args, context);
+        result = await new ReadTool().execute(args, context);
+        break;
       case 'resolve_common_directory':
-        return resolveCommonDirectoryToolArgs(args);
+        result = resolveCommonDirectoryToolArgs(args);
+        break;
       case 'glob':
-        return new GlobTool().execute(args, context);
+        result = await new GlobTool().execute(args, context);
+        break;
       case 'grep':
-        return new GrepTool().execute(args, context);
+        result = await new GrepTool().execute(args, context);
+        break;
       case 'write_file':
-        return new WriteTool().execute(args, context);
+        result = await new WriteTool().execute(args, context);
+        break;
       case 'edit_file':
-        return new EditTool().execute(args, context);
+        result = await new EditTool().execute(args, context);
+        break;
       case 'execute_shell':
-        return new ShellTool().execute(args, context);
+        result = await new ShellTool().execute(args, context);
+        break;
       default:
-        return {
+        result = {
           ok: false,
           errorCode: 'PERMISSION_DENIED',
           message: `Device RPC 不允许执行 ${operation}。`,
         };
     }
+
+    return annotateToolExecutionResultWithTargetContext(result, context, {
+      toolName,
+      operation,
+      cwd: context.workingDirectory,
+    });
   }
 
   private buildDeviceRpcToolContext(
@@ -652,7 +670,7 @@ export class CatsCompanyBot {
           return;
         }
         try {
-          let content = result;
+          let content = stripToolTargetContextForDisplay(result);
 
           // 清理 execute_shell 的格式化前缀
           if (content.startsWith('命令执行成功:') || content.startsWith('命令执行失败:')) {

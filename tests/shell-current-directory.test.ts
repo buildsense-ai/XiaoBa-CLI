@@ -60,6 +60,23 @@ describe('ShellTool current directory probe', () => {
     assert.ok(!(result.content as string).includes('__XIAOBA_CWD_MARKER__'));
   });
 
+  test('explicit cwd runs the command from that directory and persists final cwd', async () => {
+    const tool = new ShellTool();
+    const command = process.platform === 'win32'
+      ? 'Set-Content -LiteralPath marker.txt -Value ok'
+      : 'printf ok > marker.txt';
+    const result = await tool.execute({ command, cwd: 'sub' }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    assert.ok(fs.existsSync(path.join(testRoot, 'sub', 'marker.txt')));
+    assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
+    assert.ok((result.content as string).includes(`Working directory: ${path.resolve(testRoot, 'sub')}`));
+    assert.ok((result.content as string).includes(`Final cwd: ${path.resolve(testRoot, 'sub')}`));
+  });
+
   test('failed cd does not update session current directory', async () => {
     const tool = new ShellTool();
     const result = await tool.execute({ command: 'cd missing-directory' }, {

@@ -86,6 +86,40 @@ class MockToolExecutor implements ToolExecutor {
   }
 }
 
+class TargetContextToolExecutor implements ToolExecutor {
+  getToolDefinitions(): ToolDefinition[] {
+    return [{
+      name: 'execute_shell',
+      description: 'mock shell',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }];
+  }
+
+  async executeTool(toolCall: ToolCall): Promise<ToolResult> {
+    return {
+      tool_call_id: toolCall.id,
+      role: 'tool',
+      name: toolCall.function.name,
+      content: 'Command succeeded:\n$ echo ok\nok',
+      targetContext: [
+        '[tool_target]',
+        'tool: execute_shell',
+        'operation: execute_shell',
+        'target: virtual_employee_cloud_runtime',
+        'cwd: C:\\agent\\repo',
+        '[/tool_target]',
+      ].join('\n'),
+      ok: true,
+    };
+  }
+}
+
 function createMockAI(responses: ChatResponse[]) {
   const receivedMessages: Message[][] = [];
   let index = 0;
@@ -145,6 +179,30 @@ test('runner exposes assistant text before tool calls separately from working st
   assert.deepEqual(assistantText, ['我先查一下天气。']);
   assert.deepEqual(thinking, []);
   assert.equal(result.response, '天气结果已整理。');
+});
+
+test('runner injects tool target context into provider transcript only', async () => {
+  const responses = [
+    makeToolResponse(makeToolCall('call_1', 'execute_shell', { command: 'echo ok' })),
+    makeFinalResponse('done'),
+  ];
+  const { aiService, getReceivedMessages } = createMockAI(responses);
+  const runner = new ConversationRunner(aiService, new TargetContextToolExecutor(), {
+    stream: false,
+  });
+  const displayed: string[] = [];
+
+  await runner.run([{ role: 'user', content: 'run it' }], {
+    onToolEnd: (_name, _id, result) => displayed.push(result),
+  });
+
+  assert.equal(displayed[0], 'Command succeeded:\n$ echo ok\nok');
+  const secondRequest = getReceivedMessages()[1];
+  const toolMessage = secondRequest.find(message => message.role === 'tool');
+  assert.ok(toolMessage);
+  assert.match(String(toolMessage.content), /^\[tool_target\]/);
+  assert.match(String(toolMessage.content), /target: virtual_employee_cloud_runtime/);
+  assert.match(String(toolMessage.content), /Command succeeded/);
 });
 
 test('runner suppresses verbose diagnostic text before tool calls', async () => {

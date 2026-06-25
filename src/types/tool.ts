@@ -75,6 +75,8 @@ export interface ToolResult {
   role: 'tool';
   name: string;
   content: string | import('./index').ContentBlock[];
+  /** Transient provider-only context that disambiguates which device/runtime produced this tool result. */
+  targetContext?: string;
   ok?: boolean;
   errorCode?: string;
   retryable?: boolean;

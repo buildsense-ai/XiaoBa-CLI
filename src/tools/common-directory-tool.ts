@@ -143,9 +143,10 @@ export class CommonDirectoryTool implements Tool {
   definition: ToolDefinition = {
     name: 'resolve_common_directory',
     description: [
-      '把常见用户目录名称解析为当前系统上的真实本地路径。',
+      '把常见用户目录名称解析为当前工具目标设备上的真实本地路径。',
       '当用户说“桌面”“下载”“文档”等自然语言目录时先用它解析，不要手猜 C:\\Users\\...\\Desktop、~/Desktop 等路径。',
-      '解析后如果要查看目录文件，请用 glob；如果要创建文件，请用 write_file。不要为了普通文件操作改用 execute_shell。',
+      '解析出的 path 只属于本次工具实际执行的目标：可能是虚拟员工自己的云运行体，也可能是后端选中的用户设备。',
+      '解析后如果要查看目录文件，请用 glob；如果要创建文件，请用 write_file。必须用命令时，把 path 传给 execute_shell.cwd，不要单独 cd 后再猜当前目录。',
       '只解析标准 OS 用户目录；不搜索项目目录、应用目录、浏览器下载子目录或语义目录。',
     ].join('\n'),
     parameters: {
@@ -206,9 +207,11 @@ export function formatCommonDirectoryResolution(result: DirectoryResolution): st
     `exists: ${result.exists}`,
     `platform: ${result.platform}`,
     '',
-    'Use this exact path as the base directory for follow-up file operations.',
+    'Use this exact path only with the same tool target that produced this result.',
+    'If the next user request switches between "my/user computer" and "your/virtual employee cloud computer", call resolve_common_directory again on the new target.',
     'To list files here, call glob with this path and an appropriate pattern such as "*".',
     'To create or overwrite a text file here, call write_file with a file_path under this path.',
+    'If shell is truly required, pass this path as execute_shell.cwd instead of relying on a prior cd command.',
     'Do not use execute_shell for routine file listing or file creation.',
   ].join('\n');
 }

@@ -55,6 +55,7 @@ export function buildTransientEnvironmentHint(
 }
 
 export function resolveShellName(env: NodeJS.ProcessEnv = process.env): string {
+  if (process.platform === 'win32' && env.PSModulePath) return 'powershell';
   const raw = env.SHELL || env.ComSpec || env.COMSPEC || (env.PSModulePath ? 'powershell' : '');
   if (!raw) return 'unknown';
   const basename = path.win32.basename(raw);
