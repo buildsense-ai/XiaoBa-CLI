@@ -2,8 +2,17 @@ import type { DeviceGrantOperation } from '../types/session-identity';
 import type { ToolErrorCode, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import type { ToolGatewayDecision } from './tool-gateway';
 
-const REMOTE_TOOL_TIMEOUT_MS = 60_000;
+const REMOTE_TOOL_DEFAULT_TIMEOUT_MS = 60_000;
+const REMOTE_TOOL_MIN_TIMEOUT_MS = 5_000;
+const REMOTE_TOOL_MAX_TIMEOUT_MS = 180_000;
 export const MAX_DEVICE_RPC_TOOL_CONTENT_CHARS = 48_000;
+export const MAX_DEVICE_RPC_SHELL_CONTENT_CHARS = 12_000;
+
+type RemoteDeviceRpcToolName = 'read_file' | 'resolve_common_directory' | 'glob' | 'grep' | 'write_file' | 'edit_file' | 'execute_shell';
+
+interface DeviceRpcNormalizeOptions {
+  toolName?: string;
+}
 
 export function isRemoteReadonlyTool(toolName: string, operation: DeviceGrantOperation): boolean {
   return (toolName === 'read_file' && operation === 'read_file')
@@ -22,7 +31,7 @@ export function isRemoteDeviceRpcTool(toolName: string, operation: DeviceGrantOp
 export async function executeRemoteDeviceRpcTool(
   context: ToolExecutionContext,
   gateway: ToolGatewayDecision,
-  toolName: 'read_file' | 'resolve_common_directory' | 'glob' | 'grep' | 'write_file' | 'edit_file' | 'execute_shell',
+  toolName: RemoteDeviceRpcToolName,
   operation: DeviceGrantOperation,
   args: Record<string, unknown>,
 ): Promise<ToolExecutionResult | undefined> {
@@ -54,13 +63,13 @@ export async function executeRemoteDeviceRpcTool(
       targetDeviceDisplayName: gateway.targetDeviceDisplayName,
       targetDeviceBodyId: gateway.targetDeviceBodyId,
       targetDeviceInstallationId: gateway.targetDeviceInstallationId,
-      timeoutMs: gateway.grant ? timeoutForGrant(gateway.grant.expiresAt) : REMOTE_TOOL_TIMEOUT_MS,
+      timeoutMs: resolveRemoteToolTimeoutMs(gateway.grant?.expiresAt, requestedToolTimeoutMs(toolName, args)),
     });
   } catch (error: any) {
     return {
       ok: false,
       errorCode: mapRpcErrorCode(error),
-      message: `远程设备工具执行失败: ${error?.message || error || 'unknown error'}`,
+      message: formatRpcErrorMessage(error, toolName),
       retryable: isRetryableRpcError(error),
     };
   }
@@ -81,7 +90,10 @@ export async function executeRemoteReadonlyTool(
   return executeRemoteDeviceRpcTool(context, gateway, toolName, operation, args);
 }
 
-export function normalizeDeviceRpcToolResultPayload(payload: unknown): ToolExecutionResult {
+export function normalizeDeviceRpcToolResultPayload(
+  payload: unknown,
+  options: DeviceRpcNormalizeOptions = {},
+): ToolExecutionResult {
   if (!payload || typeof payload !== 'object') {
     return {
       ok: false,
@@ -93,14 +105,14 @@ export function normalizeDeviceRpcToolResultPayload(payload: unknown): ToolExecu
   if (record.ok === true) {
     return {
       ok: true,
-      content: normalizeDeviceRpcContent(record.content),
+      content: normalizeDeviceRpcContent(record.content, options),
     };
   }
   if (record.ok === false) {
     return {
       ok: false,
       errorCode: normalizeErrorCode(record.errorCode),
-      message: truncateText(String(record.message || '远程设备工具执行失败。')),
+      message: truncateText(String(record.message || '远程设备工具执行失败。'), options),
       retryable: Boolean(record.retryable),
     };
   }
@@ -111,29 +123,49 @@ export function normalizeDeviceRpcToolResultPayload(payload: unknown): ToolExecu
   };
 }
 
-export function normalizeDeviceRpcToolResultForTransport(result: ToolExecutionResult): ToolExecutionResult {
+export function normalizeDeviceRpcToolResultForTransport(
+  result: ToolExecutionResult,
+  options: DeviceRpcNormalizeOptions = {},
+): ToolExecutionResult {
   if (!result.ok) {
     return {
       ok: false,
       errorCode: normalizeErrorCode(result.errorCode),
-      message: truncateText(result.message),
+      message: truncateText(result.message, options),
       retryable: Boolean(result.retryable),
     };
   }
   return {
     ok: true,
-    content: normalizeDeviceRpcContent(result.content),
+    content: normalizeDeviceRpcContent(result.content, options),
   };
 }
 
-function timeoutForGrant(expiresAt: number): number {
-  const remaining = expiresAt - Date.now();
-  if (!Number.isFinite(remaining) || remaining <= 0) return 10_000;
-  return Math.max(5_000, Math.min(REMOTE_TOOL_TIMEOUT_MS, remaining));
+export function resolveRemoteToolTimeoutMs(
+  expiresAt?: number,
+  requestedTimeoutMs?: number,
+  now = Date.now(),
+): number {
+  const grantRemaining = typeof expiresAt === 'number' ? expiresAt - now : REMOTE_TOOL_DEFAULT_TIMEOUT_MS;
+  if (!Number.isFinite(grantRemaining) || grantRemaining <= 0) return REMOTE_TOOL_MIN_TIMEOUT_MS;
+  const requested = Number.isFinite(requestedTimeoutMs)
+    ? Math.floor(requestedTimeoutMs as number)
+    : REMOTE_TOOL_DEFAULT_TIMEOUT_MS;
+  const desired = Math.min(
+    REMOTE_TOOL_MAX_TIMEOUT_MS,
+    Math.max(REMOTE_TOOL_MIN_TIMEOUT_MS, requested),
+  );
+  return Math.max(0, Math.min(desired, Math.floor(grantRemaining)));
 }
 
-function normalizeDeviceRpcContent(content: unknown): string {
-  if (typeof content === 'string') return truncateText(content);
+function requestedToolTimeoutMs(toolName: string, args: Record<string, unknown>): number | undefined {
+  if (toolName !== 'execute_shell') return undefined;
+  const timeout = Number(args?.timeout);
+  return Number.isFinite(timeout) && timeout > 0 ? timeout : undefined;
+}
+
+function normalizeDeviceRpcContent(content: unknown, options: DeviceRpcNormalizeOptions): string {
+  if (typeof content === 'string') return truncateText(content, options);
   if (Array.isArray(content)) {
     const lines: string[] = [];
     for (const block of content) {
@@ -145,7 +177,7 @@ function normalizeDeviceRpcContent(content: unknown): string {
         lines.push('[远程设备返回了图片内容块；当前 Device RPC 不转发图片二进制，请让用户以附件方式上传该图片。]');
       }
     }
-    return truncateText(lines.join('\n'));
+    return truncateText(lines.join('\n'), options);
   }
   if (content && typeof content === 'object') {
     const record = content as Record<string, unknown>;
@@ -153,15 +185,36 @@ function normalizeDeviceRpcContent(content: unknown): string {
       return '[远程设备读取到图片文件；当前 Device RPC 不转发图片二进制，请让用户以附件方式上传该图片。]';
     }
   }
-  return truncateText(String(content ?? ''));
+  return truncateText(String(content ?? ''), options);
 }
 
-function truncateText(value: string): string {
-  if (value.length <= MAX_DEVICE_RPC_TOOL_CONTENT_CHARS) return value;
+function truncateText(value: string, options: DeviceRpcNormalizeOptions = {}): string {
+  const maxChars = maxContentCharsForTool(options.toolName);
+  if (value.length <= maxChars) return value;
+  if (options.toolName === 'execute_shell') return summarizeLongShellOutput(value, maxChars);
   return [
-    value.slice(0, MAX_DEVICE_RPC_TOOL_CONTENT_CHARS),
+    value.slice(0, maxChars),
     '',
-    `[远程设备结果超过 ${MAX_DEVICE_RPC_TOOL_CONTENT_CHARS} 字符，已截断。请用更精确的 path/pattern/limit/offset 继续读取。]`,
+    `[远程设备结果超过 ${maxChars} 字符，已截断。请用更精确的 path/pattern/limit/offset 继续读取。]`,
+  ].join('\n');
+}
+
+function maxContentCharsForTool(toolName?: string): number {
+  return toolName === 'execute_shell'
+    ? MAX_DEVICE_RPC_SHELL_CONTENT_CHARS
+    : MAX_DEVICE_RPC_TOOL_CONTENT_CHARS;
+}
+
+function summarizeLongShellOutput(value: string, maxChars: number): string {
+  const lineCount = value.split(/\r\n|\n|\r/).length;
+  const headChars = Math.floor(maxChars * 0.7);
+  const tailChars = Math.max(0, maxChars - headChars);
+  return [
+    value.slice(0, headChars).trimEnd(),
+    '',
+    `[execute_shell 输出已摘要：原始 ${value.length} 字符 / ${lineCount} 行，仅保留开头 ${headChars} 字符和结尾 ${tailChars} 字符。请缩小命令范围，或改用 glob / grep / read_file 等专用工具继续。]`,
+    '',
+    value.slice(-tailChars).trimStart(),
   ].join('\n');
 }
 
@@ -191,4 +244,10 @@ function mapRpcErrorCode(error: any): ToolErrorCode {
 function isRetryableRpcError(error: any): boolean {
   const text = String(error?.code || error?.kind || error?.message || '').toLowerCase();
   return text.includes('timeout') || text.includes('offline') || text.includes('unavailable') || text.includes('transport');
+}
+
+function formatRpcErrorMessage(error: any, toolName: string): string {
+  const message = `远程设备工具执行失败: ${error?.message || error || 'unknown error'}`;
+  if (toolName !== 'execute_shell' || mapRpcErrorCode(error) !== 'EXECUTION_TIMEOUT') return message;
+  return `${message}\n请缩小命令范围，或改用 glob / grep / read_file 等专用工具继续；避免无变化地重复执行同一条长命令。`;
 }

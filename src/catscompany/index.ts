@@ -428,7 +428,7 @@ export class CatsCompanyBot {
             retryable: this.isRetryableDeviceRpcError(response.error.code),
           };
         }
-        return normalizeDeviceRpcToolResultPayload(response.result);
+        return normalizeDeviceRpcToolResultPayload(response.result, { toolName });
       },
     };
   }
@@ -636,7 +636,7 @@ export class CatsCompanyBot {
         device_installation_id: this.localDeviceGrant?.installationId || request.device_installation_id,
         operation: request.operation,
         tool_name: request.tool_name,
-        result: error || !result ? undefined : normalizeDeviceRpcToolResultForTransport(result),
+        result: error || !result ? undefined : normalizeDeviceRpcToolResultForTransport(result, { toolName: request.tool_name }),
         error,
       });
     } catch (err: any) {
