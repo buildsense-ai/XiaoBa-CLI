@@ -13,9 +13,9 @@ export class WriteTool implements Tool {
   definition: ToolDefinition = {
     name: 'write_file',
     description: [
-      '创建或完整覆盖一个 UTF-8 文本文件。',
+      '创建或完整覆盖一个用户明确需要保留的 UTF-8 文本文件。',
       '适合生成新文件或重写整个文件；对已有文件做小范围修改时优先使用 edit_file。',
-      '当用户要求在桌面、下载、文档等常见目录创建文件时，先用 resolve_common_directory 解析目录，再把目标文件路径传给本工具；不要用 execute_shell 创建普通文本文件。',
+      '当用户要求在桌面、下载、文档等常见目录创建文件时，先用 resolve_common_directory 解析目录，再把目标文件路径传给本工具。',
     ].join('\n'),
     parameters: {
       type: 'object',

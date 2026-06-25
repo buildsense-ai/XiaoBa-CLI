@@ -9,6 +9,7 @@ import { Logger } from '../utils/logger';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { isToolAllowed, isBashCommandAllowed } from '../utils/safety';
 import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
+import { MAX_DEVICE_RPC_SHELL_CONTENT_CHARS } from './device-rpc-tool';
 
 const execAsync = promisify(exec);
 const CWD_MARKER_PREFIX = '__XIAOBA_CWD_MARKER__';
@@ -26,14 +27,21 @@ interface ShellOutput {
   stderr: string;
 }
 
+interface FormattedShellOutput {
+  content: string;
+  originalChars: number;
+  originalLines: number;
+}
+
 export class ShellTool implements Tool {
   definition: ToolDefinition = {
     name: 'execute_shell',
     description: [
-      '执行一条非交互式系统命令。',
-      '命令从当前目录或显式 cwd 启动；每次调用都是新的 shell 进程，只有最终当前目录会保留到后续工具调用。',
+      '执行一条非交互式系统命令，适合运行测试、构建、包管理器、系统诊断或项目脚本。',
+      '路径发现、目录概览和候选文件定位优先使用 glob；内容搜索使用 grep；读取已定位文件使用 read_file。',
+      'Windows 目标上 command 会作为 PowerShell 脚本执行，可直接写多行 PowerShell，无需再套一层 powershell -Command。',
+      '命令从当前目录启动；每次调用都是新的 shell 进程，只有最终当前目录会保留到后续工具调用。',
       '环境变量、alias、函数和已激活虚拟环境不会自动跨调用保留；需要时在同一条 command 中显式设置。',
-      '在 CatsCo/远程用户设备场景中，不要用它做普通文件查看或创建；查看文件列表用 glob，创建/覆盖文本文件用 write_file，编辑文件用 edit_file。',
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -52,7 +60,7 @@ export class ShellTool implements Tool {
         },
         cwd: {
           type: 'string',
-          description: '可选。命令启动目录。支持绝对路径或相对当前目录的路径；需要在桌面/下载等目录运行命令时，先用 resolve_common_directory 解析，再把返回的 path 传给 cwd。',
+          description: 'Optional command start directory. Supports absolute paths or paths relative to the current working directory.',
         },
         confirm_dangerous: {
           type: 'boolean',
@@ -126,10 +134,7 @@ export class ShellTool implements Tool {
       const parsedStdout = this.extractDirectoryProbe(stdout || '', wrapped.marker);
       const parsedStderr = this.extractDirectoryProbe(stderr || '', wrapped.marker);
       const finalDirectory = this.readDirectoryProbe(wrapped) || parsedStdout.directory || parsedStderr.directory;
-      this.updateCurrentDirectory(
-        finalDirectory,
-        context,
-      );
+      this.updateCurrentDirectory(finalDirectory, context);
 
       const output = parsedStdout.output || '';
       if (parsedStderr.output) {
@@ -139,6 +144,7 @@ export class ShellTool implements Tool {
       const executionTime = Date.now() - startTime;
       const outputLines = output ? output.split('\n').length : 0;
       const outputSize = Buffer.byteLength(output, 'utf-8');
+      const formattedOutput = formatShellOutputForTool(output);
 
       Logger.success(`Command succeeded (elapsed: ${executionTime}ms)`);
       Logger.info(`  Output: ${outputLines} lines | ${(outputSize / 1024).toFixed(2)} KB`);
@@ -163,9 +169,10 @@ export class ShellTool implements Tool {
           finalDirectory ? `Final cwd: ${finalDirectory}` : '',
           `Shell: ${this.resolveShellDisplayName()}`,
           `Elapsed: ${executionTime}ms`,
-          `Output lines: ${outputLines}`,
+          `Output lines: ${formattedOutput.originalLines}`,
+          `Output chars: ${formattedOutput.originalChars}`,
           '',
-          output,
+          formattedOutput.content,
         ].filter(line => line !== '').join('\n'),
       };
     } catch (error: any) {
@@ -173,24 +180,13 @@ export class ShellTool implements Tool {
       const parsedStdout = this.extractDirectoryProbe(error.stdout || '', wrapped.marker);
       const parsedStderr = this.extractDirectoryProbe(error.stderr || '', wrapped.marker);
       const finalDirectory = this.readDirectoryProbe(wrapped) || parsedStdout.directory || parsedStderr.directory;
-      this.updateCurrentDirectory(
-        finalDirectory,
-        context,
-      );
+      this.updateCurrentDirectory(finalDirectory, context);
       if (context.abortSignal?.aborted || /aborted|abort/i.test(String(error.message || ''))) {
         Logger.warning(`命令已取消 (耗时: ${executionTime}ms)`);
         return {
           ok: false,
           errorCode: 'EXECUTION_TIMEOUT',
-          message: [
-            '命令已取消:',
-            `$ ${command}`,
-            '',
-            `Working directory: ${executionDirectory.directory}`,
-            finalDirectory ? `Final cwd: ${finalDirectory}` : '',
-            `Shell: ${this.resolveShellDisplayName()}`,
-            `执行时间: ${executionTime}ms`,
-          ].filter(line => line !== '').join('\n'),
+          message: `命令已取消:\n$ ${command}\n\n执行时间: ${executionTime}ms`,
         };
       }
       const errorOutput = [
@@ -198,6 +194,7 @@ export class ShellTool implements Tool {
         parsedStdout.output,
         this.formatExecutionError(error),
       ].filter(Boolean).join('\n').trim();
+      const formattedError = formatShellOutputForTool(errorOutput);
 
       Logger.error(`Command failed (elapsed: ${executionTime}ms)`);
       Logger.error(`  Error: ${error.message}`);
@@ -213,8 +210,10 @@ export class ShellTool implements Tool {
           finalDirectory ? `Final cwd: ${finalDirectory}` : '',
           `Shell: ${this.resolveShellDisplayName()}`,
           `Elapsed: ${executionTime}ms`,
+          `Error chars: ${formattedError.originalChars}`,
+          '',
           'Error:',
-          errorOutput,
+          formattedError.content,
         ].filter(line => line !== '').join('\n'),
       };
     } finally {
@@ -607,7 +606,7 @@ export class ShellTool implements Tool {
       return {
         ok: false,
         errorCode: 'INVALID_TOOL_ARGUMENTS',
-        message: 'execute_shell.cwd 必须是字符串路径。',
+        message: 'execute_shell.cwd must be a string path.',
       };
     }
     const directory = path.isAbsolute(cwd)
@@ -618,21 +617,21 @@ export class ShellTool implements Tool {
         return {
           ok: false,
           errorCode: 'INVALID_TOOL_ARGUMENTS',
-          message: `execute_shell.cwd 不存在: ${directory}`,
+          message: `execute_shell.cwd does not exist: ${directory}`,
         };
       }
       if (!fs.statSync(directory).isDirectory()) {
         return {
           ok: false,
           errorCode: 'INVALID_TOOL_ARGUMENTS',
-          message: `execute_shell.cwd 不是目录: ${directory}`,
+          message: `execute_shell.cwd is not a directory: ${directory}`,
         };
       }
     } catch (error: any) {
       return {
         ok: false,
         errorCode: 'INVALID_TOOL_ARGUMENTS',
-        message: `execute_shell.cwd 无法访问: ${error?.message || error}`,
+        message: `execute_shell.cwd is not accessible: ${error?.message || error}`,
       };
     }
     return { ok: true, directory };
@@ -665,4 +664,26 @@ export class ShellTool implements Tool {
       return;
     }
   }
+}
+
+function formatShellOutputForTool(output: string): FormattedShellOutput {
+  const originalChars = output.length;
+  const originalLines = output ? output.split(/\r\n|\n|\r/).length : 0;
+  if (originalChars <= MAX_DEVICE_RPC_SHELL_CONTENT_CHARS) {
+    return { content: output, originalChars, originalLines };
+  }
+
+  const headChars = Math.floor(MAX_DEVICE_RPC_SHELL_CONTENT_CHARS * 0.7);
+  const tailChars = MAX_DEVICE_RPC_SHELL_CONTENT_CHARS - headChars;
+  return {
+    content: [
+      output.slice(0, headChars).trimEnd(),
+      '',
+      `[execute_shell 输出已摘要：原始 ${originalChars} 字符 / ${originalLines} 行，仅保留开头 ${headChars} 字符和结尾 ${tailChars} 字符。请缩小命令范围，或改用 glob / grep / read_file 等专用工具继续。]`,
+      '',
+      output.slice(-tailChars).trimStart(),
+    ].join('\n'),
+    originalChars,
+    originalLines,
+  };
 }

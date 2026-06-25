@@ -121,6 +121,7 @@ export class ReadTool implements Tool {
     name: 'read_file',
     description: [
       '读取一个本地文件。CatsCo 附件请优先使用消息中显示的本地缓存路径。',
+      '通常先用 glob 定位候选路径，或用 grep 找到包含目标内容的文件，再读取具体文件。',
       '支持文本/代码、PDF、图片和 Jupyter notebook。文本默认只读前若干行，可用 offset/limit 分页。',
         'PDF 会先提取文本层；如果文本层为空、解析失败，或用户明显关心图片/签章/手写/版式等视觉内容，会自动把少量页面转成图片并走读图链路。',
         'catsco_attachment:<id> 仅用于兼容当前轮旧附件引用；后续追问应使用历史消息里的本地缓存路径。',
