@@ -111,7 +111,7 @@ class TargetContextToolExecutor implements ToolExecutor {
         '[tool_target]',
         'tool: execute_shell',
         'operation: execute_shell',
-        'target: virtual_employee_cloud_runtime',
+        'target: agent_runtime_device',
         'cwd: C:\\agent\\repo',
         '[/tool_target]',
       ].join('\n'),
@@ -201,7 +201,7 @@ test('runner injects tool target context into provider transcript only', async (
   const toolMessage = secondRequest.find(message => message.role === 'tool');
   assert.ok(toolMessage);
   assert.match(String(toolMessage.content), /^\[tool_target\]/);
-  assert.match(String(toolMessage.content), /target: virtual_employee_cloud_runtime/);
+  assert.match(String(toolMessage.content), /target: agent_runtime_device/);
   assert.match(String(toolMessage.content), /Command succeeded/);
 });
 

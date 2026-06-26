@@ -149,7 +149,7 @@ describe('CatsCo ToolGateway', () => {
     }
   });
 
-  test('allows virtual employee local body tools when user device selection is unavailable', async () => {
+  test('allows agent local body tools when user device selection is unavailable', async () => {
     const root = makeWorkspace();
     const filePath = path.join(root, 'notes.txt');
     fs.writeFileSync(filePath, 'agent body content');
@@ -164,10 +164,10 @@ describe('CatsCo ToolGateway', () => {
     assert.match(result.ok ? String(result.content) : '', /agent body content/);
   });
 
-  test('explicit agent cloud runtime target ignores a selected user device', async () => {
+  test('explicit agent runtime device target ignores a selected user device', async () => {
     const root = makeWorkspace();
     const filePath = path.join(root, 'notes.txt');
-    fs.writeFileSync(filePath, 'agent cloud runtime content');
+    fs.writeFileSync(filePath, 'agent runtime device content');
     const agentScope = scope({
       actorUserId: 'usr100',
       sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
@@ -180,7 +180,7 @@ describe('CatsCo ToolGateway', () => {
 
     const result = await new ReadTool().execute({
       file_path: filePath,
-      target: 'agent_cloud_runtime',
+      target: 'agent_runtime_device',
     }, context(root, {
       executionScope: agentScope,
       localDeviceGrant: localDevice({ ownerUserId: 'usr7' }),
@@ -204,14 +204,54 @@ describe('CatsCo ToolGateway', () => {
     }));
 
     assert.equal(result.ok, true);
-    assert.match(result.ok ? String(result.content) : '', /agent cloud runtime content/);
+    assert.match(result.ok ? String(result.content) : '', /agent runtime device content/);
     assert.equal(rpcCalls, 0);
+  });
+
+  test('explicit legacy agent cloud runtime target remains a compatibility alias', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'agent runtime device content');
+
+    const result = await new ReadTool().execute({
+      file_path: filePath,
+      target: 'agent_cloud_runtime',
+    }, context(root, {
+      executionScope: scope({ agentBodyId: 'body-device' }),
+      localDeviceGrant: localDevice({ ownerUserId: 'usr9' }),
+      deviceSelection: unavailableDeviceSelection(),
+    }));
+
+    assert.equal(result.ok, true);
+    assert.match(result.ok ? String(result.content) : '', /agent runtime device content/);
+  });
+
+  test('explicit selected user device target never falls back to the agent runtime device', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'agent runtime device content');
+
+    const result = await new ReadTool().execute({
+      file_path: filePath,
+      target: 'selected_user_device',
+    }, context(root, {
+      executionScope: scope({ agentBodyId: 'body-device' }),
+      localDeviceGrant: localDevice({ ownerUserId: 'usr9' }),
+      deviceSelection: unavailableDeviceSelection(),
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+      assert.match(result.message, /当前用户没有可用的在线设备授权/);
+      assert.doesNotMatch(result.message, /agent runtime device content/);
+    }
   });
 
   test('explicit selected user device target uses the backend-selected device', async () => {
     const root = makeWorkspace();
     const filePath = path.join(root, 'notes.txt');
-    fs.writeFileSync(filePath, 'agent cloud runtime content');
+    fs.writeFileSync(filePath, 'agent runtime device content');
     const agentScope = scope({
       actorUserId: 'usr100',
       sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
@@ -801,7 +841,7 @@ describe('CatsCo ToolGateway', () => {
     assert.equal(fs.existsSync(path.join(root, 'remote.txt')), false);
   });
 
-  test('routes mobile channel write_file to the speaker owner device instead of the cloud body', async () => {
+  test('routes mobile channel write_file to the speaker owner device instead of the agent body', async () => {
     const root = makeWorkspace();
     const marker = path.join(root, 'must-not-create-on-cloud.txt');
     const channelScope = scope({
@@ -913,7 +953,7 @@ describe('CatsCo ToolGateway', () => {
     if (result.ok) assert.match(result.content, /catsco-shell-ok/);
   });
 
-  test('allows virtual employee local body execute_shell without user-device grant', async () => {
+  test('allows agent local body execute_shell without user-device grant', async () => {
     const root = makeWorkspace();
     const result = await new ShellTool().execute({ command: 'echo catsco-agent-body-shell-ok' }, context(root, {
       executionScope: scope({ agentBodyId: 'body-device' }),
@@ -927,7 +967,7 @@ describe('CatsCo ToolGateway', () => {
     if (result.ok) assert.match(result.content, /catsco-agent-body-shell-ok/);
   });
 
-  test('blocks virtual employee execute_shell fallback when agent body does not match local device body', async () => {
+  test('blocks agent runtime execute_shell fallback when agent body does not match local device body', async () => {
     const root = makeWorkspace();
     const marker = path.join(root, 'must-not-run-locally.txt');
 
@@ -1048,7 +1088,7 @@ describe('CatsCo ToolGateway', () => {
     assert.equal(fs.existsSync(marker), false);
   });
 
-  test('blocks channel write_file on cloud body when local device owner is missing and no speaker device is selected', async () => {
+  test('blocks channel write_file on agent body when local device owner is missing and no speaker device is selected', async () => {
     const root = makeWorkspace();
     const marker = path.join(root, 'must-not-create-on-cloud.txt');
     const channelScope = scope({

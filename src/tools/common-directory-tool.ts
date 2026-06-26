@@ -145,7 +145,7 @@ export class CommonDirectoryTool implements Tool {
     description: [
       '把常见用户目录名称解析为当前工具目标设备上的真实本地路径。',
       '当用户说“桌面”“下载”“文档”等自然语言目录时先用它解析，不要手猜 C:\\Users\\...\\Desktop、~/Desktop 等路径。',
-      '解析出的 path 只属于本次工具实际执行的目标：可能是虚拟员工自己的云运行体，也可能是后端选中的用户设备。',
+      '解析出的 path 只属于本次工具实际执行的目标：可能是智能体自己的运行体设备，也可能是后端选中的用户设备。',
       '解析后如果要查看目录文件，请用 glob；如果要创建文件，请用 write_file。必须用命令时，把 path 传给 execute_shell.cwd，不要单独 cd 后再猜当前目录。',
       '只解析标准 OS 用户目录；不搜索项目目录、应用目录、浏览器下载子目录或语义目录。',
     ].join('\n'),
@@ -158,8 +158,8 @@ export class CommonDirectoryTool implements Tool {
         },
         target: {
           type: 'string',
-          enum: ['auto', 'agent_cloud_runtime', 'selected_user_device'],
-          description: 'CatsCo 可选目标。用户说“你的/虚拟员工自己的云电脑或桌面”时用 agent_cloud_runtime；用户说“我的电脑/我的桌面/我本地”时用 selected_user_device；不确定用 auto。不要根据设备展示名判断身份。',
+          enum: ['auto', 'agent_runtime_device', 'selected_user_device'],
+          description: 'CatsCo 可选目标。用户说“你的/你自己的电脑/机器人自己的桌面/智能体自己的运行体”时用 agent_runtime_device；用户说“我的电脑/我的桌面/我本地”时用 selected_user_device；不确定用 auto。不要根据设备展示名判断身份，也不要假设 agent_runtime_device 一定是云电脑。',
         },
       },
       required: ['directory'],
@@ -214,7 +214,7 @@ export function formatCommonDirectoryResolution(result: DirectoryResolution): st
     `platform: ${result.platform}`,
     '',
     'Use this exact path only with the same tool target that produced this result.',
-    'If the next user request switches between "my/user computer" and "your/virtual employee cloud computer", call resolve_common_directory again on the new target.',
+    'If the next user request switches between "my/user computer" and "your/agent runtime device", call resolve_common_directory again on the new target.',
     'To list files here, call glob with this path and an appropriate pattern such as "*".',
     'To create or overwrite a text file here, call write_file with a file_path under this path.',
     'If shell is truly required, pass this path as execute_shell.cwd instead of relying on a prior cd command.',

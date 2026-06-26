@@ -486,7 +486,7 @@ describe('ToolManager', () => {
     assert.equal(confirmed, false);
   });
 
-  test('CatsCo virtual employee local body runs shell without confirmation for non-owner actors', async () => {
+  test('CatsCo agent local body runs shell without confirmation for non-owner actors', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-agent-body-'));
     const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
     let executed = false;
@@ -607,7 +607,7 @@ describe('ToolManager', () => {
     assert.match(result.targetContext || '', /target: selected_user_device/);
     assert.match(result.targetContext || '', /target_owner: current_speaker_user/);
     assert.match(result.targetContext || '', /target_display_name: User Laptop/);
-    assert.doesNotMatch(result.targetContext || '', /target: virtual_employee_cloud_runtime/);
+    assert.doesNotMatch(result.targetContext || '', /target: agent_runtime_device/);
   });
 
   test('CatsCo non-agent-local-body shell contexts still require strict confirmation', async () => {

@@ -21,7 +21,7 @@ export type ToolGatewayDecision =
     }
   | { ok: false; errorCode: ToolErrorCode; message: string };
 
-export type ToolTargetPreference = 'auto' | 'agent_cloud_runtime' | 'selected_user_device';
+export type ToolTargetPreference = 'auto' | 'agent_runtime_device' | 'selected_user_device';
 
 export interface ResolveToolGatewayAccessOptions {
   toolName: string;
@@ -83,8 +83,10 @@ export function isCatsCoAgentLocalBodyContext(context: ToolExecutionContext): bo
 export function normalizeToolTargetPreference(args: unknown): ToolTargetPreference {
   if (!args || typeof args !== 'object') return 'auto';
   const target = String((args as Record<string, unknown>).target || '').trim().toLowerCase();
-  if (target === 'agent_cloud_runtime' || target === 'virtual_employee_cloud_runtime') {
-    return 'agent_cloud_runtime';
+  if (target === 'agent_runtime_device'
+    || target === 'agent_cloud_runtime'
+    || target === 'virtual_employee_cloud_runtime') {
+    return 'agent_runtime_device';
   }
   if (target === 'selected_user_device' || target === 'user_device') {
     return 'selected_user_device';
@@ -147,13 +149,13 @@ export function resolveToolGatewayAccess(
   const agentLocalBody = isCatsCoAgentLocalBodyContext(context);
   const rpcForwardLocal = isCatsCoDeviceRpcForwardLocalContext(context, options.operation);
   const targetPreference = options.targetPreference ?? 'auto';
-  const prefersAgentRuntime = targetPreference === 'agent_cloud_runtime';
+  const prefersAgentRuntime = targetPreference === 'agent_runtime_device';
   const prefersSelectedUserDevice = targetPreference === 'selected_user_device';
   const requireSelectedDevice = requiresExplicitBackendDeviceSelection(scope, localDevice, rpcForwardLocal);
 
   if (prefersAgentRuntime && !agentLocalBody) {
     return denied([
-      '工具目标要求使用虚拟员工自己的 cloud runtime，但当前运行体不是当前 agent 的本地 body，已阻止本地 fallback。',
+      '工具目标要求使用智能体自己的运行体设备，但当前运行体不是当前 agent 的本地 body，已阻止本地 fallback。',
     ], options.targetLabel);
   }
 
@@ -227,7 +229,7 @@ export function resolveToolGatewayAccess(
   if (!context.deviceSelection && !agentLocalBody && requiresBackendSelectedDeviceForLocalExecution(scope, localDevice, grant, rpcForwardLocal)) {
     return denied([
       '后端没有选定当前说话人的目标设备，已阻止本地设备操作。',
-      '共享虚拟员工不能默认使用云端运行体本机，必须由服务端选择当前用户自己的在线设备。',
+      '共享智能体不能默认使用智能体自己的运行体设备，必须由服务端选择当前用户自己的在线设备。',
     ], options.targetLabel);
   }
 
@@ -310,7 +312,7 @@ function resolveBackendSelectedDevice(
     if (options.requireSelection) {
       return selectedDenied([
         '后端没有选定当前说话人的目标设备，已阻止本地设备操作。',
-        '共享虚拟员工或移动端渠道不能默认使用云端运行体本机，必须由服务端选择当前用户自己的在线设备。',
+        '共享智能体或移动端渠道不能默认使用智能体自己的运行体设备，必须由服务端选择当前用户自己的在线设备。',
       ], targetLabel);
     }
     return {
@@ -321,6 +323,12 @@ function resolveBackendSelectedDevice(
   }
 
   if (selection.status === 'needs_selection') {
+    if (options.requireSelection) {
+      return selectedDenied([
+        '后端尚未选定要操作的用户设备，已阻止本地设备操作。',
+        '请让用户从可用设备中选择一个设备名后再继续。',
+      ], targetLabel);
+    }
     if (options.allowLocalAgentBodyFallback) {
       return localSelectedDevice(localDevice);
     }
@@ -330,6 +338,12 @@ function resolveBackendSelectedDevice(
     ], targetLabel);
   }
   if (selection.status === 'unavailable') {
+    if (options.requireSelection) {
+      return selectedDenied([
+        '当前用户没有可用的在线设备授权，已阻止本地设备操作。',
+        '请让用户打开并授权目标设备后再继续。',
+      ], targetLabel);
+    }
     if (options.allowLocalAgentBodyFallback) {
       return localSelectedDevice(localDevice);
     }

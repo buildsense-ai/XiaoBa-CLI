@@ -125,8 +125,8 @@ function resolveToolTarget(
   gateway?: ToolGatewayDecision,
   targetPreference: ToolTargetPreference = 'auto',
 ): { kind: string; owner?: string; meaning?: string; displayName?: string } {
-  if (targetPreference === 'agent_cloud_runtime' && isCatsCoAgentLocalBodyContext(context)) {
-    return virtualEmployeeCloudRuntimeTarget();
+  if (targetPreference === 'agent_runtime_device' && isCatsCoAgentLocalBodyContext(context)) {
+    return agentRuntimeDeviceTarget();
   }
 
   if (targetPreference === 'selected_user_device' && gateway?.ok) {
@@ -142,7 +142,7 @@ function resolveToolTarget(
   }
 
   if (isCatsCoAgentLocalBodyContext(context)) {
-    return virtualEmployeeCloudRuntimeTarget();
+    return agentRuntimeDeviceTarget();
   }
 
   if (isCatsCoLocalOwnerSelfContext(context)) {
@@ -170,11 +170,11 @@ function preserveCwdForTarget(cwd: string | undefined): string | undefined {
   return text || undefined;
 }
 
-function virtualEmployeeCloudRuntimeTarget(): { kind: string; owner: string; meaning: string } {
+function agentRuntimeDeviceTarget(): { kind: string; owner: string; meaning: string } {
   return {
-    kind: 'virtual_employee_cloud_runtime',
+    kind: 'agent_runtime_device',
     owner: 'agent_self',
-    meaning: "This is the virtual employee's own cloud computer.",
+    meaning: "This is the current agent body's own runtime device. It may be hosted in the cloud or on a creator-owned local computer.",
   };
 }
 
@@ -185,7 +185,7 @@ function selectedUserDeviceTarget(
   return {
     kind,
     owner: 'current_speaker_user',
-    meaning: "This is the current user's selected device, not the virtual employee's own cloud computer.",
+    meaning: "This is the current speaker user's selected device, not the agent body's own runtime device.",
     displayName,
   };
 }

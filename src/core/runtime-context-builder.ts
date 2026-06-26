@@ -57,10 +57,10 @@ interface RuntimeContextSnapshot {
       deviceId?: string;
     };
     agentRuntime?: {
-      target: 'virtual_employee_cloud_runtime';
+      target: 'agent_runtime_device';
       owner: 'agent_self';
       available: true;
-      localToolTarget: 'agent_cloud_runtime';
+      localToolTarget: 'agent_runtime_device';
       meaning: string;
       userDeviceDisplayNamesAreIdentity: false;
       commonDirectoryPolicy: 'os_user_common_directories';
@@ -209,11 +209,11 @@ function sanitizeAgentRuntime(
     return undefined;
   }
   return {
-    target: 'virtual_employee_cloud_runtime',
+    target: 'agent_runtime_device',
     owner: 'agent_self',
     available: true,
-    localToolTarget: 'agent_cloud_runtime',
-    meaning: "This cloud runtime body is the virtual employee's own cloud computer.",
+    localToolTarget: 'agent_runtime_device',
+    meaning: "This is the current agent body's own runtime device. It may be hosted in the cloud or on a creator-owned local computer.",
     userDeviceDisplayNamesAreIdentity: false,
     commonDirectoryPolicy: 'os_user_common_directories',
   };

@@ -30,8 +30,8 @@ export class WriteTool implements Tool {
         },
         target: {
           type: 'string',
-          enum: ['auto', 'agent_cloud_runtime', 'selected_user_device'],
-          description: 'CatsCo 可选目标。用户说“你的/虚拟员工自己的云电脑或桌面”时用 agent_cloud_runtime；用户说“我的电脑/我的桌面/我本地”时用 selected_user_device；不确定用 auto。不要根据设备展示名判断身份。'
+          enum: ['auto', 'agent_runtime_device', 'selected_user_device'],
+          description: 'CatsCo 可选目标。用户说“你的/你自己的电脑/机器人自己的桌面/智能体自己的运行体”时用 agent_runtime_device；用户说“我的电脑/我的桌面/我本地”时用 selected_user_device；不确定用 auto。不要根据设备展示名判断身份，也不要假设 agent_runtime_device 一定是云电脑。'
         }
       },
       required: ['file_path', 'content']

@@ -58,14 +58,14 @@ describe('CommonDirectoryTool', () => {
     assert.match(result.content as string, /Do not use execute_shell/);
   });
 
-  test('resolves virtual employee cloud runtime desktop through the runtime OS', async () => {
+  test('resolves agent runtime device desktop through the runtime OS', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-agent-runtime-desktop-'));
     const tool = new CommonDirectoryTool();
     const expectedDesktop = resolveCommonDirectory('desktop');
 
     const result = await tool.execute({
       directory: 'desktop',
-      target: 'agent_cloud_runtime',
+      target: 'agent_runtime_device',
     }, catsAgentRuntimeContext(root));
 
     assert.equal(result.ok, true);
