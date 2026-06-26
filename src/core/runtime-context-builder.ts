@@ -49,6 +49,11 @@ interface RuntimeContextSnapshot {
     cwd?: string;
   }>;
   defaultTarget: 'agent_self';
+  toolTargeting: {
+    defaultToolTarget: 'agent_self';
+    targetParameterTools: string[];
+    rule: string;
+  };
 }
 
 export function buildRuntimeContextMessage(params: BuildRuntimeContextParams): Message | null {
@@ -98,6 +103,19 @@ export function buildRuntimeContextSnapshot(params: BuildRuntimeContextParams): 
     }),
     executionTargets,
     defaultTarget: 'agent_self',
+    toolTargeting: {
+      defaultToolTarget: 'agent_self',
+      targetParameterTools: [
+        'resolve_common_directory',
+        'glob',
+        'grep',
+        'read_file',
+        'write_file',
+        'edit_file',
+        'execute_shell',
+      ],
+      rule: 'Omit target or use target="agent_self" for the bot computer. Use target="speaker_default" only when the user explicitly asks to operate the current speaker/user computer.',
+    },
   }) as RuntimeContextSnapshot;
 }
 

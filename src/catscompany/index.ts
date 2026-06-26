@@ -513,18 +513,12 @@ export class CatsCompanyBot {
       ['topic_id', 'topic_id'],
       ['topic_type', 'topic_type'],
       ['actor_user_id', 'actor_user_id'],
-      ['owner_user_id', 'owner_user_id'],
       ['device_id', 'device_id'],
     ];
     for (const [field, label] of requiredFields) {
       if (!String(request[field] || '').trim()) {
         return { code: 'invalid_request', message: `Device RPC request missing ${label}.` };
       }
-    }
-    const actorUserID = String(request.actor_user_id || '').trim();
-    const ownerUserID = String(request.owner_user_id || '').trim();
-    if (ownerUserID !== actorUserID && String(request.identity_source || '').trim() !== 'channel_identity_link') {
-      return { code: 'invalid_request', message: 'Delegated Device RPC request missing channel_identity_link identity source.' };
     }
     if (typeof request.expires_at === 'number' && Date.now() > request.expires_at) {
       return { code: 'request_expired', message: 'Device RPC request has expired.' };

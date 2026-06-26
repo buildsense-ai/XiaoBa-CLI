@@ -84,6 +84,12 @@ export class GrepTool implements Tool {
     parameters: {
       type: 'object',
       properties: {
+        target: {
+          type: 'string',
+          description: 'Execution target. Omit or use agent_self for the bot computer; use speaker_default only when the user asks to operate their computer.',
+          enum: ['agent_self', 'speaker_default'],
+          default: 'agent_self',
+        },
         pattern: { type: 'string', description: '要搜索的文本或正则表达式模式。' },
         path: { type: 'string', description: '搜索的文件或目录路径。可选，默认当前目录。' },
         glob: { type: 'string', description: '文件路径过滤模式，例如 "*.js" 或 "*.{ts,tsx}"。' },
@@ -110,6 +116,7 @@ export class GrepTool implements Tool {
       toolName: this.definition.name,
       operation: 'grep',
       targetLabel: searchPath || '.',
+      executionTarget: args.target,
     });
     if (!gateway.ok) {
       return { ok: false, errorCode: gateway.errorCode, message: gateway.message };

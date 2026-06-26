@@ -26,6 +26,7 @@ export interface ToolTargetContextOptions {
   gateway?: ToolGatewayDecision;
   cwd?: string;
   shell?: string;
+  executionTarget?: unknown;
 }
 
 export function operationForToolTargetContext(toolName: string): DeviceGrantOperation | undefined {
@@ -40,7 +41,7 @@ export function buildToolTargetContext(
   const operation = options.operation || operationForToolTargetContext(options.toolName);
   if (!operation) return undefined;
 
-  const target = resolveToolTarget(context, options.gateway);
+  const target = resolveToolTarget(context, options.gateway, options.executionTarget);
   const cwd = preserveCwdForTarget(options.cwd || context.workingDirectory);
   const lines = [
     TOOL_TARGET_CONTEXT_PREFIX,
@@ -101,10 +102,17 @@ export function stripToolTargetContextForDisplay(content: string): string {
 function resolveToolTarget(
   context: ToolExecutionContext,
   gateway?: ToolGatewayDecision,
+  executionTarget?: unknown,
 ): { kind: string; displayName?: string } {
+  if (executionTarget === 'agent_self') {
+    return { kind: 'agent_self' };
+  }
+  if (executionTarget === 'speaker_default') {
+    return { kind: 'speaker_default', displayName: context.deviceSelection?.selectedDeviceDisplayName };
+  }
   if (gateway?.ok && gateway.mode === 'remote') {
     return {
-      kind: 'selected_user_device',
+      kind: 'speaker_default',
       displayName: gateway.targetDeviceDisplayName,
     };
   }

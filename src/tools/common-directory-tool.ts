@@ -152,6 +152,12 @@ export class CommonDirectoryTool implements Tool {
     parameters: {
       type: 'object',
       properties: {
+        target: {
+          type: 'string',
+          description: 'Execution target. Omit or use agent_self for the bot computer; use speaker_default only when the user asks to operate their computer.',
+          enum: ['agent_self', 'speaker_default'],
+          default: 'agent_self',
+        },
         directory: {
           type: 'string',
           description: '要解析的目录名。支持 desktop, downloads, documents, pictures, videos, music, home, temp 及常见中文别名。',
@@ -172,6 +178,7 @@ export class CommonDirectoryTool implements Tool {
       toolName: 'resolve_common_directory',
       operation: 'resolve_common_directory',
       targetLabel: kind,
+      executionTarget: args.target,
     });
     if (!gateway.ok) return gateway;
 
@@ -180,7 +187,7 @@ export class CommonDirectoryTool implements Tool {
       gateway,
       'resolve_common_directory',
       'resolve_common_directory',
-      { directory: kind },
+      { target: args.target, directory: kind },
     );
     if (remote) return remote;
 

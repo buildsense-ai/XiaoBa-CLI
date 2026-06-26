@@ -212,6 +212,7 @@ export class ToolManager implements ToolExecutor {
         toolName,
         operation: operationForToolTargetContext(toolName),
         cwd: resolveTargetContextCwd(toolName, args, context.workingDirectory),
+        executionTarget: typeof args === 'object' && args ? (args as Record<string, unknown>).target : undefined,
       });
 
       // 失败结果：统一走 ok=false 分支

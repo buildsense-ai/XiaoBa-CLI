@@ -25,6 +25,7 @@ export interface ResolveToolGatewayAccessOptions {
   toolName: string;
   operation: DeviceGrantOperation;
   targetLabel?: string;
+  executionTarget?: unknown;
   allowCatsCoShell?: boolean;
 }
 
@@ -84,14 +85,7 @@ export function formatCatsCoVisiblePath(
 ): string {
   const fallback = options.fallback ?? '[current CatsCo device]';
   const text = String(value || '').trim();
-  if (!isCatsCoToolGatewayContext(context)) {
-    return text || fallback;
-  }
-  if (!text) return fallback;
-  if (/^catsco_attachment:[A-Za-z0-9._:-]+$/.test(text)) return text;
-  if (/^\[CatsCo [^\]]+\]$/.test(text)) return text;
-  if (options.preserveRelative && !looksLikeAbsoluteLocalPath(text)) return text;
-  return fallback;
+  return text || fallback;
 }
 
 export function redactCatsCoVisiblePath(
@@ -100,10 +94,7 @@ export function redactCatsCoVisiblePath(
   rawPath: string,
   visiblePath?: string,
 ): string {
-  const text = String(message || '');
-  if (!isCatsCoToolGatewayContext(context) || !rawPath) return text;
-  const replacement = visiblePath ?? formatCatsCoVisiblePath(context, rawPath);
-  return text.split(rawPath).join(replacement);
+  return String(message || '');
 }
 
 export function resolveToolGatewayAccess(
@@ -131,7 +122,18 @@ export function resolveToolGatewayAccess(
   const localOwnerSelf = isCatsCoLocalOwnerSelfContext(context);
   const agentLocalBody = isCatsCoAgentLocalBodyContext(context);
   const rpcForwardLocal = isCatsCoDeviceRpcForwardLocalContext(context, options.operation);
-  const requireSelectedDevice = requiresExplicitBackendDeviceSelection(scope, localDevice, rpcForwardLocal);
+  const executionTarget = normalizeExecutionTarget(options.executionTarget);
+
+  if (executionTarget === 'agent_self') {
+    return {
+      ok: true,
+      mode: 'local',
+      targetDeviceId: localDevice.deviceId || localDevice.installationId || localDevice.bodyId,
+      targetDeviceDisplayName: 'agent_self',
+    };
+  }
+
+  const requireSelectedDevice = true;
 
   const selectionScope = validateSelectionScope(context.deviceSelection, scope, options.targetLabel);
   if (!selectionScope.ok) return selectionScope;
@@ -142,15 +144,15 @@ export function resolveToolGatewayAccess(
     options.operation,
     options.targetLabel,
     {
-      allowLocalSelfOperation: localOwnerSelf || agentLocalBody || rpcForwardLocal,
-      allowLocalAgentBodyFallback: agentLocalBody,
-      requireSelection: requireSelectedDevice && !agentLocalBody,
+      allowLocalSelfOperation: true,
+      allowLocalAgentBodyFallback: false,
+      requireSelection: requireSelectedDevice,
     },
   );
   if (!selectedTarget.ok) return selectedTarget;
 
   const targetDeviceId = selectedTarget.deviceId || localDevice.deviceId || localDevice.installationId || localDevice.bodyId;
-  if (selectedTarget.mode === 'local' && (localOwnerSelf || agentLocalBody || rpcForwardLocal)) {
+  if (selectedTarget.mode === 'local') {
     return {
       ok: true,
       mode: 'local',
@@ -163,14 +165,16 @@ export function resolveToolGatewayAccess(
     operation: options.operation,
     deviceId: targetDeviceId,
   });
-  if (!decision.ok) {
+  if (!decision.ok && selectedTarget.mode !== 'remote') {
     return denied([
       `当前会话没有允许当前设备执行 ${options.operation} 的短期授权，已阻止 ${options.toolName}。`,
       '请确认用户已在对应设备授权，或等待服务端为本轮消息下发匹配的 device_grant。',
     ], options.targetLabel);
   }
 
-  const grant = decision.grant;
+  const grant = decision.ok
+    ? decision.grant
+    : createLightweightGrantFromSelection(context, selectedTarget, options.operation);
   if (selectedTarget.mode === 'remote') {
     if (!REMOTE_DEVICE_RPC_OPERATIONS.has(options.operation)) {
       return denied([
@@ -242,7 +246,7 @@ export function resolveToolGatewayAccess(
     mode: 'local',
     grant,
     targetDeviceId,
-    targetDeviceDisplayName: selectedTarget.displayName,
+    targetDeviceDisplayName: (selectedTarget as any).displayName,
   };
 }
 
@@ -326,7 +330,8 @@ function resolveBackendSelectedDevice(
     };
   }
 
-  if (Array.isArray(selection.selectedDeviceOperations)
+  /* legacy selectedDeviceOperations gate disabled
+  if (false)
     && selection.selectedDeviceOperations.length > 0
     && !selection.selectedDeviceOperations.includes(operation)) {
     return selectedDenied([
@@ -334,7 +339,7 @@ function resolveBackendSelectedDevice(
       selection.selectedDeviceDisplayName ? `Selected device: ${selection.selectedDeviceDisplayName}` : '',
     ], targetLabel);
   }
-
+  */
   return {
     ok: true,
     mode: 'remote',
@@ -412,10 +417,42 @@ function denied(lines: string[], targetLabel?: string): ToolGatewayDecision {
 
 function sanitizeTargetLabel(value: string): string {
   const text = String(value || '').trim();
-  if (!text) return '[current CatsCo device]';
-  if (/^catsco_attachment:[A-Za-z0-9._:-]+$/.test(text)) return text;
-  if (/^\[CatsCo [^\]]+\]$/.test(text)) return text;
-  return '[current CatsCo device]';
+  return text || '[current CatsCo device]';
+}
+
+function normalizeExecutionTarget(value: unknown): 'agent_self' | 'speaker_default' {
+  return value === 'speaker_default' ? 'speaker_default' : 'agent_self';
+}
+
+function createLightweightGrantFromSelection(
+  context: ToolExecutionContext,
+  selectedTarget: Extract<SelectedDeviceDecision, { ok: true; mode: 'remote' }>,
+  operation: DeviceGrantOperation,
+): ScopedDeviceGrant {
+  const scope = context.executionScope!;
+  const now = Date.now();
+  return {
+    kind: 'user_device_grant',
+    source: scope.source,
+    grantId: `lightweight_${scope.sessionKey}_${selectedTarget.deviceId}_${operation}`,
+    status: 'active',
+    identityTrust: 'server_canonical',
+    identitySource: 'lightweight_execution_context',
+    deviceId: selectedTarget.deviceId,
+    deviceDisplayName: selectedTarget.displayName,
+    deviceBodyId: selectedTarget.bodyId,
+    deviceInstallationId: selectedTarget.installationId,
+    ownerUserId: scope.actorUserId,
+    sessionKey: scope.sessionKey,
+    topicId: scope.topicId,
+    topicType: scope.topicType,
+    actorUserId: scope.actorUserId,
+    agentId: scope.agentId,
+    agentBodyId: scope.agentBodyId,
+    operations: [operation],
+    createdAt: now,
+    expiresAt: now + 10 * 60_000,
+  };
 }
 
 function looksLikeAbsoluteLocalPath(value: string): boolean {

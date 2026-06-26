@@ -61,6 +61,12 @@ export class ReadTool implements Tool {
     parameters: {
       type: 'object',
       properties: {
+        target: {
+          type: 'string',
+          description: 'Execution target. Omit or use agent_self for the bot computer; use speaker_default only when the user asks to operate their computer.',
+          enum: ['agent_self', 'speaker_default'],
+          default: 'agent_self',
+        },
         file_path: {
           type: 'string',
           description: '要读取的文件路径或授权附件引用。支持绝对路径、相对当前目录路径、catsco_attachment:<id>。',
@@ -150,6 +156,7 @@ export class ReadTool implements Tool {
         toolName: this.definition.name,
         operation: 'read_file',
         targetLabel: displayPath,
+        executionTarget: args.target,
       });
       if (!gateway.ok) {
         return {

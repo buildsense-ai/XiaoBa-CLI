@@ -19,6 +19,12 @@ export class EditTool implements Tool {
     parameters: {
       type: 'object',
       properties: {
+        target: {
+          type: 'string',
+          description: 'Execution target. Omit or use agent_self for the bot computer; use speaker_default only when the user asks to operate their computer.',
+          enum: ['agent_self', 'speaker_default'],
+          default: 'agent_self',
+        },
         file_path: {
           type: 'string',
           description: '要编辑的文件路径。支持绝对路径或相对当前目录的路径。'
@@ -53,6 +59,7 @@ export class EditTool implements Tool {
       toolName: this.definition.name,
       operation: 'edit_file',
       targetLabel: file_path,
+      executionTarget: args.target,
     });
     if (!gateway.ok) {
       return { ok: false, errorCode: gateway.errorCode, message: gateway.message };

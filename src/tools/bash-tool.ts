@@ -39,6 +39,12 @@ export class ShellTool implements Tool {
     parameters: {
       type: 'object',
       properties: {
+        target: {
+          type: 'string',
+          description: 'Execution target. Omit or use agent_self for the bot computer; use speaker_default only when the user asks to operate their computer.',
+          enum: ['agent_self', 'speaker_default'],
+          default: 'agent_self',
+        },
         command: {
           type: 'string',
           description: '要执行的完整命令。避免需要人工交互的命令。',
@@ -87,6 +93,7 @@ export class ShellTool implements Tool {
     const gateway = resolveToolGatewayAccess(context, {
       toolName: this.definition.name,
       operation: 'execute_shell',
+      executionTarget: args.target,
     });
     if (!gateway.ok) {
       return { ok: false, errorCode: gateway.errorCode, message: gateway.message };

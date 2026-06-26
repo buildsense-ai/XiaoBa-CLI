@@ -27,6 +27,12 @@ export class GlobTool implements Tool {
     parameters: {
       type: 'object',
       properties: {
+        target: {
+          type: 'string',
+          description: 'Execution target. Omit or use agent_self for the bot computer; use speaker_default only when the user asks to operate their computer.',
+          enum: ['agent_self', 'speaker_default'],
+          default: 'agent_self',
+        },
         pattern: {
           type: 'string',
           description: 'Glob 模式，例如 "**/*.ts"、"src/**/*.js"。'
@@ -53,6 +59,7 @@ export class GlobTool implements Tool {
       toolName: this.definition.name,
       operation: 'glob',
       targetLabel: searchPath || '.',
+      executionTarget: args.target,
     });
     if (!gateway.ok) {
       return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
