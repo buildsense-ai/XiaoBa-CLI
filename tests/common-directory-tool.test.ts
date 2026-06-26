@@ -58,9 +58,10 @@ describe('CommonDirectoryTool', () => {
     assert.match(result.content as string, /Do not use execute_shell/);
   });
 
-  test('resolves virtual employee cloud runtime desktop to a stable data directory', async () => {
+  test('resolves virtual employee cloud runtime desktop through the runtime OS', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-agent-runtime-desktop-'));
     const tool = new CommonDirectoryTool();
+    const expectedDesktop = resolveCommonDirectory('desktop');
 
     const result = await tool.execute({
       directory: 'desktop',
@@ -69,11 +70,10 @@ describe('CommonDirectoryTool', () => {
 
     assert.equal(result.ok, true);
     const content = String(result.content);
-    const expectedDesktop = path.join(root, '.dev-user-data-real', 'Desktop');
     assert.match(content, /kind: desktop/);
-    assert.match(content, /source: agent_cloud_runtime_data/);
-    assert.match(content, new RegExp(`path: ${escapeRegExp(expectedDesktop)}`));
-    assert.equal(fs.existsSync(expectedDesktop), true);
+    assert.match(content, new RegExp(`source: ${escapeRegExp(expectedDesktop.source)}`));
+    assert.match(content, new RegExp(`path: ${escapeRegExp(expectedDesktop.path)}`));
+    assert.doesNotMatch(content, /\.dev-user-data-real/);
   });
 });
 

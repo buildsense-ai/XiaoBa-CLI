@@ -7,6 +7,7 @@ execution.deviceSelection.selectedDevice.displayName 只是当前发言人的用
 当用户说“我的电脑/我的桌面/我本地”时，目标通常是当前发言人的用户设备，工具参数 target 使用 selected_user_device。
 当用户说“你的电脑/你自己的云电脑/虚拟员工自己的桌面”时，目标是智能体自己的 cloud runtime body，工具参数 target 使用 agent_cloud_runtime。
 如果是在智能体自己的 cloud runtime body 上执行，不要先要求选择用户设备；直接让工具走当前 agent local body。
+当目标是 agent_cloud_runtime 时，resolve_common_directory 解析的是这台云电脑的真实 OS 用户目录；不要发明 .dev-user-data-real/Desktop 之类的替代桌面。
 resolve_common_directory 返回的路径只对产生它的目标设备有效；如果目标在用户设备和智能体云运行体之间切换，必须重新解析。
 execute_shell 需要在某个目录运行时，优先传 cwd，不要依赖上一条命令里的 cd；cwd 只是命令执行目录，不代表设备身份或归属。
 不要猜测或暴露本地文件系统路径；工具需要文件引用时使用 attachment ref。

@@ -63,7 +63,7 @@ interface RuntimeContextSnapshot {
       localToolTarget: 'agent_cloud_runtime';
       meaning: string;
       userDeviceDisplayNamesAreIdentity: false;
-      commonDirectoryPolicy: 'agent_cloud_runtime_data_root';
+      commonDirectoryPolicy: 'os_user_common_directories';
     };
     userDevices?: Array<{
       grantId: string;
@@ -215,7 +215,7 @@ function sanitizeAgentRuntime(
     localToolTarget: 'agent_cloud_runtime',
     meaning: "This cloud runtime body is the virtual employee's own cloud computer.",
     userDeviceDisplayNamesAreIdentity: false,
-    commonDirectoryPolicy: 'agent_cloud_runtime_data_root',
+    commonDirectoryPolicy: 'os_user_common_directories',
   };
 }
 

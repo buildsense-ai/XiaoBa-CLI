@@ -82,7 +82,7 @@ describe('runtime context builder', () => {
     assert.equal(snapshot.execution.agentRuntime.owner, 'agent_self');
     assert.equal(snapshot.execution.agentRuntime.localToolTarget, 'agent_cloud_runtime');
     assert.equal(snapshot.execution.agentRuntime.userDeviceDisplayNamesAreIdentity, false);
-    assert.equal(snapshot.execution.agentRuntime.commonDirectoryPolicy, 'agent_cloud_runtime_data_root');
+    assert.equal(snapshot.execution.agentRuntime.commonDirectoryPolicy, 'os_user_common_directories');
     assert.equal('bodyId' in snapshot.execution.localDevice, false);
     assert.equal(snapshot.execution.userDevices[0].grantId, 'device_grant_current');
     assert.equal(snapshot.execution.userDevices[0].deviceId, 'device-user-1');
