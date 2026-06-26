@@ -6,7 +6,6 @@ const REMOTE_TOOL_DEFAULT_TIMEOUT_MS = 60_000;
 const REMOTE_TOOL_MIN_TIMEOUT_MS = 5_000;
 const REMOTE_TOOL_MAX_TIMEOUT_MS = 180_000;
 export const MAX_DEVICE_RPC_TOOL_CONTENT_CHARS = 48_000;
-export const MAX_DEVICE_RPC_SHELL_CONTENT_CHARS = 12_000;
 
 type RemoteDeviceRpcToolName = 'read_file' | 'resolve_common_directory' | 'glob' | 'grep' | 'write_file' | 'edit_file' | 'execute_shell';
 
@@ -189,32 +188,12 @@ function normalizeDeviceRpcContent(content: unknown, options: DeviceRpcNormalize
 }
 
 function truncateText(value: string, options: DeviceRpcNormalizeOptions = {}): string {
-  const maxChars = maxContentCharsForTool(options.toolName);
+  const maxChars = MAX_DEVICE_RPC_TOOL_CONTENT_CHARS;
   if (value.length <= maxChars) return value;
-  if (options.toolName === 'execute_shell') return summarizeLongShellOutput(value, maxChars);
   return [
     value.slice(0, maxChars),
     '',
     `[远程设备结果超过 ${maxChars} 字符，已截断。请用更精确的 path/pattern/limit/offset 继续读取。]`,
-  ].join('\n');
-}
-
-function maxContentCharsForTool(toolName?: string): number {
-  return toolName === 'execute_shell'
-    ? MAX_DEVICE_RPC_SHELL_CONTENT_CHARS
-    : MAX_DEVICE_RPC_TOOL_CONTENT_CHARS;
-}
-
-function summarizeLongShellOutput(value: string, maxChars: number): string {
-  const lineCount = value.split(/\r\n|\n|\r/).length;
-  const headChars = Math.floor(maxChars * 0.7);
-  const tailChars = Math.max(0, maxChars - headChars);
-  return [
-    value.slice(0, headChars).trimEnd(),
-    '',
-    `[execute_shell 输出已摘要：原始 ${value.length} 字符 / ${lineCount} 行，仅保留开头 ${headChars} 字符和结尾 ${tailChars} 字符。请缩小命令范围，或改用 glob / grep / read_file 等专用工具继续。]`,
-    '',
-    value.slice(-tailChars).trimStart(),
   ].join('\n');
 }
 
