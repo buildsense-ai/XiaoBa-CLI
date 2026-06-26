@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { isToolAllowed, isPathAllowed } from '../utils/safety';
-import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
+import { formatCatsCoVisiblePath, normalizeToolTargetPreference, resolveToolGatewayAccess } from './tool-gateway';
 import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
 
 /**
@@ -35,6 +35,11 @@ export class EditTool implements Tool {
           type: 'boolean',
           description: '是否替换所有匹配项。默认 false，此时 old_string 必须唯一。',
           default: false
+        },
+        target: {
+          type: 'string',
+          enum: ['auto', 'agent_cloud_runtime', 'selected_user_device'],
+          description: 'CatsCo 可选目标。用户说“你的/虚拟员工自己的云电脑或桌面”时用 agent_cloud_runtime；用户说“我的电脑/我的桌面/我本地”时用 selected_user_device；不确定用 auto。不要根据设备展示名判断身份。'
         }
       },
       required: ['file_path', 'old_string', 'new_string']
@@ -53,6 +58,7 @@ export class EditTool implements Tool {
       toolName: this.definition.name,
       operation: 'edit_file',
       targetLabel: file_path,
+      targetPreference: normalizeToolTargetPreference(args),
     });
     if (!gateway.ok) {
       return { ok: false, errorCode: gateway.errorCode, message: gateway.message };

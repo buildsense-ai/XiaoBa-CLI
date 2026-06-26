@@ -1,6 +1,6 @@
 import type { DeviceGrantOperation } from '../types/session-identity';
 import type { ToolExecutionContext, ToolExecutionResult, ToolRiskLevel } from '../types/tool';
-import { isCatsCoAgentLocalBodyContext, isCatsCoLocalOwnerSelfContext, resolveToolGatewayAccess } from './tool-gateway';
+import { isCatsCoAgentLocalBodyContext, isCatsCoLocalOwnerSelfContext, normalizeToolTargetPreference, resolveToolGatewayAccess } from './tool-gateway';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -104,7 +104,7 @@ export function classifyLocalToolRisk(
   }
 
   const remoteFileOperation = REMOTE_DEVICE_FILE_TOOL_OPERATIONS[toolName];
-  if (remoteFileOperation && isServerAuthorizedRemoteDeviceOperation(toolName, remoteFileOperation, context)) {
+  if (remoteFileOperation && isServerAuthorizedRemoteDeviceOperation(toolName, remoteFileOperation, context, args)) {
     return {
       requiresConfirmation: false,
       risk: 'low',
@@ -125,7 +125,7 @@ export function classifyLocalToolRisk(
 
   if (toolName === 'execute_shell') {
     const command = stringField(args, 'command') || stringField(args, 'cmd') || stringField(args, 'script');
-    if (isServerAuthorizedRemoteDeviceOperation(toolName, 'execute_shell', context)) {
+    if (isServerAuthorizedRemoteDeviceOperation(toolName, 'execute_shell', context, args)) {
       return {
         requiresConfirmation: false,
         risk: 'high',
@@ -165,11 +165,13 @@ function isServerAuthorizedRemoteDeviceOperation(
   toolName: string,
   operation: DeviceGrantOperation,
   context: ToolExecutionContext,
+  args?: unknown,
 ): boolean {
   if (!context.deviceRpc) return false;
   const decision = resolveToolGatewayAccess(context, {
     toolName,
     operation,
+    targetPreference: normalizeToolTargetPreference(args),
   });
   return decision.ok && decision.mode === 'remote';
 }

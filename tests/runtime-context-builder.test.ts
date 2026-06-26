@@ -78,16 +78,21 @@ describe('runtime context builder', () => {
     assert.equal(snapshot.execution.scopeSource, 'execution_scope');
     assert.equal(snapshot.execution.localDevice.source, 'catscompany');
     assert.equal(snapshot.execution.localDevice.deviceId, 'device-1');
+    assert.equal(snapshot.execution.agentRuntime.target, 'virtual_employee_cloud_runtime');
+    assert.equal(snapshot.execution.agentRuntime.owner, 'agent_self');
+    assert.equal(snapshot.execution.agentRuntime.localToolTarget, 'agent_cloud_runtime');
+    assert.equal(snapshot.execution.agentRuntime.userDeviceDisplayNamesAreIdentity, false);
+    assert.equal(snapshot.execution.agentRuntime.commonDirectoryPolicy, 'agent_cloud_runtime_data_root');
     assert.equal('bodyId' in snapshot.execution.localDevice, false);
     assert.equal(snapshot.execution.userDevices[0].grantId, 'device_grant_current');
     assert.equal(snapshot.execution.userDevices[0].deviceId, 'device-user-1');
-    assert.equal(snapshot.execution.userDevices[0].displayName, 'Alice laptop');
+    assert.equal(snapshot.execution.userDevices[0].displayName, 'User Laptop');
     assert.deepEqual(snapshot.execution.userDevices[0].operations, ['read_file', 'execute_shell']);
     assert.equal(snapshot.execution.userDevices[0].status, 'active');
     assert.equal(snapshot.execution.deviceSelection.status, 'selected');
     assert.equal(snapshot.execution.deviceSelection.selectionSource, 'single_active_device');
     assert.equal(snapshot.execution.deviceSelection.selectedDevice.deviceId, 'device-user-1');
-    assert.equal(snapshot.execution.deviceSelection.selectedDevice.displayName, 'Alice laptop');
+    assert.equal(snapshot.execution.deviceSelection.selectedDevice.displayName, 'User Laptop');
     assert.deepEqual(snapshot.execution.deviceSelection.selectedDevice.operations, ['read_file']);
     assert.equal(snapshot.execution.localFiles[0].ref, 'catsco_attachment:contract');
     assert.equal(snapshot.execution.localFiles[0].fileName, 'contract.pdf');
@@ -222,7 +227,7 @@ function deviceGrant(scope: ExecutionScope, deviceId = 'device-user-1'): ScopedD
     source: scope.source,
     ownerUserId: scope.actorUserId,
     deviceId,
-    displayName: 'Alice laptop',
+    displayName: 'User Laptop',
     bodyId: 'body-secret',
     installationId: 'installation-main',
     identityTrust: 'server_canonical',
@@ -253,7 +258,7 @@ function deviceSelection(scope: ExecutionScope): ScopedDeviceSelection {
     identityTrust: scope.identityTrust,
     identitySource: 'metadata.catsco_identity',
     selectedDeviceId: 'device-user-1',
-    selectedDeviceDisplayName: 'Alice laptop',
+    selectedDeviceDisplayName: 'User Laptop',
     selectedDeviceBodyId: 'body-secret',
     selectedDeviceInstallationId: 'installation-main',
     selectedDeviceOperations: ['read_file'],

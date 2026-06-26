@@ -3,7 +3,7 @@ import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { glob } from 'glob';
 import { isReadPathAllowed } from '../utils/safety';
-import { formatCatsCoVisiblePath, isCatsCoToolGatewayContext, resolveToolGatewayAccess } from './tool-gateway';
+import { formatCatsCoVisiblePath, isCatsCoToolGatewayContext, normalizeToolTargetPreference, resolveToolGatewayAccess } from './tool-gateway';
 import { executeRemoteReadonlyTool } from './device-rpc-tool';
 
 interface GlobResult {
@@ -39,6 +39,11 @@ export class GlobTool implements Tool {
           type: 'number',
           description: '返回结果最大数量，默认 100。',
           default: 100
+        },
+        target: {
+          type: 'string',
+          enum: ['auto', 'agent_cloud_runtime', 'selected_user_device'],
+          description: 'CatsCo 可选目标。用户说“你的/虚拟员工自己的云电脑或桌面”时用 agent_cloud_runtime；用户说“我的电脑/我的桌面/我本地”时用 selected_user_device；不确定用 auto。不要根据设备展示名判断身份。'
         }
       },
       required: ['pattern']
@@ -53,6 +58,7 @@ export class GlobTool implements Tool {
       toolName: this.definition.name,
       operation: 'glob',
       targetLabel: searchPath || '.',
+      targetPreference: normalizeToolTargetPreference(args),
     });
     if (!gateway.ok) {
       return { ok: false, errorCode: gateway.errorCode, message: gateway.message };

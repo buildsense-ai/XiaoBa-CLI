@@ -22,7 +22,8 @@ import { PromptModeTool } from './prompt-mode-tool';
 import { DEFAULT_TOOL_NAMES } from './default-tool-names';
 import { mergeToolExecutionContext } from '../utils/tool-context';
 import { confirmLocalToolExecution } from './local-tool-risk';
-import { buildToolTargetContext, operationForToolTargetContext } from './tool-target-context';
+import { buildToolTargetContext, operationForToolTargetContext, resolveToolTargetContextGateway } from './tool-target-context';
+import { normalizeToolTargetPreference } from './tool-gateway';
 
 const INTERNAL_TOOL_NAMES = ['ask_parent'] as const;
 
@@ -208,9 +209,12 @@ export class ToolManager implements ToolExecutor {
       }
 
       const output = await tool.execute(args, context);
+      const operation = operationForToolTargetContext(toolName);
       const targetContext = buildToolTargetContext(context, {
         toolName,
-        operation: operationForToolTargetContext(toolName),
+        operation,
+        gateway: resolveToolTargetContextGateway(context, toolName, args),
+        targetPreference: normalizeToolTargetPreference(args),
         cwd: resolveTargetContextCwd(toolName, args, context.workingDirectory),
       });
 

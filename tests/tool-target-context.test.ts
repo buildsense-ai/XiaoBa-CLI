@@ -48,7 +48,10 @@ describe('tool target context', () => {
     assert.ok(context);
     assert.match(context, /^\[tool_target\]/);
     assert.match(context, /target: virtual_employee_cloud_runtime/);
+    assert.match(context, /target_owner: agent_self/);
+    assert.match(context, /target_meaning: This is the virtual employee's own cloud computer\./);
     assert.match(context, new RegExp(`cwd: ${escapeRegExp(runtimeCwd)}`));
+    assert.match(context, /cwd_scope: cwd is an execution directory on the target/);
     assert.match(context, /shell: powershell/);
   });
 
@@ -112,7 +115,7 @@ describe('tool target context', () => {
         agentId: 'usr43',
         identityTrust: 'server_canonical',
         selectedDeviceId: 'install-user-device',
-        selectedDeviceDisplayName: 'Alice Laptop',
+        selectedDeviceDisplayName: 'User Laptop',
       },
     }), {
       toolName: 'resolve_common_directory',
@@ -121,7 +124,10 @@ describe('tool target context', () => {
 
     assert.ok(context);
     assert.match(context, /target: selected_user_device/);
-    assert.match(context, /target_display_name: Alice Laptop/);
+    assert.match(context, /target_owner: current_speaker_user/);
+    assert.match(context, /not the virtual employee's own cloud computer/);
+    assert.match(context, /target_display_name: User Laptop/);
+    assert.match(context, /target_display_name_role: user_device_display_name_only/);
   });
 
   test('strips target context before CatsCo display', () => {

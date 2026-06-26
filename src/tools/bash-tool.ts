@@ -8,7 +8,7 @@ import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from 
 import { Logger } from '../utils/logger';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { isToolAllowed, isBashCommandAllowed } from '../utils/safety';
-import { resolveToolGatewayAccess } from './tool-gateway';
+import { normalizeToolTargetPreference, resolveToolGatewayAccess } from './tool-gateway';
 import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
 
 const execAsync = promisify(exec);
@@ -60,6 +60,11 @@ export class ShellTool implements Tool {
           description: 'Set true only after the user explicitly requested or confirmed a risky destructive command such as recursive deletion, git reset --hard, git clean, or force push.',
           default: false,
         },
+        target: {
+          type: 'string',
+          enum: ['auto', 'agent_cloud_runtime', 'selected_user_device'],
+          description: 'CatsCo 可选目标。用户说“你的/虚拟员工自己的云电脑或桌面”时用 agent_cloud_runtime；用户说“我的电脑/我的桌面/我本地”时用 selected_user_device；不确定用 auto。不要根据设备展示名判断身份。',
+        },
       },
       required: ['command'],
     },
@@ -87,6 +92,7 @@ export class ShellTool implements Tool {
     const gateway = resolveToolGatewayAccess(context, {
       toolName: this.definition.name,
       operation: 'execute_shell',
+      targetPreference: normalizeToolTargetPreference(args),
     });
     if (!gateway.ok) {
       return { ok: false, errorCode: gateway.errorCode, message: gateway.message };

@@ -1,7 +1,10 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
+import * as fs from 'fs';
 import * as os from 'os';
+import * as path from 'path';
 import { CommonDirectoryTool, normalizeCommonDirectory, resolveCommonDirectory } from '../src/tools/common-directory-tool';
+import type { ToolExecutionContext } from '../src/types/tool';
 
 describe('CommonDirectoryTool', () => {
   test('normalizes English and Chinese common directory aliases', () => {
@@ -54,4 +57,56 @@ describe('CommonDirectoryTool', () => {
     assert.match(result.content as string, /pass this path as execute_shell\.cwd/);
     assert.match(result.content as string, /Do not use execute_shell/);
   });
+
+  test('resolves virtual employee cloud runtime desktop to a stable data directory', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-agent-runtime-desktop-'));
+    const tool = new CommonDirectoryTool();
+
+    const result = await tool.execute({
+      directory: 'desktop',
+      target: 'agent_cloud_runtime',
+    }, catsAgentRuntimeContext(root));
+
+    assert.equal(result.ok, true);
+    const content = String(result.content);
+    const expectedDesktop = path.join(root, '.dev-user-data-real', 'Desktop');
+    assert.match(content, /kind: desktop/);
+    assert.match(content, /source: agent_cloud_runtime_data/);
+    assert.match(content, new RegExp(`path: ${escapeRegExp(expectedDesktop)}`));
+    assert.equal(fs.existsSync(expectedDesktop), true);
+  });
 });
+
+function catsAgentRuntimeContext(root: string): ToolExecutionContext {
+  return {
+    workingDirectory: root,
+    workspaceRoot: root,
+    conversationHistory: [],
+    surface: 'catscompany',
+    executionScope: {
+      source: 'catscompany',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+      topicId: 'p2p_100_43',
+      topicType: 'p2p',
+      actorUserId: 'usr100',
+      agentId: 'usr43',
+      agentBodyId: 'body-agent',
+      permissionsSource: 'server_canonical_message',
+      identityTrust: 'server_canonical',
+      isTrusted: true,
+    },
+    localDeviceGrant: {
+      kind: 'catscompany_body',
+      source: 'catscompany',
+      ownerUserId: 'usr7',
+      bodyId: 'body-agent',
+      installationId: 'install-agent',
+      deviceId: 'install-agent',
+      createdAt: Date.now(),
+    },
+  };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

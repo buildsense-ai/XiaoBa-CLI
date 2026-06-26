@@ -373,7 +373,7 @@ export class CatsCompanyBot {
         result = await new ReadTool().execute(args, context);
         break;
       case 'resolve_common_directory':
-        result = resolveCommonDirectoryToolArgs(args);
+        result = resolveCommonDirectoryToolArgs(args, context);
         break;
       case 'glob':
         result = await new GlobTool().execute(args, context);

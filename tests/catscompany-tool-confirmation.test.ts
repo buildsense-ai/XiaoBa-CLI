@@ -20,14 +20,14 @@ describe('CatsCompany tool confirmation prompts', () => {
       toolName: 'write_file',
       risk: 'medium',
       reason: '工具会修改本机文件，需要用户确认。',
-      args: { file_path: 'C:/Users/Annika/Desktop/hello.txt', content: '你好' },
+      args: { file_path: 'C:/Users/ExampleUser/Desktop/hello.txt', content: '你好' },
       surface: 'catscompany',
-      workingDirectory: 'C:/Users/Annika',
+      workingDirectory: 'C:/Users/ExampleUser',
     });
 
     assert.match(prompt, /write_file/);
     assert.match(prompt, /风险等级：中/);
-    assert.match(prompt, /file_path=C:\/Users\/Annika\/Desktop\/hello\.txt/);
+    assert.match(prompt, /file_path=C:\/Users\/ExampleUser\/Desktop\/hello\.txt/);
     assert.match(prompt, /确认执行/);
   });
 });

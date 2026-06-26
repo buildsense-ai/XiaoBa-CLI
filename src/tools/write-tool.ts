@@ -3,7 +3,7 @@ import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
 import { isToolAllowed, isPathAllowed } from '../utils/safety';
-import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
+import { formatCatsCoVisiblePath, normalizeToolTargetPreference, resolveToolGatewayAccess } from './tool-gateway';
 import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
 
 /**
@@ -27,6 +27,11 @@ export class WriteTool implements Tool {
         content: {
           type: 'string',
           description: '要写入文件的完整 UTF-8 文本内容。'
+        },
+        target: {
+          type: 'string',
+          enum: ['auto', 'agent_cloud_runtime', 'selected_user_device'],
+          description: 'CatsCo 可选目标。用户说“你的/虚拟员工自己的云电脑或桌面”时用 agent_cloud_runtime；用户说“我的电脑/我的桌面/我本地”时用 selected_user_device；不确定用 auto。不要根据设备展示名判断身份。'
         }
       },
       required: ['file_path', 'content']
@@ -45,6 +50,7 @@ export class WriteTool implements Tool {
       toolName: this.definition.name,
       operation: 'write_file',
       targetLabel: file_path,
+      targetPreference: normalizeToolTargetPreference(args),
     });
     if (!gateway.ok) {
       return { ok: false, errorCode: gateway.errorCode, message: gateway.message };

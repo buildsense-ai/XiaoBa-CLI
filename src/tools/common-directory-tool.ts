@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
-import { resolveToolGatewayAccess } from './tool-gateway';
+import { isCatsCoAgentLocalBodyContext, normalizeToolTargetPreference, resolveToolGatewayAccess } from './tool-gateway';
 
 export type CommonDirectoryKind =
   | 'desktop'
@@ -100,6 +100,17 @@ const STANDARD_SUBDIRECTORIES: Record<Exclude<CommonDirectoryKind, 'home' | 'tem
   music: 'Music',
 };
 
+const AGENT_RUNTIME_SUBDIRECTORIES: Record<CommonDirectoryKind, string> = {
+  desktop: 'Desktop',
+  downloads: 'Downloads',
+  documents: 'Documents',
+  pictures: 'Pictures',
+  videos: 'Videos',
+  music: 'Music',
+  home: '.',
+  temp: 'Temp',
+};
+
 const XDG_KEYS: Partial<Record<CommonDirectoryKind, string>> = {
   desktop: 'XDG_DESKTOP_DIR',
   downloads: 'XDG_DOWNLOAD_DIR',
@@ -139,6 +150,16 @@ export function resolveCommonDirectory(kind: CommonDirectoryKind): DirectoryReso
   return buildResolution(kind, path.join(os.homedir(), STANDARD_SUBDIRECTORIES[kind]), 'home_fallback');
 }
 
+export function resolveAgentRuntimeCommonDirectory(
+  kind: CommonDirectoryKind,
+  context: Pick<ToolExecutionContext, 'workingDirectory' | 'workspaceRoot'>,
+): DirectoryResolution {
+  const root = resolveAgentRuntimeDataRoot(context);
+  const directoryPath = path.join(root, AGENT_RUNTIME_SUBDIRECTORIES[kind]);
+  fs.mkdirSync(directoryPath, { recursive: true });
+  return buildResolution(kind, directoryPath, 'agent_cloud_runtime_data');
+}
+
 export class CommonDirectoryTool implements Tool {
   definition: ToolDefinition = {
     name: 'resolve_common_directory',
@@ -156,6 +177,11 @@ export class CommonDirectoryTool implements Tool {
           type: 'string',
           description: '要解析的目录名。支持 desktop, downloads, documents, pictures, videos, music, home, temp 及常见中文别名。',
         },
+        target: {
+          type: 'string',
+          enum: ['auto', 'agent_cloud_runtime', 'selected_user_device'],
+          description: 'CatsCo 可选目标。用户说“你的/虚拟员工自己的云电脑或桌面”时用 agent_cloud_runtime；用户说“我的电脑/我的桌面/我本地”时用 selected_user_device；不确定用 auto。不要根据设备展示名判断身份。',
+        },
       },
       required: ['directory'],
     },
@@ -172,6 +198,7 @@ export class CommonDirectoryTool implements Tool {
       toolName: 'resolve_common_directory',
       operation: 'resolve_common_directory',
       targetLabel: kind,
+      targetPreference: normalizeToolTargetPreference(args),
     });
     if (!gateway.ok) return gateway;
 
@@ -184,18 +211,25 @@ export class CommonDirectoryTool implements Tool {
     );
     if (remote) return remote;
 
-    return resolveCommonDirectoryToolArgs({ directory: kind });
+    return resolveCommonDirectoryToolArgs({ directory: kind }, _context);
   }
 }
 
-export function resolveCommonDirectoryToolArgs(args: any): ToolExecutionResult {
+export function resolveCommonDirectoryToolArgs(args: any, context?: ToolExecutionContext): ToolExecutionResult {
   const input = typeof args?.directory === 'string' ? args.directory : '';
   const kind = normalizeCommonDirectory(input);
   if (!kind) return invalidCommonDirectoryResult(input);
   return {
     ok: true,
-    content: formatCommonDirectoryResolution(resolveCommonDirectory(kind)),
+    content: formatCommonDirectoryResolution(resolveCommonDirectoryForContext(kind, context)),
   };
+}
+
+function resolveCommonDirectoryForContext(kind: CommonDirectoryKind, context?: ToolExecutionContext): DirectoryResolution {
+  if (context && isCatsCoAgentLocalBodyContext(context)) {
+    return resolveAgentRuntimeCommonDirectory(kind, context);
+  }
+  return resolveCommonDirectory(kind);
 }
 
 export function formatCommonDirectoryResolution(result: DirectoryResolution): string {
@@ -233,6 +267,12 @@ function buildResolution(kind: CommonDirectoryKind, directoryPath: string, sourc
     exists: fs.existsSync(resolvedPath),
     platform: process.platform,
   };
+}
+
+function resolveAgentRuntimeDataRoot(context: Pick<ToolExecutionContext, 'workingDirectory' | 'workspaceRoot'>): string {
+  const base = path.resolve(context.workspaceRoot || context.workingDirectory);
+  if (path.basename(base) === '.dev-user-data-real') return base;
+  return path.join(base, '.dev-user-data-real');
 }
 
 function readWindowsKnownFolder(kind: CommonDirectoryKind): string | null {

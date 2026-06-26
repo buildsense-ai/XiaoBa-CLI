@@ -4,6 +4,9 @@ import {
   isCatsCoAgentLocalBodyContext,
   isCatsCoLocalOwnerSelfContext,
   isCatsCoToolGatewayContext,
+  normalizeToolTargetPreference,
+  resolveToolGatewayAccess,
+  type ToolTargetPreference,
   type ToolGatewayDecision,
 } from './tool-gateway';
 
@@ -24,6 +27,7 @@ export interface ToolTargetContextOptions {
   toolName: string;
   operation?: DeviceGrantOperation;
   gateway?: ToolGatewayDecision;
+  targetPreference?: ToolTargetPreference;
   cwd?: string;
   shell?: string;
 }
@@ -40,16 +44,20 @@ export function buildToolTargetContext(
   const operation = options.operation || operationForToolTargetContext(options.toolName);
   if (!operation) return undefined;
 
-  const target = resolveToolTarget(context, options.gateway);
+  const target = resolveToolTarget(context, options.gateway, options.targetPreference);
   const cwd = preserveCwdForTarget(options.cwd || context.workingDirectory);
   const lines = [
     TOOL_TARGET_CONTEXT_PREFIX,
     `tool: ${options.toolName}`,
     `operation: ${operation}`,
     `target: ${target.kind}`,
+    target.owner ? `target_owner: ${target.owner}` : '',
+    target.meaning ? `target_meaning: ${target.meaning}` : '',
     target.displayName ? `target_display_name: ${target.displayName}` : '',
+    target.displayName ? `target_display_name_role: user_device_display_name_only` : '',
     cwd ? `cwd: ${cwd}` : '',
     options.shell ? `shell: ${options.shell}` : '',
+    'cwd_scope: cwd is an execution directory on the target; it does not identify device ownership.',
     'path_scope: Paths in this result belong only to the target above. Re-resolve common directories after switching targets.',
     TOOL_TARGET_CONTEXT_SUFFIX,
   ].filter(Boolean);
@@ -98,46 +106,86 @@ export function stripToolTargetContextForDisplay(content: string): string {
     .replace(/^\n+/, '');
 }
 
+export function resolveToolTargetContextGateway(
+  context: ToolExecutionContext,
+  toolName: string,
+  args: unknown,
+): ToolGatewayDecision | undefined {
+  const operation = operationForToolTargetContext(toolName);
+  if (!operation || !isCatsCoToolGatewayContext(context)) return undefined;
+  return resolveToolGatewayAccess(context, {
+    toolName,
+    operation,
+    targetPreference: normalizeToolTargetPreference(args),
+  });
+}
+
 function resolveToolTarget(
   context: ToolExecutionContext,
   gateway?: ToolGatewayDecision,
-): { kind: string; displayName?: string } {
+  targetPreference: ToolTargetPreference = 'auto',
+): { kind: string; owner?: string; meaning?: string; displayName?: string } {
+  if (targetPreference === 'agent_cloud_runtime' && isCatsCoAgentLocalBodyContext(context)) {
+    return virtualEmployeeCloudRuntimeTarget();
+  }
+
+  if (targetPreference === 'selected_user_device' && gateway?.ok) {
+    return selectedUserDeviceTarget(gateway.targetDeviceDisplayName || context.deviceSelection?.selectedDeviceDisplayName);
+  }
+
   if (gateway?.ok && gateway.mode === 'remote') {
-    return {
-      kind: 'selected_user_device',
-      displayName: gateway.targetDeviceDisplayName,
-    };
+    return selectedUserDeviceTarget(gateway.targetDeviceDisplayName);
   }
 
   if (context.executionScope?.permissionsSource === 'device_rpc_forward') {
-    return {
-      kind: 'selected_user_device',
-      displayName: context.deviceSelection?.selectedDeviceDisplayName,
-    };
+    return selectedUserDeviceTarget(context.deviceSelection?.selectedDeviceDisplayName);
   }
 
   if (isCatsCoAgentLocalBodyContext(context)) {
-    return { kind: 'virtual_employee_cloud_runtime' };
+    return virtualEmployeeCloudRuntimeTarget();
   }
 
   if (isCatsCoLocalOwnerSelfContext(context)) {
     return {
       kind: 'local_owner_device',
+      owner: 'local_authenticated_user',
+      meaning: 'This is the local device of the authenticated user running the current runtime.',
       displayName: context.deviceSelection?.selectedDeviceDisplayName,
     };
   }
 
   if (context.deviceSelection?.status === 'selected') {
-    return {
-      kind: 'backend_selected_device',
-      displayName: context.deviceSelection.selectedDeviceDisplayName,
-    };
+    return selectedUserDeviceTarget(context.deviceSelection.selectedDeviceDisplayName, 'backend_selected_device');
   }
 
-  return { kind: 'current_local_runtime' };
+  return {
+    kind: 'current_local_runtime',
+    owner: 'current_runtime',
+    meaning: 'This is the local runtime process that executed the tool.',
+  };
 }
 
 function preserveCwdForTarget(cwd: string | undefined): string | undefined {
   const text = String(cwd || '').trim();
   return text || undefined;
+}
+
+function virtualEmployeeCloudRuntimeTarget(): { kind: string; owner: string; meaning: string } {
+  return {
+    kind: 'virtual_employee_cloud_runtime',
+    owner: 'agent_self',
+    meaning: "This is the virtual employee's own cloud computer.",
+  };
+}
+
+function selectedUserDeviceTarget(
+  displayName?: string,
+  kind = 'selected_user_device',
+): { kind: string; owner: string; meaning: string; displayName?: string } {
+  return {
+    kind,
+    owner: 'current_speaker_user',
+    meaning: "This is the current user's selected device, not the virtual employee's own cloud computer.",
+    displayName,
+  };
 }

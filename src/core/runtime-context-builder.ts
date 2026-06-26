@@ -56,6 +56,15 @@ interface RuntimeContextSnapshot {
       source: MessageSource;
       deviceId?: string;
     };
+    agentRuntime?: {
+      target: 'virtual_employee_cloud_runtime';
+      owner: 'agent_self';
+      available: true;
+      localToolTarget: 'agent_cloud_runtime';
+      meaning: string;
+      userDeviceDisplayNamesAreIdentity: false;
+      commonDirectoryPolicy: 'agent_cloud_runtime_data_root';
+    };
     userDevices?: Array<{
       grantId: string;
       deviceId: string;
@@ -167,6 +176,7 @@ export function buildRuntimeContextSnapshot(params: BuildRuntimeContextParams): 
       scopeSource,
       toolsUseBackendScope: true,
       localDevice: sanitizeLocalDevice(params.localDeviceGrant),
+      agentRuntime: sanitizeAgentRuntime(scope, params.localDeviceGrant),
       userDevices: sanitizeDeviceGrants(params.deviceGrants),
       deviceSelection: sanitizeDeviceSelection(params.deviceSelection),
       localFiles: sanitizeLocalFiles(params.localFileGrants),
@@ -181,6 +191,32 @@ function sanitizeLocalDevice(grant?: ScopedLocalDeviceGrant): RuntimeContextSnap
     source: grant.source,
     deviceId: grant.deviceId,
   });
+}
+
+function sanitizeAgentRuntime(
+  scope?: ExecutionScope,
+  localDevice?: ScopedLocalDeviceGrant,
+): RuntimeContextSnapshot['execution']['agentRuntime'] | undefined {
+  if (!scope
+    || scope.source !== 'catscompany'
+    || scope.identityTrust !== 'server_canonical'
+    || !scope.isTrusted
+    || !scope.agentBodyId
+    || !localDevice
+    || localDevice.source !== 'catscompany'
+    || !localDevice.bodyId
+    || scope.agentBodyId !== localDevice.bodyId) {
+    return undefined;
+  }
+  return {
+    target: 'virtual_employee_cloud_runtime',
+    owner: 'agent_self',
+    available: true,
+    localToolTarget: 'agent_cloud_runtime',
+    meaning: "This cloud runtime body is the virtual employee's own cloud computer.",
+    userDeviceDisplayNamesAreIdentity: false,
+    commonDirectoryPolicy: 'agent_cloud_runtime_data_root',
+  };
 }
 
 function sanitizeDeviceGrants(grants?: ScopedDeviceGrant[]): RuntimeContextSnapshot['execution']['userDevices'] | undefined {

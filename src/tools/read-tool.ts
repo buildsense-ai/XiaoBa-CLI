@@ -10,7 +10,7 @@ import { analyzeImageWithReaderProxy, ReaderProxyResult } from '../utils/reader-
 import { Logger } from '../utils/logger';
 import { formatPathForLog } from '../utils/log-redaction';
 import { resolveLocalFileAccess, resolveLocalFileReference } from './local-file-gateway';
-import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
+import { formatCatsCoVisiblePath, normalizeToolTargetPreference, resolveToolGatewayAccess } from './tool-gateway';
 import { executeRemoteReadonlyTool } from './device-rpc-tool';
 
 export const DEFAULT_TEXT_READ_LIMIT = 200;
@@ -81,6 +81,11 @@ export class ReadTool implements Tool {
           type: 'string',
           description: '可选。读取图片时的分析目标；不传则使用当前用户请求作为分析目标。',
         },
+        target: {
+          type: 'string',
+          enum: ['auto', 'agent_cloud_runtime', 'selected_user_device'],
+          description: 'CatsCo 可选目标。用户说“你的/虚拟员工自己的云电脑或桌面”时用 agent_cloud_runtime；用户说“我的电脑/我的桌面/我本地”时用 selected_user_device；不确定用 auto。不要根据设备展示名判断身份。',
+        },
       },
       required: ['file_path'],
     },
@@ -150,6 +155,7 @@ export class ReadTool implements Tool {
         toolName: this.definition.name,
         operation: 'read_file',
         targetLabel: displayPath,
+        targetPreference: normalizeToolTargetPreference(args),
       });
       if (!gateway.ok) {
         return {

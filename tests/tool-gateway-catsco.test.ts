@@ -164,6 +164,107 @@ describe('CatsCo ToolGateway', () => {
     assert.match(result.ok ? String(result.content) : '', /agent body content/);
   });
 
+  test('explicit agent cloud runtime target ignores a selected user device', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'agent cloud runtime content');
+    const agentScope = scope({
+      actorUserId: 'usr100',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+      topicId: 'p2p_100_43',
+      agentBodyId: 'body-device',
+      deviceOwnerUserId: 'usr100',
+      deviceOwnerSource: 'channel_identity_link',
+    });
+    let rpcCalls = 0;
+
+    const result = await new ReadTool().execute({
+      file_path: filePath,
+      target: 'agent_cloud_runtime',
+    }, context(root, {
+      executionScope: agentScope,
+      localDeviceGrant: localDevice({ ownerUserId: 'usr7' }),
+      deviceSelection: deviceSelection({
+        sessionKey: agentScope.sessionKey,
+        topicId: agentScope.topicId,
+        actorUserId: agentScope.actorUserId,
+        agentId: agentScope.agentId,
+        selectedDeviceId: 'user-device',
+        selectedDeviceDisplayName: 'User Laptop',
+        selectedDeviceBodyId: 'user-body',
+        selectedDeviceInstallationId: 'user-install',
+        selectedDeviceOperations: ['read_file'],
+      }),
+      deviceRpc: {
+        executeTool: async () => {
+          rpcCalls += 1;
+          return { ok: true, content: 'user device content' };
+        },
+      },
+    }));
+
+    assert.equal(result.ok, true);
+    assert.match(result.ok ? String(result.content) : '', /agent cloud runtime content/);
+    assert.equal(rpcCalls, 0);
+  });
+
+  test('explicit selected user device target uses the backend-selected device', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'agent cloud runtime content');
+    const agentScope = scope({
+      actorUserId: 'usr100',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+      topicId: 'p2p_100_43',
+      agentBodyId: 'body-device',
+      deviceOwnerUserId: 'usr100',
+      deviceOwnerSource: 'channel_identity_link',
+    });
+    const calls: Array<{ args: Record<string, unknown> }> = [];
+
+    const result = await new ReadTool().execute({
+      file_path: filePath,
+      target: 'selected_user_device',
+    }, context(root, {
+      executionScope: agentScope,
+      localDeviceGrant: localDevice({ ownerUserId: 'usr7' }),
+      deviceGrants: [deviceGrant(['read_file'], {
+        deviceId: 'user-device',
+        deviceDisplayName: 'User Laptop',
+        deviceBodyId: 'user-body',
+        deviceInstallationId: 'user-install',
+        ownerUserId: 'usr100',
+        sessionKey: agentScope.sessionKey,
+        topicId: agentScope.topicId,
+        actorUserId: agentScope.actorUserId,
+        agentId: agentScope.agentId,
+        agentBodyId: agentScope.agentBodyId,
+      })],
+      deviceSelection: deviceSelection({
+        sessionKey: agentScope.sessionKey,
+        topicId: agentScope.topicId,
+        actorUserId: agentScope.actorUserId,
+        agentId: agentScope.agentId,
+        selectedDeviceId: 'user-device',
+        selectedDeviceDisplayName: 'User Laptop',
+        selectedDeviceBodyId: 'user-body',
+        selectedDeviceInstallationId: 'user-install',
+        selectedDeviceOperations: ['read_file'],
+      }),
+      deviceRpc: {
+        executeTool: async request => {
+          calls.push({ args: request.args });
+          return { ok: true, content: 'user device content' };
+        },
+      },
+    }));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok ? String(result.content) : '', 'user device content');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].args.target, 'selected_user_device');
+  });
+
   test('blocks agent local body fallback when agent body does not match local device body', async () => {
     const root = makeWorkspace();
     const filePath = path.join(root, 'notes.txt');

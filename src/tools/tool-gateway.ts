@@ -21,11 +21,14 @@ export type ToolGatewayDecision =
     }
   | { ok: false; errorCode: ToolErrorCode; message: string };
 
+export type ToolTargetPreference = 'auto' | 'agent_cloud_runtime' | 'selected_user_device';
+
 export interface ResolveToolGatewayAccessOptions {
   toolName: string;
   operation: DeviceGrantOperation;
   targetLabel?: string;
   allowCatsCoShell?: boolean;
+  targetPreference?: ToolTargetPreference;
 }
 
 export interface CatsCoVisiblePathOptions {
@@ -75,6 +78,18 @@ export function isCatsCoAgentLocalBodyContext(context: ToolExecutionContext): bo
     return false;
   }
   return Boolean(scope.agentBodyId && scope.agentBodyId === localDevice.bodyId);
+}
+
+export function normalizeToolTargetPreference(args: unknown): ToolTargetPreference {
+  if (!args || typeof args !== 'object') return 'auto';
+  const target = String((args as Record<string, unknown>).target || '').trim().toLowerCase();
+  if (target === 'agent_cloud_runtime' || target === 'virtual_employee_cloud_runtime') {
+    return 'agent_cloud_runtime';
+  }
+  if (target === 'selected_user_device' || target === 'user_device') {
+    return 'selected_user_device';
+  }
+  return 'auto';
 }
 
 export function formatCatsCoVisiblePath(
@@ -131,9 +146,20 @@ export function resolveToolGatewayAccess(
   const localOwnerSelf = isCatsCoLocalOwnerSelfContext(context);
   const agentLocalBody = isCatsCoAgentLocalBodyContext(context);
   const rpcForwardLocal = isCatsCoDeviceRpcForwardLocalContext(context, options.operation);
+  const targetPreference = options.targetPreference ?? 'auto';
+  const prefersAgentRuntime = targetPreference === 'agent_cloud_runtime';
+  const prefersSelectedUserDevice = targetPreference === 'selected_user_device';
   const requireSelectedDevice = requiresExplicitBackendDeviceSelection(scope, localDevice, rpcForwardLocal);
 
-  const selectionScope = validateSelectionScope(context.deviceSelection, scope, options.targetLabel);
+  if (prefersAgentRuntime && !agentLocalBody) {
+    return denied([
+      '工具目标要求使用虚拟员工自己的 cloud runtime，但当前运行体不是当前 agent 的本地 body，已阻止本地 fallback。',
+    ], options.targetLabel);
+  }
+
+  const selectionScope = prefersAgentRuntime
+    ? { ok: true as const, mode: 'local' as const }
+    : validateSelectionScope(context.deviceSelection, scope, options.targetLabel);
   if (!selectionScope.ok) return selectionScope;
 
   const selectedTarget = resolveBackendSelectedDevice(
@@ -144,7 +170,8 @@ export function resolveToolGatewayAccess(
     {
       allowLocalSelfOperation: localOwnerSelf || agentLocalBody || rpcForwardLocal,
       allowLocalAgentBodyFallback: agentLocalBody,
-      requireSelection: requireSelectedDevice && !agentLocalBody,
+      preferLocalAgentBody: prefersAgentRuntime,
+      requireSelection: prefersSelectedUserDevice || (requireSelectedDevice && !agentLocalBody),
     },
   );
   if (!selectedTarget.ok) return selectedTarget;
@@ -268,8 +295,17 @@ function resolveBackendSelectedDevice(
   localDevice: ScopedLocalDeviceGrant,
   operation: DeviceGrantOperation,
   targetLabel?: string,
-  options: { allowLocalSelfOperation?: boolean; allowLocalAgentBodyFallback?: boolean; requireSelection?: boolean } = {},
+  options: {
+    allowLocalSelfOperation?: boolean;
+    allowLocalAgentBodyFallback?: boolean;
+    preferLocalAgentBody?: boolean;
+    requireSelection?: boolean;
+  } = {},
 ): SelectedDeviceDecision {
+  if (options.preferLocalAgentBody) {
+    return localSelectedDevice(localDevice);
+  }
+
   if (!selection) {
     if (options.requireSelection) {
       return selectedDenied([

@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { isReadPathAllowed } from '../utils/safety';
-import { formatCatsCoVisiblePath, redactCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
+import { formatCatsCoVisiblePath, normalizeToolTargetPreference, redactCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
 import { executeRemoteReadonlyTool } from './device-rpc-tool';
 
 const VCS_DIRECTORIES_TO_EXCLUDE = ['.git', '.svn', '.hg', '.bzr'] as const;
@@ -97,7 +97,12 @@ export class GrepTool implements Tool {
           default: 'files'
         },
         limit: { type: 'number', description: '限制输出行数或文件数，默认 250。设为 0 表示不限制输出。', default: 250 },
-        offset: { type: 'number', description: '跳过前 N 行/文件，用于分页。默认 0。', default: 0 }
+        offset: { type: 'number', description: '跳过前 N 行/文件，用于分页。默认 0。', default: 0 },
+        target: {
+          type: 'string',
+          enum: ['auto', 'agent_cloud_runtime', 'selected_user_device'],
+          description: 'CatsCo 可选目标。用户说“你的/虚拟员工自己的云电脑或桌面”时用 agent_cloud_runtime；用户说“我的电脑/我的桌面/我本地”时用 selected_user_device；不确定用 auto。不要根据设备展示名判断身份。'
+        }
       },
       required: ['pattern']
     }
@@ -110,6 +115,7 @@ export class GrepTool implements Tool {
       toolName: this.definition.name,
       operation: 'grep',
       targetLabel: searchPath || '.',
+      targetPreference: normalizeToolTargetPreference(args),
     });
     if (!gateway.ok) {
       return { ok: false, errorCode: gateway.errorCode, message: gateway.message };

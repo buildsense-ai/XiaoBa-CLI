@@ -556,6 +556,60 @@ describe('ToolManager', () => {
     }
   });
 
+  test('CatsCo target context follows explicit selected user device target', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-target-user-device-'));
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    manager.registerTool(fakeTool('read_file', async () => {
+      return { ok: true, content: 'read result' };
+    }));
+    const channelScope = catsScope({
+      actorUserId: 'usr100',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+      topicId: 'p2p_100_43',
+      deviceOwnerUserId: 'usr100',
+      deviceOwnerSource: 'channel_identity_link',
+    });
+
+    const result = await manager.executeTool({
+      id: 'call-catsco-user-device-target-context',
+      type: 'function',
+      function: {
+        name: 'read_file',
+        arguments: JSON.stringify({ file_path: 'note.txt', target: 'selected_user_device' }),
+      },
+    }, [], {
+      surface: 'catscompany',
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      executionScope: channelScope,
+      localDeviceGrant: catsLocalDevice({ ownerUserId: 'usr7' }),
+      deviceGrants: [catsDeviceGrant(channelScope, ['read_file'], {
+        deviceId: 'user-device',
+        deviceDisplayName: 'User Laptop',
+        deviceBodyId: 'user-body',
+        deviceInstallationId: 'user-install',
+        ownerUserId: 'usr100',
+        actorUserId: 'usr100',
+      })],
+      deviceSelection: catsDeviceSelection(channelScope, ['read_file'], {
+        selectedDeviceId: 'user-device',
+        selectedDeviceDisplayName: 'User Laptop',
+        selectedDeviceBodyId: 'user-body',
+        selectedDeviceInstallationId: 'user-install',
+      }),
+      deviceRpc: {
+        executeTool: async () => ({ ok: true, content: 'remote read' }),
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.match(result.targetContext || '', /target: selected_user_device/);
+    assert.match(result.targetContext || '', /target_owner: current_speaker_user/);
+    assert.match(result.targetContext || '', /target_display_name: User Laptop/);
+    assert.doesNotMatch(result.targetContext || '', /target: virtual_employee_cloud_runtime/);
+  });
+
   test('CatsCo non-agent-local-body shell contexts still require strict confirmation', async () => {
     const cases: Array<{
       name: string;
