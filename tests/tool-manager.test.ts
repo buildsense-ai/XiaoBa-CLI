@@ -490,6 +490,59 @@ describe('ToolManager', () => {
     assert.equal(confirmations, 1);
   });
 
+  test('strict Weixin send_file requires confirmation when a workspace link resolves outside the workspace', async (t) => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-weixin-workspace-link-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-weixin-outside-link-'));
+    fs.writeFileSync(path.join(outside, 'secret.png'), 'secret image');
+    const linkDir = path.join(workspace, 'linked-outside');
+    try {
+      fs.symlinkSync(outside, linkDir, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      t.skip(`Cannot create symlink/junction in this environment: ${String(error)}`);
+      return;
+    }
+
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    let executed = false;
+    let confirmations = 0;
+    manager.registerTool(fakeTool('send_file', async () => {
+      executed = true;
+      return { ok: true, content: 'should not send' };
+    }));
+
+    const result = await manager.executeTool({
+      id: 'call-weixin-send-linked-outside',
+      type: 'function',
+      function: {
+        name: 'send_file',
+        arguments: JSON.stringify({
+          file_path: path.join('linked-outside', 'secret.png'),
+          file_name: 'secret.png',
+        }),
+      },
+    }, [], {
+      surface: 'weixin',
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      executionScope: weixinScope(),
+      channel: {
+        chatId: 'user-1',
+        reply: async () => undefined,
+        sendFile: async () => undefined,
+      },
+      confirmToolExecution: async () => {
+        confirmations += 1;
+        return false;
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'PERMISSION_DENIED');
+    assert.equal(executed, false);
+    assert.equal(confirmations, 1);
+  });
+
   test('CatsCo context can create new ordinary home files without confirmation', async () => {
     const manager = new ToolManager('/tmp/xiaoba-tool-manager', {}, { enabledToolNames: [] });
     let confirmed = false;

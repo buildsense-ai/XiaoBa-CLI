@@ -270,7 +270,23 @@ function classifySendFilePathRisk(args: unknown, context: ToolExecutionContext):
   const workspaceRoot = context.workspaceRoot || workingDirectory;
   const resolved = path.resolve(workingDirectory, target);
   if (looksSensitivePath(resolved)) return 'high';
-  return isWithin(resolved, workspaceRoot) ? 'low' : 'medium';
+  const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
+  if (!isWithin(resolved, resolvedWorkspaceRoot)) return 'medium';
+  const realPathRisk = classifyExistingSendFileRealPathRisk(resolved, resolvedWorkspaceRoot);
+  return realPathRisk || 'low';
+}
+
+function classifyExistingSendFileRealPathRisk(resolved: string, resolvedWorkspaceRoot: string): ToolRiskLevel | undefined {
+  if (!fs.existsSync(resolved)) return undefined;
+
+  try {
+    const realTarget = fs.realpathSync(resolved);
+    const realWorkspaceRoot = fs.realpathSync(resolvedWorkspaceRoot);
+    if (looksSensitivePath(realTarget)) return 'high';
+    return isWithin(realTarget, realWorkspaceRoot) ? undefined : 'medium';
+  } catch {
+    return 'medium';
+  }
 }
 
 function isCurrentMessageChannelWorkspaceFileSend(context: ToolExecutionContext, args: unknown): boolean {
