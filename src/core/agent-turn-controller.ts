@@ -201,6 +201,7 @@ export class AgentTurnController {
       deviceSelection: params.deviceSelection,
       deviceRpc: params.deviceRpc,
       localFileGrants: params.localFileGrants,
+      executionContext: turnContext.executionContext,
       pendingUserInputProvider: params.pendingUserInputProvider,
       confirmToolExecution: params.callbacks?.confirmToolExecution,
       episodeId,
@@ -290,6 +291,7 @@ export class AgentTurnController {
     deviceSelection?: ScopedDeviceSelection;
     deviceRpc?: DeviceRpcTransport;
     localFileGrants?: ScopedLocalFileGrant[];
+    executionContext?: import('./runtime-context-builder').ExecutionContextSnapshot;
     pendingUserInputProvider?: PendingUserInputProvider;
     confirmToolExecution?: AgentTurnCallbacks['confirmToolExecution'];
     episodeId?: string;
@@ -332,6 +334,7 @@ export class AgentTurnController {
           deviceGrants: options.deviceGrants,
           deviceSelection: options.deviceSelection,
           deviceRpc: options.deviceRpc,
+          executionContext: options.executionContext,
           localFileGrants: options.localFileGrants,
           confirmToolExecution: options.confirmToolExecution,
         },

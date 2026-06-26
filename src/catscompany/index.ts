@@ -295,25 +295,49 @@ export class CatsCompanyBot {
 
   private buildDeviceRpcTransport(): DeviceRpcTransport {
     return {
-      executeTool: async ({ toolName, operation, args, grant, timeoutMs }) => {
+      executeTool: async ({
+        toolName,
+        operation,
+        args,
+        grant,
+        targetDeviceId,
+        targetDeviceDisplayName: _targetDeviceDisplayName,
+        targetDeviceBodyId,
+        targetDeviceInstallationId,
+        timeoutMs,
+      }) => {
+        const deviceId = grant?.deviceId || targetDeviceId;
+        if (!deviceId) {
+          return {
+            ok: false,
+            errorCode: 'PERMISSION_DENIED',
+            message: 'Device RPC target is missing.',
+          };
+        }
+        const sessionKey = grant?.sessionKey || '';
+        const topicId = grant?.topicId || '';
+        const topicType = grant?.topicType || 'unknown';
+        const actorUserId = grant?.actorUserId || '';
+        const ownerUserId = grant?.ownerUserId || actorUserId;
         const response = await this.bot.sendDeviceRpcRequest({
           request_id: `device_rpc_${randomUUID()}`,
-          grant_id: grant.grantId,
-          session_key: grant.sessionKey,
-          topic_id: grant.topicId,
-          topic_type: grant.topicType,
-          actor_user_id: grant.actorUserId,
-          owner_user_id: grant.ownerUserId,
-          identity_source: grant.identitySource,
-          agent_id: grant.agentId,
-          agent_body_id: grant.agentBodyId,
-          device_id: grant.deviceId,
-          device_body_id: grant.deviceBodyId,
-          device_installation_id: grant.deviceInstallationId,
+          grant_id: grant?.grantId || `lightweight_${randomUUID()}`,
+          session_key: sessionKey,
+          topic_id: topicId,
+          topic_type: topicType,
+          actor_user_id: actorUserId,
+          owner_user_id: ownerUserId,
+          identity_source: grant?.identitySource || 'lightweight_execution_router',
+          agent_id: grant?.agentId,
+          agent_body_id: grant?.agentBodyId,
+          device_id: deviceId,
+          device_display_name: grant?.deviceDisplayName || _targetDeviceDisplayName,
+          device_body_id: grant?.deviceBodyId || targetDeviceBodyId,
+          device_installation_id: grant?.deviceInstallationId || targetDeviceInstallationId || deviceId,
           operation,
           tool_name: toolName,
           payload: { args },
-          expires_at: grant.expiresAt,
+          expires_at: grant?.expiresAt || Date.now() + DEVICE_RPC_DEFAULT_TTL_MS,
         }, timeoutMs);
 
         if (response.error) {
@@ -494,6 +518,7 @@ export class CatsCompanyBot {
       identityTrust: 'server_canonical',
       identitySource: 'device_rpc_forward',
       selectedDeviceId: grant.deviceId,
+      selectedDeviceDisplayName: request.device_display_name,
       selectedDeviceBodyId: grant.deviceBodyId,
       selectedDeviceInstallationId: grant.deviceInstallationId,
       selectedDeviceOperations: [operation],
@@ -506,11 +531,12 @@ export class CatsCompanyBot {
       conversationHistory: [],
       sessionId: executionScope.sessionKey,
       surface: 'catscompany',
-      permissionProfile: 'strict',
+      permissionProfile: 'relaxed',
       executionScope,
       localDeviceGrant: this.localDeviceGrant,
       deviceGrants: [grant],
       deviceSelection,
+      deviceRpcReceiver: true,
     };
   }
 
@@ -525,23 +551,12 @@ export class CatsCompanyBot {
     }
 
     const requiredFields: Array<[keyof CatsDeviceRpcMessage, string]> = [
-      ['grant_id', 'grant_id'],
-      ['session_key', 'session_key'],
-      ['topic_id', 'topic_id'],
-      ['topic_type', 'topic_type'],
-      ['actor_user_id', 'actor_user_id'],
-      ['owner_user_id', 'owner_user_id'],
       ['device_id', 'device_id'],
     ];
     for (const [field, label] of requiredFields) {
       if (!String(request[field] || '').trim()) {
         return { code: 'invalid_request', message: `Device RPC request missing ${label}.` };
       }
-    }
-    const actorUserID = String(request.actor_user_id || '').trim();
-    const ownerUserID = String(request.owner_user_id || '').trim();
-    if (ownerUserID !== actorUserID && String(request.identity_source || '').trim() !== 'channel_identity_link') {
-      return { code: 'invalid_request', message: 'Delegated Device RPC request missing channel_identity_link identity source.' };
     }
     if (typeof request.expires_at === 'number' && Date.now() > request.expires_at) {
       return { code: 'request_expired', message: 'Device RPC request has expired.' };
@@ -569,9 +584,11 @@ export class CatsCompanyBot {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
     const record = payload as Record<string, unknown>;
     if (record.args && typeof record.args === 'object' && !Array.isArray(record.args)) {
-      return { ...(record.args as Record<string, unknown>) };
+      const { target: _target, ...args } = record.args as Record<string, unknown>;
+      return args;
     }
-    return { ...record };
+    const { target: _target, ...args } = record;
+    return args;
   }
 
   private mapDeviceRpcToolErrorCode(code: unknown): ToolErrorCode {

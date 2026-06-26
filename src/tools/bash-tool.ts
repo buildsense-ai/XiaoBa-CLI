@@ -8,8 +8,7 @@ import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from 
 import { Logger } from '../utils/logger';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { isToolAllowed, isBashCommandAllowed } from '../utils/safety';
-import { resolveToolGatewayAccess } from './tool-gateway';
-import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
+import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
 const execAsync = promisify(exec);
 const CWD_MARKER_PREFIX = '__XIAOBA_CWD_MARKER__';
@@ -60,6 +59,7 @@ export class ShellTool implements Tool {
           description: 'Set true only after the user explicitly requested or confirmed a risky destructive command such as recursive deletion, git reset --hard, git clean, or force push.',
           default: false,
         },
+        target: targetParameterDescription(),
       },
       required: ['command'],
     },
@@ -84,14 +84,15 @@ export class ShellTool implements Tool {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `Execution blocked: ${commandPermission.reason}` };
     }
 
-    const gateway = resolveToolGatewayAccess(context, {
+    const route = resolveExecutionRoute(context, {
       toolName: this.definition.name,
       operation: 'execute_shell',
+      target: args.target,
     });
-    if (!gateway.ok) {
-      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
+    if (!route.ok) {
+      return { ok: false, errorCode: route.errorCode, message: route.message };
     }
-    const remoteResult = await executeRemoteDeviceRpcTool(context, gateway, 'execute_shell', 'execute_shell', args);
+    const remoteResult = await executeRouteIfRemote(context, route, 'execute_shell', 'execute_shell', args);
     if (remoteResult) return remoteResult;
 
     if (description) {

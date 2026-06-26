@@ -2,8 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { isToolAllowed, isPathAllowed } from '../utils/safety';
-import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
-import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
+import { formatCatsCoVisiblePath } from './tool-gateway';
+import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
 /**
  * Edit 工具 - 精确字符串替换
@@ -35,7 +35,8 @@ export class EditTool implements Tool {
           type: 'boolean',
           description: '是否替换所有匹配项。默认 false，此时 old_string 必须唯一。',
           default: false
-        }
+        },
+        target: targetParameterDescription()
       },
       required: ['file_path', 'old_string', 'new_string']
     }
@@ -49,15 +50,15 @@ export class EditTool implements Tool {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${toolPermission.reason}` };
     }
 
-    const gateway = resolveToolGatewayAccess(context, {
+    const route = resolveExecutionRoute(context, {
       toolName: this.definition.name,
       operation: 'edit_file',
-      targetLabel: file_path,
+      target: args.target,
     });
-    if (!gateway.ok) {
-      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
+    if (!route.ok) {
+      return { ok: false, errorCode: route.errorCode, message: route.message };
     }
-    const remoteResult = await executeRemoteDeviceRpcTool(context, gateway, 'edit_file', 'edit_file', args);
+    const remoteResult = await executeRouteIfRemote(context, route, 'edit_file', 'edit_file', args);
     if (remoteResult) return remoteResult;
 
     // 解析文件路径

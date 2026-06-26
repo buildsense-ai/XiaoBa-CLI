@@ -96,7 +96,11 @@ export interface DeviceRpcToolRequest {
   toolName: string;
   operation: ScopedDeviceGrant['operations'][number];
   args: Record<string, unknown>;
-  grant: ScopedDeviceGrant;
+  grant?: ScopedDeviceGrant;
+  targetDeviceId?: string;
+  targetDeviceDisplayName?: string;
+  targetDeviceBodyId?: string;
+  targetDeviceInstallationId?: string;
   timeoutMs?: number;
 }
 
@@ -196,6 +200,24 @@ export interface ToolExecutionContext {
   deviceSelection?: ScopedDeviceSelection;
   /** CatsCo 远程设备 RPC 通道。工具只能通过窄接口请求后端选定设备执行。 */
   deviceRpc?: DeviceRpcTransport;
+  executionContext?: {
+    schema: 'xiaoba.execution_context.v1';
+    conversation: {
+      type: 'local' | 'p2p' | 'group';
+      currentSpeaker: { id: string; name?: string; role?: string };
+      participants: Array<{ id: string; name?: string; role?: string }>;
+    };
+    executionTargets: Array<{
+      id: string;
+      label: string;
+      kind: 'agent_self' | 'participant';
+      status: 'ready' | 'unavailable';
+      userId?: string;
+      cwd?: string;
+    }>;
+    defaultTarget: 'agent_self' | 'speaker_default';
+  };
+  deviceRpcReceiver?: boolean;
   /** 当前 turn 已授权的本地文件资源，例如用户本轮上传的 CatsCo 附件缓存。 */
   localFileGrants?: ScopedLocalFileGrant[];
 }

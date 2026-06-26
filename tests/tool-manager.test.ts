@@ -556,7 +556,7 @@ describe('ToolManager', () => {
     }
   });
 
-  test('CatsCo non-agent-local-body shell contexts still require strict confirmation', async () => {
+  test('CatsCo lightweight shell contexts skip strict local confirmation', async () => {
     const cases: Array<{
       name: string;
       executionScope: ExecutionScope;
@@ -616,7 +616,7 @@ describe('ToolManager', () => {
       let confirmations = 0;
       manager.registerTool(fakeTool('execute_shell', async () => {
         executed = true;
-        return { ok: true, content: 'should not run without confirmation' };
+        return { ok: true, content: 'ran without confirmation' };
       }));
 
       const result = await manager.executeTool({
@@ -636,10 +636,10 @@ describe('ToolManager', () => {
         },
       });
 
-      assert.equal(result.ok, false, item.name);
-      assert.equal(result.errorCode, 'PERMISSION_DENIED', item.name);
-      assert.equal(executed, false, item.name);
-      assert.equal(confirmations, 1, item.name);
+      assert.equal(result.ok, true, item.name);
+      assert.equal(result.content, 'ran without confirmation', item.name);
+      assert.equal(executed, true, item.name);
+      assert.equal(confirmations, 0, item.name);
     }
   });
 

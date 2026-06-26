@@ -13,7 +13,7 @@ export type ToolGatewayDecision =
   | {
       ok: true;
       mode: 'remote';
-      grant: ScopedDeviceGrant;
+      grant?: ScopedDeviceGrant;
       targetDeviceId: string;
       targetDeviceDisplayName?: string;
       targetDeviceBodyId?: string;

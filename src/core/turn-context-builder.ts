@@ -18,8 +18,10 @@ import {
   buildSubAgentStatusMessage,
 } from './sub-agent-observation';
 import {
+  type ExecutionContextSnapshot,
   TRANSIENT_RUNTIME_CONTEXT_PREFIX,
   buildRuntimeContextMessage,
+  buildRuntimeContextSnapshot,
 } from './runtime-context-builder';
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
 import { TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX } from './prompt-mode-runtime';
@@ -58,6 +60,7 @@ export interface BuildTurnContextParams {
 export interface BuildTurnContextResult {
   messages: Message[];
   runtimeFeedbackForLog: string[];
+  executionContext?: ExecutionContextSnapshot;
 }
 
 /**
@@ -90,6 +93,7 @@ export class TurnContextBuilder {
     return {
       messages: contextMessages,
       runtimeFeedbackForLog: this.extractRuntimeFeedback(contextMessages),
+      executionContext: buildRuntimeContextSnapshot(params) || undefined,
     };
   }
 

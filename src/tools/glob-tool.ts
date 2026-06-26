@@ -3,8 +3,8 @@ import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { glob } from 'glob';
 import { isReadPathAllowed } from '../utils/safety';
-import { formatCatsCoVisiblePath, isCatsCoToolGatewayContext, resolveToolGatewayAccess } from './tool-gateway';
-import { executeRemoteReadonlyTool } from './device-rpc-tool';
+import { formatCatsCoVisiblePath, isCatsCoToolGatewayContext } from './tool-gateway';
+import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
 interface GlobResult {
   numFiles: number;
@@ -39,7 +39,8 @@ export class GlobTool implements Tool {
           type: 'number',
           description: '返回结果最大数量，默认 100。',
           default: 100
-        }
+        },
+        target: targetParameterDescription()
       },
       required: ['pattern']
     }
@@ -49,15 +50,15 @@ export class GlobTool implements Tool {
     const { pattern, path: searchPath, limit = 100 } = args;
     const startTime = Date.now();
 
-    const gateway = resolveToolGatewayAccess(context, {
+    const route = resolveExecutionRoute(context, {
       toolName: this.definition.name,
       operation: 'glob',
-      targetLabel: searchPath || '.',
+      target: args.target,
     });
-    if (!gateway.ok) {
-      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
+    if (!route.ok) {
+      return { ok: false, errorCode: route.errorCode, message: route.message };
     }
-    const remoteResult = await executeRemoteReadonlyTool(context, gateway, 'glob', 'glob', args);
+    const remoteResult = await executeRouteIfRemote(context, route, 'glob', 'glob', args);
     if (remoteResult) return remoteResult;
 
     // 确定搜索目录

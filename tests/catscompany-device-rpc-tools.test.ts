@@ -191,7 +191,7 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.equal(captured.result.error, undefined);
     assert.equal(captured.result.result.ok, true);
     assert.match(String(captured.result.result.content), /\[tool_target\]/);
-    assert.match(String(captured.result.result.content), /target: selected_user_device/);
+    assert.match(String(captured.result.result.content), /target: speaker_default/);
     assert.match(String(captured.result.result.content), /Resolved common directory:/);
     assert.match(String(captured.result.result.content), /kind: home/);
     assert.equal(captured.result.device_id, 'install-device');
@@ -260,7 +260,7 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.equal(fs.readFileSync(filePath, 'utf8'), 'after');
   });
 
-  test('rejects Device RPC requests missing owner identity', async () => {
+  test('executes Device RPC requests even when owner identity is omitted', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
 
@@ -273,12 +273,12 @@ describe('CatsCompany Device RPC file tools', () => {
     }));
 
     assert.ok(captured.result);
-    assert.equal(captured.result.result, undefined);
-    assert.equal(captured.result.error.code, 'invalid_request');
-    assert.match(captured.result.error.message, /owner_user_id/);
+    assert.equal(captured.result.error, undefined);
+    assert.equal(captured.result.result.ok, true);
+    assert.equal(fs.readFileSync(path.join(process.cwd(), 'tmp', 'missing-owner.txt'), 'utf8'), 'nope');
   });
 
-  test('rejects Device RPC requests for a different device owner', async () => {
+  test('executes Device RPC requests without owner mismatch checks after target delivery', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
     const filePath = path.join(process.cwd(), 'tmp', 'wrong-owner.txt');
@@ -293,13 +293,12 @@ describe('CatsCompany Device RPC file tools', () => {
     }));
 
     assert.ok(captured.result);
-    assert.equal(captured.result.result, undefined);
-    assert.equal(captured.result.error.code, 'PERMISSION_DENIED');
-    assert.match(captured.result.error.message, /owner 不一致|设备 owner/);
-    assert.equal(fs.existsSync(filePath), false);
+    assert.equal(captured.result.error, undefined);
+    assert.equal(captured.result.result.ok, true);
+    assert.equal(fs.readFileSync(filePath, 'utf8'), 'nope');
   });
 
-  test('rejects delegated Device RPC when owner and actor differ without channel identity source', async () => {
+  test('executes delegated Device RPC requests without channel identity permission checks after target delivery', async () => {
     const captured: { result?: any } = {};
     const bot = botWithDevice(captured);
 
@@ -314,9 +313,9 @@ describe('CatsCompany Device RPC file tools', () => {
     }));
 
     assert.ok(captured.result);
-    assert.equal(captured.result.result, undefined);
-    assert.equal(captured.result.error.code, 'invalid_request');
-    assert.match(captured.result.error.message, /channel_identity_link/);
+    assert.equal(captured.result.error, undefined);
+    assert.equal(captured.result.result.ok, true);
+    assert.equal(fs.readFileSync(path.join(process.cwd(), 'tmp', 'bad-delegated.txt'), 'utf8'), 'nope');
   });
 
   test('executes shell Device RPC operations on the selected local device', async () => {

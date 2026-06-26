@@ -50,6 +50,7 @@ export interface CatsDeviceRpcMessage {
   agent_id?: string;
   agent_body_id?: string;
   device_id?: string;
+  device_display_name?: string;
   device_body_id?: string;
   device_installation_id?: string;
   operation?: string;
