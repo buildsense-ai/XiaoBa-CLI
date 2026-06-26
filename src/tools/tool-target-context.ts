@@ -1,4 +1,3 @@
-import * as path from 'path';
 import type { DeviceGrantOperation } from '../types/session-identity';
 import type { ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import {
@@ -42,7 +41,7 @@ export function buildToolTargetContext(
   if (!operation) return undefined;
 
   const target = resolveToolTarget(context, options.gateway);
-  const cwd = normalizeCwdForTarget(options.cwd || context.workingDirectory);
+  const cwd = preserveCwdForTarget(options.cwd || context.workingDirectory);
   const lines = [
     TOOL_TARGET_CONTEXT_PREFIX,
     `tool: ${options.toolName}`,
@@ -138,12 +137,7 @@ function resolveToolTarget(
   return { kind: 'current_local_runtime' };
 }
 
-function normalizeCwdForTarget(cwd: string | undefined): string | undefined {
+function preserveCwdForTarget(cwd: string | undefined): string | undefined {
   const text = String(cwd || '').trim();
-  if (!text) return undefined;
-  try {
-    return path.resolve(text);
-  } catch {
-    return text;
-  }
+  return text || undefined;
 }

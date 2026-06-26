@@ -1,4 +1,3 @@
-import * as path from 'path';
 import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
 import { ReadTool } from './read-tool';
@@ -271,12 +270,5 @@ function resolveTargetContextCwd(toolName: string, args: unknown, currentDirecto
     return currentDirectory;
   }
   const cwd = (args as Record<string, unknown>).cwd;
-  if (typeof cwd !== 'string' || !cwd.trim()) return currentDirectory;
-  try {
-    return path.isAbsolute(cwd)
-      ? path.resolve(cwd)
-      : path.resolve(currentDirectory, cwd);
-  } catch {
-    return currentDirectory;
-  }
+  return typeof cwd === 'string' && cwd.trim() ? cwd.trim() : currentDirectory;
 }

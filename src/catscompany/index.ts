@@ -401,8 +401,18 @@ export class CatsCompanyBot {
     return annotateToolExecutionResultWithTargetContext(result, context, {
       toolName,
       operation,
-      cwd: context.workingDirectory,
+      cwd: this.resolveDeviceRpcTargetContextCwd(operation, args, context.workingDirectory),
     });
+  }
+
+  private resolveDeviceRpcTargetContextCwd(
+    operation: DeviceGrantOperation,
+    args: Record<string, unknown>,
+    fallback: string,
+  ): string {
+    if (operation !== 'execute_shell') return fallback;
+    const cwd = args.cwd;
+    return typeof cwd === 'string' && cwd.trim() ? cwd.trim() : fallback;
   }
 
   private buildDeviceRpcToolContext(

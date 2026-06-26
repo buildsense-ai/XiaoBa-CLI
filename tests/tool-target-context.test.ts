@@ -52,6 +52,32 @@ describe('tool target context', () => {
     assert.match(context, /shell: powershell/);
   });
 
+  test('preserves target-device POSIX cwd without host OS normalization', () => {
+    const remoteCwd = '/Users/alice/Desktop';
+    const context = buildToolTargetContext(catsContext(), {
+      toolName: 'execute_shell',
+      operation: 'execute_shell',
+      cwd: remoteCwd,
+    });
+
+    assert.ok(context);
+    assert.match(context, new RegExp(`cwd: ${escapeRegExp(remoteCwd)}`));
+    assert.doesNotMatch(context, /runtime-repo[\\/]+Users[\\/]+alice[\\/]+Desktop/);
+  });
+
+  test('does not absolutize target-device cwd strings', () => {
+    const remoteCwd = 'remote/session/Desktop';
+    const context = buildToolTargetContext(catsContext(), {
+      toolName: 'execute_shell',
+      operation: 'execute_shell',
+      cwd: remoteCwd,
+    });
+
+    assert.ok(context);
+    assert.match(context, new RegExp(`cwd: ${escapeRegExp(remoteCwd)}`));
+    assert.doesNotMatch(context, new RegExp(`cwd: ${escapeRegExp(runtimeCwd)}[\\\\/]remote[\\\\/]session[\\\\/]Desktop`));
+  });
+
   test('labels Device RPC forwarded user-device results', () => {
     const context = buildToolTargetContext(catsContext({
       executionScope: {

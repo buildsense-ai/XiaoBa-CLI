@@ -523,6 +523,39 @@ describe('ToolManager', () => {
     assert.equal(confirmed, false);
   });
 
+  test('CatsCo target context preserves explicit shell cwd strings from the target device', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-agent-body-'));
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    manager.registerTool(fakeTool('execute_shell', async () => {
+      return { ok: true, content: 'agent body shell ran' };
+    }));
+    const cwdCases = ['/Users/alice/Desktop', 'remote/session/Desktop'];
+
+    for (const [index, targetCwd] of cwdCases.entries()) {
+      const result = await manager.executeTool({
+        id: `call-catsco-agent-body-shell-cwd-${index}`,
+        type: 'function',
+        function: { name: 'execute_shell', arguments: JSON.stringify({ command: 'echo ok', cwd: targetCwd }) },
+      }, [], {
+        surface: 'catscompany',
+        permissionProfile: 'strict',
+        workingDirectory: workspace,
+        workspaceRoot: workspace,
+        executionScope: catsScope({
+          actorUserId: 'usr100',
+          sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+          topicId: 'p2p_100_43',
+        }),
+        localDeviceGrant: catsLocalDevice({ ownerUserId: 'usr7' }),
+      });
+
+      assert.equal(result.ok, true);
+      assert.match(result.targetContext || '', new RegExp(`cwd: ${escapeRegExp(targetCwd)}`));
+      assert.doesNotMatch(result.targetContext || '', /xiaoba-catsco-agent-body-[^\n]+[\\/]Users[\\/]alice[\\/]Desktop/);
+      assert.doesNotMatch(result.targetContext || '', new RegExp(`${escapeRegExp(workspace)}[\\\\/]remote[\\\\/]session[\\\\/]Desktop`));
+    }
+  });
+
   test('CatsCo non-agent-local-body shell contexts still require strict confirmation', async () => {
     const cases: Array<{
       name: string;
@@ -851,3 +884,7 @@ describe('ToolManager', () => {
     assert.equal(executed, false);
   });
 });
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
