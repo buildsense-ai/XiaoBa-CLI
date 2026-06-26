@@ -9,7 +9,6 @@ import { Logger } from '../utils/logger';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { isToolAllowed, isBashCommandAllowed } from '../utils/safety';
 import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
-import { MAX_DEVICE_RPC_SHELL_CONTENT_CHARS } from './device-rpc-tool';
 
 const execAsync = promisify(exec);
 const CWD_MARKER_PREFIX = '__XIAOBA_CWD_MARKER__';
@@ -25,12 +24,6 @@ interface WrappedCommand {
 interface ShellOutput {
   stdout: string;
   stderr: string;
-}
-
-interface FormattedShellOutput {
-  content: string;
-  originalChars: number;
-  originalLines: number;
 }
 
 export class ShellTool implements Tool {
@@ -144,7 +137,6 @@ export class ShellTool implements Tool {
       const executionTime = Date.now() - startTime;
       const outputLines = output ? output.split('\n').length : 0;
       const outputSize = Buffer.byteLength(output, 'utf-8');
-      const formattedOutput = formatShellOutputForTool(output);
 
       Logger.success(`Command succeeded (elapsed: ${executionTime}ms)`);
       Logger.info(`  Output: ${outputLines} lines | ${(outputSize / 1024).toFixed(2)} KB`);
@@ -169,10 +161,9 @@ export class ShellTool implements Tool {
           finalDirectory ? `Final cwd: ${finalDirectory}` : '',
           `Shell: ${this.resolveShellDisplayName()}`,
           `Elapsed: ${executionTime}ms`,
-          `Output lines: ${formattedOutput.originalLines}`,
-          `Output chars: ${formattedOutput.originalChars}`,
+          `Output lines: ${outputLines}`,
           '',
-          formattedOutput.content,
+          output,
         ].filter(line => line !== '').join('\n'),
       };
     } catch (error: any) {
@@ -194,7 +185,6 @@ export class ShellTool implements Tool {
         parsedStdout.output,
         this.formatExecutionError(error),
       ].filter(Boolean).join('\n').trim();
-      const formattedError = formatShellOutputForTool(errorOutput);
 
       Logger.error(`Command failed (elapsed: ${executionTime}ms)`);
       Logger.error(`  Error: ${error.message}`);
@@ -210,10 +200,8 @@ export class ShellTool implements Tool {
           finalDirectory ? `Final cwd: ${finalDirectory}` : '',
           `Shell: ${this.resolveShellDisplayName()}`,
           `Elapsed: ${executionTime}ms`,
-          `Error chars: ${formattedError.originalChars}`,
-          '',
           'Error:',
-          formattedError.content,
+          errorOutput,
         ].filter(line => line !== '').join('\n'),
       };
     } finally {
@@ -664,26 +652,4 @@ export class ShellTool implements Tool {
       return;
     }
   }
-}
-
-function formatShellOutputForTool(output: string): FormattedShellOutput {
-  const originalChars = output.length;
-  const originalLines = output ? output.split(/\r\n|\n|\r/).length : 0;
-  if (originalChars <= MAX_DEVICE_RPC_SHELL_CONTENT_CHARS) {
-    return { content: output, originalChars, originalLines };
-  }
-
-  const headChars = Math.floor(MAX_DEVICE_RPC_SHELL_CONTENT_CHARS * 0.7);
-  const tailChars = MAX_DEVICE_RPC_SHELL_CONTENT_CHARS - headChars;
-  return {
-    content: [
-      output.slice(0, headChars).trimEnd(),
-      '',
-      `[execute_shell 输出已摘要：原始 ${originalChars} 字符 / ${originalLines} 行，仅保留开头 ${headChars} 字符和结尾 ${tailChars} 字符。请缩小命令范围，或改用 glob / grep / read_file 等专用工具继续。]`,
-      '',
-      output.slice(-tailChars).trimStart(),
-    ].join('\n'),
-    originalChars,
-    originalLines,
-  };
 }
