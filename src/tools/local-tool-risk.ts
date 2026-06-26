@@ -1,6 +1,7 @@
 import type { DeviceGrantOperation } from '../types/session-identity';
 import type { ToolExecutionContext, ToolExecutionResult, ToolRiskLevel } from '../types/tool';
 import { isCatsCoAgentLocalBodyContext, isCatsCoLocalOwnerSelfContext, resolveToolGatewayAccess } from './tool-gateway';
+import { resolveOutboundTarget } from './outbound-gateway';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -151,6 +152,9 @@ export function classifyLocalToolRisk(
   }
 
   if (toolName === 'send_file') {
+    if (isCurrentMessageChannelWorkspaceFileSend(context, args)) {
+      return { requiresConfirmation: false, risk: 'low', reason: '当前微信/飞书会话内发送工作区文件。' };
+    }
     return { requiresConfirmation: true, risk: 'medium', reason: '工具会把本地文件发送到当前会话，需要用户确认。' };
   }
 
@@ -254,6 +258,33 @@ function classifyWritePathRisk(toolName: string, value: string, context: ToolExe
   if (!isWithin(resolved, workspaceRoot)) return 'high';
   if (toolName === 'write_file' && !fs.existsSync(resolved)) return 'low';
   return 'medium';
+}
+
+function classifySendFilePathRisk(args: unknown, context: ToolExecutionContext): ToolRiskLevel {
+  const target = (stringField(args, 'file_path') || stringField(args, 'path')).trim();
+  if (!target) return 'medium';
+  if (/^catsco_attachment:[A-Za-z0-9._:-]+$/.test(target)) return 'low';
+  if (looksSensitivePath(target)) return 'high';
+
+  const workingDirectory = context.workingDirectory || process.cwd();
+  const workspaceRoot = context.workspaceRoot || workingDirectory;
+  const resolved = path.resolve(workingDirectory, target);
+  if (looksSensitivePath(resolved)) return 'high';
+  return isWithin(resolved, workspaceRoot) ? 'low' : 'medium';
+}
+
+function isCurrentMessageChannelWorkspaceFileSend(context: ToolExecutionContext, args: unknown): boolean {
+  if (context.surface !== 'weixin' && context.surface !== 'feishu') return false;
+  const scope = context.executionScope;
+  if (!scope || scope.source !== context.surface) return false;
+  if (scope.identityTrust === 'untrusted') return false;
+  if (classifySendFilePathRisk(args, context) !== 'low') return false;
+
+  const target = resolveOutboundTarget(context, {
+    operation: 'send_file',
+    missingChannelMessage: '当前不在聊天会话中，无法发送文件',
+  });
+  return target.ok;
 }
 
 function isWithin(targetPath: string, parentPath: string): boolean {

@@ -41,6 +41,19 @@ function catsScope(overrides: Partial<ExecutionScope> = {}): ExecutionScope {
   };
 }
 
+function weixinScope(overrides: Partial<ExecutionScope> = {}): ExecutionScope {
+  return {
+    source: 'weixin',
+    sessionKey: 'session:v2:weixin:p2p:user-1',
+    topicId: 'user-1',
+    topicType: 'p2p',
+    actorUserId: 'user-1',
+    identityTrust: 'legacy_context',
+    isTrusted: false,
+    ...overrides,
+  };
+}
+
 function catsLocalDevice(overrides: Partial<ScopedLocalDeviceGrant> = {}): ScopedLocalDeviceGrant {
   return {
     kind: 'catscompany_body',
@@ -391,6 +404,90 @@ describe('ToolManager', () => {
     assert.equal(result.ok, false);
     assert.equal(result.errorCode, 'NEEDS_CONFIRMATION');
     assert.equal(executed, false);
+  });
+
+  test('strict Weixin send_file to current chat can send workspace files without interactive confirmation', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-weixin-send-file-'));
+    fs.writeFileSync(path.join(workspace, 'graded.png'), 'fake image');
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    let executed = false;
+    let confirmations = 0;
+    manager.registerTool(fakeTool('send_file', async () => {
+      executed = true;
+      return { ok: true, content: 'weixin file sent' };
+    }));
+
+    const result = await manager.executeTool({
+      id: 'call-weixin-send-file',
+      type: 'function',
+      function: {
+        name: 'send_file',
+        arguments: JSON.stringify({ file_path: 'graded.png', file_name: 'graded.png' }),
+      },
+    }, [], {
+      surface: 'weixin',
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      executionScope: weixinScope(),
+      channel: {
+        chatId: 'user-1',
+        reply: async () => undefined,
+        sendFile: async () => undefined,
+      },
+      confirmToolExecution: async () => {
+        confirmations += 1;
+        return false;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.content, 'weixin file sent');
+    assert.equal(executed, true);
+    assert.equal(confirmations, 0);
+  });
+
+  test('strict Weixin send_file still requires confirmation for files outside the workspace', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-weixin-workspace-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-weixin-outside-'));
+    const outsideFile = path.join(outside, 'secret.png');
+    fs.writeFileSync(outsideFile, 'secret image');
+    const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
+    let executed = false;
+    let confirmations = 0;
+    manager.registerTool(fakeTool('send_file', async () => {
+      executed = true;
+      return { ok: true, content: 'should not send' };
+    }));
+
+    const result = await manager.executeTool({
+      id: 'call-weixin-send-outside',
+      type: 'function',
+      function: {
+        name: 'send_file',
+        arguments: JSON.stringify({ file_path: outsideFile, file_name: 'secret.png' }),
+      },
+    }, [], {
+      surface: 'weixin',
+      permissionProfile: 'strict',
+      workingDirectory: workspace,
+      workspaceRoot: workspace,
+      executionScope: weixinScope(),
+      channel: {
+        chatId: 'user-1',
+        reply: async () => undefined,
+        sendFile: async () => undefined,
+      },
+      confirmToolExecution: async () => {
+        confirmations += 1;
+        return false;
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'PERMISSION_DENIED');
+    assert.equal(executed, false);
+    assert.equal(confirmations, 1);
   });
 
   test('CatsCo context can create new ordinary home files without confirmation', async () => {
