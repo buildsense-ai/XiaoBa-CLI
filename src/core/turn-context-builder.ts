@@ -47,6 +47,7 @@ export interface BuildTurnContextParams {
   deviceGrants?: ScopedDeviceGrant[];
   deviceSelection?: ScopedDeviceSelection;
   localFileGrants?: ScopedLocalFileGrant[];
+  currentDirectory?: string;
   durableMessages: Message[];
   runtimeFeedback: string[];
   skillRuntime: SessionSkillRuntime;
@@ -94,6 +95,11 @@ export class TurnContextBuilder {
       if (msg.__syntheticObservation) return false;
       if (msg.__runtimeFeedback) return false;
       if (
+        msg.__injected
+        && typeof msg.content === 'string'
+        && msg.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX)
+      ) return false;
+      if (
         (msg.__injected || msg.role === 'system')
         && typeof msg.content === 'string'
         && msg.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
@@ -126,6 +132,7 @@ export class TurnContextBuilder {
       deviceGrants: params.deviceGrants,
       deviceSelection: params.deviceSelection,
       localFileGrants: params.localFileGrants,
+      currentDirectory: params.currentDirectory,
     });
     if (!message) return;
     this.insertBeforeLastUser(messages, message);

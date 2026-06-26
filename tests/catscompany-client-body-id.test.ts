@@ -156,6 +156,8 @@ describe('CatsCompany client body identity', () => {
             display_name: 'Test Device',
             body_id: 'body-test',
             installation_id: 'install-test',
+            cwd: 'D:\\dev\\XiaoBa-CLI',
+            workspace_hint: 'XiaoBa-CLI',
             status: 'online',
             capabilities: ['read_file', 'send_file'],
           });
@@ -173,9 +175,45 @@ describe('CatsCompany client body identity', () => {
       display_name: 'Test Device',
       body_id: 'body-test',
       installation_id: 'install-test',
+      cwd: 'D:\\dev\\XiaoBa-CLI',
+      workspace_hint: 'XiaoBa-CLI',
       status: 'online',
       capabilities: ['read_file', 'send_file'],
     });
+  });
+
+  test('treats duplicate device registration conflict as recoverable', async () => {
+    const requestPromise = new Promise<unknown>((resolve, reject) => {
+      const server = createServer((req, res) => {
+        req.resume();
+        req.on('end', () => {
+          res.statusCode = 409;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'device already registered' }));
+        });
+      });
+      httpServers.push(server);
+      server.listen(0, '127.0.0.1', () => {
+        void (async () => {
+          const address = server.address() as AddressInfo;
+          const client = new CatsClient({
+            serverUrl: 'ws://127.0.0.1:1/v0/channels',
+            httpBaseUrl: `http://127.0.0.1:${address.port}`,
+            apiKey: 'cc-test-key',
+            bodyId: 'body-test',
+            installationId: 'install-test',
+          });
+          resolve(await client.registerDevice({
+            device_id: 'install-test',
+            display_name: 'Test Device',
+            status: 'online',
+            capabilities: ['read_file'],
+          }));
+        })().catch(reject);
+      });
+    });
+
+    assert.deepEqual(await requestPromise, { error: 'device already registered' });
   });
 
   test('emits device rpc requests outside the regular message stream', async () => {

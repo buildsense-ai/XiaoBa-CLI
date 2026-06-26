@@ -146,6 +146,7 @@ export class AgentTurnController {
       deviceGrants: params.deviceGrants,
       deviceSelection: params.deviceSelection,
       localFileGrants: params.localFileGrants,
+      currentDirectory: this.options.getCurrentDirectory(),
       durableMessages: params.messages,
       runtimeFeedback: params.runtimeFeedback,
       skillRuntime: this.options.skillRuntime,
@@ -252,6 +253,7 @@ export class AgentTurnController {
     shouldContinue: () => boolean;
   }): ConversationRunner {
     const surface = resolveSessionSurface(this.options.sessionKey, this.options.sessionType);
+    const permissionProfile = surface === 'catscompany' ? 'relaxed' : 'strict';
     return new ConversationRunner(
       this.options.services.aiService,
       this.options.services.toolManager,
@@ -266,7 +268,7 @@ export class AgentTurnController {
         toolExecutionContext: {
           sessionId: this.options.sessionKey,
           surface,
-          permissionProfile: 'strict',
+          permissionProfile,
           workspaceRoot: this.options.workspaceRoot,
           workingDirectory: this.options.getCurrentDirectory(),
           getCurrentDirectory: this.options.getCurrentDirectory,

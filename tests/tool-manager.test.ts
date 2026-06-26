@@ -199,6 +199,28 @@ describe('ToolManager', () => {
     assert.equal(confirmed, false);
   });
 
+  test('relaxed profile skips local tool confirmation for personal trust mode', async () => {
+    const manager = new ToolManager('/tmp/xiaoba-tool-manager', {}, { enabledToolNames: [] });
+    let confirmed = false;
+    manager.registerTool(fakeTool('execute_shell', async () => ({ ok: true, content: 'shell ok' })));
+
+    const result = await manager.executeTool({
+      id: 'call-shell-relaxed',
+      type: 'function',
+      function: { name: 'execute_shell', arguments: JSON.stringify({ command: 'echo ok' }) },
+    }, [], {
+      permissionProfile: 'relaxed',
+      confirmToolExecution: async () => {
+        confirmed = true;
+        return false;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.content, 'shell ok');
+    assert.equal(confirmed, false);
+  });
+
   test('strict local read outside the workspace requires confirmation', async () => {
     const workspace = path.resolve('/tmp/xiaoba-tool-manager');
     const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });

@@ -99,6 +99,10 @@ export function classifyLocalToolRisk(
     return { requiresConfirmation: false, risk: 'low', reason: '只读或状态类工具。' };
   }
 
+  if (context.permissionProfile === 'relaxed') {
+    return { requiresConfirmation: false, risk: 'low', reason: '个人信任模式允许已连接运行体直接执行工具。' };
+  }
+
   if (isCatsCoLocalOwnerSelfContext(context) || isCatsCoAgentLocalBodyContext(context)) {
     return { requiresConfirmation: false, risk: 'low', reason: 'CatsCo 虚拟员工本机运行体允许直接执行本机工具。' };
   }

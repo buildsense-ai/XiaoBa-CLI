@@ -782,14 +782,14 @@ export class ConversationRunner {
       deviceGrants: this.toolExecutionContext?.deviceGrants,
       deviceSelection: this.toolExecutionContext?.deviceSelection,
       localFileGrants: this.toolExecutionContext?.localFileGrants,
+      currentDirectory: this.getCurrentDirectoryForHint(),
     });
     if (!runtimeContext) return;
 
     for (let i = messages.length - 1; i >= 0; i--) {
       const message = messages[i];
       if (
-        message.role === 'system'
-        && typeof message.content === 'string'
+        typeof message.content === 'string'
         && message.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX)
       ) {
         messages.splice(i, 1);

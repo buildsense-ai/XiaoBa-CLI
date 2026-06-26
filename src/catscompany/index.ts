@@ -18,6 +18,7 @@ import type { DeviceGrantOperation, ExecutionScope, ScopedDeviceGrant, ScopedDev
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
 import { randomUUID } from 'crypto';
 import { hostname } from 'os';
+import * as path from 'path';
 import { ConfigManager } from '../utils/config';
 import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
 import { createCatsCoSessionRoute } from '../core/session-router';
@@ -151,6 +152,8 @@ export class CatsCompanyBot {
     display_name?: string;
     body_id?: string;
     installation_id?: string;
+    cwd?: string;
+    workspace_hint?: string;
     status: 'online';
     capabilities: string[];
   };
@@ -158,13 +161,18 @@ export class CatsCompanyBot {
   constructor(config: CatsCompanyConfig) {
     this.botUid = String(config.botUid || '').trim() || null;
     const localDeviceId = config.installationId || config.bodyId;
+    const workingDirectory = process.cwd();
+    const workspaceHint = workspaceHintFromCwd(workingDirectory);
+    const displayName = resolveDeviceDisplayName(config.deviceName, localDeviceId, workspaceHint);
     const deviceRegistration = localDeviceId
       ? {
           device_id: localDeviceId,
-          display_name: config.deviceName || process.env.COMPUTERNAME || process.env.HOSTNAME || hostname() || localDeviceId,
+          display_name: displayName,
           body_id: config.bodyId,
           installation_id: config.installationId || config.bodyId,
           owner_user_id: config.ownerUserId,
+          cwd: workingDirectory,
+          workspace_hint: workspaceHint,
           status: 'online' as const,
           capabilities: [...CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES],
         }
@@ -481,7 +489,7 @@ export class CatsCompanyBot {
       conversationHistory: [],
       sessionId: executionScope.sessionKey,
       surface: 'catscompany',
-      permissionProfile: 'strict',
+      permissionProfile: 'relaxed',
       executionScope,
       localDeviceGrant: this.localDeviceGrant,
       deviceGrants: [grant],
@@ -1636,4 +1644,27 @@ export class CatsCompanyBot {
       this.pendingAnswerBySession.delete(pending.sessionKey);
     }
   }
+}
+
+function resolveDeviceDisplayName(
+  configuredName: string | undefined,
+  fallbackId: string | undefined,
+  workspaceHint: string | undefined,
+): string {
+  const base = String(
+    configuredName
+      || process.env.COMPUTERNAME
+      || process.env.HOSTNAME
+      || hostname()
+      || fallbackId
+      || 'XiaoBa device',
+  ).trim();
+  if (!workspaceHint || configuredName) return base;
+  return `${base} - ${workspaceHint}`;
+}
+
+function workspaceHintFromCwd(cwd: string): string | undefined {
+  const base = path.basename(cwd || '').trim();
+  if (!base || base === path.parse(cwd).root) return undefined;
+  return base.length > 48 ? base.slice(0, 48) : base;
 }

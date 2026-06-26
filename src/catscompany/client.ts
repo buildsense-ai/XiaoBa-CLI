@@ -23,6 +23,8 @@ export interface CatsDeviceRegistration {
   installation_id?: string;
   owner_user_id?: string;
   status?: 'online' | 'offline';
+  cwd?: string;
+  workspace_hint?: string;
   capabilities?: string[];
 }
 
@@ -547,6 +549,10 @@ export class CatsClient extends EventEmitter {
       },
       body: JSON.stringify(registration),
     });
+    if (res.status === 409) {
+      Logger.warning(`[CatsCompany] device registration already exists or conflicts; continuing with existing device_id=${registration.device_id}`);
+      return res.json().catch(() => ({ status: 'conflict_ignored' }));
+    }
     if (!res.ok) {
       throw new Error(`CatsCompany device registration failed: ${res.status}`);
     }

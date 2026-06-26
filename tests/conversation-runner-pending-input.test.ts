@@ -372,17 +372,23 @@ describe('ConversationRunner pending input', () => {
     const refreshedContext = requests[1].find(isRuntimeContextMessage);
     assert.ok(refreshedContext);
     const snapshot = parseRuntimeContext(refreshedContext);
-    assert.deepEqual(
-      snapshot.execution.userDevices.map((device: any) => device.deviceId),
-      ['device-initial', 'device-pending'],
-    );
+    assert.equal(snapshot.schema, 'xiaoba.execution_context.v1');
+    assert.equal(snapshot.conversation.currentSpeaker.id, 'usr7');
+    assert.ok(snapshot.executionTargets.some((target: any) => (
+      target.id === 'speaker_default'
+      && target.kind === 'participant_default'
+      && target.status === 'ready'
+      && target.ownerUserId === 'usr7'
+    )));
+    assert.doesNotMatch(refreshedContext.content as string, /device-pending/);
     assert.doesNotMatch(refreshedContext.content as string, /install:device-/);
     assert.doesNotMatch(refreshedContext.content as string, /body-main/);
   });
 });
 
 function isRuntimeContextMessage(message: Message): boolean {
-  return message.role === 'system'
+  return message.role === 'user'
+    && message.__injected
     && typeof message.content === 'string'
     && message.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX);
 }

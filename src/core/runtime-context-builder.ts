@@ -9,7 +9,6 @@ import type {
   ScopedLocalFileGrant,
   SessionRoute,
 } from '../types/session-identity';
-import { readRequiredDefaultPromptLines } from '../utils/prompt-template';
 import { parseSessionKeyV2 } from './session-router';
 
 export const TRANSIENT_RUNTIME_CONTEXT_PREFIX = '[transient_runtime_context]';
@@ -23,71 +22,33 @@ export interface BuildRuntimeContextParams {
   deviceGrants?: ScopedDeviceGrant[];
   deviceSelection?: ScopedDeviceSelection;
   localFileGrants?: ScopedLocalFileGrant[];
+  currentDirectory?: string;
 }
 
 interface RuntimeContextSnapshot {
-  schema: 'xiaoba.runtime_context.v1';
-  session: {
-    key: string;
-    legacyKey?: string;
-    source: MessageSource;
-    topic: {
+  schema: 'xiaoba.execution_context.v1';
+  conversation: {
+    type: 'local' | MessageTopicType;
+    currentSpeaker: {
       id: string;
-      type: MessageTopicType;
+      name: string;
+      role: 'user';
     };
-    agent?: {
-      id?: string;
-    };
-  };
-  turn: {
-    actorUserId: string;
-    messageId?: string;
-    channelSeq?: number;
-    identityTrust: string;
-    identitySource?: string;
-    permissionsSource?: string;
-    isTrusted?: boolean;
-  };
-  execution: {
-    mode: 'backend_controlled';
-    scopeSource: 'execution_scope' | 'session_route' | 'session_key';
-    toolsUseBackendScope: true;
-    localDevice?: {
-      source: MessageSource;
-      deviceId?: string;
-    };
-    userDevices?: Array<{
-      grantId: string;
-      deviceId: string;
-      displayName?: string;
-      operations: string[];
-      status: string;
-      expiresAt: number;
-    }>;
-    deviceSelection?: {
-      status: string;
-      selectionSource?: string;
-      selectedDevice?: {
-        deviceId: string;
-        displayName?: string;
-        operations?: string[];
-      };
-      candidates?: Array<{
-        deviceId: string;
-        displayName?: string;
-        operations?: string[];
-      }>;
-      candidateCount?: number;
-    };
-    localFiles?: Array<{
-      ref?: string;
-      fileName: string;
-      fileType: string;
-      operations: string[];
-      expiresAt: number;
+    participants: Array<{
+      id: string;
+      name: string;
+      role: 'user' | 'agent';
     }>;
   };
-  rules: string[];
+  executionTargets: Array<{
+    id: 'agent_self' | 'speaker_default';
+    label: string;
+    kind: 'agent_self' | 'participant_default';
+    status: 'ready' | 'unavailable';
+    ownerUserId?: string;
+    cwd?: string;
+  }>;
+  defaultTarget: 'agent_self';
 }
 
 export function buildRuntimeContextMessage(params: BuildRuntimeContextParams): Message | null {
@@ -95,8 +56,9 @@ export function buildRuntimeContextMessage(params: BuildRuntimeContextParams): M
   if (!snapshot) return null;
 
   return {
-    role: 'system',
+    role: 'user',
     content: `${TRANSIENT_RUNTIME_CONTEXT_PREFIX}\n${JSON.stringify(snapshot, null, 2)}`,
+    __injected: true,
   };
 }
 
@@ -115,116 +77,122 @@ export function buildRuntimeContextSnapshot(params: BuildRuntimeContextParams): 
     ?? route?.topicType
     ?? parsedKey?.topicType;
 
-  if (!source || !topicId || !topicType) {
-    return null;
-  }
-
   const actorUserId = scope?.actorUserId
     ?? route?.actorUserId
     ?? 'unknown_actor';
   const agentId = scope?.agentId
     ?? route?.agentId
     ?? parsedKey?.agentId;
-  const identityTrust = scope?.identityTrust
-    ?? route?.identityTrust
-    ?? 'legacy_context';
-  const scopeSource = scope
-    ? 'execution_scope'
-    : route
-      ? 'session_route'
-      : 'session_key';
+  const conversationType = resolveConversationType(source, topicType);
+  const currentSpeaker = buildCurrentSpeaker(conversationType, actorUserId);
+  const agentParticipant = buildAgentParticipant(agentId);
+  const participants = dedupeParticipants([currentSpeaker, agentParticipant]);
+  const executionTargets = buildExecutionTargets(params, conversationType, currentSpeaker);
 
   return pruneUndefined({
-    schema: 'xiaoba.runtime_context.v1',
-    session: pruneUndefined({
-      key: params.sessionKey,
-      legacyKey: scope?.legacyRestoreKey
-        ?? scope?.legacySessionKey
-        ?? route?.legacyRestoreKey
-        ?? route?.legacySessionKey,
-      source,
-      topic: {
-        id: topicId,
-        type: topicType,
-      },
-      agent: agentId
-        ? pruneUndefined({
-          id: agentId,
-        })
-        : undefined,
+    schema: 'xiaoba.execution_context.v1',
+    conversation: pruneUndefined({
+      type: conversationType,
+      currentSpeaker,
+      participants,
     }),
-    turn: pruneUndefined({
-      actorUserId,
-      messageId: route?.messageId,
-      channelSeq: scope?.channelSeq ?? route?.channelSeq,
-      identityTrust,
-      identitySource: route?.identitySource,
-      permissionsSource: scope?.permissionsSource,
-      isTrusted: scope?.isTrusted,
-    }),
-    execution: pruneUndefined({
-      mode: 'backend_controlled',
-      scopeSource,
-      toolsUseBackendScope: true,
-      localDevice: sanitizeLocalDevice(params.localDeviceGrant),
-      userDevices: sanitizeDeviceGrants(params.deviceGrants),
-      deviceSelection: sanitizeDeviceSelection(params.deviceSelection),
-      localFiles: sanitizeLocalFiles(params.localFileGrants),
-    }),
-    rules: readRequiredDefaultPromptLines('transient/runtime-context-rules.md'),
+    executionTargets,
+    defaultTarget: 'agent_self',
   }) as RuntimeContextSnapshot;
 }
 
-function sanitizeLocalDevice(grant?: ScopedLocalDeviceGrant): RuntimeContextSnapshot['execution']['localDevice'] | undefined {
-  if (!grant) return undefined;
-  return pruneUndefined({
-    source: grant.source,
-    deviceId: grant.deviceId,
+function resolveConversationType(
+  source: MessageSource | undefined,
+  topicType: MessageTopicType | undefined,
+): RuntimeContextSnapshot['conversation']['type'] {
+  if (!source || source === 'cli') return 'local';
+  if (topicType === 'p2p' || topicType === 'group') return topicType;
+  return 'local';
+}
+
+function buildCurrentSpeaker(
+  conversationType: RuntimeContextSnapshot['conversation']['type'],
+  actorUserId: string,
+): RuntimeContextSnapshot['conversation']['currentSpeaker'] {
+  const id = conversationType === 'local' ? 'local_user' : (actorUserId || 'unknown_actor');
+  return {
+    id,
+    name: displayNameFromId(id),
+    role: 'user',
+  };
+}
+
+function buildAgentParticipant(agentId?: string): RuntimeContextSnapshot['conversation']['participants'][number] {
+  const id = agentId || 'agent_self';
+  return {
+    id,
+    name: id === 'agent_self' ? 'XiaoBa' : displayNameFromId(id),
+    role: 'agent',
+  };
+}
+
+function dedupeParticipants(
+  participants: RuntimeContextSnapshot['conversation']['participants'],
+): RuntimeContextSnapshot['conversation']['participants'] {
+  const seen = new Set<string>();
+  return participants.filter(participant => {
+    if (seen.has(participant.id)) return false;
+    seen.add(participant.id);
+    return true;
   });
 }
 
-function sanitizeDeviceGrants(grants?: ScopedDeviceGrant[]): RuntimeContextSnapshot['execution']['userDevices'] | undefined {
-  if (!grants || grants.length === 0) return undefined;
-  return grants.map(grant => pruneUndefined({
-    grantId: grant.grantId,
-    deviceId: grant.deviceId,
-    displayName: grant.deviceDisplayName,
-    operations: [...grant.operations],
-    status: grant.status,
-    expiresAt: grant.expiresAt,
-  }));
+function buildExecutionTargets(
+  params: BuildRuntimeContextParams,
+  conversationType: RuntimeContextSnapshot['conversation']['type'],
+  currentSpeaker: RuntimeContextSnapshot['conversation']['currentSpeaker'],
+): RuntimeContextSnapshot['executionTargets'] {
+  const localOwnerUserId = params.localDeviceGrant?.ownerUserId
+    || (conversationType === 'local' ? currentSpeaker.id : undefined);
+  const targets: RuntimeContextSnapshot['executionTargets'] = [pruneUndefined({
+    id: 'agent_self',
+    label: conversationType === 'local' ? '当前电脑' : 'XiaoBa 自己的电脑',
+    kind: 'agent_self',
+    status: 'ready',
+    ownerUserId: localOwnerUserId,
+    cwd: normalizeText(params.currentDirectory),
+  }) as RuntimeContextSnapshot['executionTargets'][number]];
+
+  const speakerTarget = buildSpeakerDefaultTarget(params, currentSpeaker);
+  if (speakerTarget) {
+    targets.push(speakerTarget);
+  }
+
+  return targets;
 }
 
-function sanitizeDeviceSelection(selection?: ScopedDeviceSelection): RuntimeContextSnapshot['execution']['deviceSelection'] | undefined {
-  if (!selection) return undefined;
+function buildSpeakerDefaultTarget(
+  params: BuildRuntimeContextParams,
+  currentSpeaker: RuntimeContextSnapshot['conversation']['currentSpeaker'],
+): RuntimeContextSnapshot['executionTargets'][number] | undefined {
+  const selection = params.deviceSelection;
+  const grants = params.deviceGrants || [];
+  const selectedGrant = selection?.selectedDeviceId
+    ? grants.find(grant => grant.deviceId === selection.selectedDeviceId)
+    : undefined;
+  const fallbackGrant = grants.find(grant => grant.ownerUserId === currentSpeaker.id) || grants[0];
+  const grant = selectedGrant || fallbackGrant;
+
+  if (!selection && !grant) return undefined;
+
+  const displayName = selection?.selectedDeviceDisplayName
+    || grant?.deviceDisplayName;
+  const label = displayName
+    ? `${currentSpeaker.name} 的 ${displayName}`
+    : `${currentSpeaker.name} 的电脑`;
+
   return pruneUndefined({
-    status: selection.status,
-    selectionSource: selection.selectionSource,
-    selectedDevice: selection.selectedDeviceId
-      ? pruneUndefined({
-        deviceId: selection.selectedDeviceId,
-        displayName: selection.selectedDeviceDisplayName,
-        operations: selection.selectedDeviceOperations ? [...selection.selectedDeviceOperations] : undefined,
-      })
-      : undefined,
-    candidates: selection.candidates?.map(candidate => pruneUndefined({
-      deviceId: candidate.deviceId,
-      displayName: candidate.displayName,
-      operations: candidate.operations ? [...candidate.operations] : undefined,
-    })),
-    candidateCount: selection.candidateCount,
-  });
-}
-
-function sanitizeLocalFiles(grants?: ScopedLocalFileGrant[]): RuntimeContextSnapshot['execution']['localFiles'] | undefined {
-  if (!grants || grants.length === 0) return undefined;
-  return grants.map(grant => pruneUndefined({
-    ref: grant.attachmentRef,
-    fileName: grant.fileName,
-    fileType: grant.fileType,
-    operations: [...grant.operations],
-    expiresAt: grant.expiresAt,
-  }));
+    id: 'speaker_default',
+    label,
+    kind: 'participant_default',
+    status: selection?.status === 'selected' || grant?.status === 'active' ? 'ready' : 'unavailable',
+    ownerUserId: grant?.ownerUserId || currentSpeaker.id,
+  }) as RuntimeContextSnapshot['executionTargets'][number];
 }
 
 function sourceFromSessionType(sessionType?: string): MessageSource | undefined {
@@ -232,6 +200,17 @@ function sourceFromSessionType(sessionType?: string): MessageSource | undefined 
     return sessionType;
   }
   return undefined;
+}
+
+function displayNameFromId(id: string): string {
+  if (id === 'local_user') return 'User';
+  return id;
+}
+
+function normalizeText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const text = value.trim();
+  return text || undefined;
 }
 
 function pruneUndefined<T>(value: T): T {
