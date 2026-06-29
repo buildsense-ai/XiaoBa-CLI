@@ -129,13 +129,15 @@ export class ShellTool implements Tool {
       const finalDirectory = this.readDirectoryProbe(wrapped) || parsedStdout.directory || parsedStderr.directory;
       this.updateCurrentDirectory(finalDirectory, context);
 
-      const output = parsedStdout.output || '';
-      if (parsedStderr.output) {
-        Logger.warning(`stderr: ${parsedStderr.output.substring(0, 200)}`);
+      const stdoutOutput = parsedStdout.output || '';
+      const stderrOutput = parsedStderr.output || '';
+      const output = this.formatSuccessfulOutput(stdoutOutput, stderrOutput);
+      if (stderrOutput) {
+        Logger.warning(`stderr: ${stderrOutput.substring(0, 200)}`);
       }
 
       const executionTime = Date.now() - startTime;
-      const outputLines = output ? output.split('\n').length : 0;
+      const outputLines = this.countOutputLines(output);
       const outputSize = Buffer.byteLength(output, 'utf-8');
 
       Logger.success(`Command succeeded (elapsed: ${executionTime}ms)`);
@@ -280,6 +282,7 @@ export class ShellTool implements Tool {
         cwd,
         env,
         encoding: 'utf-8',
+        shell: this.resolvePosixShell(env),
         timeout,
         signal,
         killSignal: 'SIGTERM',
@@ -539,6 +542,45 @@ export class ShellTool implements Tool {
       })
       .join('\n')
       .replace(/\n+$/, '');
+  }
+
+  private formatSuccessfulOutput(stdout: string, stderr: string): string {
+    const cleanStdout = String(stdout || '');
+    const cleanStderr = String(stderr || '');
+    if (cleanStdout && cleanStderr) {
+      return [
+        'Stdout:',
+        cleanStdout,
+        '',
+        'Stderr:',
+        cleanStderr,
+      ].join('\n');
+    }
+    if (cleanStderr) {
+      return ['Stderr:', cleanStderr].join('\n');
+    }
+    return cleanStdout;
+  }
+
+  private countOutputLines(output: string): number {
+    return output ? output.split('\n').length : 0;
+  }
+
+  private resolvePosixShell(env: NodeJS.ProcessEnv): string | undefined {
+    const candidates = [
+      env.SHELL && path.basename(env.SHELL) === 'bash' ? env.SHELL : undefined,
+      '/bin/bash',
+      '/usr/bin/bash',
+    ].filter((value): value is string => Boolean(value));
+
+    for (const candidate of candidates) {
+      try {
+        if (path.isAbsolute(candidate) && fs.existsSync(candidate)) return candidate;
+      } catch {
+        // Fall through to the next candidate.
+      }
+    }
+    return undefined;
   }
 
   private cleanupWrappedCommand(wrapped: WrappedCommand): void {

@@ -16,6 +16,8 @@ export interface BuildTransientEnvironmentHintOptions {
   provider?: string;
   model?: string;
   env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  now?: Date;
   gitInfo?: GitRepositoryInfo | null;
 }
 
@@ -26,6 +28,7 @@ export function buildTransientEnvironmentHint(
   if (!currentDirectory) return null;
 
   const env = options.env ?? process.env;
+  const platform = options.platform ?? process.platform;
   const gitInfo = options.gitInfo === undefined
     ? resolveGitRepositoryInfo(currentDirectory)
     : options.gitInfo;
@@ -35,8 +38,8 @@ export function buildTransientEnvironmentHint(
     'Runtime context only. Not a user request. Do not answer.',
     `cwd: ${currentDirectory}`,
     renderModelInfo(options.provider, options.model),
-    `os: ${process.platform}`,
-    `shell: ${resolveShellName(env)}`,
+    `os: ${platform}`,
+    `shell: ${resolveShellName(env, platform)}`,
     gitInfo ? renderGitInfo(gitInfo, currentDirectory) : '',
     'Use cwd for relative file and shell paths.',
   ].filter(Boolean);
@@ -48,8 +51,13 @@ export function buildTransientEnvironmentHint(
   };
 }
 
-export function resolveShellName(env: NodeJS.ProcessEnv = process.env): string {
-  if (process.platform === 'win32' && env.PSModulePath) return 'powershell';
+export function resolveShellName(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === 'win32') {
+    return 'powershell';
+  }
   const raw = env.SHELL || env.ComSpec || env.COMSPEC || (env.PSModulePath ? 'powershell' : '');
   if (!raw) return 'unknown';
   const basename = path.win32.basename(raw);

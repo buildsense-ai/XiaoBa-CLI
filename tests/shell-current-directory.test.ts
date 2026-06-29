@@ -77,6 +77,34 @@ describe('ShellTool current directory probe', () => {
     assert.ok((result.content as string).includes(`Final cwd: ${path.resolve(testRoot, 'sub')}`));
   });
 
+  test('successful commands return both stdout and stderr', async () => {
+    const tool = new ShellTool();
+    const command = process.platform === 'win32'
+      ? `& ${quotePowerShellString(process.execPath)} -e "process.stdout.write('stdout-visible\\n'); process.stderr.write('stderr-visible\\n')"`
+      : `${quotePosixString(process.execPath)} -e "process.stdout.write('stdout-visible\\n'); process.stderr.write('stderr-visible\\n')"`;
+    const result = await tool.execute({ command }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    assert.ok((result.content as string).includes('stdout-visible'));
+    assert.ok((result.content as string).includes('stderr-visible'));
+  });
+
+  test('POSIX execution uses bash when bash is available', {
+    skip: process.platform === 'win32' || !fs.existsSync('/bin/bash'),
+  }, async () => {
+    const tool = new ShellTool();
+    const result = await tool.execute({ command: 'echo "bash-version:${BASH_VERSION:-missing}"' }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    assert.match(result.content as string, /bash-version:[0-9]/);
+  });
+
   test('failed cd does not update session current directory', async () => {
     const tool = new ShellTool();
     const result = await tool.execute({ command: 'cd missing-directory' }, {
@@ -202,4 +230,12 @@ describe('ShellTool current directory probe', () => {
 
 function assertSameDirectory(actual: string, expected: string): void {
   assert.strictEqual(fs.realpathSync(actual), fs.realpathSync(expected));
+}
+
+function quotePowerShellString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function quotePosixString(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
