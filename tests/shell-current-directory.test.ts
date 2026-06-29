@@ -130,9 +130,7 @@ describe('ShellTool current directory probe', () => {
     assert.ok(!result.message.includes('exit "$status"'));
   });
 
-  test('timed out commands return structured timeout metadata', {
-    skip: process.platform === 'win32',
-  }, async () => {
+  test('timed out commands return structured timeout metadata', async () => {
     const tool = new ShellTool();
     const command = process.platform === 'win32' ? 'Start-Sleep -Seconds 5' : 'sleep 5';
     const result = await tool.execute({ command, timeout: 50 }, {
@@ -147,6 +145,31 @@ describe('ShellTool current directory probe', () => {
     assert.match(result.message, /^timed_out: true$/m);
     assert.match(result.message, /^stdout:/m);
     assert.match(result.message, /^stderr:/m);
+  });
+
+  test('aborted commands return structured abort metadata', async () => {
+    const tool = new ShellTool();
+    const controller = new AbortController();
+    const command = process.platform === 'win32' ? 'Start-Sleep -Seconds 5' : 'sleep 5';
+    const run = tool.execute({ command, timeout: 5000 }, {
+      ...context,
+      workingDirectory: currentDirectory,
+      abortSignal: controller.signal,
+    });
+    const abortTimer = setTimeout(() => controller.abort(), 50);
+
+    try {
+      const result = await run;
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.errorCode, 'EXECUTION_TIMEOUT');
+      assert.match(result.message, /^Command completed/);
+      assert.match(result.message, /^status: aborted$/m);
+      assert.match(result.message, /^timed_out: false$/m);
+      assert.match(result.message, /^stdout:/m);
+      assert.match(result.message, /^stderr:/m);
+    } finally {
+      clearTimeout(abortTimer);
+    }
   });
 
   test('successful cd is persisted even when a later command fails', async () => {
@@ -253,6 +276,35 @@ describe('ShellTool current directory probe', () => {
     assert.ok(!result.message.includes('cd >'));
     assert.ok(!result.message.includes('exit /b'));
     assert.ok(!/[A-Z]:\\.*>/.test(result.message));
+  });
+
+  test('Windows cmd fallback honors abort signal', {
+    skip: process.platform !== 'win32',
+  }, async () => {
+    const tool = new ShellTool();
+    (tool as any).executeWindowsPowerShellScript = async () => {
+      const error: any = new Error('spawn powershell.exe ENOENT');
+      error.code = 'ENOENT';
+      throw error;
+    };
+
+    const controller = new AbortController();
+    const run = tool.execute({ command: 'ping -n 6 127.0.0.1 > nul', timeout: 5000 }, {
+      ...context,
+      workingDirectory: currentDirectory,
+      abortSignal: controller.signal,
+    });
+    const abortTimer = setTimeout(() => controller.abort(), 50);
+
+    try {
+      const result = await run;
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.errorCode, 'EXECUTION_TIMEOUT');
+      assert.match(result.message, /^status: aborted$/m);
+      assert.match(result.message, /^timed_out: false$/m);
+    } finally {
+      clearTimeout(abortTimer);
+    }
   });
 
 });

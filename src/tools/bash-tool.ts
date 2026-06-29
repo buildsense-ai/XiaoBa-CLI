@@ -1,4 +1,4 @@
-import { exec, spawn } from 'child_process';
+import { exec, spawn, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { TextDecoder } from 'util';
 import * as fs from 'fs';
@@ -351,7 +351,7 @@ export class ShellTool implements Tool {
       return await this.executeWindowsPowerShellScript(wrapped, cwd, env, timeout, signal);
     } catch (error) {
       if (!this.isPowerShellLaunchFailure(error)) throw error;
-      return this.executeWindowsCmdFallback(wrapped, cwd, env, timeout);
+      return this.executeWindowsCmdFallback(wrapped, cwd, env, timeout, signal);
     }
   }
 
@@ -388,37 +388,55 @@ export class ShellTool implements Tool {
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
       let settled = false;
-      let timedOut = false;
+      let pendingFailure: any;
       let stdoutBytes = 0;
       let stderrBytes = 0;
       const maxBuffer = 10 * 1024 * 1024;
-      let timer: NodeJS.Timeout;
+      let timer: NodeJS.Timeout | undefined;
+      let closeWaitTimer: NodeJS.Timeout | undefined;
+      let abortHandler: (() => void) | undefined;
 
-      const finish = (fn: () => void) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        if (closeWaitTimer) clearTimeout(closeWaitTimer);
         if (signal && abortHandler) {
           signal.removeEventListener('abort', abortHandler);
         }
+      };
+
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         fn();
       };
 
-      const fail = (error: any) => {
-        finish(() => {
-          try { child.kill(); } catch {}
+      const rejectWithOutput = (error: any) => {
+        settle(() => {
           error.stdout = this.decodeWindowsOutput(Buffer.concat(stdoutChunks));
           error.stderr = this.decodeWindowsOutput(Buffer.concat(stderrChunks));
           reject(error);
         });
       };
 
+      const failAfterClose = (error: any) => {
+        if (settled) return;
+        if (pendingFailure) return;
+        pendingFailure = error;
+        this.terminateProcessTree(child);
+        closeWaitTimer = setTimeout(() => {
+          rejectWithOutput(error);
+        }, 5000);
+        closeWaitTimer.unref?.();
+      };
+
       timer = setTimeout(() => {
-        timedOut = true;
-        fail(new Error(`Command timed out after ${timeout}ms`));
+        failAfterClose(this.createShellTimeoutError(timeout));
       }, timeout);
-      const abortHandler = () => {
-        fail(new Error('Command aborted by user'));
+      timer.unref?.();
+
+      abortHandler = () => {
+        failAfterClose(this.createShellAbortError());
       };
       signal?.addEventListener('abort', abortHandler, { once: true });
 
@@ -426,7 +444,7 @@ export class ShellTool implements Tool {
         const buffer = Buffer.from(chunk);
         stdoutBytes += buffer.length;
         if (stdoutBytes > maxBuffer) {
-          fail(new Error(`stdout maxBuffer exceeded (${maxBuffer} bytes)`));
+          failAfterClose(new Error(`stdout maxBuffer exceeded (${maxBuffer} bytes)`));
           return;
         }
         stdoutChunks.push(buffer);
@@ -436,28 +454,34 @@ export class ShellTool implements Tool {
         const buffer = Buffer.from(chunk);
         stderrBytes += buffer.length;
         if (stderrBytes > maxBuffer) {
-          fail(new Error(`stderr maxBuffer exceeded (${maxBuffer} bytes)`));
+          failAfterClose(new Error(`stderr maxBuffer exceeded (${maxBuffer} bytes)`));
           return;
         }
         stderrChunks.push(buffer);
       });
 
       child.on('error', (error: Error) => {
-        fail(error);
+        rejectWithOutput(error);
       });
 
-      child.on('close', (code: number | null) => {
+      child.on('close', (code: number | null, closeSignal: NodeJS.Signals | null) => {
         if (settled) return;
         const stdout = this.decodeWindowsOutput(Buffer.concat(stdoutChunks));
         const stderr = this.decodeWindowsOutput(Buffer.concat(stderrChunks));
-        finish(() => {
-          if (timedOut) return;
+        settle(() => {
+          if (pendingFailure) {
+            pendingFailure.stdout = stdout;
+            pendingFailure.stderr = stderr;
+            reject(pendingFailure);
+            return;
+          }
           if (code === 0) {
             resolve({ stdout, stderr });
             return;
           }
           const error: any = new Error(`Command failed with exit code ${code}`);
-          error.code = code;
+          if (code !== null) error.code = code;
+          if (closeSignal) error.signal = closeSignal;
           error.stdout = stdout;
           error.stderr = stderr;
           reject(error);
@@ -471,10 +495,14 @@ export class ShellTool implements Tool {
     cwd: string,
     env: NodeJS.ProcessEnv,
     timeout: number,
+    signal?: AbortSignal,
   ): Promise<ShellOutput> {
     const cmdScript = wrapped.cmdScript;
     if (!cmdScript) {
       return Promise.reject(new Error('Internal error: missing Windows cmd script'));
+    }
+    if (signal?.aborted) {
+      return Promise.reject(this.createShellAbortError());
     }
 
     return new Promise((resolve, reject) => {
@@ -488,37 +516,62 @@ export class ShellTool implements Tool {
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
       let settled = false;
-      let timedOut = false;
+      let pendingFailure: any;
       let stdoutBytes = 0;
       let stderrBytes = 0;
       const maxBuffer = 10 * 1024 * 1024;
+      let closeWaitTimer: NodeJS.Timeout | undefined;
+      let abortHandler: (() => void) | undefined;
 
-      const finish = (fn: () => void) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        if (closeWaitTimer) clearTimeout(closeWaitTimer);
+        if (signal && abortHandler) {
+          signal.removeEventListener('abort', abortHandler);
+        }
+      };
+
+      const settle = (fn: () => void) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        cleanup();
         fn();
       };
 
-      const fail = (error: any) => {
-        finish(() => {
-          try { child.kill(); } catch {}
+      const rejectWithOutput = (error: any) => {
+        settle(() => {
           error.stdout = this.stripCmdSessionNoise(this.decodeWindowsOutput(Buffer.concat(stdoutChunks)));
           error.stderr = this.stripCmdSessionNoise(this.decodeWindowsOutput(Buffer.concat(stderrChunks)));
           reject(error);
         });
       };
 
+      const failAfterClose = (error: any) => {
+        if (settled) return;
+        if (pendingFailure) return;
+        pendingFailure = error;
+        this.terminateProcessTree(child);
+        closeWaitTimer = setTimeout(() => {
+          rejectWithOutput(error);
+        }, 5000);
+        closeWaitTimer.unref?.();
+      };
+
       const timer = setTimeout(() => {
-        timedOut = true;
-        fail(new Error(`Command timed out after ${timeout}ms`));
+        failAfterClose(this.createShellTimeoutError(timeout));
       }, timeout);
+      timer.unref?.();
+
+      abortHandler = () => {
+        failAfterClose(this.createShellAbortError());
+      };
+      signal?.addEventListener('abort', abortHandler, { once: true });
 
       child.stdout?.on('data', (chunk: Buffer) => {
         const buffer = Buffer.from(chunk);
         stdoutBytes += buffer.length;
         if (stdoutBytes > maxBuffer) {
-          fail(new Error(`stdout maxBuffer exceeded (${maxBuffer} bytes)`));
+          failAfterClose(new Error(`stdout maxBuffer exceeded (${maxBuffer} bytes)`));
           return;
         }
         stdoutChunks.push(buffer);
@@ -528,28 +581,34 @@ export class ShellTool implements Tool {
         const buffer = Buffer.from(chunk);
         stderrBytes += buffer.length;
         if (stderrBytes > maxBuffer) {
-          fail(new Error(`stderr maxBuffer exceeded (${maxBuffer} bytes)`));
+          failAfterClose(new Error(`stderr maxBuffer exceeded (${maxBuffer} bytes)`));
           return;
         }
         stderrChunks.push(buffer);
       });
 
       child.on('error', (error: Error) => {
-        fail(error);
+        rejectWithOutput(error);
       });
 
-      child.on('close', (code: number | null) => {
+      child.on('close', (code: number | null, closeSignal: NodeJS.Signals | null) => {
         if (settled) return;
         const stdout = this.stripCmdSessionNoise(this.decodeWindowsOutput(Buffer.concat(stdoutChunks)));
         const stderr = this.stripCmdSessionNoise(this.decodeWindowsOutput(Buffer.concat(stderrChunks)));
-        finish(() => {
-          if (timedOut) return;
+        settle(() => {
+          if (pendingFailure) {
+            pendingFailure.stdout = stdout;
+            pendingFailure.stderr = stderr;
+            reject(pendingFailure);
+            return;
+          }
           if (code === 0) {
             resolve({ stdout, stderr });
             return;
           }
           const error: any = new Error(`Command failed with exit code ${code}`);
-          error.code = code;
+          if (code !== null) error.code = code;
+          if (closeSignal) error.signal = closeSignal;
           error.stdout = stdout;
           error.stderr = stderr;
           reject(error);
@@ -558,6 +617,44 @@ export class ShellTool implements Tool {
 
       child.stdin.end(cmdScript + '\r\n');
     });
+  }
+
+  private createShellTimeoutError(timeout: number): Error {
+    const error: any = new Error(`Command timed out after ${timeout}ms`);
+    error.code = 'ETIMEDOUT';
+    error.timedOut = true;
+    return error;
+  }
+
+  private createShellAbortError(): Error {
+    const error: any = new Error('Command aborted by user');
+    error.code = 'ABORT_ERR';
+    error.aborted = true;
+    return error;
+  }
+
+  private terminateProcessTree(child: ChildProcess): void {
+    if (!child.pid) {
+      try { child.kill(); } catch {}
+      return;
+    }
+
+    if (process.platform === 'win32') {
+      try {
+        const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
+          windowsHide: true,
+          stdio: 'ignore',
+        });
+        killer.on('error', () => {
+          try { child.kill(); } catch {}
+        });
+      } catch {
+        try { child.kill(); } catch {}
+      }
+      return;
+    }
+
+    try { child.kill('SIGTERM'); } catch {}
   }
 
   private isPowerShellLaunchFailure(error: any): boolean {
@@ -746,6 +843,7 @@ export class ShellTool implements Tool {
   }
 
   private isTimeoutError(error: any): boolean {
+    if (error?.timedOut === true) return true;
     const text = String(error?.message || error?.code || '').toLowerCase();
     return text.includes('timed out') || text.includes('timeout') || text === 'etimedout';
   }
