@@ -15,6 +15,7 @@ export interface ModeRouterSidecarBranchOptions {
   activeMode?: PromptModeRuntimeState | null;
   signal?: AbortSignal;
   logEnabled?: boolean;
+  modelTimeoutMs?: number;
 }
 
 export interface ModeRouterSidecarBranchHandle {

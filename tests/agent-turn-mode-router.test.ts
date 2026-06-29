@@ -118,6 +118,7 @@ describe('AgentTurnController prompt mode router integration', () => {
     assert.equal(hasPrefix(aiService.requests[1], TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX), true);
     assert.equal(hasPrefix(aiService.requests[1], TRANSIENT_PROMPT_MODES_LIST_PREFIX), false);
     assert.match(allContent(aiService.requests[1]), /\[mode:coding-agent\]/);
+    assert.match(allContent(aiService.requests[1]), /Timing: selected from turn 1 and arrived late/);
     assert.equal(hasPrefix(result.messages, TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX), false);
 
     messages = result.messages;

@@ -540,8 +540,8 @@ export class AgentTurnController {
   ): Message[] {
     if (fixedMode) return [];
     const observations = [
-      ...this.drainModeRouterBranch(carryover),
-      ...this.drainModeRouterBranch(current),
+      ...this.drainModeRouterBranch(carryover, 'late_previous_turn'),
+      ...this.drainModeRouterBranch(current, 'current_turn'),
     ];
     this.promptModeRuntime.applyRouterObservations(observations, turnNumber);
     const message = this.promptModeRuntime.buildTransientMessage({
@@ -551,9 +551,14 @@ export class AgentTurnController {
     return message ? [message] : [];
   }
 
-  private drainModeRouterBranch(slot: ModeRouterBranchSlot | null): SyntheticObservation[] {
+  private drainModeRouterBranch(
+    slot: ModeRouterBranchSlot | null,
+    timing: SyntheticObservationTiming,
+  ): SyntheticObservation[] {
     if (!slot) return [];
-    return slot.queue.drain();
+    return slot.queue.drain().map(observation =>
+      this.withModeRouterObservationMetadata(observation, timing, slot.originTurn)
+    );
   }
 
   private isPromptModeRouterEnabled(
@@ -578,6 +583,22 @@ export class AgentTurnController {
       ...timed,
       metadata: {
         ...(timed.metadata || {}),
+        originTurn,
+      },
+    };
+  }
+
+  private withModeRouterObservationMetadata(
+    observation: SyntheticObservation,
+    timing: SyntheticObservationTiming,
+    originTurn: number,
+  ): SyntheticObservation {
+    return {
+      ...observation,
+      timing,
+      metadata: {
+        ...(observation.metadata || {}),
+        timing,
         originTurn,
       },
     };

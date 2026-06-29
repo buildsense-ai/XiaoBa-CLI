@@ -22,6 +22,7 @@ export interface MemorySearchBranchSessionOptions {
   queue: SyntheticObservationQueue;
   signal?: AbortSignal;
   logEnabled?: boolean;
+  modelTimeoutMs?: number;
 }
 
 export class MemorySearchBranchSession extends ObservationBranchSession<MemorySearchFinishPayload> {
@@ -36,6 +37,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       queue: memoryOptions.queue,
       signal: memoryOptions.signal,
       logEnabled: memoryOptions.logEnabled,
+      modelTimeoutMs: memoryOptions.modelTimeoutMs,
     });
     this.store = new MemoryLogStore(memoryOptions.workingDirectory);
   }

@@ -6,6 +6,7 @@ import * as path from 'path';
 import {
   PromptModeRuntime,
   TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX,
+  buildPromptModeRouterObservation,
 } from '../src/core/prompt-mode-runtime';
 
 describe('PromptModeRuntime', () => {
@@ -130,5 +131,43 @@ describe('PromptModeRuntime', () => {
       reason: 'topic changed',
     }, 10);
     assert.equal(runtime.buildTransientMessage({ turnNumber: 10 }), null);
+  });
+
+  test('labels late prompt mode router observations in transient mode context', () => {
+    const runtime = new PromptModeRuntime({ promptsDir });
+    runtime.beginTurn(2);
+    runtime.applyRouterObservations([{
+      ...buildPromptModeRouterObservation({
+        action: 'activate',
+        mode: 'coding-agent',
+        confidence: 0.93,
+        reason: 'local build debugging',
+      }),
+      timing: 'late_previous_turn',
+      metadata: {
+        timing: 'late_previous_turn',
+        originTurn: 1,
+      },
+    }], 2);
+
+    const lateMessage = runtime.buildTransientMessage({ turnNumber: 2 });
+    assert.match(String(lateMessage?.content), /Timing: selected from turn 1 and arrived late/);
+
+    runtime.applyRouterObservations([{
+      ...buildPromptModeRouterObservation({
+        action: 'activate',
+        mode: 'coding-agent',
+        confidence: 0.94,
+        reason: 'still coding',
+      }),
+      timing: 'current_turn',
+      metadata: {
+        timing: 'current_turn',
+        originTurn: 3,
+      },
+    }], 3);
+
+    const currentMessage = runtime.buildTransientMessage({ turnNumber: 3 });
+    assert.match(String(currentMessage?.content), /Timing: selected for the current user turn 3/);
   });
 });

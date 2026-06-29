@@ -7,6 +7,8 @@ export interface PromptModeRouterFinishPayload {
   mode?: string;
   confidence: number;
   reason: string;
+  sourceTiming?: 'current_turn' | 'late_previous_turn';
+  originTurn?: number;
 }
 
 export type PromptModeRouterFinishHandler = (payload: PromptModeRouterFinishPayload) => void;

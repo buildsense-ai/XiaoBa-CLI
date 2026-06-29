@@ -24,6 +24,7 @@ function makeToolCall(id: string, args: unknown): ToolCall {
 
 class ModeRouterAI {
   calls: Message[][] = [];
+  chatCalls = 0;
 
   constructor(private readonly args: unknown) {}
 
@@ -31,7 +32,12 @@ class ModeRouterAI {
     return true;
   }
 
-  async chat(messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse> {
+  async chat(): Promise<ChatResponse> {
+    this.chatCalls += 1;
+    assert.fail('mode router branch should use chatStream');
+  }
+
+  async chatStream(messages: Message[], tools?: ToolDefinition[]): Promise<ChatResponse> {
     this.calls.push(JSON.parse(JSON.stringify(messages)));
     assert.equal(tools?.map(tool => tool.name).join(','), 'finish_prompt_mode_routing');
     return {
@@ -39,6 +45,34 @@ class ModeRouterAI {
       toolCalls: [makeToolCall('finish_1', this.args)],
       usage,
     };
+  }
+}
+
+class HangingModeRouterAI {
+  chatCalls = 0;
+  streamCalls = 0;
+  aborted = false;
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  async chat(): Promise<ChatResponse> {
+    this.chatCalls += 1;
+    assert.fail('mode router branch should use chatStream');
+  }
+
+  chatStream(
+    _messages: Message[],
+    _tools?: ToolDefinition[],
+    _callbacks?: unknown,
+    options?: { signal?: AbortSignal },
+  ): Promise<ChatResponse> {
+    this.streamCalls += 1;
+    options?.signal?.addEventListener('abort', () => {
+      this.aborted = true;
+    }, { once: true });
+    return new Promise<ChatResponse>(() => undefined);
   }
 }
 
@@ -81,6 +115,7 @@ describe('mode router branch', () => {
       assert.equal(payload.source, 'prompt_mode_router');
       assert.equal(payload.action, (args as any).action);
       assert.equal(aiService.calls.length, 1);
+      assert.equal(aiService.chatCalls, 0);
     }
   });
 
@@ -123,5 +158,27 @@ describe('mode router branch', () => {
     } finally {
       fs.rmSync(promptsDir, { recursive: true, force: true });
     }
+  });
+
+  test('times out hanging model requests without publishing router observations', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    const aiService = new HangingModeRouterAI();
+    const session = new ModeRouterBranchSession({
+      sessionKey: 'mode-router-timeout',
+      input: 'debug this build',
+      recentMessages: [],
+      workingDirectory: process.cwd(),
+      aiService: aiService as any,
+      queue,
+      logEnabled: false,
+      modelTimeoutMs: 20,
+    });
+
+    await session.run();
+
+    assert.equal(aiService.streamCalls, 1);
+    assert.equal(aiService.chatCalls, 0);
+    assert.equal(aiService.aborted, true);
+    assert.equal(queue.drain().length, 0);
   });
 });
