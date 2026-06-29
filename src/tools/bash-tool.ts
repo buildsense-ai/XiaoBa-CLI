@@ -10,6 +10,9 @@ import { isToolAllowed, isBashCommandAllowed } from '../utils/safety';
 import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
 const CWD_MARKER_PREFIX = '__XIAOBA_CWD_MARKER__';
+const SHELL_CONTRACT_VERSION = 'shell/v1';
+const SHELL_INLINE_OUTPUT_MAX_CHARS = 30_000;
+const SHELL_ARTIFACT_DIR = 'tool-results';
 
 interface WrappedCommand {
   command: string;
@@ -33,13 +36,38 @@ interface ShellRunResult {
   exitCode?: number;
   signal?: string;
   timedOut: boolean;
+  timeoutMs: number;
   durationMs: number;
   cwdBefore: string;
   cwdAfter: string;
   stdout: string;
   stderr: string;
+  stdoutLines?: number;
+  stderrLines?: number;
+  stdoutBytes?: number;
+  stderrBytes?: number;
   errorMessage?: string;
   truncated: boolean;
+  truncatedReason?: string;
+  inlineOutputChars?: number;
+  originalOutputChars?: number;
+  outputArtifact?: string;
+  artifactError?: string;
+}
+
+interface ShellOutputPresentation {
+  stdout: string;
+  stderr: string;
+  stdoutLines: number;
+  stderrLines: number;
+  stdoutBytes: number;
+  stderrBytes: number;
+  truncated: boolean;
+  truncatedReason?: string;
+  inlineOutputChars: number;
+  originalOutputChars: number;
+  outputArtifact?: string;
+  artifactError?: string;
 }
 
 export class ShellTool implements Tool {
@@ -95,13 +123,20 @@ export class ShellTool implements Tool {
           description,
           status: 'aborted',
           timedOut: false,
+          timeoutMs: timeout,
           durationMs: 0,
           cwdBefore,
           cwdAfter: cwdBefore,
           stdout: '',
           stderr: '',
+          stdoutLines: 0,
+          stderrLines: 0,
+          stdoutBytes: 0,
+          stderrBytes: 0,
           errorMessage: 'Command aborted before execution',
           truncated: false,
+          inlineOutputChars: 0,
+          originalOutputChars: 0,
         }),
       };
     }
@@ -172,14 +207,22 @@ export class ShellTool implements Tool {
       }
 
       const executionTime = Date.now() - startTime;
-      const outputLines = this.countOutputLines(stdoutOutput) + this.countOutputLines(stderrOutput);
-      const outputSize = Buffer.byteLength(stdoutOutput, 'utf-8') + Buffer.byteLength(stderrOutput, 'utf-8');
+      const outputPresentation = this.prepareShellOutputPresentation(stdoutOutput, stderrOutput, context, {
+        command,
+        description,
+        status: 'succeeded',
+        cwdBefore,
+        cwdAfter,
+        durationMs: executionTime,
+      });
+      const outputLines = outputPresentation.stdoutLines + outputPresentation.stderrLines;
+      const outputSize = outputPresentation.stdoutBytes + outputPresentation.stderrBytes;
 
       Logger.success(`Command succeeded (elapsed: ${executionTime}ms)`);
       Logger.info(`  Output: ${outputLines} lines | ${(outputSize / 1024).toFixed(2)} KB`);
 
       if (outputLines > 20) {
-        const previewLines = [stdoutOutput, stderrOutput].filter(Boolean).join('\n').split('\n').slice(0, 10);
+        const previewLines = [outputPresentation.stdout, outputPresentation.stderr].filter(Boolean).join('\n').split('\n').slice(0, 10);
         Logger.info('  Output preview (first 10 lines):');
         previewLines.forEach(line => {
           const displayLine = line.length > 100 ? line.substring(0, 97) + '...' : line;
@@ -196,12 +239,22 @@ export class ShellTool implements Tool {
           status: 'succeeded',
           exitCode: 0,
           timedOut: false,
+          timeoutMs: timeout,
           durationMs: executionTime,
           cwdBefore,
           cwdAfter,
-          stdout: stdoutOutput,
-          stderr: stderrOutput,
-          truncated: false,
+          stdout: outputPresentation.stdout,
+          stderr: outputPresentation.stderr,
+          stdoutLines: outputPresentation.stdoutLines,
+          stderrLines: outputPresentation.stderrLines,
+          stdoutBytes: outputPresentation.stdoutBytes,
+          stderrBytes: outputPresentation.stderrBytes,
+          truncated: outputPresentation.truncated,
+          truncatedReason: outputPresentation.truncatedReason,
+          inlineOutputChars: outputPresentation.inlineOutputChars,
+          originalOutputChars: outputPresentation.originalOutputChars,
+          outputArtifact: outputPresentation.outputArtifact,
+          artifactError: outputPresentation.artifactError,
         }),
       };
     } catch (error: any) {
@@ -215,6 +268,16 @@ export class ShellTool implements Tool {
       const aborted = context.abortSignal?.aborted || /aborted|abort/i.test(String(error.message || ''));
       const timedOut = !aborted && this.isTimeoutError(error);
       if (aborted || timedOut) {
+        const stdoutOutput = parsedStdout.output || '';
+        const stderrOutput = parsedStderr.output || '';
+        const outputPresentation = this.prepareShellOutputPresentation(stdoutOutput, stderrOutput, context, {
+          command,
+          description,
+          status: aborted ? 'aborted' : 'timed_out',
+          cwdBefore,
+          cwdAfter,
+          durationMs: executionTime,
+        });
         return {
           ok: false,
           errorCode: 'EXECUTION_TIMEOUT',
@@ -224,18 +287,36 @@ export class ShellTool implements Tool {
             status: aborted ? 'aborted' : 'timed_out',
             signal: typeof error.signal === 'string' ? error.signal : undefined,
             timedOut,
+            timeoutMs: timeout,
             durationMs: executionTime,
             cwdBefore,
             cwdAfter,
-            stdout: parsedStdout.output || '',
-            stderr: parsedStderr.output || '',
+            stdout: outputPresentation.stdout,
+            stderr: outputPresentation.stderr,
+            stdoutLines: outputPresentation.stdoutLines,
+            stderrLines: outputPresentation.stderrLines,
+            stdoutBytes: outputPresentation.stdoutBytes,
+            stderrBytes: outputPresentation.stderrBytes,
             errorMessage: this.formatExecutionError(error),
-            truncated: false,
+            truncated: outputPresentation.truncated,
+            truncatedReason: outputPresentation.truncatedReason,
+            inlineOutputChars: outputPresentation.inlineOutputChars,
+            originalOutputChars: outputPresentation.originalOutputChars,
+            outputArtifact: outputPresentation.outputArtifact,
+            artifactError: outputPresentation.artifactError,
           }),
         };
       }
       const stdoutOutput = parsedStdout.output || '';
       const stderrOutput = parsedStderr.output || '';
+      const outputPresentation = this.prepareShellOutputPresentation(stdoutOutput, stderrOutput, context, {
+        command,
+        description,
+        status: 'failed',
+        cwdBefore,
+        cwdAfter,
+        durationMs: executionTime,
+      });
       const exitCode = typeof error.code === 'number' ? error.code : undefined;
       const signal = typeof error.signal === 'string' ? error.signal : undefined;
 
@@ -252,13 +333,23 @@ export class ShellTool implements Tool {
           exitCode,
           signal,
           timedOut: false,
+          timeoutMs: timeout,
           durationMs: executionTime,
           cwdBefore,
           cwdAfter,
-          stdout: stdoutOutput,
-          stderr: stderrOutput,
+          stdout: outputPresentation.stdout,
+          stderr: outputPresentation.stderr,
+          stdoutLines: outputPresentation.stdoutLines,
+          stderrLines: outputPresentation.stderrLines,
+          stdoutBytes: outputPresentation.stdoutBytes,
+          stderrBytes: outputPresentation.stderrBytes,
           errorMessage: this.formatExecutionError(error),
-          truncated: false,
+          truncated: outputPresentation.truncated,
+          truncatedReason: outputPresentation.truncatedReason,
+          inlineOutputChars: outputPresentation.inlineOutputChars,
+          originalOutputChars: outputPresentation.originalOutputChars,
+          outputArtifact: outputPresentation.outputArtifact,
+          artifactError: outputPresentation.artifactError,
         }),
       };
     } finally {
@@ -833,19 +924,173 @@ export class ShellTool implements Tool {
       .replace(/\n+$/, '');
   }
 
+  private prepareShellOutputPresentation(
+    stdout: string,
+    stderr: string,
+    context: ToolExecutionContext,
+    metadata: {
+      command: string;
+      description?: string;
+      status: ShellRunStatus;
+      cwdBefore: string;
+      cwdAfter: string;
+      durationMs: number;
+    },
+  ): ShellOutputPresentation {
+    const stdoutOutput = String(stdout || '');
+    const stderrOutput = String(stderr || '');
+    const stdoutBytes = Buffer.byteLength(stdoutOutput, 'utf-8');
+    const stderrBytes = Buffer.byteLength(stderrOutput, 'utf-8');
+    const originalOutputChars = stdoutOutput.length + stderrOutput.length;
+
+    if (originalOutputChars <= SHELL_INLINE_OUTPUT_MAX_CHARS) {
+      return {
+        stdout: stdoutOutput,
+        stderr: stderrOutput,
+        stdoutLines: this.countOutputLines(stdoutOutput),
+        stderrLines: this.countOutputLines(stderrOutput),
+        stdoutBytes,
+        stderrBytes,
+        truncated: false,
+        inlineOutputChars: originalOutputChars,
+        originalOutputChars,
+      };
+    }
+
+    let outputArtifact: string | undefined;
+    let artifactError: string | undefined;
+    try {
+      outputArtifact = this.writeShellOutputArtifact(stdoutOutput, stderrOutput, context, metadata);
+    } catch (error: any) {
+      artifactError = String(error?.message || error || 'failed to write shell output artifact');
+    }
+
+    const budgets = this.allocateInlineOutputBudgets(stdoutOutput.length, stderrOutput.length);
+    const previewStdout = this.buildOutputPreview(stdoutOutput, budgets.stdout);
+    const previewStderr = this.buildOutputPreview(stderrOutput, budgets.stderr);
+
+    return {
+      stdout: previewStdout,
+      stderr: previewStderr,
+      stdoutLines: this.countOutputLines(stdoutOutput),
+      stderrLines: this.countOutputLines(stderrOutput),
+      stdoutBytes,
+      stderrBytes,
+      truncated: true,
+      truncatedReason: 'output_exceeded_inline_limit',
+      inlineOutputChars: previewStdout.length + previewStderr.length,
+      originalOutputChars,
+      outputArtifact,
+      artifactError,
+    };
+  }
+
+  private writeShellOutputArtifact(
+    stdout: string,
+    stderr: string,
+    context: ToolExecutionContext,
+    metadata: {
+      command: string;
+      description?: string;
+      status: ShellRunStatus;
+      cwdBefore: string;
+      cwdAfter: string;
+      durationMs: number;
+    },
+  ): string {
+    const root = path.resolve(context.workspaceRoot || context.workingDirectory || process.cwd());
+    const dir = path.join(root, SHELL_ARTIFACT_DIR);
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, `shell-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}.log`);
+    const content = [
+      'Shell output artifact',
+      `contract_version: ${SHELL_CONTRACT_VERSION}`,
+      `status: ${metadata.status}`,
+      `command: ${this.formatHeaderValue(metadata.command)}`,
+      metadata.description ? `description: ${this.formatHeaderValue(metadata.description)}` : '',
+      `duration_ms: ${metadata.durationMs}`,
+      `cwd_before: ${metadata.cwdBefore}`,
+      `cwd_after: ${metadata.cwdAfter}`,
+      `stdout_bytes: ${Buffer.byteLength(stdout, 'utf-8')}`,
+      `stderr_bytes: ${Buffer.byteLength(stderr, 'utf-8')}`,
+      '',
+      'stdout:',
+      stdout || '(empty)',
+      '',
+      'stderr:',
+      stderr || '(empty)',
+    ].filter(line => line !== '').join('\n');
+    fs.writeFileSync(filePath, content, 'utf8');
+    return filePath;
+  }
+
+  private allocateInlineOutputBudgets(stdoutChars: number, stderrChars: number): { stdout: number; stderr: number } {
+    const total = stdoutChars + stderrChars;
+    if (total <= SHELL_INLINE_OUTPUT_MAX_CHARS) {
+      return { stdout: stdoutChars, stderr: stderrChars };
+    }
+    if (stdoutChars <= 0) return { stdout: 0, stderr: SHELL_INLINE_OUTPUT_MAX_CHARS };
+    if (stderrChars <= 0) return { stdout: SHELL_INLINE_OUTPUT_MAX_CHARS, stderr: 0 };
+
+    const minimumStreamBudget = Math.min(4000, Math.floor(SHELL_INLINE_OUTPUT_MAX_CHARS / 4));
+    let stdoutBudget = Math.floor(SHELL_INLINE_OUTPUT_MAX_CHARS * (stdoutChars / total));
+    stdoutBudget = Math.max(minimumStreamBudget, Math.min(stdoutChars, stdoutBudget));
+    let stderrBudget = SHELL_INLINE_OUTPUT_MAX_CHARS - stdoutBudget;
+
+    if (stderrBudget < minimumStreamBudget) {
+      stderrBudget = Math.min(stderrChars, minimumStreamBudget);
+      stdoutBudget = SHELL_INLINE_OUTPUT_MAX_CHARS - stderrBudget;
+    }
+    if (stdoutBudget > stdoutChars) {
+      stderrBudget = Math.min(stderrChars, stderrBudget + (stdoutBudget - stdoutChars));
+      stdoutBudget = stdoutChars;
+    }
+    if (stderrBudget > stderrChars) {
+      stdoutBudget = Math.min(stdoutChars, stdoutBudget + (stderrBudget - stderrChars));
+      stderrBudget = stderrChars;
+    }
+
+    return { stdout: Math.max(0, stdoutBudget), stderr: Math.max(0, stderrBudget) };
+  }
+
+  private buildOutputPreview(output: string, maxChars: number): string {
+    if (!output || maxChars <= 0) return '';
+    if (output.length <= maxChars) return output;
+
+    const lines = output.split(/\r?\n/);
+    const omittedLines = Math.max(0, lines.length - 120);
+    const lineMarker = `\n\n... [${omittedLines} lines omitted, ${lines.length} lines total, ${output.length} chars total; full output saved as artifact] ...\n\n`;
+    const linePreview = [
+      ...lines.slice(0, 80),
+      lineMarker.trim(),
+      ...lines.slice(-40),
+    ].join('\n');
+    if (linePreview.length <= maxChars) return linePreview;
+
+    const charMarker = `\n\n... [truncated, ${lines.length} lines total, ${output.length} chars total; full output saved as artifact] ...\n\n`;
+    const available = maxChars - charMarker.length;
+    if (available <= 0) return charMarker.trim().slice(0, maxChars);
+
+    const headChars = Math.max(0, Math.floor(available * 0.7));
+    const tailChars = Math.max(0, available - headChars);
+    return `${output.slice(0, headChars)}${charMarker}${tailChars > 0 ? output.slice(-tailChars) : ''}`;
+  }
+
   private formatShellRunResult(result: ShellRunResult): string {
-    const stdoutLines = this.countOutputLines(result.stdout);
-    const stderrLines = this.countOutputLines(result.stderr);
-    const stdoutBytes = Buffer.byteLength(result.stdout, 'utf-8');
-    const stderrBytes = Buffer.byteLength(result.stderr, 'utf-8');
+    const stdoutLines = result.stdoutLines ?? this.countOutputLines(result.stdout);
+    const stderrLines = result.stderrLines ?? this.countOutputLines(result.stderr);
+    const stdoutBytes = result.stdoutBytes ?? Buffer.byteLength(result.stdout, 'utf-8');
+    const stderrBytes = result.stderrBytes ?? Buffer.byteLength(result.stderr, 'utf-8');
     const header = [
       'Command completed',
+      `contract_version: ${SHELL_CONTRACT_VERSION}`,
       `status: ${result.status}`,
       `command: ${this.formatHeaderValue(result.command)}`,
       result.description ? `description: ${this.formatHeaderValue(result.description)}` : '',
       result.exitCode !== undefined ? `exit_code: ${result.exitCode}` : 'exit_code:',
       result.signal ? `signal: ${result.signal}` : 'signal:',
       `timed_out: ${result.timedOut}`,
+      `timeout_ms: ${result.timeoutMs}`,
       `duration_ms: ${result.durationMs}`,
       `cwd_before: ${result.cwdBefore}`,
       `cwd_after: ${result.cwdAfter}`,
@@ -854,6 +1099,11 @@ export class ShellTool implements Tool {
       `stdout_bytes: ${stdoutBytes}`,
       `stderr_bytes: ${stderrBytes}`,
       `truncated: ${result.truncated}`,
+      result.truncatedReason ? `truncated_reason: ${result.truncatedReason}` : '',
+      result.inlineOutputChars !== undefined ? `inline_output_chars: ${result.inlineOutputChars}` : '',
+      result.originalOutputChars !== undefined ? `original_output_chars: ${result.originalOutputChars}` : '',
+      result.outputArtifact ? `output_artifact: ${result.outputArtifact}` : '',
+      result.artifactError ? `artifact_error: ${this.formatHeaderValue(result.artifactError)}` : '',
       result.errorMessage ? `error_message: ${this.formatHeaderValue(result.errorMessage)}` : '',
     ].filter(line => line !== '');
 

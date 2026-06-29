@@ -99,6 +99,56 @@ describe('ShellTool current directory probe', () => {
     assert.ok(content.includes('stderr-visible'));
   });
 
+  test('large successful output is truncated and persisted as an artifact', async () => {
+    const tool = new ShellTool();
+    const command = process.platform === 'win32'
+      ? `& ${quotePowerShellString(process.execPath)} -e "process.stdout.write('out-' + 'x'.repeat(35000) + '-end')"`
+      : `${quotePosixString(process.execPath)} -e "process.stdout.write('out-' + 'x'.repeat(35000) + '-end')"`;
+    const result = await tool.execute({ command }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    const content = result.content as string;
+    assert.match(content, /^status: succeeded$/m);
+    assert.match(content, /^truncated: true$/m);
+    assert.match(content, /^truncated_reason: output_exceeded_inline_limit$/m);
+    assert.match(content, /^original_output_chars: 35008$/m);
+    assert.ok(content.length < 34000);
+
+    const artifactPath = readContractField(content, 'output_artifact');
+    assert.ok(artifactPath, 'expected output_artifact field');
+    assert.ok(fs.existsSync(artifactPath));
+    const artifact = fs.readFileSync(artifactPath, 'utf8');
+    assert.ok(artifact.includes('out-' + 'x'.repeat(35000) + '-end'));
+  });
+
+  test('large failed stderr output is truncated and persisted as an artifact', async () => {
+    const tool = new ShellTool();
+    const command = process.platform === 'win32'
+      ? `& ${quotePowerShellString(process.execPath)} -e "process.stderr.write('err-' + 'y'.repeat(35000) + '-end'); process.exit(7)"`
+      : `${quotePosixString(process.execPath)} -e "process.stderr.write('err-' + 'y'.repeat(35000) + '-end'); process.exit(7)"`;
+    const result = await tool.execute({ command }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'TOOL_EXECUTION_ERROR');
+    assert.match(result.message, /^status: failed$/m);
+    assert.match(result.message, /^exit_code: 7$/m);
+    assert.match(result.message, /^truncated: true$/m);
+    assert.match(result.message, /^original_output_chars: 35008$/m);
+    assert.ok(result.message.length < 34000);
+
+    const artifactPath = readContractField(result.message, 'output_artifact');
+    assert.ok(artifactPath, 'expected output_artifact field');
+    assert.ok(fs.existsSync(artifactPath));
+    const artifact = fs.readFileSync(artifactPath, 'utf8');
+    assert.ok(artifact.includes('err-' + 'y'.repeat(35000) + '-end'));
+  });
+
   test('POSIX execution uses bash when bash is available', {
     skip: process.platform === 'win32' || !fs.existsSync('/bin/bash'),
   }, async () => {
@@ -341,4 +391,10 @@ function quotePosixString(value: string): string {
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function readContractField(content: string, field: string): string | undefined {
+  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = content.match(new RegExp(`^${escaped}:\\s*(.+)$`, 'm'));
+  return match?.[1]?.trim();
 }

@@ -55,7 +55,10 @@ function makeStructuredShellOutput(command: string, lineCount = 100): string {
     'stderr_lines: 1',
     'stdout_bytes: 1000',
     'stderr_bytes: 25',
-    'truncated: false',
+    'truncated: true',
+    'truncated_reason: output_exceeded_inline_limit',
+    'original_output_chars: 123456',
+    'output_artifact: C:\\work\\repo\\tool-results\\shell-structured.log',
     'error_message: Command failed with exit code 1',
     '',
     'stdout:',
@@ -170,10 +173,14 @@ test('folds structured execute_shell output and reads contract metadata', () => 
 
   assert.ok(String(folded.content).startsWith(TRUNCATED_EXECUTE_SHELL_PREFIX));
   assert.match(String(folded.content), /command: npm test -- structured/);
-  assert.match(String(folded.content), /cwd: C:\\work\\repo/);
   assert.match(String(folded.content), /status: failed/);
-  assert.match(String(folded.content), /elapsed: 321ms/);
-  assert.match(String(folded.content), /output_lines: 101/);
+  assert.match(String(folded.content), /omitted: \d+ lines, \d+ chars/);
+  assert.doesNotMatch(String(folded.content), /^cwd:/m);
+  assert.doesNotMatch(String(folded.content), /^elapsed:/m);
+  assert.doesNotMatch(String(folded.content), /^output_lines:/m);
+  assert.doesNotMatch(String(folded.content), /^truncated:/m);
+  assert.doesNotMatch(String(folded.content), /^original_output_chars:/m);
+  assert.doesNotMatch(String(folded.content), /^output_artifact:/m);
   assert.match(String(folded.content), /ERROR failed at src\/structured\.ts:45/);
 });
 
