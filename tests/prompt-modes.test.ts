@@ -69,6 +69,7 @@ describe('prompt modes', () => {
     assert.ok(modeList);
     assert.match(String(modeList.content), /Available prompt modes/);
     assert.match(String(modeList.content), /coding-agent: 工程协作模式/);
+    assert.match(String(modeList.content), /plain-chat: 普通对话模式/);
     assert.match(String(modeList.content), /call the prompt_mode tool/);
     assert.doesNotMatch(String(modeList.content), /Matched aliases:/);
     assert.doesNotMatch(String(modeList.content), /Candidate mode:/);
@@ -78,6 +79,22 @@ describe('prompt modes', () => {
       typeof message.content === 'string'
       && message.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
     )), false);
+  });
+
+  test('loads built-in plain-chat mode definition and prompt', () => {
+    clearPromptModeRegistryCache();
+
+    const definitions = listPromptModeDefinitions();
+    const plainChat = definitions.find(mode => mode.id === 'plain-chat');
+
+    assert.ok(plainChat);
+    assert.equal(plainChat.title, '普通对话模式');
+    assert.match(plainChat.description, /角色扮演/);
+
+    const prompt = loadPromptModePrompt(path.join(process.cwd(), 'prompts'), 'plain-chat') || '';
+    assert.match(prompt, /\[mode:plain-chat\]/);
+    assert.match(prompt, /普通对话模式/);
+    assert.match(prompt, /不反复强调“我是 AI”/);
   });
 
   test('injects previously active prompt mode as facts, not an automatic decision', async () => {

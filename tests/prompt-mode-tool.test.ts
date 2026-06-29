@@ -17,6 +17,20 @@ test('prompt_mode tool loads full prompt mode instructions on demand', async () 
   assert.match(String(result.content), /工程协作模式/);
 });
 
+test('prompt_mode tool loads plain-chat instructions on demand', async () => {
+  const tool = new PromptModeTool();
+
+  const result = await tool.execute({ mode: 'plain-chat' }, {
+    workingDirectory: process.cwd(),
+    conversationHistory: [],
+  });
+
+  assert.equal(result.ok, true);
+  assert.match(String(result.content), /\[mode:plain-chat\]/);
+  assert.match(String(result.content), /普通对话模式/);
+  assert.match(String(result.content), /角色扮演/);
+});
+
 test('prompt_mode is available as a default runtime tool', () => {
   const manager = new ToolManager(process.cwd());
 
