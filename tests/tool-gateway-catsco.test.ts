@@ -796,6 +796,72 @@ describe('CatsCo ToolGateway', () => {
     assert.equal(fs.readFileSync(path.join(root, 'local.txt'), 'utf8'), 'before');
   });
 
+  test('routes mobile channel send_file to the backend-selected remote device', async () => {
+    const root = makeWorkspace();
+    const missingLocalPath = path.join(root, 'missing-on-cloud.jpg');
+    const channelScope = scope({
+      actorUserId: 'usr100',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+      topicId: 'p2p_100_43',
+      deviceOwnerUserId: 'usr100',
+      deviceOwnerSource: 'channel_identity_link',
+      channelSource: 'weixin',
+    });
+    const calls: any[] = [];
+    const result = await new SendFileTool().execute({ file_path: missingLocalPath, file_name: 'preview.jpg' }, context(root, {
+      executionScope: channelScope,
+      localDeviceGrant: localDevice({
+        ownerUserId: 'usr9',
+        bodyId: 'cloud-body',
+        installationId: 'cloud-install',
+        deviceId: 'cloud-install',
+        capabilities: ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file', 'execute_shell'],
+      }),
+      deviceGrants: [deviceGrant(['send_file'], {
+        grantId: 'speaker-send-grant',
+        identitySource: 'channel_identity_link',
+        deviceId: 'speaker-device',
+        deviceBodyId: 'speaker-body',
+        deviceInstallationId: 'speaker-install',
+        ownerUserId: 'usr100',
+        actorUserId: 'usr100',
+        sessionKey: channelScope.sessionKey,
+        topicId: channelScope.topicId,
+        topicType: channelScope.topicType,
+        agentId: channelScope.agentId,
+        agentBodyId: channelScope.agentBodyId,
+      })],
+      deviceSelection: deviceSelection({
+        sessionKey: channelScope.sessionKey,
+        topicId: channelScope.topicId,
+        topicType: channelScope.topicType,
+        actorUserId: channelScope.actorUserId,
+        agentId: channelScope.agentId,
+        selectedDeviceId: 'speaker-device',
+        selectedDeviceBodyId: 'speaker-body',
+        selectedDeviceInstallationId: 'speaker-install',
+        selectedDeviceDisplayName: 'Speaker Laptop',
+        selectedDeviceOperations: ['send_file'],
+      }),
+      deviceRpc: {
+        executeTool: async request => {
+          calls.push(request);
+          return { ok: true, content: 'remote send ok' };
+        },
+      },
+    }));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok ? result.content : '', 'remote send ok');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].toolName, 'send_file');
+    assert.equal(calls[0].operation, 'send_file');
+    assert.deepEqual(calls[0].args, { file_path: missingLocalPath, file_name: 'preview.jpg' });
+    assert.equal(calls[0].grant.ownerUserId, 'usr100');
+    assert.equal(calls[0].grant.deviceId, 'speaker-device');
+    assert.equal(fs.existsSync(missingLocalPath), false);
+  });
+
   test('allows execute_shell for local owner self on the current device', async () => {
     const root = makeWorkspace();
     const result = await new ShellTool().execute({ command: 'echo catsco-shell-ok' }, context(root, {

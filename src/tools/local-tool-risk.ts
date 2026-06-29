@@ -1,6 +1,10 @@
 import type { DeviceGrantOperation } from '../types/session-identity';
 import type { ToolExecutionContext, ToolExecutionResult, ToolRiskLevel } from '../types/tool';
 import { isCatsCoAgentLocalBodyContext, isCatsCoLocalOwnerSelfContext, resolveToolGatewayAccess } from './tool-gateway';
+import {
+  getDeviceRpcRemoteConfirmationReason,
+  getDeviceRpcToolRegistrationByToolName,
+} from './device-rpc-registry';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -36,14 +40,6 @@ const CONFIRM_TOOLS = new Set([
   'spawn_subagent',
   'share_skillhub_skill',
 ]);
-
-const REMOTE_DEVICE_FILE_TOOL_OPERATIONS: Record<string, DeviceGrantOperation> = {
-  read_file: 'read_file',
-  glob: 'glob',
-  grep: 'grep',
-  write_file: 'write_file',
-  edit_file: 'edit_file',
-};
 
 export async function confirmLocalToolExecution(
   toolName: string,
@@ -103,12 +99,17 @@ export function classifyLocalToolRisk(
     return { requiresConfirmation: false, risk: 'low', reason: 'CatsCo 虚拟员工本机运行体允许直接执行本机工具。' };
   }
 
-  const remoteFileOperation = REMOTE_DEVICE_FILE_TOOL_OPERATIONS[toolName];
-  if (remoteFileOperation && isServerAuthorizedRemoteDeviceOperation(toolName, remoteFileOperation, context)) {
+  const remoteDeviceTool = getDeviceRpcToolRegistrationByToolName(toolName);
+  if (
+    remoteDeviceTool
+    && remoteDeviceTool.category !== 'shell'
+    && remoteDeviceTool.skipLocalConfirmationWhenRemoteAuthorized
+    && isServerAuthorizedRemoteDeviceOperation(toolName, remoteDeviceTool.operation, context)
+  ) {
     return {
       requiresConfirmation: false,
-      risk: 'low',
-      reason: '服务端已选定远程设备并下发短期 device grant，普通文件工具不需要本机二次确认。',
+      risk: remoteDeviceTool.remoteConfirmationRisk,
+      reason: getDeviceRpcRemoteConfirmationReason(remoteDeviceTool),
     };
   }
 
@@ -125,11 +126,16 @@ export function classifyLocalToolRisk(
 
   if (toolName === 'execute_shell') {
     const command = stringField(args, 'command') || stringField(args, 'cmd') || stringField(args, 'script');
-    if (isServerAuthorizedRemoteDeviceOperation(toolName, 'execute_shell', context)) {
+    const shellTool = getDeviceRpcToolRegistrationByToolName(toolName);
+    if (
+      shellTool
+      && shellTool.skipLocalConfirmationWhenRemoteAuthorized
+      && isServerAuthorizedRemoteDeviceOperation(toolName, shellTool.operation, context)
+    ) {
       return {
         requiresConfirmation: false,
-        risk: 'high',
-        reason: '服务端已选定远程设备并下发 execute_shell device grant，命令由 Device RPC 直接转发。',
+        risk: shellTool.remoteConfirmationRisk,
+        reason: getDeviceRpcRemoteConfirmationReason(shellTool),
       };
     }
     if (looksDangerousShell(command)) {

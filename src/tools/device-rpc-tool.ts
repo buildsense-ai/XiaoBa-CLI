@@ -1,38 +1,40 @@
 import type { DeviceGrantOperation } from '../types/session-identity';
 import type { ToolErrorCode, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import type { ToolGatewayDecision } from './tool-gateway';
+import {
+  type DeviceRpcToolName,
+  formatDeviceRpcAllowedToolList,
+  getDeviceRpcToolRegistration,
+  isDeviceRpcReadonlyTool,
+  isDeviceRpcTool,
+} from './device-rpc-registry';
 
 const REMOTE_TOOL_TIMEOUT_MS = 60_000;
 export const MAX_DEVICE_RPC_TOOL_CONTENT_CHARS = 48_000;
 
 export function isRemoteReadonlyTool(toolName: string, operation: DeviceGrantOperation): boolean {
-  return (toolName === 'read_file' && operation === 'read_file')
-    || (toolName === 'resolve_common_directory' && operation === 'resolve_common_directory')
-    || (toolName === 'glob' && operation === 'glob')
-    || (toolName === 'grep' && operation === 'grep');
+  return isDeviceRpcReadonlyTool(toolName, operation);
 }
 
 export function isRemoteDeviceRpcTool(toolName: string, operation: DeviceGrantOperation): boolean {
-  return isRemoteReadonlyTool(toolName, operation)
-    || (toolName === 'write_file' && operation === 'write_file')
-    || (toolName === 'edit_file' && operation === 'edit_file')
-    || (toolName === 'execute_shell' && operation === 'execute_shell');
+  return isDeviceRpcTool(toolName, operation);
 }
 
 export async function executeRemoteDeviceRpcTool(
   context: ToolExecutionContext,
   gateway: ToolGatewayDecision,
-  toolName: 'read_file' | 'resolve_common_directory' | 'glob' | 'grep' | 'write_file' | 'edit_file' | 'execute_shell',
+  toolName: DeviceRpcToolName,
   operation: DeviceGrantOperation,
   args: Record<string, unknown>,
 ): Promise<ToolExecutionResult | undefined> {
   if (!gateway.ok || gateway.mode !== 'remote') return undefined;
 
-  if (!isRemoteDeviceRpcTool(toolName, operation)) {
+  const registration = getDeviceRpcToolRegistration(toolName, operation);
+  if (!registration) {
     return {
       ok: false,
       errorCode: 'PERMISSION_DENIED',
-      message: `远程设备 RPC 当前只允许 read_file / resolve_common_directory / glob / grep / write_file / edit_file / execute_shell，已阻止 ${toolName}。普通文件任务请优先用 resolve_common_directory / glob / write_file，只有服务端授权后才使用 execute_shell。`,
+      message: `远程设备 RPC 当前只允许 ${formatDeviceRpcAllowedToolList()}，已阻止 ${toolName}。普通文件任务请优先用 resolve_common_directory / glob / write_file，只有服务端授权后才使用 execute_shell。`,
     };
   }
 

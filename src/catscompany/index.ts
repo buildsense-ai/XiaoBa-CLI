@@ -21,18 +21,17 @@ import { hostname } from 'os';
 import { ConfigManager } from '../utils/config';
 import { isPrimaryModelVisionCapable } from '../utils/model-capabilities';
 import { createCatsCoSessionRoute } from '../core/session-router';
-import { ReadTool } from '../tools/read-tool';
-import { GlobTool } from '../tools/glob-tool';
-import { GrepTool } from '../tools/grep-tool';
-import { WriteTool } from '../tools/write-tool';
-import { EditTool } from '../tools/edit-tool';
-import { ShellTool } from '../tools/bash-tool';
-import { resolveCommonDirectoryToolArgs } from '../tools/common-directory-tool';
 import {
-  isRemoteDeviceRpcTool,
   normalizeDeviceRpcToolResultForTransport,
   normalizeDeviceRpcToolResultPayload,
 } from '../tools/device-rpc-tool';
+import {
+  CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES as DEVICE_RPC_RUNTIME_CAPABILITIES,
+  formatDeviceRpcAllowedToolList,
+  getDeviceRpcToolRegistration,
+  normalizeDeviceRpcOperation,
+} from '../tools/device-rpc-registry';
+import { executeRegisteredDeviceRpcTool } from './device-rpc-tool-executor';
 import {
   annotateToolExecutionResultWithTargetContext,
   stripToolTargetContextForDisplay,
@@ -80,16 +79,7 @@ const HIDDEN_CATS_TOOL_PROGRESS = new Set([
   'spawn_subagent',
 ]);
 const SUBAGENT_TERMINAL_EVENTS = new Set(['agent_completed', 'agent_failed', 'agent_stopped']);
-export const CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES: DeviceGrantOperation[] = [
-  'read_file',
-  'resolve_common_directory',
-  'glob',
-  'grep',
-  'write_file',
-  'edit_file',
-  'send_file',
-  'execute_shell',
-];
+export { CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES } from '../tools/device-rpc-registry';
 
 function shouldHideCatsToolProgress(toolName: string): boolean {
   return HIDDEN_CATS_TOOL_PROGRESS.has(toolName);
@@ -166,7 +156,7 @@ export class CatsCompanyBot {
           installation_id: config.installationId || config.bodyId,
           owner_user_id: config.ownerUserId,
           status: 'online' as const,
-          capabilities: [...CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES],
+          capabilities: [...DEVICE_RPC_RUNTIME_CAPABILITIES],
         }
       : undefined;
 
@@ -185,7 +175,7 @@ export class CatsCompanyBot {
       installationId: config.installationId,
       deviceId: config.installationId || config.bodyId,
       ownerUserId: config.ownerUserId,
-      capabilities: [...CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES],
+      capabilities: [...DEVICE_RPC_RUNTIME_CAPABILITIES],
     });
     this.deviceRegistration = deviceRegistration;
 
@@ -355,9 +345,10 @@ export class CatsCompanyBot {
   }
 
   private async executeLocalDeviceRpcTool(request: CatsDeviceRpcMessage): Promise<ToolExecutionResult> {
-    const operation = this.normalizeDeviceRpcOperation(request.operation);
+    const operation = normalizeDeviceRpcOperation(request.operation);
     const toolName = String(request.tool_name || operation || '').trim();
-    if (!operation || !isRemoteDeviceRpcTool(toolName, operation)) {
+    const registration = operation ? getDeviceRpcToolRegistration(toolName, operation) : undefined;
+    if (!registration) {
       return {
         ok: false,
         errorCode: 'PERMISSION_DENIED',
@@ -365,43 +356,16 @@ export class CatsCompanyBot {
       };
     }
 
-    const context = this.buildDeviceRpcToolContext(request, operation);
+    const context = this.buildDeviceRpcToolContext(request, registration.operation, {
+      requiresChannel: registration.requiresChannel === true,
+    });
     const args = this.extractDeviceRpcToolArgs(request.payload);
-    let result: ToolExecutionResult;
-    switch (operation) {
-      case 'read_file':
-        result = await new ReadTool().execute(args, context);
-        break;
-      case 'resolve_common_directory':
-        result = resolveCommonDirectoryToolArgs(args);
-        break;
-      case 'glob':
-        result = await new GlobTool().execute(args, context);
-        break;
-      case 'grep':
-        result = await new GrepTool().execute(args, context);
-        break;
-      case 'write_file':
-        result = await new WriteTool().execute(args, context);
-        break;
-      case 'edit_file':
-        result = await new EditTool().execute(args, context);
-        break;
-      case 'execute_shell':
-        result = await new ShellTool().execute(args, context);
-        break;
-      default:
-        result = {
-          ok: false,
-          errorCode: 'PERMISSION_DENIED',
-          message: `Device RPC 不允许执行 ${operation}。`,
-        };
-    }
+    const result = await executeRegisteredDeviceRpcTool(registration, args, context);
 
     return annotateToolExecutionResultWithTargetContext(result, context, {
       toolName,
-      operation,
-      cwd: this.resolveDeviceRpcTargetContextCwd(operation, args, context.workingDirectory),
+      operation: registration.operation,
+      cwd: this.resolveDeviceRpcTargetContextCwd(registration.operation, args, context.workingDirectory),
     });
   }
 
@@ -418,6 +382,7 @@ export class CatsCompanyBot {
   private buildDeviceRpcToolContext(
     request: CatsDeviceRpcMessage,
     operation: DeviceGrantOperation,
+    options: { requiresChannel?: boolean } = {},
   ): ToolExecutionContext {
     const topicType = request.topic_type === 'group' || request.topic_type === 'p2p'
       ? request.topic_type
@@ -475,7 +440,7 @@ export class CatsCompanyBot {
       createdAt: now,
     };
     const workingDirectory = this.runtimeProfile?.workingDirectory || this.runtime?.profile?.workingDirectory || process.cwd();
-    return {
+    const context: ToolExecutionContext = {
       workingDirectory,
       workspaceRoot: workingDirectory,
       conversationHistory: [],
@@ -487,16 +452,23 @@ export class CatsCompanyBot {
       deviceGrants: [grant],
       deviceSelection,
     };
+    if (options.requiresChannel) {
+      context.channel = this.buildChannel(executionScope.topicId, {
+        sessionKey: executionScope.sessionKey,
+        senderId: executionScope.actorUserId,
+      });
+    }
+    return context;
   }
 
   private validateDeviceRpcToolRequest(request: CatsDeviceRpcMessage): { code: string; message: string } | undefined {
     const targetError = this.validateDeviceRpcTarget(request);
     if (targetError) return targetError;
 
-    const operation = this.normalizeDeviceRpcOperation(request.operation);
+    const operation = normalizeDeviceRpcOperation(request.operation);
     const toolName = String(request.tool_name || operation || '').trim();
-    if (!operation || !isRemoteDeviceRpcTool(toolName, operation)) {
-      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, resolve_common_directory, glob, grep, write_file, edit_file, and execute_shell.' };
+    if (!operation || !getDeviceRpcToolRegistration(toolName, operation)) {
+      return { code: 'unsupported_operation', message: `Device RPC only allows ${formatDeviceRpcAllowedToolList()}.` };
     }
 
     const requiredFields: Array<[keyof CatsDeviceRpcMessage, string]> = [
@@ -520,22 +492,6 @@ export class CatsCompanyBot {
     }
     if (typeof request.expires_at === 'number' && Date.now() > request.expires_at) {
       return { code: 'request_expired', message: 'Device RPC request has expired.' };
-    }
-    return undefined;
-  }
-
-  private normalizeDeviceRpcOperation(value: unknown): DeviceGrantOperation | undefined {
-    const operation = String(value || '').trim();
-    if (
-      operation === 'read_file'
-      || operation === 'resolve_common_directory'
-      || operation === 'glob'
-      || operation === 'grep'
-      || operation === 'write_file'
-      || operation === 'edit_file'
-      || operation === 'execute_shell'
-    ) {
-      return operation;
     }
     return undefined;
   }

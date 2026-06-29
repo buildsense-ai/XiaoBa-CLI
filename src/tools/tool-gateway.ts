@@ -1,6 +1,7 @@
 import type { DeviceGrantOperation, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant } from '../types/session-identity';
 import type { ToolErrorCode, ToolExecutionContext } from '../types/tool';
 import { isDelegatedDeviceGrant, resolveDeviceGrant } from '../core/device-grants';
+import { formatDeviceRpcAllowedOperationList, isDeviceRpcOperation } from './device-rpc-registry';
 
 export type ToolGatewayDecision =
   | {
@@ -32,16 +33,6 @@ export interface CatsCoVisiblePathOptions {
   fallback?: string;
   preserveRelative?: boolean;
 }
-
-const REMOTE_DEVICE_RPC_OPERATIONS = new Set<DeviceGrantOperation>([
-  'read_file',
-  'resolve_common_directory',
-  'glob',
-  'grep',
-  'write_file',
-  'edit_file',
-  'execute_shell',
-]);
 
 export function isCatsCoToolGatewayContext(context: ToolExecutionContext): boolean {
   return context.surface === 'catscompany' || context.executionScope?.source === 'catscompany';
@@ -172,10 +163,10 @@ export function resolveToolGatewayAccess(
 
   const grant = decision.grant;
   if (selectedTarget.mode === 'remote') {
-    if (!REMOTE_DEVICE_RPC_OPERATIONS.has(options.operation)) {
+    if (!isDeviceRpcOperation(options.operation)) {
       return denied([
         `后端选定的用户设备不是当前运行体，但 ${options.operation} 还没有开放远程执行。`,
-        '当前只开放 read_file / resolve_common_directory / glob / grep / write_file / edit_file 远程工具。',
+        `当前只开放 ${formatDeviceRpcAllowedOperationList()} 远程工具。`,
         '如需查看目录文件请使用 glob；如需创建或覆盖文本文件请使用 write_file。',
       ], options.targetLabel);
     }
