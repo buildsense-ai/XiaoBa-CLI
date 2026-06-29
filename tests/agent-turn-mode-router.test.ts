@@ -98,6 +98,7 @@ describe('AgentTurnController prompt mode router integration', () => {
     messages = result.messages;
     assert.equal(aiService.requests.length, 1);
     assert.equal(hasPrefix(aiService.requests[0], TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX), false);
+    assert.equal(hasPrefix(aiService.requests[0], TRANSIENT_PROMPT_MODES_LIST_PREFIX), false);
 
     assert.equal(queues[0].push(buildPromptModeRouterObservation({
       action: 'activate',
@@ -115,7 +116,43 @@ describe('AgentTurnController prompt mode router integration', () => {
 
     assert.equal(aiService.requests.length, 2);
     assert.equal(hasPrefix(aiService.requests[1], TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX), true);
+    assert.equal(hasPrefix(aiService.requests[1], TRANSIENT_PROMPT_MODES_LIST_PREFIX), false);
+    assert.match(allContent(aiService.requests[1]), /\[mode:coding-agent\]/);
     assert.equal(hasPrefix(result.messages, TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX), false);
+
+    messages = result.messages;
+    result = await controller.run({
+      input: 'continue again',
+      messages,
+      runtimeFeedback: [],
+      shouldContinue: () => true,
+    });
+
+    assert.equal(aiService.requests.length, 3);
+    assert.equal(hasPrefix(aiService.requests[2], TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX), true);
+    assert.equal(hasPrefix(aiService.requests[2], TRANSIENT_PROMPT_MODES_LIST_PREFIX), false);
+    assert.match(allContent(aiService.requests[2]), /Full mode instructions were already supplied on turn 2/);
+    assert.doesNotMatch(allContent(aiService.requests[2]), /\[mode:coding-agent\]/);
+
+    messages = result.messages;
+    result = await controller.run({
+      input: 'continue once more',
+      messages,
+      runtimeFeedback: [],
+      shouldContinue: () => true,
+    });
+    assert.equal(aiService.requests.length, 4);
+    assert.doesNotMatch(allContent(aiService.requests[3]), /\[mode:coding-agent\]/);
+
+    messages = result.messages;
+    result = await controller.run({
+      input: 'still same task',
+      messages,
+      runtimeFeedback: [],
+      shouldContinue: () => true,
+    });
+    assert.equal(aiService.requests.length, 5);
+    assert.match(allContent(aiService.requests[4]), /\[mode:coding-agent\]/);
   });
 
   test('fixed mode suppresses router list and async active mode', async () => {
@@ -187,4 +224,12 @@ function hasPrefix(messages: Message[], prefix: string): boolean {
     typeof message.content === 'string'
     && message.content.startsWith(prefix)
   ));
+}
+
+function allContent(messages: Message[]): string {
+  return messages.map(message => (
+    typeof message.content === 'string'
+      ? message.content
+      : JSON.stringify(message.content)
+  )).join('\n');
 }

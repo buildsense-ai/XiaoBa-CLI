@@ -72,7 +72,9 @@ export class TurnContextBuilder {
     this.injectRuntimeFeedback(contextMessages, params.runtimeFeedback);
     this.injectPlanStatus(contextMessages, params.planRuntime);
     this.injectSubAgentStatus(contextMessages, params.sessionKey);
-    this.injectPromptModesList(contextMessages);
+    this.injectPromptModesList(contextMessages, {
+      promptModeRoutingEnabled: params.promptModeRoutingEnabled,
+    });
     const transientPolicy = resolveTurnContextTransientPolicy(contextMessages);
     if (transientPolicy.injectSkillsList) {
       await params.skillRuntime.reloadSkills();
@@ -179,12 +181,17 @@ export class TurnContextBuilder {
     this.insertBeforeLastUser(messages, statusMessage);
   }
 
-  private injectPromptModesList(messages: Message[]): void {
+  private injectPromptModesList(
+    messages: Message[],
+    options: { promptModeRoutingEnabled?: boolean } = {},
+  ): void {
     const fixedMode = findFixedPromptModeState(messages);
     if (fixedMode) {
       this.insertBeforeLastUser(messages, buildFixedPromptModeMessage(fixedMode));
       return;
     }
+
+    if (options.promptModeRoutingEnabled) return;
 
     const modeList = buildPromptModesListMessage({
       previousMode: findPreviousPromptModeState(messages),

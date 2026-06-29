@@ -29,8 +29,8 @@ describe('PromptModeRuntime', () => {
     fs.rmSync(promptsDir, { recursive: true, force: true });
   });
 
-  test('activates a prompt mode and builds a transient system message', () => {
-    const runtime = new PromptModeRuntime({ promptsDir });
+  test('activates a prompt mode and refreshes full instructions on an interval', () => {
+    const runtime = new PromptModeRuntime({ promptsDir, fullPromptRefreshInterval: 3 });
     runtime.beginTurn(1);
     runtime.applyRouterPayload({
       action: 'activate',
@@ -44,6 +44,51 @@ describe('PromptModeRuntime', () => {
     assert.match(String(message?.content), new RegExp(`^\\${TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX}`));
     assert.match(String(message?.content), /\[mode:coding-agent\]/);
     assert.match(String(message?.content), /Use engineering workflow/);
+
+    const sameTurnMessage = runtime.buildTransientMessage({ turnNumber: 1 });
+    assert.match(String(sameTurnMessage?.content), /Use engineering workflow/);
+
+    const nextTurnMessage = runtime.buildTransientMessage({ turnNumber: 2 });
+    assert.match(String(nextTurnMessage?.content), /Active prompt mode: coding-agent/);
+    assert.match(String(nextTurnMessage?.content), /Full mode instructions were already supplied on turn 1/);
+    assert.doesNotMatch(String(nextTurnMessage?.content), /Use engineering workflow/);
+
+    const thirdTurnMessage = runtime.buildTransientMessage({ turnNumber: 3 });
+    assert.match(String(thirdTurnMessage?.content), /Turns until next full refresh: 1/);
+    assert.doesNotMatch(String(thirdTurnMessage?.content), /Use engineering workflow/);
+
+    const refreshedMessage = runtime.buildTransientMessage({ turnNumber: 4 });
+    assert.match(String(refreshedMessage?.content), /Use engineering workflow/);
+  });
+
+  test('injects full instructions again when the active mode changes', () => {
+    fs.writeFileSync(path.join(promptsDir, 'modes', 'office.md'), [
+      '---',
+      'id: office',
+      'name: Office Mode',
+      'description: Work on office docs',
+      '---',
+      '',
+      'Use office workflow.',
+    ].join('\n'), 'utf-8');
+
+    const runtime = new PromptModeRuntime({ promptsDir });
+    runtime.applyRouterPayload({
+      action: 'activate',
+      mode: 'coding-agent',
+      confidence: 0.91,
+      reason: 'coding task',
+    }, 1);
+    assert.match(String(runtime.buildTransientMessage({ turnNumber: 1 })?.content), /Use engineering workflow/);
+    assert.doesNotMatch(String(runtime.buildTransientMessage({ turnNumber: 2 })?.content), /Use engineering workflow/);
+
+    runtime.applyRouterPayload({
+      action: 'activate',
+      mode: 'office',
+      confidence: 0.91,
+      reason: 'document task',
+    }, 2);
+    assert.match(String(runtime.buildTransientMessage({ turnNumber: 2 })?.content), /Use office workflow/);
   });
 
   test('ignores low-confidence activation and unknown modes', () => {
@@ -67,8 +112,8 @@ describe('PromptModeRuntime', () => {
     assert.equal(runtime.buildTransientMessage({ turnNumber: 1 }), null);
   });
 
-  test('clears active mode and expires after the TTL', () => {
-    const runtime = new PromptModeRuntime({ promptsDir, maxActiveTurns: 2 });
+  test('keeps active mode until router clears it', () => {
+    const runtime = new PromptModeRuntime({ promptsDir, fullPromptRefreshInterval: 2 });
     runtime.beginTurn(1);
     runtime.applyRouterPayload({
       action: 'activate',
@@ -76,21 +121,14 @@ describe('PromptModeRuntime', () => {
       confidence: 0.95,
       reason: 'coding task',
     }, 1);
-    assert.ok(runtime.buildTransientMessage({ turnNumber: 3 }));
-    assert.equal(runtime.buildTransientMessage({ turnNumber: 4 }), null);
+    assert.ok(runtime.buildTransientMessage({ turnNumber: 1 }));
+    assert.ok(runtime.buildTransientMessage({ turnNumber: 10 }));
 
-    runtime.applyRouterPayload({
-      action: 'activate',
-      mode: 'coding-agent',
-      confidence: 0.95,
-      reason: 'coding task again',
-    }, 4);
-    assert.ok(runtime.buildTransientMessage({ turnNumber: 4 }));
     runtime.applyRouterPayload({
       action: 'clear',
       confidence: 0.95,
       reason: 'topic changed',
-    }, 4);
-    assert.equal(runtime.buildTransientMessage({ turnNumber: 4 }), null);
+    }, 10);
+    assert.equal(runtime.buildTransientMessage({ turnNumber: 10 }), null);
   });
 });
