@@ -40,6 +40,7 @@ const REMOTE_DEVICE_RPC_OPERATIONS = new Set<DeviceGrantOperation>([
   'grep',
   'write_file',
   'edit_file',
+  'send_file',
   'execute_shell',
 ]);
 
@@ -175,7 +176,7 @@ export function resolveToolGatewayAccess(
     if (!REMOTE_DEVICE_RPC_OPERATIONS.has(options.operation)) {
       return denied([
         `后端选定的用户设备不是当前运行体，但 ${options.operation} 还没有开放远程执行。`,
-        '当前只开放 read_file / resolve_common_directory / glob / grep / write_file / edit_file 远程工具。',
+        '当前只开放 read_file / resolve_common_directory / glob / grep / write_file / edit_file / send_file 远程工具。',
         '如需查看目录文件请使用 glob；如需创建或覆盖文本文件请使用 write_file。',
       ], options.targetLabel);
     }

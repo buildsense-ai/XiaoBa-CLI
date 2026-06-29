@@ -69,7 +69,7 @@ function serverGrant(overrides: Partial<ScopedDeviceGrant> = {}): ScopedDeviceGr
     actorUserId: 'usr7',
     agentId: 'usr43',
     agentBodyId: 'body-agent',
-    operations: ['read_file', 'resolve_common_directory', 'glob', 'grep', 'execute_shell'],
+    operations: ['read_file', 'resolve_common_directory', 'glob', 'grep', 'send_file', 'execute_shell'],
     createdAt: Date.now(),
     expiresAt: Date.now() + 60_000,
     ...overrides,
@@ -138,6 +138,12 @@ describe('CatsCompany Device RPC file tools', () => {
       args: { command: 'echo remote-shell' },
       grant,
     });
+    const send = await transport.executeTool({
+      toolName: 'send_file',
+      operation: 'send_file',
+      args: { file_path: 'C:\\Users\\Alice\\Desktop\\graded.png', file_name: 'graded.png' },
+      grant,
+    });
 
     assert.equal(read.ok, true);
     assert.equal(glob.ok, true);
@@ -149,12 +155,14 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.equal(resolveDir.ok ? resolveDir.content : '', 'remote resolve_common_directory');
     assert.equal(grep.ok ? grep.content : '', 'remote grep');
     assert.equal(shell.ok ? shell.content : '', 'remote execute_shell');
+    assert.equal(send.ok ? send.content : '', 'remote send_file');
     assert.deepEqual(captured.map(item => [item.request.tool_name, item.request.operation]), [
       ['read_file', 'read_file'],
       ['glob', 'glob'],
       ['resolve_common_directory', 'resolve_common_directory'],
       ['grep', 'grep'],
       ['execute_shell', 'execute_shell'],
+      ['send_file', 'send_file'],
     ]);
 
     const first = captured[0].request;
@@ -258,6 +266,35 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.equal(captured.result.error, undefined);
     assert.equal(captured.result.result.ok, true);
     assert.equal(fs.readFileSync(filePath, 'utf8'), 'after');
+  });
+
+  test('executes send_file on the target local device and sends to the current topic', async () => {
+    const captured: { result?: any } = {};
+    const bot = botWithDevice(captured);
+    const sent: Array<{ topic: string; filePath: string; fileName: string }> = [];
+    bot.sender = {
+      sendFile: async (topic: string, filePath: string, fileName: string) => {
+        sent.push({ topic, filePath, fileName });
+      },
+    };
+    const tmpRoot = path.join(process.cwd(), 'tmp');
+    fs.mkdirSync(tmpRoot, { recursive: true });
+    const dir = fs.mkdtempSync(path.join(tmpRoot, 'device-rpc-send-file-'));
+    const filePath = path.join(dir, 'graded.png');
+    fs.writeFileSync(filePath, 'fake image');
+
+    await bot.handleDeviceRpcRequest(request({
+      request_id: 'rpc-send-file-1',
+      operation: 'send_file',
+      tool_name: 'send_file',
+      payload: { args: { file_path: filePath, file_name: 'graded.png' } },
+    }));
+
+    assert.ok(captured.result);
+    assert.equal(captured.result.error, undefined);
+    assert.equal(captured.result.result.ok, true);
+    assert.match(String(captured.result.result.content), /File sent to current chat/);
+    assert.deepEqual(sent, [{ topic: 'p2p_7_43', filePath, fileName: 'graded.png' }]);
   });
 
   test('rejects Device RPC requests missing owner identity', async () => {

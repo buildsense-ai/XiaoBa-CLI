@@ -829,7 +829,7 @@ describe('ToolManager', () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-catsco-remote-file-'));
     const manager = new ToolManager(workspace, {}, { enabledToolNames: [] });
     const executed: string[] = [];
-    const operations: ScopedDeviceGrant['operations'] = ['read_file', 'glob', 'grep', 'write_file', 'edit_file'];
+    const operations: ScopedDeviceGrant['operations'] = ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file'];
     for (const operation of operations) {
       manager.registerTool(fakeTool(operation, async () => {
         executed.push(operation);
@@ -923,6 +923,14 @@ describe('ToolManager', () => {
         arguments: JSON.stringify({ file_path: 'C:\\Users\\Alice\\Desktop\\note.txt', old_string: 'hello', new_string: 'hi' }),
       },
     }, [], remoteContext);
+    const send = await manager.executeTool({
+      id: 'call-remote-send-file',
+      type: 'function',
+      function: {
+        name: 'send_file',
+        arguments: JSON.stringify({ file_path: 'C:\\Users\\Alice\\Desktop\\graded.png', file_name: 'graded.png' }),
+      },
+    }, [], remoteContext);
 
     assert.equal(read.ok, true);
     assert.equal(read.content, 'remote read_file requested');
@@ -934,6 +942,8 @@ describe('ToolManager', () => {
     assert.equal(grep.content, 'remote grep requested');
     assert.equal(edit.ok, true);
     assert.equal(edit.content, 'remote edit_file requested');
+    assert.equal(send.ok, true);
+    assert.equal(send.content, 'remote send_file requested');
     assert.deepEqual(executed, operations);
     assert.equal(confirmations, 0);
   });

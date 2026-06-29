@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
 import { resolveToolPath } from '../utils/tool-path-resolver';
+import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
 import { resolveLocalFileAccess, resolveLocalFileReference } from './local-file-gateway';
 import { resolveOutboundTarget } from './outbound-gateway';
 import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
@@ -115,6 +116,8 @@ export class SendFileTool implements Tool {
           message: gateway.message,
         };
       }
+      const remoteResult = await executeRemoteDeviceRpcTool(context, gateway, 'send_file', 'send_file', args);
+      if (remoteResult) return remoteResult;
       displayPath = formatCatsCoVisiblePath(context, displayPath, { preserveRelative: true });
       visibleInputPath = displayPath;
     }

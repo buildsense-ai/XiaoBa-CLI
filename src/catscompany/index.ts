@@ -26,6 +26,7 @@ import { GlobTool } from '../tools/glob-tool';
 import { GrepTool } from '../tools/grep-tool';
 import { WriteTool } from '../tools/write-tool';
 import { EditTool } from '../tools/edit-tool';
+import { SendFileTool } from '../tools/send-file-tool';
 import { ShellTool } from '../tools/bash-tool';
 import { resolveCommonDirectoryToolArgs } from '../tools/common-directory-tool';
 import {
@@ -387,6 +388,9 @@ export class CatsCompanyBot {
       case 'edit_file':
         result = await new EditTool().execute(args, context);
         break;
+      case 'send_file':
+        result = await new SendFileTool().execute(args, context);
+        break;
       case 'execute_shell':
         result = await new ShellTool().execute(args, context);
         break;
@@ -486,6 +490,10 @@ export class CatsCompanyBot {
       localDeviceGrant: this.localDeviceGrant,
       deviceGrants: [grant],
       deviceSelection,
+      channel: this.buildChannel(executionScope.topicId, {
+        sessionKey: executionScope.sessionKey,
+        senderId: executionScope.actorUserId,
+      }),
     };
   }
 
@@ -496,7 +504,7 @@ export class CatsCompanyBot {
     const operation = this.normalizeDeviceRpcOperation(request.operation);
     const toolName = String(request.tool_name || operation || '').trim();
     if (!operation || !isRemoteDeviceRpcTool(toolName, operation)) {
-      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, resolve_common_directory, glob, grep, write_file, edit_file, and execute_shell.' };
+      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, resolve_common_directory, glob, grep, write_file, edit_file, send_file, and execute_shell.' };
     }
 
     const requiredFields: Array<[keyof CatsDeviceRpcMessage, string]> = [
@@ -533,6 +541,7 @@ export class CatsCompanyBot {
       || operation === 'grep'
       || operation === 'write_file'
       || operation === 'edit_file'
+      || operation === 'send_file'
       || operation === 'execute_shell'
     ) {
       return operation;

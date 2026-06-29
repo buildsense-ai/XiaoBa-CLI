@@ -44,6 +44,7 @@ const REMOTE_DEVICE_FILE_TOOL_OPERATIONS: Record<string, DeviceGrantOperation> =
   grep: 'grep',
   write_file: 'write_file',
   edit_file: 'edit_file',
+  send_file: 'send_file',
 };
 
 export async function confirmLocalToolExecution(

@@ -765,6 +765,83 @@ describe('CatsCo ToolGateway', () => {
     assert.equal(fs.existsSync(marker), false);
   });
 
+  test('routes mobile channel send_file to the speaker owner device instead of the cloud body', async () => {
+    const root = makeWorkspace();
+    const channelScope = scope({
+      actorUserId: 'usr100',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_100_43:agent:usr43',
+      topicId: 'p2p_100_43',
+      deviceOwnerUserId: 'usr100',
+      deviceOwnerSource: 'channel_identity_link',
+      channelSource: 'weixin',
+    });
+    const calls: any[] = [];
+    let localSendCalled = false;
+    const sendContext = context(root, {
+      executionScope: channelScope,
+      localDeviceGrant: localDevice({
+        ownerUserId: 'usr9',
+        bodyId: 'cloud-body',
+        installationId: 'cloud-install',
+        deviceId: 'cloud-install',
+        capabilities: ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file', 'execute_shell'],
+      }),
+      deviceGrants: [deviceGrant(['send_file'], {
+        grantId: 'speaker-send-file-grant',
+        identitySource: 'channel_identity_link',
+        deviceId: 'speaker-device',
+        deviceBodyId: 'speaker-body',
+        deviceInstallationId: 'speaker-install',
+        ownerUserId: 'usr100',
+        actorUserId: 'usr100',
+        sessionKey: channelScope.sessionKey,
+        topicId: channelScope.topicId,
+        topicType: channelScope.topicType,
+        agentId: channelScope.agentId,
+        agentBodyId: channelScope.agentBodyId,
+      })],
+      deviceSelection: deviceSelection({
+        sessionKey: channelScope.sessionKey,
+        topicId: channelScope.topicId,
+        topicType: channelScope.topicType,
+        actorUserId: channelScope.actorUserId,
+        agentId: channelScope.agentId,
+        selectedDeviceId: 'speaker-device',
+        selectedDeviceBodyId: 'speaker-body',
+        selectedDeviceInstallationId: 'speaker-install',
+        selectedDeviceDisplayName: 'Speaker Laptop',
+        selectedDeviceOperations: ['send_file'],
+      }),
+      deviceRpc: {
+        executeTool: async request => {
+          calls.push(request);
+          return { ok: true, content: 'remote send ok' };
+        },
+      },
+    });
+    sendContext.channel = {
+      chatId: channelScope.topicId,
+      reply: async () => {},
+      sendFile: async () => {
+        localSendCalled = true;
+      },
+    };
+
+    const result = await new SendFileTool().execute({
+      file_path: 'C:\\Users\\Alice\\Desktop\\graded.png',
+      file_name: 'graded.png',
+    }, sendContext);
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok ? result.content : '', 'remote send ok');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].toolName, 'send_file');
+    assert.equal(calls[0].operation, 'send_file');
+    assert.equal(calls[0].grant.ownerUserId, 'usr100');
+    assert.equal(calls[0].grant.deviceId, 'speaker-device');
+    assert.equal(localSendCalled, false);
+  });
+
   test('routes remote edit_file through Device RPC without local fallback', async () => {
     const root = makeWorkspace();
     fs.writeFileSync(path.join(root, 'local.txt'), 'before');
