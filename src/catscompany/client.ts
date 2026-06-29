@@ -368,6 +368,9 @@ export class CatsClient extends EventEmitter {
 
   private handleThinToolRpcMessage(raw: any): void {
     const message = normalizeThinToolRpcMessage(raw);
+    if (message) {
+      Logger.info(`[CatsCompany][thin_tool_rpc] received ${message.type}: request=${message.request_id}, tool=${message.tool_name || ''}, targetOwner=${message.target_owner_user_id || ''}, targetDevice=${message.target_device_id || ''}, device=${message.device_id || ''}, hasError=${Boolean(message.error)}, hasResult=${Boolean(message.result)}`);
+    }
     if (!message) {
       Logger.warning('[CatsCompany] 收到无效 thin_tool_rpc 消息，已忽略');
       return;
@@ -544,10 +547,12 @@ export class CatsClient extends EventEmitter {
       type: 'request',
       request_id: requestID,
     };
+    Logger.info(`[CatsCompany][thin_tool_rpc] send request: request=${requestID}, msg=${msgId}, tool=${thinToolRpc.tool_name || ''}, targetOwner=${thinToolRpc.target_owner_user_id || ''}, targetDevice=${thinToolRpc.target_device_id || ''}, timeoutMs=${timeoutMs}`);
 
     const resultPromise = new Promise<CatsThinToolRpcMessage>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingThinToolRpc.delete(requestID);
+        Logger.warning(`[CatsCompany][thin_tool_rpc] request timeout waiting result: request=${requestID}, tool=${thinToolRpc.tool_name || ''}, targetOwner=${thinToolRpc.target_owner_user_id || ''}, targetDevice=${thinToolRpc.target_device_id || ''}, timeoutMs=${timeoutMs}`);
         reject(new CatsSendError(
           'timeout',
           `Thin tool RPC ${requestID} did not receive a tool result in ${timeoutMs}ms`
@@ -566,6 +571,7 @@ export class CatsClient extends EventEmitter {
       await this.sendEnvelopeWithAck(msgId, { thin_tool_rpc: thinToolRpc }, {
         timeoutMessage: 'WebSocket sent Thin Tool RPC request but CatsCompany did not acknowledge it within 10 seconds.',
       });
+      Logger.info(`[CatsCompany][thin_tool_rpc] request acked by server: request=${requestID}, msg=${msgId}`);
     } catch (err) {
       const pending = this.pendingThinToolRpc.get(requestID);
       if (pending) {
@@ -592,6 +598,7 @@ export class CatsClient extends EventEmitter {
       throw new Error('Thin tool RPC result request_id is required');
     }
     const msgId = `${++this.msgId}`;
+    Logger.info(`[CatsCompany][thin_tool_rpc] send result: request=${requestID}, msg=${msgId}, tool=${result.tool_name || ''}, targetOwner=${result.target_owner_user_id || ''}, targetDevice=${result.target_device_id || ''}, device=${result.device_id || ''}, hasError=${Boolean(result.error)}, hasResult=${Boolean(result.result)}`);
     await this.sendEnvelopeWithAck(msgId, {
       thin_tool_rpc: {
         ...result,
@@ -602,6 +609,7 @@ export class CatsClient extends EventEmitter {
     }, {
       timeoutMessage: 'WebSocket sent Thin Tool RPC result but CatsCompany did not acknowledge it within 10 seconds.',
     });
+    Logger.info(`[CatsCompany][thin_tool_rpc] result acked by server: request=${requestID}, msg=${msgId}`);
   }
 
   private sendEnvelopeWithAck(

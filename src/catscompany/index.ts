@@ -112,6 +112,24 @@ function currentRuntimeOS(): 'windows' | 'macos' | 'linux' | 'unknown' {
   }
 }
 
+function summarizeThinToolRpcArgs(args: any): string {
+  const input = args && typeof args === 'object' ? args : {};
+  const summary: Record<string, unknown> = {};
+  for (const key of ['target', 'directory', 'path', 'file_path', 'cwd', 'command', 'pattern', 'limit']) {
+    if (Object.prototype.hasOwnProperty.call(input, key)) {
+      const value = input[key];
+      summary[key] = typeof value === 'string' && value.length > 180
+        ? `${value.slice(0, 177)}...`
+        : value;
+    }
+  }
+  try {
+    return JSON.stringify(summary);
+  } catch {
+    return String(summary);
+  }
+}
+
 function speakerNameFromMetadata(msg: Pick<ParsedCatsMessage, 'metadata' | 'senderId'>): string {
   const metadata = asRecord(msg.metadata);
   const identity = asRecord(metadata?.catsco_identity);
@@ -432,14 +450,17 @@ export class CatsCompanyBot {
             retryable: false,
           };
         }
+        const requestID = `thin_tool_rpc_${randomUUID()}`;
+        Logger.info(`[CatsCompany][thin_tool_rpc] executeTool request: request=${requestID}, tool=${toolName}, targetOwner=${targetOwnerUserId}, targetDevice=${targetDeviceId}, args=${summarizeThinToolRpcArgs(args)}`);
         const response = await this.bot.sendThinToolRpcRequest({
-          request_id: `thin_tool_rpc_${randomUUID()}`,
+          request_id: requestID,
           target_owner_user_id: targetOwnerUserId,
           target_device_id: targetDeviceId,
           tool_name: toolName,
           payload: { args },
           expires_at: Date.now() + timeoutMs,
         }, timeoutMs);
+        Logger.info(`[CatsCompany][thin_tool_rpc] executeTool response: request=${requestID}, tool=${toolName}, hasError=${Boolean(response.error)}, hasResult=${Boolean(response.result)}`);
 
         if (response.error) {
           return {
@@ -461,10 +482,12 @@ export class CatsCompanyBot {
   private async handleThinToolRpcRequest(request: CatsThinToolRpcMessage): Promise<void> {
     const requestID = request.request_id;
     if (!requestID) return;
+    Logger.info(`[CatsCompany][thin_tool_rpc] target received request: request=${requestID}, tool=${request.tool_name || ''}, targetOwner=${request.target_owner_user_id || ''}, targetDevice=${request.target_device_id || ''}, device=${request.device_id || ''}`);
 
     let result: ToolExecutionResult;
     try {
       result = await this.executeLocalThinToolRpcTool(request);
+      Logger.info(`[CatsCompany][thin_tool_rpc] target executed request: request=${requestID}, tool=${request.tool_name || ''}, ok=${result.ok}, errorCode=${result.ok ? '' : (result.errorCode || '')}`);
     } catch (error: any) {
       result = {
         ok: false,
@@ -472,6 +495,7 @@ export class CatsCompanyBot {
         message: `Thin tool RPC execution error: ${error?.message || error || 'unknown error'}`,
         retryable: false,
       };
+      Logger.warning(`[CatsCompany][thin_tool_rpc] target execution threw: request=${requestID}, tool=${request.tool_name || ''}, error=${error?.message || error}`);
     }
 
     const error = result.ok
@@ -491,6 +515,7 @@ export class CatsCompanyBot {
         result: error ? undefined : normalizeDeviceRpcToolResultForTransport(result),
         error,
       });
+      Logger.info(`[CatsCompany][thin_tool_rpc] target sent result: request=${requestID}, tool=${request.tool_name || ''}, ok=${result.ok}`);
     } catch (err: any) {
       Logger.warning(`[CatsCompany] Thin Tool RPC result send failed: request=${requestID}, error=${err?.message || err}`);
     }
@@ -1271,6 +1296,12 @@ export class CatsCompanyBot {
       botUid: this.botUid,
     });
     const executionScope = createExecutionScope(envelope);
+    const targetRoutes = extractCatsCoRuntimeContext(ctx.metadata);
+    if (targetRoutes?.routes?.length) {
+      Logger.info(`[CatsCompany][xiaoba_runtime] parsed target routes: topic=${ctx.topic}, sender=${ctx.senderId}, routes=${targetRoutes.routes.map(route => `${route.userName || route.userId || '?'}:${route.ownerUserId}/${route.deviceId}/${route.os}`).join(', ')}`);
+    } else {
+      Logger.info(`[CatsCompany][xiaoba_runtime] no target routes parsed: topic=${ctx.topic}, sender=${ctx.senderId}`);
+    }
 
     return {
       topic: ctx.topic,
@@ -1284,7 +1315,7 @@ export class CatsCompanyBot {
       executionScope,
       deviceGrants: extractCatsCoDeviceGrants(ctx.metadata, executionScope),
       deviceSelection: extractCatsCoDeviceSelection(ctx.metadata, executionScope),
-      targetRoutes: extractCatsCoRuntimeContext(ctx.metadata),
+      targetRoutes,
       file: files[0],
       files,
     };
