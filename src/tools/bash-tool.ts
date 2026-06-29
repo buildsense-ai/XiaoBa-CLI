@@ -1,5 +1,4 @@
-import { exec, spawn, type ChildProcess } from 'child_process';
-import { promisify } from 'util';
+import { spawn, type ChildProcess } from 'child_process';
 import { TextDecoder } from 'util';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -10,7 +9,6 @@ import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { isToolAllowed, isBashCommandAllowed } from '../utils/safety';
 import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
-const execAsync = promisify(exec);
 const CWD_MARKER_PREFIX = '__XIAOBA_CWD_MARKER__';
 
 interface WrappedCommand {
@@ -335,16 +333,7 @@ export class ShellTool implements Tool {
     signal?: AbortSignal,
   ): Promise<ShellOutput> {
     if (process.platform !== 'win32') {
-      return execAsync(wrapped.command, {
-        cwd,
-        env,
-        encoding: 'utf-8',
-        shell: this.resolvePosixShell(env),
-        timeout,
-        signal,
-        killSignal: 'SIGTERM',
-        maxBuffer: 10 * 1024 * 1024,
-      });
+      return this.executePosixShellScript(wrapped, cwd, env, timeout, signal);
     }
 
     try {
@@ -353,6 +342,138 @@ export class ShellTool implements Tool {
       if (!this.isPowerShellLaunchFailure(error)) throw error;
       return this.executeWindowsCmdFallback(wrapped, cwd, env, timeout, signal);
     }
+  }
+
+  private executePosixShellScript(
+    wrapped: WrappedCommand,
+    cwd: string,
+    env: NodeJS.ProcessEnv,
+    timeout: number,
+    signal?: AbortSignal,
+  ): Promise<ShellOutput> {
+    if (signal?.aborted) {
+      return Promise.reject(this.createShellAbortError());
+    }
+
+    const shell = this.resolvePosixShell(env) || '/bin/sh';
+    return new Promise((resolve, reject) => {
+      const child = spawn(shell, ['-c', wrapped.command], {
+        cwd,
+        env,
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      let settled = false;
+      let pendingFailure: any;
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      const maxBuffer = 10 * 1024 * 1024;
+      let timer: NodeJS.Timeout | undefined;
+      let closeWaitTimer: NodeJS.Timeout | undefined;
+      let abortHandler: (() => void) | undefined;
+
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        if (closeWaitTimer) clearTimeout(closeWaitTimer);
+        if (signal && abortHandler) {
+          signal.removeEventListener('abort', abortHandler);
+        }
+      };
+
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        fn();
+      };
+
+      const rejectWithOutput = (error: any) => {
+        settle(() => {
+          error.stdout = Buffer.concat(stdoutChunks).toString('utf8');
+          error.stderr = Buffer.concat(stderrChunks).toString('utf8');
+          reject(error);
+        });
+      };
+
+      const failAfterClose = (error: any) => {
+        if (settled) return;
+        if (pendingFailure) return;
+        pendingFailure = error;
+        this.terminateProcessTree(child);
+        closeWaitTimer = setTimeout(() => {
+          rejectWithOutput(error);
+        }, 5000);
+        closeWaitTimer.unref?.();
+      };
+
+      timer = setTimeout(() => {
+        failAfterClose(this.createShellTimeoutError(timeout));
+      }, timeout);
+      timer.unref?.();
+
+      abortHandler = () => {
+        failAfterClose(this.createShellAbortError());
+      };
+      if (signal?.aborted) {
+        abortHandler();
+      } else {
+        signal?.addEventListener('abort', abortHandler, { once: true });
+      }
+
+      child.stdout?.on('data', (chunk: Buffer) => {
+        const buffer = Buffer.from(chunk);
+        stdoutBytes += buffer.length;
+        if (stdoutBytes > maxBuffer) {
+          failAfterClose(new Error(`stdout maxBuffer exceeded (${maxBuffer} bytes)`));
+          return;
+        }
+        stdoutChunks.push(buffer);
+      });
+
+      child.stderr?.on('data', (chunk: Buffer) => {
+        const buffer = Buffer.from(chunk);
+        stderrBytes += buffer.length;
+        if (stderrBytes > maxBuffer) {
+          failAfterClose(new Error(`stderr maxBuffer exceeded (${maxBuffer} bytes)`));
+          return;
+        }
+        stderrChunks.push(buffer);
+      });
+
+      child.on('error', (error: Error) => {
+        rejectWithOutput(error);
+      });
+
+      child.on('close', (code: number | null, closeSignal: NodeJS.Signals | null) => {
+        if (settled) return;
+        const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+        const stderr = Buffer.concat(stderrChunks).toString('utf8');
+        settle(() => {
+          if (pendingFailure) {
+            if (closeSignal) pendingFailure.signal = closeSignal;
+            pendingFailure.stdout = stdout;
+            pendingFailure.stderr = stderr;
+            reject(pendingFailure);
+            return;
+          }
+          if (code === 0) {
+            resolve({ stdout, stderr });
+            return;
+          }
+          const error: any = new Error(code !== null
+            ? `Command failed with exit code ${code}`
+            : `Command terminated by signal ${closeSignal || 'unknown'}`);
+          if (code !== null) error.code = code;
+          if (closeSignal) error.signal = closeSignal;
+          error.stdout = stdout;
+          error.stderr = stderr;
+          reject(error);
+        });
+      });
+    });
   }
 
   private executeWindowsPowerShellScript(
@@ -367,7 +488,7 @@ export class ShellTool implements Tool {
       return Promise.reject(new Error('Internal error: missing Windows PowerShell script'));
     }
     if (signal?.aborted) {
-      return Promise.reject(new Error('Command aborted by user'));
+      return Promise.reject(this.createShellAbortError());
     }
 
     return new Promise((resolve, reject) => {
@@ -438,7 +559,11 @@ export class ShellTool implements Tool {
       abortHandler = () => {
         failAfterClose(this.createShellAbortError());
       };
-      signal?.addEventListener('abort', abortHandler, { once: true });
+      if (signal?.aborted) {
+        abortHandler();
+      } else {
+        signal?.addEventListener('abort', abortHandler, { once: true });
+      }
 
       child.stdout?.on('data', (chunk: Buffer) => {
         const buffer = Buffer.from(chunk);
@@ -470,6 +595,7 @@ export class ShellTool implements Tool {
         const stderr = this.decodeWindowsOutput(Buffer.concat(stderrChunks));
         settle(() => {
           if (pendingFailure) {
+            if (closeSignal) pendingFailure.signal = closeSignal;
             pendingFailure.stdout = stdout;
             pendingFailure.stderr = stderr;
             reject(pendingFailure);
@@ -565,7 +691,11 @@ export class ShellTool implements Tool {
       abortHandler = () => {
         failAfterClose(this.createShellAbortError());
       };
-      signal?.addEventListener('abort', abortHandler, { once: true });
+      if (signal?.aborted) {
+        abortHandler();
+      } else {
+        signal?.addEventListener('abort', abortHandler, { once: true });
+      }
 
       child.stdout?.on('data', (chunk: Buffer) => {
         const buffer = Buffer.from(chunk);
@@ -597,6 +727,7 @@ export class ShellTool implements Tool {
         const stderr = this.stripCmdSessionNoise(this.decodeWindowsOutput(Buffer.concat(stderrChunks)));
         settle(() => {
           if (pendingFailure) {
+            if (closeSignal) pendingFailure.signal = closeSignal;
             pendingFailure.stdout = stdout;
             pendingFailure.stderr = stderr;
             reject(pendingFailure);
@@ -654,7 +785,11 @@ export class ShellTool implements Tool {
       return;
     }
 
-    try { child.kill('SIGTERM'); } catch {}
+    try {
+      process.kill(-child.pid, 'SIGTERM');
+    } catch {
+      try { child.kill('SIGTERM'); } catch {}
+    }
   }
 
   private isPowerShellLaunchFailure(error: any): boolean {

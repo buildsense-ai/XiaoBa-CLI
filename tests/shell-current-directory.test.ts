@@ -172,6 +172,24 @@ describe('ShellTool current directory probe', () => {
     }
   });
 
+  test('POSIX timeout terminates child process group', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const tool = new ShellTool();
+    const markerPath = path.join(testRoot, 'late-output.txt');
+    const script = `sleep 1; printf late > ${quotePosixString(markerPath)}`;
+    const result = await tool.execute({ command: `sh -c ${quotePosixString(script)}`, timeout: 50 }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'EXECUTION_TIMEOUT');
+    assert.match(result.message, /^status: timed_out$/m);
+    await delay(1200);
+    assert.strictEqual(fs.existsSync(markerPath), false);
+  });
+
   test('successful cd is persisted even when a later command fails', async () => {
     const tool = new ShellTool();
     const failingCommand = process.platform === 'win32'
@@ -319,4 +337,8 @@ function quotePowerShellString(value: string): string {
 
 function quotePosixString(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
