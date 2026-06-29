@@ -88,9 +88,13 @@ export interface ToolResult {
  * 工具内部执行结果的统一类型
  * 工具 execute() 必须返回此类型，由 BaseTool 统一处理失败兜底
  */
-export type ToolExecutionResult =
+export type ToolExecutionResult = (
   | { ok: true; content: string | import('./index').ContentBlock[] }
-  | { ok: false; errorCode: string; message: string; retryable?: boolean };
+  | { ok: false; errorCode: string; message: string; retryable?: boolean }
+) & {
+  /** Route-aware context for the model-visible tool result. */
+  targetContext?: string;
+};
 
 export interface DeviceRpcToolRequest {
   toolName: string;
@@ -106,6 +110,36 @@ export interface DeviceRpcToolRequest {
 
 export interface DeviceRpcTransport {
   executeTool(request: DeviceRpcToolRequest): Promise<ToolExecutionResult>;
+}
+
+export interface ThinToolRpcRequest {
+  targetOwnerUserId: string;
+  targetDeviceId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  timeoutMs?: number;
+}
+
+export interface ThinToolRpcTransport {
+  executeTool(request: ThinToolRpcRequest): Promise<ToolExecutionResult>;
+}
+
+export type TargetRouteOS = 'windows' | 'macos' | 'linux' | 'unknown';
+
+export interface TargetRoute {
+  userId: string;
+  userName?: string;
+  ownerUserId: string;
+  deviceId: string;
+  label: string;
+  os: TargetRouteOS;
+  status: 'ready';
+}
+
+export interface TargetRoutes {
+  routes: TargetRoute[];
+  byName: Map<string, TargetRoute[]>;
+  byUserId: Map<string, TargetRoute[]>;
 }
 
 export type ToolErrorCode =
@@ -200,6 +234,8 @@ export interface ToolExecutionContext {
   deviceSelection?: ScopedDeviceSelection;
   /** CatsCo 远程设备 RPC 通道。工具只能通过窄接口请求后端选定设备执行。 */
   deviceRpc?: DeviceRpcTransport;
+  thinToolRpc?: ThinToolRpcTransport;
+  targetRoutes?: TargetRoutes;
   executionContext?: {
     schema: 'xiaoba.execution_context.v1';
     conversation: {

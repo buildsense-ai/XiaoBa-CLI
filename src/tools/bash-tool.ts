@@ -72,18 +72,6 @@ export class ShellTool implements Tool {
       return { ok: false, errorCode: 'EXECUTION_TIMEOUT', message: `命令已取消，未开始执行:\n$ ${command}` };
     }
 
-    const toolPermission = isToolAllowed(this.definition.name);
-    if (!toolPermission.allowed) {
-      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `Execution blocked: ${toolPermission.reason}` };
-    }
-
-    const commandPermission = isBashCommandAllowed(command, {
-      confirmed: confirm_dangerous === true,
-    });
-    if (!commandPermission.allowed) {
-      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `Execution blocked: ${commandPermission.reason}` };
-    }
-
     const route = resolveExecutionRoute(context, {
       toolName: this.definition.name,
       operation: 'execute_shell',
@@ -94,6 +82,21 @@ export class ShellTool implements Tool {
     }
     const remoteResult = await executeRouteIfRemote(context, route, 'execute_shell', 'execute_shell', args);
     if (remoteResult) return remoteResult;
+
+    const toolPermission = isToolAllowed(this.definition.name);
+    if (!toolPermission.allowed) {
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `Execution blocked: ${toolPermission.reason}` };
+    }
+
+    const commandPermission = isBashCommandAllowed(command, {
+      confirmed: context.deviceRpcReceiver || confirm_dangerous === true,
+      env: context.deviceRpcReceiver
+        ? { ...process.env, GAUZ_BASH_ALLOW_DANGEROUS: 'true' }
+        : process.env,
+    });
+    if (!commandPermission.allowed) {
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `Execution blocked: ${commandPermission.reason}` };
+    }
 
     if (description) {
       Logger.info(`Executing command: ${description}`);

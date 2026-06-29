@@ -7,6 +7,7 @@ import type {
   ScopedLocalFileGrant,
   SessionRoute,
 } from '../types/session-identity';
+import type { TargetRoutes } from '../types/tool';
 import {
   SessionSkillRuntime,
   TRANSIENT_SKILLS_LIST_PREFIX,
@@ -49,6 +50,7 @@ export interface BuildTurnContextParams {
   localDeviceGrant?: ScopedLocalDeviceGrant;
   deviceGrants?: ScopedDeviceGrant[];
   deviceSelection?: ScopedDeviceSelection;
+  targetRoutes?: TargetRoutes;
   localFileGrants?: ScopedLocalFileGrant[];
   durableMessages: Message[];
   runtimeFeedback: string[];
@@ -138,6 +140,7 @@ export class TurnContextBuilder {
       localDeviceGrant: params.localDeviceGrant,
       deviceGrants: params.deviceGrants,
       deviceSelection: params.deviceSelection,
+      targetRoutes: params.targetRoutes,
       localFileGrants: params.localFileGrants,
     });
     if (!message) return;

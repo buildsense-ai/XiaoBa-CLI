@@ -1,4 +1,5 @@
 import type { ExecutionScope, MessageEnvelope, ScopedDeviceGrant, ScopedDeviceSelection } from '../types/session-identity';
+import type { TargetRoutes } from '../types/tool';
 
 /**
  * CatsCo agent 连接配置
@@ -50,6 +51,7 @@ export interface ParsedCatsMessage {
   deviceGrants?: ScopedDeviceGrant[];
   /** 服务端为当前 turn 选择的用户设备，或要求先选择设备 */
   deviceSelection?: ScopedDeviceSelection;
+  targetRoutes?: TargetRoutes;
   /** 文件附件信息（rich content file/image 时存在） */
   file?: CatsFileInfo;
   /** 同一条消息里的全部附件（content_blocks 或 rich content） */

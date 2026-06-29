@@ -15,6 +15,8 @@ import { SkillManager } from '../skills/skill-manager';
 import {
   ChannelCallbacks,
   DeviceRpcTransport,
+  TargetRoutes,
+  ThinToolRpcTransport,
   ToolExecutionConfirmationRequest,
   ToolExecutionConfirmationResult,
 } from '../types/tool';
@@ -102,6 +104,8 @@ export interface HandleMessageOptions {
   deviceSelection?: ScopedDeviceSelection;
   /** 当前 turn 可用的远程设备 RPC 通道。 */
   deviceRpc?: DeviceRpcTransport;
+  thinToolRpc?: ThinToolRpcTransport;
+  targetRoutes?: TargetRoutes;
   /** 当前 turn 已授权的本地文件资源。 */
   localFileGrants?: ScopedLocalFileGrant[];
   /** 当前 turn 专属、给 agent 可见的运行时反馈 */
@@ -423,6 +427,8 @@ export class AgentSession {
       let deviceGrants: ScopedDeviceGrant[] | undefined;
       let deviceSelection: ScopedDeviceSelection | undefined;
       let deviceRpc: DeviceRpcTransport | undefined;
+      let thinToolRpc: ThinToolRpcTransport | undefined;
+      let targetRoutes: TargetRoutes | undefined;
       let localFileGrants: ScopedLocalFileGrant[] | undefined;
       let runtimeFeedbackInputs: RuntimeFeedbackInput[] = [];
       let pendingUserInputProvider: PendingUserInputProvider | undefined;
@@ -436,6 +442,8 @@ export class AgentSession {
           || 'deviceGrants' in callbacksOrOptions
           || 'deviceSelection' in callbacksOrOptions
           || 'deviceRpc' in callbacksOrOptions
+          || 'thinToolRpc' in callbacksOrOptions
+          || 'targetRoutes' in callbacksOrOptions
           || 'localFileGrants' in callbacksOrOptions
           || 'callbacks' in callbacksOrOptions
           || 'runtimeFeedback' in callbacksOrOptions
@@ -451,6 +459,8 @@ export class AgentSession {
           deviceGrants = opts.deviceGrants;
           deviceSelection = opts.deviceSelection;
           deviceRpc = opts.deviceRpc;
+          thinToolRpc = opts.thinToolRpc;
+          targetRoutes = opts.targetRoutes;
           localFileGrants = opts.localFileGrants;
           runtimeFeedbackInputs = opts.runtimeFeedback || [];
           pendingUserInputProvider = opts.pendingUserInputProvider;
@@ -506,6 +516,8 @@ export class AgentSession {
           deviceGrants,
           deviceSelection,
           deviceRpc,
+          thinToolRpc,
+          targetRoutes,
           localFileGrants,
           pendingUserInputProvider,
           abortSignal: this.activeAbortController.signal,
