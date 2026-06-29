@@ -16,7 +16,7 @@ import {
 
 export const TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX = '[transient_active_prompt_mode]';
 
-const DEFAULT_MAX_ACTIVE_TURNS = 5;
+const DEFAULT_FULL_PROMPT_REFRESH_INTERVAL = 3;
 const DEFAULT_ACTIVATE_CONFIDENCE = 0.7;
 const DEFAULT_CLEAR_CONFIDENCE = 0.7;
 
@@ -27,11 +27,12 @@ export interface PromptModeRuntimeState {
   reason: string;
   activatedTurn: number;
   updatedTurn: number;
+  instructionsInjectedTurn?: number;
 }
 
 export interface PromptModeRuntimeOptions {
   promptsDir?: string;
-  maxActiveTurns?: number;
+  fullPromptRefreshInterval?: number;
   activateConfidence?: number;
   clearConfidence?: number;
 }
@@ -40,29 +41,33 @@ export class PromptModeRuntime {
   private active: PromptModeRuntimeState | null = null;
   private currentTurn = 0;
   private readonly promptsDir: string;
-  private readonly maxActiveTurns: number;
+  private readonly fullPromptRefreshInterval: number;
   private readonly activateConfidence: number;
   private readonly clearConfidence: number;
 
   constructor(options: PromptModeRuntimeOptions = {}) {
     this.promptsDir = options.promptsDir ?? getPromptBaseDir();
-    this.maxActiveTurns = options.maxActiveTurns ?? DEFAULT_MAX_ACTIVE_TURNS;
+    this.fullPromptRefreshInterval = Math.max(
+      1,
+      Math.floor(options.fullPromptRefreshInterval ?? DEFAULT_FULL_PROMPT_REFRESH_INTERVAL),
+    );
     this.activateConfidence = options.activateConfidence ?? DEFAULT_ACTIVATE_CONFIDENCE;
     this.clearConfidence = options.clearConfidence ?? DEFAULT_CLEAR_CONFIDENCE;
   }
 
   beginTurn(turnNumber: number): void {
     this.currentTurn = turnNumber;
-    this.expireIfNeeded(turnNumber);
   }
 
   getActiveMode(): PromptModeRuntimeState | null {
     return this.active ? { ...this.active } : null;
   }
 
-  getRemainingTurns(turnNumber = this.currentTurn): number | null {
+  getTurnsUntilFullPromptRefresh(turnNumber = this.currentTurn): number | null {
     if (!this.active) return null;
-    return Math.max(0, this.maxActiveTurns - (turnNumber - this.active.updatedTurn));
+    if (this.active.instructionsInjectedTurn === undefined) return 0;
+    const turnsSinceFullPrompt = turnNumber - this.active.instructionsInjectedTurn;
+    return Math.max(0, this.fullPromptRefreshInterval - turnsSinceFullPrompt);
   }
 
   clear(reason = 'cleared'): void {
@@ -70,7 +75,7 @@ export class PromptModeRuntime {
       Logger.info(`[prompt-mode-runtime] cleared active mode ${this.active.mode}: ${reason}`);
       this.logRuntimeEvent('clear', this.active, {
         reason,
-        remainingTurns: this.getRemainingTurns(),
+        turnsUntilFullPromptRefresh: this.getTurnsUntilFullPromptRefresh(),
       });
     }
     this.active = null;
@@ -132,20 +137,24 @@ export class PromptModeRuntime {
       return;
     }
 
+    const previous = this.active?.mode === definition.id
+      ? this.active
+      : null;
     this.active = {
       mode: definition.id,
       title: definition.title,
       confidence: payload.confidence,
       reason: payload.reason,
-      activatedTurn: this.active?.mode === definition.id
-        ? this.active.activatedTurn
+      activatedTurn: previous
+        ? previous.activatedTurn
         : turnNumber,
       updatedTurn: turnNumber,
+      instructionsInjectedTurn: previous?.instructionsInjectedTurn,
     };
     Logger.info(`[prompt-mode-runtime] active mode=${definition.id} confidence=${payload.confidence.toFixed(2)} reason=${payload.reason}`);
     this.logRuntimeEvent('activate', this.active, {
-      remainingTurns: this.getRemainingTurns(turnNumber),
-      expiresAfterTurn: this.active.updatedTurn + this.maxActiveTurns,
+      fullPromptRefreshInterval: this.fullPromptRefreshInterval,
+      turnsUntilFullPromptRefresh: this.getTurnsUntilFullPromptRefresh(turnNumber),
     });
   }
 
@@ -155,14 +164,19 @@ export class PromptModeRuntime {
   } = {}): Message | null {
     const turnNumber = options.turnNumber ?? this.currentTurn;
     if (options.fixedMode) return null;
-    this.expireIfNeeded(turnNumber);
     if (!this.active) return null;
 
-    const content = loadPromptModePrompt(this.promptsDir, this.active.mode);
-    if (!content) {
-      Logger.warning(`[prompt-mode-runtime] active mode "${this.active.mode}" is unreadable; clearing`);
-      this.active = null;
-      return null;
+    const includeInstructions = this.shouldInjectFullInstructions(turnNumber);
+    const content = includeInstructions
+      ? loadPromptModePrompt(this.promptsDir, this.active.mode)
+      : null;
+    if (includeInstructions) {
+      if (!content) {
+        Logger.warning(`[prompt-mode-runtime] active mode "${this.active.mode}" is unreadable; clearing`);
+        this.active = null;
+        return null;
+      }
+      this.active.instructionsInjectedTurn = turnNumber;
     }
 
     return {
@@ -172,24 +186,27 @@ export class PromptModeRuntime {
         `Active prompt mode: ${this.active.mode} (${this.active.title}).`,
         `Selected asynchronously by runtime mode router with confidence ${this.active.confidence.toFixed(2)}.`,
         `Reason: ${this.active.reason}`,
-        `Remaining active turns before TTL: ${this.getRemainingTurns(turnNumber)}.`,
+        `Full mode instructions refresh every ${this.fullPromptRefreshInterval} active turn(s).`,
         'Apply this mode where it fits the current user request. If the user has clearly changed topic, follow the user and do not force this mode.',
         'If the user explicitly asks to leave or disable this mode, call prompt_mode with mode "clear" before answering.',
-        '',
-        content,
+        ...(
+          content
+            ? ['', content]
+            : [
+              `Full mode instructions were already supplied on turn ${this.active.instructionsInjectedTurn}.`,
+              `Turns until next full refresh: ${this.getTurnsUntilFullPromptRefresh(turnNumber)}.`,
+              'This is only a short status reminder; do not explain it to the user.',
+            ]
+        ),
       ].join('\n'),
     };
   }
 
-  private expireIfNeeded(turnNumber: number): void {
-    if (!this.active) return;
-    if (turnNumber - this.active.updatedTurn <= this.maxActiveTurns) return;
-    Logger.info(`[prompt-mode-runtime] expired active mode ${this.active.mode} after ${this.maxActiveTurns} turns`);
-    this.logRuntimeEvent('expire', this.active, {
-      turnNumber,
-      maxActiveTurns: this.maxActiveTurns,
-    });
-    this.active = null;
+  private shouldInjectFullInstructions(turnNumber: number): boolean {
+    if (!this.active) return false;
+    return this.active.instructionsInjectedTurn === undefined
+      || this.active.instructionsInjectedTurn === turnNumber
+      || turnNumber - this.active.instructionsInjectedTurn >= this.fullPromptRefreshInterval;
   }
 
   private logRuntimeEvent(
@@ -211,6 +228,7 @@ export class PromptModeRuntime {
             reason: state.reason,
             activatedTurn: state.activatedTurn,
             updatedTurn: state.updatedTurn,
+            instructionsInjectedTurn: state.instructionsInjectedTurn,
           } : null,
           ...extra,
         },

@@ -189,7 +189,7 @@ describe('prompt modes', () => {
     )), false);
   });
 
-  test('prompt mode routing keeps selectable mode list as fallback but not with fixed mode', async () => {
+  test('prompt mode routing suppresses selectable mode list but keeps fixed mode status', async () => {
     const builder = new TurnContextBuilder();
     const routed = await builder.build({
       sessionKey: 'cli',
@@ -210,7 +210,7 @@ describe('prompt modes', () => {
       && message.__injected
       && typeof message.content === 'string'
       && message.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
-    )), true);
+    )), false);
 
     const fixed = await builder.build({
       sessionKey: 'cli',
