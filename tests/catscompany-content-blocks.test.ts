@@ -97,8 +97,6 @@ function createProcessHarness() {
       toolResults.push({ topic, toolUseId, content, isError, metadata });
     },
   };
-  bot.pendingAnswers = new Map();
-  bot.pendingAnswerBySession = new Map();
   bot.pendingAttachments = new Map();
   bot.messageQueue = new Map();
   bot.botUid = 'usr43';
