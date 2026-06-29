@@ -112,8 +112,6 @@ function createHarness(options: { busy?: boolean } = {}) {
     sendToolUse: async () => undefined,
     sendToolResult: async () => undefined,
   };
-  bot.pendingAnswers = new Map();
-  bot.pendingAnswerBySession = new Map();
   bot.pendingAttachments = new Map();
   bot.messageQueue = new Map();
   bot.botUid = 'usr43';

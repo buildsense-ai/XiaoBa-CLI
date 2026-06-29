@@ -314,7 +314,7 @@ export class AgentTurnController {
         toolExecutionContext: {
           sessionId: this.options.sessionKey,
           surface,
-          permissionProfile: 'strict',
+          permissionProfile: options.confirmToolExecution ? 'strict' : undefined,
           workspaceRoot: this.options.workspaceRoot,
           workingDirectory: this.options.getCurrentDirectory(),
           getCurrentDirectory: this.options.getCurrentDirectory,
