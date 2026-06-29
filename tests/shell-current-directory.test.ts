@@ -88,8 +88,15 @@ describe('ShellTool current directory probe', () => {
     });
 
     assert.strictEqual(result.ok, true);
-    assert.ok((result.content as string).includes('stdout-visible'));
-    assert.ok((result.content as string).includes('stderr-visible'));
+    const content = result.content as string;
+    assert.match(content, /^Command completed/);
+    assert.match(content, /^status: succeeded$/m);
+    assert.match(content, /^exit_code: 0$/m);
+    assert.match(content, /^timed_out: false$/m);
+    assert.match(content, /^stdout_lines: 1$/m);
+    assert.match(content, /^stderr_lines: 1$/m);
+    assert.ok(content.includes('stdout-visible'));
+    assert.ok(content.includes('stderr-visible'));
   });
 
   test('POSIX execution uses bash when bash is available', {
@@ -114,10 +121,32 @@ describe('ShellTool current directory probe', () => {
 
     assert.strictEqual(result.ok, false);
     assert.strictEqual(currentDirectory, testRoot);
+    assert.match(result.message, /^Command completed/);
+    assert.match(result.message, /^status: failed$/m);
+    assert.match(result.message, /^timed_out: false$/m);
     assert.ok(!result.message.includes('__XIAOBA_CWD_MARKER__'));
     assert.ok(!result.message.includes('status=$?'));
     assert.ok(!result.message.includes('printf'));
     assert.ok(!result.message.includes('exit "$status"'));
+  });
+
+  test('timed out commands return structured timeout metadata', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const tool = new ShellTool();
+    const command = process.platform === 'win32' ? 'Start-Sleep -Seconds 5' : 'sleep 5';
+    const result = await tool.execute({ command, timeout: 50 }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'EXECUTION_TIMEOUT');
+    assert.match(result.message, /^Command completed/);
+    assert.match(result.message, /^status: timed_out$/m);
+    assert.match(result.message, /^timed_out: true$/m);
+    assert.match(result.message, /^stdout:/m);
+    assert.match(result.message, /^stderr:/m);
   });
 
   test('successful cd is persisted even when a later command fails', async () => {

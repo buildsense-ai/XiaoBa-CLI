@@ -26,6 +26,24 @@ interface ShellOutput {
   stderr: string;
 }
 
+type ShellRunStatus = 'succeeded' | 'failed' | 'timed_out' | 'aborted';
+
+interface ShellRunResult {
+  command: string;
+  description?: string;
+  status: ShellRunStatus;
+  exitCode?: number;
+  signal?: string;
+  timedOut: boolean;
+  durationMs: number;
+  cwdBefore: string;
+  cwdAfter: string;
+  stdout: string;
+  stderr: string;
+  errorMessage?: string;
+  truncated: boolean;
+}
+
 export class ShellTool implements Tool {
   definition: ToolDefinition = {
     name: 'execute_shell',
@@ -68,9 +86,26 @@ export class ShellTool implements Tool {
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { command, description, timeout = 30000, confirm_dangerous = false, cwd } = args;
+    let cwdBefore = context.workingDirectory;
 
     if (context.abortSignal?.aborted) {
-      return { ok: false, errorCode: 'EXECUTION_TIMEOUT', message: `命令已取消，未开始执行:\n$ ${command}` };
+      return {
+        ok: false,
+        errorCode: 'EXECUTION_TIMEOUT',
+        message: this.formatShellRunResult({
+          command,
+          description,
+          status: 'aborted',
+          timedOut: false,
+          durationMs: 0,
+          cwdBefore,
+          cwdAfter: cwdBefore,
+          stdout: '',
+          stderr: '',
+          errorMessage: 'Command aborted before execution',
+          truncated: false,
+        }),
+      };
     }
 
     const route = resolveExecutionRoute(context, {
@@ -104,6 +139,7 @@ export class ShellTool implements Tool {
     }
     const executionDirectory = this.resolveExecutionDirectory(cwd, context);
     if (!executionDirectory.ok) return executionDirectory;
+    cwdBefore = executionDirectory.directory;
 
     Logger.info(`$ ${command}`);
     Logger.info(`Current directory: ${executionDirectory.directory}`);
@@ -126,25 +162,26 @@ export class ShellTool implements Tool {
 
       const parsedStdout = this.extractDirectoryProbe(stdout || '', wrapped.marker);
       const parsedStderr = this.extractDirectoryProbe(stderr || '', wrapped.marker);
-      const finalDirectory = this.readDirectoryProbe(wrapped) || parsedStdout.directory || parsedStderr.directory;
-      this.updateCurrentDirectory(finalDirectory, context);
+      const cwdAfter = this.updateCurrentDirectory(
+        this.readDirectoryProbe(wrapped) || parsedStdout.directory || parsedStderr.directory,
+        context,
+      ) || cwdBefore;
 
       const stdoutOutput = parsedStdout.output || '';
       const stderrOutput = parsedStderr.output || '';
-      const output = this.formatSuccessfulOutput(stdoutOutput, stderrOutput);
       if (stderrOutput) {
         Logger.warning(`stderr: ${stderrOutput.substring(0, 200)}`);
       }
 
       const executionTime = Date.now() - startTime;
-      const outputLines = this.countOutputLines(output);
-      const outputSize = Buffer.byteLength(output, 'utf-8');
+      const outputLines = this.countOutputLines(stdoutOutput) + this.countOutputLines(stderrOutput);
+      const outputSize = Buffer.byteLength(stdoutOutput, 'utf-8') + Buffer.byteLength(stderrOutput, 'utf-8');
 
       Logger.success(`Command succeeded (elapsed: ${executionTime}ms)`);
       Logger.info(`  Output: ${outputLines} lines | ${(outputSize / 1024).toFixed(2)} KB`);
 
       if (outputLines > 20) {
-        const previewLines = output.split('\n').slice(0, 10);
+        const previewLines = [stdoutOutput, stderrOutput].filter(Boolean).join('\n').split('\n').slice(0, 10);
         Logger.info('  Output preview (first 10 lines):');
         previewLines.forEach(line => {
           const displayLine = line.length > 100 ? line.substring(0, 97) + '...' : line;
@@ -155,38 +192,54 @@ export class ShellTool implements Tool {
 
       return {
         ok: true,
-        content: [
-          'Command succeeded:',
-          `$ ${command}`,
-          '',
-          `Working directory: ${executionDirectory.directory}`,
-          finalDirectory ? `Final cwd: ${finalDirectory}` : '',
-          `Shell: ${this.resolveShellDisplayName()}`,
-          `Elapsed: ${executionTime}ms`,
-          `Output lines: ${outputLines}`,
-          '',
-          output,
-        ].filter(line => line !== '').join('\n'),
+        content: this.formatShellRunResult({
+          command,
+          description,
+          status: 'succeeded',
+          exitCode: 0,
+          timedOut: false,
+          durationMs: executionTime,
+          cwdBefore,
+          cwdAfter,
+          stdout: stdoutOutput,
+          stderr: stderrOutput,
+          truncated: false,
+        }),
       };
     } catch (error: any) {
       const executionTime = Date.now() - startTime;
       const parsedStdout = this.extractDirectoryProbe(error.stdout || '', wrapped.marker);
       const parsedStderr = this.extractDirectoryProbe(error.stderr || '', wrapped.marker);
-      const finalDirectory = this.readDirectoryProbe(wrapped) || parsedStdout.directory || parsedStderr.directory;
-      this.updateCurrentDirectory(finalDirectory, context);
-      if (context.abortSignal?.aborted || /aborted|abort/i.test(String(error.message || ''))) {
-        Logger.warning(`命令已取消 (耗时: ${executionTime}ms)`);
+      const cwdAfter = this.updateCurrentDirectory(
+        this.readDirectoryProbe(wrapped) || parsedStdout.directory || parsedStderr.directory,
+        context,
+      ) || cwdBefore;
+      const aborted = context.abortSignal?.aborted || /aborted|abort/i.test(String(error.message || ''));
+      const timedOut = !aborted && this.isTimeoutError(error);
+      if (aborted || timedOut) {
         return {
           ok: false,
           errorCode: 'EXECUTION_TIMEOUT',
-          message: `命令已取消:\n$ ${command}\n\n执行时间: ${executionTime}ms`,
+          message: this.formatShellRunResult({
+            command,
+            description,
+            status: aborted ? 'aborted' : 'timed_out',
+            signal: typeof error.signal === 'string' ? error.signal : undefined,
+            timedOut,
+            durationMs: executionTime,
+            cwdBefore,
+            cwdAfter,
+            stdout: parsedStdout.output || '',
+            stderr: parsedStderr.output || '',
+            errorMessage: this.formatExecutionError(error),
+            truncated: false,
+          }),
         };
       }
-      const errorOutput = [
-        parsedStderr.output,
-        parsedStdout.output,
-        this.formatExecutionError(error),
-      ].filter(Boolean).join('\n').trim();
+      const stdoutOutput = parsedStdout.output || '';
+      const stderrOutput = parsedStderr.output || '';
+      const exitCode = typeof error.code === 'number' ? error.code : undefined;
+      const signal = typeof error.signal === 'string' ? error.signal : undefined;
 
       Logger.error(`Command failed (elapsed: ${executionTime}ms)`);
       Logger.error(`  Error: ${error.message}`);
@@ -194,17 +247,21 @@ export class ShellTool implements Tool {
       return {
         ok: false,
         errorCode: 'TOOL_EXECUTION_ERROR',
-        message: [
-          'Command failed:',
-          `$ ${command}`,
-          '',
-          `Working directory: ${executionDirectory.directory}`,
-          finalDirectory ? `Final cwd: ${finalDirectory}` : '',
-          `Shell: ${this.resolveShellDisplayName()}`,
-          `Elapsed: ${executionTime}ms`,
-          'Error:',
-          errorOutput,
-        ].filter(line => line !== '').join('\n'),
+        message: this.formatShellRunResult({
+          command,
+          description,
+          status: 'failed',
+          exitCode,
+          signal,
+          timedOut: false,
+          durationMs: executionTime,
+          cwdBefore,
+          cwdAfter,
+          stdout: stdoutOutput,
+          stderr: stderrOutput,
+          errorMessage: this.formatExecutionError(error),
+          truncated: false,
+        }),
       };
     } finally {
       this.cleanupWrappedCommand(wrapped);
@@ -544,22 +601,43 @@ export class ShellTool implements Tool {
       .replace(/\n+$/, '');
   }
 
-  private formatSuccessfulOutput(stdout: string, stderr: string): string {
-    const cleanStdout = String(stdout || '');
-    const cleanStderr = String(stderr || '');
-    if (cleanStdout && cleanStderr) {
-      return [
-        'Stdout:',
-        cleanStdout,
-        '',
-        'Stderr:',
-        cleanStderr,
-      ].join('\n');
-    }
-    if (cleanStderr) {
-      return ['Stderr:', cleanStderr].join('\n');
-    }
-    return cleanStdout;
+  private formatShellRunResult(result: ShellRunResult): string {
+    const stdoutLines = this.countOutputLines(result.stdout);
+    const stderrLines = this.countOutputLines(result.stderr);
+    const stdoutBytes = Buffer.byteLength(result.stdout, 'utf-8');
+    const stderrBytes = Buffer.byteLength(result.stderr, 'utf-8');
+    const header = [
+      'Command completed',
+      `status: ${result.status}`,
+      `command: ${this.formatHeaderValue(result.command)}`,
+      result.description ? `description: ${this.formatHeaderValue(result.description)}` : '',
+      result.exitCode !== undefined ? `exit_code: ${result.exitCode}` : 'exit_code:',
+      result.signal ? `signal: ${result.signal}` : 'signal:',
+      `timed_out: ${result.timedOut}`,
+      `duration_ms: ${result.durationMs}`,
+      `cwd_before: ${result.cwdBefore}`,
+      `cwd_after: ${result.cwdAfter}`,
+      `stdout_lines: ${stdoutLines}`,
+      `stderr_lines: ${stderrLines}`,
+      `stdout_bytes: ${stdoutBytes}`,
+      `stderr_bytes: ${stderrBytes}`,
+      `truncated: ${result.truncated}`,
+      result.errorMessage ? `error_message: ${this.formatHeaderValue(result.errorMessage)}` : '',
+    ].filter(line => line !== '');
+
+    return [
+      ...header,
+      '',
+      'stdout:',
+      result.stdout || '(empty)',
+      '',
+      'stderr:',
+      result.stderr || '(empty)',
+    ].join('\n');
+  }
+
+  private formatHeaderValue(value: string): string {
+    return String(value || '').replace(/\r?\n/g, ' ; ');
   }
 
   private countOutputLines(output: string): number {
@@ -667,8 +745,9 @@ export class ShellTool implements Tool {
     return { ok: true, directory };
   }
 
-  private resolveShellDisplayName(): string {
-    return process.platform === 'win32' ? 'powershell' : 'sh';
+  private isTimeoutError(error: any): boolean {
+    const text = String(error?.message || error?.code || '').toLowerCase();
+    return text.includes('timed out') || text.includes('timeout') || text === 'etimedout';
   }
 
   private formatExecutionError(error: any): string {
@@ -684,14 +763,15 @@ export class ShellTool implements Tool {
     return this.stripAnyDirectoryProbe(String(error?.message || error || 'Command failed'));
   }
 
-  private updateCurrentDirectory(directory: string | undefined, context: ToolExecutionContext): void {
-    if (!directory) return;
+  private updateCurrentDirectory(directory: string | undefined, context: ToolExecutionContext): string | undefined {
+    if (!directory) return undefined;
     const resolved = path.resolve(directory);
     try {
-      if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return;
+      if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return undefined;
       context.updateCurrentDirectory?.(resolved);
+      return resolved;
     } catch {
-      return;
+      return undefined;
     }
   }
 }

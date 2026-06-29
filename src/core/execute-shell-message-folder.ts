@@ -330,6 +330,8 @@ function selectKeyLines(lines: string[], maxKeyLines: number): string[] {
 }
 
 function readCommand(rawText: string): string | undefined {
+  const command = readField(rawText, 'command');
+  if (command) return command;
   const lines = rawText.split(/\r?\n/);
   for (const line of lines) {
     if (line.startsWith('$ ')) return line.slice(2).trim() || undefined;
@@ -338,9 +340,18 @@ function readCommand(rawText: string): string | undefined {
 }
 
 function readStatus(rawText: string): ShellMetadata['status'] {
+  const status = readField(rawText, 'status');
+  if (status === 'succeeded' || status === 'failed') return status;
+  if (status === 'timed_out' || status === 'aborted') return 'failed';
   if (/^Command succeeded:/m.test(rawText)) return 'succeeded';
   if (/^Command failed:/m.test(rawText)) return 'failed';
   return 'unknown';
+}
+
+function readField(rawText: string, key: string): string | undefined {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = rawText.match(new RegExp(`^${escapedKey}:\\s*(.*)$`, 'm'));
+  return match?.[1]?.trim() || undefined;
 }
 
 function parseToolArguments(toolCall?: NonNullable<Message['tool_calls']>[number]): Record<string, unknown> {
