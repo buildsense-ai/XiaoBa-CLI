@@ -12,6 +12,12 @@ function getFailure(result: ToolExecutionResult): Extract<ToolExecutionResult, {
   return result;
 }
 
+function getSuccess(result: ToolExecutionResult): Extract<ToolExecutionResult, { ok: true }> {
+  assert.equal(result.ok, true);
+  if (!result.ok) throw new Error('expected edit_file to succeed');
+  return result;
+}
+
 describe('EditTool', () => {
   let tool: EditTool;
   let testRoot: string;
@@ -43,7 +49,9 @@ describe('EditTool', () => {
       new_string: 'XiaoBa',
     }, context);
 
-    assert.equal(result.ok, true);
+    const success = getSuccess(result);
+    assert.match(String(success.content), /修改后附近内容/);
+    assert.match(String(success.content), /hello XiaoBa/);
     assert.equal(fs.readFileSync(filePath, 'utf8'), 'hello XiaoBa');
   });
 
@@ -118,5 +126,55 @@ describe('EditTool', () => {
     const failure = getFailure(result);
     assert.equal(failure.errorCode, 'TOOL_EXECUTION_ERROR');
     assert.match(failure.message, /文件过大|too large/);
+  });
+
+  test('explains likely LF and CRLF mismatch when old_string is not found', async () => {
+    const filePath = path.join(testRoot, 'line-endings.txt');
+    fs.writeFileSync(filePath, 'alpha\r\nbeta\r\ngamma', 'utf8');
+
+    const result = await tool.execute({
+      file_path: filePath,
+      old_string: 'alpha\nbeta',
+      new_string: 'changed',
+    }, context);
+
+    const failure = getFailure(result);
+    assert.equal(failure.errorCode, 'TOOL_EXECUTION_ERROR');
+    assert.match(failure.message, /LF\/CRLF|换行/);
+  });
+
+  test('explains likely leading or trailing whitespace mismatch', async () => {
+    const filePath = path.join(testRoot, 'trimmed.txt');
+    fs.writeFileSync(filePath, 'target', 'utf8');
+
+    const result = await tool.execute({
+      file_path: filePath,
+      old_string: '  target  ',
+      new_string: 'changed',
+    }, context);
+
+    const failure = getFailure(result);
+    assert.equal(failure.errorCode, 'TOOL_EXECUTION_ERROR');
+    assert.match(failure.message, /首尾空白/);
+  });
+
+  test('returns candidate lines when a similar string is present', async () => {
+    const filePath = path.join(testRoot, 'candidate.txt');
+    fs.writeFileSync(filePath, [
+      'const before = 1;',
+      'const name = "Tom";',
+      'const after = 2;',
+    ].join('\n'), 'utf8');
+
+    const result = await tool.execute({
+      file_path: filePath,
+      old_string: "const name = 'Tom';",
+      new_string: 'const name = "Jerry";',
+    }, context);
+
+    const failure = getFailure(result);
+    assert.equal(failure.errorCode, 'TOOL_EXECUTION_ERROR');
+    assert.match(failure.message, /可能相关位置/);
+    assert.match(failure.message, /const name = "Tom";/);
   });
 });
