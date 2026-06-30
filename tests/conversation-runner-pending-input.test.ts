@@ -371,11 +371,10 @@ describe('ConversationRunner pending input', () => {
 
     const refreshedContext = requests[1].find(isRuntimeContextMessage);
     assert.ok(refreshedContext);
-    const snapshot = parseRuntimeContext(refreshedContext);
-    assert.deepEqual(
-      snapshot.execution.userDevices.map((device: any) => device.deviceId),
-      ['device-initial', 'device-pending'],
-    );
+    const refreshedContent = String(refreshedContext.content || '');
+    assert.match(refreshedContent, /规则：/);
+    assert.doesNotMatch(refreshedContent, /device-initial/);
+    assert.doesNotMatch(refreshedContent, /device-pending/);
     assert.doesNotMatch(refreshedContext.content as string, /install:device-/);
     assert.doesNotMatch(refreshedContext.content as string, /body-main/);
   });
@@ -385,11 +384,6 @@ function isRuntimeContextMessage(message: Message): boolean {
   return message.role === 'system'
     && typeof message.content === 'string'
     && message.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX);
-}
-
-function parseRuntimeContext(message: Message): any {
-  const content = String(message.content || '');
-  return JSON.parse(content.slice(TRANSIENT_RUNTIME_CONTEXT_PREFIX.length).trim());
 }
 
 function assertPendingBoundaryBeforeUser(messages: Message[], userContent: string): void {

@@ -476,7 +476,7 @@ export class CatsCompanyBot {
   }
 
   private maybeBuildThinToolRpcTransport(): ThinToolRpcTransport | undefined {
-    return this.bot.supportsThinToolRpc ? this.buildThinToolRpcTransport() : undefined;
+    return this.bot?.supportsThinToolRpc ? this.buildThinToolRpcTransport() : undefined;
   }
 
   private async handleThinToolRpcRequest(request: CatsThinToolRpcMessage): Promise<void> {

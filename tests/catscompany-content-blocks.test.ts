@@ -280,7 +280,7 @@ describe('CatsCo content blocks', () => {
     );
     assert.strictEqual(handledTurns.length, 1);
     assert.deepStrictEqual(handledTurns[0].userMessage, [
-      { type: 'text', text: '一起看这些附件' },
+      { type: 'text', text: 'usr1：\n一起看这些附件' },
       { type: 'text', text: '[image] a.png -> (no authorized attachment reference)' },
       { type: 'text', text: '[image] c.png -> (no authorized attachment reference)' },
       { type: 'text', text: '[file] b.pdf -> (no authorized attachment reference)' },
@@ -381,7 +381,7 @@ describe('CatsCo content blocks', () => {
     );
     assert.strictEqual(handledTurns.length, 1);
     assert.deepStrictEqual(handledTurns[0].userMessage, [
-      { type: 'text', text: '非 Dashboard 入口一起看这些附件' },
+      { type: 'text', text: 'usr1：\n非 Dashboard 入口一起看这些附件' },
       { type: 'text', text: '[image] a.png -> (no authorized attachment reference)' },
       { type: 'text', text: '[file] b.pdf -> (no authorized attachment reference)' },
     ]);
@@ -574,7 +574,7 @@ describe('CatsCo content blocks', () => {
     });
 
     assert.strictEqual(handledTurns.length, 1);
-    assert.strictEqual(handledTurns[0].userMessage, '这条纯文本不应该等待附件');
+    assert.strictEqual(handledTurns[0].userMessage, 'usr1：\n这条纯文本不应该等待附件');
     assert.strictEqual(typeof handledTurns[0].options.callbacks?.onThinking, 'function');
     assert.strictEqual(typeof handledTurns[0].options.callbacks?.onAssistantText, 'function');
     await handledTurns[0].options.callbacks.onAssistantText('工具调用前的可见回复');
