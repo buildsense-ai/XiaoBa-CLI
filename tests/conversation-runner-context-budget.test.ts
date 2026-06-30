@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ConversationRunner, PROMPT_BUDGET_TRIM_MESSAGE, PROMPT_TOOLS_DISABLED_MESSAGE } from '../src/core/conversation-runner';
-import { FOLDED_READ_FILE_PREFIX } from '../src/core/read-file-message-folder';
+import { TRUNCATED_READ_FILE_PREFIX } from '../src/core/read-file-message-folder';
 import { estimateMessageTokens, estimateMessagesTokens, estimateToolsTokens } from '../src/core/token-estimator';
 import type { ContentBlock, Message } from '../src/types';
 import type { ToolDefinition, ToolExecutor } from '../src/types/tool';
@@ -166,7 +166,7 @@ test('adaptive tool result folding uses runner message budget before mechanical 
   }
 
   const providerToolResult = captured[0].find(message => message.tool_call_id === 'call_budget_read');
-  assert.ok(String(providerToolResult?.content).startsWith(FOLDED_READ_FILE_PREFIX));
+  assert.ok(String(providerToolResult?.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
   assert.ok(estimateMessagesTokens(captured[0]) <= 5_000);
   assert.equal(messages[2].content, raw);
 });

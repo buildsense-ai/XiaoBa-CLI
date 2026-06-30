@@ -1,8 +1,14 @@
 import { createHash } from 'crypto';
 import { Message } from '../types';
 import { estimateTokens } from './token-estimator';
+import {
+  persistToolResultArtifact,
+  ToolResultArtifactStoreOptions,
+} from './tool-result-artifact-store';
 
-export const FOLDED_EXECUTE_SHELL_PREFIX = '[folded_execute_shell]';
+export const TRUNCATED_EXECUTE_SHELL_PREFIX = '[truncated_execute_shell]';
+export const FOLDED_EXECUTE_SHELL_PREFIX = TRUNCATED_EXECUTE_SHELL_PREFIX;
+const LEGACY_FOLDED_EXECUTE_SHELL_PREFIX = '[folded_execute_shell]';
 
 export interface ExecuteShellMessageFoldingOptions {
   enabled: boolean;
@@ -13,6 +19,7 @@ export interface ExecuteShellMessageFoldingOptions {
   keepRecentHistoricalShells: number;
   foldCurrentRun: boolean;
   protectedCurrentRunToolResultIndexes?: ReadonlySet<number>;
+  artifactStore?: Partial<ToolResultArtifactStoreOptions>;
 }
 
 export interface ExecuteShellMessageFoldingStats {
@@ -128,7 +135,7 @@ export function foldHistoricalExecuteShellMessages(
     }
 
     const rawText = typeof message.content === 'string' ? message.content : '';
-    if (!rawText || rawText.startsWith(FOLDED_EXECUTE_SHELL_PREFIX)) return;
+    if (!rawText || isAlreadyTruncated(rawText)) return;
 
     const rawTokens = estimateTokens(rawText);
     if (rawTokens < resolved.thresholdTokens) return;
@@ -217,10 +224,22 @@ function buildFoldedExecuteShellContent(
     .update('\0')
     .update(candidate.rawText)
     .digest('hex');
+  const artifact = persistToolResultArtifact({
+    artifactId: `sh_${hash.slice(0, 16)}`,
+    toolName: 'execute_shell',
+    toolCallId: candidate.message.tool_call_id,
+    sha256: hash,
+    rawText: candidate.rawText,
+    store: options.artifactStore,
+  });
 
   const foldedParts = [
-    FOLDED_EXECUTE_SHELL_PREFIX,
-    `artifact_id: sh_${hash.slice(0, 16)}`,
+    TRUNCATED_EXECUTE_SHELL_PREFIX,
+    `artifact_id: ${artifact.artifactId}`,
+    artifact.ref ? `full_output_ref: ${artifact.ref}` : '',
+    artifact.filePath ? `full_output_path: ${artifact.filePath}` : '',
+    artifact.fileUri ? `full_output_link: ${artifact.fileUri}` : '',
+    artifact.writeError ? `full_output_store_error: ${oneLine(artifact.writeError, 300)}` : '',
     metadata.command ? `command: ${oneLine(metadata.command, 1600)}` : '',
     metadata.description ? `description: ${oneLine(metadata.description, 400)}` : '',
     metadata.cwd ? `cwd: ${metadata.cwd}` : '',
@@ -233,7 +252,7 @@ function buildFoldedExecuteShellContent(
     `original_tokens_est: ${candidate.rawTokens}`,
     `sha256: ${hash}`,
     '',
-    'summary: Historical execute_shell output was folded out of the provider prompt. Re-run the command or inspect logs before relying on omitted lines.',
+    'summary: Historical execute_shell output was truncated out of the provider prompt. Use full_output_path/full_output_ref, re-run the command, or inspect logs before relying on omitted lines.',
     headLines.length > 0 ? ['head:', ...headLines.map(line => `  ${line}`)].join('\n') : '',
     tailLines.length > 0 ? ['tail:', ...tailLines.map(line => `  ${line}`)].join('\n') : '',
     keyLines.length > 0 ? ['key_lines:', ...keyLines.map(line => `  ${line}`)].join('\n') : '',
@@ -280,6 +299,11 @@ function normalizeToolName(name: string): string {
     return 'execute_shell';
   }
   return normalized;
+}
+
+function isAlreadyTruncated(rawText: string): boolean {
+  return rawText.startsWith(TRUNCATED_EXECUTE_SHELL_PREFIX)
+    || rawText.startsWith(LEGACY_FOLDED_EXECUTE_SHELL_PREFIX);
 }
 
 function findLastRealUserIndex(messages: Message[]): number {

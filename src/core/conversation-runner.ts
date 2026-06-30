@@ -22,6 +22,7 @@ import {
   foldToolResultsTowardPromptBudget,
   resolveAdaptiveToolResultFoldingOptions,
 } from './adaptive-tool-result-folder';
+import { resolveToolResultArtifactStoreOptions } from './tool-result-artifact-store';
 import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
@@ -382,15 +383,18 @@ export class ConversationRunner {
         requestMessages,
         currentRunToolResultFoldingOptions,
       );
+      const toolResultArtifactStoreOptions = this.resolveToolResultArtifactStoreOptions(turns);
       const readFileFoldingOptions = {
         ...resolveReadFileMessageFoldingOptions(),
         foldCurrentRun: currentRunToolResultFoldingOptions.enabled,
         protectedCurrentRunToolResultIndexes,
+        artifactStore: toolResultArtifactStoreOptions,
       };
       const executeShellFoldingOptions = {
         ...resolveExecuteShellMessageFoldingOptions(),
         foldCurrentRun: currentRunToolResultFoldingOptions.enabled,
         protectedCurrentRunToolResultIndexes,
+        artifactStore: toolResultArtifactStoreOptions,
       };
       const readFileFolding = foldHistoricalReadFileMessages(
         requestMessages,
@@ -399,8 +403,8 @@ export class ConversationRunner {
       requestMessages = readFileFolding.messages;
       if (readFileFolding.stats.folded_count > 0) {
         Logger.info(
-          `[${this.sessionLabel}Turn ${turns}] read_file folding: `
-          + `folded=${readFileFolding.stats.folded_count}, `
+          `[${this.sessionLabel}Turn ${turns}] read_file truncation: `
+          + `truncated=${readFileFolding.stats.folded_count}, `
           + `current=${readFileFolding.stats.folded_current_turn_count}, `
           + `saved≈${readFileFolding.stats.saved_tokens_est} tokens`,
         );
@@ -412,8 +416,8 @@ export class ConversationRunner {
       requestMessages = executeShellFolding.messages;
       if (executeShellFolding.stats.folded_count > 0) {
         Logger.info(
-          `[${this.sessionLabel}Turn ${turns}] execute_shell folding: `
-          + `folded=${executeShellFolding.stats.folded_count}, `
+          `[${this.sessionLabel}Turn ${turns}] execute_shell truncation: `
+          + `truncated=${executeShellFolding.stats.folded_count}, `
           + `current=${executeShellFolding.stats.folded_current_turn_count}, `
           + `saved≈${executeShellFolding.stats.saved_tokens_est} tokens`,
         );
@@ -428,9 +432,9 @@ export class ConversationRunner {
       requestMessages = adaptiveFolding.messages;
       if (adaptiveFolding.stats.folded_count > 0) {
         Logger.info(
-          `[${this.sessionLabel}Turn ${turns}] adaptive tool_result folding: `
+          `[${this.sessionLabel}Turn ${turns}] adaptive tool_result truncation: `
           + `passes=${adaptiveFolding.stats.passes}, `
-          + `folded=${adaptiveFolding.stats.folded_count}, `
+          + `truncated=${adaptiveFolding.stats.folded_count}, `
           + `current=${adaptiveFolding.stats.folded_current_turn_count}, `
           + `saved≈${adaptiveFolding.stats.saved_tokens_est} tokens, `
           + `prompt≈${adaptiveFolding.stats.started_prompt_tokens_est}->${adaptiveFolding.stats.finished_prompt_tokens_est}, `
@@ -1387,6 +1391,21 @@ export class ConversationRunner {
       ...options,
       targetPromptTokens: Math.min(options.targetPromptTokens, promptBudget),
     };
+  }
+
+  private resolveToolResultArtifactStoreOptions(turn: number) {
+    const workspaceRoot = this.toolExecutionContext?.workspaceRoot
+      || this.toolExecutionContext?.workingDirectory;
+    const defaultRoot = workspaceRoot
+      ? path.join(workspaceRoot, '.xiaoba', 'tool-results')
+      : undefined;
+    return resolveToolResultArtifactStoreOptions(process.env, {
+      enabled: Boolean(defaultRoot),
+      rootDirectory: defaultRoot,
+      sessionId: this.toolExecutionContext?.sessionId
+        || this.toolExecutionContext?.executionScope?.sessionKey,
+      turn,
+    });
   }
 
   private fitToolsToPromptBudget(tools: ToolDefinition[]): ToolDefinition[] {

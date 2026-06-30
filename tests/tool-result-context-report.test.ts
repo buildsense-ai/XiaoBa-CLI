@@ -46,7 +46,7 @@ test('formats before and after tool result context savings', () => {
     tool('read_file', 'y'.repeat(500), 'read_1'),
   ]);
   const after = summarizeToolResultContext([
-    tool('execute_shell', '[folded_execute_shell]\nsummary', 'shell_1'),
+    tool('execute_shell', '[truncated_execute_shell]\nsummary', 'shell_1'),
     tool('read_file', 'y'.repeat(500), 'read_1'),
   ]);
 

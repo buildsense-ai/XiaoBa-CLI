@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
-  FOLDED_READ_FILE_PREFIX,
+  TRUNCATED_READ_FILE_PREFIX,
   foldHistoricalReadFileMessages,
   resolveReadFileMessageFoldingOptions,
 } from '../src/core/read-file-message-folder';
@@ -61,11 +64,45 @@ test('folds large historical read_file tool results while preserving tool exchan
   assert.equal(folded.tool_call_id, 'call_old_read');
   assert.equal(folded.name, 'read_file');
   assert.equal(typeof folded.content, 'string');
-  assert.ok(String(folded.content).startsWith(FOLDED_READ_FILE_PREFIX));
+  assert.ok(String(folded.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
   assert.match(String(folded.content), /artifact_id: rf_[a-f0-9]{16}/);
   assert.match(String(folded.content), /path: E:\/repo\/large\.ts/);
   assert.equal(String(folded.content).includes('plain historical content line 45'), false);
   assert.ok(result.stats.saved_tokens_est > 0);
+});
+
+test('writes truncated read_file full output to a linkable artifact', () => {
+  const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-read-artifacts-'));
+  const raw = makeReadFileOutput('E:/repo/linked-large.ts', 90);
+  const messages: Message[] = [
+    { role: 'user', content: 'read linked-large.ts' },
+    makeToolCallMessage('call_linked_read', 'E:/repo/linked-large.ts'),
+    { role: 'tool', name: 'read_file', tool_call_id: 'call_linked_read', content: raw },
+    { role: 'assistant', content: 'read complete' },
+    { role: 'user', content: 'continue' },
+  ];
+
+  try {
+    const result = foldHistoricalReadFileMessages(messages, {
+      thresholdTokens: 20,
+      artifactStore: {
+        enabled: true,
+        rootDirectory: artifactRoot,
+        sessionId: 'test session',
+        turn: 7,
+      },
+    });
+    const content = String(result.messages[2].content);
+    const fullOutputPath = content.match(/^full_output_path: (.+)$/m)?.[1];
+
+    assert.ok(content.startsWith(TRUNCATED_READ_FILE_PREFIX));
+    assert.match(content, /full_output_ref: tool-result:\/\/test_session\/turn-0007\/rf_[a-f0-9]{16}/);
+    assert.match(content, /full_output_link: file:\/\//);
+    assert.ok(fullOutputPath);
+    assert.equal(fs.readFileSync(fullOutputPath, 'utf8').includes(raw), true);
+  } finally {
+    fs.rmSync(artifactRoot, { recursive: true, force: true });
+  }
 });
 
 test('does not fold read_file result from the current tool loop', () => {
@@ -108,7 +145,7 @@ test('can delayed-fold older current-run read_file results while protecting rece
   assert.equal(result.stats.folded_count, 1);
   assert.equal(result.stats.folded_current_turn_count, 1);
   assert.equal(result.stats.protected_current_turn_count, 1);
-  assert.ok(String(result.messages[2].content).startsWith(FOLDED_READ_FILE_PREFIX));
+  assert.ok(String(result.messages[2].content).startsWith(TRUNCATED_READ_FILE_PREFIX));
   assert.equal(result.messages[5].content, secondRaw);
 });
 
@@ -135,7 +172,7 @@ test('can keep the most recent historical read_file result raw', () => {
   assert.equal(result.stats.candidate_count, 2);
   assert.equal(result.stats.folded_count, 1);
   assert.equal(result.stats.skipped_recent_count, 1);
-  assert.ok(String(result.messages[2].content).startsWith(FOLDED_READ_FILE_PREFIX));
+  assert.ok(String(result.messages[2].content).startsWith(TRUNCATED_READ_FILE_PREFIX));
   assert.equal(result.messages[6].content, secondRaw);
 });
 
@@ -193,7 +230,7 @@ test('runner folds only provider input and leaves durable session messages raw',
   }
 
   const providerToolResult = captured[0].find(message => message.role === 'tool');
-  assert.ok(String(providerToolResult?.content).startsWith(FOLDED_READ_FILE_PREFIX));
+  assert.ok(String(providerToolResult?.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
   assert.equal(messages[2].content, raw);
 });
 
@@ -244,7 +281,7 @@ test('runner delayed-folds older current-run tool results and keeps recent ones 
 
   const providerOld = captured[0].find(message => message.tool_call_id === 'call_current_provider_old');
   const providerRecent = captured[0].find(message => message.tool_call_id === 'call_current_provider_recent');
-  assert.ok(String(providerOld?.content).startsWith(FOLDED_READ_FILE_PREFIX));
+  assert.ok(String(providerOld?.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
   assert.equal(providerRecent?.content, secondRaw);
   assert.equal(messages[2].content, firstRaw);
   assert.equal(messages[5].content, secondRaw);
