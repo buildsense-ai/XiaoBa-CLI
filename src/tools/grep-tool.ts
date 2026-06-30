@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
@@ -8,6 +8,9 @@ import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription
 
 const VCS_DIRECTORIES_TO_EXCLUDE = ['.git', '.svn', '.hg', '.bzr'] as const;
 const DEFAULT_LIMIT = 250;
+const MAX_GREP_LIMIT = 2000;
+const MAX_GREP_OUTPUT_BYTES = 512 * 1024;
+const GREP_COMMAND_TIMEOUT_MS = 30_000;
 
 interface GrepResult {
   mode: 'content' | 'files' | 'count';
@@ -18,27 +21,79 @@ interface GrepResult {
   numMatches?: number;
   appliedLimit?: number;
   appliedOffset?: number;
+  requestedLimit?: number;
+  limitWasCapped?: boolean;
+  reachedOutputLimit?: boolean;
+  nextOffset?: number;
+}
+
+interface NormalizedGrepPaging {
+  offset: number;
+  limit: number;
+  requestedLimit?: number;
+  limitWasCapped: boolean;
 }
 
 interface FallbackResult {
   content: string;
-  error?: string;
+}
+
+interface SearchCommandResult {
+  output: string;
+  stderr: string;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  reachedOutputLimit: boolean;
 }
 
 function applyHeadLimit<T>(
   items: T[],
-  limit: number | undefined,
-  offset: number = 0,
-): { items: T[]; appliedLimit: number | undefined } {
-  if (limit === 0) {
-    return { items: items.slice(offset), appliedLimit: undefined };
-  }
-  const effectiveLimit = limit ?? DEFAULT_LIMIT;
-  const sliced = items.slice(offset, offset + effectiveLimit);
-  const wasTruncated = items.length - offset > effectiveLimit;
+  paging: NormalizedGrepPaging,
+  reachedOutputLimit: boolean,
+): { items: T[]; appliedLimit: number | undefined; nextOffset?: number } {
+  const sliced = items.slice(paging.offset, paging.offset + paging.limit);
+  const wasTruncated = reachedOutputLimit || items.length - paging.offset > paging.limit;
   return {
     items: sliced,
-    appliedLimit: wasTruncated ? effectiveLimit : undefined,
+    appliedLimit: wasTruncated ? paging.limit : undefined,
+    nextOffset: wasTruncated ? paging.offset + sliced.length : undefined,
+  };
+}
+
+function normalizeGrepPaging(limit: unknown, offset: unknown): NormalizedGrepPaging {
+  const parsedOffset = Number(offset);
+  const normalizedOffset = Number.isFinite(parsedOffset) && parsedOffset > 0
+    ? Math.floor(parsedOffset)
+    : 0;
+
+  if (limit === 0 || limit === '0') {
+    return {
+      offset: normalizedOffset,
+      limit: MAX_GREP_LIMIT,
+      requestedLimit: 0,
+      limitWasCapped: true,
+    };
+  }
+
+  const parsedLimit = Number(limit);
+  const hasExplicitLimit = limit !== undefined && limit !== null && limit !== '';
+  const requestedLimit = hasExplicitLimit && Number.isFinite(parsedLimit)
+    ? Math.floor(parsedLimit)
+    : undefined;
+
+  if (!hasExplicitLimit || requestedLimit === undefined || requestedLimit <= 0) {
+    return {
+      offset: normalizedOffset,
+      limit: DEFAULT_LIMIT,
+      limitWasCapped: false,
+    };
+  }
+
+  return {
+    offset: normalizedOffset,
+    limit: Math.min(requestedLimit, MAX_GREP_LIMIT),
+    requestedLimit,
+    limitWasCapped: requestedLimit > MAX_GREP_LIMIT,
   };
 }
 
@@ -106,6 +161,13 @@ export class GrepTool implements Tool {
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { pattern, path: searchPath } = args;
+    if (typeof pattern !== 'string' || pattern.trim() === '') {
+      return {
+        ok: false,
+        errorCode: 'INVALID_TOOL_ARGUMENTS',
+        message: 'grep requires a non-empty pattern.',
+      };
+    }
 
     const route = resolveExecutionRoute(context, {
       toolName: this.definition.name,
@@ -147,6 +209,13 @@ export class GrepTool implements Tool {
         lastError = null; // 重置错误，因为空结果是正常情况
         continue;
       } catch (error: any) {
+        if (this.isCancellationError(error)) {
+          return {
+            ok: false,
+            errorCode: 'EXECUTION_TIMEOUT',
+            message: String(error?.message || error || 'grep execution was interrupted'),
+          };
+        }
         lastError = error;
         // 如果有多个 fallback，继续尝试下一个
         continue;
@@ -159,8 +228,139 @@ export class GrepTool implements Tool {
     return { ok: false, errorCode: 'EXECUTION_ERROR', message: errorMsg };
   }
 
+  private runSearchCommand(
+    command: string,
+    commandArgs: string[],
+    cwd: string,
+    context: ToolExecutionContext,
+    lineBudget: number,
+  ): Promise<SearchCommandResult> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(command, commandArgs, {
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+
+      const lines: string[] = [];
+      const stderrChunks: Buffer[] = [];
+      let stdoutCarry = '';
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      let reachedOutputLimit = false;
+      let timedOut = false;
+      let aborted = false;
+      let settled = false;
+      let timer: NodeJS.Timeout | undefined;
+      let abortHandler: (() => void) | undefined;
+
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        if (abortHandler) context.abortSignal?.removeEventListener('abort', abortHandler);
+      };
+
+      const terminate = () => {
+        try { child.kill(); } catch {}
+      };
+
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        fn();
+      };
+
+      const appendStdout = (chunk: Buffer) => {
+        if (reachedOutputLimit) return;
+        stdoutBytes += chunk.length;
+        if (stdoutBytes > MAX_GREP_OUTPUT_BYTES) {
+          reachedOutputLimit = true;
+          terminate();
+          return;
+        }
+
+        const parts = (stdoutCarry + chunk.toString('utf8')).split(/\r?\n/);
+        stdoutCarry = parts.pop() || '';
+        for (const line of parts) {
+          lines.push(line);
+          if (lines.length >= lineBudget) {
+            reachedOutputLimit = true;
+            terminate();
+            break;
+          }
+        }
+      };
+
+      child.stdout?.on('data', (chunk: Buffer) => appendStdout(Buffer.from(chunk)));
+      child.stderr?.on('data', (chunk: Buffer) => {
+        const buffer = Buffer.from(chunk);
+        stderrBytes += buffer.length;
+        if (stderrBytes <= 64 * 1024) stderrChunks.push(buffer);
+      });
+
+      child.on('error', error => {
+        settle(() => reject(error));
+      });
+
+      timer = setTimeout(() => {
+        timedOut = true;
+        terminate();
+      }, GREP_COMMAND_TIMEOUT_MS);
+      timer.unref?.();
+
+      abortHandler = () => {
+        aborted = true;
+        terminate();
+      };
+      if (context.abortSignal?.aborted) {
+        abortHandler();
+      } else {
+        context.abortSignal?.addEventListener('abort', abortHandler, { once: true });
+      }
+
+      child.on('close', (exitCode: number | null, signal: NodeJS.Signals | null) => {
+        settle(() => {
+          if (aborted) {
+            reject(this.createGrepAbortError());
+            return;
+          }
+          if (timedOut) {
+            reject(this.createGrepTimeoutError());
+            return;
+          }
+          if (!reachedOutputLimit && stdoutCarry) lines.push(stdoutCarry);
+          resolve({
+            output: lines.join('\n'),
+            stderr: Buffer.concat(stderrChunks).toString('utf8'),
+            exitCode,
+            signal,
+            reachedOutputLimit,
+          });
+        });
+      });
+    });
+  }
+
+  private createGrepTimeoutError(): Error {
+    const error: any = new Error(`grep timed out after ${GREP_COMMAND_TIMEOUT_MS}ms`);
+    error.code = 'ETIMEDOUT';
+    return error;
+  }
+
+  private createGrepAbortError(): Error {
+    const error: any = new Error('grep aborted by user');
+    error.code = 'ABORT_ERR';
+    return error;
+  }
+
+  private isCancellationError(error: any): boolean {
+    const code = String(error?.code || '');
+    return code === 'ETIMEDOUT' || code === 'ABORT_ERR';
+  }
+
   private async executeWithRipgrep(args: any, searchPath: string, context: ToolExecutionContext, visibleSearchPath?: string): Promise<FallbackResult> {
-    const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
+    const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files' } = args;
+    const paging = normalizeGrepPaging(args?.limit, args?.offset);
     const rgArgs: string[] = ['--color=never', '--no-heading', '--hidden'];
 
     for (const dir of VCS_DIRECTORIES_TO_EXCLUDE) rgArgs.push('--glob', `!${dir}`);
@@ -178,9 +378,17 @@ export class GrepTool implements Tool {
     rgArgs.push(originalPath ? searchPath : '.');
 
     try {
-      const output = execFileSync('rg', rgArgs, { cwd: context.workingDirectory, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] }) as string;
-      return { content: this.processOutput(output, args, context, visibleSearchPath) };
+      const searchResult = await this.runSearchCommand('rg', rgArgs, context.workingDirectory, context, paging.offset + paging.limit + 1);
+      if (searchResult.exitCode === 1 && !searchResult.output) {
+        return { content: this.formatNoMatch(pattern, visibleSearchPath ?? originalPath, globPattern, fileType) };
+      }
+      if (searchResult.exitCode === 0 || searchResult.reachedOutputLimit) {
+        return { content: this.processOutput(searchResult.output, args, context, visibleSearchPath, searchResult.reachedOutputLimit) };
+      }
+      throw new Error(searchResult.stderr || `rg execution failed (exit ${searchResult.exitCode ?? searchResult.signal ?? 'unknown'})`);
     } catch (error: any) {
+      if (this.isCancellationError(error)) throw error;
+      if (error.status === undefined && !error.stderr) throw error;
       if (error.status === 1) {
         // 无匹配，返回格式化的"未找到"
         return { content: this.formatNoMatch(pattern, visibleSearchPath ?? originalPath, globPattern, fileType) };
@@ -192,7 +400,8 @@ export class GrepTool implements Tool {
   }
 
   private async executeWithSystemGrep(args: any, searchPath: string, context: ToolExecutionContext, visibleSearchPath?: string): Promise<FallbackResult> {
-    const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
+    const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files' } = args;
+    const paging = normalizeGrepPaging(args?.limit, args?.offset);
     const grepArgs: string[] = [];
 
     if (case_insensitive) grepArgs.push('-i');
@@ -202,20 +411,28 @@ export class GrepTool implements Tool {
 
     grepArgs.push('-r');
     for (const dir of VCS_DIRECTORIES_TO_EXCLUDE) grepArgs.push('--exclude-dir=' + dir);
-    grepArgs.push(pattern, searchPath);
+    grepArgs.push('-e', pattern, searchPath);
 
     try {
-      const output = execFileSync('grep', grepArgs, { cwd: context.workingDirectory, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] }) as string;
-      let processedOutput = output;
+      const searchResult = await this.runSearchCommand('grep', grepArgs, context.workingDirectory, context, paging.offset + paging.limit + 1);
+      if (searchResult.exitCode === 1 && !searchResult.output) {
+        return { content: this.formatNoMatch(pattern, visibleSearchPath ?? originalPath, globPattern, fileType) };
+      }
+      if (searchResult.exitCode !== 0 && !searchResult.reachedOutputLimit) {
+        throw new Error(searchResult.stderr || `grep execution failed (exit ${searchResult.exitCode ?? searchResult.signal ?? 'unknown'})`);
+      }
+      let processedOutput = searchResult.output;
 
       if (globPattern) {
-        const lines = output.trim().split('\n').filter(Boolean);
+        const lines = searchResult.output.trim().split('\n').filter(Boolean);
         const globRegex = new RegExp(globPattern.replace(/\*/g, '.*').replace(/\?/g, '.'));
         processedOutput = lines.filter(line => globRegex.test(path.basename(line.split(':')[0]))).join('\n');
       }
 
-      return { content: this.processOutput(processedOutput, args, context, visibleSearchPath) };
+      return { content: this.processOutput(processedOutput, args, context, visibleSearchPath, searchResult.reachedOutputLimit) };
     } catch (error: any) {
+      if (this.isCancellationError(error)) throw error;
+      if (error.status === undefined && !error.stderr) throw error;
       if (error.status === 1) {
         return { content: this.formatNoMatch(pattern, visibleSearchPath ?? originalPath, globPattern, fileType) };
       }
@@ -225,20 +442,35 @@ export class GrepTool implements Tool {
   }
 
   private async executeWithNodeJS(args: any, searchPath: string, context: ToolExecutionContext, visibleSearchPath?: string): Promise<FallbackResult> {
-    const { pattern, path: originalPath, glob: globPattern, type: fileType, case_insensitive = false, context: contextLines, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
+    const { pattern, glob: globPattern, case_insensitive = false, output_mode = 'files' } = args;
+    const paging = normalizeGrepPaging(args?.limit, args?.offset);
 
     if (!fs.existsSync(searchPath)) {
       throw new Error(`目录不存在: ${searchPath}`);
     }
 
-    const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(escapeRegex(pattern), case_insensitive ? 'i' : '');
+    const regex = new RegExp(pattern, case_insensitive ? 'i' : '');
     const results: string[] = [];
+    const lineBudget = paging.offset + paging.limit + 1;
+    let resultBytes = 0;
+    let reachedOutputLimit = false;
+
+    const addResult = (value: string) => {
+      if (reachedOutputLimit) return;
+      results.push(value);
+      resultBytes += Buffer.byteLength(value, 'utf8') + 1;
+      if (results.length >= lineBudget || resultBytes >= MAX_GREP_OUTPUT_BYTES) {
+        reachedOutputLimit = true;
+      }
+    };
 
     const walkDir = (dir: string) => {
+      if (reachedOutputLimit) return;
+      if (context.abortSignal?.aborted) throw this.createGrepAbortError();
       if (!fs.existsSync(dir)) return;
       try {
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (reachedOutputLimit) return;
           const fullPath = path.join(dir, entry.name);
           if (VCS_DIRECTORIES_TO_EXCLUDE.includes(entry.name as any)) continue;
           if (entry.isDirectory()) { walkDir(fullPath); continue; }
@@ -249,13 +481,16 @@ export class GrepTool implements Tool {
             }
             try {
               const lines = fs.readFileSync(fullPath, 'utf-8').split('\n');
+              let fileMatchCount = 0;
               for (let i = 0; i < lines.length; i++) {
                 if (regex.test(lines[i])) {
-                  if (output_mode === 'files') { results.push(fullPath); break; }
-                  else if (output_mode === 'count') { results.push(`${fullPath}:1`); break; }
-                  else results.push(`${fullPath}:${i + 1}:${lines[i]}`);
+                  if (output_mode === 'files') { addResult(fullPath); break; }
+                  else if (output_mode === 'count') { fileMatchCount++; }
+                  else addResult(`${fullPath}:${i + 1}:${lines[i]}`);
+                  if (reachedOutputLimit) break;
                 }
               }
+              if (output_mode === 'count' && fileMatchCount > 0) addResult(`${fullPath}:${fileMatchCount}`);
             } catch {}
           }
         }
@@ -265,14 +500,25 @@ export class GrepTool implements Tool {
     };
 
     walkDir(searchPath);
-    return { content: this.processOutput(results.join('\n'), args, context, visibleSearchPath) };
+    return { content: this.processOutput(results.join('\n'), args, context, visibleSearchPath, reachedOutputLimit) };
   }
 
-  private processOutput(output: string, args: any, context: ToolExecutionContext, visibleSearchPath?: string): string {
-    const { pattern, path: originalPath, glob: globPattern, type: fileType, output_mode = 'files', limit = DEFAULT_LIMIT, offset = 0 } = args;
+  private processOutput(output: string, args: any, context: ToolExecutionContext, visibleSearchPath?: string, reachedOutputLimit: boolean = false): string {
+    const { pattern, path: originalPath, glob: globPattern, type: fileType, output_mode = 'files' } = args;
+    const paging = normalizeGrepPaging(args?.limit, args?.offset);
     const allLines = output.trim().split('\n').filter(Boolean);
-    const { items: limitedLines, appliedLimit } = applyHeadLimit(allLines, limit, offset);
-    const result: GrepResult = { mode: output_mode, numFiles: 0, filenames: [], appliedLimit, appliedOffset: offset > 0 ? offset : undefined };
+    const { items: limitedLines, appliedLimit, nextOffset } = applyHeadLimit(allLines, paging, reachedOutputLimit);
+    const result: GrepResult = {
+      mode: output_mode,
+      numFiles: 0,
+      filenames: [],
+      appliedLimit,
+      appliedOffset: paging.offset > 0 ? paging.offset : undefined,
+      requestedLimit: paging.requestedLimit,
+      limitWasCapped: paging.limitWasCapped,
+      reachedOutputLimit,
+      nextOffset,
+    };
 
     if (output_mode === 'content') {
       result.content = limitedLines.map(line => {
@@ -303,12 +549,31 @@ export class GrepTool implements Tool {
     return `未找到匹配项。\n模式: ${pattern}\n路径: ${searchPath || '.'}\n${globPattern ? `Glob: ${globPattern}\n` : ''}${fileType ? `类型: ${fileType}\n` : ''}`;
   }
 
+  private formatResultNotes(result: GrepResult): string {
+    const notes: string[] = [];
+    if (result.limitWasCapped) {
+      if (result.requestedLimit === 0) {
+        notes.push(`Note: limit=0 is capped to ${MAX_GREP_LIMIT} results for safety.`);
+      } else if (result.requestedLimit !== undefined) {
+        notes.push(`Note: requested limit=${result.requestedLimit} was capped to ${MAX_GREP_LIMIT} results.`);
+      }
+    }
+    if (result.reachedOutputLimit) {
+      notes.push('Note: grep stopped collecting output after reaching the safety limit. Narrow pattern/path/glob or continue with offset.');
+    }
+    if (result.nextOffset !== undefined && result.appliedLimit !== undefined) {
+      notes.push(`Next page: call grep with offset=${result.nextOffset}, limit=${result.appliedLimit}.`);
+    }
+    return notes.length ? `\n\n${notes.join('\n')}` : '';
+  }
+
   private formatResult(result: GrepResult, pattern: string, searchPath: string | undefined, globPattern: string | undefined, fileType: string | undefined): string {
     const { mode, numFiles, filenames, content, numLines, numMatches, appliedLimit, appliedOffset } = result;
-    if (numFiles === 0 && !content) return `未找到匹配项。\n模式: ${pattern}\n路径: ${searchPath || '.'}\n${globPattern ? `Glob: ${globPattern}\n` : ''}${fileType ? `类型: ${fileType}\n` : ''}`;
+    const notes = this.formatResultNotes(result);
+    if (numFiles === 0 && !content) return `未找到匹配项。\n模式: ${pattern}\n路径: ${searchPath || '.'}\n${globPattern ? `Glob: ${globPattern}\n` : ''}${fileType ? `类型: ${fileType}\n` : ''}${notes}`;
     const limitInfo = formatLimitInfo(appliedLimit, appliedOffset);
-    if (mode === 'content') return `找到 ${numLines} 行匹配${limitInfo ? ` (${limitInfo})` : ''}:\n模式: ${pattern}\n路径: ${searchPath || '.'}\n${globPattern ? `Glob: ${globPattern}\n` : ''}${fileType ? `类型: ${fileType}\n` : ''}\n` + content;
-    if (mode === 'count') return `找到 ${numMatches} 个匹配，分布在 ${numFiles} 个文件${limitInfo ? ` (${limitInfo})` : ''}:\n模式: ${pattern}\n路径: ${searchPath || '.'}\n${globPattern ? `Glob: ${globPattern}\n` : ''}${fileType ? `类型: ${fileType}\n` : ''}\n` + content;
-    return `找到 ${numFiles} 个文件${limitInfo ? ` (${limitInfo})` : ''}:\n模式: ${pattern}\n路径: ${searchPath || '.'}\n${globPattern ? `Glob: ${globPattern}\n` : ''}${fileType ? `类型: ${fileType}\n` : ''}\n` + filenames.map((file, i) => `${(i + 1).toString().padStart(4, ' ')}. ${file}`).join('\n');
+    if (mode === 'content') return `找到 ${numLines} 行匹配${limitInfo ? ` (${limitInfo})` : ''}:\n模式: ${pattern}\n路径: ${searchPath || '.'}\n${globPattern ? `Glob: ${globPattern}\n` : ''}${fileType ? `类型: ${fileType}\n` : ''}\n` + content + notes;
+    if (mode === 'count') return `找到 ${numMatches} 个匹配，分布在 ${numFiles} 个文件${limitInfo ? ` (${limitInfo})` : ''}:\n模式: ${pattern}\n路径: ${searchPath || '.'}\n${globPattern ? `Glob: ${globPattern}\n` : ''}${fileType ? `类型: ${fileType}\n` : ''}\n` + content + notes;
+    return `找到 ${numFiles} 个文件${limitInfo ? ` (${limitInfo})` : ''}:\n模式: ${pattern}\n路径: ${searchPath || '.'}\n${globPattern ? `Glob: ${globPattern}\n` : ''}${fileType ? `类型: ${fileType}\n` : ''}\n` + filenames.map((file, i) => `${(i + 1).toString().padStart(4, ' ')}. ${file}`).join('\n') + notes;
   }
 }

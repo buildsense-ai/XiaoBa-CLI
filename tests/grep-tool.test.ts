@@ -12,6 +12,23 @@ function getContent(result: { ok: boolean; content: unknown }): string {
   return result.content as string;
 }
 
+async function withCommandPathDisabled<T>(fn: () => Promise<T>): Promise<T> {
+  const pathKeys = Object.keys(process.env).filter(key => key.toLowerCase() === 'path');
+  if (pathKeys.length === 0) pathKeys.push('PATH');
+  const originals = new Map(pathKeys.map(key => [key, process.env[key]]));
+
+  try {
+    for (const key of pathKeys) process.env[key] = '';
+    return await fn();
+  } finally {
+    for (const key of pathKeys) {
+      const original = originals.get(key);
+      if (original === undefined) delete process.env[key];
+      else process.env[key] = original;
+    }
+  }
+}
+
 describe('GrepTool', () => {
   let grepTool: GrepTool;
   let testDir: string;
@@ -64,6 +81,15 @@ describe('GrepTool', () => {
   });
 
   describe('基础搜索功能', () => {
+    test('应该拒绝空pattern', async () => {
+      const result = await grepTool.execute({
+        output_mode: 'files'
+      }, context);
+
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.errorCode, 'INVALID_TOOL_ARGUMENTS');
+    });
+
     test('应该能找到匹配的文件（files模式）', async () => {
       const result = await grepTool.execute({
         pattern: 'Hello',
@@ -163,6 +189,7 @@ describe('GrepTool', () => {
 
       const text = getContent(result);
       assert.ok(text.includes('limit: 2'), '应该显示limit信息');
+      assert.ok(text.includes('Next page:'), '应该提示下一页offset');
     });
 
     test('应该支持offset跳过结果', async () => {
@@ -174,6 +201,17 @@ describe('GrepTool', () => {
 
       const text = getContent(result);
       assert.ok(text.includes('offset: 1'), '应该显示offset信息');
+    });
+
+    test('limit=0应该被安全上限收住', async () => {
+      const result = await grepTool.execute({
+        pattern: 'Hello',
+        output_mode: 'files',
+        limit: 0
+      }, context);
+
+      const text = getContent(result);
+      assert.ok(text.includes('limit=0 is capped'), '应该提示limit=0已被安全上限收住');
     });
   });
 
@@ -246,6 +284,30 @@ describe('GrepTool', () => {
       } finally {
         process.env.PATH = originalPath;
       }
+    });
+
+    test('Node fallback应该按regex语义搜索', async () => {
+      const result = await withCommandPathDisabled(() => grepTool.execute({
+        pattern: 'hello|greet',
+        output_mode: 'files'
+      }, context));
+
+      const text = getContent(result);
+      assert.ok(text.includes('test1.js'), '应该匹配hello');
+      assert.ok(text.includes('nested.js'), '应该匹配greet');
+    });
+
+    test('Node fallback的count模式应该统计真实匹配次数', async () => {
+      const marker = `count_marker_${Date.now()}`;
+      fs.writeFileSync(path.join(testDir, 'count-exact.txt'), `${marker}\n${marker}\nnope\n`);
+
+      const result = await withCommandPathDisabled(() => grepTool.execute({
+        pattern: marker,
+        output_mode: 'count'
+      }, context));
+
+      const text = getContent(result);
+      assert.ok(text.includes('count-exact.txt:2'), `应该统计到2次匹配，实际: ${text}`);
     });
   });
 
