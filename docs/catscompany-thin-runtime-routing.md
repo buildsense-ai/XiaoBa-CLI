@@ -45,3 +45,8 @@ Optional. Omit target to run on the host computer running this agent. Set target
 ```
 
 The transient runtime context remains short Chinese text and does not expose internal owner/device ids.
+
+## Observed Issues To Track
+
+- 2026-06-30 group runtime facts changed for the same participant across turns: `arrowhaken` was first injected as `EASON, Windows`, then later as `xiaoba-demo-runtime, Unknown`. This indicates CatsCompany runtime device selection can still surface an older/demo ready device instead of the expected current Windows device.
+- In group chats, user wording such as "your desktop" can be misread after previous assistant replies said "your desktop" while referring to the speaker's own desktop. The model-facing rule should explicitly cover "your desktop / your files / your side" as the bot host computer, and assistant replies should prefer explicit names such as "Lin's desktop" or "your (Lin) desktop" to avoid polluting future turns.
