@@ -124,6 +124,29 @@ describe('ShellTool current directory probe', () => {
     assert.ok(artifact.includes('out-' + 'x'.repeat(35000) + '-end'));
   });
 
+  test('stdout larger than the old maxBuffer is persisted without failing', async () => {
+    const tool = new ShellTool();
+    const outputChars = 11 * 1024 * 1024;
+    const command = process.platform === 'win32'
+      ? `& ${quotePowerShellString(process.execPath)} -e "process.stdout.write('z'.repeat(${outputChars}))"`
+      : `${quotePosixString(process.execPath)} -e "process.stdout.write('z'.repeat(${outputChars}))"`;
+    const result = await tool.execute({ command, timeout: 60000 }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    const content = result.content as string;
+    assert.match(content, /^status: succeeded$/m);
+    assert.match(content, /^truncated: true$/m);
+    assert.match(content, new RegExp(`^original_output_chars: ${outputChars}$`, 'm'));
+    assert.doesNotMatch(content, /maxBuffer exceeded/);
+
+    const artifactPath = readContractField(content, 'output_artifact');
+    assert.ok(artifactPath, 'expected output_artifact field');
+    assert.ok(fs.statSync(artifactPath).size > outputChars);
+  });
+
   test('large failed stderr output is truncated and persisted as an artifact', async () => {
     const tool = new ShellTool();
     const command = process.platform === 'win32'
