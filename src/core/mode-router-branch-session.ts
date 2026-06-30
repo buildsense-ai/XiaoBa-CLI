@@ -30,6 +30,7 @@ export interface ModeRouterBranchSessionOptions {
   signal?: AbortSignal;
   logEnabled?: boolean;
   promptsDir?: string;
+  modelTimeoutMs?: number;
 }
 
 export class ModeRouterBranchSession extends ObservationBranchSession<PromptModeRouterFinishPayload> {
@@ -44,6 +45,7 @@ export class ModeRouterBranchSession extends ObservationBranchSession<PromptMode
       queue: modeOptions.queue,
       signal: modeOptions.signal,
       logEnabled: modeOptions.logEnabled,
+      modelTimeoutMs: modeOptions.modelTimeoutMs,
     });
     this.promptsDir = modeOptions.promptsDir ?? getPromptBaseDir();
   }

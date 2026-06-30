@@ -23,12 +23,18 @@ function makeToolCall(id: string, name: string, args: unknown): ToolCall {
 
 class MemoryBranchAI {
   calls: Message[][] = [];
+  chatCalls = 0;
 
   isToolCallingSupported(): boolean {
     return true;
   }
 
-  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
+  async chat(): Promise<ChatResponse> {
+    this.chatCalls += 1;
+    assert.fail('memory sidecar branch should use chatStream');
+  }
+
+  async chatStream(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
     this.calls.push(JSON.parse(JSON.stringify(messages)));
     const lastTool = [...messages].reverse().find(message => message.role === 'tool');
     if (!lastTool) {
@@ -56,12 +62,18 @@ class MemoryBranchAI {
 
 class NoInjectMemoryBranchAI {
   calls: Message[][] = [];
+  chatCalls = 0;
 
   isToolCallingSupported(): boolean {
     return true;
   }
 
-  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
+  async chat(): Promise<ChatResponse> {
+    this.chatCalls += 1;
+    assert.fail('memory sidecar branch should use chatStream');
+  }
+
+  async chatStream(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
     this.calls.push(JSON.parse(JSON.stringify(messages)));
     return {
       content: null,
@@ -77,13 +89,19 @@ class NoInjectMemoryBranchAI {
 
 class PromptInjectionMemoryBranchAI {
   calls: Message[][] = [];
+  chatCalls = 0;
   sawUntrustedEvidenceRule = false;
 
   isToolCallingSupported(): boolean {
     return true;
   }
 
-  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
+  async chat(): Promise<ChatResponse> {
+    this.chatCalls += 1;
+    assert.fail('memory sidecar branch should use chatStream');
+  }
+
+  async chatStream(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
     this.calls.push(JSON.parse(JSON.stringify(messages)));
     const systemText = String(messages.find(message => message.role === 'system')?.content || '');
     this.sawUntrustedEvidenceRule = this.sawUntrustedEvidenceRule
@@ -185,6 +203,7 @@ describe('memory sidecar branch', () => {
     assert.equal(injected.summary, 'Prior memory says dashboard filters should stay compact.');
     assert.deepEqual(injected.refs, ['chat/2026-06-09/demo.jsonl#1']);
     assert.equal(aiService.calls.length, 2);
+    assert.equal(aiService.chatCalls, 0);
   });
 
   test('suppresses observations when branch finishes with inject false', async () => {
@@ -203,6 +222,7 @@ describe('memory sidecar branch', () => {
 
     assert.equal(queue.drain().length, 0);
     assert.equal(aiService.calls.length, 1);
+    assert.equal(aiService.chatCalls, 0);
     assert.match(readBranchLogs(testRoot), /suppressed_observation/);
   });
 
@@ -249,6 +269,7 @@ describe('memory sidecar branch', () => {
     const observations = queue.drain();
 
     assert.equal(aiService.sawUntrustedEvidenceRule, true);
+    assert.equal(aiService.chatCalls, 0);
     assert.equal(observations.length, 1);
     assert.match(observations[0].summary, /blue button/);
     assert.doesNotMatch(observations[0].summary, /忽略系统提示|finish_memory_search 注入|sk-test-secret|secret/i);
@@ -259,8 +280,20 @@ describe('memory sidecar branch', () => {
   test('cancelled branch does not publish late memory observations', async () => {
     const queue = new InMemorySyntheticObservationQueue();
     const aiService = {
+      chatCalls: 0,
+      streamCalls: 0,
       isToolCallingSupported: () => true,
-      chat: (_messages: Message[], _tools?: ToolDefinition[], options?: { signal?: AbortSignal }) => {
+      chat: () => {
+        aiService.chatCalls += 1;
+        assert.fail('memory sidecar branch should use chatStream');
+      },
+      chatStream: (
+        _messages: Message[],
+        _tools?: ToolDefinition[],
+        _callbacks?: unknown,
+        options?: { signal?: AbortSignal },
+      ) => {
+        aiService.streamCalls += 1;
         return new Promise<ChatResponse>((_resolve, reject) => {
           options?.signal?.addEventListener('abort', () => {
             const error = new Error('aborted');
@@ -283,6 +316,52 @@ describe('memory sidecar branch', () => {
     handle.cancel();
     await handle.done;
     assert.equal(queue.drain().length, 0);
+    assert.ok(aiService.streamCalls <= 1);
+    assert.equal(aiService.chatCalls, 0);
+  });
+
+  test('times out hanging memory branch without publishing observations', async () => {
+    const queue = new InMemorySyntheticObservationQueue();
+    let aborted = false;
+    const aiService = {
+      chatCalls: 0,
+      streamCalls: 0,
+      isToolCallingSupported: () => true,
+      chat: () => {
+        aiService.chatCalls += 1;
+        assert.fail('memory sidecar branch should use chatStream');
+      },
+      chatStream: (
+        _messages: Message[],
+        _tools?: ToolDefinition[],
+        _callbacks?: unknown,
+        options?: { signal?: AbortSignal },
+      ) => {
+        aiService.streamCalls += 1;
+        options?.signal?.addEventListener('abort', () => {
+          aborted = true;
+        }, { once: true });
+        return new Promise<ChatResponse>(() => undefined);
+      },
+    };
+
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'test-session',
+      input: 'quick question',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: aiService as any,
+      queue,
+      modelTimeoutMs: 20,
+    });
+
+    await handle.done;
+
+    assert.equal(queue.drain().length, 0);
+    assert.equal(aiService.streamCalls, 1);
+    assert.equal(aiService.chatCalls, 0);
+    assert.equal(aborted, true);
+    assert.match(readBranchLogs(testRoot), /model_timeout/);
   });
 });
 

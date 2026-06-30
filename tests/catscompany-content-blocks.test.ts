@@ -103,8 +103,6 @@ function createProcessHarness() {
       runtimePlans.push({ topic, snapshot });
     },
   };
-  bot.pendingAnswers = new Map();
-  bot.pendingAnswerBySession = new Map();
   bot.pendingAttachments = new Map();
   bot.messageQueue = new Map();
   bot.subAgentEventRoutes = new Map();

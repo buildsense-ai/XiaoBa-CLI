@@ -8,7 +8,10 @@ import {
 } from '../runtime/prompt-modes';
 import { getPromptBaseDir } from '../utils/prompt-template';
 import { Logger } from '../utils/logger';
-import { SyntheticObservation } from './synthetic-observation';
+import {
+  SyntheticObservation,
+  SyntheticObservationTiming,
+} from './synthetic-observation';
 import {
   PromptModeRouterAction,
   PromptModeRouterFinishPayload,
@@ -27,6 +30,9 @@ export interface PromptModeRuntimeState {
   reason: string;
   activatedTurn: number;
   updatedTurn: number;
+  sourceTiming?: SyntheticObservationTiming;
+  originTurn?: number;
+  appliedTurn: number;
   instructionsInjectedTurn?: number;
 }
 
@@ -149,6 +155,9 @@ export class PromptModeRuntime {
         ? previous.activatedTurn
         : turnNumber,
       updatedTurn: turnNumber,
+      sourceTiming: payload.sourceTiming,
+      originTurn: payload.originTurn,
+      appliedTurn: turnNumber,
       instructionsInjectedTurn: previous?.instructionsInjectedTurn,
     };
     Logger.info(`[prompt-mode-runtime] active mode=${definition.id} confidence=${payload.confidence.toFixed(2)} reason=${payload.reason}`);
@@ -186,6 +195,7 @@ export class PromptModeRuntime {
         `Active prompt mode: ${this.active.mode} (${this.active.title}).`,
         `Selected asynchronously by runtime mode router with confidence ${this.active.confidence.toFixed(2)}.`,
         `Reason: ${this.active.reason}`,
+        this.formatModeTimingLine(this.active, turnNumber),
         `Full mode instructions refresh every ${this.fullPromptRefreshInterval} active turn(s).`,
         'Apply this mode where it fits the current user request. If the user has clearly changed topic, follow the user and do not force this mode.',
         'If the user explicitly asks to leave or disable this mode, call prompt_mode with mode "clear" before answering.',
@@ -209,6 +219,17 @@ export class PromptModeRuntime {
       || turnNumber - this.active.instructionsInjectedTurn >= this.fullPromptRefreshInterval;
   }
 
+  private formatModeTimingLine(state: PromptModeRuntimeState, turnNumber: number): string {
+    if (state.sourceTiming === 'late_previous_turn') {
+      const origin = state.originTurn !== undefined ? ` turn ${state.originTurn}` : ' the previous user turn';
+      return `Timing: selected from${origin} and arrived late; apply it only if the current request continues that thread.`;
+    }
+    if (state.sourceTiming === 'current_turn') {
+      return `Timing: selected for the current user turn ${turnNumber}.`;
+    }
+    return 'Timing: selected asynchronously; apply it only where it fits the current user request.';
+  }
+
   private logRuntimeEvent(
     action: string,
     state: PromptModeRuntimeState | null,
@@ -228,6 +249,9 @@ export class PromptModeRuntime {
             reason: state.reason,
             activatedTurn: state.activatedTurn,
             updatedTurn: state.updatedTurn,
+            sourceTiming: state.sourceTiming,
+            originTurn: state.originTurn,
+            appliedTurn: state.appliedTurn,
             instructionsInjectedTurn: state.instructionsInjectedTurn,
           } : null,
           ...extra,
@@ -295,5 +319,23 @@ export function parsePromptModeRouterObservation(
     ...(mode ? { mode } : {}),
     confidence: Math.max(0, Math.min(1, confidence)),
     reason,
+    ...extractPromptModeObservationTiming(observation),
+  };
+}
+
+function extractPromptModeObservationTiming(
+  observation: SyntheticObservation,
+): Pick<PromptModeRouterFinishPayload, 'sourceTiming' | 'originTurn'> {
+  const rawTiming = observation.metadata?.timing ?? observation.timing;
+  const sourceTiming = rawTiming === 'current_turn' || rawTiming === 'late_previous_turn'
+    ? rawTiming
+    : undefined;
+  const rawOriginTurn = observation.metadata?.originTurn;
+  const originTurn = typeof rawOriginTurn === 'number' && Number.isFinite(rawOriginTurn)
+    ? rawOriginTurn
+    : undefined;
+  return {
+    ...(sourceTiming ? { sourceTiming } : {}),
+    ...(originTurn !== undefined ? { originTurn } : {}),
   };
 }

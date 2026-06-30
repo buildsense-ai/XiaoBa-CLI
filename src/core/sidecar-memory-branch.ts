@@ -13,6 +13,7 @@ export interface MemorySidecarBranchOptions {
   queue: SyntheticObservationQueue;
   signal?: AbortSignal;
   logEnabled?: boolean;
+  modelTimeoutMs?: number;
 }
 
 export interface MemorySidecarBranchHandle {

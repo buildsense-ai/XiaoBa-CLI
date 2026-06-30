@@ -7,6 +7,8 @@ import { Tool } from '../types/tool';
 import { AgentToolExecutor } from '../agents/agent-tool-executor';
 import { ConversationRunner, RunResult, RunnerCallbacks } from './conversation-runner';
 
+const DEFAULT_BRANCH_MODEL_TIMEOUT_MS = 15_000;
+
 export interface BranchSessionOptions {
   id: string;
   type: string;
@@ -14,6 +16,7 @@ export interface BranchSessionOptions {
   workingDirectory: string;
   signal?: AbortSignal;
   logEnabled?: boolean;
+  modelTimeoutMs?: number;
 }
 
 export interface BranchRunOutcome {
@@ -73,7 +76,7 @@ export abstract class BranchSession {
       },
     );
     const runner = new ConversationRunner(this.options.aiService, toolExecutor, {
-      stream: false,
+      stream: true,
       enableCompression: true,
       shouldContinue: () => this.shouldContinue(),
       toolExecutionContext: {
@@ -101,8 +104,20 @@ export abstract class BranchSession {
       onRetry: (attempt, maxRetries) => this.logger.write('retry', { attempt, max_retries: maxRetries }),
     };
 
+    const runPromise = runner.run(this.messages, callbacks);
+    const abortPromise = this.buildAbortPromise();
+    const timeoutMs = this.resolveModelTimeoutMs();
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        this.logger.write('model_timeout', { timeout_ms: timeoutMs });
+        this.abortController.abort();
+        reject(this.createAbortError(`Branch model request timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+
     try {
-      const result = await runner.run(this.messages, callbacks);
+      const result = await Promise.race([runPromise, abortPromise, timeoutPromise]);
       this.logger.write('run_result', {
         response: result.response,
         final_response_visible: result.finalResponseVisible,
@@ -110,6 +125,8 @@ export abstract class BranchSession {
       });
       return { messages: this.messages, result };
     } finally {
+      abortPromise.cleanup();
+      if (timeout) clearTimeout(timeout);
       this.logger.write('transcript', { messages: this.messages });
     }
   }
@@ -127,6 +144,34 @@ export abstract class BranchSession {
     if (!this.isAbortError(error)) {
       Logger.warning(`[branch:${this.options.type}:${this.options.id}] failed: ${error?.message || error}`);
     }
+  }
+
+  private resolveModelTimeoutMs(): number {
+    const configured = this.options.modelTimeoutMs ?? DEFAULT_BRANCH_MODEL_TIMEOUT_MS;
+    return Number.isFinite(configured) && configured > 0
+      ? configured
+      : DEFAULT_BRANCH_MODEL_TIMEOUT_MS;
+  }
+
+  private buildAbortPromise(): Promise<never> & { cleanup(): void } {
+    let cleanup: () => void = () => undefined;
+    const promise = new Promise<never>((_, reject) => {
+      const abort = () => reject(this.createAbortError('Branch session aborted'));
+      if (this.abortController.signal.aborted) {
+        abort();
+        return;
+      }
+      this.abortController.signal.addEventListener('abort', abort, { once: true });
+      cleanup = () => this.abortController.signal.removeEventListener('abort', abort);
+    }) as Promise<never> & { cleanup(): void };
+    promise.cleanup = cleanup;
+    return promise;
+  }
+
+  private createAbortError(message: string): Error {
+    const error = new Error(message);
+    error.name = 'AbortError';
+    return error;
   }
 }
 

@@ -11,7 +11,7 @@ import { AgentServices, BUSY_MESSAGE, RuntimeFeedbackInput, SessionCallbacks } f
 import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import type { SubAgentInfo } from '../core/sub-agent-session';
-import { ChannelCallbacks, DeviceRpcTransport, ToolErrorCode, ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
+import { ChannelCallbacks, DeviceRpcTransport, ToolErrorCode, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { ContentBlock } from '../types';
 import type { PendingUserInput } from '../core/conversation-runner';
 import type { DeviceGrantOperation, ExecutionScope, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant, ScopedLocalFileGrant } from '../types/session-identity';
@@ -47,15 +47,6 @@ interface PendingAttachment {
   localFileGrant?: ScopedLocalFileGrant;
 }
 
-interface PendingAnswer {
-  id: string;
-  sessionKey: string;
-  topic: string;
-  expectedSenderId: string;
-  resolve: (text: string) => void;
-  timeoutHandle: ReturnType<typeof setTimeout>;
-}
-
 interface QueuedMessage {
   userMessage: string | ContentBlock[];
   topic: string;
@@ -75,7 +66,6 @@ interface SubAgentEventRoute {
   channelSource?: string;
 }
 
-const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 const TYPING_HEARTBEAT_INTERVAL_MS = 5_000;
 const DEVICE_REGISTRATION_REFRESH_MS = 120_000;
 const DEVICE_RPC_DEFAULT_TTL_MS = 60_000;
@@ -152,10 +142,6 @@ export class CatsCompanyBot {
   private sender: MessageSender;
   private sessionManager: MessageSessionManager;
   private agentServices: AgentServices;
-  /** key = pendingAnswerId */
-  private pendingAnswers = new Map<string, PendingAnswer>();
-  /** key = sessionKey, value = pendingAnswerId */
-  private pendingAnswerBySession = new Map<string, string>();
   /** 等待用户后续指令的附件队列，key 为 sessionKey */
   private pendingAttachments = new Map<string, PendingAttachment[]>();
   /** 主会话忙时的消息队列，key = sessionKey */
@@ -745,9 +731,6 @@ export class CatsCompanyBot {
           Logger.warning(`前端通知发送失败 (tool_result): ${err.message}`);
         }
       },
-      confirmToolExecution: opts?.sessionKey && opts?.senderId
-        ? (request) => this.confirmCatsCoToolExecution(topic, opts.sessionKey!, opts.senderId!, request)
-        : undefined,
     };
   }
 
@@ -769,23 +752,6 @@ export class CatsCompanyBot {
     if (this.botUid && msg.senderId === this.botUid) return;
 
     const key = msg.envelope.sessionKey;
-
-    // ── 拦截：如果当前 session 正在等待回答，按 sender 精确匹配 ──
-    const pendingId = this.pendingAnswerBySession.get(key);
-    if (pendingId) {
-      const pending = this.pendingAnswers.get(pendingId);
-      if (!pending) {
-        this.pendingAnswerBySession.delete(key);
-      } else if (msg.senderId === pending.expectedSenderId) {
-        this.clearPendingAnswerById(pending.id);
-        Logger.info(`[${key}] 收到用户对提问的回复: ${msg.text.slice(0, 50)}...`);
-        pending.resolve(msg.text);
-        return;
-      } else {
-        Logger.info(`[${key}] 忽略非提问发起人的回复: ${msg.senderId}`);
-        return;
-      }
-    }
 
     await this.processParsedMessage(msg, key);
   }
@@ -946,7 +912,6 @@ export class CatsCompanyBot {
       }
     } finally {
       stopTypingHeartbeat();
-      this.clearPendingAnswerBySession(key);
     }
 
     // 处理忙时排队的消息
@@ -1129,7 +1094,6 @@ export class CatsCompanyBot {
       await this.drainMessageQueue(sessionKey);
     } finally {
       stopTypingHeartbeatOnce();
-      this.clearPendingAnswerBySession(sessionKey);
     }
   }
 
@@ -1368,7 +1332,6 @@ export class CatsCompanyBot {
       }
     } finally {
       stopTypingHeartbeat();
-      this.clearPendingAnswerBySession(sessionKey);
     }
 
     await this.drainMessageQueue(sessionKey);
@@ -1471,10 +1434,6 @@ export class CatsCompanyBot {
     this.stopDeviceRegistrationRefresh();
     this.bot.disconnect();
     await this.sessionManager.destroy();
-    for (const pendingId of Array.from(this.pendingAnswers.keys())) {
-      this.clearPendingAnswerById(pendingId);
-    }
-    this.pendingAnswerBySession.clear();
     this.pendingAttachments.clear();
     this.messageQueue.clear();
     this.subAgentEventRoutes.clear();
@@ -1591,131 +1550,4 @@ export class CatsCompanyBot {
     ].join('\n');
   }
 
-  private async confirmCatsCoToolExecution(
-    topic: string,
-    sessionKey: string,
-    senderId: string,
-    request: ToolExecutionConfirmationRequest,
-  ): Promise<ToolExecutionConfirmationResult> {
-    const prompt = this.formatToolConfirmationPrompt(request);
-    try {
-      await this.sender.reply(topic, prompt);
-    } catch (err: any) {
-      Logger.warning(`工具确认请求发送失败: ${err?.message || err}`);
-      return { approved: false, reason: '无法发送工具确认请求，已取消本次操作。' };
-    }
-
-    const answer = await new Promise<string>((resolve) => {
-      this.registerPendingAnswer(sessionKey, topic, senderId, resolve);
-    });
-    const decision = this.parseToolConfirmationAnswer(answer);
-    if (decision === 'approve') return true;
-    if (decision === 'deny') {
-      return { approved: false, reason: '用户未确认该工具操作，已取消。' };
-    }
-    return { approved: false, reason: '未收到明确确认，已取消该工具操作。' };
-  }
-
-  private formatToolConfirmationPrompt(request: ToolExecutionConfirmationRequest): string {
-    const riskLabel = request.risk === 'high' ? '高' : request.risk === 'medium' ? '中' : '低';
-    const target = this.formatToolConfirmationTarget(request.args);
-    return [
-      `需要你确认后才能继续执行 ${request.toolName}。`,
-      `风险等级：${riskLabel}`,
-      target ? `操作对象：${target}` : '',
-      request.reason,
-      '请只回复“同意”或“确认执行”继续；回复“取消”或“不确认”则不会执行。',
-    ].filter(Boolean).join('\n');
-  }
-
-  private formatToolConfirmationTarget(args: unknown): string {
-    if (!args || typeof args !== 'object' || Array.isArray(args)) return '';
-    const record = args as Record<string, unknown>;
-    const preferredKeys = ['file_path', 'path', 'target', 'command', 'pattern', 'description'];
-    for (const key of preferredKeys) {
-      const value = record[key];
-      if (typeof value === 'string' && value.trim()) {
-        return `${key}=${this.truncateConfirmationValue(value.trim())}`;
-      }
-    }
-    try {
-      return this.truncateConfirmationValue(JSON.stringify(record));
-    } catch {
-      return '';
-    }
-  }
-
-  private truncateConfirmationValue(value: string): string {
-    return value.length <= 160 ? value : `${value.slice(0, 157)}...`;
-  }
-
-  private parseToolConfirmationAnswer(answer: string): 'approve' | 'deny' | 'unknown' {
-    const text = String(answer || '').trim().toLowerCase().replace(/[。.!！\s]+$/g, '');
-    if (!text || text.includes('未在120秒内回复')) return 'unknown';
-    if (/^(取消|不同意|拒绝|不要|不行|否|no|n|cancel|deny|denied)$/i.test(text)
-      || /不\s*确认/.test(text)
-      || /不是\s*确认/.test(text)
-      || /别\s*执行/.test(text)
-      || /不要\s*执行/.test(text)
-      || text.includes('取消')
-      || text.includes('不同意')
-      || text.includes('拒绝')) {
-      return 'deny';
-    }
-    if (/^(同意|确认|确认执行|可以|可以继续|继续|继续执行|执行|yes|y|ok|approve|approved)$/i.test(text)) {
-      return 'approve';
-    }
-    return 'unknown';
-  }
-
-  private registerPendingAnswer(
-    sessionKey: string,
-    topic: string,
-    expectedSenderId: string,
-    resolve: (text: string) => void,
-  ): void {
-    const existingId = this.pendingAnswerBySession.get(sessionKey);
-    if (existingId) {
-      const existing = this.pendingAnswers.get(existingId);
-      this.clearPendingAnswerById(existingId);
-      existing?.resolve('（提问已更新，请回答最新问题）');
-    }
-
-    const id = randomUUID();
-    const timeoutHandle = setTimeout(() => {
-      const pending = this.pendingAnswers.get(id);
-      if (!pending) return;
-      this.clearPendingAnswerById(id);
-      pending.resolve('（用户未在120秒内回复）');
-    }, PENDING_ANSWER_TIMEOUT_MS);
-
-    this.pendingAnswers.set(id, {
-      id,
-      sessionKey,
-      topic,
-      expectedSenderId,
-      resolve,
-      timeoutHandle,
-    });
-    this.pendingAnswerBySession.set(sessionKey, id);
-  }
-
-  private clearPendingAnswerBySession(sessionKey: string): void {
-    const pendingId = this.pendingAnswerBySession.get(sessionKey);
-    if (!pendingId) return;
-    this.clearPendingAnswerById(pendingId);
-  }
-
-  private clearPendingAnswerById(pendingId: string): void {
-    const pending = this.pendingAnswers.get(pendingId);
-    if (!pending) return;
-
-    clearTimeout(pending.timeoutHandle);
-    this.pendingAnswers.delete(pendingId);
-
-    const mappedId = this.pendingAnswerBySession.get(pending.sessionKey);
-    if (mappedId === pendingId) {
-      this.pendingAnswerBySession.delete(pending.sessionKey);
-    }
-  }
 }
