@@ -17,7 +17,7 @@ import type {
 } from '../src/types/session-identity';
 
 describe('runtime context builder', () => {
-  test('injects structured runtime context before the latest user message and removes it from durable history', async () => {
+  test('injects short transient runtime context before the latest user message and removes it from durable history', async () => {
     const builder = new TurnContextBuilder();
     const route = createSessionRoute({
       source: 'catscompany',
@@ -67,21 +67,19 @@ describe('runtime context builder', () => {
     assert.ok(runtimeIndex >= 0, 'runtime context should be injected');
     assert.ok(runtimeIndex < userIndex, 'runtime context should appear before the latest user message');
 
-    const snapshot = parseRuntimeContext(result.messages[runtimeIndex]);
-    assert.equal(snapshot.schema, 'xiaoba.execution_context.v1');
-    assert.equal(snapshot.conversation.type, 'group');
-    assert.equal(snapshot.conversation.currentSpeaker.id, 'usr7');
-    assert.equal(snapshot.conversation.participants.some((item: any) => item.id === 'usr43' && item.role === 'agent'), true);
-    assert.equal(snapshot.executionTargets[0].id, 'agent_self');
-    assert.equal(snapshot.executionTargets[0].status, 'ready');
-    assert.equal(snapshot.executionTargets.some((item: any) => item.id === 'speaker_default' && item.status === 'ready'), true);
-    assert.equal(snapshot.defaultTarget, 'agent_self');
-    assert.match(snapshot.toolRules.join('\n'), /我的电脑/);
-    assert.match(snapshot.toolRules.join('\n'), /你的电脑/);
-    assert.doesNotMatch(result.messages[runtimeIndex].content as string, /C:\\secret/);
-    assert.doesNotMatch(result.messages[runtimeIndex].content as string, /body-main/);
-    assert.doesNotMatch(result.messages[runtimeIndex].content as string, /body-secret/);
-    assert.doesNotMatch(result.messages[runtimeIndex].content as string, /installation-main/);
+    const runtimeText = String(result.messages[runtimeIndex].content || '');
+    assert.match(runtimeText, /^\[transient_runtime_context\]/);
+    assert.match(runtimeText, /\[\/transient_runtime_context\]$/);
+    assert.match(runtimeText, /默认不要传 target/);
+    assert.match(runtimeText, /你的电脑\/XiaoBa 的电脑\/bot 的电脑/);
+    assert.doesNotMatch(runtimeText, /可在用户电脑执行的工具/);
+    assert.doesNotMatch(runtimeText, /read_file, resolve_common_directory, glob, grep, write_file, edit_file, execute_shell/);
+    assert.doesNotMatch(runtimeText, /xiaoba\.execution_context\.v1/);
+    assert.doesNotMatch(runtimeText, /"conversation"/);
+    assert.doesNotMatch(runtimeText, /C:\\secret/);
+    assert.doesNotMatch(runtimeText, /body-main/);
+    assert.doesNotMatch(runtimeText, /body-secret/);
+    assert.doesNotMatch(runtimeText, /installation-main/);
 
     const durable = builder.removeTransientMessages(result.messages);
     assert.equal(durable.some(isRuntimeContextMessage), false);
@@ -162,11 +160,6 @@ function isRuntimeContextMessage(message: Message): boolean {
   return message.role === 'system'
     && typeof message.content === 'string'
     && message.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX);
-}
-
-function parseRuntimeContext(message: Message): any {
-  const content = String(message.content || '');
-  return JSON.parse(content.slice(TRANSIENT_RUNTIME_CONTEXT_PREFIX.length).trim());
 }
 
 function localGrant(filePath: string): ScopedLocalFileGrant {
