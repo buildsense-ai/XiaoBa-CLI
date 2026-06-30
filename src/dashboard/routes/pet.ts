@@ -6,6 +6,9 @@ import {
   getCachedPromptCompanionProposal,
   getPromptCompanionProposal,
 } from '../../pet/prompt-companion';
+import { getDailyReport, saveDailyReport } from '../../pet/daily-report-companion';
+import { applySkillDraft, getSkillDrafts } from '../../pet/skill-draft-companion';
+import { getSkillCompanionRecommendations } from '../../pet/skill-companion';
 
 export function registerPetRoutes(router: Router): void {
   router.get('/pet/status', (_req, res) => {
@@ -31,6 +34,62 @@ export function registerPetRoutes(router: Router): void {
       res.json(getPetService().progress());
     } catch (error: any) {
       res.status(500).json({ error: error?.message || String(error) });
+    }
+  });
+
+  router.get('/pet/skill-recommendations', (req, res) => {
+    try {
+      res.json(getSkillCompanionRecommendations({
+        days: req.query.days ? Number(req.query.days) : undefined,
+        limit: req.query.limit ? Number(req.query.limit) : undefined,
+      }));
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message || String(error) });
+    }
+  });
+
+  router.get('/pet/skill-drafts', (req, res) => {
+    try {
+      res.json(getSkillDrafts({
+        days: req.query.days ? Number(req.query.days) : undefined,
+        limit: req.query.limit ? Number(req.query.limit) : undefined,
+      }));
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message || String(error) });
+    }
+  });
+
+  router.get('/pet/daily-report', (req, res) => {
+    try {
+      res.json(getDailyReport({
+        date: req.query.date ? String(req.query.date) : undefined,
+        days: req.query.days ? Number(req.query.days) : undefined,
+        limit: req.query.limit ? Number(req.query.limit) : undefined,
+      }));
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message || String(error) });
+    }
+  });
+
+  router.post('/pet/daily-report/save', (req, res) => {
+    try {
+      if (!requireJsonWrite(req, res)) return;
+      res.json(saveDailyReport({
+        date: req.body?.date ? String(req.body.date) : undefined,
+        days: req.body?.days ? Number(req.body.days) : undefined,
+        limit: req.body?.limit ? Number(req.body.limit) : undefined,
+      }));
+    } catch (error: any) {
+      res.status(Number(error?.status || 500)).json({ error: error?.message || String(error) });
+    }
+  });
+
+  router.post('/pet/skill-drafts/apply', (req, res) => {
+    try {
+      if (!requireJsonWrite(req, res)) return;
+      res.json(applySkillDraft(String(req.body?.id || '')));
+    } catch (error: any) {
+      res.status(Number(error?.status || 500)).json({ error: error?.message || String(error) });
     }
   });
 
