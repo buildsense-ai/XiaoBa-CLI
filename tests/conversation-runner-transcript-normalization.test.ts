@@ -86,6 +86,40 @@ class MockToolExecutor implements ToolExecutor {
   }
 }
 
+class TargetContextToolExecutor implements ToolExecutor {
+  getToolDefinitions(): ToolDefinition[] {
+    return [{
+      name: 'execute_shell',
+      description: 'mock shell',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }];
+  }
+
+  async executeTool(toolCall: ToolCall): Promise<ToolResult> {
+    return {
+      tool_call_id: toolCall.id,
+      role: 'tool',
+      name: toolCall.function.name,
+      content: 'Command succeeded:\n$ echo ok\nok',
+      targetContext: [
+        '[tool_target]',
+        'tool: execute_shell',
+        'operation: execute_shell',
+        'target: virtual_employee_cloud_runtime',
+        'cwd: C:\\agent\\repo',
+        '[/tool_target]',
+      ].join('\n'),
+      ok: true,
+    };
+  }
+}
+
 function createMockAI(responses: ChatResponse[]) {
   const receivedMessages: Message[][] = [];
   let index = 0;
@@ -145,6 +179,203 @@ test('runner exposes assistant text before tool calls separately from working st
   assert.deepEqual(assistantText, ['我先查一下天气。']);
   assert.deepEqual(thinking, []);
   assert.equal(result.response, '天气结果已整理。');
+});
+
+test('runner injects tool target context into provider transcript only', async () => {
+  const responses = [
+    makeToolResponse(makeToolCall('call_1', 'execute_shell', { command: 'echo ok' })),
+    makeFinalResponse('done'),
+  ];
+  const { aiService, getReceivedMessages } = createMockAI(responses);
+  const runner = new ConversationRunner(aiService, new TargetContextToolExecutor(), {
+    stream: false,
+  });
+  const displayed: string[] = [];
+
+  await runner.run([{ role: 'user', content: 'run it' }], {
+    onToolEnd: (_name, _id, result) => displayed.push(result),
+  });
+
+  assert.equal(displayed[0], 'Command succeeded:\n$ echo ok\nok');
+  const secondRequest = getReceivedMessages()[1];
+  const toolMessage = secondRequest.find(message => message.role === 'tool');
+  assert.ok(toolMessage);
+  assert.match(String(toolMessage.content), /^\[tool_target\]/);
+  assert.match(String(toolMessage.content), /target: virtual_employee_cloud_runtime/);
+  assert.match(String(toolMessage.content), /Command succeeded/);
+});
+
+test('runner suppresses verbose diagnostic text before tool calls', async () => {
+  const diagnostic = [
+    '2. **超长混合代码块完整** — 看 split 输出，第一段含多个空行。',
+    '',
+    '问题：seg 里 b.start 是代码块开始位置，实际却被硬切到了代码块中间。',
+    '继续调试正则和硬切分支。',
+  ].join('\n');
+  const responses = [
+    {
+      content: diagnostic,
+      toolCalls: [makeToolCall('call_1', 'execute_shell', { command: 'node test.js' })],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 80,
+        totalTokens: 180,
+      },
+    },
+    makeFinalResponse('测试已修到全绿。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'execute_shell',
+      description: 'run command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }],
+    { execute_shell: 'ok' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const assistantText: string[] = [];
+  const thinking: string[] = [];
+
+  const result = await runner.run([{ role: 'user', content: '跑长任务' }], {
+    onAssistantText: text => assistantText.push(text),
+    onThinking: text => thinking.push(text),
+  });
+
+  assert.deepEqual(assistantText, []);
+  assert.deepEqual(thinking, []);
+  assert.equal(result.response, '测试已修到全绿。');
+  assert.equal(toolExecutor.getExecutionCount('execute_shell'), 1);
+});
+
+test('runner suppresses short debugging diagnosis before tool calls', async () => {
+  const responses = [
+    {
+      content: '继续调试测试失败项，先看断言和实际输出。',
+      toolCalls: [makeToolCall('call_1', 'execute_shell', { command: 'node test.js' })],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+      },
+    },
+    makeFinalResponse('已修好。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'execute_shell',
+      description: 'run command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }],
+    { execute_shell: 'ok' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const assistantText: string[] = [];
+  const thinking: string[] = [];
+
+  const result = await runner.run([{ role: 'user', content: '继续排查' }], {
+    onAssistantText: text => assistantText.push(text),
+    onThinking: text => thinking.push(text),
+  });
+
+  assert.deepEqual(assistantText, []);
+  assert.deepEqual(thinking, []);
+  assert.equal(result.response, '已修好。');
+});
+
+test('runner still surfaces concise progress before tool calls', async () => {
+  const responses = [
+    {
+      content: '正在跑测试。',
+      toolCalls: [makeToolCall('call_1', 'execute_shell', { command: 'node test.js' })],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 8,
+        totalTokens: 108,
+      },
+    },
+    makeFinalResponse('测试已通过。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'execute_shell',
+      description: 'run command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }],
+    { execute_shell: 'ok' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const assistantText: string[] = [];
+  const thinking: string[] = [];
+
+  const result = await runner.run([{ role: 'user', content: '跑测试' }], {
+    onAssistantText: text => assistantText.push(text),
+    onThinking: text => thinking.push(text),
+  });
+
+  assert.deepEqual(assistantText, ['正在跑测试。']);
+  assert.deepEqual(thinking, []);
+  assert.equal(result.response, '测试已通过。');
+  assert.equal(toolExecutor.getExecutionCount('execute_shell'), 1);
+});
+
+test('runner does not leak suppressed tool prelude through thinking callbacks', async () => {
+  const responses = [
+    {
+      content: '103/4。剩 html 转义和 3 个失败断言，继续调试。',
+      toolCalls: [makeToolCall('call_1', 'execute_shell', { command: 'node test.js' })],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+      },
+    },
+    makeFinalResponse('已完成。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'execute_shell',
+      description: 'run command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }],
+    { execute_shell: 'ok' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const thinking: string[] = [];
+
+  const result = await runner.run([{ role: 'user', content: '跑测试' }], {
+    onThinking: text => thinking.push(text),
+  });
+
+  assert.deepEqual(thinking, []);
+  assert.equal(result.response, '已完成。');
 });
 
 test('runner normalizes send_text tool into assistant transcript without tool_result pollution', async () => {
@@ -260,7 +491,7 @@ test('runner injects current directory before the active request context without
   assert.equal(secondCallMessages[assistantToolIndex + 1].role, 'tool');
   assert.match(
     String(secondCallMessages[cwdIndex].content),
-    /^\[transient_current_directory\]\nRuntime context only\. Not a user request\. Do not answer\.\ndate: \d{4}-\d{2}-\d{2}\ncwd: C:\\Users\\test\\workspace\nos: .+\nshell: .+\nUse cwd for relative file and shell paths\.$/,
+    /^\[transient_current_directory\]\nRuntime context only\. Not a user request\. Do not answer\.\ncwd: C:\\Users\\test\\workspace\nos: .+\nshell: .+\nUse cwd for relative file and shell paths\.$/,
   );
   assert.equal(
     secondCallMessages[secondCallMessages.length - 1].role,

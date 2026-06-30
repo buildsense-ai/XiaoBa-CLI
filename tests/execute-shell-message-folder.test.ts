@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
-  FOLDED_EXECUTE_SHELL_PREFIX,
+  TRUNCATED_EXECUTE_SHELL_PREFIX,
   foldHistoricalExecuteShellMessages,
   resolveExecuteShellMessageFoldingOptions,
 } from '../src/core/execute-shell-message-folder';
@@ -67,13 +70,47 @@ test('folds large historical execute_shell results while preserving tool exchang
   assert.equal(folded.tool_call_id, 'call_old_shell');
   assert.equal(folded.name, 'execute_shell');
   assert.equal(typeof folded.content, 'string');
-  assert.ok(String(folded.content).startsWith(FOLDED_EXECUTE_SHELL_PREFIX));
+  assert.ok(String(folded.content).startsWith(TRUNCATED_EXECUTE_SHELL_PREFIX));
   assert.match(String(folded.content), /artifact_id: sh_[a-f0-9]{16}/);
   assert.match(String(folded.content), /command: npm test/);
   assert.match(String(folded.content), /status: failed/);
   assert.match(String(folded.content), /ERROR failed at src\/broken\.ts:123/);
   assert.equal(String(folded.content).includes('plain shell output line 45'), false);
   assert.ok(result.stats.saved_tokens_est > 0);
+});
+
+test('writes truncated execute_shell full output to a linkable artifact', () => {
+  const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-shell-artifacts-'));
+  const raw = makeShellOutput('npm test -- linked', 100, true);
+  const messages: Message[] = [
+    { role: 'user', content: 'run linked tests' },
+    makeToolCallMessage('call_linked_shell', 'npm test -- linked'),
+    { role: 'tool', name: 'execute_shell', tool_call_id: 'call_linked_shell', content: raw },
+    { role: 'assistant', content: 'tests failed' },
+    { role: 'user', content: 'continue' },
+  ];
+
+  try {
+    const result = foldHistoricalExecuteShellMessages(messages, {
+      thresholdTokens: 20,
+      artifactStore: {
+        enabled: true,
+        rootDirectory: artifactRoot,
+        sessionId: 'test session',
+        turn: 9,
+      },
+    });
+    const content = String(result.messages[2].content);
+    const fullOutputPath = content.match(/^full_output_path: (.+)$/m)?.[1];
+
+    assert.ok(content.startsWith(TRUNCATED_EXECUTE_SHELL_PREFIX));
+    assert.match(content, /full_output_ref: tool-result:\/\/test_session\/turn-0009\/sh_[a-f0-9]{16}/);
+    assert.match(content, /full_output_link: file:\/\//);
+    assert.ok(fullOutputPath);
+    assert.equal(fs.readFileSync(fullOutputPath, 'utf8').includes(raw), true);
+  } finally {
+    fs.rmSync(artifactRoot, { recursive: true, force: true });
+  }
 });
 
 test('does not fold execute_shell result from the current tool loop', () => {
@@ -116,7 +153,7 @@ test('can delayed-fold older current-run execute_shell results while protecting 
   assert.equal(result.stats.folded_count, 1);
   assert.equal(result.stats.folded_current_turn_count, 1);
   assert.equal(result.stats.protected_current_turn_count, 1);
-  assert.ok(String(result.messages[2].content).startsWith(FOLDED_EXECUTE_SHELL_PREFIX));
+  assert.ok(String(result.messages[2].content).startsWith(TRUNCATED_EXECUTE_SHELL_PREFIX));
   assert.equal(result.messages[5].content, secondRaw);
 });
 
@@ -143,7 +180,7 @@ test('can keep the most recent historical execute_shell result raw', () => {
   assert.equal(result.stats.candidate_count, 2);
   assert.equal(result.stats.folded_count, 1);
   assert.equal(result.stats.skipped_recent_count, 1);
-  assert.ok(String(result.messages[2].content).startsWith(FOLDED_EXECUTE_SHELL_PREFIX));
+  assert.ok(String(result.messages[2].content).startsWith(TRUNCATED_EXECUTE_SHELL_PREFIX));
   assert.equal(result.messages[6].content, secondRaw);
 });
 
@@ -203,6 +240,6 @@ test('runner folds execute_shell only in provider input and leaves durable sessi
   }
 
   const providerToolResult = captured[0].find(message => message.role === 'tool');
-  assert.ok(String(providerToolResult?.content).startsWith(FOLDED_EXECUTE_SHELL_PREFIX));
+  assert.ok(String(providerToolResult?.content).startsWith(TRUNCATED_EXECUTE_SHELL_PREFIX));
   assert.equal(messages[2].content, raw);
 });

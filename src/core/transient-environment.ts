@@ -2,7 +2,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { Message } from '../types';
-import type { ToolSurface } from '../types/tool';
 
 export const TRANSIENT_CURRENT_DIRECTORY_PREFIX = '[transient_current_directory]';
 
@@ -14,11 +13,9 @@ export interface GitRepositoryInfo {
 
 export interface BuildTransientEnvironmentHintOptions {
   currentDirectory?: string;
-  surface?: ToolSurface;
   provider?: string;
   model?: string;
   env?: NodeJS.ProcessEnv;
-  now?: Date;
   gitInfo?: GitRepositoryInfo | null;
 }
 
@@ -28,7 +25,6 @@ export function buildTransientEnvironmentHint(
   const currentDirectory = options.currentDirectory?.trim();
   if (!currentDirectory) return null;
 
-  const now = options.now ?? new Date();
   const env = options.env ?? process.env;
   const gitInfo = options.gitInfo === undefined
     ? resolveGitRepositoryInfo(currentDirectory)
@@ -37,9 +33,7 @@ export function buildTransientEnvironmentHint(
   const lines = [
     TRANSIENT_CURRENT_DIRECTORY_PREFIX,
     'Runtime context only. Not a user request. Do not answer.',
-    `date: ${now.toISOString().slice(0, 10)}`,
     `cwd: ${currentDirectory}`,
-    options.surface ? `surface: ${options.surface}` : '',
     renderModelInfo(options.provider, options.model),
     `os: ${process.platform}`,
     `shell: ${resolveShellName(env)}`,
@@ -55,6 +49,7 @@ export function buildTransientEnvironmentHint(
 }
 
 export function resolveShellName(env: NodeJS.ProcessEnv = process.env): string {
+  if (process.platform === 'win32' && env.PSModulePath) return 'powershell';
   const raw = env.SHELL || env.ComSpec || env.COMSPEC || (env.PSModulePath ? 'powershell' : '');
   if (!raw) return 'unknown';
   const basename = path.win32.basename(raw);

@@ -33,6 +33,10 @@ import {
   normalizeDeviceRpcToolResultForTransport,
   normalizeDeviceRpcToolResultPayload,
 } from '../tools/device-rpc-tool';
+import {
+  annotateToolExecutionResultWithTargetContext,
+  stripToolTargetContextForDisplay,
+} from '../tools/tool-target-context';
 import { formatPathForLog } from '../utils/log-redaction';
 
 interface PendingAttachment {
@@ -66,6 +70,11 @@ interface QueuedMessage {
   runtimeFeedback?: RuntimeFeedbackInput[];
 }
 
+interface SubAgentEventRoute {
+  topic: string;
+  channelSource?: string;
+}
+
 const PENDING_ANSWER_TIMEOUT_MS = 120_000;
 const TYPING_HEARTBEAT_INTERVAL_MS = 5_000;
 const DEVICE_REGISTRATION_REFRESH_MS = 120_000;
@@ -74,6 +83,15 @@ const HIDDEN_CATS_TOOL_PROGRESS = new Set([
   'send_text',
   'send_file',
   'spawn_subagent',
+]);
+const STRUCTURED_TOOL_PROGRESS_UNSUPPORTED_CHANNELS = new Set([
+  'clawbot',
+  'mobile',
+  'wechat_clawbot',
+  'wechat',
+  'weixin_clawbot',
+  'weixin',
+  'wx',
 ]);
 const SUBAGENT_TERMINAL_EVENTS = new Set(['agent_completed', 'agent_failed', 'agent_stopped']);
 export const CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES: DeviceGrantOperation[] = [
@@ -89,6 +107,12 @@ export const CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES: DeviceGrantOperation[
 
 function shouldHideCatsToolProgress(toolName: string): boolean {
   return HIDDEN_CATS_TOOL_PROGRESS.has(toolName);
+}
+
+function shouldSuppressStructuredToolProgress(channelSource?: string): boolean {
+  const normalized = String(channelSource || '').trim().toLowerCase();
+  if (!normalized) return false;
+  return STRUCTURED_TOOL_PROGRESS_UNSUPPORTED_CHANNELS.has(normalized);
 }
 
 export function isCatsCompanyPassiveAcknowledgement(text: string): boolean {
@@ -136,6 +160,8 @@ export class CatsCompanyBot {
   private pendingAttachments = new Map<string, PendingAttachment[]>();
   /** 主会话忙时的消息队列，key = sessionKey */
   private messageQueue = new Map<string, QueuedMessage[]>();
+  /** 子 Agent 事件应沿用 spawn 时的通道能力，不能被同 session 后续消息覆盖 */
+  private subAgentEventRoutes = new Map<string, SubAgentEventRoute>();
   /** Bot 自身的 uid，用于过滤自己发出的消息 */
   private botUid: string | null = null;
   private runtime: AdapterRuntimeBundle;
@@ -363,28 +389,52 @@ export class CatsCompanyBot {
 
     const context = this.buildDeviceRpcToolContext(request, operation);
     const args = this.extractDeviceRpcToolArgs(request.payload);
+    let result: ToolExecutionResult;
     switch (operation) {
       case 'read_file':
-        return new ReadTool().execute(args, context);
+        result = await new ReadTool().execute(args, context);
+        break;
       case 'resolve_common_directory':
-        return resolveCommonDirectoryToolArgs(args);
+        result = resolveCommonDirectoryToolArgs(args);
+        break;
       case 'glob':
-        return new GlobTool().execute(args, context);
+        result = await new GlobTool().execute(args, context);
+        break;
       case 'grep':
-        return new GrepTool().execute(args, context);
+        result = await new GrepTool().execute(args, context);
+        break;
       case 'write_file':
-        return new WriteTool().execute(args, context);
+        result = await new WriteTool().execute(args, context);
+        break;
       case 'edit_file':
-        return new EditTool().execute(args, context);
+        result = await new EditTool().execute(args, context);
+        break;
       case 'execute_shell':
-        return new ShellTool().execute(args, context);
+        result = await new ShellTool().execute(args, context);
+        break;
       default:
-        return {
+        result = {
           ok: false,
           errorCode: 'PERMISSION_DENIED',
           message: `Device RPC 不允许执行 ${operation}。`,
         };
     }
+
+    return annotateToolExecutionResultWithTargetContext(result, context, {
+      toolName,
+      operation,
+      cwd: this.resolveDeviceRpcTargetContextCwd(operation, args, context.workingDirectory),
+    });
+  }
+
+  private resolveDeviceRpcTargetContextCwd(
+    operation: DeviceGrantOperation,
+    args: Record<string, unknown>,
+    fallback: string,
+  ): string {
+    if (operation !== 'execute_shell') return fallback;
+    const cwd = args.cwd;
+    return typeof cwd === 'string' && cwd.trim() ? cwd.trim() : fallback;
   }
 
   private buildDeviceRpcToolContext(
@@ -575,9 +625,11 @@ export class CatsCompanyBot {
     opts?: {
       sessionKey?: string;
       senderId?: string;
+      channelSource?: string;
     },
   ): ChannelCallbacks & { hasOutbound: boolean } {
     let _hasOutbound = false;
+    const suppressStructuredProgress = shouldSuppressStructuredToolProgress(opts?.channelSource);
     const channel: ChannelCallbacks & { hasOutbound: boolean } = {
       chatId: topic,
       get hasOutbound() { return _hasOutbound; },
@@ -600,6 +652,9 @@ export class CatsCompanyBot {
         }
       },
       sendRuntimePlan: async (_targetTopic, snapshot) => {
+        if (suppressStructuredProgress) {
+          return;
+        }
         try {
           await this.sender.sendRuntimePlan(topic, snapshot);
         } catch (err: any) {
@@ -612,7 +667,11 @@ export class CatsCompanyBot {
     return channel;
   }
 
-  private buildSessionCallbacks(topic: string, opts?: { sessionKey?: string; senderId?: string }): SessionCallbacks {
+  private buildSessionCallbacks(
+    topic: string,
+    opts?: { sessionKey?: string; senderId?: string; channelSource?: string },
+  ): SessionCallbacks {
+    const suppressToolProgress = shouldSuppressStructuredToolProgress(opts?.channelSource);
     return {
       onRetry: async (attempt, maxRetries) => {
         try {
@@ -629,6 +688,9 @@ export class CatsCompanyBot {
         }
       },
       onThinking: async (thinking: string) => {
+        if (suppressToolProgress) {
+          return;
+        }
         try {
           await this.sender.sendThinking(topic, thinking);
         } catch (err: any) {
@@ -637,7 +699,7 @@ export class CatsCompanyBot {
       },
       onToolStart: async (toolName: string, toolUseId: string, input: any) => {
         // 跳过输出型工具的 WORKING 消息
-        if (shouldHideCatsToolProgress(toolName)) {
+        if (suppressToolProgress || shouldHideCatsToolProgress(toolName)) {
           return;
         }
         try {
@@ -648,11 +710,11 @@ export class CatsCompanyBot {
       },
       onToolEnd: async (toolName: string, toolUseId: string, result: string) => {
         // 跳过输出型工具的 WORKING 消息
-        if (shouldHideCatsToolProgress(toolName)) {
+        if (suppressToolProgress || shouldHideCatsToolProgress(toolName)) {
           return;
         }
         try {
-          let content = result;
+          let content = stripToolTargetContextForDisplay(result);
 
           // 清理 execute_shell 的格式化前缀
           if (content.startsWith('命令执行成功:') || content.startsWith('命令执行失败:')) {
@@ -728,20 +790,25 @@ export class CatsCompanyBot {
     await this.processParsedMessage(msg, key);
   }
 
+  private registerSubAgentPlatformCallbacks(
+    sessionKey: string,
+    topic: string,
+    senderId: string,
+    executionScope?: ParsedCatsMessage['executionScope'],
+  ): void {
+    SubAgentManager.getInstance().registerPlatformCallbacks(sessionKey, {
+      injectMessage: async (text: string) => {
+        await this.handleSubAgentFeedback(sessionKey, topic, senderId, text, executionScope);
+      },
+      onSubAgentEvent: async (event: any, info?: SubAgentInfo) => {
+        await this.handleSubAgentRuntimeEvent(topic, event, info, executionScope?.channelSource);
+      },
+    } as any);
+  }
+
   private async processParsedMessage(msg: ParsedCatsMessage, key: string): Promise<void> {
     const sessionRoute = msg.envelope ? createCatsCoSessionRoute(msg.envelope) : undefined;
     const session = this.sessionManager.getOrCreate(sessionRoute && sessionRoute.sessionKey === key ? sessionRoute : key);
-
-    // 注册持久化回调到 SubAgentManager
-    const subAgentManager = SubAgentManager.getInstance();
-    subAgentManager.registerPlatformCallbacks(key, {
-      injectMessage: async (text: string) => {
-        await this.handleSubAgentFeedback(key, msg.topic, msg.senderId, text, msg.executionScope);
-      },
-      onSubAgentEvent: async (event: any, info?: SubAgentInfo) => {
-        await this.handleSubAgentRuntimeEvent(msg.topic, event, info);
-      },
-    } as any);
 
     // 处理斜杠命令
     if (typeof msg.text === 'string' && msg.text.startsWith('/')) {
@@ -839,10 +906,13 @@ export class CatsCompanyBot {
       return;
     }
 
+    this.registerSubAgentPlatformCallbacks(key, msg.topic, msg.senderId, msg.executionScope);
+
     // 构建通道回调，通过 context 传递给工具（替代 bind/unbind）
     const channel = this.buildChannel(msg.topic, {
       sessionKey: key,
       senderId: msg.senderId,
+      channelSource: msg.executionScope?.channelSource,
     });
 
     const stopTypingHeartbeat = this.startTypingHeartbeat(msg.topic);
@@ -859,7 +929,11 @@ export class CatsCompanyBot {
         localFileGrants,
         runtimeFeedback,
         pendingUserInputProvider: () => this.consumeQueuedUserInput(key, msg.executionScope),
-        callbacks: this.buildSessionCallbacks(msg.topic, { sessionKey: key, senderId: msg.senderId }),
+        callbacks: this.buildSessionCallbacks(msg.topic, {
+          sessionKey: key,
+          senderId: msg.senderId,
+          channelSource: msg.executionScope?.channelSource,
+        }),
       });
 
       // 最终文本回复
@@ -1004,9 +1078,12 @@ export class CatsCompanyBot {
       return;
     }
 
+    this.registerSubAgentPlatformCallbacks(sessionKey, topic, senderId, executionScope);
+
     const channel = this.buildChannel(topic, {
       sessionKey,
       senderId,
+      channelSource: executionScope?.channelSource,
     });
 
     const stopTypingHeartbeat = this.startTypingHeartbeat(topic);
@@ -1020,7 +1097,11 @@ export class CatsCompanyBot {
     try {
       const result = await session.handleRuntimeObservation(text, {
         channel,
-        callbacks: this.buildSessionCallbacks(topic),
+        callbacks: this.buildSessionCallbacks(topic, {
+          sessionKey,
+          senderId,
+          channelSource: executionScope?.channelSource,
+        }),
         source: 'subagent_result',
         executionScope,
         localDeviceGrant: this.localDeviceGrant,
@@ -1080,9 +1161,26 @@ export class CatsCompanyBot {
     topic: string,
     event: any,
     info?: SubAgentInfo,
+    channelSource?: string,
   ): Promise<void> {
     const subAgentId = String(event?.subAgentId || info?.id || '');
     if (!subAgentId) return;
+
+    const eventType = String(event?.type || '');
+    if (eventType === 'agent_spawned') {
+      this.subAgentEventRoutes.set(subAgentId, { topic, channelSource });
+    }
+    const route = this.subAgentEventRoutes.get(subAgentId);
+    const eventTopic = route?.topic || topic;
+    const eventChannelSource = route ? route.channelSource : channelSource;
+    const isTerminalEvent = SUBAGENT_TERMINAL_EVENTS.has(eventType);
+
+    if (shouldSuppressStructuredToolProgress(eventChannelSource)) {
+      if (isTerminalEvent) {
+        this.subAgentEventRoutes.delete(subAgentId);
+      }
+      return;
+    }
 
     const displayName = String(event?.subAgentName || (info as any)?.displayName || subAgentId.slice(0, 12));
     const toolUseId = `subagent:${subAgentId}`;
@@ -1090,7 +1188,7 @@ export class CatsCompanyBot {
 
     try {
       if (event?.type === 'agent_spawned') {
-        await this.sender.sendToolUse(topic, toolUseId, displayName, {
+        await this.sender.sendToolUse(eventTopic, toolUseId, displayName, {
           kind: 'subagent',
           subagent_id: subAgentId,
           display_name: displayName,
@@ -1114,12 +1212,13 @@ export class CatsCompanyBot {
           info?.outputFiles?.length ? `产出文件:\n${info.outputFiles.map(file => `- ${file}`).join('\n')}` : '',
         ].filter(Boolean).join('\n');
         await this.sender.sendToolResult(
-          topic,
+          eventTopic,
           toolUseId,
           summary,
           event.type === 'agent_failed',
           this.subAgentEventMetadata(event, info, status),
         );
+        this.subAgentEventRoutes.delete(subAgentId);
         return;
       }
 
@@ -1129,7 +1228,7 @@ export class CatsCompanyBot {
 
       if (event?.summary) {
         await this.sender.sendThinking(
-          topic,
+          eventTopic,
           `[${displayName}] ${event.summary}`,
           this.subAgentEventMetadata(event, info, status),
         );
@@ -1214,9 +1313,11 @@ export class CatsCompanyBot {
     }
 
     const session = this.sessionManager.getOrCreate(sessionKey);
+    this.registerSubAgentPlatformCallbacks(sessionKey, msg.topic, msg.senderId, msg.executionScope);
     const channel = this.buildChannel(msg.topic, {
       sessionKey,
       senderId: msg.senderId,
+      channelSource: msg.executionScope?.channelSource,
     });
 
     const stopTypingHeartbeat = this.startTypingHeartbeat(msg.topic);
@@ -1225,7 +1326,11 @@ export class CatsCompanyBot {
       const result = msg.source === 'subagent_feedback'
         ? await session.handleRuntimeObservation(msg.userMessage as string, {
           channel,
-          callbacks: this.buildSessionCallbacks(msg.topic, { sessionKey, senderId: msg.senderId }),
+          callbacks: this.buildSessionCallbacks(msg.topic, {
+            sessionKey,
+            senderId: msg.senderId,
+            channelSource: msg.executionScope?.channelSource,
+          }),
           source: 'subagent_result',
           executionScope: msg.executionScope,
           localDeviceGrant: this.localDeviceGrant,
@@ -1242,7 +1347,11 @@ export class CatsCompanyBot {
           runtimeFeedback: msg.runtimeFeedback,
           localFileGrants: msg.localFileGrants,
           pendingUserInputProvider: () => this.consumeQueuedUserInput(sessionKey, msg.executionScope),
-          callbacks: this.buildSessionCallbacks(msg.topic, { sessionKey, senderId: msg.senderId }),
+          callbacks: this.buildSessionCallbacks(msg.topic, {
+            sessionKey,
+            senderId: msg.senderId,
+            channelSource: msg.executionScope?.channelSource,
+          }),
         });
       if (result.text.startsWith('处理消息时出错:')) {
         try {
@@ -1368,6 +1477,7 @@ export class CatsCompanyBot {
     this.pendingAnswerBySession.clear();
     this.pendingAttachments.clear();
     this.messageQueue.clear();
+    this.subAgentEventRoutes.clear();
     Logger.info('CatsCo agent 已停止');
   }
 

@@ -190,6 +190,8 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.ok(captured.result);
     assert.equal(captured.result.error, undefined);
     assert.equal(captured.result.result.ok, true);
+    assert.match(String(captured.result.result.content), /\[tool_target\]/);
+    assert.match(String(captured.result.result.content), /target: selected_user_device/);
     assert.match(String(captured.result.result.content), /Resolved common directory:/);
     assert.match(String(captured.result.result.content), /kind: home/);
     assert.equal(captured.result.device_id, 'install-device');

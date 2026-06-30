@@ -22,6 +22,7 @@ import {
   foldToolResultsTowardPromptBudget,
   resolveAdaptiveToolResultFoldingOptions,
 } from './adaptive-tool-result-folder';
+import { resolveToolResultArtifactStoreOptions } from './tool-result-artifact-store';
 import {
   buildExplicitPlanRequestHintIfUseful,
   buildInitialDecisionHintIfUseful,
@@ -41,6 +42,7 @@ import {
   TRANSIENT_RUNTIME_CONTEXT_PREFIX,
   buildRuntimeContextMessage,
 } from './runtime-context-builder';
+import { buildPendingUserInputBoundaryMessage } from './pending-user-input-boundary';
 import {
   TRANSIENT_CURRENT_DIRECTORY_PREFIX,
   buildTransientEnvironmentHint,
@@ -51,6 +53,7 @@ import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/mo
 import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
 import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
 import { PromptTraceLogger } from '../utils/prompt-trace-logger';
+import { prependToolTargetContext } from '../tools/tool-target-context';
 import {
   buildSyntheticObservationLifecycleEvent,
   buildSyntheticObservationMessages,
@@ -86,6 +89,26 @@ const MAX_EMPTY_MAX_TOKEN_RECOVERIES = 1;
 const EMPTY_MAX_TOKENS_MESSAGE = '模型这轮输出达到了 max_tokens 上限，但没有生成可见回复或工具调用。已保留当前上下文；请回复“继续”，我会从刚才的位置继续推进。';
 export const PROMPT_BUDGET_TRIM_MESSAGE = '当前上下文超过模型窗口，已裁剪较早的历史内容以继续处理。';
 export const PROMPT_TOOLS_DISABLED_MESSAGE = '当前模型上下文不足以加载全部工具，本轮已先按纯文本继续处理。';
+const MAX_VISIBLE_TOOL_PRELUDE_CHARS = 64;
+const MAX_VISIBLE_TOOL_PRELUDE_LINES = 2;
+
+const TOOL_PRELUDE_INTERNAL_PATTERNS = [
+  /\bmemory\b/i,
+  /\bobservation\b/i,
+  /\bsynthetic\b/i,
+  /\bdebug\b/i,
+  /\bdbg\b/i,
+  /\bFAIL\b/,
+  /\bfail(?:ed|ing|s)?\b/i,
+  /\bpass(?:ed|ing|es)?\b/i,
+  /\bactual=/i,
+  /\bexpected=/i,
+  /\b\d+\s*\/\s*\d+\b/,
+  /根因|原因|问题|诊断|bug|报错|错误|异常|失败|断言|调试|正则|期望|实际|可能是|应该|测试要求|代码块被切|硬切|贪心/,
+];
+
+const TOOL_PRELUDE_PROGRESS_PATTERN =
+  /^(?:先|我先|开始|准备|正在|继续|建|创建|写|生成|跑|执行|检查|验证|清理|上传|发送|重试|修复|已|完成|稍等|马上|接着)[^：:\n`]{0,48}(?:[。！？.!?]|$)/;
 
 /**
  * 对话运行回调
@@ -173,6 +196,8 @@ export interface RunnerOptions {
   syntheticObservationProvider?: SyntheticObservationProvider;
   /** Non-durable runtime system context produced by sidecar branches. */
   runtimeTransientProvider?: RuntimeTransientProvider;
+  /** Internal id that ties all messages created by one externally visible user turn together. */
+  episodeId?: string;
 }
 
 /**
@@ -194,6 +219,7 @@ export class ConversationRunner {
   private promptTraceLogger: PromptTraceLogger;
   private syntheticObservationProvider?: SyntheticObservationProvider;
   private runtimeTransientProvider?: RuntimeTransientProvider;
+  private episodeId?: string;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -218,6 +244,7 @@ export class ConversationRunner {
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
     this.syntheticObservationProvider = options?.syntheticObservationProvider;
     this.runtimeTransientProvider = options?.runtimeTransientProvider;
+    this.episodeId = options?.episodeId;
     this.maxTurns = options?.maxTurns;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
@@ -364,15 +391,18 @@ export class ConversationRunner {
         requestMessages,
         currentRunToolResultFoldingOptions,
       );
+      const toolResultArtifactStoreOptions = this.resolveToolResultArtifactStoreOptions(turns);
       const readFileFoldingOptions = {
         ...resolveReadFileMessageFoldingOptions(),
         foldCurrentRun: currentRunToolResultFoldingOptions.enabled,
         protectedCurrentRunToolResultIndexes,
+        artifactStore: toolResultArtifactStoreOptions,
       };
       const executeShellFoldingOptions = {
         ...resolveExecuteShellMessageFoldingOptions(),
         foldCurrentRun: currentRunToolResultFoldingOptions.enabled,
         protectedCurrentRunToolResultIndexes,
+        artifactStore: toolResultArtifactStoreOptions,
       };
       const readFileFolding = foldHistoricalReadFileMessages(
         requestMessages,
@@ -381,8 +411,8 @@ export class ConversationRunner {
       requestMessages = readFileFolding.messages;
       if (readFileFolding.stats.folded_count > 0) {
         Logger.info(
-          `[${this.sessionLabel}Turn ${turns}] read_file folding: `
-          + `folded=${readFileFolding.stats.folded_count}, `
+          `[${this.sessionLabel}Turn ${turns}] read_file truncation: `
+          + `truncated=${readFileFolding.stats.folded_count}, `
           + `current=${readFileFolding.stats.folded_current_turn_count}, `
           + `saved≈${readFileFolding.stats.saved_tokens_est} tokens`,
         );
@@ -394,8 +424,8 @@ export class ConversationRunner {
       requestMessages = executeShellFolding.messages;
       if (executeShellFolding.stats.folded_count > 0) {
         Logger.info(
-          `[${this.sessionLabel}Turn ${turns}] execute_shell folding: `
-          + `folded=${executeShellFolding.stats.folded_count}, `
+          `[${this.sessionLabel}Turn ${turns}] execute_shell truncation: `
+          + `truncated=${executeShellFolding.stats.folded_count}, `
           + `current=${executeShellFolding.stats.folded_current_turn_count}, `
           + `saved≈${executeShellFolding.stats.saved_tokens_est} tokens`,
         );
@@ -410,9 +440,9 @@ export class ConversationRunner {
       requestMessages = adaptiveFolding.messages;
       if (adaptiveFolding.stats.folded_count > 0) {
         Logger.info(
-          `[${this.sessionLabel}Turn ${turns}] adaptive tool_result folding: `
+          `[${this.sessionLabel}Turn ${turns}] adaptive tool_result truncation: `
           + `passes=${adaptiveFolding.stats.passes}, `
-          + `folded=${adaptiveFolding.stats.folded_count}, `
+          + `truncated=${adaptiveFolding.stats.folded_count}, `
           + `current=${adaptiveFolding.stats.folded_current_turn_count}, `
           + `saved≈${adaptiveFolding.stats.saved_tokens_est} tokens, `
           + `prompt≈${adaptiveFolding.stats.started_prompt_tokens_est}->${adaptiveFolding.stats.finished_prompt_tokens_est}, `
@@ -557,10 +587,13 @@ export class ConversationRunner {
 
       if (response.content) {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI文本: ${ConversationRunner.truncateForLog(response.content, 300)}`);
-        if (callbacks?.onAssistantText) {
+        const shouldSurfacePrelude = this.shouldSurfaceToolPrelude(response.content);
+        if (callbacks?.onAssistantText && shouldSurfacePrelude) {
           await callbacks.onAssistantText(response.content);
-        } else if (callbacks?.onThinking) {
+        } else if (!callbacks?.onAssistantText && callbacks?.onThinking && shouldSurfacePrelude) {
           await callbacks.onThinking(response.content);
+        } else {
+          Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具前文本已作为内部进度保留，未发送给用户`);
         }
       }
       const toolNames = response.toolCalls.map(tc => tc.function.name).join(', ');
@@ -616,9 +649,9 @@ export class ConversationRunner {
           hasDeliveredMessageOutThisRun = true;
         }
 
-        const toolContent = result.content;
+        const toolContent = prependToolTargetContext(result.content, result.targetContext);
 
-        this.handleToolDisplay(toolCall, contentToString(toolContent), callbacks);
+        this.handleToolDisplay(toolCall, contentToString(result.content), callbacks);
         executionRecords.push({
           toolCall,
           toolName,
@@ -725,7 +758,15 @@ export class ConversationRunner {
       this.refreshRuntimeContextForPendingInput(messages);
     }
 
-    const userMessage: Message = { role: 'user', content };
+    messages.push(buildPendingUserInputBoundaryMessage());
+    const userMessage: Message = {
+      role: 'user',
+      content,
+      ...(this.episodeId ? {
+        __episodeId: this.episodeId,
+        __episodeInputKind: 'pending' as const,
+      } : {}),
+    };
     messages.push(userMessage);
     newMessages.push(userMessage);
 
@@ -1082,7 +1123,6 @@ export class ConversationRunner {
     const modelConfig = (this.aiService as any).getConfig?.();
     return buildTransientEnvironmentHint({
       currentDirectory,
-      surface: this.toolExecutionContext?.surface,
       provider: modelConfig?.provider,
       model: modelConfig?.model,
     });
@@ -1164,6 +1204,21 @@ export class ConversationRunner {
     }
 
     return null;
+  }
+
+  private shouldSurfaceToolPrelude(content: string): boolean {
+    const text = content.trim();
+    if (!text) return false;
+    if (text.length > MAX_VISIBLE_TOOL_PRELUDE_CHARS) return false;
+
+    const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    if (lines.length > MAX_VISIBLE_TOOL_PRELUDE_LINES) return false;
+    if (lines.some(line => line.length > MAX_VISIBLE_TOOL_PRELUDE_CHARS)) return false;
+    if (text.includes('```')) return false;
+    if (/^\s*#{1,6}\s/m.test(text) || /^\s*\|.+\|\s*$/m.test(text)) return false;
+    if (TOOL_PRELUDE_INTERNAL_PATTERNS.some(pattern => pattern.test(text))) return false;
+
+    return TOOL_PRELUDE_PROGRESS_PATTERN.test(text);
   }
 
   private buildDuplicateOutboundHint(content: string): Message {
@@ -1354,6 +1409,21 @@ export class ConversationRunner {
       ...options,
       targetPromptTokens: Math.min(options.targetPromptTokens, promptBudget),
     };
+  }
+
+  private resolveToolResultArtifactStoreOptions(turn: number) {
+    const workspaceRoot = this.toolExecutionContext?.workspaceRoot
+      || this.toolExecutionContext?.workingDirectory;
+    const defaultRoot = workspaceRoot
+      ? path.join(workspaceRoot, '.xiaoba', 'tool-results')
+      : undefined;
+    return resolveToolResultArtifactStoreOptions(process.env, {
+      enabled: Boolean(defaultRoot),
+      rootDirectory: defaultRoot,
+      sessionId: this.toolExecutionContext?.sessionId
+        || this.toolExecutionContext?.executionScope?.sessionKey,
+      turn,
+    });
   }
 
   private fitToolsToPromptBudget(tools: ToolDefinition[]): ToolDefinition[] {

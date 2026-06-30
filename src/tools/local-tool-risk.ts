@@ -1,6 +1,6 @@
 import type { DeviceGrantOperation } from '../types/session-identity';
 import type { ToolExecutionContext, ToolExecutionResult, ToolRiskLevel } from '../types/tool';
-import { isCatsCoLocalOwnerSelfContext, resolveToolGatewayAccess } from './tool-gateway';
+import { isCatsCoAgentLocalBodyContext, isCatsCoLocalOwnerSelfContext, resolveToolGatewayAccess } from './tool-gateway';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -100,8 +100,8 @@ export function classifyLocalToolRisk(
     return { requiresConfirmation: false, risk: 'low', reason: '只读或状态类工具。' };
   }
 
-  if (isCatsCoLocalOwnerSelfContext(context)) {
-    return { requiresConfirmation: false, risk: 'low', reason: 'CatsCo 本地 owner 自用场景允许直接执行本机工具。' };
+  if (isCatsCoLocalOwnerSelfContext(context) || isCatsCoAgentLocalBodyContext(context)) {
+    return { requiresConfirmation: false, risk: 'low', reason: 'CatsCo 虚拟员工本机运行体允许直接执行本机工具。' };
   }
 
   const remoteFileOperation = REMOTE_DEVICE_FILE_TOOL_OPERATIONS[toolName];

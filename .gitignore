@@ -35,6 +35,7 @@ Thumbs.db
 
 # 本地 agent / IDE 生成配置
 .claude/
+.xiaoba/
 .kiro/
 .playwright-mcp/
 

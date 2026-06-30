@@ -64,6 +64,19 @@ export function isCatsCoLocalOwnerSelfContext(context: ToolExecutionContext): bo
   return false;
 }
 
+export function isCatsCoAgentLocalBodyContext(context: ToolExecutionContext): boolean {
+  if (!isCatsCoToolGatewayContext(context)) return false;
+  const scope = context.executionScope;
+  const localDevice = context.localDeviceGrant;
+  if (!scope || scope.source !== 'catscompany' || scope.identityTrust !== 'server_canonical' || !scope.isTrusted) {
+    return false;
+  }
+  if (!localDevice || localDevice.source !== 'catscompany' || !localDevice.bodyId) {
+    return false;
+  }
+  return Boolean(scope.agentBodyId && scope.agentBodyId === localDevice.bodyId);
+}
+
 export function formatCatsCoVisiblePath(
   context: ToolExecutionContext,
   value: string | undefined,
@@ -116,6 +129,7 @@ export function resolveToolGatewayAccess(
   }
 
   const localOwnerSelf = isCatsCoLocalOwnerSelfContext(context);
+  const agentLocalBody = isCatsCoAgentLocalBodyContext(context);
   const rpcForwardLocal = isCatsCoDeviceRpcForwardLocalContext(context, options.operation);
   const requireSelectedDevice = requiresExplicitBackendDeviceSelection(scope, localDevice, rpcForwardLocal);
 
@@ -128,14 +142,15 @@ export function resolveToolGatewayAccess(
     options.operation,
     options.targetLabel,
     {
-      allowLocalSelfOperation: localOwnerSelf || rpcForwardLocal,
-      requireSelection: requireSelectedDevice,
+      allowLocalSelfOperation: localOwnerSelf || agentLocalBody || rpcForwardLocal,
+      allowLocalAgentBodyFallback: agentLocalBody,
+      requireSelection: requireSelectedDevice && !agentLocalBody,
     },
   );
   if (!selectedTarget.ok) return selectedTarget;
 
   const targetDeviceId = selectedTarget.deviceId || localDevice.deviceId || localDevice.installationId || localDevice.bodyId;
-  if (selectedTarget.mode === 'local' && (localOwnerSelf || rpcForwardLocal)) {
+  if (selectedTarget.mode === 'local' && (localOwnerSelf || agentLocalBody || rpcForwardLocal)) {
     return {
       ok: true,
       mode: 'local',
@@ -182,14 +197,14 @@ export function resolveToolGatewayAccess(
     };
   }
 
-  if (!context.deviceSelection && requiresBackendSelectedDeviceForLocalExecution(scope, localDevice, grant, rpcForwardLocal)) {
+  if (!context.deviceSelection && !agentLocalBody && requiresBackendSelectedDeviceForLocalExecution(scope, localDevice, grant, rpcForwardLocal)) {
     return denied([
       '后端没有选定当前说话人的目标设备，已阻止本地设备操作。',
       '共享虚拟员工不能默认使用云端运行体本机，必须由服务端选择当前用户自己的在线设备。',
     ], options.targetLabel);
   }
 
-  if (options.operation === 'execute_shell' && !localOwnerSelf && !rpcForwardLocal && !options.allowCatsCoShell) {
+  if (options.operation === 'execute_shell' && !localOwnerSelf && !agentLocalBody && !rpcForwardLocal && !options.allowCatsCoShell) {
     return denied([
       'CatsCo 会话暂不允许外部用户或远程委托通过 execute_shell 操作命令行。',
       '命令执行只允许本机 owner 自用场景直接执行。',
@@ -253,7 +268,7 @@ function resolveBackendSelectedDevice(
   localDevice: ScopedLocalDeviceGrant,
   operation: DeviceGrantOperation,
   targetLabel?: string,
-  options: { allowLocalSelfOperation?: boolean; requireSelection?: boolean } = {},
+  options: { allowLocalSelfOperation?: boolean; allowLocalAgentBodyFallback?: boolean; requireSelection?: boolean } = {},
 ): SelectedDeviceDecision {
   if (!selection) {
     if (options.requireSelection) {
@@ -270,12 +285,18 @@ function resolveBackendSelectedDevice(
   }
 
   if (selection.status === 'needs_selection') {
+    if (options.allowLocalAgentBodyFallback) {
+      return localSelectedDevice(localDevice);
+    }
     return selectedDenied([
       '后端尚未选定要操作的用户设备，已阻止本地设备操作。',
       '请让用户从可用设备中选择一个设备名后再继续。',
     ], targetLabel);
   }
   if (selection.status === 'unavailable') {
+    if (options.allowLocalAgentBodyFallback) {
+      return localSelectedDevice(localDevice);
+    }
     return selectedDenied([
       '当前用户没有可用的在线设备授权，已阻止本地设备操作。',
       '请让用户打开并授权目标设备后再继续。',
@@ -321,6 +342,14 @@ function resolveBackendSelectedDevice(
     displayName: selection.selectedDeviceDisplayName,
     bodyId: selection.selectedDeviceBodyId,
     installationId: selection.selectedDeviceInstallationId,
+  };
+}
+
+function localSelectedDevice(localDevice: ScopedLocalDeviceGrant): Extract<SelectedDeviceDecision, { ok: true; mode: 'local' }> {
+  return {
+    ok: true,
+    mode: 'local',
+    deviceId: localDevice.deviceId || localDevice.installationId || localDevice.bodyId,
   };
 }
 

@@ -98,6 +98,16 @@ function deviceSelection(overrides: Partial<ScopedDeviceSelection> = {}): Scoped
   };
 }
 
+function unavailableDeviceSelection(overrides: Partial<ScopedDeviceSelection> = {}): ScopedDeviceSelection {
+  return deviceSelection({
+    status: 'unavailable',
+    selectedDeviceId: undefined,
+    selectedDeviceBodyId: undefined,
+    selectedDeviceInstallationId: undefined,
+    ...overrides,
+  });
+}
+
 function context(root: string, options: {
   executionScope?: ExecutionScope;
   localDeviceGrant?: ScopedLocalDeviceGrant;
@@ -136,6 +146,119 @@ describe('CatsCo ToolGateway', () => {
       assert.equal(result.errorCode, 'PERMISSION_DENIED');
       assert.match(result.message, /没有允许当前设备执行 read_file/);
       assert.doesNotMatch(result.message, new RegExp(escapeRegExp(filePath)));
+    }
+  });
+
+  test('allows virtual employee local body tools when user device selection is unavailable', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'agent body content');
+
+    const result = await new ReadTool().execute({ file_path: filePath }, context(root, {
+      executionScope: scope({ agentBodyId: 'body-device' }),
+      localDeviceGrant: localDevice({ ownerUserId: 'usr9' }),
+      deviceSelection: unavailableDeviceSelection(),
+    }));
+
+    assert.equal(result.ok, true);
+    assert.match(result.ok ? String(result.content) : '', /agent body content/);
+  });
+
+  test('blocks agent local body fallback when agent body does not match local device body', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'must not read through fallback');
+
+    const result = await new ReadTool().execute({ file_path: filePath }, context(root, {
+      executionScope: scope({ agentBodyId: 'body-other' }),
+      localDeviceGrant: localDevice({ ownerUserId: 'usr9' }),
+      deviceSelection: unavailableDeviceSelection(),
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+      assert.match(result.message, /当前用户没有可用的在线设备授权/);
+    }
+  });
+
+  test('blocks agent local body fallback for untrusted CatsCo identities', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'must not read through fallback');
+
+    const cases: Array<{ name: string; executionScope: ExecutionScope }> = [
+      {
+        name: 'untrusted identity',
+        executionScope: scope({
+          agentBodyId: 'body-device',
+          identityTrust: 'untrusted',
+          isTrusted: false,
+        }),
+      },
+      {
+        name: 'server canonical but not trusted',
+        executionScope: scope({
+          agentBodyId: 'body-device',
+          isTrusted: false,
+        }),
+      },
+    ];
+
+    for (const item of cases) {
+      const result = await new ReadTool().execute({ file_path: filePath }, context(root, {
+        executionScope: item.executionScope,
+        localDeviceGrant: localDevice({ ownerUserId: 'usr9' }),
+        deviceSelection: unavailableDeviceSelection(),
+      }));
+
+      assert.equal(result.ok, false, item.name);
+      if (!result.ok) {
+        assert.equal(result.errorCode, 'PERMISSION_DENIED', item.name);
+        assert.match(result.message, /身份未通过服务端一致性校验/, item.name);
+      }
+    }
+  });
+
+  test('blocks agent local body fallback when local device binding is not the CatsCo body', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'must not read through fallback');
+
+    const result = await new ReadTool().execute({ file_path: filePath }, context(root, {
+      executionScope: scope({ agentBodyId: 'body-device' }),
+      localDeviceGrant: localDevice({
+        source: 'cli',
+        ownerUserId: 'usr9',
+      } as Partial<ScopedLocalDeviceGrant>),
+      deviceSelection: unavailableDeviceSelection(),
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+      assert.match(result.message, /缺少 CatsCo 本机设备绑定/);
+    }
+  });
+
+  test('blocks agent local body fallback when local device body id is missing', async () => {
+    const root = makeWorkspace();
+    const filePath = path.join(root, 'notes.txt');
+    fs.writeFileSync(filePath, 'must not read through fallback');
+
+    const result = await new ReadTool().execute({ file_path: filePath }, context(root, {
+      executionScope: scope({ agentBodyId: 'body-device' }),
+      localDeviceGrant: localDevice({
+        ownerUserId: 'usr9',
+        bodyId: undefined,
+      } as Partial<ScopedLocalDeviceGrant>),
+      deviceSelection: unavailableDeviceSelection(),
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+      assert.match(result.message, /当前用户没有可用的在线设备授权/);
     }
   });
 
@@ -687,6 +810,41 @@ describe('CatsCo ToolGateway', () => {
 
     assert.equal(result.ok, true);
     if (result.ok) assert.match(result.content, /catsco-shell-ok/);
+  });
+
+  test('allows virtual employee local body execute_shell without user-device grant', async () => {
+    const root = makeWorkspace();
+    const result = await new ShellTool().execute({ command: 'echo catsco-agent-body-shell-ok' }, context(root, {
+      executionScope: scope({ agentBodyId: 'body-device' }),
+      localDeviceGrant: localDevice({
+        ownerUserId: 'usr9',
+        capabilities: ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file', 'execute_shell'],
+      }),
+    }));
+
+    assert.equal(result.ok, true);
+    if (result.ok) assert.match(result.content, /catsco-agent-body-shell-ok/);
+  });
+
+  test('blocks virtual employee execute_shell fallback when agent body does not match local device body', async () => {
+    const root = makeWorkspace();
+    const marker = path.join(root, 'must-not-run-locally.txt');
+
+    const result = await new ShellTool().execute({ command: `node -e "require('fs').writeFileSync('${marker.replace(/\\/g, '\\\\')}', 'wrong')"` }, context(root, {
+      executionScope: scope({ agentBodyId: 'body-other' }),
+      localDeviceGrant: localDevice({
+        ownerUserId: 'usr9',
+        capabilities: ['read_file', 'glob', 'grep', 'write_file', 'edit_file', 'send_file', 'execute_shell'],
+      }),
+      deviceSelection: unavailableDeviceSelection(),
+    }));
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+      assert.match(result.message, /当前用户没有可用的在线设备授权/);
+    }
+    assert.equal(fs.existsSync(marker), false);
   });
 
   test('routes remote execute_shell for a mobile channel speaker when selected and granted', async () => {

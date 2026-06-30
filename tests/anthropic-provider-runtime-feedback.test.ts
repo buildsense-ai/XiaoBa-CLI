@@ -29,6 +29,8 @@ describe('AnthropicProvider runtime feedback boundary', () => {
         __runtimeFeedback: true,
         __runtimeObservation: true,
         runtimeObservationSource: 'subagent_result',
+        __episodeId: 'episode:test',
+        __episodeInputKind: 'root',
         extra: 'must not leak',
       } as any,
     ];
@@ -43,6 +45,8 @@ describe('AnthropicProvider runtime feedback boundary', () => {
     assert.equal(JSON.stringify(transformed).includes('__injected'), false);
     assert.equal(JSON.stringify(transformed).includes('__runtimeFeedback'), false);
     assert.equal(JSON.stringify(transformed).includes('__runtimeObservation'), false);
+    assert.equal(JSON.stringify(transformed).includes('__episodeId'), false);
+    assert.equal(JSON.stringify(transformed).includes('__episodeInputKind'), false);
     assert.equal(JSON.stringify(transformed).includes('runtimeObservationSource'), false);
     assert.equal(JSON.stringify(transformed).includes('must not leak'), false);
   });
@@ -101,6 +105,67 @@ describe('AnthropicProvider runtime feedback boundary', () => {
           timing: 'late_previous_turn',
         }),
       }],
+    });
+  });
+
+  test('coalesces adjacent user messages before Anthropic-compatible requests', () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://example.test/v1/messages',
+      model: 'claude-sonnet-4-20250514',
+    });
+
+    const transformed = (provider as any).transformMessages([
+      { role: 'system', content: 'system' },
+      { role: 'user', content: '[以下是之前 99 条对话的 AI 摘要]\n\nold context' },
+      { role: 'user', content: '继续' },
+    ] as Message[]);
+
+    assert.equal(transformed.system, 'system');
+    assert.deepStrictEqual(transformed.messages, [{
+      role: 'user',
+      content: '[以下是之前 99 条对话的 AI 摘要]\n\nold context\n\n继续',
+    }]);
+  });
+
+  test('coalesces tool_result user turn with following user text while keeping tool_result first', () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://example.test/v1/messages',
+      model: 'claude-sonnet-4-20250514',
+    });
+
+    const transformed = (provider as any).transformMessages([
+      { role: 'user', content: 'read notes' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'read_file', arguments: '{"path":"notes.md"}' },
+        }],
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'call_1',
+        name: 'read_file',
+        content: 'file contents',
+      },
+      { role: 'user', content: '继续' },
+    ] as Message[]);
+
+    assert.equal(transformed.messages.length, 3);
+    assert.deepStrictEqual(transformed.messages[2], {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'call_1',
+          content: 'file contents',
+        },
+        { type: 'text', text: '继续' },
+      ],
     });
   });
 
