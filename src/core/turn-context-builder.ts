@@ -22,6 +22,7 @@ import {
   buildRuntimeContextMessage,
 } from './runtime-context-builder';
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
+import { TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX } from './prompt-mode-runtime';
 import {
   TRANSIENT_FIXED_PROMPT_MODE_PREFIX,
   TRANSIENT_PROMPT_MODES_LIST_PREFIX,
@@ -51,6 +52,7 @@ export interface BuildTurnContextParams {
   runtimeFeedback: string[];
   skillRuntime: SessionSkillRuntime;
   planRuntime?: PlanRuntime;
+  promptModeRoutingEnabled?: boolean;
 }
 
 export interface BuildTurnContextResult {
@@ -102,6 +104,11 @@ export class TurnContextBuilder {
         (msg.__injected || msg.role === 'system')
         && typeof msg.content === 'string'
         && msg.content.startsWith(TRANSIENT_FIXED_PROMPT_MODE_PREFIX)
+      ) return false;
+      if (
+        msg.role === 'system'
+        && typeof msg.content === 'string'
+        && msg.content.startsWith(TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX)
       ) return false;
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;

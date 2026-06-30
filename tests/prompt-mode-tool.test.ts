@@ -23,6 +23,26 @@ test('prompt_mode is available as a default runtime tool', () => {
   assert.ok(manager.getToolDefinitions().some(tool => tool.name === 'prompt_mode'));
 });
 
+test('prompt_mode can clear an async active mode through runtime context', async () => {
+  const tool = new PromptModeTool();
+  let clearReason = '';
+
+  const result = await tool.execute({ mode: 'clear' }, {
+    workingDirectory: process.cwd(),
+    conversationHistory: [],
+    promptModeRuntime: {
+      getActiveMode: () => ({ mode: 'coding-agent' }),
+      clear: (reason?: string) => {
+        clearReason = reason || '';
+      },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(clearReason, 'prompt_mode_tool_clear');
+  assert.match(String(result.content), /Cleared active prompt mode "coding-agent"/);
+});
+
 test('prompt_mode does not reload the already active fixed mode', async () => {
   const tool = new PromptModeTool();
 
