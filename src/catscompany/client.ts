@@ -255,6 +255,10 @@ export class CatsClient extends EventEmitter {
         'timeout',
         'WebSocket 在收到 Device RPC 结果前关闭'
       ));
+      this.rejectPendingThinToolRpc(new CatsSendError(
+        'timeout',
+        'WebSocket closed before receiving Thin Tool RPC result'
+      ));
       if (!this.closed) this.scheduleReconnect();
     });
   }
@@ -378,7 +382,15 @@ export class CatsClient extends EventEmitter {
     if (message.type === 'result') {
       const pending = this.pendingThinToolRpc.get(message.request_id);
       if (pending) {
-        if (pending.acknowledged) {
+        if (!thinToolRpcResultMatchesPending(message, pending.request)) {
+          clearTimeout(pending.timer);
+          this.pendingThinToolRpc.delete(message.request_id);
+          pending.reject(new CatsSendError(
+            'ack',
+            `Thin tool RPC ${message.request_id} result scope does not match pending request`,
+            409
+          ));
+        } else if (pending.acknowledged) {
           this.resolvePendingThinToolRpc(message.request_id, pending, message);
         } else {
           pending.result = message;
@@ -770,6 +782,14 @@ export class CatsClient extends EventEmitter {
     }
   }
 
+  private rejectPendingThinToolRpc(err: Error): void {
+    for (const [requestID, pending] of this.pendingThinToolRpc.entries()) {
+      clearTimeout(pending.timer);
+      this.pendingThinToolRpc.delete(requestID);
+      pending.reject(err);
+    }
+  }
+
   private forceReconnect(reason: string): void {
     Logger.warning(`[CatsCompany] ${reason}，主动重建 WebSocket 连接`);
     if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
@@ -931,6 +951,13 @@ function deviceRpcResultMatchesPending(result: CatsDeviceRpcMessage, request: Ca
     && deviceRpcOptionalFieldMatches(result.device_body_id, request.device_body_id)
     && deviceRpcOptionalFieldMatches(result.device_installation_id, request.device_installation_id)
     && deviceRpcOptionalFieldMatches(result.operation, request.operation)
+    && deviceRpcOptionalFieldMatches(result.tool_name, request.tool_name);
+}
+
+function thinToolRpcResultMatchesPending(result: CatsThinToolRpcMessage, request: CatsThinToolRpcMessage): boolean {
+  return deviceRpcOptionalFieldMatches(result.target_owner_user_id, request.target_owner_user_id)
+    && deviceRpcOptionalFieldMatches(result.target_device_id, request.target_device_id)
+    && deviceRpcOptionalFieldMatches(result.device_id, request.target_device_id)
     && deviceRpcOptionalFieldMatches(result.tool_name, request.tool_name);
 }
 
