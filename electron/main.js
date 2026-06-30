@@ -1,11 +1,15 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog, shell, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { spawnSync } = require('child_process');
 
 const DASHBOARD_PORT = resolveDashboardPort(process.env.XIAOBA_DASHBOARD_PORT);
 const DEEP_LINK_PROTOCOL = 'catsco';
 const TRUSTED_DEEP_LINK_BASE_ORIGINS = new Set(['https://app.catsco.cc']);
+const WINDOWS_RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+const START_AT_LOGIN_RUN_VALUE = 'CatsCo Companion';
 let mainWindow = null;
+let petWindow = null;
 let tray = null;
 let autoUpdater = null;
 let dashboardServerHandle = null;
@@ -49,30 +53,20 @@ function applyConfiguredUserDataPath() {
   app.setPath('userData', resolvedUserDataDir);
 }
 
-function readCloseToTrayPreference() {
+function readDesktopConfig() {
   try {
     const configPath = path.join(process.cwd(), '.xiaoba', 'catsco.json');
-    if (!fs.existsSync(configPath)) return true;
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    const value = config?.preferences?.closeToTray;
-    return value !== false;
+    if (!fs.existsSync(configPath)) return {};
+    return JSON.parse(fs.readFileSync(configPath, 'utf8'));
   } catch (_error) {
-    return true;
+    return {};
   }
 }
 
-function writeCloseToTrayPreference(closeToTray) {
+function writePreferencePatch(patch) {
   const configPath = path.join(process.cwd(), '.xiaoba', 'catsco.json');
   const configDir = path.dirname(configPath);
-  let config = {};
-
-  try {
-    if (fs.existsSync(configPath)) {
-      config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    }
-  } catch (_error) {
-    config = {};
-  }
+  const config = readDesktopConfig();
 
   const next = {
     ...config,
@@ -81,7 +75,7 @@ function writeCloseToTrayPreference(closeToTray) {
       ...config.preferences,
       autoConnect: config.preferences?.autoConnect ?? true,
       switchConfirmEnabled: config.preferences?.switchConfirmEnabled ?? true,
-      closeToTray: Boolean(closeToTray),
+      ...patch,
     },
     updatedAt: new Date().toISOString(),
   };
@@ -90,13 +84,157 @@ function writeCloseToTrayPreference(closeToTray) {
   fs.writeFileSync(configPath, JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 });
 }
 
-function showMainWindow() {
+function readCloseToTrayPreference() {
+  const value = readDesktopConfig()?.preferences?.closeToTray;
+  return value !== false;
+}
+
+function writeCloseToTrayPreference(closeToTray) {
+  writePreferencePatch({ closeToTray: Boolean(closeToTray) });
+}
+
+function readStartAtLoginPreference() {
+  return Boolean(readDesktopConfig()?.preferences?.startAtLogin);
+}
+
+function writeStartAtLoginPreference(startAtLogin) {
+  writePreferencePatch({ startAtLogin: Boolean(startAtLogin) });
+  syncLoginItemSettings();
+}
+
+function getStartAtLoginLaunchArgs() {
+  if (process.defaultApp && process.argv.length >= 2) {
+    return [path.resolve(process.argv[1])];
+  }
+  return [];
+}
+
+function getStartAtLoginCommandLine() {
+  const quote = (value) => `"${String(value || '').replace(/"/g, '\\"')}"`;
+  return [process.execPath, ...getStartAtLoginLaunchArgs()].map(quote).join(' ');
+}
+
+function readPetWindowBounds() {
+  return sanitizePetWindowBounds(readDesktopConfig()?.preferences?.petWindowBounds);
+}
+
+function savePetWindowBounds(bounds) {
+  const next = sanitizePetWindowBounds(bounds);
+  if (!next) return;
+  writePreferencePatch({ petWindowBounds: next });
+}
+
+function sanitizePetWindowBounds(bounds) {
+  if (!bounds || typeof bounds !== 'object') return null;
+
+  const width = Number(bounds.width);
+  const height = Number(bounds.height);
+  const x = Number(bounds.x);
+  const y = Number(bounds.y);
+  if (![width, height, x, y].every(Number.isFinite)) return null;
+
+  const display = screen.getDisplayMatching({
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.round(width),
+    height: Math.round(height),
+  }) || screen.getPrimaryDisplay();
+  const { workArea } = display;
+  const minVisible = 64;
+  const safeWidth = Math.max(240, Math.min(Math.round(width), workArea.width));
+  const safeHeight = Math.max(440, Math.min(Math.round(height), workArea.height));
+  const minX = workArea.x - safeWidth + minVisible;
+  const maxX = workArea.x + workArea.width - minVisible;
+  const minY = workArea.y;
+  const maxY = workArea.y + workArea.height - minVisible;
+
+  return {
+    x: Math.round(Math.min(Math.max(x, minX), maxX)),
+    y: Math.round(Math.min(Math.max(y, minY), maxY)),
+    width: safeWidth,
+    height: safeHeight,
+  };
+}
+
+function syncLoginItemSettings() {
+  const openAtLogin = readStartAtLoginPreference();
+  try {
+    app.setLoginItemSettings({
+      openAtLogin,
+      openAsHidden: false,
+      ...(getStartAtLoginLaunchArgs().length > 0
+        ? { path: process.execPath, args: getStartAtLoginLaunchArgs() }
+        : {}),
+    });
+  } catch (error) {
+    console.warn('Failed to sync start-at-login preference:', error?.message || error);
+  }
+  syncWindowsRunAtLoginFallback();
+}
+
+function syncWindowsRunAtLoginFallback() {
+  if (process.platform !== 'win32') return;
+  const openAtLogin = readStartAtLoginPreference();
+  const args = openAtLogin
+    ? ['add', WINDOWS_RUN_KEY, '/v', START_AT_LOGIN_RUN_VALUE, '/t', 'REG_SZ', '/d', getStartAtLoginCommandLine(), '/f']
+    : ['delete', WINDOWS_RUN_KEY, '/v', START_AT_LOGIN_RUN_VALUE, '/f'];
+  const result = spawnSync('reg', args, { windowsHide: true, stdio: 'ignore' });
+  if (result.error && openAtLogin) {
+    console.warn('Failed to sync Windows start-at-login fallback:', result.error.message || result.error);
+  }
+}
+
+function ensureStartAtLoginRegistration() {
+  syncLoginItemSettings();
+}
+
+function showMainWindow(targetPath) {
+  const targetUrl = buildDashboardUrl(targetPath);
   if (mainWindow) {
+    if (targetPath) mainWindow.loadURL(targetUrl);
     mainWindow.show();
     mainWindow.focus();
   } else {
-    createWindow();
+    createWindow(targetPath);
   }
+}
+
+function showPetWindow() {
+  if (petWindow) {
+    petWindow.show();
+    petWindow.focus();
+  } else {
+    createPetWindow();
+  }
+}
+
+function getDashboardUrl() {
+  return `http://127.0.0.1:${DASHBOARD_PORT}`;
+}
+
+function buildDashboardUrl(targetPath) {
+  const base = getDashboardUrl();
+  const text = String(targetPath || '').trim();
+  if (!text) return base;
+  if (text.startsWith('#')) return `${base}/${text}`;
+  if (text.startsWith('/')) return `${base}${text}`;
+  return base;
+}
+
+function resolveCatsCoWebUrl() {
+  return normalizeHttpUrl(process.env.CATSCO_WEB_URL)
+    || normalizeHttpUrl(process.env.CATSCO_HTTP_BASE_URL)
+    || 'https://app.catsco.cc';
+}
+
+function openDashboardFromPet(targetPath) {
+  showMainWindow(targetPath);
+}
+
+function openCatsCoWebFromPet() {
+  shell.openExternal(resolveCatsCoWebUrl()).catch((error) => {
+    console.warn('Failed to open CatsCo Web:', error?.message || error);
+  });
 }
 
 function isCatsCoDeepLink(value) {
@@ -256,6 +394,17 @@ try {
 function normalizeUrl(value) {
   if (!value) return null;
   return String(value).trim().replace(/\/+$/, '');
+}
+
+function normalizeHttpUrl(value) {
+  const normalized = normalizeUrl(value);
+  if (!normalized) return null;
+  try {
+    const url = new URL(normalized);
+    return (url.protocol === 'http:' || url.protocol === 'https:') ? normalized : null;
+  } catch (_error) {
+    return null;
+  }
 }
 
 function resolveReleasePageUrl() {
@@ -561,7 +710,7 @@ function stopDashboardServer() {
   });
 }
 
-function createWindow() {
+function createWindow(targetPath) {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -577,7 +726,8 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadURL(`http://127.0.0.1:${DASHBOARD_PORT}`);
+  if (targetPath) mainWindow.loadURL(buildDashboardUrl(targetPath));
+  else mainWindow.loadURL(`http://127.0.0.1:${DASHBOARD_PORT}`);
 
   mainWindow.on('close', (event) => {
     if (app.isQuitting || !readCloseToTrayPreference()) return;
@@ -586,9 +736,93 @@ function createWindow() {
     notifyWindowHidden();
   });
 
+  mainWindow.on('minimize', (event) => {
+    event.preventDefault();
+    mainWindow.hide();
+    showPetWindow();
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+}
+
+function createPetWindow() {
+  if (petWindow) return petWindow;
+
+  const { workArea } = screen.getPrimaryDisplay();
+  const width = 284;
+  const height = 536;
+  const savedBounds = readPetWindowBounds();
+  const initialBounds = savedBounds || {
+    x: Math.max(workArea.x, workArea.x + workArea.width - width - 28),
+    y: Math.max(workArea.y, workArea.y + workArea.height - height - 64),
+    width,
+    height,
+  };
+  petWindow = new BrowserWindow({
+    ...initialBounds,
+    width,
+    height,
+    minWidth: 240,
+    minHeight: 440,
+    title: 'CatsCo Companion',
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    resizable: false,
+    movable: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    hasShadow: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+
+  petWindow.setAlwaysOnTop(true, 'floating');
+  petWindow.loadURL(`http://127.0.0.1:${DASHBOARD_PORT}/pet-window.html`);
+
+  petWindow.once('ready-to-show', () => {
+    petWindow?.show();
+  });
+
+  petWindow.webContents.once('did-finish-load', () => {
+    if (petWindow && !petWindow.isVisible()) petWindow.show();
+  });
+
+  petWindow.on('close', (event) => {
+    if (app.isQuitting) return;
+    event.preventDefault();
+    savePetWindowBounds(petWindow.getBounds());
+    petWindow.hide();
+  });
+
+  petWindow.on('moved', () => {
+    if (petWindow) savePetWindowBounds(petWindow.getBounds());
+  });
+
+  petWindow.on('closed', () => {
+    petWindow = null;
+  });
+
+  petWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isTrustedDashboardUrl(url)) {
+      showMainWindow();
+    } else {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
+  petWindow.webContents.on('context-menu', () => {
+    showPetContextMenu();
+  });
+
+  return petWindow;
 }
 
 function isTrustedDashboardUrl(value) {
@@ -657,6 +891,64 @@ function openAttachmentCacheDirectory() {
       console.error('Failed to open attachment cache directory:', error);
     }
   });
+}
+
+ipcMain.handle('catsco:pet:open-dashboard', (_event, targetPath) => {
+  openDashboardFromPet(String(targetPath || ''));
+  return { ok: true };
+});
+
+ipcMain.handle('catsco:pet:open-catsco-web', () => {
+  openCatsCoWebFromPet();
+  return { ok: true, url: resolveCatsCoWebUrl() };
+});
+
+ipcMain.handle('catsco:pet:show-menu', () => {
+  showPetContextMenu();
+  return { ok: true };
+});
+
+ipcMain.handle('catsco:pet:get-state', () => ({
+  ok: true,
+  dashboardUrl: getDashboardUrl(),
+  catsCoWebUrl: resolveCatsCoWebUrl(),
+  startAtLogin: readStartAtLoginPreference(),
+}));
+
+ipcMain.handle('catsco:pet:set-start-at-login', (_event, value) => {
+  writeStartAtLoginPreference(Boolean(value));
+  syncLoginItemSettings();
+  return { ok: true, startAtLogin: readStartAtLoginPreference() };
+});
+
+function quitApp() {
+  app.isQuitting = true;
+  app.quit();
+}
+
+function buildPetContextMenuTemplate() {
+  return [
+    { label: 'Show Companion', click: showPetWindow },
+    { label: 'Open Dashboard', click: openDashboardFromPet },
+    { label: 'Open CatsCo Web', click: openCatsCoWebFromPet },
+    { type: 'separator' },
+    {
+      label: 'Start at login',
+      type: 'checkbox',
+      checked: readStartAtLoginPreference(),
+      click: (menuItem) => {
+        writeStartAtLoginPreference(menuItem.checked);
+        syncLoginItemSettings();
+      },
+    },
+    { type: 'separator' },
+    { label: 'Quit CatsCo', click: quitApp },
+  ];
+}
+
+function showPetContextMenu() {
+  const menu = Menu.buildFromTemplate(buildPetContextMenuTemplate());
+  menu.popup({ window: petWindow || mainWindow || undefined });
 }
 
 function createApplicationMenu() {
@@ -766,6 +1058,17 @@ function createApplicationMenu() {
 
 function createTray() {
   tray = new Tray(createTrayIcon());
+  const contextMenu = Menu.buildFromTemplate(buildPetContextMenuTemplate());
+
+  tray.setToolTip('CatsCo Companion');
+  tray.setContextMenu(contextMenu);
+  tray.on('click', () => {
+    showPetWindow();
+  });
+}
+
+function createLegacyTray() {
+  tray = new Tray(createTrayIcon());
 
   const contextMenu = Menu.buildFromTemplate([
     { label: '打开 CatsCo Dashboard', click: showMainWindow },
@@ -853,8 +1156,9 @@ app.whenReady().then(async () => {
     registerDeepLinkProtocol();
     await startServer();
     dashboardServerReady = true;
+    ensureStartAtLoginRegistration();
     createApplicationMenu();
-    createWindow();
+    createPetWindow();
     createTray();
     enqueueDeepLinkFromArgv(process.argv);
     scheduleDeepLinkDrain();
@@ -871,8 +1175,7 @@ app.whenReady().then(async () => {
   }
 
   app.on('activate', () => {
-    if (mainWindow) mainWindow.show();
-    else createWindow();
+    showPetWindow();
   });
 });
 

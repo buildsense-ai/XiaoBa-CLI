@@ -53,6 +53,7 @@ import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-gra
 import { registerSkillHubRoutes } from './skillhub';
 import { registerPetRoutes } from './pet';
 import type { DashboardAuthStatus } from '../auth';
+import { registerSessionLogRoutes } from './session-logs';
 import { SkillHubService } from '../../skillhub/service';
 import {
   computeLocalSkillContentHash,
@@ -1726,6 +1727,7 @@ export function createApiRouter(
   const router = Router();
   registerSkillHubRoutes(router, { getCatsCoAuth: getCatsCoAuthForSkillHub });
   registerPetRoutes(router);
+  registerSessionLogRoutes(router);
 
   // ==================== 总览 ====================
 

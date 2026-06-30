@@ -96,10 +96,48 @@ export class ServiceManager extends EventEmitter {
     ];
 
     for (const candidate of candidates) {
-      if (candidate && fs.existsSync(candidate)) return candidate;
+      const executable = this.resolveSpawnableNodeExecutable(candidate);
+      if (executable) return executable;
     }
 
     return 'node';
+  }
+
+  private resolveSpawnableNodeExecutable(candidate?: string): string | undefined {
+    if (!candidate || !fs.existsSync(candidate)) return undefined;
+    if (!isWindows) return candidate;
+
+    const ext = path.extname(candidate).toLowerCase();
+    if (ext === '.cmd' || ext === '.bat') {
+      return this.resolveWindowsCommandShimTarget(candidate)
+        || this.resolveAdjacentWindowsExecutable(candidate);
+    }
+
+    return candidate;
+  }
+
+  private resolveWindowsCommandShimTarget(shimPath: string): string | undefined {
+    try {
+      const content = fs.readFileSync(shimPath, 'utf8');
+      const quoted = content.match(/"([^"\r\n]+\.exe)"(?:\s|%|\r|\n|$)/i);
+      const unquoted = content.match(/^\s*([^\s"\r\n]+\.exe)(?:\s|%|\r|\n|$)/im);
+      const target = quoted?.[1] || unquoted?.[1];
+
+      if (target && fs.existsSync(target)) return target;
+    } catch {
+      // Ignore unreadable shims and continue with other candidates.
+    }
+
+    return undefined;
+  }
+
+  private resolveAdjacentWindowsExecutable(commandShim: string): string | undefined {
+    const ext = path.extname(commandShim);
+    const executable = path.join(
+      path.dirname(commandShim),
+      `${path.basename(commandShim, ext)}.exe`,
+    );
+    return fs.existsSync(executable) ? executable : undefined;
   }
 
   private resolveDevTsxRunner(nodeExecutable: string): { command: string; argsPrefix: string[] } {

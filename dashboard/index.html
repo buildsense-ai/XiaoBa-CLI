@@ -5232,6 +5232,9 @@
       <a class="nav-item" onclick="switchPage('services')" data-page="services">
         <span class="nav-icon">&gt;</span> <span>智能体中心</span>
       </a>
+      <a class="nav-item" style="display:none" aria-hidden="true" onclick="switchPage('logs')" data-page="logs">
+        <span class="nav-icon">≡</span> <span>Logs</span>
+      </a>
       <a class="nav-item" onclick="switchPage('store')" data-page="store">
         <span class="nav-icon">+</span> <span>Skills</span>
       </a>
@@ -5277,6 +5280,35 @@
           </div>
         </div>
         <div class="config-section" id="model-source-panel"><div class="loading">加载模型来源...</div></div>
+      </div>
+
+      <!-- Page: Logs -->
+      <div class="page" id="page-logs">
+        <div class="settings-header">
+          <div class="settings-heading">
+            <div class="settings-kicker">Session Logs</div>
+            <div class="section-title" style="margin-bottom:0">Session Logs</div>
+            <div class="settings-meta">View recent local JSONL session logs, tool calls, failures, and runtime signals.</div>
+          </div>
+          <div class="settings-actions">
+            <select class="config-input" id="session-log-type" style="width:160px" onchange="fetchSessionLogs()">
+              <option value="all">All</option>
+              <option value="chat">Chat</option>
+              <option value="cli">CLI</option>
+              <option value="catscompany">CatsCo</option>
+              <option value="feishu">Feishu</option>
+              <option value="weixin">Weixin</option>
+            </select>
+            <button class="btn btn-primary" onclick="fetchSessionLogs()">Refresh</button>
+          </div>
+        </div>
+        <div class="config-section">
+          <div class="portal-list" id="session-log-list"><div class="loading">Loading session logs...</div></div>
+        </div>
+        <div class="config-section">
+          <div class="config-group-title-main">Selected Session</div>
+          <pre id="session-log-detail" style="white-space:pre-wrap;word-break:break-word;max-height:460px;overflow:auto;margin-top:12px;background:rgba(15,17,23,0.06);border-radius:12px;padding:14px;color:var(--text)">Select a session log.</pre>
+        </div>
       </div>
 
       <!-- Page: Companion -->
@@ -5802,7 +5834,7 @@
     let appReadinessSnapshot = {};
     let appReadinessLoaded = false;
     let appReadinessError = '';
-    const pageTitles = { services:'Agent Hub', store:'SkillHub', prompts:'Prompt Lab', companion:'Companion Hub', chat:'CatsCo' };
+    const pageTitles = { services:'Agent Hub', logs:'Session Logs', store:'SkillHub', prompts:'Prompt Lab', companion:'Companion Hub', chat:'CatsCo' };
     let catsAuthMode = 'login';
     let catsState = {};
     let catsNextAction = 'none';
@@ -6700,6 +6732,83 @@
       } else if (name === 'services') {
         fetchStatus();
         refreshSettingsPage();
+      } else if (name === 'logs') {
+        fetchSessionLogs();
+      }
+    }
+
+    async function fetchSessionLogs(){
+      const list=document.getElementById('session-log-list');
+      const detail=document.getElementById('session-log-detail');
+      const type=document.getElementById('session-log-type')?.value||'all';
+      if(list)list.innerHTML='<div class="loading">Loading session logs...</div>';
+      try{
+        const data=await parseSimpleResponse(await fetch(API+'/api/sessions/recent?days=7&type='+encodeURIComponent(type)));
+        const sessions=Array.isArray(data.sessions)?data.sessions:[];
+        if(!sessions.length){
+          if(list)list.innerHTML='<div class="runtime-note">No recent session logs found.</div>';
+          if(detail)detail.textContent='Select a session log.';
+          return;
+        }
+        if(list){
+          list.innerHTML=sessions.map(session=>renderSessionLogRow(session)).join('');
+          list.querySelectorAll('[data-session-log-open]').forEach(button=>{
+            button.addEventListener('click',()=>{
+              openSessionLog(button.getAttribute('data-session-log-open')||'');
+            });
+          });
+        }
+      }catch(e){
+        if(list)list.innerHTML='<div class="runtime-note danger">Session logs failed: '+escapeHtml(e.message||String(e))+'</div>';
+      }
+    }
+
+    function renderSessionLogRow(session){
+      const title=escapeHtml(session.sessionId||session.relativePath||session.fileId);
+      const meta=[
+        session.sessionType||'unknown',
+        (session.turns||0)+' turns',
+        (session.toolCalls||0)+' tools',
+        (session.failures||0)+' failures',
+        (session.runtimeErrors||0)+' runtime errors',
+      ].join(' · ');
+      return '<div class="portal-row">'+
+        '<div><div class="portal-title">'+title+'</div><div class="portal-meta">'+escapeHtml(meta)+'</div></div>'+
+        '<button class="btn" data-session-log-open="'+escapeHtml(session.fileId||'')+'">Open</button>'+
+      '</div>';
+    }
+
+    async function openSessionLog(fileId){
+      const detail=document.getElementById('session-log-detail');
+      if(detail)detail.textContent='Loading...';
+      try{
+        const data=await parseSimpleResponse(await fetch(API+'/api/sessions/'+encodeURIComponent(fileId)));
+        if(detail)detail.textContent=JSON.stringify(data,null,2);
+      }catch(e){
+        if(detail)detail.textContent='Session log failed: '+(e.message||String(e));
+      }
+    }
+
+    function pageNameFromHash(){
+      const hash=String(location.hash||'').replace(/^#\/?/,'');
+      const name=hash.split(/[?&]/)[0];
+      if(name==='logs'||name==='store'||name==='services'||name==='prompts'||name==='companion'||name==='chat')return name;
+      if(name==='skills'||name==='skillhub')return 'store';
+      return '';
+    }
+
+    function applyHashRoute(){
+      const name=pageNameFromHash();
+      if(!name)return;
+      switchPage(name);
+      if(name==='store'){
+        const params=new URLSearchParams(String(location.hash||'').split('?')[1]||'');
+        const query=params.get('skillhub');
+        if(query){
+          const input=document.getElementById('skillhub-search-input');
+          if(input)input.value=query;
+          setTimeout(()=>searchSkillHub(query),0);
+        }
       }
     }
 
@@ -11455,7 +11564,8 @@
     // Init
     loadDashboardFontScale();
     preloadPetFrames();renderPetProfile();renderPetProcess();initFloatingPetDrag();setPetState('idle');
-    fetchConfig();fetchStatus();fetchSkills();fetchSkillHubStatus();fetchDashboardSettings();fetchUpdateStatus(true);fetchCatsStatus();fetchPetStatus();fetchPetTimeline();fetchPetProgress();fetchPromptCompanionProposal();
+    fetchConfig();fetchStatus();fetchSkills();fetchSkillHubStatus();fetchDashboardSettings();fetchUpdateStatus(true);fetchCatsStatus();fetchPetStatus();fetchPetTimeline();fetchPetProgress();fetchPromptCompanionProposal();applyHashRoute();
+    window.addEventListener('hashchange', applyHashRoute);
     if(document.getElementById('page-chat')?.classList.contains('active') && !catsPollTimer) catsPollTimer = setInterval(fetchCatsStatus, 5000);
     setInterval(fetchStatus,5000);setInterval(fetchSkills,30000);setInterval(()=>fetchUpdateStatus(true),5000);setInterval(()=>{fetchPetStatus();fetchPetTimeline();fetchPetProgress();},2500);setInterval(()=>fetchPromptCompanionProposal(),30000);
     const catsMessagesBox = document.getElementById('cats-messages');
