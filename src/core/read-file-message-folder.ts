@@ -1,8 +1,14 @@
 import { createHash } from 'crypto';
 import { Message } from '../types';
 import { estimateTokens } from './token-estimator';
+import {
+  persistToolResultArtifact,
+  ToolResultArtifactStoreOptions,
+} from './tool-result-artifact-store';
 
-export const FOLDED_READ_FILE_PREFIX = '[folded_read_file]';
+export const TRUNCATED_READ_FILE_PREFIX = '[truncated_read_file]';
+export const FOLDED_READ_FILE_PREFIX = TRUNCATED_READ_FILE_PREFIX;
+const LEGACY_FOLDED_READ_FILE_PREFIX = '[folded_read_file]';
 
 export interface ReadFileMessageFoldingOptions {
   enabled: boolean;
@@ -12,6 +18,7 @@ export interface ReadFileMessageFoldingOptions {
   keepRecentHistoricalReads: number;
   foldCurrentRun: boolean;
   protectedCurrentRunToolResultIndexes?: ReadonlySet<number>;
+  artifactStore?: Partial<ToolResultArtifactStoreOptions>;
 }
 
 export interface ReadFileMessageFoldingStats {
@@ -112,7 +119,7 @@ export function foldHistoricalReadFileMessages(
     }
 
     const rawText = typeof message.content === 'string' ? message.content : '';
-    if (!rawText || rawText.startsWith(FOLDED_READ_FILE_PREFIX)) return;
+    if (!rawText || isAlreadyTruncated(rawText)) return;
 
     const rawTokens = estimateTokens(rawText);
     if (rawTokens < resolved.thresholdTokens) return;
@@ -200,9 +207,21 @@ function buildFoldedReadFileContent(
     .update('\0')
     .update(candidate.rawText)
     .digest('hex');
+  const artifact = persistToolResultArtifact({
+    artifactId: `rf_${hash.slice(0, 16)}`,
+    toolName: 'read_file',
+    toolCallId: candidate.message.tool_call_id,
+    sha256: hash,
+    rawText: candidate.rawText,
+    store: options.artifactStore,
+  });
   const foldedParts = [
-    FOLDED_READ_FILE_PREFIX,
-    `artifact_id: rf_${hash.slice(0, 16)}`,
+    TRUNCATED_READ_FILE_PREFIX,
+    `artifact_id: ${artifact.artifactId}`,
+    artifact.ref ? `full_output_ref: ${artifact.ref}` : '',
+    artifact.filePath ? `full_output_path: ${artifact.filePath}` : '',
+    artifact.fileUri ? `full_output_link: ${artifact.fileUri}` : '',
+    artifact.writeError ? `full_output_store_error: ${oneLine(artifact.writeError, 300)}` : '',
     metadata.file ? `file: ${metadata.file}` : '',
     metadata.path ? `path: ${metadata.path}` : '',
     metadata.display ? `range: ${metadata.display}` : '',
@@ -211,7 +230,7 @@ function buildFoldedReadFileContent(
     `original_tokens_est: ${candidate.rawTokens}`,
     `sha256: ${hash}`,
     '',
-    'summary: Historical read_file output was folded out of the provider prompt. Re-read this file/range before exact edits or quoting.',
+    'summary: Historical read_file output was truncated out of the provider prompt. Use full_output_path/full_output_ref or re-read this file/range before exact edits or quoting.',
     previewLines.length > 0 ? ['preview:', ...previewLines.map(line => `  ${line}`)].join('\n') : '',
     symbolLines.length > 0 ? ['key_symbols:', ...symbolLines.map(line => `  ${line}`)].join('\n') : '',
   ];
@@ -257,6 +276,11 @@ function normalizeToolName(name: string): string {
   const normalized = String(name || '').trim();
   if (normalized === 'Read') return 'read_file';
   return normalized;
+}
+
+function isAlreadyTruncated(rawText: string): boolean {
+  return rawText.startsWith(TRUNCATED_READ_FILE_PREFIX)
+    || rawText.startsWith(LEGACY_FOLDED_READ_FILE_PREFIX);
 }
 
 function findLastRealUserIndex(messages: Message[]): number {
@@ -334,6 +358,12 @@ function buildDisplayFromArgs(args: Record<string, unknown>): string | undefined
 
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
   return values.find(value => Boolean(value && value.trim()));
+}
+
+function oneLine(value: string, maxLength: number): string {
+  const trimmed = value.replace(/\r?\n/g, ' ; ').trim();
+  if (trimmed.length <= maxLength) return trimmed;
+  return `${trimmed.slice(0, maxLength - 20)}...(truncated ${trimmed.length} chars)`;
 }
 
 function readBooleanEnv(value: string | undefined, fallback: boolean): boolean {
