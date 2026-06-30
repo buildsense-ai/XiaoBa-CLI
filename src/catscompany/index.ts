@@ -177,7 +177,6 @@ export class CatsCompanyBot {
           owner_user_id: config.ownerUserId,
           status: 'online' as const,
           capabilities: [...CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES],
-          model_status: resolveCatsDeviceModelStatus(),
         }
       : undefined;
 
@@ -260,13 +259,21 @@ export class CatsCompanyBot {
     if (!this.deviceRegistration?.device_id) return;
     const registration = {
       ...this.deviceRegistration,
-      model_status: resolveCatsDeviceModelStatus(),
+      model_status: this.resolveCurrentDeviceModelStatus(),
     };
     await this.bot.registerDevice(registration);
     const modelStatus = registration.model_status
       ? `, model=${registration.model_status.source}/${registration.model_status.model}`
       : '';
     Logger.info(`[CatsCompany] 已注册本机设备能力: device=${registration.device_id}, capabilities=${registration.capabilities.join(',')}${modelStatus}`);
+  }
+
+  private resolveCurrentDeviceModelStatus(): ReturnType<typeof resolveCatsDeviceModelStatus> {
+    const getConfig = (this.agentServices.aiService as any).getConfig;
+    const config = typeof getConfig === 'function'
+      ? getConfig.call(this.agentServices.aiService)
+      : undefined;
+    return resolveCatsDeviceModelStatus({ config });
   }
 
   private startDeviceRegistrationRefresh(): void {

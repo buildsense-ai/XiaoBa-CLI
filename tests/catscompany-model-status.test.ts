@@ -34,6 +34,46 @@ test('treats relay base URL as relay even when source is absent', () => {
   assert.equal(status?.model, 'deepseek-v4-flash');
 });
 
+test('uses effective runtime config before stale env values', () => {
+  const status = resolveCatsDeviceModelStatus({
+    env: {
+      GAUZ_LLM_MODEL: 'MiniMax-M2.7',
+      GAUZ_LLM_API_BASE: 'https://relay.catsco.cc/anthropic',
+    } as NodeJS.ProcessEnv,
+    config: {
+      apiUrl: 'https://relay.catsco.cc/anthropic',
+      model: 'MiniMax-M3',
+    },
+    now: () => 1782790000005,
+  });
+
+  assert.deepEqual(status, {
+    source: 'relay',
+    model: 'MiniMax-M3',
+    updated_at: 1782790000005,
+  });
+});
+
+test('does not let stale relay source override a custom endpoint', () => {
+  const status = resolveCatsDeviceModelStatus({
+    env: {
+      CATSCO_MODEL_SOURCE: 'relay',
+    } as NodeJS.ProcessEnv,
+    config: {
+      apiUrl: 'https://example.test/v1',
+      apiKey: 'sk-secret',
+      model: 'claude-fable-5',
+    },
+    now: () => 1782790000006,
+  });
+
+  assert.deepEqual(status, {
+    source: 'custom',
+    model: 'claude-fable-5',
+    updated_at: 1782790000006,
+  });
+});
+
 test('reports custom model status without exposing endpoint or key', () => {
   const status = resolveCatsDeviceModelStatus({
     env: {

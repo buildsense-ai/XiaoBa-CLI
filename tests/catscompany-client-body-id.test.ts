@@ -158,6 +158,11 @@ describe('CatsCompany client body identity', () => {
             installation_id: 'install-test',
             status: 'online',
             capabilities: ['read_file', 'send_file'],
+            model_status: {
+              source: 'relay',
+              model: 'MiniMax-M3',
+              updated_at: 1782790000000,
+            },
           });
         })().catch(reject);
       });
@@ -175,7 +180,14 @@ describe('CatsCompany client body identity', () => {
       installation_id: 'install-test',
       status: 'online',
       capabilities: ['read_file', 'send_file'],
+      model_status: {
+        source: 'relay',
+        model: 'MiniMax-M3',
+        updated_at: 1782790000000,
+      },
     });
+    assert.equal(request.body.apiUrl, undefined);
+    assert.equal(request.body.apiKey, undefined);
   });
 
   test('emits device rpc requests outside the regular message stream', async () => {
