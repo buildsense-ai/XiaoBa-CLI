@@ -38,6 +38,7 @@ import {
   stripToolTargetContextForDisplay,
 } from '../tools/tool-target-context';
 import { formatPathForLog } from '../utils/log-redaction';
+import { resolveCatsDeviceModelStatus } from './model-status';
 
 interface PendingAttachment {
   fileName: string;
@@ -161,6 +162,7 @@ export class CatsCompanyBot {
     installation_id?: string;
     status: 'online';
     capabilities: string[];
+    model_status?: ReturnType<typeof resolveCatsDeviceModelStatus>;
   };
 
   constructor(config: CatsCompanyConfig) {
@@ -175,6 +177,7 @@ export class CatsCompanyBot {
           owner_user_id: config.ownerUserId,
           status: 'online' as const,
           capabilities: [...CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES],
+          model_status: resolveCatsDeviceModelStatus(),
         }
       : undefined;
 
@@ -255,8 +258,15 @@ export class CatsCompanyBot {
 
   private async registerCurrentDevice(): Promise<void> {
     if (!this.deviceRegistration?.device_id) return;
-    await this.bot.registerDevice(this.deviceRegistration);
-    Logger.info(`[CatsCompany] 已注册本机设备能力: device=${this.deviceRegistration.device_id}, capabilities=${this.deviceRegistration.capabilities.join(',')}`);
+    const registration = {
+      ...this.deviceRegistration,
+      model_status: resolveCatsDeviceModelStatus(),
+    };
+    await this.bot.registerDevice(registration);
+    const modelStatus = registration.model_status
+      ? `, model=${registration.model_status.source}/${registration.model_status.model}`
+      : '';
+    Logger.info(`[CatsCompany] 已注册本机设备能力: device=${registration.device_id}, capabilities=${registration.capabilities.join(',')}${modelStatus}`);
   }
 
   private startDeviceRegistrationRefresh(): void {

@@ -24,6 +24,11 @@ export interface CatsDeviceRegistration {
   owner_user_id?: string;
   status?: 'online' | 'offline';
   capabilities?: string[];
+  model_status?: {
+    source?: 'relay' | 'custom';
+    model?: string;
+    updated_at?: number;
+  };
 }
 
 export interface CatsDeviceRpcError {
