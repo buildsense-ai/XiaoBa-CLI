@@ -28,11 +28,24 @@ export class SendTextTool implements Tool {
     },
   };
 
-  async execute(args: { text: string }, context: ToolExecutionContext): Promise<ToolExecutionResult> {
-    const { text } = args;
+  async execute(args: unknown, context: ToolExecutionContext): Promise<ToolExecutionResult> {
+    if (!args || typeof args !== 'object') {
+      return {
+        ok: false,
+        errorCode: 'INVALID_TOOL_ARGUMENTS',
+        message: 'send_text requires a non-empty text string.',
+      };
+    }
 
-    if (!text || !text.trim()) {
-      throw new Error('text 不能为空');
+    const { text } = args as { text?: unknown };
+    const normalizedText = typeof text === 'string' ? text.trim() : '';
+
+    if (!normalizedText) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_TOOL_ARGUMENTS',
+        message: 'send_text requires a non-empty text string.',
+      };
     }
 
     const target = resolveOutboundTarget(context, {
@@ -47,7 +60,15 @@ export class SendTextTool implements Tool {
       };
     }
 
-    await context.channel!.reply(target.chatId, text.trim());
+    try {
+      await context.channel!.reply(target.chatId, normalizedText);
+    } catch (error: any) {
+      return {
+        ok: false,
+        errorCode: 'TOOL_EXECUTION_ERROR',
+        message: `Message send failed: ${String(error?.message || error)}`,
+      };
+    }
 
     return { ok: true, content: '已发送' };
   }

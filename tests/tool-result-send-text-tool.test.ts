@@ -61,6 +61,22 @@ describe('SendTextTool outbound scope checks', () => {
     assert.deepEqual(sent, [{ chatId: 'legacy-chat', text: 'hello' }]);
   });
 
+  test('rejects missing or empty text without sending', async () => {
+    const tool = new SendTextTool();
+    const { context, sent } = contextWithChannel('p2p_7_43', scope());
+
+    const missingResult = await tool.execute({}, context);
+    const emptyResult = await tool.execute({ text: '   ' }, context);
+
+    assert.equal(missingResult.ok, false);
+    assert.equal(missingResult.errorCode, 'INVALID_TOOL_ARGUMENTS');
+    assert.match(missingResult.message, /non-empty text/);
+    assert.equal(emptyResult.ok, false);
+    assert.equal(emptyResult.errorCode, 'INVALID_TOOL_ARGUMENTS');
+    assert.match(emptyResult.message, /non-empty text/);
+    assert.deepEqual(sent, []);
+  });
+
   test('blocks text send when channel chatId conflicts with executionScope topic', async () => {
     const tool = new SendTextTool();
     const { context, sent } = contextWithChannel('p2p_8_43', scope());
@@ -88,7 +104,7 @@ describe('SendTextTool outbound scope checks', () => {
     assert.deepEqual(sent, [{ chatId: 'p2p_7_43', text: '请重新发送一下' }]);
   });
 
-  test('propagates channel send failures to the tool caller', async () => {
+  test('returns channel send failures as structured tool errors', async () => {
     const tool = new SendTextTool();
     const context: ToolExecutionContext = {
       workingDirectory: process.cwd(),
@@ -105,9 +121,10 @@ describe('SendTextTool outbound scope checks', () => {
       },
     };
 
-    await assert.rejects(
-      () => tool.execute({ text: '会发送失败' }, context),
-      /ack timeout/,
-    );
+    const result = await tool.execute({ text: '会发送失败' }, context);
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'TOOL_EXECUTION_ERROR');
+    assert.match(result.message, /Message send failed: ack timeout/);
   });
 });
