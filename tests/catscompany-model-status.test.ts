@@ -93,10 +93,11 @@ test('reports custom model status without exposing endpoint or key', () => {
   });
 });
 
-test('falls back to custom label when a custom source has no model name', () => {
+test('falls back to custom label when custom source has a partial config but no model name', () => {
   const status = resolveCatsDeviceModelStatus({
     env: {
       CATSCO_MODEL_SOURCE: 'custom',
+      GAUZ_LLM_API_BASE: 'https://example.test/v1',
     } as NodeJS.ProcessEnv,
     config: {},
     now: () => 1782790000003,
@@ -104,6 +105,18 @@ test('falls back to custom label when a custom source has no model name', () => 
 
   assert.equal(status?.source, 'custom');
   assert.equal(status?.model, '自定义模型');
+});
+
+test('does not report stale empty custom source as configured model status', () => {
+  const status = resolveCatsDeviceModelStatus({
+    env: {
+      CATSCO_MODEL_SOURCE: 'custom',
+    } as NodeJS.ProcessEnv,
+    config: {},
+    now: () => 1782790000007,
+  });
+
+  assert.equal(status, undefined);
 });
 
 test('does not report default config when no model source is configured', () => {

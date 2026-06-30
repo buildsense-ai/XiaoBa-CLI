@@ -51,7 +51,8 @@ export function resolveCatsDeviceModelStatus(options: ModelStatusOptions = {}): 
     };
   }
 
-  if (source === 'custom' || (apiKey && (model || apiBase))) {
+  const hasCustomSignal = Boolean(model || apiBase || apiKey);
+  if ((source === 'custom' && hasCustomSignal) || (apiKey && (model || apiBase))) {
     return {
       source: 'custom',
       model: model || '自定义模型',
