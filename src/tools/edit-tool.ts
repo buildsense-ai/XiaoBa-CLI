@@ -5,6 +5,38 @@ import { isToolAllowed, isPathAllowed } from '../utils/safety';
 import { formatCatsCoVisiblePath } from './tool-gateway';
 import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
+const MAX_EDIT_FILE_BYTES = 5 * 1024 * 1024;
+const BINARY_CHECK_BYTES = 8192;
+const BINARY_FILE_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico',
+  '.pdf', '.zip', '.gz', '.tgz', '.tar', '.rar', '.7z',
+  '.exe', '.dll', '.so', '.dylib', '.bin',
+  '.woff', '.woff2', '.ttf', '.otf',
+  '.mp3', '.mp4', '.mov', '.avi',
+  '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+]);
+
+function invalidArguments(message: string): ToolExecutionResult {
+  return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message };
+}
+
+function isLikelyBinaryFile(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  if (BINARY_FILE_EXTENSIONS.has(ext)) return true;
+
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(BINARY_CHECK_BYTES);
+    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, bytesRead).includes(0);
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
+}
+
 /**
  * Edit 工具 - 精确字符串替换
  */
@@ -43,7 +75,22 @@ export class EditTool implements Tool {
   };
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
+    if (!args || typeof args !== 'object') {
+      return invalidArguments('edit_file requires an arguments object.');
+    }
     const { file_path, old_string, new_string, replace_all = false } = args;
+    if (typeof file_path !== 'string' || file_path.length === 0) {
+      return invalidArguments('edit_file requires a non-empty file_path string.');
+    }
+    if (typeof old_string !== 'string' || old_string.length === 0) {
+      return invalidArguments('edit_file requires a non-empty old_string string.');
+    }
+    if (typeof new_string !== 'string') {
+      return invalidArguments('edit_file requires new_string to be a string.');
+    }
+    if (replace_all !== undefined && typeof replace_all !== 'boolean') {
+      return invalidArguments('edit_file requires replace_all to be a boolean when provided.');
+    }
 
     const toolPermission = isToolAllowed(this.definition.name);
     if (!toolPermission.allowed) {
@@ -77,8 +124,59 @@ export class EditTool implements Tool {
       return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `错误：文件不存在: ${displayPath}` };
     }
 
+    let stats: fs.Stats;
+    try {
+      stats = fs.statSync(absolutePath);
+    } catch {
+      return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `错误：文件不存在: ${displayPath}` };
+    }
+
+    if (!stats.isFile()) {
+      return {
+        ok: false,
+        errorCode: 'TOOL_EXECUTION_ERROR',
+        message: `错误：edit_file 只能编辑普通文本文件，目标不是文件。\n文件: ${displayPath}`,
+      };
+    }
+
+    if (stats.size > MAX_EDIT_FILE_BYTES) {
+      return {
+        ok: false,
+        errorCode: 'TOOL_EXECUTION_ERROR',
+        message: `错误：文件过大，edit_file 只处理 ${MAX_EDIT_FILE_BYTES} bytes 以内的文本文件。\n文件: ${displayPath}\n大小: ${stats.size} bytes`,
+      };
+    }
+
+    let likelyBinary: boolean;
+    try {
+      likelyBinary = isLikelyBinaryFile(absolutePath);
+    } catch (error: any) {
+      return {
+        ok: false,
+        errorCode: 'TOOL_EXECUTION_ERROR',
+        message: `错误：读取文件失败。\n文件: ${displayPath}\n原因: ${error?.message || error}`,
+      };
+    }
+
+    if (likelyBinary) {
+      return {
+        ok: false,
+        errorCode: 'TOOL_EXECUTION_ERROR',
+        message: `错误：目标看起来不是普通文本文件，已阻止 edit_file 以避免损坏二进制文件。\n文件: ${displayPath}`,
+      };
+    }
+
     // 读取文件内容
-    const content = fs.readFileSync(absolutePath, 'utf-8');
+    let content: string;
+    try {
+      content = fs.readFileSync(absolutePath, 'utf-8');
+    } catch (error: any) {
+      return {
+        ok: false,
+        errorCode: 'TOOL_EXECUTION_ERROR',
+        message: `错误：读取文件失败。\n文件: ${displayPath}\n原因: ${error?.message || error}`,
+      };
+    }
 
     // 检查 old_string 是否存在
     if (!content.includes(old_string)) {
