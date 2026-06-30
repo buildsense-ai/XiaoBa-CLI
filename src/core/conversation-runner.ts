@@ -53,6 +53,11 @@ import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/mo
 import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
 import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
 import { PromptTraceLogger } from '../utils/prompt-trace-logger';
+import {
+  restoreProviderReplayToolCalls,
+  stripAssistantArtifactsFromMessages,
+  stripAssistantTranscriptArtifacts,
+} from '../utils/transcript-artifacts';
 import { prependToolTargetContext } from '../tools/tool-target-context';
 import {
   buildSyntheticObservationLifecycleEvent,
@@ -87,6 +92,7 @@ const MIN_MESSAGE_BUDGET = 2000;
 const OVERFLOW_REDUCTION_RATIO = 0.6;
 const MAX_EMPTY_MAX_TOKEN_RECOVERIES = 1;
 const EMPTY_MAX_TOKENS_MESSAGE = '模型这轮输出达到了 max_tokens 上限，但没有生成可见回复或工具调用。已保留当前上下文；请回复“继续”，我会从刚才的位置继续推进。';
+const REPLAY_ARTIFACT_ONLY_MESSAGE = '模型工具调用回放异常，这轮没有生成可见回复。上下文已保留；你可以直接说“继续”，我会从这里接上。';
 export const PROMPT_BUDGET_TRIM_MESSAGE = '当前上下文超过模型窗口，已裁剪较早的历史内容以继续处理。';
 export const PROMPT_TOOLS_DISABLED_MESSAGE = '当前模型上下文不足以加载全部工具，本轮已先按纯文本继续处理。';
 const MAX_VISIBLE_TOOL_PRELUDE_CHARS = 64;
@@ -521,6 +527,36 @@ export class ConversationRunner {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI返回 tokens: ${response.usage.promptTokens}+${response.usage.completionTokens}=${response.usage.totalTokens}`);
       }
 
+      if ((!response.toolCalls || response.toolCalls.length === 0) && response.content) {
+        const restored = restoreProviderReplayToolCalls(
+          response.content,
+          this.buildRestorableReplayToolNameSet(requestTools),
+        );
+        if (restored.toolCalls.length > 0) {
+          const restoredToolCalls = restored.toolCalls
+            .map(toolCall => ({
+              ...toolCall,
+              function: {
+                ...toolCall.function,
+                name: normalizeToolName(toolCall.function.name),
+              },
+            }))
+            .filter(toolCall => this.isRestoredReplayToolCallSafe(toolCall, currentDirectory));
+          if (restoredToolCalls.length > 0) {
+            Logger.warning(
+              `[${this.sessionLabel}Turn ${turns}] 已将模型内部 replay 摘要恢复为工具调用: `
+              + restoredToolCalls.map(toolCall => toolCall.function.name).join(', ')
+            );
+            response = {
+              ...response,
+              content: restored.visibleText || null,
+              toolCalls: restoredToolCalls,
+              providerContent: undefined,
+            };
+          }
+        }
+      }
+
       if (!response.toolCalls || response.toolCalls.length === 0) {
         if (this.isEmptyMaxTokensResponse(response)) {
           Logger.warning(`[${this.sessionLabel}Turn ${turns}] 模型输出达到 max_tokens 且没有可见内容或工具调用`);
@@ -533,10 +569,18 @@ export class ConversationRunner {
           response = { ...response, content: EMPTY_MAX_TOKENS_MESSAGE, toolCalls: [] };
         }
 
-        Logger.info(`[${this.sessionLabel}Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(response.content || '', 300)}`);
+        let visibleContent = stripAssistantTranscriptArtifacts(response.content || '');
+        if ((response.content || '') && visibleContent !== (response.content || '')) {
+          Logger.warning(`[${this.sessionLabel}Turn ${turns}] 已过滤模型返回的内部历史回放占位文本`);
+        }
+        if ((response.content || '') && !visibleContent) {
+          visibleContent = REPLAY_ARTIFACT_ONLY_MESSAGE;
+        }
 
-        if (response.content) {
-          const finalAssistantMessage: Message = { role: 'assistant', content: response.content };
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(visibleContent, 300)}`);
+
+        if (visibleContent) {
+          const finalAssistantMessage: Message = { role: 'assistant', content: visibleContent };
           messages.push(finalAssistantMessage);
           newMessages.push(finalAssistantMessage);
         }
@@ -546,7 +590,7 @@ export class ConversationRunner {
         }
 
         if (this.isMessageSurface()) {
-          let finalText = response.content || '';
+          let finalText = visibleContent;
           finalText = finalText.replace(/^\[已发送信息\]\s*/, '');
           finalText = finalText.replace(/^\[已发送文件\]\s*/, '');
 
@@ -573,7 +617,7 @@ export class ConversationRunner {
           };
         }
 
-        let cleanedResponse = response.content || '';
+        let cleanedResponse = visibleContent;
         cleanedResponse = cleanedResponse.replace(/^\[已发送信息\]\s*/, '');
         cleanedResponse = cleanedResponse.replace(/^\[已发送文件\]\s*/, '');
 
@@ -586,12 +630,16 @@ export class ConversationRunner {
       }
 
       if (response.content) {
-        Logger.info(`[${this.sessionLabel}Turn ${turns}] AI文本: ${ConversationRunner.truncateForLog(response.content, 300)}`);
-        const shouldSurfacePrelude = this.shouldSurfaceToolPrelude(response.content);
+        const visiblePrelude = stripAssistantTranscriptArtifacts(response.content);
+        if (visiblePrelude !== response.content) {
+          Logger.warning(`[${this.sessionLabel}Turn ${turns}] 已过滤工具前文本里的内部历史回放占位文本`);
+        }
+        Logger.info(`[${this.sessionLabel}Turn ${turns}] AI文本: ${ConversationRunner.truncateForLog(visiblePrelude, 300)}`);
+        const shouldSurfacePrelude = this.shouldSurfaceToolPrelude(visiblePrelude);
         if (callbacks?.onAssistantText && shouldSurfacePrelude) {
-          await callbacks.onAssistantText(response.content);
+          await callbacks.onAssistantText(visiblePrelude);
         } else if (!callbacks?.onAssistantText && callbacks?.onThinking && shouldSurfacePrelude) {
-          await callbacks.onThinking(response.content);
+          await callbacks.onThinking(visiblePrelude);
         } else {
           Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具前文本已作为内部进度保留，未发送给用户`);
         }
@@ -601,7 +649,7 @@ export class ConversationRunner {
 
       const assistantMsg: Message = {
         role: 'assistant',
-        content: response.content,
+        content: stripAssistantTranscriptArtifacts(response.content || ''),
         tool_calls: response.toolCalls,
         providerContent: response.providerContent,
       };
@@ -1020,8 +1068,9 @@ export class ConversationRunner {
         && !message.content.startsWith(TRANSIENT_CURRENT_DIRECTORY_PREFIX);
     });
 
+    const repairedBase = this.repairToolExchangeMessages(stripAssistantArtifactsFromMessages(sanitizedBase));
     const collapsed: Message[] = [];
-    for (const message of sanitizedBase) {
+    for (const message of repairedBase) {
       const previous = collapsed[collapsed.length - 1];
       if (
         previous
@@ -1049,6 +1098,71 @@ export class ConversationRunner {
         ...transientHints,
       ],
     );
+  }
+
+  private buildRestorableReplayToolNameSet(tools: ToolDefinition[]): Set<string> {
+    const allowed = new Set<string>();
+    for (const tool of tools) {
+      if (tool.transcriptMode !== 'outbound_file' || normalizeToolName(tool.name) !== 'send_file') {
+        continue;
+      }
+      allowed.add(tool.name);
+      allowed.add(normalizeToolName(tool.name));
+    }
+    for (const [alias, normalized] of Object.entries(TOOL_NAME_ALIASES)) {
+      if (allowed.has(normalized)) {
+        allowed.add(alias);
+      }
+    }
+    return allowed;
+  }
+
+  private isRestoredReplayToolCallSafe(toolCall: ToolCall, currentDirectory?: string): boolean {
+    const toolName = normalizeToolName(toolCall.function.name);
+    if (toolName !== 'send_file') {
+      return false;
+    }
+    return this.isRestoredSendFilePathInsideCurrentDirectory(
+      toolCall.function.arguments,
+      currentDirectory || this.toolExecutionContext?.workingDirectory,
+    );
+  }
+
+  private isRestoredSendFilePathInsideCurrentDirectory(argumentsJson: string, currentDirectory?: string): boolean {
+    if (!currentDirectory) return false;
+    let args: unknown;
+    try {
+      args = JSON.parse(argumentsJson);
+    } catch {
+      return false;
+    }
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+    const filePath = (args as Record<string, unknown>).file_path;
+    if (typeof filePath !== 'string' || !filePath.trim()) return false;
+
+    if (this.isWindowsPathLike(currentDirectory) || this.isWindowsPathLike(filePath)) {
+      if (!this.isWindowsPathLike(currentDirectory)) {
+        return false;
+      }
+      const base = path.win32.resolve(currentDirectory);
+      const resolved = path.win32.resolve(base, filePath);
+      return this.isPathInside(base, resolved, path.win32.sep, true);
+    }
+
+    const base = path.resolve(currentDirectory);
+    const resolved = path.resolve(base, filePath);
+    return this.isPathInside(base, resolved, path.sep, process.platform === 'win32');
+  }
+
+  private isWindowsPathLike(value: string): boolean {
+    return /^[a-zA-Z]:[\\/]/.test(value) || /^[\\/]{2}[^\\/]/.test(value);
+  }
+
+  private isPathInside(base: string, resolved: string, separator: string, caseInsensitive: boolean): boolean {
+    const normalizedBase = caseInsensitive ? base.toLowerCase() : base;
+    const normalizedResolved = caseInsensitive ? resolved.toLowerCase() : resolved;
+    return normalizedResolved === normalizedBase
+      || normalizedResolved.startsWith(normalizedBase + separator);
   }
 
   private insertProviderTransientHints(messages: Message[], hints: Message[]): Message[] {
