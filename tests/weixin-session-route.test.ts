@@ -5,7 +5,7 @@ import { SubAgentManager } from '../src/core/sub-agent-manager';
 
 describe('Weixin SessionRoute V2', () => {
   test('routes messages through a Weixin V2 key while preserving the outbound user id', async () => {
-    const sentTexts: Array<{ userId: string; text: string; contextToken?: string }> = [];
+    const sentTexts: Array<{ userId: string; text: string; contextToken?: string; fromUserId?: string }> = [];
     const bot = createHarness({
       sentTexts,
       parsed: {
@@ -41,7 +41,7 @@ describe('Weixin SessionRoute V2', () => {
       await bot.handledTurns[0].options.channel.reply('ignored-chat-id', 'reply text');
 
       assert.deepEqual(sentTexts, [
-        { userId: 'shared', text: 'reply text', contextToken: 'ctx-token' },
+        { userId: 'shared', text: 'reply text', contextToken: 'ctx-token', fromUserId: 'wx-bot' },
       ]);
     } finally {
       SubAgentManager.getInstance().unregisterPlatformCallbacks('session:v2:weixin:p2p:shared');
@@ -89,7 +89,7 @@ describe('Weixin SessionRoute V2', () => {
 function createHarness(options: {
   busy?: boolean;
   parsed: any;
-  sentTexts?: Array<{ userId: string; text: string; contextToken?: string }>;
+  sentTexts?: Array<{ userId: string; text: string; contextToken?: string; fromUserId?: string }>;
 }): any {
   const bot = Object.create(WeixinBot.prototype) as any;
   bot.sessionBusy = options.busy ?? false;
@@ -121,8 +121,8 @@ function createHarness(options: {
     },
   };
   bot.sender = {
-    sendText: async (userId: string, text: string, contextToken?: string) => {
-      options.sentTexts?.push({ userId, text, contextToken });
+    sendText: async (userId: string, text: string, contextToken?: string, fromUserId?: string) => {
+      options.sentTexts?.push({ userId, text, contextToken, fromUserId });
     },
     sendFile: async () => undefined,
   };

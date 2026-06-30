@@ -1,4 +1,5 @@
 import { ContentBlock, Message } from '../types';
+import { randomUUID } from 'crypto';
 import type {
   ExecutionScope,
   ScopedDeviceGrant,
@@ -128,6 +129,7 @@ export class AgentTurnController {
 
   async run(params: RunAgentTurnParams): Promise<RunAgentTurnResult> {
     const turnNumber = ++this.turnSequence;
+    const episodeId = this.createEpisodeId(turnNumber);
     const previousCarryoverMemoryBranch = this.memoryBranchCarryover;
     const previousCarryoverModeRouter = this.modeRouterCarryover;
     const branchAgentsEnabled = isBranchAgentsEnabled();
@@ -141,6 +143,8 @@ export class AgentTurnController {
     params.messages.push({
       role: 'user',
       content: params.input,
+      __episodeId: episodeId,
+      __episodeInputKind: 'root',
       ...(params.runtimeObservationSource && {
         __runtimeObservation: true,
         runtimeObservationSource: params.runtimeObservationSource,
@@ -199,6 +203,7 @@ export class AgentTurnController {
       localFileGrants: params.localFileGrants,
       pendingUserInputProvider: params.pendingUserInputProvider,
       confirmToolExecution: params.callbacks?.confirmToolExecution,
+      episodeId,
       syntheticObservationProvider: () => this.drainMemoryObservations(
         carryoverMemoryBranch,
         currentMemoryBranch,
@@ -216,6 +221,7 @@ export class AgentTurnController {
     let result;
     try {
       result = await runner.run(turnContext.messages, this.toRunnerCallbacks(params.callbacks));
+      this.markEpisodeMessages(result.newMessages, episodeId);
     } catch (error: any) {
       const partialMessages = this.options.turnContextBuilder.removeTransientMessages(turnContext.messages);
       this.replaceBase64Images(partialMessages);
@@ -265,6 +271,17 @@ export class AgentTurnController {
     };
   }
 
+  private createEpisodeId(turnNumber: number): string {
+    return `episode:${turnNumber}:${randomUUID().slice(0, 8)}`;
+  }
+
+  private markEpisodeMessages(messages: Message[], episodeId: string): void {
+    for (const message of messages) {
+      if (message.__episodeId) continue;
+      message.__episodeId = episodeId;
+    }
+  }
+
   private createRunner(options: {
     channel?: ChannelCallbacks;
     executionScope?: ExecutionScope;
@@ -275,6 +292,7 @@ export class AgentTurnController {
     localFileGrants?: ScopedLocalFileGrant[];
     pendingUserInputProvider?: PendingUserInputProvider;
     confirmToolExecution?: AgentTurnCallbacks['confirmToolExecution'];
+    episodeId?: string;
     syntheticObservationProvider?: () => SyntheticObservation[];
     runtimeTransientProvider?: () => Message[];
     abortSignal?: AbortSignal;
@@ -289,6 +307,7 @@ export class AgentTurnController {
         pendingUserInputProvider: options.pendingUserInputProvider,
         syntheticObservationProvider: options.syntheticObservationProvider,
         runtimeTransientProvider: options.runtimeTransientProvider,
+        episodeId: options.episodeId,
         // AgentSession/ContextWindowManager compacts durable history before the turn.
         // Runner-level compaction can fold transient runtime feedback into summary.
         enableCompression: false,

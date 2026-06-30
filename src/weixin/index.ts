@@ -128,16 +128,16 @@ export class WeixinBot {
     }
   }
 
-  private buildChannel(chatId: string, sessionKey: string, userId: string): ChannelCallbacks {
+  private buildChannel(chatId: string, sessionKey: string, userId: string, botUserId?: string): ChannelCallbacks {
     return {
       chatId,
       reply: async (cid: string, text: string) => {
         const contextToken = this.contextTokens.get(sessionKey) || this.contextTokens.get(`user:${userId}`);
-        await this.sender.sendText(userId, text, contextToken);
+        await this.sender.sendText(userId, text, contextToken, botUserId);
       },
       sendFile: async (cid: string, filePath: string, fileName: string) => {
         const contextToken = this.contextTokens.get(sessionKey) || this.contextTokens.get(`user:${userId}`);
-        await this.sender.sendFile(userId, filePath, fileName, contextToken);
+        await this.sender.sendFile(userId, filePath, fileName, contextToken, botUserId);
       },
     };
   }
@@ -224,7 +224,7 @@ export class WeixinBot {
     }
 
     const session = this.sessionManager.getOrCreate(route);
-    const channel = this.buildChannel(route.topicId, sessionKey, userId);
+    const channel = this.buildChannel(route.topicId, sessionKey, userId, parsed.chat?.id);
     SubAgentManager.getInstance().registerPlatformCallbacks(sessionKey, {
       injectMessage: async (text: string) => {
         await this.handleSubAgentFeedback(sessionKey, route.topicId, userId, text, route);

@@ -32,6 +32,7 @@ import {
   findPreviousPromptModeState,
 } from '../runtime/prompt-modes';
 import { resolveTurnContextTransientPolicy } from './transient-injection-policy';
+import { TRANSIENT_PENDING_USER_INPUT_PREFIX } from './pending-user-input-boundary';
 
 const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
@@ -115,6 +116,7 @@ export class TurnContextBuilder {
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_PLAN_STATUS_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)) return false;
+      if (msg.content.startsWith(TRANSIENT_PENDING_USER_INPUT_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SOFT_CHECK_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_RUNTIME_OBSERVATION_RULES_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SKILLS_LIST_PREFIX)) return false;

@@ -90,8 +90,8 @@ test('adaptively lowers thresholds to fold additional tool results toward a prom
   assert.equal(result.stats.execute_shell_folded_count, 1);
   assert.equal(result.stats.passes, 2);
   assert.deepEqual(result.stats.thresholds_tried, [1000, 500]);
-  assert.match(String(result.messages[2].content), /^\[folded_read_file\]/);
-  assert.match(String(result.messages[4].content), /^\[folded_execute_shell\]/);
+  assert.match(String(result.messages[2].content), /^\[truncated_read_file\]/);
+  assert.match(String(result.messages[4].content), /^\[truncated_execute_shell\]/);
 });
 
 test('does not adaptively fold when disabled or already under target', () => {

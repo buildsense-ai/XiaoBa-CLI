@@ -21,6 +21,8 @@ describe('OpenAIProvider runtime feedback boundary', () => {
         __runtimeFeedback: true,
         __runtimeObservation: true,
         runtimeObservationSource: 'subagent_result',
+        __episodeId: 'episode:test',
+        __episodeInputKind: 'root',
         extra: 'must not leak',
       } as any,
       {
@@ -50,6 +52,8 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     assert.equal(JSON.stringify(body.messages).includes('__injected'), false);
     assert.equal(JSON.stringify(body.messages).includes('__runtimeFeedback'), false);
     assert.equal(JSON.stringify(body.messages).includes('__runtimeObservation'), false);
+    assert.equal(JSON.stringify(body.messages).includes('__episodeId'), false);
+    assert.equal(JSON.stringify(body.messages).includes('__episodeInputKind'), false);
     assert.equal(JSON.stringify(body.messages).includes('runtimeObservationSource'), false);
     assert.equal(JSON.stringify(body.messages).includes('must not leak'), false);
   });

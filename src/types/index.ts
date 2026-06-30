@@ -29,6 +29,10 @@ export interface Message {
   /** Synthetic tool-call/tool-result pair used as transient runtime context. */
   __syntheticObservation?: boolean;
   syntheticObservationId?: string;
+  /** Internal episode marker used for local compaction grouping. Never sent to providers. */
+  __episodeId?: string;
+  /** Distinguishes the initial user input from user messages merged while a turn is running. */
+  __episodeInputKind?: 'root' | 'pending';
   /** Provider 原始 assistant content blocks，仅用于下次请求回放，不展示给用户。 */
   providerContent?: ProviderContentBlock[];
 }

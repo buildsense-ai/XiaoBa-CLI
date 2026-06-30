@@ -167,8 +167,62 @@ export class AnthropicProvider implements AIProvider {
 
     return {
       system: systemPrompt || undefined,
-      messages: transformedMessages
+      messages: this.coalesceAdjacentUserMessages(transformedMessages)
     };
+  }
+
+  private coalesceAdjacentUserMessages(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+    const result: Anthropic.MessageParam[] = [];
+
+    for (const message of messages) {
+      const previous = result[result.length - 1];
+      if (previous?.role === 'user' && message.role === 'user') {
+        previous.content = this.mergeUserContent(previous.content, message.content) as any;
+        continue;
+      }
+      result.push(message);
+    }
+
+    return result;
+  }
+
+  private mergeUserContent(left: unknown, right: unknown): unknown {
+    if (typeof left === 'string' && typeof right === 'string') {
+      return [left, right].filter(Boolean).join('\n\n');
+    }
+
+    const blocks = [
+      ...this.userContentToBlocks(left),
+      ...this.userContentToBlocks(right),
+    ];
+    if (blocks.length === 0) return '';
+
+    return this.orderUserBlocks(blocks);
+  }
+
+  private userContentToBlocks(content: unknown): any[] {
+    if (Array.isArray(content)) return content;
+    if (typeof content === 'string') {
+      return content ? [{ type: 'text', text: content }] : [];
+    }
+    return [];
+  }
+
+  private orderUserBlocks(blocks: any[]): any[] {
+    if (!blocks.some(block => block?.type === 'tool_result')) {
+      return blocks;
+    }
+
+    const toolResults: any[] = [];
+    const others: any[] = [];
+    for (const block of blocks) {
+      if (block?.type === 'tool_result') {
+        toolResults.push(block);
+      } else {
+        others.push(block);
+      }
+    }
+    return [...toolResults, ...others];
   }
 
   /**
