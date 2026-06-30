@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { SessionToolCallLog, SessionTurnLogEntry } from '../utils/session-log-schema';
+import { stripAssistantTranscriptArtifacts } from '../utils/transcript-artifacts';
 
 export interface MemorySearchMatch {
   ref: string;
@@ -340,7 +341,7 @@ function formatRef(ref: ParsedRef): string {
 function searchableText(entry: SessionTurnLogEntry): string {
   return [
     entry.user?.text || '',
-    entry.assistant?.text || '',
+    stripAssistantTranscriptArtifacts(entry.assistant?.text || ''),
     ...(entry.assistant?.tool_calls || []).flatMap(toolCall => [
       toolCall.name || '',
       normalizeToolArgument(toolCall.arguments),
@@ -362,7 +363,10 @@ function formatTurnRecord(record: MemoryTurnRecord, budgetChars: number): Memory
   const builder = new BudgetTextBuilder(budgetChars);
   builder.appendLine(`REF: ${record.ref}`);
   builder.appendSection('USER', record.entry.user?.text || '');
-  builder.appendSection('ASSISTANT_FINAL', record.entry.assistant?.text || '');
+  builder.appendSection(
+    'ASSISTANT_FINAL',
+    stripAssistantTranscriptArtifacts(record.entry.assistant?.text || ''),
+  );
   builder.appendSection('TOOL_CALLS_AND_RESULTS', formatToolCalls(record.entry.assistant?.tool_calls || []));
   return {
     ref: record.ref,

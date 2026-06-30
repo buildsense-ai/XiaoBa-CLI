@@ -176,6 +176,43 @@ describe('memory branch tools', () => {
     assert.equal(parsed.truncated, true);
     assert.match(parsed.text, /truncated field/);
   });
+
+  test('read strips DeepSeek replay summary artifacts from historical assistant text', async () => {
+    const leakedReplay = [
+      '先给你做个小游戏。',
+      '',
+      '[历史工具调用已转为摘要：DeepSeek thinking replay 缓存缺失，工具=write_file，id=call_function_1，参数={"content":"<!DOCTYPE html>',
+      '<html>',
+      '<script>',
+      'const levels = [1, 2, 3];',
+      '</script>',
+      '</html>","file_path":"E:\\\\tmp\\\\flappy.html"}]',
+    ].join('\n');
+    writeSessionLog(testRoot, [
+      turn(1, '2026-06-16T10:00:00.000Z', '写个游戏', leakedReplay),
+    ]);
+
+    const store = new MemoryLogStore(testRoot);
+    const readTool = new MemoryReadTurnTool(store);
+    const result = await readTool.execute({
+      ref: 'chat/2026-06-16/demo.jsonl#1',
+      budget_chars: 4000,
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+
+    assert.equal(result.ok, true);
+    const parsed = JSON.parse(String(result.content));
+    assert.match(parsed.text, /ASSISTANT_FINAL:\n先给你做个小游戏。/);
+    assert.doesNotMatch(parsed.text, /DeepSeek thinking replay|DOCTYPE html|flappy\.html/);
+
+    const searchTool = new MemorySearchTool(store);
+    const search = await searchTool.execute({
+      keywords: ['flappy.html'],
+      start_time: '2026-06-16T00:00:00.000Z',
+      end_time: '2026-06-16T23:59:59.999Z',
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(search.ok, true);
+    assert.deepEqual(JSON.parse(String(search.content)).matches, []);
+  });
 });
 
 function writeSessionLog(root: string, entries: unknown[]): void {

@@ -181,6 +181,234 @@ test('runner exposes assistant text before tool calls separately from working st
   assert.equal(result.response, '天气结果已整理。');
 });
 
+test('runner strips DeepSeek replay summary artifacts from final visible replies', async () => {
+  const leakedReplay = [
+    '明白，这次给你做个之前没做过的小游戏。',
+    '',
+    '[历史工具调用已转为摘要：DeepSeek thinking replay 缓存缺失，工具=write_file，id=call_function_1，参数={"content":"<!DOCTYPE html>',
+    '<html>',
+    '<script>',
+    'const levels = [1, 2, 3];',
+    '</script>',
+    '</html>","file_path":"E:\\\\tmp\\\\flappy.html"}]',
+  ].join('\n');
+  const mock = createMockAI([makeFinalResponse(leakedReplay)]);
+  const runner = new ConversationRunner(mock.aiService, new MockToolExecutor([], {}), {
+    stream: false,
+    enableCompression: false,
+  });
+
+  const result = await runner.run([{ role: 'user', content: '写个 html 游戏' }]);
+
+  assert.equal(result.response, '明白，这次给你做个之前没做过的小游戏。');
+  assert.deepEqual(
+    result.messages.filter(message => message.role === 'assistant').map(message => message.content),
+    ['明白，这次给你做个之前没做过的小游戏。'],
+  );
+  assert.doesNotMatch(JSON.stringify(result), /DeepSeek thinking replay|DOCTYPE html|flappy\.html/);
+});
+
+test('runner surfaces a clear fallback when final reply only contains replay artifacts', async () => {
+  const artifactOnly = [
+    '[历史工具调用已转为摘要：DeepSeek thinking replay 缓存缺失，工具=unknown_tool，id=call_function_2，参数={"content":"<!DOCTYPE html>',
+    '<html>hidden</html>","file_path":"E:\\\\tmp\\\\hidden.html"}]',
+  ].join('\n');
+  const mock = createMockAI([makeFinalResponse(artifactOnly)]);
+  const runner = new ConversationRunner(mock.aiService, new MockToolExecutor([], {}), {
+    stream: false,
+    enableCompression: false,
+  });
+
+  const result = await runner.run([{ role: 'user', content: '继续' }]);
+
+  assert.match(result.response, /模型工具调用回放异常/);
+  assert.doesNotMatch(JSON.stringify(result), /DOCTYPE html|hidden\.html/);
+});
+
+test('runner restores DeepSeek replay summaries into executable tool calls', async () => {
+  const replaySummary = [
+    '没看到吗？我再发一次。',
+    '',
+    '[历史工具调用已转为摘要：DeepSeek thinking replay 缓存缺失，工具=send_file，id=call_function_send_1，参数={"file_name":"flappy-bird.html","file_path":"E:/tmp/flappy-bird.html"}]',
+  ].join('\n');
+  const mock = createMockAI([
+    makeFinalResponse(replaySummary),
+    makeFinalResponse('已经重新发了一次。'),
+  ]);
+  const executor = new MockToolExecutor(
+    [{
+      name: 'send_file',
+      description: 'mock send file',
+      transcriptMode: 'outbound_file',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string' },
+          file_name: { type: 'string' },
+        },
+        required: ['file_path'],
+      },
+    }],
+    { send_file: 'file sent' },
+  );
+  const runner = new ConversationRunner(mock.aiService, executor, {
+    stream: false,
+    enableCompression: false,
+    toolExecutionContext: {
+      workingDirectory: 'E:/tmp',
+    },
+  });
+
+  const result = await runner.run([{ role: 'user', content: '我没看到文件' }]);
+
+  assert.equal(executor.getExecutionCount('send_file'), 1);
+  assert.equal(result.response, '已经重新发了一次。');
+  assert.doesNotMatch(JSON.stringify(result), /DeepSeek thinking replay/);
+});
+
+test('runner does not restore DeepSeek replay summaries for state-changing tools', async () => {
+  const replaySummary = [
+    '[历史工具调用已转为摘要：DeepSeek thinking replay 缓存缺失，工具=execute_shell，id=call_function_shell_1，参数={"command":"echo should-not-run"}]',
+  ].join('\n');
+  const mock = createMockAI([makeFinalResponse(replaySummary)]);
+  const executor = new MockToolExecutor(
+    [{
+      name: 'execute_shell',
+      description: 'mock shell',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }],
+    { execute_shell: 'should not run' },
+  );
+  const runner = new ConversationRunner(mock.aiService, executor, {
+    stream: false,
+    enableCompression: false,
+  });
+
+  const result = await runner.run([{ role: 'user', content: '继续' }]);
+
+  assert.equal(executor.getExecutionCount('execute_shell'), 0);
+  assert.match(result.response, /模型工具调用回放异常/);
+  assert.doesNotMatch(JSON.stringify(result), /should-not-run|DeepSeek thinking replay/);
+});
+
+test('runner does not restore outbound file replay summaries outside the current directory', async () => {
+  const replaySummary = [
+    '[历史工具调用已转为摘要：DeepSeek thinking replay 缓存缺失，工具=send_file，id=call_function_send_unsafe，参数={"file_name":"secret.txt","file_path":"E:/secrets/secret.txt"}]',
+  ].join('\n');
+  const mock = createMockAI([makeFinalResponse(replaySummary)]);
+  const executor = new MockToolExecutor(
+    [{
+      name: 'send_file',
+      description: 'mock send file',
+      transcriptMode: 'outbound_file',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string' },
+          file_name: { type: 'string' },
+        },
+        required: ['file_path'],
+      },
+    }],
+    { send_file: 'file sent' },
+  );
+  const runner = new ConversationRunner(mock.aiService, executor, {
+    stream: false,
+    enableCompression: false,
+    toolExecutionContext: {
+      workingDirectory: 'E:/work/safe',
+    },
+  });
+
+  const result = await runner.run([{ role: 'user', content: '继续' }]);
+
+  assert.equal(executor.getExecutionCount('send_file'), 0);
+  assert.match(result.response, /模型工具调用回放异常/);
+  assert.doesNotMatch(JSON.stringify(result), /secret\.txt|DeepSeek thinking replay/);
+});
+
+test('runner does not restore outbound message replay summaries', async () => {
+  const replaySummary = [
+    '[历史工具调用已转为摘要：DeepSeek thinking replay 缓存缺失，工具=send_text，id=call_function_text_1，参数={"text":"should-not-send"}]',
+  ].join('\n');
+  const mock = createMockAI([makeFinalResponse(replaySummary)]);
+  const executor = new MockToolExecutor(
+    [{
+      name: 'send_text',
+      description: 'mock send text',
+      transcriptMode: 'outbound_message',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string' },
+        },
+        required: ['text'],
+      },
+    }],
+    { send_text: 'sent' },
+  );
+  const runner = new ConversationRunner(mock.aiService, executor, {
+    stream: false,
+    enableCompression: false,
+  });
+
+  const result = await runner.run([{ role: 'user', content: '继续' }]);
+
+  assert.equal(executor.getExecutionCount('send_text'), 0);
+  assert.match(result.response, /模型工具调用回放异常/);
+  assert.doesNotMatch(JSON.stringify(result), /should-not-send|DeepSeek thinking replay/);
+});
+
+test('runner keeps normal providerContent tool replay for M3 style tool calls', async () => {
+  const toolCall = makeToolCall('call_m3_1', 'execute_shell', { command: 'echo ok' });
+  const mock = createMockAI([
+    {
+      content: null,
+      toolCalls: [toolCall],
+      providerContent: [
+        { type: 'thinking', thinking: 'hidden reasoning', signature: 'sig_m3' },
+        { type: 'tool_use', id: 'call_m3_1', name: 'execute_shell', input: { command: 'echo ok' } },
+      ],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+      },
+    },
+    makeFinalResponse('done'),
+  ]);
+  const runner = new ConversationRunner(mock.aiService, new MockToolExecutor([{
+    name: 'execute_shell',
+    description: 'mock shell',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string' },
+      },
+      required: ['command'],
+    },
+  }], { execute_shell: 'ok' }), {
+    stream: false,
+    enableCompression: false,
+  });
+
+  const result = await runner.run([{ role: 'user', content: 'run shell' }]);
+  const assistantWithTool = result.messages.find(message => message.role === 'assistant' && message.tool_calls?.length);
+
+  assert.equal(result.response, 'done');
+  assert.deepEqual(assistantWithTool?.tool_calls?.map(call => call.id), ['call_m3_1']);
+  assert.deepEqual(assistantWithTool?.providerContent?.map(block => block.type === 'tool_use' ? block.id : block.type), [
+    'thinking',
+    'call_m3_1',
+  ]);
+});
+
 test('runner injects tool target context into provider transcript only', async () => {
   const responses = [
     makeToolResponse(makeToolCall('call_1', 'execute_shell', { command: 'echo ok' })),
