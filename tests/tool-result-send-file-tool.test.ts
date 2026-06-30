@@ -197,6 +197,53 @@ describe('SendFileTool - ToolExecutionResult', () => {
     assert.strictEqual(sentChatId, 'chat-1');
   });
 
+  test('CatsCo send_file ignores legacy selected user device and sends local bot file to current chat', async () => {
+    const filePath = path.join(testRoot, 'bot-report.md');
+    fs.writeFileSync(filePath, 'hello from bot host');
+    let sentChatId = '';
+    let sentPath = '';
+    context.surface = 'catscompany';
+    context.sessionId = 'cc_user:usr7';
+    context.executionScope = scope({ topicId: 'chat-1' });
+    context.localDeviceGrant = deviceGrant({
+      bodyId: 'bot-body',
+      installationId: 'bot-install',
+      deviceId: 'bot-install',
+      ownerUserId: 'agent-owner',
+    });
+    context.deviceSelection = {
+      source: 'catscompany',
+      status: 'selected',
+      sessionKey: 'cc_user:usr7',
+      topicId: 'chat-1',
+      topicType: 'p2p',
+      actorUserId: 'usr7',
+      agentId: 'usr43',
+      agentBodyId: 'body-main',
+      identityTrust: 'server_canonical',
+      selectedDeviceId: 'lin-laptop',
+      selectedDeviceDisplayName: 'Lin laptop',
+      selectedDeviceBodyId: 'lin-body',
+      selectedDeviceInstallationId: 'lin-install',
+      selectedDeviceOperations: ['read_file', 'write_file'],
+      selectionSource: 'explicit_mention',
+    };
+    context.channel = {
+      chatId: 'chat-1',
+      reply: async () => {},
+      sendFile: async (chatId, resolvedPath) => {
+        sentChatId = chatId;
+        sentPath = resolvedPath;
+      },
+    };
+
+    const result = await tool.execute({ file_path: filePath, file_name: 'bot-report.md' }, context);
+
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(sentChatId, 'chat-1');
+    assert.strictEqual(sentPath, filePath);
+  });
+
   test('blocks file send when channel chatId conflicts with executionScope topic', async () => {
     const filePath = path.join(testRoot, 'secret.md');
     fs.writeFileSync(filePath, 'hello');
@@ -240,7 +287,7 @@ describe('SendFileTool - ToolExecutionResult', () => {
 
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.errorCode, 'PERMISSION_DENIED');
-    assert.match(result.message, /身份未通过服务端一致性校验/);
+    assert.match(result.message, /not server-canonical/);
     assert.strictEqual(sendCalled, false);
   });
 
@@ -266,7 +313,7 @@ describe('SendFileTool - ToolExecutionResult', () => {
 
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.errorCode, 'PERMISSION_DENIED');
-    assert.match(result.message, /身份未通过服务端一致性校验/);
+    assert.match(result.message, /not server-canonical/);
     assert.strictEqual(sentChatId, '');
   });
 

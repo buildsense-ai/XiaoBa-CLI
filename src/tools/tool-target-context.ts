@@ -1,11 +1,6 @@
 import type { DeviceGrantOperation } from '../types/session-identity';
 import type { ToolExecutionContext, ToolExecutionResult } from '../types/tool';
-import {
-  isCatsCoAgentLocalBodyContext,
-  isCatsCoLocalOwnerSelfContext,
-  isCatsCoToolGatewayContext,
-  type ToolGatewayDecision,
-} from './tool-gateway';
+import { isCatsCoToolGatewayContext, type ToolGatewayDecision } from './tool-gateway';
 
 export const TOOL_TARGET_CONTEXT_PREFIX = '[tool_target]';
 export const TOOL_TARGET_CONTEXT_SUFFIX = '[/tool_target]';
@@ -104,26 +99,23 @@ function resolveToolTarget(
 ): { kind: string; displayName?: string } {
   if (gateway?.ok && gateway.mode === 'remote') {
     return {
-      kind: 'selected_user_device',
+      kind: 'speaker_default',
       displayName: gateway.targetDeviceDisplayName,
     };
   }
 
-  if (context.executionScope?.permissionsSource === 'device_rpc_forward') {
+  if (context.deviceRpcReceiver || context.executionScope?.permissionsSource === 'device_rpc_forward') {
     return {
-      kind: 'selected_user_device',
+      kind: 'speaker_default',
       displayName: context.deviceSelection?.selectedDeviceDisplayName,
     };
   }
 
-  if (isCatsCoAgentLocalBodyContext(context)) {
-    return { kind: 'virtual_employee_cloud_runtime' };
-  }
-
-  if (isCatsCoLocalOwnerSelfContext(context)) {
+  if (context.executionContext) {
+    const target = context.executionContext.executionTargets.find(item => item.id === 'agent_self');
     return {
-      kind: 'local_owner_device',
-      displayName: context.deviceSelection?.selectedDeviceDisplayName,
+      kind: 'agent_self',
+      displayName: target?.label,
     };
   }
 

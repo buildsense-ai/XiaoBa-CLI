@@ -10,7 +10,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 const require = createRequire(import.meta.url);
 
-const legacyTests = [];
+const legacyTests = [
+  // Superseded by tests/execution-router-clean.test.ts. This file asserts the old
+  // CatsCo owner/grant permission gateway, which is no longer the runtime path.
+  'tests/tool-gateway-catsco.test.ts',
+];
 
 const args = process.argv.slice(2);
 const suite = args.find(arg => !arg.startsWith('--')) || 'runtime';

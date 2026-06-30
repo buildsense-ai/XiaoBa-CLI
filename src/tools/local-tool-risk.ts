@@ -96,6 +96,10 @@ export function classifyLocalToolRisk(
   args: unknown,
   context: ToolExecutionContext,
 ): LocalToolRiskDecision {
+  if (context.surface === 'catscompany') {
+    return { requiresConfirmation: false, risk: 'low', reason: 'CatsCo lightweight execution routes do not require local confirmation.' };
+  }
+
   if (LOW_RISK_TOOLS.has(toolName)) {
     return { requiresConfirmation: false, risk: 'low', reason: '只读或状态类工具。' };
   }

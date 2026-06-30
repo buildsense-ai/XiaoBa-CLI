@@ -3,8 +3,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { isReadPathAllowed } from '../utils/safety';
-import { formatCatsCoVisiblePath, redactCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
-import { executeRemoteReadonlyTool } from './device-rpc-tool';
+import { formatCatsCoVisiblePath, redactCatsCoVisiblePath } from './tool-gateway';
+import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
 const VCS_DIRECTORIES_TO_EXCLUDE = ['.git', '.svn', '.hg', '.bzr'] as const;
 const DEFAULT_LIMIT = 250;
@@ -97,7 +97,8 @@ export class GrepTool implements Tool {
           default: 'files'
         },
         limit: { type: 'number', description: '限制输出行数或文件数，默认 250。设为 0 表示不限制输出。', default: 250 },
-        offset: { type: 'number', description: '跳过前 N 行/文件，用于分页。默认 0。', default: 0 }
+        offset: { type: 'number', description: '跳过前 N 行/文件，用于分页。默认 0。', default: 0 },
+        target: targetParameterDescription()
       },
       required: ['pattern']
     }
@@ -106,15 +107,15 @@ export class GrepTool implements Tool {
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const { pattern, path: searchPath } = args;
 
-    const gateway = resolveToolGatewayAccess(context, {
+    const route = resolveExecutionRoute(context, {
       toolName: this.definition.name,
       operation: 'grep',
-      targetLabel: searchPath || '.',
+      target: args.target,
     });
-    if (!gateway.ok) {
-      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
+    if (!route.ok) {
+      return { ok: false, errorCode: route.errorCode, message: route.message };
     }
-    const remoteResult = await executeRemoteReadonlyTool(context, gateway, 'grep', 'grep', args);
+    const remoteResult = await executeRouteIfRemote(context, route, 'grep', 'grep', args);
     if (remoteResult) return remoteResult;
 
     const resolvedSearchPath = searchPath

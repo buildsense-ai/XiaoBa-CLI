@@ -48,9 +48,13 @@ export async function executeRemoteDeviceRpcTool(
     return await context.deviceRpc.executeTool({
       toolName,
       operation,
-      args,
+      args: stripTransportOnlyArgs(args),
       grant: gateway.grant,
-      timeoutMs: timeoutForGrant(gateway.grant.expiresAt),
+      targetDeviceId: gateway.targetDeviceId,
+      targetDeviceDisplayName: gateway.targetDeviceDisplayName,
+      targetDeviceBodyId: gateway.targetDeviceBodyId,
+      targetDeviceInstallationId: gateway.targetDeviceInstallationId,
+      timeoutMs: gateway.grant ? timeoutForGrant(gateway.grant.expiresAt) : REMOTE_TOOL_TIMEOUT_MS,
     });
   } catch (error: any) {
     return {
@@ -60,6 +64,11 @@ export async function executeRemoteDeviceRpcTool(
       retryable: isRetryableRpcError(error),
     };
   }
+}
+
+function stripTransportOnlyArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const { target: _target, ...rest } = args;
+  return rest;
 }
 
 export async function executeRemoteReadonlyTool(

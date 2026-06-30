@@ -3,8 +3,8 @@ import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { Logger } from '../utils/logger';
 import { isToolAllowed, isPathAllowed } from '../utils/safety';
-import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
-import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
+import { formatCatsCoVisiblePath } from './tool-gateway';
+import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
 /**
  * Write 工具 - 写入文件内容
@@ -27,7 +27,8 @@ export class WriteTool implements Tool {
         content: {
           type: 'string',
           description: '要写入文件的完整 UTF-8 文本内容。'
-        }
+        },
+        target: targetParameterDescription()
       },
       required: ['file_path', 'content']
     }
@@ -41,15 +42,15 @@ export class WriteTool implements Tool {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${toolPermission.reason}` };
     }
 
-    const gateway = resolveToolGatewayAccess(context, {
+    const route = resolveExecutionRoute(context, {
       toolName: this.definition.name,
       operation: 'write_file',
-      targetLabel: file_path,
+      target: args.target,
     });
-    if (!gateway.ok) {
-      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
+    if (!route.ok) {
+      return { ok: false, errorCode: route.errorCode, message: route.message };
     }
-    const remoteResult = await executeRemoteDeviceRpcTool(context, gateway, 'write_file', 'write_file', args);
+    const remoteResult = await executeRouteIfRemote(context, route, 'write_file', 'write_file', args);
     if (remoteResult) return remoteResult;
 
     // 解析文件路径

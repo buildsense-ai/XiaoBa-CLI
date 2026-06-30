@@ -4,7 +4,7 @@ import { Logger } from '../utils/logger';
 import { resolveToolPath } from '../utils/tool-path-resolver';
 import { resolveLocalFileAccess, resolveLocalFileReference } from './local-file-gateway';
 import { resolveOutboundTarget } from './outbound-gateway';
-import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
+import { formatCatsCoVisiblePath, isCatsCoToolGatewayContext } from './tool-gateway';
 
 export class SendFileTool implements Tool {
   definition: ToolDefinition = {
@@ -103,16 +103,12 @@ export class SendFileTool implements Tool {
     }
 
     if (!authorizedByLocalFileGrant) {
-      const gateway = resolveToolGatewayAccess(context, {
-        toolName: this.definition.name,
-        operation: 'send_file',
-        targetLabel: displayPath,
-      });
-      if (!gateway.ok) {
+      const identity = validateCatsCoLocalSendFileContext(context, displayPath);
+      if (!identity.ok) {
         return {
           ok: false,
-          errorCode: gateway.errorCode,
-          message: gateway.message,
+          errorCode: identity.errorCode,
+          message: identity.message,
         };
       }
       displayPath = formatCatsCoVisiblePath(context, displayPath, { preserveRelative: true });
@@ -208,6 +204,36 @@ export class SendFileTool implements Tool {
       };
     }
   }
+}
+
+function validateCatsCoLocalSendFileContext(
+  context: ToolExecutionContext,
+  targetLabel: string,
+): { ok: true } | { ok: false; errorCode: 'PERMISSION_DENIED'; message: string } {
+  if (!isCatsCoToolGatewayContext(context)) return { ok: true };
+
+  const scope = context.executionScope;
+  if (!scope || scope.source !== 'catscompany') {
+    return denyLocalSendFile('Current tool call is missing CatsCo execution identity.', targetLabel);
+  }
+  if (scope.identityTrust !== 'server_canonical' || !scope.isTrusted) {
+    return denyLocalSendFile('Current CatsCo message identity is not server-canonical, so send_file is blocked.', targetLabel);
+  }
+  if (!context.localDeviceGrant || context.localDeviceGrant.source !== 'catscompany') {
+    return denyLocalSendFile('Current runtime is missing its CatsCo local device binding, so send_file is blocked.', targetLabel);
+  }
+  return { ok: true };
+}
+
+function denyLocalSendFile(reason: string, targetLabel: string): { ok: false; errorCode: 'PERMISSION_DENIED'; message: string } {
+  return {
+    ok: false,
+    errorCode: 'PERMISSION_DENIED',
+    message: [
+      reason,
+      `Target: ${targetLabel || '[current CatsCo device]'}`,
+    ].join('\n'),
+  };
 }
 
 function redactToolVisiblePath(message: unknown, absolutePath: string, displayPath: string): string {

@@ -17,7 +17,7 @@ import type {
 } from '../src/types/session-identity';
 
 describe('runtime context builder', () => {
-  test('injects structured runtime context before the latest user message and removes it from durable history', async () => {
+  test('injects short transient runtime context before the latest user message and removes it from durable history', async () => {
     const builder = new TurnContextBuilder();
     const route = createSessionRoute({
       source: 'catscompany',
@@ -67,40 +67,19 @@ describe('runtime context builder', () => {
     assert.ok(runtimeIndex >= 0, 'runtime context should be injected');
     assert.ok(runtimeIndex < userIndex, 'runtime context should appear before the latest user message');
 
-    const snapshot = parseRuntimeContext(result.messages[runtimeIndex]);
-    assert.equal(snapshot.schema, 'xiaoba.runtime_context.v1');
-    assert.equal(snapshot.session.key, route.sessionKey);
-    assert.equal(snapshot.session.topic.id, 'grp_80');
-    assert.equal(snapshot.session.agent.id, 'usr43');
-    assert.equal('bodyId' in snapshot.session.agent, false);
-    assert.equal(snapshot.turn.actorUserId, 'usr7');
-    assert.equal(snapshot.turn.identityTrust, 'server_canonical');
-    assert.equal(snapshot.execution.scopeSource, 'execution_scope');
-    assert.equal(snapshot.execution.localDevice.source, 'catscompany');
-    assert.equal(snapshot.execution.localDevice.deviceId, 'device-1');
-    assert.equal('bodyId' in snapshot.execution.localDevice, false);
-    assert.equal(snapshot.execution.userDevices[0].grantId, 'device_grant_current');
-    assert.equal(snapshot.execution.userDevices[0].deviceId, 'device-user-1');
-    assert.equal(snapshot.execution.userDevices[0].displayName, 'Alice laptop');
-    assert.deepEqual(snapshot.execution.userDevices[0].operations, ['read_file', 'execute_shell']);
-    assert.equal(snapshot.execution.userDevices[0].status, 'active');
-    assert.equal(snapshot.execution.deviceSelection.status, 'selected');
-    assert.equal(snapshot.execution.deviceSelection.selectionSource, 'single_active_device');
-    assert.equal(snapshot.execution.deviceSelection.selectedDevice.deviceId, 'device-user-1');
-    assert.equal(snapshot.execution.deviceSelection.selectedDevice.displayName, 'Alice laptop');
-    assert.deepEqual(snapshot.execution.deviceSelection.selectedDevice.operations, ['read_file']);
-    assert.equal(snapshot.execution.localFiles[0].ref, 'catsco_attachment:contract');
-    assert.equal(snapshot.execution.localFiles[0].fileName, 'contract.pdf');
-    assert.doesNotMatch(result.messages[runtimeIndex].content as string, /C:\\secret/);
-    assert.doesNotMatch(result.messages[runtimeIndex].content as string, /tmp[\\/]downloads/);
-    assert.doesNotMatch(result.messages[runtimeIndex].content as string, /body-main/);
-    assert.doesNotMatch(result.messages[runtimeIndex].content as string, /body-secret/);
-    assert.doesNotMatch(result.messages[runtimeIndex].content as string, /"bodyId"/);
-    assert.doesNotMatch(result.messages[runtimeIndex].content as string, /installation-main/);
-    assert.doesNotMatch(result.messages[runtimeIndex].content as string, /deviceBodyId/);
-    assert.doesNotMatch(result.messages[runtimeIndex].content as string, /deviceInstallationId/);
-    assert.doesNotMatch(result.messages[runtimeIndex].content as string, /createdAt/);
-    assert.doesNotMatch(result.messages[runtimeIndex].content as string, /mtimeMs/);
+    const runtimeText = String(result.messages[runtimeIndex].content || '');
+    assert.match(runtimeText, /^\[transient_runtime_context\]/);
+    assert.match(runtimeText, /\[\/transient_runtime_context\]$/);
+    assert.match(runtimeText, /默认不要传 target/);
+    assert.match(runtimeText, /你的电脑\/XiaoBa 的电脑\/bot 的电脑/);
+    assert.doesNotMatch(runtimeText, /可在用户电脑执行的工具/);
+    assert.doesNotMatch(runtimeText, /read_file, resolve_common_directory, glob, grep, write_file, edit_file, execute_shell/);
+    assert.doesNotMatch(runtimeText, /xiaoba\.execution_context\.v1/);
+    assert.doesNotMatch(runtimeText, /"conversation"/);
+    assert.doesNotMatch(runtimeText, /C:\\secret/);
+    assert.doesNotMatch(runtimeText, /body-main/);
+    assert.doesNotMatch(runtimeText, /body-secret/);
+    assert.doesNotMatch(runtimeText, /installation-main/);
 
     const durable = builder.removeTransientMessages(result.messages);
     assert.equal(durable.some(isRuntimeContextMessage), false);
@@ -158,12 +137,8 @@ describe('runtime context builder', () => {
       assert.equal(capturedRequests.length, 2);
       const firstContexts = capturedRequests[0].filter(isRuntimeContextMessage);
       const secondContexts = capturedRequests[1].filter(isRuntimeContextMessage);
-      assert.equal(firstContexts.length, 1);
-      assert.equal(secondContexts.length, 1);
-      assert.equal(parseRuntimeContext(firstContexts[0]).turn.actorUserId, 'alice');
-      assert.equal(parseRuntimeContext(firstContexts[0]).execution.userDevices[0].deviceId, 'alice-device');
-      assert.equal(parseRuntimeContext(secondContexts[0]).turn.actorUserId, 'bob');
-      assert.equal(parseRuntimeContext(secondContexts[0]).session.topic.id, 'oc_group');
+      assert.equal(firstContexts.length, 0);
+      assert.equal(secondContexts.length, 0);
 
       const retainedMessages = (session as any).messages as Message[];
       assert.equal(retainedMessages.some(isRuntimeContextMessage), false);
@@ -185,11 +160,6 @@ function isRuntimeContextMessage(message: Message): boolean {
   return message.role === 'system'
     && typeof message.content === 'string'
     && message.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX);
-}
-
-function parseRuntimeContext(message: Message): any {
-  const content = String(message.content || '');
-  return JSON.parse(content.slice(TRANSIENT_RUNTIME_CONTEXT_PREFIX.length).trim());
 }
 
 function localGrant(filePath: string): ScopedLocalFileGrant {

@@ -88,20 +88,58 @@ export interface ToolResult {
  * 工具内部执行结果的统一类型
  * 工具 execute() 必须返回此类型，由 BaseTool 统一处理失败兜底
  */
-export type ToolExecutionResult =
+export type ToolExecutionResult = (
   | { ok: true; content: string | import('./index').ContentBlock[] }
-  | { ok: false; errorCode: string; message: string; retryable?: boolean };
+  | { ok: false; errorCode: string; message: string; retryable?: boolean }
+) & {
+  /** Route-aware context for the model-visible tool result. */
+  targetContext?: string;
+};
 
 export interface DeviceRpcToolRequest {
   toolName: string;
   operation: ScopedDeviceGrant['operations'][number];
   args: Record<string, unknown>;
-  grant: ScopedDeviceGrant;
+  grant?: ScopedDeviceGrant;
+  targetDeviceId?: string;
+  targetDeviceDisplayName?: string;
+  targetDeviceBodyId?: string;
+  targetDeviceInstallationId?: string;
   timeoutMs?: number;
 }
 
 export interface DeviceRpcTransport {
   executeTool(request: DeviceRpcToolRequest): Promise<ToolExecutionResult>;
+}
+
+export interface ThinToolRpcRequest {
+  targetOwnerUserId: string;
+  targetDeviceId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  timeoutMs?: number;
+}
+
+export interface ThinToolRpcTransport {
+  executeTool(request: ThinToolRpcRequest): Promise<ToolExecutionResult>;
+}
+
+export type TargetRouteOS = 'windows' | 'macos' | 'linux' | 'unknown';
+
+export interface TargetRoute {
+  userId: string;
+  userName?: string;
+  ownerUserId: string;
+  deviceId: string;
+  label: string;
+  os: TargetRouteOS;
+  status: 'ready';
+}
+
+export interface TargetRoutes {
+  routes: TargetRoute[];
+  byName: Map<string, TargetRoute[]>;
+  byUserId: Map<string, TargetRoute[]>;
 }
 
 export type ToolErrorCode =
@@ -196,6 +234,26 @@ export interface ToolExecutionContext {
   deviceSelection?: ScopedDeviceSelection;
   /** CatsCo 远程设备 RPC 通道。工具只能通过窄接口请求后端选定设备执行。 */
   deviceRpc?: DeviceRpcTransport;
+  thinToolRpc?: ThinToolRpcTransport;
+  targetRoutes?: TargetRoutes;
+  executionContext?: {
+    schema: 'xiaoba.execution_context.v1';
+    conversation: {
+      type: 'local' | 'p2p' | 'group';
+      currentSpeaker: { id: string; name?: string; role?: string };
+      participants: Array<{ id: string; name?: string; role?: string }>;
+    };
+    executionTargets: Array<{
+      id: string;
+      label: string;
+      kind: 'agent_self' | 'participant';
+      status: 'ready' | 'unavailable';
+      userId?: string;
+      cwd?: string;
+    }>;
+    defaultTarget: 'agent_self' | 'speaker_default';
+  };
+  deviceRpcReceiver?: boolean;
   /** 当前 turn 已授权的本地文件资源，例如用户本轮上传的 CatsCo 附件缓存。 */
   localFileGrants?: ScopedLocalFileGrant[];
 }

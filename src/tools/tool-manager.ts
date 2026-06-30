@@ -208,7 +208,7 @@ export class ToolManager implements ToolExecutor {
       }
 
       const output = await tool.execute(args, context);
-      const targetContext = buildToolTargetContext(context, {
+      const targetContext = output.targetContext || buildToolTargetContext(context, {
         toolName,
         operation: operationForToolTargetContext(toolName),
         cwd: resolveTargetContextCwd(toolName, args, context.workingDirectory),

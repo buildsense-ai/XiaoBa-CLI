@@ -10,8 +10,8 @@ import { analyzeImageWithReaderProxy, ReaderProxyResult } from '../utils/reader-
 import { Logger } from '../utils/logger';
 import { formatPathForLog } from '../utils/log-redaction';
 import { resolveLocalFileAccess, resolveLocalFileReference } from './local-file-gateway';
-import { formatCatsCoVisiblePath, resolveToolGatewayAccess } from './tool-gateway';
-import { executeRemoteReadonlyTool } from './device-rpc-tool';
+import { formatCatsCoVisiblePath } from './tool-gateway';
+import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
 export const DEFAULT_TEXT_READ_LIMIT = 200;
 export const MAX_TEXT_READ_LIMIT = 2000;
@@ -81,6 +81,7 @@ export class ReadTool implements Tool {
           type: 'string',
           description: '可选。读取图片时的分析目标；不传则使用当前用户请求作为分析目标。',
         },
+        target: targetParameterDescription(),
       },
       required: ['file_path'],
     },
@@ -146,19 +147,19 @@ export class ReadTool implements Tool {
     }
 
     if (!authorizedByLocalFileGrant) {
-      const gateway = resolveToolGatewayAccess(context, {
+      const route = resolveExecutionRoute(context, {
         toolName: this.definition.name,
         operation: 'read_file',
-        targetLabel: displayPath,
+        target: args.target,
       });
-      if (!gateway.ok) {
+      if (!route.ok) {
         return {
           ok: false,
-          errorCode: gateway.errorCode,
-          message: gateway.message,
+          errorCode: route.errorCode,
+          message: route.message,
         };
       }
-      const remoteResult = await executeRemoteReadonlyTool(context, gateway, 'read_file', 'read_file', args);
+      const remoteResult = await executeRouteIfRemote(context, route, 'read_file', 'read_file', args);
       if (remoteResult) return remoteResult;
 
       const pathPermission = isReadPathAllowed(absolutePath, context.workingDirectory);

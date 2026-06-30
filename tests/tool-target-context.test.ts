@@ -32,12 +32,28 @@ function catsContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecuti
       ownerUserId: 'usr9',
       createdAt: Date.now(),
     },
+    executionContext: {
+      schema: 'xiaoba.execution_context.v1',
+      conversation: {
+        type: 'p2p',
+        currentSpeaker: { id: 'usr7', name: 'usr7', role: 'user' },
+        participants: [
+          { id: 'usr7', name: 'usr7', role: 'user' },
+          { id: 'usr43', name: 'XiaoBa', role: 'agent' },
+        ],
+      },
+      executionTargets: [
+        { id: 'agent_self', label: 'XiaoBa local computer', kind: 'agent_self', status: 'ready', cwd: runtimeCwd },
+        { id: 'speaker_default', label: 'usr7 device', kind: 'participant', status: 'ready', userId: 'usr7' },
+      ],
+      defaultTarget: 'agent_self',
+    },
     ...overrides,
   };
 }
 
 describe('tool target context', () => {
-  test('labels virtual employee cloud runtime results', () => {
+  test('labels agent self local runtime results', () => {
     const context = buildToolTargetContext(catsContext(), {
       toolName: 'execute_shell',
       operation: 'execute_shell',
@@ -47,7 +63,7 @@ describe('tool target context', () => {
 
     assert.ok(context);
     assert.match(context, /^\[tool_target\]/);
-    assert.match(context, /target: virtual_employee_cloud_runtime/);
+    assert.match(context, /target: agent_self/);
     assert.match(context, new RegExp(`cwd: ${escapeRegExp(runtimeCwd)}`));
     assert.match(context, /shell: powershell/);
   });
@@ -120,7 +136,7 @@ describe('tool target context', () => {
     });
 
     assert.ok(context);
-    assert.match(context, /target: selected_user_device/);
+    assert.match(context, /target: speaker_default/);
     assert.match(context, /target_display_name: Alice Laptop/);
   });
 
@@ -128,7 +144,7 @@ describe('tool target context', () => {
     const displayed = stripToolTargetContextForDisplay([
       '[tool_target]',
       'tool: execute_shell',
-      'target: virtual_employee_cloud_runtime',
+      'target: current_local_runtime',
       '[/tool_target]',
       '',
       'Command succeeded:',

@@ -3,8 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
-import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
-import { resolveToolGatewayAccess } from './tool-gateway';
+import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
 export type CommonDirectoryKind =
   | 'desktop'
@@ -156,6 +155,7 @@ export class CommonDirectoryTool implements Tool {
           type: 'string',
           description: '要解析的目录名。支持 desktop, downloads, documents, pictures, videos, music, home, temp 及常见中文别名。',
         },
+        target: targetParameterDescription(),
       },
       required: ['directory'],
     },
@@ -168,16 +168,16 @@ export class CommonDirectoryTool implements Tool {
       return invalidCommonDirectoryResult(input);
     }
 
-    const gateway = resolveToolGatewayAccess(_context, {
+    const route = resolveExecutionRoute(_context, {
       toolName: 'resolve_common_directory',
       operation: 'resolve_common_directory',
-      targetLabel: kind,
+      target: args.target,
     });
-    if (!gateway.ok) return gateway;
+    if (!route.ok) return { ok: false, errorCode: route.errorCode, message: route.message };
 
-    const remote = await executeRemoteDeviceRpcTool(
+    const remote = await executeRouteIfRemote(
       _context,
-      gateway,
+      route,
       'resolve_common_directory',
       'resolve_common_directory',
       { directory: kind },

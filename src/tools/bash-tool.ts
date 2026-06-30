@@ -8,8 +8,7 @@ import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from 
 import { Logger } from '../utils/logger';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { isToolAllowed, isBashCommandAllowed } from '../utils/safety';
-import { resolveToolGatewayAccess } from './tool-gateway';
-import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
+import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
 const execAsync = promisify(exec);
 const CWD_MARKER_PREFIX = '__XIAOBA_CWD_MARKER__';
@@ -60,6 +59,7 @@ export class ShellTool implements Tool {
           description: 'Set true only after the user explicitly requested or confirmed a risky destructive command such as recursive deletion, git reset --hard, git clean, or force push.',
           default: false,
         },
+        target: targetParameterDescription(),
       },
       required: ['command'],
     },
@@ -72,27 +72,31 @@ export class ShellTool implements Tool {
       return { ok: false, errorCode: 'EXECUTION_TIMEOUT', message: `命令已取消，未开始执行:\n$ ${command}` };
     }
 
+    const route = resolveExecutionRoute(context, {
+      toolName: this.definition.name,
+      operation: 'execute_shell',
+      target: args.target,
+    });
+    if (!route.ok) {
+      return { ok: false, errorCode: route.errorCode, message: route.message };
+    }
+    const remoteResult = await executeRouteIfRemote(context, route, 'execute_shell', 'execute_shell', args);
+    if (remoteResult) return remoteResult;
+
     const toolPermission = isToolAllowed(this.definition.name);
     if (!toolPermission.allowed) {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `Execution blocked: ${toolPermission.reason}` };
     }
 
     const commandPermission = isBashCommandAllowed(command, {
-      confirmed: confirm_dangerous === true,
+      confirmed: context.deviceRpcReceiver || confirm_dangerous === true,
+      env: context.deviceRpcReceiver
+        ? { ...process.env, GAUZ_BASH_ALLOW_DANGEROUS: 'true' }
+        : process.env,
     });
     if (!commandPermission.allowed) {
       return { ok: false, errorCode: 'PERMISSION_DENIED', message: `Execution blocked: ${commandPermission.reason}` };
     }
-
-    const gateway = resolveToolGatewayAccess(context, {
-      toolName: this.definition.name,
-      operation: 'execute_shell',
-    });
-    if (!gateway.ok) {
-      return { ok: false, errorCode: gateway.errorCode, message: gateway.message };
-    }
-    const remoteResult = await executeRemoteDeviceRpcTool(context, gateway, 'execute_shell', 'execute_shell', args);
-    if (remoteResult) return remoteResult;
 
     if (description) {
       Logger.info(`Executing command: ${description}`);
