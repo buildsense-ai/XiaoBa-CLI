@@ -54,12 +54,7 @@ interface FoldCandidate {
 
 interface ShellMetadata {
   command?: string;
-  description?: string;
-  timeout?: number;
-  cwd?: string;
   status?: 'succeeded' | 'failed' | 'unknown';
-  elapsed?: string;
-  outputLines?: string;
 }
 
 const DEFAULT_OPTIONS: ExecuteShellMessageFoldingOptions = {
@@ -232,27 +227,16 @@ function buildFoldedExecuteShellContent(
     rawText: candidate.rawText,
     store: options.artifactStore,
   });
+  const fullOutput = selectFullOutputReference(artifact);
 
   const foldedParts = [
     TRUNCATED_EXECUTE_SHELL_PREFIX,
-    `artifact_id: ${artifact.artifactId}`,
-    artifact.ref ? `full_output_ref: ${artifact.ref}` : '',
-    artifact.filePath ? `full_output_path: ${artifact.filePath}` : '',
-    artifact.fileUri ? `full_output_link: ${artifact.fileUri}` : '',
-    artifact.writeError ? `full_output_store_error: ${oneLine(artifact.writeError, 300)}` : '',
+    fullOutput ? `full_output: ${fullOutput}` : '',
     metadata.command ? `command: ${oneLine(metadata.command, 1600)}` : '',
-    metadata.description ? `description: ${oneLine(metadata.description, 400)}` : '',
-    metadata.cwd ? `cwd: ${metadata.cwd}` : '',
-    metadata.timeout ? `timeout_ms: ${metadata.timeout}` : '',
     metadata.status ? `status: ${metadata.status}` : '',
-    metadata.elapsed ? `elapsed: ${metadata.elapsed}` : '',
-    metadata.outputLines ? `output_lines: ${metadata.outputLines}` : '',
-    `original_chars: ${candidate.rawText.length}`,
-    `original_lines: ${lines.length}`,
-    `original_tokens_est: ${candidate.rawTokens}`,
-    `sha256: ${hash}`,
+    `omitted: ${formatOmitted(lines.length, candidate.rawText.length)}`,
     '',
-    'summary: Historical execute_shell output was truncated out of the provider prompt. Use full_output_path/full_output_ref, re-run the command, or inspect logs before relying on omitted lines.',
+    'summary: Historical execute_shell output was truncated out of the provider prompt. Open full_output, re-run the command, or inspect logs before relying on omitted lines.',
     headLines.length > 0 ? ['head:', ...headLines.map(line => `  ${line}`)].join('\n') : '',
     tailLines.length > 0 ? ['tail:', ...tailLines.map(line => `  ${line}`)].join('\n') : '',
     keyLines.length > 0 ? ['key_lines:', ...keyLines.map(line => `  ${line}`)].join('\n') : '',
@@ -268,12 +252,7 @@ function extractShellMetadata(
   const args = parseToolArguments(toolCall);
   return {
     command: firstNonEmpty(stringArg(args, 'command'), readCommand(rawText)),
-    description: stringArg(args, 'description'),
-    timeout: numberArg(args, 'timeout'),
-    cwd: firstNonEmpty(stringArg(args, 'cwd'), stringArg(args, 'workingDirectory')),
     status: readStatus(rawText),
-    elapsed: readHeader(rawText, 'Elapsed'),
-    outputLines: readHeader(rawText, 'Output lines'),
   };
 }
 
@@ -304,6 +283,15 @@ function normalizeToolName(name: string): string {
 function isAlreadyTruncated(rawText: string): boolean {
   return rawText.startsWith(TRUNCATED_EXECUTE_SHELL_PREFIX)
     || rawText.startsWith(LEGACY_FOLDED_EXECUTE_SHELL_PREFIX);
+}
+
+function selectFullOutputReference(artifact: ReturnType<typeof persistToolResultArtifact>): string | undefined {
+  return artifact.fileUri || artifact.filePath || artifact.ref;
+}
+
+function formatOmitted(lines: number, chars: number): string {
+  const lineLabel = lines === 1 ? 'line' : 'lines';
+  return `${lines} ${lineLabel}, ${chars} chars`;
 }
 
 function findLastRealUserIndex(messages: Message[]): number {
@@ -355,12 +343,6 @@ function readStatus(rawText: string): ShellMetadata['status'] {
   return 'unknown';
 }
 
-function readHeader(rawText: string, label: string): string | undefined {
-  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = rawText.match(new RegExp(`^${escapedLabel}:\\s*(.+)$`, 'm'));
-  return match?.[1]?.trim() || undefined;
-}
-
 function parseToolArguments(toolCall?: NonNullable<Message['tool_calls']>[number]): Record<string, unknown> {
   if (!toolCall?.function?.arguments) return {};
   try {
@@ -376,11 +358,6 @@ function parseToolArguments(toolCall?: NonNullable<Message['tool_calls']>[number
 function stringArg(args: Record<string, unknown>, key: string): string | undefined {
   const value = args[key];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
-
-function numberArg(args: Record<string, unknown>, key: string): number | undefined {
-  const value = Number(args[key]);
-  return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
