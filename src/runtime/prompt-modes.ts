@@ -105,7 +105,7 @@ export function buildFixedPromptModeMessage(
       TRANSIENT_FIXED_PROMPT_MODE_PREFIX,
       `Fixed prompt mode active: ${fixedMode.mode} (${fixedMode.title}).`,
       'This mode is already part of the system prompt.',
-      'Do not call prompt_mode or load another prompt mode unless the user explicitly asks to change the fixed profile.',
+      'Do not load another prompt mode unless the runtime profile changes.',
     ].join('\n'),
     __injected: true,
   };
@@ -156,7 +156,7 @@ export function buildPromptModesListMessage(
       '',
       `Previously active prompt mode: ${options.previousMode.mode} (${options.previousMode.title}), last loaded ${formatTurnsAgo(options.previousMode.turnsSinceLoaded)}.`,
       'Use the previous mode only if the current user message continues the same task. If the user changed task, ignore it.',
-      'If you need the full previous mode instructions again, call prompt_mode with that mode id.',
+      'Do not load prompt modes directly; current mode selection is handled by runtime routing.',
     ].join('\n')
     : '';
 
@@ -165,8 +165,8 @@ export function buildPromptModesListMessage(
     content: [
       TRANSIENT_PROMPT_MODES_LIST_PREFIX,
       'Available prompt modes. This is routing context, not a user request.',
-      'If one mode clearly helps with the current real user message, call the prompt_mode tool with that mode id before answering.',
-      'If no mode is clearly useful, ignore this list and answer normally.',
+      'Do not select or load prompt modes directly; current mode selection is handled by runtime routing.',
+      'If no active mode is supplied by runtime routing, answer normally.',
       previousMode,
       '',
       modeList,

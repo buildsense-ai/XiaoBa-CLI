@@ -96,6 +96,7 @@ const EMPTY_MAX_TOKENS_MESSAGE = '模型这轮输出达到了 max_tokens 上限�
 const REPLAY_ARTIFACT_ONLY_MESSAGE = '模型工具调用回放异常，这轮没有生成可见回复。上下文已保留；你可以直接说“继续”，我会从这里接上。';
 export const PROMPT_BUDGET_TRIM_MESSAGE = '当前上下文超过模型窗口，已裁剪较早的历史内容以继续处理。';
 export const PROMPT_TOOLS_DISABLED_MESSAGE = '当前模型上下文不足以加载全部工具，本轮已先按纯文本继续处理。';
+const MAIN_AGENT_HIDDEN_TOOL_NAMES = new Set(['prompt_mode']);
 const MAX_VISIBLE_TOOL_PRELUDE_CHARS = 64;
 const MAX_VISIBLE_TOOL_PRELUDE_LINES = 2;
 
@@ -280,7 +281,8 @@ export class ConversationRunner {
   async run(messages: Message[], callbacks?: RunnerCallbacks): Promise<RunResult> {
     const allTools = this.toolExecutor.getToolDefinitions();
     const supportsToolCalling = (this.aiService as any).isToolCallingSupported?.() !== false;
-    const activeTools = supportsToolCalling ? allTools : [];
+    const providerTools = allTools.filter(tool => !MAIN_AGENT_HIDDEN_TOOL_NAMES.has(tool.name));
+    const activeTools = supportsToolCalling ? providerTools : [];
     if (activeTools.length === 0 && allTools.length > 0) {
       Logger.warning(`[${this.sessionLabel}] 当前模型/中转暂不启用工具调用，已按纯文本模型运行`);
     }
@@ -319,6 +321,7 @@ export class ConversationRunner {
       this.injectSyntheticObservations(messages, turns);
       const runtimeTransientHints = this.drainRuntimeTransientMessages(turns);
       const requestTools = this.fitToolsToPromptBudget(activeTools);
+      const requestToolNames = new Set(requestTools.map(tool => tool.name));
       if (requestTools.length < activeTools.length && !notifiedToolBudgetDisabled) {
         notifiedToolBudgetDisabled = true;
         if (callbacks?.onThinking) {
@@ -667,16 +670,31 @@ export class ConversationRunner {
         const toolUseId = toolCall.id;
         const toolInput = JSON.parse(toolCall.function.arguments);
         const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
-        callbacks?.onToolStart?.(toolName, toolUseId, toolInput);
-        Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
-        const activeToolNames = allTools.map(tool => tool.name);
+        const normalizedToolName = normalizeToolName(toolName);
+        const toolWasExposed = requestToolNames.has(normalizedToolName);
         const toolStart = Date.now();
-        const result = await this.executeToolWithRetry(
-          toolCall,
-          messages,
-          this.toolExecutionContext || {},
-          turns,
-        );
+        let result: ToolResult;
+        if (!toolWasExposed) {
+          Logger.warning(`[${this.sessionLabel}Turn ${turns}] 模型调用了当前未暴露的工具: ${toolName}`);
+          result = {
+            tool_call_id: toolUseId,
+            role: 'tool',
+            name: normalizedToolName,
+            content: `错误：工具 "${toolName}" 当前不可用。`,
+            ok: false,
+            errorCode: 'TOOL_NOT_FOUND',
+            retryable: false,
+          };
+        } else {
+          callbacks?.onToolStart?.(toolName, toolUseId, toolInput);
+          Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
+          result = await this.executeToolWithRetry(
+            toolCall,
+            messages,
+            this.toolExecutionContext || {},
+            turns,
+          );
+        }
         executedToolCalls++;
         if (toolName === PLAN_TOOL_NAME) {
           hasUpdatedPlan = true;
@@ -689,7 +707,9 @@ export class ConversationRunner {
         Metrics.recordToolCall(toolName, toolDuration);
         this.promptTraceLogger.recordToolResult(turns, toolCall, result, toolDuration);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
-        callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
+        if (toolWasExposed) {
+          callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
+        }
 
         if (
           (transcriptMode === 'outbound_message' || transcriptMode === 'outbound_file')
@@ -701,7 +721,9 @@ export class ConversationRunner {
 
         const toolContent = prependToolTargetContext(result.content, result.targetContext);
 
-        this.handleToolDisplay(toolCall, contentToString(result.content), callbacks);
+        if (toolWasExposed) {
+          this.handleToolDisplay(toolCall, contentToString(result.content), callbacks);
+        }
         executionRecords.push({
           toolCall,
           toolName,
