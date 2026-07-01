@@ -195,7 +195,7 @@ function buildCatsChatStage(){
       title:'启动 CatsCompany connector',
       copy:'已绑定，启动后接收网页消息。',
       action:'setup',
-      actionLabel:'检查并启动',
+      actionLabel:'自动启动中',
       inputPlaceholder:'先启动 CatsCompany connector',
     };
   }
@@ -492,10 +492,10 @@ function renderCatsStatus(){
   });
   if(!connected)unlockCatsAuthFields(false);
   const connectedCopy=configured
-    ? (running?'可以直接开始对话。':'已绑定 agent，请启动 connector 或检查 CatsCompany connector。')
+    ? (running?'可以直接开始对话。':'已绑定 agent，正在自动启动或检查 CatsCompany connector。')
     : '请选择或创建当前设备自己的 agent。';
-  const showSetup=connected && stage.action==='setup';
-  const setupLabel=!configured?'选择机器人':running?'重新检查':'检查并启动';
+  const showSetup=false;
+  const setupLabel=!configured?'选择机器人':'重新检查';
   window.__catscoRenderCatsConnectedCard?.({
     copy:connectedCopy,
     setupDisabled:relayActionBusy(),
@@ -763,7 +763,7 @@ async function setupCatsBot(options={}){
   }catch(e){
     if(e.status===409 && e.action==='rotate_required'){
       if(automatic){
-        setCatsAction('自动启动需要重新生成 CatsCo 中转 Key。请点击“检查并启动”确认后继续。', true);
+        setCatsAction('自动启动需要重新生成 CatsCo 中转 Key。请在 CatsCo 中转站撤销删除当前 Key，然后回到 Dashboard 重新选择模型，系统会自动创建并写入新的 Key。', true);
         return;
       }
       const ok=confirm('你的 CatsCo 中转 Key 已存在，但当前无法读取明文。要重新生成并写入 CatsCo 桌面端吗？旧 Key 会立即失效。');

@@ -599,7 +599,7 @@ function CatsComposer({
 function CatsConnectedCard({
   copy = '可以直接开始对话。',
   setupDisabled = false,
-  setupLabel = '检查并启动',
+  setupLabel = '重新检查',
   showSetup = false,
 }: CatsConnectedPayload) {
   return (

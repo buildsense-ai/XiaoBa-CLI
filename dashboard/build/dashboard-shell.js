@@ -21657,7 +21657,7 @@
   function CatsConnectedCard({
     copy = "\u53EF\u4EE5\u76F4\u63A5\u5F00\u59CB\u5BF9\u8BDD\u3002",
     setupDisabled = false,
-    setupLabel = "\u68C0\u67E5\u5E76\u542F\u52A8",
+    setupLabel = "\u91CD\u65B0\u68C0\u67E5",
     showSetup = false
   }) {
     return /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-connected-title" }, "CatsCo \u5DF2\u8FDE\u63A5"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-muted", id: "cats-connected-copy" }, copy), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-connected-actions" }, /* @__PURE__ */ import_react.default.createElement("button", { className: "btn", type: "button", onClick: () => window.showBotSelector?.() }, "\u9009\u62E9\u673A\u5668\u4EBA"), /* @__PURE__ */ import_react.default.createElement(

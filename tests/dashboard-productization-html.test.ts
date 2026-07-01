@@ -233,6 +233,7 @@ test('CatsCo Chat readiness, setup, and composer are split between React UI and 
   assert.doesNotMatch(reactFiles.chat, /Custom model|Loading earlier messages|Reached the earliest message|group\.mine \? 'Me'/);
   assert.match(reactFiles.chat, /__catscoFocusCatsMessageInput/);
   assert.match(reactFiles.chat, /input\.style\.height = 'auto'/);
+  assert.doesNotMatch(reactFiles.chat, /setupLabel = '检查并启动'/);
   assert.match(scriptFiles.basePet, /let pendingStartupSource = ''/);
   assert.match(scriptFiles.catsChat, /function buildCatsChatStage\(\)/);
   assert.match(scriptFiles.catsChat, /function isCatsBodyReady\(bodyStatus\)/);
@@ -241,6 +242,8 @@ test('CatsCo Chat readiness, setup, and composer are split between React UI and 
   assert.doesNotMatch(scriptFiles.catsChat, /catsState\.bodyStatus\?\.state==='active'/);
   assert.match(scriptFiles.catsChat, /function renderCatsChecklist\(stage\)/);
   assert.match(scriptFiles.catsChat, /const connectedCardOwnsAction=connected && \(stage\.action==='setup' \|\| stage\.action==='refresh'\)/);
+  assert.match(scriptFiles.catsChat, /const showSetup=false/);
+  assert.doesNotMatch(scriptFiles.catsChat, /请点击.“检查并启动”|setupLabel=.*检查并启动|actionLabel:'检查并启动'/);
   assert.match(scriptFiles.modelSettings, /function renderCatsRelayModelPanel\(\)/);
   assert.match(scriptFiles.catsChat, /function runCatsNextAction\(\)/);
   assert.match(scriptFiles.catsChat, /function unlockCatsAuthFields\(focusAccount=false\)/);
