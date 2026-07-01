@@ -955,14 +955,21 @@ function deviceRpcResultMatchesPending(result: CatsDeviceRpcMessage, request: Ca
 }
 
 function thinToolRpcResultMatchesPending(result: CatsThinToolRpcMessage, request: CatsThinToolRpcMessage): boolean {
-  return deviceRpcOptionalFieldMatches(result.target_owner_user_id, request.target_owner_user_id)
-    && deviceRpcOptionalFieldMatches(result.target_device_id, request.target_device_id)
-    && deviceRpcOptionalFieldMatches(result.device_id, request.target_device_id)
-    && deviceRpcOptionalFieldMatches(result.tool_name, request.tool_name);
+  return deviceRpcPresentFieldMatches(result.target_owner_user_id, request.target_owner_user_id)
+    && deviceRpcPresentFieldMatches(result.target_device_id, request.target_device_id)
+    && deviceRpcPresentFieldMatches(result.device_id, request.target_device_id)
+    && deviceRpcPresentFieldMatches(result.tool_name, request.tool_name);
 }
 
 function deviceRpcOptionalFieldMatches(actual: unknown, expected: unknown): boolean {
   const actualText = typeof actual === 'string' ? actual.trim() : '';
   const expectedText = typeof expected === 'string' ? expected.trim() : '';
   return !actualText || !expectedText || actualText === expectedText;
+}
+
+function deviceRpcPresentFieldMatches(actual: unknown, expected: unknown): boolean {
+  const expectedText = typeof expected === 'string' ? expected.trim() : '';
+  if (!expectedText) return true;
+  const actualText = typeof actual === 'string' ? actual.trim() : '';
+  return actualText === expectedText;
 }

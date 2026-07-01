@@ -226,13 +226,14 @@ function validateCatsCoLocalSendFileContext(
 }
 
 function denyLocalSendFile(reason: string, targetLabel: string): { ok: false; errorCode: 'PERMISSION_DENIED'; message: string } {
+  const lines = [reason];
+  if (targetLabel) {
+    lines.push(`Target: ${targetLabel}`);
+  }
   return {
     ok: false,
     errorCode: 'PERMISSION_DENIED',
-    message: [
-      reason,
-      `Target: ${targetLabel || '[current CatsCo device]'}`,
-    ].join('\n'),
+    message: lines.join('\n'),
   };
 }
 
