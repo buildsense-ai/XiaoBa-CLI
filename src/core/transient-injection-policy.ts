@@ -7,9 +7,6 @@ import {
 
 export type TransientIntentKind =
   | 'coding'
-  | 'office'
-  | 'classroom'
-  | 'team'
   | 'skill'
   | 'workspace'
   | 'plain-chat';
@@ -248,7 +245,6 @@ function resolveIntentKind(options: {
   workspaceRelevant: boolean;
   actionable: boolean;
 }): TransientIntentKind {
-  if (options.hasOfficeSignal) return 'office';
   if (
     options.hasSkillSignal
     || options.hasBrowserSignal

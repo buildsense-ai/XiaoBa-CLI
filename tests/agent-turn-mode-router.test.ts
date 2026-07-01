@@ -163,7 +163,7 @@ describe('AgentTurnController prompt mode router integration', () => {
 
     (controller as any).promptModeRuntime.applyRouterPayload({
       action: 'activate',
-      mode: 'office',
+      mode: 'plain-chat',
       confidence: 0.95,
       reason: 'preloaded async mode',
     }, 1);

@@ -76,7 +76,7 @@ test('prompt_mode does not reload the already active fixed mode', async () => {
 test('prompt_mode rejects a different mode when a fixed mode is active', async () => {
   const tool = new PromptModeTool();
 
-  const result = await tool.execute({ mode: 'office' }, {
+  const result = await tool.execute({ mode: 'plain-chat' }, {
     workingDirectory: process.cwd(),
     conversationHistory: [
       { role: 'system', content: 'base\n[mode:coding-agent]\nfixed coding instructions' },

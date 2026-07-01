@@ -68,6 +68,18 @@ test('coding work requests get workspace context plus a narrow coding skill list
   assert.equal(providerPolicy.injectEnvironment, true);
 });
 
+test('document work maps to workspace intent while keeping office skill routing', () => {
+  const messages: Message[] = [
+    { role: 'user', content: 'Please create a PPT summary for tomorrow.' },
+  ];
+
+  const turnPolicy = resolveTurnContextTransientPolicy(messages);
+
+  assert.equal(turnPolicy.intent.kind, 'workspace');
+  assert.equal(turnPolicy.injectSkillsList, true);
+  assert.deepEqual(turnPolicy.skillNames, ['officecli']);
+});
+
 test('fixed system mode suppresses duplicate auto mode hints but keeps coding workspace context', () => {
   const messages: Message[] = [
     { role: 'system', content: '[mode:coding-agent]\nbase coding prompt' },

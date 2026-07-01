@@ -21,7 +21,7 @@ export class PromptModeTool implements Tool {
       properties: {
         mode: {
           type: 'string',
-          description: 'Prompt mode id, for example coding-agent, office, classroom, or team-assistant. Use "clear" to clear the current async active mode.',
+          description: 'Prompt mode id, for example coding-agent or plain-chat. Use "clear" to clear the current async active mode.',
         },
       },
       required: ['mode'],

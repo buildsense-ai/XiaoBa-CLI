@@ -81,6 +81,15 @@ describe('prompt modes', () => {
     assert.match(prompt, /不反复强调“我是 AI”/);
   });
 
+  test('keeps only daily and coding built-in prompt modes', () => {
+    clearPromptModeRegistryCache();
+
+    assert.deepEqual(
+      listPromptModeDefinitions().map(mode => mode.id),
+      ['coding-agent', 'plain-chat'],
+    );
+  });
+
   test('injects previously active prompt mode as facts, not an automatic decision', async () => {
     const builder = new TurnContextBuilder();
     const durableMessages: Message[] = [

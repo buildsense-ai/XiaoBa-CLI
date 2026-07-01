@@ -161,7 +161,7 @@ describe('ConversationRunner runtime transient messages', () => {
           type: 'function',
           function: {
             name: 'prompt_mode',
-            arguments: JSON.stringify({ mode: 'classroom' }),
+            arguments: JSON.stringify({ mode: 'plain-chat' }),
           },
         }],
         usage,
