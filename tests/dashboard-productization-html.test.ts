@@ -4,9 +4,11 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 const read = (relativePath: string) => readFileSync(join(process.cwd(), relativePath), 'utf-8');
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const dashboardHtml = read('dashboard/index.html');
 const dashboardCss = read('dashboard/styles/dashboard.css');
+const packageJson = JSON.parse(read('package.json')) as { version: string };
 
 const reactFiles = {
   chat: read('dashboard/react-src/chat-page.tsx'),
@@ -42,7 +44,10 @@ const scriptSource = Object.values(scriptFiles).join('\n');
 const dashboardSource = [dashboardHtml, dashboardCss, reactSource, scriptSource].join('\n');
 
 test('dashboard index is a small React shell with split runtime scripts', () => {
-  assert.match(dashboardHtml, /<div id="dashboard-app-root" data-dashboard-version="1\.2\.0"><\/div>/);
+  assert.match(
+    dashboardHtml,
+    new RegExp(`<div id="dashboard-app-root" data-dashboard-version="${escapeRegExp(packageJson.version)}"></div>`),
+  );
   assert.match(dashboardHtml, /<div id="global-modals-root"><\/div>/);
   assert.match(dashboardHtml, /build\/dashboard-shell\.js\?v=react-script-bridge-free/);
   assert.match(dashboardHtml, /styles\/dashboard\.css\?v=react-script-bridge-free/);
