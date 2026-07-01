@@ -58,8 +58,12 @@ test('visible output guidance describes product preference without hard output e
   assert.match(guidance.content, /Keep the chat-visible reply short/);
   assert.match(guidance.content, /write_file/);
   assert.match(guidance.content, /send_file/);
+  assert.match(guidance.content, /Artifact format preference/);
+  assert.match(guidance.content, /Word \(\.docx\)/);
+  assert.match(guidance.content, /PDF/);
+  assert.match(guidance.content, /do not default to Markdown/i);
   assert.match(guidance.content, /Example 1: long work product/);
-  assert.match(guidance.content, /Assistant action: create or update a Markdown\/document file/);
+  assert.match(guidance.content, /Assistant action: create or update a user-openable document file/);
   assert.match(guidance.content, /Example 2: classroom\/material deliverable/);
   assert.match(guidance.content, /Example 4: explicit inline request/);
   assert.doesNotMatch(guidance.content, /字符数超过|非空行数超过|threshold/i);

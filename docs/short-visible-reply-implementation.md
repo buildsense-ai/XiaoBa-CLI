@@ -96,7 +96,7 @@ prompts/transient/visible-output-guidance.md
 示例片段：
 
 ```text
-User asks for a complete plan/report/material -> create a Markdown/document file, then reply:
+User asks for a complete plan/report/material -> create a user-openable document file when possible, then reply:
 "已整理到 <file>。核心结论是 ...，我还验证了/待确认 ..."
 
 User asks a quick question -> answer directly in a few sentences, no file.
@@ -189,7 +189,7 @@ const visibleOutputGuidance = buildVisibleOutputGuidance({
 它只告诉模型当前可用交付路径，例如：
 
 ```text
-write_file for local Markdown/text artifacts;
+write_file for local artifacts, drafts, and source-backed files;
 send_file for chat file delivery after a file exists
 ```
 
