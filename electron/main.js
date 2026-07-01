@@ -2,12 +2,11 @@ const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog, shell, scr
 const path = require('path');
 const fs = require('fs');
 const { spawnSync } = require('child_process');
+const { createDesktopCompanionManager } = require('./desktop-companion-manager');
 
 const DASHBOARD_PORT = resolveDashboardPort(process.env.XIAOBA_DASHBOARD_PORT);
 const DEEP_LINK_PROTOCOL = 'catsco';
 const TRUSTED_DEEP_LINK_BASE_ORIGINS = new Set(['https://app.catsco.cc']);
-const WINDOWS_RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
-const START_AT_LOGIN_RUN_VALUE = 'CatsCo Companion';
 let mainWindow = null;
 let petWindow = null;
 let tray = null;
@@ -15,6 +14,7 @@ let autoUpdater = null;
 let dashboardServerHandle = null;
 let hideNoticeShown = false;
 let dashboardServerReady = false;
+let desktopCompanionManager = null;
 const pendingDeepLinks = [];
 let deepLinkDrainPromise = null;
 
@@ -84,6 +84,20 @@ function writePreferencePatch(patch) {
   fs.writeFileSync(configPath, JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 });
 }
 
+function getDesktopCompanionManager() {
+  if (!desktopCompanionManager) {
+    desktopCompanionManager = createDesktopCompanionManager({
+      app,
+      screen,
+      spawnSync,
+      process,
+      readDesktopConfig,
+      writePreferencePatch,
+    });
+  }
+  return desktopCompanionManager;
+}
+
 function readCloseToTrayPreference() {
   const value = readDesktopConfig()?.preferences?.closeToTray;
   return value !== false;
@@ -93,99 +107,8 @@ function writeCloseToTrayPreference(closeToTray) {
   writePreferencePatch({ closeToTray: Boolean(closeToTray) });
 }
 
-function readStartAtLoginPreference() {
-  return Boolean(readDesktopConfig()?.preferences?.startAtLogin);
-}
-
-function writeStartAtLoginPreference(startAtLogin) {
-  writePreferencePatch({ startAtLogin: Boolean(startAtLogin) });
-  syncLoginItemSettings();
-}
-
-function getStartAtLoginLaunchArgs() {
-  if (process.defaultApp && process.argv.length >= 2) {
-    return [path.resolve(process.argv[1])];
-  }
-  return [];
-}
-
-function getStartAtLoginCommandLine() {
-  const quote = (value) => `"${String(value || '').replace(/"/g, '\\"')}"`;
-  return [process.execPath, ...getStartAtLoginLaunchArgs()].map(quote).join(' ');
-}
-
-function readPetWindowBounds() {
-  return sanitizePetWindowBounds(readDesktopConfig()?.preferences?.petWindowBounds);
-}
-
-function savePetWindowBounds(bounds) {
-  const next = sanitizePetWindowBounds(bounds);
-  if (!next) return;
-  writePreferencePatch({ petWindowBounds: next });
-}
-
-function sanitizePetWindowBounds(bounds) {
-  if (!bounds || typeof bounds !== 'object') return null;
-
-  const width = Number(bounds.width);
-  const height = Number(bounds.height);
-  const x = Number(bounds.x);
-  const y = Number(bounds.y);
-  if (![width, height, x, y].every(Number.isFinite)) return null;
-
-  const display = screen.getDisplayMatching({
-    x: Math.round(x),
-    y: Math.round(y),
-    width: Math.round(width),
-    height: Math.round(height),
-  }) || screen.getPrimaryDisplay();
-  const { workArea } = display;
-  const minVisible = 64;
-  const safeWidth = Math.max(240, Math.min(Math.round(width), workArea.width));
-  const safeHeight = Math.max(440, Math.min(Math.round(height), workArea.height));
-  const minX = workArea.x - safeWidth + minVisible;
-  const maxX = workArea.x + workArea.width - minVisible;
-  const minY = workArea.y;
-  const maxY = workArea.y + workArea.height - minVisible;
-
-  return {
-    x: Math.round(Math.min(Math.max(x, minX), maxX)),
-    y: Math.round(Math.min(Math.max(y, minY), maxY)),
-    width: safeWidth,
-    height: safeHeight,
-  };
-}
-
-function syncLoginItemSettings() {
-  const openAtLogin = readStartAtLoginPreference();
-  try {
-    app.setLoginItemSettings({
-      openAtLogin,
-      openAsHidden: false,
-      ...(getStartAtLoginLaunchArgs().length > 0
-        ? { path: process.execPath, args: getStartAtLoginLaunchArgs() }
-        : {}),
-    });
-  } catch (error) {
-    console.warn('Failed to sync start-at-login preference:', error?.message || error);
-  }
-  syncWindowsRunAtLoginFallback();
-}
-
-function syncWindowsRunAtLoginFallback() {
-  if (process.platform !== 'win32') return;
-  const openAtLogin = readStartAtLoginPreference();
-  const args = openAtLogin
-    ? ['add', WINDOWS_RUN_KEY, '/v', START_AT_LOGIN_RUN_VALUE, '/t', 'REG_SZ', '/d', getStartAtLoginCommandLine(), '/f']
-    : ['delete', WINDOWS_RUN_KEY, '/v', START_AT_LOGIN_RUN_VALUE, '/f'];
-  const result = spawnSync('reg', args, { windowsHide: true, stdio: 'ignore' });
-  if (result.error && openAtLogin) {
-    console.warn('Failed to sync Windows start-at-login fallback:', result.error.message || result.error);
-  }
-}
-
 function ensureStartAtLoginRegistration() {
-  syncLoginItemSettings();
+  getDesktopCompanionManager().syncLoginItemSettings();
 }
 
 function showMainWindow(targetPath) {
@@ -750,16 +673,11 @@ function createWindow(targetPath) {
 function createPetWindow() {
   if (petWindow) return petWindow;
 
-  const { workArea } = screen.getPrimaryDisplay();
   const width = 284;
   const height = 536;
-  const savedBounds = readPetWindowBounds();
-  const initialBounds = savedBounds || {
-    x: Math.max(workArea.x, workArea.x + workArea.width - width - 28),
-    y: Math.max(workArea.y, workArea.y + workArea.height - height - 64),
-    width,
-    height,
-  };
+  const manager = getDesktopCompanionManager();
+  const initialBounds = manager.getInitialBounds({ width, height });
+  const desktopCompanionWindowOptions = manager.getWindowBehaviorOptions();
   petWindow = new BrowserWindow({
     ...initialBounds,
     width,
@@ -771,8 +689,8 @@ function createPetWindow() {
     transparent: true,
     backgroundColor: '#00000000',
     resizable: false,
-    movable: true,
-    alwaysOnTop: true,
+    movable: desktopCompanionWindowOptions.movable,
+    alwaysOnTop: desktopCompanionWindowOptions.alwaysOnTop,
     skipTaskbar: true,
     show: false,
     hasShadow: false,
@@ -783,7 +701,7 @@ function createPetWindow() {
     },
   });
 
-  petWindow.setAlwaysOnTop(true, 'floating');
+  manager.attachPetWindow(petWindow);
   petWindow.loadURL(`http://127.0.0.1:${DASHBOARD_PORT}/pet-window.html`);
 
   petWindow.once('ready-to-show', () => {
@@ -797,12 +715,8 @@ function createPetWindow() {
   petWindow.on('close', (event) => {
     if (app.isQuitting) return;
     event.preventDefault();
-    savePetWindowBounds(petWindow.getBounds());
+    manager.settlePetWindowBounds(petWindow);
     petWindow.hide();
-  });
-
-  petWindow.on('moved', () => {
-    if (petWindow) savePetWindowBounds(petWindow.getBounds());
   });
 
   petWindow.on('closed', () => {
@@ -912,13 +826,19 @@ ipcMain.handle('catsco:pet:get-state', () => ({
   ok: true,
   dashboardUrl: getDashboardUrl(),
   catsCoWebUrl: resolveCatsCoWebUrl(),
-  startAtLogin: readStartAtLoginPreference(),
+  ...getDesktopCompanionManager().getState(),
 }));
 
 ipcMain.handle('catsco:pet:set-start-at-login', (_event, value) => {
-  writeStartAtLoginPreference(Boolean(value));
-  syncLoginItemSettings();
-  return { ok: true, startAtLogin: readStartAtLoginPreference() };
+  return { ok: true, ...getDesktopCompanionManager().setStartAtLogin(Boolean(value)) };
+});
+
+ipcMain.handle('catsco:pet:set-lock-position', (_event, value) => {
+  return { ok: true, ...getDesktopCompanionManager().setLockPetPosition(Boolean(value)) };
+});
+
+ipcMain.handle('catsco:pet:set-always-on-top', (_event, value) => {
+  return { ok: true, ...getDesktopCompanionManager().setAlwaysOnTop(Boolean(value)) };
 });
 
 function quitApp() {
@@ -927,18 +847,34 @@ function quitApp() {
 }
 
 function buildPetContextMenuTemplate() {
+  const manager = getDesktopCompanionManager();
   return [
     { label: 'Show Companion', click: showPetWindow },
     { label: 'Open Dashboard', click: openDashboardFromPet },
     { label: 'Open CatsCo Web', click: openCatsCoWebFromPet },
     { type: 'separator' },
     {
-      label: 'Start at login',
+      label: 'Lock Pet Position',
       type: 'checkbox',
-      checked: readStartAtLoginPreference(),
+      checked: manager.readLockPetPositionPreference(),
       click: (menuItem) => {
-        writeStartAtLoginPreference(menuItem.checked);
-        syncLoginItemSettings();
+        manager.setLockPetPosition(menuItem.checked);
+      },
+    },
+    {
+      label: 'Always On Top',
+      type: 'checkbox',
+      checked: manager.readAlwaysOnTopPreference(),
+      click: (menuItem) => {
+        manager.setAlwaysOnTop(menuItem.checked);
+      },
+    },
+    {
+      label: 'Start With System',
+      type: 'checkbox',
+      checked: manager.readStartAtLoginPreference(),
+      click: (menuItem) => {
+        manager.setStartAtLogin(menuItem.checked);
       },
     },
     { type: 'separator' },

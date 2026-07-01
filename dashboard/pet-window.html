@@ -54,6 +54,13 @@
       cursor: grab;
     }
 
+    #pet-shell.position-locked.pet-drag-region,
+    #pet-shell.position-locked .pet-drag-region,
+    #pet-shell.position-locked .drag-handle {
+      -webkit-app-region: no-drag;
+      cursor: default;
+    }
+
     .pet-drag-region:active,
     .drag-handle:active {
       cursor: grabbing;
@@ -382,7 +389,7 @@
   </style>
 </head>
 <body>
-  <main id="pet-shell" aria-label="CatsCo companion">
+  <main id="pet-shell" class="pet-drag-region" aria-label="CatsCo companion">
     <section class="panel" aria-label="Companion actions">
       <div class="drag-handle pet-drag-region" title="拖动宠物"></div>
       <div class="title-row pet-drag-region">
@@ -423,8 +430,16 @@
         </div>
       </section>
       <label class="switch-row">
-        <span>Start at login</span>
+        <span>Start With System</span>
         <input id="start-login" type="checkbox">
+      </label>
+      <label class="switch-row">
+        <span>Lock Pet Position</span>
+        <input id="lock-position" type="checkbox">
+      </label>
+      <label class="switch-row">
+        <span>Always On Top</span>
+        <input id="always-on-top" type="checkbox">
       </label>
       <div id="pet-hint" class="hint">右键查看更多选项。</div>
     </section>
@@ -450,6 +465,8 @@
     const hint = document.getElementById('pet-hint');
     const pulse = document.getElementById('pet-pulse');
     const startLogin = document.getElementById('start-login');
+    const lockPosition = document.getElementById('lock-position');
+    const alwaysOnTop = document.getElementById('always-on-top');
     const workFeed = document.getElementById('work-feed');
     const workLevel = document.getElementById('work-level');
     const workAlert = document.getElementById('work-alert');
@@ -502,8 +519,11 @@
         openDashboard: () => window.open('/', '_blank'),
         openCatsCoWeb: () => window.open('https://app.catsco.cc', '_blank'),
         showMenu: () => Promise.resolve(),
-        getState: () => Promise.resolve({ startAtLogin: false }),
-        setStartAtLogin: () => Promise.resolve(),
+        getState: () => Promise.resolve({ startAtLogin: false, lockPetPosition: false, alwaysOnTop: true }),
+        setStartAtLogin: (value) => Promise.resolve({ startAtLogin: Boolean(value) }),
+        setLockPetPosition: (value) => Promise.resolve({ lockPetPosition: Boolean(value) }),
+        setAlwaysOnTop: (value) => Promise.resolve({ alwaysOnTop: Boolean(value) }),
+        onDesktopStateChanged: () => () => {},
       };
     }
 
@@ -749,10 +769,21 @@
     async function loadDesktopState() {
       try {
         const state = await petApi().getState();
-        startLogin.checked = Boolean(state && state.startAtLogin);
+        applyDesktopState(state);
       } catch (_error) {
         startLogin.checked = false;
+        lockPosition.checked = false;
+        alwaysOnTop.checked = true;
+        shell.classList.remove('position-locked');
       }
+    }
+
+    function applyDesktopState(state) {
+      startLogin.checked = Boolean(state && state.startAtLogin);
+      lockPosition.checked = Boolean(state && state.lockPetPosition);
+      alwaysOnTop.checked = state && state.alwaysOnTop !== false;
+      shell.classList.toggle('position-locked', lockPosition.checked);
+      shell.title = lockPosition.checked ? '宠物位置已锁定' : '拖动宠物到喜欢的位置';
     }
 
     function openDashboard() {
@@ -988,9 +1019,21 @@
 
     startLogin.addEventListener('change', async () => {
       const result = await petApi().setStartAtLogin(startLogin.checked);
-      if (result && typeof result.startAtLogin === 'boolean') {
-        startLogin.checked = result.startAtLogin;
-      }
+      applyDesktopState({ startAtLogin: startLogin.checked, lockPetPosition: lockPosition.checked, alwaysOnTop: alwaysOnTop.checked, ...result });
+    });
+
+    lockPosition.addEventListener('change', async () => {
+      const result = await petApi().setLockPetPosition(lockPosition.checked);
+      applyDesktopState({ startAtLogin: startLogin.checked, lockPetPosition: lockPosition.checked, alwaysOnTop: alwaysOnTop.checked, ...result });
+    });
+
+    alwaysOnTop.addEventListener('change', async () => {
+      const result = await petApi().setAlwaysOnTop(alwaysOnTop.checked);
+      applyDesktopState({ startAtLogin: startLogin.checked, lockPetPosition: lockPosition.checked, alwaysOnTop: alwaysOnTop.checked, ...result });
+    });
+
+    petApi().onDesktopStateChanged?.((state) => {
+      applyDesktopState(state);
     });
 
     window.addEventListener('contextmenu', (event) => {
