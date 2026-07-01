@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { mountChatPage } from './chat-page';
 import { mountCompanionPage } from './companion-page';
 import { mountGlobalModals } from './global-modals';
+import { mountPromptsPage } from './prompts-page';
 import { mountServicesPage } from './services-page';
 import { mountStorePage } from './store-page';
 
@@ -38,6 +39,7 @@ type ShellRenderPayload = {
 
 const NAV_ITEMS: NavItem[] = [
   { icon: '@', label: 'CatsCo', page: 'chat' },
+  { icon: '#', label: '提示词', page: 'prompts' },
   { icon: '>', label: '智能体中心', page: 'services' },
   { icon: '+', label: 'Skills', page: 'store' },
   { icon: '*', label: '伙伴中心', page: 'companion' },
@@ -52,6 +54,7 @@ let dashboardShellState = {
 
 const PAGE_ITEMS = [
   { id: 'services-page-root', page: 'services' },
+  { id: 'prompts-page-root', page: 'prompts' },
   { id: 'companion-page-root', page: 'companion' },
   { id: 'store-page-root', page: 'store' },
   { id: 'chat-page-root', page: 'chat' },
@@ -207,6 +210,7 @@ function mountDashboardShell() {
 mountDashboardShell();
 mountChatPage();
 mountServicesPage();
+mountPromptsPage();
 mountCompanionPage();
 mountStorePage();
 mountGlobalModals();

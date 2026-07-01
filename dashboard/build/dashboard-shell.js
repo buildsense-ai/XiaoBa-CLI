@@ -1059,7 +1059,7 @@
           return dispatcher;
         }
         "undefined" !== typeof __REACT_DEVTOOLS_GLOBAL_HOOK__ && "function" === typeof __REACT_DEVTOOLS_GLOBAL_HOOK__.registerInternalModuleStart && __REACT_DEVTOOLS_GLOBAL_HOOK__.registerInternalModuleStart(Error());
-        var React7 = require_react(), Internals = {
+        var React8 = require_react(), Internals = {
           d: {
             f: noop,
             r: function() {
@@ -1077,7 +1077,7 @@
           },
           p: 0,
           findDOMNode: null
-        }, REACT_PORTAL_TYPE = /* @__PURE__ */ Symbol.for("react.portal"), ReactSharedInternals = React7.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+        }, REACT_PORTAL_TYPE = /* @__PURE__ */ Symbol.for("react.portal"), ReactSharedInternals = React8.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
         "function" === typeof Map && null != Map.prototype && "function" === typeof Map.prototype.forEach && "function" === typeof Set && null != Set.prototype && "function" === typeof Set.prototype.clear && "function" === typeof Set.prototype.forEach || console.error(
           "React depends on Map and Set built-in types. Make sure that you load a polyfill in older browsers. https://reactjs.org/link/react-polyfills"
         );
@@ -2883,7 +2883,7 @@
           "number" === type && getActiveElement(node.ownerDocument) === node || node.defaultValue === "" + value || (node.defaultValue = "" + value);
         }
         function validateOptionProps(element, props) {
-          null == props.value && ("object" === typeof props.children && null !== props.children ? React7.Children.forEach(props.children, function(child) {
+          null == props.value && ("object" === typeof props.children && null !== props.children ? React8.Children.forEach(props.children, function(child) {
             null == child || "string" === typeof child || "number" === typeof child || "bigint" === typeof child || didWarnInvalidChild || (didWarnInvalidChild = true, console.error(
               "Cannot infer the option value of complex children. Pass a `value` prop or use a plain string as children to <option>."
             ));
@@ -18515,14 +18515,14 @@
           ));
         }
         "undefined" !== typeof __REACT_DEVTOOLS_GLOBAL_HOOK__ && "function" === typeof __REACT_DEVTOOLS_GLOBAL_HOOK__.registerInternalModuleStart && __REACT_DEVTOOLS_GLOBAL_HOOK__.registerInternalModuleStart(Error());
-        var Scheduler = require_scheduler(), React7 = require_react(), ReactDOM = require_react_dom(), assign = Object.assign, REACT_LEGACY_ELEMENT_TYPE = /* @__PURE__ */ Symbol.for("react.element"), REACT_ELEMENT_TYPE = /* @__PURE__ */ Symbol.for("react.transitional.element"), REACT_PORTAL_TYPE = /* @__PURE__ */ Symbol.for("react.portal"), REACT_FRAGMENT_TYPE = /* @__PURE__ */ Symbol.for("react.fragment"), REACT_STRICT_MODE_TYPE = /* @__PURE__ */ Symbol.for("react.strict_mode"), REACT_PROFILER_TYPE = /* @__PURE__ */ Symbol.for("react.profiler"), REACT_CONSUMER_TYPE = /* @__PURE__ */ Symbol.for("react.consumer"), REACT_CONTEXT_TYPE = /* @__PURE__ */ Symbol.for("react.context"), REACT_FORWARD_REF_TYPE = /* @__PURE__ */ Symbol.for("react.forward_ref"), REACT_SUSPENSE_TYPE = /* @__PURE__ */ Symbol.for("react.suspense"), REACT_SUSPENSE_LIST_TYPE = /* @__PURE__ */ Symbol.for("react.suspense_list"), REACT_MEMO_TYPE = /* @__PURE__ */ Symbol.for("react.memo"), REACT_LAZY_TYPE = /* @__PURE__ */ Symbol.for("react.lazy");
+        var Scheduler = require_scheduler(), React8 = require_react(), ReactDOM = require_react_dom(), assign = Object.assign, REACT_LEGACY_ELEMENT_TYPE = /* @__PURE__ */ Symbol.for("react.element"), REACT_ELEMENT_TYPE = /* @__PURE__ */ Symbol.for("react.transitional.element"), REACT_PORTAL_TYPE = /* @__PURE__ */ Symbol.for("react.portal"), REACT_FRAGMENT_TYPE = /* @__PURE__ */ Symbol.for("react.fragment"), REACT_STRICT_MODE_TYPE = /* @__PURE__ */ Symbol.for("react.strict_mode"), REACT_PROFILER_TYPE = /* @__PURE__ */ Symbol.for("react.profiler"), REACT_CONSUMER_TYPE = /* @__PURE__ */ Symbol.for("react.consumer"), REACT_CONTEXT_TYPE = /* @__PURE__ */ Symbol.for("react.context"), REACT_FORWARD_REF_TYPE = /* @__PURE__ */ Symbol.for("react.forward_ref"), REACT_SUSPENSE_TYPE = /* @__PURE__ */ Symbol.for("react.suspense"), REACT_SUSPENSE_LIST_TYPE = /* @__PURE__ */ Symbol.for("react.suspense_list"), REACT_MEMO_TYPE = /* @__PURE__ */ Symbol.for("react.memo"), REACT_LAZY_TYPE = /* @__PURE__ */ Symbol.for("react.lazy");
         /* @__PURE__ */ Symbol.for("react.scope");
         var REACT_ACTIVITY_TYPE = /* @__PURE__ */ Symbol.for("react.activity");
         /* @__PURE__ */ Symbol.for("react.legacy_hidden");
         /* @__PURE__ */ Symbol.for("react.tracing_marker");
         var REACT_MEMO_CACHE_SENTINEL = /* @__PURE__ */ Symbol.for("react.memo_cache_sentinel");
         /* @__PURE__ */ Symbol.for("react.view_transition");
-        var MAYBE_ITERATOR_SYMBOL = Symbol.iterator, REACT_CLIENT_REFERENCE = /* @__PURE__ */ Symbol.for("react.client.reference"), isArrayImpl = Array.isArray, ReactSharedInternals = React7.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE, ReactDOMSharedInternals = ReactDOM.__DOM_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE, NotPending = Object.freeze({
+        var MAYBE_ITERATOR_SYMBOL = Symbol.iterator, REACT_CLIENT_REFERENCE = /* @__PURE__ */ Symbol.for("react.client.reference"), isArrayImpl = Array.isArray, ReactSharedInternals = React8.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE, ReactDOMSharedInternals = ReactDOM.__DOM_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE, NotPending = Object.freeze({
           pending: false,
           data: null,
           method: null,
@@ -21310,7 +21310,7 @@
           }
         };
         (function() {
-          var isomorphicReactPackageVersion = React7.version;
+          var isomorphicReactPackageVersion = React8.version;
           if ("19.2.7" !== isomorphicReactPackageVersion)
             throw Error(
               'Incompatible React versions: The "react" and "react-dom" packages must have the exact same version. Instead got:\n  - react:      ' + (isomorphicReactPackageVersion + "\n  - react-dom:  19.2.7\nLearn more: https://react.dev/warnings/version-mismatch")
@@ -21451,9 +21451,9 @@
   });
 
   // dashboard/react-src/dashboard-shell.tsx
-  var import_react6 = __toESM(require_react());
+  var import_react7 = __toESM(require_react());
   var import_react_dom = __toESM(require_react_dom());
-  var import_client6 = __toESM(require_client());
+  var import_client7 = __toESM(require_client());
 
   // dashboard/react-src/chat-page.tsx
   var import_react = __toESM(require_react());
@@ -23039,9 +23039,188 @@
     window.__catscoSetGlobalModalOpen = setGlobalModalOpen;
   }
 
-  // dashboard/react-src/services-page.tsx
+  // dashboard/react-src/prompts-page.tsx
   var import_react4 = __toESM(require_react());
   var import_client4 = __toESM(require_client());
+  var promptsPageRoot = null;
+  var promptsPageElement = null;
+  var promptPageState = {
+    dirty: false,
+    draftContent: "",
+    error: "",
+    groupOpen: {},
+    loading: true,
+    selectedPath: "",
+    statusText: ""
+  };
+  function fileBaseName(path) {
+    const parts = String(path || "").split("/");
+    return parts[parts.length - 1] || path;
+  }
+  function promptFileGroup(path) {
+    const value = String(path || "");
+    if (!value.includes("/")) return "core";
+    if (value.startsWith("agents/")) return "agents";
+    if (value.startsWith("tools/")) return "tools";
+    return value.split("/")[0] || "other";
+  }
+  function promptGroupLabel(group) {
+    const labels = {
+      agents: "\u5206\u652F Agent",
+      core: "\u6838\u5FC3\u63D0\u793A\u8BCD",
+      tools: "\u5DE5\u5177\u63D0\u793A\u8BCD"
+    };
+    return labels[group] || group;
+  }
+  function promptFileMeta(file) {
+    const digest = file.effective || file.base || {};
+    const stats = [`${Number(digest.chars || 0)} chars`, `${Number(digest.lines || 0)} lines`];
+    if (digest.short_hash) stats.push(String(digest.short_hash));
+    return stats.join(" \xB7 ");
+  }
+  function traceTime(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
+  }
+  function setPromptEditorDraft(value) {
+    promptPageState = {
+      ...promptPageState,
+      dirty: true,
+      draftContent: value,
+      statusText: "\u672A\u4FDD\u5B58\u7684\u8986\u76D6\u5185\u5BB9\u4F1A\u5728\u4FDD\u5B58\u540E\u70ED\u52A0\u8F7D\u3002"
+    };
+    renderPromptsPage();
+  }
+  function togglePromptFileGroup(group) {
+    const current = promptPageState.groupOpen[group];
+    promptPageState = {
+      ...promptPageState,
+      groupOpen: {
+        ...promptPageState.groupOpen,
+        [group]: current === false
+      }
+    };
+    renderPromptsPage();
+  }
+  function TraceCard({ label, meta, value }) {
+    return /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-trace-card" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-trace-label" }, label), /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-trace-value" }, value || "-"), meta ? /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-meta" }, meta) : null);
+  }
+  function PromptTraceGrid({ promptState }) {
+    const trace = promptState.trace || {};
+    const bundle = trace.bundle || {};
+    const system = trace.system || {};
+    return /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-trace-grid" }, /* @__PURE__ */ import_react4.default.createElement(TraceCard, { label: "System hash", meta: `${Number(system.chars || 0)} chars \xB7 ${Number(system.lines || 0)} lines`, value: system.short_hash || "-" }), /* @__PURE__ */ import_react4.default.createElement(TraceCard, { label: "Bundle hash", meta: `${Number(bundle.file_count || 0)} files`, value: bundle.short_hash || "-" }), /* @__PURE__ */ import_react4.default.createElement(TraceCard, { label: "\u7248\u672C", meta: trace.source || "prompt-editor", value: trace.prompt_version || "local" }), /* @__PURE__ */ import_react4.default.createElement(TraceCard, { label: "\u8986\u76D6\u76EE\u5F55", meta: traceTime(trace.generated_at), value: promptState.overrides_dir || "\u672A\u914D\u7F6E" }));
+  }
+  function PromptBranchAgentControls({ branchAgents }) {
+    if (!branchAgents) return null;
+    return /* @__PURE__ */ import_react4.default.createElement("div", { className: "runtime-note prompt-branch-agents" }, /* @__PURE__ */ import_react4.default.createElement("label", { className: "prompt-branch-toggle" }, /* @__PURE__ */ import_react4.default.createElement(
+      "input",
+      {
+        checked: branchAgents.enabled !== false,
+        onChange: (event) => window.setBranchAgentsEnabled?.(event.currentTarget.checked),
+        type: "checkbox"
+      }
+    ), /* @__PURE__ */ import_react4.default.createElement("span", null, "\u542F\u7528\u5206\u652F Agent \u63D0\u793A\u8BCD")), /* @__PURE__ */ import_react4.default.createElement("span", null, branchAgents.env_key || "XIAOBA_BRANCH_AGENTS_ENABLED"));
+  }
+  function PromptFileTree({ files, selectedPath }) {
+    if (!files.length) return /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-file-list" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "loading" }, "\u6682\u65E0\u53EF\u7F16\u8F91\u63D0\u793A\u8BCD"));
+    const groups = /* @__PURE__ */ new Map();
+    files.forEach((file) => {
+      const group = promptFileGroup(file.path);
+      groups.set(group, [...groups.get(group) || [], file]);
+    });
+    return /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-file-list" }, [...groups.entries()].map(([group, groupFiles]) => {
+      const open = promptPageState.groupOpen[group] !== false;
+      return /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-file-group", key: group }, /* @__PURE__ */ import_react4.default.createElement("button", { className: "prompt-file-group-title", type: "button", onClick: () => togglePromptFileGroup(group) }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "chevron" }, open ? "v" : ">"), /* @__PURE__ */ import_react4.default.createElement("span", null, promptGroupLabel(group)), /* @__PURE__ */ import_react4.default.createElement("span", { className: "prompt-file-count" }, groupFiles.length)), open ? groupFiles.map((file) => /* @__PURE__ */ import_react4.default.createElement(
+        "button",
+        {
+          className: `prompt-file-item${file.path === selectedPath ? " active" : ""}${group === "core" ? "" : " nested"}`,
+          key: file.path,
+          onClick: () => window.selectPromptEditorFile?.(file.path),
+          type: "button"
+        },
+        /* @__PURE__ */ import_react4.default.createElement("span", { className: "prompt-file-name" }, fileBaseName(file.path)),
+        /* @__PURE__ */ import_react4.default.createElement("span", { className: "prompt-file-meta" }, file.overridden ? "\u5DF2\u8986\u76D6 \xB7 " : "", promptFileMeta(file))
+      )) : null);
+    }));
+  }
+  function PromptEditorPane({ state }) {
+    const file = state.selectedFile;
+    const writable = state.promptState?.writable !== false;
+    if (!file) {
+      return /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-editor-pane" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "loading" }, "\u9009\u62E9\u4E00\u4E2A\u63D0\u793A\u8BCD\u6587\u4EF6\u5F00\u59CB\u7F16\u8F91"));
+    }
+    return /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-editor-pane" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-editor-head" }, /* @__PURE__ */ import_react4.default.createElement("div", null, /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-editor-title" }, file.path), /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-editor-meta" }, "effective ", file.effective?.short_hash || "-", " \xB7 base ", file.base?.short_hash || "-", " \xB7 ", Number(file.effective?.chars || 0), " chars")), /* @__PURE__ */ import_react4.default.createElement("span", { className: `tag ${file.overridden ? "green" : "gray"}` }, file.overridden ? "\u672C\u5730\u8986\u76D6" : "\u9ED8\u8BA4\u7248\u672C")), !writable ? /* @__PURE__ */ import_react4.default.createElement("div", { className: "runtime-note warning" }, "\u672A\u914D\u7F6E\u5B89\u5168\u7684\u63D0\u793A\u8BCD\u8986\u76D6\u76EE\u5F55\uFF0C\u5F53\u524D\u6587\u4EF6\u53EA\u80FD\u67E5\u770B\u3002") : null, /* @__PURE__ */ import_react4.default.createElement(
+      "textarea",
+      {
+        className: "prompt-editor-textarea",
+        disabled: !writable,
+        id: "prompt-editor-textarea",
+        onChange: (event) => setPromptEditorDraft(event.currentTarget.value),
+        spellCheck: false,
+        value: state.draftContent
+      }
+    ), /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-editor-actions" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-editor-status", id: "prompt-editor-status" }, state.statusText || (state.dirty ? "\u672A\u4FDD\u5B58" : "\u5DF2\u540C\u6B65")), /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-actions" }, /* @__PURE__ */ import_react4.default.createElement("button", { className: "btn btn-primary", disabled: !writable || !state.dirty, onClick: () => window.savePromptEditorFile?.(), type: "button" }, "\u4FDD\u5B58\u8986\u76D6"), /* @__PURE__ */ import_react4.default.createElement("button", { className: "btn", disabled: !writable || !file.overridden, onClick: () => window.resetPromptEditorFile?.(), type: "button" }, "\u91CD\u7F6E\u4E3A\u9ED8\u8BA4"))));
+  }
+  function PromptWorkbench({ state }) {
+    if (state.loading && !state.promptState) {
+      return /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-workbench", id: "prompt-workbench" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "loading" }, "\u52A0\u8F7D\u63D0\u793A\u8BCD..."));
+    }
+    if (state.error) {
+      return /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-workbench", id: "prompt-workbench" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "runtime-note danger" }, state.error));
+    }
+    const promptState = state.promptState;
+    if (!promptState) {
+      return /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-workbench", id: "prompt-workbench" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "loading" }, "\u52A0\u8F7D\u63D0\u793A\u8BCD..."));
+    }
+    const files = promptState.files || [];
+    return /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-workbench", "data-react-prompt-workbench": "mounted", id: "prompt-workbench" }, /* @__PURE__ */ import_react4.default.createElement(PromptTraceGrid, { promptState }), /* @__PURE__ */ import_react4.default.createElement(PromptBranchAgentControls, { branchAgents: promptState.branch_agents }), /* @__PURE__ */ import_react4.default.createElement("div", { className: "runtime-note" }, "\u7F16\u8F91\u672C\u5730\u8986\u76D6\u7248\u672C\uFF0C\u4FDD\u5B58\u540E\u4F1A\u5728\u4E0B\u4E00\u6761\u7528\u6237\u6D88\u606F\u5F00\u59CB\u524D\u70ED\u52A0\u8F7D\u3002\u9ED8\u8BA4\u76EE\u5F55\uFF1A", promptState.base_dir || "-"), /* @__PURE__ */ import_react4.default.createElement("div", { className: "prompt-editor-layout" }, /* @__PURE__ */ import_react4.default.createElement(PromptFileTree, { files, selectedPath: state.selectedPath }), /* @__PURE__ */ import_react4.default.createElement(PromptEditorPane, { state })));
+  }
+  function PromptsPage({ state }) {
+    return /* @__PURE__ */ import_react4.default.createElement(import_react4.default.Fragment, null, /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-header" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-heading" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-kicker" }, "Prompt Lab"), /* @__PURE__ */ import_react4.default.createElement("div", { className: "section-title", style: { marginBottom: 0 } }, "\u63D0\u793A\u8BCD\u8C03\u8BD5"), /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-meta" }, "\u7F16\u8F91\u672C\u5730\u8986\u76D6\u7248\u672C\uFF0C\u4E0B\u4E00\u6761\u7528\u6237\u6D88\u606F\u5F00\u59CB\u524D\u70ED\u52A0\u8F7D\uFF1B\u65E5\u5FD7\u4F1A\u8BB0\u5F55 system \u548C bundle hash\u3002")), /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-actions" }, /* @__PURE__ */ import_react4.default.createElement("button", { className: "btn", onClick: () => window.copyPromptOverridesPath?.(), type: "button" }, "\u590D\u5236\u8986\u76D6\u76EE\u5F55"), /* @__PURE__ */ import_react4.default.createElement("button", { className: "btn", onClick: () => window.installPromptEditorSkill?.(), type: "button" }, "\u5B89\u88C5\u7F16\u8F91 Skill"), /* @__PURE__ */ import_react4.default.createElement("button", { className: "btn btn-primary", onClick: () => window.refreshPromptWorkbench?.(), type: "button" }, "\u5237\u65B0"))), /* @__PURE__ */ import_react4.default.createElement(PromptWorkbench, { state }));
+  }
+  function renderPromptsPage() {
+    if (!promptsPageElement) return;
+    promptsPageRoot || (promptsPageRoot = (0, import_client4.createRoot)(promptsPageElement));
+    promptsPageRoot.render(/* @__PURE__ */ import_react4.default.createElement(PromptsPage, { state: promptPageState }));
+    promptsPageElement.dataset.reactPrompts = "mounted";
+  }
+  function renderPromptWorkbench(payload = {}) {
+    const hasPromptState = Object.prototype.hasOwnProperty.call(payload, "promptState");
+    const hasSelectedFile = Object.prototype.hasOwnProperty.call(payload, "selectedFile");
+    const selectedFile = hasSelectedFile ? payload.selectedFile || void 0 : promptPageState.selectedFile;
+    const draftContent = payload.draftContent !== void 0 ? String(payload.draftContent ?? "") : hasSelectedFile ? String(selectedFile?.content || "") : promptPageState.draftContent;
+    promptPageState = {
+      ...promptPageState,
+      ...hasPromptState ? { promptState: payload.promptState || void 0 } : {},
+      ...payload.selectedPath === void 0 ? {} : { selectedPath: String(payload.selectedPath || "") },
+      ...payload.loading === void 0 ? {} : { loading: Boolean(payload.loading) },
+      ...payload.error === void 0 ? {} : { error: String(payload.error || "") },
+      ...payload.statusText === void 0 ? {} : { statusText: String(payload.statusText || "") },
+      ...payload.dirty === void 0 ? {} : { dirty: Boolean(payload.dirty) },
+      selectedFile,
+      draftContent
+    };
+    renderPromptsPage();
+  }
+  function getPromptEditorDraft() {
+    return promptPageState.draftContent;
+  }
+  function mountPromptsPage() {
+    const root = document.getElementById("prompts-page-root");
+    if (!root) return;
+    promptsPageElement = root;
+    renderPromptsPage();
+    window.__catscoRenderPromptWorkbench = renderPromptWorkbench;
+    window.__catscoGetPromptEditorDraft = getPromptEditorDraft;
+    window.__catscoSetPromptEditorDraft = setPromptEditorDraft;
+  }
+
+  // dashboard/react-src/services-page.tsx
+  var import_react5 = __toESM(require_react());
+  var import_client5 = __toESM(require_client());
   var SERVICE_COPY = {
     catscompany: "\u8FDE\u63A5 CatsCo webapp\uFF0C\u4F1A\u628A\u7F51\u9875\u4F1A\u8BDD\u6D88\u606F\u9001\u5165\u672C\u5730 agent\u3002",
     feishu: "\u542F\u52A8\u98DE\u4E66\u673A\u5668\u4EBA\u5165\u53E3\uFF0C\u7528\u98DE\u4E66 App \u914D\u7F6E\u63A5\u5165\u672C\u5730 agent\u3002",
@@ -23119,7 +23298,7 @@
   }) {
     if (!group) return null;
     const className = `service-config${ui?.dirty ? " dirty" : ""}`;
-    return /* @__PURE__ */ import_react4.default.createElement(
+    return /* @__PURE__ */ import_react5.default.createElement(
       "details",
       {
         className,
@@ -23134,8 +23313,8 @@
           focusedServiceConfigName = name;
         }
       },
-      /* @__PURE__ */ import_react4.default.createElement("summary", null, /* @__PURE__ */ import_react4.default.createElement("span", null, group.title), /* @__PURE__ */ import_react4.default.createElement("span", { className: "tag" }, "\u9AD8\u7EA7")),
-      /* @__PURE__ */ import_react4.default.createElement("div", { className: "service-config-body" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "runtime-note" }, group.hint), group.keys.map((item) => /* @__PURE__ */ import_react4.default.createElement("div", { className: "service-config-row", key: item.key }, /* @__PURE__ */ import_react4.default.createElement("label", { className: "config-label" }, item.label), /* @__PURE__ */ import_react4.default.createElement(
+      /* @__PURE__ */ import_react5.default.createElement("summary", null, /* @__PURE__ */ import_react5.default.createElement("span", null, group.title), /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag" }, "\u9AD8\u7EA7")),
+      /* @__PURE__ */ import_react5.default.createElement("div", { className: "service-config-body" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "runtime-note" }, group.hint), group.keys.map((item) => /* @__PURE__ */ import_react5.default.createElement("div", { className: "service-config-row", key: item.key }, /* @__PURE__ */ import_react5.default.createElement("label", { className: "config-label" }, item.label), /* @__PURE__ */ import_react5.default.createElement(
         "input",
         {
           className: "config-input",
@@ -23152,7 +23331,7 @@
           }),
           placeholder: item.key
         }
-      ), item.action === "weixinToken" ? /* @__PURE__ */ import_react4.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.getWeixinToken?.(), style: { marginTop: 6 } }, "\u83B7\u53D6 Token") : null)), /* @__PURE__ */ import_react4.default.createElement("div", { className: "service-config-actions" }, /* @__PURE__ */ import_react4.default.createElement("span", { className: "service-config-hint" }, "\u51ED\u8BC1\u4EC5\u4FDD\u5B58\u5230\u672C\u5730 .env"), /* @__PURE__ */ import_react4.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.saveServiceConfig?.(name) }, "\u4FDD\u5B58"), /* @__PURE__ */ import_react4.default.createElement("button", { className: "btn", type: "button", onClick: () => window.cancelServiceConfig?.(name) }, "\u53D6\u6D88"), /* @__PURE__ */ import_react4.default.createElement("span", { className: `config-saved${ui?.saved ? " show" : ""}`, id: `service-config-saved-${name}` }, "\u5DF2\u4FDD\u5B58")))
+      ), item.action === "weixinToken" ? /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.getWeixinToken?.(), style: { marginTop: 6 } }, "\u83B7\u53D6 Token") : null)), /* @__PURE__ */ import_react5.default.createElement("div", { className: "service-config-actions" }, /* @__PURE__ */ import_react5.default.createElement("span", { className: "service-config-hint" }, "\u51ED\u8BC1\u4EC5\u4FDD\u5B58\u5230\u672C\u5730 .env"), /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.saveServiceConfig?.(name) }, "\u4FDD\u5B58"), /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn", type: "button", onClick: () => window.cancelServiceConfig?.(name) }, "\u53D6\u6D88"), /* @__PURE__ */ import_react5.default.createElement("span", { className: `config-saved${ui?.saved ? " show" : ""}`, id: `service-config-saved-${name}` }, "\u5DF2\u4FDD\u5B58")))
     );
   }
   function ServiceCard({
@@ -23167,7 +23346,7 @@
     const status = String(service.status || "stopped");
     const running = status === "running";
     const uptime = running && service.uptime ? formatServiceUptime(service.uptime) : "-";
-    return /* @__PURE__ */ import_react4.default.createElement("div", { className: "service-card" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "service-header" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "service-name" }, label), /* @__PURE__ */ import_react4.default.createElement("span", { className: `service-status ${serviceStatusClass(status)}` }, status)), /* @__PURE__ */ import_react4.default.createElement("div", { className: "service-copy" }, serviceCopy(name)), /* @__PURE__ */ import_react4.default.createElement("div", { className: "service-detail" }, running ? /* @__PURE__ */ import_react4.default.createElement(import_react4.default.Fragment, null, /* @__PURE__ */ import_react4.default.createElement("span", null, "PID: ", service.pid), /* @__PURE__ */ import_react4.default.createElement("span", null, "Uptime: ", uptime)) : /* @__PURE__ */ import_react4.default.createElement("span", null, "\u672A\u8FD0\u884C"), service.lastError ? /* @__PURE__ */ import_react4.default.createElement("span", { style: { color: "var(--red)" } }, service.lastError) : null), /* @__PURE__ */ import_react4.default.createElement("div", { className: "service-actions" }, running ? /* @__PURE__ */ import_react4.default.createElement(import_react4.default.Fragment, null, /* @__PURE__ */ import_react4.default.createElement("button", { className: "btn btn-danger", type: "button", onClick: () => window.svcAction?.(name, "stop") }, servicePrimaryAction(name, true)), /* @__PURE__ */ import_react4.default.createElement("button", { className: "btn", type: "button", onClick: () => window.svcAction?.(name, "restart") }, "\u91CD\u542F")) : /* @__PURE__ */ import_react4.default.createElement("button", { className: "btn btn-success", type: "button", onClick: () => window.svcAction?.(name, "start") }, servicePrimaryAction(name, false)), /* @__PURE__ */ import_react4.default.createElement("button", { className: "btn", type: "button", onClick: () => window.showLogs?.(name, label) }, "\u65E5\u5FD7")), /* @__PURE__ */ import_react4.default.createElement(
+    return /* @__PURE__ */ import_react5.default.createElement("div", { className: "service-card" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "service-header" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "service-name" }, label), /* @__PURE__ */ import_react5.default.createElement("span", { className: `service-status ${serviceStatusClass(status)}` }, status)), /* @__PURE__ */ import_react5.default.createElement("div", { className: "service-copy" }, serviceCopy(name)), /* @__PURE__ */ import_react5.default.createElement("div", { className: "service-detail" }, running ? /* @__PURE__ */ import_react5.default.createElement(import_react5.default.Fragment, null, /* @__PURE__ */ import_react5.default.createElement("span", null, "PID: ", service.pid), /* @__PURE__ */ import_react5.default.createElement("span", null, "Uptime: ", uptime)) : /* @__PURE__ */ import_react5.default.createElement("span", null, "\u672A\u8FD0\u884C"), service.lastError ? /* @__PURE__ */ import_react5.default.createElement("span", { style: { color: "var(--red)" } }, service.lastError) : null), /* @__PURE__ */ import_react5.default.createElement("div", { className: "service-actions" }, running ? /* @__PURE__ */ import_react5.default.createElement(import_react5.default.Fragment, null, /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn btn-danger", type: "button", onClick: () => window.svcAction?.(name, "stop") }, servicePrimaryAction(name, true)), /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn", type: "button", onClick: () => window.svcAction?.(name, "restart") }, "\u91CD\u542F")) : /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn btn-success", type: "button", onClick: () => window.svcAction?.(name, "start") }, servicePrimaryAction(name, false)), /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn", type: "button", onClick: () => window.showLogs?.(name, label) }, "\u65E5\u5FD7")), /* @__PURE__ */ import_react5.default.createElement(
       ServiceConfig,
       {
         configData,
@@ -23185,8 +23364,8 @@
     serviceConfigUi,
     services
   }) {
-    if (!services.length) return /* @__PURE__ */ import_react4.default.createElement("div", { className: "loading" }, "\u65E0\u670D\u52A1");
-    return /* @__PURE__ */ import_react4.default.createElement(import_react4.default.Fragment, null, services.map((service) => /* @__PURE__ */ import_react4.default.createElement(
+    if (!services.length) return /* @__PURE__ */ import_react5.default.createElement("div", { className: "loading" }, "\u65E0\u670D\u52A1");
+    return /* @__PURE__ */ import_react5.default.createElement(import_react5.default.Fragment, null, services.map((service) => /* @__PURE__ */ import_react5.default.createElement(
       ServiceCard,
       {
         configData,
@@ -23216,7 +23395,7 @@
     status = {}
   }) {
     if (!fieldsAvailable) {
-      return /* @__PURE__ */ import_react4.default.createElement("div", { className: "runtime-note warning" }, "\u6A21\u578B\u6765\u6E90\u6682\u4E0D\u53EF\u7528\uFF0C\u8BF7\u7A0D\u540E\u5237\u65B0\u3002");
+      return /* @__PURE__ */ import_react5.default.createElement("div", { className: "runtime-note warning" }, "\u6A21\u578B\u6765\u6E90\u6682\u4E0D\u53EF\u7528\uFF0C\u8BF7\u7A0D\u540E\u5237\u65B0\u3002");
     }
     const statusText = status.message || "\u51ED\u8BC1\u4EC5\u4FDD\u5B58\u5230\u672C\u5730 .env\uFF1B\u81EA\u5B9A\u4E49\u6A21\u578B\u9ED8\u8BA4 128K \u5B89\u5168\u4E0A\u4E0B\u6587\uFF0C\u65B0 session \u6216\u4E0B\u4E00\u6B21\u542F\u52A8 connector \u540E\u751F\u6548\u3002";
     const statusColor = status.tone === "error" ? "var(--red)" : status.tone === "success" ? "var(--green)" : "var(--text2)";
@@ -23224,8 +23403,8 @@
       setCustomModelDraft({ ...payload, dirty: true });
       window.scheduleCustomModelAutoSave?.();
     };
-    const secretPlaceholder = draft.secretPlaceholder || (keyPresent ? "\u9423\u6B11\u2516\u741B\u3127\u305A\u6DC7\u6FC7\u5BD4\u941C\u7248\u6E41\u9351\uE161\u7609" : "\u6748\u64B3\u53C6\u7481\u5757\u68F6\u9351\uE161\u7609");
-    return /* @__PURE__ */ import_react4.default.createElement("div", { className: "model-source-layout" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "runtime-note" }, "\u4E2D\u8F6C\u6A21\u578B\u548C\u81EA\u5B9A\u4E49\u6A21\u578B\u4F1A\u5206\u522B\u4FDD\u5B58\u3002CatsCo \u4E2D\u8F6C\u4F1A\u6309\u6240\u9009\u6A21\u578B\u81EA\u52A8\u8C03\u6574\u4E0A\u4E0B\u6587\uFF1B\u81EA\u5B9A\u4E49\u6A21\u578B\u9ED8\u8BA4\u6309 128K \u5B89\u5168\u4E0A\u4E0B\u6587\u8FD0\u884C\uFF0C\u82E5\u6A21\u578B\u5B9E\u9645\u7A97\u53E3\u66F4\u5C0F\uFF0C\u8BF7\u51CF\u5C11\u5386\u53F2\u6216\u5728\u9AD8\u7EA7\u73AF\u5883\u53D8\u91CF\u91CC\u964D\u4F4E GAUZ_LLM_CONTEXT_WINDOW_TOKENS\u3002"), /* @__PURE__ */ import_react4.default.createElement(
+    const secretPlaceholder = draft.secretPlaceholder || (keyPresent ? "\u7559\u7A7A\u8868\u793A\u4FDD\u6301\u73B0\u6709\u51ED\u8BC1" : "\u8F93\u5165\u8BBF\u95EE\u51ED\u8BC1");
+    return /* @__PURE__ */ import_react5.default.createElement("div", { className: "model-source-layout" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "runtime-note" }, "\u4E2D\u8F6C\u6A21\u578B\u548C\u81EA\u5B9A\u4E49\u6A21\u578B\u4F1A\u5206\u522B\u4FDD\u5B58\u3002CatsCo \u4E2D\u8F6C\u4F1A\u6309\u6240\u9009\u6A21\u578B\u81EA\u52A8\u8C03\u6574\u4E0A\u4E0B\u6587\uFF1B\u81EA\u5B9A\u4E49\u6A21\u578B\u9ED8\u8BA4\u6309 128K \u5B89\u5168\u4E0A\u4E0B\u6587\u8FD0\u884C\uFF0C\u82E5\u6A21\u578B\u5B9E\u9645\u7A97\u53E3\u66F4\u5C0F\uFF0C\u8BF7\u51CF\u5C11\u5386\u53F2\u6216\u5728\u9AD8\u7EA7\u73AF\u5883\u53D8\u91CF\u91CC\u964D\u4F4E GAUZ_LLM_CONTEXT_WINDOW_TOKENS\u3002"), /* @__PURE__ */ import_react5.default.createElement(
       "details",
       {
         className: "model-source-card warning",
@@ -23236,8 +23415,8 @@
           customModelDetailsElement = element;
         }
       },
-      /* @__PURE__ */ import_react4.default.createElement("summary", null, /* @__PURE__ */ import_react4.default.createElement("div", { className: "model-source-head" }, /* @__PURE__ */ import_react4.default.createElement("div", null, /* @__PURE__ */ import_react4.default.createElement("div", { className: "model-source-title" }, "\u81EA\u5B9A\u4E49\u6A21\u578B\uFF08\u7B2C\u4E09\u65B9\uFF09"), /* @__PURE__ */ import_react4.default.createElement("div", { className: "model-source-copy" }, "\u53EA\u6709\u624B\u52A8\u63A5\u5165\u7B2C\u4E09\u65B9\u6A21\u578B\u65F6\u9700\u8981\u586B\u5199\u3002CatsCo \u4E2D\u8F6C\u6A21\u578B\u8BF7\u5728 CatsCo \u9875\u9762\u9009\u62E9\uFF1B\u81EA\u5B9A\u4E49\u6A21\u578B\u9ED8\u8BA4\u4F7F\u7528 128K \u5B89\u5168\u4E0A\u4E0B\u6587\u3002")), /* @__PURE__ */ import_react4.default.createElement("span", { className: `tag ${keyPresent ? "green" : "gray"}` }, credentialMeta))),
-      /* @__PURE__ */ import_react4.default.createElement("div", { className: "model-source-form" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "config-row" }, /* @__PURE__ */ import_react4.default.createElement("label", { className: "config-label" }, "\u517C\u5BB9\u7C7B\u578B"), /* @__PURE__ */ import_react4.default.createElement(
+      /* @__PURE__ */ import_react5.default.createElement("summary", null, /* @__PURE__ */ import_react5.default.createElement("div", { className: "model-source-head" }, /* @__PURE__ */ import_react5.default.createElement("div", null, /* @__PURE__ */ import_react5.default.createElement("div", { className: "model-source-title" }, "\u81EA\u5B9A\u4E49\u6A21\u578B\uFF08\u7B2C\u4E09\u65B9\uFF09"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "model-source-copy" }, "\u53EA\u6709\u624B\u52A8\u63A5\u5165\u7B2C\u4E09\u65B9\u6A21\u578B\u65F6\u9700\u8981\u586B\u5199\u3002CatsCo \u4E2D\u8F6C\u6A21\u578B\u8BF7\u5728 CatsCo \u9875\u9762\u9009\u62E9\uFF1B\u81EA\u5B9A\u4E49\u6A21\u578B\u9ED8\u8BA4\u4F7F\u7528 128K \u5B89\u5168\u4E0A\u4E0B\u6587\u3002")), /* @__PURE__ */ import_react5.default.createElement("span", { className: `tag ${keyPresent ? "green" : "gray"}` }, credentialMeta))),
+      /* @__PURE__ */ import_react5.default.createElement("div", { className: "model-source-form" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "config-row" }, /* @__PURE__ */ import_react5.default.createElement("label", { className: "config-label" }, "\u517C\u5BB9\u7C7B\u578B"), /* @__PURE__ */ import_react5.default.createElement(
         "select",
         {
           className: "config-select",
@@ -23246,9 +23425,9 @@
           value: draft.provider || "anthropic",
           onChange: (event) => updateDraft({ provider: event.currentTarget.value })
         },
-        /* @__PURE__ */ import_react4.default.createElement("option", { value: "anthropic" }, "Anthropic-compatible"),
-        /* @__PURE__ */ import_react4.default.createElement("option", { value: "openai" }, "OpenAI-compatible")
-      )), /* @__PURE__ */ import_react4.default.createElement("div", { className: "config-row" }, /* @__PURE__ */ import_react4.default.createElement("label", { className: "config-label" }, "\u6A21\u578B\u5730\u5740"), /* @__PURE__ */ import_react4.default.createElement(
+        /* @__PURE__ */ import_react5.default.createElement("option", { value: "anthropic" }, "Anthropic-compatible"),
+        /* @__PURE__ */ import_react5.default.createElement("option", { value: "openai" }, "OpenAI-compatible")
+      )), /* @__PURE__ */ import_react5.default.createElement("div", { className: "config-row" }, /* @__PURE__ */ import_react5.default.createElement("label", { className: "config-label" }, "\u6A21\u578B\u5730\u5740"), /* @__PURE__ */ import_react5.default.createElement(
         "input",
         {
           className: "config-input",
@@ -23259,7 +23438,7 @@
           onChange: (event) => updateDraft({ apiBase: event.currentTarget.value }),
           placeholder: apiBasePlaceholder
         }
-      )), /* @__PURE__ */ import_react4.default.createElement("div", { className: "config-row" }, /* @__PURE__ */ import_react4.default.createElement("label", { className: "config-label" }, "\u6A21\u578B\u540D\u79F0"), /* @__PURE__ */ import_react4.default.createElement(
+      )), /* @__PURE__ */ import_react5.default.createElement("div", { className: "config-row" }, /* @__PURE__ */ import_react5.default.createElement("label", { className: "config-label" }, "\u6A21\u578B\u540D\u79F0"), /* @__PURE__ */ import_react5.default.createElement(
         "input",
         {
           className: "config-input",
@@ -23269,7 +23448,7 @@
           onChange: (event) => updateDraft({ model: event.currentTarget.value }),
           placeholder: "model-name"
         }
-      )), /* @__PURE__ */ import_react4.default.createElement("div", { className: "config-row" }, /* @__PURE__ */ import_react4.default.createElement("label", { className: "config-label" }, "\u8BBF\u95EE\u51ED\u8BC1"), /* @__PURE__ */ import_react4.default.createElement(
+      )), /* @__PURE__ */ import_react5.default.createElement("div", { className: "config-row" }, /* @__PURE__ */ import_react5.default.createElement("label", { className: "config-label" }, "\u8BBF\u95EE\u51ED\u8BC1"), /* @__PURE__ */ import_react5.default.createElement(
         "input",
         {
           className: "config-input",
@@ -23280,7 +23459,7 @@
           onChange: (event) => updateDraft({ secret: event.currentTarget.value, secretPlaceholder: "" }),
           placeholder: secretPlaceholder
         }
-      )), /* @__PURE__ */ import_react4.default.createElement("div", { className: "model-secret-row" }, /* @__PURE__ */ import_react4.default.createElement("label", null, /* @__PURE__ */ import_react4.default.createElement(
+      )), /* @__PURE__ */ import_react5.default.createElement("div", { className: "model-secret-row" }, /* @__PURE__ */ import_react5.default.createElement("label", null, /* @__PURE__ */ import_react5.default.createElement(
         "input",
         {
           type: "checkbox",
@@ -23289,19 +23468,19 @@
           checked: draft.clearSecret,
           onChange: (event) => updateDraft({ clearSecret: event.currentTarget.checked })
         }
-      ), " \u6E05\u9664\u5DF2\u4FDD\u5B58\u7684\u8BBF\u95EE\u51ED\u8BC1"), /* @__PURE__ */ import_react4.default.createElement("span", null, credentialMeta)), /* @__PURE__ */ import_react4.default.createElement("div", { className: "model-source-actions" }, /* @__PURE__ */ import_react4.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.saveCustomModelSettings?.() }, "\u4FDD\u5B58\u81EA\u5B9A\u4E49\u6A21\u578B"), /* @__PURE__ */ import_react4.default.createElement("span", { className: `config-saved${saved ? " show" : ""}`, id: "model-source-saved" }, "\u5DF2\u4FDD\u5B58")), /* @__PURE__ */ import_react4.default.createElement("div", { id: "model-source-status", "data-react-model-source-status": "mounted", style: { color: statusColor, fontSize: 13 } }, statusText))
+      ), " \u6E05\u9664\u5DF2\u4FDD\u5B58\u7684\u8BBF\u95EE\u51ED\u8BC1"), /* @__PURE__ */ import_react5.default.createElement("span", null, credentialMeta)), /* @__PURE__ */ import_react5.default.createElement("div", { className: "model-source-actions" }, /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.saveCustomModelSettings?.() }, "\u4FDD\u5B58\u81EA\u5B9A\u4E49\u6A21\u578B"), /* @__PURE__ */ import_react5.default.createElement("span", { className: `config-saved${saved ? " show" : ""}`, id: "model-source-saved" }, "\u5DF2\u4FDD\u5B58")), /* @__PURE__ */ import_react5.default.createElement("div", { id: "model-source-status", "data-react-model-source-status": "mounted", style: { color: statusColor, fontSize: 13 } }, statusText))
     ));
   }
   function ServicesPage({ state }) {
     const modelSourcePayload = state.modelSourcePayload ? { ...state.modelSourcePayload, customModelSettingsOpen: state.customModelOpen } : void 0;
-    return /* @__PURE__ */ import_react4.default.createElement(import_react4.default.Fragment, null, /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-header" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-heading" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-kicker" }, "Agent Hub"), /* @__PURE__ */ import_react4.default.createElement("div", { className: "section-title", style: { marginBottom: 0 } }, "\u8FD0\u884C\u3001\u8FDE\u63A5\u4E0E\u8BBE\u7F6E"), /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-meta" }, "\u96C6\u4E2D\u5904\u7406\u672C\u5730 agent\u3001\u8FDE\u63A5\u5668\u548C\u5FC5\u8981\u7684\u9AD8\u7EA7\u73AF\u5883\u53D8\u91CF\u3002")), /* @__PURE__ */ import_react4.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.fetchStatus?.() }, "\u5237\u65B0\u72B6\u6001")), /* @__PURE__ */ import_react4.default.createElement("div", { className: "services-grid robot-grid", "data-react-services-grid": "mounted", id: "services-grid" }, state.servicesPayload ? /* @__PURE__ */ import_react4.default.createElement(
+    return /* @__PURE__ */ import_react5.default.createElement(import_react5.default.Fragment, null, /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-header" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-heading" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-kicker" }, "Agent Hub"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "section-title", style: { marginBottom: 0 } }, "\u8FD0\u884C\u3001\u8FDE\u63A5\u4E0E\u8BBE\u7F6E"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-meta" }, "\u96C6\u4E2D\u5904\u7406\u672C\u5730 agent\u3001\u8FDE\u63A5\u5668\u548C\u5FC5\u8981\u7684\u9AD8\u7EA7\u73AF\u5883\u53D8\u91CF\u3002")), /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.fetchStatus?.() }, "\u5237\u65B0\u72B6\u6001")), /* @__PURE__ */ import_react5.default.createElement("div", { className: "services-grid robot-grid", "data-react-services-grid": "mounted", id: "services-grid" }, state.servicesPayload ? /* @__PURE__ */ import_react5.default.createElement(
       ServiceGrid,
       {
         ...state.servicesPayload,
         serviceConfigDrafts: state.serviceConfigDrafts,
         serviceConfigUi: state.serviceConfigUi
       }
-    ) : /* @__PURE__ */ import_react4.default.createElement("div", { className: "loading" }, "\u52A0\u8F7D\u4E2D...")), /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-header", style: { marginTop: 28 } }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-heading" }, /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-kicker" }, "Settings"), /* @__PURE__ */ import_react4.default.createElement("div", { className: "section-title", style: { marginBottom: 0 } }, "\u81EA\u5B9A\u4E49\u6A21\u578B"), /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-meta" }, "CatsCo \u4E2D\u8F6C\u6A21\u578B\u5728 CatsCo \u9875\u9762\u9009\u62E9\uFF1B\u8FD9\u91CC\u53EA\u4FDD\u7559\u7B2C\u4E09\u65B9\u6A21\u578B\u7684\u624B\u52A8\u914D\u7F6E\u3002")), /* @__PURE__ */ import_react4.default.createElement("div", { className: "settings-actions" }, /* @__PURE__ */ import_react4.default.createElement(
+    ) : /* @__PURE__ */ import_react5.default.createElement("div", { className: "loading" }, "\u52A0\u8F7D\u4E2D...")), /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-header", style: { marginTop: 28 } }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-heading" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-kicker" }, "Settings"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "section-title", style: { marginBottom: 0 } }, "\u81EA\u5B9A\u4E49\u6A21\u578B"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-meta" }, "CatsCo \u4E2D\u8F6C\u6A21\u578B\u5728 CatsCo \u9875\u9762\u9009\u62E9\uFF1B\u8FD9\u91CC\u53EA\u4FDD\u7559\u7B2C\u4E09\u65B9\u6A21\u578B\u7684\u624B\u52A8\u914D\u7F6E\u3002")), /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-actions" }, /* @__PURE__ */ import_react5.default.createElement(
       "button",
       {
         className: "btn",
@@ -23311,7 +23490,7 @@
         onClick: () => window.toggleCustomModelSettings?.()
       },
       state.customModelOpen ? "\u6536\u7EB3\u914D\u7F6E" : "\u5C55\u5F00\u914D\u7F6E"
-    ), /* @__PURE__ */ import_react4.default.createElement("button", { className: "btn", type: "button", onClick: () => window.refreshSettingsPage?.() }, "\u5237\u65B0\u8BBE\u7F6E"))), /* @__PURE__ */ import_react4.default.createElement("div", { className: "config-section", "data-react-model-source": "mounted", id: "model-source-panel" }, modelSourcePayload ? /* @__PURE__ */ import_react4.default.createElement(
+    ), /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn", type: "button", onClick: () => window.refreshSettingsPage?.() }, "\u5237\u65B0\u8BBE\u7F6E"))), /* @__PURE__ */ import_react5.default.createElement("div", { className: "config-section", "data-react-model-source": "mounted", id: "model-source-panel" }, modelSourcePayload ? /* @__PURE__ */ import_react5.default.createElement(
       ModelSourcePanel,
       {
         ...modelSourcePayload,
@@ -23319,7 +23498,7 @@
         saved: state.modelSourceSaved,
         status: state.modelSourceStatus
       }
-    ) : /* @__PURE__ */ import_react4.default.createElement("div", { className: "loading" }, "\u52A0\u8F7D\u6A21\u578B\u6765\u6E90...")));
+    ) : /* @__PURE__ */ import_react5.default.createElement("div", { className: "loading" }, "\u52A0\u8F7D\u6A21\u578B\u6765\u6E90...")));
   }
   var servicesPageRoot = null;
   var servicesPageElement = null;
@@ -23337,8 +23516,8 @@
   };
   function renderServicesPage() {
     if (!servicesPageElement) return;
-    servicesPageRoot || (servicesPageRoot = (0, import_client4.createRoot)(servicesPageElement));
-    servicesPageRoot?.render(/* @__PURE__ */ import_react4.default.createElement(ServicesPage, { state: servicesPageState }));
+    servicesPageRoot || (servicesPageRoot = (0, import_client5.createRoot)(servicesPageElement));
+    servicesPageRoot?.render(/* @__PURE__ */ import_react5.default.createElement(ServicesPage, { state: servicesPageState }));
     servicesPageElement.dataset.reactServices = "mounted";
   }
   function renderServicesGrid(payload) {
@@ -23502,8 +23681,8 @@
   }
 
   // dashboard/react-src/store-page.tsx
-  var import_react5 = __toESM(require_react());
-  var import_client5 = __toESM(require_client());
+  var import_react6 = __toESM(require_react());
+  var import_client6 = __toESM(require_client());
   var storePageRoot;
   var storePageElement;
   var storePageState = {
@@ -23523,7 +23702,7 @@
     return value && typeof value === "object" ? value : void 0;
   }
   function RuntimeNotice2({ message, tone = "" }) {
-    return /* @__PURE__ */ import_react5.default.createElement("div", { className: `runtime-note${tone ? ` ${tone}` : ""}` }, message || "");
+    return /* @__PURE__ */ import_react6.default.createElement("div", { className: `runtime-note${tone ? ` ${tone}` : ""}` }, message || "");
   }
   function setStoreDraftField(id, value) {
     storePageState = {
@@ -23543,7 +23722,7 @@
   }
   function StorePage({ state }) {
     const developerData = state.developerData;
-    return /* @__PURE__ */ import_react5.default.createElement(import_react5.default.Fragment, null, /* @__PURE__ */ import_react5.default.createElement("div", { id: "skillhub-section" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-header" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-heading" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-kicker" }, "SkillHub"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "section-title", style: { marginBottom: 0 } }, "Skills"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-meta" }, "\u516C\u5F00 Skill \u65E0\u9700\u767B\u5F55\u5373\u53EF\u641C\u7D22\u548C\u5B89\u88C5\uFF1B\u767B\u5F55\u540E\u53EF\u5206\u4EAB\u672C\u5730 Skill \u5E76\u7BA1\u7406\u5DF2\u53D1\u5E03\u7248\u672C\u3002")), /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn", type: "button", onClick: () => window.refreshSkillHubPage?.() }, "\u5237\u65B0")), /* @__PURE__ */ import_react5.default.createElement("div", { className: "companion-skill-toolbar" }, /* @__PURE__ */ import_react5.default.createElement(
+    return /* @__PURE__ */ import_react6.default.createElement(import_react6.default.Fragment, null, /* @__PURE__ */ import_react6.default.createElement("div", { id: "skillhub-section" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-header" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-heading" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-kicker" }, "SkillHub"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "section-title", style: { marginBottom: 0 } }, "Skills"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-meta" }, "\u516C\u5F00 Skill \u65E0\u9700\u767B\u5F55\u5373\u53EF\u641C\u7D22\u548C\u5B89\u88C5\uFF1B\u767B\u5F55\u540E\u53EF\u5206\u4EAB\u672C\u5730 Skill \u5E76\u7BA1\u7406\u5DF2\u53D1\u5E03\u7248\u672C\u3002")), /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn", type: "button", onClick: () => window.refreshSkillHubPage?.() }, "\u5237\u65B0")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "companion-skill-toolbar" }, /* @__PURE__ */ import_react6.default.createElement(
       "input",
       {
         className: "config-input",
@@ -23554,7 +23733,7 @@
           if (event.key === "Enter") window.searchSkillHub?.();
         }
       }
-    ), /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.searchSkillHub?.() }, "\u641C\u7D22"), /* @__PURE__ */ import_react5.default.createElement(
+    ), /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.searchSkillHub?.() }, "\u641C\u7D22"), /* @__PURE__ */ import_react6.default.createElement(
       "button",
       {
         className: "btn",
@@ -23565,7 +23744,7 @@
         }
       },
       "\u6E05\u7A7A"
-    )), /* @__PURE__ */ import_react5.default.createElement("details", { className: "config-section", open: true }, /* @__PURE__ */ import_react5.default.createElement("summary", { className: "settings-advanced-summary" }, /* @__PURE__ */ import_react5.default.createElement("span", null, "\u53D1\u73B0\u6280\u80FD"), /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag" }, "cloud registry")), /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-advanced-body" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "skills-grid", "data-react-skillhub-registry": "mounted", id: "skillhub-registry-grid" }, state.registryPayload ? /* @__PURE__ */ import_react5.default.createElement(SkillHubRegistryGrid, { ...state.registryPayload }) : /* @__PURE__ */ import_react5.default.createElement("div", { className: "loading" }, "\u641C\u7D22\u4E91\u7AEF\u5DF2\u5BA1\u6838 Skill\u3002")))), /* @__PURE__ */ import_react5.default.createElement("details", { className: "config-section", open: true }, /* @__PURE__ */ import_react5.default.createElement("summary", { className: "settings-advanced-summary" }, /* @__PURE__ */ import_react5.default.createElement("span", null, "\u5DF2\u5B89\u88C5\u6280\u80FD"), /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag" }, "local")), /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-advanced-body" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "skills-grid", "data-react-local-skill-store": "mounted", id: "store-grid" }, state.localSkillStorePayload ? /* @__PURE__ */ import_react5.default.createElement(LocalSkillGrid, { ...state.localSkillStorePayload }) : /* @__PURE__ */ import_react5.default.createElement("div", { className: "loading" }, "\u52A0\u8F7D\u4E2D..."))))), /* @__PURE__ */ import_react5.default.createElement("div", { className: "config-section", "data-react-skillhub-account": "mounted", id: "skillhub-account-card" }, state.accountPayload ? /* @__PURE__ */ import_react5.default.createElement(SkillHubAccountCard, { ...state.accountPayload }) : /* @__PURE__ */ import_react5.default.createElement("div", { className: "loading" }, "\u6B63\u5728\u68C0\u67E5 SkillHub \u767B\u5F55\u72B6\u6001...")), /* @__PURE__ */ import_react5.default.createElement("div", { className: "config-section" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "config-group-title-main" }, "\u6211\u7684\u53D1\u5E03"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-meta", style: { marginBottom: 14 } }, "\u7BA1\u7406\u4F60\u53D1\u5E03\u5230 SkillHub \u7684 Skill \u548C\u7248\u672C\u3002\u4E0B\u67B6\u4F1A\u9690\u85CF\u516C\u5F00\u5B89\u88C5\uFF1B\u5220\u9664\u4F1A\u79FB\u9664\u670D\u52A1\u5668\u7248\u672C\u548C\u5305\u6587\u4EF6\u3002"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "portal-list", "data-react-skillhub-package-versions": "mounted", id: "skillhub-package-versions-list" }, developerData ? /* @__PURE__ */ import_react5.default.createElement(SkillHubPackageVersionsList, { versions: developerData.packageVersions || [] }) : /* @__PURE__ */ import_react5.default.createElement("div", { className: "loading" }, "\u6682\u65E0\u53D1\u5E03\u7248\u672C"))));
+    )), /* @__PURE__ */ import_react6.default.createElement("details", { className: "config-section", open: true }, /* @__PURE__ */ import_react6.default.createElement("summary", { className: "settings-advanced-summary" }, /* @__PURE__ */ import_react6.default.createElement("span", null, "\u53D1\u73B0\u6280\u80FD"), /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag" }, "cloud registry")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-advanced-body" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "skills-grid", "data-react-skillhub-registry": "mounted", id: "skillhub-registry-grid" }, state.registryPayload ? /* @__PURE__ */ import_react6.default.createElement(SkillHubRegistryGrid, { ...state.registryPayload }) : /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "\u641C\u7D22\u4E91\u7AEF\u5DF2\u5BA1\u6838 Skill\u3002")))), /* @__PURE__ */ import_react6.default.createElement("details", { className: "config-section", open: true }, /* @__PURE__ */ import_react6.default.createElement("summary", { className: "settings-advanced-summary" }, /* @__PURE__ */ import_react6.default.createElement("span", null, "\u5DF2\u5B89\u88C5\u6280\u80FD"), /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag" }, "local")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-advanced-body" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "skills-grid", "data-react-local-skill-store": "mounted", id: "store-grid" }, state.localSkillStorePayload ? /* @__PURE__ */ import_react6.default.createElement(LocalSkillGrid, { ...state.localSkillStorePayload }) : /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "\u52A0\u8F7D\u4E2D..."))))), /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-section", "data-react-skillhub-account": "mounted", id: "skillhub-account-card" }, state.accountPayload ? /* @__PURE__ */ import_react6.default.createElement(SkillHubAccountCard, { ...state.accountPayload }) : /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "\u6B63\u5728\u68C0\u67E5 SkillHub \u767B\u5F55\u72B6\u6001...")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-section" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-group-title-main" }, "\u6211\u7684\u53D1\u5E03"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-meta", style: { marginBottom: 14 } }, "\u7BA1\u7406\u4F60\u53D1\u5E03\u5230 SkillHub \u7684 Skill \u548C\u7248\u672C\u3002\u4E0B\u67B6\u4F1A\u9690\u85CF\u516C\u5F00\u5B89\u88C5\uFF1B\u5220\u9664\u4F1A\u79FB\u9664\u670D\u52A1\u5668\u7248\u672C\u548C\u5305\u6587\u4EF6\u3002"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "portal-list", "data-react-skillhub-package-versions": "mounted", id: "skillhub-package-versions-list" }, developerData ? /* @__PURE__ */ import_react6.default.createElement(SkillHubPackageVersionsList, { versions: developerData.packageVersions || [] }) : /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "\u6682\u65E0\u53D1\u5E03\u7248\u672C"))));
   }
   function roleList(value) {
     const roles = asList(value).map((item) => toText2(item)).filter(Boolean);
@@ -23573,29 +23752,29 @@
   }
   function SkillHubAccountCard({ skillHubState = {}, message, tone, loading = false }) {
     if (loading) {
-      return /* @__PURE__ */ import_react5.default.createElement("div", { className: "loading" }, message || "Checking SkillHub status...");
+      return /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, message || "Checking SkillHub status...");
     }
     if (message) {
-      return /* @__PURE__ */ import_react5.default.createElement(RuntimeNotice2, { message, tone });
+      return /* @__PURE__ */ import_react6.default.createElement(RuntimeNotice2, { message, tone });
     }
     const user = toRecord2(skillHubState.user) || {};
     const roles = roleList(skillHubState.roles);
     const authenticated = Boolean(skillHubState.authenticated);
     if (authenticated) {
-      return /* @__PURE__ */ import_react5.default.createElement(import_react5.default.Fragment, null, /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-setup-head" }, /* @__PURE__ */ import_react5.default.createElement("div", null, /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-setup-title" }, "Signed in to SkillHub"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-setup-copy" }, toText2(user.displayName, toText2(user.email, "CatsCo user")), " \u8DEF ", roles)), /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag green" }, "connected")), /* @__PURE__ */ import_react5.default.createElement("div", { className: "config-actions", style: { marginTop: 14 } }, /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn", type: "button", onClick: () => window.fetchSkillHubDeveloper?.() }, "Refresh developer status"), /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn", type: "button", onClick: () => window.logoutSkillHub?.() }, "Logout")), !skillHubState.trustReady ? /* @__PURE__ */ import_react5.default.createElement("div", { className: "runtime-note warning", style: { marginTop: 12 } }, "This Agent build does not include the SkillHub root public key yet. Run the trust-root setup before production release.") : null);
+      return /* @__PURE__ */ import_react6.default.createElement(import_react6.default.Fragment, null, /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-setup-head" }, /* @__PURE__ */ import_react6.default.createElement("div", null, /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-setup-title" }, "Signed in to SkillHub"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-setup-copy" }, toText2(user.displayName, toText2(user.email, "CatsCo user")), " \u8DEF ", roles)), /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag green" }, "connected")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-actions", style: { marginTop: 14 } }, /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn", type: "button", onClick: () => window.fetchSkillHubDeveloper?.() }, "Refresh developer status"), /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn", type: "button", onClick: () => window.logoutSkillHub?.() }, "Logout")), !skillHubState.trustReady ? /* @__PURE__ */ import_react6.default.createElement("div", { className: "runtime-note warning", style: { marginTop: 12 } }, "This Agent build does not include the SkillHub root public key yet. Run the trust-root setup before production release.") : null);
     }
-    return /* @__PURE__ */ import_react5.default.createElement(import_react5.default.Fragment, null, /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-setup-head" }, /* @__PURE__ */ import_react5.default.createElement("div", null, /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-setup-title" }, "Connect SkillHub"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-setup-copy" }, "Public Skills can be searched and installed directly. Publishing and version management reuse the current CatsCo account.")), /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag warm" }, "catsco login")), /* @__PURE__ */ import_react5.default.createElement("div", { className: "config-actions", style: { marginTop: 14 } }, /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.connectSkillHubWithCatsCo?.() }, "Connect with CatsCo"), /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn", type: "button", onClick: () => window.fetchSkillHubDeveloper?.() }, "Refresh status")), /* @__PURE__ */ import_react5.default.createElement("details", { style: { marginTop: 14 } }, /* @__PURE__ */ import_react5.default.createElement("summary", { className: "settings-meta" }, "Fallback: SkillHub email/password login"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "chat-form-row", style: { marginTop: 14, marginBottom: 10 } }, /* @__PURE__ */ import_react5.default.createElement("input", { className: "config-input", id: "skillhub-login-email", ...storeDraftFieldProps("skillhub-login-email"), placeholder: "Email" }), /* @__PURE__ */ import_react5.default.createElement("input", { className: "config-input", id: "skillhub-login-password", ...storeDraftFieldProps("skillhub-login-password"), type: "password", placeholder: "Password" })), /* @__PURE__ */ import_react5.default.createElement("div", { className: "chat-form-row" }, /* @__PURE__ */ import_react5.default.createElement("input", { className: "config-input", id: "skillhub-register-name", ...storeDraftFieldProps("skillhub-register-name"), placeholder: "Display name for registration" }), /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn", type: "button", onClick: () => window.loginSkillHub?.() }, "Login"), /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn", type: "button", onClick: () => window.registerSkillHub?.() }, "Register"))));
+    return /* @__PURE__ */ import_react6.default.createElement(import_react6.default.Fragment, null, /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-setup-head" }, /* @__PURE__ */ import_react6.default.createElement("div", null, /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-setup-title" }, "Connect SkillHub"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-setup-copy" }, "Public Skills can be searched and installed directly. Publishing and version management reuse the current CatsCo account.")), /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag warm" }, "catsco login")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-actions", style: { marginTop: 14 } }, /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.connectSkillHubWithCatsCo?.() }, "Connect with CatsCo"), /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn", type: "button", onClick: () => window.fetchSkillHubDeveloper?.() }, "Refresh status")), /* @__PURE__ */ import_react6.default.createElement("details", { style: { marginTop: 14 } }, /* @__PURE__ */ import_react6.default.createElement("summary", { className: "settings-meta" }, "Fallback: SkillHub email/password login"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "chat-form-row", style: { marginTop: 14, marginBottom: 10 } }, /* @__PURE__ */ import_react6.default.createElement("input", { className: "config-input", id: "skillhub-login-email", ...storeDraftFieldProps("skillhub-login-email"), placeholder: "Email" }), /* @__PURE__ */ import_react6.default.createElement("input", { className: "config-input", id: "skillhub-login-password", ...storeDraftFieldProps("skillhub-login-password"), type: "password", placeholder: "Password" })), /* @__PURE__ */ import_react6.default.createElement("div", { className: "chat-form-row" }, /* @__PURE__ */ import_react6.default.createElement("input", { className: "config-input", id: "skillhub-register-name", ...storeDraftFieldProps("skillhub-register-name"), placeholder: "Display name for registration" }), /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn", type: "button", onClick: () => window.loginSkillHub?.() }, "Login"), /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn", type: "button", onClick: () => window.registerSkillHub?.() }, "Register"))));
   }
   function SkillHubPackageVersionsList({ versions = [] }) {
     if (!versions.length) {
-      return /* @__PURE__ */ import_react5.default.createElement("div", { className: "loading" }, "No published versions");
+      return /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "No published versions");
     }
-    return /* @__PURE__ */ import_react5.default.createElement(import_react5.default.Fragment, null, versions.map((item, index) => {
+    return /* @__PURE__ */ import_react6.default.createElement(import_react6.default.Fragment, null, versions.map((item, index) => {
       const author = toText2(toRecord2(item.author)?.name);
       const downloads = Number(item.downloadCount || 0);
       const packageVersionId = toText2(item.packageVersionId, toText2(item.id));
       const status = toText2(item.status, "published");
-      return /* @__PURE__ */ import_react5.default.createElement("div", { className: "portal-row", key: `${toText2(item.skillId, toText2(item.name, "version"))}-${index}` }, /* @__PURE__ */ import_react5.default.createElement("strong", null, toText2(item.skillId, toText2(item.name, "-"))), /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-meta" }, "v", toText2(item.latestVersion, toText2(item.version, "-")), " \u8DEF ", status, " \u8DEF downloads ", downloads, item.publishedAt ? ` \u8DEF ${toText2(item.publishedAt)}` : ""), /* @__PURE__ */ import_react5.default.createElement("div", { className: "settings-meta" }, author ? `by ${author}` : "", " \u8DEF owner managed"), status === "published" && packageVersionId ? /* @__PURE__ */ import_react5.default.createElement("div", { className: "config-actions", style: { marginTop: 8 } }, /* @__PURE__ */ import_react5.default.createElement(
+      return /* @__PURE__ */ import_react6.default.createElement("div", { className: "portal-row", key: `${toText2(item.skillId, toText2(item.name, "version"))}-${index}` }, /* @__PURE__ */ import_react6.default.createElement("strong", null, toText2(item.skillId, toText2(item.name, "-"))), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-meta" }, "v", toText2(item.latestVersion, toText2(item.version, "-")), " \u8DEF ", status, " \u8DEF downloads ", downloads, item.publishedAt ? ` \u8DEF ${toText2(item.publishedAt)}` : ""), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-meta" }, author ? `by ${author}` : "", " \u8DEF owner managed"), status === "published" && packageVersionId ? /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-actions", style: { marginTop: 8 } }, /* @__PURE__ */ import_react6.default.createElement(
         "button",
         {
           className: "btn btn-danger",
@@ -23631,16 +23810,16 @@
     tone
   }) {
     if (loading) {
-      return /* @__PURE__ */ import_react5.default.createElement("div", { className: "loading" }, message || "Searching SkillHub...");
+      return /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, message || "Searching SkillHub...");
     }
     if (message) {
-      return /* @__PURE__ */ import_react5.default.createElement(RuntimeNotice2, { message, tone });
+      return /* @__PURE__ */ import_react6.default.createElement(RuntimeNotice2, { message, tone });
     }
     if (!items.length) {
-      return /* @__PURE__ */ import_react5.default.createElement("div", { className: "loading" }, "No matching Skills found.");
+      return /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "No matching Skills found.");
     }
     const installedIds = buildInstalledSkillIds(skillHubState, localSkills);
-    return /* @__PURE__ */ import_react5.default.createElement(import_react5.default.Fragment, null, items.map((item, index) => /* @__PURE__ */ import_react5.default.createElement(
+    return /* @__PURE__ */ import_react6.default.createElement(import_react6.default.Fragment, null, items.map((item, index) => /* @__PURE__ */ import_react6.default.createElement(
       SkillHubRegistryCard,
       {
         key: `${toText2(item.skillId, toText2(item.name, "skill"))}-${index}`,
@@ -23664,7 +23843,7 @@
     ].filter(Boolean).slice(0, 5);
     const triggerExamples = asList(item.triggerExamples).slice(0, 3).map((value) => toText2(value)).filter(Boolean);
     const canInstall = Boolean(skillId) && !installed;
-    return /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-card" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-name" }, toText2(item.displayName, toText2(item.name, skillId)), " ", /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag green" }, "SkillHub")), /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-desc" }, toText2(item.description)), /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-meta" }, tagLabels.map((tag, index) => /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag", key: `${tag}-${index}` }, tag)), /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag" }, "v", latestVersion || "-")), /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-files" }, triggerExamples.join(", ")), /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-actions" }, /* @__PURE__ */ import_react5.default.createElement(
+    return /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-card" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-name" }, toText2(item.displayName, toText2(item.name, skillId)), " ", /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag green" }, "SkillHub")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-desc" }, toText2(item.description)), /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-meta" }, tagLabels.map((tag, index) => /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag", key: `${tag}-${index}` }, tag)), /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag" }, "v", latestVersion || "-")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-files" }, triggerExamples.join(", ")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-actions" }, /* @__PURE__ */ import_react6.default.createElement(
       "button",
       {
         className: "btn btn-primary",
@@ -23674,7 +23853,7 @@
         onClick: () => window.installSkillHubSkill?.(skillId, latestVersion || void 0)
       },
       installed ? "Installed" : "Install"
-    ), /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn", disabled: !skillId, "data-skillhub-versions": "true", type: "button", onClick: () => window.showSkillHubVersions?.(skillId) }, "Versions")));
+    ), /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn", disabled: !skillId, "data-skillhub-versions": "true", type: "button", onClick: () => window.showSkillHubVersions?.(skillId) }, "Versions")));
   }
   function getSkillCompanionStats(name) {
     try {
@@ -23690,25 +23869,25 @@
     const successes = Number(stats.successes || 0);
     const successRate = calls > 0 ? `${Math.round(successes / calls * 100)}%` : "--";
     const level = Number(stats.level || Math.max(1, Math.floor(calls / 10) + 1));
-    return /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-growth" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-growth-stat" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-growth-label" }, "calls"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-growth-value" }, calls)), /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-growth-stat" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-growth-label" }, "success"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-growth-value" }, successRate)), /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-growth-stat" }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-growth-label" }, "level"), /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-growth-value" }, "Lv.", level)));
+    return /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-growth" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-growth-stat" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-growth-label" }, "calls"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-growth-value" }, calls)), /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-growth-stat" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-growth-label" }, "success"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-growth-value" }, successRate)), /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-growth-stat" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-growth-label" }, "level"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-growth-value" }, "Lv.", level)));
   }
   function SkillSourceTag({ skill }) {
     if (skill.skillHub) {
-      return /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag green", title: "SkillHub shared skill" }, "SkillHub");
+      return /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag green", title: "SkillHub shared skill" }, "SkillHub");
     }
     if (skill.source === "system") {
-      return /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag", title: "System skill" }, "system");
+      return /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag", title: "System skill" }, "system");
     }
     return null;
   }
   function SkillHubLocalMeta({ skill }) {
     const hub = toRecord2(skill.skillHub);
     if (!hub) return null;
-    const modifiedTag = hub.modified === true ? /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag warm" }, "local changes") : hub.modified === false ? /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag green" }, "synced") : /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag" }, "not checked");
-    return /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-meta" }, hub.author ? /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag" }, "by ", toText2(hub.author)) : null, hub.version ? /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag" }, "v", toText2(hub.version)) : null, modifiedTag);
+    const modifiedTag = hub.modified === true ? /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag warm" }, "local changes") : hub.modified === false ? /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag green" }, "synced") : /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag" }, "not checked");
+    return /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-meta" }, hub.author ? /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag" }, "by ", toText2(hub.author)) : null, hub.version ? /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag" }, "v", toText2(hub.version)) : null, modifiedTag);
   }
   function SkillActionButtons({ skill, name }) {
-    return /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-actions" }, skill.canDisable === false ? /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn", disabled: true }, "Protected") : /* @__PURE__ */ import_react5.default.createElement(
+    return /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-actions" }, skill.canDisable === false ? /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn", disabled: true }, "Protected") : /* @__PURE__ */ import_react6.default.createElement(
       "button",
       {
         className: "btn",
@@ -23716,19 +23895,19 @@
         onClick: () => window.toggleSkill?.(name, skill.enabled !== false)
       },
       skill.enabled === false ? "Enable" : "Disable"
-    ), skill.canShare ? /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.shareLocalSkillToSkillHub?.(name) }, "Share") : null, skill.canDelete ? /* @__PURE__ */ import_react5.default.createElement("button", { className: "btn btn-danger", type: "button", onClick: () => window.deleteSkill?.(name) }, "Delete") : null);
+    ), skill.canShare ? /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.shareLocalSkillToSkillHub?.(name) }, "Share") : null, skill.canDelete ? /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn btn-danger", type: "button", onClick: () => window.deleteSkill?.(name) }, "Delete") : null);
   }
   function LocalSkillGrid({ skills = [], actions = true, loading = false, message, tone }) {
     if (loading) {
-      return /* @__PURE__ */ import_react5.default.createElement("div", { className: "loading" }, message || "Loading skills...");
+      return /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, message || "Loading skills...");
     }
     if (message) {
-      return /* @__PURE__ */ import_react5.default.createElement(RuntimeNotice2, { message, tone });
+      return /* @__PURE__ */ import_react6.default.createElement(RuntimeNotice2, { message, tone });
     }
     if (!skills.length) {
-      return /* @__PURE__ */ import_react5.default.createElement("div", { className: "loading" }, "No Skills");
+      return /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "No Skills");
     }
-    return /* @__PURE__ */ import_react5.default.createElement(import_react5.default.Fragment, null, skills.map((skill, index) => /* @__PURE__ */ import_react5.default.createElement(
+    return /* @__PURE__ */ import_react6.default.createElement(import_react6.default.Fragment, null, skills.map((skill, index) => /* @__PURE__ */ import_react6.default.createElement(
       LocalSkillCard,
       {
         key: `${toText2(skill.name, "skill")}-${index}`,
@@ -23740,12 +23919,12 @@
   function LocalSkillCard({ skill, actions }) {
     const name = toText2(skill.name);
     const files = asList(skill.files).map((value) => toText2(value)).filter(Boolean);
-    return /* @__PURE__ */ import_react5.default.createElement("div", { className: `skill-card${skill.enabled === false ? " disabled" : ""}` }, /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-name" }, name, " ", /* @__PURE__ */ import_react5.default.createElement(SkillSourceTag, { skill }), skill.enabled === false ? /* @__PURE__ */ import_react5.default.createElement(import_react5.default.Fragment, null, " ", /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag", style: { background: "rgba(220,93,115,0.12)", color: "var(--red)" } }, "disabled")) : null), /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-desc" }, toText2(skill.description)), /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-meta" }, skill.userInvocable ? /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag active" }, "user") : null, skill.autoInvocable ? /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag active" }, "auto") : null, skill.maxTurns ? /* @__PURE__ */ import_react5.default.createElement("span", { className: "tag" }, "max ", toText2(skill.maxTurns), " turns") : null), /* @__PURE__ */ import_react5.default.createElement(SkillHubLocalMeta, { skill }), /* @__PURE__ */ import_react5.default.createElement(SkillGrowth, { name }), files.length ? /* @__PURE__ */ import_react5.default.createElement("div", { className: "skill-files" }, files.join(", ")) : null, actions ? /* @__PURE__ */ import_react5.default.createElement(SkillActionButtons, { skill, name }) : null);
+    return /* @__PURE__ */ import_react6.default.createElement("div", { className: `skill-card${skill.enabled === false ? " disabled" : ""}` }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-name" }, name, " ", /* @__PURE__ */ import_react6.default.createElement(SkillSourceTag, { skill }), skill.enabled === false ? /* @__PURE__ */ import_react6.default.createElement(import_react6.default.Fragment, null, " ", /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag", style: { background: "rgba(220,93,115,0.12)", color: "var(--red)" } }, "disabled")) : null), /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-desc" }, toText2(skill.description)), /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-meta" }, skill.userInvocable ? /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag active" }, "user") : null, skill.autoInvocable ? /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag active" }, "auto") : null, skill.maxTurns ? /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag" }, "max ", toText2(skill.maxTurns), " turns") : null), /* @__PURE__ */ import_react6.default.createElement(SkillHubLocalMeta, { skill }), /* @__PURE__ */ import_react6.default.createElement(SkillGrowth, { name }), files.length ? /* @__PURE__ */ import_react6.default.createElement("div", { className: "skill-files" }, files.join(", ")) : null, actions ? /* @__PURE__ */ import_react6.default.createElement(SkillActionButtons, { skill, name }) : null);
   }
   function renderStorePage() {
     if (!storePageElement) return;
-    storePageRoot ?? (storePageRoot = (0, import_client5.createRoot)(storePageElement));
-    storePageRoot?.render(/* @__PURE__ */ import_react5.default.createElement(StorePage, { state: storePageState }));
+    storePageRoot ?? (storePageRoot = (0, import_client6.createRoot)(storePageElement));
+    storePageRoot?.render(/* @__PURE__ */ import_react6.default.createElement(StorePage, { state: storePageState }));
     storePageElement.dataset.reactStore = "mounted";
   }
   function renderSkillHubRegistryGrid(payload) {
@@ -23795,6 +23974,7 @@
   // dashboard/react-src/dashboard-shell.tsx
   var NAV_ITEMS = [
     { icon: "@", label: "CatsCo", page: "chat" },
+    { icon: "#", label: "\u63D0\u793A\u8BCD", page: "prompts" },
     { icon: ">", label: "\u667A\u80FD\u4F53\u4E2D\u5FC3", page: "services" },
     { icon: "+", label: "Skills", page: "store" },
     { icon: "*", label: "\u4F19\u4F34\u4E2D\u5FC3", page: "companion" }
@@ -23807,6 +23987,7 @@
   };
   var PAGE_ITEMS = [
     { id: "services-page-root", page: "services" },
+    { id: "prompts-page-root", page: "prompts" },
     { id: "companion-page-root", page: "companion" },
     { id: "store-page-root", page: "store" },
     { id: "chat-page-root", page: "chat" }
@@ -23821,7 +24002,7 @@
       }
       applyActivePage(page);
     };
-    return /* @__PURE__ */ import_react6.default.createElement(import_react6.default.Fragment, null, /* @__PURE__ */ import_react6.default.createElement("div", { className: "sidebar-brand" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "sidebar-brand-icon" }, /* @__PURE__ */ import_react6.default.createElement("img", { className: "sidebar-brand-logo", src: "cat-icon.png", alt: "CatsCo" })), /* @__PURE__ */ import_react6.default.createElement("div", null, /* @__PURE__ */ import_react6.default.createElement("div", { className: "sidebar-brand-text" }, "CatsCo"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "sidebar-brand-ver" }, "v", version))), /* @__PURE__ */ import_react6.default.createElement("nav", { className: "sidebar-nav" }, NAV_ITEMS.map((item) => /* @__PURE__ */ import_react6.default.createElement(
+    return /* @__PURE__ */ import_react7.default.createElement(import_react7.default.Fragment, null, /* @__PURE__ */ import_react7.default.createElement("div", { className: "sidebar-brand" }, /* @__PURE__ */ import_react7.default.createElement("div", { className: "sidebar-brand-icon" }, /* @__PURE__ */ import_react7.default.createElement("img", { className: "sidebar-brand-logo", src: "cat-icon.png", alt: "CatsCo" })), /* @__PURE__ */ import_react7.default.createElement("div", null, /* @__PURE__ */ import_react7.default.createElement("div", { className: "sidebar-brand-text" }, "CatsCo"), /* @__PURE__ */ import_react7.default.createElement("div", { className: "sidebar-brand-ver" }, "v", version))), /* @__PURE__ */ import_react7.default.createElement("nav", { className: "sidebar-nav" }, NAV_ITEMS.map((item) => /* @__PURE__ */ import_react7.default.createElement(
       "a",
       {
         className: `nav-item${item.page === activePage ? " active" : ""}`,
@@ -23829,24 +24010,24 @@
         key: item.page,
         onClick: (event) => handleNavClick(event, item.page)
       },
-      /* @__PURE__ */ import_react6.default.createElement("span", { className: "nav-icon" }, item.icon),
+      /* @__PURE__ */ import_react7.default.createElement("span", { className: "nav-icon" }, item.icon),
       " ",
-      /* @__PURE__ */ import_react6.default.createElement("span", null, item.label)
-    ))), /* @__PURE__ */ import_react6.default.createElement("div", { className: "sidebar-footer" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "sidebar-footer-info" }, /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn sidebar-update-btn", id: "sidebar-update-btn", type: "button", onClick: () => window.showUpdateModal?.(true) }, "\u68C0\u67E5\u66F4\u65B0"))));
+      /* @__PURE__ */ import_react7.default.createElement("span", null, item.label)
+    ))), /* @__PURE__ */ import_react7.default.createElement("div", { className: "sidebar-footer" }, /* @__PURE__ */ import_react7.default.createElement("div", { className: "sidebar-footer-info" }, /* @__PURE__ */ import_react7.default.createElement("button", { className: "btn sidebar-update-btn", id: "sidebar-update-btn", type: "button", onClick: () => window.showUpdateModal?.(true) }, "\u68C0\u67E5\u66F4\u65B0"))));
   }
   function DashboardPages({ activePage }) {
-    return /* @__PURE__ */ import_react6.default.createElement("div", { className: "main-wrapper" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "page-content" }, PAGE_ITEMS.map((item) => /* @__PURE__ */ import_react6.default.createElement("div", { className: `page${item.page === activePage ? " active" : ""}`, id: `page-${item.page}`, key: item.page }, /* @__PURE__ */ import_react6.default.createElement("div", { id: item.id })))));
+    return /* @__PURE__ */ import_react7.default.createElement("div", { className: "main-wrapper" }, /* @__PURE__ */ import_react7.default.createElement("div", { className: "page-content" }, PAGE_ITEMS.map((item) => /* @__PURE__ */ import_react7.default.createElement("div", { className: `page${item.page === activePage ? " active" : ""}`, id: `page-${item.page}`, key: item.page }, /* @__PURE__ */ import_react7.default.createElement("div", { id: item.id })))));
   }
   function DashboardApp({ activePage, uiZoom, version }) {
     const appClassName = `dashboard-app${activePage === "chat" ? " chat-active" : ""}${activePage === "companion" ? " companion-active" : ""}`;
-    (0, import_react6.useLayoutEffect)(() => {
+    (0, import_react7.useLayoutEffect)(() => {
       document.body.classList.toggle("chat-active", activePage === "chat");
       document.body.classList.toggle("companion-active", activePage === "companion");
       return () => {
         document.body.classList.remove("chat-active", "companion-active");
       };
     }, [activePage]);
-    (0, import_react6.useEffect)(() => {
+    (0, import_react7.useEffect)(() => {
       const handleKeyDown = (event) => window.handleDashboardFontScaleShortcut?.(event);
       const handleResize = () => {
         window.refreshDashboardFontScaleForViewport?.();
@@ -23859,7 +24040,7 @@
         window.removeEventListener("resize", handleResize);
       };
     }, []);
-    return /* @__PURE__ */ import_react6.default.createElement("div", { className: appClassName, style: { "--dashboard-ui-zoom": String(uiZoom) } }, /* @__PURE__ */ import_react6.default.createElement("aside", { className: "sidebar", id: "dashboard-sidebar-root", "data-dashboard-version": version }, /* @__PURE__ */ import_react6.default.createElement(DashboardSidebar, { activePage, version })), /* @__PURE__ */ import_react6.default.createElement(DashboardPages, { activePage }), /* @__PURE__ */ import_react6.default.createElement("div", { id: "floating-pet-root" }));
+    return /* @__PURE__ */ import_react7.default.createElement("div", { className: appClassName, style: { "--dashboard-ui-zoom": String(uiZoom) } }, /* @__PURE__ */ import_react7.default.createElement("aside", { className: "sidebar", id: "dashboard-sidebar-root", "data-dashboard-version": version }, /* @__PURE__ */ import_react7.default.createElement(DashboardSidebar, { activePage, version })), /* @__PURE__ */ import_react7.default.createElement(DashboardPages, { activePage }), /* @__PURE__ */ import_react7.default.createElement("div", { id: "floating-pet-root" }));
   }
   function resolveInitialVersion(root) {
     const fallbackVersion = root.querySelector(".sidebar-brand-ver")?.textContent?.trim().replace(/^v/, "");
@@ -23874,13 +24055,13 @@
   function renderDashboardShell(payload = {}, options = {}) {
     const root = document.getElementById("dashboard-app-root");
     if (!root) return;
-    dashboardShellRoot || (dashboardShellRoot = (0, import_client6.createRoot)(root));
+    dashboardShellRoot || (dashboardShellRoot = (0, import_client7.createRoot)(root));
     dashboardShellState = {
       activePage: payload.activePage || dashboardShellState.activePage || "chat",
       uiZoom: payload.uiZoom || dashboardShellState.uiZoom || 1,
       version: payload.version || dashboardShellState.version || "-"
     };
-    const element = /* @__PURE__ */ import_react6.default.createElement(DashboardApp, { activePage: dashboardShellState.activePage, uiZoom: dashboardShellState.uiZoom, version: dashboardShellState.version });
+    const element = /* @__PURE__ */ import_react7.default.createElement(DashboardApp, { activePage: dashboardShellState.activePage, uiZoom: dashboardShellState.uiZoom, version: dashboardShellState.version });
     if (options.sync) {
       (0, import_react_dom.flushSync)(() => {
         dashboardShellRoot?.render(element);
@@ -23907,6 +24088,7 @@
   mountDashboardShell();
   mountChatPage();
   mountServicesPage();
+  mountPromptsPage();
   mountCompanionPage();
   mountStorePage();
   mountGlobalModals();

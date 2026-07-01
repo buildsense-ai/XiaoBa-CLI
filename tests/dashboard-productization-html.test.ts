@@ -12,6 +12,7 @@ const reactFiles = {
   chat: read('dashboard/react-src/chat-page.tsx'),
   companion: read('dashboard/react-src/companion-page.tsx'),
   globalModals: read('dashboard/react-src/global-modals.tsx'),
+  prompts: read('dashboard/react-src/prompts-page.tsx'),
   services: read('dashboard/react-src/services-page.tsx'),
   shell: read('dashboard/react-src/dashboard-shell.tsx'),
   store: read('dashboard/react-src/store-page.tsx'),
@@ -28,6 +29,7 @@ const scriptFiles = {
   messages: read('dashboard/scripts/cats-chat-messages.js'),
   modelSettings: read('dashboard/scripts/model-settings.js'),
   promptCompanion: read('dashboard/scripts/prompt-companion.js'),
+  promptWorkbench: read('dashboard/scripts/prompt-workbench.js'),
   serviceUpdate: read('dashboard/scripts/service-update.js'),
   settingsState: read('dashboard/scripts/settings-state.js'),
   skillhub: read('dashboard/scripts/skillhub.js'),
@@ -58,6 +60,7 @@ test('dashboard index is a small React shell with split runtime scripts', () => 
     'cats-chat-markdown',
     'cats-chat-messages',
     'cats-chat-attachments',
+    'prompt-workbench',
     'prompt-companion',
     'weixin',
     'bootstrap',
@@ -72,14 +75,18 @@ test('dashboard index is a small React shell with split runtime scripts', () => 
 test('React shell owns navigation, page roots, and global modal mounting', () => {
   assert.match(reactFiles.shell, /import \{ mountChatPage \} from '\.\/chat-page'/);
   assert.match(reactFiles.shell, /import \{ mountServicesPage \} from '\.\/services-page'/);
+  assert.match(reactFiles.shell, /import \{ mountPromptsPage \} from '\.\/prompts-page'/);
   assert.match(reactFiles.shell, /import \{ mountCompanionPage \} from '\.\/companion-page'/);
   assert.match(reactFiles.shell, /import \{ mountStorePage \} from '\.\/store-page'/);
   assert.match(reactFiles.shell, /import \{ mountGlobalModals \} from '\.\/global-modals'/);
   assert.match(reactFiles.shell, /href=\{`#\$\{item\.page\}`\}/);
+  assert.match(reactFiles.shell, /page: 'prompts'/);
   assert.match(reactFiles.shell, /id: 'services-page-root'/);
+  assert.match(reactFiles.shell, /id: 'prompts-page-root'/);
   assert.match(reactFiles.shell, /id: 'companion-page-root'/);
   assert.match(reactFiles.shell, /id: 'store-page-root'/);
   assert.match(reactFiles.shell, /id: 'chat-page-root'/);
+  assert.match(reactFiles.shell, /mountPromptsPage\(\);/);
   assert.match(reactFiles.shell, /document\.body\.classList\.toggle\('chat-active', activePage === 'chat'\)/);
   assert.match(reactFiles.shell, /document\.body\.classList\.toggle\('companion-active', activePage === 'companion'\)/);
   assert.match(reactFiles.globalModals, /export function mountGlobalModals\(\)/);
@@ -90,6 +97,9 @@ test('Agent Hub and model settings are React-rendered while scripts provide API 
   assert.match(reactFiles.services, /id="services-grid"/);
   assert.match(reactFiles.services, /id="custom-model-toggle-btn"/);
   assert.match(reactFiles.services, /id="model-source-panel"/);
+  assert.match(reactFiles.services, /留空表示保持现有凭证/);
+  assert.match(reactFiles.services, /输入访问凭证/);
+  assert.doesNotMatch(reactFiles.services, /鐣欑|杈撳/);
   assert.match(reactFiles.chat, /data-relay-model-id=\{choice\.id\}/);
   assert.match(reactFiles.chat, /data-relay-model-context="chat"/);
   assert.match(reactFiles.services, /window\.saveServiceConfig\?\.\(name\)/);
@@ -143,6 +153,27 @@ test('Companion prompt advisor is React-rendered while preserving current propos
   assert.doesNotMatch(scriptFiles.promptCompanion, /document\.|querySelector|getElementById|classList|innerHTML|insertAdjacentHTML|activeElement|closest\(/);
 });
 
+test('Prompt Lab is React-rendered and keeps prompt editing behind script bridges', () => {
+  assert.match(reactFiles.prompts, /id="prompt-workbench"/);
+  assert.match(reactFiles.prompts, /Prompt Lab/);
+  assert.match(reactFiles.prompts, /提示词调试/);
+  assert.match(reactFiles.prompts, /id="prompt-editor-textarea"/);
+  assert.match(reactFiles.prompts, /window\.savePromptEditorFile\?\.\(\)/);
+  assert.match(reactFiles.prompts, /window\.resetPromptEditorFile\?\.\(\)/);
+  assert.match(reactFiles.prompts, /window\.setBranchAgentsEnabled\?\.\(event\.currentTarget\.checked\)/);
+  assert.match(reactFiles.prompts, /window\.__catscoRenderPromptWorkbench = renderPromptWorkbench/);
+  assert.match(reactFiles.prompts, /window\.__catscoGetPromptEditorDraft = getPromptEditorDraft/);
+  assert.match(scriptFiles.promptWorkbench, /async function refreshPromptWorkbench\(selectPath, options = \{\}\)/);
+  assert.match(scriptFiles.promptWorkbench, /\/api\/prompts'/);
+  assert.match(scriptFiles.promptWorkbench, /\/api\/prompts\/file/);
+  assert.match(scriptFiles.promptWorkbench, /\/api\/prompts\/branch-agents/);
+  assert.match(scriptFiles.promptWorkbench, /\/api\/prompts\/editor-skill\/install/);
+  assert.match(scriptFiles.promptWorkbench, /window\.__catscoRenderPromptWorkbench\?\./);
+  assert.match(scriptFiles.status, /dashboardActivePage === 'prompts'/);
+  assert.match(scriptFiles.promptCompanion, /window\.refreshPromptWorkbench\?\.\(p\.path \|\| data\.proposal\?\.path \|\| 'system-prompt\.md'\)/);
+  assert.doesNotMatch(scriptFiles.promptWorkbench, /document\.|querySelector|getElementById|classList|innerHTML|insertAdjacentHTML|activeElement|closest\(/);
+});
+
 test('SkillHub store is separate from Companion Hub and owns publishing controls', () => {
   assert.match(reactFiles.store, /id="skillhub-section"/);
   assert.match(reactFiles.store, /id="skillhub-search-input"/);
@@ -156,6 +187,7 @@ test('SkillHub store is separate from Companion Hub and owns publishing controls
   assert.match(reactFiles.store, /data-skillhub-versions="true"/);
   assert.match(reactFiles.store, /data-skillhub-yank-version="true"/);
   assert.match(scriptFiles.status, /if \(target === 'skills'\) return switchPage\('store'\);/);
+  assert.match(scriptFiles.status, /if \(target === 'prompts'\) return switchPage\('prompts'\);/);
   assert.match(scriptFiles.skillhub, /async function installSkillHubSkill\(skillId, version\)/);
   assert.match(scriptFiles.skillhub, /async function showSkillHubVersions\(skillId\)/);
   assert.match(scriptFiles.skillhub, /async function yankOwnSkillHubVersion\(packageVersionId\)/);
@@ -261,6 +293,7 @@ test('split dashboard scripts no longer mutate DOM directly', () => {
     /document\.|window\.addEventListener|querySelector|getElementById|classList|innerHTML|insertAdjacentHTML|activeElement|closest\(/,
   );
   assert.match(scriptSource, /window\.__catscoRenderServices\?\./);
+  assert.match(scriptSource, /window\.__catscoRenderPromptWorkbench\?\./);
   assert.match(scriptSource, /window\.__catscoRenderCatsMessages\?\./);
   assert.match(scriptSource, /window\.__catscoRenderSkillHubRegistry\?\./);
   assert.match(scriptSource, /window\.__catscoRenderPetProfile\?\./);

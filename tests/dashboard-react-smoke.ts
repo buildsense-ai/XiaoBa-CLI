@@ -44,6 +44,11 @@ test(
   assert.equal(await page.evaluate(() => document.body.classList.contains('chat-active')), false);
   assert.equal(await page.locator('#floating-pet').evaluate(element => getComputedStyle(element).display), 'none');
 
+  await page.click('a[href="#prompts"]');
+  await page.waitForFunction(() => document.querySelector('#page-prompts')?.classList.contains('active'));
+  await page.waitForSelector('#prompt-workbench[data-react-prompt-workbench="mounted"]');
+  assert.equal(await page.locator('#prompt-editor-textarea').inputValue(), 'You are CatsCo.');
+
   await page.evaluate(() => window.openCustomModelFromChat?.());
   await page.waitForFunction(() => document.querySelector('#page-services')?.classList.contains('active'));
   await page.waitForFunction(() => document.querySelector<HTMLDetailsElement>('#model-source-panel details')?.open === true);
@@ -96,6 +101,39 @@ function apiResponse(pathname: string) {
     };
   }
   if (pathname === '/api/cats/relay/model-config') return { configured: false, models: [] };
+  if (pathname === '/api/prompts') {
+    return {
+      base_dir: 'app/prompts',
+      branch_agents: { enabled: true, env_key: 'XIAOBA_BRANCH_AGENTS_ENABLED' },
+      files: [
+        {
+          path: 'system-prompt.md',
+          overridden: false,
+          base: { chars: 15, lines: 1, short_hash: 'base12345678' },
+          effective: { chars: 15, lines: 1, short_hash: 'eff123456789' },
+        },
+      ],
+      overrides_dir: 'C:/tmp/prompts',
+      trace: {
+        bundle: { file_count: 1, short_hash: 'bundle123456' },
+        generated_at: '2026-07-01T00:00:00.000Z',
+        prompt_version: 'local',
+        source: 'prompt-editor',
+        system: { chars: 15, lines: 1, short_hash: 'system123456' },
+      },
+      writable: true,
+    };
+  }
+  if (pathname === '/api/prompts/file') {
+    return {
+      path: 'system-prompt.md',
+      overridden: false,
+      base: { chars: 15, lines: 1, short_hash: 'base12345678' },
+      effective: { chars: 15, lines: 1, short_hash: 'eff123456789' },
+      base_content: 'You are CatsCo.',
+      content: 'You are CatsCo.',
+    };
+  }
   if (pathname === '/api/cats/status') {
     return {
       connected: false,

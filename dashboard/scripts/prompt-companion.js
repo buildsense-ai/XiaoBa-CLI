@@ -124,6 +124,9 @@ async function applyPromptCompanionProposal() {
     window.__catscoClearPromptCompanionNote?.();
     if (typeof setPetState === 'function') setPetState('success', { message: 'Prompt suggestion applied. It will affect the next message.', holdMs: 2600 });
     renderPromptCompanionState();
+    if (typeof getDashboardActivePage === 'function' && getDashboardActivePage() === 'prompts') {
+      await window.refreshPromptWorkbench?.(p.path || data.proposal?.path || 'system-prompt.md');
+    }
   } catch (error) {
     alert('Failed to apply prompt suggestion: ' + (error.message || String(error)));
   }

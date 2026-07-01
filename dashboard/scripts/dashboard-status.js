@@ -19,6 +19,8 @@ function switchPage(name) {
   } else if (dashboardActivePage === 'store') {
     refreshSkillHubPage();
     fetchSkillHubDeveloper();
+  } else if (dashboardActivePage === 'prompts') {
+    window.refreshPromptWorkbench?.();
   } else if (dashboardActivePage === 'services') {
     fetchStatus();
     refreshSettingsPage();
@@ -84,6 +86,7 @@ function runReadinessAction(target) {
   if (target === 'settings') return switchPage('services');
   if (target === 'catsco') return switchPage('chat');
   if (target === 'skills') return switchPage('store');
+  if (target === 'prompts') return switchPage('prompts');
   if (target === 'service') return svcAction('catscompany','start');
   fetchStatus();
   fetchReadiness();

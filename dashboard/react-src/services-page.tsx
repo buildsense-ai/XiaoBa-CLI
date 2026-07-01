@@ -418,7 +418,7 @@ function ModelSourcePanel({
     setCustomModelDraft({ ...payload, dirty: true });
     window.scheduleCustomModelAutoSave?.();
   };
-  const secretPlaceholder = draft.secretPlaceholder || (keyPresent ? '鐣欑┖琛ㄧず淇濇寔鐜版湁鍑瘉' : '杈撳叆璁块棶鍑瘉');
+  const secretPlaceholder = draft.secretPlaceholder || (keyPresent ? '留空表示保持现有凭证' : '输入访问凭证');
 
   return (
       <div className="model-source-layout">
