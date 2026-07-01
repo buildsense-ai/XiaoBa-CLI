@@ -643,7 +643,6 @@
 
     function shouldAlertEvent(event) {
       if (!event || !event.id || seenTimelineEventIds.has(event.id)) return false;
-      if (event.event_type === 'message_completed') return false;
       const createdAt = Date.parse(event.created_at || '');
       if (!timelinePrimed) return Number.isFinite(createdAt) && Date.now() - createdAt < 120000;
       return true;

@@ -33,6 +33,7 @@ test('message completion is activity, not meaningful growth', () => {
 
   assert.equal(data.profile.total_xp, 0);
   assert.equal(data.profile.level, 1);
+  assert.equal(data.profile.current_state, 'success');
 });
 
 test('meaningful task completion can still advance companion growth', () => {

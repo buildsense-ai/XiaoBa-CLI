@@ -6241,7 +6241,7 @@
       if (eventType === 'level_up') return 3600;
       if (eventType === 'skill_failed') return 7000;
       if (eventType === 'skill_started') return 0;
-      if (eventType === 'skill_succeeded' || eventType === 'task_completed') return 2600;
+      if (eventType === 'skill_succeeded' || eventType === 'task_completed' || eventType === 'message_completed') return 2600;
       return 0;
     }
 
@@ -6274,7 +6274,7 @@
       if (event.event_type === 'skill_started') return 'working';
       if (event.event_type === 'skill_failed') return 'error';
       if (event.event_type === 'level_up') return 'level_up';
-      if (event.event_type === 'skill_succeeded' || event.event_type === 'task_completed') return 'success';
+      if (event.event_type === 'skill_succeeded' || event.event_type === 'task_completed' || event.event_type === 'message_completed') return 'success';
       return 'idle';
     }
 
