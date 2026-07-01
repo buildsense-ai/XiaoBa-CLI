@@ -31,10 +31,10 @@ test('prompt_mode tool loads plain-chat instructions on demand', async () => {
   assert.match(String(result.content), /角色扮演/);
 });
 
-test('prompt_mode is available as a default runtime tool', () => {
+test('prompt_mode is not exposed as a default runtime tool', () => {
   const manager = new ToolManager(process.cwd());
 
-  assert.ok(manager.getToolDefinitions().some(tool => tool.name === 'prompt_mode'));
+  assert.equal(manager.getToolDefinitions().some(tool => tool.name === 'prompt_mode'), false);
 });
 
 test('prompt_mode can clear an async active mode through runtime context', async () => {
