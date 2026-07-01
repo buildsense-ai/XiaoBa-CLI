@@ -500,6 +500,69 @@ describe('CatsCompany client body identity', () => {
     client.disconnect();
   });
 
+  test('rejects thin tool rpc results that omit pending request scope fields', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    servers.push(server);
+    await new Promise<void>(resolve => server.once('listening', resolve));
+
+    server.once('connection', socket => {
+      socket.on('message', data => {
+        const msg = JSON.parse(data.toString());
+        if (msg.hi) {
+          socket.send(JSON.stringify({
+            ctrl: {
+              id: msg.hi.id,
+              code: 200,
+              params: {
+                build: 'catscompany',
+                ver: '0.1.0',
+                features: ['client_msg_id', 'thin_tool_rpc'],
+                uid: 'usr42',
+                name: 'Agent',
+              },
+            },
+          }));
+          return;
+        }
+        if (msg.thin_tool_rpc?.type === 'request') {
+          socket.send(JSON.stringify({ ctrl: { id: msg.thin_tool_rpc.id, code: 200, text: 'ok' } }));
+          socket.send(JSON.stringify({
+            thin_tool_rpc: {
+              type: 'result',
+              request_id: msg.thin_tool_rpc.request_id,
+              result: { ok: true },
+            },
+          }));
+        }
+      });
+    });
+
+    const address = server.address() as AddressInfo;
+    const client = new CatsClient({
+      serverUrl: `ws://127.0.0.1:${address.port}`,
+      apiKey: 'cc-test-key',
+      bodyId: 'body-agent',
+      installationId: 'install-agent',
+    });
+    client.on('error', () => undefined);
+    await new Promise<void>(resolve => {
+      client.once('ready', () => resolve());
+      client.connect();
+    });
+
+    await assert.rejects(
+      () => client.sendThinToolRpcRequest({
+        request_id: 'thin-missing-scope',
+        target_owner_user_id: 'usr7',
+        target_device_id: 'install-test',
+        tool_name: 'read_file',
+        payload: { args: { file_path: '/tmp/a.txt' } },
+      }),
+      /scope does not match/
+    );
+    client.disconnect();
+  });
+
   test('rejects pending thin tool rpc when websocket closes before result', async () => {
     const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
     servers.push(server);
