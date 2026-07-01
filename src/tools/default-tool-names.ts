@@ -15,7 +15,6 @@ export const DEFAULT_TOOL_NAMES = [
   'update_plan',
   'record_decision',
   'share_skillhub_skill',
-  'prompt_mode',
   'skill',
 ] as const;
 
