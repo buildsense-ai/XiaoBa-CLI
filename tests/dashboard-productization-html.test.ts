@@ -286,7 +286,8 @@ test('dashboard font scaling and non-chat layout remain stylesheet-driven', () =
   assert.doesNotMatch(dashboardCss, /--dashboard-content-max/);
   assert.match(dashboardCss, /\.page-content \{\s*width: 100%;\s*max-width: none;\s*margin: 0;/);
   assert.match(dashboardCss, /body\.chat-active \.main-wrapper \{[\s\S]*height: 100vh;[\s\S]*overflow: hidden;/);
-  assert.match(dashboardCss, /body\.chat-active \.chat-shell \{[\s\S]*height: 100%;[\s\S]*overflow: hidden;/);
+  assert.match(dashboardCss, /\.chat-shell \{[\s\S]*grid-template-rows: minmax\(0, 1fr\);/);
+  assert.match(dashboardCss, /body\.chat-active \.chat-shell \{[\s\S]*position: absolute;[\s\S]*inset: 0;[\s\S]*height: auto;[\s\S]*overflow: hidden;/);
   assert.match(dashboardCss, /\.chat-connect \{[\s\S]*overflow-y: auto;[\s\S]*overscroll-behavior: contain;/);
   assert.match(dashboardCss, /\.chat-messages \{[\s\S]*overflow-y: auto;[\s\S]*overscroll-behavior: contain;/);
   assert.match(dashboardCss, /body:not\(\.chat-active\) \.sidebar \{\s*position: static;\s*width: 100%;\s*min-height: auto;/);

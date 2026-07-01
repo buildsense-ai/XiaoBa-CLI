@@ -2931,6 +2931,7 @@
     .chat-shell {
       display: grid;
       grid-template-columns: clamp(300px, 19vw, 360px) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
       gap: 12px;
       height: calc(100vh - 118px);
       min-height: 620px;
@@ -2962,6 +2963,7 @@
       height: 100%;
       min-height: 0;
       overflow: hidden;
+      position: relative;
     }
 
     #page-chat .section-title {
@@ -2969,8 +2971,10 @@
     }
 
     body.chat-active .chat-shell {
-      flex: 1;
-      height: 100%;
+      position: absolute;
+      inset: 0;
+      flex: none;
+      height: auto;
       min-height: 0;
       overflow: hidden;
     }
@@ -2981,6 +2985,7 @@
       border-radius: 18px;
       box-shadow: var(--shadow-sm), var(--glow);
       overflow: hidden;
+      min-width: 0;
       min-height: 0;
     }
 
@@ -3394,6 +3399,7 @@
       flex-direction: column;
       height: 100%;
       min-height: 0;
+      max-height: 100%;
       background: #181b20;
       color: #e8eaed;
       font-family: 'Inter', 'Microsoft YaHei UI', 'PingFang SC', sans-serif;
@@ -4168,6 +4174,13 @@
         grid-template-columns: 1fr;
         height: auto;
         min-height: 560px;
+      }
+      body.chat-active .chat-shell {
+        position: static;
+        inset: auto;
+        height: auto;
+        min-height: 560px;
+        overflow: visible;
       }
       .chat-shell.connect-collapsed {
         grid-template-columns: 1fr;
