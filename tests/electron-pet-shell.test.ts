@@ -8,6 +8,10 @@ const electronMain = readFileSync(join(root, 'electron/main.js'), 'utf-8');
 const preload = readFileSync(join(root, 'electron/preload.js'), 'utf-8');
 const dashboardHtml = readFileSync(join(root, 'dashboard/index.html'), 'utf-8');
 const petWindowPath = join(root, 'dashboard/pet-window.html');
+const desktopCompanionManagerPath = join(root, 'electron/desktop-companion-manager.js');
+const desktopCompanionManager = existsSync(desktopCompanionManagerPath)
+  ? readFileSync(desktopCompanionManagerPath, 'utf-8')
+  : '';
 
 test('electron launches the pet shell first while keeping dashboard hidden until requested', () => {
   const startupBlock = electronMain.slice(
@@ -24,7 +28,7 @@ test('electron launches the pet shell first while keeping dashboard hidden until
 test('pet shell is a transparent always-on-top desktop companion window', () => {
   assert.match(electronMain, /petWindow = new BrowserWindow\(\{[\s\S]*transparent: true/);
   assert.match(electronMain, /petWindow = new BrowserWindow\(\{[\s\S]*frame: false/);
-  assert.match(electronMain, /petWindow = new BrowserWindow\(\{[\s\S]*alwaysOnTop: true/);
+  assert.match(electronMain, /getWindowBehaviorOptions\(\)/);
   assert.match(electronMain, /petWindow = new BrowserWindow\(\{[\s\S]*skipTaskbar: true/);
   assert.match(electronMain, /petWindow\.loadURL\(`http:\/\/127\.0\.0\.1:\$\{DASHBOARD_PORT\}\/pet-window\.html`\)/);
 });
@@ -32,14 +36,18 @@ test('pet shell is a transparent always-on-top desktop companion window', () => 
 test('pet shell can be dragged and remembers its last desktop position', () => {
   const petWindow = readFileSync(petWindowPath, 'utf-8');
 
-  assert.match(electronMain, /function readPetWindowBounds\(\)/);
-  assert.match(electronMain, /function savePetWindowBounds\(bounds\)/);
-  assert.match(electronMain, /const savedBounds = readPetWindowBounds\(\);/);
-  assert.match(electronMain, /petWindow\.on\('moved'/);
-  assert.match(electronMain, /savePetWindowBounds\(petWindow\.getBounds\(\)\)/);
+  assert.equal(existsSync(desktopCompanionManagerPath), true);
+  assert.match(desktopCompanionManager, /function createDesktopCompanionManager/);
+  assert.match(desktopCompanionManager, /DEFAULT_SNAP_DISTANCE = 28/);
+  assert.match(desktopCompanionManager, /setLockPetPosition/);
+  assert.match(desktopCompanionManager, /setAlwaysOnTop/);
+  assert.match(electronMain, /manager\.getInitialBounds/);
+  assert.match(electronMain, /manager\.attachPetWindow\(petWindow\)/);
   assert.match(petWindow, /pet-drag-region/);
   assert.match(petWindow, /-webkit-app-region: drag/);
   assert.match(petWindow, /-webkit-app-region: no-drag/);
+  assert.match(petWindow, /position-locked/);
+  assert.match(petWindow, /#pet-shell\.position-locked\.pet-drag-region/);
 });
 
 test('dashboard minimize hides the dashboard and keeps the pet as the desktop entry', () => {
@@ -58,12 +66,12 @@ test('pet shell exposes safe actions for dashboard, CatsCo web, menu, and startu
   assert.match(electronMain, /function openDashboardFromPet\(targetPath\)/);
   assert.match(electronMain, /function openCatsCoWebFromPet\(\)/);
   assert.match(electronMain, /function showPetContextMenu\(\)/);
-  assert.match(electronMain, /function syncLoginItemSettings\(\)/);
-  assert.match(electronMain, /app\.setLoginItemSettings\(\{/);
-  assert.match(electronMain, /function syncWindowsRunAtLoginFallback\(\)/);
+  assert.match(electronMain, /function getDesktopCompanionManager\(\)/);
+  assert.match(desktopCompanionManager, /app\.setLoginItemSettings\(\{/);
+  assert.match(desktopCompanionManager, /function syncWindowsRunAtLoginFallback\(\)/);
   assert.match(electronMain, /function ensureStartAtLoginRegistration\(\)/);
-  assert.match(electronMain, /HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run/);
-  assert.match(electronMain, /spawnSync\('reg'/);
+  assert.match(desktopCompanionManager, /HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run/);
+  assert.match(desktopCompanionManager, /spawnSync\('reg'/);
   assert.match(electronMain, /ensureStartAtLoginRegistration\(\);/);
   assert.match(electronMain, /CATSCO_WEB_URL/);
   assert.match(electronMain, /CATSCO_HTTP_BASE_URL/);
@@ -73,6 +81,9 @@ test('pet shell exposes safe actions for dashboard, CatsCo web, menu, and startu
   assert.match(preload, /openCatsCoWeb/);
   assert.match(preload, /showMenu/);
   assert.match(preload, /setStartAtLogin/);
+  assert.match(preload, /setLockPetPosition/);
+  assert.match(preload, /setAlwaysOnTop/);
+  assert.match(preload, /onDesktopStateChanged/);
 });
 
 test('changing start at login syncs the OS registration immediately', () => {
@@ -81,14 +92,12 @@ test('changing start at login syncs the OS registration immediately', () => {
     electronMain.indexOf('function quitApp()'),
   );
   const menuBlock = electronMain.slice(
-    electronMain.indexOf("label: 'Start at login'"),
+    electronMain.indexOf("label: 'Start With System'"),
     electronMain.indexOf("{ label: 'Quit CatsCo'"),
   );
 
-  assert.match(ipcBlock, /writeStartAtLoginPreference\(Boolean\(value\)\);/);
-  assert.match(ipcBlock, /syncLoginItemSettings\(\);/);
-  assert.match(menuBlock, /writeStartAtLoginPreference\(menuItem\.checked\);/);
-  assert.match(menuBlock, /syncLoginItemSettings\(\);/);
+  assert.match(ipcBlock, /getDesktopCompanionManager\(\)\.setStartAtLogin\(Boolean\(value\)\)/);
+  assert.match(menuBlock, /manager\.setStartAtLogin\(menuItem\.checked\)/);
 });
 
 test('pet shell page exists and talks to the existing pet APIs', () => {
@@ -127,6 +136,10 @@ test('pet shell page exists and talks to the existing pet APIs', () => {
   assert.match(petWindow, /\/#logs/);
   assert.match(petWindow, /catscoPet\.openDashboard/);
   assert.match(petWindow, /catscoPet\.openCatsCoWeb/);
+  assert.match(petWindow, /id="lock-position"/);
+  assert.match(petWindow, /id="always-on-top"/);
+  assert.match(petWindow, /setLockPetPosition/);
+  assert.match(petWindow, /setAlwaysOnTop/);
 });
 
 test('message completion still drives companion emotion and alert bubbles', () => {
