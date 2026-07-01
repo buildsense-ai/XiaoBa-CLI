@@ -5,6 +5,26 @@
     "pet/idle/03.png",
     "pet/idle/04.png"
   ],
+  "idle_active": [
+    "pet/idle_active/01.png",
+    "pet/idle_active/02.png",
+    "pet/idle_active/03.png",
+    "pet/idle_active/04.png",
+    "pet/idle_active/05.png",
+    "pet/idle_active/06.png",
+    "pet/idle_active/07.png",
+    "pet/idle_active/08.png",
+    "pet/idle_active/09.png",
+    "pet/idle_active/10.png",
+    "pet/idle_active/11.png",
+    "pet/idle_active/12.png",
+    "pet/idle_active/13.png",
+    "pet/idle_active/14.png",
+    "pet/idle_active/15.png",
+    "pet/idle_active/16.png",
+    "pet/idle_active/17.png",
+    "pet/idle_active/18.png"
+  ],
   "thinking": [
     "pet/thinking/01.png",
     "pet/thinking/02.png",
@@ -25,10 +45,120 @@
     "pet/success/03.png",
     "pet/success/04.png"
   ],
+  "happy": [
+    "pet/happy/01.png",
+    "pet/happy/02.png"
+  ],
+  "skill": [
+    "pet/skill/01.png"
+  ],
+  "notify": [
+    "pet/notify/01.png",
+    "pet/notify/02.png",
+    "pet/notify/03.png",
+    "pet/notify/04.png",
+    "pet/notify/05.png",
+    "pet/notify/06.png",
+    "pet/notify/07.png",
+    "pet/notify/08.png",
+    "pet/notify/09.png",
+    "pet/notify/10.png",
+    "pet/notify/11.png",
+    "pet/notify/12.png",
+    "pet/notify/13.png",
+    "pet/notify/14.png",
+    "pet/notify/15.png",
+    "pet/notify/16.png",
+    "pet/notify/17.png",
+    "pet/notify/18.png",
+    "pet/notify/19.png",
+    "pet/notify/20.png",
+    "pet/notify/21.png",
+    "pet/notify/22.png",
+    "pet/notify/23.png",
+    "pet/notify/24.png"
+  ],
+  "sleepy": [
+    "pet/sleepy/01.png",
+    "pet/sleepy/02.png"
+  ],
   "error": [
     "pet/error/01.png",
     "pet/error/02.png",
     "pet/error/03.png",
     "pet/error/04.png"
-  ]
+  ],
+  "level_up": [
+    "pet/level_up/01.png"
+  ],
+  "peek": [
+    "pet/peek/01.png"
+  ],
+  "levels": {
+    "3": {
+      "idle": [
+        "pet/idle_active/01.png",
+        "pet/idle_active/02.png",
+        "pet/idle_active/03.png",
+        "pet/idle_active/04.png",
+        "pet/idle_active/05.png",
+        "pet/idle_active/06.png",
+        "pet/idle_active/07.png",
+        "pet/idle_active/08.png",
+        "pet/idle_active/09.png",
+        "pet/idle_active/10.png",
+        "pet/idle_active/11.png",
+        "pet/idle_active/12.png",
+        "pet/idle_active/13.png",
+        "pet/idle_active/14.png",
+        "pet/idle_active/15.png",
+        "pet/idle_active/16.png",
+        "pet/idle_active/17.png",
+        "pet/idle_active/18.png"
+      ]
+    },
+    "5": {
+      "success": [
+        "pet/happy/01.png",
+        "pet/happy/02.png"
+      ],
+      "level_up": [
+        "pet/level_up/01.png"
+      ],
+      "notify": [
+        "pet/notify/01.png",
+        "pet/notify/02.png",
+        "pet/notify/03.png",
+        "pet/notify/04.png",
+        "pet/notify/05.png",
+        "pet/notify/06.png",
+        "pet/notify/07.png",
+        "pet/notify/08.png",
+        "pet/notify/09.png",
+        "pet/notify/10.png",
+        "pet/notify/11.png",
+        "pet/notify/12.png",
+        "pet/notify/13.png",
+        "pet/notify/14.png",
+        "pet/notify/15.png",
+        "pet/notify/16.png",
+        "pet/notify/17.png",
+        "pet/notify/18.png",
+        "pet/notify/19.png",
+        "pet/notify/20.png",
+        "pet/notify/21.png",
+        "pet/notify/22.png",
+        "pet/notify/23.png",
+        "pet/notify/24.png"
+      ]
+    },
+    "8": {
+      "skill": [
+        "pet/skill/01.png"
+      ],
+      "peek": [
+        "pet/peek/01.png"
+      ]
+    }
+  }
 }

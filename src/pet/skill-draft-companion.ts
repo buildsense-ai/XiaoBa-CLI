@@ -53,6 +53,8 @@ interface SkillDraftSignals {
   commonTasks: Map<string, number>;
 }
 
+const MIN_SHELL_FAILURES_FOR_SKILL_DRAFT = 2;
+
 export function getSkillDrafts(options: {
   days?: number;
   limit?: number;
@@ -96,7 +98,7 @@ export function getSkillDrafts(options: {
   }
 
   const drafts: SkillDraft[] = [];
-  if (signals.shellFailures > 0) {
+  if (signals.shellFailures >= MIN_SHELL_FAILURES_FOR_SKILL_DRAFT) {
     drafts.push(buildShellRecoveryDraft(signals));
   }
   if (signals.runtimeErrors >= 2 || signals.failures >= 3) {
