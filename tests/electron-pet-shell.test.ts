@@ -129,6 +129,21 @@ test('pet shell page exists and talks to the existing pet APIs', () => {
   assert.match(petWindow, /catscoPet\.openCatsCoWeb/);
 });
 
+test('message completion still drives companion emotion and alert bubbles', () => {
+  const petWindow = readFileSync(petWindowPath, 'utf-8');
+  const alertBlock = petWindow.slice(
+    petWindow.indexOf('function shouldAlertEvent(event)'),
+    petWindow.indexOf('function showWorkAlert(event)'),
+  );
+  const dashboardEventStateBlock = dashboardHtml.slice(
+    dashboardHtml.indexOf('function petEventState(event)'),
+    dashboardHtml.indexOf('function renderPetUnlocks()'),
+  );
+
+  assert.doesNotMatch(alertBlock, /event\.event_type === 'message_completed'\)\s*return false/);
+  assert.match(dashboardEventStateBlock, /event\.event_type === 'message_completed'[\s\S]*return 'success'/);
+});
+
 test('dashboard keeps session logs available without exposing them as a primary nav item', () => {
   assert.doesNotMatch(dashboardHtml, /<a class="nav-item" onclick="switchPage\('logs'\)" data-page="logs">/);
   assert.match(dashboardHtml, /id="page-logs"/);

@@ -205,7 +205,7 @@ function stateForEvent(eventType: PetEventType): PetState {
   if (eventType === 'skill_started') return 'skill';
   if (eventType === 'skill_failed') return 'error';
   if (eventType === 'level_up') return 'level_up';
-  if (eventType === 'skill_succeeded' || eventType === 'task_completed') return 'success';
+  if (eventType === 'skill_succeeded' || eventType === 'task_completed' || eventType === 'message_completed') return 'success';
   return 'idle';
 }
 
