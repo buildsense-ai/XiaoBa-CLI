@@ -93,6 +93,10 @@ test('React shell owns navigation, page roots, and global modal mounting', () =>
   assert.match(reactFiles.shell, /document\.body\.classList\.toggle\('chat-active', activePage === 'chat'\)/);
   assert.match(reactFiles.shell, /document\.body\.classList\.toggle\('companion-active', activePage === 'companion'\)/);
   assert.match(reactFiles.globalModals, /export function mountGlobalModals\(\)/);
+  assert.match(reactFiles.globalModals, /onClick=\{\(\) => window\.closeUpdateModal\?\.\(\)\}/);
+  assert.match(reactFiles.globalModals, /onClick=\{\(\) => window\.closeCatsMediaPreview\?\.\(\)\}/);
+  assert.match(reactFiles.globalModals, /if \(globalModalsState\.modalOpen\.update\) window\.closeUpdateModal\?\.\(\);/);
+  assert.match(reactFiles.globalModals, /if \(globalModalsState\.modalOpen\.mediaPreview\) window\.closeCatsMediaPreview\?\.\(\);/);
   assert.match(reactFiles.globalModals, /<span style=\{color \? \{ color \} : undefined\}>\{payload\.text\}<\/span>/);
   assert.doesNotMatch(reactFiles.globalModals, /<pre[^>]*>\{payload\.text\}<\/pre>/);
   assert.doesNotMatch(reactSource, /legacyBody|dangerouslySetInnerHTML|data-action|onclick=|onchange=|oninput=/);
@@ -120,6 +124,10 @@ test('Agent Hub and model settings are React-rendered while scripts provide API 
   assert.match(scriptFiles.modelSettings, /function customModelContextWindowValue\(rawValue\)/);
   assert.match(scriptFiles.modelSettings, /'model\.contextWindowTokens':contextWindowTokens/);
   assert.match(scriptFiles.modelSettings, /contextWindowTokens:settings\['model\.contextWindowTokens'\]/);
+  assert.match(scriptFiles.modelSettings, /'标准额度'/);
+  assert.match(scriptFiles.modelSettings, /meta:quota\+' · 上下文 '\+contextLabel/);
+  assert.match(scriptFiles.modelSettings, /'自定义配置 · 上下文 '\+customContextLabel/);
+  assert.doesNotMatch(scriptFiles.modelSettings, /Low quota Flash|Multimodal|Standard quota|Custom config|Not configured|Configure endpoint \/ key/);
   assert.match(scriptFiles.modelSettings, /async function refreshCatsChatAfterMutation\(options=\{\}\)/);
   assert.match(scriptFiles.modelSettings, /setCatsStatusMutationBusy\(true\);[\s\S]*invalidateCatsStatusRequests\(\);/);
   assert.match(scriptFiles.modelSettings, /fetchCatsStatus\(\{priority:true\}\)/);
@@ -199,15 +207,26 @@ test('SkillHub store is separate from Companion Hub and owns publishing controls
   assert.match(reactFiles.store, /placeholder="搜索合同审查、PPT、工程量清单\.\.\."/);
   assert.match(reactFiles.store, /<span>发现技能<\/span>/);
   assert.match(reactFiles.store, /<span>已安装技能<\/span>/);
+  assert.match(reactFiles.store, /id="copy-skills-root-btn"/);
   assert.match(reactFiles.store, /我的发布/);
   assert.match(reactFiles.store, /data-skillhub-install=\{canInstall \? 'true' : undefined\}/);
   assert.match(reactFiles.store, /data-skillhub-versions="true"/);
   assert.match(reactFiles.store, /data-skillhub-yank-version="true"/);
+  assert.match(reactFiles.store, /data-skillhub-restore-version="true"/);
+  assert.match(reactFiles.store, /data-skillhub-delete-version="true"/);
   assert.match(scriptFiles.status, /if \(target === 'skills'\) return switchPage\('store'\);/);
   assert.match(scriptFiles.status, /if \(target === 'prompts'\) return switchPage\('prompts'\);/);
+  assert.match(scriptFiles.skillhub, /async function copySkillsRootPath\(\)/);
   assert.match(scriptFiles.skillhub, /async function installSkillHubSkill\(skillId, version\)/);
   assert.match(scriptFiles.skillhub, /async function showSkillHubVersions\(skillId\)/);
   assert.match(scriptFiles.skillhub, /async function yankOwnSkillHubVersion\(packageVersionId\)/);
+  assert.match(scriptFiles.skillhub, /async function restoreOwnSkillHubVersion\(packageVersionId\)/);
+  assert.match(scriptFiles.skillhub, /async function deleteOwnSkillHubVersion\(packageVersionId\)/);
+  assert.match(scriptFiles.weixin, /let weixinPollAgentUid=''/);
+  assert.match(scriptFiles.weixin, /agent_uid/);
+  assert.match(scriptFiles.weixin, /encodeURIComponent\(qrcode\)\+agentParam/);
+  assert.match(scriptFiles.weixin, /d\.status==='confirmed'&&d\.token_saved/);
+  assert.doesNotMatch(scriptFiles.weixin, /d\.bot_token|WEIXIN_TOKEN/);
   assert.doesNotMatch(
     dashboardSource,
     /SkillHub Developer|id="skillhub-developer-apply"|id="skillhub-developer-console"|data-page="developer"|id="page-developer"/,

@@ -167,26 +167,38 @@ function renderSkillHubRegistry(items) {
   renderSkillHubRegistryState({ items, skillHubState, localSkills: localSkillsCache || [] });
 }
 
+async function copySkillsRootPath() {
+  try {
+    const data = await parseSimpleResponse(await fetch(API + '/api/skills-root'));
+    if (!navigator.clipboard?.writeText) throw new Error('当前环境不支持剪贴板写入');
+    await navigator.clipboard.writeText(data.path || '');
+    window.__catscoRenderCopySkillsRootStatus?.('Copied');
+    setTimeout(() => window.__catscoRenderCopySkillsRootStatus?.('Copy Skills path'), 1400);
+  } catch (e) {
+    alert('Copy Skills path failed: ' + (e.message || String(e)));
+  }
+}
+
 async function installSkillHubSkill(skillId, version) {
-  pulsePetState('thinking', 'Installing Skill...', 1600);
+  pulsePetState('thinking', '正在安装 Skill...', 1600);
   try {
     const data = await parseSimpleResponse(await fetch(API + '/api/skillhub/install', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({ skillId, version }),
     }));
-    pulsePetState('success', 'Skill installed', 2200);
-    alert('Install complete: ' + (data.skill?.name || skillId));
+    pulsePetState('success', 'Skill 已安装', 2200);
+    alert('安装完成: ' + (data.skill?.name || skillId));
     await refreshSkillHubPage();
   } catch (e) {
-    pulsePetState('error', 'Install failed', 2600);
-    alert('Install failed: ' + (e.message || String(e)));
+    pulsePetState('error', '安装失败', 2600);
+    alert('安装失败: ' + (e.message || String(e)));
   }
 }
 
 async function showSkillHubVersions(skillId) {
   if (!skillId) return;
-  renderSkillHubVersionsState({ skillId, loading: true, message: 'Loading versions...' });
+  renderSkillHubVersionsState({ skillId, loading: true, message: '正在加载版本...' });
   window.__catscoSetGlobalModalOpen?.('skillHubVersions', true);
   try {
     const [data, ownerData] = await Promise.all([
@@ -203,7 +215,7 @@ async function showSkillHubVersions(skillId) {
   } catch (e) {
     renderSkillHubVersionsState({
       skillId,
-      message: 'Load versions failed: ' + (e.message || String(e)),
+      message: '版本加载失败: ' + (e.message || String(e)),
       tone: 'danger',
     });
   }
@@ -235,7 +247,7 @@ function renderSkillHubDeveloper(data) {
 
 async function yankOwnSkillHubVersion(packageVersionId) {
   if (!packageVersionId) return;
-  if (!confirm('Remove this published SkillHub version from public search and downloads?')) return;
+  if (!confirm('下架这个 SkillHub 版本？下架后其他用户将无法从公开搜索安装它。')) return;
   try {
     await parseSimpleResponse(await fetch(API + '/api/skillhub/developer/package-versions/' + encodeURIComponent(packageVersionId) + '/yank', {
       method:'POST',
@@ -245,6 +257,37 @@ async function yankOwnSkillHubVersion(packageVersionId) {
     await fetchSkillHubDeveloper();
     await refreshSkillHubPage();
   } catch (e) {
-    alert('Remove failed: ' + (e.message || String(e)));
+    alert('下架失败: ' + (e.message || String(e)));
+  }
+}
+
+async function restoreOwnSkillHubVersion(packageVersionId) {
+  if (!packageVersionId) return;
+  if (!confirm('重新公开这个 SkillHub 版本？公开后其他用户可以搜索和安装它。')) return;
+  try {
+    await parseSimpleResponse(await fetch(API + '/api/skillhub/me/package-versions/' + encodeURIComponent(packageVersionId) + '/restore', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({}),
+    }));
+    await fetchSkillHubDeveloper();
+    await refreshSkillHubPage();
+  } catch (e) {
+    alert('重新公开失败: ' + (e.message || String(e)));
+  }
+}
+
+async function deleteOwnSkillHubVersion(packageVersionId) {
+  if (!packageVersionId) return;
+  if (!confirm('永久删除这个 SkillHub 版本？删除后其他用户将无法安装该版本。')) return;
+  try {
+    await parseSimpleResponse(await fetch(API + '/api/skillhub/me/package-versions/' + encodeURIComponent(packageVersionId), {
+      method:'DELETE',
+      headers:{'Content-Type':'application/json'},
+    }));
+    await fetchSkillHubDeveloper();
+    await refreshSkillHubPage();
+  } catch (e) {
+    alert('删除失败: ' + (e.message || String(e)));
   }
 }

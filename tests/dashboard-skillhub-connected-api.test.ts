@@ -225,9 +225,15 @@ describe('dashboard connected SkillHub API', () => {
     assert.doesNotMatch(html, /onclick="installSkillHubSkill/);
     assert.match(storePage, /data-skillhub-versions="true"/);
     assert.match(reactSource, /data-skillhub-yank-version="true"/);
+    assert.match(reactSource, /data-skillhub-restore-version="true"/);
+    assert.match(reactSource, /data-skillhub-delete-version="true"/);
     assert.match(storePage, /onClick=\{\(\) => window\.installSkillHubSkill\?\.\(skillId, latestVersion \|\| undefined\)\}/);
     assert.match(storePage, /onClick=\{\(\) => window\.showSkillHubVersions\?\.\(skillId\)\}/);
     assert.match(reactSource, /onClick=\{\(\) => window\.yankOwnSkillHubVersion\?\.\(packageVersionId\)\}/);
+    assert.match(reactSource, /onClick=\{\(\) => window\.restoreOwnSkillHubVersion\?\.\(packageVersionId\)\}/);
+    assert.match(reactSource, /onClick=\{\(\) => window\.deleteOwnSkillHubVersion\?\.\(packageVersionId\)\}/);
+    assert.match(skillhubScript, /\/api\/skillhub\/me\/package-versions\/' \+ encodeURIComponent\(packageVersionId\) \+ '\/restore'/);
+    assert.match(skillhubScript, /\/api\/skillhub\/me\/package-versions\/' \+ encodeURIComponent\(packageVersionId\)/);
     assert.doesNotMatch(html, /onclick="showSkillHubVersions/);
     assert.doesNotMatch(html, /onclick="yankOwnSkillHubVersion/);
   });

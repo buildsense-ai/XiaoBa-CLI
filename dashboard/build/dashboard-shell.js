@@ -22828,13 +22828,13 @@
     tone
   }) {
     if (loading) {
-      return /* @__PURE__ */ import_react3.default.createElement("div", { className: "loading" }, message || "Loading versions...");
+      return /* @__PURE__ */ import_react3.default.createElement("div", { className: "loading" }, message || "\u6B63\u5728\u52A0\u8F7D\u7248\u672C...");
     }
     if (message && tone) {
       return /* @__PURE__ */ import_react3.default.createElement(RuntimeNotice, { message, tone });
     }
     if (!versions.length) {
-      return /* @__PURE__ */ import_react3.default.createElement("div", { className: "loading" }, message || "No versions found.");
+      return /* @__PURE__ */ import_react3.default.createElement("div", { className: "loading" }, message || "\u6682\u65E0\u7248\u672C");
     }
     const ownerVersionByKey = /* @__PURE__ */ new Map();
     for (const item of ownerVersions) {
@@ -22847,9 +22847,9 @@
       const version = toText(item.latestVersion, toText(item.version));
       const ownerVersion = ownerVersionByKey.get(`${skillId}@${version}`);
       const packageVersionId = toText(ownerVersion?.packageVersionId, toText(ownerVersion?.id));
-      const status = toText(item.status, "published");
-      const publishedStatus = status !== "published" ? status : "published";
-      return /* @__PURE__ */ import_react3.default.createElement("div", { className: "portal-row", key: `${version || "version"}-${index}` }, /* @__PURE__ */ import_react3.default.createElement("strong", null, "v", version || "-"), /* @__PURE__ */ import_react3.default.createElement("div", { className: "skill-meta" }, /* @__PURE__ */ import_react3.default.createElement("span", { className: `tag ${publishedStatus === "published" ? "green" : "warm"}` }, publishedStatus), item.publishedAt ? /* @__PURE__ */ import_react3.default.createElement("span", { className: "tag" }, toText(item.publishedAt)) : null, /* @__PURE__ */ import_react3.default.createElement("span", { className: "tag" }, "downloads ", Number(item.downloadCount || 0))), /* @__PURE__ */ import_react3.default.createElement("div", { className: "config-actions", style: { marginTop: 10 } }, /* @__PURE__ */ import_react3.default.createElement(
+      const ownerStatus = toText(toRecord(ownerVersion)?.status, toText(item.status, "published"));
+      const publishedStatus = ownerStatus !== "published" ? ownerStatus : "published";
+      return /* @__PURE__ */ import_react3.default.createElement("div", { className: "portal-row", key: `${version || "version"}-${index}` }, /* @__PURE__ */ import_react3.default.createElement("strong", null, "v", version || "-"), /* @__PURE__ */ import_react3.default.createElement("div", { className: "skill-meta" }, /* @__PURE__ */ import_react3.default.createElement("span", { className: `tag ${publishedStatus === "published" ? "green" : "warm"}` }, publishedStatus), item.publishedAt ? /* @__PURE__ */ import_react3.default.createElement("span", { className: "tag" }, toText(item.publishedAt)) : null, /* @__PURE__ */ import_react3.default.createElement("span", { className: "tag" }, "\u4E0B\u8F7D ", Number(item.downloadCount || 0))), /* @__PURE__ */ import_react3.default.createElement("div", { className: "config-actions", style: { marginTop: 10 } }, /* @__PURE__ */ import_react3.default.createElement(
         "button",
         {
           className: "btn btn-primary",
@@ -22859,8 +22859,8 @@
           "data-version": version || void 0,
           onClick: () => window.installSkillHubSkill?.(skillId, version || void 0)
         },
-        "Install this version"
-      ), packageVersionId && toText(toRecord(ownerVersion)?.status, "published") === "published" ? /* @__PURE__ */ import_react3.default.createElement(
+        "\u5B89\u88C5\u6B64\u7248\u672C"
+      ), packageVersionId && ownerStatus === "published" ? /* @__PURE__ */ import_react3.default.createElement(
         "button",
         {
           className: "btn btn-danger",
@@ -22868,7 +22868,25 @@
           "data-package-version-id": packageVersionId,
           onClick: () => window.yankOwnSkillHubVersion?.(packageVersionId)
         },
-        "Remove version"
+        "\u4E0B\u67B6\u7248\u672C"
+      ) : null, packageVersionId && ownerStatus !== "published" ? /* @__PURE__ */ import_react3.default.createElement(
+        "button",
+        {
+          className: "btn btn-success",
+          "data-skillhub-restore-version": "true",
+          "data-package-version-id": packageVersionId,
+          onClick: () => window.restoreOwnSkillHubVersion?.(packageVersionId)
+        },
+        "\u91CD\u65B0\u516C\u5F00"
+      ) : null, packageVersionId ? /* @__PURE__ */ import_react3.default.createElement(
+        "button",
+        {
+          className: "btn btn-danger",
+          "data-skillhub-delete-version": "true",
+          "data-package-version-id": packageVersionId,
+          onClick: () => window.deleteOwnSkillHubVersion?.(packageVersionId)
+        },
+        "\u5220\u9664\u7248\u672C"
       ) : null));
     }));
   }
@@ -22948,11 +22966,12 @@
       document.addEventListener("keydown", handleEscape);
       return () => document.removeEventListener("keydown", handleEscape);
     }, [state.modalOpen.logs, state.modalOpen.mediaPreview, state.modalOpen.skillHubVersions, state.modalOpen.update]);
-    return /* @__PURE__ */ import_react3.default.createElement(import_react3.default.Fragment, null, /* @__PURE__ */ import_react3.default.createElement("div", { className: modalOverlayClass(state.modalOpen.logs), id: "logs-modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-header" }, /* @__PURE__ */ import_react3.default.createElement("h3", { id: "logs-title", "data-react-logs-title": "mounted" }, state.logsTitle || "\u65E5\u5FD7"), /* @__PURE__ */ import_react3.default.createElement("button", { className: "modal-close", onClick: () => setGlobalModalOpen("logs", false) }, "\xD7")), /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-body", id: "logs-body", "data-react-logs-body": "mounted" }, /* @__PURE__ */ import_react3.default.createElement(LogsBody, { ...state.logsBody })))), /* @__PURE__ */ import_react3.default.createElement("div", { className: modalOverlayClass(state.modalOpen.skillHubVersions), id: "skillhub-versions-modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-header" }, /* @__PURE__ */ import_react3.default.createElement("h3", { id: "skillhub-versions-title", "data-react-skillhub-versions-title": "mounted" }, "SkillHub Versions: ", state.skillHubVersions.skillId || "-"), /* @__PURE__ */ import_react3.default.createElement("button", { className: "modal-close", onClick: () => setGlobalModalOpen("skillHubVersions", false) }, "\xD7")), /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-body", "data-react-skillhub-versions": "mounted", id: "skillhub-versions-body" }, /* @__PURE__ */ import_react3.default.createElement(SkillHubVersionsList, { ...state.skillHubVersions })))), /* @__PURE__ */ import_react3.default.createElement("div", { className: modalOverlayClass(state.modalOpen.update), id: "update-modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-header" }, /* @__PURE__ */ import_react3.default.createElement("h3", null, "\u66F4\u65B0\u4E2D\u5FC3"), /* @__PURE__ */ import_react3.default.createElement("button", { className: "modal-close", onClick: () => setGlobalModalOpen("update", false) }, "\xD7")), /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-body", id: "update-body", "data-react-update-status": "mounted" }, /* @__PURE__ */ import_react3.default.createElement(UpdateStatusBody, { ...state.updateStatus })))), /* @__PURE__ */ import_react3.default.createElement("div", { className: modalOverlayClass(state.modalOpen.mediaPreview), id: "media-preview-modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-header" }, /* @__PURE__ */ import_react3.default.createElement("h3", { id: "media-preview-title", "data-react-media-preview-title": "mounted" }, state.mediaPreview.title || "\u9884\u89C8"), /* @__PURE__ */ import_react3.default.createElement("button", { className: "modal-close", onClick: () => setGlobalModalOpen("mediaPreview", false) }, "\xD7")), /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-body", id: "media-preview-body", "data-react-media-preview": "mounted" }, /* @__PURE__ */ import_react3.default.createElement(MediaPreviewBody, { ...state.mediaPreview })))));
+    return /* @__PURE__ */ import_react3.default.createElement(import_react3.default.Fragment, null, /* @__PURE__ */ import_react3.default.createElement("div", { className: modalOverlayClass(state.modalOpen.logs), id: "logs-modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-header" }, /* @__PURE__ */ import_react3.default.createElement("h3", { id: "logs-title", "data-react-logs-title": "mounted" }, state.logsTitle || "\u65E5\u5FD7"), /* @__PURE__ */ import_react3.default.createElement("button", { className: "modal-close", onClick: () => setGlobalModalOpen("logs", false) }, "\xD7")), /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-body", id: "logs-body", "data-react-logs-body": "mounted" }, /* @__PURE__ */ import_react3.default.createElement(LogsBody, { ...state.logsBody })))), /* @__PURE__ */ import_react3.default.createElement("div", { className: modalOverlayClass(state.modalOpen.skillHubVersions), id: "skillhub-versions-modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-header" }, /* @__PURE__ */ import_react3.default.createElement("h3", { id: "skillhub-versions-title", "data-react-skillhub-versions-title": "mounted" }, "SkillHub Versions: ", state.skillHubVersions.skillId || "-"), /* @__PURE__ */ import_react3.default.createElement("button", { className: "modal-close", onClick: () => setGlobalModalOpen("skillHubVersions", false) }, "\xD7")), /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-body", "data-react-skillhub-versions": "mounted", id: "skillhub-versions-body" }, /* @__PURE__ */ import_react3.default.createElement(SkillHubVersionsList, { ...state.skillHubVersions })))), /* @__PURE__ */ import_react3.default.createElement("div", { className: modalOverlayClass(state.modalOpen.update), id: "update-modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-header" }, /* @__PURE__ */ import_react3.default.createElement("h3", null, "\u66F4\u65B0\u4E2D\u5FC3"), /* @__PURE__ */ import_react3.default.createElement("button", { className: "modal-close", onClick: () => window.closeUpdateModal?.() }, "\xD7")), /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-body", id: "update-body", "data-react-update-status": "mounted" }, /* @__PURE__ */ import_react3.default.createElement(UpdateStatusBody, { ...state.updateStatus })))), /* @__PURE__ */ import_react3.default.createElement("div", { className: modalOverlayClass(state.modalOpen.mediaPreview), id: "media-preview-modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal" }, /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-header" }, /* @__PURE__ */ import_react3.default.createElement("h3", { id: "media-preview-title", "data-react-media-preview-title": "mounted" }, state.mediaPreview.title || "\u9884\u89C8"), /* @__PURE__ */ import_react3.default.createElement("button", { className: "modal-close", onClick: () => window.closeCatsMediaPreview?.() }, "\xD7")), /* @__PURE__ */ import_react3.default.createElement("div", { className: "modal-body", id: "media-preview-body", "data-react-media-preview": "mounted" }, /* @__PURE__ */ import_react3.default.createElement(MediaPreviewBody, { ...state.mediaPreview })))));
   }
   function LogsBody(payload) {
     if (payload.kind === "weixin-qr") {
-      return /* @__PURE__ */ import_react3.default.createElement("div", { style: { padding: 20, textAlign: "center" } }, /* @__PURE__ */ import_react3.default.createElement("p", { style: { color: "var(--text)", marginBottom: 16 } }, "\u8BF7\u7528\u5FAE\u4FE1\u626B\u63CF\u4E0B\u65B9\u4E8C\u7EF4\u7801\u6388\u6743"), /* @__PURE__ */ import_react3.default.createElement(
+      const agentName = payload.agentName || "\u5F53\u524D Agent";
+      return /* @__PURE__ */ import_react3.default.createElement("div", { style: { padding: 20, textAlign: "center" } }, /* @__PURE__ */ import_react3.default.createElement("p", { style: { color: "var(--text)", fontWeight: 800, marginBottom: 8 } }, "\u7ED1\u5B9A\u5230 ", agentName), /* @__PURE__ */ import_react3.default.createElement("p", { style: { color: "var(--text2)", marginBottom: 16 } }, "\u8BF7\u7528\u5FAE\u4FE1\u626B\u63CF\u4E0B\u65B9\u4E8C\u7EF4\u7801\u6388\u6743\u3002\u6388\u6743\u6210\u529F\u540E\uFF0C\u5FAE\u4FE1\u6D88\u606F\u4F1A\u8FDB\u5165\u8FD9\u4E2A Agent\u3002"), /* @__PURE__ */ import_react3.default.createElement(
         "a",
         {
           href: payload.href,
@@ -22972,7 +22991,7 @@
       ), /* @__PURE__ */ import_react3.default.createElement("p", { style: { color: "var(--text3)", fontSize: 12, marginTop: 16 } }, "\u7B49\u5F85\u626B\u7801\u4E2D..."));
     }
     if (payload.kind === "weixin-success") {
-      return /* @__PURE__ */ import_react3.default.createElement("div", { style: { color: "var(--green)", padding: 20, textAlign: "center" } }, /* @__PURE__ */ import_react3.default.createElement("p", { style: { fontSize: 18, fontWeight: 700, marginBottom: 12 } }, "\u6388\u6743\u6210\u529F"), /* @__PURE__ */ import_react3.default.createElement("p", null, "Token \u5DF2\u81EA\u52A8\u586B\u5165\uFF0C\u8BF7\u70B9\u51FB\u4FDD\u5B58\u6309\u94AE"));
+      return /* @__PURE__ */ import_react3.default.createElement("div", { style: { color: "var(--green)", padding: 20, textAlign: "center" } }, /* @__PURE__ */ import_react3.default.createElement("p", { style: { fontSize: 18, fontWeight: 700, marginBottom: 12 } }, "\u6388\u6743\u6210\u529F"), /* @__PURE__ */ import_react3.default.createElement("p", null, payload.message || "\u5FAE\u4FE1\u901A\u9053\u5DF2\u7ED1\u5B9A\uFF0CToken \u5DF2\u4FDD\u5B58\u5230\u672C\u5730\u73AF\u5883\u3002"));
     }
     if (payload.kind === "weixin-expired") {
       return /* @__PURE__ */ import_react3.default.createElement("div", { style: { color: "var(--red)", padding: 20, textAlign: "center" } }, "\u4E8C\u7EF4\u7801\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u83B7\u53D6");
@@ -23022,6 +23041,8 @@
     renderGlobalModals();
   }
   function closeGlobalModals() {
+    if (globalModalsState.modalOpen.update) window.closeUpdateModal?.();
+    if (globalModalsState.modalOpen.mediaPreview) window.closeCatsMediaPreview?.();
     globalModalsState = {
       ...globalModalsState,
       modalOpen: {
@@ -23780,7 +23801,20 @@
         }
       },
       "\u6E05\u7A7A"
-    )), /* @__PURE__ */ import_react6.default.createElement("details", { className: "config-section", open: true }, /* @__PURE__ */ import_react6.default.createElement("summary", { className: "settings-advanced-summary" }, /* @__PURE__ */ import_react6.default.createElement("span", null, "\u53D1\u73B0\u6280\u80FD"), /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag" }, "cloud registry")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-advanced-body" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "skills-grid", "data-react-skillhub-registry": "mounted", id: "skillhub-registry-grid" }, state.registryPayload ? /* @__PURE__ */ import_react6.default.createElement(SkillHubRegistryGrid, { ...state.registryPayload }) : /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "\u641C\u7D22\u4E91\u7AEF\u5DF2\u5BA1\u6838 Skill\u3002")))), /* @__PURE__ */ import_react6.default.createElement("details", { className: "config-section", open: true }, /* @__PURE__ */ import_react6.default.createElement("summary", { className: "settings-advanced-summary" }, /* @__PURE__ */ import_react6.default.createElement("span", null, "\u5DF2\u5B89\u88C5\u6280\u80FD"), /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag" }, "local")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-advanced-body" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "skills-grid", "data-react-local-skill-store": "mounted", id: "store-grid" }, state.localSkillStorePayload ? /* @__PURE__ */ import_react6.default.createElement(LocalSkillGrid, { ...state.localSkillStorePayload }) : /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "\u52A0\u8F7D\u4E2D..."))))), /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-section", "data-react-skillhub-account": "mounted", id: "skillhub-account-card" }, state.accountPayload ? /* @__PURE__ */ import_react6.default.createElement(SkillHubAccountCard, { ...state.accountPayload }) : /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "\u6B63\u5728\u68C0\u67E5 SkillHub \u767B\u5F55\u72B6\u6001...")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-section" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-group-title-main" }, "\u6211\u7684\u53D1\u5E03"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-meta", style: { marginBottom: 14 } }, "\u7BA1\u7406\u4F60\u53D1\u5E03\u5230 SkillHub \u7684 Skill \u548C\u7248\u672C\u3002\u4E0B\u67B6\u4F1A\u9690\u85CF\u516C\u5F00\u5B89\u88C5\uFF1B\u5220\u9664\u4F1A\u79FB\u9664\u670D\u52A1\u5668\u7248\u672C\u548C\u5305\u6587\u4EF6\u3002"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "portal-list", "data-react-skillhub-package-versions": "mounted", id: "skillhub-package-versions-list" }, developerData ? /* @__PURE__ */ import_react6.default.createElement(SkillHubPackageVersionsList, { versions: developerData.packageVersions || [] }) : /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "\u6682\u65E0\u53D1\u5E03\u7248\u672C"))));
+    )), /* @__PURE__ */ import_react6.default.createElement("details", { className: "config-section", open: true }, /* @__PURE__ */ import_react6.default.createElement("summary", { className: "settings-advanced-summary" }, /* @__PURE__ */ import_react6.default.createElement("span", null, "\u53D1\u73B0\u6280\u80FD"), /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag" }, "cloud registry")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-advanced-body" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "skills-grid", "data-react-skillhub-registry": "mounted", id: "skillhub-registry-grid" }, state.registryPayload ? /* @__PURE__ */ import_react6.default.createElement(SkillHubRegistryGrid, { ...state.registryPayload }) : /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "\u641C\u7D22\u4E91\u7AEF\u5DF2\u5BA1\u6838 Skill\u3002")))), /* @__PURE__ */ import_react6.default.createElement("details", { className: "config-section", open: true }, /* @__PURE__ */ import_react6.default.createElement("summary", { className: "settings-advanced-summary" }, /* @__PURE__ */ import_react6.default.createElement("span", null, "\u5DF2\u5B89\u88C5\u6280\u80FD"), /* @__PURE__ */ import_react6.default.createElement("span", { style: { alignItems: "center", display: "flex", gap: 8 } }, /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag" }, "local"), /* @__PURE__ */ import_react6.default.createElement(
+      "button",
+      {
+        className: "btn",
+        id: "copy-skills-root-btn",
+        type: "button",
+        onClick: (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          window.copySkillsRootPath?.();
+        }
+      },
+      state.copySkillsRootLabel || "Copy Skills path"
+    ))), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-advanced-body" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "skills-grid", "data-react-local-skill-store": "mounted", id: "store-grid" }, state.localSkillStorePayload ? /* @__PURE__ */ import_react6.default.createElement(LocalSkillGrid, { ...state.localSkillStorePayload }) : /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "\u52A0\u8F7D\u4E2D..."))))), /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-section", "data-react-skillhub-account": "mounted", id: "skillhub-account-card" }, state.accountPayload ? /* @__PURE__ */ import_react6.default.createElement(SkillHubAccountCard, { ...state.accountPayload }) : /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "\u6B63\u5728\u68C0\u67E5 SkillHub \u767B\u5F55\u72B6\u6001...")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-section" }, /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-group-title-main" }, "\u6211\u7684\u53D1\u5E03"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-meta", style: { marginBottom: 14 } }, "\u7BA1\u7406\u4F60\u53D1\u5E03\u5230 SkillHub \u7684 Skill \u548C\u7248\u672C\u3002\u4E0B\u67B6\u4F1A\u9690\u85CF\u516C\u5F00\u5B89\u88C5\uFF1B\u5220\u9664\u4F1A\u79FB\u9664\u670D\u52A1\u5668\u7248\u672C\u548C\u5305\u6587\u4EF6\u3002"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "portal-list", "data-react-skillhub-package-versions": "mounted", id: "skillhub-package-versions-list" }, developerData ? /* @__PURE__ */ import_react6.default.createElement(SkillHubPackageVersionsList, { versions: developerData.packageVersions || [] }) : /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "\u6682\u65E0\u53D1\u5E03\u7248\u672C"))));
   }
   function roleList(value) {
     const roles = asList(value).map((item) => toText2(item)).filter(Boolean);
@@ -23797,20 +23831,21 @@
     const roles = roleList(skillHubState.roles);
     const authenticated = Boolean(skillHubState.authenticated);
     if (authenticated) {
-      return /* @__PURE__ */ import_react6.default.createElement(import_react6.default.Fragment, null, /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-setup-head" }, /* @__PURE__ */ import_react6.default.createElement("div", null, /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-setup-title" }, "Signed in to SkillHub"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-setup-copy" }, toText2(user.displayName, toText2(user.email, "CatsCo user")), " \u8DEF ", roles)), /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag green" }, "connected")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-actions", style: { marginTop: 14 } }, /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn", type: "button", onClick: () => window.fetchSkillHubDeveloper?.() }, "Refresh developer status"), /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn", type: "button", onClick: () => window.logoutSkillHub?.() }, "Logout")), !skillHubState.trustReady ? /* @__PURE__ */ import_react6.default.createElement("div", { className: "runtime-note warning", style: { marginTop: 12 } }, "This Agent build does not include the SkillHub root public key yet. Run the trust-root setup before production release.") : null);
+      return /* @__PURE__ */ import_react6.default.createElement(import_react6.default.Fragment, null, /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-setup-head" }, /* @__PURE__ */ import_react6.default.createElement("div", null, /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-setup-title" }, "Signed in to SkillHub"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-setup-copy" }, toText2(user.displayName, toText2(user.email, "CatsCo user")), " \xB7 ", roles)), /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag green" }, "connected")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-actions", style: { marginTop: 14 } }, /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn", type: "button", onClick: () => window.fetchSkillHubDeveloper?.() }, "Refresh developer status"), /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn", type: "button", onClick: () => window.logoutSkillHub?.() }, "Logout")), !skillHubState.trustReady ? /* @__PURE__ */ import_react6.default.createElement("div", { className: "runtime-note warning", style: { marginTop: 12 } }, "This Agent build does not include the SkillHub root public key yet. Run the trust-root setup before production release.") : null);
     }
     return /* @__PURE__ */ import_react6.default.createElement(import_react6.default.Fragment, null, /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-setup-head" }, /* @__PURE__ */ import_react6.default.createElement("div", null, /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-setup-title" }, "Connect SkillHub"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-setup-copy" }, "Public Skills can be searched and installed directly. Publishing and version management reuse the current CatsCo account.")), /* @__PURE__ */ import_react6.default.createElement("span", { className: "tag warm" }, "catsco login")), /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-actions", style: { marginTop: 14 } }, /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn btn-primary", type: "button", onClick: () => window.connectSkillHubWithCatsCo?.() }, "Connect with CatsCo"), /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn", type: "button", onClick: () => window.fetchSkillHubDeveloper?.() }, "Refresh status")), /* @__PURE__ */ import_react6.default.createElement("details", { style: { marginTop: 14 } }, /* @__PURE__ */ import_react6.default.createElement("summary", { className: "settings-meta" }, "Fallback: SkillHub email/password login"), /* @__PURE__ */ import_react6.default.createElement("div", { className: "chat-form-row", style: { marginTop: 14, marginBottom: 10 } }, /* @__PURE__ */ import_react6.default.createElement("input", { className: "config-input", id: "skillhub-login-email", ...storeDraftFieldProps("skillhub-login-email"), placeholder: "Email" }), /* @__PURE__ */ import_react6.default.createElement("input", { className: "config-input", id: "skillhub-login-password", ...storeDraftFieldProps("skillhub-login-password"), type: "password", placeholder: "Password" })), /* @__PURE__ */ import_react6.default.createElement("div", { className: "chat-form-row" }, /* @__PURE__ */ import_react6.default.createElement("input", { className: "config-input", id: "skillhub-register-name", ...storeDraftFieldProps("skillhub-register-name"), placeholder: "Display name for registration" }), /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn", type: "button", onClick: () => window.loginSkillHub?.() }, "Login"), /* @__PURE__ */ import_react6.default.createElement("button", { className: "btn", type: "button", onClick: () => window.registerSkillHub?.() }, "Register"))));
   }
   function SkillHubPackageVersionsList({ versions = [] }) {
     if (!versions.length) {
-      return /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "No published versions");
+      return /* @__PURE__ */ import_react6.default.createElement("div", { className: "loading" }, "\u6682\u65E0\u53D1\u5E03\u7248\u672C");
     }
     return /* @__PURE__ */ import_react6.default.createElement(import_react6.default.Fragment, null, versions.map((item, index) => {
       const author = toText2(toRecord2(item.author)?.name);
       const downloads = Number(item.downloadCount || 0);
       const packageVersionId = toText2(item.packageVersionId, toText2(item.id));
       const status = toText2(item.status, "published");
-      return /* @__PURE__ */ import_react6.default.createElement("div", { className: "portal-row", key: `${toText2(item.skillId, toText2(item.name, "version"))}-${index}` }, /* @__PURE__ */ import_react6.default.createElement("strong", null, toText2(item.skillId, toText2(item.name, "-"))), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-meta" }, "v", toText2(item.latestVersion, toText2(item.version, "-")), " \u8DEF ", status, " \u8DEF downloads ", downloads, item.publishedAt ? ` \u8DEF ${toText2(item.publishedAt)}` : ""), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-meta" }, author ? `by ${author}` : "", " \u8DEF owner managed"), status === "published" && packageVersionId ? /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-actions", style: { marginTop: 8 } }, /* @__PURE__ */ import_react6.default.createElement(
+      const version = toText2(item.latestVersion, toText2(item.version, "-"));
+      return /* @__PURE__ */ import_react6.default.createElement("div", { className: "portal-row", key: `${toText2(item.skillId, toText2(item.name, "version"))}-${index}` }, /* @__PURE__ */ import_react6.default.createElement("strong", null, toText2(item.skillId, toText2(item.name, "-"))), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-meta" }, "v", version, " \xB7 ", status, " \xB7 \u4E0B\u8F7D ", downloads, item.publishedAt ? ` \xB7 ${toText2(item.publishedAt)}` : ""), /* @__PURE__ */ import_react6.default.createElement("div", { className: "settings-meta" }, author ? `\u4F5C\u8005 ${author}` : "", " \xB7 \u5F53\u524D\u8D26\u53F7\u53EF\u7BA1\u7406"), packageVersionId ? /* @__PURE__ */ import_react6.default.createElement("div", { className: "config-actions", style: { marginTop: 8 } }, status === "published" ? /* @__PURE__ */ import_react6.default.createElement(
         "button",
         {
           className: "btn btn-danger",
@@ -23818,7 +23853,25 @@
           type: "button",
           onClick: () => window.yankOwnSkillHubVersion?.(packageVersionId)
         },
-        "Remove version"
+        "\u4E0B\u67B6"
+      ) : /* @__PURE__ */ import_react6.default.createElement(
+        "button",
+        {
+          className: "btn btn-success",
+          "data-skillhub-restore-version": "true",
+          type: "button",
+          onClick: () => window.restoreOwnSkillHubVersion?.(packageVersionId)
+        },
+        "\u91CD\u65B0\u516C\u5F00"
+      ), /* @__PURE__ */ import_react6.default.createElement(
+        "button",
+        {
+          className: "btn btn-danger",
+          "data-skillhub-delete-version": "true",
+          type: "button",
+          onClick: () => window.deleteOwnSkillHubVersion?.(packageVersionId)
+        },
+        "\u5220\u9664"
       )) : null);
     }));
   }
@@ -23979,6 +24032,10 @@
     storePageState = { ...storePageState, developerData: data };
     renderStorePage();
   }
+  function renderCopySkillsRootStatus(label) {
+    storePageState = { ...storePageState, copySkillsRootLabel: label || "Copy Skills path" };
+    renderStorePage();
+  }
   function getStoreDraft() {
     return { ...storePageState.storeDraft };
   }
@@ -23998,6 +24055,7 @@
     window.__catscoRenderLocalSkillStore = renderLocalSkillStoreGrid;
     window.__catscoRenderSkillHubAccount = renderSkillHubAccountCard;
     window.__catscoRenderSkillHubDeveloper = renderSkillHubDeveloperPanel;
+    window.__catscoRenderCopySkillsRootStatus = renderCopySkillsRootStatus;
     window.__catscoSetStoreDraft = setStoreDraft;
   }
   function mountStorePage() {

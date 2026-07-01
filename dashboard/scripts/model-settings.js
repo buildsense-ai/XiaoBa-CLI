@@ -190,7 +190,8 @@ function renderCatsRelayModelPanel(){
       : catsConnected?'先选模型，再检查启动。':'先选模型，登录后自动接入。';
   const relayChoices=models.map(model=>{
     const id=String(model.id||model.model||'');
-    const quota=model.quota_class==='flash-low'?'Low quota Flash':model.quota_class==='multimodal'?'Multimodal':'Standard quota';
+    const quota=model.quota_class==='flash-low'?'低额度 Flash':model.quota_class==='multimodal'?'多模态':'标准额度';
+    const sdkLabel=model.sdk_label || (String(model.provider||model.protocol||'').toLowerCase().includes('openai')?'OpenAI SDK':'Anthropic SDK');
     const contextLabel=formatModelContextLabel(model.context_window_tokens, model.context_label);
     return {
       id,
@@ -198,17 +199,17 @@ function renderCatsRelayModelPanel(){
       disabled:relayActionBusy(),
       label:String(model.label||model.model||id),
       modelName:String(model.model||id),
-      meta:quota+' · context '+contextLabel+' · Anthropic SDK',
+      meta:quota+' · 上下文 '+contextLabel+' · '+sdkLabel,
     };
   });
   const custom=customStartupProfile();
   const customConfigured=isCustomStartupConfigured();
   const customProvider=custom.provider || settingValue('model.provider') || 'anthropic';
-  const customModel=custom.model || settingValue('model.model') || 'Not configured';
+  const customModel=custom.model || settingValue('model.model') || '未配置';
   const customContextLabel=customModelContextWindowLabel();
   const customMeta=customConfigured
-    ? 'Custom config · context '+customContextLabel+' · '+(customProvider==='openai'?'OpenAI SDK':'Anthropic SDK')
-    : 'Configure endpoint / key in settings';
+    ? '自定义配置 · 上下文 '+customContextLabel+' · '+(customProvider==='openai'?'OpenAI SDK':'Anthropic SDK')
+    : '去设置填写 endpoint / key';
   window.__catscoRenderCatsRelayModelPanel?.({
     activationCopy,
     customChoice:{
@@ -219,7 +220,7 @@ function renderCatsRelayModelPanel(){
       meta:customMeta,
     },
     models:relayChoices,
-    tagLabel:source==='custom'?'Custom':activeModel?String(activeModel.model||activeModel.label||'Selected'):'Available',
+    tagLabel:source==='custom'?'自定义':activeModel?String(activeModel.model||activeModel.label||'已选择'):'可用',
     tagTone:source==='custom'||activeModel?'green':'warm',
   });
 }

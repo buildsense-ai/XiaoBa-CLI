@@ -3,8 +3,8 @@ import { createRoot, type Root } from 'react-dom/client';
 
 type LogsBodyPayload =
   | { kind: 'text'; text: string; tone?: 'error' | 'success' | 'muted' }
-  | { href: string; kind: 'weixin-qr' }
-  | { kind: 'weixin-success' }
+  | { agentName?: string; href: string; kind: 'weixin-qr' }
+  | { kind: 'weixin-success'; message?: string }
   | { kind: 'weixin-expired' };
 
 type MediaPreviewPayload = {
@@ -68,9 +68,11 @@ declare global {
     closeUpdateModal?: () => void;
     copyManualInstallerUrl?: (url: string) => void;
     copyReleasePageUrl?: (url: string) => void;
+    deleteOwnSkillHubVersion?: (packageVersionId: string) => void;
     downloadUpdate?: () => void;
     installSkillHubSkill?: (skillId: string, version?: string) => void;
     installUpdate?: () => void;
+    restoreOwnSkillHubVersion?: (packageVersionId: string) => void;
     yankOwnSkillHubVersion?: (packageVersionId: string) => void;
   }
 }
@@ -132,13 +134,13 @@ function SkillHubVersionsList({
   tone,
 }: SkillHubVersionsPayload) {
   if (loading) {
-    return <div className="loading">{message || 'Loading versions...'}</div>;
+    return <div className="loading">{message || '正在加载版本...'}</div>;
   }
   if (message && tone) {
     return <RuntimeNotice message={message} tone={tone} />;
   }
   if (!versions.length) {
-    return <div className="loading">{message || 'No versions found.'}</div>;
+    return <div className="loading">{message || '暂无版本'}</div>;
   }
   const ownerVersionByKey = new Map<string, AnyRecord>();
   for (const item of ownerVersions) {
@@ -153,15 +155,15 @@ function SkillHubVersionsList({
         const version = toText(item.latestVersion, toText(item.version));
         const ownerVersion = ownerVersionByKey.get(`${skillId}@${version}`);
         const packageVersionId = toText(ownerVersion?.packageVersionId, toText(ownerVersion?.id));
-        const status = toText(item.status, 'published');
-        const publishedStatus = status !== 'published' ? status : 'published';
+        const ownerStatus = toText(toRecord(ownerVersion)?.status, toText(item.status, 'published'));
+        const publishedStatus = ownerStatus !== 'published' ? ownerStatus : 'published';
         return (
           <div className="portal-row" key={`${version || 'version'}-${index}`}>
             <strong>v{version || '-'}</strong>
             <div className="skill-meta">
               <span className={`tag ${publishedStatus === 'published' ? 'green' : 'warm'}`}>{publishedStatus}</span>
               {item.publishedAt ? <span className="tag">{toText(item.publishedAt)}</span> : null}
-              <span className="tag">downloads {Number(item.downloadCount || 0)}</span>
+              <span className="tag">下载 {Number(item.downloadCount || 0)}</span>
             </div>
             <div className="config-actions" style={{ marginTop: 10 }}>
               <button
@@ -172,16 +174,36 @@ function SkillHubVersionsList({
                 data-version={version || undefined}
                 onClick={() => window.installSkillHubSkill?.(skillId, version || undefined)}
               >
-                Install this version
+                安装此版本
               </button>
-              {packageVersionId && toText(toRecord(ownerVersion)?.status, 'published') === 'published' ? (
+              {packageVersionId && ownerStatus === 'published' ? (
                 <button
                   className="btn btn-danger"
                   data-skillhub-yank-version="true"
                   data-package-version-id={packageVersionId}
                   onClick={() => window.yankOwnSkillHubVersion?.(packageVersionId)}
                 >
-                  Remove version
+                  下架版本
+                </button>
+              ) : null}
+              {packageVersionId && ownerStatus !== 'published' ? (
+                <button
+                  className="btn btn-success"
+                  data-skillhub-restore-version="true"
+                  data-package-version-id={packageVersionId}
+                  onClick={() => window.restoreOwnSkillHubVersion?.(packageVersionId)}
+                >
+                  重新公开
+                </button>
+              ) : null}
+              {packageVersionId ? (
+                <button
+                  className="btn btn-danger"
+                  data-skillhub-delete-version="true"
+                  data-package-version-id={packageVersionId}
+                  onClick={() => window.deleteOwnSkillHubVersion?.(packageVersionId)}
+                >
+                  删除版本
                 </button>
               ) : null}
             </div>
@@ -352,7 +374,7 @@ function GlobalModals({ state }: { state: GlobalModalsState }) {
         <div className="modal">
           <div className="modal-header">
             <h3>更新中心</h3>
-            <button className="modal-close" onClick={() => setGlobalModalOpen('update', false)}>
+            <button className="modal-close" onClick={() => window.closeUpdateModal?.()}>
               &times;
             </button>
           </div>
@@ -368,7 +390,7 @@ function GlobalModals({ state }: { state: GlobalModalsState }) {
             <h3 id="media-preview-title" data-react-media-preview-title="mounted">
               {state.mediaPreview.title || '预览'}
             </h3>
-            <button className="modal-close" onClick={() => setGlobalModalOpen('mediaPreview', false)}>
+            <button className="modal-close" onClick={() => window.closeCatsMediaPreview?.()}>
               &times;
             </button>
           </div>
@@ -383,9 +405,13 @@ function GlobalModals({ state }: { state: GlobalModalsState }) {
 
 function LogsBody(payload: LogsBodyPayload) {
   if (payload.kind === 'weixin-qr') {
+    const agentName = payload.agentName || '当前 Agent';
     return (
       <div style={{ padding: 20, textAlign: 'center' }}>
-        <p style={{ color: 'var(--text)', marginBottom: 16 }}>请用微信扫描下方二维码授权</p>
+        <p style={{ color: 'var(--text)', fontWeight: 800, marginBottom: 8 }}>绑定到 {agentName}</p>
+        <p style={{ color: 'var(--text2)', marginBottom: 16 }}>
+          请用微信扫描下方二维码授权。授权成功后，微信消息会进入这个 Agent。
+        </p>
         <a
           href={payload.href}
           style={{
@@ -411,7 +437,7 @@ function LogsBody(payload: LogsBodyPayload) {
     return (
       <div style={{ color: 'var(--green)', padding: 20, textAlign: 'center' }}>
         <p style={{ fontSize: 18, fontWeight: 700, marginBottom: 12 }}>授权成功</p>
-        <p>Token 已自动填入，请点击保存按钮</p>
+        <p>{payload.message || '微信通道已绑定，Token 已保存到本地环境。'}</p>
       </div>
     );
   }
@@ -474,6 +500,8 @@ function setGlobalModalOpen(name: GlobalModalName, open: boolean) {
 }
 
 function closeGlobalModals() {
+  if (globalModalsState.modalOpen.update) window.closeUpdateModal?.();
+  if (globalModalsState.modalOpen.mediaPreview) window.closeCatsMediaPreview?.();
   globalModalsState = {
     ...globalModalsState,
     modalOpen: {

@@ -30,6 +30,7 @@ type SkillHubAccountPayload = {
 
 type StorePageState = {
   accountPayload?: SkillHubAccountPayload;
+  copySkillsRootLabel?: string;
   developerData?: AnyRecord;
   localSkillStorePayload?: LocalSkillStorePayload;
   registryPayload?: SkillHubRegistryPayload;
@@ -43,8 +44,11 @@ declare global {
     __catscoRenderLocalSkillStore?: (payload: LocalSkillStorePayload) => void;
     __catscoRenderSkillHubAccount?: (payload: SkillHubAccountPayload) => void;
     __catscoRenderSkillHubDeveloper?: (payload: AnyRecord) => void;
+    __catscoRenderCopySkillsRootStatus?: (label: string) => void;
     __catscoSetStoreDraft?: (payload: Record<string, string>) => void;
     connectSkillHubWithCatsCo?: () => void;
+    copySkillsRootPath?: () => void;
+    deleteOwnSkillHubVersion?: (packageVersionId: string) => void;
     deleteSkill?: (name: string) => void;
     fetchSkillHubDeveloper?: () => void;
     installSkillHubSkill?: (skillId: string, version?: string) => void;
@@ -52,6 +56,7 @@ declare global {
     logoutSkillHub?: () => void;
     refreshSkillHubPage?: () => void;
     registerSkillHub?: () => void;
+    restoreOwnSkillHubVersion?: (packageVersionId: string) => void;
     searchSkillHub?: (queryOverride?: string, quiet?: boolean) => void;
     shareLocalSkillToSkillHub?: (name: string) => void;
     showSkillHubVersions?: (skillId: string) => void;
@@ -169,7 +174,21 @@ function StorePage({ state }: { state: StorePageState }) {
         <details className="config-section" open>
           <summary className="settings-advanced-summary">
             <span>已安装技能</span>
-            <span className="tag">local</span>
+            <span style={{ alignItems: 'center', display: 'flex', gap: 8 }}>
+              <span className="tag">local</span>
+              <button
+                className="btn"
+                id="copy-skills-root-btn"
+                type="button"
+                onClick={event => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  window.copySkillsRootPath?.();
+                }}
+              >
+                {state.copySkillsRootLabel || 'Copy Skills path'}
+              </button>
+            </span>
           </summary>
           <div className="settings-advanced-body">
             <div className="skills-grid" data-react-local-skill-store="mounted" id="store-grid">
@@ -229,7 +248,7 @@ function SkillHubAccountCard({ skillHubState = {}, message, tone, loading = fals
           <div>
             <div className="settings-setup-title">Signed in to SkillHub</div>
             <div className="settings-setup-copy">
-              {toText(user.displayName, toText(user.email, 'CatsCo user'))} 路 {roles}
+              {toText(user.displayName, toText(user.email, 'CatsCo user'))} · {roles}
             </div>
           </div>
           <span className="tag green">connected</span>
@@ -294,7 +313,7 @@ function SkillHubAccountCard({ skillHubState = {}, message, tone, loading = fals
 
 function SkillHubPackageVersionsList({ versions = [] }: { versions?: AnyRecord[] }) {
   if (!versions.length) {
-    return <div className="loading">No published versions</div>;
+    return <div className="loading">暂无发布版本</div>;
   }
   return (
     <>
@@ -303,25 +322,45 @@ function SkillHubPackageVersionsList({ versions = [] }: { versions?: AnyRecord[]
         const downloads = Number(item.downloadCount || 0);
         const packageVersionId = toText(item.packageVersionId, toText(item.id));
         const status = toText(item.status, 'published');
+        const version = toText(item.latestVersion, toText(item.version, '-'));
         return (
           <div className="portal-row" key={`${toText(item.skillId, toText(item.name, 'version'))}-${index}`}>
             <strong>{toText(item.skillId, toText(item.name, '-'))}</strong>
             <div className="settings-meta">
-              v{toText(item.latestVersion, toText(item.version, '-'))} 路 {status} 路 downloads {downloads}
-              {item.publishedAt ? ` 路 ${toText(item.publishedAt)}` : ''}
+              v{version} · {status} · 下载 {downloads}
+              {item.publishedAt ? ` · ${toText(item.publishedAt)}` : ''}
             </div>
             <div className="settings-meta">
-              {author ? `by ${author}` : ''} 路 owner managed
+              {author ? `作者 ${author}` : ''} · 当前账号可管理
             </div>
-            {status === 'published' && packageVersionId ? (
+            {packageVersionId ? (
               <div className="config-actions" style={{ marginTop: 8 }}>
+                {status === 'published' ? (
+                  <button
+                    className="btn btn-danger"
+                    data-skillhub-yank-version="true"
+                    type="button"
+                    onClick={() => window.yankOwnSkillHubVersion?.(packageVersionId)}
+                  >
+                    下架
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn-success"
+                    data-skillhub-restore-version="true"
+                    type="button"
+                    onClick={() => window.restoreOwnSkillHubVersion?.(packageVersionId)}
+                  >
+                    重新公开
+                  </button>
+                )}
                 <button
                   className="btn btn-danger"
-                  data-skillhub-yank-version="true"
+                  data-skillhub-delete-version="true"
                   type="button"
-                  onClick={() => window.yankOwnSkillHubVersion?.(packageVersionId)}
+                  onClick={() => window.deleteOwnSkillHubVersion?.(packageVersionId)}
                 >
-                  Remove version
+                  删除
                 </button>
               </div>
             ) : null}
@@ -603,6 +642,11 @@ function renderSkillHubDeveloperPanel(data: AnyRecord) {
   renderStorePage();
 }
 
+function renderCopySkillsRootStatus(label: string) {
+  storePageState = { ...storePageState, copySkillsRootLabel: label || 'Copy Skills path' };
+  renderStorePage();
+}
+
 function getStoreDraft() {
   return { ...storePageState.storeDraft };
 }
@@ -624,6 +668,7 @@ if (typeof window !== 'undefined') {
   window.__catscoRenderLocalSkillStore = renderLocalSkillStoreGrid;
   window.__catscoRenderSkillHubAccount = renderSkillHubAccountCard;
   window.__catscoRenderSkillHubDeveloper = renderSkillHubDeveloperPanel;
+  window.__catscoRenderCopySkillsRootStatus = renderCopySkillsRootStatus;
   window.__catscoSetStoreDraft = setStoreDraft;
 }
 
