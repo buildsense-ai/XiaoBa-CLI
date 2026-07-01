@@ -87,6 +87,7 @@ test('React shell owns navigation, page roots, and global modal mounting', () =>
   assert.match(reactFiles.shell, /id: 'store-page-root'/);
   assert.match(reactFiles.shell, /id: 'chat-page-root'/);
   assert.match(reactFiles.shell, /mountPromptsPage\(\);/);
+  assert.match(dashboardCss, /\.sidebar-brand-logo\s*\{[\s\S]*width:\s*100%;[\s\S]*height:\s*100%;[\s\S]*object-fit:\s*contain;[\s\S]*border-radius:\s*inherit;/);
   assert.match(reactFiles.shell, /document\.body\.classList\.toggle\('chat-active', activePage === 'chat'\)/);
   assert.match(reactFiles.shell, /document\.body\.classList\.toggle\('companion-active', activePage === 'companion'\)/);
   assert.match(reactFiles.globalModals, /export function mountGlobalModals\(\)/);
