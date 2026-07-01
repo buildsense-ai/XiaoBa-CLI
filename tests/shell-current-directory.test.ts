@@ -73,8 +73,8 @@ describe('ShellTool current directory probe', () => {
     assert.strictEqual(result.ok, true);
     assert.ok(fs.existsSync(path.join(testRoot, 'sub', 'marker.txt')));
     assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
-    assert.ok((result.content as string).includes(`Working directory: ${path.resolve(testRoot, 'sub')}`));
-    assert.ok((result.content as string).includes(`Final cwd: ${path.resolve(testRoot, 'sub')}`));
+    assert.ok((result.content as string).includes(`cwd_before: ${path.resolve(testRoot, 'sub')}`));
+    assert.ok((result.content as string).includes(`cwd_after: ${path.resolve(testRoot, 'sub')}`));
   });
 
   test('successful commands return both stdout and stderr', async () => {
