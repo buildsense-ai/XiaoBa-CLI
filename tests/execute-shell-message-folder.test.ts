@@ -33,6 +33,42 @@ function makeShellOutput(command: string, lineCount = 100, failed = false): stri
   ].filter(line => line !== '').join('\n');
 }
 
+function makeStructuredShellOutput(command: string, lineCount = 100): string {
+  const lines = Array.from({ length: lineCount }, (_, index) => {
+    const lineNumber = index + 1;
+    if (lineNumber === 50) {
+      return 'ERROR failed at src/structured.ts:45 with assertion failure';
+    }
+    return `structured shell output line ${lineNumber}`;
+  });
+  return [
+    'Command completed',
+    'status: failed',
+    `command: ${command}`,
+    'exit_code: 1',
+    'signal:',
+    'timed_out: false',
+    'duration_ms: 321',
+    'cwd_before: C:\\work\\repo',
+    'cwd_after: C:\\work\\repo',
+    `stdout_lines: ${lineCount}`,
+    'stderr_lines: 1',
+    'stdout_bytes: 1000',
+    'stderr_bytes: 25',
+    'truncated: true',
+    'truncated_reason: output_exceeded_inline_limit',
+    'original_output_chars: 123456',
+    'output_artifact: C:\\work\\repo\\tool-results\\shell-structured.log',
+    'error_message: Command failed with exit code 1',
+    '',
+    'stdout:',
+    lines.join('\n'),
+    '',
+    'stderr:',
+    'warning before failure',
+  ].join('\n');
+}
+
 function makeToolCallMessage(id: string, command: string): Message {
   return {
     role: 'assistant',
@@ -115,6 +151,37 @@ test('writes truncated execute_shell full output to a linkable artifact', () => 
   } finally {
     fs.rmSync(artifactRoot, { recursive: true, force: true });
   }
+});
+
+test('folds structured execute_shell output and reads contract metadata', () => {
+  const raw = makeStructuredShellOutput('npm test -- structured', 100);
+  const messages: Message[] = [
+    { role: 'user', content: 'run tests' },
+    makeToolCallMessage('call_structured_shell', 'npm test -- structured'),
+    { role: 'tool', name: 'execute_shell', tool_call_id: 'call_structured_shell', content: raw },
+    { role: 'assistant', content: 'tests failed' },
+    { role: 'user', content: 'summarize failure' },
+  ];
+
+  const result = foldHistoricalExecuteShellMessages(messages, {
+    thresholdTokens: 20,
+    maxHeadLines: 2,
+    maxTailLines: 2,
+    maxKeyLines: 4,
+  });
+  const folded = result.messages[2];
+
+  assert.ok(String(folded.content).startsWith(TRUNCATED_EXECUTE_SHELL_PREFIX));
+  assert.match(String(folded.content), /command: npm test -- structured/);
+  assert.match(String(folded.content), /status: failed/);
+  assert.match(String(folded.content), /omitted: \d+ lines, \d+ chars/);
+  assert.doesNotMatch(String(folded.content), /^cwd:/m);
+  assert.doesNotMatch(String(folded.content), /^elapsed:/m);
+  assert.doesNotMatch(String(folded.content), /^output_lines:/m);
+  assert.doesNotMatch(String(folded.content), /^truncated:/m);
+  assert.doesNotMatch(String(folded.content), /^original_output_chars:/m);
+  assert.doesNotMatch(String(folded.content), /^output_artifact:/m);
+  assert.match(String(folded.content), /ERROR failed at src\/structured\.ts:45/);
 });
 
 test('does not fold execute_shell result from the current tool loop', () => {

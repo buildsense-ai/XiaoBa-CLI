@@ -51,12 +51,12 @@ describe('Logger', () => {
     Logger.closeLogFile();
     await waitForFlush();
 
-    const globalContent = fs.readFileSync(globalLogPath, 'utf-8');
+    const globalContent = await readFileEventually(globalLogPath, /\[INFO\] outside context/);
     assert.match(globalContent, /\[INFO\] outside context/);
     assert.doesNotMatch(globalContent, /inside context/);
     assert.doesNotMatch(globalContent, /still inside context/);
 
-    const sessionEntries = fs.readFileSync(sessionLogPath, 'utf-8')
+    const sessionEntries = (await readFileEventually(sessionLogPath, /still inside context/))
       .trim()
       .split('\n')
       .filter(Boolean)
@@ -88,4 +88,20 @@ describe('Logger', () => {
 
 function waitForFlush(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 20));
+}
+
+async function readFileEventually(filePath: string, expected: RegExp): Promise<string> {
+  let lastContent = '';
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      lastContent = fs.readFileSync(filePath, 'utf-8');
+      if (expected.test(lastContent)) return lastContent;
+    } catch (error) {
+      lastError = error;
+    }
+    await waitForFlush();
+  }
+  if (lastError && !fs.existsSync(filePath)) throw lastError;
+  return lastContent;
 }
