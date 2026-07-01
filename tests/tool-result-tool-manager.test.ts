@@ -65,7 +65,8 @@ describe('ToolManager - ToolExecutionResult 统一处理', () => {
       [],
     );
     assert.strictEqual(result.ok, true);
-    assert.ok(result.content?.includes('找到'));
+    assert.ok(String(result.content).includes('a.txt'));
+    assert.ok(String(result.content).includes('b.txt'));
     assert.strictEqual(result.errorCode, undefined);
   });
 
