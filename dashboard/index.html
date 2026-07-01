@@ -5415,13 +5415,17 @@
             <div class="companion-action-library">
               <div class="companion-section-head">
                 <div class="companion-section-title">当前动作库</div>
-                <span class="tag">22 帧</span>
+                <span class="tag">71 帧</span>
               </div>
               <div class="pet-action-grid companion-action-tags">
                 <div class="pet-action active" data-pet-state="idle" role="button" tabindex="0" onclick="previewPetAction('idle')" onkeydown="handlePetActionPreviewKey(event,'idle')">待机<span>4 帧</span></div>
                 <div class="pet-action" data-pet-state="thinking" role="button" tabindex="0" onclick="previewPetAction('thinking')" onkeydown="handlePetActionPreviewKey(event,'thinking')">思考<span>4 帧</span></div>
                 <div class="pet-action" data-pet-state="typing" role="button" tabindex="0" onclick="previewPetAction('typing')" onkeydown="handlePetActionPreviewKey(event,'typing')">输入<span>6 帧</span></div>
                 <div class="pet-action" data-pet-state="success" role="button" tabindex="0" onclick="previewPetAction('success')" onkeydown="handlePetActionPreviewKey(event,'success')">成功<span>4 帧</span></div>
+                <div class="pet-action" data-pet-state="notify" role="button" tabindex="0" onclick="previewPetAction('notify')" onkeydown="handlePetActionPreviewKey(event,'notify')">提醒<span>24 帧</span></div>
+                <div class="pet-action" data-pet-state="skill" role="button" tabindex="0" onclick="previewPetAction('skill')" onkeydown="handlePetActionPreviewKey(event,'skill')">Skill<span>1 帧</span></div>
+                <div class="pet-action" data-pet-state="sleepy" role="button" tabindex="0" onclick="previewPetAction('sleepy')" onkeydown="handlePetActionPreviewKey(event,'sleepy')">休息<span>2 帧</span></div>
+                <div class="pet-action" data-pet-state="level_up" role="button" tabindex="0" onclick="previewPetAction('level_up')" onkeydown="handlePetActionPreviewKey(event,'level_up')">升级<span>1 帧</span></div>
                 <div class="pet-action" data-pet-state="error" role="button" tabindex="0" onclick="previewPetAction('error')" onkeydown="handlePetActionPreviewKey(event,'error')">错误<span>4 帧</span></div>
               </div>
             </div>
@@ -5865,27 +5869,40 @@
     const CATS_WORKING_TEXT_PREFIX = 'AI文本:';
     const CATS_WORKING_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
     const catsRuntimePlanOpenState = new Map();
-    const petFrames = {
+    let petFrames = {};
+    const petFrameFallbacks = {
       idle: ['pet/idle/01.png', 'pet/idle/02.png', 'pet/idle/03.png', 'pet/idle/04.png'],
+      idle_active: ['pet/idle/01.png', 'pet/idle/02.png', 'pet/idle/03.png', 'pet/idle/04.png'],
       thinking: ['pet/thinking/01.png', 'pet/thinking/02.png', 'pet/thinking/03.png', 'pet/thinking/04.png'],
       working: ['pet/thinking/01.png', 'pet/thinking/02.png', 'pet/thinking/03.png', 'pet/thinking/04.png'],
       typing: ['pet/typing/01.png', 'pet/typing/02.png', 'pet/typing/03.png', 'pet/typing/04.png', 'pet/typing/05.png', 'pet/typing/06.png'],
       success: ['pet/success/01.png', 'pet/success/02.png', 'pet/success/03.png', 'pet/success/04.png'],
+      happy: ['pet/success/01.png', 'pet/success/02.png', 'pet/success/03.png', 'pet/success/04.png'],
+      skill: ['pet/thinking/01.png', 'pet/thinking/02.png', 'pet/thinking/03.png', 'pet/thinking/04.png'],
+      notify: ['pet/success/01.png', 'pet/success/02.png', 'pet/success/03.png', 'pet/success/04.png'],
+      sleepy: ['pet/idle/01.png', 'pet/idle/02.png', 'pet/idle/03.png', 'pet/idle/04.png'],
       error: ['pet/error/01.png', 'pet/error/02.png', 'pet/error/03.png', 'pet/error/04.png'],
-      level_up: ['pet/success/01.png', 'pet/success/02.png', 'pet/success/03.png', 'pet/success/04.png']
+      level_up: ['pet/success/01.png', 'pet/success/02.png', 'pet/success/03.png', 'pet/success/04.png'],
+      peek: ['pet/idle/01.png']
     };
-    const petSpeeds = { idle: 520, thinking: 620, working: 520, typing: 140, success: 360, error: 420, level_up: 320 };
-    const petStateLabels = { idle: '待机中', thinking: '思考中', working: '工作中', typing: '输入中', success: '完成了', error: '出错了', level_up: '升级了' };
+    petFrames = { ...petFrameFallbacks };
+    const petSpeeds = { idle: 520, idle_active: 420, thinking: 620, working: 520, typing: 140, skill: 360, notify: 260, sleepy: 680, success: 360, happy: 260, error: 420, level_up: 320, peek: 420 };
+    const petStateLabels = { idle: '待机中', idle_active: '陪伴中', thinking: '思考中', working: '工作中', typing: '输入中', skill: '发现能力', notify: '提醒你', sleepy: '休息中', success: '完成了', happy: '开心', error: '出错了', level_up: '升级了', peek: '探头中' };
     const petStateCopy = {
       idle: '正在等待下一项任务。',
       thinking: '正在整理上下文和下一步动作。',
       working: '正在执行当前任务。',
       typing: '正在处理输入或输出内容。',
+      skill: '我发现一个能力可能适合你。',
+      notify: '提醒一下，这里有一个事情可能需要关注。',
+      sleepy: '我先安静陪着，需要时再叫我。',
       success: '刚完成了一项工作。',
+      happy: '完成啦，我帮你整理好了。',
       error: '遇到异常，需要你看一眼。',
-      level_up: '经验提升，解锁了新等级。'
+      level_up: '经验提升，解锁了新等级。',
+      peek: '我在这里，点我可以打开入口。'
     };
-    const petPreviewLabels = { idle: '待机', thinking: '思考', typing: '输入', success: '成功', error: '错误' };
+    const petPreviewLabels = { idle: '待机', idle_active: '陪伴', thinking: '思考', typing: '输入', skill: 'Skill', notify: '提醒', sleepy: '休息', success: '成功', happy: '开心', error: '错误', level_up: '升级', peek: '探头' };
     const PET_PROFILE_KEY = 'xiaoba.petProfile';
     const PET_PROCESS_KEY = 'xiaoba.petProcess';
     const PET_POSITION_KEY = 'xiaoba.petPosition';
@@ -6383,7 +6400,7 @@
       if (eventType === 'level_up') return 3600;
       if (eventType === 'skill_failed') return 7000;
       if (eventType === 'skill_started') return 0;
-      if (eventType === 'skill_succeeded' || eventType === 'task_completed' || eventType === 'message_completed') return 2600;
+      if (eventType === 'skill_succeeded' || eventType === 'task_completed') return 2600;
       return 0;
     }
 
@@ -6416,7 +6433,7 @@
       if (event.event_type === 'skill_started') return 'working';
       if (event.event_type === 'skill_failed') return 'error';
       if (event.event_type === 'level_up') return 'level_up';
-      if (event.event_type === 'skill_succeeded' || event.event_type === 'task_completed' || event.event_type === 'message_completed') return 'success';
+      if (event.event_type === 'skill_succeeded' || event.event_type === 'task_completed') return 'success';
       return 'idle';
     }
 
@@ -6440,8 +6457,51 @@
       box.innerHTML = '<div class="companion-next-name">Lv.'+nextUnlock.level+' '+escapeHtml(nextUnlock.title)+'</div><div class="companion-next-copy">'+escapeHtml(nextUnlock.meta)+'</div><div class="companion-next-stats"><div class="companion-next-stat"><span>当前 XP</span><strong>'+currentXp+' / '+next+' XP</strong></div><div class="companion-next-stat"><span>还差</span><strong>'+remaining+' XP</strong></div></div>';
     }
 
+    async function loadPetManifest() {
+      try {
+        const res = await fetch('pet/manifest.json', { cache: 'no-store' });
+        if (!res.ok) throw new Error('pet manifest unavailable');
+        const manifest = await res.json();
+        petFrames = { ...petFrameFallbacks, ...manifest };
+      } catch (_error) {
+        petFrames = { ...petFrameFallbacks };
+      }
+    }
+
+    function resolveDashboardLevelFrames(state) {
+      const levels = petFrames.levels || {};
+      const level = Math.max(1, Number(petProfile.level || 1));
+      const candidates = Object.keys(levels)
+        .map(value => Number(value))
+        .filter(value => Number.isFinite(value) && value <= level)
+        .sort((a, b) => b - a);
+      for (const candidate of candidates) {
+        const frames = levels[String(candidate)] && levels[String(candidate)][state];
+        if (Array.isArray(frames) && frames.length) return frames;
+      }
+      return null;
+    }
+
+    function resolveDashboardPetFrames(state) {
+      return resolveDashboardLevelFrames(state) || petFrames[state] || petFrames.idle || petFrameFallbacks.idle;
+    }
+
+    function hasDashboardPetState(state) {
+      return Array.isArray(petFrames[state]) || Boolean(resolveDashboardLevelFrames(state));
+    }
+
     function preloadPetFrames() {
-      Object.values(petFrames).flat().forEach(src => {
+      const sources = [];
+      Object.entries(petFrames).forEach(([key, value]) => {
+        if (key === 'levels') return;
+        if (Array.isArray(value)) sources.push(...value);
+      });
+      Object.values(petFrames.levels || {}).forEach(levelFrames => {
+        Object.values(levelFrames || {}).forEach(frames => {
+          if (Array.isArray(frames)) sources.push(...frames);
+        });
+      });
+      Array.from(new Set(sources)).forEach(src => {
         const img = new Image();
         img.src = src;
       });
@@ -6450,11 +6510,11 @@
     function renderPetFrameStrip(state) {
       const strip = document.getElementById('pet-frame-strip');
       if (!strip) return;
-      strip.innerHTML = petFrames[state].map(src => '<img class="pet-frame-thumb" src="'+src+'" alt="" />').join('');
+      strip.innerHTML = resolveDashboardPetFrames(state).map(src => '<img class="pet-frame-thumb" src="'+src+'" alt="" />').join('');
     }
 
     function showPetFrame() {
-      const frames = petFrames[petState] || petFrames.idle;
+      const frames = resolveDashboardPetFrames(petState);
       if (!frames.length) return;
       const src = frames[petFrameIndex % frames.length];
       document.querySelectorAll('#pet-frame, #floating-pet-frame').forEach(frame => { frame.src = src; });
@@ -6475,7 +6535,7 @@
     }
 
     function applyPetDisplayState(state, options = {}) {
-      if (!petFrames[state]) state = 'idle';
+      if (!hasDashboardPetState(state)) state = 'idle';
       petState = state;
       petFrameIndex = 0;
       document.querySelectorAll('.pet-action').forEach(btn => {
@@ -6499,7 +6559,7 @@
     }
 
     function setPetState(state, options = {}) {
-      if (!petFrames[state]) state = 'idle';
+      if (!hasDashboardPetState(state)) state = 'idle';
       if (petStateHoldTimer) {
         clearTimeout(petStateHoldTimer);
         petStateHoldTimer = null;
@@ -6518,7 +6578,7 @@
     }
 
     function previewPetAction(state) {
-      if (!petFrames[state]) return;
+      if (!hasDashboardPetState(state)) return;
       if (previewPetTimer) clearTimeout(previewPetTimer);
       previewPetState = state;
       applyPetDisplayState(state, {
@@ -6553,7 +6613,7 @@
     }
 
     function setPetAutoBaseline(state) {
-      if (!petFrames[state]) state = 'idle';
+      if (!hasDashboardPetState(state)) state = 'idle';
       petAutoBaseline = state;
       if (!petStateHoldTimer) setPetState(state);
     }
@@ -11562,9 +11622,13 @@
     }
 
     // Init
-    loadDashboardFontScale();
-    preloadPetFrames();renderPetProfile();renderPetProcess();initFloatingPetDrag();setPetState('idle');
-    fetchConfig();fetchStatus();fetchSkills();fetchSkillHubStatus();fetchDashboardSettings();fetchUpdateStatus(true);fetchCatsStatus();fetchPetStatus();fetchPetTimeline();fetchPetProgress();fetchPromptCompanionProposal();applyHashRoute();
+    async function initDashboard() {
+      loadDashboardFontScale();
+      await loadPetManifest();
+      preloadPetFrames();renderPetProfile();renderPetProcess();initFloatingPetDrag();setPetState('idle');
+      fetchConfig();fetchStatus();fetchSkills();fetchSkillHubStatus();fetchDashboardSettings();fetchUpdateStatus(true);fetchCatsStatus();fetchPetStatus();fetchPetTimeline();fetchPetProgress();fetchPromptCompanionProposal();applyHashRoute();
+    }
+    initDashboard();
     window.addEventListener('hashchange', applyHashRoute);
     if(document.getElementById('page-chat')?.classList.contains('active') && !catsPollTimer) catsPollTimer = setInterval(fetchCatsStatus, 5000);
     setInterval(fetchStatus,5000);setInterval(fetchSkills,30000);setInterval(()=>fetchUpdateStatus(true),5000);setInterval(()=>{fetchPetStatus();fetchPetTimeline();fetchPetProgress();},2500);setInterval(()=>fetchPromptCompanionProposal(),30000);

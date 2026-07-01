@@ -109,6 +109,11 @@ test('pet shell page exists and talks to the existing pet APIs', () => {
   assert.match(petWindow, /previewDailyReport/);
   assert.match(petWindow, /saveDailyReport/);
   assert.match(petWindow, /showDailyReportAlert/);
+  assert.match(petWindow, /resolveLevelFrames/);
+  assert.match(petWindow, /idle_active/);
+  assert.match(petWindow, /notify/);
+  assert.match(petWindow, /sleepy/);
+  assert.match(petWindow, /skill/);
   assert.match(petWindow, /catsco:daily-report-alert/);
   assert.match(petWindow, /昨天的日报我整理好啦/);
   assert.match(petWindow, /id="skill-draft-card"/);
@@ -130,4 +135,11 @@ test('dashboard keeps session logs available without exposing them as a primary 
   assert.match(dashboardHtml, /\/api\/sessions\/recent/);
   assert.match(dashboardHtml, /\/api\/sessions\//);
   assert.match(dashboardHtml, /location\.hash/);
+});
+
+test('dashboard companion preview loads the shared pet manifest instead of maintaining a second frame list', () => {
+  assert.doesNotMatch(dashboardHtml, /const petFrames = \{/);
+  assert.match(dashboardHtml, /async function loadPetManifest/);
+  assert.match(dashboardHtml, /pet\/manifest\.json/);
+  assert.match(dashboardHtml, /petFrameFallbacks/);
 });

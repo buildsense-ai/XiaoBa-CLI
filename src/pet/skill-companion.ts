@@ -15,11 +15,14 @@ export interface SkillCompanionRecommendation {
   createdAt: string;
   source: {
     sessions: number;
+    shellFailures: number;
     failures: number;
     runtimeErrors: number;
     toolCalls: number;
   };
 }
+
+const MIN_SHELL_FAILURES_FOR_RECOMMENDATION = 2;
 
 export function getSkillCompanionRecommendations(options: {
   days?: number;
@@ -56,12 +59,13 @@ export function getSkillCompanionRecommendations(options: {
   const now = new Date().toISOString();
   const source = {
     sessions: sessions.length,
+    shellFailures: signals.shellFailures,
     failures: signals.failures,
     runtimeErrors: signals.runtimeErrors,
     toolCalls: signals.toolCalls,
   };
 
-  if (signals.shellFailures > 0) {
+  if (signals.shellFailures >= MIN_SHELL_FAILURES_FOR_RECOMMENDATION) {
     recommendations.push({
       id: `shell-help:${signals.shellFailures}`,
       title: 'Shell command helper skill',

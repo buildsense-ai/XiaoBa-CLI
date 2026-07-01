@@ -120,6 +120,35 @@ describe('dashboard session log API', () => {
   });
 
   test('pet skill recommendations suggest SkillHub searches without installing automatically', async () => {
+    const firstResponse = await get('/api/pet/skill-recommendations?days=7');
+
+    assert.equal(firstResponse.status, 200);
+    assert.equal(firstResponse.body.recommendations.length, 0);
+
+    writeSessionLog({
+      type: 'chat',
+      file: 'second_shell_failure.jsonl',
+      entries: [{
+        entry_type: 'turn',
+        turn: 1,
+        timestamp: new Date().toISOString(),
+        session_id: 'chat:second-shell-failure',
+        session_type: 'chat',
+        user: { text: 'please retry the shell command' },
+        assistant: {
+          text: 'The shell command failed again: not recognized',
+          tool_calls: [{
+            id: 'tool-2',
+            name: 'execute_shell',
+            arguments: { command: 'grep retry' },
+            result: 'not recognized',
+            duration_ms: 15,
+          }],
+        },
+        tokens: { prompt: 10, completion: 5 },
+      }],
+    });
+
     const response = await get('/api/pet/skill-recommendations?days=7');
 
     assert.equal(response.status, 200);
@@ -128,11 +157,40 @@ describe('dashboard session log API', () => {
     assert.equal(recommendation.action, 'skillhub_search');
     assert.match(recommendation.title, /Shell/);
     assert.match(recommendation.searchQuery, /shell/i);
-    assert.match(recommendation.reason, /1/);
+    assert.match(recommendation.reason, /2/);
     assert.equal(recommendation.autoInstall, false);
   });
 
   test('pet skill drafts generate local skill markdown and require confirmation before install', async () => {
+    const firstDraftResponse = await get('/api/pet/skill-drafts?days=7');
+
+    assert.equal(firstDraftResponse.status, 200);
+    assert.equal(firstDraftResponse.body.drafts.length, 0);
+
+    writeSessionLog({
+      type: 'chat',
+      file: 'second_shell_draft_failure.jsonl',
+      entries: [{
+        entry_type: 'turn',
+        turn: 1,
+        timestamp: new Date().toISOString(),
+        session_id: 'chat:second-shell-draft-failure',
+        session_type: 'chat',
+        user: { text: 'please inspect another failed shell command' },
+        assistant: {
+          text: 'The shell command failed again: command not found',
+          tool_calls: [{
+            id: 'tool-draft-2',
+            name: 'execute_shell',
+            arguments: { command: 'grep retry' },
+            result: 'command not found',
+            duration_ms: 15,
+          }],
+        },
+        tokens: { prompt: 10, completion: 5 },
+      }],
+    });
+
     const draftResponse = await get('/api/pet/skill-drafts?days=7');
 
     assert.equal(draftResponse.status, 200);
@@ -224,6 +282,30 @@ describe('dashboard session log API', () => {
           message: 'Repeated runtime error while formatting output',
         },
       ],
+    });
+
+    writeSessionLog({
+      type: 'chat',
+      file: 'expanded_shell_repeat.jsonl',
+      entries: [{
+        entry_type: 'turn',
+        turn: 1,
+        timestamp: new Date().toISOString(),
+        session_id: 'chat:expanded-shell-repeat',
+        session_type: 'chat',
+        user: { text: 'please inspect the repeated shell failure' },
+        assistant: {
+          text: 'The shell command failed again: command not found',
+          tool_calls: [{
+            id: 'tool-expanded-shell',
+            name: 'execute_shell',
+            arguments: { command: 'grep retry' },
+            result: 'command not found',
+            duration_ms: 15,
+          }],
+        },
+        tokens: { prompt: 10, completion: 5 },
+      }],
     });
 
     const response = await get('/api/pet/skill-drafts?days=7');

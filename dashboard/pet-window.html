@@ -469,10 +469,25 @@
     const previewDailyReportButton = document.getElementById('preview-daily-report');
     const saveDailyReportButton = document.getElementById('save-daily-report');
     const openDailyReportLogsButton = document.getElementById('open-daily-report-logs');
-    const frameSpeeds = { idle: 520, thinking: 360, typing: 120, success: 260, error: 320, level_up: 260 };
+    const frameSpeeds = {
+      idle: 520,
+      idle_active: 420,
+      thinking: 360,
+      typing: 120,
+      skill: 360,
+      notify: 260,
+      sleepy: 680,
+      success: 260,
+      happy: 260,
+      error: 320,
+      level_up: 260,
+      peek: 420,
+    };
+    const sleepyDelayMs = 10 * 60 * 1000;
     const seenTimelineEventIds = new Set();
     let manifest = {};
     let state = 'idle';
+    let currentPetLevel = 1;
     let frameIndex = 0;
     let frameTimer = null;
     let skillRecommendation = null;
@@ -480,6 +495,7 @@
     let dailyReport = null;
     let timelinePrimed = false;
     let alertTimer = null;
+    let sleepyTimer = null;
 
     function petApi() {
       return window.catscoPet || {
@@ -500,6 +516,10 @@
       if (manifest[text]) return text;
       if (text.includes('level')) return 'level_up';
       if (text.includes('error') || text.includes('fail')) return 'error';
+      if (text.includes('skill')) return 'skill';
+      if (text.includes('notify') || text.includes('report') || text.includes('daily')) return 'notify';
+      if (text.includes('sleep')) return 'sleepy';
+      if (text.includes('happy')) return 'happy';
       if (text.includes('success') || text.includes('done')) return 'success';
       if (text.includes('typing') || text.includes('working')) return 'typing';
       if (text.includes('thinking') || text.includes('busy')) return 'thinking';
@@ -507,6 +527,7 @@
     }
 
     function setState(next) {
+      resetSleepyTimer();
       state = normalizeState(next);
       frameIndex = 0;
       if (frameTimer) clearInterval(frameTimer);
@@ -515,9 +536,32 @@
     }
 
     function showNextFrame() {
-      const frames = manifest[state] || manifest.idle || ['pet/idle/01.png'];
+      const frames = resolveLevelFrames(state) || manifest[state] || manifest.idle || ['pet/idle/01.png'];
       frame.src = frames[frameIndex % frames.length];
       frameIndex += 1;
+    }
+
+    function resolveLevelFrames(targetState) {
+      const levels = manifest.levels || {};
+      const level = Math.max(1, Number(currentPetLevel || 1));
+      const candidates = Object.keys(levels)
+        .map(value => Number(value))
+        .filter(value => Number.isFinite(value) && value <= level)
+        .sort((a, b) => b - a);
+      for (const candidate of candidates) {
+        const frames = levels[String(candidate)] && levels[String(candidate)][targetState];
+        if (Array.isArray(frames) && frames.length) return frames;
+      }
+      return null;
+    }
+
+    function resetSleepyTimer() {
+      if (sleepyTimer) clearTimeout(sleepyTimer);
+      sleepyTimer = setTimeout(() => {
+        if (!shell.classList.contains('open') && !workAlert.classList.contains('show')) {
+          setState('sleepy');
+        }
+      }, sleepyDelayMs);
     }
 
     async function loadManifest() {
@@ -599,6 +643,7 @@
 
     function shouldAlertEvent(event) {
       if (!event || !event.id || seenTimelineEventIds.has(event.id)) return false;
+      if (event.event_type === 'message_completed') return false;
       const createdAt = Date.parse(event.created_at || '');
       if (!timelinePrimed) return Number.isFinite(createdAt) && Date.now() - createdAt < 120000;
       return true;
@@ -622,6 +667,7 @@
     }
 
     function showDailyReportAlert(report) {
+      setState('notify');
       workAlertTitle.textContent = '昨天的日报我整理好啦';
       workAlertDetail.textContent = '完成事项、错误、偏好和 Skill 建议都在草稿里，点我看看。';
       workAlertXp.textContent = '日报';
@@ -645,7 +691,10 @@
         const status = data.status || data;
         const next = status.state || status.mood || status.current_state || status.phase;
         statusText.textContent = normalizeState(next);
-        if (status.level) workLevel.textContent = 'LV.' + status.level;
+        if (status.level) {
+          currentPetLevel = Number(status.level || 1);
+          workLevel.textContent = 'LV.' + currentPetLevel;
+        }
         setState(next);
       } catch (_error) {
         statusText.textContent = 'offline';
@@ -675,7 +724,10 @@
       try {
         const res = await fetch('/api/pet/progress', { cache: 'no-store' });
         const progress = await res.json();
-        if (progress && progress.level) workLevel.textContent = 'LV.' + progress.level;
+        if (progress && progress.level) {
+          currentPetLevel = Number(progress.level || 1);
+          workLevel.textContent = 'LV.' + currentPetLevel;
+        }
       } catch (_error) {
         // Progress is decorative; keep the pet usable if it is unavailable.
       }
@@ -736,6 +788,7 @@
         if (skillRecommendation) {
           hint.textContent = skillRecommendation.title + ': ' + skillRecommendation.reason;
           pulse.classList.add('show');
+          setState('skill');
         }
       } catch (_error) {
         skillRecommendation = null;
@@ -832,6 +885,7 @@
         if (!res.ok) throw new Error(data.error || 'Daily report save failed');
         saveDailyReportButton.textContent = '已保存';
         hint.textContent = '日报已保存: ' + (data.saved && data.saved.path ? data.saved.path : dailyReport.date);
+        setState('happy');
       } catch (error) {
         saveDailyReportButton.disabled = false;
         hint.textContent = '日报保存失败: ' + (error.message || String(error));
@@ -854,6 +908,7 @@
       skillDraftCard.classList.add('show');
       pulse.classList.add('show');
       hint.textContent = '发现一个可确认的 Skill 草稿。';
+      setState('skill');
     }
 
     function previewSkillDraft() {
@@ -878,6 +933,7 @@
         hint.textContent = 'Skill 已' + (data.skill && data.skill.action === 'updated' ? '更新' : '生成') + ': ' + skillDraft.name;
         skillDraftCard.classList.remove('show');
         skillDraft = null;
+        setState('happy');
       } catch (error) {
         hint.textContent = 'Skill 生成失败: ' + (error.message || String(error));
       } finally {
