@@ -63,14 +63,14 @@ describe('PromptModeRuntime', () => {
   });
 
   test('injects full instructions again when the active mode changes', () => {
-    fs.writeFileSync(path.join(promptsDir, 'modes', 'plain-chat.md'), [
+    fs.writeFileSync(path.join(promptsDir, 'modes', 'office.md'), [
       '---',
-      'id: plain-chat',
-      'name: Plain Chat Mode',
-      'description: Handle daily chat',
+      'id: office',
+      'name: Office Mode',
+      'description: Work on office docs',
       '---',
       '',
-      'Use daily conversation workflow.',
+      'Use office workflow.',
     ].join('\n'), 'utf-8');
 
     const runtime = new PromptModeRuntime({ promptsDir });
@@ -85,11 +85,11 @@ describe('PromptModeRuntime', () => {
 
     runtime.applyRouterPayload({
       action: 'activate',
-      mode: 'plain-chat',
+      mode: 'office',
       confidence: 0.91,
       reason: 'document task',
     }, 2);
-    assert.match(String(runtime.buildTransientMessage({ turnNumber: 2 })?.content), /Use daily conversation workflow/);
+    assert.match(String(runtime.buildTransientMessage({ turnNumber: 2 })?.content), /Use office workflow/);
   });
 
   test('ignores low-confidence activation and unknown modes', () => {

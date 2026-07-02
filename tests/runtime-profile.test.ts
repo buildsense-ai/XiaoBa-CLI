@@ -54,7 +54,7 @@ describe('RuntimeProfile', () => {
     const env = {
       CURRENT_AGENT_DISPLAY_NAME: 'Desk Bot',
       CURRENT_PLATFORM: '飞书',
-      XIAOBA_PROMPT_MODE: 'plain-chat',
+      XIAOBA_PROMPT_MODE: 'classroom',
     };
 
     const profile = resolveDefaultRuntimeProfile({ env });
@@ -64,7 +64,7 @@ describe('RuntimeProfile', () => {
     assert.equal(profile.surface, 'feishu');
     assert.equal(profile.prompt.displayName, 'Desk Bot');
     assert.equal(profile.prompt.platform, '飞书');
-    assert.equal(profile.prompt.mode, 'plain-chat');
+    assert.equal(profile.prompt.mode, 'classroom');
   });
 
   test('resolves CatsCo env surface to legacy catscompany surface id', () => {

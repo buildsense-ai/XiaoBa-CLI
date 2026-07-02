@@ -42,7 +42,7 @@ describe('prompt modes', () => {
     }
   });
 
-  test('does not inject selectable prompt modes into the main agent context', async () => {
+  test('injects prompt mode list as injected transient context, not a guessed mode', async () => {
     const builder = new TurnContextBuilder();
     const durableMessages: Message[] = [
       { role: 'system', content: 'base system' },
@@ -59,7 +59,23 @@ describe('prompt modes', () => {
       } as any,
     });
 
-    assert.equal(result.messages.some(message => (
+    const modeList = result.messages.find(message => (
+      message.role === 'user'
+      && message.__injected
+      && typeof message.content === 'string'
+      && message.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
+    ));
+
+    assert.ok(modeList);
+    assert.match(String(modeList.content), /Available prompt modes/);
+    assert.match(String(modeList.content), /coding-agent: 工程协作模式/);
+    assert.match(String(modeList.content), /plain-chat: 普通对话模式/);
+    assert.match(String(modeList.content), /call the prompt_mode tool/);
+    assert.doesNotMatch(String(modeList.content), /Matched aliases:/);
+    assert.doesNotMatch(String(modeList.content), /Candidate mode:/);
+
+    const durable = builder.removeTransientMessages(result.messages);
+    assert.equal(durable.some(message => (
       typeof message.content === 'string'
       && message.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
     )), false);
@@ -79,15 +95,6 @@ describe('prompt modes', () => {
     assert.match(prompt, /\[mode:plain-chat\]/);
     assert.match(prompt, /普通对话模式/);
     assert.match(prompt, /不反复强调“我是 AI”/);
-  });
-
-  test('keeps only daily and coding built-in prompt modes', () => {
-    clearPromptModeRegistryCache();
-
-    assert.deepEqual(
-      listPromptModeDefinitions().map(mode => mode.id),
-      ['coding-agent', 'plain-chat'],
-    );
   });
 
   test('injects previously active prompt mode as facts, not an automatic decision', async () => {
@@ -137,7 +144,11 @@ describe('prompt modes', () => {
       && message.content.startsWith(TRANSIENT_PROMPT_MODES_LIST_PREFIX)
     ));
 
-    assert.equal(modeList, undefined);
+    assert.ok(modeList);
+    assert.match(String(modeList.content), /Previously active prompt mode: coding-agent/);
+    assert.match(String(modeList.content), /last loaded 1 user turn ago/);
+    assert.match(String(modeList.content), /Use the previous mode only if/);
+    assert.match(String(modeList.content), /If the user changed task, ignore it/);
   });
 
   test('fixed prompt mode suppresses selectable mode list', async () => {

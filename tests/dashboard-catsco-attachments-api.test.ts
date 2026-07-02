@@ -27,25 +27,17 @@ function serverUrl(server: Server): string {
   return `http://127.0.0.1:${address.port}`;
 }
 
-async function removeTempRoot(root: string): Promise<void> {
-  let lastError: unknown;
+async function removeTreeWithRetry(target: string): Promise<void> {
   const retryableCodes = new Set(['ENOTEMPTY', 'EBUSY', 'EPERM']);
-  for (let attempt = 0; attempt < 12; attempt += 1) {
+  for (let attempt = 0; attempt < 10; attempt++) {
     try {
-      await fs.promises.rm(root, {
-        recursive: true,
-        force: true,
-        maxRetries: 5,
-        retryDelay: 100,
-      });
+      await fs.promises.rm(target, { recursive: true, force: true });
       return;
     } catch (error: any) {
-      if (!retryableCodes.has(error?.code)) throw error;
-      lastError = error;
-      await new Promise(resolve => setTimeout(resolve, 100));
+      if (!retryableCodes.has(error?.code) || attempt === 9) throw error;
+      await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)));
     }
   }
-  throw lastError;
 }
 
 describe('dashboard CatsCo attachment API', () => {
@@ -76,7 +68,7 @@ describe('dashboard CatsCo attachment API', () => {
       if (originalEnv[key] === undefined) delete process.env[key];
       else process.env[key] = originalEnv[key];
     }
-    await removeTempRoot(testRoot);
+    await removeTreeWithRetry(testRoot);
   });
 
   test('streams a local file to CatsCo and sends the attachment as the user', async () => {

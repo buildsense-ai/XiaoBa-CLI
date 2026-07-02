@@ -108,7 +108,7 @@ jobs:
 
   build-win:
     needs: release-preflight
-    runs-on: windows-2022
+    runs-on: windows-latest
     environment: release-prod
     env:
       XIAOBA_UPDATE_BASE_URL: https://github-release.tos-cn-guangzhou.volces.com/update

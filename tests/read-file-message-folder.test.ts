@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { fileURLToPath } from 'url';
 import {
   TRUNCATED_READ_FILE_PREFIX,
   foldHistoricalReadFileMessages,
@@ -66,8 +65,8 @@ test('folds large historical read_file tool results while preserving tool exchan
   assert.equal(folded.name, 'read_file');
   assert.equal(typeof folded.content, 'string');
   assert.ok(String(folded.content).startsWith(TRUNCATED_READ_FILE_PREFIX));
+  assert.match(String(folded.content), /artifact_id: rf_[a-f0-9]{16}/);
   assert.match(String(folded.content), /path: E:\/repo\/large\.ts/);
-  assert.match(String(folded.content), /omitted: \d+ lines, \d+ chars/);
   assert.equal(String(folded.content).includes('plain historical content line 45'), false);
   assert.ok(result.stats.saved_tokens_est > 0);
 });
@@ -94,16 +93,13 @@ test('writes truncated read_file full output to a linkable artifact', () => {
       },
     });
     const content = String(result.messages[2].content);
-    const fullOutput = content.match(/^full_output: (.+)$/m)?.[1];
+    const fullOutputPath = content.match(/^full_output_path: (.+)$/m)?.[1];
 
     assert.ok(content.startsWith(TRUNCATED_READ_FILE_PREFIX));
-    assert.match(content, /^full_output: file:\/\//m);
-    assert.doesNotMatch(content, /^artifact_id:/m);
-    assert.doesNotMatch(content, /^full_output_ref:/m);
-    assert.doesNotMatch(content, /^full_output_path:/m);
-    assert.doesNotMatch(content, /^full_output_link:/m);
-    assert.ok(fullOutput);
-    assert.equal(fs.readFileSync(fileURLToPath(fullOutput), 'utf8').includes(raw), true);
+    assert.match(content, /full_output_ref: tool-result:\/\/test_session\/turn-0007\/rf_[a-f0-9]{16}/);
+    assert.match(content, /full_output_link: file:\/\//);
+    assert.ok(fullOutputPath);
+    assert.equal(fs.readFileSync(fullOutputPath, 'utf8').includes(raw), true);
   } finally {
     fs.rmSync(artifactRoot, { recursive: true, force: true });
   }
