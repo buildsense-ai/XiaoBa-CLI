@@ -16,8 +16,9 @@ function canonicalMetadata(actorUserId: string, topicId: string, agentId = 'usr4
 
 function expectedCatsCoSessionKey(actorUserId: string, topicId: string, agentId = 'usr43') {
   const topicType = topicId.startsWith('grp_') ? 'group' : 'p2p';
-  const sessionTopicId = topicType === 'group' ? `${topicId}:actor:${actorUserId}` : topicId;
-  return `session:v2:catscompany:${topicType}:${encodeURIComponent(sessionTopicId)}:agent:${encodeURIComponent(agentId)}`;
+  if (topicType === 'group') return `cc_group:${topicId}`;
+  void actorUserId;
+  return `session:v2:catscompany:${topicType}:${encodeURIComponent(topicId)}:agent:${encodeURIComponent(agentId)}`;
 }
 
 function deviceGrant(overrides: Record<string, unknown> = {}) {
@@ -177,7 +178,7 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(handledTurns[0].options.executionScope.isTrusted, true);
   });
 
-  test('group turn uses actor-scoped group session key while preserving raw topic in scope', async () => {
+  test('group turn uses legacy group session key while preserving actor in scope', async () => {
     const { bot, handledTurns, sessionKeys } = createHarness();
 
     await (bot as any).onMessage({
@@ -190,15 +191,15 @@ describe('CatsCompany execution scope flow', () => {
       seq: 12,
     });
 
-    assert.deepEqual(sessionKeys, ['session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43']);
+    assert.deepEqual(sessionKeys, ['cc_group:grp_80']);
     assert.equal(handledTurns.length, 1);
-    assert.equal(handledTurns[0].options.sessionRoute.sessionKey, 'session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43');
-    assert.equal(handledTurns[0].options.sessionRoute.legacySessionKey, undefined);
-    assert.equal(handledTurns[0].options.sessionRoute.legacyRestoreKey, undefined);
+    assert.equal(handledTurns[0].options.sessionRoute.sessionKey, 'cc_group:grp_80');
+    assert.equal(handledTurns[0].options.sessionRoute.legacySessionKey, 'cc_group:grp_80');
+    assert.equal(handledTurns[0].options.sessionRoute.legacyRestoreKey, 'cc_group:grp_80');
     assert.equal(handledTurns[0].options.sessionRoute.legacyCleanupKey, 'cc_group:grp_80');
-    assert.equal(handledTurns[0].options.executionScope.sessionKey, 'session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43');
-    assert.equal(handledTurns[0].options.executionScope.legacySessionKey, undefined);
-    assert.equal(handledTurns[0].options.executionScope.legacyRestoreKey, undefined);
+    assert.equal(handledTurns[0].options.executionScope.sessionKey, 'cc_group:grp_80');
+    assert.equal(handledTurns[0].options.executionScope.legacySessionKey, 'cc_group:grp_80');
+    assert.equal(handledTurns[0].options.executionScope.legacyRestoreKey, 'cc_group:grp_80');
     assert.equal(handledTurns[0].options.executionScope.legacyCleanupKey, 'cc_group:grp_80');
     assert.equal(handledTurns[0].options.executionScope.topicType, 'group');
     assert.equal(handledTurns[0].options.executionScope.topicId, 'grp_80');
@@ -224,7 +225,7 @@ describe('CatsCompany execution scope flow', () => {
     assert.deepEqual(handledTurns[0].options.deviceGrants[0].operations, ['read_file', 'send_file']);
   });
 
-  test('passes actor-scoped group device grants into CatsCompany session turn', async () => {
+  test('passes group device grants into CatsCompany session turn', async () => {
     const { bot, handledTurns } = createHarness();
 
     await (bot as any).onMessage({
@@ -334,7 +335,7 @@ describe('CatsCompany execution scope flow', () => {
       botUid: 'usr43',
     }));
 
-    assert.notEqual(aliceScope.sessionKey, bobScope.sessionKey);
+    assert.equal(aliceScope.sessionKey, bobScope.sessionKey);
 
     bot.messageQueue.set(bobScope.sessionKey, [{
       userMessage: 'bob follow-up',

@@ -88,7 +88,7 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
       ? 'untrusted'
       : 'legacy_context';
   const legacyCleanupKey = buildCatsCoSessionKey(resolvedTopicType, topicId, actorUserId);
-  const legacyRestoreKey = resolvedTopicType === 'group' ? undefined : legacyCleanupKey;
+  const legacyRestoreKey = legacyCleanupKey;
   const route = createSessionRoute({
     source: 'catscompany',
     topicId,
@@ -104,10 +104,13 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
     legacyRestoreKey,
     legacyCleanupKey,
   });
+  const sessionKey = resolvedTopicType === 'group'
+    ? legacyCleanupKey
+    : route.sessionKey;
 
   return {
     source: 'catscompany',
-    sessionKey: route.sessionKey,
+    sessionKey,
     legacySessionKey: legacyRestoreKey,
     legacyRestoreKey,
     legacyCleanupKey,

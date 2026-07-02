@@ -26,6 +26,21 @@ function stateFilePath(key: string): string {
   return path.join(SESSION_STATE_DIR, keyToFilename(key).replace(/\.jsonl$/, '.json'));
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function catsCoGroupIdFromLegacyKey(key: string): string | undefined {
+  const match = key.match(/^cc_group:(.+)$/);
+  return match?.[1]?.trim() || undefined;
+}
+
+function newestExistingFile(files: string[]): string | undefined {
+  return files
+    .filter(file => fs.existsSync(file))
+    .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
+}
+
 function hasHiddenProviderReplay(message: Message): boolean {
   return Array.isArray(message.providerContent)
     && message.providerContent.some(block => (
@@ -159,6 +174,7 @@ export class SessionStore {
 
   /** 检查是否有会话文件 */
   hasSession(sessionKey: string): boolean {
+    this.migrateCatsCoGroupSessionIfNeeded(sessionKey);
     return fs.existsSync(filePath(sessionKey));
   }
 
@@ -175,6 +191,7 @@ export class SessionStore {
 
   loadRuntimeState(sessionKey: string): SessionRuntimeState {
     try {
+      this.migrateCatsCoGroupStateIfNeeded(sessionKey);
       const fp = stateFilePath(sessionKey);
       if (!fs.existsSync(fp)) return {};
       const parsed = JSON.parse(fs.readFileSync(fp, 'utf-8')) as SessionRuntimeState;
@@ -204,5 +221,52 @@ export class SessionStore {
     } catch (err) {
       Logger.error(`Failed to delete session state [${sessionKey}]: ${err}`);
     }
+  }
+
+  private migrateCatsCoGroupSessionIfNeeded(sessionKey: string): void {
+    this.migrateCatsCoGroupFileIfNeeded(sessionKey, SESSIONS_DIR, '.jsonl');
+  }
+
+  private migrateCatsCoGroupStateIfNeeded(sessionKey: string): void {
+    this.migrateCatsCoGroupFileIfNeeded(sessionKey, SESSION_STATE_DIR, '.json');
+  }
+
+  private migrateCatsCoGroupFileIfNeeded(sessionKey: string, dir: string, extension: '.jsonl' | '.json'): void {
+    const groupId = catsCoGroupIdFromLegacyKey(sessionKey);
+    if (!groupId) return;
+
+    const target = extension === '.jsonl' ? filePath(sessionKey) : stateFilePath(sessionKey);
+    if (fs.existsSync(target) || !fs.existsSync(dir)) return;
+
+    const source = this.findCatsCoGroupCompatibilityFile(dir, groupId, extension);
+    if (!source) return;
+
+    try {
+      if (!fs.existsSync(path.dirname(target))) fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(source, target);
+      Logger.info(`CatsCo group session migrated to legacy key: ${path.basename(source)} -> ${path.basename(target)}`);
+    } catch (err) {
+      Logger.error(`Failed to migrate CatsCo group session [${sessionKey}]: ${err}`);
+    }
+  }
+
+  private findCatsCoGroupCompatibilityFile(dir: string, groupId: string, extension: '.jsonl' | '.json'): string | undefined {
+    const escapedGroup = escapeRegExp(groupId);
+    const escapedExtension = escapeRegExp(extension);
+    const entries = fs.readdirSync(dir, { withFileTypes: true })
+      .filter(entry => entry.isFile())
+      .map(entry => entry.name);
+
+    const actorV2 = new RegExp(`^session_v2_catscompany_group_${escapedGroup}_3Aactor_3A[^_]+_agent_[^_]+${escapedExtension}$`);
+    const topicV2 = new RegExp(`^session_v2_catscompany_group_${escapedGroup}_agent_[^_]+${escapedExtension}$`);
+
+    const actorSource = newestExistingFile(entries
+      .filter(name => actorV2.test(name))
+      .map(name => path.join(dir, name)));
+    if (actorSource) return actorSource;
+
+    return newestExistingFile(entries
+      .filter(name => topicV2.test(name))
+      .map(name => path.join(dir, name)));
   }
 }

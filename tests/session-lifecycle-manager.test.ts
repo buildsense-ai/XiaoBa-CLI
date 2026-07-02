@@ -139,8 +139,8 @@ describe('AgentSession lifecycle', () => {
     }
   });
 
-  test('CatsCo group cleanup-only legacy key is not used for restore fallback', async () => {
-    const { AgentSession, SessionStore, createSessionRoute } = loadSessionModules();
+  test('CatsCo group uses the legacy key as its primary session', async () => {
+    const { AgentSession, SessionStore, createCatsCoSessionRoute } = loadSessionModules();
     const defaultDir = fs.mkdtempSync(path.join(testRoot, 'default-'));
     const legacyDir = fs.mkdtempSync(path.join(testRoot, 'legacy-'));
     const store = SessionStore.getInstance();
@@ -149,18 +149,22 @@ describe('AgentSession lifecycle', () => {
     ]);
     store.saveRuntimeState('cc_group:grp_80', { currentDirectory: legacyDir });
 
-    const route = createSessionRoute({
+    const route = createCatsCoSessionRoute({
       source: 'catscompany',
+      sessionKey: 'cc_group:grp_80',
       topicType: 'group',
       topicId: 'grp_80',
-      sessionTopicId: 'grp_80:actor:alice',
+      rawText: 'hello',
       actorUserId: 'alice',
       agentId: 'usr43',
       identityTrust: 'server_canonical',
+      identitySource: 'test',
+      legacyRestoreKey: 'cc_group:grp_80',
       legacyCleanupKey: 'cc_group:grp_80',
     });
-    assert.equal(route.legacySessionKey, undefined);
-    assert.equal(route.legacyRestoreKey, undefined);
+    assert.equal(route.sessionKey, 'cc_group:grp_80');
+    assert.equal(route.legacySessionKey, 'cc_group:grp_80');
+    assert.equal(route.legacyRestoreKey, 'cc_group:grp_80');
     assert.equal(route.legacyCleanupKey, 'cc_group:grp_80');
 
     const session = new AgentSession(route.sessionKey, buildMockServices({
@@ -172,17 +176,73 @@ describe('AgentSession lifecycle', () => {
     }), 'catscompany', route);
     session.setSystemPromptProvider(() => 'system prompt');
 
-    assert.equal(session.restoreFromStore(), false);
-    assert.equal((session as any).currentDirectory, defaultDir);
+    assert.equal(session.restoreFromStore(), true);
+    assert.equal((session as any).currentDirectory, legacyDir);
     await session.init();
     assert.equal(
       (session as any).messages.some((message: any) => message.content === 'legacy group history'),
-      false,
+      true,
     );
 
     session.clear();
     assert.equal(store.hasSession('cc_group:grp_80'), false);
-    assert.deepEqual(store.loadRuntimeState('cc_group:grp_80'), {});
+  });
+
+  test('CatsCo group migrates actor-v2 and topic-v2 session files to the legacy key', async () => {
+    const { SessionStore } = loadSessionModules();
+    const sessionsDir = path.join(testRoot, 'data', 'sessions');
+    const stateDir = path.join(testRoot, 'data', 'session-state');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    const actorV2File = path.join(sessionsDir, 'session_v2_catscompany_group_grp_80_3Aactor_3Ausr7_agent_usr43.jsonl');
+    const topicV2File = path.join(sessionsDir, 'session_v2_catscompany_group_grp_80_agent_usr43.jsonl');
+    fs.writeFileSync(topicV2File, `${JSON.stringify({ role: 'user', content: 'topic v2 history' })}\n`, 'utf-8');
+    fs.writeFileSync(actorV2File, `${JSON.stringify({ role: 'user', content: 'actor v2 history' })}\n`, 'utf-8');
+    fs.writeFileSync(
+      path.join(stateDir, 'session_v2_catscompany_group_grp_80_3Aactor_3Ausr7_agent_usr43.json'),
+      JSON.stringify({ currentDirectory: 'D:\\actor-v2' }),
+      'utf-8',
+    );
+
+    const store = SessionStore.getInstance();
+    assert.equal(store.hasSession('cc_group:grp_80'), true);
+    assert.deepEqual(
+      store.loadContext('cc_group:grp_80').map((message: any) => message.content),
+      ['actor v2 history'],
+    );
+    assert.equal(
+      fs.existsSync(path.join(sessionsDir, 'cc_group_grp_80.jsonl')),
+      true,
+    );
+    assert.deepEqual(store.loadRuntimeState('cc_group:grp_80').currentDirectory, 'D:\\actor-v2');
+  });
+
+  test('CatsCo group migrates topic-v2 files when no actor-v2 file exists', async () => {
+    const { SessionStore } = loadSessionModules();
+    const sessionsDir = path.join(testRoot, 'data', 'sessions');
+    const stateDir = path.join(testRoot, 'data', 'session-state');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(sessionsDir, 'session_v2_catscompany_group_grp_80_agent_usr43.jsonl'),
+      `${JSON.stringify({ role: 'user', content: 'topic v2 history' })}\n`,
+      'utf-8',
+    );
+    fs.writeFileSync(
+      path.join(stateDir, 'session_v2_catscompany_group_grp_80_agent_usr43.json'),
+      JSON.stringify({ currentDirectory: 'D:\\topic-v2' }),
+      'utf-8',
+    );
+
+    const store = SessionStore.getInstance();
+    assert.equal(store.hasSession('cc_group:grp_80'), true);
+    assert.deepEqual(
+      store.loadContext('cc_group:grp_80').map((message: any) => message.content),
+      ['topic v2 history'],
+    );
+    assert.deepEqual(store.loadRuntimeState('cc_group:grp_80').currentDirectory, 'D:\\topic-v2');
   });
 
   test('reset and clear discard pending runtime feedback', async () => {
@@ -767,6 +827,7 @@ function loadSessionModules(): any {
     CONTEXT_COMPACTION_COMPLETE_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_COMPLETE_MESSAGE,
     SessionStore: require('../src/utils/session-store').SessionStore,
     createSessionRoute: require('../src/core/session-router').createSessionRoute,
+    createCatsCoSessionRoute: require('../src/core/session-router').createCatsCoSessionRoute,
   };
 }
 

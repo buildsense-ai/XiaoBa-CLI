@@ -71,12 +71,12 @@ describe('CatsCompany MessageEnvelope and ExecutionScope', () => {
     });
     const scope = createExecutionScope(envelope);
 
-    assert.equal(envelope.sessionKey, 'session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43');
-    assert.equal(envelope.legacySessionKey, undefined);
-    assert.equal(envelope.legacyRestoreKey, undefined);
+    assert.equal(envelope.sessionKey, 'cc_group:grp_80');
+    assert.equal(envelope.legacySessionKey, 'cc_group:grp_80');
+    assert.equal(envelope.legacyRestoreKey, 'cc_group:grp_80');
     assert.equal(envelope.legacyCleanupKey, 'cc_group:grp_80');
-    assert.equal(scope.legacySessionKey, undefined);
-    assert.equal(scope.legacyRestoreKey, undefined);
+    assert.equal(scope.legacySessionKey, 'cc_group:grp_80');
+    assert.equal(scope.legacyRestoreKey, 'cc_group:grp_80');
     assert.equal(scope.legacyCleanupKey, 'cc_group:grp_80');
     assert.equal(scope.topicType, 'group');
     assert.equal(scope.actorUserId, 'usr7');

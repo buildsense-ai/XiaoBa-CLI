@@ -88,10 +88,8 @@ export function buildCatsCoSessionTopicId(
   actorUserId: string,
 ): string {
   const normalizedTopicId = normalizeId(topicId) || 'unknown_topic';
-  const normalizedActorUserId = normalizeId(actorUserId);
-  if (normalizeTopicType(topicType) === 'group' && normalizedActorUserId) {
-    return `${normalizedTopicId}:actor:${normalizedActorUserId}`;
-  }
+  void topicType;
+  void actorUserId;
   return normalizedTopicId;
 }
 
@@ -103,11 +101,11 @@ export function createCatsCoSessionRoute(envelope: MessageEnvelope): SessionRout
   );
   const legacyRestoreKey = envelope.legacyRestoreKey
     || envelope.legacySessionKey
-    || (normalizeTopicType(envelope.topicType) === 'group' ? undefined : fallbackLegacyKey);
+    || fallbackLegacyKey;
   const legacyCleanupKey = envelope.legacyCleanupKey
     || envelope.legacySessionKey
     || fallbackLegacyKey;
-  return createSessionRoute({
+  const route = createSessionRoute({
     source: 'catscompany',
     topicId: envelope.topicId,
     sessionTopicId: buildCatsCoSessionTopicId(
@@ -126,6 +124,16 @@ export function createCatsCoSessionRoute(envelope: MessageEnvelope): SessionRout
     legacyRestoreKey,
     legacyCleanupKey,
   });
+  if (route.topicType === 'group') {
+    return {
+      ...route,
+      sessionKey: fallbackLegacyKey,
+      legacySessionKey: fallbackLegacyKey,
+      legacyRestoreKey: fallbackLegacyKey,
+      legacyCleanupKey: fallbackLegacyKey,
+    };
+  }
+  return route;
 }
 
 export function createFeishuSessionRoute(message: ParsedFeishuMessage): SessionRoute {
