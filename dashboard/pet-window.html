@@ -1,0 +1,1153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CatsCo Companion</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --panel: rgba(18, 22, 30, 0.94);
+      --line: rgba(255, 255, 255, 0.14);
+      --text: #f4f7fb;
+      --muted: #a8b2c1;
+      --accent: #51d6a7;
+      --accent-2: #74a7ff;
+      --warning: #f6c66b;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: transparent;
+      user-select: none;
+    }
+
+    body {
+      display: grid;
+      place-items: end center;
+      padding: 8px;
+      color: var(--text);
+    }
+
+    #pet-shell {
+      position: relative;
+      width: 252px;
+      min-height: 424px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-end;
+    }
+
+    .pet-drag-region,
+    .drag-handle {
+      -webkit-app-region: drag;
+      cursor: grab;
+    }
+
+    #pet-shell.position-locked.pet-drag-region,
+    #pet-shell.position-locked .pet-drag-region,
+    #pet-shell.position-locked .drag-handle {
+      -webkit-app-region: no-drag;
+      cursor: default;
+    }
+
+    .pet-drag-region:active,
+    .drag-handle:active {
+      cursor: grabbing;
+    }
+
+    .drag-handle,
+    .pet-grip {
+      width: 74px;
+      height: 12px;
+      margin: 0 auto 2px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.18);
+    }
+
+    .pet-grip {
+      margin: 0 auto 7px;
+      opacity: 0.65;
+    }
+
+    .panel,
+    .work-alert {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: 0 16px 44px rgba(0, 0, 0, 0.28);
+      backdrop-filter: blur(14px);
+    }
+
+    .panel {
+      width: 100%;
+      margin-bottom: 8px;
+      padding: 10px;
+      max-height: calc(100vh - 148px);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transform: translateY(4px) scale(0.98);
+      transform-origin: bottom center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 140ms ease, transform 140ms ease;
+    }
+
+    #pet-shell.open .panel {
+      transform: translateY(0) scale(1);
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .title-row,
+    .work-head,
+    .work-alert-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .title-row {
+      margin-bottom: 8px;
+      padding: 2px 2px 0;
+    }
+
+    .title,
+    .work-title,
+    .work-alert-title {
+      font-size: 12px;
+      font-weight: 750;
+      letter-spacing: 0;
+    }
+
+    .status,
+    .level-pill,
+    .work-time,
+    .hint,
+    .work-detail,
+    .work-empty,
+    .work-alert-detail {
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+
+    .status {
+      max-width: 92px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .level-pill {
+      padding: 3px 8px;
+      border-radius: 999px;
+      color: #dbeafe;
+      background: rgba(116, 167, 255, 0.14);
+      border: 1px solid rgba(116, 167, 255, 0.24);
+      font-weight: 750;
+    }
+
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+
+    .panel-scroll {
+      min-height: 0;
+      margin-top: 8px;
+      padding-right: 2px;
+      overflow-y: auto;
+    }
+
+    button {
+      min-height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      font: inherit;
+      font-size: 11px;
+      font-weight: 650;
+      cursor: pointer;
+      -webkit-app-region: no-drag;
+    }
+
+    button.primary {
+      border-color: rgba(81, 214, 167, 0.55);
+      background: rgba(81, 214, 167, 0.16);
+    }
+
+    button:hover {
+      background: rgba(255, 255, 255, 0.14);
+    }
+
+    .work-card {
+      margin-top: 0;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .skill-draft-card {
+      display: none;
+      margin-top: 9px;
+      padding: 9px;
+      border: 1px solid rgba(81, 214, 167, 0.22);
+      border-radius: 8px;
+      background: rgba(81, 214, 167, 0.08);
+    }
+
+    .daily-report-card {
+      display: none;
+      margin-top: 9px;
+      padding: 9px;
+      border: 1px solid rgba(116, 167, 255, 0.24);
+      border-radius: 8px;
+      background: rgba(116, 167, 255, 0.08);
+    }
+
+    .skill-draft-card.show {
+      display: block;
+    }
+
+    .daily-report-card.show {
+      display: block;
+    }
+
+    .skill-draft-title,
+    .daily-report-title {
+      color: var(--text);
+      font-size: 11px;
+      font-weight: 760;
+    }
+
+    .skill-draft-reason,
+    .daily-report-summary,
+    .daily-report-meta {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+
+    .skill-draft-actions,
+    .daily-report-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .work-feed {
+      max-height: 116px;
+      margin-top: 7px;
+      overflow-y: auto;
+      padding-right: 2px;
+    }
+
+    .work-item {
+      display: grid;
+      grid-template-columns: 8px 1fr auto;
+      gap: 8px;
+      align-items: start;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .work-item:last-child {
+      border-bottom: 0;
+    }
+
+    .work-dot {
+      width: 8px;
+      height: 8px;
+      margin-top: 4px;
+      border-radius: 50%;
+      background: var(--accent-2);
+    }
+
+    .work-item.error .work-dot {
+      background: #ff7a90;
+    }
+
+    .work-item.level_up .work-dot {
+      background: var(--warning);
+    }
+
+    .work-name {
+      color: var(--text);
+      font-size: 11px;
+      font-weight: 720;
+      line-height: 1.3;
+    }
+
+    .work-detail {
+      margin-top: 2px;
+    }
+
+    .work-empty {
+      padding: 9px 0 3px;
+    }
+
+    .switch-row,
+    .hint {
+      margin-top: 8px;
+    }
+
+    .switch-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+
+    input {
+      accent-color: var(--accent);
+      -webkit-app-region: no-drag;
+    }
+
+    .work-alert {
+      position: absolute;
+      left: 50%;
+      bottom: 122px;
+      width: 236px;
+      padding: 11px 12px;
+      transform: translate(-50%, 10px) scale(0.98);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 160ms ease, transform 160ms ease;
+    }
+
+    .work-alert.show {
+      opacity: 1;
+      transform: translate(-50%, 0) scale(1);
+      pointer-events: auto;
+    }
+
+    .work-alert-meta {
+      margin-top: 6px;
+    }
+
+    .work-alert-xp {
+      color: #dbeafe;
+      font-size: 10px;
+      font-weight: 800;
+    }
+
+    .sprite-button {
+      width: 116px;
+      height: 116px;
+      margin: 0 auto;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      filter: drop-shadow(0 13px 18px rgba(0, 0, 0, 0.28));
+    }
+
+    .sprite-button:hover {
+      background: transparent;
+      transform: translateY(-1px);
+    }
+
+    #pet-frame {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      pointer-events: none;
+    }
+
+    .pulse {
+      position: absolute;
+      right: 44px;
+      bottom: 112px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent-2);
+      box-shadow: 0 0 0 0 rgba(116, 167, 255, 0.55);
+      animation: pulse 1.8s infinite;
+      opacity: 0;
+    }
+
+    .pulse.show {
+      opacity: 1;
+    }
+
+    @keyframes pulse {
+      70% {
+        box-shadow: 0 0 0 10px rgba(116, 167, 255, 0);
+      }
+      100% {
+        box-shadow: 0 0 0 0 rgba(116, 167, 255, 0);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main id="pet-shell" class="pet-drag-region" aria-label="CatsCo companion">
+    <section class="panel" aria-label="Companion actions">
+      <div class="drag-handle pet-drag-region" title="拖动宠物"></div>
+      <div class="title-row pet-drag-region">
+        <div class="title">CatsCo</div>
+        <div id="pet-status" class="status">starting</div>
+      </div>
+      <div class="actions">
+        <button id="open-dashboard" class="primary" type="button">Dashboard</button>
+        <button id="open-web" type="button">CatsCo Web</button>
+        <button id="open-work" type="button">最近工作</button>
+        <button id="open-skillhub" type="button">SkillHub</button>
+      </div>
+      <div class="panel-scroll">
+      <section class="work-card" aria-label="最近工作">
+        <div class="work-head">
+          <div class="work-title">最近工作</div>
+          <div id="work-level" class="level-pill">LV.1</div>
+        </div>
+        <div id="work-feed" class="work-feed">
+          <div class="work-empty">暂无最近工作。</div>
+        </div>
+      </section>
+      <section id="daily-report-card" class="daily-report-card" aria-label="Daily report draft">
+        <div id="daily-report-title" class="daily-report-title">今日日报</div>
+        <div id="daily-report-summary" class="daily-report-summary">我会先筛掉噪声，再整理今天真正有价值的工作。</div>
+        <div id="daily-report-meta" class="daily-report-meta"></div>
+        <div class="daily-report-actions">
+          <button id="preview-daily-report" type="button">预览</button>
+          <button id="save-daily-report" type="button">保存</button>
+          <button id="dismiss-daily-report" type="button">不保存</button>
+          <button id="open-daily-report-logs" class="primary" type="button">日志</button>
+        </div>
+      </section>
+      <section id="skill-draft-card" class="skill-draft-card" aria-label="Skill draft recommendation">
+        <div id="skill-draft-title" class="skill-draft-title">可生成 Skill</div>
+        <div id="skill-draft-reason" class="skill-draft-reason">根据最近日志发现可沉淀的工作流。</div>
+        <div class="skill-draft-actions">
+          <button id="preview-skill-draft" type="button">预览</button>
+          <button id="apply-skill-draft" class="primary" type="button">生成</button>
+          <button id="dismiss-skill-draft" type="button">暂不生成</button>
+        </div>
+      </section>
+      <label class="switch-row">
+        <span>Start With System</span>
+        <input id="start-login" type="checkbox">
+      </label>
+      <label class="switch-row">
+        <span>Lock Pet Position</span>
+        <input id="lock-position" type="checkbox">
+      </label>
+      <label class="switch-row">
+        <span>Always On Top</span>
+        <input id="always-on-top" type="checkbox">
+      </label>
+      <div id="pet-hint" class="hint">右键查看更多选项。</div>
+      </div>
+    </section>
+    <aside id="work-alert" class="work-alert" aria-live="polite" aria-hidden="true">
+      <div id="work-alert-title" class="work-alert-title">任务完成</div>
+      <div id="work-alert-detail" class="work-alert-detail">刚完成了一项工作。</div>
+      <div class="work-alert-meta">
+        <span id="work-alert-xp" class="work-alert-xp">+0 XP</span>
+        <span id="work-alert-time" class="work-time">--:--</span>
+      </div>
+    </aside>
+    <span id="pet-pulse" class="pulse" aria-hidden="true"></span>
+    <div class="pet-grip pet-drag-region" title="拖动宠物" aria-hidden="true"></div>
+    <button id="pet-button" class="sprite-button" type="button" aria-label="Open CatsCo companion menu">
+      <img id="pet-frame" src="pet/idle/01.png" alt="">
+    </button>
+  </main>
+
+  <script>
+    const shell = document.getElementById('pet-shell');
+    const frame = document.getElementById('pet-frame');
+    const statusText = document.getElementById('pet-status');
+    const hint = document.getElementById('pet-hint');
+    const pulse = document.getElementById('pet-pulse');
+    const startLogin = document.getElementById('start-login');
+    const lockPosition = document.getElementById('lock-position');
+    const alwaysOnTop = document.getElementById('always-on-top');
+    const workFeed = document.getElementById('work-feed');
+    const workLevel = document.getElementById('work-level');
+    const workAlert = document.getElementById('work-alert');
+    const workAlertTitle = document.getElementById('work-alert-title');
+    const workAlertDetail = document.getElementById('work-alert-detail');
+    const workAlertXp = document.getElementById('work-alert-xp');
+    const workAlertTime = document.getElementById('work-alert-time');
+    const skillDraftCard = document.getElementById('skill-draft-card');
+    const skillDraftTitle = document.getElementById('skill-draft-title');
+    const skillDraftReason = document.getElementById('skill-draft-reason');
+    const previewSkillDraftButton = document.getElementById('preview-skill-draft');
+    const applySkillDraftButton = document.getElementById('apply-skill-draft');
+    const dismissSkillDraftButton = document.getElementById('dismiss-skill-draft');
+    const dailyReportCard = document.getElementById('daily-report-card');
+    const dailyReportTitle = document.getElementById('daily-report-title');
+    const dailyReportSummary = document.getElementById('daily-report-summary');
+    const dailyReportMeta = document.getElementById('daily-report-meta');
+    const previewDailyReportButton = document.getElementById('preview-daily-report');
+    const saveDailyReportButton = document.getElementById('save-daily-report');
+    const dismissDailyReportButton = document.getElementById('dismiss-daily-report');
+    const openDailyReportLogsButton = document.getElementById('open-daily-report-logs');
+    const frameSpeeds = {
+      idle: 520,
+      idle_active: 420,
+      thinking: 360,
+      typing: 120,
+      skill: 360,
+      notify: 260,
+      sleepy: 680,
+      success: 260,
+      happy: 260,
+      error: 320,
+      level_up: 260,
+      peek: 420,
+    };
+    const sleepyDelayMs = 10 * 60 * 1000;
+    const seenTimelineEventIds = new Set();
+    let manifest = {};
+    let state = 'idle';
+    let currentPetLevel = 1;
+    let frameIndex = 0;
+    let frameTimer = null;
+    let skillRecommendation = null;
+    let skillDraft = null;
+    let dailyReport = null;
+    let promptProposalPending = false;
+    let timelinePrimed = false;
+    let alertTimer = null;
+    let sleepyTimer = null;
+
+    function petApi() {
+      return window.catscoPet || {
+        openDashboard: () => window.open('/', '_blank'),
+        openCatsCoWeb: () => window.open('https://app.catsco.cc', '_blank'),
+        showMenu: () => Promise.resolve(),
+        getState: () => Promise.resolve({ startAtLogin: false, lockPetPosition: false, alwaysOnTop: true }),
+        setStartAtLogin: (value) => Promise.resolve({ startAtLogin: Boolean(value) }),
+        setLockPetPosition: (value) => Promise.resolve({ lockPetPosition: Boolean(value) }),
+        setAlwaysOnTop: (value) => Promise.resolve({ alwaysOnTop: Boolean(value) }),
+        onDesktopStateChanged: () => () => {},
+      };
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    }
+
+    function normalizeState(value) {
+      const text = String(value || '').toLowerCase();
+      if (manifest[text]) return text;
+      if (text.includes('level')) return 'level_up';
+      if (text.includes('error') || text.includes('fail')) return 'error';
+      if (text.includes('skill')) return 'skill';
+      if (text.includes('notify') || text.includes('report') || text.includes('daily')) return 'notify';
+      if (text.includes('sleep')) return 'sleepy';
+      if (text.includes('happy')) return 'happy';
+      if (text.includes('success') || text.includes('done')) return 'success';
+      if (text.includes('typing') || text.includes('working')) return 'typing';
+      if (text.includes('thinking') || text.includes('busy')) return 'thinking';
+      return 'idle';
+    }
+
+    function setState(next) {
+      resetSleepyTimer();
+      state = normalizeState(next);
+      frameIndex = 0;
+      if (frameTimer) clearInterval(frameTimer);
+      frameTimer = setInterval(showNextFrame, frameSpeeds[state] || 420);
+      showNextFrame();
+    }
+
+    function showNextFrame() {
+      const frames = resolveLevelFrames(state) || manifest[state] || manifest.idle || ['pet/idle/01.png'];
+      frame.src = frames[frameIndex % frames.length];
+      frameIndex += 1;
+    }
+
+    function resolveLevelFrames(targetState) {
+      const levels = manifest.levels || {};
+      const level = Math.max(1, Number(currentPetLevel || 1));
+      const candidates = Object.keys(levels)
+        .map(value => Number(value))
+        .filter(value => Number.isFinite(value) && value <= level)
+        .sort((a, b) => b - a);
+      for (const candidate of candidates) {
+        const frames = levels[String(candidate)] && levels[String(candidate)][targetState];
+        if (Array.isArray(frames) && frames.length) return frames;
+      }
+      return null;
+    }
+
+    function resetSleepyTimer() {
+      if (sleepyTimer) clearTimeout(sleepyTimer);
+      sleepyTimer = setTimeout(() => {
+        if (!shell.classList.contains('open') && !workAlert.classList.contains('show')) {
+          setState('sleepy');
+        }
+      }, sleepyDelayMs);
+    }
+
+    async function loadManifest() {
+      try {
+        const res = await fetch('pet/manifest.json', { cache: 'no-store' });
+        manifest = await res.json();
+      } catch (_error) {
+        manifest = { idle: ['pet/idle/01.png'] };
+      }
+      setState('idle');
+    }
+
+    function formatTime(value) {
+      const date = new Date(value || Date.now());
+      if (Number.isNaN(date.getTime())) return '--:--';
+      return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+
+    function previousLocalDate() {
+      const date = new Date();
+      date.setDate(date.getDate() - 1);
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return year + '-' + month + '-' + day;
+    }
+
+    function dailyReportAlertKey(report) {
+      return 'catsco:daily-report-alert:' + String(report && report.date || '');
+    }
+
+    function dailyReportDecisionKey(report) {
+      const date = String(report && report.date || '').trim();
+      return date ? 'catsco:daily-report-decision:' + date : '';
+    }
+
+    function skillDraftDecisionKey(draft) {
+      const id = String(draft && (draft.id || draft.name) || '').trim();
+      return id ? 'catsco:skill-draft-decision:' + id : '';
+    }
+
+    function hasStoredDecision(key) {
+      return Boolean(key && localStorage.getItem(key));
+    }
+
+    function rememberDecision(key, value) {
+      if (!key) return;
+      localStorage.setItem(key, String(value || 'dismissed') + ':' + new Date().toISOString());
+    }
+
+    function syncPulse() {
+      pulse.classList.toggle('show', Boolean(
+        promptProposalPending ||
+        skillRecommendation ||
+        skillDraft ||
+        dailyReport ||
+        workAlert.classList.contains('show')
+      ));
+    }
+
+    function eventTitle(event) {
+      const xp = Math.max(0, Number(event && event.xp_delta || 0));
+      const xpText = xp > 0 ? '，获得 ' + xp + ' XP' : '';
+      switch (event && event.event_type) {
+        case 'message_completed':
+          return '消息完成' + xpText;
+        case 'task_completed':
+          return '任务完成' + xpText;
+        case 'skill_succeeded':
+          return (event.skill_name || 'Skill') + ' 完成' + xpText;
+        case 'skill_failed':
+          return (event.skill_name || '任务') + ' 遇到问题';
+        case 'level_up':
+          return '升级了' + xpText;
+        default:
+          return event && event.message ? String(event.message) : '最近工作已更新';
+      }
+    }
+
+    function eventDetail(event) {
+      if (event && event.message) return String(event.message);
+      if (event && event.event_type === 'skill_failed') return '需要你稍后查看失败原因。';
+      return '刚完成了一项工作。';
+    }
+
+    function eventClass(event) {
+      const type = String(event && event.event_type || '');
+      if (type.includes('failed')) return 'error';
+      if (type === 'level_up') return 'level_up';
+      return '';
+    }
+
+    function renderWorkFeed(events) {
+      const items = Array.isArray(events) ? events.slice(0, 5) : [];
+      if (!items.length) {
+        workFeed.innerHTML = '<div class="work-empty">暂无最近工作。</div>';
+        return;
+      }
+      workFeed.innerHTML = items.map(event => (
+        '<div class="work-item ' + escapeHtml(eventClass(event)) + '">' +
+          '<span class="work-dot"></span>' +
+          '<div><div class="work-name">' + escapeHtml(eventTitle(event)) + '</div>' +
+          '<div class="work-detail">' + escapeHtml(eventDetail(event)) + '</div></div>' +
+          '<span class="work-time">' + escapeHtml(formatTime(event.created_at)) + '</span>' +
+        '</div>'
+      )).join('');
+    }
+
+    function shouldAlertEvent(event) {
+      if (!event || !event.id || seenTimelineEventIds.has(event.id)) return false;
+      const createdAt = Date.parse(event.created_at || '');
+      if (!timelinePrimed) return Number.isFinite(createdAt) && Date.now() - createdAt < 120000;
+      return true;
+    }
+
+    function showWorkAlert(event) {
+      workAlertTitle.textContent = eventTitle(event);
+      workAlertDetail.textContent = eventDetail(event);
+      workAlertXp.textContent = '+' + Math.max(0, Number(event && event.xp_delta || 0)) + ' XP';
+      workAlertTime.textContent = formatTime(event && event.created_at);
+      workAlert.dataset.alertKind = 'timeline';
+      workAlert.classList.add('show');
+      workAlert.setAttribute('aria-hidden', 'false');
+      pulse.classList.add('show');
+      if (alertTimer) clearTimeout(alertTimer);
+      alertTimer = setTimeout(() => {
+        workAlert.classList.remove('show');
+        workAlert.setAttribute('aria-hidden', 'true');
+        syncPulse();
+      }, 8000);
+    }
+
+    function showDailyReportAlert(report) {
+      setState('notify');
+      workAlertTitle.textContent = '昨天的日报我整理好啦';
+      workAlertDetail.textContent = '完成事项、错误、偏好和 Skill 建议都在草稿里，点我看看。';
+      workAlertXp.textContent = '日报';
+      workAlertTime.textContent = formatTime(Date.now());
+      workAlert.dataset.alertKind = 'daily-report';
+      workAlert.classList.add('show');
+      workAlert.setAttribute('aria-hidden', 'false');
+      pulse.classList.add('show');
+      hint.textContent = '昨天的日报我整理好啦，要不要看看？';
+      if (alertTimer) clearTimeout(alertTimer);
+      alertTimer = setTimeout(() => {
+        workAlert.classList.remove('show');
+        workAlert.setAttribute('aria-hidden', 'true');
+      }, 12000);
+    }
+
+    async function refreshPetStatus() {
+      try {
+        const res = await fetch('/api/pet/status', { cache: 'no-store' });
+        const data = await res.json();
+        const status = data.status || data;
+        const next = status.state || status.mood || status.current_state || status.phase;
+        statusText.textContent = normalizeState(next);
+        if (status.level) {
+          currentPetLevel = Number(status.level || 1);
+          workLevel.textContent = 'LV.' + currentPetLevel;
+        }
+        setState(next);
+      } catch (_error) {
+        statusText.textContent = 'offline';
+        setState('error');
+      }
+    }
+
+    async function refreshTimeline() {
+      try {
+        const res = await fetch('/api/pet/timeline?limit=5', { cache: 'no-store' });
+        const data = await res.json();
+        const events = Array.isArray(data.events) ? data.events : [];
+        renderWorkFeed(events);
+        const newest = events[0];
+        if (newest) hint.textContent = eventTitle(newest);
+        if (shouldAlertEvent(newest)) showWorkAlert(newest);
+        events.forEach(event => {
+          if (event && event.id) seenTimelineEventIds.add(event.id);
+        });
+        timelinePrimed = true;
+      } catch (_error) {
+        hint.textContent = 'Dashboard service is starting.';
+      }
+    }
+
+    async function refreshProgress() {
+      try {
+        const res = await fetch('/api/pet/progress', { cache: 'no-store' });
+        const progress = await res.json();
+        if (progress && progress.level) {
+          currentPetLevel = Number(progress.level || 1);
+          workLevel.textContent = 'LV.' + currentPetLevel;
+        }
+      } catch (_error) {
+        // Progress is decorative; keep the pet usable if it is unavailable.
+      }
+    }
+
+    async function refreshPromptProposal() {
+      try {
+        const res = await fetch('/api/pet/prompt-proposal', { cache: 'no-store' });
+        const data = await res.json();
+        const proposal = data.proposal;
+        promptProposalPending = Boolean(proposal);
+        syncPulse();
+        if (proposal) {
+          hint.textContent = proposal.title || '有一条提示词建议可以查看。';
+        }
+      } catch (_error) {
+        promptProposalPending = false;
+        syncPulse();
+      }
+    }
+
+    async function loadDesktopState() {
+      try {
+        const state = await petApi().getState();
+        applyDesktopState(state);
+      } catch (_error) {
+        startLogin.checked = false;
+        lockPosition.checked = false;
+        alwaysOnTop.checked = true;
+        shell.classList.remove('position-locked');
+      }
+    }
+
+    function applyDesktopState(state) {
+      startLogin.checked = Boolean(state && state.startAtLogin);
+      lockPosition.checked = Boolean(state && state.lockPetPosition);
+      alwaysOnTop.checked = state && state.alwaysOnTop !== false;
+      shell.classList.toggle('position-locked', lockPosition.checked);
+      shell.title = lockPosition.checked ? '宠物位置已锁定' : '拖动宠物到喜欢的位置';
+    }
+
+    function openDashboard() {
+      if (window.catscoPet) return window.catscoPet.openDashboard();
+      return petApi().openDashboard();
+    }
+
+    function focusWorkFeed() {
+      shell.classList.add('open');
+      refreshTimeline();
+      refreshProgress();
+    }
+
+    function openSkillHub() {
+      const query = skillRecommendation && skillRecommendation.searchQuery
+        ? '?skillhub=' + encodeURIComponent(skillRecommendation.searchQuery)
+        : '';
+      if (window.catscoPet) return window.catscoPet.openDashboard('/#store' + query);
+      return window.open('/#store' + query, '_blank');
+    }
+
+    function openCatsCoWeb() {
+      if (window.catscoPet) return window.catscoPet.openCatsCoWeb();
+      return petApi().openCatsCoWeb();
+    }
+
+    async function refreshSkillRecommendations() {
+      try {
+        const res = await fetch('/api/pet/skill-recommendations', { cache: 'no-store' });
+        const data = await res.json();
+        skillRecommendation = (data.recommendations || [])[0] || null;
+        if (skillRecommendation) {
+          hint.textContent = skillRecommendation.title + ': ' + skillRecommendation.reason;
+          pulse.classList.add('show');
+          setState('skill');
+        }
+      } catch (_error) {
+        skillRecommendation = null;
+      }
+    }
+
+    async function refreshSkillDrafts() {
+      try {
+        const res = await fetch('/api/pet/skill-drafts?days=7', { cache: 'no-store' });
+        const data = await res.json();
+        const drafts = Array.isArray(data.drafts) ? data.drafts : [];
+        skillDraft = drafts.find(draft => !hasStoredDecision(skillDraftDecisionKey(draft))) || null;
+        renderSkillDraft();
+      } catch (_error) {
+        skillDraft = null;
+        renderSkillDraft();
+      }
+    }
+
+    async function refreshDailyReport() {
+      try {
+        const yesterday = previousLocalDate();
+        const yesterdayData = await fetchDailyReport('/api/pet/daily-report?days=7&date=' + encodeURIComponent(yesterday));
+        let report = yesterdayData.report || null;
+        if (!hasDailyReportSignals(report)) {
+          const latestData = await fetchDailyReport('/api/pet/daily-report?days=7');
+          report = latestData.report || null;
+        }
+        dailyReport = hasDailyReportSignals(report) && !hasStoredDecision(dailyReportDecisionKey(report)) ? report : null;
+        renderDailyReport();
+        maybeShowDailyReportAlert(dailyReport, yesterday);
+      } catch (_error) {
+        dailyReport = null;
+        renderDailyReport();
+      }
+    }
+
+    async function fetchDailyReport(url) {
+      const res = await fetch(url, { cache: 'no-store' });
+      return res.json();
+    }
+
+    function hasDailyReportSignals(report) {
+      if (!report || !report.metrics) return false;
+      if (Number(report.metrics.turns || 0) > 0) return true;
+      if (Number(report.metrics.runtimeErrors || 0) > 0) return true;
+      if (Array.isArray(report.skillCandidates) && report.skillCandidates.length > 0) return true;
+      return false;
+    }
+
+    function maybeShowDailyReportAlert(report, yesterday) {
+      if (!report || report.date !== yesterday) return;
+      if (hasStoredDecision(dailyReportDecisionKey(report))) return;
+      const key = dailyReportAlertKey(report);
+      if (!key || localStorage.getItem(key)) return;
+      localStorage.setItem(key, new Date().toISOString());
+      showDailyReportAlert(report);
+    }
+
+    function renderDailyReport() {
+      if (!dailyReport) {
+        dailyReportCard.classList.remove('show');
+        syncPulse();
+        return;
+      }
+      dailyReportTitle.textContent = (dailyReport.date === previousLocalDate() ? '昨日日报: ' : '日报: ') + (dailyReport.date || '');
+      dailyReportSummary.textContent = dailyReport.summary || '我帮你筛掉噪声，整理了今天值得回看的工作。';
+      saveDailyReportButton.disabled = false;
+      dismissDailyReportButton.disabled = false;
+      saveDailyReportButton.textContent = '保存';
+      const metrics = dailyReport.metrics || {};
+      const noise = dailyReport.noise || {};
+      dailyReportMeta.textContent = '有效 ' + Number(metrics.turns || 0)
+        + ' 条 / 已过滤 ' + Number(noise.filteredTurns || 0)
+        + ' 条 / Skill 候选 ' + ((dailyReport.skillCandidates || []).length);
+      dailyReportCard.classList.add('show');
+      pulse.classList.add('show');
+      hint.textContent = '今天的工作我先筛了一遍，可以预览日报草稿。';
+    }
+
+    function previewDailyReport() {
+      if (!dailyReport) return;
+      const markdown = String(dailyReport.reportMarkdown || dailyReport.summary || '');
+      alert(markdown.slice(0, 2200));
+    }
+
+    async function saveDailyReport() {
+      if (!dailyReport) return;
+      if (!confirm('保存这份日报草稿到本地 reports/daily 吗？')) return;
+      saveDailyReportButton.disabled = true;
+      try {
+        const res = await fetch('/api/pet/daily-report/save', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ date: dailyReport.date, days: 7 }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Daily report save failed');
+        const savedDate = dailyReport.date;
+        rememberDecision(dailyReportDecisionKey(dailyReport), 'saved');
+        dailyReport = null;
+        dailyReportCard.classList.remove('show');
+        hint.textContent = '日报已保存: ' + (data.saved && data.saved.path ? data.saved.path : savedDate);
+        syncPulse();
+        setState('happy');
+      } catch (error) {
+        saveDailyReportButton.disabled = false;
+        hint.textContent = '日报保存失败: ' + (error.message || String(error));
+      }
+    }
+
+    function dismissDailyReport() {
+      if (!dailyReport) return;
+      rememberDecision(dailyReportDecisionKey(dailyReport), 'dismissed');
+      dailyReport = null;
+      dailyReportCard.classList.remove('show');
+      hint.textContent = '这份日报先不保存，之后也可以从日志里回看。';
+      syncPulse();
+      setState('idle');
+    }
+
+    function openDailyReportLogs() {
+      if (window.catscoPet) return window.catscoPet.openDashboard('/#logs');
+      return window.open('/#logs', '_blank');
+    }
+
+    function renderSkillDraft() {
+      if (!skillDraft) {
+        skillDraftCard.classList.remove('show');
+        syncPulse();
+        return;
+      }
+      skillDraftTitle.textContent = (skillDraft.action === 'update_local_skill' ? '可更新 Skill: ' : '可生成 Skill: ') + skillDraft.name;
+      skillDraftReason.textContent = skillDraft.reason || '根据最近日志发现可沉淀的工作流。';
+      applySkillDraftButton.textContent = skillDraft.action === 'update_local_skill' ? '更新' : '生成';
+      applySkillDraftButton.disabled = false;
+      dismissSkillDraftButton.disabled = false;
+      skillDraftCard.classList.add('show');
+      pulse.classList.add('show');
+      hint.textContent = '发现一个可确认的 Skill 草稿。';
+      setState('skill');
+    }
+
+    function previewSkillDraft() {
+      if (!skillDraft) return;
+      const markdown = String(skillDraft.skillMarkdown || '');
+      alert(markdown.slice(0, 1800));
+    }
+
+    async function applySkillDraft() {
+      if (!skillDraft) return;
+      const action = skillDraft.action === 'update_local_skill' ? '更新' : '生成';
+      if (!confirm(action + '本地 Skill "' + skillDraft.name + '"？')) return;
+      applySkillDraftButton.disabled = true;
+      try {
+        const res = await fetch('/api/pet/skill-drafts/apply', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: skillDraft.id }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Skill draft apply failed');
+        rememberDecision(skillDraftDecisionKey(skillDraft), 'applied');
+        hint.textContent = 'Skill 已' + (data.skill && data.skill.action === 'updated' ? '更新' : '生成') + ': ' + skillDraft.name;
+        skillDraftCard.classList.remove('show');
+        skillDraft = null;
+        syncPulse();
+        setState('happy');
+      } catch (error) {
+        hint.textContent = 'Skill 生成失败: ' + (error.message || String(error));
+      } finally {
+        applySkillDraftButton.disabled = false;
+      }
+    }
+
+    function dismissSkillDraft() {
+      if (!skillDraft) return;
+      rememberDecision(skillDraftDecisionKey(skillDraft), 'dismissed');
+      skillDraft = null;
+      skillDraftCard.classList.remove('show');
+      hint.textContent = '这条 Skill 建议先不生成。';
+      syncPulse();
+      setState('idle');
+    }
+
+    document.getElementById('pet-button').addEventListener('click', () => {
+      shell.classList.toggle('open');
+    });
+
+    document.getElementById('open-dashboard').addEventListener('click', () => {
+      openDashboard();
+    });
+
+    document.getElementById('open-web').addEventListener('click', () => {
+      openCatsCoWeb();
+    });
+
+    document.getElementById('open-work').addEventListener('click', () => {
+      focusWorkFeed();
+    });
+
+    document.getElementById('open-skillhub').addEventListener('click', () => {
+      openSkillHub();
+    });
+
+    previewSkillDraftButton.addEventListener('click', () => {
+      previewSkillDraft();
+    });
+
+    applySkillDraftButton.addEventListener('click', () => {
+      applySkillDraft();
+    });
+
+    dismissSkillDraftButton.addEventListener('click', () => {
+      dismissSkillDraft();
+    });
+
+    previewDailyReportButton.addEventListener('click', () => {
+      previewDailyReport();
+    });
+
+    saveDailyReportButton.addEventListener('click', () => {
+      saveDailyReport();
+    });
+
+    dismissDailyReportButton.addEventListener('click', () => {
+      dismissDailyReport();
+    });
+
+    openDailyReportLogsButton.addEventListener('click', () => {
+      openDailyReportLogs();
+    });
+
+    workAlert.addEventListener('click', () => {
+      if (workAlert.dataset.alertKind === 'daily-report') {
+        shell.classList.add('open');
+      }
+    });
+
+    startLogin.addEventListener('change', async () => {
+      const result = await petApi().setStartAtLogin(startLogin.checked);
+      applyDesktopState({ startAtLogin: startLogin.checked, lockPetPosition: lockPosition.checked, alwaysOnTop: alwaysOnTop.checked, ...result });
+    });
+
+    lockPosition.addEventListener('change', async () => {
+      const result = await petApi().setLockPetPosition(lockPosition.checked);
+      applyDesktopState({ startAtLogin: startLogin.checked, lockPetPosition: lockPosition.checked, alwaysOnTop: alwaysOnTop.checked, ...result });
+    });
+
+    alwaysOnTop.addEventListener('change', async () => {
+      const result = await petApi().setAlwaysOnTop(alwaysOnTop.checked);
+      applyDesktopState({ startAtLogin: startLogin.checked, lockPetPosition: lockPosition.checked, alwaysOnTop: alwaysOnTop.checked, ...result });
+    });
+
+    petApi().onDesktopStateChanged?.((state) => {
+      applyDesktopState(state);
+    });
+
+    window.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      petApi().showMenu();
+    });
+
+    loadManifest();
+    loadDesktopState();
+    refreshPetStatus();
+    refreshProgress();
+    refreshTimeline();
+    refreshPromptProposal();
+    refreshSkillRecommendations();
+    refreshSkillDrafts();
+    refreshDailyReport();
+    setInterval(refreshPetStatus, 2500);
+    setInterval(refreshProgress, 5000);
+    setInterval(refreshTimeline, 5000);
+    setInterval(refreshPromptProposal, 30000);
+    setInterval(refreshSkillRecommendations, 30 * 60 * 1000);
+    setInterval(refreshSkillDrafts, 6 * 60 * 60 * 1000);
+    setInterval(refreshDailyReport, 60 * 60 * 1000);
+  </script>
+</body>
+</html>

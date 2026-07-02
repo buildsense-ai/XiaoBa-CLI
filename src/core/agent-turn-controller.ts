@@ -268,7 +268,6 @@ export class AgentTurnController {
 
     if (result.finalResponseVisible) {
       this.recordPetTurnCompletion('message_completed');
-      this.recordPetTurnCompletion('task_completed');
     }
 
     return {

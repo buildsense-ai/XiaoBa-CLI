@@ -18,6 +18,11 @@ export const PET_LEVEL_RULES: PetLevelRule[] = [
   { level: 3, min_xp: 150, title: '熟练助手' },
   { level: 4, min_xp: 350, title: '工作搭档' },
   { level: 5, min_xp: 700, title: '专业执行者' },
+  { level: 6, min_xp: 1100, title: '灵感捕手' },
+  { level: 7, min_xp: 1600, title: 'Skill 策划师' },
+  { level: 8, min_xp: 2300, title: '工作管家' },
+  { level: 9, min_xp: 3200, title: '成长伙伴' },
+  { level: 10, min_xp: 4500, title: '高级伙伴' },
 ];
 
 const XP_RULES: Record<PetEventType, number> = {
@@ -25,7 +30,7 @@ const XP_RULES: Record<PetEventType, number> = {
   skill_succeeded: 3,
   skill_failed: 0,
   task_completed: 10,
-  message_completed: 1,
+  message_completed: 0,
   level_up: 0,
 };
 
@@ -197,7 +202,7 @@ function updateSkillStats(data: PetStoreData, event: PetEvent): void {
 }
 
 function stateForEvent(eventType: PetEventType): PetState {
-  if (eventType === 'skill_started') return 'working';
+  if (eventType === 'skill_started') return 'skill';
   if (eventType === 'skill_failed') return 'error';
   if (eventType === 'level_up') return 'level_up';
   if (eventType === 'skill_succeeded' || eventType === 'task_completed' || eventType === 'message_completed') return 'success';
@@ -215,7 +220,7 @@ function defaultMessage(eventType: PetEventType, skillName: string): string {
   if (eventType === 'skill_succeeded') return skillName ? `「${skillName}」skill 已完成` : 'skill 已完成';
   if (eventType === 'skill_failed') return skillName ? `「${skillName}」skill 出错了，点我查看` : 'skill 出错了，点我查看';
   if (eventType === 'task_completed') return `任务完成，获得 ${XP_RULES.task_completed} XP`;
-  if (eventType === 'message_completed') return `消息完成，获得 ${XP_RULES.message_completed} XP`;
+  if (eventType === 'message_completed') return '\u5df2\u5b8c\u6210\u4e00\u6761\u56de\u590d';
   if (eventType === 'level_up') return '升级了';
   return '正在等待下一项任务。';
 }
