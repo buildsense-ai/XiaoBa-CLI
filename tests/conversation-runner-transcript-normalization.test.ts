@@ -567,6 +567,97 @@ test('runner still surfaces concise progress before tool calls', async () => {
   assert.equal(toolExecutor.getExecutionCount('execute_shell'), 1);
 });
 
+test('runner surfaces user-facing diagnostic prelude before tool calls', async () => {
+  const diagnostic = [
+    '**找到根本原因了，全是证据：**',
+    '',
+    '| 检查项 | 结果 | 说明 |',
+    '|---|---|---|',
+    '| 系统代理 | 未打开 | 需要继续检查 WinINET 设置 |',
+    '',
+    '我现在先验证代理配置，再按结果修复。',
+  ].join('\n');
+  const responses = [
+    {
+      content: diagnostic,
+      toolCalls: [makeToolCall('call_1', 'execute_shell', { command: 'netsh winhttp show proxy' })],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 80,
+        totalTokens: 180,
+      },
+    },
+    makeFinalResponse('已确认代理配置。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'execute_shell',
+      description: 'run command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }],
+    { execute_shell: 'ok' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const assistantText: string[] = [];
+  const thinking: string[] = [];
+
+  const result = await runner.run([{ role: 'user', content: '帮我看代理为什么不通' }], {
+    onAssistantText: text => assistantText.push(text),
+    onThinking: text => thinking.push(text),
+  });
+
+  assert.deepEqual(assistantText, [diagnostic]);
+  assert.deepEqual(thinking, []);
+  assert.equal(result.response, '已确认代理配置。');
+  assert.equal(toolExecutor.getExecutionCount('execute_shell'), 1);
+});
+
+test('runner does not route visible tool prelude through thinking callback', async () => {
+  const responses = [
+    {
+      content: '找到原因了，我先跑一个命令验证。',
+      toolCalls: [makeToolCall('call_1', 'execute_shell', { command: 'echo ok' })],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+      },
+    },
+    makeFinalResponse('验证完成。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'execute_shell',
+      description: 'run command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }],
+    { execute_shell: 'ok' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const thinking: string[] = [];
+
+  const result = await runner.run([{ role: 'user', content: '查一下' }], {
+    onThinking: text => thinking.push(text),
+  });
+
+  assert.deepEqual(thinking, []);
+  assert.equal(result.response, '验证完成。');
+});
+
 test('runner does not leak suppressed tool prelude through thinking callbacks', async () => {
   const responses = [
     {

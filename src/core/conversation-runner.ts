@@ -97,8 +97,9 @@ const REPLAY_ARTIFACT_ONLY_MESSAGE = '模型工具调用回放异常，这轮没
 export const PROMPT_BUDGET_TRIM_MESSAGE = '当前上下文超过模型窗口，已裁剪较早的历史内容以继续处理。';
 export const PROMPT_TOOLS_DISABLED_MESSAGE = '当前模型上下文不足以加载全部工具，本轮已先按纯文本继续处理。';
 const MAIN_AGENT_HIDDEN_TOOL_NAMES = new Set(['prompt_mode']);
-const MAX_VISIBLE_TOOL_PRELUDE_CHARS = 64;
-const MAX_VISIBLE_TOOL_PRELUDE_LINES = 2;
+const MAX_VISIBLE_TOOL_PRELUDE_CHARS = 1600;
+const MAX_VISIBLE_TOOL_PRELUDE_LINES = 18;
+const MAX_VISIBLE_TOOL_PRELUDE_LINE_CHARS = 420;
 
 const TOOL_PRELUDE_INTERNAL_PATTERNS = [
   /\bmemory\b/i,
@@ -112,11 +113,13 @@ const TOOL_PRELUDE_INTERNAL_PATTERNS = [
   /\bactual=/i,
   /\bexpected=/i,
   /\b\d+\s*\/\s*\d+\b/,
-  /根因|原因|问题|诊断|bug|报错|错误|异常|失败|断言|调试|正则|期望|实际|可能是|应该|测试要求|代码块被切|硬切|贪心/,
+  /bug|报错|错误|异常|失败|断言|调试|正则|期望|实际|测试要求|代码块被切|硬切|贪心/,
 ];
 
 const TOOL_PRELUDE_PROGRESS_PATTERN =
   /^(?:先|我先|开始|准备|正在|继续|建|创建|写|生成|跑|执行|检查|验证|清理|上传|发送|重试|修复|已|完成|稍等|马上|接着)[^：:\n`]{0,48}(?:[。！？.!?]|$)/;
+const TOOL_PRELUDE_USER_FACING_PATTERN =
+  /^(?:[*_`~\s]*|[一二三四五六七八九十]+[、.]\s*|\d+[、.]\s*)?(?:找到|确认|看到了|我查到|我看了|问题|原因|根因|结论|修复|解决|说明|目前|现在|接下来|下一步|可以|不能|需要|这个|这里|先|我先|继续|正在|准备|开始|已|完成)/;
 
 /**
  * 对话运行回调
@@ -643,8 +646,6 @@ export class ConversationRunner {
         const shouldSurfacePrelude = this.shouldSurfaceToolPrelude(visiblePrelude);
         if (callbacks?.onAssistantText && shouldSurfacePrelude) {
           await callbacks.onAssistantText(visiblePrelude);
-        } else if (!callbacks?.onAssistantText && callbacks?.onThinking && shouldSurfacePrelude) {
-          await callbacks.onThinking(visiblePrelude);
         } else {
           Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具前文本已作为内部进度保留，未发送给用户`);
         }
@@ -1359,12 +1360,11 @@ export class ConversationRunner {
 
     const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
     if (lines.length > MAX_VISIBLE_TOOL_PRELUDE_LINES) return false;
-    if (lines.some(line => line.length > MAX_VISIBLE_TOOL_PRELUDE_CHARS)) return false;
-    if (text.includes('```')) return false;
-    if (/^\s*#{1,6}\s/m.test(text) || /^\s*\|.+\|\s*$/m.test(text)) return false;
+    if (lines.some(line => line.length > MAX_VISIBLE_TOOL_PRELUDE_LINE_CHARS)) return false;
     if (TOOL_PRELUDE_INTERNAL_PATTERNS.some(pattern => pattern.test(text))) return false;
 
-    return TOOL_PRELUDE_PROGRESS_PATTERN.test(text);
+    return TOOL_PRELUDE_PROGRESS_PATTERN.test(text)
+      || TOOL_PRELUDE_USER_FACING_PATTERN.test(text);
   }
 
   private buildDuplicateOutboundHint(content: string): Message {
