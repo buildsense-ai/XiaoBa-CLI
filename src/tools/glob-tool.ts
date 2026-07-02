@@ -1,137 +1,391 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { glob } from 'glob';
+import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { isReadPathAllowed } from '../utils/safety';
 import { formatCatsCoVisiblePath, isCatsCoToolGatewayContext } from './tool-gateway';
 import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
-interface GlobResult {
-  numFiles: number;
-  filenames: string[];
-  truncated: boolean;
-  durationMs: number;
+type GlobEntryKind = 'file' | 'directory' | 'symlink' | 'other';
+type GlobKindFilter = 'files' | 'directories' | 'all';
+
+interface GlobEntry {
+  path: string;
+  kind: GlobEntryKind;
+  mtime: number;
+  size?: number;
+  matchedPatterns: string[];
 }
 
-/**
- * Glob 工具 - 文件模式匹配搜索
- */
+interface GlobResult {
+  numEntries: number;
+  totalMatches: number;
+  entries: GlobEntry[];
+  truncated: boolean;
+  durationMs: number;
+  patterns: string[];
+  kind: GlobKindFilter;
+  filters: {
+    modifiedAfter?: string;
+    modifiedBefore?: string;
+    maxDepth?: number;
+  };
+  summary?: GlobSummary;
+}
+
+interface GlobSummary {
+  byTopDirectory: Array<{ key: string; count: number }>;
+  byExtension: Array<{ key: string; count: number }>;
+  byModifiedDay: Array<{ key: string; count: number }>;
+}
+
 export class GlobTool implements Tool {
   definition: ToolDefinition = {
     name: 'glob',
     description: [
-      '按 glob 模式查找文件路径，返回匹配文件列表并按修改时间倒序排列。',
-      '适合先定位候选文件；要搜索文件内容请使用 grep。',
-      '当用户问“桌面/下载/文档里有哪些文件”时，先用 resolve_common_directory 解析目录，再用本工具列出文件；不要用 execute_shell 跑 dir/ls。',
+      'Find files or directories by path pattern and metadata.',
+      'Use this to discover candidate paths before grep/read_file. Use grep for content search.',
+      'Supports multiple filename patterns, file/directory kind, modified time filters, max depth, and result summaries.',
+      'For broad recent-file questions, prefer patterns + modified_after + max_depth + summary over repeated one-off glob calls.',
     ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
         pattern: {
           type: 'string',
-          description: 'Glob 模式，例如 "**/*.ts"、"src/**/*.js"。'
+          description: 'Single glob pattern, e.g. "**/*.ts" or "src/**/*.js". Use either pattern or patterns.',
+        },
+        patterns: {
+          type: 'array',
+          description: 'Multiple glob patterns to search in one call. Results are deduplicated and can show matched patterns.',
+          items: { type: 'string' },
         },
         path: {
           type: 'string',
-          description: '搜索起始目录。可选，默认当前目录。可以使用 resolve_common_directory 返回的绝对路径。'
+          description: 'Search root directory. Defaults to the current working directory. Can use resolve_common_directory output.',
         },
         limit: {
           type: 'number',
-          description: '返回结果最大数量，默认 100。',
-          default: 100
+          description: 'Maximum number of results to return. Defaults to 100.',
+          default: 100,
         },
-        target: targetParameterDescription()
+        kind: {
+          type: 'string',
+          description: 'Return files, directories, or all entries. Defaults to files.',
+          enum: ['files', 'directories', 'all'],
+          default: 'files',
+        },
+        max_depth: {
+          type: 'number',
+          description: 'Maximum search depth relative to path. Use 1-3 for shallow structure checks.',
+        },
+        modified_after: {
+          type: 'string',
+          description: 'Only return entries modified after this time. Accepts ISO time or YYYY-MM-DD.',
+        },
+        modified_before: {
+          type: 'string',
+          description: 'Only return entries modified before this time. Accepts ISO time or YYYY-MM-DD.',
+        },
+        include_hidden: {
+          type: 'boolean',
+          description: 'Include dotfiles and dot-directories. Defaults to false.',
+          default: false,
+        },
+        summary: {
+          type: 'boolean',
+          description: 'Include summary facets by top directory, extension, and modified day.',
+          default: false,
+        },
+        target: targetParameterDescription(),
       },
-      required: ['pattern']
-    }
+      required: [],
+    },
   };
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
-    const { pattern, path: searchPath, limit = 100 } = args;
+    const searchPath = args?.path;
+    const patterns = normalizePatterns(args);
+    const limit = normalizeLimit(args?.limit);
+    const kind = normalizeKind(args?.kind);
+    const maxDepth = normalizePositiveInteger(args?.max_depth);
+    const modifiedAfter = parseDateFilter(args?.modified_after);
+    const modifiedBefore = parseDateFilter(args?.modified_before);
+    const includeHidden = args?.include_hidden === true;
+    const includeSummary = args?.summary === true;
     const startTime = Date.now();
+
+    if (patterns.length === 0) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_TOOL_ARGUMENTS',
+        message: 'glob requires either pattern or patterns.',
+      };
+    }
 
     const route = resolveExecutionRoute(context, {
       toolName: this.definition.name,
       operation: 'glob',
-      target: args.target,
+      target: args?.target,
     });
     if (!route.ok) {
       return { ok: false, errorCode: route.errorCode, message: route.message };
     }
-    const remoteResult = await executeRouteIfRemote(context, route, 'glob', 'glob', args);
+    const remoteArgs = typeof args?.pattern === 'string' && args.pattern.trim()
+      ? args
+      : (patterns.length > 0 ? { ...args, pattern: patterns[0] } : args);
+    const remoteResult = await executeRouteIfRemote(context, route, 'glob', 'glob', remoteArgs);
     if (remoteResult) return remoteResult;
 
-    // 确定搜索目录
     const cwd = searchPath
       ? (path.isAbsolute(searchPath) ? searchPath : path.join(context.workingDirectory, searchPath))
       : context.workingDirectory;
 
     const pathPermission = isReadPathAllowed(cwd, context.workingDirectory);
     if (!pathPermission.allowed) {
-      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `执行被阻止: ${pathPermission.reason}` };
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: `Execution blocked: ${pathPermission.reason}` };
     }
 
     const visibleSearchPath = formatCatsCoVisiblePath(context, searchPath || '.', { preserveRelative: true });
     const visibleCwd = formatCatsCoVisiblePath(context, cwd);
 
-    // 检查目录是否存在
     if (!fs.existsSync(cwd)) {
-      return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `目录不存在: ${visibleCwd}` };
+      return { ok: false, errorCode: 'FILE_NOT_FOUND', message: `Directory not found: ${visibleCwd}` };
     }
 
-    // 执行 glob 搜索
     const shouldReturnAbsolutePaths = !isCatsCoToolGatewayContext(context) && Boolean(searchPath && path.isAbsolute(searchPath));
+    const matchedPaths = new Map<string, Set<string>>();
 
-    const files = await glob(pattern, {
-      cwd,
-      absolute: false,
-      nodir: true,
-      dot: false,
-      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**']
-    });
-
-    if (files.length === 0) {
-      return { ok: true, content: `未找到匹配的文件。\n模式: ${pattern}\n目录: ${visibleSearchPath}\nPath: ${visibleCwd}` };
+    for (const candidatePattern of patterns) {
+      const matches = await glob(candidatePattern, {
+        cwd,
+        absolute: false,
+        nodir: kind === 'files',
+        dot: includeHidden,
+        maxDepth,
+        ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+        windowsPathsNoEscape: process.platform === 'win32',
+      });
+      for (const match of matches) {
+        const normalized = normalizeRelativePath(String(match));
+        if (!matchedPaths.has(normalized)) matchedPaths.set(normalized, new Set());
+        matchedPaths.get(normalized)!.add(candidatePattern);
+      }
     }
 
-    // 使用Promise.allSettled容错处理stat（文件可能在glob后被删除）
-    const statsPromises = files.map(file => {
-      const fullPath = path.join(cwd, file);
-      return fs.promises.stat(fullPath)
-        .then(stats => ({ file, mtime: stats.mtime.getTime() }))
-        .catch(() => ({ file, mtime: 0 })); // 失败的文件排在最后
+    const entries = await collectEntries(cwd, matchedPaths, {
+      kind,
+      modifiedAfter,
+      modifiedBefore,
     });
+    entries.sort((a, b) => b.mtime - a.mtime || a.path.localeCompare(b.path));
 
-    const filesWithStats = await Promise.all(statsPromises);
-
-    // 按修改时间降序排序（最新的在前）
-    filesWithStats.sort((a, b) => b.mtime - a.mtime);
-
-    // 应用限制
-    const truncated = files.length > limit;
-    const limitedFiles = filesWithStats.slice(0, limit);
+    const truncated = entries.length > limit;
+    const limitedEntries = entries.slice(0, limit).map(entry => ({
+      ...entry,
+      path: shouldReturnAbsolutePaths ? path.join(cwd, entry.path) : entry.path,
+    }));
 
     const result: GlobResult = {
-      numFiles: limitedFiles.length,
-      filenames: limitedFiles.map(f => shouldReturnAbsolutePaths ? path.join(cwd, f.file) : f.file),
+      numEntries: limitedEntries.length,
+      totalMatches: entries.length,
+      entries: limitedEntries,
       truncated,
-      durationMs: Date.now() - startTime
+      durationMs: Date.now() - startTime,
+      patterns,
+      kind,
+      filters: {
+        modifiedAfter: modifiedAfter?.label,
+        modifiedBefore: modifiedBefore?.label,
+        maxDepth,
+      },
+      summary: includeSummary ? buildSummary(entries) : undefined,
     };
 
-    return { ok: true, content: this.formatResult(result, pattern, visibleSearchPath, visibleCwd) };
+    return { ok: true, content: this.formatResult(result, visibleSearchPath, visibleCwd, limit) };
   }
 
   private formatResult(
     result: GlobResult,
-    pattern: string,
     visibleSearchPath: string,
     visibleCwd: string,
+    limit: number,
   ): string {
-    const { numFiles, filenames, truncated, durationMs } = result;
+    const { numEntries, totalMatches, entries, truncated, durationMs, patterns, kind, filters, summary } = result;
+    const noun = kind === 'files' ? 'files' : kind === 'directories' ? 'directories' : 'entries';
+    const header = [
+      `Found ${numEntries}/${totalMatches} ${noun} (${durationMs}ms)${truncated ? ' - truncated' : ''}:`,
+      `Patterns: ${patterns.join(', ')}`,
+      `Directory: ${visibleSearchPath}`,
+      `Path: ${visibleCwd}`,
+      `Kind: ${kind}`,
+      filters.maxDepth !== undefined ? `Max depth: ${filters.maxDepth}` : '',
+      filters.modifiedAfter ? `Modified after: ${filters.modifiedAfter}` : '',
+      filters.modifiedBefore ? `Modified before: ${filters.modifiedBefore}` : '',
+      '',
+    ].filter(line => line !== '').join('\n');
 
-    const header = `找到 ${numFiles} 个文件 (${durationMs}ms)${truncated ? ' - 结果已截断，考虑使用更精确的模式' : ''}:\n模式: ${pattern}\n目录: ${visibleSearchPath}\nPath: ${visibleCwd}\n\n`;
-    const fileList = filenames.map((file, i) => `${(i + 1).toString().padStart(4, ' ')}. ${file}`).join('\n');
-    
-    return header + fileList + (truncated ? '\n\n提示: 结果被限制在前 100 个文件。使用更具体的路径或模式来缩小范围。' : '');
+    const summaryText = summary ? [
+      'Summary:',
+      formatFacet('top directories', summary.byTopDirectory),
+      formatFacet('extensions', summary.byExtension),
+      formatFacet('modified days', summary.byModifiedDay),
+      '',
+    ].join('\n') : '';
+
+    if (entries.length === 0) {
+      return [
+        header,
+        summaryText,
+        'No matching entries.',
+        'Try broader patterns, a wider modified_after/modified_before range, or a higher max_depth.',
+      ].filter(Boolean).join('\n');
+    }
+
+    const entryList = entries.map((entry, i) => {
+      const kindLabel = entry.kind.padEnd(9, ' ');
+      const modified = entry.mtime > 0 ? new Date(entry.mtime).toISOString() : 'unknown';
+      const size = entry.kind === 'file' ? formatBytes(entry.size ?? 0).padStart(9, ' ') : ''.padStart(9, ' ');
+      const suffix = entry.kind === 'directory' ? '/' : '';
+      const matched = entry.matchedPatterns.length > 1 ? ` [${entry.matchedPatterns.join(', ')}]` : '';
+      return `${(i + 1).toString().padStart(4, ' ')}. [${kindLabel}] ${size} ${modified} ${entry.path}${suffix}${matched}`;
+    }).join('\n');
+
+    return [
+      header,
+      summaryText,
+      entryList,
+      truncated ? `\nHint: results were limited to ${limit}. Use narrower patterns, modified_after/modified_before, max_depth, or a more specific path to continue.` : '',
+    ].filter(Boolean).join('\n');
   }
+}
+
+function normalizePatterns(args: any): string[] {
+  const values: string[] = [];
+  if (typeof args?.pattern === 'string' && args.pattern.trim()) values.push(args.pattern.trim());
+  if (Array.isArray(args?.patterns)) {
+    for (const item of args.patterns) {
+      if (typeof item === 'string' && item.trim()) values.push(item.trim());
+    }
+  }
+  return [...new Set(values)].slice(0, 20);
+}
+
+function normalizeLimit(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 100;
+  return Math.floor(parsed);
+}
+
+function normalizeKind(value: unknown): GlobKindFilter {
+  if (value === 'directories' || value === 'all') return value;
+  return 'files';
+}
+
+function normalizePositiveInteger(value: unknown): number | undefined {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.floor(parsed);
+}
+
+function parseDateFilter(value: unknown): { timestamp: number; label: string } | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const label = String(value).trim();
+  if (!label) return undefined;
+  const timestamp = typeof value === 'number' ? value : Date.parse(label);
+  if (!Number.isFinite(timestamp)) return undefined;
+  return { timestamp, label };
+}
+
+function normalizeRelativePath(value: string): string {
+  return value.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+async function collectEntries(
+  cwd: string,
+  matchedPaths: Map<string, Set<string>>,
+  options: {
+    kind: GlobKindFilter;
+    modifiedAfter?: { timestamp: number };
+    modifiedBefore?: { timestamp: number };
+  },
+): Promise<GlobEntry[]> {
+  const entries: GlobEntry[] = [];
+  for (const [relativePath, matchedPatterns] of matchedPaths) {
+    const fullPath = path.join(cwd, relativePath);
+    let stats: fs.Stats;
+    try {
+      stats = await fs.promises.lstat(fullPath);
+    } catch {
+      continue;
+    }
+    const kind = entryKind(stats);
+    if (options.kind === 'files' && kind !== 'file') continue;
+    if (options.kind === 'directories' && kind !== 'directory') continue;
+    const mtime = stats.mtime.getTime();
+    if (options.modifiedAfter && mtime < options.modifiedAfter.timestamp) continue;
+    if (options.modifiedBefore && mtime > options.modifiedBefore.timestamp) continue;
+    entries.push({
+      path: relativePath,
+      kind,
+      mtime,
+      size: kind === 'file' ? stats.size : undefined,
+      matchedPatterns: [...matchedPatterns],
+    });
+  }
+  return entries;
+}
+
+function entryKind(stats: fs.Stats): GlobEntryKind {
+  if (stats.isFile()) return 'file';
+  if (stats.isDirectory()) return 'directory';
+  if (stats.isSymbolicLink()) return 'symlink';
+  return 'other';
+}
+
+function buildSummary(entries: GlobEntry[]): GlobSummary {
+  return {
+    byTopDirectory: topFacet(entries.map(entry => topDirectory(entry.path))),
+    byExtension: topFacet(entries.map(entry => entry.kind === 'directory' ? '[directory]' : extensionOf(entry.path))),
+    byModifiedDay: topFacet(entries.map(entry => entry.mtime > 0 ? new Date(entry.mtime).toISOString().slice(0, 10) : 'unknown')),
+  };
+}
+
+function topFacet(values: string[], limit = 8): Array<{ key: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const value of values) counts.set(value, (counts.get(value) || 0) + 1);
+  return [...counts.entries()]
+    .map(([key, count]) => ({ key, count }))
+    .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))
+    .slice(0, limit);
+}
+
+function topDirectory(filePath: string): string {
+  const normalized = normalizeRelativePath(filePath);
+  const parts = normalized.split('/').filter(Boolean);
+  if (parts.length <= 1) return '.';
+  return parts[0];
+}
+
+function extensionOf(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  return ext || '[no extension]';
+}
+
+function formatFacet(label: string, values: Array<{ key: string; count: number }>): string {
+  if (values.length === 0) return `  ${label}: none`;
+  return `  ${label}: ${values.map(item => `${item.key}=${item.count}`).join(', ')}`;
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const precision = unitIndex === 0 || size >= 10 ? 0 : 1;
+  return `${size.toFixed(precision)} ${units[unitIndex]}`;
 }
