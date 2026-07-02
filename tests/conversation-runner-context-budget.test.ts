@@ -132,7 +132,7 @@ test('adaptive tool result folding uses runner message budget before mechanical 
     makeToolCallMessage('call_budget_read', 'read_file', { file_path: 'E:/repo/budget-bound.ts' }),
     { role: 'tool', name: 'read_file', tool_call_id: 'call_budget_read', content: raw },
     { role: 'assistant', content: 'old read complete' },
-    { role: 'user', content: 'current question '.repeat(1000) },
+    { role: 'user', content: 'current question '.repeat(950) },
   ];
   assert.ok(estimateMessagesTokens(messages) > 5_000);
   assert.ok(estimateMessagesTokens(messages) < 100_000);

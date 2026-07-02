@@ -45,6 +45,10 @@ import {
 } from './runtime-context-builder';
 import { buildPendingUserInputBoundaryMessage } from './pending-user-input-boundary';
 import {
+  TRANSIENT_VISIBLE_OUTPUT_GUIDANCE_PREFIX,
+  buildVisibleOutputGuidance,
+} from './visible-output-guidance';
+import {
   TRANSIENT_CURRENT_DIRECTORY_PREFIX,
   buildTransientEnvironmentHint,
 } from './transient-environment';
@@ -383,9 +387,17 @@ export class ConversationRunner {
       const perTurnRunnerHint = transientPolicy.injectRunnerHint
         ? buildPerTurnRunnerHint(requestTools)
         : null;
+      const visibleOutputGuidance = transientPolicy.injectVisibleOutputGuidance
+        ? buildVisibleOutputGuidance({
+          surface: this.toolExecutionContext?.surface,
+          tools: requestTools,
+          intent: transientPolicy.intent,
+        })
+        : null;
       let requestMessages = this.buildProviderInputMessages(messages, [
         ...runtimeTransientHints,
         ...(perTurnRunnerHint ? [perTurnRunnerHint] : []),
+        ...(visibleOutputGuidance ? [visibleOutputGuidance] : []),
         ...nextTurnTransientHints,
         ...orchestrationHints,
       ], {
@@ -1092,6 +1104,9 @@ export class ConversationRunner {
       if (message.content.startsWith(TRANSIENT_CURRENT_DIRECTORY_PREFIX)) {
         return false;
       }
+      if (message.__injected && message.content.startsWith(TRANSIENT_VISIBLE_OUTPUT_GUIDANCE_PREFIX)) {
+        return false;
+      }
       if (message.role !== 'system') {
         return true;
       }
@@ -1487,7 +1502,6 @@ export class ConversationRunner {
       if (this.stream) {
         const streamCallbacks: StreamCallbacks = {
           onText: (text) => callbacks?.onText?.(text),
-          onRetry: (attempt, maxRetries) => callbacks?.onRetry?.(attempt, maxRetries),
         };
         return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
       }
@@ -1507,6 +1521,7 @@ export class ConversationRunner {
       if (this.stream) {
         const streamCallbacks: StreamCallbacks = {
           onText: (text) => callbacks?.onText?.(text),
+          onRetry: (attempt, maxRetries) => callbacks?.onRetry?.(attempt, maxRetries),
         };
         return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
       }
