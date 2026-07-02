@@ -46,8 +46,10 @@
     "pet/success/04.png"
   ],
   "happy": [
-    "pet/happy/01.png",
-    "pet/happy/02.png"
+    "pet/success/01.png",
+    "pet/success/02.png",
+    "pet/success/03.png",
+    "pet/success/04.png"
   ],
   "skill": [
     "pet/skill/01.png"
@@ -79,8 +81,10 @@
     "pet/notify/24.png"
   ],
   "sleepy": [
-    "pet/sleepy/01.png",
-    "pet/sleepy/02.png"
+    "pet/idle/01.png",
+    "pet/idle/02.png",
+    "pet/idle/03.png",
+    "pet/idle/04.png"
   ],
   "error": [
     "pet/error/01.png",
@@ -118,10 +122,6 @@
       ]
     },
     "5": {
-      "success": [
-        "pet/happy/01.png",
-        "pet/happy/02.png"
-      ],
       "level_up": [
         "pet/level_up/01.png"
       ],

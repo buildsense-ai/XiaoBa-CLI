@@ -381,6 +381,25 @@ describe('dashboard session log API', () => {
           level: 'error',
           message: 'Runtime error while generating a draft report',
         },
+        {
+          entry_type: 'turn',
+          turn: 4,
+          timestamp: new Date().toISOString(),
+          session_id: 'chat:daily',
+          session_type: 'chat',
+          user: { text: 'Fix the Windows build command again and keep the final report readable' },
+          assistant: {
+            text: 'Command failed with exit code 1\n$ powershell -Command "Set-Location D:\\codex-remotion-work; npm install --loglevel=error"',
+            tool_calls: [{
+              id: 'tool-report-failed',
+              name: 'execute_shell',
+              arguments: { command: 'powershell -Command "Set-Location D:\\codex-remotion-work; npm install --loglevel=error"' },
+              result: 'Command failed:\n$ powershell -Command "Set-Location D:\\codex-remotion-work; npm install --loglevel=error"\nWorking directory: C:\\Users\\86152\\AppData\\Roaming\\xiaoba-cli',
+              duration_ms: 470,
+            }],
+          },
+          tokens: { prompt: 12, completion: 9 },
+        },
       ],
     });
 
@@ -391,11 +410,19 @@ describe('dashboard session log API', () => {
     assert.equal(response.body.report.autoSave, false);
     assert.equal(response.body.report.metrics.sessions, 3);
     assert.equal(response.body.report.noise.filteredTurns >= 1, true);
-    assert.match(response.body.report.summary, /daily report/i);
-    assert.match(response.body.report.reportMarkdown, /Completed the daily report companion/i);
+    assert.match(response.body.report.summary, /工作记录|日报/);
+    assert.match(response.body.report.reportMarkdown, /昨天完成了什么/);
+    assert.match(response.body.report.reportMarkdown, /日报|日志分析/);
     assert.doesNotMatch(response.body.report.reportMarkdown, /hello thanks just testing/i);
-    assert.match(response.body.report.sections.preferences.join('\n'), /concise/i);
-    assert.match(response.body.report.sections.failures.join('\n'), /Runtime error/i);
+    assert.doesNotMatch(response.body.report.reportMarkdown, /Please generate my daily report/i);
+    assert.doesNotMatch(response.body.report.reportMarkdown, /Completed the daily report companion/i);
+    assert.doesNotMatch(response.body.report.reportMarkdown, /powershell -Command/i);
+    assert.doesNotMatch(response.body.report.reportMarkdown, /Working directory/i);
+    assert.doesNotMatch(response.body.report.reportMarkdown, /execute_shell/i);
+    assert.doesNotMatch(response.body.report.reportMarkdown, /Recent logs/i);
+    assert.match(response.body.report.sections.preferences.join('\n'), /简洁|中文|concise/i);
+    assert.match(response.body.report.sections.failures.join('\n'), /运行时错误|Runtime error/i);
+    assert.match(response.body.report.sections.failures.join('\n'), /命令执行失败|command/i);
     assert.equal(response.body.report.skillCandidates.length >= 1, true);
     assert.equal(response.body.report.skillCandidates[0].requiresConfirmation, true);
     assert.equal(response.body.report.skillCandidates[0].autoInstall, false);
@@ -440,8 +467,9 @@ describe('dashboard session log API', () => {
     assert.equal(saveResponse.body.saved.path, reportPath);
     assert.equal(fs.existsSync(reportPath), true);
     const savedMarkdown = fs.readFileSync(reportPath, 'utf8');
-    assert.match(savedMarkdown, /Daily Report/);
-    assert.match(savedMarkdown, /Completed a useful daily report draft/);
+    assert.match(savedMarkdown, /日报/);
+    assert.match(savedMarkdown, /Skill/);
+    assert.doesNotMatch(savedMarkdown, /Completed a useful daily report draft/);
   });
 
   async function get(urlPath: string): Promise<{ status: number; body: any }> {
