@@ -198,7 +198,7 @@ export class PromptModeRuntime {
         this.formatModeTimingLine(this.active, turnNumber),
         `Full mode instructions refresh every ${this.fullPromptRefreshInterval} active turn(s).`,
         'Apply this mode where it fits the current user request. If the user has clearly changed topic, follow the user and do not force this mode.',
-        'If the user explicitly asks to leave or disable this mode, stop applying the active mode and answer the user normally.',
+        'If the user explicitly asks to leave or disable this mode, call prompt_mode with mode "clear" before answering.',
         ...(
           content
             ? ['', content]

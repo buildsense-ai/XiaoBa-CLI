@@ -81,6 +81,7 @@ describe('runtime characterization', () => {
         'execute_shell',
         'glob',
         'grep',
+        'prompt_mode',
         'read_file',
         'record_decision',
         'resolve_common_directory',

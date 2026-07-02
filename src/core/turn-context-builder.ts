@@ -30,7 +30,9 @@ import {
   TRANSIENT_FIXED_PROMPT_MODE_PREFIX,
   TRANSIENT_PROMPT_MODES_LIST_PREFIX,
   buildFixedPromptModeMessage,
+  buildPromptModesListMessage,
   findFixedPromptModeState,
+  findPreviousPromptModeState,
 } from '../runtime/prompt-modes';
 import { resolveTurnContextTransientPolicy } from './transient-injection-policy';
 import { TRANSIENT_PENDING_USER_INPUT_PREFIX } from './pending-user-input-boundary';
@@ -190,12 +192,21 @@ export class TurnContextBuilder {
 
   private injectPromptModesList(
     messages: Message[],
-    _options: { promptModeRoutingEnabled?: boolean } = {},
+    options: { promptModeRoutingEnabled?: boolean } = {},
   ): void {
     const fixedMode = findFixedPromptModeState(messages);
     if (fixedMode) {
       this.insertBeforeLastUser(messages, buildFixedPromptModeMessage(fixedMode));
+      return;
     }
+
+    if (options.promptModeRoutingEnabled) return;
+
+    const modeList = buildPromptModesListMessage({
+      previousMode: findPreviousPromptModeState(messages),
+    });
+    if (!modeList) return;
+    this.insertBeforeLastUser(messages, modeList);
   }
 
   private extractRuntimeFeedback(messages: Message[]): string[] {

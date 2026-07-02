@@ -214,26 +214,13 @@ describe('dashboard connected SkillHub API', () => {
 
   test('SkillHub install buttons do not embed registry data in inline handlers', () => {
     const html = fs.readFileSync(path.join(originalCwd, 'dashboard/index.html'), 'utf8');
-    const storePage = fs.readFileSync(path.join(originalCwd, 'dashboard/react-src/store-page.tsx'), 'utf8');
-    const globalModals = fs.readFileSync(path.join(originalCwd, 'dashboard/react-src/global-modals.tsx'), 'utf8');
-    const skillhubScript = fs.readFileSync(path.join(originalCwd, 'dashboard/scripts/skillhub.js'), 'utf8');
-    const reactSource = `${storePage}\n${globalModals}`;
-
-    assert.match(storePage, /data-skillhub-install=\{canInstall \? 'true' : undefined\}/);
-    assert.match(globalModals, /data-skillhub-install=\{version \? 'true' : undefined\}/);
-    assert.doesNotMatch(skillhubScript, /addEventListener\('click'/);
+    assert.match(html, /data-skillhub-install="true"/);
+    assert.match(html, /addEventListener\('click', handleSkillHubInstallClick\)/);
     assert.doesNotMatch(html, /onclick="installSkillHubSkill/);
-    assert.match(storePage, /data-skillhub-versions="true"/);
-    assert.match(reactSource, /data-skillhub-yank-version="true"/);
-    assert.match(reactSource, /data-skillhub-restore-version="true"/);
-    assert.match(reactSource, /data-skillhub-delete-version="true"/);
-    assert.match(storePage, /onClick=\{\(\) => window\.installSkillHubSkill\?\.\(skillId, latestVersion \|\| undefined\)\}/);
-    assert.match(storePage, /onClick=\{\(\) => window\.showSkillHubVersions\?\.\(skillId\)\}/);
-    assert.match(reactSource, /onClick=\{\(\) => window\.yankOwnSkillHubVersion\?\.\(packageVersionId\)\}/);
-    assert.match(reactSource, /onClick=\{\(\) => window\.restoreOwnSkillHubVersion\?\.\(packageVersionId\)\}/);
-    assert.match(reactSource, /onClick=\{\(\) => window\.deleteOwnSkillHubVersion\?\.\(packageVersionId\)\}/);
-    assert.match(skillhubScript, /\/api\/skillhub\/me\/package-versions\/' \+ encodeURIComponent\(packageVersionId\) \+ '\/restore'/);
-    assert.match(skillhubScript, /\/api\/skillhub\/me\/package-versions\/' \+ encodeURIComponent\(packageVersionId\)/);
+    assert.match(html, /data-skillhub-versions="true"/);
+    assert.match(html, /data-skillhub-yank-version="true"/);
+    assert.match(html, /addEventListener\('click', handleSkillHubVersionsClick\)/);
+    assert.match(html, /addEventListener\('click', handleSkillHubYankVersionClick\)/);
     assert.doesNotMatch(html, /onclick="showSkillHubVersions/);
     assert.doesNotMatch(html, /onclick="yankOwnSkillHubVersion/);
   });

@@ -74,8 +74,8 @@ if (packageLock.packages?.['']?.version && packageLock.packages[''].version !== 
   fail(`package-lock root package version ${packageLock.packages[''].version} does not match ${tag}.`, version, tag);
 }
 
-if (!new RegExp(`<div id="dashboard-app-root"[^>]*data-dashboard-version="${version}"`).test(dashboardHtml)) {
-  fail(`dashboard/index.html dashboard app version does not match ${tag}.`, version, tag);
+if (!dashboardHtml.includes(`sidebar-brand-ver">v${version}<`)) {
+  fail(`dashboard/index.html sidebar version does not match ${tag}.`, version, tag);
 }
 
 console.log(`Source version is in sync with ${tag}.`);

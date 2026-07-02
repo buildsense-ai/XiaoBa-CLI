@@ -31,10 +31,10 @@ test('prompt_mode tool loads plain-chat instructions on demand', async () => {
   assert.match(String(result.content), /角色扮演/);
 });
 
-test('prompt_mode is not exposed as a default runtime tool', () => {
+test('prompt_mode is available as a default runtime tool', () => {
   const manager = new ToolManager(process.cwd());
 
-  assert.equal(manager.getToolDefinitions().some(tool => tool.name === 'prompt_mode'), false);
+  assert.ok(manager.getToolDefinitions().some(tool => tool.name === 'prompt_mode'));
 });
 
 test('prompt_mode can clear an async active mode through runtime context', async () => {
@@ -76,7 +76,7 @@ test('prompt_mode does not reload the already active fixed mode', async () => {
 test('prompt_mode rejects a different mode when a fixed mode is active', async () => {
   const tool = new PromptModeTool();
 
-  const result = await tool.execute({ mode: 'plain-chat' }, {
+  const result = await tool.execute({ mode: 'office' }, {
     workingDirectory: process.cwd(),
     conversationHistory: [
       { role: 'system', content: 'base\n[mode:coding-agent]\nfixed coding instructions' },
