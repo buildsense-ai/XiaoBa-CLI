@@ -142,7 +142,7 @@ function speakerNameFromMetadata(msg: Pick<ParsedCatsMessage, 'metadata' | 'send
 }
 
 function prefixCatsUserMessage(name: string, content: string | ContentBlock[]): string | ContentBlock[] {
-  const prefix = `${name}：\n`;
+  const prefix = `[发言人: ${name}]\n`;
   if (typeof content === 'string') return `${prefix}${content}`;
   const blocks = [...content];
   const firstTextIndex = blocks.findIndex(block => block.type === 'text');

@@ -1,12 +1,23 @@
 # Execution Routing Debug Notes
 
-## Current Inconsistency To Verify
+## Legacy Inconsistency Notes
 
-- Model-facing target IDs are generic: `agent_self` and `speaker_default`.
-- Tool schemas expose the same fixed enum: `agent_self | speaker_default`.
-- The router maps `speaker_default` to CatsCompany `deviceSelection` or device grants.
-- If CatsCompany selects the wrong device, the agent currently has no more precise target ID to choose.
-- Remote tool results can be labeled as `agent_self`, which can pollute durable history and confuse later turns.
+These notes were written while debugging the old `deviceSelection/deviceGrants`
+route. The current lightweight route is:
+
+`CatsCompany runtime devices -> XiaoBa targetRoutes -> user-name target -> thin_tool_rpc`
+
+In the current route, model-facing base tools accept a free-form user name or
+user id target. `speaker_default` is legacy fallback behavior kept for old
+messages/tests and should not be described as the primary architecture.
+
+Old inconsistency that motivated the rewrite:
+
+- Model-facing target IDs were generic: `agent_self` and `speaker_default`.
+- Tool schemas exposed the same fixed enum: `agent_self | speaker_default`.
+- The router mapped `speaker_default` to CatsCompany `deviceSelection` or device grants.
+- If CatsCompany selected the wrong device, the agent had no more precise target ID to choose.
+- Remote tool results could be labeled as `agent_self`, polluting durable history and confusing later turns.
 
 ## Debug Order
 
@@ -61,7 +72,7 @@ Target-aware tools:
 - `edit_file`
 - `execute_shell`
 
-Current intended route:
+Legacy intended route captured during this debug pass:
 
 1. Tool receives optional `target`.
 2. `resolveExecutionRoute()` chooses `agent_self` by default.

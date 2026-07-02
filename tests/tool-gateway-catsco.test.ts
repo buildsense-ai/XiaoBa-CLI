@@ -473,7 +473,7 @@ describe('CatsCo ToolGateway', () => {
     assert.deepEqual(calls[1].args, { pattern: 'needle', path: '/remote/project', output_mode: 'files' });
   });
 
-  test('redacts local absolute paths from successful CatsCo device file results', async () => {
+  test('preserves local absolute paths in successful CatsCo device file results', async () => {
     const root = makeWorkspace();
     const filePath = path.join(root, 'notes.txt');
     const outPath = path.join(root, 'out.txt');
@@ -490,32 +490,34 @@ describe('CatsCo ToolGateway', () => {
 
     const read = await new ReadTool().execute({ file_path: filePath }, ctx);
     assert.equal(read.ok, true);
-    assert.doesNotMatch(String(read.content), new RegExp(escapeRegExp(filePath)));
+    assert.match(String(read.content), new RegExp(escapeRegExp(filePath)));
 
     const glob = await new GlobTool().execute({ pattern: '*.txt', path: root }, ctx);
     assert.equal(glob.ok, true);
     assert.match(String(glob.content), /notes\.txt/);
-    assert.doesNotMatch(String(glob.content), new RegExp(escapeRegExp(root)));
+    assert.match(String(glob.content), new RegExp(escapeRegExp(root)));
 
     const grep = await new GrepTool().execute({ pattern: 'needle', path: filePath, output_mode: 'content' }, ctx);
     assert.equal(grep.ok, true);
     assert.match(String(grep.content), /needle/);
-    assert.doesNotMatch(String(grep.content), new RegExp(escapeRegExp(root)));
+    assert.match(String(grep.content), new RegExp(escapeRegExp(root)));
 
     const write = await new WriteTool().execute({ file_path: outPath, content: 'after' }, ctx);
     assert.equal(write.ok, true);
-    assert.doesNotMatch(String(write.content), new RegExp(escapeRegExp(outPath)));
+    assert.match(String(write.content), /Path: out\.txt/);
+    assert.doesNotMatch(String(write.content), /\[current CatsCo device\]/);
 
     const edit = await new EditTool().execute({ file_path: outPath, old_string: 'after', new_string: 'done' }, ctx);
     assert.equal(edit.ok, true);
-    assert.doesNotMatch(String(edit.content), new RegExp(escapeRegExp(outPath)));
+    assert.match(String(edit.content), new RegExp(escapeRegExp(outPath)));
+    assert.doesNotMatch(String(edit.content), /\[current CatsCo device\]/);
 
     const send = await new SendFileTool().execute({ file_path: filePath, file_name: 'notes.txt' }, ctx);
     assert.equal(send.ok, true);
-    assert.doesNotMatch(String(send.content), new RegExp(escapeRegExp(filePath)));
+    assert.match(String(send.content), new RegExp(escapeRegExp(filePath)));
   });
 
-  test('redacts local absolute paths from CatsCo device file failure results', async () => {
+  test('preserves local absolute paths in CatsCo device file failure results', async () => {
     const root = makeWorkspace();
     const missingPath = path.join(root, 'missing.txt');
     const ctx = context(root, {
@@ -527,7 +529,7 @@ describe('CatsCo ToolGateway', () => {
     if (!readDirectory.ok) {
       assert.equal(readDirectory.errorCode, 'TOOL_EXECUTION_ERROR');
       assert.match(readDirectory.message, /Path is not a file/);
-      assert.doesNotMatch(readDirectory.message, new RegExp(escapeRegExp(root)));
+      assert.match(readDirectory.message, new RegExp(escapeRegExp(root)));
     }
 
     const sendMissing = await new SendFileTool().execute({ file_path: missingPath, file_name: 'missing.txt' }, ctx);
@@ -535,8 +537,7 @@ describe('CatsCo ToolGateway', () => {
     if (!sendMissing.ok) {
       assert.equal(sendMissing.errorCode, 'FILE_NOT_FOUND');
       assert.match(sendMissing.message, /File not found/);
-      assert.doesNotMatch(sendMissing.message, new RegExp(escapeRegExp(missingPath)));
-      assert.doesNotMatch(sendMissing.message, new RegExp(escapeRegExp(root)));
+      assert.match(sendMissing.message, new RegExp(escapeRegExp(missingPath)));
     }
 
     const sendDirectory = await new SendFileTool().execute({ file_path: root, file_name: 'root' }, ctx);
@@ -544,7 +545,7 @@ describe('CatsCo ToolGateway', () => {
     if (!sendDirectory.ok) {
       assert.equal(sendDirectory.errorCode, 'TOOL_EXECUTION_ERROR');
       assert.match(sendDirectory.message, /Path is not a file/);
-      assert.doesNotMatch(sendDirectory.message, new RegExp(escapeRegExp(root)));
+      assert.match(sendDirectory.message, new RegExp(escapeRegExp(root)));
     }
   });
 
