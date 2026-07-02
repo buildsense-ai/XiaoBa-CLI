@@ -93,6 +93,10 @@
       width: 100%;
       margin-bottom: 8px;
       padding: 10px;
+      max-height: calc(100vh - 148px);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
       transform: translateY(4px) scale(0.98);
       transform-origin: bottom center;
       opacity: 0;
@@ -160,6 +164,14 @@
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 6px;
+      flex: 0 0 auto;
+    }
+
+    .panel-scroll {
+      min-height: 0;
+      margin-top: 8px;
+      padding-right: 2px;
+      overflow-y: auto;
     }
 
     button {
@@ -185,7 +197,7 @@
     }
 
     .work-card {
-      margin-top: 9px;
+      margin-top: 0;
       padding-top: 8px;
       border-top: 1px solid rgba(255, 255, 255, 0.1);
     }
@@ -235,7 +247,7 @@
     .skill-draft-actions,
     .daily-report-actions {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 6px;
       margin-top: 8px;
     }
@@ -402,6 +414,7 @@
         <button id="open-work" type="button">最近工作</button>
         <button id="open-skillhub" type="button">SkillHub</button>
       </div>
+      <div class="panel-scroll">
       <section class="work-card" aria-label="最近工作">
         <div class="work-head">
           <div class="work-title">最近工作</div>
@@ -418,6 +431,7 @@
         <div class="daily-report-actions">
           <button id="preview-daily-report" type="button">预览</button>
           <button id="save-daily-report" type="button">保存</button>
+          <button id="dismiss-daily-report" type="button">不保存</button>
           <button id="open-daily-report-logs" class="primary" type="button">日志</button>
         </div>
       </section>
@@ -427,6 +441,7 @@
         <div class="skill-draft-actions">
           <button id="preview-skill-draft" type="button">预览</button>
           <button id="apply-skill-draft" class="primary" type="button">生成</button>
+          <button id="dismiss-skill-draft" type="button">暂不生成</button>
         </div>
       </section>
       <label class="switch-row">
@@ -442,6 +457,7 @@
         <input id="always-on-top" type="checkbox">
       </label>
       <div id="pet-hint" class="hint">右键查看更多选项。</div>
+      </div>
     </section>
     <aside id="work-alert" class="work-alert" aria-live="polite" aria-hidden="true">
       <div id="work-alert-title" class="work-alert-title">任务完成</div>
@@ -479,12 +495,14 @@
     const skillDraftReason = document.getElementById('skill-draft-reason');
     const previewSkillDraftButton = document.getElementById('preview-skill-draft');
     const applySkillDraftButton = document.getElementById('apply-skill-draft');
+    const dismissSkillDraftButton = document.getElementById('dismiss-skill-draft');
     const dailyReportCard = document.getElementById('daily-report-card');
     const dailyReportTitle = document.getElementById('daily-report-title');
     const dailyReportSummary = document.getElementById('daily-report-summary');
     const dailyReportMeta = document.getElementById('daily-report-meta');
     const previewDailyReportButton = document.getElementById('preview-daily-report');
     const saveDailyReportButton = document.getElementById('save-daily-report');
+    const dismissDailyReportButton = document.getElementById('dismiss-daily-report');
     const openDailyReportLogsButton = document.getElementById('open-daily-report-logs');
     const frameSpeeds = {
       idle: 520,
@@ -510,6 +528,7 @@
     let skillRecommendation = null;
     let skillDraft = null;
     let dailyReport = null;
+    let promptProposalPending = false;
     let timelinePrimed = false;
     let alertTimer = null;
     let sleepyTimer = null;
@@ -613,6 +632,35 @@
       return 'catsco:daily-report-alert:' + String(report && report.date || '');
     }
 
+    function dailyReportDecisionKey(report) {
+      const date = String(report && report.date || '').trim();
+      return date ? 'catsco:daily-report-decision:' + date : '';
+    }
+
+    function skillDraftDecisionKey(draft) {
+      const id = String(draft && (draft.id || draft.name) || '').trim();
+      return id ? 'catsco:skill-draft-decision:' + id : '';
+    }
+
+    function hasStoredDecision(key) {
+      return Boolean(key && localStorage.getItem(key));
+    }
+
+    function rememberDecision(key, value) {
+      if (!key) return;
+      localStorage.setItem(key, String(value || 'dismissed') + ':' + new Date().toISOString());
+    }
+
+    function syncPulse() {
+      pulse.classList.toggle('show', Boolean(
+        promptProposalPending ||
+        skillRecommendation ||
+        skillDraft ||
+        dailyReport ||
+        workAlert.classList.contains('show')
+      ));
+    }
+
     function eventTitle(event) {
       const xp = Math.max(0, Number(event && event.xp_delta || 0));
       const xpText = xp > 0 ? '，获得 ' + xp + ' XP' : '';
@@ -681,7 +729,7 @@
       alertTimer = setTimeout(() => {
         workAlert.classList.remove('show');
         workAlert.setAttribute('aria-hidden', 'true');
-        if (!skillRecommendation) pulse.classList.remove('show');
+        syncPulse();
       }, 8000);
     }
 
@@ -757,12 +805,14 @@
         const res = await fetch('/api/pet/prompt-proposal', { cache: 'no-store' });
         const data = await res.json();
         const proposal = data.proposal;
-        pulse.classList.toggle('show', Boolean(proposal) || workAlert.classList.contains('show'));
+        promptProposalPending = Boolean(proposal);
+        syncPulse();
         if (proposal) {
           hint.textContent = proposal.title || '有一条提示词建议可以查看。';
         }
       } catch (_error) {
-        if (!workAlert.classList.contains('show')) pulse.classList.remove('show');
+        promptProposalPending = false;
+        syncPulse();
       }
     }
 
@@ -829,7 +879,8 @@
       try {
         const res = await fetch('/api/pet/skill-drafts?days=7', { cache: 'no-store' });
         const data = await res.json();
-        skillDraft = (data.drafts || [])[0] || null;
+        const drafts = Array.isArray(data.drafts) ? data.drafts : [];
+        skillDraft = drafts.find(draft => !hasStoredDecision(skillDraftDecisionKey(draft))) || null;
         renderSkillDraft();
       } catch (_error) {
         skillDraft = null;
@@ -846,7 +897,7 @@
           const latestData = await fetchDailyReport('/api/pet/daily-report?days=7');
           report = latestData.report || null;
         }
-        dailyReport = hasDailyReportSignals(report) ? report : null;
+        dailyReport = hasDailyReportSignals(report) && !hasStoredDecision(dailyReportDecisionKey(report)) ? report : null;
         renderDailyReport();
         maybeShowDailyReportAlert(dailyReport, yesterday);
       } catch (_error) {
@@ -870,6 +921,7 @@
 
     function maybeShowDailyReportAlert(report, yesterday) {
       if (!report || report.date !== yesterday) return;
+      if (hasStoredDecision(dailyReportDecisionKey(report))) return;
       const key = dailyReportAlertKey(report);
       if (!key || localStorage.getItem(key)) return;
       localStorage.setItem(key, new Date().toISOString());
@@ -879,11 +931,13 @@
     function renderDailyReport() {
       if (!dailyReport) {
         dailyReportCard.classList.remove('show');
+        syncPulse();
         return;
       }
       dailyReportTitle.textContent = (dailyReport.date === previousLocalDate() ? '昨日日报: ' : '日报: ') + (dailyReport.date || '');
       dailyReportSummary.textContent = dailyReport.summary || '我帮你筛掉噪声，整理了今天值得回看的工作。';
       saveDailyReportButton.disabled = false;
+      dismissDailyReportButton.disabled = false;
       saveDailyReportButton.textContent = '保存';
       const metrics = dailyReport.metrics || {};
       const noise = dailyReport.noise || {};
@@ -913,13 +967,27 @@
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Daily report save failed');
-        saveDailyReportButton.textContent = '已保存';
-        hint.textContent = '日报已保存: ' + (data.saved && data.saved.path ? data.saved.path : dailyReport.date);
+        const savedDate = dailyReport.date;
+        rememberDecision(dailyReportDecisionKey(dailyReport), 'saved');
+        dailyReport = null;
+        dailyReportCard.classList.remove('show');
+        hint.textContent = '日报已保存: ' + (data.saved && data.saved.path ? data.saved.path : savedDate);
+        syncPulse();
         setState('happy');
       } catch (error) {
         saveDailyReportButton.disabled = false;
         hint.textContent = '日报保存失败: ' + (error.message || String(error));
       }
+    }
+
+    function dismissDailyReport() {
+      if (!dailyReport) return;
+      rememberDecision(dailyReportDecisionKey(dailyReport), 'dismissed');
+      dailyReport = null;
+      dailyReportCard.classList.remove('show');
+      hint.textContent = '这份日报先不保存，之后也可以从日志里回看。';
+      syncPulse();
+      setState('idle');
     }
 
     function openDailyReportLogs() {
@@ -930,11 +998,14 @@
     function renderSkillDraft() {
       if (!skillDraft) {
         skillDraftCard.classList.remove('show');
+        syncPulse();
         return;
       }
       skillDraftTitle.textContent = (skillDraft.action === 'update_local_skill' ? '可更新 Skill: ' : '可生成 Skill: ') + skillDraft.name;
       skillDraftReason.textContent = skillDraft.reason || '根据最近日志发现可沉淀的工作流。';
       applySkillDraftButton.textContent = skillDraft.action === 'update_local_skill' ? '更新' : '生成';
+      applySkillDraftButton.disabled = false;
+      dismissSkillDraftButton.disabled = false;
       skillDraftCard.classList.add('show');
       pulse.classList.add('show');
       hint.textContent = '发现一个可确认的 Skill 草稿。';
@@ -960,15 +1031,27 @@
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Skill draft apply failed');
+        rememberDecision(skillDraftDecisionKey(skillDraft), 'applied');
         hint.textContent = 'Skill 已' + (data.skill && data.skill.action === 'updated' ? '更新' : '生成') + ': ' + skillDraft.name;
         skillDraftCard.classList.remove('show');
         skillDraft = null;
+        syncPulse();
         setState('happy');
       } catch (error) {
         hint.textContent = 'Skill 生成失败: ' + (error.message || String(error));
       } finally {
         applySkillDraftButton.disabled = false;
       }
+    }
+
+    function dismissSkillDraft() {
+      if (!skillDraft) return;
+      rememberDecision(skillDraftDecisionKey(skillDraft), 'dismissed');
+      skillDraft = null;
+      skillDraftCard.classList.remove('show');
+      hint.textContent = '这条 Skill 建议先不生成。';
+      syncPulse();
+      setState('idle');
     }
 
     document.getElementById('pet-button').addEventListener('click', () => {
@@ -999,12 +1082,20 @@
       applySkillDraft();
     });
 
+    dismissSkillDraftButton.addEventListener('click', () => {
+      dismissSkillDraft();
+    });
+
     previewDailyReportButton.addEventListener('click', () => {
       previewDailyReport();
     });
 
     saveDailyReportButton.addEventListener('click', () => {
       saveDailyReport();
+    });
+
+    dismissDailyReportButton.addEventListener('click', () => {
+      dismissDailyReport();
     });
 
     openDailyReportLogsButton.addEventListener('click', () => {

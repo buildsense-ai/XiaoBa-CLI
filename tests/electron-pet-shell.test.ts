@@ -117,6 +117,9 @@ test('pet shell page exists and talks to the existing pet APIs', () => {
   assert.match(petWindow, /id="daily-report-card"/);
   assert.match(petWindow, /previewDailyReport/);
   assert.match(petWindow, /saveDailyReport/);
+  assert.match(petWindow, /id="dismiss-daily-report"/);
+  assert.match(petWindow, /dismissDailyReport/);
+  assert.match(petWindow, /dailyReportDecisionKey/);
   assert.match(petWindow, /showDailyReportAlert/);
   assert.match(petWindow, /resolveLevelFrames/);
   assert.match(petWindow, /idle_active/);
@@ -127,6 +130,9 @@ test('pet shell page exists and talks to the existing pet APIs', () => {
   assert.match(petWindow, /昨天的日报我整理好啦/);
   assert.match(petWindow, /id="skill-draft-card"/);
   assert.match(petWindow, /applySkillDraft/);
+  assert.match(petWindow, /id="dismiss-skill-draft"/);
+  assert.match(petWindow, /dismissSkillDraft/);
+  assert.match(petWindow, /skillDraftDecisionKey/);
   assert.match(petWindow, /id="work-feed"/);
   assert.match(petWindow, /id="work-alert"/);
   assert.match(petWindow, /work-title/);
@@ -140,6 +146,17 @@ test('pet shell page exists and talks to the existing pet APIs', () => {
   assert.match(petWindow, /id="always-on-top"/);
   assert.match(petWindow, /setLockPetPosition/);
   assert.match(petWindow, /setAlwaysOnTop/);
+});
+
+test('pet shell keeps primary entry actions visible when report and skill cards are pending', () => {
+  const petWindow = readFileSync(petWindowPath, 'utf-8');
+
+  assert.match(petWindow, /class="panel-scroll"/);
+  assert.ok(petWindow.indexOf('class="actions"') < petWindow.indexOf('class="panel-scroll"'));
+  assert.ok(petWindow.indexOf('id="daily-report-card"') > petWindow.indexOf('class="panel-scroll"'));
+  assert.ok(petWindow.indexOf('id="skill-draft-card"') > petWindow.indexOf('class="panel-scroll"'));
+  assert.match(petWindow, /\.panel[\s\S]*max-height:/);
+  assert.match(petWindow, /\.panel-scroll[\s\S]*overflow-y: auto/);
 });
 
 test('message completion still drives companion emotion and alert bubbles', () => {

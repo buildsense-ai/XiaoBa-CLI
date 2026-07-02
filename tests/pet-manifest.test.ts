@@ -28,6 +28,8 @@ test('pet manifest includes companion states and valid frame paths', () => {
     assert.equal(manifest[state].length > 0, true, `${state} should not be empty`);
     for (const frame of manifest[state]) {
       assert.equal(existsSync(join(root, 'dashboard', frame)), true, `${state} frame exists: ${frame}`);
+      assert.doesNotMatch(frame, /pet\/happy\//, `${state} should not use removed happy frames`);
+      assert.doesNotMatch(frame, /pet\/sleepy\//, `${state} should not use removed sleepy frames`);
     }
   }
 });
@@ -38,6 +40,13 @@ test('pet manifest declares level-specific frame overrides with fallbacks', () =
   assert.equal(typeof manifest.levels, 'object');
   assert.equal(Array.isArray(manifest.levels['3'].idle), true);
   assert.match(manifest.levels['3'].idle[0], /pet\/idle_active\//);
-  assert.equal(Array.isArray(manifest.levels['5'].success), true);
   assert.match(manifest.levels['5'].level_up[0], /pet\/level_up\//);
+  for (const level of Object.values(manifest.levels) as any[]) {
+    for (const frames of Object.values(level) as any[]) {
+      for (const frame of frames) {
+        assert.doesNotMatch(frame, /pet\/happy\//);
+        assert.doesNotMatch(frame, /pet\/sleepy\//);
+      }
+    }
+  }
 });
