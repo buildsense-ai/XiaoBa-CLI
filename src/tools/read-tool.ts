@@ -1,6 +1,8 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as readline from 'readline';
+import { execFileSync } from 'child_process';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { isReadPathAllowed } from '../utils/safety';
 import { createImageBlock } from '../utils/image-utils';
@@ -20,6 +22,18 @@ export const DEFAULT_PDF_READ_PAGES = 10;
 export const MAX_PDF_READ_PAGES = 30;
 export const MAX_PDF_READ_BYTES = 20 * 1024 * 1024;
 export const MAX_PDF_OUTPUT_BYTES = 192 * 1024;
+export const DEFAULT_PDF_IMAGE_FALLBACK_PAGES = 3;
+export const MAX_PDF_IMAGE_FALLBACK_PAGES = 5;
+const MAX_PDF_RENDER_PIXELS = 4_000_000;
+const DEFAULT_PDF_RENDER_SCALE = 1.75;
+const PDF_VISUAL_INTENT_PATTERNS = [
+  /图片|图像|照片|截图|扫描|扫描件|影印|拍照/,
+  /签名|签字|手写|字迹|笔迹|批注/,
+  /印章|盖章|公章|章印|红章|骑缝章/,
+  /版式|布局|排版|页面结构|格式|样式|颜色|表格|图表|流程图/,
+  /试卷|答题卡|作业|批改|卷面/,
+  /\b(image|photo|picture|screenshot|scan|scanned|signature|handwriting|stamp|seal|layout|table|chart|diagram|visual)\b/i,
+];
 
 interface PdfParseOptions {
   max?: number;
@@ -74,6 +88,31 @@ interface PdfPageSelection {
   warnings: string[];
 }
 
+interface RenderedPdfPage {
+  pageNumber: number;
+  imagePath: string;
+  renderer: 'pdfjs' | 'pdftoppm';
+}
+
+interface PdfCanvasAndContext {
+  canvas: any;
+  context: any;
+}
+
+interface ReadImageOptions {
+  forceReaderProxy?: boolean;
+  metadataType?: string;
+  proxyIntro?: string;
+}
+
+interface PdfRenderedImageReadOptions {
+  reason: 'missing_text' | 'parse_failed' | 'visual_supplement';
+  totalPages?: number;
+}
+
+type DynamicImport = (specifier: string) => Promise<any>;
+const dynamicImport: DynamicImport = new Function('specifier', 'return import(specifier)') as DynamicImport;
+
 /**
  * Read tool - reads local files and returns content to the model.
  */
@@ -83,6 +122,7 @@ export class ReadTool implements Tool {
     description: [
       '读取一个本地文件或当前用户轮次授权的 CatsCo 附件。',
       '支持文本/代码、PDF、图片和 Jupyter notebook。文本默认只读前若干行，可用 offset/limit 分页。',
+      'PDF 会先提取文本层；如果文本层为空、解析失败，或用户明显关心图片/签章/手写/版式等视觉内容，会自动把少量页面转成图片并走读图链路。',
       '图片会按当前模型能力处理：视觉模型收到图片块，非视觉模型收到 reader proxy 的文字解析结果。',
     ].join('\n'),
     parameters: {
@@ -222,7 +262,7 @@ export class ReadTool implements Tool {
     const ext = path.extname(absolutePath).toLowerCase();
 
     if (ext === '.pdf') {
-      const content = await this.readPDF(absolutePath, displayPath, visiblePath, pages);
+      const content = await this.readPDF(absolutePath, displayPath, visiblePath, context, pages, prompt || analysis_prompt);
       return { ok: true, content };
     }
 
@@ -479,6 +519,33 @@ export class ReadTool implements Tool {
     };
   }
 
+  private getPdfCoverageNotice(selection: PdfPageSelection, totalPages?: number): string[] {
+    if (!Number.isFinite(totalPages) || !totalPages || totalPages <= 0) return [];
+    const pageCount = Math.floor(totalPages);
+    const selectedPages = selection.selectedPages
+      ? Array.from(selection.selectedPages).filter(page => page <= pageCount).sort((a, b) => a - b)
+      : undefined;
+
+    if (selectedPages) {
+      const coversAllPages = selectedPages.length === pageCount
+        && selectedPages.every((page, index) => page === index + 1);
+      if (coversAllPages) return [];
+
+      return [
+        `读取范围提示: 仅已读取页 ${selectedPages.length > 0 ? selectedPages.join(', ') : selection.label} / 共 ${pageCount} 页。`,
+        '重要: 下面内容只代表已读取页，不能当作整份 PDF 的完整总结；如果用户要全文/整份分析，请询问是否继续分段读取全文，或让用户指定页码。',
+      ];
+    }
+
+    const readCount = Math.min(selection.maxPageToRender, pageCount);
+    if (readCount >= pageCount) return [];
+
+    return [
+      `读取范围提示: 仅已读取前 ${readCount} / 共 ${pageCount} 页。`,
+      '重要: 下面内容只代表已读取页，不能当作整份 PDF 的完整总结；如果用户要全文/整份分析，请询问是否继续分段读取全文，或让用户指定页码。',
+    ];
+  }
+
   private async extractPdfText(absolutePath: string, selection: PdfPageSelection): Promise<PdfParseResult> {
     const data = fs.readFileSync(absolutePath);
     const selectedPages = selection.selectedPages;
@@ -513,7 +580,265 @@ export class ReadTool implements Tool {
     return pdfParse(data, options);
   }
 
-  private async readPDF(absolutePath: string, filePath: string, visiblePath: string, pages?: string): Promise<string> {
+  private getPdfRenderedImagePages(selection: PdfPageSelection, totalPages?: number): number[] {
+    if (selection.selectedPages && selection.selectedPages.size > 0) {
+      return Array.from(selection.selectedPages)
+        .sort((a, b) => a - b)
+        .slice(0, MAX_PDF_IMAGE_FALLBACK_PAGES);
+    }
+
+    const knownPages = Number.isFinite(totalPages) && totalPages && totalPages > 0
+      ? Math.floor(totalPages)
+      : undefined;
+    const count = knownPages && knownPages <= MAX_PDF_IMAGE_FALLBACK_PAGES
+      ? knownPages
+      : Math.min(DEFAULT_PDF_IMAGE_FALLBACK_PAGES, selection.maxPageToRender);
+    return Array.from({ length: count }, (_, index) => index + 1);
+  }
+
+  private shouldSupplementPdfVisualRead(context: ToolExecutionContext, prompt?: string): boolean {
+    const task = this.getImageReadPrompt(context, prompt);
+    if (!task) return false;
+    return PDF_VISUAL_INTENT_PATTERNS.some(pattern => pattern.test(task));
+  }
+
+  private loadPdfCanvasModule(): any {
+    const rawCanvasModule = require('@napi-rs/canvas');
+    const canvasModule = rawCanvasModule?.createCanvas
+      ? rawCanvasModule
+      : rawCanvasModule?.default;
+    if (!canvasModule?.createCanvas) {
+      throw new Error('@napi-rs/canvas createCanvas is unavailable');
+    }
+    return canvasModule;
+  }
+
+  private createPdfCanvasFactory(canvasModule: any): any {
+    return {
+      create(width: number, height: number): PdfCanvasAndContext {
+        if (width <= 0 || height <= 0) {
+          throw new Error('Invalid PDF canvas size');
+        }
+        const canvas = canvasModule.createCanvas(width, height);
+        return {
+          canvas,
+          context: canvas.getContext('2d', { willReadFrequently: true }),
+        };
+      },
+      reset(canvasAndContext: PdfCanvasAndContext, width: number, height: number): void {
+        if (!canvasAndContext?.canvas) {
+          throw new Error('PDF canvas is not specified');
+        }
+        if (width <= 0 || height <= 0) {
+          throw new Error('Invalid PDF canvas size');
+        }
+        canvasAndContext.canvas.width = width;
+        canvasAndContext.canvas.height = height;
+      },
+      destroy(canvasAndContext: PdfCanvasAndContext): void {
+        if (!canvasAndContext?.canvas) return;
+        canvasAndContext.canvas.width = 0;
+        canvasAndContext.canvas.height = 0;
+        canvasAndContext.canvas = null;
+        canvasAndContext.context = null;
+      },
+    };
+  }
+
+  private async renderPdfPagesWithPdfJs(
+    absolutePath: string,
+    pages: number[],
+    tempDir: string,
+  ): Promise<RenderedPdfPage[]> {
+    const canvasModule = this.loadPdfCanvasModule();
+    const globalScope = globalThis as any;
+    if (!globalScope.DOMMatrix && canvasModule.DOMMatrix) globalScope.DOMMatrix = canvasModule.DOMMatrix;
+    if (!globalScope.DOMPoint && canvasModule.DOMPoint) globalScope.DOMPoint = canvasModule.DOMPoint;
+    if (!globalScope.DOMRect && canvasModule.DOMRect) globalScope.DOMRect = canvasModule.DOMRect;
+    if (!globalScope.ImageData && canvasModule.ImageData) globalScope.ImageData = canvasModule.ImageData;
+    if (!globalScope.Path2D && canvasModule.Path2D) globalScope.Path2D = canvasModule.Path2D;
+
+    const pdfjs = await dynamicImport('pdfjs-dist/legacy/build/pdf.mjs');
+    const canvasFactory = this.createPdfCanvasFactory(canvasModule);
+    const data = new Uint8Array(fs.readFileSync(absolutePath));
+    const loadingTask = pdfjs.getDocument({
+      data,
+      disableWorker: true,
+      useSystemFonts: true,
+      canvasFactory,
+    });
+
+    const rendered: RenderedPdfPage[] = [];
+    const doc = await loadingTask.promise;
+    try {
+      for (const pageNumber of pages) {
+        if (pageNumber > doc.numPages) continue;
+
+        const page = await doc.getPage(pageNumber);
+        const baseViewport = page.getViewport({ scale: 1 });
+        const basePixels = Math.max(1, baseViewport.width * baseViewport.height);
+        const maxScale = Math.sqrt(MAX_PDF_RENDER_PIXELS / basePixels);
+        const scale = Math.min(DEFAULT_PDF_RENDER_SCALE, maxScale);
+        const viewport = page.getViewport({ scale });
+        const canvas = canvasModule.createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+        const canvasContext = canvas.getContext('2d');
+        await page.render({ canvasContext, viewport, canvasFactory }).promise;
+
+        const imagePath = path.join(tempDir, `page-${pageNumber}.png`);
+        fs.writeFileSync(imagePath, canvas.toBuffer('image/png'));
+        rendered.push({ pageNumber, imagePath, renderer: 'pdfjs' });
+        page.cleanup?.();
+      }
+    } finally {
+      await doc.destroy();
+    }
+
+    if (rendered.length === 0) {
+      throw new Error('PDF 页码超出范围，未渲染出任何页面。');
+    }
+    return rendered;
+  }
+
+  private async renderPdfPagesWithPdftoppm(
+    absolutePath: string,
+    pages: number[],
+    tempDir: string,
+  ): Promise<RenderedPdfPage[]> {
+    const rendered: RenderedPdfPage[] = [];
+    for (const pageNumber of pages) {
+      const outputPrefix = path.join(tempDir, `pdftoppm-page-${pageNumber}`);
+      execFileSync('pdftoppm', [
+        '-f',
+        String(pageNumber),
+        '-l',
+        String(pageNumber),
+        '-singlefile',
+        '-png',
+        '-r',
+        '150',
+        absolutePath,
+        outputPrefix,
+      ], { timeout: 45_000, stdio: 'pipe' });
+
+      const imagePath = `${outputPrefix}.png`;
+      if (fs.existsSync(imagePath)) {
+        rendered.push({ pageNumber, imagePath, renderer: 'pdftoppm' });
+      }
+    }
+
+    if (rendered.length === 0) {
+      throw new Error('pdftoppm 未生成页面图片。');
+    }
+    return rendered;
+  }
+
+  private async renderPdfPagesToImages(
+    absolutePath: string,
+    pages: number[],
+    tempDir: string,
+  ): Promise<RenderedPdfPage[]> {
+    let pdfJsMessage = 'unknown pdfjs error';
+    try {
+      return await this.renderPdfPagesWithPdfJs(absolutePath, pages, tempDir);
+    } catch (pdfJsError: any) {
+      pdfJsMessage = String(pdfJsError?.message || pdfJsError || 'unknown pdfjs error');
+      Logger.warning(`[CatsCo] pdf_image_fallback pdfjs_failed file=${formatPathForLog(absolutePath)} reason=${pdfJsMessage.slice(0, 300)}`);
+    }
+
+    try {
+      return await this.renderPdfPagesWithPdftoppm(absolutePath, pages, tempDir);
+    } catch (pdftoppmError: any) {
+      const message = String(pdftoppmError?.message || pdftoppmError || 'unknown pdftoppm error');
+      throw new Error(`PDF 页面渲染失败：内置 PDF.js 渲染失败：${pdfJsMessage}；系统 pdftoppm 也不可用或执行失败：${message}`);
+    }
+  }
+
+  private async readPdfViaRenderedImages(
+    absolutePath: string,
+    filePath: string,
+    visiblePath: string,
+    context: ToolExecutionContext,
+    selection: PdfPageSelection,
+    prompt?: string,
+    options?: PdfRenderedImageReadOptions,
+  ): Promise<string> {
+    const pages = this.getPdfRenderedImagePages(selection, options?.totalPages);
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-pdf-pages-'));
+
+    try {
+      const renderedPages = await this.renderPdfPagesToImages(absolutePath, pages, tempDir);
+      const isSupplement = options?.reason === 'visual_supplement';
+      const parts = [
+        isSupplement
+          ? 'PDF 文本层已提取；由于用户任务可能涉及图片、签名、印章、手写、版式或表格，已额外转成页面图片补充读取。'
+          : 'PDF 文本层未提取到内容，已自动转成页面图片继续读取。',
+        `${isSupplement ? '视觉补充页码' : '转图片页码'}: ${renderedPages.map(page => page.pageNumber).join(', ')}`,
+        `读取方式: ${renderedPages[0]?.renderer === 'pdftoppm' ? '系统 pdftoppm 渲染 + Cats reader proxy 读图' : '内置 PDF.js 渲染 + Cats reader proxy 读图'}`,
+      ];
+
+      if (pages.length > renderedPages.length) {
+        const renderedSet = new Set(renderedPages.map(page => page.pageNumber));
+        const skipped = pages.filter(page => !renderedSet.has(page));
+        if (skipped.length > 0) {
+          parts.push(`跳过页码: ${skipped.join(', ')}（可能超出 PDF 总页数）`);
+        }
+      }
+
+      if (!selection.selectedPages && options?.totalPages && options.totalPages > renderedPages.length) {
+        parts.push(`PDF 共 ${options.totalPages} 页，为避免大 PDF 转图过慢和上下文膨胀，默认只补读前 ${renderedPages.length} 页；需要指定页请用 pages，例如 pages="12-15"。`);
+      } else if ((!selection.selectedPages || selection.selectedPages.size > MAX_PDF_IMAGE_FALLBACK_PAGES)
+        && selection.maxPageToRender > renderedPages.length) {
+        parts.push(`为避免读图成本和上下文膨胀，图片读取默认最多处理 ${renderedPages.length} 页；需要更多页请用 pages 指定更小范围。`);
+      }
+
+      const userTask = this.getImageReadPrompt(context, prompt);
+      for (const page of renderedPages) {
+        const pagePrompt = [
+          `用户正在读取 PDF 文件: ${visiblePath}`,
+          `当前是 PDF 第 ${page.pageNumber} 页的渲染图片。`,
+          userTask ? `用户任务: ${userTask}` : '请提取这一页中可见的文字、表格和关键结构。',
+        ].join('\n');
+        const analysis = await this.readImage(
+          page.imagePath,
+          `${filePath}#page=${page.pageNumber}`,
+          `${visiblePath}#page=${page.pageNumber}`,
+          context,
+          pagePrompt,
+          {
+            forceReaderProxy: true,
+            metadataType: 'PDF 页面图片',
+            proxyIntro: isSupplement
+              ? '视觉补充结果（PDF 文本层可能漏掉图片、签章、手写或版式信息）：'
+              : '读图结果（PDF 文本层不可用，已转为页面图片解析）：',
+          },
+        );
+        parts.push('', `--- 第 ${page.pageNumber} 页 ---`, String(analysis));
+      }
+
+      return parts.join('\n');
+    } catch (error: any) {
+      const rawMessage = String(error?.message || error || 'unknown error').trim();
+      const message = rawMessage.length > 500 ? `${rawMessage.slice(0, 500)}...` : rawMessage;
+      return [
+        options?.reason === 'visual_supplement'
+          ? 'PDF 文本层已提取，但 CatsCo 额外尝试转为页面图片补充读取时失败。'
+          : 'PDF 文本层未提取到内容，CatsCo 已尝试转为页面图片读取，但转图链路失败。',
+        `原因: ${message}`,
+        '可以改发截图/图片，或在当前环境安装 Poppler(pdftoppm) 后重试。',
+      ].join('\n');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  private async readPDF(
+    absolutePath: string,
+    filePath: string,
+    visiblePath: string,
+    context: ToolExecutionContext,
+    pages?: string,
+    prompt?: string,
+  ): Promise<string> {
     const stats = fs.statSync(absolutePath);
     const sizeMB = (stats.size / 1024 / 1024).toFixed(2);
     const selection = this.parsePdfPages(pages);
@@ -545,6 +870,11 @@ export class ReadTool implements Tool {
         `已解析页: ${selection.label}`,
       );
 
+      const coverageNotice = this.getPdfCoverageNotice(selection, parsed.numpages);
+      if (coverageNotice.length > 0) {
+        lines.push('', ...coverageNotice);
+      }
+
       if (selection.warnings.length > 0) {
         lines.push('', ...selection.warnings);
       }
@@ -552,8 +882,10 @@ export class ReadTool implements Tool {
       if (!rawText) {
         lines.push(
           '',
-          '未提取到可用文本。这个 PDF 可能是扫描件/图片型 PDF、加密文档，或文本层为空。',
-          '如果用户需要读内容，建议改用图片 OCR、截图读图，或 shell 中更专业的文档解析工具。',
+          await this.readPdfViaRenderedImages(absolutePath, filePath, visiblePath, context, selection, prompt, {
+            reason: 'missing_text',
+            totalPages: parsed.numpages,
+          }),
         );
         return lines.join('\n');
       }
@@ -573,6 +905,16 @@ export class ReadTool implements Tool {
         );
       }
 
+      if (this.shouldSupplementPdfVisualRead(context, prompt)) {
+        lines.push(
+          '',
+          await this.readPdfViaRenderedImages(absolutePath, filePath, visiblePath, context, selection, prompt, {
+            reason: 'visual_supplement',
+            totalPages: parsed.numpages,
+          }),
+        );
+      }
+
       return lines.join('\n');
     } catch (error: any) {
       const rawMessage = String(error?.message || error || 'unknown error').trim();
@@ -581,7 +923,10 @@ export class ReadTool implements Tool {
         '',
         'PDF 解析失败，read_file 未能提取正文。',
         `原因: ${message}`,
-        '可以尝试重新上传 PDF、改发截图，或使用 shell 中可用的文档解析库/系统工具处理。',
+        '',
+        await this.readPdfViaRenderedImages(absolutePath, filePath, visiblePath, context, selection, prompt, {
+          reason: 'parse_failed',
+        }),
       );
       return lines.join('\n');
     }
@@ -620,10 +965,15 @@ export class ReadTool implements Tool {
     return explicit || this.getLatestUserText(context);
   }
 
-  private formatImageMetadata(absolutePath: string, filePath: string, visiblePath: string): string {
+  private formatImageMetadata(
+    absolutePath: string,
+    filePath: string,
+    visiblePath: string,
+    metadataType = '图片文件',
+  ): string {
     const stats = fs.statSync(absolutePath);
     const sizeKB = (stats.size / 1024).toFixed(2);
-    return [`文件: ${filePath}`, `Path: ${visiblePath}`, '类型: 图片文件', `大小: ${sizeKB} KB`].join('\n');
+    return [`文件: ${filePath}`, `Path: ${visiblePath}`, `类型: ${metadataType}`, `大小: ${sizeKB} KB`].join('\n');
   }
 
   private formatReaderProxyFailure(proxyResult: ReaderProxyResult, visionCapable: boolean): string {
@@ -683,13 +1033,15 @@ export class ReadTool implements Tool {
     visiblePath: string,
     context: ToolExecutionContext,
     prompt?: string,
+    options?: ReadImageOptions,
   ): Promise<any> {
     const config = ConfigManager.getConfigReadonly();
     const imagePrompt = this.getImageReadPrompt(context, prompt);
     const visionCapable = isPrimaryModelVisionCapable(config);
+    const forceReaderProxy = Boolean(options?.forceReaderProxy);
     const modelName = config.model || 'unknown';
 
-    if (visionCapable) {
+    if (visionCapable && !forceReaderProxy) {
       const imageBlock = await createImageBlock(absolutePath);
       const logFile = formatPathForLog(absolutePath || filePath);
       if (imageBlock) {
@@ -713,19 +1065,19 @@ export class ReadTool implements Tool {
 
     if (proxyResult.ok && proxyResult.analysis) {
       return [
-        this.formatImageMetadata(absolutePath, filePath, visiblePath),
+        this.formatImageMetadata(absolutePath, filePath, visiblePath, options?.metadataType),
         '',
-        visionCapable
+        options?.proxyIntro || (visionCapable && !forceReaderProxy
           ? '主模型图片块生成失败，已自动改用 Cats reader proxy 解析：'
-          : '读图结果（由 Cats reader proxy 解析，已作为 read_file 结果返回给当前非多模态主模型）：',
+          : '读图结果（由 Cats reader proxy 解析，已作为 read_file 结果返回给当前非多模态主模型）：'),
         proxyResult.analysis,
       ].join('\n');
     }
 
     return [
-      this.formatImageMetadata(absolutePath, filePath, visiblePath),
+      this.formatImageMetadata(absolutePath, filePath, visiblePath, options?.metadataType),
       '',
-      this.formatReaderProxyFailure(proxyResult, visionCapable),
+      this.formatReaderProxyFailure(proxyResult, visionCapable && !forceReaderProxy),
     ].join('\n');
   }
 
