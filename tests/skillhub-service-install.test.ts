@@ -91,6 +91,20 @@ describe('SkillHub connected install service', () => {
     assert.equal(fs.existsSync(path.join(install.skill.path, 'SKILL.md')), true);
   });
 
+  test('rejects registry entries that do not match the requested skill id', async () => {
+    const fixture = createFixture();
+    (fixture as any).allowMismatchedRequest = true;
+    CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS.push(fixture.rootTrust);
+    await startFixtureServer(fixture);
+    process.env.CATSCO_SKILLHUB_BASE_URL = baseUrl;
+
+    await assert.rejects(
+      () => new SkillHubService().install('lin/other-skill', '1.0.0'),
+      (error: any) => error?.code === 'skillhub.registry_entry_mismatch',
+    );
+    assert.equal(fs.existsSync(path.join(testRoot, 'skills', 'contract-review')), false);
+  });
+
   async function startFixtureServer(fixture: ReturnType<typeof createFixture>): Promise<void> {
     const app = express();
     app.use(express.json());
@@ -110,7 +124,7 @@ describe('SkillHub connected install service', () => {
       res.type('application/octet-stream').send(fixture.packageBytes);
     });
     app.get(/^\/api\/skills\/(.+)\/versions\/([^/]+)$/, (req, res) => {
-      assert.equal(req.params[0], fixture.entry.skillId);
+      if (!(fixture as any).allowMismatchedRequest) assert.equal(req.params[0], fixture.entry.skillId);
       res.json({
         version: {
           ...fixture.entry,
@@ -120,7 +134,7 @@ describe('SkillHub connected install service', () => {
       });
     });
     app.get(/^\/api\/skills\/(.+)$/, (req, res) => {
-      assert.equal(req.params[0], fixture.entry.skillId);
+      if (!(fixture as any).allowMismatchedRequest) assert.equal(req.params[0], fixture.entry.skillId);
       res.json({ skill: fixture.entry, versions: [fixture.entry] });
     });
     server = await listen(app);

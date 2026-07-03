@@ -4,6 +4,7 @@ import type { Server } from 'http';
 import { Logger } from '../utils/logger';
 import { createApiRouter } from './routes/api';
 import { ServiceManager } from './service-manager';
+import { bootstrapDefaultSkillHubSkillsOnce } from '../skillhub/default-skill-bootstrap';
 
 const DEFAULT_PORT = 3800;
 const activeServers: Server[] = [];
@@ -33,6 +34,10 @@ export async function startDashboard(
   const serviceManager = new ServiceManager(projectRoot);
 
   app.use(express.json({ limit: '25mb' }));
+
+  bootstrapDefaultSkillHubSkillsOnce().catch(error => {
+    Logger.warning(`Default SkillHub bootstrap failed: ${error?.message || String(error)}`);
+  });
 
   // API routes
   app.use('/api', createApiRouter(serviceManager, controllers.updateController));

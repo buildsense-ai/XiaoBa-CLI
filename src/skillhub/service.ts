@@ -249,16 +249,34 @@ export class SkillHubService {
     if (version) {
       const detail = await this.client.getVersion(skillId, version);
       const entry = normalizeRegistryEntryVersion(detail.version || detail.skill, version);
-      if (entry) return entry;
+      if (entry) return assertRegistryEntryMatchesRequest(entry, skillId, version);
     } else {
       const detail = await this.client.getSkill(skillId);
-      if (detail.skill) return detail.skill;
-      if (detail.version) return detail.version;
+      if (detail.skill) return assertRegistryEntryMatchesRequest(detail.skill, skillId);
+      if (detail.version) return assertRegistryEntryMatchesRequest(detail.version, skillId);
     }
     const error: any = new Error('SkillHub 未找到这个 Skill 版本。');
     error.status = 404;
     throw error;
   }
+}
+
+function assertRegistryEntryMatchesRequest(
+  entry: SkillHubRegistryEntry,
+  requestedSkillId: string,
+  requestedVersion?: string,
+): SkillHubRegistryEntry {
+  const actualSkillId = String(entry.skillId || '').trim();
+  const expectedSkillId = String(requestedSkillId || '').trim();
+  const actualVersion = String(entry.latestVersion || (entry as any).version || '').trim();
+  const expectedVersion = String(requestedVersion || '').trim();
+  if (actualSkillId !== expectedSkillId || (expectedVersion && actualVersion !== expectedVersion)) {
+    const error: any = new Error('SkillHub 返回的 Skill 版本与请求不一致，已停止安装。');
+    error.status = 409;
+    error.code = 'skillhub.registry_entry_mismatch';
+    throw error;
+  }
+  return entry;
 }
 
 function normalizeRegistryEntryVersion(entry: SkillHubRegistryEntry | undefined, requestedVersion?: string): SkillHubRegistryEntry | undefined {
