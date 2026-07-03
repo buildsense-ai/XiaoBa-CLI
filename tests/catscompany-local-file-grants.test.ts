@@ -66,6 +66,37 @@ describe('CatsCo local file grant creation', () => {
     assert.ok(result.expiresAt > result.createdAt);
   });
 
+  test('creates a scoped file grant for stable CatsCo attachment cache files', () => {
+    const previous = process.env.XIAOBA_USER_DATA_DIR;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'catsco-local-cache-grant-'));
+    process.env.XIAOBA_USER_DATA_DIR = root;
+    try {
+      const filePath = path.join(root, 'data', 'attachments', 'catscompany', 'cc_user_usr7', 'report.md');
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, 'hello');
+      const device = createCatsCoLocalDeviceGrant({
+        bodyId: 'body-main',
+        installationId: 'install-main',
+      });
+
+      const result = createCatsCoAttachmentGrant(scope(), device, {
+        localPath: filePath,
+        fileName: 'report.md',
+        type: 'file',
+        workspaceRoot: path.join(root, 'workspace-that-does-not-contain-cache'),
+      });
+
+      assert.ok(result);
+      assert.equal(result.filePath, fs.realpathSync(filePath));
+      assert.equal(result.fileName, 'report.md');
+      assert.deepEqual(result.operations, ['read_file', 'send_file']);
+    } finally {
+      if (previous === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+      else process.env.XIAOBA_USER_DATA_DIR = previous;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('does not create grants for missing, legacy, untrusted, non-CatsCo, or bodyless scopes', () => {
     const { root, filePath } = workspaceWithAttachment('blocked.md');
     const device = createCatsCoLocalDeviceGrant({ bodyId: 'body-main' });

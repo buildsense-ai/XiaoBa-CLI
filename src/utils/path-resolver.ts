@@ -1,8 +1,36 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import * as os from 'os';
 
 export class PathResolver {
+  static getRuntimeDataRoot(): string {
+    const explicit = [
+      process.env.XIAOBA_USER_DATA_DIR,
+      process.env.CATSCO_USER_DATA_DIR,
+      process.env.XIAOBA_ELECTRON_USER_DATA_DIR,
+      process.env.XIAOBA_RUNTIME_ROOT,
+    ]
+      .map(value => String(value || '').trim())
+      .find(Boolean);
+
+    return path.resolve(explicit || process.cwd());
+  }
+
+  static getDataPath(...segments: string[]): string {
+    return path.join(this.getRuntimeDataRoot(), 'data', ...segments);
+  }
+
+  static getLogsPath(...segments: string[]): string {
+    return path.join(this.getRuntimeDataRoot(), 'logs', ...segments);
+  }
+
+  static getAttachmentsPath(...segments: string[]): string {
+    return this.getDataPath('attachments', ...segments);
+  }
+
+  static getPromptOverridesPath(): string {
+    return path.join(this.getRuntimeDataRoot(), 'prompt-overrides');
+  }
+
   static getSkillsPath(): string {
     const override = process.env.XIAOBA_SKILLS_DIR?.trim();
     if (override) return path.resolve(override);
@@ -10,13 +38,7 @@ export class PathResolver {
   }
 
   static getUserDataSkillsPath(): string {
-    if (process.platform === 'win32') {
-      return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'xiaoba-cli', 'skills');
-    }
-    if (process.platform === 'darwin') {
-      return path.join(os.homedir(), 'Library', 'Application Support', 'xiaoba-cli', 'skills');
-    }
-    return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'xiaoba-cli', 'skills');
+    return path.join(this.getRuntimeDataRoot(), 'skills');
   }
 
   static ensureDir(dirPath: string): void {

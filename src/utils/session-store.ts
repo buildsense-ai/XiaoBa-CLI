@@ -6,9 +6,10 @@ import {
   contentToText,
   stripAssistantTranscriptArtifacts,
 } from './transcript-artifacts';
+import { PathResolver } from './path-resolver';
 
-const SESSIONS_DIR = path.resolve(process.cwd(), 'data', 'sessions');
-const SESSION_STATE_DIR = path.resolve(process.cwd(), 'data', 'session-state');
+const SESSIONS_DIR = PathResolver.getDataPath('sessions');
+const SESSION_STATE_DIR = PathResolver.getDataPath('session-state');
 
 function ensureDir(): void {
   if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });

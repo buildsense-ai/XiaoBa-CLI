@@ -3072,7 +3072,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       }
 
       const uploader = new LogUploader(serverUrl, apiKey);
-      await uploader.uploadLogs(path.resolve('logs/sessions'), date);
+      await uploader.uploadLogs(PathResolver.getLogsPath('sessions'), date);
       res.json({ ok: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });

@@ -14,6 +14,7 @@ import type {
 import type { SubAgentRuntimeEvent } from '../core/sub-agent-events';
 import type { SubAgentInfo } from '../core/sub-agent-session';
 import type { PromptTraceSnapshot } from './prompt-observability';
+import { PathResolver } from './path-resolver';
 
 export type {
   LegacySessionTurnLogEntry,
@@ -27,7 +28,7 @@ export type {
   SessionTurnLogEntry,
 } from './session-log-schema';
 
-const SESSION_LOG_DIR = path.resolve('logs/sessions');
+const SESSION_LOG_DIR = PathResolver.getLogsPath('sessions');
 const MAX_TOOL_RESULT_LENGTH = parseOptionalLimit(process.env.XIAOBA_SESSION_TOOL_RESULT_LIMIT);
 const MAX_RUNTIME_FEEDBACK_LENGTH = Number(process.env.XIAOBA_SESSION_RUNTIME_FEEDBACK_LIMIT || 4000);
 

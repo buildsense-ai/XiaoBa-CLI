@@ -7,6 +7,7 @@ import type {
   ScopedLocalDeviceGrant,
   ScopedLocalFileGrant,
 } from '../types/session-identity';
+import { isInsideCatsCoAttachmentCacheRoot } from './attachment-cache';
 
 export const CATSCOMPANY_ATTACHMENT_GRANT_TTL_MS = 30 * 60 * 1000;
 export const CATSCOMPANY_ATTACHMENT_REF_PREFIX = 'catsco_attachment:';
@@ -54,7 +55,7 @@ export function createCatsCoAttachmentGrant(
   if (scope.agentBodyId !== localDeviceGrant.bodyId) return undefined;
 
   const filePath = normalizeLocalPath(input.localPath);
-  if (!isInsideDownloadsRoot(filePath, input.workspaceRoot)) return undefined;
+  if (!isInsideManagedAttachmentRoot(filePath, input.workspaceRoot)) return undefined;
 
   let stats: fs.Stats;
   try {
@@ -98,7 +99,9 @@ export function normalizeLocalPath(filePath: string): string {
   }
 }
 
-function isInsideDownloadsRoot(filePath: string, workspaceRoot = process.cwd()): boolean {
+function isInsideManagedAttachmentRoot(filePath: string, workspaceRoot = process.cwd()): boolean {
+  if (isInsideCatsCoAttachmentCacheRoot(filePath)) return true;
+
   const downloadsRoot = normalizeLocalPath(path.join(workspaceRoot, 'tmp', 'downloads'));
   const target = normalizeForCompare(filePath);
   const root = normalizeForCompare(downloadsRoot);

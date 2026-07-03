@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { PathResolver } from './path-resolver';
 
 export const DEFAULT_PROMPTS_DIR = path.join(__dirname, '../../prompts');
 
@@ -17,7 +18,7 @@ export function getPromptOverridesDir(env: NodeJS.ProcessEnv = process.env): str
   const userDataDir = (env.XIAOBA_USER_DATA_DIR || env.CATSCO_USER_DATA_DIR || '').trim();
   if (userDataDir) return path.resolve(userDataDir, 'prompt-overrides');
   const runtimeRoot = (env.XIAOBA_RUNTIME_ROOT || '').trim();
-  return runtimeRoot ? path.resolve(runtimeRoot, 'prompt-overrides') : undefined;
+  return runtimeRoot ? path.resolve(runtimeRoot, 'prompt-overrides') : PathResolver.getPromptOverridesPath();
 }
 
 export function isSafePromptOverridesDir(promptsDir: string, overridesDir: string): boolean {

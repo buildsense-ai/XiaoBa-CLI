@@ -91,7 +91,7 @@ export function formatCatsCoVisiblePath(
   if (/^catsco_attachment:[A-Za-z0-9._:-]+$/.test(text)) return text;
   if (/^\[CatsCo [^\]]+\]$/.test(text)) return text;
   if (options.preserveRelative && !looksLikeAbsoluteLocalPath(text)) return text;
-  return fallback;
+  return text;
 }
 
 export function redactCatsCoVisiblePath(

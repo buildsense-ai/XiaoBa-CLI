@@ -15,6 +15,7 @@ import {
   ParsedSessionLogEntry,
   SessionPromptTraceLogEntry,
 } from '../utils/session-log-schema';
+import { PathResolver } from '../utils/path-resolver';
 import { getPetService } from './pet-service';
 import { resolvePetDataDir } from './pet-store';
 import { PetEvent } from './pet-types';
@@ -837,7 +838,7 @@ function looksLikeShellPortabilityError(text: string): boolean {
 function resolveSessionLogsDir(env: NodeJS.ProcessEnv = process.env): string {
   const userData = String(env.XIAOBA_ELECTRON_USER_DATA_DIR || env.XIAOBA_USER_DATA_DIR || env.CATSCO_USER_DATA_DIR || '').trim();
   if (userData) return path.join(path.resolve(userData), 'logs', 'sessions');
-  return path.resolve(process.cwd(), 'logs', 'sessions');
+  return PathResolver.getLogsPath('sessions');
 }
 
 function listRecentSessionLogFiles(root: string, limit: number): string[] {

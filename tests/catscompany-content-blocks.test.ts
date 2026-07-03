@@ -218,7 +218,7 @@ describe('CatsCo content blocks', () => {
     assert.strictEqual(parsed.files[0].fileName, 'crack.png');
   });
 
-  test('builds CatsCo attachment context with opaque references instead of local paths', async () => {
+  test('builds CatsCo attachment context with stable local cache paths', async () => {
     const bot = Object.create(CatsCompanyBot.prototype);
     const localPath = 'C:\\tmp\\catsco-secret\\tmp\\downloads\\report.pdf';
     const attachment = {
@@ -235,10 +235,9 @@ describe('CatsCo content blocks', () => {
     const prompt = (bot as any).buildAttachmentOnlyPrompt([attachment]);
     const modelVisible = JSON.stringify(blocks) + '\n' + prompt;
 
-    assert.match(modelVisible, /catsco_attachment:visible-ref/);
-    assert.match(modelVisible, /授权附件引用/);
-    assert.doesNotMatch(modelVisible, /catsco-secret/);
-    assert.doesNotMatch(modelVisible, new RegExp(escapeRegExp(localPath)));
+    assert.doesNotMatch(modelVisible, /catsco_attachment:visible-ref/);
+    assert.match(modelVisible, /本地缓存路径:/);
+    assert.match(modelVisible, new RegExp(escapeRegExp(localPath)));
   });
 
   test('processes multiple attachments as one user turn', async () => {
@@ -341,8 +340,8 @@ describe('CatsCo content blocks', () => {
     assert.strictEqual(blocks[1].type, 'text');
     assert.match((blocks[1] as any).text, /Current user turn contains image attachments/);
     assert.match((blocks[1] as any).text, /call read_file/);
-    assert.match((blocks[1] as any).text, /catsco_attachment:image-ref/);
-    assert.doesNotMatch((blocks[1] as any).text, /C:\\tmp\\red-blue\.png/);
+    assert.match((blocks[1] as any).text, /C:\\tmp\\red-blue\.png/);
+    assert.doesNotMatch((blocks[1] as any).text, /catsco_attachment:image-ref/);
   });
 
   test('processes CatsCompany websocket content_blocks as one user turn', async () => {
@@ -489,7 +488,7 @@ describe('CatsCo content blocks', () => {
     }
   });
 
-  test('builds attachment messages with opaque references instead of local paths', async () => {
+  test('builds attachment messages with stable local cache paths', async () => {
     const bot = Object.create(CatsCompanyBot.prototype) as any;
     const localPath = 'C:\\tmp\\catsco-test\\secret-report.pdf';
 
@@ -509,13 +508,12 @@ describe('CatsCo content blocks', () => {
       .join('\n');
 
     assert.match(text, /请读取这个文件/);
-    assert.match(text, /catsco_attachment:opaque-ref/);
-    assert.doesNotMatch(text, /secret-report\.pdf -> C:/);
-    assert.doesNotMatch(text, /C:\\tmp\\catsco-test/);
-    assert.doesNotMatch(text, /授权附件路径/);
+    assert.match(text, /本地缓存路径:/);
+    assert.match(text, new RegExp(escapeRegExp(localPath)));
+    assert.doesNotMatch(text, /catsco_attachment:opaque-ref/);
   });
 
-  test('sanitizes CatsCo image block metadata to use opaque references', async () => {
+  test('keeps CatsCo image block metadata on the stable local cache path', async () => {
     const bot = Object.create(CatsCompanyBot.prototype) as any;
     const originalModel = process.env.GAUZ_LLM_MODEL;
     const originalApiBase = process.env.GAUZ_LLM_API_BASE;
@@ -543,9 +541,9 @@ describe('CatsCo content blocks', () => {
 
       const imageBlock = blocks.find((block: any) => block.type === 'image') as any;
       assert.ok(imageBlock);
-      assert.strictEqual(imageBlock.filePath, 'catsco_attachment:image-ref');
-      assert.doesNotMatch(JSON.stringify(blocks), new RegExp(escapeRegExp(localPath)));
-      assert.doesNotMatch(JSON.stringify(blocks), new RegExp(escapeRegExp(testRoot)));
+      assert.strictEqual(imageBlock.filePath, localPath);
+      assert.ok(blocks.some((block: any) => block.type === 'text' && String(block.text).includes(localPath)));
+      assert.doesNotMatch(JSON.stringify(blocks), /catsco_attachment:image-ref/);
     } finally {
       if (originalModel === undefined) {
         delete process.env.GAUZ_LLM_MODEL;

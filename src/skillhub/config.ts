@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
+import { PathResolver } from '../utils/path-resolver';
 
 export const DEFAULT_SKILLHUB_BASE_URL = 'https://logs.catsco.fun:9000';
 
@@ -22,7 +23,7 @@ export function loadSkillHubConfig(overrides: { baseUrl?: unknown } = {}): Skill
     ),
     DEFAULT_SKILLHUB_BASE_URL,
   );
-  const dataDir = path.join(process.cwd(), 'data', 'skillhub');
+  const dataDir = PathResolver.getDataPath('skillhub');
   return {
     baseUrl,
     dataDir,
@@ -45,7 +46,7 @@ export function normalizeBaseUrl(value: unknown, fallback = DEFAULT_SKILLHUB_BAS
 }
 
 function readEnvFile(): Record<string, string> {
-  const envPath = path.join(process.cwd(), '.env');
+  const envPath = path.join(PathResolver.getRuntimeDataRoot(), '.env');
   if (!fs.existsSync(envPath)) return {};
   return dotenv.parse(fs.readFileSync(envPath, 'utf-8'));
 }

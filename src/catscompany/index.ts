@@ -41,6 +41,10 @@ import {
 } from '../tools/tool-target-context';
 import { formatPathForLog } from '../utils/log-redaction';
 import { resolveCatsDeviceModelStatus } from './model-status';
+import {
+  buildCatsCoAttachmentCachePath,
+  scheduleCatsCoAttachmentCacheCleanup,
+} from './attachment-cache';
 
 interface PendingAttachment {
   fileName: string;
@@ -296,6 +300,7 @@ export class CatsCompanyBot {
    */
   async start(): Promise<void> {
     Logger.openLogFile('catscompany');
+    scheduleCatsCoAttachmentCacheCleanup();
     Logger.info('正在启动 CatsCompany connector...');
 
     // 加载 skills
@@ -1096,7 +1101,8 @@ export class CatsCompanyBot {
     if (messageFiles.length > 0) {
       const attachments: PendingAttachment[] = [];
       for (const file of messageFiles) {
-        const localPath = await this.sender.downloadFile(file.url, file.fileName);
+        const targetPath = buildCatsCoAttachmentCachePath(key, file.fileName);
+        const localPath = await this.sender.downloadFile(file.url, file.fileName, { targetPath });
         if (!localPath) {
           runtimeFeedback.push({
             source: 'catscompany.file_download',
@@ -1117,6 +1123,7 @@ export class CatsCompanyBot {
             workspaceRoot: process.cwd(),
           }),
         });
+        scheduleCatsCoAttachmentCacheCleanup();
       }
 
       if (attachments.length > 0) {
@@ -1789,7 +1796,7 @@ export class CatsCompanyBot {
         if (imgBlock) {
           blocks.push({
             ...imgBlock,
-            filePath: att.localFileGrant?.attachmentRef || `[CatsCo attachment: ${att.fileName}]`,
+            filePath: att.localPath || `[CatsCo attachment: ${att.fileName}]`,
           } as any);
           Logger.info(`[CatsCo] vision_direct model=${modelName} file=${logFile} bytes_base64=${((imgBlock as any).source as any)?.data?.length || 0}`);
         } else {
@@ -1808,8 +1815,8 @@ export class CatsCompanyBot {
           text: [
             '[Current user turn contains image attachments]',
             'The primary model cannot directly inspect image pixels in this runtime.',
-            'If the user request depends on image content, call read_file with file_path set to the current authorized attachment reference below.',
-            'Use only the current authorized attachment reference(s) listed here. Do not use old tmp/downloads paths, old image URLs, old filenames, or prior image descriptions.',
+            'If the user request depends on image content, call read_file with file_path set to the local cache path below.',
+            'Use the local cache path shown here. Do not use old tmp/downloads paths, old image URLs, old filenames, or prior image descriptions.',
             currentImageRefs.join('\n\n'),
           ].join('\n'),
         });
@@ -1821,18 +1828,10 @@ export class CatsCompanyBot {
 
   private formatAttachmentReferenceForModel(attachment: PendingAttachment): string {
     const label = attachment.type === 'image' ? '图片' : '文件';
-    const attachmentRef = attachment.localFileGrant?.attachmentRef;
-    if (!attachmentRef) {
-      return [
-        `[${label}] ${attachment.fileName}`,
-        '[附件授权状态] 当前消息没有生成可读取的本地附件引用。',
-      ].join('\n');
-    }
-
     return [
       `[${label}] ${attachment.fileName}`,
-      `[授权附件引用] ${attachmentRef}`,
-      '[使用方式] 如需读取或转发该附件，将 read_file/send_file 的 file_path 设置为这个引用。',
+      `本地缓存路径: ${attachment.localPath}`,
+      '读取方式: 如需查看该附件，调用 read_file，file_path 使用上面的本地缓存路径。',
     ].join('\n');
   }
 

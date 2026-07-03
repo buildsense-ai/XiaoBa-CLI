@@ -5,6 +5,7 @@ import { styles } from '../theme/colors';
 import ora, { Ora } from 'ora';
 import type { SessionTurnLogger } from './session-turn-logger';
 import type { SessionRuntimeLogEvent } from './session-log-schema';
+import { PathResolver } from './path-resolver';
 
 interface LoggerContextStore {
   sessionId?: string;
@@ -73,7 +74,7 @@ export class Logger {
     const ss = String(now.getSeconds()).padStart(2, '0');
     const suffix = sessionKey ? `${sessionType}_${sessionKey}` : sessionType;
     const fileName = `${hh}-${mm}-${ss}_${suffix}.log`;
-    const dir = path.resolve('logs', dateDir);
+    const dir = PathResolver.getLogsPath(dateDir);
 
     fs.mkdirSync(dir, { recursive: true });
     this.logFilePath = path.join(dir, fileName);

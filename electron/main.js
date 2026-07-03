@@ -638,6 +638,27 @@ ipcMain.handle('catsco:select-files', async (event) => {
     .filter(Boolean);
 });
 
+function getRuntimeDataRootForMenu() {
+  return process.env.XIAOBA_USER_DATA_DIR
+    || process.env.CATSCO_USER_DATA_DIR
+    || process.env.XIAOBA_ELECTRON_USER_DATA_DIR
+    || app.getPath('userData');
+}
+
+function openAttachmentCacheDirectory() {
+  const dir = path.join(getRuntimeDataRootForMenu(), 'data', 'attachments');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (error) {
+    console.error('Failed to create attachment cache directory:', error);
+  }
+  shell.openPath(dir).then((error) => {
+    if (error) {
+      console.error('Failed to open attachment cache directory:', error);
+    }
+  });
+}
+
 function createApplicationMenu() {
   const closeToTray = readCloseToTrayPreference();
   const quit = () => {
@@ -679,6 +700,12 @@ function createApplicationMenu() {
     {
       label: '编辑',
       submenu: editMenu,
+    },
+    {
+      label: '设置',
+      submenu: [
+        { label: '打开本地缓存文件位置', click: openAttachmentCacheDirectory },
+      ],
     },
     {
       label: '视图',

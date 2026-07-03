@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { SessionToolCallLog, SessionTurnLogEntry } from '../utils/session-log-schema';
 import { stripAssistantTranscriptArtifacts } from '../utils/transcript-artifacts';
+import { PathResolver } from '../utils/path-resolver';
 
 export interface MemorySearchMatch {
   ref: string;
@@ -272,8 +273,8 @@ function normalizeKeywords(value: unknown): string[] {
 
 function resolveLogRoots(workingDirectory: string): string[] {
   const roots = [
+    PathResolver.getLogsPath('sessions'),
     path.resolve(workingDirectory, 'logs', 'sessions'),
-    path.resolve(process.cwd(), 'logs', 'sessions'),
   ];
   return Array.from(new Set(roots)).filter(root => {
     try {

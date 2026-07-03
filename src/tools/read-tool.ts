@@ -120,17 +120,18 @@ export class ReadTool implements Tool {
   definition: ToolDefinition = {
     name: 'read_file',
     description: [
-      '读取一个本地文件或当前用户轮次授权的 CatsCo 附件。',
+      '读取一个本地文件。CatsCo 附件请优先使用消息中显示的本地缓存路径。',
       '支持文本/代码、PDF、图片和 Jupyter notebook。文本默认只读前若干行，可用 offset/limit 分页。',
-      'PDF 会先提取文本层；如果文本层为空、解析失败，或用户明显关心图片/签章/手写/版式等视觉内容，会自动把少量页面转成图片并走读图链路。',
-      '图片会按当前模型能力处理：视觉模型收到图片块，非视觉模型收到 reader proxy 的文字解析结果。',
+        'PDF 会先提取文本层；如果文本层为空、解析失败，或用户明显关心图片/签章/手写/版式等视觉内容，会自动把少量页面转成图片并走读图链路。',
+        'catsco_attachment:<id> 仅用于兼容当前轮旧附件引用；后续追问应使用历史消息里的本地缓存路径。',
+        '图片会按当前模型能力处理：视觉模型收到图片块，非视觉模型收到 reader proxy 的文字解析结果。',
     ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
         file_path: {
           type: 'string',
-          description: '要读取的文件路径或授权附件引用。支持绝对路径、相对当前目录路径、catsco_attachment:<id>。',
+          description: '要读取的文件路径。支持绝对路径、相对当前目录路径；CatsCo 附件优先使用消息中的本地缓存路径，catsco_attachment:<id> 仅作旧引用兼容。',
         },
         offset: {
           type: 'number',

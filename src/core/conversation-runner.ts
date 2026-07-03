@@ -54,6 +54,7 @@ import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/mo
 import { formatProviderErrorForLog } from '../utils/provider-error-log-sanitizer';
 import { renderRequiredDefaultPromptFile } from '../utils/prompt-template';
 import { PromptTraceLogger } from '../utils/prompt-trace-logger';
+import { PathResolver } from '../utils/path-resolver';
 import {
   restoreProviderReplayToolCalls,
   stripAssistantArtifactsFromMessages,
@@ -1435,7 +1436,7 @@ export class ConversationRunner {
     try {
       const date = new Date();
       const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-      const dir = path.resolve('logs', 'provider-messages', dateStr);
+      const dir = PathResolver.getLogsPath('provider-messages', dateStr);
       fs.mkdirSync(dir, { recursive: true });
       const safeSession = (this.toolExecutionContext?.sessionId || 'unknown').replace(/[:<>"|?*]/g, '_');
       const filePath = path.join(dir, `${safeSession}.jsonl`);

@@ -3,8 +3,9 @@ import * as path from 'path';
 import { ChatConfig, ChatResponse, ContentBlock, Message } from '../types';
 import { ToolCall, ToolDefinition, ToolResult, ToolSurface } from '../types/tool';
 import { Logger } from './logger';
+import { PathResolver } from './path-resolver';
 
-const DEFAULT_TRACE_DIR = path.resolve('logs', 'prompt-trace');
+const DEFAULT_TRACE_DIR = PathResolver.getLogsPath('prompt-trace');
 const SECRET_PATTERNS: RegExp[] = [
   /sk-[A-Za-z0-9_-]{8,}/g,
   /cats_svc_[A-Za-z0-9_-]+/g,

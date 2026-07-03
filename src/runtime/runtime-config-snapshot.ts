@@ -99,7 +99,7 @@ export async function createRuntimeConfigSnapshot(
   options: CreateRuntimeConfigSnapshotOptions = {},
 ): Promise<RuntimeConfigSnapshot> {
   const env = options.env ?? process.env;
-  const runtimeRoot = path.resolve(options.runtimeRoot ?? process.cwd());
+  const runtimeRoot = path.resolve(options.runtimeRoot ?? PathResolver.getRuntimeDataRoot());
   const resolved = options.profile
     ? {
       profile: options.profile,

@@ -4,8 +4,9 @@ import { Message } from '../types';
 import { ToolDefinition } from '../types/tool';
 import { estimateMessageTokens, estimateToolsTokens } from '../core/token-estimator';
 import { TRANSIENT_RUNTIME_CONTEXT_PREFIX } from '../core/runtime-context-builder';
+import { PathResolver } from './path-resolver';
 
-const DEBUG_DIR = path.resolve('logs/context-debug');
+const DEBUG_DIR = PathResolver.getLogsPath('context-debug');
 
 export interface ContextDebugEntry {
   request_id: string;

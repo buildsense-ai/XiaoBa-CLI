@@ -487,13 +487,16 @@ export class MessageSender {
     }
   }
 
-  async downloadFile(url: string, fileName: string): Promise<string | null> {
+  async downloadFile(url: string, fileName: string, options: { targetPath?: string } = {}): Promise<string | null> {
+    let partPath: string | undefined;
     try {
-      const tmpDir = path.join(process.cwd(), 'tmp', 'downloads');
-      fs.mkdirSync(tmpDir, { recursive: true });
 
       const fullUrl = url.startsWith('http') ? url : `${this.baseUrl}${url}`;
-      const localPath = path.join(tmpDir, `${Date.now()}_${fileName}`);
+      const localPath = options.targetPath
+        ? path.resolve(options.targetPath)
+        : path.join(process.cwd(), 'tmp', 'downloads', `${Date.now()}_${path.basename(fileName)}`);
+      fs.mkdirSync(path.dirname(localPath), { recursive: true });
+      partPath = `${localPath}.part-${process.pid}-${Date.now()}`;
       const res = await fetch(fullUrl);
       if (!res.ok) {
         Logger.error(`文件下载失败: HTTP ${res.status} - ${url}`);
@@ -501,10 +504,19 @@ export class MessageSender {
       }
 
       const buffer = Buffer.from(await res.arrayBuffer());
-      fs.writeFileSync(localPath, buffer);
+      fs.writeFileSync(partPath, buffer);
+      fs.renameSync(partPath, localPath);
+      partPath = undefined;
       Logger.info(`文件已下载: ${fileName} -> ${localPath} (${buffer.length} bytes)`);
       return localPath;
     } catch (err: any) {
+      if (partPath) {
+        try {
+          fs.unlinkSync(partPath);
+        } catch {
+          // ignore partial cleanup failure
+        }
+      }
       Logger.error(`文件下载失败: ${err.message}`);
       return null;
     }

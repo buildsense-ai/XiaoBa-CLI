@@ -130,12 +130,17 @@ class PromptInjectionMemoryBranchAI {
 
 describe('memory sidecar branch', () => {
   let testRoot: string;
+  let previousUserDataDir: string | undefined;
 
   beforeEach(() => {
+    previousUserDataDir = process.env.XIAOBA_USER_DATA_DIR;
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-memory-sidecar-'));
+    process.env.XIAOBA_USER_DATA_DIR = testRoot;
   });
 
   afterEach(() => {
+    if (previousUserDataDir === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+    else process.env.XIAOBA_USER_DATA_DIR = previousUserDataDir;
     if (testRoot && fs.existsSync(testRoot)) {
       fs.rmSync(testRoot, { recursive: true, force: true });
     }

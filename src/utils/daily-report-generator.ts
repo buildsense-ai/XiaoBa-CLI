@@ -10,9 +10,10 @@ import type {
   LegacySessionTurnLogEntry,
   SessionTurnLogEntry,
 } from './session-log-schema';
+import { PathResolver } from './path-resolver';
 
-const SESSION_LOG_DIR = path.resolve('logs/sessions');
-const REPORT_DIR = path.resolve('logs/reports');
+const SESSION_LOG_DIR = PathResolver.getLogsPath('sessions');
+const REPORT_DIR = PathResolver.getLogsPath('reports');
 
 type TurnLog = SessionTurnLogEntry | LegacySessionTurnLogEntry;
 
