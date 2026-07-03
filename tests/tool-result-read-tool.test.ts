@@ -465,6 +465,9 @@ describe('ReadTool - ToolExecutionResult', () => {
     assert.ok(content.includes('PDF'));
     assert.ok(content.includes('PDF 解析失败'));
     assert.ok(content.includes('未能提取正文'));
+    assert.ok(content.includes('PDF 页面渲染失败：内置 PDF.js 渲染失败'));
+    assert.ok(content.includes('系统 pdftoppm 也不可用或执行失败'));
+    assert.ok(content.includes('安装 Poppler(pdftoppm) 后重试'));
     assert.ok(!content.includes('paper-analysis'));
   });
 });
