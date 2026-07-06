@@ -5,6 +5,12 @@ import test from 'node:test';
 
 const root = process.cwd();
 const electronMain = readFileSync(join(root, 'electron/main.js'), 'utf-8');
+const applicationMenu = readFileSync(join(root, 'electron/application-menu.js'), 'utf-8');
+const petIpc = readFileSync(join(root, 'electron/pet-ipc.js'), 'utf-8');
+const petMenu = readFileSync(join(root, 'electron/pet-menu.js'), 'utf-8');
+const petWindowModule = readFileSync(join(root, 'electron/pet-window.js'), 'utf-8');
+const runtimeData = readFileSync(join(root, 'electron/runtime-data.js'), 'utf-8');
+const trayModule = readFileSync(join(root, 'electron/tray.js'), 'utf-8');
 const preload = readFileSync(join(root, 'electron/preload.js'), 'utf-8');
 const dashboardHtml = readFileSync(join(root, 'dashboard/index.html'), 'utf-8');
 const petWindowPath = join(root, 'dashboard/pet-window.html');
@@ -19,18 +25,19 @@ test('electron launches the pet shell first while keeping dashboard hidden until
     electronMain.indexOf('enqueueDeepLinkFromArgv(process.argv);'),
   );
 
-  assert.match(electronMain, /let petWindow = null;/);
+  assert.match(electronMain, /createPetWindowController/);
   assert.match(electronMain, /function createPetWindow\(\)/);
+  assert.match(startupBlock, /ensureDesktopCompanionShell\(\);/);
   assert.match(startupBlock, /createPetWindow\(\);/);
   assert.doesNotMatch(startupBlock, /createWindow\(\);/);
 });
 
 test('pet shell is a transparent always-on-top desktop companion window', () => {
-  assert.match(electronMain, /petWindow = new BrowserWindow\(\{[\s\S]*transparent: true/);
-  assert.match(electronMain, /petWindow = new BrowserWindow\(\{[\s\S]*frame: false/);
-  assert.match(electronMain, /getWindowBehaviorOptions\(\)/);
-  assert.match(electronMain, /petWindow = new BrowserWindow\(\{[\s\S]*skipTaskbar: true/);
-  assert.match(electronMain, /petWindow\.loadURL\(`http:\/\/127\.0\.0\.1:\$\{DASHBOARD_PORT\}\/pet-window\.html`\)/);
+  assert.match(petWindowModule, /petWindow = new BrowserWindow\(\{[\s\S]*transparent: true/);
+  assert.match(petWindowModule, /petWindow = new BrowserWindow\(\{[\s\S]*frame: false/);
+  assert.match(petWindowModule, /getWindowBehaviorOptions\(\)/);
+  assert.match(petWindowModule, /petWindow = new BrowserWindow\(\{[\s\S]*skipTaskbar: true/);
+  assert.match(petWindowModule, /petWindow\.loadURL\(`http:\/\/127\.0\.0\.1:\$\{dashboardPort\}\/pet-window\.html`\)/);
 });
 
 test('pet shell can be dragged and remembers its last desktop position', () => {
@@ -41,8 +48,8 @@ test('pet shell can be dragged and remembers its last desktop position', () => {
   assert.match(desktopCompanionManager, /DEFAULT_SNAP_DISTANCE = 28/);
   assert.match(desktopCompanionManager, /setLockPetPosition/);
   assert.match(desktopCompanionManager, /setAlwaysOnTop/);
-  assert.match(electronMain, /manager\.getInitialBounds/);
-  assert.match(electronMain, /manager\.attachPetWindow\(petWindow\)/);
+  assert.match(petWindowModule, /manager\.getInitialBounds/);
+  assert.match(petWindowModule, /manager\.attachPetWindow\(petWindow\)/);
   assert.match(petWindow, /pet-drag-region/);
   assert.match(petWindow, /-webkit-app-region: drag/);
   assert.match(petWindow, /-webkit-app-region: no-drag/);
@@ -53,7 +60,7 @@ test('pet shell can be dragged and remembers its last desktop position', () => {
 test('dashboard minimize hides the dashboard and keeps the pet as the desktop entry', () => {
   const dashboardWindowBlock = electronMain.slice(
     electronMain.indexOf('function createWindow(targetPath)'),
-    electronMain.indexOf('function createPetWindow()'),
+    electronMain.indexOf('function isTrustedDashboardUrl(value)'),
   );
 
   assert.match(dashboardWindowBlock, /mainWindow\.on\('minimize'/);
@@ -67,6 +74,12 @@ test('pet shell exposes safe actions for dashboard, CatsCo web, menu, and startu
   assert.match(electronMain, /function openCatsCoWebFromPet\(\)/);
   assert.match(electronMain, /function showPetContextMenu\(\)/);
   assert.match(electronMain, /function getDesktopCompanionManager\(\)/);
+  assert.match(petIpc, /catsco:pet:open-dashboard/);
+  assert.match(petIpc, /catsco:pet:open-catsco-web/);
+  assert.match(petIpc, /catsco:pet:show-menu/);
+  assert.match(petIpc, /catsco:pet:get-state/);
+  assert.match(petMenu, /label: 'Open Dashboard'/);
+  assert.match(petMenu, /label: 'Open CatsCo Web'/);
   assert.match(desktopCompanionManager, /app\.setLoginItemSettings\(\{/);
   assert.match(desktopCompanionManager, /function syncWindowsRunAtLoginFallback\(\)/);
   assert.match(electronMain, /function ensureStartAtLoginRegistration\(\)/);
@@ -87,17 +100,32 @@ test('pet shell exposes safe actions for dashboard, CatsCo web, menu, and startu
 });
 
 test('changing start at login syncs the OS registration immediately', () => {
-  const ipcBlock = electronMain.slice(
-    electronMain.indexOf("ipcMain.handle('catsco:pet:set-start-at-login'"),
-    electronMain.indexOf('function quitApp()'),
+  const ipcBlock = petIpc.slice(
+    petIpc.indexOf("ipcMain.handle('catsco:pet:set-start-at-login'"),
+    petIpc.indexOf("ipcMain.handle('catsco:pet:set-lock-position'"),
   );
-  const menuBlock = electronMain.slice(
-    electronMain.indexOf("label: 'Start With System'"),
-    electronMain.indexOf("{ label: 'Quit CatsCo'"),
+  const menuBlock = petMenu.slice(
+    petMenu.indexOf("label: 'Start With System'"),
+    petMenu.indexOf("{ label: 'Quit CatsCo'"),
   );
 
   assert.match(ipcBlock, /getDesktopCompanionManager\(\)\.setStartAtLogin\(Boolean\(value\)\)/);
   assert.match(menuBlock, /manager\.setStartAtLogin\(menuItem\.checked\)/);
+});
+
+test('electron desktop shell responsibilities are split into focused modules', () => {
+  assert.match(electronMain, /require\('\.\/application-menu'\)/);
+  assert.match(electronMain, /require\('\.\/runtime-data'\)/);
+  assert.match(electronMain, /require\('\.\/pet-ipc'\)/);
+  assert.match(electronMain, /require\('\.\/pet-menu'\)/);
+  assert.match(electronMain, /require\('\.\/pet-window'\)/);
+  assert.match(electronMain, /require\('\.\/tray'\)/);
+  assert.match(applicationMenu, /function createApplicationMenu/);
+  assert.match(runtimeData, /function openAttachmentCacheDirectory/);
+  assert.match(petWindowModule, /function createPetWindowController/);
+  assert.match(petIpc, /function registerPetIpcHandlers/);
+  assert.match(petMenu, /function createPetMenu/);
+  assert.match(trayModule, /function createCompanionTray/);
 });
 
 test('pet shell page exists and talks to the existing pet APIs', () => {
