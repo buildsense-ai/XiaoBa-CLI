@@ -214,6 +214,10 @@ function formatModelRetryThinking(attempt: number, maxRetries: number, info?: St
   return `模型连接异常${status}，正在重试 ${attempt}/${maxRetries}${retryIn}...`;
 }
 
+function isActiveSubAgentStatusForUi(status?: SubAgentInfo['status']): boolean {
+  return status === 'running' || status === 'waiting_for_input';
+}
+
 export function isCatsCompanyPassiveAcknowledgement(text: string): boolean {
   const compact = String(text || '')
     .toLowerCase()
@@ -1086,7 +1090,7 @@ export class CatsCompanyBot {
         await this.handleSubAgentFeedback(sessionKey, topic, senderId, text, executionScope);
       },
       onSubAgentEvent: async (event: any, info?: SubAgentInfo) => {
-        await this.handleSubAgentRuntimeEvent(topic, event, info, executionScope?.channelSource);
+        await this.handleSubAgentRuntimeEvent(topic, event, info, executionScope?.channelSource, sessionKey);
       },
     } as any);
   }
@@ -1411,7 +1415,7 @@ export class CatsCompanyBot {
     try {
       const result = await session.handleRuntimeObservation(text, {
         channel,
-        callbacks: this.buildSessionCallbacks(topic, {
+        callbacks: suppressFinalResponse ? undefined : this.buildSessionCallbacks(topic, {
           sessionKey,
           senderId,
           channelSource: executionScope?.channelSource,
@@ -1478,6 +1482,7 @@ export class CatsCompanyBot {
     event: any,
     info?: SubAgentInfo,
     channelSource?: string,
+    sessionKey?: string,
   ): Promise<void> {
     const subAgentId = String(event?.subAgentId || info?.id || '');
     if (!subAgentId) return;
@@ -1490,6 +1495,25 @@ export class CatsCompanyBot {
     const eventTopic = route?.topic || topic;
     const eventChannelSource = route ? route.channelSource : channelSource;
     const isTerminalEvent = SUBAGENT_TERMINAL_EVENTS.has(eventType);
+    const displayName = String(event?.subAgentName || (info as any)?.displayName || subAgentId.slice(0, 12));
+    const toolUseId = `subagent:${subAgentId}`;
+    const status = info?.status || 'running';
+    const isInactiveStatus = !isActiveSubAgentStatusForUi(status);
+
+    if (sessionKey) {
+      const manager = SubAgentManager.getInstance();
+      const parentSession = this.sessionManager.get?.(sessionKey) || this.sessionManager.getOrCreate(sessionKey);
+      const shouldShowTerminalForWait = isTerminalEvent
+        && manager.isResultWaitClaimedForParent(sessionKey, subAgentId);
+      const shouldSuppressForSession = (parentSession && !parentSession.isBusy())
+        || (isTerminalEvent ? !shouldShowTerminalForWait : isInactiveStatus);
+      if (shouldSuppressForSession) {
+        if (isTerminalEvent || isInactiveStatus) {
+          this.subAgentEventRoutes.delete(subAgentId);
+        }
+        return;
+      }
+    }
 
     if (shouldSuppressStructuredToolProgress(eventChannelSource)) {
       if (isTerminalEvent) {
@@ -1497,10 +1521,6 @@ export class CatsCompanyBot {
       }
       return;
     }
-
-    const displayName = String(event?.subAgentName || (info as any)?.displayName || subAgentId.slice(0, 12));
-    const toolUseId = `subagent:${subAgentId}`;
-    const status = info?.status || 'running';
 
     try {
       if (event?.type === 'agent_spawned') {
@@ -1655,7 +1675,7 @@ export class CatsCompanyBot {
       const result = msg.source === 'subagent_feedback'
         ? await session.handleRuntimeObservation(msg.userMessage as string, {
           channel,
-          callbacks: this.buildSessionCallbacks(msg.topic, {
+          callbacks: suppressSubAgentFinalResponse ? undefined : this.buildSessionCallbacks(msg.topic, {
             sessionKey,
             senderId: msg.senderId,
             channelSource: msg.executionScope?.channelSource,

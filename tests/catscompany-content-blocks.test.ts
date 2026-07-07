@@ -963,6 +963,134 @@ describe('CatsCo content blocks', () => {
     assert.match(toolResults[0].content, /logs\/report\.md/);
   });
 
+  test('subagent runtime events are suppressed after the parent turn is idle', async () => {
+    const { bot, sentThinking, toolResults } = createProcessHarness();
+    const now = Date.now();
+    const sessionKey = 'session:v2:catscompany:p2p:p2p_1_2:agent:usr43';
+    const info = {
+      id: 'sub-bg',
+      skillName: 'worker',
+      taskDescription: '后台生成详情页',
+      status: 'running',
+      createdAt: now,
+      progressLog: [],
+      outputFiles: [],
+    };
+    bot.subAgentEventRoutes.set('sub-bg', { topic: 'p2p_1_2' });
+
+    await bot.handleSubAgentRuntimeEvent('p2p_1_2', {
+      subAgentId: 'sub-bg',
+      subAgentName: '子agent1',
+      type: 'agent_progress',
+      timestamp: now,
+      summary: '后台继续写文件',
+    }, info, undefined, sessionKey);
+
+    await bot.handleSubAgentRuntimeEvent('p2p_1_2', {
+      subAgentId: 'sub-bg',
+      subAgentName: '子agent1',
+      type: 'agent_completed',
+      timestamp: now + 1,
+      summary: '完成',
+    }, {
+      ...info,
+      status: 'completed',
+      resultSummary: '详情页已完成',
+    }, undefined, sessionKey);
+
+    assert.deepStrictEqual(sentThinking, []);
+    assert.deepStrictEqual(toolResults, []);
+    assert.equal(bot.subAgentEventRoutes.has('sub-bg'), false);
+  });
+
+  test('unclaimed subagent terminal events stay off CatsCompany working stream', async () => {
+    const { bot, sentThinking, toolResults, session } = createProcessHarness();
+    const manager = SubAgentManager.getInstance();
+    const now = Date.now();
+    const sessionKey = 'session:v2:catscompany:p2p:p2p_1_2:agent:usr43';
+    const subAgentId = 'sub-nowait';
+    const info = {
+      id: subAgentId,
+      skillName: 'worker',
+      taskDescription: '后台生成详情页',
+      status: 'completed',
+      createdAt: now,
+      completedAt: now + 1,
+      progressLog: [],
+      outputFiles: [],
+      resultSummary: '详情页已完成',
+    };
+    session.isBusy = () => true;
+    bot.subAgentEventRoutes.set(subAgentId, { topic: 'p2p_1_2' });
+    (manager as any).parentMap.set(subAgentId, sessionKey);
+
+    try {
+      await bot.handleSubAgentRuntimeEvent('p2p_1_2', {
+        subAgentId,
+        subAgentName: '子agent1',
+        type: 'agent_completed',
+        timestamp: now + 1,
+        summary: '完成',
+      }, info, undefined, sessionKey);
+
+      await bot.handleSubAgentRuntimeEvent('p2p_1_2', {
+        subAgentId,
+        subAgentName: '子agent1',
+        type: 'agent_progress',
+        timestamp: now + 2,
+        summary: '临时目录已清理',
+      }, info, undefined, sessionKey);
+
+      assert.deepStrictEqual(toolResults, []);
+      assert.deepStrictEqual(sentThinking, []);
+      assert.equal(bot.subAgentEventRoutes.has(subAgentId), false);
+    } finally {
+      (manager as any).parentMap.delete(subAgentId);
+    }
+  });
+
+  test('wait-claimed subagent terminal events can close CatsCompany working stream', async () => {
+    const { bot, toolResults, session } = createProcessHarness();
+    const manager = SubAgentManager.getInstance();
+    const now = Date.now();
+    const sessionKey = 'session:v2:catscompany:p2p:p2p_1_2:agent:usr43';
+    const subAgentId = 'sub-waited';
+    const info = {
+      id: subAgentId,
+      skillName: 'worker',
+      taskDescription: '后台生成详情页',
+      status: 'completed',
+      createdAt: now,
+      completedAt: now + 1,
+      progressLog: [],
+      outputFiles: ['detail.html'],
+      resultSummary: '详情页已完成',
+    };
+    session.isBusy = () => true;
+    bot.subAgentEventRoutes.set(subAgentId, { topic: 'p2p_1_2' });
+    (manager as any).parentMap.set(subAgentId, sessionKey);
+    (manager as any).resultWaitClaimCount.set(subAgentId, 1);
+
+    try {
+      await bot.handleSubAgentRuntimeEvent('p2p_1_2', {
+        subAgentId,
+        subAgentName: '子agent1',
+        type: 'agent_completed',
+        timestamp: now + 1,
+        summary: '完成',
+      }, info, undefined, sessionKey);
+
+      assert.strictEqual(toolResults.length, 1);
+      assert.strictEqual(toolResults[0].toolUseId, `subagent:${subAgentId}`);
+      assert.strictEqual(toolResults[0].metadata.subagent_event_type, 'agent_completed');
+      assert.match(toolResults[0].content, /详情页已完成/);
+      assert.equal(bot.subAgentEventRoutes.has(subAgentId), false);
+    } finally {
+      (manager as any).parentMap.delete(subAgentId);
+      (manager as any).resultWaitClaimCount.delete(subAgentId);
+    }
+  });
+
   test('subagent runtime events are suppressed for Weixin mobile bridge channels', async () => {
     const { bot, sentThinking, toolUses, toolResults } = createProcessHarness();
     const now = Date.now();
@@ -1028,12 +1156,8 @@ describe('CatsCo content blocks', () => {
     assert.strictEqual(runtimeObservations.length, 1);
     assert.strictEqual(runtimeObservations[0].options.source, 'subagent_result');
     assert.strictEqual(runtimeObservations[0].options.suppressFinalResponse, true);
-    assert.strictEqual(typeof runtimeObservations[0].options.callbacks?.onThinking, 'function');
-    await runtimeObservations[0].options.callbacks.onThinking('子 agent 回流压缩状态');
-    assert.deepStrictEqual(
-      sentThinking.map(({ topic, text }) => ({ topic, text })),
-      [{ topic: 'p2p_38_110', text: '子 agent 回流压缩状态' }],
-    );
+    assert.strictEqual(runtimeObservations[0].options.callbacks, undefined);
+    assert.deepStrictEqual(sentThinking, []);
     assert.deepStrictEqual(replies, []);
   });
 
@@ -1137,12 +1261,8 @@ describe('CatsCo content blocks', () => {
     assert.strictEqual(runtimeObservations.length, 1);
     assert.strictEqual(runtimeObservations[0].options.source, 'subagent_result');
     assert.strictEqual(runtimeObservations[0].options.suppressFinalResponse, true);
-    assert.strictEqual(typeof runtimeObservations[0].options.callbacks?.onThinking, 'function');
-    await runtimeObservations[0].options.callbacks.onThinking('排队子 agent 压缩状态');
-    assert.deepStrictEqual(
-      sentThinking.map(({ topic, text }) => ({ topic, text })),
-      [{ topic: 'p2p_38_110', text: '排队子 agent 压缩状态' }],
-    );
+    assert.strictEqual(runtimeObservations[0].options.callbacks, undefined);
+    assert.deepStrictEqual(sentThinking, []);
     assert.deepStrictEqual(sentTexts, []);
     assert.deepStrictEqual(replies, [
       { topic: 'p2p_38_110', text: '处理消息时出错: 子 agent 结果处理失败' },

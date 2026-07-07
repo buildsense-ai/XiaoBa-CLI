@@ -544,6 +544,11 @@ export class SubAgentManager {
     return 'silent';
   }
 
+  isResultWaitClaimedForParent(parentSessionKey: string, subAgentId: string): boolean {
+    return this.parentMap.get(subAgentId) === parentSessionKey
+      && (this.resultWaitClaimCount.get(subAgentId) ?? 0) > 0;
+  }
+
   markResultObservationHandledForParent(parentSessionKey: string, observation: string): void {
     const id = parseTerminalResultObservationId(observation);
     if (!id || this.parentMap.get(id) !== parentSessionKey) return;
