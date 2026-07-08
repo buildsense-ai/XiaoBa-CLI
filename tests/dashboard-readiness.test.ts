@@ -131,7 +131,7 @@ describe('dashboard readiness and service preflight API', () => {
   });
 
   test('GET /readiness blocks startup when the primary model key is missing', async () => {
-    const response = await fetch(`${baseUrl}/api/readiness`);
+    const response = await fetch(`${baseUrl}/api/readiness/details`);
     const text = await response.text();
     const data = JSON.parse(text) as any;
     const model = data.sections.find((section: any) => section.id === 'model');
@@ -173,7 +173,7 @@ describe('dashboard readiness and service preflight API', () => {
     assert.equal(preflightText.includes('catsco-agent-secret'), false);
     assert.equal(preflightText.includes(testRoot), false);
 
-    const readinessResponse = await fetch(`${baseUrl}/api/readiness`);
+    const readinessResponse = await fetch(`${baseUrl}/api/readiness/details`);
     const readinessText = await readinessResponse.text();
     const readiness = JSON.parse(readinessText) as any;
     const catsco = readiness.sections.find((section: any) => section.id === 'catsco');
@@ -214,7 +214,7 @@ describe('dashboard readiness and service preflight API', () => {
     assert.equal(preflight.blockingChecks.includes('model.custom.credential'), false);
     assert.deepStrictEqual(preflight.blockingChecks, []);
 
-    const readinessResponse = await fetch(`${baseUrl}/api/readiness`);
+    const readinessResponse = await fetch(`${baseUrl}/api/readiness/details`);
     const readinessText = await readinessResponse.text();
     const readiness = JSON.parse(readinessText) as any;
     const model = readiness.sections.find((section: any) => section.id === 'model');
@@ -245,7 +245,7 @@ describe('dashboard readiness and service preflight API', () => {
     ]);
     writeConfirmedCatsBinding();
 
-    const readinessResponse = await fetch(`${baseUrl}/api/readiness`);
+    const readinessResponse = await fetch(`${baseUrl}/api/readiness/details`);
     const readinessText = await readinessResponse.text();
     const readiness = JSON.parse(readinessText) as any;
     const model = readiness.sections.find((section: any) => section.id === 'model');

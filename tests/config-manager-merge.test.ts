@@ -65,7 +65,7 @@ function runDashboardStatusProbe(homeDir: string, envFile: string): any {
         const server = app.listen(0, '127.0.0.1');
         await new Promise(resolve => server.once('listening', resolve));
         const address = server.address();
-        const response = await fetch('http://127.0.0.1:' + address.port + '/api/status');
+        const response = await fetch('http://127.0.0.1:' + address.port + '/api/status/details');
         const data = await response.json();
         await new Promise(resolve => server.close(resolve));
         process.stdout.write(JSON.stringify({
