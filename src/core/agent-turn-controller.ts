@@ -185,6 +185,7 @@ export class AgentTurnController {
         currentMemoryBranch,
       ),
       abortSignal: params.abortSignal,
+      suppressFinalResponse: params.suppressFinalResponse,
       shouldContinue: params.shouldContinue,
     });
 
@@ -267,6 +268,7 @@ export class AgentTurnController {
     episodeId?: string;
     syntheticObservationProvider?: () => SyntheticObservation[];
     abortSignal?: AbortSignal;
+    suppressFinalResponse?: boolean;
     shouldContinue: () => boolean;
   }): ConversationRunner {
     const surface = resolveSessionSurface(this.options.sessionKey, this.options.sessionType);
@@ -281,6 +283,7 @@ export class AgentTurnController {
         // AgentSession/ContextWindowManager compacts durable history before the turn.
         // Runner-level compaction can fold transient runtime feedback into summary.
         enableCompression: false,
+        suppressFinalResponse: options.suppressFinalResponse,
         toolExecutionContext: {
           sessionId: this.options.sessionKey,
           surface,

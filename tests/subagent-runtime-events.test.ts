@@ -1173,10 +1173,10 @@ describe('subagent runtime events', () => {
     }
   });
 
-  test('manager reuses an active subagent for duplicate task descriptions', async () => {
+  test('manager reuses an active subagent only for identical task context', async () => {
     const manager = SubAgentManager.getInstance();
     const parentSessionKey = `test-parent:${Date.now()}:dedupe-active`;
-    let finishRun: (() => void) | undefined;
+    const finishRuns: Array<() => void> = [];
 
     manager.registerPlatformCallbacks(parentSessionKey, {
       injectMessage: async () => undefined,
@@ -1186,7 +1186,7 @@ describe('subagent runtime events', () => {
     const originalRun = SubAgentSession.prototype.run;
     (SubAgentSession.prototype as any).run = async function runMock() {
       await new Promise<void>(resolve => {
-        finishRun = resolve;
+        finishRuns.push(resolve);
       });
       this.status = 'stopped';
       this.completedAt = Date.now();
@@ -1210,8 +1210,8 @@ describe('subagent runtime events', () => {
         parentSessionKey,
         {
           agentType: 'worker',
-          taskDescription: '待办清单工具页',
-          userMessage: 'write another todo page',
+          taskDescription: '制作待办清单HTML页面',
+          userMessage: 'write todo page',
         },
         process.cwd(),
         {} as any,
@@ -1221,14 +1221,30 @@ describe('subagent runtime events', () => {
       assert.equal(second.id, first.id);
       assert.equal(second.reusedExisting, true);
       assert.equal(manager.listByParent(parentSessionKey).filter(info => info.status === 'running').length, 1);
+
+      const third = await manager.spawn(
+        parentSessionKey,
+        {
+          agentType: 'worker',
+          taskDescription: '待办清单工具页',
+          userMessage: 'write another todo page',
+        },
+        process.cwd(),
+        {} as any,
+        { getSkill: () => undefined } as any,
+      );
+      assert.ok(!('error' in third));
+      assert.notEqual(third.id, first.id);
+      assert.equal(manager.listByParent(parentSessionKey).filter(info => info.status === 'running').length, 2);
     } finally {
-      if (finishRun) finishRun();
+      for (const finishRun of finishRuns) finishRun();
       SubAgentSession.prototype.run = originalRun;
       for (const info of manager.listByParent(parentSessionKey)) {
         (manager as any).subAgents.delete(info.id);
         (manager as any).completedSubAgents.delete(info.id);
         (manager as any).parentMap.delete(info.id);
         (manager as any).displayNameByAgent.delete(info.id);
+        (manager as any).dedupeKeyByAgent.delete(info.id);
       }
       manager.unregisterPlatformCallbacks(parentSessionKey);
     }
@@ -1305,6 +1321,73 @@ describe('subagent runtime events', () => {
         (manager as any).resultConsumedByWait.delete(info.id);
         (manager as any).resultWaitClaimCount.delete(info.id);
         (manager as any).pendingResultObservations.delete(info.id);
+      }
+      manager.unregisterPlatformCallbacks(parentSessionKey);
+    }
+  });
+
+  test('wait_subagents returns when a subagent is waiting for parent input', async () => {
+    const manager = SubAgentManager.getInstance();
+    const parentSessionKey = `test-parent:${Date.now()}:wait-ask-parent`;
+    const finishRuns: Array<() => void> = [];
+
+    manager.registerPlatformCallbacks(parentSessionKey, {
+      injectMessage: async () => undefined,
+      onSubAgentEvent: async () => undefined,
+    });
+
+    const originalRun = SubAgentSession.prototype.run;
+    (SubAgentSession.prototype as any).run = async function runMock() {
+      this.status = 'waiting_for_input';
+      this.pendingQuestion = '确认目标文件夹';
+      this.pendingQuestionSince = Date.now();
+      await new Promise<void>(resolve => {
+        finishRuns.push(resolve);
+      });
+      this.status = 'stopped';
+      this.completedAt = Date.now();
+    };
+
+    try {
+      const spawned = await manager.spawn(
+        parentSessionKey,
+        {
+          agentType: 'worker',
+          taskDescription: 'needs parent input',
+          userMessage: 'needs parent input',
+          allowedTools: ['ask_parent'],
+        },
+        process.cwd(),
+        {} as any,
+        { getSkill: () => undefined } as any,
+      );
+      assert.ok(!('error' in spawned));
+      await waitFor(() => manager.getInfoForParent(parentSessionKey, spawned.id)?.status === 'waiting_for_input');
+
+      const startedAt = Date.now();
+      const result = await new WaitSubagentsTool().execute({
+        subagent_ids: [spawned.displayName],
+        timeout_ms: 5000,
+      }, {
+        workingDirectory: process.cwd(),
+        conversationHistory: [],
+        sessionId: parentSessionKey,
+      });
+
+      assert.equal(result.ok, true);
+      assert.ok(Date.now() - startedAt < 1000);
+      const content = result.ok ? result.content : result.message;
+      assert.match(content, /正在等待主 agent 回复/);
+      assert.match(content, /确认目标文件夹/);
+    } finally {
+      for (const finishRun of finishRuns) finishRun();
+      SubAgentSession.prototype.run = originalRun;
+      for (const info of manager.listByParent(parentSessionKey)) {
+        (manager as any).subAgents.delete(info.id);
+        (manager as any).completedSubAgents.delete(info.id);
+        (manager as any).parentMap.delete(info.id);
+        (manager as any).displayNameByAgent.delete(info.id);
+        (manager as any).dedupeKeyByAgent.delete(info.id);
       }
       manager.unregisterPlatformCallbacks(parentSessionKey);
     }

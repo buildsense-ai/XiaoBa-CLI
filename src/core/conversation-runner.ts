@@ -196,6 +196,8 @@ export interface RunnerOptions {
   shouldContinue?: () => boolean;
   /** 是否启用上下文压缩（默认 true，agent 用 false） */
   enableCompression?: boolean;
+  /** True when the caller wants the model turn to update state/history but never auto-send a final message. */
+  suppressFinalResponse?: boolean;
   /** 透传给 ToolExecutor 的执行上下文（session/run/surface 等） */
   toolExecutionContext?: Partial<ToolExecutionContext>;
   /** Pulls user messages that arrived while the current run was busy. */
@@ -228,6 +230,7 @@ export class ConversationRunner {
   private syntheticObservationProvider?: SyntheticObservationProvider;
   private runtimeTransientProvider?: RuntimeTransientProvider;
   private episodeId?: string;
+  private suppressFinalResponse: boolean;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -254,6 +257,7 @@ export class ConversationRunner {
     this.runtimeTransientProvider = options?.runtimeTransientProvider;
     this.episodeId = options?.episodeId;
     this.maxTurns = options?.maxTurns;
+    this.suppressFinalResponse = options?.suppressFinalResponse === true;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.sessionLabel = this.toolExecutionContext?.sessionId
@@ -488,7 +492,7 @@ export class ConversationRunner {
       } catch (error: any) {
         this.promptTraceLogger.recordError(turns, error);
         if (this.isMessageSurface() && isModelImageSafetyError(error)) {
-          if (this.toolExecutionContext?.channel && this.toolExecutionContext?.surface !== 'catscompany') {
+          if (!this.suppressFinalResponse && this.toolExecutionContext?.channel && this.toolExecutionContext?.surface !== 'catscompany') {
             try {
               await this.toolExecutionContext.channel.reply(
                 this.toolExecutionContext.channel.chatId,
@@ -598,7 +602,7 @@ export class ConversationRunner {
 
           // CatsCo 使用 Code Mode API，不自动转发，由上层统一处理
           const surface = this.toolExecutionContext?.surface;
-          if (finalText && this.toolExecutionContext?.channel && surface !== 'catscompany') {
+          if (finalText && !this.suppressFinalResponse && this.toolExecutionContext?.channel && surface !== 'catscompany') {
             try {
               await this.toolExecutionContext.channel.reply(
                 this.toolExecutionContext.channel.chatId,

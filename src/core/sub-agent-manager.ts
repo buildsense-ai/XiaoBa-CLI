@@ -55,6 +55,8 @@ export interface StopAllSubAgentsResult {
 export interface WaitForSubAgentsResult {
   infos: SubAgentInfo[];
   timedOut: boolean;
+  waitingForParentInput?: boolean;
+  aborted?: boolean;
   unknownRefs: string[];
 }
 
@@ -90,6 +92,8 @@ export class SubAgentManager {
   /** 子智能体展示名，便于日志/UI 使用 子agent1/子agent2 这类稳定标签 */
   private displayNameByAgent = new Map<string, string>();
   private displayCounterByParent = new Map<string, number>();
+  /** Conservative active-task idempotency key, key = subagent id. */
+  private dedupeKeyByAgent = new Map<string, string>();
   /** wait_subagents 正在等待并准备消费的结果，key = subagent id */
   private resultWaitClaimCount = new Map<string, number>();
   /** 已经通过 wait_subagents 交给主 agent 的结果，避免完成 observation 二次唤醒 */
@@ -171,7 +175,8 @@ export class SubAgentManager {
       return { error: `Skill "${skillName}" 不存在` };
     }
 
-    const duplicate = this.findActiveDuplicate(parentSessionKey, taskDescription);
+    const dedupeKey = buildSubAgentDedupeKey(request);
+    const duplicate = this.findActiveDuplicate(parentSessionKey, dedupeKey);
     if (duplicate) {
       const info = this.decorateInfo(parentSessionKey, duplicate.getInfo());
       Logger.info(`[SubAgentManager] 复用正在运行的子智能体 ${info.id}，避免重复派发：${taskDescription}`);
@@ -226,6 +231,7 @@ export class SubAgentManager {
     const session = new SubAgentSession(id, aiService, skillManager, options);
     this.subAgents.set(id, session);
     this.parentMap.set(id, parentSessionKey);
+    this.dedupeKeyByAgent.set(id, dedupeKey);
     const spawnedEvent = this.recordEvent(parentSessionKey, id, 'agent_spawned', `派遣 ${displayName} (${session.agentType}) 执行：${taskDescription}`, {
       agentType: session.agentType,
       skillName,
@@ -385,7 +391,7 @@ export class SubAgentManager {
   async waitForParent(
     parentSessionKey: string,
     refs: readonly string[] = [],
-    options: { timeoutMs?: number; waitFor?: 'all' | 'any'; consumeResults?: boolean } = {},
+    options: { timeoutMs?: number; waitFor?: 'all' | 'any'; consumeResults?: boolean; abortSignal?: AbortSignal } = {},
   ): Promise<WaitForSubAgentsResult> {
     const waitFor = options.waitFor || 'all';
     const timeoutMs = Math.max(0, Math.min(options.timeoutMs ?? 120_000, 300_000));
@@ -413,12 +419,24 @@ export class SubAgentManager {
     const startedAt = Date.now();
     let finalInfos: SubAgentInfo[] = [];
     let timedOut = false;
+    let waitingForParentInput = false;
+    let aborted = false;
     while (true) {
       const infos = targetIds
         .map(id => this.getInfoForParent(parentSessionKey, id))
         .filter((info): info is SubAgentInfo => Boolean(info));
       const activeCount = infos.filter(info => isActiveSubAgentStatus(info.status)).length;
       const hasTerminal = infos.some(info => !isActiveSubAgentStatus(info.status));
+      if (options.abortSignal?.aborted) {
+        finalInfos = infos;
+        aborted = true;
+        break;
+      }
+      if (infos.some(info => info.status === 'waiting_for_input')) {
+        finalInfos = infos;
+        waitingForParentInput = true;
+        break;
+      }
       const done = targetIds.length === 0
         || (waitFor === 'any' ? hasTerminal : activeCount === 0);
       if (done) {
@@ -435,7 +453,7 @@ export class SubAgentManager {
     }
 
     if (consumeResults) {
-      const consumedIds = timedOut
+      const consumedIds = timedOut || aborted
         ? []
         : finalInfos
           .filter(info => !isActiveSubAgentStatus(info.status))
@@ -443,17 +461,16 @@ export class SubAgentManager {
       await this.releaseResultObservationClaims(parentSessionKey, targetIds, consumedIds);
     }
 
-    return { infos: finalInfos, timedOut, unknownRefs };
+    return { infos: finalInfos, timedOut, waitingForParentInput, aborted, unknownRefs };
   }
 
-  private findActiveDuplicate(parentSessionKey: string, taskDescription: string): SubAgentSession | undefined {
-    const incomingKey = normalizeSubAgentTaskKey(taskDescription);
+  private findActiveDuplicate(parentSessionKey: string, incomingKey: string): SubAgentSession | undefined {
     if (!incomingKey) return undefined;
 
     for (const [id, session] of this.subAgents) {
       if (this.parentMap.get(id) !== parentSessionKey) continue;
       if (!isActiveSubAgentStatus(session.status)) continue;
-      if (normalizeSubAgentTaskKey(session.taskDescription) === incomingKey) {
+      if (this.dedupeKeyByAgent.get(id) === incomingKey) {
         return session;
       }
     }
@@ -626,6 +643,7 @@ export class SubAgentManager {
       this.resultNotifyOnObservation.delete(id);
       this.resultWaitClaimCount.delete(id);
       this.pendingResultObservations.delete(id);
+      this.dedupeKeyByAgent.delete(id);
       this.eventStore.removeAgent(parentSessionKey, id);
       this.parentMap.delete(id);
       this.displayNameByAgent.delete(id);
@@ -789,11 +807,28 @@ function compactForParentNotification(text: string, maxChars: number): string {
   return `${normalized.slice(0, maxChars)}... [已压缩，原始 ${normalized.length} 字符]`;
 }
 
+function buildSubAgentDedupeKey(request: SpawnSubAgentRequest): string {
+  return JSON.stringify({
+    skillName: normalizeSubAgentTaskKey(request.skillName || ''),
+    agentType: request.agentType || '',
+    toolScope: request.toolScope || '',
+    subAgentPrompt: normalizeSubAgentTaskKey(request.subAgentPrompt || ''),
+    allowParentQuestions: request.allowParentQuestions === true,
+    allowedTools: normalizeDedupeTools(request.allowedTools),
+    maxTurns: request.maxTurns || 0,
+    taskDescription: normalizeSubAgentTaskKey(request.taskDescription),
+    userMessage: normalizeSubAgentTaskKey(request.userMessage),
+  });
+}
+
+function normalizeDedupeTools(tools?: readonly string[]): string[] {
+  return [...new Set((tools || []).map(tool => String(tool || '').trim()).filter(Boolean))].sort();
+}
+
 function normalizeSubAgentTaskKey(text: string): string {
   return String(text || '')
     .toLowerCase()
-    .replace(/[\s"'`“”‘’《》<>()[\]{}:：,，.。;；!！?？/\\|_-]+/g, '')
-    .replace(/(制作|创建|生成|实现|开发|编写|撰写|构建|完成|处理|执行|页面|网页|html|工具页|工具|任务|子agent|智能体|agent)/g, '')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 

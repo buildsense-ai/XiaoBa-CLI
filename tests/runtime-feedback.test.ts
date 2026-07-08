@@ -154,6 +154,40 @@ describe('runtime feedback', () => {
     assert.equal(turnEntries[0].user.runtime_feedback, undefined);
   });
 
+  test('suppressed runtime observations do not auto-send on message channels', async () => {
+    const { AgentSession } = loadAgentSessionModules();
+    const sent: Array<{ chatId: string; text: string }> = [];
+
+    const session = new AgentSession('user:runtime-observation-suppress-demo', buildMockServices({
+      aiService: {
+        async chatStream() {
+          return {
+            content: '后台子任务完成，我补充一下。',
+            toolCalls: [],
+            usage: { promptTokens: 7, completionTokens: 5, totalTokens: 12 },
+          };
+        },
+      },
+    }), 'feishu');
+    session.setSystemPromptProvider(() => 'system prompt');
+
+    const result = await session.handleRuntimeObservation('[子智能体完成]\n结果：ok', {
+      source: 'subagent_result',
+      suppressFinalResponse: true,
+      channel: {
+        chatId: 'chat-a',
+        reply: async (chatId: string, text: string) => {
+          sent.push({ chatId, text });
+        },
+        sendFile: async () => undefined,
+      },
+    });
+
+    assert.equal(result.text, '');
+    assert.equal(result.visibleToUser, false);
+    assert.deepStrictEqual(sent, []);
+  });
+
   test('HandleMessageOptions runtime feedback does not mutate session state while busy', async () => {
     const { AgentSession, BUSY_MESSAGE } = loadAgentSessionModules();
     const session = new AgentSession('user:busy-feedback-demo', buildMockServices(), 'feishu');

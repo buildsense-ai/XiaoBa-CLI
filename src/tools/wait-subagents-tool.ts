@@ -42,6 +42,7 @@ export class WaitSubagentsTool implements Tool {
       waitFor,
       timeoutMs,
       consumeResults: true,
+      abortSignal: context.abortSignal,
     });
 
     const unknown = result.unknownRefs.length
@@ -54,7 +55,13 @@ export class WaitSubagentsTool implements Tool {
       };
     }
 
-    const status = result.timedOut ? '等待超时，以下是当前状态' : '等待完成，以下是子任务结果';
+    const status = result.aborted
+      ? '等待已取消，以下是当前状态'
+      : result.waitingForParentInput
+        ? '有子任务正在等待主 agent 回复，以下是当前状态'
+        : result.timedOut
+          ? '等待超时，以下是当前状态'
+          : '等待完成，以下是子任务结果';
     return {
       ok: true,
       content: [
@@ -92,6 +99,7 @@ function formatInfo(info: any): string {
     `[${info.displayName || info.id}] ${info.taskDescription}`,
     info.displayName ? `ID: ${info.id}` : '',
     `状态: ${statusMap[info.status] || info.status}`,
+    info.pendingQuestion ? `等待问题: ${info.pendingQuestion}` : '',
     info.resultSummary ? `结果摘要: ${String(info.resultSummary).slice(0, 1200)}` : '',
     info.outputFiles?.length ? `产出文件:\n${info.outputFiles.map((file: string) => `- ${file}`).join('\n')}` : '',
   ].filter(Boolean);
