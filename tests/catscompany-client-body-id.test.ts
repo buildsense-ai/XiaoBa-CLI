@@ -145,9 +145,18 @@ describe('CatsCompany client body identity', () => {
     servers.push(server);
     await new Promise<void>(resolve => server.once('listening', resolve));
 
+    let connections = 0;
     const socketClosed = new Promise<void>(resolve => {
-      server.once('connection', socket => {
-        socket.once('close', () => resolve());
+      server.on('connection', socket => {
+        connections++;
+        if (connections === 1) {
+          socket.once('close', () => resolve());
+        }
+      });
+    });
+    const secondConnection = new Promise<void>(resolve => {
+      server.on('connection', () => {
+        if (connections >= 2) resolve();
       });
     });
 
@@ -157,12 +166,15 @@ describe('CatsCompany client body identity', () => {
       apiKey: 'cc-test-key',
       bodyId: 'body-test',
       readyTimeoutMs: 30,
-      reconnectBaseDelayMs: 1000,
+      reconnectBaseDelayMs: 10,
+      reconnectMaxDelayMs: 10,
     });
     client.on('error', () => undefined);
     client.connect();
 
     await withTimeout(socketClosed);
+    await withTimeout(secondConnection);
+    assert.ok(connections >= 2);
     client.disconnect();
   });
 
