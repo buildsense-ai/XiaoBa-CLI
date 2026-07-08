@@ -83,6 +83,28 @@ describe('ToolManager - ToolExecutionResult 统一处理', () => {
     assert.strictEqual(result.errorCode, undefined);
   });
 
+  test('glob can include directories when requested', async () => {
+    fs.mkdirSync(path.join(testRoot, 'matched-dir'));
+    fs.writeFileSync(path.join(testRoot, 'matched-file.txt'), '');
+
+    const defaultResult = await manager.executeTool(
+      { id: 't4_dir_default', type: 'function', function: { name: 'glob', arguments: JSON.stringify({ pattern: '*' }) } },
+      [],
+    );
+    assert.strictEqual(defaultResult.ok, true);
+    assert.ok(!String(defaultResult.content).includes('matched-dir'));
+    assert.ok(String(defaultResult.content).includes('matched-file.txt'));
+
+    const withDirectories = await manager.executeTool(
+      { id: 't4_dir_include', type: 'function', function: { name: 'glob', arguments: JSON.stringify({ pattern: '*', include_directories: true }) } },
+      [],
+    );
+    assert.strictEqual(withDirectories.ok, true);
+    assert.ok(String(withDirectories.content).includes('matched-dir'));
+    assert.ok(String(withDirectories.content).includes('matched-file.txt'));
+    assert.strictEqual(withDirectories.errorCode, undefined);
+  });
+
   test('read_file uses reader proxy path for images when primary model is text-only', async () => {
     const previousConfigPath = process.env.XIAOBA_CONFIG_PATH;
     const previousModel = process.env.GAUZ_LLM_MODEL;

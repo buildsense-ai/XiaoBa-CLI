@@ -22,7 +22,7 @@ export class GlobTool implements Tool {
     description: [
       '按 glob 模式查找文件路径，返回匹配文件列表并按修改时间倒序排列。',
       '适合先定位候选文件；要搜索文件内容请使用 grep。',
-      '当用户问“桌面/下载/文档里有哪些文件”时，先用 resolve_common_directory 解析目录，再用本工具列出文件；不要用 execute_shell 跑 dir/ls。',
+      '当用户问“桌面/下载/文档里有什么/有哪些文件或文件夹”时，先用 resolve_common_directory 解析目录，再用 pattern="*" 且 include_directories=true 列出目录项；不要用 execute_shell 跑 dir/ls。',
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -40,6 +40,11 @@ export class GlobTool implements Tool {
           description: '返回结果最大数量，默认 100。',
           default: 100
         },
+        include_directories: {
+          type: 'boolean',
+          description: '是否包含匹配到的目录。默认 false，保持只返回文件；用户要查看目录里有什么、有哪些文件夹或列目录内容时设为 true。',
+          default: false
+        },
         target: targetParameterDescription()
       },
       required: ['pattern']
@@ -47,7 +52,7 @@ export class GlobTool implements Tool {
   };
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
-    const { pattern, path: searchPath, limit = 100 } = args;
+    const { pattern, path: searchPath, limit = 100, include_directories = false } = args;
     const startTime = Date.now();
 
     const route = resolveExecutionRoute(context, {
@@ -85,7 +90,7 @@ export class GlobTool implements Tool {
     const files = await glob(pattern, {
       cwd,
       absolute: false,
-      nodir: true,
+      nodir: !include_directories,
       dot: false,
       ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**']
     });
