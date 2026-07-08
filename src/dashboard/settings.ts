@@ -286,15 +286,19 @@ function buildModelStartupSnapshot(
   const custom = readCustomModelProfile(fileEnv, env);
   const storedRelay = readModelProfile(RELAY_MODEL_ENV_KEYS, fileEnv, env);
   const requestedSource = firstNonEmpty(fileEnv[MODEL_SOURCE_ENV_KEY], env[MODEL_SOURCE_ENV_KEY]);
+  const effectiveIsRelay = isCatsRelayApiBase(effective.apiBase);
   const relayBase = storedRelay.configured
     ? storedRelay
     : {
       ...storedRelay,
-      provider: storedRelay.provider || (isCatsRelayApiBase(effective.apiBase) ? effective.provider : storedRelay.provider),
-      apiBase: storedRelay.apiBase || (isCatsRelayApiBase(effective.apiBase) ? effective.apiBase : storedRelay.apiBase),
-      model: storedRelay.model || (isCatsRelayApiBase(effective.apiBase) ? effective.model : storedRelay.model),
-      apiKeyPresent: storedRelay.apiKeyPresent || (isCatsRelayApiBase(effective.apiBase) && effective.apiKeyPresent),
-      configured: isCatsRelayApiBase(effective.apiBase) && effective.configured,
+      provider: storedRelay.provider || (effectiveIsRelay ? effective.provider : storedRelay.provider),
+      apiBase: storedRelay.apiBase || (effectiveIsRelay ? effective.apiBase : storedRelay.apiBase),
+      model: storedRelay.model || (effectiveIsRelay ? effective.model : storedRelay.model),
+      reasoningEffort: storedRelay.reasoningEffort && storedRelay.reasoningEffort !== 'default'
+        ? storedRelay.reasoningEffort
+        : effectiveIsRelay ? effective.reasoningEffort : storedRelay.reasoningEffort,
+      apiKeyPresent: storedRelay.apiKeyPresent || (effectiveIsRelay && effective.apiKeyPresent),
+      configured: effectiveIsRelay && effective.configured,
     };
   const relay = {
     ...relayBase,
@@ -302,7 +306,6 @@ function buildModelStartupSnapshot(
       ? relayBase.reasoningEffort
       : 'high' as const,
   };
-  const effectiveIsRelay = isCatsRelayApiBase(effective.apiBase);
   const source = requestedSource === 'custom' && custom.configured
     ? 'custom'
     : requestedSource === 'relay' && relay.configured && effectiveIsRelay

@@ -5,7 +5,7 @@ import { AIProvider, AIRequestOptions, StreamCallbacks } from './provider';
 import { ContextDebugLogger } from '../utils/context-debug-logger';
 import { normalizeOpenAIChatCompletionsUrl } from './openai-url';
 import { resolveMaxTokens } from './output-limits';
-import { applyOpenAIReasoningOptions } from '../utils/reasoning-effort';
+import { applyOpenAIReasoningOptions, supportsOpenAIReasoningReplay } from '../utils/reasoning-effort';
 
 /**
  * OpenAI Provider
@@ -87,12 +87,38 @@ export class OpenAIProvider implements AIProvider {
           arguments: toolCall.function.arguments,
         },
       }));
+      const reasoningContent = this.extractOpenAIReasoningContent(message);
+      if (reasoningContent) {
+        sanitized.reasoning_content = reasoningContent;
+      }
     }
     if (message.role === 'tool' && message.tool_call_id) {
       sanitized.tool_call_id = message.tool_call_id;
     }
 
     return sanitized;
+  }
+
+  private extractOpenAIReasoningContent(message: Message): string | undefined {
+    if (!this.shouldReplayOpenAIReasoningContent()) return undefined;
+    if (!Array.isArray(message.providerContent) || !message.tool_calls?.length) return undefined;
+    const block = message.providerContent.find(item =>
+      item
+      && typeof item === 'object'
+      && item.type === 'openai_reasoning'
+      && typeof (item as any).reasoning_content === 'string'
+    );
+    const reasoning = typeof (block as any)?.reasoning_content === 'string'
+      ? (block as any).reasoning_content.trim()
+      : '';
+    return reasoning || undefined;
+  }
+
+  private shouldReplayOpenAIReasoningContent(): boolean {
+    return supportsOpenAIReasoningReplay({
+      apiUrl: this.apiUrl,
+      model: this.model,
+    });
   }
 
   private sanitizeContent(content: Message['content']): any {
@@ -156,6 +182,7 @@ export class OpenAIProvider implements AIProvider {
         completionTokens: usage.completion_tokens ?? 0,
         totalTokens: usage.total_tokens ?? 0,
       } : undefined,
+      ...this.buildOpenAIProviderContent(message),
     };
   }
 
@@ -183,6 +210,7 @@ export class OpenAIProvider implements AIProvider {
 
     return new Promise<ChatResponse>((resolve, reject) => {
       let fullContent = '';
+      let fullReasoningContent = '';
       let contentStripper = new OpenAIThinkingStripper();
       const toolCallsMap = new Map<number, { id: string; type: 'function'; function: { name: string; arguments: string } }>();
       let buffer = '';
@@ -234,9 +262,8 @@ export class OpenAIProvider implements AIProvider {
             // (reasoning_content/thinking/etc.). CatsCo treats them as private
             // provider-side work: never render them and never send them back as
             // conversation content.
-            if (hasOpenAIReasoningDelta(delta)) {
-              // Deliberately ignored.
-            }
+            const reasoningDelta = extractOpenAIReasoningDelta(delta);
+            if (reasoningDelta) fullReasoningContent += reasoningDelta;
 
             // 文本内容
             if (delta.content) {
@@ -286,6 +313,9 @@ export class OpenAIProvider implements AIProvider {
           toolCalls,
           usage: streamUsage,
           stopReason: finishReason,
+          ...(toolCalls && fullReasoningContent.trim()
+            ? { providerContent: buildOpenAIProviderContentFromToolCalls(toolCalls, fullReasoningContent.trim()) }
+            : {}),
         };
 
         ContextDebugLogger.dumpSdkBoundary('after', undefined, {
@@ -303,12 +333,47 @@ export class OpenAIProvider implements AIProvider {
       });
     });
   }
+
+  private buildOpenAIProviderContent(message: any): Pick<ChatResponse, 'providerContent'> {
+    const toolCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+    const reasoningContent = typeof message?.reasoning_content === 'string'
+      ? message.reasoning_content.trim()
+      : '';
+    if (!toolCalls.length || !reasoningContent) return {};
+    return {
+      providerContent: buildOpenAIProviderContentFromToolCalls(toolCalls, reasoningContent),
+    };
+  }
 }
 
-function hasOpenAIReasoningDelta(delta: any): boolean {
-  return typeof delta?.reasoning_content === 'string'
-    || typeof delta?.reasoning === 'string'
-    || typeof delta?.thinking === 'string';
+function extractOpenAIReasoningDelta(delta: any): string {
+  if (typeof delta?.reasoning_content === 'string') return delta.reasoning_content;
+  if (typeof delta?.reasoning === 'string') return '';
+  if (typeof delta?.thinking === 'string') return '';
+  return '';
+}
+
+function buildOpenAIProviderContentFromToolCalls(
+  toolCalls: NonNullable<ChatResponse['toolCalls']>,
+  reasoningContent: string,
+): NonNullable<ChatResponse['providerContent']> {
+  return [
+    { type: 'openai_reasoning', reasoning_content: reasoningContent },
+    ...toolCalls.map(toolCall => ({
+      type: 'tool_use',
+      id: toolCall.id,
+      name: toolCall.function.name,
+      input: parseOpenAIToolArguments(toolCall.function.arguments),
+    })),
+  ];
+}
+
+function parseOpenAIToolArguments(argumentsJson: string): unknown {
+  try {
+    return JSON.parse(argumentsJson || '{}');
+  } catch {
+    return argumentsJson || '';
+  }
 }
 
 function stripOpenAIThinkingText(text: string): string {

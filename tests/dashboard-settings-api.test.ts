@@ -201,6 +201,25 @@ describe('dashboard typed settings API', () => {
     assert.equal(data.modelStartup.custom.reasoningEffort, 'high');
   });
 
+  test('GET /settings carries legacy relay reasoning effort into startup snapshot', async () => {
+    fs.writeFileSync(path.join(testRoot, '.env'), [
+      'GAUZ_LLM_PROVIDER=anthropic',
+      'GAUZ_LLM_API_BASE=https://relay.catsco.cc/anthropic',
+      'GAUZ_LLM_API_KEY=sk-bf-relay-secret',
+      'GAUZ_LLM_MODEL=deepseek-v4-flash',
+      'GAUZ_LLM_REASONING_EFFORT=max',
+      '',
+    ].join('\n'));
+
+    const response = await fetch(`${baseUrl}/api/settings`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.modelStartup.source, 'relay');
+    assert.equal(data.modelStartup.effective.reasoningEffort, 'max');
+    assert.equal(data.modelStartup.relay.reasoningEffort, 'max');
+  });
+
   test('PUT /settings writes allowlisted model settings and refreshes process env', async () => {
     const response = await fetch(`${baseUrl}/api/settings`, {
       method: 'PUT',

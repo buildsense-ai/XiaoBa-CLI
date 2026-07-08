@@ -18,6 +18,7 @@ test('SDK debug dumps redact provider hidden thinking blocks', () => {
           content: [
             { type: 'thinking', thinking: 'hidden chain text', signature: 'sig_secret' },
             { type: 'redacted_thinking', data: 'opaque_secret' },
+            { type: 'openai_reasoning', reasoning_content: 'hidden OpenAI reasoning text' },
           ],
         }],
         apiKey: 'sk-secret-debug-value',
@@ -35,9 +36,11 @@ test('SDK debug dumps redact provider hidden thinking blocks', () => {
     const content = fs.readFileSync(path.join(debugDir, file), 'utf-8');
 
     assert.match(content, /redacted hidden thinking/);
+    assert.match(content, /redacted hidden reasoning/);
     assert.match(content, /redacted thinking signature/);
     assert.match(content, /redacted thinking data/);
     assert.doesNotMatch(content, /hidden chain text/);
+    assert.doesNotMatch(content, /hidden OpenAI reasoning text/);
     assert.doesNotMatch(content, /sig_secret/);
     assert.doesNotMatch(content, /opaque_secret/);
     assert.doesNotMatch(content, /sk-secret-debug-value/);

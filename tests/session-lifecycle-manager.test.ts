@@ -363,6 +363,41 @@ describe('AgentSession lifecycle', () => {
     assert.doesNotMatch(raw, /private tool result/);
   });
 
+  test('session persistence treats OpenAI reasoning replay as hidden provider state', async () => {
+    const { SessionStore } = loadSessionModules();
+    SessionStore.getInstance().saveContext('user:lifecycle-openai-provider-replay', [
+      { role: 'user', content: '需要查资料' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'call_openai_1',
+          type: 'function',
+          function: { name: 'read_file', arguments: '{"path":"notes.md"}' },
+        }],
+        providerContent: [
+          { type: 'openai_reasoning', reasoning_content: 'hidden OpenAI reasoning' },
+          { type: 'tool_use', id: 'call_openai_1', name: 'read_file', input: { path: 'notes.md' } },
+        ],
+      },
+      { role: 'tool', content: 'private openai tool result', tool_call_id: 'call_openai_1', name: 'read_file' },
+    ]);
+
+    const restored = SessionStore.getInstance().loadContext('user:lifecycle-openai-provider-replay');
+    const raw = fs.readFileSync(
+      path.join(testRoot, 'data', 'sessions', 'user_lifecycle-openai-provider-replay.jsonl'),
+      'utf-8',
+    );
+
+    assert.deepStrictEqual(
+      restored.map((message: any) => message.content),
+      ['需要查资料', null, '[历史工具结果已省略；read_file 已完成。]'],
+    );
+    assert.equal(restored.some((message: any) => Array.isArray(message.providerContent)), false);
+    assert.doesNotMatch(raw, /hidden OpenAI reasoning/);
+    assert.doesNotMatch(raw, /private openai tool result/);
+  });
+
   test('loading legacy sessions migrates provider replay hidden thinking off disk', async () => {
     const { SessionStore } = loadSessionModules();
     const sessionFile = path.join(testRoot, 'data', 'sessions', 'user_lifecycle-legacy-provider-replay.jsonl');

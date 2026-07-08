@@ -47,6 +47,7 @@ function hasHiddenProviderReplay(message: Message): boolean {
     && message.providerContent.some(block => (
       block?.type === 'thinking'
       || block?.type === 'redacted_thinking'
+      || block?.type === 'openai_reasoning'
     ));
 }
 

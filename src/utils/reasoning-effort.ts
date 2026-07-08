@@ -62,6 +62,10 @@ export function supportsReasoningSwitch(config: Pick<ChatConfig, 'model' | 'apiU
   return Boolean(inferReasoningModelFamily(config));
 }
 
+export function supportsOpenAIReasoningReplay(config: Pick<ChatConfig, 'model' | 'apiUrl'>): boolean {
+  return inferReasoningModelFamily(config) === 'deepseek';
+}
+
 function inferReasoningModelFamily(config: Pick<ChatConfig, 'model' | 'apiUrl'>): ReasoningModelFamily | undefined {
   const text = `${config.model || ''} ${config.apiUrl || ''}`.toLowerCase();
   if (text.includes('deepseek')) return 'deepseek';
