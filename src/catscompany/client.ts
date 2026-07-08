@@ -14,6 +14,10 @@ export interface CatsClientConfig {
   installationId?: string;
   deviceRegistration?: CatsDeviceRegistration;
   httpBaseUrl?: string;
+  connectTimeoutMs?: number;
+  readyTimeoutMs?: number;
+  reconnectBaseDelayMs?: number;
+  reconnectMaxDelayMs?: number;
 }
 
 export interface CatsDeviceRegistration {
@@ -119,6 +123,10 @@ export type CatsSendErrorKind = 'transport' | 'ack' | 'timeout';
 // Cats 服务端握手协议版本，不是 CatsCo 客户端发布版本。
 const CATSCOMPANY_PROTOCOL_VERSION = '0.1.0';
 const CATSCOMPANY_CLIENT_UA = 'CatsCo/1.0';
+const DEFAULT_WS_CONNECT_TIMEOUT_MS = 20_000;
+const DEFAULT_WS_READY_TIMEOUT_MS = 20_000;
+const DEFAULT_RECONNECT_BASE_DELAY_MS = 1_000;
+const DEFAULT_RECONNECT_MAX_DELAY_MS = 30_000;
 
 function maskSecret(value: string): string {
   if (value.length <= 10) return '***';
@@ -174,10 +182,14 @@ export class CatsClient extends EventEmitter {
   private pendingThinToolRpc = new Map<string, PendingThinToolRpc>();
   private pingTimer: NodeJS.Timeout | null = null;
   private pongTimer: NodeJS.Timeout | null = null;
+  private connectTimer: NodeJS.Timeout | null = null;
+  private readyTimer: NodeJS.Timeout | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
   private subscribedTopics = new Set<string>();
   private supportsClientMessageDedupe = false;
   public supportsThinToolRpc = false;
+  private awaitingReady = false;
 
   public uid = '';
   public name = '';
@@ -216,9 +228,12 @@ export class CatsClient extends EventEmitter {
         'X-CatsCo-Installation-ID': installationId,
       },
     });
+    this.startConnectTimeout(bodyId);
 
     this.ws.on('open', () => {
-      this.reconnectAttempts = 0;
+      this.clearConnectTimeout();
+      this.awaitingReady = true;
+      this.startReadyTimeout();
       this.send({
         hi: {
           id: '1',
@@ -243,6 +258,9 @@ export class CatsClient extends EventEmitter {
     this.ws.on('error', (err: Error) => this.emit('error', err));
     this.ws.on('close', (code: number, reason: Buffer) => {
       Logger.warning(`[CatsCompany] WebSocket 已关闭: code=${code}, reason=${reason.toString() || '-'}`);
+      this.clearConnectTimeout();
+      this.clearReadyTimeout();
+      this.awaitingReady = false;
       this.stopHeartbeat();
       this.ws = null;
       this.rejectPendingAcks(new CatsSendError(
@@ -266,6 +284,9 @@ export class CatsClient extends EventEmitter {
   private handleMessage(msg: any): void {
     if (msg.ctrl) {
       if (msg.ctrl.code === 200 && msg.ctrl.params?.build === 'catscompany') {
+        this.awaitingReady = false;
+        this.clearReadyTimeout();
+        this.reconnectAttempts = 0;
         this.uid = String(msg.ctrl.params?.uid || 'bot');
         this.name = String(msg.ctrl.params?.name || 'CatsCo');
         Logger.info(
@@ -797,6 +818,44 @@ export class CatsClient extends EventEmitter {
     }
   }
 
+  private startConnectTimeout(bodyId: string): void {
+    this.clearConnectTimeout();
+    const timeoutMs = this.positiveTimeout(this.config.connectTimeoutMs, DEFAULT_WS_CONNECT_TIMEOUT_MS);
+    this.connectTimer = setTimeout(() => {
+      if (this.ws?.readyState !== WebSocket.CONNECTING) return;
+      Logger.warning(`[CatsCompany] WebSocket 连接握手超时 ${timeoutMs}ms，主动重建连接: bodyId=${bodyId}`);
+      this.ws.terminate();
+    }, timeoutMs);
+    (this.connectTimer as any).unref?.();
+  }
+
+  private clearConnectTimeout(): void {
+    if (!this.connectTimer) return;
+    clearTimeout(this.connectTimer);
+    this.connectTimer = null;
+  }
+
+  private startReadyTimeout(): void {
+    this.clearReadyTimeout();
+    const timeoutMs = this.positiveTimeout(this.config.readyTimeoutMs, DEFAULT_WS_READY_TIMEOUT_MS);
+    this.readyTimer = setTimeout(() => {
+      if (!this.awaitingReady || this.ws?.readyState !== WebSocket.OPEN) return;
+      Logger.warning(`[CatsCompany] CatsCompany 握手确认超时 ${timeoutMs}ms，主动重建 WebSocket 连接`);
+      this.ws.terminate();
+    }, timeoutMs);
+    (this.readyTimer as any).unref?.();
+  }
+
+  private clearReadyTimeout(): void {
+    if (!this.readyTimer) return;
+    clearTimeout(this.readyTimer);
+    this.readyTimer = null;
+  }
+
+  private positiveTimeout(value: number | undefined, fallback: number): number {
+    return Number.isFinite(value) && Number(value) > 0 ? Number(value) : fallback;
+  }
+
   private startHeartbeat(): void {
     this.stopHeartbeat();
     this.pingTimer = setInterval(() => {
@@ -827,10 +886,17 @@ export class CatsClient extends EventEmitter {
   }
 
   private scheduleReconnect(): void {
-    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+    const baseDelay = this.positiveTimeout(this.config.reconnectBaseDelayMs, DEFAULT_RECONNECT_BASE_DELAY_MS);
+    const maxDelay = this.positiveTimeout(this.config.reconnectMaxDelayMs, DEFAULT_RECONNECT_MAX_DELAY_MS);
+    const delay = Math.min(baseDelay * Math.pow(2, this.reconnectAttempts), maxDelay);
     Logger.info(`[CatsCompany] ${delay}ms 后重连 (尝试 ${this.reconnectAttempts + 1})`);
     this.reconnectAttempts++;
-    setTimeout(() => this.connect(), delay);
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.closed) this.connect();
+    }, delay);
+    (this.reconnectTimer as any).unref?.();
   }
 
   private resubscribeTopics(): void {
@@ -848,6 +914,13 @@ export class CatsClient extends EventEmitter {
 
   disconnect(): void {
     this.closed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.clearConnectTimeout();
+    this.clearReadyTimeout();
+    this.awaitingReady = false;
     this.stopHeartbeat();
     this.ws?.close();
   }

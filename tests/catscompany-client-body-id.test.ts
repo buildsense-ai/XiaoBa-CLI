@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import * as assert from 'node:assert';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server as HttpServer } from 'node:http';
+import { createServer as createNetServer, type Server as NetServer, type Socket } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer } from 'ws';
 import { CatsClient, type CatsDeviceRpcMessage } from '../src/catscompany/client';
 
 describe('CatsCompany client body identity', () => {
   const servers: WebSocketServer[] = [];
-  const httpServers: Server[] = [];
+  const httpServers: HttpServer[] = [];
+  const netServers: NetServer[] = [];
+  const netSockets: Socket[] = [];
   const identityEnvKeys = [
     'CATSCO_BODY_ID',
     'CATSCOMPANY_BODY_ID',
@@ -31,6 +34,12 @@ describe('CatsCompany client body identity', () => {
     for (const server of httpServers.splice(0)) {
       server.close();
     }
+    for (const socket of netSockets.splice(0)) {
+      socket.destroy();
+    }
+    for (const server of netServers.splice(0)) {
+      server.close();
+    }
     for (const key of identityEnvKeys) {
       if (originalEnv[key] === undefined) delete process.env[key];
       else process.env[key] = originalEnv[key];
@@ -40,6 +49,18 @@ describe('CatsCompany client body identity', () => {
   function clearIdentityEnv(): void {
     for (const key of identityEnvKeys) {
       delete process.env[key];
+    }
+  }
+
+  async function withTimeout<T>(promise: Promise<T>, timeoutMs = 1000): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
+    });
+    try {
+      return await Promise.race([promise, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -81,6 +102,68 @@ describe('CatsCompany client body identity', () => {
     });
 
     assert.throws(() => client.connect(), /bodyId missing/);
+  });
+
+  test('retries when websocket upgrade handshake stalls', async () => {
+    let connections = 0;
+    const server = createNetServer(socket => {
+      connections++;
+      netSockets.push(socket);
+      socket.on('error', () => undefined);
+    });
+    netServers.push(server);
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+
+    const secondConnection = new Promise<void>(resolve => {
+      server.on('connection', () => {
+        if (connections >= 2) resolve();
+      });
+    });
+
+    const address = server.address() as AddressInfo;
+    const client = new CatsClient({
+      serverUrl: `ws://127.0.0.1:${address.port}`,
+      apiKey: 'cc-test-key',
+      bodyId: 'body-test',
+      connectTimeoutMs: 30,
+      reconnectBaseDelayMs: 10,
+      reconnectMaxDelayMs: 10,
+    });
+    client.on('error', () => undefined);
+
+    try {
+      client.connect();
+      await withTimeout(secondConnection);
+      assert.ok(connections >= 2);
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  test('reconnects when CatsCompany ready handshake is not received', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    servers.push(server);
+    await new Promise<void>(resolve => server.once('listening', resolve));
+
+    const socketClosed = new Promise<void>(resolve => {
+      server.once('connection', socket => {
+        socket.once('close', () => resolve());
+      });
+    });
+
+    const address = server.address() as AddressInfo;
+    const client = new CatsClient({
+      serverUrl: `ws://127.0.0.1:${address.port}`,
+      apiKey: 'cc-test-key',
+      bodyId: 'body-test',
+      readyTimeoutMs: 30,
+      reconnectBaseDelayMs: 1000,
+    });
+    client.on('error', () => undefined);
+    client.connect();
+
+    await withTimeout(socketClosed);
+    client.disconnect();
   });
 
   test('includes local device registration in websocket hi', async () => {
