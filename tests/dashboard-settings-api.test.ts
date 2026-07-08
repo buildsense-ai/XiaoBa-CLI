@@ -264,7 +264,7 @@ describe('dashboard typed settings API', () => {
     assert.equal(process.env.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '512000');
     assert.equal(process.env.GAUZ_LLM_REASONING_EFFORT, 'max');
 
-    const statusResponse = await fetch(`${baseUrl}/api/status`);
+    const statusResponse = await fetch(`${baseUrl}/api/status/details`);
     const status = await statusResponse.json() as any;
     assert.equal(status.provider, 'anthropic');
     assert.equal(status.model, 'MiniMax-M2.7-highspeed');
