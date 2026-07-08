@@ -5,6 +5,7 @@ import { Logger } from '../utils/logger';
 import { createApiRouter } from './routes/api';
 import { ServiceManager } from './service-manager';
 import { bootstrapDefaultSkillHubSkillsOnce } from '../skillhub/default-skill-bootstrap';
+import { createDashboardAuth } from './auth';
 
 const DEFAULT_PORT = 3800;
 const activeServers: Server[] = [];
@@ -39,8 +40,18 @@ export async function startDashboard(
     Logger.warning(`Default SkillHub bootstrap failed: ${error?.message || String(error)}`);
   });
 
-  // API routes
-  app.use('/api', createApiRouter(serviceManager, controllers.updateController));
+  // Configure and apply dashboard authentication.
+  // Trim the env var so whitespace-only values are treated as "not set"
+  // (the middleware also trims, but we check the trimmed value for logging).
+  const dashboardApiKey = (process.env.DASHBOARD_API_KEY || '').trim();
+  const dashboardAuth = createDashboardAuth({
+    apiKey: dashboardApiKey || undefined,
+  });
+
+  // API routes (with auth protection)
+  app.use('/api', dashboardAuth.middleware, createApiRouter(serviceManager, controllers.updateController, {
+    getAuthStatus: dashboardAuth.getStatus,
+  }));
 
   // Serve frontend
   const frontendPath = path.join(__dirname, '../../dashboard');
@@ -63,6 +74,9 @@ export async function startDashboard(
 
   const server = app.listen(port, '127.0.0.1', () => {
     Logger.success(`\nCatsCo Dashboard started`);
+    if (dashboardApiKey) {
+      Logger.info(`API authentication enabled — provide DASHBOARD_API_KEY as Bearer token or X-API-Key header`);
+    }
     Logger.info(`Open browser: http://127.0.0.1:${port} or http://localhost:${port}\n`);
   });
   activeServers.push(server);

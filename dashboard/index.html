@@ -5629,6 +5629,106 @@
         return '';
       }
     })();
+    const DASHBOARD_API_KEY_STORAGE_KEY = 'catsco.dashboardApiKey';
+    let dashboardApiKeyPromptInFlight = null;
+    function getFetchUrl(input){
+      if(typeof input === 'string')return input;
+      if(typeof URL !== 'undefined' && input instanceof URL)return input.href;
+      if(typeof Request !== 'undefined' && input instanceof Request)return input.url;
+      return (input && input.url) || '';
+    }
+    function getFetchMethod(input, init){
+      return String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+    }
+    function isDashboardApiUrl(input){
+      try{
+        const raw = getFetchUrl(input);
+        if(!raw)return false;
+        const url = new URL(raw, window.location.href);
+        const apiBase = new URL(API || '/', window.location.href);
+        return url.origin === apiBase.origin && url.pathname.startsWith('/api/');
+      }catch(_e){
+        return false;
+      }
+    }
+    function getDashboardStoredApiKey(){
+      try{return window.sessionStorage.getItem(DASHBOARD_API_KEY_STORAGE_KEY) || '';}catch(_e){return '';}
+    }
+    function setDashboardStoredApiKey(key){
+      try{
+        if(key)window.sessionStorage.setItem(DASHBOARD_API_KEY_STORAGE_KEY, key);
+        else window.sessionStorage.removeItem(DASHBOARD_API_KEY_STORAGE_KEY);
+      }catch(_e){}
+    }
+    function promptForDashboardApiKey(message){
+      if(!dashboardApiKeyPromptInFlight){
+        dashboardApiKeyPromptInFlight = Promise.resolve().then(() => {
+          const key = window.prompt(message || '请输入 Dashboard API Key');
+          const trimmed = key && key.trim() ? key.trim() : '';
+          if(trimmed)setDashboardStoredApiKey(trimmed);
+          return trimmed;
+        }).finally(() => {
+          dashboardApiKeyPromptInFlight = null;
+        });
+      }
+      return dashboardApiKeyPromptInFlight;
+    }
+    async function ensureDashboardApiKey(message){
+      const existing = getDashboardStoredApiKey();
+      if(existing)return existing;
+      return promptForDashboardApiKey(message);
+    }
+    function withDashboardApiKey(input, init){
+      if(!isDashboardApiUrl(input))return { input, init };
+      const key = getDashboardStoredApiKey();
+      if(!key)return { input, init };
+      const nextInit = Object.assign({}, init || {});
+      const sourceHeaders = nextInit.headers || (typeof Request !== 'undefined' && input instanceof Request ? input.headers : {});
+      const headers = new Headers(sourceHeaders || {});
+      if(!headers.has('Authorization') && !headers.has('X-API-Key')){
+        headers.set('X-API-Key', key);
+      }
+      nextInit.headers = headers;
+      return { input, init: nextInit };
+    }
+    async function isDashboardAuthFailure(response){
+      if(response.status !== 401 && response.status !== 403 && response.status !== 429)return false;
+      try{
+        const data = await response.clone().json();
+        return data && (
+          data.code === 'dashboard_auth_required' ||
+          data.code === 'dashboard_auth_invalid' ||
+          data.code === 'dashboard_auth_rate_limited'
+        );
+      }catch(_e){
+        return false;
+      }
+    }
+    function cloneFetchInput(input){
+      if(typeof Request !== 'undefined' && input instanceof Request){
+        return input.clone();
+      }
+      return input;
+    }
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async function(input, init){
+      const firstInput = cloneFetchInput(input);
+      const retryInput = cloneFetchInput(input);
+      let request = withDashboardApiKey(firstInput, init);
+      let response = await nativeFetch(request.input, request.init);
+      if(isDashboardApiUrl(input) && await isDashboardAuthFailure(response)){
+        if(response.status === 429){
+          return response;
+        }
+        setDashboardStoredApiKey('');
+        const key = await promptForDashboardApiKey('Dashboard API Key 无效或缺失，请重新输入');
+        if(key){
+          request = withDashboardApiKey(retryInput, init);
+          response = await nativeFetch(request.input, request.init);
+        }
+      }
+      return response;
+    };
     function formatDashboardApiError(error, path){
       const message=error&&error.message?String(error.message):String(error||'请求失败');
       if(/failed to fetch|networkerror|load failed|fetch/i.test(message)){
@@ -6872,12 +6972,24 @@
 
     async function fetchStatus() {
       try {
-        const res = await fetch(API+'/api/status');
-        const data = await res.json();
+        const publicRes = await fetch(API+'/api/status');
+        const publicStatus = await publicRes.json();
+        let data = publicStatus || {};
+        const shouldLoadDetails = !data.authRequired || await ensureDashboardApiKey('请输入 Dashboard API Key 以加载详细状态');
+        if(shouldLoadDetails){
+          const detailRes = await fetch(API+'/api/status/details');
+          if(detailRes.ok){
+            data = await detailRes.json();
+          }
+        }
         appStatusSnapshot = data || {};
         document.querySelector('.sidebar-brand-ver').textContent = 'v' + (data.version || '-');
-        renderStatus(data);
-        if(!shouldDeferServiceRender())renderServices(data.services || []);
+        if(data.authRequired && !shouldLoadDetails){
+          renderDashboardLockedState(data);
+        }else{
+          renderStatus(data);
+          if(!shouldDeferServiceRender())renderServices(data.services || []);
+        }
         await fetchReadiness();
         applyPetBaseline();
       } catch (e) {
@@ -6887,17 +6999,29 @@
 
     async function fetchReadiness() {
       try {
-        const res = await fetch(API+'/api/readiness');
-        if (!res.ok) throw new Error('HTTP '+res.status);
-        const contentType = res.headers.get('content-type') || '';
-        if (!contentType.includes('application/json')) {
+        const publicRes = await fetch(API+'/api/readiness');
+        if (!publicRes.ok) throw new Error('HTTP '+publicRes.status);
+        const publicContentType = publicRes.headers.get('content-type') || '';
+        if (!publicContentType.includes('application/json')) {
           throw new Error('Readiness API 尚未加载，请重启 Dashboard。');
         }
-        const data = await res.json();
+        const publicData = await publicRes.json();
+        let data = publicData || {};
+        const shouldLoadDetails = !data.authRequired || await ensureDashboardApiKey('请输入 Dashboard API Key 以加载详细就绪状态');
+        if(shouldLoadDetails){
+          const detailRes = await fetch(API+'/api/readiness/details');
+          if(detailRes.ok){
+            data = await detailRes.json();
+          }
+        }
         appReadinessSnapshot = data || {};
         appReadinessLoaded = true;
         appReadinessError = '';
-        renderReadiness(appReadinessSnapshot);
+        if(data.authRequired && !shouldLoadDetails){
+          renderDashboardLockedState(data);
+        }else{
+          renderReadiness(appReadinessSnapshot);
+        }
         if (document.getElementById('page-chat')?.classList.contains('active')) renderCatsStatus();
       } catch (e) {
         appReadinessSnapshot = {};
@@ -6919,6 +7043,22 @@
         const grid = document.getElementById('store-grid') || document.getElementById('skills-grid');
         if (grid) grid.innerHTML = '<div class="loading">无法加载</div>';
       }
+    }
+
+    function renderDashboardLockedState(d){
+      const statusGrid = document.getElementById('status-grid');
+      if(statusGrid){
+        statusGrid.innerHTML = '<div class="status-card"><div class="label">Dashboard</div><div class="value">已锁定</div><div class="readiness-summary">请输入 Dashboard API Key 以加载详细状态。</div></div>'+
+          '<div class="status-card"><div class="label">Version</div><div class="value">'+escapeHtml(d.version||'-')+'</div></div>';
+      }
+      const servicesGrid = document.getElementById('services-grid');
+      if(servicesGrid)servicesGrid.innerHTML = '<div class="loading">Dashboard API 已启用认证，请输入 API Key 后刷新。</div>';
+      const summaryTitle = document.querySelector('#run-summary .run-summary-title');
+      const summaryMeta = document.querySelector('#run-summary .run-summary-meta');
+      const actions = document.getElementById('readiness-alert-actions');
+      if(summaryTitle)summaryTitle.textContent = 'Dashboard 已锁定';
+      if(summaryMeta)summaryMeta.textContent = '需要 Dashboard API Key 才能查看服务、设置和就绪诊断。';
+      if(actions)actions.innerHTML = "<button class='btn btn-primary' onclick='setDashboardStoredApiKey(\"\");fetchStatus();fetchReadiness()'>输入 API Key</button>";
     }
 
     function renderStatus(d) {

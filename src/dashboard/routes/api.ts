@@ -52,6 +52,7 @@ import { resolveCatsCoRuntimeConfig } from '../../catscompany/runtime-config';
 import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-grants';
 import { registerSkillHubRoutes } from './skillhub';
 import { registerPetRoutes } from './pet';
+import type { DashboardAuthStatus } from '../auth';
 import { SkillHubService } from '../../skillhub/service';
 import {
   computeLocalSkillContentHash,
@@ -1599,7 +1600,15 @@ async function getCatsCoAuthForSkillHub(): Promise<{
   };
 }
 
-export function createApiRouter(serviceManager: ServiceManager, updateController?: UpdateController): Router {
+export interface DashboardApiRouterOptions {
+  getAuthStatus?: () => DashboardAuthStatus;
+}
+
+export function createApiRouter(
+  serviceManager: ServiceManager,
+  updateController?: UpdateController,
+  options: DashboardApiRouterOptions = {}
+): Router {
   const router = Router();
   registerSkillHubRoutes(router, { getCatsCoAuth: getCatsCoAuthForSkillHub });
   registerPetRoutes(router);
@@ -1608,6 +1617,14 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
 
   
   router.get('/status', (_req, res) => {
+    res.json({
+      ok: true,
+      version: APP_VERSION,
+      authRequired: Boolean(options.getAuthStatus?.().enabled),
+    });
+  });
+
+  router.get('/status/details', (_req, res) => {
     const config = ConfigManager.getConfigReadonly();
     const contextWindow = resolveModelContextWindow(config);
     const services = serviceManager.getAll();
@@ -1622,6 +1639,7 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
       contextWindow,
       skillsPath: PathResolver.getSkillsPath(),
       services,
+      authStatus: options.getAuthStatus?.() || { enabled: false, configured: false },
     });
   });
 
@@ -1710,6 +1728,25 @@ export function createApiRouter(serviceManager: ServiceManager, updateController
   });
 
   router.get('/readiness', async (_req, res) => {
+    try {
+      const readiness = await getDashboardReadiness(serviceManager, {
+        runtimeRoot: process.cwd(),
+        config: ConfigManager.getConfigReadonly(),
+      });
+      // Public readiness exposes only a redacted aggregate status so the UI
+      // can avoid false-ready states without leaking detailed diagnostics.
+      res.json({
+        ok: readiness.status !== 'blocked',
+        generatedAt: readiness.generatedAt,
+        status: readiness.status,
+        authRequired: Boolean(options.getAuthStatus?.().enabled),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.get('/readiness/details', async (_req, res) => {
     try {
       res.json(await getDashboardReadiness(serviceManager, {
         runtimeRoot: process.cwd(),
