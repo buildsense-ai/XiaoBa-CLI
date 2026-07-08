@@ -567,6 +567,46 @@ test('runner still surfaces concise progress before tool calls', async () => {
   assert.equal(toolExecutor.getExecutionCount('execute_shell'), 1);
 });
 
+test('runner surfaces medium-length progress before tool calls', async () => {
+  const responses = [
+    {
+      content: '我先把现有页面结构和数据来源梳理一下，然后检查相关文件，再继续生成两个页面，完成后会统一告诉你结果，过程中如果发现缺口会顺手补上。',
+      toolCalls: [makeToolCall('call_1', 'execute_shell', { command: 'node build-page.js' })],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+      },
+    },
+    makeFinalResponse('页面已生成并检查完。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'execute_shell',
+      description: 'run command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }],
+    { execute_shell: 'ok' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const assistantText: string[] = [];
+
+  const result = await runner.run([{ role: 'user', content: '做两个页面' }], {
+    onAssistantText: text => assistantText.push(text),
+  });
+
+  assert.deepEqual(assistantText, ['我先把现有页面结构和数据来源梳理一下，然后检查相关文件，再继续生成两个页面，完成后会统一告诉你结果，过程中如果发现缺口会顺手补上。']);
+  assert.equal(result.response, '页面已生成并检查完。');
+  assert.equal(toolExecutor.getExecutionCount('execute_shell'), 1);
+});
+
 test('runner does not leak suppressed tool prelude through thinking callbacks', async () => {
   const responses = [
     {
