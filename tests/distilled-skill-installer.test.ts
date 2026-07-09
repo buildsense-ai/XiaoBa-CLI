@@ -183,10 +183,27 @@ describe('Distilled Skill Installer', () => {
       assert.doesNotMatch(markdown, /Thanks, that works perfectly!/);
     });
 
-    test('frontmatter includes distilled capability naming in the description', () => {
+    test('frontmatter description is a routable when/do summary', () => {
       const markdown = renderDistilledSkillMarkdown(makeCandidate(), makePromoteReview());
       const parsed = matter(markdown);
-      assert.match(parsed.data.description, /Distilled capability:/);
+      assert.match(parsed.data.description, /^Distilled capability\. When:/);
+      assert.match(parsed.data.description, /Do:/);
+      assert.match(parsed.data.description, /parse a JSONL file/);
+      assert.match(parsed.data.description, /readline and process line by line/);
+      assert.doesNotMatch(parsed.data.description, /Capability: Capability:/);
+    });
+
+    test('frontmatter description marks truncated metadata instead of ending with bare ellipsis', () => {
+      const candidate = makeCandidate({
+        applicability: `Applies when the user raises a similar problem to: ${'Long problem detail '.repeat(30)}`,
+        actionPattern: `Apply this response pattern: ${'Long action detail '.repeat(40)}`,
+      });
+
+      const markdown = renderDistilledSkillMarkdown(candidate, makePromoteReview());
+      const parsed = matter(markdown);
+
+      assert.match(parsed.data.description, /\[source has more\]/);
+      assert.doesNotMatch(parsed.data.description, /\.\.\.$/);
     });
 
     test('frontmatter includes stable capability_id and immutable snapshot_id', () => {
@@ -361,7 +378,8 @@ describe('Distilled Skill Installer', () => {
 
       assert.equal(parsed.data.source_file_path, '/logs/sessions/chat/session\nwith-tab\t.jsonl');
       assert.equal(parsed.data.review_rationale, 'Line one\r\nLine two\tTabbed');
-      assert.match(parsed.data.description, /Parse\s+JSONL\s+logs/);
+      assert.match(parsed.data.description, /^Distilled capability\. When:/);
+      assert.match(parsed.data.description, /Do:/);
     });
   });
 
@@ -406,7 +424,7 @@ describe('Distilled Skill Installer', () => {
       }
     });
 
-    test('parsed skill description is marked as a distilled capability', () => {
+    test('parsed skill description is a routable distilled capability summary', () => {
       const dir = makeTempDir();
       try {
         const result = installPromotedCandidate(
@@ -415,7 +433,8 @@ describe('Distilled Skill Installer', () => {
           dir,
         );
         const skill = SkillParser.parse(result.filePath);
-        assert.match(skill.metadata.description, /Distilled capability:/);
+        assert.match(skill.metadata.description, /^Distilled capability\. When:/);
+        assert.match(skill.metadata.description, /Do:/);
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -722,7 +741,8 @@ describe('Distilled Skill Installer', () => {
 
         const skill = SkillParser.parse(result.filePath);
         assert.ok(skill.metadata.name);
-        assert.match(skill.metadata.description, /Distilled capability:/);
+        assert.match(skill.metadata.description, /^Distilled capability\. When:/);
+        assert.match(skill.metadata.description, /Do:/);
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }
