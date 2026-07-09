@@ -1615,7 +1615,8 @@ export function createApiRouter(
 
   // ==================== 总览 ====================
 
-  
+  // Public summary endpoints intentionally expose only minimal state.
+  // Detailed dashboard diagnostics live under /details and are protected by auth.
   router.get('/status', (_req, res) => {
     res.json({
       ok: true,
