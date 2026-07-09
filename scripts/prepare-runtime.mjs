@@ -417,7 +417,13 @@ export function repairNodeRuntimeEntrypoints(nodeRuntimeRoot, platform = process
       continue;
     }
 
-    fs.rmSync(linkPath, { force: true });
+    // Node.js v24+ does not remove broken symlinks with rmSync({ force: true }).
+    // Use unlinkSync which reliably removes symlink entries regardless of target state.
+    try {
+      fs.unlinkSync(linkPath);
+    } catch {
+      fs.rmSync(linkPath, { force: true, recursive: true });
+    }
     fs.symlinkSync(link.target, linkPath);
     fs.chmodSync(targetPath, 0o755);
     repaired.push(link.name);
@@ -440,7 +446,11 @@ export function removeBrokenRuntimeSymlinks(runtimeRoot) {
 
       if (stat.isSymbolicLink()) {
         if (!fs.existsSync(entryPath)) {
-          fs.rmSync(entryPath, { force: true });
+          try {
+            fs.unlinkSync(entryPath);
+          } catch {
+            fs.rmSync(entryPath, { force: true, recursive: true });
+          }
           removed.push(path.relative(runtimeRoot, entryPath));
         }
         continue;
