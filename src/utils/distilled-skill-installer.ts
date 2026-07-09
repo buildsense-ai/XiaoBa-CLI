@@ -371,7 +371,8 @@ function normalizeDescriptionPart(value: string): string {
 function compactDescriptionPart(value: string, max: number): string {
   if (value.length <= max) return ensureTerminalPunctuation(value);
 
-  const hardLimit = Math.max(20, max - 16);
+  const suffix = ' [source has more]';
+  const hardLimit = Math.max(20, max - suffix.length - 1);
   const head = value.slice(0, hardLimit);
   const boundary = Math.max(
     head.lastIndexOf('. '),
@@ -379,12 +380,13 @@ function compactDescriptionPart(value: string, max: number): string {
     head.lastIndexOf(', '),
   );
   const compacted = boundary >= 40 ? head.slice(0, boundary + 1) : head.trimEnd();
-  return `${ensureTerminalPunctuation(compacted)} [source has more]`;
+  return `${ensureTerminalPunctuation(compacted)}${suffix}`;
 }
 
 function ensureTerminalPunctuation(value: string): string {
   if (!value) return value;
-  return /[.!?。！？]$/.test(value) ? value : `${value}.`;
+  const cleaned = value.replace(/[,;:，；：]\s*$/, '');
+  return /[.!?。！？]$/.test(cleaned) ? cleaned : `${cleaned}.`;
 }
 
 // ---------------------------------------------------------------------------

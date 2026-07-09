@@ -195,8 +195,8 @@ describe('Distilled Skill Installer', () => {
 
     test('frontmatter description marks truncated metadata instead of ending with bare ellipsis', () => {
       const candidate = makeCandidate({
-        applicability: `Applies when the user raises a similar problem to: ${'Long problem detail '.repeat(30)}`,
-        actionPattern: `Apply this response pattern: ${'Long action detail '.repeat(40)}`,
+        applicability: `Applies when the user raises a similar problem to: ${'Long problem detail, '.repeat(30)}`,
+        actionPattern: `Apply this response pattern: ${'Long action detail; '.repeat(40)}`,
       });
 
       const markdown = renderDistilledSkillMarkdown(candidate, makePromoteReview());
@@ -204,6 +204,11 @@ describe('Distilled Skill Installer', () => {
 
       assert.match(parsed.data.description, /\[source has more\]/);
       assert.doesNotMatch(parsed.data.description, /\.\.\.$/);
+      assert.doesNotMatch(parsed.data.description, /[,;:]\./);
+      assert.ok(
+        parsed.data.description.length
+          <= 'Distilled capability. When: '.length + 150 + ' Do: '.length + 210,
+      );
     });
 
     test('frontmatter includes stable capability_id and immutable snapshot_id', () => {
