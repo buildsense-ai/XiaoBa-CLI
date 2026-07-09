@@ -10,15 +10,39 @@ import {
 } from './capability-distiller';
 import {
   buildPromotionPacket,
+  PROMOTION_REVIEWER_VERSION,
   PromotionDecision,
   PromotionPacket,
   PromotionReviewResult,
   reviewPromotionPacket,
 } from './promotion-reviewer';
 import {
+  appendEvidence,
+  AppendEvidenceInput,
+  CapabilityRegistryState,
+  emptyCapabilityRegistryState,
+  loadCapabilityRegistry,
+  makeEvidenceRef,
+  newCapability,
+  NewCapabilityInput,
+  saveCapabilityRegistry,
+  supersedeSnapshot,
+  SupersedeSnapshotInput,
+} from './capability-registry';
+import { prefilterCapabilities } from './capability-prefilter';
+import {
+  addNeedsReviewEntry,
+  loadNeedsReviewQueue,
+  NeedsReviewQueueEntry,
+  NeedsReviewQueueState,
+  saveNeedsReviewQueue,
+} from './needs-review-queue';
+import {
   GENERATED_DISTILLED_DIR_NAME,
+  computeSnapshotId,
   installPromotedCandidate,
   InstalledSkillSnapshot,
+  resolveEffectiveFields,
 } from './distilled-skill-installer';
 
 /**
@@ -123,6 +147,8 @@ export interface PipelineUnitResult {
   installations: InstalledSkillSnapshot[];
   /** Durable review-outcome entries written this run. */
   outcomes: ReviewOutcomeEntry[];
+  /** Needs-review queue entries written this run. */
+  needsReviewEntries: NeedsReviewQueueEntry[];
 }
 
 export interface DistillationPipelineOptions {
@@ -146,6 +172,29 @@ export interface DistillationPipelineOptions {
    * review decision (promote / needs_review / reject) is appended here.
    */
   reviewOutcomesPath: string;
+  /**
+   * Optional path to the durable needs-review queue state file. When provided,
+   * every `needs_review` decision is enqueued without mutating the Capability
+   * Registry.
+   */
+  needsReviewQueuePath?: string;
+  /**
+   * Optional path to the Capability Registry current-state file. The pipeline
+   * reads this file to compute matched capability IDs and registry-state
+   * fingerprints for needs-review queue entries.
+   */
+  capabilityRegistryPath?: string;
+  /**
+   * Reviewer version used for needs-review retry gating. Defaults to the
+   * deterministic reviewer version exported by promotion-reviewer.
+   */
+  reviewerVersion?: string;
+  /**
+   * Optional root for branch-style per-unit work logs. Runtime startup passes
+   * `<runtime>/logs/branches/distillation`; tests may omit it to avoid writing
+   * audit logs for pure unit tests.
+   */
+  workLogRoot?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +213,10 @@ export class DistillationPipeline {
   private readonly reviewer: ReviewerFn;
   private readonly outputDir: string;
   private readonly reviewOutcomesPath: string;
+  private readonly needsReviewQueuePath: string | null;
+  private readonly capabilityRegistryPath: string | null;
+  private readonly reviewerVersion: string;
+  private readonly workLogRoot: string | null;
   private readonly outcomes: ReviewOutcomeEntry[];
 
   constructor(options: DistillationPipelineOptions) {
@@ -171,6 +224,10 @@ export class DistillationPipeline {
     this.reviewer = options.reviewer ?? DEFAULT_REVIEWER;
     this.outputDir = options.outputDir;
     this.reviewOutcomesPath = options.reviewOutcomesPath;
+    this.needsReviewQueuePath = options.needsReviewQueuePath ?? null;
+    this.capabilityRegistryPath = options.capabilityRegistryPath ?? null;
+    this.reviewerVersion = options.reviewerVersion ?? PROMOTION_REVIEWER_VERSION;
+    this.workLogRoot = options.workLogRoot ?? null;
     this.outcomes = loadReviewOutcomes(this.reviewOutcomesPath);
   }
 
@@ -185,51 +242,255 @@ export class DistillationPipeline {
    *  5. Append a durable review-outcome entry for every decision.
    */
   processUnit(unit: DistillationUnit): PipelineUnitResult {
-    const candidates = this.distiller(unit);
+    const workLogger = new DistillationWorkLogger(this.workLogRoot, unit);
+    workLogger.write('start', {
+      source_file_path: unit.filePath,
+      byte_range: unit.byteRange,
+      new_turns: unit.newTurns.map(turn => turn.turn),
+      continuity_turn_count: unit.continuityTurns.length,
+      generated_at: unit.generatedAt,
+    });
+
     const reviews: PromotionReviewResult[] = [];
     const installations: InstalledSkillSnapshot[] = [];
     const newOutcomes: ReviewOutcomeEntry[] = [];
+    const needsReviewEntries: NeedsReviewQueueEntry[] = [];
+    let candidates: DistilledKnowledgeCandidate[] = [];
+    const needsReviewQueue = this.needsReviewQueuePath
+      ? loadNeedsReviewQueue(this.needsReviewQueuePath)
+      : null;
+    const capabilityRegistry = this.loadCurrentCapabilityRegistry();
 
-    for (const candidate of candidates) {
-      const packet = buildPromotionPacket(candidate);
-      const review = this.reviewer(packet);
-      reviews.push(review);
+    try {
+      candidates = this.distiller(unit);
+      workLogger.write('distiller_output', {
+        candidate_count: candidates.length,
+        candidates: candidates.map(summarizeCandidateForLog),
+      });
 
-      let snapshot: InstalledSkillSnapshot | null = null;
-      if (review.decision === 'promote') {
-        snapshot = installPromotedCandidate(candidate, review, this.outputDir);
-        installations.push(snapshot);
+      for (const candidate of candidates) {
+        const packet = buildPromotionPacket(candidate);
+        workLogger.write('promotion_packet', {
+          capability_id: candidate.capabilityId,
+          recommendation: packet.recommendation,
+          provenance_ref_count: packet.provenance.length,
+          reviewer_risks: packet.reviewRisks,
+          solved_loop: packet.solvedLoopEvidence,
+        });
+
+        const review = this.reviewer(packet);
+        reviews.push(review);
+        workLogger.write('review_result', {
+          capability_id: candidate.capabilityId,
+          decision: review.decision,
+          rationale: review.rationale,
+          review_risks: review.reviewRisks,
+          rewrite: review.rewrite,
+          reviewed_at: review.reviewedAt,
+        });
+
+        let snapshot: InstalledSkillSnapshot | null = null;
+        let registryMutated = false;
+
+        switch (review.decision) {
+          case 'promote': {
+            // V1 promote path: install the immutable SKILL.md snapshot without
+            // mutating the Capability Registry. This preserves existing V1 behavior.
+            snapshot = installPromotedCandidate(candidate, review, this.outputDir);
+            installations.push(snapshot);
+            workLogger.write('install_result', {
+              capability_id: candidate.capabilityId,
+              snapshot_id: snapshot.snapshotId,
+              skill_file_path: snapshot.filePath,
+              newly_created: snapshot.newlyCreated,
+              skill_name: snapshot.skillName,
+            });
+            break;
+          }
+          case 'new_capability': {
+            // V2 new capability: install the initial Active Snapshot and create
+            // a registry entry that points to it.
+            if (this.capabilityRegistryPath) {
+              assertCanCreateCapability(capabilityRegistry, candidate.capabilityId);
+            }
+            snapshot = installPromotedCandidate(candidate, review, this.outputDir);
+            installations.push(snapshot);
+            workLogger.write('install_result', {
+              capability_id: candidate.capabilityId,
+              snapshot_id: snapshot.snapshotId,
+              skill_file_path: snapshot.filePath,
+              newly_created: snapshot.newlyCreated,
+              skill_name: snapshot.skillName,
+            });
+            if (this.capabilityRegistryPath) {
+              newCapability(capabilityRegistry, buildNewCapabilityInput(candidate, snapshot, review));
+              registryMutated = true;
+              workLogger.write('registry_new_capability', {
+                capability_id: candidate.capabilityId,
+                active_snapshot_id: snapshot.snapshotId,
+              });
+            }
+            break;
+          }
+          case 'append_evidence': {
+            // V2 evidence append: update registry evidence refs without
+            // changing the Active Snapshot or installing a new skill-list entry.
+            if (this.capabilityRegistryPath) {
+              appendEvidence(capabilityRegistry, buildAppendEvidenceInput(candidate, review));
+              registryMutated = true;
+              workLogger.write('registry_append_evidence', {
+                capability_id: candidate.capabilityId,
+              });
+            }
+            break;
+          }
+          case 'supersede_snapshot': {
+            // V2 supersede: install the new Active Snapshot and update the
+            // registry to select it, preserving the prior active snapshot.
+            if (this.capabilityRegistryPath) {
+              assertCanSupersedeSnapshot(
+                capabilityRegistry,
+                candidate,
+                review,
+              );
+            }
+            snapshot = installPromotedCandidate(candidate, review, this.outputDir);
+            installations.push(snapshot);
+            workLogger.write('install_result', {
+              capability_id: candidate.capabilityId,
+              snapshot_id: snapshot.snapshotId,
+              skill_file_path: snapshot.filePath,
+              newly_created: snapshot.newlyCreated,
+              skill_name: snapshot.skillName,
+            });
+            if (this.capabilityRegistryPath) {
+              supersedeSnapshot(
+                capabilityRegistry,
+                buildSupersedeSnapshotInput(candidate, snapshot, review),
+              );
+              registryMutated = true;
+              workLogger.write('registry_supersede_snapshot', {
+                capability_id: candidate.capabilityId,
+                new_active_snapshot_id: snapshot.snapshotId,
+              });
+            }
+            break;
+          }
+          case 'needs_review': {
+            if (needsReviewQueue) {
+              const prefilterResult = prefilterCapabilities(candidate, capabilityRegistry);
+              const entry = addNeedsReviewEntry(needsReviewQueue, {
+                packet,
+                review,
+                matchedCapabilityIds: prefilterResult.matches.map(match => match.capabilityId),
+                registry: capabilityRegistry,
+                reviewerVersion: this.reviewerVersion,
+                createdAt: review.reviewedAt,
+              });
+              needsReviewEntries.push(entry);
+              workLogger.write('needs_review_queue_entry', {
+                capability_id: candidate.capabilityId,
+                entry_id: entry.entryId,
+                matched_capability_ids: entry.matchedCapabilityIds,
+                evidence_fingerprint: entry.evidenceFingerprint,
+                registry_state_fingerprint: entry.registryStateFingerprint,
+                reviewer_version: entry.reviewerVersion,
+              });
+            }
+            break;
+          }
+          case 'reject': {
+            // V1/V2 reject: write a durable review outcome only.
+            break;
+          }
+          default: {
+            // Exhaustiveness check for PromotionDecision. If a new decision is
+            // added without a handler, TypeScript will flag the `never` branch.
+            const _exhaustive: never = review.decision;
+            throw new Error(
+              `Unhandled promotion decision "${_exhaustive}" for capability ${candidate.capabilityId}.`,
+            );
+          }
+        }
+
+        if (registryMutated && this.capabilityRegistryPath) {
+          saveCapabilityRegistry(this.capabilityRegistryPath, capabilityRegistry);
+        }
+
+        const outcome: ReviewOutcomeEntry = {
+          capabilityId: candidate.capabilityId,
+          decision: review.decision,
+          rationale: review.rationale,
+          reviewedAt: review.reviewedAt,
+          sourceUnit: candidate.sourceUnit,
+        };
+        if (snapshot) {
+          outcome.snapshotId = snapshot.snapshotId;
+          outcome.skillFilePath = snapshot.filePath;
+        }
+        newOutcomes.push(outcome);
       }
 
-      const outcome: ReviewOutcomeEntry = {
-        capabilityId: candidate.capabilityId,
-        decision: review.decision,
-        rationale: review.rationale,
-        reviewedAt: review.reviewedAt,
-        sourceUnit: candidate.sourceUnit,
+      const nextOutcomes = [...this.outcomes, ...newOutcomes];
+      if (needsReviewQueue && this.needsReviewQueuePath) {
+        saveNeedsReviewQueue(this.needsReviewQueuePath, needsReviewQueue);
+      }
+      persistReviewOutcomes(this.reviewOutcomesPath, nextOutcomes);
+      this.outcomes.push(...newOutcomes);
+
+      workLogger.write('run_result', {
+        candidate_count: candidates.length,
+        review_counts: countReviewDecisions(reviews),
+        installation_count: installations.length,
+        outcome_count: newOutcomes.length,
+        needs_review_queue_entry_count: needsReviewEntries.length,
+      });
+
+      return {
+        candidates,
+        reviews,
+        installations,
+        outcomes: newOutcomes,
+        needsReviewEntries,
       };
-      if (snapshot) {
-        outcome.snapshotId = snapshot.snapshotId;
-        outcome.skillFilePath = snapshot.filePath;
-      }
-      newOutcomes.push(outcome);
+    } catch (error: any) {
+      workLogger.write('failed', {
+        message: String(error?.message || error || 'unknown error'),
+        name: error?.name,
+        candidate_count: candidates.length,
+        review_count: reviews.length,
+        installation_count: installations.length,
+        needs_review_queue_entry_count: needsReviewEntries.length,
+      });
+      throw error;
+    } finally {
+      workLogger.write('transcript', {
+        unit: {
+          source_file_path: unit.filePath,
+          byte_range: unit.byteRange,
+          new_turns: unit.newTurns.map(turn => turn.turn),
+          continuity_turn_count: unit.continuityTurns.length,
+          generated_at: unit.generatedAt,
+        },
+        candidates: candidates.map(summarizeCandidateForLog),
+        reviews,
+        installations,
+        outcomes: newOutcomes,
+        needs_review_entries: needsReviewEntries,
+      });
     }
-
-    const nextOutcomes = [...this.outcomes, ...newOutcomes];
-    persistReviewOutcomes(this.reviewOutcomesPath, nextOutcomes);
-    this.outcomes.push(...newOutcomes);
-
-    return {
-      candidates,
-      reviews,
-      installations,
-      outcomes: newOutcomes,
-    };
   }
 
   /** All durable review outcomes recorded so far (promote / needs_review / reject). */
   getReviewOutcomes(): ReviewOutcomeEntry[] {
     return [...this.outcomes];
+  }
+
+  private loadCurrentCapabilityRegistry(): CapabilityRegistryState {
+    if (!this.capabilityRegistryPath) {
+      return emptyCapabilityRegistryState();
+    }
+    return loadCapabilityRegistry(this.capabilityRegistryPath);
   }
 }
 
@@ -288,4 +549,177 @@ function persistReviewOutcomes(
  */
 export function defaultDistilledOutputDir(skillsRoot: string): string {
   return path.join(skillsRoot, GENERATED_DISTILLED_DIR_NAME);
+}
+
+// ---------------------------------------------------------------------------
+// Branch-style distillation work logging
+// ---------------------------------------------------------------------------
+
+class DistillationWorkLogger {
+  private readonly filePath: string | null;
+  private readonly branchId: string;
+
+  constructor(workLogRoot: string | null, unit: DistillationUnit) {
+    this.branchId = buildDistillationBranchId(unit);
+    if (!workLogRoot) {
+      this.filePath = null;
+      return;
+    }
+
+    const date = new Date();
+    const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    const dir = path.join(workLogRoot, dateStr);
+    fs.mkdirSync(dir, { recursive: true });
+    this.filePath = path.join(dir, `${this.branchId}.jsonl`);
+  }
+
+  write(eventType: string, payload: Record<string, unknown> = {}): void {
+    if (!this.filePath) return;
+    const entry = {
+      entry_type: 'branch',
+      branch_type: 'distillation',
+      branch_id: this.branchId,
+      event_type: eventType,
+      timestamp: new Date().toISOString(),
+      ...payload,
+    };
+    try {
+      fs.appendFileSync(this.filePath, JSON.stringify(entry) + '\n');
+    } catch {
+      // Work logs are audit-only. Never fail the distillation pipeline because
+      // branch-style logging could not be written.
+    }
+  }
+}
+
+function buildDistillationBranchId(unit: DistillationUnit): string {
+  const raw = `${unit.filePath}:${unit.byteRange.start}:${unit.byteRange.end}:${unit.generatedAt}`;
+  const hash = Buffer.from(raw).toString('base64url').slice(0, 18);
+  return `distillation-${Date.now().toString(36)}-${hash}`;
+}
+
+function summarizeCandidateForLog(candidate: DistilledKnowledgeCandidate): Record<string, unknown> {
+  return {
+    kind: candidate.kind,
+    capability_id: candidate.capabilityId,
+    title: candidate.title,
+    applicability: candidate.applicability,
+    action_pattern: candidate.actionPattern,
+    boundaries: candidate.boundaries,
+    risks: candidate.risks,
+    solved_loop: candidate.solvedLoop,
+    provenance: candidate.provenance,
+    source_unit: candidate.sourceUnit,
+    generated_at: candidate.generatedAt,
+  };
+}
+
+function countReviewDecisions(reviews: PromotionReviewResult[]): Record<PromotionDecision, number> {
+  return reviews.reduce<Record<PromotionDecision, number>>((counts, review) => {
+    counts[review.decision] += 1;
+    return counts;
+  }, {
+    promote: 0,
+    needs_review: 0,
+    reject: 0,
+    new_capability: 0,
+    append_evidence: 0,
+    supersede_snapshot: 0,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// V2 Capability Registry transition helpers
+// ---------------------------------------------------------------------------
+
+function assertCanCreateCapability(
+  registry: CapabilityRegistryState,
+  capabilityId: string,
+): void {
+  if (registry.capabilities[capabilityId]) {
+    throw new Error(
+      `Cannot create capability "${capabilityId}": a registry entry with this capabilityId already exists.`,
+    );
+  }
+}
+
+function assertCanSupersedeSnapshot(
+  registry: CapabilityRegistryState,
+  candidate: DistilledKnowledgeCandidate,
+  review: PromotionReviewResult,
+): void {
+  const entry = registry.capabilities[candidate.capabilityId];
+  if (!entry) {
+    throw new Error(
+      `Cannot supersede snapshot for capability "${candidate.capabilityId}": no such registry entry.`,
+    );
+  }
+
+  const effective = resolveEffectiveFields(candidate, review.rewrite);
+  const newActiveSnapshotId = computeSnapshotId(candidate, effective, review);
+  if (newActiveSnapshotId === entry.activeSnapshotId) {
+    throw new Error(
+      `Cannot supersede snapshot for capability "${candidate.capabilityId}": newActiveSnapshotId is already the active snapshot.`,
+    );
+  }
+}
+
+function buildNewCapabilityInput(
+  candidate: DistilledKnowledgeCandidate,
+  snapshot: InstalledSkillSnapshot,
+  review: PromotionReviewResult,
+): NewCapabilityInput {
+  return {
+    capabilityId: candidate.capabilityId,
+    activeSnapshotId: snapshot.snapshotId,
+    routingDescription: buildRoutingDescription(candidate),
+    evidenceRefs: candidate.provenance.map(ref =>
+      makeEvidenceRef(ref.filePath, ref.turn, ref.unitByteRange, review.reviewedAt),
+    ),
+    relatedSnapshotIds: [snapshot.snapshotId],
+    createdAt: review.reviewedAt,
+    sourceReview: {
+      decision: review.decision,
+      reviewedAt: review.reviewedAt,
+      sourceUnit: candidate.sourceUnit,
+    },
+  };
+}
+
+function buildAppendEvidenceInput(
+  candidate: DistilledKnowledgeCandidate,
+  review: PromotionReviewResult,
+): AppendEvidenceInput {
+  return {
+    capabilityId: candidate.capabilityId,
+    evidenceRefs: candidate.provenance.map(ref =>
+      makeEvidenceRef(ref.filePath, ref.turn, ref.unitByteRange, review.reviewedAt),
+    ),
+    appendedAt: review.reviewedAt,
+  };
+}
+
+function buildSupersedeSnapshotInput(
+  candidate: DistilledKnowledgeCandidate,
+  snapshot: InstalledSkillSnapshot,
+  review: PromotionReviewResult,
+): SupersedeSnapshotInput {
+  return {
+    capabilityId: candidate.capabilityId,
+    newActiveSnapshotId: snapshot.snapshotId,
+    supersededAt: review.reviewedAt,
+    routingDescription: buildRoutingDescription(candidate),
+  };
+}
+
+/**
+ * Build a concise routable When/Do summary for the Capability Registry entry.
+ *
+ * The routing description should match the active skill's description so the
+ * prefilter and skill selection use consistent language. We derive it from the
+ * candidate title and the core action pattern.
+ */
+function buildRoutingDescription(candidate: DistilledKnowledgeCandidate): string {
+  const title = candidate.title.replace(/^Capability:\s*/, '').trim();
+  return `${title} — ${candidate.actionPattern}`.slice(0, 280);
 }

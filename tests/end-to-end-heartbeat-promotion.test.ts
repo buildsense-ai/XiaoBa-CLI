@@ -26,6 +26,7 @@ import {
   ReviewerFn,
   loadReviewOutcomesSync,
 } from '../src/utils/distillation-pipeline';
+import { loadNeedsReviewQueue } from '../src/utils/needs-review-queue';
 import { SkillParser } from '../src/skills/skill-parser';
 
 // ---------------------------------------------------------------------------
@@ -181,6 +182,9 @@ function makeFixtureReviewer(): ReviewerFn {
       rationale: `Fixture reviewer decision: ${decision}`,
       reviewRisks: [],
       rewrite: null,
+      questions: decision === 'needs_review'
+        ? ['What additional evidence would make this candidate safe to retry?']
+        : undefined,
       reviewedAt: '2026-07-10T01:00:00.000Z',
     };
   };
@@ -196,6 +200,7 @@ interface TestEnv {
   stateFile: string;
   recordFile: string;
   reviewOutcomesFile: string;
+  needsReviewQueueFile: string;
   pipeline: DistillationPipeline;
   scheduler: DistillationHeartbeatScheduler;
   restore: () => void;
@@ -208,6 +213,7 @@ function setupEnv(): TestEnv {
   const stateFile = path.join(root, 'data', 'distillation-cursor-state.json');
   const recordFile = path.join(root, 'data', 'distillation-heartbeat-record.json');
   const reviewOutcomesFile = path.join(root, 'data', 'distillation-review-outcomes.json');
+  const needsReviewQueueFile = path.join(root, 'data', 'needs-review-queue-state.json');
   const outputDir = path.join(root, 'skills', 'generated-distilled');
 
   const savedEnv: Record<string, string | undefined> = {
@@ -231,6 +237,7 @@ function setupEnv(): TestEnv {
     reviewer: makeFixtureReviewer(),
     outputDir,
     reviewOutcomesPath: reviewOutcomesFile,
+    needsReviewQueuePath: needsReviewQueueFile,
   });
 
   const scheduler = new DistillationHeartbeatScheduler(root, unit => pipeline.processUnit(unit));
@@ -241,6 +248,7 @@ function setupEnv(): TestEnv {
     stateFile,
     recordFile,
     reviewOutcomesFile,
+    needsReviewQueueFile,
     pipeline,
     scheduler,
     restore: () => {
@@ -452,9 +460,22 @@ describe('End-to-end heartbeat promotion (first-version kind=capability pipeline
     assert.equal(rejected!.skillFilePath, undefined, 'rejected has no skill file');
     assert.equal(rejected!.snapshotId, undefined, 'rejected has no snapshot id');
 
-    // Needs-review: durable outcome record but no skill file (retryable).
+    // Needs-review: durable outcome record and durable queue entry but no skill file.
     assert.equal(needsReview!.skillFilePath, undefined, 'needs_review has no skill file');
     assert.equal(needsReview!.snapshotId, undefined, 'needs_review has no snapshot id');
+    assert.ok(fs.existsSync(env.needsReviewQueueFile), 'needs_review queue file exists');
+
+    const queue = loadNeedsReviewQueue(env.needsReviewQueueFile);
+    const entries = Object.values(queue.entries);
+    assert.equal(entries.length, 1, 'needs_review decision creates one queue entry');
+    assert.equal(entries[0].capabilityId, needsReview!.capabilityId);
+    assert.equal(entries[0].status, 'pending');
+    assert.deepEqual(entries[0].questions, [
+      'What additional evidence would make this candidate safe to retry?',
+    ]);
+    assert.ok(entries[0].evidenceFingerprint, 'queue entry stores evidence fingerprint');
+    assert.ok(entries[0].registryStateFingerprint, 'queue entry stores registry-state fingerprint');
+    assert.equal(entries[0].retryEligibility.eligible, false);
 
     // Every outcome carries source unit traceability.
     for (const o of outcomes) {

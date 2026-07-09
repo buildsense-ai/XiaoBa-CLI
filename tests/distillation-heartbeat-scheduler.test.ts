@@ -124,6 +124,18 @@ describe('DistillationHeartbeatScheduler', () => {
         const config = getDistillationHeartbeatConfig(root);
         assert.equal(config.enabled, true);
         assert.equal(config.intervalHours, 6);
+        assert.equal(
+          config.needsReviewQueuePath,
+          path.join(root, 'data', 'needs-review-queue-state.json'),
+        );
+        assert.equal(
+          config.capabilityRegistryPath,
+          path.join(root, 'data', 'capability-registry-state.json'),
+        );
+        assert.equal(
+          config.workLogRoot,
+          path.join(root, 'logs', 'branches', 'distillation'),
+        );
       } finally {
         restoreProcessEnv(saved);
       }
@@ -138,6 +150,36 @@ describe('DistillationHeartbeatScheduler', () => {
           DistillationHeartbeatScheduler.shouldStartForCurrentRuntime(root),
           false,
         );
+      } finally {
+        restoreProcessEnv(saved);
+      }
+    });
+
+    test('can use a thirty-minute cadence for local testing', () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-cfg-'));
+      const saved = { ...process.env };
+      try {
+        process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
+        process.env.DISTILLATION_HEARTBEAT_INTERVAL_MINUTES = '30';
+        delete process.env.DISTILLATION_HEARTBEAT_INTERVAL_HOURS;
+
+        const config = getDistillationHeartbeatConfig(root);
+        assert.equal(config.intervalHours, 0.5);
+      } finally {
+        restoreProcessEnv(saved);
+      }
+    });
+
+    test('accepts fractional hours for the thirty-minute test cadence', () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-cfg-'));
+      const saved = { ...process.env };
+      try {
+        process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
+        process.env.DISTILLATION_HEARTBEAT_INTERVAL_HOURS = '0.5';
+        delete process.env.DISTILLATION_HEARTBEAT_INTERVAL_MINUTES;
+
+        const config = getDistillationHeartbeatConfig(root);
+        assert.equal(config.intervalHours, 0.5);
       } finally {
         restoreProcessEnv(saved);
       }

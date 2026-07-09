@@ -17,7 +17,7 @@ import * as dotenv from 'dotenv';
  */
 
 const DEFAULT_INTERVAL_HOURS = 6;
-const MIN_INTERVAL_HOURS = 1;
+const MIN_INTERVAL_MINUTES = 30;
 
 export interface DistillationHeartbeatConfig {
   /** Master switch for the heartbeat scheduler. */
@@ -30,6 +30,14 @@ export interface DistillationHeartbeatConfig {
   stateFilePath: string;
   /** Path to the heartbeat run record (observability + catch-up audit). */
   heartbeatRecordPath: string;
+  /** Path to the durable review-outcomes log (promote/needs_review/reject). */
+  reviewOutcomesPath: string;
+  /** Path to the durable needs-review queue state file. */
+  needsReviewQueuePath: string;
+  /** Path to the durable Capability Registry state file. */
+  capabilityRegistryPath: string;
+  /** Root directory for branch-style distillation work logs. */
+  workLogRoot: string;
 }
 
 function readEnv(env: NodeJS.ProcessEnv, ...keys: string[]): string | undefined {
@@ -61,7 +69,26 @@ function readBoolean(env: NodeJS.ProcessEnv, key: string, defaultValue: boolean)
 function readNumber(env: NodeJS.ProcessEnv, key: string, defaultValue: number, min: number): number {
   const parsed = Number(env[key] || defaultValue);
   if (!Number.isFinite(parsed) || parsed < min) return defaultValue;
-  return Math.floor(parsed);
+  return parsed;
+}
+
+function readIntervalHours(env: NodeJS.ProcessEnv): number {
+  const rawMinutes = env.DISTILLATION_HEARTBEAT_INTERVAL_MINUTES;
+  if (rawMinutes != null && rawMinutes !== '') {
+    const minutes = Number(rawMinutes);
+    if (Number.isFinite(minutes) && minutes >= MIN_INTERVAL_MINUTES) {
+      return minutes / 60;
+    }
+    return DEFAULT_INTERVAL_HOURS;
+  }
+
+  const hours = readNumber(
+    env,
+    'DISTILLATION_HEARTBEAT_INTERVAL_HOURS',
+    DEFAULT_INTERVAL_HOURS,
+    MIN_INTERVAL_MINUTES / 60,
+  );
+  return hours;
 }
 
 function isPathInside(childPath: string, parentPath: string): boolean {
@@ -102,12 +129,7 @@ export function getDistillationHeartbeatConfig(
   };
 
   const enabled = readBoolean(runtimeEnv, 'DISTILLATION_HEARTBEAT_ENABLED', true);
-  const intervalHours = readNumber(
-    runtimeEnv,
-    'DISTILLATION_HEARTBEAT_INTERVAL_HOURS',
-    DEFAULT_INTERVAL_HOURS,
-    MIN_INTERVAL_HOURS,
-  );
+  const intervalHours = readIntervalHours(runtimeEnv);
   const logsRoot = resolveContainedPath(
     workingDirectory,
     'logs',
@@ -126,6 +148,30 @@ export function getDistillationHeartbeatConfig(
     readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_RECORD_FILE'),
     'data/distillation-heartbeat-record.json',
   );
+  const reviewOutcomesPath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_REVIEW_OUTCOMES_FILE'),
+    'data/distillation-review-outcomes.json',
+  );
+  const needsReviewQueuePath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_NEEDS_REVIEW_QUEUE_FILE'),
+    'data/needs-review-queue-state.json',
+  );
+  const capabilityRegistryPath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_CAPABILITY_REGISTRY_FILE'),
+    'data/capability-registry-state.json',
+  );
+  const workLogRoot = resolveContainedPath(
+    workingDirectory,
+    'logs',
+    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_WORK_LOG_ROOT'),
+    'logs/branches/distillation',
+  );
 
   return {
     enabled,
@@ -133,5 +179,9 @@ export function getDistillationHeartbeatConfig(
     logsRoot,
     stateFilePath,
     heartbeatRecordPath,
+    reviewOutcomesPath,
+    needsReviewQueuePath,
+    capabilityRegistryPath,
+    workLogRoot,
   };
 }

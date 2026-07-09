@@ -7,6 +7,7 @@ import {
 } from './capability-distiller';
 import {
   FaithfulRewrite,
+  PromotionDecision,
   PromotionReviewResult,
 } from './promotion-reviewer';
 
@@ -90,11 +91,13 @@ const SAFE_PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
  * (idempotent) and never overwrites the existing file.
  *
  * @param candidate  The distilled knowledge candidate to install.
- * @param review     The promotion review result; must have `decision='promote'`.
+ * @param review     The promotion review result; must have a decision that
+ *                   creates an immutable snapshot (`promote`, `new_capability`,
+ *                   or `supersede_snapshot`).
  * @param outputDir  Root directory for generated distilled skills (typically
  *                   `<skillsRoot>/generated-distilled`).
  * @returns Metadata about the installed (or pre-existing) snapshot.
- * @throws When the review decision is not `promote`.
+ * @throws When the review decision is not `promote`, `new_capability`, or `supersede_snapshot`.
  */
 export function installPromotedCandidate(
   candidate: DistilledKnowledgeCandidate,
@@ -170,7 +173,8 @@ export function installPromotedCandidate(
  * the rendered content without writing a file.
  *
  * @param candidate  The distilled knowledge candidate.
- * @param review     The promotion review result (`decision` must be `promote`).
+ * @param review     The promotion review result (`decision` must be one of
+ *                   `promote`, `new_capability`, or `supersede_snapshot`).
  * @returns The full `SKILL.md` content (frontmatter + body).
  */
 export function renderDistilledSkillMarkdown(
@@ -215,14 +219,20 @@ export function computeSnapshotId(
   return crypto.createHash('sha256').update(content).digest('hex').slice(0, SNAPSHOT_ID_HEX_LEN);
 }
 
+const INSTALL_DECISIONS = new Set<PromotionDecision>([
+  'promote',
+  'new_capability',
+  'supersede_snapshot',
+]);
+
 function assertPromotedCandidate(
   candidate: DistilledKnowledgeCandidate,
   review: PromotionReviewResult,
   action: string,
 ): void {
-  if (review.decision !== 'promote') {
+  if (!INSTALL_DECISIONS.has(review.decision)) {
     throw new Error(
-      `Cannot ${action} candidate ${candidate.capabilityId}: review decision is "${review.decision}", expected "promote".`,
+      `Cannot ${action} candidate ${candidate.capabilityId}: review decision is "${review.decision}", expected one of ${[...INSTALL_DECISIONS].join(', ')}.`,
     );
   }
   if (review.capabilityId !== candidate.capabilityId) {

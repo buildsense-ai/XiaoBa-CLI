@@ -335,15 +335,15 @@ function buildProvenance(
 
 function buildTitle(problem: string): string {
   const head = problem.split(/[.!?\n]/)[0].trim() || problem;
-  return `Capability: ${snippet(head, 80)}`;
+  return `Capability: ${compactForMetadata(head, 96)}`;
 }
 
 function buildActionPattern(toolNames: string[], action: string): string {
   if (toolNames.length > 0) {
     const tools = toolNames.slice(0, 5).join(', ');
-    return `Use tool(s) [${tools}] then respond with: ${snippet(action, 120)}`;
+    return `Use tool(s) [${tools}] then apply this pattern: ${compactForMetadata(action, 260)}`;
   }
-  return `Respond with: ${snippet(action, 140)}`;
+  return `Apply this response pattern: ${compactForMetadata(action, 280)}`;
 }
 
 function describeAction(toolNames: string[], assistantText: string): string {
@@ -368,6 +368,21 @@ function uniqueToolNames(toolNames: string[]): string[] {
 function snippet(text: string, max: number = MAX_SNIPPET_LEN): string {
   if (text.length <= max) return text;
   return text.slice(0, max).trimEnd() + '...';
+}
+
+function compactForMetadata(text: string, max: number): string {
+  const cleaned = cleanText(text);
+  if (cleaned.length <= max) return cleaned;
+
+  const hardLimit = Math.max(20, max - 16);
+  const head = cleaned.slice(0, hardLimit);
+  const boundary = Math.max(
+    head.lastIndexOf('. '),
+    head.lastIndexOf('; '),
+    head.lastIndexOf(', '),
+  );
+  const compacted = boundary >= 40 ? head.slice(0, boundary + 1) : head.trimEnd();
+  return `${compacted} [source has more]`;
 }
 
 function stableCapabilityId(unit: DistillationUnit, problemTurn: CompletedTurn): string {

@@ -654,7 +654,7 @@ describe('Distilled Skill Installer', () => {
         const review = makePromoteReview({ decision: 'needs_review' });
         assert.throws(
           () => installPromotedCandidate(candidate, review, dir),
-          /expected "promote"/,
+          /expected one of promote, new_capability, supersede_snapshot/,
         );
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
@@ -668,7 +668,7 @@ describe('Distilled Skill Installer', () => {
         const review = makePromoteReview({ decision: 'reject' });
         assert.throws(
           () => installPromotedCandidate(candidate, review, dir),
-          /expected "promote"/,
+          /expected one of promote, new_capability, supersede_snapshot/,
         );
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
@@ -678,7 +678,7 @@ describe('Distilled Skill Installer', () => {
     test('renderDistilledSkillMarkdown throws for non-promote decisions', () => {
       assert.throws(
         () => renderDistilledSkillMarkdown(makeCandidate(), makePromoteReview({ decision: 'reject' })),
-        /expected "promote"/,
+        /expected one of promote, new_capability, supersede_snapshot/,
       );
     });
   });
