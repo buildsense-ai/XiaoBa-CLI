@@ -213,10 +213,11 @@ export class DistillationPipeline {
         outcome.skillFilePath = snapshot.filePath;
       }
       newOutcomes.push(outcome);
-      this.outcomes.push(outcome);
     }
 
-    persistReviewOutcomes(this.reviewOutcomesPath, this.outcomes);
+    const nextOutcomes = [...this.outcomes, ...newOutcomes];
+    persistReviewOutcomes(this.reviewOutcomesPath, nextOutcomes);
+    this.outcomes.push(...newOutcomes);
 
     return {
       candidates,
@@ -245,15 +246,14 @@ export function loadReviewOutcomesSync(reviewOutcomesPath: string): ReviewOutcom
 }
 
 function loadReviewOutcomes(reviewOutcomesPath: string): ReviewOutcomeEntry[] {
-  try {
-    if (!fs.existsSync(reviewOutcomesPath)) return [];
-    const parsed = JSON.parse(
-      fs.readFileSync(reviewOutcomesPath, 'utf-8'),
-    ) as Partial<ReviewOutcomeLog>;
-    return Array.isArray(parsed.outcomes) ? parsed.outcomes : [];
-  } catch {
-    return [];
+  if (!fs.existsSync(reviewOutcomesPath)) return [];
+  const parsed = JSON.parse(
+    fs.readFileSync(reviewOutcomesPath, 'utf-8'),
+  ) as Partial<ReviewOutcomeLog>;
+  if (!Array.isArray(parsed.outcomes)) {
+    throw new Error(`Review outcomes log is malformed: ${reviewOutcomesPath}`);
   }
+  return parsed.outcomes;
 }
 
 function persistReviewOutcomes(
@@ -263,11 +263,20 @@ function persistReviewOutcomes(
   fs.mkdirSync(path.dirname(reviewOutcomesPath), { recursive: true });
   const payload: ReviewOutcomeLog = { schemaVersion: 1, outcomes };
   const tmpPath = `${reviewOutcomesPath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), {
-    encoding: 'utf-8',
-    mode: 0o600,
-  });
-  fs.renameSync(tmpPath, reviewOutcomesPath);
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+    fs.renameSync(tmpPath, reviewOutcomesPath);
+  } catch (error) {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {
+      // Best-effort cleanup only; preserve the original error.
+    }
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------

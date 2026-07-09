@@ -295,6 +295,41 @@ describe('Distilled Skill Installer', () => {
       assert.notEqual(idA, idB);
     });
 
+    test('snapshot_id is stable when nested object key insertion order differs', () => {
+      const candidateA = makeCandidate();
+      const candidateB = makeCandidate({
+        sourceUnit: {
+          generatedAt: candidateA.sourceUnit.generatedAt,
+          byteRange: {
+            end: candidateA.sourceUnit.byteRange.end,
+            start: candidateA.sourceUnit.byteRange.start,
+          },
+          filePath: candidateA.sourceUnit.filePath,
+        } as DistilledKnowledgeCandidate['sourceUnit'],
+        provenance: [
+          {
+            unitByteRange: { end: 1000, start: 0 },
+            role: 'problem-action',
+            turn: 1,
+            filePath: '/logs/sessions/chat/chat_cli.jsonl',
+          } as CapabilityProvenanceRef,
+          {
+            unitByteRange: { end: 1000, start: 0 },
+            role: 'verification',
+            turn: 2,
+            filePath: '/logs/sessions/chat/chat_cli.jsonl',
+          } as CapabilityProvenanceRef,
+        ],
+      });
+      const reviewA = makePromoteReviewFor(candidateA);
+      const reviewB = makePromoteReviewFor(candidateB);
+
+      const idA = computeSnapshotId(candidateA, resolveEffectiveFields(candidateA, null), reviewA);
+      const idB = computeSnapshotId(candidateB, resolveEffectiveFields(candidateB, null), reviewB);
+
+      assert.equal(idA, idB);
+    });
+
     test('a Faithful Rewrite changes the rendered content and snapshot_id', () => {
       const candidate = makeCandidate({ title: 'Capability: Parse  JSONL' });
       const reviewNoRewrite = makePromoteReview({ rewrite: null });
@@ -307,6 +342,26 @@ describe('Distilled Skill Installer', () => {
 
       assert.notEqual(mdNoRewrite, mdWithRewrite);
       assert.match(mdWithRewrite, /Capability: Parse JSONL/);
+    });
+
+    test('frontmatter safely escapes YAML control characters', () => {
+      const candidate = makeCandidate({
+        title: 'Capability: Parse\nJSONL\tlogs',
+        sourceUnit: {
+          filePath: '/logs/sessions/chat/session\nwith-tab\t.jsonl',
+          byteRange: { start: 0, end: 1000 },
+          generatedAt: '2026-07-10T00:00:00.000Z',
+        },
+      });
+      const review = makePromoteReviewFor(candidate, {
+        rationale: 'Line one\r\nLine two\tTabbed',
+      });
+      const markdown = renderDistilledSkillMarkdown(candidate, review);
+      const parsed = matter(markdown);
+
+      assert.equal(parsed.data.source_file_path, '/logs/sessions/chat/session\nwith-tab\t.jsonl');
+      assert.equal(parsed.data.review_rationale, 'Line one\r\nLine two\tTabbed');
+      assert.match(parsed.data.description, /Parse\s+JSONL\s+logs/);
     });
   });
 

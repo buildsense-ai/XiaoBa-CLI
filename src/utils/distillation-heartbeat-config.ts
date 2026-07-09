@@ -66,7 +66,15 @@ function readNumber(env: NodeJS.ProcessEnv, key: string, defaultValue: number, m
 
 function isPathInside(childPath: string, parentPath: string): boolean {
   const relative = path.relative(parentPath, childPath);
-  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+  return (
+    relative === ''
+    || (
+      !!relative
+      && relative !== '..'
+      && !relative.startsWith(`..${path.sep}`)
+      && !path.isAbsolute(relative)
+    )
+  );
 }
 
 function resolveContainedPath(

@@ -199,7 +199,7 @@ export function computeSnapshotId(
   effective: EffectiveFields,
   review: PromotionReviewResult,
 ): string {
-  const content = JSON.stringify({
+  const content = stableStringify({
     schemaVersion: candidate.schemaVersion,
     kind: candidate.kind,
     capabilityId: candidate.capabilityId,
@@ -447,6 +447,32 @@ function renderProvenanceRef(ref: CapabilityProvenanceRef): string {
  * characters.
  */
 function yamlString(value: string): string {
-  const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const escaped = value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, char =>
+      `\\x${char.charCodeAt(0).toString(16).padStart(2, '0')}`,
+    );
   return `"${escaped}"`;
+}
+
+function stableStringify(value: unknown): string {
+  return JSON.stringify(sortObjectKeys(value));
+}
+
+function sortObjectKeys(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortObjectKeys);
+  }
+  if (value && typeof value === 'object') {
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) {
+      sorted[key] = sortObjectKeys((value as Record<string, unknown>)[key]);
+    }
+    return sorted;
+  }
+  return value;
 }

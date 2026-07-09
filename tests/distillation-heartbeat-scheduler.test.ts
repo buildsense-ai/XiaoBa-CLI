@@ -94,6 +94,21 @@ function setupEnv(): TestEnv {
   };
 }
 
+function restoreProcessEnv(saved: NodeJS.ProcessEnv): void {
+  for (const key of Object.keys(process.env)) {
+    if (!(key in saved)) {
+      delete process.env[key];
+    }
+  }
+  for (const [key, value] of Object.entries(saved)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -110,7 +125,7 @@ describe('DistillationHeartbeatScheduler', () => {
         assert.equal(config.enabled, true);
         assert.equal(config.intervalHours, 6);
       } finally {
-        process.env = saved;
+        restoreProcessEnv(saved);
       }
     });
 
@@ -124,7 +139,7 @@ describe('DistillationHeartbeatScheduler', () => {
           false,
         );
       } finally {
-        process.env = saved;
+        restoreProcessEnv(saved);
       }
     });
 
@@ -139,7 +154,7 @@ describe('DistillationHeartbeatScheduler', () => {
           false,
         );
       } finally {
-        process.env = saved;
+        restoreProcessEnv(saved);
       }
     });
   });
@@ -356,7 +371,7 @@ describe('DistillationHeartbeatScheduler', () => {
         assert.equal(record.runCount, 1);
         assert.equal(record.lastUnitsProcessed, 0);
       } finally {
-        process.env = saved;
+        restoreProcessEnv(saved);
       }
     });
   });
@@ -377,7 +392,7 @@ describe('DistillationHeartbeatScheduler', () => {
         assert.equal(result.ran, false);
         assert.equal(result.unitsProcessed, 0);
       } finally {
-        process.env = saved;
+        restoreProcessEnv(saved);
       }
     });
   });

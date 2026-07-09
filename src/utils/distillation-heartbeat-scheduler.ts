@@ -55,6 +55,9 @@ const DEFAULT_PROCESSOR: DistillationUnitProcessor = () => {
   // pipeline (issues #3–#6) replaces this no-op sink later.
 };
 
+const MIN_TIMEOUT_MS = 60 * 1000;
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
 function emptyHeartbeatRecord(): HeartbeatRecord {
   return {
     schemaVersion: 1,
@@ -145,15 +148,15 @@ export class DistillationHeartbeatScheduler {
       return { unitsProcessed: 0, advancedFiles: 0, ran: false };
     }
 
-    const config = getDistillationHeartbeatConfig(this.workingDirectory);
-    const sessionLogsRoot = resolveSessionLogsRoot(config.logsRoot);
-    if (!fs.existsSync(sessionLogsRoot) || !fs.statSync(sessionLogsRoot).isDirectory()) {
-      this.recordHeartbeat(config.heartbeatRecordPath, reason, 0, 0);
-      return { unitsProcessed: 0, advancedFiles: 0, ran: true };
-    }
-
     this.running = true;
     try {
+      const config = getDistillationHeartbeatConfig(this.workingDirectory);
+      const sessionLogsRoot = resolveSessionLogsRoot(config.logsRoot);
+      if (!fs.existsSync(sessionLogsRoot) || !fs.statSync(sessionLogsRoot).isDirectory()) {
+        this.recordHeartbeat(config.heartbeatRecordPath, reason, 0, 0);
+        return { unitsProcessed: 0, advancedFiles: 0, ran: true };
+      }
+
       const { units, advancedFiles } = processSessionLogDirectory(
         sessionLogsRoot,
         config.stateFilePath,
@@ -185,7 +188,10 @@ export class DistillationHeartbeatScheduler {
     }
 
     const config = getDistillationHeartbeatConfig(this.workingDirectory);
-    const delay = Math.max(60 * 1000, config.intervalHours * 60 * 60 * 1000);
+    const delay = Math.min(
+      MAX_TIMEOUT_MS,
+      Math.max(MIN_TIMEOUT_MS, config.intervalHours * 60 * 60 * 1000),
+    );
     this.timer = setTimeout(async () => {
       await this.runHeartbeat('scheduled');
       this.scheduleNextRun();

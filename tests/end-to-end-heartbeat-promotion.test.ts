@@ -569,3 +569,73 @@ describe('End-to-end heartbeat promotion (first-version kind=capability pipeline
     );
   });
 });
+
+describe('DistillationPipeline durable outcome handling', () => {
+  test('throws on a corrupt review-outcomes log instead of silently clearing history', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-pipeline-corrupt-'));
+    try {
+      const outcomesPath = path.join(root, 'data', 'distillation-review-outcomes.json');
+      fs.mkdirSync(path.dirname(outcomesPath), { recursive: true });
+      fs.writeFileSync(outcomesPath, '{not json', 'utf-8');
+
+      assert.throws(
+        () => new DistillationPipeline({
+          distiller: makeFixtureDistiller(),
+          reviewer: makeFixtureReviewer(),
+          outputDir: path.join(root, 'skills', 'generated-distilled'),
+          reviewOutcomesPath: outcomesPath,
+        }),
+        /Expected|JSON|Unexpected/i,
+      );
+      assert.equal(fs.readFileSync(outcomesPath, 'utf-8'), '{not json');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('does not mutate in-memory outcomes when later candidate processing fails', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-pipeline-atomic-'));
+    try {
+      const outcomesPath = path.join(root, 'data', 'distillation-review-outcomes.json');
+      const outputDir = path.join(root, 'skills', 'generated-distilled');
+      const unit: DistillationUnit = {
+        filePath: path.join(root, 'logs', 'sessions', 'chat.jsonl'),
+        newTurns: [
+          makeTurn(1, 'cli', 'How do I parse JSONL?', 'Use readline.'),
+          makeTurn(2, 'cli', 'Thanks, that works perfectly!', 'Great.'),
+        ],
+        continuityTurns: [],
+        byteRange: { start: 0, end: 1000 },
+        generatedAt: '2026-07-10T00:00:00.000Z',
+      };
+      const pipeline = new DistillationPipeline({
+        distiller: unitArg => [
+          fixtureCandidate(unitArg, 'cap-promote-atomic', PROMOTE_EVIDENCE),
+          fixtureCandidate(unitArg, 'cap-reject-atomic', REJECT_EVIDENCE),
+        ],
+        reviewer: packet => {
+          if (packet.candidate.capabilityId === 'cap-reject-atomic') {
+            throw new Error('simulated reviewer failure');
+          }
+          return {
+            schemaVersion: 1,
+            capabilityId: packet.candidate.capabilityId,
+            decision: 'promote',
+            rationale: 'Promote first candidate.',
+            reviewRisks: [],
+            rewrite: null,
+            reviewedAt: '2026-07-10T01:00:00.000Z',
+          };
+        },
+        outputDir,
+        reviewOutcomesPath: outcomesPath,
+      });
+
+      assert.throws(() => pipeline.processUnit(unit), /simulated reviewer failure/);
+      assert.deepEqual(pipeline.getReviewOutcomes(), []);
+      assert.equal(fs.existsSync(outcomesPath), false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

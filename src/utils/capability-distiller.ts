@@ -161,6 +161,13 @@ const CORRECTION_MARKERS: readonly string[] = [
   'error',
 ];
 
+const POSITIVE_ACCEPTANCE_REGEXES = POSITIVE_ACCEPTANCE_MARKERS.map(marker =>
+  buildMarkerRegex(marker),
+);
+const CORRECTION_REGEXES = CORRECTION_MARKERS.map(marker =>
+  buildMarkerRegex(marker),
+);
+
 // ---------------------------------------------------------------------------
 // Public distiller entry point
 // ---------------------------------------------------------------------------
@@ -255,22 +262,16 @@ function detectSolvedLoop(
 }
 
 function hasPositiveAcceptance(text: string): boolean {
-  const lower = text.toLowerCase();
-  return POSITIVE_ACCEPTANCE_MARKERS.some(marker =>
-    hasMarker(lower, marker),
-  );
+  return POSITIVE_ACCEPTANCE_REGEXES.some(regex => regex.test(text));
 }
 
 function hasCorrectionMarker(text: string): boolean {
-  const lower = text.toLowerCase();
-  return CORRECTION_MARKERS.some(marker =>
-    hasMarker(lower, marker),
-  );
+  return CORRECTION_REGEXES.some(regex => regex.test(text));
 }
 
-function hasMarker(text: string, marker: string): boolean {
+function buildMarkerRegex(marker: string): RegExp {
   const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i').test(text);
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i');
 }
 
 // ---------------------------------------------------------------------------
@@ -283,7 +284,7 @@ function buildCandidate(
   verificationTurn: CompletedTurn,
   evidence: SolvedLoopEvidence,
 ): DistilledKnowledgeCandidate {
-  const toolNames = problemTurn.assistant.tool_calls.map(tc => tc.name).filter(Boolean);
+  const toolNames = uniqueToolNames(problemTurn.assistant.tool_calls.map(tc => tc.name));
   return {
     schemaVersion: 1,
     kind: 'capability',
@@ -360,13 +361,17 @@ function cleanText(text: string): string {
   return (text || '').replace(/\s+/g, ' ').trim();
 }
 
+function uniqueToolNames(toolNames: string[]): string[] {
+  return [...new Set(toolNames.map(name => name.trim()).filter(Boolean))];
+}
+
 function snippet(text: string, max: number = MAX_SNIPPET_LEN): string {
   if (text.length <= max) return text;
   return text.slice(0, max).trimEnd() + '...';
 }
 
 function stableCapabilityId(unit: DistillationUnit, problemTurn: CompletedTurn): string {
-  const raw = `${unit.filePath}|${unit.byteRange.start}-${unit.byteRange.end}|turn-${problemTurn.turn}`;
+  const raw = `${unit.filePath}|turn-${problemTurn.turn}|${cleanText(problemTurn.user.text)}`;
   const hash = crypto.createHash('sha256').update(raw).digest('hex');
   return `cap-${hash.slice(0, 16)}`;
 }
