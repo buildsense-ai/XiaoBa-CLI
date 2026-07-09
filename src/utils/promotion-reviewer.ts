@@ -37,7 +37,20 @@ import {
  *                   attention before installation.
  * - `reject`      — the candidate should not be installed.
  */
-export type PromotionDecision = 'promote' | 'needs_review' | 'reject';
+export type PromotionDecision =
+  | 'promote'
+  | 'needs_review'
+  | 'reject'
+  | 'new_capability'
+  | 'append_evidence'
+  | 'supersede_snapshot';
+
+/**
+ * Version identifier for the deterministic promotion reviewer. Bumps when
+ * the review heuristics change materially, so needs-review retry gating can
+ * detect that a stronger/changed reviewer should revisit queued entries.
+ */
+export const PROMOTION_REVIEWER_VERSION = 'promotion-reviewer-v1';
 
 /**
  * Risks surfaced during review that are independent of the candidate's own
@@ -120,6 +133,12 @@ export interface PromotionReviewResult {
   reviewRisks: ReviewerRisk[];
   /** Faithful rewrite of structured fields, or null when no rewrite was needed. */
   rewrite: FaithfulRewrite | null;
+  /**
+   * Reviewer questions describing what evidence or context is missing.
+   * Populated mainly for `needs_review` decisions so a later retry pass
+   * knows what to look for.
+   */
+  questions?: string[];
   /** ISO timestamp of the review. */
   reviewedAt: string;
 }
@@ -288,6 +307,10 @@ export function reviewPromotionPacket(packet: PromotionPacket): PromotionReviewR
       'Insufficient provenance for a promote decision; held for review.',
       [...risks, ...packet.reviewRisks],
       hasRewrite(rewrite) ? rewrite : null,
+      [
+        `Why does this candidate only have ${provenance.length} provenance ref(s)?`,
+        'Can a second source turn (problem-action and verification) be provided?',
+      ],
     );
   }
 
@@ -298,6 +321,10 @@ export function reviewPromotionPacket(packet: PromotionPacket): PromotionReviewR
       'Provenance is present but incomplete for an automatic promote decision.',
       [...risks, ...packet.reviewRisks],
       hasRewrite(rewrite) ? rewrite : null,
+      [
+        'Which provenance refs are incomplete and why?',
+        'Can the missing file paths, turn numbers, or byte ranges be recovered?',
+      ],
     );
   }
 
@@ -308,6 +335,10 @@ export function reviewPromotionPacket(packet: PromotionPacket): PromotionReviewR
       'Candidate contains unsupported claims; downgraded to needs_review.',
       [...risks, ...packet.reviewRisks],
       hasRewrite(rewrite) ? rewrite : null,
+      [
+        'Which claims in the candidate are not grounded in the solved-loop evidence?',
+        'Can additional evidence be provided to support the unsupported claims?',
+      ],
     );
   }
 
@@ -581,8 +612,9 @@ function makeResult(
   rationale: string,
   reviewRisks: ReviewerRisk[],
   rewrite: FaithfulRewrite | null,
+  questions?: string[],
 ): PromotionReviewResult {
-  return {
+  const result: PromotionReviewResult = {
     schemaVersion: 1,
     capabilityId,
     decision,
@@ -591,4 +623,8 @@ function makeResult(
     rewrite,
     reviewedAt: new Date().toISOString(),
   };
+  if (decision === 'needs_review' && questions && questions.length > 0) {
+    result.questions = questions;
+  }
+  return result;
 }

@@ -83,6 +83,7 @@ interface TestEnv {
   stateFile: string;
   recordFile: string;
   reviewOutcomesFile: string;
+  workLogRoot: string;
   generatedDistilledRoot: string;
   restore: () => void;
   teardown: () => void;
@@ -102,6 +103,7 @@ function setupEnv(enableHeartbeat: boolean = true, role?: string): TestEnv {
   const stateFile = path.join(root, 'data', 'distillation-cursor-state.json');
   const recordFile = path.join(root, 'data', 'distillation-heartbeat-record.json');
   const reviewOutcomesFile = path.join(root, 'data', 'distillation-review-outcomes.json');
+  const workLogRoot = path.join(root, 'logs', 'branches', 'distillation');
   const generatedDistilledRoot = path.join(skillsRoot, 'generated-distilled');
 
   const savedEnv: Record<string, string | undefined> = {
@@ -112,6 +114,11 @@ function setupEnv(enableHeartbeat: boolean = true, role?: string): TestEnv {
     DISTILLATION_HEARTBEAT_RECORD_FILE: process.env.DISTILLATION_HEARTBEAT_RECORD_FILE,
     DISTILLATION_HEARTBEAT_REVIEW_OUTCOMES_FILE:
       process.env.DISTILLATION_HEARTBEAT_REVIEW_OUTCOMES_FILE,
+    DISTILLATION_HEARTBEAT_NEEDS_REVIEW_QUEUE_FILE:
+      process.env.DISTILLATION_HEARTBEAT_NEEDS_REVIEW_QUEUE_FILE,
+    DISTILLATION_HEARTBEAT_CAPABILITY_REGISTRY_FILE:
+      process.env.DISTILLATION_HEARTBEAT_CAPABILITY_REGISTRY_FILE,
+    DISTILLATION_HEARTBEAT_WORK_LOG_ROOT: process.env.DISTILLATION_HEARTBEAT_WORK_LOG_ROOT,
     XIAOBA_ROLE: process.env.XIAOBA_ROLE,
     XIAOBA_SKILLS_DIR: process.env.XIAOBA_SKILLS_DIR,
     XIAOBA_USER_DATA_DIR: process.env.XIAOBA_USER_DATA_DIR,
@@ -130,6 +137,9 @@ function setupEnv(enableHeartbeat: boolean = true, role?: string): TestEnv {
   delete process.env.DISTILLATION_HEARTBEAT_STATE_FILE;
   delete process.env.DISTILLATION_HEARTBEAT_RECORD_FILE;
   delete process.env.DISTILLATION_HEARTBEAT_REVIEW_OUTCOMES_FILE;
+  delete process.env.DISTILLATION_HEARTBEAT_NEEDS_REVIEW_QUEUE_FILE;
+  delete process.env.DISTILLATION_HEARTBEAT_CAPABILITY_REGISTRY_FILE;
+  delete process.env.DISTILLATION_HEARTBEAT_WORK_LOG_ROOT;
   // Keep the runtime skills root hermetic: generated-distilled lands under
   // <root>/skills/generated-distilled, i.e. the current runtime skills root.
   process.env.XIAOBA_SKILLS_DIR = skillsRoot;
@@ -150,6 +160,7 @@ function setupEnv(enableHeartbeat: boolean = true, role?: string): TestEnv {
     stateFile,
     recordFile,
     reviewOutcomesFile,
+    workLogRoot,
     generatedDistilledRoot,
     restore: () => {
       for (const [key, value] of Object.entries(savedEnv)) {
@@ -210,6 +221,11 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
       env.reviewOutcomesFile,
       'review outcomes resolve to the runtime data state file',
     );
+    assert.equal(
+      config.workLogRoot,
+      env.workLogRoot,
+      'distillation work logs resolve to branch-style runtime logs',
+    );
 
     // Behavioral proof that the scheduler processor is the real pipeline, not
     // the default no-op: a session log append produces a durable review outcome
@@ -226,6 +242,26 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
     assert.ok(
       outcomes.some(o => o.decision === 'promote'),
       'at least one promoted outcome was recorded durably',
+    );
+
+    const workLogEntries = readDistillationWorkLogEntries(env.workLogRoot);
+    assert.ok(workLogEntries.length > 0, 'distillation work log entries were written');
+    assert.ok(
+      workLogEntries.every(e => e.entry_type === 'branch' && e.branch_type === 'distillation'),
+      'work log follows branch-agent entry shape',
+    );
+    assert.deepEqual(
+      workLogEntries.map(e => e.event_type),
+      [
+        'start',
+        'distiller_output',
+        'promotion_packet',
+        'review_result',
+        'install_result',
+        'run_result',
+        'transcript',
+      ],
+      'work log captures the distiller/reviewer/installer event chain',
     );
   });
 
@@ -375,6 +411,18 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
       'the promoted outcome points at the installed skill file',
     );
 
+    const workLogEntries = readDistillationWorkLogEntries(env.workLogRoot);
+    const installEvent = workLogEntries.find(e => e.event_type === 'install_result');
+    assert.equal(
+      installEvent?.skill_file_path,
+      skillPath,
+      'work log links installer result to generated SKILL.md',
+    );
+    assert.ok(
+      workLogEntries.some(e => e.event_type === 'review_result' && e.decision === 'promote'),
+      'work log records reviewer promotion decision',
+    );
+
     // The Log Cursor advanced durably, so a repeated heartbeat with no new
     // appends does not install a duplicate skill.
     const r2 = await support.distillationHeartbeatScheduler!.runHeartbeat('scheduled');
@@ -401,6 +449,30 @@ function collectSkillFiles(root: string): string[] {
       const skillFile = path.join(fullPath, 'SKILL.md');
       if (fs.existsSync(skillFile)) results.push(skillFile);
       results.push(...collectSkillFiles(fullPath));
+    }
+  }
+  return results;
+}
+
+function readDistillationWorkLogEntries(root: string): any[] {
+  const files = collectJsonlFiles(root);
+  assert.equal(files.length, 1, 'one distillation work log file was written');
+  return fs.readFileSync(files[0], 'utf-8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line));
+}
+
+function collectJsonlFiles(root: string): string[] {
+  if (!fs.existsSync(root)) return [];
+  const results: string[] = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...collectJsonlFiles(fullPath));
+    } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+      results.push(fullPath);
     }
   }
   return results;
