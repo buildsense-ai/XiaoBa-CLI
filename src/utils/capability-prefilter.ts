@@ -222,7 +222,7 @@ const STOP_WORDS = new Set<string>([
 ]);
 
 /**
- * Tokenize text into lowercase alphanumeric tokens.
+ * Tokenize text into lowercase Unicode letter/number tokens.
  *
  * Deterministic: no stemming, no model calls. A small stop-word list removes
  * domain boilerplate that would otherwise create false recall overlap.
@@ -230,9 +230,12 @@ const STOP_WORDS = new Set<string>([
 export function tokenizeText(text: string): Set<string> {
   const normalized = (text || '').toLowerCase();
   const tokens = new Set<string>();
-  for (const match of normalized.match(/[a-z0-9]+/g) ?? []) {
+  for (const match of normalized.match(/[\p{L}\p{N}]+/gu) ?? []) {
     if (match.length > 1 && !STOP_WORDS.has(match)) {
       tokens.add(match);
+    }
+    if (/\p{Script=Han}/u.test(match)) {
+      for (const character of match) tokens.add(character);
     }
   }
   return tokens;

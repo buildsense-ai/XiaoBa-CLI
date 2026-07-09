@@ -85,6 +85,18 @@ describe('Capability Candidate Distiller', () => {
       assert.deepEqual(candidate.sourceUnit.byteRange, unit.byteRange);
     });
 
+    test('keeps compacted metadata within its declared limits', () => {
+      const unit = makeUnit([
+        makeTurn(1, `How do I ${'process a very long record '.repeat(30)}?`, 'Use the streaming parser. '.repeat(30)),
+        makeTurn(2, 'Thanks, that works perfectly!', 'Glad it helped.'),
+      ]);
+
+      const [candidate] = distillCapabilityCandidates(unit);
+      assert.ok(candidate);
+      assert.ok(candidate.title.replace(/^Capability: /, '').length <= 96);
+      assert.ok(candidate.actionPattern.replace(/^Apply this response pattern: /, '').length <= 280);
+    });
+
     test('candidate action pattern references the tools used in the problem turn', () => {
       const unit = makeUnit([
         makeTurn(

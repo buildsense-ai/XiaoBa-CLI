@@ -298,6 +298,25 @@ describe('Needs Review Queue (issue #19)', () => {
       }
     });
 
+    test('a structurally invalid queue file is quarantined', () => {
+      const env = setup();
+      try {
+        fs.mkdirSync(path.dirname(env.queueFile), { recursive: true });
+        fs.writeFileSync(
+          env.queueFile,
+          JSON.stringify({ schemaVersion: 1, entries: [] }),
+          'utf-8',
+        );
+
+        const state = loadNeedsReviewQueue(env.queueFile);
+        assert.equal(state.stateCorrupt, true);
+        assert.deepEqual(state.entries, {});
+        assert.equal(fs.existsSync(env.queueFile), false);
+      } finally {
+        env.teardown();
+      }
+    });
+
     test('quarantine does not destroy installed snapshots or audit logs', () => {
       const env = setup();
       try {

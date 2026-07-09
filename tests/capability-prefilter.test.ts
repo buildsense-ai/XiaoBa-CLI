@@ -108,6 +108,14 @@ describe('Capability Prefilter (issue #18)', () => {
       assert.equal(tokens.has('c'), false);
       assert.ok(tokens.has('jsonl'));
     });
+
+    test('tokenizeText preserves Unicode text for non-English capability recall', () => {
+      const tokens = tokenizeText('解析 JSONL 文件并逐行处理');
+      assert.ok(tokens.has('解'));
+      assert.ok(tokens.has('析'));
+      assert.ok(tokens.has('文'));
+      assert.ok(tokens.has('jsonl'));
+    });
   });
 
   describe('obvious match', () => {
@@ -136,6 +144,25 @@ describe('Capability Prefilter (issue #18)', () => {
       assert.equal(result.matches[0].score, 100);
       assert.equal(result.matches[1].capabilityId, 'cap-read-large-file');
       assert.ok(result.matches[1].score < 100);
+    });
+
+    test('recalls a related Chinese capability', () => {
+      const registry = emptyCapabilityRegistryState();
+      makeRegistryEntry(registry, {
+        capabilityId: 'cap-parse-jsonl-zh',
+        activeSnapshotId: 'snap-parse-jsonl-zh',
+        routingDescription: '适用于解析 JSONL 文件。逐行读取并处理数据。',
+      });
+
+      const candidate = makeCandidate({
+        capabilityId: 'cap-new-jsonl-zh',
+        title: '解析 JSONL 文件',
+        applicability: '用户需要处理大型 JSONL 文件',
+        actionPattern: '逐行读取并处理数据',
+      });
+
+      const result = prefilterCapabilities(candidate, registry);
+      assert.equal(result.matches[0]?.capabilityId, 'cap-parse-jsonl-zh');
     });
   });
 

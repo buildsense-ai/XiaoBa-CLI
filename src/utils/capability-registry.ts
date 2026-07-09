@@ -50,6 +50,12 @@ const VALID_CAPABILITY_STATUSES = new Set<CapabilityStatus>([
   'retired',
 ]);
 
+const RESERVED_CAPABILITY_IDS = new Set([
+  '__proto__',
+  'constructor',
+  'prototype',
+]);
+
 /**
  * An evidence ref identifies a solved-loop evidence record that supports a
  * capability. The triple (sourceFilePath, turn, byteRange) is the durable
@@ -155,6 +161,13 @@ export function loadCapabilityRegistry(stateFilePath: string): CapabilityRegistr
   const raw = fs.readFileSync(stateFilePath, 'utf-8');
   try {
     const parsed = JSON.parse(raw) as Partial<CapabilityRegistryState>;
+    if (
+      !isRecord(parsed)
+      || parsed.schemaVersion !== CAPABILITY_REGISTRY_SCHEMA_VERSION
+      || !isRecord(parsed.capabilities)
+    ) {
+      throw new Error('Capability Registry state has an invalid structure.');
+    }
     return {
       schemaVersion: CAPABILITY_REGISTRY_SCHEMA_VERSION,
       capabilities: sanitizeCapabilities(parsed.capabilities),
@@ -235,8 +248,9 @@ export function newCapability(
 ): CapabilityRegistryEntry {
   assertNonEmpty(input.capabilityId, 'capabilityId');
   assertNonEmpty(input.activeSnapshotId, 'activeSnapshotId');
+  assertSafeCapabilityId(input.capabilityId);
 
-  if (state.capabilities[input.capabilityId]) {
+  if (getCapability(state, input.capabilityId)) {
     throw new Error(
       `Cannot create capability "${input.capabilityId}": a registry entry with this capabilityId already exists.`,
     );
@@ -290,7 +304,7 @@ export function appendEvidence(
 ): CapabilityRegistryEntry {
   assertNonEmpty(input.capabilityId, 'capabilityId');
 
-  const entry = state.capabilities[input.capabilityId];
+  const entry = getCapability(state, input.capabilityId);
   if (!entry) {
     throw new Error(
       `Cannot append evidence to capability "${input.capabilityId}": no such registry entry.`,
@@ -357,7 +371,7 @@ export function supersedeSnapshot(
   assertNonEmpty(input.capabilityId, 'capabilityId');
   assertNonEmpty(input.newActiveSnapshotId, 'newActiveSnapshotId');
 
-  const entry = state.capabilities[input.capabilityId];
+  const entry = getCapability(state, input.capabilityId);
   if (!entry) {
     throw new Error(
       `Cannot supersede snapshot for capability "${input.capabilityId}": no such registry entry.`,
@@ -399,7 +413,9 @@ export function getCapability(
   state: CapabilityRegistryState,
   capabilityId: string,
 ): CapabilityRegistryEntry | undefined {
-  return state.capabilities[capabilityId];
+  return Object.prototype.hasOwnProperty.call(state.capabilities, capabilityId)
+    ? state.capabilities[capabilityId]
+    : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -461,6 +477,12 @@ function assertNonEmpty(value: unknown, label: string): asserts value is string 
   }
 }
 
+function assertSafeCapabilityId(capabilityId: string): void {
+  if (RESERVED_CAPABILITY_IDS.has(capabilityId)) {
+    throw new Error(`Capability Registry: capabilityId "${capabilityId}" is reserved.`);
+  }
+}
+
 /**
  * Sanitize a parsed `capabilities` map so a slightly malformed state file does
  * not crash the loader. Only entries with a non-empty `capabilityId` and
@@ -477,7 +499,11 @@ function sanitizeCapabilities(
     const entry = source[key];
     if (!entry || typeof entry !== 'object') continue;
     const e = entry as Partial<CapabilityRegistryEntry>;
-    if (!isNonEmptyString(e.capabilityId) || !isNonEmptyString(e.activeSnapshotId)) {
+    if (
+      !isNonEmptyString(e.capabilityId)
+      || RESERVED_CAPABILITY_IDS.has(e.capabilityId)
+      || !isNonEmptyString(e.activeSnapshotId)
+    ) {
       continue;
     }
     result[e.capabilityId] = {
@@ -570,6 +596,10 @@ function sanitizeSourceReview(
 
 function isString(value: unknown): value is string {
   return typeof value === 'string';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 function isNonEmptyString(value: unknown): value is string {

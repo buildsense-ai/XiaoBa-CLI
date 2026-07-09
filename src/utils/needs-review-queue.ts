@@ -8,6 +8,7 @@ import {
 import {
   CapabilityRegistryEntry,
   CapabilityRegistryState,
+  getCapability,
 } from './capability-registry';
 import { PromotionPacket, PromotionReviewResult } from './promotion-reviewer';
 
@@ -193,6 +194,13 @@ export function loadNeedsReviewQueue(queueFilePath: string): NeedsReviewQueueSta
   const raw = fs.readFileSync(queueFilePath, 'utf-8');
   try {
     const parsed = JSON.parse(raw) as Partial<NeedsReviewQueueState>;
+    if (
+      !isRecord(parsed)
+      || parsed.schemaVersion !== NEEDS_REVIEW_QUEUE_SCHEMA_VERSION
+      || !isRecord(parsed.entries)
+    ) {
+      throw new Error('Needs Review Queue state has an invalid structure.');
+    }
     return {
       schemaVersion: NEEDS_REVIEW_QUEUE_SCHEMA_VERSION,
       entries: sanitizeEntries(parsed.entries),
@@ -500,7 +508,7 @@ export function computeRegistryStateFingerprint(
 ): string {
   const sortedIds = dedupeStrings([...capabilityIds]).sort();
   const fingerprintable = sortedIds.map(id => {
-    const entry = registry.capabilities[id];
+    const entry = getCapability(registry, id);
     if (!entry) return { capabilityId: id, present: false };
     return {
       capabilityId: entry.capabilityId,
@@ -553,6 +561,10 @@ function assertNonEmpty(value: unknown, label: string): asserts value is string 
 
 function isString(value: unknown): value is string {
   return typeof value === 'string';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 function isNonEmptyString(value: unknown): value is string {

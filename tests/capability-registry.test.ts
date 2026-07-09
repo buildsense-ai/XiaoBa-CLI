@@ -282,6 +282,25 @@ describe('Capability Registry (issue #16)', () => {
       }
     });
 
+    test('a structurally invalid state file is quarantined', () => {
+      const env = setup();
+      try {
+        fs.mkdirSync(path.dirname(env.stateFile), { recursive: true });
+        fs.writeFileSync(
+          env.stateFile,
+          JSON.stringify({ schemaVersion: 1, capabilities: 'broken' }),
+          'utf-8',
+        );
+
+        const state = loadCapabilityRegistry(env.stateFile);
+        assert.equal(state.stateCorrupt, true);
+        assert.deepEqual(state.capabilities, {});
+        assert.equal(fs.existsSync(env.stateFile), false);
+      } finally {
+        env.teardown();
+      }
+    });
+
     test('quarantine does not destroy installed snapshots or audit logs', () => {
       const env = setup();
       try {
@@ -432,6 +451,17 @@ describe('Capability Registry (issue #16)', () => {
           ),
         /activeSnapshotId must be a non-empty string/,
       );
+    });
+
+    test('rejects capability IDs that collide with object prototype keys', () => {
+      const state = emptyCapabilityRegistryState();
+      for (const capabilityId of ['__proto__', 'constructor', 'prototype']) {
+        assert.throws(
+          () => newCapability(state, makeNewCapabilityInput({ capabilityId })),
+          /capabilityId .* is reserved/,
+        );
+      }
+      assert.equal(Object.keys(state.capabilities).length, 0);
     });
 
     test('initial evidence refs are deduplicated', () => {

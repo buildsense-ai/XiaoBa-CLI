@@ -374,7 +374,8 @@ function compactForMetadata(text: string, max: number): string {
   const cleaned = cleanText(text);
   if (cleaned.length <= max) return cleaned;
 
-  const hardLimit = Math.max(20, max - 16);
+  const suffix = ' [source has more]';
+  const hardLimit = Math.max(20, max - suffix.length);
   const head = cleaned.slice(0, hardLimit);
   const boundary = Math.max(
     head.lastIndexOf('. '),
@@ -382,7 +383,7 @@ function compactForMetadata(text: string, max: number): string {
     head.lastIndexOf(', '),
   );
   const compacted = boundary >= 40 ? head.slice(0, boundary + 1) : head.trimEnd();
-  return `${compacted} [source has more]`;
+  return `${compacted}${suffix}`;
 }
 
 function stableCapabilityId(unit: DistillationUnit, problemTurn: CompletedTurn): string {

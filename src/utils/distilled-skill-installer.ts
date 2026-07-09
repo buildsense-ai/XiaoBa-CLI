@@ -318,7 +318,7 @@ function renderFrontmatter(
 
   // Skill discovery fields (consumed by SkillParser).
   lines.push(`name: ${yamlString(skillName)}`);
-  lines.push(`description: ${yamlString(buildDescription(effective))}`);
+  lines.push(`description: ${yamlString(buildDistilledSkillDescription(effective))}`);
   lines.push(`user-invocable: true`);
 
   // Distilled capability identity.
@@ -352,7 +352,7 @@ function renderFrontmatter(
  * marks the skill as a distilled capability so humans and agents can
  * distinguish generated skills from hand-authored ones.
  */
-function buildDescription(effective: EffectiveFields): string {
+export function buildDistilledSkillDescription(effective: EffectiveFields): string {
   const applicability = normalizeDescriptionPart(effective.applicability)
     .replace(/^Applies when the user raises a similar problem to:\s*/i, '')
     .replace(/^Use when\s*/i, '');

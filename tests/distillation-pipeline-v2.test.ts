@@ -36,6 +36,7 @@ import {
   ReviewerFn,
 } from '../src/utils/distillation-pipeline';
 import {
+  buildDistilledSkillDescription,
   computeSnapshotId,
   resolveEffectiveFields,
 } from '../src/utils/distilled-skill-installer';
@@ -281,6 +282,86 @@ describe('DistillationPipeline V2 consolidation state wiring (issue #20)', () =>
     assert.equal(entry.status, 'active');
     assert.ok(entry.evidenceRefs.length > 0, 'registry entry has evidence refs');
     assert.ok(entry.relatedSnapshotIds.includes(entry.activeSnapshotId), 'active snapshot is in related snapshots');
+    assert.equal(
+      entry.routingDescription,
+      buildDistilledSkillDescription(
+        resolveEffectiveFields(fixtureCandidate(makeUnit(), 'cap-v2-new'), null),
+      ),
+      'registry routing description matches the active SKILL.md description',
+    );
+  });
+
+  test('new_capability registry routing description uses the faithful rewrite', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-pipeline-v2-rewrite-'));
+    try {
+      const candidate = fixtureCandidate(makeUnit(), 'cap-v2-rewrite');
+      const review: PromotionReviewResult = {
+        schemaVersion: 1,
+        capabilityId: candidate.capabilityId,
+        decision: 'new_capability',
+        rationale: 'Use reviewed wording.',
+        reviewRisks: [],
+        rewrite: {
+          applicability: 'Use when the reviewed applicability matches.',
+          actionPattern: 'Apply the reviewed action pattern.',
+        },
+        reviewedAt: '2026-07-10T01:00:00.000Z',
+      };
+      const registryPath = path.join(root, 'data', 'registry.json');
+      const pipeline = new DistillationPipeline({
+        distiller: () => [candidate],
+        reviewer: () => review,
+        outputDir: path.join(root, 'skills'),
+        reviewOutcomesPath: path.join(root, 'data', 'outcomes.json'),
+        capabilityRegistryPath: registryPath,
+      });
+
+      pipeline.processUnit(makeUnit());
+      const entry = loadCapabilityRegistry(registryPath).capabilities[candidate.capabilityId];
+      assert.equal(
+        entry.routingDescription,
+        buildDistilledSkillDescription(resolveEffectiveFields(candidate, review.rewrite)),
+      );
+      assert.match(entry.routingDescription, /reviewed applicability/);
+      assert.match(entry.routingDescription, /reviewed action pattern/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('V2 durable decisions fail when their required state path is missing', () => {
+    const decisions: PromotionDecision[] = [
+      'new_capability',
+      'append_evidence',
+      'supersede_snapshot',
+      'needs_review',
+    ];
+
+    for (const decision of decisions) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-pipeline-v2-no-state-'));
+      try {
+        const candidate = fixtureCandidate(makeUnit(), `cap-${decision}`);
+        const pipeline = new DistillationPipeline({
+          distiller: () => [candidate],
+          reviewer: packet => ({
+            schemaVersion: 1,
+            capabilityId: packet.candidate.capabilityId,
+            decision,
+            rationale: 'Fixture missing-state decision.',
+            reviewRisks: [],
+            rewrite: null,
+            reviewedAt: '2026-07-10T01:00:00.000Z',
+          }),
+          outputDir: path.join(root, 'skills'),
+          reviewOutcomesPath: path.join(root, 'data', 'outcomes.json'),
+        });
+
+        assert.throws(() => pipeline.processUnit(makeUnit()), /requires a configured/);
+        assert.equal(fs.existsSync(path.join(root, 'data', 'outcomes.json')), false);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    }
   });
 
   test('append_evidence updates registry evidence refs without changing active snapshot or installing a skill', () => {
