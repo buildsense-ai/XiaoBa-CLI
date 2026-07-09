@@ -489,6 +489,28 @@ describe('Log Cursor based Distillation Unit extraction', () => {
         env.teardown();
       }
     });
+
+    test('does not quarantine non-JSON read failures as corrupt state', () => {
+      const env = setup();
+      try {
+        fs.rmSync(env.stateFile, { force: true });
+        fs.mkdirSync(env.stateFile, { recursive: true });
+
+        assert.throws(
+          () => loadLogCursorState(env.stateFile),
+          /EISDIR|illegal operation on a directory|is a directory/i,
+        );
+        assert.equal(fs.existsSync(env.stateFile), true);
+        assert.equal(
+          fs.readdirSync(path.dirname(env.stateFile)).some(name =>
+            name.includes('.corrupt.'),
+          ),
+          false,
+        );
+      } finally {
+        env.teardown();
+      }
+    });
   });
 
   describe('legacy turn entries', () => {

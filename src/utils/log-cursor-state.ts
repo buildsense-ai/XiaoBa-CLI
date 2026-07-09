@@ -39,12 +39,14 @@ export function emptyLogCursorState(): LogCursorState {
 }
 
 export function loadLogCursorState(stateFilePath: string): LogCursorState {
+  if (!fs.existsSync(stateFilePath)) {
+    return emptyLogCursorState();
+  }
+
+  const raw = fs.readFileSync(stateFilePath, 'utf-8');
   try {
-    if (!fs.existsSync(stateFilePath)) {
-      return emptyLogCursorState();
-    }
     const parsed = JSON.parse(
-      fs.readFileSync(stateFilePath, 'utf-8'),
+      raw,
     ) as Partial<LogCursorState>;
     return {
       schemaVersion: 1,
@@ -69,11 +71,20 @@ export function saveLogCursorState(
     cursors: state.cursors || {},
   };
   const tmpPath = `${stateFilePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), {
-    encoding: 'utf-8',
-    mode: 0o600,
-  });
-  fs.renameSync(tmpPath, stateFilePath);
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+    fs.renameSync(tmpPath, stateFilePath);
+  } catch (error) {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {
+      // Best-effort cleanup only; preserve the original error.
+    }
+    throw error;
+  }
 }
 
 /**
