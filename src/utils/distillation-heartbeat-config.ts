@@ -30,6 +30,8 @@ export interface DistillationHeartbeatConfig {
   stateFilePath: string;
   /** Path to the heartbeat run record (observability + catch-up audit). */
   heartbeatRecordPath: string;
+  /** Path to the durable review-outcomes log (promote/needs_review/reject). */
+  reviewOutcomesPath: string;
 }
 
 function readEnv(env: NodeJS.ProcessEnv, ...keys: string[]): string | undefined {
@@ -126,6 +128,12 @@ export function getDistillationHeartbeatConfig(
     readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_RECORD_FILE'),
     'data/distillation-heartbeat-record.json',
   );
+  const reviewOutcomesPath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_REVIEW_OUTCOMES_FILE'),
+    'data/distillation-review-outcomes.json',
+  );
 
   return {
     enabled,
@@ -133,5 +141,6 @@ export function getDistillationHeartbeatConfig(
     logsRoot,
     stateFilePath,
     heartbeatRecordPath,
+    reviewOutcomesPath,
   };
 }
