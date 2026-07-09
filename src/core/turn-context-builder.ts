@@ -34,6 +34,7 @@ import {
   findFixedPromptModeState,
   findPreviousPromptModeState,
 } from '../runtime/prompt-modes';
+import { TRANSIENT_VISIBLE_OUTPUT_GUIDANCE_PREFIX } from './visible-output-guidance';
 import { resolveTurnContextTransientPolicy } from './transient-injection-policy';
 import { TRANSIENT_PENDING_USER_INPUT_PREFIX } from './pending-user-input-boundary';
 
@@ -117,6 +118,11 @@ export class TurnContextBuilder {
         msg.role === 'system'
         && typeof msg.content === 'string'
         && msg.content.startsWith(TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX)
+      ) return false;
+      if (
+        msg.__injected
+        && typeof msg.content === 'string'
+        && msg.content.startsWith(TRANSIENT_VISIBLE_OUTPUT_GUIDANCE_PREFIX)
       ) return false;
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
