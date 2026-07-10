@@ -1,7 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-  CompletedTurn,
   DistillationUnit,
 } from './distillation-unit';
 import {
@@ -56,6 +55,12 @@ import {
   InstalledSkillSnapshot,
   resolveEffectiveFields,
 } from './distilled-skill-installer';
+import {
+  BoundedSourceEvidence,
+  EvidenceBundle,
+  SkillEvolutionResult,
+  SkillEvolutionRuntime,
+} from './skill-evolution';
 
 /**
  * Distillation Pipeline (issue #6).
@@ -165,6 +170,11 @@ export interface PipelineUnitResult {
   needsReviewEntries: NeedsReviewQueueEntry[];
 }
 
+export interface V3PipelineUnitResult {
+  candidates: DistilledKnowledgeCandidate[];
+  evolutions: SkillEvolutionResult[];
+}
+
 /**
  * Result of re-reviewing eligible Needs Review Queue entries during a heartbeat
  * (issue #29).
@@ -230,6 +240,13 @@ export interface DistillationPipelineOptions {
    * audit logs for pure unit tests.
    */
   workLogRoot?: string;
+  /** Optional V3 Branch Promotion Reviewer / transition writer. */
+  skillEvolution?: SkillEvolutionRuntime;
+  /** Test/runtime hook for supplying bounded V3 evidence. */
+  v3EvidenceBundleBuilder?: (
+    unit: DistillationUnit,
+    candidate: DistilledKnowledgeCandidate,
+  ) => EvidenceBundle;
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +270,8 @@ export class DistillationPipeline {
   private readonly reviewerVersion: string;
   private readonly workLogRoot: string | null;
   private readonly outcomes: ReviewOutcomeEntry[];
+  private readonly skillEvolution: SkillEvolutionRuntime | null;
+  private readonly v3EvidenceBundleBuilder: DistillationPipelineOptions['v3EvidenceBundleBuilder'];
 
   constructor(options: DistillationPipelineOptions) {
     this.distiller = options.distiller ?? DEFAULT_DISTILLER;
@@ -263,7 +282,26 @@ export class DistillationPipeline {
     this.capabilityRegistryPath = options.capabilityRegistryPath ?? null;
     this.reviewerVersion = options.reviewerVersion ?? PROMOTION_REVIEWER_VERSION;
     this.workLogRoot = options.workLogRoot ?? null;
+    this.skillEvolution = options.skillEvolution ?? null;
+    this.v3EvidenceBundleBuilder = options.v3EvidenceBundleBuilder;
     this.outcomes = loadReviewOutcomes(this.reviewOutcomesPath);
+  }
+
+  /** Async runtime seam for the isolated V3 Author/Verifier workflow. */
+  async processUnitAsync(unit: DistillationUnit): Promise<PipelineUnitResult | V3PipelineUnitResult> {
+    if (!this.skillEvolution) return this.processUnit(unit);
+    const candidates = this.distiller(unit);
+    const reviewInputs = candidates.map(candidate => ({
+      candidate,
+      bundle: this.v3EvidenceBundleBuilder?.(unit, candidate)
+        ?? buildV3EvidenceBundle(unit, candidate, this.skillEvolution!),
+    }));
+    const evolutions = await mapWithConcurrency(
+      reviewInputs,
+      Math.max(1, Math.floor(this.skillEvolution.getEffectiveConfig().reviewerConcurrency)),
+      input => this.skillEvolution!.reviewAndApply(input.bundle),
+    );
+    return { candidates, evolutions };
   }
 
   /**
@@ -826,6 +864,60 @@ function persistReviewOutcomes(
  */
 export function defaultDistilledOutputDir(skillsRoot: string): string {
   return path.join(skillsRoot, GENERATED_DISTILLED_DIR_NAME);
+}
+
+export function buildV3EvidenceBundle(
+  unit: DistillationUnit,
+  candidate: DistilledKnowledgeCandidate,
+  skillEvolution: SkillEvolutionRuntime,
+): EvidenceBundle {
+  const turns = [...unit.continuityTurns, ...unit.newTurns];
+  const sourceEvidence: BoundedSourceEvidence[] = candidate.provenance.flatMap(ref => {
+    const sourceTurn = turns.find(turn => turn.turn === ref.turn);
+    if (!sourceTurn) return [];
+    return [{
+      ref: `${ref.filePath}#${ref.turn}:${ref.role}:${ref.unitByteRange.start}-${ref.unitByteRange.end}`,
+      sourceFilePath: ref.filePath,
+      turn: ref.turn,
+      byteRange: ref.unitByteRange,
+      role: ref.role,
+      content: JSON.stringify(sourceTurn),
+    }];
+  });
+  return {
+    bundleId: `v3:${unit.filePath}:${unit.byteRange.start}:${unit.byteRange.end}:${candidate.capabilityId}`,
+    episode: candidate,
+    completionEvidence: sourceEvidence.filter(ref => ref.role === 'problem-action'),
+    settlementEvidence: sourceEvidence.filter(ref => ref.role === 'verification'),
+    boundedContinuity: unit.continuityTurns,
+    referencedSkills: skillEvolution.getReferencedSkillSnapshots(),
+    relatedCurrentSkills: Object.values(skillEvolution.getRegistry().capabilities).map(record => ({
+      handle: record.handle,
+      revision: record.revision,
+      routingName: record.routingName,
+      description: record.description,
+      guidanceHash: record.guidanceHash,
+    })),
+    sourceEvidence,
+  };
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]!, index);
+    }
+  }));
+  return results;
 }
 
 // ---------------------------------------------------------------------------
