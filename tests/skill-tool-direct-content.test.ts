@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { SkillTool } from '../src/tools/skill-tool';
+import { loadSkillUsageLedger, SkillUsageLedger } from '../src/utils/skill-usage-ledger';
 
 describe('skill tool direct content mode', () => {
   let testRoot: string;
@@ -64,6 +65,51 @@ describe('skill tool direct content mode', () => {
     assert.equal(result.ok, true);
     assert.match(String(result.content), /已重新加载 1 个 skills/);
     assert.doesNotMatch(String(result.content), /__reload_skills__/);
+  });
+
+  test('records a successful generated Current Skill load but excludes manual skills', async () => {
+    const generatedFile = path.join(testRoot, 'skills', 'generated-distilled', 'cap_generated', 'SKILL.md');
+    fs.mkdirSync(path.dirname(generatedFile), { recursive: true });
+    fs.writeFileSync(generatedFile, [
+      '---',
+      'name: generated-demo',
+      'description: Generated demo skill',
+      '---',
+      '',
+      'Generated guidance.',
+    ].join('\n'), 'utf-8');
+
+    const tool = new SkillTool();
+    const generatedResult = await tool.execute(
+      { skill: 'generated-demo' },
+      { sessionId: 'runtime-1', conversationHistory: [{ __episodeId: 'episode-1' }] } as any,
+    );
+    assert.equal(generatedResult.ok, true);
+
+    const manualResult = await tool.execute(
+      { skill: 'demo' },
+      { sessionId: 'runtime-1', episodeId: 'episode-1', conversationHistory: [] } as any,
+    );
+    assert.equal(manualResult.ok, true);
+
+    const ledger = loadSkillUsageLedger(path.join(testRoot, 'data', 'skill-usage-ledger.json'));
+    assert.equal(ledger.loads.length, 1);
+    assert.equal(ledger.loads[0]!.skillName, 'generated-demo');
+    assert.equal(ledger.loads[0]!.episodeId, 'episode-1');
+    assert.equal(ledger.loads[0]!.capabilityHandle, 'cap_generated');
+    assert.equal(Object.hasOwn(ledger.loads[0]!, 'caused'), false);
+
+    const usageLedger = new SkillUsageLedger(
+      path.join(testRoot, 'data', 'skill-usage-ledger.json'),
+      path.join(testRoot, 'skills', 'generated-distilled'),
+    );
+    usageLedger.recordSameEpisodeOutcome({
+      loadFactId: ledger.loads[0]!.factId,
+      episodeId: 'episode-1',
+      outcome: 'verified_success',
+      evidenceRefs: ['session.jsonl#1:acceptance'],
+    });
+    assert.equal(loadSkillUsageLedger(path.join(testRoot, 'data', 'skill-usage-ledger.json')).outcomes[0]!.episodeId, 'episode-1');
   });
 });
 

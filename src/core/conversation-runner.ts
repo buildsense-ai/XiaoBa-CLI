@@ -675,7 +675,10 @@ export class ConversationRunner {
         const result = await this.executeToolWithRetry(
           toolCall,
           messages,
-          this.toolExecutionContext || {},
+          {
+            ...(this.toolExecutionContext || {}),
+            ...(this.episodeId ? { episodeId: this.episodeId } : {}),
+          },
           turns,
         );
         executedToolCalls++;
