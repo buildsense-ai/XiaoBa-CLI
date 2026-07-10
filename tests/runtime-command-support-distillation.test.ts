@@ -14,6 +14,7 @@ import { DistillationPipeline, loadReviewOutcomesSync } from '../src/utils/disti
 import { getDistillationHeartbeatConfig } from '../src/utils/distillation-heartbeat-config';
 import { SessionTurnLogEntry } from '../src/utils/session-log-schema';
 import { SkillParser } from '../src/skills/skill-parser';
+import { loadCapabilityRegistry } from '../src/utils/capability-registry';
 
 // ---------------------------------------------------------------------------
 // Runtime startup wiring of the full DistillationPipeline (issue #13).
@@ -240,9 +241,12 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
     const outcomes = loadReviewOutcomesSync(env.reviewOutcomesFile);
     assert.ok(outcomes.length > 0, 'the pipeline wrote durable review outcomes');
     assert.ok(
-      outcomes.some(o => o.decision === 'promote'),
-      'at least one promoted outcome was recorded durably',
+      outcomes.some(o => o.decision === 'new_capability'),
+      'at least one new_capability outcome was recorded durably',
     );
+
+    const registry = loadCapabilityRegistry(env.reviewOutcomesFile.replace('distillation-review-outcomes.json', 'capability-registry-state.json'));
+    assert.equal(Object.keys(registry.capabilities).length, 1, 'one registry entry was created');
 
     const workLogEntries = readDistillationWorkLogEntries(env.workLogRoot);
     assert.ok(workLogEntries.length > 0, 'distillation work log entries were written');
@@ -258,10 +262,11 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
         'promotion_packet',
         'review_result',
         'install_result',
+        'registry_new_capability',
         'run_result',
         'transcript',
       ],
-      'work log captures the distiller/reviewer/installer event chain',
+      'work log captures the distiller/reviewer/installer/registry event chain',
     );
   });
 
@@ -407,9 +412,14 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
     const outcomes = loadReviewOutcomesSync(env.reviewOutcomesFile);
     assert.ok(outcomes.length > 0, 'durable review outcomes were written');
     assert.ok(
-      outcomes.some(o => o.decision === 'promote' && o.skillFilePath === skillPath),
-      'the promoted outcome points at the installed skill file',
+      outcomes.some(o => o.decision === 'new_capability' && o.skillFilePath === skillPath),
+      'the new_capability outcome points at the installed skill file',
     );
+
+    const registry = loadCapabilityRegistry(env.reviewOutcomesFile.replace('distillation-review-outcomes.json', 'capability-registry-state.json'));
+    assert.equal(Object.keys(registry.capabilities).length, 1, 'one registry entry was created');
+    const entry = Object.values(registry.capabilities)[0];
+    assert.equal(entry.activeSnapshotId, parsed.data.snapshot_id, 'registry active snapshot matches installed skill');
 
     const workLogEntries = readDistillationWorkLogEntries(env.workLogRoot);
     const installEvent = workLogEntries.find(e => e.event_type === 'install_result');
@@ -419,8 +429,8 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
       'work log links installer result to generated SKILL.md',
     );
     assert.ok(
-      workLogEntries.some(e => e.event_type === 'review_result' && e.decision === 'promote'),
-      'work log records reviewer promotion decision',
+      workLogEntries.some(e => e.event_type === 'review_result' && e.decision === 'new_capability'),
+      'work log records reviewer new_capability decision',
     );
 
     // The Log Cursor advanced durably, so a repeated heartbeat with no new

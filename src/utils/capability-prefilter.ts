@@ -40,6 +40,8 @@ export interface CapabilityPrefilterMatch {
   status: CapabilityStatus;
   /** Routable When/Do summary from the registry entry. */
   routingDescription: string;
+  /** Full active-guidance fingerprint, when available in the registry. */
+  guidanceFingerprint?: string;
   /** Deterministic recall score (0–100). Higher means more overlap. */
   score: number;
   /** Number of evidence refs backing the related capability. */
@@ -286,6 +288,7 @@ function buildMatch(entry: CapabilityRegistryEntry, score: number): CapabilityPr
     activeSnapshotId: entry.activeSnapshotId,
     status: entry.status,
     routingDescription: entry.routingDescription,
+    guidanceFingerprint: entry.guidanceFingerprint,
     score,
     evidenceCount: entry.evidenceRefs.length,
     relatedSnapshotCount: entry.relatedSnapshotIds.length,

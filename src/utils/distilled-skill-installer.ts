@@ -10,6 +10,11 @@ import {
   PromotionDecision,
   PromotionReviewResult,
 } from './promotion-reviewer';
+import {
+  buildDistilledSkillDescription,
+  EffectiveFields,
+  resolveEffectiveFields,
+} from './distilled-skill-content';
 
 /**
  * Distilled Skill Installer (issue #5).
@@ -53,19 +58,12 @@ export interface InstalledSkillSnapshot {
   skillName: string;
 }
 
-/**
- * Effective field values after applying a Faithful Rewrite (if any).
- *
- * The installer resolves rewrite overrides so the rendered Markdown reflects
- * the final reviewed content, not the pre-rewrite candidate.
- */
-export interface EffectiveFields {
-  title: string;
-  applicability: string;
-  actionPattern: string;
-  boundaries: string[];
-  risks: string[];
-}
+export {
+  /** Re-exported from the shared content helper so existing importers keep working. */
+  EffectiveFields,
+  resolveEffectiveFields,
+  buildDistilledSkillDescription,
+} from './distilled-skill-content';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -259,27 +257,6 @@ function normalizeOutputDir(outputDir: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Internal: effective fields (apply Faithful Rewrite)
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the effective field values by applying the reviewer's Faithful
- * Rewrite overrides on top of the candidate's original fields.
- */
-export function resolveEffectiveFields(
-  candidate: DistilledKnowledgeCandidate,
-  rewrite: FaithfulRewrite | null,
-): EffectiveFields {
-  return {
-    title: rewrite?.title ?? candidate.title,
-    applicability: rewrite?.applicability ?? candidate.applicability,
-    actionPattern: rewrite?.actionPattern ?? candidate.actionPattern,
-    boundaries: rewrite?.boundaries ?? candidate.boundaries,
-    risks: rewrite?.risks ?? candidate.risks,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Internal: skill name
 // ---------------------------------------------------------------------------
 
@@ -345,48 +322,6 @@ function renderFrontmatter(
 
   lines.push('---');
   return lines.join('\n');
-}
-
-/**
- * Build the skill `description` frontmatter value. The description explicitly
- * marks the skill as a distilled capability so humans and agents can
- * distinguish generated skills from hand-authored ones.
- */
-export function buildDistilledSkillDescription(effective: EffectiveFields): string {
-  const applicability = normalizeDescriptionPart(effective.applicability)
-    .replace(/^Applies when the user raises a similar problem to:\s*/i, '')
-    .replace(/^Use when\s*/i, '');
-  const action = normalizeDescriptionPart(effective.actionPattern)
-    .replace(/^Respond with:\s*/i, '')
-    .replace(/^Apply this response pattern:\s*/i, '')
-    .replace(/^Use tool\(s\)\s*\[([^\]]+)\]\s*then apply this pattern:\s*/i, 'Use tools [$1], then ');
-
-  return `Distilled capability. When: ${compactDescriptionPart(applicability, 150)} Do: ${compactDescriptionPart(action, 210)}`;
-}
-
-function normalizeDescriptionPart(value: string): string {
-  return value.replace(/\s+/g, ' ').trim();
-}
-
-function compactDescriptionPart(value: string, max: number): string {
-  if (value.length <= max) return ensureTerminalPunctuation(value);
-
-  const suffix = ' [source has more]';
-  const hardLimit = Math.max(20, max - suffix.length - 1);
-  const head = value.slice(0, hardLimit);
-  const boundary = Math.max(
-    head.lastIndexOf('. '),
-    head.lastIndexOf('; '),
-    head.lastIndexOf(', '),
-  );
-  const compacted = boundary >= 40 ? head.slice(0, boundary + 1) : head.trimEnd();
-  return `${ensureTerminalPunctuation(compacted)}${suffix}`;
-}
-
-function ensureTerminalPunctuation(value: string): string {
-  if (!value) return value;
-  const cleaned = value.replace(/[,;:，；：]\s*$/, '');
-  return /[.!?。！？]$/.test(cleaned) ? cleaned : `${cleaned}.`;
 }
 
 // ---------------------------------------------------------------------------

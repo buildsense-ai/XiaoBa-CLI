@@ -31,6 +31,7 @@ import {
   SupersedeSnapshotInput,
 } from './capability-registry';
 import { prefilterCapabilities } from './capability-prefilter';
+import { computeDistilledSkillGuidanceFingerprint } from './distilled-skill-content';
 import {
   addNeedsReviewEntry,
   loadNeedsReviewQueue,
@@ -262,6 +263,7 @@ export class DistillationPipeline {
       ? loadNeedsReviewQueue(this.needsReviewQueuePath)
       : null;
     const capabilityRegistry = this.loadCurrentCapabilityRegistry();
+    const useRegistry = this.capabilityRegistryPath !== null;
 
     try {
       candidates = this.distiller(unit);
@@ -271,7 +273,10 @@ export class DistillationPipeline {
       });
 
       for (const candidate of candidates) {
-        const packet = buildPromotionPacket(candidate);
+        const relatedCapabilities = useRegistry
+          ? prefilterCapabilities(candidate, capabilityRegistry)
+          : undefined;
+        const packet = buildPromotionPacket(candidate, { relatedCapabilities });
         workLogger.write('promotion_packet', {
           capability_id: candidate.capabilityId,
           recommendation: packet.recommendation,
@@ -283,13 +288,19 @@ export class DistillationPipeline {
         const review = this.reviewer(packet);
         reviews.push(review);
         workLogger.write('review_result', {
-          capability_id: candidate.capabilityId,
+          capability_id: review.capabilityId,
           decision: review.decision,
           rationale: review.rationale,
           review_risks: review.reviewRisks,
           rewrite: review.rewrite,
           reviewed_at: review.reviewedAt,
         });
+
+        const targetCapabilityId = review.capabilityId;
+        const installCandidate =
+          targetCapabilityId === candidate.capabilityId
+            ? candidate
+            : { ...candidate, capabilityId: targetCapabilityId };
 
         let snapshot: InstalledSkillSnapshot | null = null;
         let registryMutated = false;
@@ -298,10 +309,10 @@ export class DistillationPipeline {
           case 'promote': {
             // V1 promote path: install the immutable SKILL.md snapshot without
             // mutating the Capability Registry. This preserves existing V1 behavior.
-            snapshot = installPromotedCandidate(candidate, review, this.outputDir);
+            snapshot = installPromotedCandidate(installCandidate, review, this.outputDir);
             installations.push(snapshot);
             workLogger.write('install_result', {
-              capability_id: candidate.capabilityId,
+              capability_id: targetCapabilityId,
               snapshot_id: snapshot.snapshotId,
               skill_file_path: snapshot.filePath,
               newly_created: snapshot.newlyCreated,
@@ -313,21 +324,21 @@ export class DistillationPipeline {
             // V2 new capability: install the initial Active Snapshot and create
             // a registry entry that points to it.
             requireStatePath(this.capabilityRegistryPath, review.decision, 'Capability Registry');
-            assertCanCreateCapability(capabilityRegistry, candidate.capabilityId);
-            snapshot = installPromotedCandidate(candidate, review, this.outputDir);
+            assertCanCreateCapability(capabilityRegistry, targetCapabilityId);
+            snapshot = installPromotedCandidate(installCandidate, review, this.outputDir);
             installations.push(snapshot);
             workLogger.write('install_result', {
-              capability_id: candidate.capabilityId,
+              capability_id: targetCapabilityId,
               snapshot_id: snapshot.snapshotId,
               skill_file_path: snapshot.filePath,
               newly_created: snapshot.newlyCreated,
               skill_name: snapshot.skillName,
             });
             if (this.capabilityRegistryPath) {
-              newCapability(capabilityRegistry, buildNewCapabilityInput(candidate, snapshot, review));
+              newCapability(capabilityRegistry, buildNewCapabilityInput(installCandidate, snapshot, review));
               registryMutated = true;
               workLogger.write('registry_new_capability', {
-                capability_id: candidate.capabilityId,
+                capability_id: targetCapabilityId,
                 active_snapshot_id: snapshot.snapshotId,
               });
             }
@@ -337,10 +348,10 @@ export class DistillationPipeline {
             // V2 evidence append: update registry evidence refs without
             // changing the Active Snapshot or installing a new skill-list entry.
             requireStatePath(this.capabilityRegistryPath, review.decision, 'Capability Registry');
-            appendEvidence(capabilityRegistry, buildAppendEvidenceInput(candidate, review));
+            appendEvidence(capabilityRegistry, buildAppendEvidenceInput(installCandidate, review));
             registryMutated = true;
             workLogger.write('registry_append_evidence', {
-              capability_id: candidate.capabilityId,
+              capability_id: targetCapabilityId,
             });
             break;
           }
@@ -350,13 +361,13 @@ export class DistillationPipeline {
             requireStatePath(this.capabilityRegistryPath, review.decision, 'Capability Registry');
             assertCanSupersedeSnapshot(
               capabilityRegistry,
-              candidate,
+              installCandidate,
               review,
             );
-            snapshot = installPromotedCandidate(candidate, review, this.outputDir);
+            snapshot = installPromotedCandidate(installCandidate, review, this.outputDir);
             installations.push(snapshot);
             workLogger.write('install_result', {
-              capability_id: candidate.capabilityId,
+              capability_id: targetCapabilityId,
               snapshot_id: snapshot.snapshotId,
               skill_file_path: snapshot.filePath,
               newly_created: snapshot.newlyCreated,
@@ -365,11 +376,11 @@ export class DistillationPipeline {
             if (this.capabilityRegistryPath) {
               supersedeSnapshot(
                 capabilityRegistry,
-                buildSupersedeSnapshotInput(candidate, snapshot, review),
+                buildSupersedeSnapshotInput(installCandidate, snapshot, review),
               );
               registryMutated = true;
               workLogger.write('registry_supersede_snapshot', {
-                capability_id: candidate.capabilityId,
+                capability_id: targetCapabilityId,
                 new_active_snapshot_id: snapshot.snapshotId,
               });
             }
@@ -378,18 +389,17 @@ export class DistillationPipeline {
           case 'needs_review': {
             requireStatePath(this.needsReviewQueuePath, review.decision, 'Needs Review Queue');
             const queue = needsReviewQueue!;
-            const prefilterResult = prefilterCapabilities(candidate, capabilityRegistry);
             const entry = addNeedsReviewEntry(queue, {
               packet,
               review,
-              matchedCapabilityIds: prefilterResult.matches.map(match => match.capabilityId),
+              matchedCapabilityIds: relatedCapabilities?.matches.map(match => match.capabilityId) ?? [],
               registry: capabilityRegistry,
               reviewerVersion: this.reviewerVersion,
               createdAt: review.reviewedAt,
             });
             needsReviewEntries.push(entry);
             workLogger.write('needs_review_queue_entry', {
-              capability_id: candidate.capabilityId,
+              capability_id: targetCapabilityId,
               entry_id: entry.entryId,
               matched_capability_ids: entry.matchedCapabilityIds,
               evidence_fingerprint: entry.evidenceFingerprint,
@@ -417,7 +427,7 @@ export class DistillationPipeline {
         }
 
         const outcome: ReviewOutcomeEntry = {
-          capabilityId: candidate.capabilityId,
+          capabilityId: targetCapabilityId,
           decision: review.decision,
           rationale: review.rationale,
           reviewedAt: review.reviewedAt,
@@ -647,10 +657,11 @@ function assertCanSupersedeSnapshot(
   candidate: DistilledKnowledgeCandidate,
   review: PromotionReviewResult,
 ): void {
-  const entry = getCapability(registry, candidate.capabilityId);
+  const targetCapabilityId = review.capabilityId;
+  const entry = getCapability(registry, targetCapabilityId);
   if (!entry) {
     throw new Error(
-      `Cannot supersede snapshot for capability "${candidate.capabilityId}": no such registry entry.`,
+      `Cannot supersede snapshot for capability "${targetCapabilityId}": no such registry entry.`,
     );
   }
 
@@ -658,7 +669,7 @@ function assertCanSupersedeSnapshot(
   const newActiveSnapshotId = computeSnapshotId(candidate, effective, review);
   if (newActiveSnapshotId === entry.activeSnapshotId) {
     throw new Error(
-      `Cannot supersede snapshot for capability "${candidate.capabilityId}": newActiveSnapshotId is already the active snapshot.`,
+      `Cannot supersede snapshot for capability "${targetCapabilityId}": newActiveSnapshotId is already the active snapshot.`,
     );
   }
 }
@@ -669,9 +680,10 @@ function buildNewCapabilityInput(
   review: PromotionReviewResult,
 ): NewCapabilityInput {
   return {
-    capabilityId: candidate.capabilityId,
+    capabilityId: review.capabilityId,
     activeSnapshotId: snapshot.snapshotId,
     routingDescription: buildRoutingDescription(candidate, review),
+    guidanceFingerprint: buildGuidanceFingerprint(candidate, review),
     evidenceRefs: candidate.provenance.map(ref =>
       makeEvidenceRef(ref.filePath, ref.turn, ref.unitByteRange, review.reviewedAt),
     ),
@@ -690,7 +702,7 @@ function buildAppendEvidenceInput(
   review: PromotionReviewResult,
 ): AppendEvidenceInput {
   return {
-    capabilityId: candidate.capabilityId,
+    capabilityId: review.capabilityId,
     evidenceRefs: candidate.provenance.map(ref =>
       makeEvidenceRef(ref.filePath, ref.turn, ref.unitByteRange, review.reviewedAt),
     ),
@@ -704,10 +716,11 @@ function buildSupersedeSnapshotInput(
   review: PromotionReviewResult,
 ): SupersedeSnapshotInput {
   return {
-    capabilityId: candidate.capabilityId,
+    capabilityId: review.capabilityId,
     newActiveSnapshotId: snapshot.snapshotId,
     supersededAt: review.reviewedAt,
     routingDescription: buildRoutingDescription(candidate, review),
+    guidanceFingerprint: buildGuidanceFingerprint(candidate, review),
   };
 }
 
@@ -723,6 +736,15 @@ function buildRoutingDescription(
   review: PromotionReviewResult,
 ): string {
   return buildDistilledSkillDescription(
+    resolveEffectiveFields(candidate, review.rewrite),
+  );
+}
+
+function buildGuidanceFingerprint(
+  candidate: DistilledKnowledgeCandidate,
+  review: PromotionReviewResult,
+): string {
+  return computeDistilledSkillGuidanceFingerprint(
     resolveEffectiveFields(candidate, review.rewrite),
   );
 }

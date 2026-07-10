@@ -3,6 +3,12 @@ import {
   DistilledKnowledgeCandidate,
   SolvedLoopEvidence,
 } from './capability-distiller';
+import { CapabilityPrefilterResult } from './capability-prefilter';
+import {
+  buildDistilledSkillDescription,
+  computeDistilledSkillGuidanceFingerprint,
+  resolveEffectiveFields,
+} from './distilled-skill-content';
 
 /**
  * Promotion Reviewer (issue #4).
@@ -36,6 +42,12 @@ import {
  * - `needs_review`— the candidate has potential but needs human or model
  *                   attention before installation.
  * - `reject`      — the candidate should not be installed.
+ * - `new_capability` — no related capability exists; create a registry entry
+ *                      and initial active snapshot.
+ * - `append_evidence` — a related capability exists with unchanged guidance;
+ *                       add provenance refs without changing activeSnapshotId.
+ * - `supersede_snapshot` — a related capability exists but guidance changed;
+ *                          install/select a new active snapshot.
  */
 export type PromotionDecision =
   | 'promote'
@@ -83,6 +95,12 @@ export interface PromotionPacket {
   reviewRisks: ReviewerRisk[];
   /** Preliminary recommendation before the reviewer decides. */
   recommendation: 'promote' | 'needs_review' | 'reject';
+  /**
+   * Bounded Capability Registry recall context supplied by the heartbeat.
+   * When absent, the reviewer keeps the legacy V1 promote decision for
+   * backward compatibility.
+   */
+  relatedCapabilities?: CapabilityPrefilterResult;
 }
 
 export interface BuildPromotionPacketOptions {
@@ -92,6 +110,8 @@ export interface BuildPromotionPacketOptions {
   provenance?: CapabilityProvenanceRef[];
   /** Reviewer-observed risks to carry into the packet. */
   reviewRisks?: ReviewerRisk[];
+  /** Bounded Capability Registry recall context for registry-aware consolidation decisions. */
+  relatedCapabilities?: CapabilityPrefilterResult;
 }
 
 /**
@@ -198,6 +218,7 @@ export function buildPromotionPacket(
     provenance,
     reviewRisks,
     recommendation,
+    relatedCapabilities: options.relatedCapabilities,
   };
 }
 
@@ -211,7 +232,19 @@ export function buildPromotionPacket(
  * The reviewer is deterministic. It validates that the candidate's claims are
  * supported by the supplied provenance and solved-loop evidence, performs a
  * Faithful Rewrite where useful, and returns one of `promote`, `needs_review`,
- * or `reject` with rationale.
+ * `reject`, `new_capability`, `append_evidence`, or `supersede_snapshot` with
+ * rationale.
+ *
+ * When the packet carries `relatedCapabilities` from the heartbeat prefilter,
+ * the reviewer makes a registry-aware consolidation decision:
+ *  - **new_capability** — no related capability in the registry; create one.
+ *  - **append_evidence** — a related capability has identical full guidance;
+ *    add evidence refs only.
+ *  - **supersede_snapshot** — a strongly related capability exists but the
+ *    reviewed guidance changed; install/select a new active snapshot.
+ *
+ * When `relatedCapabilities` is absent, the reviewer preserves the legacy V1
+ * promote decision for backward compatibility.
  *
  * Decision logic:
  *  - **reject**      — essential evidence is missing, provenance is empty or
@@ -219,7 +252,7 @@ export function buildPromotionPacket(
  *  - **needs_review** — core evidence exists but some claims are unsupported
  *                      or some fields are too sparse to trust.
  *  - **promote**      — all checks pass and the candidate is ready to become a
- *                      skill draft.
+ *                      skill draft (legacy V1 path when no registry context).
  *
  * @param packet The Promotion Packet to review.
  * @returns Structured review result (never writes SKILL.md).
@@ -342,11 +375,89 @@ export function reviewPromotionPacket(packet: PromotionPacket): PromotionReviewR
     );
   }
 
-  // All checks pass → promote.
+  // All checks pass. When registry context is present, make a
+  // registry-aware consolidation decision; otherwise preserve the legacy V1
+  // promote decision for backward compatibility.
+  return resolveRegistryAwareDecision(packet, candidate, rewrite, risks);
+}
+
+// ---------------------------------------------------------------------------
+// Internal: registry-aware consolidation decision
+// ---------------------------------------------------------------------------
+
+/**
+ * Strong-match threshold for treating a non-identical routable description as
+ * a related capability worth superseding. Lower scores are treated as new
+ * capabilities to avoid false-positive consolidation.
+ */
+const STRONG_MATCH_SCORE_THRESHOLD = 80;
+
+function resolveRegistryAwareDecision(
+  packet: PromotionPacket,
+  candidate: DistilledKnowledgeCandidate,
+  rewrite: FaithfulRewrite,
+  risks: ReviewerRisk[],
+): PromotionReviewResult {
+  const related = packet.relatedCapabilities;
+  if (!related) {
+    return makeResult(
+      candidate.capabilityId,
+      'promote',
+      'All checks passed: solved-loop evidence is complete, provenance is sufficient, and no unsupported claims were detected.',
+      [...risks, ...packet.reviewRisks],
+      hasRewrite(rewrite) ? rewrite : null,
+    );
+  }
+
+  if (related.matches.length === 0) {
+    return makeResult(
+      candidate.capabilityId,
+      'new_capability',
+      `No related capability found in registry (total ${related.totalRegistryCapabilities}); create a new registry entry and initial active snapshot.`,
+      [...risks, ...packet.reviewRisks],
+      hasRewrite(rewrite) ? rewrite : null,
+    );
+  }
+
+  const topMatch = related.matches[0];
+  const effective = resolveEffectiveFields(candidate, hasRewrite(rewrite) ? rewrite : null);
+  const candidateRouting = buildDistilledSkillDescription(effective);
+  const candidateGuidanceFingerprint = computeDistilledSkillGuidanceFingerprint(effective);
+
+  if (candidateRouting === topMatch.routingDescription) {
+    if (topMatch.guidanceFingerprint === candidateGuidanceFingerprint) {
+      return makeResult(
+        topMatch.capabilityId,
+        'append_evidence',
+        `Related capability "${topMatch.capabilityId}" matches and guidance is unchanged; append evidence refs without changing activeSnapshotId.`,
+        [...risks, ...packet.reviewRisks],
+        hasRewrite(rewrite) ? rewrite : null,
+      );
+    }
+
+    return makeResult(
+      topMatch.capabilityId,
+      'supersede_snapshot',
+      `Related capability "${topMatch.capabilityId}" has the same routing description but materially changed guidance; install/select a new active snapshot.`,
+      [...risks, ...packet.reviewRisks],
+      hasRewrite(rewrite) ? rewrite : null,
+    );
+  }
+
+  if (topMatch.score >= STRONG_MATCH_SCORE_THRESHOLD) {
+    return makeResult(
+      topMatch.capabilityId,
+      'supersede_snapshot',
+      `Related capability "${topMatch.capabilityId}" strongly matches but guidance changed; install/select a new active snapshot.`,
+      [...risks, ...packet.reviewRisks],
+      hasRewrite(rewrite) ? rewrite : null,
+    );
+  }
+
   return makeResult(
     candidate.capabilityId,
-    'promote',
-    'All checks passed: solved-loop evidence is complete, provenance is sufficient, and no unsupported claims were detected.',
+    'new_capability',
+    `Top related capability "${topMatch.capabilityId}" score ${topMatch.score} is below the strong-match threshold; create a new registry entry and initial active snapshot.`,
     [...risks, ...packet.reviewRisks],
     hasRewrite(rewrite) ? rewrite : null,
   );
