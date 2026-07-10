@@ -1,6 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import {
+  CompletedTurn,
+  DistillationTurn,
   DistillationUnit,
 } from './distillation-unit';
 import {
@@ -56,6 +58,11 @@ import {
   InstalledSkillSnapshot,
   resolveEffectiveFields,
 } from './distilled-skill-installer';
+import {
+  LearningEpisode,
+  LearningEpisodeStore,
+  extractLearningEpisodes,
+} from './learning-episode';
 import {
   BoundedSourceEvidence,
   EvidenceBundle,
@@ -174,6 +181,7 @@ export interface PipelineUnitResult {
 export interface V3PipelineUnitResult {
   candidates: DistilledKnowledgeCandidate[];
   evolutions: SkillEvolutionResult[];
+  episodes?: LearningEpisode[];
 }
 
 /**
@@ -243,11 +251,15 @@ export interface DistillationPipelineOptions {
   workLogRoot?: string;
   /** Optional V3 Branch Promotion Reviewer / transition writer. */
   skillEvolution?: SkillEvolutionRuntime;
-  /** Test/runtime hook for supplying bounded V3 evidence. */
+  /** Optional durable V3 Learning Episode store. */
+  learningEpisodeStorePath?: string;
+  /** Test/runtime hook for supplying applicable Referenced Skills to V3. */
   v3EvidenceBundleBuilder?: (
     unit: DistillationUnit,
     candidate: DistilledKnowledgeCandidate,
   ) => EvidenceBundle;
+  /** Effective V3 Settlement Window injected by runtime configuration. */
+  learningEpisodeSettlementWindowMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +285,8 @@ export class DistillationPipeline {
   private readonly outcomes: ReviewOutcomeEntry[];
   private readonly skillEvolution: SkillEvolutionRuntime | null;
   private readonly v3EvidenceBundleBuilder: DistillationPipelineOptions['v3EvidenceBundleBuilder'];
+  private readonly learningEpisodeStore: LearningEpisodeStore | null;
+  private readonly learningEpisodeSettlementWindowMs: number | undefined;
 
   constructor(options: DistillationPipelineOptions) {
     this.distiller = options.distiller ?? DEFAULT_DISTILLER;
@@ -285,24 +299,43 @@ export class DistillationPipeline {
     this.workLogRoot = options.workLogRoot ?? null;
     this.skillEvolution = options.skillEvolution ?? null;
     this.v3EvidenceBundleBuilder = options.v3EvidenceBundleBuilder;
+    this.learningEpisodeStore = options.learningEpisodeStorePath
+      ? new LearningEpisodeStore(options.learningEpisodeStorePath)
+      : null;
+    this.learningEpisodeSettlementWindowMs = options.learningEpisodeSettlementWindowMs;
     this.outcomes = loadReviewOutcomes(this.reviewOutcomesPath);
   }
 
   /** Async runtime seam for the isolated V3 Author/Verifier workflow. */
   async processUnitAsync(unit: DistillationUnit): Promise<PipelineUnitResult | V3PipelineUnitResult> {
     if (!this.skillEvolution) return this.processUnit(unit);
+    let episodes: LearningEpisode[] | undefined;
+    if (this.learningEpisodeStore) {
+      const extraction = extractLearningEpisodes(unit, this.learningEpisodeSettlementWindowMs);
+      this.learningEpisodeStore.applyExtraction(extraction);
+      const settledState = this.learningEpisodeStore.settle();
+      episodes = Object.values(settledState.episodes);
+    }
     const candidates = this.distiller(unit);
-    const reviewInputs = candidates.map(candidate => ({
-      candidate,
-      bundle: this.v3EvidenceBundleBuilder?.(unit, candidate)
-        ?? buildV3EvidenceBundle(unit, candidate, this.skillEvolution!),
-    }));
+    const reviewInputs: Array<{ candidate: DistilledKnowledgeCandidate; bundle: EvidenceBundle }> = [];
+    for (const candidate of candidates) {
+      const episode = episodes?.find(candidateEpisode =>
+        candidate.provenance.some(ref =>
+          ref.filePath === candidateEpisode.sourceFilePath
+          && ref.turn === candidateEpisode.deliveryTurn,
+        ),
+      );
+      if (this.learningEpisodeStore && (!episode || episode.status !== 'promoted')) continue;
+      const bundle = this.v3EvidenceBundleBuilder?.(unit, candidate)
+        ?? buildV3EvidenceBundle(unit, candidate, this.skillEvolution);
+      reviewInputs.push({ candidate, bundle });
+    }
     const evolutions = await mapWithConcurrency(
       reviewInputs,
       Math.max(1, Math.floor(this.skillEvolution.getEffectiveConfig().reviewerConcurrency)),
       input => this.skillEvolution!.reviewAndApply(input.bundle),
     );
-    return { candidates, evolutions };
+    return { candidates, evolutions, ...(episodes && { episodes }) };
   }
 
   /**
@@ -890,7 +923,10 @@ export function buildV3EvidenceBundle(
 ): EvidenceBundle {
   const turns = [...unit.continuityTurns, ...unit.newTurns];
   const sourceEvidence: BoundedSourceEvidence[] = candidate.provenance.flatMap(ref => {
-    const sourceTurn = turns.find(turn => turn.turn === ref.turn);
+    const sourceTurn = turns.find(turn =>
+      turn.turn === ref.turn
+      && turnSourceFilePath(turn, unit.filePath) === ref.filePath,
+    );
     if (!sourceTurn) return [];
     return [{
       ref: `${ref.filePath}#${ref.turn}:${ref.role}:${ref.unitByteRange.start}-${ref.unitByteRange.end}`,
@@ -935,6 +971,11 @@ async function mapWithConcurrency<T, R>(
     }
   }));
   return results;
+}
+
+function turnSourceFilePath(turn: CompletedTurn, fallback: string): string {
+  const origin = (turn as DistillationTurn).origin?.filePath;
+  return typeof origin === 'string' && origin.trim() ? origin : fallback;
 }
 
 // ---------------------------------------------------------------------------

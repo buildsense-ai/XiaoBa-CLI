@@ -1,6 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { DistillationUnit, extractDistillationUnit } from './distillation-unit';
+import {
+  CrossFileContinuityOptions,
+  DistillationUnit,
+  extractDistillationUnit,
+} from './distillation-unit';
 import {
   advanceCursor,
   getCursor,
@@ -180,8 +184,14 @@ export class DistillationHeartbeatScheduler {
 
       const units: DistillationUnit[] = [];
       let advancedFiles = 0;
-      for (const filePath of collectJsonlFiles(sessionLogsRoot)) {
-        const result = await processSessionLogAsync(filePath, config.stateFilePath, this.processor);
+      const files = collectJsonlFiles(sessionLogsRoot);
+      for (const filePath of files) {
+        const result = await processSessionLogAsync(
+          filePath,
+          config.stateFilePath,
+          this.processor,
+          files,
+        );
         if (result.processed && result.distillationUnit) units.push(result.distillationUnit);
         if (result.advanced) advancedFiles++;
       }
@@ -283,6 +293,7 @@ async function processSessionLogAsync(
   filePath: string,
   stateFilePath: string,
   processor: DistillationUnitProcessor,
+  orderedFilePaths: readonly string[] = [filePath],
 ): Promise<{
   distillationUnit: DistillationUnit | null;
   advanced: boolean;
@@ -292,7 +303,8 @@ async function processSessionLogAsync(
   const cursor = getCursor(state, filePath);
   let extracted;
   try {
-    extracted = extractDistillationUnit(filePath, cursor);
+    const crossFileContinuity: CrossFileContinuityOptions = { orderedFilePaths };
+    extracted = extractDistillationUnit(filePath, cursor, { crossFileContinuity });
   } catch (error) {
     markCursorFailed(state, filePath, cursor.byteOffset, error);
     saveLogCursorState(stateFilePath, state);
