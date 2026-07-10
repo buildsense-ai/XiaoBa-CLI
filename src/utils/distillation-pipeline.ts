@@ -37,6 +37,7 @@ import { computeDistilledSkillGuidanceFingerprint } from './distilled-skill-cont
 import {
   addNeedsReviewEntry,
   computeRegistryStateFingerprint,
+  findPendingEntryByCapabilityId,
   findPendingEntryForCandidate,
   listQueueEntries,
   loadNeedsReviewQueue,
@@ -336,6 +337,22 @@ export class DistillationPipeline {
               entry_id: refreshed.entryId,
             });
           }
+          continue;
+        }
+
+        // A stable capability identity with no new provenance is a duplicate
+        // occurrence, not a fresh review candidate. `findPendingEntryForCandidate`
+        // intentionally returns no refresh target in this case so the queue
+        // remains evidence-gated; skip it rather than creating another review
+        // outcome for the same source evidence.
+        const duplicate = needsReviewQueue
+          ? findPendingEntryByCapabilityId(needsReviewQueue, candidate.capabilityId)
+          : undefined;
+        if (duplicate) {
+          workLogger.write('needs_review_queue_duplicate_evidence', {
+            capability_id: candidate.capabilityId,
+            entry_id: duplicate.entryId,
+          });
           continue;
         }
 

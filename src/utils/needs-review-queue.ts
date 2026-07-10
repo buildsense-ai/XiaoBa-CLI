@@ -507,15 +507,16 @@ export function findPendingEntryByCapabilityId(
  * normalized title + solved-loop problem/action/verification comparison so
  * repeated occurrences of the same solved loop can refresh one durable queue
  * entry even when the distiller emits per-occurrence capability identities.
- * Matching is evidence-gated: incoming candidates must contribute new
- * evidence before refreshing an existing queue entry.
+ * Exact capability matches require new provenance. Fallback matches require
+ * matching guidance plus a changed evidence fingerprint before refreshing an
+ * existing queue entry.
  */
 export function findPendingEntryForCandidate(
   state: NeedsReviewQueueState,
   candidate: DistilledKnowledgeCandidate,
 ): NeedsReviewQueueEntry | undefined {
   const exact = findPendingEntryByCapabilityId(state, candidate.capabilityId);
-  if (exact && matchingCandidateAddsEvidence(exact, candidate)) return exact;
+  if (exact && candidateAddsNewProvenance(exact, candidate)) return exact;
 
   const normalizedTitle = normalizeMatcherText(candidate.title);
   const normalizedProblem = normalizeMatcherText(candidate.solvedLoop.problem);
@@ -535,6 +536,14 @@ export function findPendingEntryForCandidate(
   if (candidates.length === 0) return undefined;
   candidates.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt, 'en'));
   return candidates[0];
+}
+
+function candidateAddsNewProvenance(
+  entry: NeedsReviewQueueEntry,
+  candidate: DistilledKnowledgeCandidate,
+): boolean {
+  const existingKeys = provenanceKeys(entry.candidatePayload.provenance);
+  return [...provenanceKeys(candidate.provenance)].some(key => !existingKeys.has(key));
 }
 
 /** Input for refreshing a queued entry with newly distilled matching evidence. */
