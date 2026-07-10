@@ -218,6 +218,7 @@ export class AgentTurnController {
       tokens: { prompt: metrics.totalPromptTokens, completion: metrics.totalCompletionTokens },
       runtimeFeedback: turnContext.runtimeFeedbackForLog,
       runtimeObservationSource: params.runtimeObservationSource,
+      episodeId,
     });
 
     if (result.finalResponseVisible) {
@@ -276,6 +277,7 @@ export class AgentTurnController {
         enableCompression: false,
         toolExecutionContext: {
           sessionId: this.options.sessionKey,
+          episodeId: options.episodeId,
           surface,
           permissionProfile: options.confirmToolExecution ? 'strict' : undefined,
           workspaceRoot: this.options.workspaceRoot,

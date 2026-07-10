@@ -52,6 +52,10 @@ export interface DistillationHeartbeatConfig {
   skillEvolutionSettlementWindowHours: number;
   /** V3 curator wake policy in hours (reserved for the existing runtime seam). */
   skillEvolutionCuratorIntervalHours: number;
+  /** Append-only factual generated-skill load and outcome ledger. */
+  skillUsageLedgerPath: string;
+  /** Durable low-frequency Curator scheduling and coalescing state. */
+  skillEvolutionCuratorStatePath: string;
   /** Bounded Branch Promotion Reviewer worker count. */
   skillEvolutionReviewerConcurrency: number;
   /** Durable review queue state for V3 semantic defers and operational retries. */
@@ -235,6 +239,18 @@ export function getDistillationHeartbeatConfig(
     24,
     0,
   );
+  const skillUsageLedgerPath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'XIAOBA_SKILL_USAGE_LEDGER_FILE'),
+    'data/skill-usage-ledger.jsonl',
+  );
+  const skillEvolutionCuratorStatePath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_CURATOR_STATE_FILE'),
+    'data/skill-evolution-curator-state.json',
+  );
   const skillEvolutionReviewQueuePath = readEnv(
     runtimeEnv,
     'XIAOBA_SKILL_EVOLUTION_REVIEW_QUEUE_FILE',
@@ -277,6 +293,8 @@ export function getDistillationHeartbeatConfig(
     learningEpisodeStorePath,
     skillEvolutionSettlementWindowHours,
     skillEvolutionCuratorIntervalHours,
+    skillUsageLedgerPath,
+    skillEvolutionCuratorStatePath,
     skillEvolutionReviewerConcurrency,
     skillEvolutionReviewQueuePath: resolveContainedPath(
       workingDirectory,

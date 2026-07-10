@@ -31,6 +31,7 @@ export interface SessionTurnLogEntry {
   turn: number;
   timestamp: string;
   session_id: string;
+  episode_id?: string;
   session_type: string;
   user: {
     text: string;
