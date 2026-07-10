@@ -108,11 +108,18 @@ export class SkillUsageCurator {
     const outcomes = facts.filter((fact): fact is SkillUsageOutcomeFact => fact.kind === 'episode-outcome');
     const current = this.options.runtime?.getRegistry().capabilities ?? {};
     const selected = new Map<string, { skill: GeneratedCurrentSkillIdentity; outcomes: SkillUsageOutcomeFact[]; expedited: boolean }>();
+    const obsoleteOutcomeFactIds: string[] = [];
+    const obsoleteHandles = new Set<string>();
 
     for (const outcome of outcomes) {
       if (state.reviewedOutcomeFactIds.includes(outcome.factId)) continue;
       const load = loads.get(outcome.loadFactId);
-      if (!load || !current[load.skill.capabilityHandle]) continue;
+      const currentSkill = load && current[load.skill.capabilityHandle];
+      if (!load || !currentSkill || !isCurrentSkillIdentity(currentSkill, load.skill)) {
+        obsoleteOutcomeFactIds.push(outcome.factId);
+        if (load) obsoleteHandles.add(load.skill.capabilityHandle);
+        continue;
+      }
       const entry = selected.get(load.skill.capabilityHandle) ?? {
         skill: load.skill,
         outcomes: [],
@@ -120,6 +127,14 @@ export class SkillUsageCurator {
       };
       entry.outcomes.push(outcome);
       selected.set(load.skill.capabilityHandle, entry);
+    }
+
+    // Ledger facts remain durable historical evidence, but outcomes linked to
+    // a replaced revision must never be reconsidered as evidence for its
+    // successor. Mark them consumed locally and clear a stale-only wake.
+    if (obsoleteOutcomeFactIds.length > 0) {
+      state.reviewedOutcomeFactIds = [...new Set([...state.reviewedOutcomeFactIds, ...obsoleteOutcomeFactIds])];
+      for (const handle of obsoleteHandles) if (!selected.has(handle)) delete state.expedited[handle];
     }
 
     const transitions: CuratorRunResult['transitions'] = [];
@@ -135,6 +150,14 @@ export class SkillUsageCurator {
         bundle: this.buildEvidenceBundle(selection.skill, selection.outcomes),
       };
       const transition = await this.reassess(request);
+      if (transition === 'defer') {
+        for (const outcome of selection.outcomes) {
+          this.recordDeferredOutcome(outcome.episodeId, [
+            ...outcome.evidenceRefs,
+            `usage-curation:${outcome.factId}`,
+          ]);
+        }
+      }
       transitions.push({ capabilityHandle, transition });
       state.reviewedOutcomeFactIds = [...new Set([...state.reviewedOutcomeFactIds, ...selection.outcomes.map(item => item.factId)])];
       delete state.expedited[capabilityHandle];
@@ -147,7 +170,7 @@ export class SkillUsageCurator {
   private async reassess(request: CuratorReassessment): Promise<CapabilityTransitionKind> {
     if (this.options.reassess) return this.options.reassess(request);
     if (!this.options.runtime) return 'defer';
-    return (await this.options.runtime.reviewAndApply(request.bundle)).transition;
+    return (await this.options.runtime.reviewUsageAndApply(request.bundle)).transition;
   }
 
   private buildEvidenceBundle(skill: GeneratedCurrentSkillIdentity, outcomes: SkillUsageOutcomeFact[]): EvidenceBundle {
@@ -155,15 +178,38 @@ export class SkillUsageCurator {
     const record = registry?.capabilities[skill.capabilityHandle];
     const facts = this.options.ledger.listFacts();
     const loads = new Map(facts.filter(fact => fact.kind === 'generated-skill-load').map(fact => [fact.factId, fact]));
-    const completionEvidence = outcomes.map(outcome => ({ ref: `ledger:${loads.get(outcome.loadFactId)?.factId ?? outcome.loadFactId}` }));
+    const completionEvidence = [...new Set(outcomes.map(outcome => `ledger:${loads.get(outcome.loadFactId)?.factId ?? outcome.loadFactId}`))]
+      .map(ref => ({ ref }));
     const settlementEvidence = outcomes.map(outcome => ({ ref: `ledger:${outcome.factId}` }));
+    const sourceEvidence = [
+      ...completionEvidence.map(item => {
+        const loadId = item.ref.slice('ledger:'.length);
+        const load = loads.get(loadId);
+        return {
+          ref: item.ref,
+          role: 'problem-action' as const,
+          content: `Factual generated Current Skill load: ${load?.skill.routingName ?? skill.routingName} (${load?.skill.guidanceHash ?? skill.guidanceHash}).`,
+        };
+      }),
+      ...outcomes.map(outcome => ({
+        ref: `ledger:${outcome.factId}`,
+        role: 'verification' as const,
+        content: `Factual same-Learning-Episode outcome: ${outcome.outcome}. Evidence references: ${outcome.evidenceRefs.join(', ')}.`,
+      })),
+    ];
     return {
       bundleId: `usage-curation:${skill.capabilityHandle}:${outcomes.map(item => item.factId).sort().join(',')}`,
       episode: {
         kind: 'usage-reassessment',
         capabilityHandle: skill.capabilityHandle,
         routingName: skill.routingName,
-        factualOutcomeIds: outcomes.map(item => item.factId),
+        factualOutcomes: outcomes.map(outcome => ({
+          factId: outcome.factId,
+          episodeId: outcome.episodeId,
+          outcome: outcome.outcome,
+          evidenceRefs: [...outcome.evidenceRefs],
+          recordedAt: outcome.recordedAt,
+        })),
       },
       completionEvidence,
       settlementEvidence,
@@ -176,6 +222,7 @@ export class SkillUsageCurator {
         description: item.description,
         guidanceHash: item.guidanceHash,
       })),
+      sourceEvidence,
     };
   }
 
@@ -196,6 +243,15 @@ export class SkillUsageCurator {
     fs.writeFileSync(temporary, JSON.stringify(state, null, 2), { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(temporary, this.options.statePath);
   }
+}
+
+function isCurrentSkillIdentity(
+  current: { routingName: string; skillFilePath: string; guidanceHash: string },
+  loaded: GeneratedCurrentSkillIdentity,
+): boolean {
+  return current.routingName === loaded.routingName
+    && current.skillFilePath === loaded.skillFilePath
+    && current.guidanceHash === loaded.guidanceHash;
 }
 
 function emptyState(): CuratorState {
