@@ -40,6 +40,15 @@ export function buildSubAgentStatusMessage(
   };
 }
 
+export function shouldSuppressSubAgentObservationReply(text: string): boolean {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return false;
+  if (/需要你的指示|待回复|等待主\s*agent|反馈/.test(normalized)) return false;
+
+  return /^\[[^\]]+\s+(已完成|失败|已停止)\]/.test(normalized)
+    || /^\[子智能体(已)?(完成|失败|停止)\]/.test(normalized);
+}
+
 function statusLabel(status: string): string {
   switch (status) {
     case 'running':

@@ -12,6 +12,7 @@ import { SendFileTool } from './send-file-tool';
 import { SendTextTool } from './send-text-tool';
 import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
+import { WaitSubagentsTool } from './wait-subagents-tool';
 import { StopSubagentTool } from './stop-subagent-tool';
 import { ResumeSubagentTool } from './resume-subagent-tool';
 import { UpdatePlanTool } from './update-plan-tool';
@@ -90,6 +91,7 @@ export class ToolManager implements ToolExecutor {
       new SendFileTool(),
       new SpawnSubagentTool(),
       new CheckSubagentTool(),
+      new WaitSubagentsTool(),
       new StopSubagentTool(),
       new ResumeSubagentTool(),
       new UpdatePlanTool(),

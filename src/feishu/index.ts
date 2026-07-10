@@ -8,6 +8,7 @@ import { MessageSessionManager } from '../core/message-session-manager';
 import { AgentServices, BUSY_MESSAGE, ERROR_MESSAGE, RuntimeFeedbackInput } from '../core/agent-session';
 import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
+import { shouldSuppressSubAgentObservationReply } from '../core/sub-agent-observation';
 import { BridgeServer, GroupMessage } from '../bridge/bridge-server';
 import { BridgeClient } from '../bridge/bridge-client';
 import { ChimeInJudge } from '../bridge/chime-in-judge';
@@ -431,6 +432,7 @@ export class FeishuBot {
         sessionRoute: route,
         executionScope: createExecutionScopeFromRoute(route),
         source: 'subagent_result',
+        suppressFinalResponse: shouldSuppressSubAgentObservationReply(text),
       });
       if (result.text === BUSY_MESSAGE) {
         this.enqueueSubAgentFeedback(sessionKey, chatId, senderId, text, route);
@@ -492,6 +494,7 @@ export class FeishuBot {
           sessionRoute: msg.sessionRoute,
           executionScope,
           source: 'subagent_result',
+          suppressFinalResponse: shouldSuppressSubAgentObservationReply(msg.userText),
         })
         : await session.handleMessage(msg.userText, {
           channel,

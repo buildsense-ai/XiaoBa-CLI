@@ -25,6 +25,9 @@ export interface ContextCompactionStatusEvent {
   usedTokens: number;
   maxTokens: number;
   usagePercent: number;
+  toolResultCount?: number;
+  toolResultTokens?: number;
+  toolResultChars?: number;
   messageCount?: number;
   error?: unknown;
 }
@@ -53,7 +56,11 @@ export class ContextWindowManager {
 
     const usage = this.compressor.getUsageInfo(durable);
     const reason = options.reason ? `${options.reason} ` : '';
-    Logger.info(`[${options.sessionKey}] ${reason}上下文即将压缩: ${usage.usedTokens}/${usage.maxTokens} tokens (${usage.usagePercent}%)`);
+    Logger.info(
+      `[${options.sessionKey}] ${reason}上下文即将压缩: `
+      + `${usage.usedTokens}/${usage.maxTokens} tokens (${usage.usagePercent}%), `
+      + `tool_results=${usage.toolResultCount}/${usage.toolResultTokens} tokens`,
+    );
     await this.emitStatus(options, {
       status: 'start',
       sessionKey: options.sessionKey,

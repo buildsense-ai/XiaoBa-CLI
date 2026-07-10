@@ -61,7 +61,8 @@ describe('prompt copy regression', () => {
       assert.doesNotMatch(content, /用 reply/);
       assert.doesNotMatch(content, /reply 和 send_file/);
       assert.match(content, /已派遣 子智能体 \(sub-test\)/);
-      assert.match(content, /完成后会以后台结果通知回到主会话/);
+      assert.match(content, /完成结果会作为内部 observation 回到主会话/);
+      assert.match(content, /需要整合时用 wait_subagents/);
       assert.match(content, /你仍负责主线推进和最终回复/);
       assert.doesNotMatch(content, /可以继续调用 spawn_subagent 派发/);
     } finally {

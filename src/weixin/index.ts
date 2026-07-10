@@ -5,6 +5,7 @@ import { MessageSender } from './message-sender';
 import { MessageSessionManager } from '../core/message-session-manager';
 import { AgentServices, BUSY_MESSAGE, ERROR_MESSAGE, RuntimeFeedbackInput } from '../core/agent-session';
 import { SubAgentManager } from '../core/sub-agent-manager';
+import { shouldSuppressSubAgentObservationReply } from '../core/sub-agent-observation';
 import { Logger } from '../utils/logger';
 import { ChannelCallbacks } from '../types/tool';
 import { AdapterRuntimeBundle, createAdapterRuntime } from '../runtime/adapter-runtime';
@@ -313,6 +314,7 @@ export class WeixinBot {
       sessionRoute: route,
       executionScope: createExecutionScopeFromRoute(route),
       source: 'subagent_result',
+      suppressFinalResponse: shouldSuppressSubAgentObservationReply(text),
     });
     if (result.text === BUSY_MESSAGE) {
       this.enqueueSubAgentFeedback(sessionKey, chatId, userId, text, route);
@@ -367,6 +369,7 @@ export class WeixinBot {
         sessionRoute: msg.sessionRoute,
         executionScope,
         source: 'subagent_result',
+        suppressFinalResponse: shouldSuppressSubAgentObservationReply(msg.userText),
       })
       : await session.handleMessage(msg.userText, {
         channel,

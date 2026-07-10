@@ -93,6 +93,7 @@ describe('runtime characterization', () => {
         'spawn_subagent',
         'stop_subagent',
         'update_plan',
+        'wait_subagents',
         'write_file',
       ],
     );

@@ -118,6 +118,8 @@ export interface HandleMessageOptions {
 export interface HandleRuntimeObservationOptions extends HandleMessageOptions {
   /** 内部 observation 来源，例如 subagent_result */
   source?: string;
+  /** 为 true 时，observation 仍进入主会话处理和历史，但本轮最终文本不外发给用户。 */
+  suppressFinalResponse?: boolean;
 }
 
 /** 命令处理结果 */
@@ -410,13 +412,14 @@ export class AgentSession {
     options: HandleRuntimeObservationOptions = {},
   ): Promise<HandleMessageResult> {
     const { source = 'runtime_observation', ...handleOptions } = options;
-    return this.handleInput(text, handleOptions, source);
+    return this.handleInput(text, handleOptions, source, options.suppressFinalResponse === true);
   }
 
   private async handleInput(
     text: string | import('../types').ContentBlock[],
     callbacksOrOptions?: SessionCallbacks | HandleMessageOptions,
     runtimeObservationSource?: string,
+    suppressFinalResponse = false,
   ): Promise<HandleMessageResult> {
     return this.withLogContext(async () => {
       // 兼容旧签名：如果传入的对象有 onText/onToolStart 等字段，视为 SessionCallbacks
@@ -509,6 +512,7 @@ export class AgentSession {
           messages: this.messages,
           runtimeFeedback,
           runtimeObservationSource,
+          suppressFinalResponse,
           callbacks,
           channel,
           sessionRoute,

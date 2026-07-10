@@ -10,6 +10,7 @@ export const DEFAULT_TOOL_NAMES = [
   'send_file',
   'spawn_subagent',
   'check_subagent',
+  'wait_subagents',
   'stop_subagent',
   'resume_subagent',
   'update_plan',
