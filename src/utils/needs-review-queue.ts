@@ -513,15 +513,25 @@ export function findPendingEntryForCandidate(
   candidate: DistilledKnowledgeCandidate,
 ): NeedsReviewQueueEntry | undefined {
   const exact = findPendingEntryByCapabilityId(state, candidate.capabilityId);
-  if (exact) return exact;
+  if (exact && matchingCandidateAddsEvidence(exact, candidate)) return exact;
 
   const normalizedTitle = normalizeMatcherText(candidate.title);
   const normalizedProblem = normalizeMatcherText(candidate.solvedLoop.problem);
+  const normalizedAction = normalizeMatcherText(candidate.solvedLoop.action);
+  const normalizedVerification = normalizeMatcherText(candidate.solvedLoop.verification);
+  const candidateProvenanceKeys = provenanceKeys(candidate.provenance);
+
   const candidates = Object.values(state.entries).filter(e => {
     if (e.status !== 'pending' && e.status !== 'retry_eligible') return false;
+    const existingProvenanceKeys = provenanceKeys(e.candidatePayload.provenance);
+    const hasNewProvenance = [...candidateProvenanceKeys].some(
+      candidateKey => !existingProvenanceKeys.has(candidateKey),
+    );
     return (
       normalizeMatcherText(e.candidatePayload.title) === normalizedTitle &&
       normalizeMatcherText(e.candidatePayload.solvedLoop.problem) === normalizedProblem &&
+      normalizeMatcherText(e.candidatePayload.solvedLoop.action) === normalizedAction &&
+      normalizeMatcherText(e.candidatePayload.solvedLoop.verification) === normalizedVerification &&
       matchingCandidateAddsEvidence(e, candidate)
     );
   });
@@ -852,6 +862,22 @@ function normalizeQuestions(questions: string[]): string[] {
 
 function normalizeMatcherText(value: string): string {
   return (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function provenanceKeys(
+  refs: Pick<DistilledKnowledgeCandidate['provenance'][number],
+    'filePath' | 'turn' | 'role' | 'unitByteRange'>[],
+): Set<string> {
+  const keys = new Set<string>();
+  for (const ref of refs) {
+    if (!isNonEmptyString(ref.filePath) || typeof ref.turn !== 'number') continue;
+    if (!ref.unitByteRange || typeof ref.unitByteRange.start !== 'number' || typeof ref.unitByteRange.end !== 'number') {
+      continue;
+    }
+    const key = `${ref.filePath}|${ref.turn}|${ref.role}|${ref.unitByteRange.start}|${ref.unitByteRange.end}`;
+    keys.add(key);
+  }
+  return keys;
 }
 
 function dedupeStrings(values: string[]): string[] {

@@ -26,6 +26,7 @@ import {
   computeEvidenceFingerprint,
   computeRegistryStateFingerprint,
   emptyNeedsReviewQueueState,
+  findPendingEntryForCandidate,
   getQueueEntry,
   loadNeedsReviewQueue,
   markDropped,
@@ -209,6 +210,54 @@ describe('Needs Review Queue (issue #19)', () => {
         const entry = Object.values(reloaded.entries)[0];
         assert.equal(entry.capabilityId, 'cap-abc123def456');
         assert.equal(entry.status, 'pending');
+      } finally {
+        env.teardown();
+      }
+    });
+  });
+
+  describe('match queue entries for matching-evidence retry', () => {
+    test('requires stronger matching than only title + problem before refreshing', () => {
+      const env = setup();
+      try {
+        const state = emptyNeedsReviewQueueState();
+        const input = makeAddInput(state);
+        const entry = addNeedsReviewEntry(state, input);
+
+        const identicalYetDistinctCandidate: DistilledKnowledgeCandidate = {
+          ...input.packet.candidate,
+          capabilityId: 'cap-distinct',
+        };
+
+        const fallbackMatch = findPendingEntryForCandidate(state, identicalYetDistinctCandidate);
+        assert.equal(
+          fallbackMatch,
+          undefined,
+          'same title/problem/action/verification with no new provenance does not match',
+        );
+
+        const withNewProvenance: DistilledKnowledgeCandidate = {
+          ...input.packet.candidate,
+          capabilityId: 'cap-distinct-2',
+          provenance: [
+            ...input.packet.candidate.provenance,
+            {
+              filePath: '/logs/sessions/chat/chat_cli.jsonl',
+              turn: 3,
+              role: 'problem-action',
+              unitByteRange: { start: 1000, end: 2000 },
+            },
+            {
+              filePath: '/logs/sessions/chat/chat_cli.jsonl',
+              turn: 4,
+              role: 'verification',
+              unitByteRange: { start: 1000, end: 2000 },
+            },
+          ],
+        };
+
+        const renewedMatch = findPendingEntryForCandidate(state, withNewProvenance);
+        assert.equal(renewedMatch?.entryId, entry.entryId, 'additional provenance enables matching-evidence retry');
       } finally {
         env.teardown();
       }
