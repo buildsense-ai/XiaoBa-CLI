@@ -217,6 +217,49 @@ describe('Needs Review Queue (issue #19)', () => {
   });
 
   describe('match queue entries for matching-evidence retry', () => {
+    test('does not match unchanged candidates with exact capabilityId', () => {
+      const env = setup();
+      try {
+        const state = emptyNeedsReviewQueueState();
+        const input = makeAddInput(state);
+        addNeedsReviewEntry(state, input);
+
+        const unchanged = { ...input.packet.candidate };
+        const noMatch = findPendingEntryForCandidate(state, unchanged);
+
+        assert.equal(noMatch, undefined, 'exact capabilityId with no provenance changes does not match');
+      } finally {
+        env.teardown();
+      }
+    });
+
+    test('matches exact capabilityId only when candidate brings new provenance', () => {
+      const env = setup();
+      try {
+        const state = emptyNeedsReviewQueueState();
+        const input = makeAddInput(state);
+        const entry = addNeedsReviewEntry(state, input);
+
+        const withNewProvenance: DistilledKnowledgeCandidate = {
+          ...input.packet.candidate,
+          provenance: [
+            ...input.packet.candidate.provenance,
+            {
+              filePath: '/logs/sessions/chat/chat_cli.jsonl',
+              turn: 3,
+              role: 'problem-action',
+              unitByteRange: { start: 1000, end: 2000 },
+            },
+          ],
+        };
+
+        const renewedMatch = findPendingEntryForCandidate(state, withNewProvenance);
+        assert.equal(renewedMatch?.entryId, entry.entryId, 'same capabilityId with new provenance refreshes');
+      } finally {
+        env.teardown();
+      }
+    });
+
     test('requires stronger matching than only title + problem before refreshing', () => {
       const env = setup();
       try {

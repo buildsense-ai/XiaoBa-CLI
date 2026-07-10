@@ -504,9 +504,11 @@ export function findPendingEntryByCapabilityId(
 /**
  * Find a pending or retry-eligible queue entry that matches a newly distilled
  * candidate. Matching prefers exact capabilityId, then falls back to a
- * normalized title + solved-loop problem comparison so repeated occurrences of
- * the same solved loop can refresh one durable queue entry even when the
- * distiller emits per-occurrence capability identities.
+ * normalized title + solved-loop problem/action/verification comparison so
+ * repeated occurrences of the same solved loop can refresh one durable queue
+ * entry even when the distiller emits per-occurrence capability identities.
+ * Matching is evidence-gated: incoming candidates must contribute new
+ * evidence before refreshing an existing queue entry.
  */
 export function findPendingEntryForCandidate(
   state: NeedsReviewQueueState,
@@ -519,14 +521,9 @@ export function findPendingEntryForCandidate(
   const normalizedProblem = normalizeMatcherText(candidate.solvedLoop.problem);
   const normalizedAction = normalizeMatcherText(candidate.solvedLoop.action);
   const normalizedVerification = normalizeMatcherText(candidate.solvedLoop.verification);
-  const candidateProvenanceKeys = provenanceKeys(candidate.provenance);
 
   const candidates = Object.values(state.entries).filter(e => {
     if (e.status !== 'pending' && e.status !== 'retry_eligible') return false;
-    const existingProvenanceKeys = provenanceKeys(e.candidatePayload.provenance);
-    const hasNewProvenance = [...candidateProvenanceKeys].some(
-      candidateKey => !existingProvenanceKeys.has(candidateKey),
-    );
     return (
       normalizeMatcherText(e.candidatePayload.title) === normalizedTitle &&
       normalizeMatcherText(e.candidatePayload.solvedLoop.problem) === normalizedProblem &&
