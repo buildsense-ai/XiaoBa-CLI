@@ -10,6 +10,7 @@ import {
   DistillationPipeline,
   defaultDistilledOutputDir,
   loadReviewOutcomesSync,
+  ReviewOutcomeEntry,
 } from '../src/utils/distillation-pipeline';
 import {
   loadCapabilityRegistry,
@@ -55,13 +56,22 @@ interface TestEnv {
   teardown: () => void;
 }
 
-function setupEnv(): TestEnv {
+function setupEnv(existingOutcomes: ReviewOutcomeEntry[] = []): TestEnv {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-heartbeat-registry-aware-'));
 
   const config = getDistillationHeartbeatConfig(root, {
     ...process.env,
     DISTILLATION_HEARTBEAT_ENABLED: 'true',
   });
+
+  if (existingOutcomes.length > 0) {
+    fs.mkdirSync(path.dirname(config.reviewOutcomesPath), { recursive: true });
+    fs.writeFileSync(
+      config.reviewOutcomesPath,
+      JSON.stringify({ schemaVersion: 1, outcomes: existingOutcomes }),
+      'utf-8',
+    );
+  }
 
   const pipeline = new DistillationPipeline({
     outputDir: defaultDistilledOutputDir(path.join(root, 'skills')),
@@ -229,6 +239,51 @@ describe('DistillationHeartbeat registry-aware consolidation (issue #27)', () =>
     const branchLines = findBranchLogLines(env);
     const appendEvents = findEvents(branchLines, 'registry_append_evidence');
     assert.equal(appendEvents.length, 1, 'branch log records one append_evidence');
+  });
+
+  test('legacy registry guidance and V1 outcomes remain durable during evidence append', async () => {
+    env.teardown();
+    const v1Outcome: ReviewOutcomeEntry = {
+      capabilityId: 'legacy-v1-capability',
+      decision: 'promote',
+      rationale: 'Existing V1 audit record.',
+      reviewedAt: '2026-07-09T00:00:00.000Z',
+      snapshotId: 'legacy-snapshot',
+      skillFilePath: '/legacy/SKILL.md',
+      sourceUnit: { filePath: '/legacy.jsonl', byteRange: { start: 0, end: 1 } },
+    };
+    env = setupEnv([v1Outcome]);
+
+    writeFirstSessionLog(env);
+    await env.scheduler.runHeartbeat('manual');
+    const registryBefore = loadCapabilityRegistry(env.config.capabilityRegistryPath);
+    const entryBefore = Object.values(registryBefore.capabilities)[0];
+    assert.ok(entryBefore);
+    const activeBefore = entryBefore.activeSnapshotId;
+    delete entryBefore.guidanceFingerprint;
+    saveCapabilityRegistry(env.config.capabilityRegistryPath, registryBefore);
+
+    appendSecondSessionLog(env);
+    await env.scheduler.runHeartbeat('manual');
+
+    const registryAfter = loadCapabilityRegistry(env.config.capabilityRegistryPath);
+    const entryAfter = Object.values(registryAfter.capabilities)[0];
+    assert.ok(entryAfter);
+    assert.equal(entryAfter.activeSnapshotId, activeBefore, 'legacy entry retains its active snapshot');
+    assert.equal(entryAfter.evidenceRefs.length, 4, 'legacy entry appends new evidence');
+
+    const outcomes = loadReviewOutcomesSync(env.config.reviewOutcomesPath);
+    assert.ok(
+      outcomes.some(outcome => outcome.capabilityId === v1Outcome.capabilityId),
+      'pre-existing V1 audit outcome remains durable',
+    );
+    assert.ok(
+      outcomes.some(outcome => outcome.decision === 'append_evidence'),
+      'legacy entry records append_evidence rather than supersede_snapshot',
+    );
+
+    const skillDirs = fs.readdirSync(path.join(env.root, 'skills', 'generated-distilled', entryAfter.capabilityId));
+    assert.deepEqual(skillDirs, [activeBefore], 'legacy entry does not create a new skill snapshot');
   });
 
   test('matching routing with changed full guidance supersedes the active snapshot', async () => {

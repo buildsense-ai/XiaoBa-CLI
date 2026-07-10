@@ -425,11 +425,20 @@ function resolveRegistryAwareDecision(
   const candidateGuidanceFingerprint = computeDistilledSkillGuidanceFingerprint(effective);
 
   if (candidateRouting === topMatch.routingDescription) {
-    if (topMatch.guidanceFingerprint === candidateGuidanceFingerprint) {
+    // Registry entries created before guidance fingerprints were introduced
+    // cannot distinguish a material change from an evidence-only update. Keep
+    // their existing Active Snapshot rather than creating one from incomplete
+    // state; a later explicit material review can still supersede it.
+    if (
+      topMatch.guidanceFingerprint === undefined ||
+      topMatch.guidanceFingerprint === candidateGuidanceFingerprint
+    ) {
       return makeResult(
         topMatch.capabilityId,
         'append_evidence',
-        `Related capability "${topMatch.capabilityId}" matches and guidance is unchanged; append evidence refs without changing activeSnapshotId.`,
+        topMatch.guidanceFingerprint === undefined
+          ? `Related capability "${topMatch.capabilityId}" matches a legacy registry entry without a guidance fingerprint; append evidence refs without changing activeSnapshotId.`
+          : `Related capability "${topMatch.capabilityId}" matches and guidance is unchanged; append evidence refs without changing activeSnapshotId.`,
         [...risks, ...packet.reviewRisks],
         hasRewrite(rewrite) ? rewrite : null,
       );
