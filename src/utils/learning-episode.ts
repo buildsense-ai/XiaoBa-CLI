@@ -263,7 +263,15 @@ function evidenceRef(filePath: string, turn: number, kind: string): string {
 }
 
 function makeEpisodeId(filePath: string, turn: CompletedTurn): string {
+  const persistedEpisodeId = persistedEpisodeIdOf(turn);
+  if (persistedEpisodeId) return persistedEpisodeId;
   return `episode-${hash(`${filePath}|${runtimeSessionIdOf(turn)}|turn-${turn.turn}`).slice(0, 20)}`;
+}
+
+function persistedEpisodeIdOf(turn: CompletedTurn): string | undefined {
+  const candidate = turn as SessionTurnLogEntry & { episode_id?: unknown };
+  const episodeId = typeof candidate.episode_id === 'string' ? candidate.episode_id.trim() : '';
+  return episodeId || undefined;
 }
 
 function makeSignalId(

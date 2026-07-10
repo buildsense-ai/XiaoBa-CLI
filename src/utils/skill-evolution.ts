@@ -413,6 +413,19 @@ export class SkillEvolutionRuntime {
     return result;
   }
 
+  /**
+   * Reassess an already-current Skill from factual usage evidence.
+   *
+   * Usage reassessment still runs the identical Author → Verifier →
+   * Capability Transition path. Its episode is not a distilled candidate,
+   * however, so a verifier defer must not enter the candidate-only retry
+   * queue (nor be misclassified as an operational failure).
+   */
+  async reviewUsageAndApply(bundle: EvidenceBundle): Promise<SkillEvolutionResult> {
+    const { result } = await this.reviewAndApplyWithRetries(bundle, undefined, false);
+    return result;
+  }
+
   private async reviewAndApplyWithRetries(
     bundle: EvidenceBundle,
     sharedBranchTranscriptPaths?: string[],

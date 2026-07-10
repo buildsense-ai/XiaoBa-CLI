@@ -15,6 +15,7 @@ export interface RecordTurnParams {
   };
   runtimeFeedback?: string[];
   runtimeObservationSource?: string;
+  episodeId?: string;
 }
 
 /**
@@ -38,6 +39,7 @@ export class TurnLogRecorder {
       {
         runtimeFeedback: params.runtimeFeedback,
         runtimeObservationSource: params.runtimeObservationSource,
+        episodeId: params.episodeId,
         prompt: this.prompt,
       },
     );

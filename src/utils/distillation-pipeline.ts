@@ -71,6 +71,7 @@ import {
   SkillEvolutionResult,
   SkillEvolutionRuntime,
 } from './skill-evolution';
+import { SkillUsageCurator } from './skill-usage-curator';
 
 /**
  * Distillation Pipeline (issue #6).
@@ -270,6 +271,8 @@ export interface DistillationPipelineOptions {
   ) => EvidenceBundle;
   /** Effective V3 Settlement Window injected by runtime configuration. */
   learningEpisodeSettlementWindowMs?: number;
+  /** Optional V3 generated-skill usage outcome recorder. */
+  skillUsageCurator?: SkillUsageCurator;
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +300,7 @@ export class DistillationPipeline {
   private readonly v3EvidenceBundleBuilder: DistillationPipelineOptions['v3EvidenceBundleBuilder'];
   private readonly learningEpisodeStore: LearningEpisodeStore | null;
   private readonly learningEpisodeSettlementWindowMs: number | undefined;
+  private readonly skillUsageCurator: SkillUsageCurator | null;
 
   constructor(options: DistillationPipelineOptions) {
     this.distiller = options.distiller ?? DEFAULT_DISTILLER;
@@ -313,6 +317,7 @@ export class DistillationPipeline {
       ? new LearningEpisodeStore(options.learningEpisodeStorePath)
       : null;
     this.learningEpisodeSettlementWindowMs = options.learningEpisodeSettlementWindowMs;
+    this.skillUsageCurator = options.skillUsageCurator ?? null;
     this.outcomes = loadReviewOutcomes(this.reviewOutcomesPath);
   }
 
@@ -329,6 +334,7 @@ export class DistillationPipeline {
       this.learningEpisodeStore.applyExtraction(extraction);
       const settledState = this.learningEpisodeStore.settle();
       episodes = Object.values(settledState.episodes);
+      for (const episode of episodes) this.skillUsageCurator?.observeEpisode(episode);
     }
     const candidates = this.distiller(unit);
     const reviewInputs: Array<{ candidate: DistilledKnowledgeCandidate; bundle: EvidenceBundle }> = [];

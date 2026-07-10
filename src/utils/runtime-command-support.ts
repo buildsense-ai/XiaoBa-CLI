@@ -5,6 +5,8 @@ import { getDistillationHeartbeatConfig } from './distillation-heartbeat-config'
 import { PathResolver } from './path-resolver';
 import { AIService } from './ai-service';
 import { SkillEvolutionRuntime } from './skill-evolution';
+import { SkillUsageCurator } from './skill-usage-curator';
+import { SkillUsageLedger } from './skill-usage-ledger';
 
 interface ActiveRuntimeSupport {
   catscoLogUploadScheduler: CatscoLogUploadScheduler | null;
@@ -66,6 +68,14 @@ export async function startRuntimeCommandSupport(
             verifierModel: config.skillEvolutionVerifierModel,
           })
           : undefined;
+        const skillUsageCurator = skillEvolution
+          ? new SkillUsageCurator({
+            ledger: new SkillUsageLedger(config.skillUsageLedgerPath),
+            statePath: config.skillEvolutionCuratorStatePath,
+            intervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
+            runtime: skillEvolution,
+          })
+          : undefined;
         const pipeline = new DistillationPipeline({
           outputDir: defaultDistilledOutputDir(PathResolver.getSkillsPath()),
           reviewOutcomesPath: config.reviewOutcomesPath,
@@ -75,6 +85,7 @@ export async function startRuntimeCommandSupport(
           skillEvolution,
           learningEpisodeStorePath: config.learningEpisodeStorePath,
           learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
+          skillUsageCurator,
         });
         distillationPipeline = pipeline;
         distillationHeartbeatScheduler = new DistillationHeartbeatScheduler(
@@ -82,6 +93,7 @@ export async function startRuntimeCommandSupport(
           unit => skillEvolution ? pipeline.processUnitAsync(unit) : pipeline.processUnit(unit),
           async () => {
             await pipeline.reviewSkillEvolutionQueueEntries();
+            await skillUsageCurator?.runDue();
           },
         );
       }
