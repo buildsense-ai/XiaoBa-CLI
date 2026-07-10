@@ -38,6 +38,32 @@ export interface DistillationHeartbeatConfig {
   capabilityRegistryPath: string;
   /** Root directory for branch-style distillation work logs. */
   workLogRoot: string;
+  /** V3 verified Current Skill workflow master switch. */
+  skillEvolutionEnabled: boolean;
+  /** Active-only V3 Current Skill Registry state file. */
+  skillEvolutionRegistryPath: string;
+  /** Append-only V3 Transition Audit file. */
+  skillEvolutionAuditPath: string;
+  /** Short-lived V3 Transition Journal file. */
+  skillEvolutionJournalPath: string;
+  /** Durable independent Learning Episode state for V3 settlement. */
+  learningEpisodeStorePath: string;
+  /** V3 Settlement Window policy in hours. */
+  skillEvolutionSettlementWindowHours: number;
+  /** V3 curator wake policy in hours (reserved for the existing runtime seam). */
+  skillEvolutionCuratorIntervalHours: number;
+  /** Bounded Branch Promotion Reviewer worker count. */
+  skillEvolutionReviewerConcurrency: number;
+  /** Durable review queue state for V3 semantic defers and operational retries. */
+  skillEvolutionReviewQueuePath: string;
+  /** Operational review retry backoff in minutes. */
+  skillEvolutionOperationalRetryMinutes: number;
+  /** Operational review retry cap in hours. */
+  skillEvolutionOperationalRetryMaxHours: number;
+  /** Optional Author model override. */
+  skillEvolutionAuthorModel?: string;
+  /** Optional independent Verifier model override. */
+  skillEvolutionVerifierModel?: string;
 }
 
 function readEnv(env: NodeJS.ProcessEnv, ...keys: string[]): string | undefined {
@@ -172,6 +198,67 @@ export function getDistillationHeartbeatConfig(
     readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_WORK_LOG_ROOT'),
     'logs/branches/distillation',
   );
+  const skillEvolutionEnabled = readBoolean(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_V3_ENABLED', false);
+  const skillEvolutionRegistryPath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_REGISTRY_FILE'),
+    'data/current-skill-registry.json',
+  );
+  const skillEvolutionAuditPath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_AUDIT_FILE'),
+    'data/transition-audit.jsonl',
+  );
+  const skillEvolutionJournalPath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_JOURNAL_FILE'),
+    'data/transition-journal.json',
+  );
+  const learningEpisodeStorePath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'XIAOBA_LEARNING_EPISODE_STORE_FILE'),
+    'data/learning-episodes.json',
+  );
+  const skillEvolutionSettlementWindowHours = readNumber(
+    runtimeEnv,
+    'XIAOBA_SKILL_EVOLUTION_SETTLEMENT_WINDOW_HOURS',
+    3,
+    0,
+  );
+  const skillEvolutionCuratorIntervalHours = readNumber(
+    runtimeEnv,
+    'XIAOBA_SKILL_EVOLUTION_CURATOR_INTERVAL_HOURS',
+    24,
+    0,
+  );
+  const skillEvolutionReviewQueuePath = readEnv(
+    runtimeEnv,
+    'XIAOBA_SKILL_EVOLUTION_REVIEW_QUEUE_FILE',
+  );
+  const skillEvolutionReviewerConcurrency = Math.min(readNumber(
+    runtimeEnv,
+    'XIAOBA_SKILL_EVOLUTION_REVIEWER_CONCURRENCY',
+    3,
+    1,
+  ), 32);
+  const skillEvolutionOperationalRetryMinutes = readNumber(
+    runtimeEnv,
+    'XIAOBA_SKILL_EVOLUTION_OPERATIONAL_RETRY_MINUTES',
+    5,
+    0,
+  );
+  const skillEvolutionOperationalRetryMaxHours = readNumber(
+    runtimeEnv,
+    'XIAOBA_SKILL_EVOLUTION_OPERATIONAL_RETRY_MAX_HOURS',
+    6,
+    0,
+  );
+  const skillEvolutionAuthorModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_AUTHOR_MODEL');
+  const skillEvolutionVerifierModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_VERIFIER_MODEL');
 
   return {
     enabled,
@@ -183,5 +270,23 @@ export function getDistillationHeartbeatConfig(
     needsReviewQueuePath,
     capabilityRegistryPath,
     workLogRoot,
+    skillEvolutionEnabled,
+    skillEvolutionRegistryPath,
+    skillEvolutionAuditPath,
+    skillEvolutionJournalPath,
+    learningEpisodeStorePath,
+    skillEvolutionSettlementWindowHours,
+    skillEvolutionCuratorIntervalHours,
+    skillEvolutionReviewerConcurrency,
+    skillEvolutionReviewQueuePath: resolveContainedPath(
+      workingDirectory,
+      'data',
+      skillEvolutionReviewQueuePath,
+      'data/skill-evolution-review-queue.json',
+    ),
+    skillEvolutionOperationalRetryMinutes,
+    skillEvolutionOperationalRetryMaxHours,
+    ...(skillEvolutionAuthorModel && { skillEvolutionAuthorModel }),
+    ...(skillEvolutionVerifierModel && { skillEvolutionVerifierModel }),
   };
 }

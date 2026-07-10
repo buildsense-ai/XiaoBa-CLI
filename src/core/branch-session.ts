@@ -51,6 +51,11 @@ export abstract class BranchSession {
       && !this.options.signal?.aborted;
   }
 
+  /** Runtime audit path for constrained branches. */
+  protected getBranchTranscriptPath(): string | null {
+    return this.logger.getFilePath();
+  }
+
   protected abstract buildInitialMessages(): Promise<Message[]>;
   protected abstract buildTools(): Tool[];
 
@@ -168,6 +173,10 @@ export class BranchSessionLogger {
     } catch (error: any) {
       Logger.warning(`[branch:${this.options.branchType}:${this.options.branchId}] log write failed: ${error.message}`);
     }
+  }
+
+  getFilePath(): string | null {
+    return this.filePath;
   }
 }
 

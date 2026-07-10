@@ -3,6 +3,8 @@ import { DistillationHeartbeatScheduler } from './distillation-heartbeat-schedul
 import { DistillationPipeline, defaultDistilledOutputDir } from './distillation-pipeline';
 import { getDistillationHeartbeatConfig } from './distillation-heartbeat-config';
 import { PathResolver } from './path-resolver';
+import { AIService } from './ai-service';
+import { SkillEvolutionRuntime } from './skill-evolution';
 
 interface ActiveRuntimeSupport {
   catscoLogUploadScheduler: CatscoLogUploadScheduler | null;
@@ -47,18 +49,40 @@ export async function startRuntimeCommandSupport(
       // the scheduler still owns them.
       if (DistillationHeartbeatScheduler.shouldStartForCurrentRuntime(workingDirectory)) {
         const config = getDistillationHeartbeatConfig(workingDirectory);
+        const skillEvolution = config.skillEvolutionEnabled
+          ? new SkillEvolutionRuntime({
+            workingDirectory,
+            outputDir: defaultDistilledOutputDir(PathResolver.getSkillsPath()),
+            registryPath: config.skillEvolutionRegistryPath,
+            auditPath: config.skillEvolutionAuditPath,
+            journalPath: config.skillEvolutionJournalPath,
+            reviewQueuePath: config.skillEvolutionReviewQueuePath,
+            aiService: new AIService(),
+            settlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
+            reviewerConcurrency: config.skillEvolutionReviewerConcurrency,
+            operationalRetryMs: config.skillEvolutionOperationalRetryMinutes * 60 * 1000,
+            operationalRetryMaxMs: config.skillEvolutionOperationalRetryMaxHours * 60 * 60 * 1000,
+            authorModel: config.skillEvolutionAuthorModel,
+            verifierModel: config.skillEvolutionVerifierModel,
+          })
+          : undefined;
         const pipeline = new DistillationPipeline({
           outputDir: defaultDistilledOutputDir(PathResolver.getSkillsPath()),
           reviewOutcomesPath: config.reviewOutcomesPath,
           needsReviewQueuePath: config.needsReviewQueuePath,
           capabilityRegistryPath: config.capabilityRegistryPath,
           workLogRoot: config.workLogRoot,
+          skillEvolution,
+          learningEpisodeStorePath: config.learningEpisodeStorePath,
+          learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
         });
         distillationPipeline = pipeline;
         distillationHeartbeatScheduler = new DistillationHeartbeatScheduler(
           workingDirectory,
-          unit => pipeline.processUnit(unit),
-          () => pipeline.reviewEligibleQueueEntries(),
+          unit => skillEvolution ? pipeline.processUnitAsync(unit) : pipeline.processUnit(unit),
+          async () => {
+            await pipeline.reviewSkillEvolutionQueueEntries();
+          },
         );
       }
 

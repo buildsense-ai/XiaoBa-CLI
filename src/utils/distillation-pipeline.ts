@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   CompletedTurn,
+  DistillationTurn,
   DistillationUnit,
 } from './distillation-unit';
 import {
@@ -57,6 +58,19 @@ import {
   InstalledSkillSnapshot,
   resolveEffectiveFields,
 } from './distilled-skill-installer';
+import {
+  LearningEpisode,
+  LearningEpisodeStore,
+  extractLearningEpisodes,
+  settleLearningEpisodes,
+} from './learning-episode';
+import {
+  BoundedSourceEvidence,
+  EvidenceBundle,
+  SkillEvolutionQueueReviewResult,
+  SkillEvolutionResult,
+  SkillEvolutionRuntime,
+} from './skill-evolution';
 
 /**
  * Distillation Pipeline (issue #6).
@@ -166,6 +180,12 @@ export interface PipelineUnitResult {
   needsReviewEntries: NeedsReviewQueueEntry[];
 }
 
+export interface V3PipelineUnitResult {
+  candidates: DistilledKnowledgeCandidate[];
+  evolutions: SkillEvolutionResult[];
+  episodes?: LearningEpisode[];
+}
+
 /**
  * Result of re-reviewing eligible Needs Review Queue entries during a heartbeat
  * (issue #29).
@@ -181,6 +201,14 @@ export interface QueueReviewResult {
   installations: InstalledSkillSnapshot[];
   /** Durable review-outcome entries written this cycle. */
   outcomes: ReviewOutcomeEntry[];
+}
+
+export interface QueueReviewResultV3 {
+  reviewed: number;
+  deferredReviewed: number;
+  operationalReviewed: number;
+  operationalRetried: number;
+  deferredRetried: number;
 }
 
 function emptyQueueReviewResult(): QueueReviewResult {
@@ -231,6 +259,17 @@ export interface DistillationPipelineOptions {
    * audit logs for pure unit tests.
    */
   workLogRoot?: string;
+  /** Optional V3 Branch Promotion Reviewer / transition writer. */
+  skillEvolution?: SkillEvolutionRuntime;
+  /** Optional durable V3 Learning Episode store. */
+  learningEpisodeStorePath?: string;
+  /** Test/runtime hook for supplying applicable Referenced Skills to V3. */
+  v3EvidenceBundleBuilder?: (
+    unit: DistillationUnit,
+    candidate: DistilledKnowledgeCandidate,
+  ) => EvidenceBundle;
+  /** Effective V3 Settlement Window injected by runtime configuration. */
+  learningEpisodeSettlementWindowMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +293,10 @@ export class DistillationPipeline {
   private readonly reviewerVersion: string;
   private readonly workLogRoot: string | null;
   private readonly outcomes: ReviewOutcomeEntry[];
+  private readonly skillEvolution: SkillEvolutionRuntime | null;
+  private readonly v3EvidenceBundleBuilder: DistillationPipelineOptions['v3EvidenceBundleBuilder'];
+  private readonly learningEpisodeStore: LearningEpisodeStore | null;
+  private readonly learningEpisodeSettlementWindowMs: number | undefined;
 
   constructor(options: DistillationPipelineOptions) {
     this.distiller = options.distiller ?? DEFAULT_DISTILLER;
@@ -264,7 +307,54 @@ export class DistillationPipeline {
     this.capabilityRegistryPath = options.capabilityRegistryPath ?? null;
     this.reviewerVersion = options.reviewerVersion ?? PROMOTION_REVIEWER_VERSION;
     this.workLogRoot = options.workLogRoot ?? null;
+    this.skillEvolution = options.skillEvolution ?? null;
+    this.v3EvidenceBundleBuilder = options.v3EvidenceBundleBuilder;
+    this.learningEpisodeStore = options.learningEpisodeStorePath
+      ? new LearningEpisodeStore(options.learningEpisodeStorePath)
+      : null;
+    this.learningEpisodeSettlementWindowMs = options.learningEpisodeSettlementWindowMs;
     this.outcomes = loadReviewOutcomes(this.reviewOutcomesPath);
+  }
+
+  /**
+   * Async runtime seam for V3. The legacy synchronous processor remains
+   * unchanged; when a V3 runtime is supplied, heartbeat callers use this
+   * method so the cursor waits for the isolated Author/Verifier commit.
+   */
+  async processUnitAsync(unit: DistillationUnit): Promise<PipelineUnitResult | V3PipelineUnitResult> {
+    if (!this.skillEvolution) return this.processUnit(unit);
+    let episodes: LearningEpisode[] | undefined;
+    if (this.learningEpisodeStore) {
+      const extraction = extractLearningEpisodes(unit, this.learningEpisodeSettlementWindowMs);
+      this.learningEpisodeStore.applyExtraction(extraction);
+      const settledState = this.learningEpisodeStore.settle();
+      episodes = Object.values(settledState.episodes);
+    }
+    const candidates = this.distiller(unit);
+    const reviewInputs: Array<{ candidate: DistilledKnowledgeCandidate; bundle: EvidenceBundle }> = [];
+    for (const candidate of candidates) {
+      const episode = episodes?.find(candidateEpisode =>
+        candidate.provenance.some(ref =>
+          ref.filePath === candidateEpisode.sourceFilePath
+          && ref.turn === candidateEpisode.deliveryTurn,
+        ),
+      );
+      if (this.learningEpisodeStore && (!episode || episode.status !== 'promoted')) continue;
+      const bundle = this.v3EvidenceBundleBuilder?.(unit, candidate)
+        ?? buildV3EvidenceBundle(unit, candidate, this.skillEvolution);
+      reviewInputs.push({ candidate, bundle });
+    }
+
+    const reviewerConcurrency = Math.max(
+      1,
+      Math.floor(this.skillEvolution.getEffectiveConfig().reviewerConcurrency),
+    );
+    const evolutions = await mapWithConcurrency(
+      reviewInputs,
+      reviewerConcurrency,
+      input => this.skillEvolution!.reviewAndApply(input.bundle),
+    );
+    return { candidates, evolutions, ...(episodes && { episodes }) };
   }
 
   /**
@@ -611,6 +701,25 @@ export class DistillationPipeline {
   }
 
   /**
+   * Re-review due V3 semantic defers and operational failure queue entries.
+   *
+   * This runs after the heartbeat's distillation pass so newly refreshed
+   * registries and version settings can promote or refresh queued candidates.
+   */
+  async reviewSkillEvolutionQueueEntries(): Promise<QueueReviewResultV3> {
+    if (!this.skillEvolution) {
+      return {
+        reviewed: 0,
+        deferredReviewed: 0,
+        operationalReviewed: 0,
+        operationalRetried: 0,
+        deferredRetried: 0,
+      };
+    }
+    return this.skillEvolution.reviewDueQueueEntries();
+  }
+
+  /**
    * Apply a resolvable (non-`needs_review`) review decision to the Capability
    * Registry and installed-skill store. Shared by the new-candidate path
    * (`processUnit`) and the queue re-review path (`reviewEligibleQueueEntries`).
@@ -843,6 +952,72 @@ function persistReviewOutcomes(
  */
 export function defaultDistilledOutputDir(skillsRoot: string): string {
   return path.join(skillsRoot, GENERATED_DISTILLED_DIR_NAME);
+}
+
+export function buildV3EvidenceBundle(
+  unit: DistillationUnit,
+  candidate: DistilledKnowledgeCandidate,
+  skillEvolution: SkillEvolutionRuntime,
+): EvidenceBundle {
+  const turns = [...unit.continuityTurns, ...unit.newTurns];
+  const sourceEvidence: BoundedSourceEvidence[] = candidate.provenance.flatMap(ref => {
+    const sourceTurn = turns.find(turn =>
+      turn.turn === ref.turn
+      && turnSourceFilePath(turn, unit.filePath) === ref.filePath,
+    );
+    if (!sourceTurn) return [];
+    return [{
+      ref: `${ref.filePath}#${ref.turn}:${ref.role}:${ref.unitByteRange.start}-${ref.unitByteRange.end}`,
+      sourceFilePath: ref.filePath,
+      turn: ref.turn,
+      byteRange: ref.unitByteRange,
+      role: ref.role,
+      content: JSON.stringify(sourceTurn),
+    }];
+  });
+  const completionEvidence = sourceEvidence.filter(ref => ref.role === 'problem-action');
+  const settlementEvidence = sourceEvidence.filter(ref => ref.role === 'verification');
+  return {
+    bundleId: `v3:${unit.filePath}:${unit.byteRange.start}:${unit.byteRange.end}:${candidate.capabilityId}`,
+    episode: candidate,
+    completionEvidence,
+    settlementEvidence,
+    boundedContinuity: unit.continuityTurns,
+    referencedSkills: skillEvolution.getReferencedSkillSnapshots(),
+    relatedCurrentSkills: Object.values(skillEvolution.getRegistry().capabilities).map(record => ({
+      handle: record.handle,
+      revision: record.revision,
+      routingName: record.routingName,
+      description: record.description,
+      guidanceHash: record.guidanceHash,
+    })),
+    sourceEvidence,
+  };
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]!, index);
+    }
+  }));
+
+  return results;
+}
+
+function turnSourceFilePath(turn: CompletedTurn, fallback: string): string {
+  const origin = (turn as DistillationTurn).origin?.filePath;
+  return typeof origin === 'string' && origin.trim() ? origin : fallback;
 }
 
 // ---------------------------------------------------------------------------

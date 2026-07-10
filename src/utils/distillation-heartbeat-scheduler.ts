@@ -1,6 +1,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { DistillationUnit, processSessionLogDirectory } from './distillation-unit';
+import {
+  CrossFileContinuityOptions,
+  DistillationUnit,
+  extractDistillationUnit,
+} from './distillation-unit';
+import {
+  advanceCursor,
+  getCursor,
+  loadLogCursorState,
+  markCursorFailed,
+  saveLogCursorState,
+} from './log-cursor-state';
 import { getDistillationHeartbeatConfig } from './distillation-heartbeat-config';
 import { Logger } from './logger';
 
@@ -47,7 +58,7 @@ export interface HeartbeatRecord {
   lastAdvancedFiles: number;
 }
 
-export type DistillationUnitProcessor = (unit: DistillationUnit) => void;
+export type DistillationUnitProcessor = (unit: DistillationUnit) => unknown | Promise<unknown>;
 
 /**
  * Optional hook invoked once after a heartbeat cycle finishes processing all
@@ -57,7 +68,7 @@ export type DistillationUnitProcessor = (unit: DistillationUnit) => void;
  * best-effort: it must not throw, and a failing hook never blocks the
  * heartbeat or cursor advancement.
  */
-export type HeartbeatCycleCompleteHook = () => void;
+export type HeartbeatCycleCompleteHook = () => Promise<void> | void;
 
 const DEFAULT_PROCESSOR: DistillationUnitProcessor = () => {
   // Issue #2 scope: the heartbeat owns the runtime path that extracts
@@ -167,15 +178,26 @@ export class DistillationHeartbeatScheduler {
       const sessionLogsRoot = resolveSessionLogsRoot(config.logsRoot);
       if (!fs.existsSync(sessionLogsRoot) || !fs.statSync(sessionLogsRoot).isDirectory()) {
         this.recordHeartbeat(config.heartbeatRecordPath, reason, 0, 0);
-        this.runCycleCompleteHook();
+        await this.runCycleCompleteHook();
         return { unitsProcessed: 0, advancedFiles: 0, ran: true };
       }
 
-      const { units, advancedFiles } = processSessionLogDirectory(
-        sessionLogsRoot,
-        config.stateFilePath,
-        this.processor,
-      );
+      const units: DistillationUnit[] = [];
+      let advancedFiles = 0;
+      // Process one file at a time so an async Branch Promotion Reviewer can
+      // finish before that file's cursor is advanced. The existing sync
+      // processors remain valid because `await` also accepts void.
+      const files = collectJsonlFilesForHeartbeat(sessionLogsRoot);
+      for (const filePath of files) {
+        const result = await processSessionLogAsync(
+          filePath,
+          config.stateFilePath,
+          this.processor,
+          files,
+        );
+        if (result.processed && result.distillationUnit) units.push(result.distillationUnit);
+        if (result.advanced) advancedFiles++;
+      }
 
       this.recordHeartbeat(config.heartbeatRecordPath, reason, units.length, advancedFiles);
 
@@ -191,7 +213,7 @@ export class DistillationHeartbeatScheduler {
       // Queue entries so the heartbeat autonomously consumes retry-eligible
       // reviews (reviewer version, registry-state, explicit-command, or
       // matching-evidence changes). The hook is best-effort.
-      this.runCycleCompleteHook();
+      await this.runCycleCompleteHook();
 
       return { unitsProcessed: units.length, advancedFiles, ran: true };
     } catch (error: any) {
@@ -206,10 +228,10 @@ export class DistillationHeartbeatScheduler {
    * Best-effort invocation of the cycle-complete hook (issue #29). A throwing
    * hook is logged and never blocks the heartbeat or cursor advancement.
    */
-  private runCycleCompleteHook(): void {
+  private async runCycleCompleteHook(): Promise<void> {
     if (!this.cycleCompleteHook) return;
     try {
-      this.cycleCompleteHook();
+      await this.cycleCompleteHook();
     } catch (error: any) {
       Logger.warning(
         `[DistillationHeartbeat] cycle-complete hook failed: ${error?.message ?? error}`,
@@ -268,6 +290,64 @@ export class DistillationHeartbeatScheduler {
       Logger.warning(`[DistillationHeartbeat] failed to record heartbeat: ${error.message}`);
     }
   }
+}
+
+async function processSessionLogAsync(
+  filePath: string,
+  stateFilePath: string,
+  processor: DistillationUnitProcessor,
+  orderedFilePaths: readonly string[] = [filePath],
+): Promise<{
+  distillationUnit: DistillationUnit | null;
+  advanced: boolean;
+  processed: boolean;
+}> {
+  // Keep the extraction/cursor semantics in distillation-unit.ts while
+  // allowing the processor to be asynchronous. This mirrors processSessionLog
+  // and intentionally advances the cursor only after the branch commit.
+  const state = loadLogCursorState(stateFilePath);
+  const cursor = getCursor(state, filePath);
+  let extracted;
+  try {
+    const crossFileContinuity: CrossFileContinuityOptions = {
+      orderedFilePaths,
+      // The extractor derives the current file's identity from its first new
+      // turn, then requires every predecessor/current turn to match it.
+    };
+    extracted = extractDistillationUnit(filePath, cursor, { crossFileContinuity });
+  } catch (error) {
+    markCursorFailed(state, filePath, cursor.byteOffset, error);
+    saveLogCursorState(stateFilePath, state);
+    return { distillationUnit: null, advanced: false, processed: false };
+  }
+  if (extracted.distillationUnit) {
+    try {
+      await processor(extracted.distillationUnit);
+      advanceCursor(state, extracted.newCursor);
+      saveLogCursorState(stateFilePath, state);
+      return { distillationUnit: extracted.distillationUnit, advanced: true, processed: true };
+    } catch (error) {
+      markCursorFailed(state, filePath, cursor.byteOffset, error);
+      saveLogCursorState(stateFilePath, state);
+      return { distillationUnit: extracted.distillationUnit, advanced: false, processed: false };
+    }
+  }
+  if (extracted.advanced) {
+    advanceCursor(state, extracted.newCursor);
+    saveLogCursorState(stateFilePath, state);
+  }
+  return { distillationUnit: null, advanced: extracted.advanced, processed: false };
+}
+
+function collectJsonlFilesForHeartbeat(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  const files: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...collectJsonlFilesForHeartbeat(fullPath));
+    else if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(fullPath);
+  }
+  return files.sort();
 }
 
 export function loadHeartbeatRecord(recordPath: string): HeartbeatRecord {

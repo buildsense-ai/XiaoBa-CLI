@@ -1,0 +1,650 @@
+import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
+import {
+  CompletedTurn,
+  DistillationTurn,
+  DistillationUnit,
+  MAX_CONTINUITY_TURNS,
+  normalizeContinuityLimit,
+} from './distillation-unit';
+import {
+  ParsedSessionLogEntry,
+  SessionTurnLogEntry,
+  isSessionTurnEntry,
+} from './session-log-schema';
+import {
+  EvidenceBundle,
+  ReferencedSkillSnapshot,
+  SkillAuthorFixture,
+  SkillDraft,
+  SkillEvolutionResult,
+  SkillEvolutionRuntime,
+  SkillEvidenceRef,
+  SkillVerifierFixture,
+} from './skill-evolution';
+import { SkillParser } from '../skills/skill-parser';
+import { PathResolver } from './path-resolver';
+
+/** A completed delivery attempt is the unit of learning, not a whole task. */
+export const LEARNING_EPISODE_SCHEMA_VERSION = 1 as const;
+
+export type LearningEpisodeStatus = 'settling' | 'contradicted' | 'promoted' | 'rejected';
+
+export type CompletionEvidenceKind =
+  | 'artifact-delivery'
+  | 'artifact-validation'
+  | 'verified-tool-result'
+  | 'user-acceptance';
+
+export interface EpisodeEvidenceRef {
+  ref: string;
+  sourceFilePath: string;
+  turn: number;
+  kind: CompletionEvidenceKind | 'contradiction';
+  detail?: string;
+}
+
+export interface ContradictionSignal {
+  signalId: string;
+  kind: 'direct-correction' | 'failure-report';
+  message: string;
+  source: EpisodeEvidenceRef;
+  precedingDeliveryTurn: number;
+  precedingSourceFilePath: string;
+  runtimeSessionId: string;
+  preventsPromotion: true;
+}
+
+export interface LearningEpisode {
+  schemaVersion: typeof LEARNING_EPISODE_SCHEMA_VERSION;
+  episodeId: string;
+  runtimeSessionId: string;
+  sourceFilePath: string;
+  deliveryTurn: number;
+  completionEvidence: EpisodeEvidenceRef[];
+  contradictionSignals: ContradictionSignal[];
+  predecessorEpisodeId?: string;
+  /** A retry is related to its predecessor, but never shares its settlement. */
+  retryOfEpisodeId?: string;
+  settlementDeadline: string;
+  status: LearningEpisodeStatus;
+}
+
+export interface LearningEpisodeExtractionResult {
+  episodes: LearningEpisode[];
+  contradictions: ContradictionSignal[];
+}
+
+const DELIVERY_TOOL = /(?:send|deliver|write|create|generate|export|upload|publish|attach|artifact|file)/i;
+const VALIDATION_TOOL = /(?:validat|check|inspect|verify|assert|test|opencli)/i;
+const SUCCESS_RESULT = /(?:success|succeed|ok|passed|valid|created|delivered|sent|uploaded|generated)/i;
+const FAILURE_RESULT = /(?:fail|error|invalid|unable|cannot|denied|timeout)/i;
+const POSITIVE_ACCEPTANCE = /(?:^|\W)(?:thanks?|works?|worked|great|perfect|excellent|correct|verified|confirmed|done|yes|yep|that(?:'|’)s right|that did it)(?:$|\W)/i;
+const CONTRADICTION = /(?:^|\W)(?:redo|try again|unsuitable|not suitable|wrong|incorrect|not what|doesn['’]t work|didn['’]t work|still failing|still broken|failed|failure|error|no,|nope|instead)(?:$|\W)/i;
+const CONTINUATION = /(?:^|\W)(?:continue|resume|redo|try again|接着做|继续|重做)(?:$|\W)/i;
+
+/**
+ * Extract independent delivery attempts from one Distillation Unit.
+ *
+ * The extraction intentionally accepts high-recall evidence. Settlement is
+ * the later, durable decision point; a direct correction is attached to the
+ * preceding episode and makes that episode ineligible for promotion.
+ */
+export function extractLearningEpisodes(
+  unit: DistillationUnit,
+  settlementWindowMs = 3 * 60 * 60 * 1000,
+): LearningEpisodeExtractionResult {
+  const turns = [...unit.continuityTurns, ...unit.newTurns];
+  const newTurnNumbers = new Set(unit.newTurns.map(turn => turn.turn));
+  const episodes: LearningEpisode[] = [];
+  const contradictions: ContradictionSignal[] = [];
+
+  for (let index = 0; index < turns.length; index++) {
+    const deliveryTurn = turns[index];
+    if (!newTurnNumbers.has(deliveryTurn.turn)) continue;
+    const deliverySourceFilePath = turnSourceFilePath(deliveryTurn, unit.filePath);
+    const evidence = detectCompletionEvidence(deliverySourceFilePath, deliveryTurn);
+    if (!hasDeliveryEvidence(evidence)) continue;
+
+    const episodeId = makeEpisodeId(deliverySourceFilePath, deliveryTurn);
+    const next = turns[index + 1];
+    const signal = next ? detectContradiction(deliverySourceFilePath, deliveryTurn, next, unit.filePath) : undefined;
+    const accepted = next ? detectAcceptance(turnSourceFilePath(next, unit.filePath), deliveryTurn, next) : undefined;
+    if (signal) {
+      evidence.push(signal.source);
+      contradictions.push(signal);
+    } else if (accepted) {
+      evidence.push(accepted);
+    }
+
+    const predecessor = [...episodes].reverse().find(candidate =>
+      candidate.runtimeSessionId === runtimeSessionIdOf(deliveryTurn)
+      && candidate.deliveryTurn < deliveryTurn.turn,
+    );
+    const episode: LearningEpisode = {
+      schemaVersion: LEARNING_EPISODE_SCHEMA_VERSION,
+      episodeId,
+      runtimeSessionId: runtimeSessionIdOf(deliveryTurn),
+      sourceFilePath: deliverySourceFilePath,
+      deliveryTurn: deliveryTurn.turn,
+      completionEvidence: evidence,
+      contradictionSignals: signal ? [signal] : [],
+      ...(predecessor && { predecessorEpisodeId: predecessor.episodeId }),
+      settlementDeadline: new Date(Date.parse(deliveryTurn.timestamp) + settlementWindowMs).toISOString(),
+      status: signal ? 'contradicted' : 'settling',
+    };
+    // A retry points back to the contradicted delivery, never to itself.
+    if (predecessor?.status === 'contradicted') {
+      episode.retryOfEpisodeId = predecessor.episodeId;
+    }
+    episodes.push(episode);
+  }
+
+  // A correction can arrive in a new unit immediately after a delivery that
+  // was continuity context. Return the signal so the durable store can update
+  // that already-known episode without re-creating it.
+  for (let index = 0; index < turns.length - 1; index++) {
+    const delivery = turns[index];
+    const correction = turns[index + 1];
+    if (!newTurnNumbers.has(correction.turn) || newTurnNumbers.has(delivery.turn)) continue;
+    const deliverySourceFilePath = turnSourceFilePath(delivery, unit.filePath);
+    const deliveryEvidence = detectCompletionEvidence(deliverySourceFilePath, delivery);
+    if (!hasDeliveryEvidence(deliveryEvidence)) continue;
+    const signal = detectContradiction(deliverySourceFilePath, delivery, correction, unit.filePath);
+    if (signal) {
+      contradictions.push(signal);
+      continue;
+    }
+    const accepted = detectAcceptance(turnSourceFilePath(correction, unit.filePath), delivery, correction);
+    if (accepted) {
+      episodes.push({
+        schemaVersion: LEARNING_EPISODE_SCHEMA_VERSION,
+        episodeId: makeEpisodeId(deliverySourceFilePath, delivery),
+        runtimeSessionId: runtimeSessionIdOf(delivery),
+        sourceFilePath: deliverySourceFilePath,
+        deliveryTurn: delivery.turn,
+        completionEvidence: uniqueEvidence([...deliveryEvidence, accepted]),
+        contradictionSignals: [],
+        settlementDeadline: new Date(Date.parse(delivery.timestamp) + settlementWindowMs).toISOString(),
+        status: 'settling',
+      });
+    }
+  }
+
+  return { episodes, contradictions };
+}
+
+function detectCompletionEvidence(filePath: string, turn: CompletedTurn): EpisodeEvidenceRef[] {
+  const evidence: EpisodeEvidenceRef[] = [];
+  for (const tool of turn.assistant.tool_calls) {
+    const detail = `${tool.name}: ${String(tool.result || '')}`.trim();
+    if (VALIDATION_TOOL.test(tool.name) && SUCCESS_RESULT.test(tool.result || '')) {
+      evidence.push({
+        ref: evidenceRef(filePath, turn.turn, `validation:${tool.name}`),
+        sourceFilePath: filePath,
+        turn: turn.turn,
+        kind: 'artifact-validation',
+        detail,
+      });
+    } else if (DELIVERY_TOOL.test(tool.name) && !FAILURE_RESULT.test(tool.result || '')) {
+      evidence.push({
+        ref: evidenceRef(filePath, turn.turn, `delivery:${tool.name}`),
+        sourceFilePath: filePath,
+        turn: turn.turn,
+        kind: 'artifact-delivery',
+        detail,
+      });
+    }
+  }
+  return uniqueEvidence(evidence);
+}
+
+function hasDeliveryEvidence(evidence: readonly EpisodeEvidenceRef[]): boolean {
+  return evidence.some(item => item.kind === 'artifact-delivery' || item.kind === 'verified-tool-result');
+}
+
+function detectContradiction(
+  deliverySourceFilePath: string,
+  delivery: CompletedTurn,
+  next: CompletedTurn,
+  fallbackCorrectionFilePath: string,
+): ContradictionSignal | undefined {
+  const message = next.user.text.trim();
+  if (!message || !CONTRADICTION.test(message)) return undefined;
+  const correctionSourceFilePath = turnSourceFilePath(next, fallbackCorrectionFilePath);
+  const source: EpisodeEvidenceRef = {
+    ref: evidenceRef(correctionSourceFilePath, next.turn, 'contradiction'),
+    sourceFilePath: correctionSourceFilePath,
+    turn: next.turn,
+    kind: 'contradiction',
+    detail: message,
+  };
+  return {
+    signalId: makeSignalId(deliverySourceFilePath, correctionSourceFilePath, delivery.turn, next.turn),
+    kind: /(?:fail|error|doesn|didn|broken)/i.test(message) ? 'failure-report' : 'direct-correction',
+    message,
+    source,
+    precedingDeliveryTurn: delivery.turn,
+    precedingSourceFilePath: deliverySourceFilePath,
+    runtimeSessionId: runtimeSessionIdOf(delivery),
+    preventsPromotion: true,
+  };
+}
+
+function detectAcceptance(
+  filePath: string,
+  delivery: CompletedTurn,
+  next: CompletedTurn,
+): EpisodeEvidenceRef | undefined {
+  const message = next.user.text.trim();
+  if (!message || !POSITIVE_ACCEPTANCE.test(message) || CONTRADICTION.test(message)) return undefined;
+  return {
+    ref: evidenceRef(filePath, next.turn, 'acceptance'),
+    sourceFilePath: filePath,
+    turn: next.turn,
+    kind: 'user-acceptance',
+    detail: message,
+  };
+}
+
+function runtimeSessionIdOf(turn: CompletedTurn): string {
+  const candidate = turn as SessionTurnLogEntry & { runtime_session_id?: string; runtime_id?: string };
+  return String(candidate.runtime_session_id || candidate.runtime_id || candidate.session_id).trim();
+}
+
+function turnSourceFilePath(turn: CompletedTurn, fallback: string): string {
+  const origin = (turn as DistillationTurn).origin?.filePath;
+  return typeof origin === 'string' && origin.trim() ? origin : fallback;
+}
+
+function evidenceRef(filePath: string, turn: number, kind: string): string {
+  return `${filePath}#turn-${turn}:${kind}`;
+}
+
+function makeEpisodeId(filePath: string, turn: CompletedTurn): string {
+  return `episode-${hash(`${filePath}|${runtimeSessionIdOf(turn)}|turn-${turn.turn}`).slice(0, 20)}`;
+}
+
+function makeSignalId(
+  deliveryFilePath: string,
+  correctionFilePath: string,
+  deliveryTurn: number,
+  correctionTurn: number,
+): string {
+  return `contradiction-${hash(`${deliveryFilePath}|${correctionFilePath}|${deliveryTurn}|${correctionTurn}`).slice(0, 20)}`;
+}
+
+function hash(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function uniqueEvidence(evidence: EpisodeEvidenceRef[]): EpisodeEvidenceRef[] {
+  return [...new Map(evidence.map(item => [item.ref, item])).values()];
+}
+
+export interface SettleLearningEpisodesOptions {
+  now?: Date;
+  promote?: (episode: LearningEpisode) => LearningEpisodeStatus;
+}
+
+/** Settle each episode independently; contradiction always wins. */
+export function settleLearningEpisodes(
+  episodes: readonly LearningEpisode[],
+  options: SettleLearningEpisodesOptions = {},
+): LearningEpisode[] {
+  const now = (options.now ?? new Date()).getTime();
+  return episodes.map(episode => {
+    if (episode.status === 'contradicted' || episode.contradictionSignals.length > 0) {
+      return { ...cloneEpisode(episode), status: 'rejected' };
+    }
+    if (episode.status !== 'settling') return cloneEpisode(episode);
+    if (Date.parse(episode.settlementDeadline) > now) return cloneEpisode(episode);
+    const status = options.promote?.(episode) ?? 'promoted';
+    return { ...cloneEpisode(episode), status };
+  });
+}
+
+function cloneEpisode(episode: LearningEpisode): LearningEpisode {
+  return JSON.parse(JSON.stringify(episode)) as LearningEpisode;
+}
+
+export interface LearningEpisodeStoreState {
+  schemaVersion: typeof LEARNING_EPISODE_SCHEMA_VERSION;
+  episodes: Record<string, LearningEpisode>;
+}
+
+export class LearningEpisodeStore {
+  constructor(private readonly filePath: string) {}
+
+  load(): LearningEpisodeStoreState {
+    if (!fs.existsSync(this.filePath)) return emptyEpisodeStoreState();
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as LearningEpisodeStoreState;
+      if (parsed.schemaVersion !== LEARNING_EPISODE_SCHEMA_VERSION || !parsed.episodes) throw new Error('invalid episode store');
+      return parsed;
+    } catch {
+      return emptyEpisodeStoreState();
+    }
+  }
+
+  save(state: LearningEpisodeStoreState): void {
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    const temp = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify(state, null, 2), { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(temp, this.filePath);
+  }
+
+  upsert(episodes: readonly LearningEpisode[]): LearningEpisodeStoreState {
+    const state = this.load();
+    for (const episode of episodes) {
+      const existing = state.episodes[episode.episodeId];
+      const linked = episode.retryOfEpisodeId || episode.predecessorEpisodeId
+        ? episode
+        : linkRetryToStoredPredecessor(episode, state);
+      state.episodes[episode.episodeId] = mergeEpisode(existing, linked);
+    }
+    this.save(state);
+    return state;
+  }
+
+  /** Upsert new episodes and apply correction signals discovered at a later cursor. */
+  applyExtraction(result: LearningEpisodeExtractionResult): LearningEpisodeStoreState {
+    const state = this.upsert(result.episodes);
+    for (const signal of result.contradictions) {
+      const predecessor = Object.values(state.episodes).find(episode =>
+        episode.sourceFilePath === signal.precedingSourceFilePath
+        && episode.runtimeSessionId === signal.runtimeSessionId
+        && episode.deliveryTurn === signal.precedingDeliveryTurn,
+      );
+      if (!predecessor) continue;
+      predecessor.contradictionSignals = [...new Map(
+        [...predecessor.contradictionSignals, signal].map(item => [item.signalId, item]),
+      ).values()];
+      predecessor.status = predecessor.status === 'promoted' ? 'rejected' : 'contradicted';
+      predecessor.completionEvidence = uniqueEvidence([...predecessor.completionEvidence, signal.source]);
+    }
+    this.save(state);
+    return state;
+  }
+
+  settle(options: SettleLearningEpisodesOptions = {}): LearningEpisodeStoreState {
+    const state = this.load();
+    const settled = settleLearningEpisodes(Object.values(state.episodes), options);
+    state.episodes = Object.fromEntries(settled.map(episode => [episode.episodeId, episode]));
+    this.save(state);
+    return state;
+  }
+}
+
+function emptyEpisodeStoreState(): LearningEpisodeStoreState {
+  return { schemaVersion: LEARNING_EPISODE_SCHEMA_VERSION, episodes: {} };
+}
+
+function mergeEpisode(existing: LearningEpisode | undefined, incoming: LearningEpisode): LearningEpisode {
+  if (!existing) return cloneEpisode(incoming);
+  const signals = [...existing.contradictionSignals, ...incoming.contradictionSignals];
+  const merged: LearningEpisode = {
+    ...existing,
+    completionEvidence: uniqueEvidence([...existing.completionEvidence, ...incoming.completionEvidence]),
+    contradictionSignals: [...new Map(signals.map(signal => [signal.signalId, signal])).values()],
+  };
+  if (merged.contradictionSignals.length > 0) {
+    merged.status = existing.status === 'promoted' ? 'rejected' : 'contradicted';
+  }
+  return merged;
+}
+
+function linkRetryToStoredPredecessor(
+  episode: LearningEpisode,
+  state: LearningEpisodeStoreState,
+): LearningEpisode {
+  const predecessor = Object.values(state.episodes)
+    .filter(candidate =>
+      candidate.runtimeSessionId === episode.runtimeSessionId
+      && candidate.deliveryTurn < episode.deliveryTurn,
+    )
+    .filter(candidate => candidate.status === 'contradicted' || candidate.status === 'rejected')
+    .sort((a, b) => b.deliveryTurn - a.deliveryTurn)[0];
+  if (!predecessor) return episode;
+  return {
+    ...episode,
+    predecessorEpisodeId: predecessor.episodeId,
+    retryOfEpisodeId: predecessor.episodeId,
+  };
+}
+
+export interface ContinuityFile {
+  filePath: string;
+  entries: ParsedSessionLogEntry[];
+}
+
+export interface ContinuityReadOptions {
+  files: readonly ContinuityFile[];
+  currentFilePath: string;
+  runtimeSessionId: string;
+  maxTurns?: number;
+}
+
+/**
+ * Read continuity from exactly one predecessor file.
+ *
+ * The ordered file list is part of the contract: a file that is not the
+ * immediate predecessor cannot be read, even if its session id matches.
+ */
+export function readImmediatePredecessorContinuity(options: ContinuityReadOptions): DistillationTurn[] {
+  const currentIndex = options.files.findIndex(file => file.filePath === options.currentFilePath);
+  if (currentIndex <= 0) return [];
+  const current = options.files[currentIndex];
+  const currentTurns = current.entries.filter(isSessionTurnEntry);
+  if (currentTurns.length === 0 || !hasContinuationSignal(currentTurns[0].user.text)) return [];
+  if (currentTurns.some(turn => runtimeSessionIdOf(turn) !== options.runtimeSessionId)) return [];
+
+  const predecessor = options.files[currentIndex - 1];
+  const predecessorTurns = predecessor.entries.filter(isSessionTurnEntry);
+  if (predecessorTurns.length === 0) return [];
+  if (predecessorTurns.some(turn => runtimeSessionIdOf(turn) !== options.runtimeSessionId)) return [];
+  const maxTurns = Math.min(MAX_CONTINUITY_TURNS, normalizeContinuityLimit(options.maxTurns));
+  return maxTurns === 0
+    ? []
+    : predecessorTurns.slice(-maxTurns).map(turn => ({
+      ...turn,
+      origin: { filePath: predecessor.filePath },
+    }));
+}
+
+/** Read only the current file and its immediate predecessor when eligible. */
+export function readImmediatePredecessorContinuityFromDisk(
+  orderedFilePaths: readonly string[],
+  currentFilePath: string,
+  runtimeSessionId: string,
+  maxTurns = MAX_CONTINUITY_TURNS,
+): DistillationTurn[] {
+  const currentIndex = orderedFilePaths.indexOf(currentFilePath);
+  if (currentIndex <= 0) return [];
+  const currentEntries = readSessionEntries(currentFilePath);
+  const currentTurns = currentEntries.filter(isSessionTurnEntry);
+  if (currentTurns.length === 0 || !hasContinuationSignal(currentTurns[0].user.text)) return [];
+  const predecessorPath = orderedFilePaths[currentIndex - 1];
+  const predecessorEntries = readSessionEntries(predecessorPath);
+  return readImmediatePredecessorContinuity({
+    files: [
+      { filePath: predecessorPath, entries: predecessorEntries },
+      { filePath: currentFilePath, entries: currentEntries },
+    ],
+    currentFilePath,
+    runtimeSessionId,
+    maxTurns,
+  });
+}
+
+function readSessionEntries(filePath: string): ParsedSessionLogEntry[] {
+  if (!fs.existsSync(filePath)) return [];
+  return fs.readFileSync(filePath, 'utf8')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => JSON.parse(line) as ParsedSessionLogEntry);
+}
+
+function hasContinuationSignal(text: string): boolean {
+  return CONTINUATION.test(String(text || '').replace(/\s+/g, ' ').trim());
+}
+
+export interface FlashcardCompositionOptions {
+  episode: LearningEpisode;
+  sourceFilePath: string;
+  outputDir: string;
+  registryPath: string;
+  auditPath: string;
+  journalPath: string;
+  workingDirectory: string;
+  wordCardMakerVersion?: string;
+  wordCardMakerPath?: string;
+  logEnabled?: boolean;
+  authorFixture?: SkillAuthorFixture;
+  verifierFixture?: SkillVerifierFixture;
+}
+
+export interface FlashcardCompositionResult {
+  evolution: SkillEvolutionResult;
+  referencedSkill: ReferencedSkillSnapshot;
+  manualSkillHashBefore?: string;
+  manualSkillHashAfter?: string;
+}
+
+/**
+ * Controlled V3 regression adapter for the flashcard workflow.
+ *
+ * The generated skill adds the opencli selection/validation/delivery pattern
+ * and records word-card-maker as a live reference. It writes only the
+ * generated output/registry/audit paths supplied by the caller.
+ */
+export async function promoteFlashcardComposition(
+  options: FlashcardCompositionOptions,
+): Promise<FlashcardCompositionResult> {
+  if (options.episode.status !== 'promoted') {
+    throw new Error('A flashcard Composition Capability requires a settled, promoted retry episode.');
+  }
+  if (options.episode.contradictionSignals.length > 0 || !options.episode.retryOfEpisodeId) {
+    throw new Error('A flashcard Composition Capability requires an uncontested retry episode.');
+  }
+  if (options.episode.sourceFilePath !== options.sourceFilePath) {
+    throw new Error('Flashcard composition source file must match the episode provenance.');
+  }
+  const deliveryEvidence = options.episode.completionEvidence.filter(evidence => evidence.kind === 'artifact-delivery');
+  const validationEvidence = options.episode.completionEvidence.filter(evidence => evidence.kind === 'artifact-validation');
+  if (deliveryEvidence.length === 0 || validationEvidence.length === 0) {
+    throw new Error('A flashcard Composition Capability requires validated delivery evidence.');
+  }
+  const referencedSkill = makeReferencedSkill(options);
+  const manualSkillHashBefore = options.wordCardMakerPath ? hashFile(options.wordCardMakerPath) : undefined;
+  const bundle = buildFlashcardEvidenceBundle(options.episode, options.sourceFilePath, referencedSkill);
+  const runtime = new SkillEvolutionRuntime({
+    workingDirectory: options.workingDirectory,
+    outputDir: options.outputDir,
+    registryPath: options.registryPath,
+    auditPath: options.auditPath,
+    journalPath: options.journalPath,
+    logEnabled: options.logEnabled,
+    authorFixture: options.authorFixture ?? flashcardAuthor,
+    verifierFixture: options.verifierFixture ?? flashcardVerifier,
+  });
+  const evolution = await runtime.reviewAndApply(bundle);
+  const manualSkillHashAfter = options.wordCardMakerPath ? hashFile(options.wordCardMakerPath) : undefined;
+  if (manualSkillHashBefore !== manualSkillHashAfter) {
+    throw new Error('word-card-maker changed during Composition Capability promotion.');
+  }
+  return { evolution, referencedSkill, manualSkillHashBefore, manualSkillHashAfter };
+}
+
+export function buildFlashcardEvidenceBundle(
+  episode: LearningEpisode,
+  sourceFilePath: string,
+  referencedSkill: ReferencedSkillSnapshot,
+): EvidenceBundle {
+  const settlementEvidence = episode.completionEvidence.filter(evidence => evidence.kind === 'user-acceptance');
+  const deliveryEvidence = episode.completionEvidence.filter(evidence => evidence.kind === 'artifact-delivery');
+  const validationEvidence = episode.completionEvidence.filter(evidence => evidence.kind === 'artifact-validation');
+  if (deliveryEvidence.length === 0 || validationEvidence.length === 0 || settlementEvidence.length === 0) {
+    throw new Error('Flashcard evidence bundle requires validation, delivery, and acceptance evidence.');
+  }
+  const settlementSource = settlementEvidence.map(toSkillEvidenceRef);
+  const settlementRefs = new Set(settlementSource.map(evidence => evidence.ref));
+  const completionEvidence = episode.completionEvidence
+    .filter(evidence => !settlementRefs.has(evidence.ref))
+    .map(toSkillEvidenceRef);
+  return {
+    bundleId: `flashcard-${episode.episodeId}`,
+    episode: {
+      ...episode,
+      workflow: 'flashcard correction and verified retry',
+    },
+    completionEvidence,
+    settlementEvidence,
+    boundedContinuity: [],
+    referencedSkills: [referencedSkill],
+    relatedCurrentSkills: [],
+  };
+}
+
+function toSkillEvidenceRef(evidence: EpisodeEvidenceRef): SkillEvidenceRef {
+  return {
+    ref: evidence.ref,
+    sourceFilePath: evidence.sourceFilePath,
+    turn: evidence.turn,
+  };
+}
+
+function makeReferencedSkill(options: FlashcardCompositionOptions): ReferencedSkillSnapshot {
+  return {
+    name: 'word-card-maker',
+    ...(options.wordCardMakerVersion && { version: options.wordCardMakerVersion }),
+    ...(options.wordCardMakerPath && { contentFingerprint: hashFile(options.wordCardMakerPath) }),
+  };
+}
+
+const flashcardAuthor: SkillAuthorFixture = ({ bundle }): SkillDraft => ({
+  body: [
+    'Use the referenced `word-card-maker` skill for the base word-card structure.',
+    'For image cards, use `opencli` to select a suitable image, validate the selected artifact and its dimensions/content, then deliver the validated card.',
+    'Keep selection, validation, and delivery explicit; if validation fails, report the failure and retry instead of delivering an unsuitable artifact.',
+  ].join('\n\n'),
+  envelope: {
+    decision: 'create_current_skill',
+    routingName: 'flashcard-image-delivery',
+    description: 'Create validated flashcards by composing word-card-maker with opencli image selection and delivery.',
+    referencedSkills: ['word-card-maker'],
+    evidenceRefs: [...bundle.completionEvidence, ...bundle.settlementEvidence].map(ref => ref.ref),
+    rationale: 'Controlled flashcard correction and verified retry workflow.',
+  },
+});
+
+const flashcardVerifier: SkillVerifierFixture = ({ bundle, draft }): ReturnType<SkillVerifierFixture> => ({
+  decision: draft.body.includes('word-card-maker')
+    && draft.body.includes('opencli')
+    && draft.envelope.referencedSkills?.includes('word-card-maker')
+    && bundle.referencedSkills.some(skill => skill.name === 'word-card-maker')
+    ? 'accept'
+    : 'reject',
+  transition: 'create_current_skill',
+  issues: [],
+  rationale: 'The draft is semantic, references the manual word-card-maker skill, and contains the opencli selection/validation/delivery workflow.',
+});
+
+function hashFile(filePath: string): string | undefined {
+  if (!fs.existsSync(filePath)) return undefined;
+  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+/** Existing discovery uses recursive SKILL.md files; expose a small testable view. */
+export function listDiscoverableGeneratedSkills(skillsRoot = PathResolver.getSkillsPath()): Array<{ name: string; description: string; filePath: string }> {
+  return PathResolver.findSkillFiles(skillsRoot).flatMap(filePath => {
+    try {
+      const skill = SkillParser.parse(filePath);
+      return [{ name: skill.metadata.name, description: skill.metadata.description, filePath: skill.filePath }];
+    } catch {
+      return [];
+    }
+  });
+}
