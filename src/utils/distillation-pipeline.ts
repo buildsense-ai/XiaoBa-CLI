@@ -313,6 +313,7 @@ export class DistillationPipeline {
           ? findPendingEntryForCandidate(needsReviewQueue, candidate)
           : undefined;
         if (existing) {
+          const previousEvidenceFingerprint = existing.evidenceFingerprint;
           const refreshed = refreshQueueEntryWithMatchingEvidence(
             needsReviewQueue!,
             existing.entryId,
@@ -322,12 +323,19 @@ export class DistillationPipeline {
               updatedAt: candidate.generatedAt,
             },
           );
-          needsReviewEntries.push(refreshed);
-          workLogger.write('needs_review_queue_refresh', {
-            capability_id: candidate.capabilityId,
-            entry_id: refreshed.entryId,
-            evidence_fingerprint: refreshed.evidenceFingerprint,
-          });
+          if (refreshed.evidenceFingerprint !== previousEvidenceFingerprint) {
+            needsReviewEntries.push(refreshed);
+            workLogger.write('needs_review_queue_refresh', {
+              capability_id: candidate.capabilityId,
+              entry_id: refreshed.entryId,
+              evidence_fingerprint: refreshed.evidenceFingerprint,
+            });
+          } else {
+            workLogger.write('needs_review_queue_duplicate_evidence', {
+              capability_id: candidate.capabilityId,
+              entry_id: refreshed.entryId,
+            });
+          }
           continue;
         }
 
@@ -495,6 +503,11 @@ export class DistillationPipeline {
     for (const entryId of Object.keys(queue.entries)) {
       const entry = queue.entries[entryId];
       if (!entry || entry.status !== 'pending') continue;
+
+      entry.matchedCapabilityIds = prefilterCapabilities(
+        entry.candidatePayload,
+        registry,
+      ).matches.map(match => match.capabilityId);
 
       const currentRegistryFingerprint = computeRegistryStateFingerprint(
         registry,

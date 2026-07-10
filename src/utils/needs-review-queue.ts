@@ -521,7 +521,8 @@ export function findPendingEntryForCandidate(
     if (e.status !== 'pending' && e.status !== 'retry_eligible') return false;
     return (
       normalizeMatcherText(e.candidatePayload.title) === normalizedTitle &&
-      normalizeMatcherText(e.candidatePayload.solvedLoop.problem) === normalizedProblem
+      normalizeMatcherText(e.candidatePayload.solvedLoop.problem) === normalizedProblem &&
+      matchingCandidateAddsEvidence(e, candidate)
     );
   });
   if (candidates.length === 0) return undefined;
@@ -570,19 +571,16 @@ export function refreshQueueEntryWithMatchingEvidence(
     );
   }
 
-  const mergedProvenance = dedupeProvenanceRefs([
-    ...entry.candidatePayload.provenance,
-    ...input.newCandidate.provenance,
-  ]);
-  const mergedCandidate: DistilledKnowledgeCandidate = {
-    ...entry.candidatePayload,
-    solvedLoop: input.newCandidate.solvedLoop,
-    provenance: mergedProvenance,
-  };
+  const mergedCandidate = mergeMatchingCandidateEvidence(entry, input.newCandidate);
+
+  const evidenceFingerprint = computeEvidenceFingerprintFromCandidate(mergedCandidate);
+  if (evidenceFingerprint === entry.evidenceFingerprint) {
+    return entry;
+  }
 
   entry.candidatePayload = mergedCandidate;
-  entry.sourceRefs = normalizeSourceRefs(mergedProvenance);
-  entry.evidenceFingerprint = computeEvidenceFingerprintFromCandidate(mergedCandidate);
+  entry.sourceRefs = normalizeSourceRefs(mergedCandidate.provenance);
+  entry.evidenceFingerprint = evidenceFingerprint;
   entry.status = 'retry_eligible';
   entry.retryEligibility = {
     eligible: true,
@@ -592,6 +590,29 @@ export function refreshQueueEntryWithMatchingEvidence(
   };
   entry.updatedAt = input.updatedAt;
   return entry;
+}
+
+function matchingCandidateAddsEvidence(
+  entry: NeedsReviewQueueEntry,
+  candidate: DistilledKnowledgeCandidate,
+): boolean {
+  return computeEvidenceFingerprintFromCandidate(
+    mergeMatchingCandidateEvidence(entry, candidate),
+  ) !== entry.evidenceFingerprint;
+}
+
+function mergeMatchingCandidateEvidence(
+  entry: NeedsReviewQueueEntry,
+  candidate: DistilledKnowledgeCandidate,
+): DistilledKnowledgeCandidate {
+  return {
+    ...entry.candidatePayload,
+    solvedLoop: candidate.solvedLoop,
+    provenance: dedupeProvenanceRefs([
+      ...entry.candidatePayload.provenance,
+      ...candidate.provenance,
+    ]),
+  };
 }
 
 /** Input for renewing a queue entry after a re-review returned `needs_review`. */

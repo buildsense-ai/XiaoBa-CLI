@@ -93,7 +93,9 @@ const STABLE_CAPABILITY_ID = 'cap-stable-jsonl-readline';
  * distiller keeps the ID stable so the matching-evidence refresh path can find
  * an existing queued entry for the same capability.
  */
-function makeStableDistiller(): (unit: DistillationUnit) => DistilledKnowledgeCandidate[] {
+function makeStableDistiller(
+  fixedEvidence = false,
+): (unit: DistillationUnit) => DistilledKnowledgeCandidate[] {
   return (unit: DistillationUnit): DistilledKnowledgeCandidate[] => {
     const newTurns = unit.newTurns;
     const candidates: DistilledKnowledgeCandidate[] = [];
@@ -120,8 +122,18 @@ function makeStableDistiller(): (unit: DistillationUnit) => DistilledKnowledgeCa
           noCorrection: 'Verification turn contained positive acceptance and no immediate-correction markers.',
         },
         provenance: [
-          { filePath: unit.filePath, turn: problemTurn.turn, role: 'problem-action', unitByteRange: unit.byteRange },
-          { filePath: unit.filePath, turn: verificationTurn.turn, role: 'verification', unitByteRange: unit.byteRange },
+          {
+            filePath: fixedEvidence ? '/fixed-evidence.jsonl' : unit.filePath,
+            turn: fixedEvidence ? 1 : problemTurn.turn,
+            role: 'problem-action',
+            unitByteRange: fixedEvidence ? { start: 0, end: 100 } : unit.byteRange,
+          },
+          {
+            filePath: fixedEvidence ? '/fixed-evidence.jsonl' : unit.filePath,
+            turn: fixedEvidence ? 2 : verificationTurn.turn,
+            role: 'verification',
+            unitByteRange: fixedEvidence ? { start: 0, end: 100 } : unit.byteRange,
+          },
         ],
         generatedAt: new Date().toISOString(),
         sourceUnit: { filePath: unit.filePath, byteRange: unit.byteRange, generatedAt: unit.generatedAt },
@@ -171,7 +183,7 @@ interface TestEnv {
   teardown: () => void;
 }
 
-function setupEnv(): TestEnv {
+function setupEnv(options: { fixedEvidence?: boolean } = {}): TestEnv {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-heartbeat-needs-review-'));
   const logFile = path.join(root, 'logs', 'sessions', 'chat', '2026-07-09', 'chat_cli.jsonl');
   const registryFile = path.join(root, 'data', 'capability-registry-state.json');
@@ -208,7 +220,7 @@ function setupEnv(): TestEnv {
     reviewOutcomesPath: reviewOutcomesFile,
     capabilityRegistryPath: registryFile,
     needsReviewQueuePath: needsReviewQueueFile,
-    distiller: makeStableDistiller(),
+    distiller: makeStableDistiller(options.fixedEvidence),
     reviewer: controlledReviewer.reviewer as any,
   });
 
@@ -444,6 +456,25 @@ describe('Heartbeat-driven Needs Review Queue re-review (issue #29)', () => {
     assert.ok(outcomes.length >= 2, 'at least two review outcomes (enqueue + re-review)');
   });
 
+  test('duplicate matching evidence leaves the pending entry unreviewed', async () => {
+    env.restore();
+    env.teardown();
+    env = setupEnv({ fixedEvidence: true });
+    const entry = await enqueueFirstOccurrence();
+    const outcomeCount = loadOutcomes(env).length;
+
+    appendLog(env.logFile, [
+      makeTurn(3, 'cli', PROBLEM, ACTION_A),
+      makeTurn(4, 'cli', ACCEPTANCE, 'Glad it helped.'),
+    ]);
+    await env.scheduler.runHeartbeat('scheduled');
+
+    const after = loadQueue(env).entries[entry.entryId]!;
+    assert.equal(after.status, 'pending');
+    assert.equal(after.retryEligibility.eligible, false);
+    assert.equal(loadOutcomes(env).length, outcomeCount, 'duplicate evidence produces no re-review outcome');
+  });
+
   test('matching new evidence resolves the existing entry even when the current review is resolvable', async () => {
     const entry = await enqueueFirstOccurrence();
     env.reviewer.setDecision('new_capability');
@@ -613,31 +644,14 @@ describe('Heartbeat-driven Needs Review Queue re-review (issue #29)', () => {
   test('relevant registry-state change makes a pending entry eligible', async () => {
     const entry = await enqueueFirstOccurrence();
 
-    // Manually create a registry entry that the queue entry's
-    // matchedCapabilityIds references, so the registry-state fingerprint
-    // changes. The queue entry was enqueued with an empty registry, so adding
-    // a capability changes the fingerprint for the matched IDs.
-    // We simulate this by writing a registry file that includes a capability
-    // the queue entry references. The queue entry's matchedCapabilityIds is
-    // empty (no registry matches at enqueue time), so we need a different
-    // approach: directly add a capability to the registry and update the
-    // queue entry's matchedCapabilityIds to reference it.
-
-    // Load the queue, add a matched capability ID to the entry, and save.
-    const queue = loadQueue(env);
-    const queued = queue.entries[entry.entryId]!;
-    queued.matchedCapabilityIds = ['cap-other-jsonl'];
-    fs.writeFileSync(env.needsReviewQueueFile, JSON.stringify({
-      schemaVersion: 1,
-      entries: { [entry.entryId]: queued },
-    }, null, 2));
-
-    // Write a registry with that capability so the fingerprint is non-null.
+    // The entry started with no Registry matches. Add a capability that the
+    // heartbeat's prefilter can discover; the heartbeat must recompute the
+    // matched IDs itself before comparing Registry state.
     const registryState = {
       schemaVersion: 1,
       capabilities: {
-        'cap-other-jsonl': {
-          capabilityId: 'cap-other-jsonl',
+        [STABLE_CAPABILITY_ID]: {
+          capabilityId: STABLE_CAPABILITY_ID,
           activeSnapshotId: 'snap-1',
           status: 'active',
           routingDescription: 'Parse JSONL with readline',
@@ -651,9 +665,8 @@ describe('Heartbeat-driven Needs Review Queue re-review (issue #29)', () => {
     fs.mkdirSync(path.dirname(env.registryFile), { recursive: true });
     fs.writeFileSync(env.registryFile, JSON.stringify(registryState, null, 2));
 
-    // Run a heartbeat — the cycle-complete hook should detect the registry-state
-    // change (the fingerprint now includes cap-other-jsonl which was absent at
-    // enqueue time) and make the entry eligible.
+    // Run a heartbeat — the cycle-complete hook should detect the newly
+    // relevant capability without any direct queue mutation.
     await env.scheduler.runHeartbeat('scheduled');
 
     const queueAfter = loadQueue(env);
