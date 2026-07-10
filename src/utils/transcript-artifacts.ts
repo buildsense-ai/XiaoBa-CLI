@@ -15,11 +15,6 @@ const GENERIC_INTERNAL_FAILURE_LINE = /^\[处理失败: .+\]$/;
 const MODEL_TIMEOUT_INTERNAL_LINE = /^\[处理中断: 模型中转请求超时。.+\]$/;
 const KNOWN_RUNTIME_ERROR_MARKERS =
   /API错误\s*\(\d+\).*[{"]|MaxRetriesExceededError|HTTPSConnectionPool|ConnectTimeoutError|request[_ ]timed[_ ]out|default_request_timeout_in_seconds|upstream request timeout|gateway timeout|ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED|fetch failed|bifrost request failed|API密钥未配置|当前模型不支持图片识别/i;
-const LEGACY_PROMPT_MODE_ARTIFACT_MARKER =
-  /transient[_ ]prompt[_ ]modes?|transient_prompt|prompt_mode|\[mode:[^\]]+\]|async-task/i;
-const LEGACY_PROMPT_MODE_NAME_ARTIFACT_MARKER =
-  /(?:coding-agent|classroom|team-assistant|plain-chat).{0,48}(?:mode|prompt|模式|切换|可用|routing)|(?:mode|prompt|模式|切换|可用|routing).{0,48}(?:coding-agent|classroom|team-assistant|plain-chat)/i;
-
 export function contentToText(content: Message['content']): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -27,7 +22,6 @@ export function contentToText(content: Message['content']): string {
 }
 
 export function stripAssistantTranscriptArtifacts(text: string): string {
-  text = stripLegacyPromptModeArtifacts(text);
   const lines = text.split(/\r?\n/);
   const nonBlankLines = lines.map(line => line.trim()).filter(Boolean);
   if (nonBlankLines.length === 1 && isInternalRuntimeErrorLine(nonBlankLines[0], true)) {
@@ -72,19 +66,6 @@ export function stripAssistantTranscriptArtifacts(text: string): string {
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-}
-
-function stripLegacyPromptModeArtifacts(text: string): string {
-  const paragraphs = text.split(/\n{2,}/);
-  let removed = false;
-  const kept = paragraphs.filter(paragraph => {
-    const artifact = LEGACY_PROMPT_MODE_ARTIFACT_MARKER.test(paragraph)
-      || LEGACY_PROMPT_MODE_NAME_ARTIFACT_MARKER.test(paragraph);
-    if (artifact) removed = true;
-    return !artifact;
-  });
-  if (!removed) return text;
-  return kept.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 export interface RestoredReplayToolCalls {

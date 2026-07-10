@@ -1,23 +1,22 @@
 # XiaoBa Prompt Stack Format
 
-这份文档定义 XiaoBa/CatsCo 的 prompt 组织格式。目标不是复制某个 coding agent 的具体内容，而是借鉴它的分层方法：稳定规则放稳定位置，动态状态按需临时注入，业务模式用可替换的模式包承载。
+这份文档定义 XiaoBa/CatsCo 的 prompt 组织格式。目标不是复制某个 coding agent 的具体内容，而是借鉴它的分层方法：稳定规则放稳定位置，动态状态按需临时注入，业务场景由工具、技能和自然语言请求本身驱动。
 
 ## 设计目标
 
 - 基础 prompt 保持中性，适合团队、课堂、普通聊天和轻量工作流。
-- coding、office、classroom 等垂直能力通过模式包或 transient hint 补充，不污染所有会话。
+- coding、office、classroom 等垂直能力不再通过全局模式包切换；优先由用户请求、工具能力、技能和少量必要 transient context 承载。
 - 每轮变化的信息默认不进 system，避免破坏缓存、污染历史和制造伪用户请求。
 - 新增需求时先判断属于哪一层，再决定写 prompt 文件、写动态注入，还是写代码逻辑。
 
 ## Prompt Stack
 
-运行时 prompt 分为四层：
+运行时 prompt 分为三层：
 
 | 层级 | 位置 | 用途 | 稳定性 |
 | --- | --- | --- | --- |
 | Stable system | `prompts/system-prompt.md` | 身份、通用系统规则、任务执行、谨慎行动、工具边界、语气、输出效率 | 高 |
 | Runtime template | `prompts/runtime-context.md` | displayName、platform、date、当前目录使用规则 | 中 |
-| Stable mode package | `prompts/modes/*.md` | coding、classroom、office、team-assistant 等显式模式 | 高 |
 | Turn-scoped transient | `prompts/transient/*.md` + runtime 数据 | 当前目录、技能列表、计划状态、子 agent 状态、runner hint、后台观察结果 | 低 |
 
 ## Stable System Sections
@@ -46,28 +45,17 @@ Runtime context only. Not a user request.
 
 动态注入分为：
 
-- Session guidance：当前会话可用的模式、技能、工具组和平台能力。
+- Session guidance：当前会话可用的技能、工具组和平台能力。
 - Environment：当前目录、平台、日期、运行时 profile、模型能力摘要。
 - Work state：计划状态、子 agent 状态、后台观察结果、恢复提示。
 - Recovery hints：重复外发、空 max_tokens、工具失败后的单轮纠偏。
-
-## Mode Packages
-
-模式包是稳定的 system 片段，但只在明确配置或策略命中时加入。
-
-- `coding-agent`：代码、仓库、日志、构建、测试、本地开发任务。
-- `classroom`：课堂、老师、学生、教学辅助和低打扰交流。
-- `office`：文档、表格、汇报、行政协作。
-- `team-assistant`：团队协作、会议、任务推进和日常支持。
-
-模式包不应该重复基础 system 的事实边界、隐私规则和通用语气。它只补充该模式独有的工作方法、风险边界和工具偏好。
 
 ## Add-New-Requirement Checklist
 
 新增一条 prompt 需求时，先回答：
 
 - 它是长期稳定规则，还是每轮变化状态？
-- 它对所有用户都成立，还是只对某个模式成立？
+- 它对所有用户都成立，还是只对某类场景成立？
 - 它需要模型记住，还是只需要本轮参考？
 - 它是自然语言行为规则，还是应该由代码强制保证？
 - 它会不会破坏 prompt cache？
@@ -79,5 +67,5 @@ Runtime context only. Not a user request.
 当前阶段优先做三件事：
 
 - 保持基础 system prompt 中性且短，避免产品还没定型时写成单一 coding agent。
-- 把 coding 能力继续放在 `coding-agent` 模式包和 coding 场景 transient 策略里。
-- 等团队、课堂、普通用户需求讲清楚后，再分别完善 `classroom`、`team-assistant`、`office` 模式包和触发策略。
+- 把 coding、课堂、办公等能力放在工具、技能、子 agent 和用户请求语义里，不再维护可切换 mode package。
+- 只有当信息确实每轮变化且必须由模型知道时，才通过 transient context 注入。

@@ -1,7 +1,6 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { ConversationRunner } from '../src/core/conversation-runner';
-import { LEGACY_TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX } from '../src/core/legacy-prompt-mode-transients';
 import { ChatResponse, Message } from '../src/types';
 import { ToolCall, ToolDefinition, ToolExecutor, ToolResult } from '../src/types/tool';
 
@@ -90,54 +89,6 @@ describe('ConversationRunner runtime transient messages', () => {
     assert.equal(
       received[1].some(message => typeof message.content === 'string' && message.content.startsWith(transientPrefix)),
       true,
-    );
-  });
-
-  test('drops legacy prompt-mode runtime transients before provider calls', async () => {
-    const received: Message[][] = [];
-    const responses: ChatResponse[] = [
-      {
-        content: null,
-        toolCalls: [makeToolCall('call_1')],
-        usage,
-      },
-      {
-        content: 'done',
-        toolCalls: [],
-        usage,
-      },
-    ];
-
-    const aiService = {
-      chat: async (messages: Message[]) => {
-        received.push(cloneMessages(messages));
-        return responses[received.length - 1];
-      },
-    } as any;
-
-    let drainCount = 0;
-    const runner = new ConversationRunner(aiService, new NoopToolExecutor(), {
-      stream: false,
-      enableCompression: false,
-      runtimeTransientProvider: () => {
-        drainCount += 1;
-        if (drainCount !== 2) return [];
-        return [{
-          role: 'system',
-          content: `${LEGACY_TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX}\n[mode:coding-agent]\nUse engineering workflow.`,
-        }];
-      },
-    });
-
-    await runner.run([{ role: 'user', content: 'debug it' }]);
-
-    assert.equal(received.length, 2);
-    assert.equal(
-      received.some(batch => batch.some(message => (
-        typeof message.content === 'string'
-        && message.content.startsWith(LEGACY_TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX)
-      ))),
-      false,
     );
   });
 });

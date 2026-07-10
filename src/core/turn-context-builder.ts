@@ -25,9 +25,6 @@ import {
   buildRuntimeContextSnapshot,
 } from './runtime-context-builder';
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
-import {
-  isLegacyPromptModeTransientContent,
-} from './legacy-prompt-mode-transients';
 import { resolveTurnContextTransientPolicy } from './transient-injection-policy';
 import { TRANSIENT_PENDING_USER_INPUT_PREFIX } from './pending-user-input-boundary';
 
@@ -93,11 +90,6 @@ export class TurnContextBuilder {
     return messages.filter(msg => {
       if (msg.__syntheticObservation) return false;
       if (msg.__runtimeFeedback) return false;
-      if (
-        (msg.__injected || msg.role === 'system')
-        && typeof msg.content === 'string'
-        && isLegacyPromptModeTransientContent(msg.content)
-      ) return false;
       if (msg.role !== 'system' || typeof msg.content !== 'string') return true;
       if (msg.content.startsWith(TRANSIENT_SUBAGENT_STATUS_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_PLAN_STATUS_PREFIX)) return false;

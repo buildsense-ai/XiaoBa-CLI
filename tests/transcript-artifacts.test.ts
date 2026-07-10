@@ -6,40 +6,33 @@ import {
 } from '../src/utils/transcript-artifacts';
 import type { Message } from '../src/types';
 
-test('strips stale prompt-mode self reports from assistant text', () => {
-  const cleaned = stripAssistantTranscriptArtifacts([
-    '这张图是一段群聊截图。',
+test('preserves ordinary assistant text mentioning legacy mode-related terms', () => {
+  const text = [
+    '我检查了 prompt_mode 的兼容代码，当前实现正常。',
     '',
-    '后面我注意到系统给我加了 transient prompt modes 和当前目录信息，这是路由上下文，不是你的指令。',
+    'async-task.ts 已经写好并通过测试。',
     '',
-    '如果你要继续问这张图的意思，告诉我就行。',
-  ].join('\n'));
+    'coding-agent adapter 是外部代理适配器，不是 prompt 模式。',
+  ].join('\n');
 
-  assert.equal(cleaned, [
-    '这张图是一段群聊截图。',
-    '',
-    '如果你要继续问这张图的意思，告诉我就行。',
-  ].join('\n'));
+  assert.equal(stripAssistantTranscriptArtifacts(text), text);
 });
 
-test('strips old prompt-mode assistant artifacts before model context', () => {
+test('preserves assistant messages mentioning legacy mode-related terms before model context', () => {
   const messages: Message[] = [
     {
       role: 'assistant',
       content: [
-        '这个请求没法接，原因是 coding-agent 不是当前环境下我可用的真实模式。',
+        '我检查了 prompt_mode 的兼容代码，当前实现正常。',
         '',
-        '- 平台给我提示里只有一个 transient prompt mode：async-task，不是 coding-agent。',
+        'async-task.ts 已经写好并通过测试。',
         '',
-        '如果你有具体要 debug 的代码或报错信息，告诉我。',
+        'coding-agent adapter 是外部代理适配器，不是 prompt 模式。',
       ].join('\n'),
     },
   ];
 
   const cleaned = stripAssistantArtifactsFromMessages(messages);
 
-  assert.deepEqual(cleaned, [{
-    role: 'assistant',
-    content: '如果你有具体要 debug 的代码或报错信息，告诉我。',
-  }]);
+  assert.deepEqual(cleaned, messages);
 });

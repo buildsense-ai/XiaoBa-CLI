@@ -67,7 +67,6 @@ import {
   describeSyntheticObservationForLog,
   SyntheticObservation,
 } from './synthetic-observation';
-import { isLegacyPromptModeTransientContent } from './legacy-prompt-mode-transients';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -1075,7 +1074,6 @@ export class ConversationRunner {
         return true;
       }
       return !message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)
-        && !isLegacyPromptModeTransientContent(message.content)
         && !message.content.startsWith(TRANSIENT_CURRENT_DIRECTORY_PREFIX);
     });
 
@@ -1227,10 +1225,7 @@ export class ConversationRunner {
   private drainRuntimeTransientMessages(turn: number): Message[] {
     if (!this.runtimeTransientProvider) return [];
     try {
-      return this.runtimeTransientProvider().filter(message => !(
-        typeof message.content === 'string'
-        && isLegacyPromptModeTransientContent(message.content)
-      ));
+      return this.runtimeTransientProvider();
     } catch (error: any) {
       Logger.warning(`[${this.sessionLabel}Turn ${turn}] runtime transient drain failed: ${error.message}`);
       return [];
