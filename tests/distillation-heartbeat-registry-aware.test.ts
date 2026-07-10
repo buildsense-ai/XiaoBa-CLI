@@ -105,10 +105,16 @@ function writeFirstSessionLog(env: TestEnv): void {
   fs.writeFileSync(logFile, makeSessionLogContent(turns), 'utf-8');
 }
 
-function appendSecondSessionLog(env: TestEnv): void {
+function appendSecondSessionLog(
+  env: TestEnv,
+  action = ACTION,
+  toolCalls: SessionTurnLogEntry['assistant']['tool_calls'] = [
+    { id: 'tc-2', name: 'read_file', arguments: {}, result: 'ok', duration_ms: 10 },
+  ],
+): void {
   const logFile = path.join(env.config.logsRoot, 'sessions', 'chat', 'chat_cli.jsonl');
   const turns: SessionTurnLogEntry[] = [
-    makeTurn(3, PROBLEM, ACTION, [{ id: 'tc-2', name: 'read_file', arguments: {}, result: 'ok', duration_ms: 10 }]),
+    makeTurn(3, PROBLEM, action, toolCalls),
     makeTurn(4, ACCEPTANCE, 'Glad it helped.'),
   ];
   fs.appendFileSync(logFile, makeSessionLogContent(turns), 'utf-8');
@@ -232,7 +238,7 @@ describe('DistillationHeartbeat registry-aware consolidation (issue #27)', () =>
     const outcomes = loadReviewOutcomesSync(env.config.reviewOutcomesPath);
     const appendOutcome = outcomes.find(o => o.decision === 'append_evidence');
     assert.ok(appendOutcome, 'append_evidence outcome recorded');
-    assert.equal(appendOutcome!.capabilityId, entryAfter.capabilityId);
+    assert.equal(appendOutcome!.targetCapabilityId, entryAfter.capabilityId);
     assert.equal(appendOutcome!.snapshotId, undefined, 'append_evidence does not install a snapshot');
     assert.equal(appendOutcome!.skillFilePath, undefined, 'append_evidence does not create a skill file');
 
@@ -297,13 +303,11 @@ describe('DistillationHeartbeat registry-aware consolidation (issue #27)', () =>
     const expectedGuidanceFingerprint = entryBefore.guidanceFingerprint;
     assert.ok(expectedGuidanceFingerprint, 'new capability records its full guidance fingerprint');
 
-    // Model a prior Active Snapshot whose title, boundary, or risk changed
-    // while its routable When/Do description stayed the same. The heartbeat
-    // must not collapse this into an evidence-only update.
-    entryBefore.guidanceFingerprint = 'different-material-guidance';
-    saveCapabilityRegistry(env.config.capabilityRegistryPath, registryBefore);
-
-    appendSecondSessionLog(env);
+    appendSecondSessionLog(
+      env,
+      'Use the fs.createReadStream API with the split2 package to stream and split records.',
+      [],
+    );
     const result = await env.scheduler.runHeartbeat('manual');
     assert.equal(result.unitsProcessed, 1);
 
@@ -311,7 +315,8 @@ describe('DistillationHeartbeat registry-aware consolidation (issue #27)', () =>
     const entryAfter = Object.values(registryAfter.capabilities)[0];
     assert.ok(entryAfter);
     assert.notEqual(entryAfter.activeSnapshotId, activeBefore, 'active snapshot is superseded');
-    assert.equal(entryAfter.guidanceFingerprint, expectedGuidanceFingerprint);
+    assert.ok(entryAfter.guidanceFingerprint, 'superseded snapshot records its guidance fingerprint');
+    assert.notEqual(entryAfter.guidanceFingerprint, expectedGuidanceFingerprint);
 
     const skillDirs = fs.readdirSync(path.join(env.root, 'skills', 'generated-distilled', entryAfter.capabilityId));
     assert.equal(skillDirs.length, 2, 'a new immutable snapshot was installed');

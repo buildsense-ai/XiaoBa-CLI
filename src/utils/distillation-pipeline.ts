@@ -33,6 +33,7 @@ import {
   SupersedeSnapshotInput,
 } from './capability-registry';
 import { prefilterCapabilities } from './capability-prefilter';
+import { computeDistilledSkillGuidanceFingerprint } from './distilled-skill-content';
 import {
   addNeedsReviewEntry,
   loadNeedsReviewQueue,
@@ -705,6 +706,7 @@ function buildNewCapabilityInput(
     capabilityId: candidate.capabilityId,
     activeSnapshotId: snapshot.snapshotId,
     routingDescription: buildRoutingDescription(candidate, review),
+    guidanceFingerprint: buildGuidanceFingerprint(candidate, review),
     evidenceRefs: candidate.provenance.map(ref =>
       makeEvidenceRef(ref.filePath, ref.turn, ref.unitByteRange, review.reviewedAt),
     ),
@@ -743,6 +745,7 @@ function buildSupersedeSnapshotInput(
     newActiveSnapshotId: snapshot.snapshotId,
     supersededAt: review.reviewedAt,
     routingDescription: buildRoutingDescription(candidate, review),
+    guidanceFingerprint: buildGuidanceFingerprint(candidate, review),
   };
 }
 
@@ -762,6 +765,15 @@ function buildRoutingDescription(
   );
 }
 
+function buildGuidanceFingerprint(
+  candidate: DistilledKnowledgeCandidate,
+  review: PromotionReviewResult,
+): string {
+  return computeDistilledSkillGuidanceFingerprint(
+    resolveEffectiveFields(candidate, review.rewrite),
+  );
+}
+
 function requireStatePath(
   statePath: string | null,
   decision: PromotionDecision,
@@ -771,4 +783,3 @@ function requireStatePath(
     throw new Error(`${decision} requires a configured ${stateName} path.`);
   }
 }
-

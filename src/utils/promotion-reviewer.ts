@@ -13,6 +13,10 @@ import {
   CapabilityRegistryState,
   EvidenceRef,
 } from './capability-registry';
+import {
+  buildDistilledSkillDescription,
+  resolveEffectiveFields,
+} from './distilled-skill-content';
 
 /**
  * Promotion Reviewer (issue #4, #27, #28).
@@ -853,12 +857,25 @@ function selectConsolidationTarget(
   const exact = registryContext.matches.find(m => m.capabilityId === candidate.capabilityId);
   if (exact) return exact;
 
-  return registryContext.matches.find(match => {
+  const candidateRouting = buildDistilledSkillDescription(
+    resolveEffectiveFields(candidate, null),
+  );
+  const routingMatch = registryContext.matches.find(
+    match => match.routingDescription === candidateRouting,
+  );
+  if (routingMatch) return routingMatch;
+
+  const identityMatch = registryContext.matches.find(match => {
     const content = registryContext.activeSnapshotContents[match.capabilityId];
     const guidance = content ? parseSnapshotGuidance(content) : null;
     return guidance !== null && hasStrongCapabilityIdentity(candidate, guidance);
   });
+  if (identityMatch) return identityMatch;
+
+  return registryContext.matches.find(match => match.score >= STRONG_MATCH_SCORE_THRESHOLD);
 }
+
+const STRONG_MATCH_SCORE_THRESHOLD = 80;
 
 function buildConsolidationRationale(
   decision: PromotionDecision,
@@ -980,9 +997,11 @@ function guidanceTextEquivalent(a: string, b: string): boolean {
 
   const tokens = (value: string) => new Set(
     canonical(value)
+      .replace(/\bjsonl\b/gu, 'json')
       .split(' ')
       .filter(Boolean)
-      .map(token => token.length > 3 && token.endsWith('s') ? token.slice(0, -1) : token),
+      .map(token => token.length > 3 && token.endsWith('s') ? token.slice(0, -1) : token)
+      .filter(token => !GUIDANCE_NOISE_TOKENS.has(token)),
   );
   const left = tokens(a);
   const right = tokens(b);
@@ -993,6 +1012,12 @@ function guidanceTextEquivalent(a: string, b: string): boolean {
   }
   return shared / (left.size + right.size - shared) >= 0.3;
 }
+
+const GUIDANCE_NOISE_TOKENS = new Set([
+  'a', 'an', 'and', 'apply', 'at', 'by', 'each', 'file', 'interface', 'instead',
+  'line', 'node', 'of', 'one', 'pattern', 'process', 'read', 'record', 'the',
+  'then', 'this', 'time', 'to', 'tool', 'tools', 'use', 'with',
+]);
 
 function hasStrongCapabilityIdentity(
   candidate: DistilledKnowledgeCandidate,
