@@ -46,6 +46,10 @@ export interface DistillationHeartbeatConfig {
   skillEvolutionAuditPath: string;
   /** Short-lived V3 Transition Journal file. */
   skillEvolutionJournalPath: string;
+  /** Durable independent Learning Episode state for V3 settlement. */
+  learningEpisodeStorePath: string;
+  /** V3 Settlement Window policy in hours. */
+  skillEvolutionSettlementWindowHours: number;
   /** Bounded Branch Promotion Reviewer worker count. */
   skillEvolutionReviewerConcurrency: number;
   /** Optional Author model override. */
@@ -205,6 +209,18 @@ export function getDistillationHeartbeatConfig(
     readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_JOURNAL_FILE'),
     'data/transition-journal.json',
   );
+  const learningEpisodeStorePath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'XIAOBA_LEARNING_EPISODE_STORE_FILE'),
+    'data/learning-episodes.json',
+  );
+  const skillEvolutionSettlementWindowHours = readNumber(
+    runtimeEnv,
+    'XIAOBA_SKILL_EVOLUTION_SETTLEMENT_WINDOW_HOURS',
+    3,
+    0,
+  );
   const skillEvolutionReviewerConcurrency = Math.min(readNumber(
     runtimeEnv,
     'XIAOBA_SKILL_EVOLUTION_REVIEWER_CONCURRENCY',
@@ -228,6 +244,8 @@ export function getDistillationHeartbeatConfig(
     skillEvolutionRegistryPath,
     skillEvolutionAuditPath,
     skillEvolutionJournalPath,
+    learningEpisodeStorePath,
+    skillEvolutionSettlementWindowHours,
     skillEvolutionReviewerConcurrency,
     ...(skillEvolutionAuthorModel && { skillEvolutionAuthorModel }),
     ...(skillEvolutionVerifierModel && { skillEvolutionVerifierModel }),

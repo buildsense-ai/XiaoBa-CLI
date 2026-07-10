@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 import {
   CompletedTurn,
+  DistillationTurn,
   DistillationUnit,
 } from './distillation-unit';
 
@@ -319,18 +320,30 @@ function buildProvenance(
 ): CapabilityProvenanceRef[] {
   return [
     {
-      filePath: unit.filePath,
+      filePath: turnSourceFilePath(problemTurn, unit.filePath),
       turn: problemTurn.turn,
       role: 'problem-action',
-      unitByteRange: unit.byteRange,
+      unitByteRange: turnSourceByteRange(problemTurn, unit.byteRange),
     },
     {
-      filePath: unit.filePath,
+      filePath: turnSourceFilePath(verificationTurn, unit.filePath),
       turn: verificationTurn.turn,
       role: 'verification',
-      unitByteRange: unit.byteRange,
+      unitByteRange: turnSourceByteRange(verificationTurn, unit.byteRange),
     },
   ];
+}
+
+function turnSourceFilePath(turn: CompletedTurn, fallback: string): string {
+  const origin = (turn as DistillationTurn).origin?.filePath;
+  return typeof origin === 'string' && origin.trim() ? origin : fallback;
+}
+
+function turnSourceByteRange(
+  turn: CompletedTurn,
+  fallback: { start: number; end: number },
+): { start: number; end: number } {
+  return (turn as DistillationTurn).origin?.byteRange ?? fallback;
 }
 
 function buildTitle(problem: string): string {
@@ -387,7 +400,7 @@ function compactForMetadata(text: string, max: number): string {
 }
 
 function stableCapabilityId(unit: DistillationUnit, problemTurn: CompletedTurn): string {
-  const raw = `${unit.filePath}|turn-${problemTurn.turn}|${cleanText(problemTurn.user.text)}`;
+  const raw = `${turnSourceFilePath(problemTurn, unit.filePath)}|turn-${problemTurn.turn}|${cleanText(problemTurn.user.text)}`;
   const hash = crypto.createHash('sha256').update(raw).digest('hex');
   return `cap-${hash.slice(0, 16)}`;
 }

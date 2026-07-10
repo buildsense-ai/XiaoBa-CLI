@@ -69,6 +69,8 @@ export async function startRuntimeCommandSupport(
           capabilityRegistryPath: config.capabilityRegistryPath,
           workLogRoot: config.workLogRoot,
           skillEvolution,
+          learningEpisodeStorePath: config.learningEpisodeStorePath,
+          learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
         });
         distillationPipeline = pipeline;
         distillationHeartbeatScheduler = new DistillationHeartbeatScheduler(

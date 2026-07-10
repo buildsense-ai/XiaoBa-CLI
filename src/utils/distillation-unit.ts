@@ -30,17 +30,40 @@ export const MAX_CONTINUITY_TURNS = 10;
 
 export type CompletedTurn = SessionTurnLogEntry | LegacySessionTurnLogEntry;
 
+/** Origin metadata carried only on in-memory continuity turns. */
+export interface TurnOrigin {
+  filePath: string;
+  byteRange?: { start: number; end: number };
+}
+
+export type DistillationTurn = CompletedTurn & { origin?: TurnOrigin };
+
 export interface DistillationUnit {
   /** Session log file this unit was extracted from. */
   filePath: string;
   /** Newly appended completed turns not yet processed. */
-  newTurns: CompletedTurn[];
+  newTurns: DistillationTurn[];
   /** Up to MAX_CONTINUITY_TURNS prior completed turns from the same file. */
-  continuityTurns: CompletedTurn[];
+  continuityTurns: DistillationTurn[];
   /** Byte range of the newly processed content in the source file. */
   byteRange: { start: number; end: number };
   /** ISO timestamp of unit creation. */
   generatedAt: string;
+}
+
+export interface CrossFileContinuityOptions {
+  /** Ordered session-log files; only the immediate predecessor is eligible. */
+  orderedFilePaths: readonly string[];
+  /** Runtime session identity that must match both files. */
+  runtimeSessionId?: string;
+  /** Defensive upper bound; values above the V3 ten-turn policy are capped. */
+  maxTurns?: number;
+}
+
+/** Normalize a caller-supplied continuity limit before applying the policy cap. */
+export function normalizeContinuityLimit(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return MAX_CONTINUITY_TURNS;
+  return Math.max(0, Math.floor(value));
 }
 
 export interface ExtractionResult {
@@ -68,6 +91,7 @@ export interface ProcessSessionLogResult {
 export function extractDistillationUnit(
   filePath: string,
   cursor: LogCursorEntry,
+  options: { crossFileContinuity?: CrossFileContinuityOptions } = {},
 ): ExtractionResult {
   const buffer = fs.readFileSync(filePath);
   const fileSize = buffer.length;
@@ -99,7 +123,7 @@ export function extractDistillationUnit(
 
   const newContent = newBuffer.subarray(0, completeBytes).toString('utf-8');
   const newEntries = parseLines(newContent);
-  const newTurns = newEntries.filter(isSessionTurnEntry);
+  const newTurns = newEntries.filter(isSessionTurnEntry) as DistillationTurn[];
 
   const advancedOffset = cursor.byteOffset + completeBytes;
 
@@ -123,8 +147,15 @@ export function extractDistillationUnit(
   const priorBuffer = buffer.subarray(0, cursor.byteOffset);
   const priorContent = priorBuffer.toString('utf-8');
   const priorEntries = parseLines(priorContent);
-  const priorTurns = priorEntries.filter(isSessionTurnEntry);
-  const continuityTurns = priorTurns.slice(-MAX_CONTINUITY_TURNS);
+  const priorTurns = priorEntries.filter(isSessionTurnEntry) as DistillationTurn[];
+  let continuityTurns = priorTurns.slice(-MAX_CONTINUITY_TURNS);
+  if (continuityTurns.length === 0 && options.crossFileContinuity) {
+    continuityTurns = readImmediatePredecessorTurns(
+      filePath,
+      newTurns,
+      options.crossFileContinuity,
+    );
+  }
 
   const distillationUnit: DistillationUnit = {
     filePath,
@@ -145,6 +176,45 @@ export function extractDistillationUnit(
     },
     advanced: true,
   };
+}
+
+function readImmediatePredecessorTurns(
+  currentFilePath: string,
+  currentTurns: DistillationTurn[],
+  options: CrossFileContinuityOptions,
+): DistillationTurn[] {
+  const currentIndex = options.orderedFilePaths.indexOf(currentFilePath);
+  if (currentIndex <= 0 || currentTurns.length === 0) return [];
+  if (!hasContinuationSignal(currentTurns[0].user.text)) return [];
+  const expectedRuntimeSessionId = options.runtimeSessionId?.trim() || runtimeSessionId(currentTurns[0]);
+  if (currentTurns.some(turn => runtimeSessionId(turn) !== expectedRuntimeSessionId)) return [];
+
+  // This is the only cross-file read: the ordered list proves the selected
+  // source is the immediate predecessor, not an arbitrary historical log.
+  const predecessorPath = options.orderedFilePaths[currentIndex - 1];
+  if (!fs.existsSync(predecessorPath)) return [];
+  const predecessorTurns = parseLines(fs.readFileSync(predecessorPath, 'utf8'))
+    .filter(isSessionTurnEntry) as DistillationTurn[];
+  if (predecessorTurns.length === 0) return [];
+  if (predecessorTurns.some(turn => runtimeSessionId(turn) !== expectedRuntimeSessionId)) return [];
+  const maxTurns = Math.min(MAX_CONTINUITY_TURNS, normalizeContinuityLimit(options.maxTurns));
+  return maxTurns === 0
+    ? []
+    : predecessorTurns.slice(-maxTurns).map(turn => ({
+      ...turn,
+      origin: { filePath: predecessorPath },
+    }));
+}
+
+function runtimeSessionId(turn: CompletedTurn): string {
+  const candidate = turn as CompletedTurn & { runtime_session_id?: string; runtime_id?: string };
+  return String(candidate.runtime_session_id || candidate.runtime_id || candidate.session_id).trim();
+}
+
+function hasContinuationSignal(text: string): boolean {
+  return /(?:^|\W)(?:continue|resume|redo|try again|接着做|继续|重做)(?:$|\W)/i.test(
+    String(text || '').replace(/\s+/g, ' ').trim(),
+  );
 }
 
 /**
