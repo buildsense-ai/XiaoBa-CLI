@@ -58,6 +58,7 @@ export async function startRuntimeCommandSupport(
         distillationHeartbeatScheduler = new DistillationHeartbeatScheduler(
           workingDirectory,
           unit => pipeline.processUnit(unit),
+          () => pipeline.reviewEligibleQueueEntries(),
         );
       }
 

@@ -439,11 +439,15 @@ export function markResolved(
     throw new Error(`Cannot mark entry "${entryId}" as resolved: no such queue entry.`);
   }
 
+  const previousEligibility = entry.retryEligibility;
   entry.status = 'resolved';
   entry.retryEligibility = {
     eligible: false,
-    reason: 'Entry was resolved and removed from retry pool.',
+    reason: previousEligibility.reason
+      ? `Entry was resolved and removed from retry pool. Last eligibility trigger: ${previousEligibility.reason}`
+      : 'Entry was resolved and removed from retry pool.',
     lastCheckedAt: resolvedAt,
+    lastEligibleAt: previousEligibility.lastEligibleAt,
   };
   entry.updatedAt = resolvedAt;
   return entry;
@@ -474,6 +478,181 @@ export function markDropped(
 }
 
 // ---------------------------------------------------------------------------
+// Public: matching-evidence refresh + renewed needs_review
+// ---------------------------------------------------------------------------
+
+/**
+ * Find a pending or retry-eligible queue entry whose candidate carries the
+ * given capability identity. Returns the most recently updated matching entry,
+ * or `undefined` when none exists. Resolved/dropped entries are ignored so a
+ * later occurrence of the same capability can be queued fresh.
+ */
+export function findPendingEntryByCapabilityId(
+  state: NeedsReviewQueueState,
+  capabilityId: string,
+): NeedsReviewQueueEntry | undefined {
+  const candidates = Object.values(state.entries).filter(
+    e =>
+      e.capabilityId === capabilityId &&
+      (e.status === 'pending' || e.status === 'retry_eligible'),
+  );
+  if (candidates.length === 0) return undefined;
+  candidates.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt, 'en'));
+  return candidates[0];
+}
+
+/**
+ * Find a pending or retry-eligible queue entry that matches a newly distilled
+ * candidate. Matching prefers exact capabilityId, then falls back to a
+ * normalized title + solved-loop problem comparison so repeated occurrences of
+ * the same solved loop can refresh one durable queue entry even when the
+ * distiller emits per-occurrence capability identities.
+ */
+export function findPendingEntryForCandidate(
+  state: NeedsReviewQueueState,
+  candidate: DistilledKnowledgeCandidate,
+): NeedsReviewQueueEntry | undefined {
+  const exact = findPendingEntryByCapabilityId(state, candidate.capabilityId);
+  if (exact) return exact;
+
+  const normalizedTitle = normalizeMatcherText(candidate.title);
+  const normalizedProblem = normalizeMatcherText(candidate.solvedLoop.problem);
+  const candidates = Object.values(state.entries).filter(e => {
+    if (e.status !== 'pending' && e.status !== 'retry_eligible') return false;
+    return (
+      normalizeMatcherText(e.candidatePayload.title) === normalizedTitle &&
+      normalizeMatcherText(e.candidatePayload.solvedLoop.problem) === normalizedProblem
+    );
+  });
+  if (candidates.length === 0) return undefined;
+  candidates.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt, 'en'));
+  return candidates[0];
+}
+
+/** Input for refreshing a queued entry with newly distilled matching evidence. */
+export interface RefreshQueueEntryInput {
+  /** The newly distilled candidate that matches the queued capability. */
+  newCandidate: DistilledKnowledgeCandidate;
+  /** Human-readable reason for the eligibility state (e.g. new evidence). */
+  reason: string;
+  /** ISO timestamp of the refresh. */
+  updatedAt: string;
+}
+
+/**
+ * Refresh a pending/retry-eligible queue entry with newly distilled matching
+ * evidence (issue #29).
+ *
+ * The new candidate's solved-loop evidence and provenance refs are merged into
+ * the queued candidate payload, the evidence fingerprint is recomputed so the
+ * change is detectable, all durable source references are refreshed, and the
+ * entry is marked retry-eligible with the supplied reason. The previous review
+ * rationale/questions remain in place until the eligible entry is re-reviewed
+ * during the heartbeat. The registry-state fingerprint and reviewer version
+ * are likewise re-evaluated when the heartbeat consumes eligible entries.
+ *
+ * Throws when the entry does not exist or is already resolved/dropped.
+ */
+export function refreshQueueEntryWithMatchingEvidence(
+  state: NeedsReviewQueueState,
+  entryId: string,
+  input: RefreshQueueEntryInput,
+): NeedsReviewQueueEntry {
+  const entry = state.entries[entryId];
+  if (!entry) {
+    throw new Error(
+      `Cannot refresh entry "${entryId}": no such queue entry.`,
+    );
+  }
+  if (entry.status === 'resolved' || entry.status === 'dropped') {
+    throw new Error(
+      `Cannot refresh entry "${entryId}": status is "${entry.status}".`,
+    );
+  }
+
+  const mergedProvenance = dedupeProvenanceRefs([
+    ...entry.candidatePayload.provenance,
+    ...input.newCandidate.provenance,
+  ]);
+  const mergedCandidate: DistilledKnowledgeCandidate = {
+    ...entry.candidatePayload,
+    solvedLoop: input.newCandidate.solvedLoop,
+    provenance: mergedProvenance,
+  };
+
+  entry.candidatePayload = mergedCandidate;
+  entry.sourceRefs = normalizeSourceRefs(mergedProvenance);
+  entry.evidenceFingerprint = computeEvidenceFingerprintFromCandidate(mergedCandidate);
+  entry.status = 'retry_eligible';
+  entry.retryEligibility = {
+    eligible: true,
+    reason: input.reason,
+    lastCheckedAt: input.updatedAt,
+    lastEligibleAt: input.updatedAt,
+  };
+  entry.updatedAt = input.updatedAt;
+  return entry;
+}
+
+/** Input for renewing a queue entry after a re-review returned `needs_review`. */
+export interface RenewNeedsReviewEntryInput {
+  /** The reviewer's renewed `needs_review` result. */
+  review: PromotionReviewResult;
+  /** Current reviewer version to pin so an unchanged version won't re-trigger. */
+  reviewerVersion: string;
+  /** Current relevant registry-state fingerprint to pin. */
+  registryStateFingerprint: string;
+  /** ISO timestamp of the renewal. */
+  updatedAt: string;
+}
+
+/**
+ * Renew a queue entry after a re-review returned `needs_review` again (issue #29).
+ *
+ * The rationale/questions are updated from the renewed review, and the stored
+ * reviewer version and registry-state fingerprint are pinned to the current
+ * values so the entry is not retried again until another meaningful change
+ * arrives. The evidence fingerprint is left unchanged (no new evidence was
+ * supplied by a re-review). The entry returns to `pending`.
+ *
+ * Throws when the entry does not exist or is already resolved/dropped.
+ */
+export function renewNeedsReviewEntry(
+  state: NeedsReviewQueueState,
+  entryId: string,
+  input: RenewNeedsReviewEntryInput,
+): NeedsReviewQueueEntry {
+  const entry = state.entries[entryId];
+  if (!entry) {
+    throw new Error(
+      `Cannot renew entry "${entryId}": no such queue entry.`,
+    );
+  }
+  if (entry.status === 'resolved' || entry.status === 'dropped') {
+    throw new Error(
+      `Cannot renew entry "${entryId}": status is "${entry.status}".`,
+    );
+  }
+
+  const previousEligibility = entry.retryEligibility;
+  entry.rationale = input.review.rationale;
+  entry.questions = normalizeQuestions(input.review.questions ?? entry.questions);
+  entry.reviewerVersion = input.reviewerVersion;
+  entry.registryStateFingerprint = input.registryStateFingerprint;
+  entry.status = 'pending';
+  entry.retryEligibility = {
+    eligible: false,
+    reason: previousEligibility.reason
+      ? `Renewed needs_review after re-review; awaiting next meaningful change before retry. Last eligibility trigger: ${previousEligibility.reason}`
+      : 'Renewed needs_review after re-review; awaiting next meaningful change before retry.',
+    lastCheckedAt: input.updatedAt,
+    lastEligibleAt: previousEligibility.lastEligibleAt,
+  };
+  entry.updatedAt = input.updatedAt;
+  return entry;
+}
+
+// ---------------------------------------------------------------------------
 // Public: fingerprint computation
 // ---------------------------------------------------------------------------
 
@@ -489,6 +668,24 @@ export function computeEvidenceFingerprint(packet: PromotionPacket): string {
     capabilityId: candidate.capabilityId,
     solvedLoop: packet.solvedLoopEvidence,
     provenance: packet.provenance,
+    sourceUnit: candidate.sourceUnit,
+  };
+  return sha256Hex(JSON.stringify(fingerprintable));
+}
+
+/**
+ * Compute a stable evidence fingerprint directly from a candidate payload.
+ * Used when refreshing a queued entry with merged evidence without rebuilding
+ * a full Promotion Packet. The fingerprint covers the same fields as
+ * {@link computeEvidenceFingerprint} so refresh fingerprints are comparable.
+ */
+export function computeEvidenceFingerprintFromCandidate(
+  candidate: DistilledKnowledgeCandidate,
+): string {
+  const fingerprintable = {
+    capabilityId: candidate.capabilityId,
+    solvedLoop: candidate.solvedLoop,
+    provenance: candidate.provenance,
     sourceUnit: candidate.sourceUnit,
   };
   return sha256Hex(JSON.stringify(fingerprintable));
@@ -630,6 +827,10 @@ function dedupeSourceRefs(refs: NeedsReviewSourceRef[]): NeedsReviewSourceRef[] 
 
 function normalizeQuestions(questions: string[]): string[] {
   return dedupeStrings(questions.map(q => (q || '').trim()).filter(Boolean));
+}
+
+function normalizeMatcherText(value: string): string {
+  return (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 function dedupeStrings(values: string[]): string[] {
