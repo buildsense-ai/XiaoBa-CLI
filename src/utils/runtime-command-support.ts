@@ -2,7 +2,9 @@ import { CatscoLogUploadScheduler } from './catsco-log-upload-scheduler';
 import { DistillationHeartbeatScheduler } from './distillation-heartbeat-scheduler';
 import { DistillationPipeline, defaultDistilledOutputDir } from './distillation-pipeline';
 import { getDistillationHeartbeatConfig } from './distillation-heartbeat-config';
+import { AIService } from './ai-service';
 import { PathResolver } from './path-resolver';
+import { SkillEvolutionRuntime } from './skill-evolution';
 
 interface ActiveRuntimeSupport {
   catscoLogUploadScheduler: CatscoLogUploadScheduler | null;
@@ -47,17 +49,31 @@ export async function startRuntimeCommandSupport(
       // the scheduler still owns them.
       if (DistillationHeartbeatScheduler.shouldStartForCurrentRuntime(workingDirectory)) {
         const config = getDistillationHeartbeatConfig(workingDirectory);
+        const skillEvolution = config.skillEvolutionEnabled
+          ? new SkillEvolutionRuntime({
+            workingDirectory,
+            outputDir: defaultDistilledOutputDir(PathResolver.getSkillsPath()),
+            registryPath: config.skillEvolutionRegistryPath,
+            auditPath: config.skillEvolutionAuditPath,
+            journalPath: config.skillEvolutionJournalPath,
+            aiService: new AIService(),
+            reviewerConcurrency: config.skillEvolutionReviewerConcurrency,
+            authorModel: config.skillEvolutionAuthorModel,
+            verifierModel: config.skillEvolutionVerifierModel,
+          })
+          : undefined;
         const pipeline = new DistillationPipeline({
           outputDir: defaultDistilledOutputDir(PathResolver.getSkillsPath()),
           reviewOutcomesPath: config.reviewOutcomesPath,
           needsReviewQueuePath: config.needsReviewQueuePath,
           capabilityRegistryPath: config.capabilityRegistryPath,
           workLogRoot: config.workLogRoot,
+          skillEvolution,
         });
         distillationPipeline = pipeline;
         distillationHeartbeatScheduler = new DistillationHeartbeatScheduler(
           workingDirectory,
-          unit => pipeline.processUnit(unit),
+          unit => skillEvolution ? pipeline.processUnitAsync(unit) : pipeline.processUnit(unit),
           () => pipeline.reviewEligibleQueueEntries(),
         );
       }

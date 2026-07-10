@@ -38,6 +38,20 @@ export interface DistillationHeartbeatConfig {
   capabilityRegistryPath: string;
   /** Root directory for branch-style distillation work logs. */
   workLogRoot: string;
+  /** V3 verified Current Skill workflow master switch. */
+  skillEvolutionEnabled: boolean;
+  /** Active-only V3 Current Skill Registry state file. */
+  skillEvolutionRegistryPath: string;
+  /** Append-only V3 Transition Audit file. */
+  skillEvolutionAuditPath: string;
+  /** Short-lived V3 Transition Journal file. */
+  skillEvolutionJournalPath: string;
+  /** Bounded Branch Promotion Reviewer worker count. */
+  skillEvolutionReviewerConcurrency: number;
+  /** Optional Author model override. */
+  skillEvolutionAuthorModel?: string;
+  /** Optional independent Verifier model override. */
+  skillEvolutionVerifierModel?: string;
 }
 
 function readEnv(env: NodeJS.ProcessEnv, ...keys: string[]): string | undefined {
@@ -172,6 +186,33 @@ export function getDistillationHeartbeatConfig(
     readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_WORK_LOG_ROOT'),
     'logs/branches/distillation',
   );
+  const skillEvolutionEnabled = readBoolean(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_V3_ENABLED', false);
+  const skillEvolutionRegistryPath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_REGISTRY_FILE'),
+    'data/current-skill-registry.json',
+  );
+  const skillEvolutionAuditPath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_AUDIT_FILE'),
+    'data/transition-audit.jsonl',
+  );
+  const skillEvolutionJournalPath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_JOURNAL_FILE'),
+    'data/transition-journal.json',
+  );
+  const skillEvolutionReviewerConcurrency = Math.min(readNumber(
+    runtimeEnv,
+    'XIAOBA_SKILL_EVOLUTION_REVIEWER_CONCURRENCY',
+    3,
+    1,
+  ), 32);
+  const skillEvolutionAuthorModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_AUTHOR_MODEL');
+  const skillEvolutionVerifierModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_VERIFIER_MODEL');
 
   return {
     enabled,
@@ -183,5 +224,12 @@ export function getDistillationHeartbeatConfig(
     needsReviewQueuePath,
     capabilityRegistryPath,
     workLogRoot,
+    skillEvolutionEnabled,
+    skillEvolutionRegistryPath,
+    skillEvolutionAuditPath,
+    skillEvolutionJournalPath,
+    skillEvolutionReviewerConcurrency,
+    ...(skillEvolutionAuthorModel && { skillEvolutionAuthorModel }),
+    ...(skillEvolutionVerifierModel && { skillEvolutionVerifierModel }),
   };
 }
