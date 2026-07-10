@@ -50,8 +50,16 @@ export interface DistillationHeartbeatConfig {
   learningEpisodeStorePath: string;
   /** V3 Settlement Window policy in hours. */
   skillEvolutionSettlementWindowHours: number;
+  /** V3 curator wake policy in hours (reserved for the existing runtime seam). */
+  skillEvolutionCuratorIntervalHours: number;
   /** Bounded Branch Promotion Reviewer worker count. */
   skillEvolutionReviewerConcurrency: number;
+  /** Durable review queue state for V3 semantic defers and operational retries. */
+  skillEvolutionReviewQueuePath: string;
+  /** Operational review retry backoff in minutes. */
+  skillEvolutionOperationalRetryMinutes: number;
+  /** Operational review retry cap in hours. */
+  skillEvolutionOperationalRetryMaxHours: number;
   /** Optional Author model override. */
   skillEvolutionAuthorModel?: string;
   /** Optional independent Verifier model override. */
@@ -221,12 +229,34 @@ export function getDistillationHeartbeatConfig(
     3,
     0,
   );
+  const skillEvolutionCuratorIntervalHours = readNumber(
+    runtimeEnv,
+    'XIAOBA_SKILL_EVOLUTION_CURATOR_INTERVAL_HOURS',
+    24,
+    0,
+  );
+  const skillEvolutionReviewQueuePath = readEnv(
+    runtimeEnv,
+    'XIAOBA_SKILL_EVOLUTION_REVIEW_QUEUE_FILE',
+  );
   const skillEvolutionReviewerConcurrency = Math.min(readNumber(
     runtimeEnv,
     'XIAOBA_SKILL_EVOLUTION_REVIEWER_CONCURRENCY',
     3,
     1,
   ), 32);
+  const skillEvolutionOperationalRetryMinutes = readNumber(
+    runtimeEnv,
+    'XIAOBA_SKILL_EVOLUTION_OPERATIONAL_RETRY_MINUTES',
+    5,
+    0,
+  );
+  const skillEvolutionOperationalRetryMaxHours = readNumber(
+    runtimeEnv,
+    'XIAOBA_SKILL_EVOLUTION_OPERATIONAL_RETRY_MAX_HOURS',
+    6,
+    0,
+  );
   const skillEvolutionAuthorModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_AUTHOR_MODEL');
   const skillEvolutionVerifierModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_VERIFIER_MODEL');
 
@@ -246,7 +276,16 @@ export function getDistillationHeartbeatConfig(
     skillEvolutionJournalPath,
     learningEpisodeStorePath,
     skillEvolutionSettlementWindowHours,
+    skillEvolutionCuratorIntervalHours,
     skillEvolutionReviewerConcurrency,
+    skillEvolutionReviewQueuePath: resolveContainedPath(
+      workingDirectory,
+      'data',
+      skillEvolutionReviewQueuePath,
+      'data/skill-evolution-review-queue.json',
+    ),
+    skillEvolutionOperationalRetryMinutes,
+    skillEvolutionOperationalRetryMaxHours,
     ...(skillEvolutionAuthorModel && { skillEvolutionAuthorModel }),
     ...(skillEvolutionVerifierModel && { skillEvolutionVerifierModel }),
   };

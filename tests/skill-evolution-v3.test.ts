@@ -20,8 +20,12 @@ import {
   TransitionAuditEntry,
   TransitionJournal,
 } from '../src/utils/skill-evolution';
+import {
+  findOperationalByBundleId,
+  loadReviewQueueState,
+  saveReviewQueueState,
+} from '../src/utils/skill-evolution-review-queue';
 import { buildV3EvidenceBundle as buildPipelineV3EvidenceBundle } from '../src/utils/distillation-pipeline';
-import { getDistillationHeartbeatConfig } from '../src/utils/distillation-heartbeat-config';
 
 function fixtureBundle(): EvidenceBundle {
   return {
@@ -112,27 +116,6 @@ function setup(): { root: string; options: SkillEvolutionOptions; cleanup: () =>
 }
 
 describe('V3 verified semantic Current Skills', () => {
-  test('injects the bounded #36 V3 runtime configuration through one config surface', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-v3-config-'));
-    try {
-      const config = getDistillationHeartbeatConfig(root, {
-        XIAOBA_SKILL_EVOLUTION_V3_ENABLED: 'true',
-        XIAOBA_SKILL_EVOLUTION_REVIEWER_CONCURRENCY: '5',
-        XIAOBA_SKILL_EVOLUTION_AUTHOR_MODEL: 'author-fixture-model',
-        XIAOBA_SKILL_EVOLUTION_VERIFIER_MODEL: 'verifier-fixture-model',
-      });
-      assert.equal(config.skillEvolutionEnabled, true);
-      assert.equal(config.skillEvolutionReviewerConcurrency, 5);
-      assert.equal(config.skillEvolutionAuthorModel, 'author-fixture-model');
-      assert.equal(config.skillEvolutionVerifierModel, 'verifier-fixture-model');
-      assert.equal(config.skillEvolutionRegistryPath, path.join(root, 'data/current-skill-registry.json'));
-      assert.equal(config.skillEvolutionAuditPath, path.join(root, 'data/transition-audit.jsonl'));
-      assert.equal(config.skillEvolutionJournalPath, path.join(root, 'data/transition-journal.json'));
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
   test('the existing DistillationPipeline async seam can drive V3 end to end', async () => {
     const env = setup();
     try {
@@ -391,6 +374,186 @@ describe('V3 verified semantic Current Skills', () => {
     }
   });
 
+  test('rechecks a deferred semantic candidate only when material evidence changes', async () => {
+    const env = setup();
+    try {
+      const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      env.options.reviewQueuePath = reviewQueuePath;
+      env.options.authorFixture = async () => ({
+        body: 'Use the bounded shared workflow and validate its result.',
+        envelope: {
+          decision: 'create_current_skill',
+          routingName: 'deferred-workflow',
+          description: 'A workflow waiting for stronger evidence evidence.',
+          evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+        },
+      });
+      env.options.verifierFixture = () => ({
+        decision: 'defer',
+        issues: [{ code: 'awaiting-evidence', message: 'Needs stronger material evidence.', severity: 'warning' }],
+        rationale: 'Deferring until additional material evidence appears.',
+      });
+
+      const runtime = new SkillEvolutionRuntime({ ...env.options });
+      const deferred = await runtime.reviewAndApply(fixtureCandidateBundle(fixtureCandidate(), 'deferred-material'));
+      assert.equal(deferred.transition, 'defer');
+      assert.equal(deferred.queued, 'deferred');
+      const queueAfterDefer = loadReviewQueueState(reviewQueuePath);
+      assert.equal(queueAfterDefer.deferred.length, 1);
+
+      const firstReview = await runtime.reviewDueQueueEntries();
+      assert.equal(firstReview.reviewed, 0, 'deferred review should stay gated until material evidence changes');
+      assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
+
+      const withEvolvedEvidence = loadReviewQueueState(reviewQueuePath);
+      const deferredEntry = withEvolvedEvidence.deferred[0]!;
+      withEvolvedEvidence.deferred[0] = {
+        ...deferredEntry,
+        bundle: {
+          ...deferredEntry.bundle,
+          completionEvidence: [...deferredEntry.bundle.completionEvidence, { ref: 'session.jsonl#99' }],
+        },
+      };
+      saveReviewQueueState(reviewQueuePath, withEvolvedEvidence);
+
+      env.options.verifierFixture = ({ draft }) => ({
+        decision: 'accept',
+        transition: draft.envelope.decision,
+        issues: [],
+        rationale: 'Material evidence now satisfies the review policy.',
+      });
+
+      const secondRuntime = new SkillEvolutionRuntime({ ...env.options });
+      const secondReview = await secondRuntime.reviewDueQueueEntries();
+      assert.equal(secondReview.reviewed, 1);
+      assert.equal(secondReview.deferredReviewed, 1);
+      const registry = loadCurrentSkillRegistry(env.options.registryPath);
+      assert.equal(Object.keys(registry.capabilities).length, 1);
+      assert.equal(loadReviewQueueState(reviewQueuePath).deferred.length, 0);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('persists operational retry state across restart with bounded exponential backoff config', async () => {
+    const env = setup();
+    try {
+      const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      env.options.reviewQueuePath = reviewQueuePath;
+      env.options.operationalRetryMs = 1;
+      env.options.operationalRetryMaxMs = 2;
+
+      env.options.authorFixture = async () => ({
+        body: 'Use the bounded fail-retry workflow and validate its result.',
+        envelope: {
+          decision: 'create_current_skill',
+          routingName: 'fail-retry-workflow',
+          description: 'A candidate that initially fails operational review.',
+          evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+        },
+      });
+      env.options.verifierFixture = () => {
+        throw new Error('Model request timed out while validating the verifier completion.');
+      };
+      const failingRuntime = new SkillEvolutionRuntime({ ...env.options });
+
+      const first = await failingRuntime.reviewAndApply(fixtureCandidateBundle(fixtureCandidate(), 'operational-restart'));
+      assert.equal(first.queued, 'operational');
+      const queueBeforeRestart = loadReviewQueueState(reviewQueuePath);
+      const failedEntry = findOperationalByBundleId(queueBeforeRestart, 'operational-restart');
+      assert.ok(failedEntry);
+      assert.equal(failedEntry!.attempts, 1);
+      assert.equal(failedEntry!.failureKind, 'branch_timeout');
+      const firstDelay = failedEntry!.currentDelayMs;
+      assert.equal(firstDelay >= 1, true);
+
+      await new Promise(resolve => setTimeout(resolve, 5));
+
+      env.options.verifierFixture = () => ({
+        decision: 'accept',
+        transition: 'create_current_skill',
+        issues: [],
+        rationale: 'Retry processing after restart persisted failure state.',
+      });
+      const restoredRuntime = new SkillEvolutionRuntime({ ...env.options });
+      const restartReview = await restoredRuntime.reviewDueQueueEntries();
+      assert.equal(restartReview.reviewed, 1);
+      assert.equal(restartReview.operationalReviewed, 1);
+      const queueAfterRestart = loadReviewQueueState(reviewQueuePath);
+      assert.equal(queueAfterRestart.operational.length, 0);
+      const registry = loadCurrentSkillRegistry(env.options.registryPath);
+      assert.equal(Object.keys(registry.capabilities).length, 1);
+      assert.deepEqual(loadTransitionAudit(env.options.auditPath).length, 1);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('preserves the concrete failure when a due operational retry fails again', async () => {
+    const env = setup();
+    try {
+      const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      env.options.reviewQueuePath = reviewQueuePath;
+      env.options.operationalRetryMs = 1;
+      env.options.operationalRetryMaxMs = 8;
+      env.options.verifierFixture = () => {
+        throw new Error('Model request timed out during the retry attempt.');
+      };
+
+      const runtime = new SkillEvolutionRuntime(env.options);
+      const first = await runtime.reviewAndApply(fixtureCandidateBundle(fixtureCandidate(), 'retry-failure-detail'));
+      assert.equal(first.queued, 'operational');
+
+      const dueQueue = loadReviewQueueState(reviewQueuePath);
+      const entry = findOperationalByBundleId(dueQueue, 'retry-failure-detail');
+      assert.ok(entry);
+      dueQueue.operational = dueQueue.operational.map(item => item.bundleId === entry!.bundleId
+        ? { ...item, nextRetryAt: new Date(0).toISOString() }
+        : item);
+      saveReviewQueueState(reviewQueuePath, dueQueue);
+
+      const retry = await runtime.reviewDueQueueEntries();
+      assert.equal(retry.reviewed, 1);
+      assert.equal(retry.operationalRetried, 1);
+      const retried = findOperationalByBundleId(loadReviewQueueState(reviewQueuePath), 'retry-failure-detail');
+      assert.ok(retried);
+      assert.equal(retried!.attempts, 2);
+      assert.equal(retried!.failureKind, 'branch_timeout');
+      assert.match(retried!.failureMessage, /retry attempt/);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('queues an invalid verifier completion schema for operational retry', async () => {
+    const env = setup();
+    try {
+      const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      env.options.reviewQueuePath = reviewQueuePath;
+      env.options.verifierFixture = () => ({
+        decision: 'accept',
+        issues: [],
+        // Missing rationale is an invalid completion, not a semantic reject.
+      } as any);
+
+      const result = await new SkillEvolutionRuntime(env.options).reviewAndApply(
+        fixtureCandidateBundle(fixtureCandidate(), 'invalid-verifier-schema'),
+      );
+
+      assert.equal(result.queued, 'operational');
+      const entry = findOperationalByBundleId(
+        loadReviewQueueState(reviewQueuePath),
+        'invalid-verifier-schema',
+      );
+      assert.ok(entry);
+      assert.equal(entry!.failureKind, 'invalid_completion_schema');
+      assert.match(entry!.failureMessage, /rationale/);
+      assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
+    } finally {
+      env.cleanup();
+    }
+  });
+
   test('the default Evidence Bundle carries real source evidence and manual skill snapshots', async () => {
     const env = setup();
     try {
@@ -408,7 +571,10 @@ describe('V3 verified semantic Current Skills', () => {
       ].join('\n'));
       const runtime = new SkillEvolutionRuntime({ ...env.options, manualSkillNames: [] });
       assert.deepEqual(runtime.getEffectiveConfig(), {
+        settlementWindowMs: 3 * 60 * 60 * 1000,
         reviewerConcurrency: 3,
+        operationalRetryMs: 5 * 60 * 1000,
+        operationalRetryMaxMs: 6 * 60 * 60 * 1000,
       });
       const bundle = buildPipelineV3EvidenceBundle(
         {

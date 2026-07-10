@@ -8,6 +8,22 @@ import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from 
 import { AIService } from './ai-service';
 import { PathResolver } from './path-resolver';
 import { SkillParser } from '../skills/skill-parser';
+import {
+  addOrUpdateOperationalFailure,
+  findOperationalByBundleId,
+  popDueOperationalEntries,
+  getDueDeferredEntries,
+  loadReviewQueueState,
+  SkillEvolutionReviewQueueState,
+  OperationalReviewFailureKind,
+  removeDeferredByBundleId,
+  removeOperationalFailureByBundleId,
+  saveReviewQueueState,
+  SkillEvolutionDeferredReviewEntry,
+  SkillEvolutionOperationalReviewFailureEntry,
+  upsertDeferredEntry,
+} from './skill-evolution-review-queue';
+import { DistilledKnowledgeCandidate } from './capability-distiller';
 
 /**
  * V3's runtime-owned promotion seam.
@@ -319,13 +335,18 @@ export interface SkillEvolutionPaths {
   registryPath: string;
   auditPath: string;
   journalPath: string;
+  reviewQueuePath?: string;
 }
 
 export interface SkillEvolutionOptions extends SkillEvolutionPaths {
   workingDirectory: string;
   aiService?: AIService;
   manualSkillNames?: readonly string[];
+  reviewQueuePath?: string;
+  settlementWindowMs?: number;
   reviewerConcurrency?: number;
+  operationalRetryMs?: number;
+  operationalRetryMaxMs?: number;
   authorModel?: string;
   verifierModel?: string;
   reviewerVersion?: string;
@@ -338,7 +359,10 @@ export interface SkillEvolutionOptions extends SkillEvolutionPaths {
 }
 
 export interface SkillEvolutionEffectiveConfig {
+  settlementWindowMs: number;
   reviewerConcurrency: number;
+  operationalRetryMs: number;
+  operationalRetryMaxMs: number;
   authorModel?: string;
   verifierModel?: string;
 }
@@ -352,6 +376,16 @@ export interface SkillEvolutionResult {
   verifier?: SkillVerifierResult;
   record?: CurrentSkillRecord;
   audit?: TransitionAuditEntry;
+  queued?: 'deferred' | 'operational';
+  queueEntryId?: string;
+}
+
+export interface SkillEvolutionQueueReviewResult {
+  reviewed: number;
+  deferredReviewed: number;
+  operationalReviewed: number;
+  operationalRetried: number;
+  deferredRetried: number;
 }
 
 export interface TransitionJournal {
@@ -382,6 +416,7 @@ export class SkillEvolutionRuntime {
   private async reviewAndApplyWithRetries(
     bundle: EvidenceBundle,
     sharedBranchTranscriptPaths?: string[],
+    persistQueue = true,
   ): Promise<{ result: SkillEvolutionResult; branchTranscriptPaths: string[]; bundle: EvidenceBundle }> {
     const branchTranscriptPaths = sharedBranchTranscriptPaths ?? [];
     let reviewBundle = freezeClone(bundle);
@@ -389,8 +424,48 @@ export class SkillEvolutionRuntime {
     for (let retry = 0; retry <= MAX_OPTIMISTIC_COMMIT_RETRIES; retry++) {
       try {
         const result = await this.reviewAndApplyOnce(reviewBundle, branchTranscriptPaths);
+        if (persistQueue && result.transition === 'defer' && this.options.reviewQueuePath) {
+          const queue = loadReviewQueueState(this.options.reviewQueuePath);
+          const candidate = this.extractCandidateFromBundle(reviewBundle);
+          const relevantReadSet = result.verifier
+            ? declaredRegistryReadSet(result.verifier, reviewBundle, result.draft!)
+            : [];
+          const deferredEntry = upsertDeferredEntry(
+            queue,
+            candidate,
+            reviewBundle,
+            this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
+            relevantReadSet,
+            result.verifier?.rationale ?? 'Verifier deferred for later review.',
+            new Date(),
+          );
+          result.queued = 'deferred';
+          result.queueEntryId = deferredEntry.entryId;
+          saveReviewQueueState(this.options.reviewQueuePath, queue);
+        }
         return { result, branchTranscriptPaths, bundle: reviewBundle };
       } catch (error) {
+        const operationalFailure = this.extractOperationalFailure(error);
+        if (operationalFailure) {
+          const queuePath = this.options.reviewQueuePath;
+          if (!queuePath) {
+            throw operationalFailure;
+          }
+          if (!persistQueue) {
+            throw operationalFailure;
+          }
+          return {
+            result: this.enqueueOperationalFailureAndReturnResult(
+              reviewBundle,
+              operationalFailure,
+              new Date(),
+              queuePath,
+            ),
+            branchTranscriptPaths,
+            bundle: reviewBundle,
+          };
+        }
+
         if (error instanceof ReviewCommitConflictError) {
           if (retry >= MAX_OPTIMISTIC_COMMIT_RETRIES) {
             throw error;
@@ -403,6 +478,142 @@ export class SkillEvolutionRuntime {
     }
 
     throw new Error('Skill Evolution exceeded optimistic commit retries.');
+  }
+
+  private buildOperationalReviewError(error: unknown, branchTranscriptPaths: string[]): OperationalReviewError {
+    if (error instanceof OperationalReviewError) {
+      return error;
+    }
+
+    const message = String((error as { message?: unknown })?.message ?? error ?? 'Unknown branch failure');
+    const lower = message.toLowerCase();
+    let kind: OperationalReviewFailureKind = 'branch_failure';
+    if (/completion schema/i.test(message) || /invalid schema/i.test(lower) || /missing required/i.test(lower)) {
+      kind = 'invalid_completion_schema';
+    } else if (/timeout|timed.?out|deadline/i.test(lower)) {
+      kind = 'branch_timeout';
+    }
+
+    return new OperationalReviewError(
+      kind,
+      message,
+      branchTranscriptPaths[branchTranscriptPaths.length - 1],
+    );
+  }
+
+  private extractOperationalFailure(error: unknown): OperationalReviewError | undefined {
+    if (error instanceof OperationalReviewError) {
+      return error;
+    }
+    if (error instanceof ReviewCommitConflictError) {
+      return undefined;
+    }
+    return this.buildOperationalReviewError(error, []);
+  }
+
+  private extractCandidateFromBundle(bundle: EvidenceBundle): DistilledKnowledgeCandidate {
+    if (!isLikelyDistilledKnowledgeCandidate(bundle.episode)) {
+      throw new Error('Evidence bundle does not contain a DistilledKnowledgeCandidate.');
+    }
+    return bundle.episode;
+  }
+
+  private enqueueOperationalFailureAndReturnResult(
+    bundle: EvidenceBundle,
+    error: OperationalReviewError,
+    now: Date,
+    queuePath: string,
+  ): SkillEvolutionResult {
+    const queue = loadReviewQueueState(queuePath);
+    const candidate = this.extractCandidateFromBundle(bundle);
+    addOrUpdateOperationalFailure(
+      queue,
+      candidate,
+      bundle,
+      error.kind,
+      error.message,
+      error.transcriptPath,
+      this.getEffectiveConfig().operationalRetryMs,
+      this.getEffectiveConfig().operationalRetryMaxMs,
+      now,
+    );
+    saveReviewQueueState(queuePath, queue);
+    return {
+      transition: 'reject_candidate',
+      verified: false,
+      rounds: 1,
+      queued: 'operational',
+      queueEntryId: findOperationalByBundleId(queue, bundle.bundleId)?.entryId,
+    };
+  }
+
+  private async reviewDueQueueEntriesInternal(): Promise<SkillEvolutionQueueReviewResult> {
+    const queuePath = this.options.reviewQueuePath;
+    if (!queuePath) {
+      return {
+        reviewed: 0,
+        deferredReviewed: 0,
+        operationalReviewed: 0,
+        operationalRetried: 0,
+        deferredRetried: 0,
+      };
+    }
+
+    const queue = loadReviewQueueState(queuePath);
+    const registry = this.getRegistry();
+    const currentReadSet = normalizeRegistryReadSet(
+      Object.values(registry.capabilities).map(record => ({
+        handle: record.handle,
+        revision: record.revision,
+      })),
+    );
+    const dueOperational = popDueOperationalEntries(queue, new Date());
+    const dueDeferred = getDueDeferredEntries(
+      queue,
+      this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
+      currentReadSet,
+    );
+    type ReviewQueueTask =
+      | { type: 'operational'; entry: SkillEvolutionOperationalReviewFailureEntry }
+      | { type: 'deferred'; entry: SkillEvolutionDeferredReviewEntry };
+
+    const tasks: ReviewQueueTask[] = [
+      ...dueOperational.map(item => ({ type: 'operational' as const, entry: item })),
+      ...dueDeferred.map(item => ({ type: 'deferred' as const, entry: item })),
+    ];
+    if (tasks.length === 0) {
+      return {
+        reviewed: 0,
+        deferredReviewed: 0,
+        operationalReviewed: 0,
+        operationalRetried: 0,
+        deferredRetried: 0,
+      };
+    }
+
+    const config = this.getEffectiveConfig();
+    const result: SkillEvolutionQueueReviewResult = {
+      reviewed: 0,
+      deferredReviewed: 0,
+      operationalReviewed: 0,
+      operationalRetried: 0,
+      deferredRetried: 0,
+    };
+
+    await mapWithConcurrency(tasks, config.reviewerConcurrency, async item => {
+      if (item.type === 'deferred') {
+        await this.reviewDueDeferredEntry(queue, item.entry as SkillEvolutionDeferredReviewEntry, result, config);
+        return;
+      }
+      await this.reviewDueOperationalEntry(queue, item.entry as SkillEvolutionOperationalReviewFailureEntry, result, config);
+    });
+
+    saveReviewQueueState(queuePath, queue);
+    return result;
+  }
+
+  async reviewDueQueueEntries(): Promise<SkillEvolutionQueueReviewResult> {
+    return this.reviewDueQueueEntriesInternal();
   }
 
   private async reviewAndApplyOnce(
@@ -420,7 +631,7 @@ export class SkillEvolutionRuntime {
         draft = await author.run();
       } catch (error) {
         if (author.transcriptPath) branchTranscriptPaths.push(author.transcriptPath);
-        throw error;
+        throw this.buildOperationalReviewError(error, branchTranscriptPaths);
       }
       if (author.transcriptPath) branchTranscriptPaths.push(author.transcriptPath);
       const draftIssues = validateDraft(draft, frozenBundle, this.getManualSkillNames());
@@ -439,7 +650,7 @@ export class SkillEvolutionRuntime {
         verification = normalizeVerifierResult(await verifier.run());
       } catch (error) {
         if (verifier.transcriptPath) branchTranscriptPaths.push(verifier.transcriptPath);
-        throw error;
+        throw this.buildOperationalReviewError(error, branchTranscriptPaths);
       }
       if (verifier.transcriptPath) branchTranscriptPaths.push(verifier.transcriptPath);
       if (verification.decision === 'revise' && round < MAX_AUTHOR_VERIFIER_ROUNDS) {
@@ -461,6 +672,103 @@ export class SkillEvolutionRuntime {
     }
 
     throw new Error('Skill Evolution exhausted its bounded author-verifier loop.');
+  }
+
+  private async reviewDueDeferredEntry(
+    queue: SkillEvolutionReviewQueueState,
+    entry: SkillEvolutionDeferredReviewEntry,
+    result: SkillEvolutionQueueReviewResult,
+    config: SkillEvolutionEffectiveConfig,
+  ): Promise<void> {
+    try {
+      const { result: reviewed, bundle: reviewedBundle } = await this.reviewAndApplyWithRetries(entry.bundle, [], false);
+      removeDeferredByBundleId(queue, entry.bundle.bundleId);
+      if (reviewed.transition === 'defer' || reviewed.queued === 'deferred') {
+        const relevantReadSet = reviewed.verifier
+          ? declaredRegistryReadSet(reviewed.verifier, reviewedBundle, reviewed.draft!)
+          : entry.relevantReadSet;
+        upsertDeferredEntry(
+          queue,
+          entry.candidate,
+          reviewedBundle,
+          this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
+          relevantReadSet,
+          reviewed.verifier?.rationale ?? entry.reason,
+          new Date(),
+        );
+        result.deferredRetried++;
+      }
+      result.reviewed++;
+      result.deferredReviewed++;
+    } catch (error) {
+      const operationalError = this.extractOperationalFailure(error);
+      if (!operationalError) {
+        throw error;
+      }
+      removeDeferredByBundleId(queue, entry.bundle.bundleId);
+      addOrUpdateOperationalFailure(
+        queue,
+        entry.candidate,
+        entry.bundle,
+        operationalError.kind,
+        operationalError.message,
+        operationalError.transcriptPath,
+        config.operationalRetryMs,
+        config.operationalRetryMaxMs,
+        new Date(),
+      );
+      result.reviewed++;
+      result.deferredReviewed++;
+      result.deferredRetried++;
+    }
+  }
+
+  private async reviewDueOperationalEntry(
+    queue: SkillEvolutionReviewQueueState,
+    entry: SkillEvolutionOperationalReviewFailureEntry,
+    result: SkillEvolutionQueueReviewResult,
+    config: SkillEvolutionEffectiveConfig,
+  ): Promise<void> {
+    try {
+      const { result: reviewed } = await this.reviewAndApplyWithRetries(entry.bundle, [], false);
+      removeOperationalFailureByBundleId(queue, entry.bundle.bundleId);
+      if (reviewed.queued === 'operational') {
+        addOrUpdateOperationalFailure(
+          queue,
+          entry.candidate,
+          entry.bundle,
+          'branch_failure',
+          'Operational review remains queued after re-review.',
+          undefined,
+          config.operationalRetryMs,
+          config.operationalRetryMaxMs,
+          new Date(),
+        );
+        result.operationalRetried++;
+      } else {
+        result.operationalReviewed++;
+      }
+      result.reviewed++;
+    } catch (error) {
+      const operationalError = this.extractOperationalFailure(error);
+      if (!operationalError) {
+        throw error;
+      }
+      addOrUpdateOperationalFailure(
+        queue,
+        entry.candidate,
+        entry.bundle,
+        operationalError.kind,
+        operationalError.message,
+        operationalError.transcriptPath,
+        config.operationalRetryMs,
+        config.operationalRetryMaxMs,
+        new Date(),
+      );
+      result.reviewed++;
+      result.operationalReviewed++;
+      result.operationalRetried++;
+    }
   }
 
   getRegistry(): CurrentSkillRegistryState {
@@ -500,7 +808,10 @@ export class SkillEvolutionRuntime {
 
   getEffectiveConfig(): SkillEvolutionEffectiveConfig {
     return {
+      settlementWindowMs: this.options.settlementWindowMs ?? 3 * 60 * 60 * 1000,
       reviewerConcurrency: this.options.reviewerConcurrency ?? 3,
+      operationalRetryMs: this.options.operationalRetryMs ?? 5 * 60 * 1000,
+      operationalRetryMaxMs: this.options.operationalRetryMaxMs ?? 6 * 60 * 60 * 1000,
       ...(this.options.authorModel && { authorModel: this.options.authorModel }),
       ...(this.options.verifierModel && { verifierModel: this.options.verifierModel }),
     };
@@ -678,6 +989,26 @@ export class SkillEvolutionRuntime {
   }
 }
 
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]!, index);
+    }
+  }));
+
+  return results;
+}
+
 export interface ApplyTransitionInput extends SkillEvolutionPaths {
   bundle: EvidenceBundle;
   draft: SkillDraft;
@@ -726,10 +1057,14 @@ class ReviewCommitConflictError extends Error {
   }
 }
 
-class InvalidBranchCompletionError extends Error {
-  constructor(message: string) {
+class OperationalReviewError extends Error {
+  constructor(
+    public readonly kind: OperationalReviewFailureKind,
+    message: string,
+    public readonly transcriptPath?: string,
+  ) {
     super(message);
-    this.name = 'InvalidBranchCompletionError';
+    this.name = 'OperationalReviewError';
   }
 }
 
@@ -940,6 +1275,12 @@ function validateEvidenceBundle(bundle: EvidenceBundle): void {
   }
 }
 
+function isLikelyDistilledKnowledgeCandidate(value: unknown): value is DistilledKnowledgeCandidate {
+  return !!value
+    && typeof value === 'object'
+    && (value as { kind?: unknown }).kind === 'capability';
+}
+
 function validateDraft(draft: SkillDraft, bundle: EvidenceBundle, manualSkillNames: readonly string[]): SkillVerifierIssue[] {
   const issues: SkillVerifierIssue[] = [];
   if (!draft || typeof draft.body !== 'string' || !draft.body.trim()) issues.push(issue('empty-draft', 'Skill Draft body is empty.', 'danger'));
@@ -1117,23 +1458,23 @@ function assertTransitionTargetsWereRead(
 
 function normalizeVerifierResult(result: SkillVerifierResult | { approved?: boolean; issues?: SkillVerifierIssue[]; rationale?: string; transition?: CapabilityTransitionKind; registryReadSet?: CapabilityReadSetEntry[] }): SkillVerifierResult {
   if (!result || typeof result !== 'object') {
-    throw new InvalidBranchCompletionError('Verifier returned an invalid completion schema.');
+    throw new OperationalReviewError('invalid_completion_schema', 'Verifier returned an invalid completion schema.');
   }
   if ('approved' in result) {
     if (typeof result.approved !== 'boolean') {
-      throw new InvalidBranchCompletionError('Verifier returned an invalid approved field.');
+      throw new OperationalReviewError('invalid_completion_schema', 'Verifier returned an invalid approved field.');
     }
     if (result.issues !== undefined && !Array.isArray(result.issues)) {
-      throw new InvalidBranchCompletionError('Verifier issues must be an array.');
+      throw new OperationalReviewError('invalid_completion_schema', 'Verifier issues must be an array.');
     }
     if (result.rationale !== undefined && typeof result.rationale !== 'string') {
-      throw new InvalidBranchCompletionError('Verifier rationale must be a string.');
+      throw new OperationalReviewError('invalid_completion_schema', 'Verifier rationale must be a string.');
     }
     if (result.transition !== undefined && !isTransition(result.transition)) {
-      throw new InvalidBranchCompletionError('Verifier transition is invalid.');
+      throw new OperationalReviewError('invalid_completion_schema', 'Verifier transition is invalid.');
     }
     if (result.registryReadSet !== undefined && !Array.isArray(result.registryReadSet)) {
-      throw new InvalidBranchCompletionError('Verifier registryReadSet must be an array.');
+      throw new OperationalReviewError('invalid_completion_schema', 'Verifier registryReadSet must be an array.');
     }
     return {
       decision: result.approved ? 'accept' : 'reject',
@@ -1144,19 +1485,19 @@ function normalizeVerifierResult(result: SkillVerifierResult | { approved?: bool
     };
   }
   if (!('decision' in result) || !['accept', 'revise', 'defer', 'reject'].includes(result.decision as string)) {
-    throw new InvalidBranchCompletionError('Verifier decision is missing or invalid.');
+    throw new OperationalReviewError('invalid_completion_schema', 'Verifier decision is missing or invalid.');
   }
   if (!Array.isArray(result.issues)) {
-    throw new InvalidBranchCompletionError('Verifier issues must be an array.');
+    throw new OperationalReviewError('invalid_completion_schema', 'Verifier issues must be an array.');
   }
   if (typeof result.rationale !== 'string') {
-    throw new InvalidBranchCompletionError('Verifier rationale must be a string.');
+    throw new OperationalReviewError('invalid_completion_schema', 'Verifier rationale must be a string.');
   }
   if (result.transition !== undefined && !isTransition(result.transition)) {
-    throw new InvalidBranchCompletionError('Verifier transition is invalid.');
+    throw new OperationalReviewError('invalid_completion_schema', 'Verifier transition is invalid.');
   }
   if (result.registryReadSet !== undefined && !Array.isArray(result.registryReadSet)) {
-    throw new InvalidBranchCompletionError('Verifier registryReadSet is malformed.');
+    throw new OperationalReviewError('invalid_completion_schema', 'Verifier registryReadSet must be an array.');
   }
   const registryReadSet = result.registryReadSet === undefined
     ? undefined
@@ -1164,7 +1505,7 @@ function normalizeVerifierResult(result: SkillVerifierResult | { approved?: bool
       try {
         return normalizeRegistryReadSet(result.registryReadSet!);
       } catch {
-        throw new InvalidBranchCompletionError('Verifier registryReadSet is malformed.');
+        throw new OperationalReviewError('invalid_completion_schema', 'Verifier registryReadSet is malformed.');
       }
     })();
   return {

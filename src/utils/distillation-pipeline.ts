@@ -62,10 +62,12 @@ import {
   LearningEpisode,
   LearningEpisodeStore,
   extractLearningEpisodes,
+  settleLearningEpisodes,
 } from './learning-episode';
 import {
   BoundedSourceEvidence,
   EvidenceBundle,
+  SkillEvolutionQueueReviewResult,
   SkillEvolutionResult,
   SkillEvolutionRuntime,
 } from './skill-evolution';
@@ -201,6 +203,14 @@ export interface QueueReviewResult {
   outcomes: ReviewOutcomeEntry[];
 }
 
+export interface QueueReviewResultV3 {
+  reviewed: number;
+  deferredReviewed: number;
+  operationalReviewed: number;
+  operationalRetried: number;
+  deferredRetried: number;
+}
+
 function emptyQueueReviewResult(): QueueReviewResult {
   return { reviewed: [], resolved: [], renewed: [], installations: [], outcomes: [] };
 }
@@ -306,7 +316,11 @@ export class DistillationPipeline {
     this.outcomes = loadReviewOutcomes(this.reviewOutcomesPath);
   }
 
-  /** Async runtime seam for the isolated V3 Author/Verifier workflow. */
+  /**
+   * Async runtime seam for V3. The legacy synchronous processor remains
+   * unchanged; when a V3 runtime is supplied, heartbeat callers use this
+   * method so the cursor waits for the isolated Author/Verifier commit.
+   */
   async processUnitAsync(unit: DistillationUnit): Promise<PipelineUnitResult | V3PipelineUnitResult> {
     if (!this.skillEvolution) return this.processUnit(unit);
     let episodes: LearningEpisode[] | undefined;
@@ -330,9 +344,14 @@ export class DistillationPipeline {
         ?? buildV3EvidenceBundle(unit, candidate, this.skillEvolution);
       reviewInputs.push({ candidate, bundle });
     }
+
+    const reviewerConcurrency = Math.max(
+      1,
+      Math.floor(this.skillEvolution.getEffectiveConfig().reviewerConcurrency),
+    );
     const evolutions = await mapWithConcurrency(
       reviewInputs,
-      Math.max(1, Math.floor(this.skillEvolution.getEffectiveConfig().reviewerConcurrency)),
+      reviewerConcurrency,
       input => this.skillEvolution!.reviewAndApply(input.bundle),
     );
     return { candidates, evolutions, ...(episodes && { episodes }) };
@@ -682,6 +701,25 @@ export class DistillationPipeline {
   }
 
   /**
+   * Re-review due V3 semantic defers and operational failure queue entries.
+   *
+   * This runs after the heartbeat's distillation pass so newly refreshed
+   * registries and version settings can promote or refresh queued candidates.
+   */
+  async reviewSkillEvolutionQueueEntries(): Promise<QueueReviewResultV3> {
+    if (!this.skillEvolution) {
+      return {
+        reviewed: 0,
+        deferredReviewed: 0,
+        operationalReviewed: 0,
+        operationalRetried: 0,
+        deferredRetried: 0,
+      };
+    }
+    return this.skillEvolution.reviewDueQueueEntries();
+  }
+
+  /**
    * Apply a resolvable (non-`needs_review`) review decision to the Capability
    * Registry and installed-skill store. Shared by the new-candidate path
    * (`processUnit`) and the queue re-review path (`reviewEligibleQueueEntries`).
@@ -937,11 +975,13 @@ export function buildV3EvidenceBundle(
       content: JSON.stringify(sourceTurn),
     }];
   });
+  const completionEvidence = sourceEvidence.filter(ref => ref.role === 'problem-action');
+  const settlementEvidence = sourceEvidence.filter(ref => ref.role === 'verification');
   return {
     bundleId: `v3:${unit.filePath}:${unit.byteRange.start}:${unit.byteRange.end}:${candidate.capabilityId}`,
     episode: candidate,
-    completionEvidence: sourceEvidence.filter(ref => ref.role === 'problem-action'),
-    settlementEvidence: sourceEvidence.filter(ref => ref.role === 'verification'),
+    completionEvidence,
+    settlementEvidence,
     boundedContinuity: unit.continuityTurns,
     referencedSkills: skillEvolution.getReferencedSkillSnapshots(),
     relatedCurrentSkills: Object.values(skillEvolution.getRegistry().capabilities).map(record => ({
@@ -963,6 +1003,7 @@ async function mapWithConcurrency<T, R>(
   const results = new Array<R>(items.length);
   let nextIndex = 0;
   const workerCount = Math.min(Math.max(1, concurrency), items.length);
+
   await Promise.all(Array.from({ length: workerCount }, async () => {
     while (true) {
       const index = nextIndex++;
@@ -970,6 +1011,7 @@ async function mapWithConcurrency<T, R>(
       results[index] = await worker(items[index]!, index);
     }
   }));
+
   return results;
 }
 
