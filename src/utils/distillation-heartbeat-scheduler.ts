@@ -49,6 +49,16 @@ export interface HeartbeatRecord {
 
 export type DistillationUnitProcessor = (unit: DistillationUnit) => void;
 
+/**
+ * Optional hook invoked once after a heartbeat cycle finishes processing all
+ * Distillation Units (issue #29). The runtime wires it to
+ * `DistillationPipeline.reviewEligibleQueueEntries` so the heartbeat also
+ * re-reviews eligible Needs Review Queue entries on every cycle. The hook is
+ * best-effort: it must not throw, and a failing hook never blocks the
+ * heartbeat or cursor advancement.
+ */
+export type HeartbeatCycleCompleteHook = () => void;
+
 const DEFAULT_PROCESSOR: DistillationUnitProcessor = () => {
   // Issue #2 scope: the heartbeat owns the runtime path that extracts
   // Distillation Units and records the run. The distillation/review/install
@@ -72,6 +82,7 @@ function emptyHeartbeatRecord(): HeartbeatRecord {
 export class DistillationHeartbeatScheduler {
   private readonly workingDirectory: string;
   private readonly processor: DistillationUnitProcessor;
+  private readonly cycleCompleteHook: HeartbeatCycleCompleteHook | null;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private started = false;
@@ -80,9 +91,11 @@ export class DistillationHeartbeatScheduler {
   constructor(
     workingDirectory: string = process.cwd(),
     processor: DistillationUnitProcessor = DEFAULT_PROCESSOR,
+    cycleCompleteHook: HeartbeatCycleCompleteHook | null = null,
   ) {
     this.workingDirectory = workingDirectory;
     this.processor = processor;
+    this.cycleCompleteHook = cycleCompleteHook;
   }
 
   /**
@@ -154,6 +167,7 @@ export class DistillationHeartbeatScheduler {
       const sessionLogsRoot = resolveSessionLogsRoot(config.logsRoot);
       if (!fs.existsSync(sessionLogsRoot) || !fs.statSync(sessionLogsRoot).isDirectory()) {
         this.recordHeartbeat(config.heartbeatRecordPath, reason, 0, 0);
+        this.runCycleCompleteHook();
         return { unitsProcessed: 0, advancedFiles: 0, ran: true };
       }
 
@@ -173,12 +187,33 @@ export class DistillationHeartbeatScheduler {
         Logger.info(`[DistillationHeartbeat] no new session log appends (${reason})`);
       }
 
+      // Issue #29: after the new-candidate pass, re-review eligible Needs Review
+      // Queue entries so the heartbeat autonomously consumes retry-eligible
+      // reviews (reviewer version, registry-state, explicit-command, or
+      // matching-evidence changes). The hook is best-effort.
+      this.runCycleCompleteHook();
+
       return { unitsProcessed: units.length, advancedFiles, ran: true };
     } catch (error: any) {
       Logger.warning(`[DistillationHeartbeat] cycle failed (${reason}): ${error.message}`);
       return { unitsProcessed: 0, advancedFiles: 0, ran: true };
     } finally {
       this.running = false;
+    }
+  }
+
+  /**
+   * Best-effort invocation of the cycle-complete hook (issue #29). A throwing
+   * hook is logged and never blocks the heartbeat or cursor advancement.
+   */
+  private runCycleCompleteHook(): void {
+    if (!this.cycleCompleteHook) return;
+    try {
+      this.cycleCompleteHook();
+    } catch (error: any) {
+      Logger.warning(
+        `[DistillationHeartbeat] cycle-complete hook failed: ${error?.message ?? error}`,
+      );
     }
   }
 
