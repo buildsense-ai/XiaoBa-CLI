@@ -2,8 +2,8 @@ import { CatscoLogUploadScheduler } from './catsco-log-upload-scheduler';
 import { DistillationHeartbeatScheduler } from './distillation-heartbeat-scheduler';
 import { DistillationPipeline, defaultDistilledOutputDir } from './distillation-pipeline';
 import { getDistillationHeartbeatConfig } from './distillation-heartbeat-config';
-import { AIService } from './ai-service';
 import { PathResolver } from './path-resolver';
+import { AIService } from './ai-service';
 import { SkillEvolutionRuntime } from './skill-evolution';
 
 interface ActiveRuntimeSupport {
@@ -56,8 +56,12 @@ export async function startRuntimeCommandSupport(
             registryPath: config.skillEvolutionRegistryPath,
             auditPath: config.skillEvolutionAuditPath,
             journalPath: config.skillEvolutionJournalPath,
+            reviewQueuePath: config.skillEvolutionReviewQueuePath,
             aiService: new AIService(),
+            settlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
             reviewerConcurrency: config.skillEvolutionReviewerConcurrency,
+            operationalRetryMs: config.skillEvolutionOperationalRetryMinutes * 60 * 1000,
+            operationalRetryMaxMs: config.skillEvolutionOperationalRetryMaxHours * 60 * 60 * 1000,
             authorModel: config.skillEvolutionAuthorModel,
             verifierModel: config.skillEvolutionVerifierModel,
           })
@@ -76,7 +80,9 @@ export async function startRuntimeCommandSupport(
         distillationHeartbeatScheduler = new DistillationHeartbeatScheduler(
           workingDirectory,
           unit => skillEvolution ? pipeline.processUnitAsync(unit) : pipeline.processUnit(unit),
-          () => pipeline.reviewEligibleQueueEntries(),
+          async () => {
+            await pipeline.reviewSkillEvolutionQueueEntries();
+          },
         );
       }
 

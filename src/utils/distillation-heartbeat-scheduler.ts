@@ -68,7 +68,7 @@ export type DistillationUnitProcessor = (unit: DistillationUnit) => unknown | Pr
  * best-effort: it must not throw, and a failing hook never blocks the
  * heartbeat or cursor advancement.
  */
-export type HeartbeatCycleCompleteHook = () => unknown | Promise<unknown>;
+export type HeartbeatCycleCompleteHook = () => Promise<void> | void;
 
 const DEFAULT_PROCESSOR: DistillationUnitProcessor = () => {
   // Issue #2 scope: the heartbeat owns the runtime path that extracts
@@ -184,7 +184,10 @@ export class DistillationHeartbeatScheduler {
 
       const units: DistillationUnit[] = [];
       let advancedFiles = 0;
-      const files = collectJsonlFiles(sessionLogsRoot);
+      // Process one file at a time so an async Branch Promotion Reviewer can
+      // finish before that file's cursor is advanced. The existing sync
+      // processors remain valid because `await` also accepts void.
+      const files = collectJsonlFilesForHeartbeat(sessionLogsRoot);
       for (const filePath of files) {
         const result = await processSessionLogAsync(
           filePath,
@@ -299,18 +302,24 @@ async function processSessionLogAsync(
   advanced: boolean;
   processed: boolean;
 }> {
+  // Keep the extraction/cursor semantics in distillation-unit.ts while
+  // allowing the processor to be asynchronous. This mirrors processSessionLog
+  // and intentionally advances the cursor only after the branch commit.
   const state = loadLogCursorState(stateFilePath);
   const cursor = getCursor(state, filePath);
   let extracted;
   try {
-    const crossFileContinuity: CrossFileContinuityOptions = { orderedFilePaths };
+    const crossFileContinuity: CrossFileContinuityOptions = {
+      orderedFilePaths,
+      // The extractor derives the current file's identity from its first new
+      // turn, then requires every predecessor/current turn to match it.
+    };
     extracted = extractDistillationUnit(filePath, cursor, { crossFileContinuity });
   } catch (error) {
     markCursorFailed(state, filePath, cursor.byteOffset, error);
     saveLogCursorState(stateFilePath, state);
     return { distillationUnit: null, advanced: false, processed: false };
   }
-
   if (extracted.distillationUnit) {
     try {
       await processor(extracted.distillationUnit);
@@ -323,7 +332,6 @@ async function processSessionLogAsync(
       return { distillationUnit: extracted.distillationUnit, advanced: false, processed: false };
     }
   }
-
   if (extracted.advanced) {
     advanceCursor(state, extracted.newCursor);
     saveLogCursorState(stateFilePath, state);
@@ -331,12 +339,12 @@ async function processSessionLogAsync(
   return { distillationUnit: null, advanced: extracted.advanced, processed: false };
 }
 
-function collectJsonlFiles(dir: string): string[] {
+function collectJsonlFilesForHeartbeat(dir: string): string[] {
   if (!fs.existsSync(dir)) return [];
   const files: string[] = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) files.push(...collectJsonlFiles(fullPath));
+    if (entry.isDirectory()) files.push(...collectJsonlFilesForHeartbeat(fullPath));
     else if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(fullPath);
   }
   return files.sort();
