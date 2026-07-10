@@ -94,6 +94,12 @@ export interface CapabilityRegistryEntry {
   status: CapabilityStatus;
   /** Routable When/Do summary matching the active skill's description. */
   routingDescription: string;
+  /**
+   * Deterministic fingerprint of every user-facing guidance field in the
+   * active snapshot. Optional for registry entries created before this field
+   * was introduced.
+   */
+  guidanceFingerprint?: string;
   /** Evidence refs backing this capability (idempotent append). */
   evidenceRefs: EvidenceRef[];
   /** Related snapshot IDs (historical/immutable snapshots for this capability). */
@@ -222,6 +228,8 @@ export interface NewCapabilityInput {
   activeSnapshotId: string;
   /** Routable When/Do summary. */
   routingDescription: string;
+  /** Deterministic fingerprint of the initial Active Snapshot guidance. */
+  guidanceFingerprint?: string;
   /** Initial evidence refs. */
   evidenceRefs: EvidenceRef[];
   /** Related snapshot IDs (at minimum, the initial active snapshot). */
@@ -261,6 +269,7 @@ export function newCapability(
     activeSnapshotId: input.activeSnapshotId,
     status: 'active',
     routingDescription: input.routingDescription,
+    guidanceFingerprint: input.guidanceFingerprint,
     evidenceRefs: dedupeEvidenceRefs(input.evidenceRefs),
     relatedSnapshotIds: dedupeStrings(input.relatedSnapshotIds),
     createdAt: input.createdAt,
@@ -343,6 +352,8 @@ export interface SupersedeSnapshotInput {
    * `routingDescription` is updated; otherwise it is left unchanged.
    */
   routingDescription?: string;
+  /** Deterministic fingerprint of the new Active Snapshot guidance. */
+  guidanceFingerprint?: string;
 }
 
 /**
@@ -397,6 +408,9 @@ export function supersedeSnapshot(
 
   if (isNonEmptyString(input.routingDescription)) {
     entry.routingDescription = input.routingDescription;
+  }
+  if (isNonEmptyString(input.guidanceFingerprint)) {
+    entry.guidanceFingerprint = input.guidanceFingerprint;
   }
 
   entry.updatedAt = input.supersededAt;
@@ -513,6 +527,9 @@ function sanitizeCapabilities(
       routingDescription: isString(e.routingDescription)
         ? e.routingDescription
         : '',
+      guidanceFingerprint: isNonEmptyString(e.guidanceFingerprint)
+        ? e.guidanceFingerprint
+        : undefined,
       evidenceRefs: sanitizeEvidenceRefs(e.evidenceRefs),
       relatedSnapshotIds: sanitizeStringList(e.relatedSnapshotIds),
       createdAt: isString(e.createdAt) ? e.createdAt : '',
