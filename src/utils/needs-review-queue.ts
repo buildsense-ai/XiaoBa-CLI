@@ -504,30 +504,46 @@ export function findPendingEntryByCapabilityId(
 /**
  * Find a pending or retry-eligible queue entry that matches a newly distilled
  * candidate. Matching prefers exact capabilityId, then falls back to a
- * normalized title + solved-loop problem comparison so repeated occurrences of
- * the same solved loop can refresh one durable queue entry even when the
- * distiller emits per-occurrence capability identities.
+ * normalized title + solved-loop problem/action/verification comparison so
+ * repeated occurrences of the same solved loop can refresh one durable queue
+ * entry even when the distiller emits per-occurrence capability identities.
+ * Exact capability matches require new provenance. Fallback matches require
+ * matching guidance plus a changed evidence fingerprint before refreshing an
+ * existing queue entry.
  */
 export function findPendingEntryForCandidate(
   state: NeedsReviewQueueState,
   candidate: DistilledKnowledgeCandidate,
 ): NeedsReviewQueueEntry | undefined {
   const exact = findPendingEntryByCapabilityId(state, candidate.capabilityId);
-  if (exact) return exact;
+  if (exact && candidateAddsNewProvenance(exact, candidate)) return exact;
 
   const normalizedTitle = normalizeMatcherText(candidate.title);
   const normalizedProblem = normalizeMatcherText(candidate.solvedLoop.problem);
+  const normalizedAction = normalizeMatcherText(candidate.solvedLoop.action);
+  const normalizedVerification = normalizeMatcherText(candidate.solvedLoop.verification);
+
   const candidates = Object.values(state.entries).filter(e => {
     if (e.status !== 'pending' && e.status !== 'retry_eligible') return false;
     return (
       normalizeMatcherText(e.candidatePayload.title) === normalizedTitle &&
       normalizeMatcherText(e.candidatePayload.solvedLoop.problem) === normalizedProblem &&
+      normalizeMatcherText(e.candidatePayload.solvedLoop.action) === normalizedAction &&
+      normalizeMatcherText(e.candidatePayload.solvedLoop.verification) === normalizedVerification &&
       matchingCandidateAddsEvidence(e, candidate)
     );
   });
   if (candidates.length === 0) return undefined;
   candidates.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt, 'en'));
   return candidates[0];
+}
+
+function candidateAddsNewProvenance(
+  entry: NeedsReviewQueueEntry,
+  candidate: DistilledKnowledgeCandidate,
+): boolean {
+  const existingKeys = provenanceKeys(entry.candidatePayload.provenance);
+  return [...provenanceKeys(candidate.provenance)].some(key => !existingKeys.has(key));
 }
 
 /** Input for refreshing a queued entry with newly distilled matching evidence. */
@@ -852,6 +868,22 @@ function normalizeQuestions(questions: string[]): string[] {
 
 function normalizeMatcherText(value: string): string {
   return (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function provenanceKeys(
+  refs: Pick<DistilledKnowledgeCandidate['provenance'][number],
+    'filePath' | 'turn' | 'role' | 'unitByteRange'>[],
+): Set<string> {
+  const keys = new Set<string>();
+  for (const ref of refs) {
+    if (!isNonEmptyString(ref.filePath) || typeof ref.turn !== 'number') continue;
+    if (!ref.unitByteRange || typeof ref.unitByteRange.start !== 'number' || typeof ref.unitByteRange.end !== 'number') {
+      continue;
+    }
+    const key = `${ref.filePath}|${ref.turn}|${ref.role}|${ref.unitByteRange.start}|${ref.unitByteRange.end}`;
+    keys.add(key);
+  }
+  return keys;
 }
 
 function dedupeStrings(values: string[]): string[] {
