@@ -7,10 +7,7 @@ import { PathResolver } from './path-resolver';
 import { AIService } from './ai-service';
 import { Logger } from './logger';
 import { SkillEvolutionOptions, SkillEvolutionRuntime } from './skill-evolution';
-import {
-  buildSkillUsageEvidenceBundle,
-  SkillUsageCurator,
-} from './skill-usage-curator';
+import { SkillUsageCurator } from './skill-usage-curator';
 import { SkillUsageLedger } from './skill-usage-ledger';
 
 export interface RuntimeCommandSupportOptions {
@@ -93,26 +90,13 @@ export async function startRuntimeCommandSupport(
         }
         const curator = skillEvolution
           ? new SkillUsageCurator({
-            ledger: new SkillUsageLedger(config.skillUsageLedgerPath, defaultDistilledOutputDir(PathResolver.getSkillsPath())),
-            statePath: config.skillUsageCuratorStatePath,
-            generatedSkillsRoot: defaultDistilledOutputDir(PathResolver.getSkillsPath()),
+            ledger: new SkillUsageLedger(config.skillUsageLedgerPath),
+            statePath: config.skillEvolutionCuratorStatePath,
+            intervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
+            runtime: skillEvolution,
             now: options.clock,
-            evidenceBundleBuilder: (summary, ledger) => buildSkillUsageEvidenceBundle(summary, ledger, skillEvolution),
-            review: request => skillEvolution.reviewAndApply(request.evidenceBundle),
           })
           : null;
-        const clock = options.clock ?? (() => new Date());
-        let nextCuratorReviewAt = 0;
-        const runCuratorReview = async () => {
-          if (!curator) return;
-          const now = clock();
-          // A contradiction wake bypasses the low-frequency batch interval.
-          const expedited = curator.getPendingExpeditedWakes().length > 0;
-          if (!expedited && now.getTime() < nextCuratorReviewAt) return;
-          await curator.reviewDue();
-          nextCuratorReviewAt = now.getTime()
-            + config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000;
-        };
         const pipeline = new DistillationPipeline({
           outputDir: defaultDistilledOutputDir(PathResolver.getSkillsPath()),
           reviewOutcomesPath: config.reviewOutcomesPath,
@@ -122,7 +106,7 @@ export async function startRuntimeCommandSupport(
           skillEvolution,
           learningEpisodeStorePath: config.learningEpisodeStorePath,
           learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
-          skillUsageLedgerPath: config.skillUsageLedgerPath,
+          skillUsageCurator: curator ?? undefined,
         });
         distillationPipeline = pipeline;
         distillationHeartbeatScheduler = new DistillationHeartbeatScheduler(
@@ -130,13 +114,13 @@ export async function startRuntimeCommandSupport(
           unit => skillEvolution ? pipeline.processUnitAsync(unit) : pipeline.processUnit(unit),
           async () => {
             await pipeline.reviewSkillEvolutionQueueEntries();
+            await curator?.runDue();
           },
           skillEvolution
             ? async () => {
               await pipeline.processSettledLearningEpisodes();
             }
             : null,
-          runCuratorReview,
         );
       }
 

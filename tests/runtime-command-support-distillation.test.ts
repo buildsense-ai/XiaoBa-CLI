@@ -16,7 +16,7 @@ import { getDistillationHeartbeatConfig } from '../src/utils/distillation-heartb
 import { SessionTurnLogEntry } from '../src/utils/session-log-schema';
 import { SkillParser } from '../src/skills/skill-parser';
 import { loadCurrentSkillRegistry, loadTransitionAudit } from '../src/utils/skill-evolution';
-import { loadSkillUsageLedger, SkillUsageLedger } from '../src/utils/skill-usage-ledger';
+import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
 
 // ---------------------------------------------------------------------------
 // Runtime startup wiring of the full DistillationPipeline (issue #13).
@@ -190,7 +190,7 @@ function setupEnv(enableHeartbeat: boolean = true, role?: string): TestEnv {
         authorFixture: ({ bundle }) => {
           branchFixtureCalls.author++;
           const current = bundle.relatedCurrentSkills[0];
-          if (bundle.bundleId.startsWith('v3:skill-usage:') && current) {
+          if (bundle.bundleId.startsWith('usage-curation:') && current) {
             return {
               body: 'Preserve the bounded generated guidance while reassessing its observed usage evidence.',
               envelope: {
@@ -483,15 +483,22 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
 
     const config = getDistillationHeartbeatConfig(env.root);
     const generatedFile = collectSkillFiles(env.generatedDistilledRoot)[0]!;
-    const usageLedger = new SkillUsageLedger(config.skillUsageLedgerPath, env.generatedDistilledRoot);
+    const generatedRecord = Object.values(
+      loadCurrentSkillRegistry(config.skillEvolutionRegistryPath).capabilities,
+    ).find(record => record.skillFilePath === generatedFile)!;
+    const generatedIdentity = {
+      capabilityHandle: generatedRecord.handle,
+      routingName: generatedRecord.routingName,
+      skillFilePath: generatedRecord.skillFilePath,
+      guidanceHash: generatedRecord.guidanceHash,
+    };
+    const usageLedger = new SkillUsageLedger(config.skillUsageLedgerPath);
     const successEpisodeId = 'episode:generated-success';
     const contradictionEpisodeId = 'episode:generated-contradiction';
     const successLoad = usageLedger.recordGeneratedSkillLoad({
-      skillName: 'streaming-jsonl-parser',
-      skillFilePath: generatedFile,
-      capabilityHandle: path.basename(path.dirname(generatedFile)),
       runtimeSessionId: 'cli',
       episodeId: successEpisodeId,
+      skill: generatedIdentity,
     });
 
     fs.appendFileSync(env.logFile, [
@@ -502,9 +509,12 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
     ].map(entry => JSON.stringify(entry)).join('\n') + '\n', 'utf8');
     await support.distillationHeartbeatScheduler!.runHeartbeat('manual');
 
-    let ledger = loadSkillUsageLedger(config.skillUsageLedgerPath);
-    const successOutcome = ledger.outcomes.find(outcome => outcome.loadFactId === successLoad.factId);
-    assert.equal(successOutcome?.outcome, 'verified_success');
+    let facts = usageLedger.listFacts();
+    const successOutcome = facts.find(fact =>
+      fact.kind === 'episode-outcome' && fact.loadFactId === successLoad.factId,
+    );
+    assert.equal(successOutcome?.kind, 'episode-outcome');
+    assert.equal(successOutcome?.outcome, 'verified-success');
     assert.ok(successOutcome?.evidenceRefs.some(ref => ref.includes('#turn-3:delivery:write_file')));
     const episodeState = JSON.parse(fs.readFileSync(config.learningEpisodeStorePath, 'utf8')) as {
       episodes: Record<string, { agentTurnEpisodeId?: string; status: string }>;
@@ -516,11 +526,9 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
     const authorBeforeContradiction = env.branchFixtureCalls.author;
     const verifierBeforeContradiction = env.branchFixtureCalls.verifier;
     const contradictionLoad = usageLedger.recordGeneratedSkillLoad({
-      skillName: 'streaming-jsonl-parser',
-      skillFilePath: generatedFile,
-      capabilityHandle: path.basename(path.dirname(generatedFile)),
       runtimeSessionId: 'cli',
       episodeId: contradictionEpisodeId,
+      skill: generatedIdentity,
     });
     fs.appendFileSync(env.logFile, [
       makeTurn(5, 'cli', 'Deliver the parser artifact again.', 'Delivered the parser.', [
@@ -530,35 +538,43 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
     ].map(entry => JSON.stringify(entry)).join('\n') + '\n', 'utf8');
     await support.distillationHeartbeatScheduler!.runHeartbeat('manual');
 
-    ledger = loadSkillUsageLedger(config.skillUsageLedgerPath);
-    const contradictionOutcome = ledger.outcomes.find(outcome => outcome.loadFactId === contradictionLoad.factId);
-    assert.equal(contradictionOutcome?.outcome, 'contradiction');
+    facts = usageLedger.listFacts();
+    const contradictionOutcome = facts.find(fact =>
+      fact.kind === 'episode-outcome' && fact.loadFactId === contradictionLoad.factId,
+    );
+    assert.equal(contradictionOutcome?.kind, 'episode-outcome');
+    assert.equal(contradictionOutcome?.outcome, 'contradicted');
     assert.ok(contradictionOutcome?.evidenceRefs.some(ref => ref.includes('#turn-6:contradiction')));
     assert.ok(env.branchFixtureCalls.author > authorBeforeContradiction, 'the expedited Curator invokes the Author seam');
     assert.ok(env.branchFixtureCalls.verifier > verifierBeforeContradiction, 'the expedited Curator invokes the Verifier seam');
     assert.equal(fs.existsSync(generatedFile), true, 'Curator never directly deletes the Current Skill');
     const usageAuditCount = loadTransitionAudit(config.skillEvolutionAuditPath)
-      .filter(entry => entry.bundleId.startsWith('v3:skill-usage:')).length;
-    const curatorStateBeforeManual = fs.readFileSync(config.skillUsageCuratorStatePath, 'utf8');
+      .filter(entry => entry.bundleId.startsWith('usage-curation:')).length;
+    const curatorStateBeforeManual = fs.readFileSync(config.skillEvolutionCuratorStatePath, 'utf8');
 
     const manualFile = path.join(env.skillsRoot, 'manual', 'SKILL.md');
     fs.mkdirSync(path.dirname(manualFile), { recursive: true });
     fs.writeFileSync(manualFile, '---\nname: manual\ndescription: Manual\n---\n\nManual guidance.\n', 'utf8');
     assert.throws(() => usageLedger.recordGeneratedSkillLoad({
-      skillName: 'manual',
-      skillFilePath: manualFile,
+      runtimeSessionId: 'cli',
       episodeId: 'episode:manual',
-    }), /Only generated Current Skills/);
+      skill: {
+        capabilityHandle: 'manual',
+        routingName: 'manual',
+        skillFilePath: manualFile,
+        guidanceHash: 'manual-hash',
+      },
+    }), /generated Current Skills only/);
     await support.distillationHeartbeatScheduler!.runHeartbeat('manual');
-    ledger = loadSkillUsageLedger(config.skillUsageLedgerPath);
-    assert.equal(ledger.loads.length, 2, 'manual skill loads never enter the ledger');
-    assert.equal(ledger.outcomes.length, 2, 'manual skill loads never receive outcomes');
+    facts = usageLedger.listFacts();
+    assert.equal(facts.filter(fact => fact.kind === 'generated-skill-load').length, 2, 'manual skill loads never enter the ledger');
+    assert.equal(facts.filter(fact => fact.kind === 'episode-outcome').length, 2, 'manual skill loads never receive outcomes');
     assert.equal(
-      loadTransitionAudit(config.skillEvolutionAuditPath).filter(entry => entry.bundleId.startsWith('v3:skill-usage:')).length,
+      loadTransitionAudit(config.skillEvolutionAuditPath).filter(entry => entry.bundleId.startsWith('usage-curation:')).length,
       usageAuditCount,
       'manual skill usage never reaches Curator review',
     );
-    assert.equal(fs.readFileSync(config.skillUsageCuratorStatePath, 'utf8'), curatorStateBeforeManual);
+    assert.equal(fs.readFileSync(config.skillEvolutionCuratorStatePath, 'utf8'), curatorStateBeforeManual);
   });
 });
 

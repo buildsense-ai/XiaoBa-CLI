@@ -416,6 +416,12 @@ export class SkillEvolutionRuntime {
     return result;
   }
 
+  /** Usage reassessment reuses Author/Verifier without candidate retry state. */
+  async reviewUsageAndApply(bundle: EvidenceBundle): Promise<SkillEvolutionResult> {
+    const { result } = await this.reviewAndApplyWithRetries(bundle, undefined, false);
+    return result;
+  }
+
   getQueuedReviewKind(bundleId: string): 'deferred' | 'operational' | undefined {
     const queuePath = this.options.reviewQueuePath;
     if (!queuePath) return undefined;

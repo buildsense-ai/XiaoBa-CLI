@@ -50,12 +50,12 @@ export interface DistillationHeartbeatConfig {
   learningEpisodeStorePath: string;
   /** V3 Settlement Window policy in hours. */
   skillEvolutionSettlementWindowHours: number;
-  /** V3 Curator low-frequency batch interval in hours. */
+  /** V3 curator wake policy in hours (reserved for the existing runtime seam). */
   skillEvolutionCuratorIntervalHours: number;
-  /** Append-only generated Current Skill usage ledger. */
+  /** Append-only factual generated-skill load and outcome ledger. */
   skillUsageLedgerPath: string;
-  /** Durable Curator operational state. */
-  skillUsageCuratorStatePath: string;
+  /** Durable low-frequency Curator scheduling and coalescing state. */
+  skillEvolutionCuratorStatePath: string;
   /** Bounded Branch Promotion Reviewer worker count. */
   skillEvolutionReviewerConcurrency: number;
   /** Durable review queue state for V3 semantic defers and operational retries. */
@@ -202,8 +202,8 @@ export function getDistillationHeartbeatConfig(
     readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_WORK_LOG_ROOT'),
     'logs/branches/distillation',
   );
-  // PRD #35: V3 is the default runtime path. Keep the environment override so
-  // operators and migration tests can explicitly preserve the V1 pipeline.
+  // V3 is the production path. Operators and compatibility tests can still
+  // opt back into V1 explicitly.
   const skillEvolutionEnabled = readBoolean(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_V3_ENABLED', true);
   const skillEvolutionRegistryPath = resolveContainedPath(
     workingDirectory,
@@ -245,13 +245,13 @@ export function getDistillationHeartbeatConfig(
     workingDirectory,
     'data',
     readEnv(runtimeEnv, 'XIAOBA_SKILL_USAGE_LEDGER_FILE'),
-    'data/skill-usage-ledger.json',
+    'data/skill-usage-ledger.jsonl',
   );
-  const skillUsageCuratorStatePath = resolveContainedPath(
+  const skillEvolutionCuratorStatePath = resolveContainedPath(
     workingDirectory,
     'data',
-    readEnv(runtimeEnv, 'XIAOBA_SKILL_USAGE_CURATOR_STATE_FILE'),
-    'data/skill-usage-curator.json',
+    readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_CURATOR_STATE_FILE'),
+    'data/skill-evolution-curator-state.json',
   );
   const skillEvolutionReviewQueuePath = readEnv(
     runtimeEnv,
@@ -296,7 +296,7 @@ export function getDistillationHeartbeatConfig(
     skillEvolutionSettlementWindowHours,
     skillEvolutionCuratorIntervalHours,
     skillUsageLedgerPath,
-    skillUsageCuratorStatePath,
+    skillEvolutionCuratorStatePath,
     skillEvolutionReviewerConcurrency,
     skillEvolutionReviewQueuePath: resolveContainedPath(
       workingDirectory,

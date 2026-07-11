@@ -204,7 +204,7 @@ export interface ToolExecutionContext {
   workspaceRoot?: string;
   conversationHistory: any[];
   sessionId?: string;
-  /** Stable correlation for the externally visible turn/Learning Episode. */
+  /** Stable correlation for the externally visible turn / Learning Episode. */
   episodeId?: string;
   surface?: ToolSurface;
   permissionProfile?: ToolPermissionProfile;

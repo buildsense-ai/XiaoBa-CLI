@@ -277,6 +277,7 @@ export class AgentTurnController {
         enableCompression: false,
         toolExecutionContext: {
           sessionId: this.options.sessionKey,
+          episodeId: options.episodeId,
           surface,
           permissionProfile: options.confirmToolExecution ? 'strict' : undefined,
           workspaceRoot: this.options.workspaceRoot,

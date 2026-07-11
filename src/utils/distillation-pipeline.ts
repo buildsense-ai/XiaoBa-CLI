@@ -71,7 +71,7 @@ import {
   SkillEvolutionResult,
   SkillEvolutionRuntime,
 } from './skill-evolution';
-import { SkillUsageLedger } from './skill-usage-ledger';
+import { SkillUsageCurator } from './skill-usage-curator';
 
 /**
  * Distillation Pipeline (issue #6).
@@ -271,8 +271,8 @@ export interface DistillationPipelineOptions {
   ) => EvidenceBundle;
   /** Effective V3 Settlement Window injected by runtime configuration. */
   learningEpisodeSettlementWindowMs?: number;
-  /** Optional append-only V3 Skill Usage Ledger path. */
-  skillUsageLedgerPath?: string;
+  /** Optional V3 generated-skill usage outcome recorder. */
+  skillUsageCurator?: SkillUsageCurator;
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +300,7 @@ export class DistillationPipeline {
   private readonly v3EvidenceBundleBuilder: DistillationPipelineOptions['v3EvidenceBundleBuilder'];
   private readonly learningEpisodeStore: LearningEpisodeStore | null;
   private readonly learningEpisodeSettlementWindowMs: number | undefined;
-  private readonly skillUsageLedger: SkillUsageLedger | null;
+  private readonly skillUsageCurator: SkillUsageCurator | null;
 
   constructor(options: DistillationPipelineOptions) {
     this.distiller = options.distiller ?? DEFAULT_DISTILLER;
@@ -317,9 +317,7 @@ export class DistillationPipeline {
       ? new LearningEpisodeStore(options.learningEpisodeStorePath)
       : null;
     this.learningEpisodeSettlementWindowMs = options.learningEpisodeSettlementWindowMs;
-    this.skillUsageLedger = options.skillUsageLedgerPath
-      ? new SkillUsageLedger(options.skillUsageLedgerPath, options.outputDir)
-      : null;
+    this.skillUsageCurator = options.skillUsageCurator ?? null;
     this.outcomes = loadReviewOutcomes(this.reviewOutcomesPath);
   }
 
@@ -333,10 +331,9 @@ export class DistillationPipeline {
     if (this.learningEpisodeStore) {
       const extraction = extractLearningEpisodes(unit, this.learningEpisodeSettlementWindowMs);
       const extractedState = this.learningEpisodeStore.applyExtraction(extraction);
-      // Record a fact for a matching generated load only. The canonical
-      // AgentTurnController episode id is deliberately required; legacy logs
-      // cannot be causally or deterministically joined by proximity.
-      this.recordSkillUsageOutcomes(Object.values(extractedState.episodes), new Date());
+      for (const episode of Object.values(extractedState.episodes)) {
+        this.skillUsageCurator?.observeEpisode(episode);
+      }
       return this.processSettledLearningEpisodes(new Date(), unit);
     }
 
@@ -377,7 +374,9 @@ export class DistillationPipeline {
     }
 
     const settledState = this.learningEpisodeStore.settle({ now });
-    this.recordSkillUsageOutcomes(Object.values(settledState.episodes), now);
+    for (const episode of Object.values(settledState.episodes)) {
+      this.skillUsageCurator?.observeEpisode(episode);
+    }
     const episodes = Object.values(settledState.episodes);
     const reviewInputs: Array<{ candidate: DistilledKnowledgeCandidate; bundle: EvidenceBundle }> = [];
     for (const episode of episodes) {
@@ -404,35 +403,6 @@ export class DistillationPipeline {
     const bundleId = learningEpisodeBundleId(episode);
     return this.skillEvolution!.getAudit().some(entry => entry.bundleId === bundleId)
       || this.skillEvolution!.getQueuedReviewKind(bundleId) !== undefined;
-  }
-
-  private recordSkillUsageOutcomes(episodes: readonly LearningEpisode[], observedAt: Date): void {
-    if (!this.skillUsageLedger) return;
-    const ledger = this.skillUsageLedger.load();
-    for (const episode of episodes) {
-      const episodeId = episode.agentTurnEpisodeId;
-      if (!episodeId) continue;
-      const outcome = episode.contradictionSignals.length > 0
-        ? 'contradiction' as const
-        : episode.status === 'promoted'
-          ? 'verified_success' as const
-          : undefined;
-      if (!outcome) continue;
-
-      const evidenceRefs = uniqueStrings([
-        ...episode.completionEvidence.map(evidence => evidence.ref),
-        ...episode.contradictionSignals.flatMap(signal => [signal.signalId, signal.source.ref]),
-      ]);
-      for (const load of ledger.loads.filter(item => item.episodeId === episodeId)) {
-        this.skillUsageLedger.recordSameEpisodeOutcome({
-          loadFactId: load.factId,
-          episodeId,
-          outcome,
-          evidenceRefs,
-          observedAt,
-        });
-      }
-    }
   }
 
   /**
@@ -1120,10 +1090,6 @@ function emptyUnitForEpisode(episode: LearningEpisode): DistillationUnit {
     byteRange: { start: 0, end: 0 },
     generatedAt: episode.settlementDeadline,
   };
-}
-
-function uniqueStrings(values: readonly string[]): string[] {
-  return [...new Set(values.map(value => value.trim()).filter(Boolean))];
 }
 
 async function mapWithConcurrency<T, R>(

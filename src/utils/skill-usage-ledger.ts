@@ -1,307 +1,195 @@
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import { randomUUID } from 'crypto';
-import { PathResolver } from './path-resolver';
+import type { LearningEpisode } from './learning-episode';
 
-/**
- * The usage ledger is an append-only fact store.  A load says only that the
- * skill tool returned a generated Current Skill; an outcome says only that a
- * later observation was associated with the same Learning Episode.
- */
 export const SKILL_USAGE_LEDGER_SCHEMA_VERSION = 1 as const;
 
-export type SkillUsageOutcomeKind = 'verified_success' | 'deferred' | 'contradiction';
+export type SkillUsageOutcome = 'verified-success' | 'deferred' | 'contradicted';
+
+/** Runtime-owned identity for an active generated Current Skill. */
+export interface GeneratedCurrentSkillIdentity {
+  capabilityHandle: string;
+  routingName: string;
+  skillFilePath: string;
+  guidanceHash: string;
+}
 
 export interface GeneratedSkillLoadFact {
+  schemaVersion: typeof SKILL_USAGE_LEDGER_SCHEMA_VERSION;
+  kind: 'generated-skill-load';
   factId: string;
-  source: 'generated-current';
-  skillName: string;
-  skillFilePath: string;
-  capabilityHandle?: string;
-  runtimeSessionId?: string;
-  /** Optional for direct callers; runtime tool calls should always provide it. */
-  episodeId?: string;
-  loadedAt: string;
+  recordedAt: string;
+  runtimeSessionId: string;
+  episodeId: string;
+  skill: GeneratedCurrentSkillIdentity;
 }
 
 export interface SkillUsageOutcomeFact {
+  schemaVersion: typeof SKILL_USAGE_LEDGER_SCHEMA_VERSION;
+  kind: 'episode-outcome';
   factId: string;
+  recordedAt: string;
   loadFactId: string;
-  source: 'generated-current';
-  skillName: string;
-  capabilityHandle?: string;
   episodeId: string;
-  outcome: SkillUsageOutcomeKind;
-  /** A Learning Episode evidence ref or durable contradiction signal id. */
+  outcome: SkillUsageOutcome;
   evidenceRefs: string[];
-  observedAt: string;
 }
 
-export interface SkillUsageLedgerState {
-  schemaVersion: typeof SKILL_USAGE_LEDGER_SCHEMA_VERSION;
-  loads: GeneratedSkillLoadFact[];
-  outcomes: SkillUsageOutcomeFact[];
-  stateCorrupt?: boolean;
-}
+export type SkillUsageLedgerFact = GeneratedSkillLoadFact | SkillUsageOutcomeFact;
 
 export interface RecordGeneratedSkillLoadInput {
-  skillName: string;
-  skillFilePath: string;
-  capabilityHandle?: string;
-  runtimeSessionId?: string;
-  episodeId?: string;
-  loadedAt?: Date;
+  runtimeSessionId: string;
+  episodeId: string;
+  skill: GeneratedCurrentSkillIdentity;
+  recordedAt?: Date;
 }
 
 export interface RecordSkillUsageOutcomeInput {
-  loadFactId: string;
   episodeId: string;
-  outcome: SkillUsageOutcomeKind;
-  evidenceRefs?: readonly string[];
-  observedAt?: Date;
+  outcome: SkillUsageOutcome;
+  evidenceRefs: readonly string[];
+  recordedAt?: Date;
 }
 
-export interface SkillUsageTurnLogger {
-  recordGeneratedSkillLoad(input: RecordGeneratedSkillLoadInput): GeneratedSkillLoadFact;
-  recordSameEpisodeOutcome(input: RecordSkillUsageOutcomeInput): SkillUsageOutcomeFact;
-}
-
-export function emptySkillUsageLedgerState(): SkillUsageLedgerState {
-  return {
-    schemaVersion: SKILL_USAGE_LEDGER_SCHEMA_VERSION,
-    loads: [],
-    outcomes: [],
-  };
-}
-
-export function defaultSkillUsageLedgerPath(): string {
-  return PathResolver.getDataPath('skill-usage-ledger.json');
-}
-
-export function loadSkillUsageLedger(filePath: string): SkillUsageLedgerState {
-  if (!fs.existsSync(filePath)) return emptySkillUsageLedgerState();
-
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Partial<SkillUsageLedgerState>;
-    if (
-      parsed?.schemaVersion !== SKILL_USAGE_LEDGER_SCHEMA_VERSION
-      || !Array.isArray(parsed.loads)
-      || !Array.isArray(parsed.outcomes)
-    ) {
-      throw new Error('invalid skill usage ledger schema');
-    }
-
-    const loads = parsed.loads.filter(isLoadFact).map(normalizeLoadFact);
-    const loadIds = new Set(loads.map(load => load.factId));
-    const outcomes = parsed.outcomes
-      .filter(isOutcomeFact)
-      .map(normalizeOutcomeFact)
-      .filter(outcome => loadIds.has(outcome.loadFactId));
-
-    return {
-      schemaVersion: SKILL_USAGE_LEDGER_SCHEMA_VERSION,
-      loads,
-      outcomes,
-    };
-  } catch {
-    quarantineCorruptLedger(filePath);
-    return { ...emptySkillUsageLedgerState(), stateCorrupt: true };
-  }
-}
-
-export function saveSkillUsageLedger(filePath: string, state: SkillUsageLedgerState): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  const payload = {
-    schemaVersion: SKILL_USAGE_LEDGER_SCHEMA_VERSION,
-    // Never persist the diagnostic corruption marker as if it were a fact.
-    loads: state.loads,
-    outcomes: state.outcomes,
-  } satisfies Omit<SkillUsageLedgerState, 'stateCorrupt'>;
-
-  try {
-    fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(tempPath, filePath);
-  } catch (error) {
-    try {
-      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-    } catch {
-      // Best-effort cleanup only; preserve the original write error.
-    }
-    throw error;
-  }
-}
-
-export class SkillUsageLedger implements SkillUsageTurnLogger {
-  private readonly generatedSkillsRoot: string;
-
-  constructor(
-    private readonly filePath: string = defaultSkillUsageLedgerPath(),
-    generatedSkillsRoot: string = path.join(PathResolver.getSkillsPath(), 'generated-distilled'),
-  ) {
-    this.generatedSkillsRoot = path.resolve(generatedSkillsRoot);
-  }
-
-  load(): SkillUsageLedgerState {
-    return loadSkillUsageLedger(this.filePath);
-  }
+/**
+ * Append-only facts about generated Current Skill loading and same-episode
+ * outcomes. Facts intentionally do not claim that a loaded skill was followed
+ * or caused the episode outcome.
+ */
+export class SkillUsageLedger {
+  constructor(private readonly filePath: string) {}
 
   recordGeneratedSkillLoad(input: RecordGeneratedSkillLoadInput): GeneratedSkillLoadFact {
-    const skillName = input.skillName.trim();
-    const skillFilePath = path.resolve(input.skillFilePath);
-    if (!skillName) throw new Error('A generated skill load requires a skill name.');
-    if (!isGeneratedCurrentSkillPath(skillFilePath, this.generatedSkillsRoot)) {
-      throw new Error('Only generated Current Skills can be recorded in the Skill Usage Ledger.');
-    }
-
+    assertGeneratedCurrentSkill(input.skill);
+    assertNonEmpty(input.runtimeSessionId, 'runtimeSessionId');
+    assertNonEmpty(input.episodeId, 'episodeId');
     const fact: GeneratedSkillLoadFact = {
-      factId: `skill-load-${randomUUID()}`,
-      source: 'generated-current',
-      skillName,
-      skillFilePath,
-      ...(input.capabilityHandle?.trim() && { capabilityHandle: input.capabilityHandle.trim() }),
-      ...(input.runtimeSessionId?.trim() && { runtimeSessionId: input.runtimeSessionId.trim() }),
-      ...(input.episodeId?.trim() && { episodeId: input.episodeId.trim() }),
-      loadedAt: (input.loadedAt ?? new Date()).toISOString(),
+      schemaVersion: SKILL_USAGE_LEDGER_SCHEMA_VERSION,
+      kind: 'generated-skill-load',
+      factId: `skill-load_${crypto.randomUUID().replace(/-/g, '')}`,
+      recordedAt: (input.recordedAt ?? new Date()).toISOString(),
+      runtimeSessionId: input.runtimeSessionId,
+      episodeId: input.episodeId,
+      skill: { ...input.skill },
     };
-    const state = this.load();
-    if (state.stateCorrupt) {
-      throw new Error('Skill Usage Ledger state was corrupt and has been quarantined.');
-    }
-    state.loads.push(fact);
-    saveSkillUsageLedger(this.filePath, state);
+    this.append(fact);
     return fact;
   }
 
-  recordSameEpisodeOutcome(input: RecordSkillUsageOutcomeInput): SkillUsageOutcomeFact {
-    const state = this.load();
-    if (state.stateCorrupt) {
-      throw new Error('Skill Usage Ledger state was corrupt and has been quarantined.');
-    }
-    const load = state.loads.find(item => item.factId === input.loadFactId);
-    if (!load) throw new Error(`Cannot associate outcome with unknown skill load ${input.loadFactId}.`);
-
-    const episodeId = input.episodeId.trim();
-    if (!episodeId) throw new Error('A skill usage outcome requires a Learning Episode id.');
-    if (!load.episodeId || load.episodeId !== episodeId) {
-      throw new Error('A skill usage outcome must belong to the same Learning Episode as the skill load.');
-    }
-
-    const evidenceRefs = uniqueStrings(input.evidenceRefs ?? []);
-    // A durable signal id makes repeated log extraction idempotent without
-    // changing the append-only fact semantics.
-    const existing = state.outcomes.find(outcome =>
-      outcome.loadFactId === load.factId
-      && outcome.episodeId === episodeId
-      && outcome.outcome === input.outcome
-      && (
-        (evidenceRefs.length === 0 && outcome.evidenceRefs.length === 0)
-        || (evidenceRefs.length > 0 && evidenceRefs.every(ref => outcome.evidenceRefs.includes(ref)))
-      ),
+  recordOutcome(input: RecordSkillUsageOutcomeInput): SkillUsageOutcomeFact[] {
+    assertNonEmpty(input.episodeId, 'episodeId');
+    const evidenceRefs = uniqueNonEmpty(input.evidenceRefs);
+    if (evidenceRefs.length === 0) throw new Error('Skill Usage Ledger outcome requires evidence refs.');
+    const facts = this.listFacts();
+    const loads = facts.filter((fact): fact is GeneratedSkillLoadFact =>
+      fact.kind === 'generated-skill-load' && fact.episodeId === input.episodeId,
     );
-    if (existing) return existing;
-
-    const fact: SkillUsageOutcomeFact = {
-      factId: `skill-outcome-${randomUUID()}`,
-      loadFactId: load.factId,
-      source: 'generated-current',
-      skillName: load.skillName,
-      ...(load.capabilityHandle && { capabilityHandle: load.capabilityHandle }),
-      episodeId,
-      outcome: input.outcome,
-      evidenceRefs,
-      observedAt: (input.observedAt ?? new Date()).toISOString(),
-    };
-    state.outcomes.push(fact);
-    saveSkillUsageLedger(this.filePath, state);
-    return fact;
+    const existing = new Set(facts
+      .filter((fact): fact is SkillUsageOutcomeFact => fact.kind === 'episode-outcome')
+      .map(fact => `${fact.loadFactId}:${fact.outcome}`));
+    const recordedAt = (input.recordedAt ?? new Date()).toISOString();
+    const outcomes: SkillUsageOutcomeFact[] = [];
+    for (const load of loads) {
+      if (existing.has(`${load.factId}:${input.outcome}`)) continue;
+      const fact: SkillUsageOutcomeFact = {
+        schemaVersion: SKILL_USAGE_LEDGER_SCHEMA_VERSION,
+        kind: 'episode-outcome',
+        factId: `skill-outcome_${crypto.randomUUID().replace(/-/g, '')}`,
+        recordedAt,
+        loadFactId: load.factId,
+        episodeId: input.episodeId,
+        outcome: input.outcome,
+        evidenceRefs,
+      };
+      this.append(fact);
+      outcomes.push(fact);
+    }
+    return outcomes;
   }
 
-  getFilePath(): string {
-    return this.filePath;
+  /** Persist only observable settlement facts for loads already tied to this episode. */
+  recordEpisodeOutcome(episode: LearningEpisode, recordedAt?: Date): SkillUsageOutcomeFact[] {
+    const episodeId = episode.agentTurnEpisodeId;
+    // Legacy logs have no canonical AgentTurn correlation. Never join them by
+    // timestamp, session proximity, or the distillation-owned episode id.
+    if (!episodeId) return [];
+    if (episode.status === 'promoted') {
+      return this.recordOutcome({
+        episodeId,
+        outcome: 'verified-success',
+        evidenceRefs: episode.completionEvidence.map(item => item.ref),
+        recordedAt,
+      });
+    }
+    if (episode.contradictionSignals.length > 0 || episode.status === 'contradicted') {
+      return this.recordOutcome({
+        episodeId,
+        outcome: 'contradicted',
+        evidenceRefs: episode.contradictionSignals.map(item => item.source.ref),
+        recordedAt,
+      });
+    }
+    return [];
+  }
+
+  listFacts(): SkillUsageLedgerFact[] {
+    if (!fs.existsSync(this.filePath)) return [];
+    try {
+      return fs.readFileSync(this.filePath, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .flatMap(line => {
+          try {
+            const fact = JSON.parse(line) as unknown;
+            return isLedgerFact(fact) ? [fact] : [];
+          } catch {
+            return [];
+          }
+        });
+    } catch {
+      return [];
+    }
+  }
+
+  private append(fact: SkillUsageLedgerFact): void {
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    fs.appendFileSync(this.filePath, `${JSON.stringify(fact)}\n`, { encoding: 'utf8', mode: 0o600 });
   }
 }
 
-export function isGeneratedCurrentSkillPath(
-  skillFilePath: string,
-  generatedSkillsRoot: string = path.join(PathResolver.getSkillsPath(), 'generated-distilled'),
-): boolean {
-  const filePath = path.resolve(skillFilePath);
-  const root = path.resolve(generatedSkillsRoot);
-  const relative = path.relative(root, filePath);
-  return path.basename(filePath) === 'SKILL.md'
-    && relative !== ''
-    && relative !== '..'
-    && !relative.startsWith(`..${path.sep}`)
-    && !path.isAbsolute(relative);
-}
-
-export function capabilityHandleFromGeneratedSkillPath(
-  skillFilePath: string,
-  generatedSkillsRoot: string = path.join(PathResolver.getSkillsPath(), 'generated-distilled'),
-): string | undefined {
-  if (!isGeneratedCurrentSkillPath(skillFilePath, generatedSkillsRoot)) return undefined;
-  const relative = path.relative(path.resolve(generatedSkillsRoot), path.resolve(skillFilePath));
-  const firstSegment = relative.split(path.sep)[0];
-  return firstSegment && firstSegment !== 'SKILL.md' ? firstSegment : undefined;
-}
-
-function isLoadFact(value: unknown): value is GeneratedSkillLoadFact {
-  const item = value as Partial<GeneratedSkillLoadFact> | null;
-  return !!item
-    && item.source === 'generated-current'
-    && typeof item.factId === 'string'
-    && typeof item.skillName === 'string'
-    && typeof item.skillFilePath === 'string'
-    && typeof item.loadedAt === 'string';
-}
-
-function isOutcomeFact(value: unknown): value is SkillUsageOutcomeFact {
-  const item = value as Partial<SkillUsageOutcomeFact> | null;
-  return !!item
-    && item.source === 'generated-current'
-    && typeof item.factId === 'string'
-    && typeof item.loadFactId === 'string'
-    && typeof item.skillName === 'string'
-    && typeof item.episodeId === 'string'
-    && isOutcomeKind(item.outcome)
-    && Array.isArray(item.evidenceRefs)
-    && typeof item.observedAt === 'string';
-}
-
-function normalizeLoadFact(fact: GeneratedSkillLoadFact): GeneratedSkillLoadFact {
-  return {
-    ...fact,
-    skillName: fact.skillName.trim(),
-    skillFilePath: path.resolve(fact.skillFilePath),
-    ...(fact.capabilityHandle?.trim() && { capabilityHandle: fact.capabilityHandle.trim() }),
-    ...(fact.runtimeSessionId?.trim() && { runtimeSessionId: fact.runtimeSessionId.trim() }),
-    ...(fact.episodeId?.trim() && { episodeId: fact.episodeId.trim() }),
-  };
-}
-
-function normalizeOutcomeFact(fact: SkillUsageOutcomeFact): SkillUsageOutcomeFact {
-  return {
-    ...fact,
-    skillName: fact.skillName.trim(),
-    episodeId: fact.episodeId.trim(),
-    evidenceRefs: uniqueStrings(fact.evidenceRefs),
-  };
-}
-
-function isOutcomeKind(value: unknown): value is SkillUsageOutcomeKind {
-  return value === 'verified_success' || value === 'deferred' || value === 'contradiction';
-}
-
-function uniqueStrings(values: readonly string[]): string[] {
-  return [...new Set(values.filter(value => typeof value === 'string' && value.trim()).map(value => value.trim()))];
-}
-
-function quarantineCorruptLedger(filePath: string): void {
-  try {
-    if (!fs.existsSync(filePath)) return;
-    fs.renameSync(filePath, `${filePath}.corrupt.${Date.now()}`);
-  } catch {
-    // The empty isolated state is still safer than trusting partial JSON.
+function assertGeneratedCurrentSkill(skill: GeneratedCurrentSkillIdentity): void {
+  assertNonEmpty(skill.capabilityHandle, 'capabilityHandle');
+  assertNonEmpty(skill.routingName, 'routingName');
+  assertNonEmpty(skill.guidanceHash, 'guidanceHash');
+  assertNonEmpty(skill.skillFilePath, 'skillFilePath');
+  if (!skill.skillFilePath.split(/[\\/]+/).includes('generated-distilled')) {
+    throw new Error('Skill Usage Ledger accepts generated Current Skills only.');
   }
+}
+
+function assertNonEmpty(value: string, name: string): void {
+  if (!value?.trim()) throw new Error(`${name} must be a non-empty string.`);
+}
+
+function uniqueNonEmpty(values: readonly string[]): string[] {
+  return [...new Set(values.filter(value => typeof value === 'string' && value.trim()))];
+}
+
+function isLedgerFact(value: unknown): value is SkillUsageLedgerFact {
+  if (!value || typeof value !== 'object') return false;
+  const fact = value as Partial<SkillUsageLedgerFact>;
+  if (fact.schemaVersion !== SKILL_USAGE_LEDGER_SCHEMA_VERSION || typeof fact.factId !== 'string') return false;
+  if (fact.kind === 'generated-skill-load') {
+    return typeof fact.episodeId === 'string'
+      && typeof fact.runtimeSessionId === 'string'
+      && !!fact.skill
+      && typeof fact.skill.capabilityHandle === 'string'
+      && typeof fact.skill.skillFilePath === 'string';
+  }
+  return fact.kind === 'episode-outcome'
+    && typeof fact.loadFactId === 'string'
+    && typeof fact.episodeId === 'string'
+    && (fact.outcome === 'verified-success' || fact.outcome === 'deferred' || fact.outcome === 'contradicted')
+    && Array.isArray(fact.evidenceRefs);
 }

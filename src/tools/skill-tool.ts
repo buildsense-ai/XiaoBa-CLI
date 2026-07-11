@@ -1,40 +1,28 @@
-import * as path from 'path';
+import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { SkillManager } from '../skills/skill-manager';
-import { SkillInvocationContext } from '../types/skill';
+import { Skill, SkillInvocationContext } from '../types/skill';
 import { SkillExecutor } from '../skills/skill-executor';
 import { Logger } from '../utils/logger';
 import { getPetService } from '../pet/pet-service';
 import { PetEventType } from '../pet/pet-types';
+import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
 import {
-  capabilityHandleFromGeneratedSkillPath,
-  defaultSkillUsageLedgerPath,
-  isGeneratedCurrentSkillPath,
+  GeneratedCurrentSkillIdentity,
   SkillUsageLedger,
-  SkillUsageTurnLogger,
 } from '../utils/skill-usage-ledger';
-import { PathResolver } from '../utils/path-resolver';
-
-export interface SkillToolOptions {
-  skillManager?: SkillManager;
-  usageLogger?: SkillUsageTurnLogger;
-  generatedSkillsRoot?: string;
-}
 
 /**
  * Skill 工具 - 调用已注册的 skills
  */
 export class SkillTool implements Tool {
   private skillManager: SkillManager;
-  private usageLogger: SkillUsageTurnLogger;
-  private generatedSkillsRoot: string;
+  private usageLedger: SkillUsageLedger;
 
-  constructor(options: SkillToolOptions = {}) {
-    this.skillManager = options.skillManager ?? new SkillManager();
-    this.generatedSkillsRoot = options.generatedSkillsRoot
-      ?? path.join(PathResolver.getSkillsPath(), 'generated-distilled');
-    this.usageLogger = options.usageLogger
-      ?? new SkillUsageLedger(defaultSkillUsageLedgerPath(), this.generatedSkillsRoot);
+  constructor(usageLedger = new SkillUsageLedger(getDistillationHeartbeatConfig().skillUsageLedgerPath)) {
+    this.skillManager = new SkillManager();
+    this.usageLedger = usageLedger;
   }
 
   definition: ToolDefinition = {
@@ -120,22 +108,7 @@ export class SkillTool implements Tool {
       // 直接返回渲染后的 SKILL.md 内容，由 tool_result 并入上下文
       const result = SkillExecutor.execute(skill, invocationContext);
 
-      // Only a successful load from the generated Current Skill boundary is a
-      // ledger fact. Manual, bundled, and user skills remain outside curator
-      // ownership even when they are successfully loaded.
-      if (isGeneratedCurrentSkillPath(skill.filePath, this.generatedSkillsRoot)) {
-        try {
-          this.usageLogger.recordGeneratedSkillLoad({
-            skillName,
-            skillFilePath: skill.filePath,
-            capabilityHandle: capabilityHandleFromGeneratedSkillPath(skill.filePath, this.generatedSkillsRoot),
-            runtimeSessionId: context.sessionId,
-            episodeId: context.episodeId ?? episodeIdFromConversation(context.conversationHistory),
-          });
-        } catch (error) {
-          Logger.warning(`Skill usage ledger write failed for ${skillName}: ${String((error as Error)?.message ?? error)}`);
-        }
-      }
+      this.recordGeneratedSkillLoad(skill, context);
 
       this.recordPetEvent('skill_succeeded', skillName, context);
       return { ok: true, content: result };
@@ -148,6 +121,15 @@ export class SkillTool implements Tool {
       Logger.error(`Skill 执行失败: ${error.message}`);
       return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `Skill 执行失败: ${error.message}` };
     }
+  }
+
+  private recordGeneratedSkillLoad(skill: Skill, context: ToolExecutionContext): void {
+    if (!isGeneratedDistilledSkill(skill) || !context.sessionId || !context.episodeId) return;
+    this.usageLedger.recordGeneratedSkillLoad({
+      runtimeSessionId: context.sessionId,
+      episodeId: context.episodeId,
+      skill: generatedSkillIdentity(skill),
+    });
   }
 
   private recordPetEvent(
@@ -170,11 +152,19 @@ export class SkillTool implements Tool {
   }
 }
 
-function episodeIdFromConversation(history: any[] | undefined): string | undefined {
-  const messages = Array.isArray(history) ? history : [];
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const value = messages[index]?.__episodeId;
-    if (typeof value === 'string' && value.trim()) return value.trim();
-  }
-  return undefined;
+function isGeneratedDistilledSkill(skill: Skill): boolean {
+  return skill.filePath.split(/[\\/]+/).includes('generated-distilled');
+}
+
+function generatedSkillIdentity(skill: Skill): GeneratedCurrentSkillIdentity {
+  const segments = skill.filePath.split(/[\\/]+/);
+  const generatedIndex = segments.lastIndexOf('generated-distilled');
+  const capabilityHandle = generatedIndex >= 0 ? segments[generatedIndex + 1] : undefined;
+  if (!capabilityHandle) throw new Error(`Generated skill path has no capability handle: ${skill.filePath}`);
+  return {
+    capabilityHandle,
+    routingName: skill.metadata.name,
+    skillFilePath: skill.filePath,
+    guidanceHash: crypto.createHash('sha256').update(fs.readFileSync(skill.filePath)).digest('hex'),
+  };
 }
