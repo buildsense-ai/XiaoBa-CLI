@@ -124,6 +124,7 @@ describe('DistillationHeartbeatScheduler', () => {
         const config = getDistillationHeartbeatConfig(root);
         assert.equal(config.enabled, true);
         assert.equal(config.intervalHours, 6);
+        assert.equal(config.skillEvolutionEnabled, true);
         assert.equal(
           config.needsReviewQueuePath,
           path.join(root, 'data', 'needs-review-queue-state.json'),
@@ -141,6 +142,32 @@ describe('DistillationHeartbeatScheduler', () => {
       }
     });
 
+    test('resolves effective V3 policy values through the shared runtime config surface', () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-v3-cfg-'));
+      const saved = { ...process.env };
+      try {
+        process.env.XIAOBA_SKILL_EVOLUTION_SETTLEMENT_WINDOW_HOURS = '1.5';
+        process.env.XIAOBA_SKILL_EVOLUTION_CURATOR_INTERVAL_HOURS = '12';
+        process.env.XIAOBA_SKILL_EVOLUTION_REVIEWER_CONCURRENCY = '5';
+        process.env.XIAOBA_SKILL_EVOLUTION_OPERATIONAL_RETRY_MINUTES = '2';
+        process.env.XIAOBA_SKILL_EVOLUTION_OPERATIONAL_RETRY_MAX_HOURS = '4';
+        process.env.XIAOBA_SKILL_EVOLUTION_AUTHOR_MODEL = 'author-fixture-model';
+        process.env.XIAOBA_SKILL_EVOLUTION_VERIFIER_MODEL = 'verifier-fixture-model';
+
+        const config = getDistillationHeartbeatConfig(root, process.env);
+        assert.equal(config.skillEvolutionSettlementWindowHours, 1.5);
+        assert.equal(config.skillEvolutionCuratorIntervalHours, 12);
+        assert.equal(config.skillEvolutionReviewerConcurrency, 5);
+        assert.equal(config.skillEvolutionOperationalRetryMinutes, 2);
+        assert.equal(config.skillEvolutionOperationalRetryMaxHours, 4);
+        assert.equal(config.skillEvolutionAuthorModel, 'author-fixture-model');
+        assert.equal(config.skillEvolutionVerifierModel, 'verifier-fixture-model');
+      } finally {
+        restoreProcessEnv(saved);
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
     test('can be disabled through runtime configuration', () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-cfg-'));
       const saved = { ...process.env };
@@ -152,6 +179,18 @@ describe('DistillationHeartbeatScheduler', () => {
         );
       } finally {
         restoreProcessEnv(saved);
+      }
+    });
+
+    test('can explicitly preserve the V1 path through the V3 override', () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-v3-toggle-'));
+      const saved = { ...process.env };
+      try {
+        process.env.XIAOBA_SKILL_EVOLUTION_V3_ENABLED = 'false';
+        assert.equal(getDistillationHeartbeatConfig(root).skillEvolutionEnabled, false);
+      } finally {
+        restoreProcessEnv(saved);
+        fs.rmSync(root, { recursive: true, force: true });
       }
     });
 
@@ -202,6 +241,111 @@ describe('DistillationHeartbeatScheduler', () => {
   });
 
   describe('scheduler trigger behavior', () => {
+    test('preserves the discovery cadence when settlement deadline is later', () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-discovery-cadence-'));
+      const saved = { ...process.env };
+      const originalSetTimeout = globalThis.setTimeout;
+      const scheduledDelays: number[] = [];
+      try {
+        const storePath = path.join(root, 'data', 'learning-episodes.json');
+        process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
+        process.env.DISTILLATION_HEARTBEAT_INTERVAL_MINUTES = '30';
+        delete process.env.DISTILLATION_HEARTBEAT_INTERVAL_HOURS;
+        process.env.XIAOBA_LEARNING_EPISODE_STORE_FILE = 'data/learning-episodes.json';
+        fs.mkdirSync(path.dirname(storePath), { recursive: true });
+        fs.writeFileSync(storePath, JSON.stringify({
+          schemaVersion: 1,
+          episodes: {
+            'episode-later-deadline': {
+              schemaVersion: 1,
+              episodeId: 'episode-later-deadline',
+              runtimeSessionId: 'later-deadline-runtime',
+              sourceFilePath: path.join(root, 'logs', 'sessions', 'flashcards.jsonl'),
+              deliveryTurn: 1,
+              completionEvidence: [],
+              contradictionSignals: [],
+              settlementDeadline: new Date(Date.now() + 31 * 60 * 1000).toISOString(),
+              status: 'settling',
+            },
+          },
+        }), 'utf8');
+
+        globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number) => {
+          scheduledDelays.push(Number(delay));
+          return originalSetTimeout(() => {}, 0);
+        }) as typeof globalThis.setTimeout;
+
+        const scheduler = new DistillationHeartbeatScheduler(root, () => {}, null, () => {});
+        (scheduler as unknown as { scheduleNextRun: () => void }).scheduleNextRun();
+
+        assert.deepEqual(scheduledDelays, [30 * 60 * 1000]);
+        void scheduler.stop();
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+        restoreProcessEnv(saved);
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    test('wakes at a settlement deadline even when discovery interval is still far away', async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-settlement-deadline-'));
+      const saved = { ...process.env };
+      try {
+        const storePath = path.join(root, 'data', 'learning-episodes.json');
+        const recordPath = path.join(root, 'data', 'heartbeat.json');
+        process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
+        process.env.DISTILLATION_HEARTBEAT_INTERVAL_MINUTES = '30';
+        delete process.env.DISTILLATION_HEARTBEAT_INTERVAL_HOURS;
+        process.env.DISTILLATION_HEARTBEAT_LOG_ROOT = 'logs';
+        process.env.DISTILLATION_HEARTBEAT_RECORD_FILE = recordPath;
+        process.env.XIAOBA_LEARNING_EPISODE_STORE_FILE = 'data/learning-episodes.json';
+        fs.mkdirSync(path.dirname(storePath), { recursive: true });
+        fs.writeFileSync(storePath, JSON.stringify({
+          schemaVersion: 1,
+          episodes: {
+            'episode-deadline': {
+              schemaVersion: 1,
+              episodeId: 'episode-deadline',
+              runtimeSessionId: 'deadline-runtime',
+              sourceFilePath: path.join(root, 'logs', 'sessions', 'flashcards.jsonl'),
+              deliveryTurn: 1,
+              completionEvidence: [],
+              contradictionSignals: [],
+              settlementDeadline: new Date(Date.now() + 80).toISOString(),
+              status: 'settling',
+            },
+          },
+        }), 'utf8');
+
+        let wakeCalls = 0;
+        const deadlineAt = Date.now() + 80;
+        const scheduler = new DistillationHeartbeatScheduler(
+          root,
+          () => {},
+          null,
+          () => {
+            wakeCalls++;
+            if (Date.now() >= deadlineAt) {
+              const state = JSON.parse(fs.readFileSync(storePath, 'utf8')) as any;
+              state.episodes['episode-deadline'].status = 'promoted';
+              fs.writeFileSync(storePath, JSON.stringify(state), 'utf8');
+            }
+          },
+        );
+        await scheduler.start();
+        await new Promise(resolve => setTimeout(resolve, 220));
+        await scheduler.stop();
+
+        const record = loadHeartbeatRecord(recordPath);
+        assert.ok(wakeCalls >= 2, 'startup and deadline cycles should invoke the settlement seam');
+        assert.ok(record.runCount >= 2, 'deadline wake should run independently of discovery cadence');
+        assert.equal(record.lastReason, 'settlement-deadline');
+      } finally {
+        restoreProcessEnv(saved);
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
     test('runHeartbeat fires without a user turn and extracts Distillation Units from new appends', async () => {
       const env = setupEnv();
       try {

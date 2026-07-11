@@ -61,8 +61,8 @@ import {
 import {
   LearningEpisode,
   LearningEpisodeStore,
+  buildLearningEpisodeCandidate,
   extractLearningEpisodes,
-  settleLearningEpisodes,
 } from './learning-episode';
 import {
   BoundedSourceEvidence,
@@ -71,6 +71,7 @@ import {
   SkillEvolutionResult,
   SkillEvolutionRuntime,
 } from './skill-evolution';
+import { SkillUsageLedger } from './skill-usage-ledger';
 
 /**
  * Distillation Pipeline (issue #6).
@@ -270,6 +271,8 @@ export interface DistillationPipelineOptions {
   ) => EvidenceBundle;
   /** Effective V3 Settlement Window injected by runtime configuration. */
   learningEpisodeSettlementWindowMs?: number;
+  /** Optional append-only V3 Skill Usage Ledger path. */
+  skillUsageLedgerPath?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +300,7 @@ export class DistillationPipeline {
   private readonly v3EvidenceBundleBuilder: DistillationPipelineOptions['v3EvidenceBundleBuilder'];
   private readonly learningEpisodeStore: LearningEpisodeStore | null;
   private readonly learningEpisodeSettlementWindowMs: number | undefined;
+  private readonly skillUsageLedger: SkillUsageLedger | null;
 
   constructor(options: DistillationPipelineOptions) {
     this.distiller = options.distiller ?? DEFAULT_DISTILLER;
@@ -313,6 +317,9 @@ export class DistillationPipeline {
       ? new LearningEpisodeStore(options.learningEpisodeStorePath)
       : null;
     this.learningEpisodeSettlementWindowMs = options.learningEpisodeSettlementWindowMs;
+    this.skillUsageLedger = options.skillUsageLedgerPath
+      ? new SkillUsageLedger(options.skillUsageLedgerPath, options.outputDir)
+      : null;
     this.outcomes = loadReviewOutcomes(this.reviewOutcomesPath);
   }
 
@@ -323,23 +330,22 @@ export class DistillationPipeline {
    */
   async processUnitAsync(unit: DistillationUnit): Promise<PipelineUnitResult | V3PipelineUnitResult> {
     if (!this.skillEvolution) return this.processUnit(unit);
-    let episodes: LearningEpisode[] | undefined;
     if (this.learningEpisodeStore) {
       const extraction = extractLearningEpisodes(unit, this.learningEpisodeSettlementWindowMs);
-      this.learningEpisodeStore.applyExtraction(extraction);
-      const settledState = this.learningEpisodeStore.settle();
-      episodes = Object.values(settledState.episodes);
+      const extractedState = this.learningEpisodeStore.applyExtraction(extraction);
+      // Record a fact for a matching generated load only. The canonical
+      // AgentTurnController episode id is deliberately required; legacy logs
+      // cannot be causally or deterministically joined by proximity.
+      this.recordSkillUsageOutcomes(Object.values(extractedState.episodes), new Date());
+      return this.processSettledLearningEpisodes(new Date(), unit);
     }
+
+    // V3 without an Episode store is retained as an injectable compatibility
+    // seam for isolated tests and migration callers. Runtime V3 always passes
+    // the durable store, so candidate admission above is episode-backed.
     const candidates = this.distiller(unit);
     const reviewInputs: Array<{ candidate: DistilledKnowledgeCandidate; bundle: EvidenceBundle }> = [];
     for (const candidate of candidates) {
-      const episode = episodes?.find(candidateEpisode =>
-        candidate.provenance.some(ref =>
-          ref.filePath === candidateEpisode.sourceFilePath
-          && ref.turn === candidateEpisode.deliveryTurn,
-        ),
-      );
-      if (this.learningEpisodeStore && (!episode || episode.status !== 'promoted')) continue;
       const bundle = this.v3EvidenceBundleBuilder?.(unit, candidate)
         ?? buildV3EvidenceBundle(unit, candidate, this.skillEvolution);
       reviewInputs.push({ candidate, bundle });
@@ -354,7 +360,79 @@ export class DistillationPipeline {
       reviewerConcurrency,
       input => this.skillEvolution!.reviewAndApply(input.bundle),
     );
-    return { candidates, evolutions, ...(episodes && { episodes }) };
+    return { candidates, evolutions };
+  }
+
+  /**
+   * Settle durable episodes and admit each newly settled episode into the V3
+   * Author/Verifier seam. This method is also used by the scheduler's deadline
+   * wake, so it must not depend on a newly appended session log.
+   */
+  async processSettledLearningEpisodes(
+    now: Date = new Date(),
+    unit?: DistillationUnit,
+  ): Promise<V3PipelineUnitResult> {
+    if (!this.skillEvolution || !this.learningEpisodeStore) {
+      return { candidates: [], evolutions: [] };
+    }
+
+    const settledState = this.learningEpisodeStore.settle({ now });
+    this.recordSkillUsageOutcomes(Object.values(settledState.episodes), now);
+    const episodes = Object.values(settledState.episodes);
+    const reviewInputs: Array<{ candidate: DistilledKnowledgeCandidate; bundle: EvidenceBundle }> = [];
+    for (const episode of episodes) {
+      if (episode.status !== 'promoted' || this.hasReviewedLearningEpisode(episode)) continue;
+      const candidate = buildLearningEpisodeCandidate(episode, unit);
+      const bundle = this.v3EvidenceBundleBuilder?.(unit ?? emptyUnitForEpisode(episode), candidate)
+        ?? buildLearningEpisodeEvidenceBundle(episode, candidate, this.skillEvolution);
+      reviewInputs.push({ candidate, bundle });
+    }
+
+    const reviewerConcurrency = Math.max(
+      1,
+      Math.floor(this.skillEvolution.getEffectiveConfig().reviewerConcurrency),
+    );
+    const evolutions = await mapWithConcurrency(
+      reviewInputs,
+      reviewerConcurrency,
+      input => this.skillEvolution!.reviewAndApply(input.bundle),
+    );
+    return { candidates: reviewInputs.map(input => input.candidate), evolutions, episodes };
+  }
+
+  private hasReviewedLearningEpisode(episode: LearningEpisode): boolean {
+    const bundleId = learningEpisodeBundleId(episode);
+    return this.skillEvolution!.getAudit().some(entry => entry.bundleId === bundleId)
+      || this.skillEvolution!.getQueuedReviewKind(bundleId) !== undefined;
+  }
+
+  private recordSkillUsageOutcomes(episodes: readonly LearningEpisode[], observedAt: Date): void {
+    if (!this.skillUsageLedger) return;
+    const ledger = this.skillUsageLedger.load();
+    for (const episode of episodes) {
+      const episodeId = episode.agentTurnEpisodeId;
+      if (!episodeId) continue;
+      const outcome = episode.contradictionSignals.length > 0
+        ? 'contradiction' as const
+        : episode.status === 'promoted'
+          ? 'verified_success' as const
+          : undefined;
+      if (!outcome) continue;
+
+      const evidenceRefs = uniqueStrings([
+        ...episode.completionEvidence.map(evidence => evidence.ref),
+        ...episode.contradictionSignals.flatMap(signal => [signal.signalId, signal.source.ref]),
+      ]);
+      for (const load of ledger.loads.filter(item => item.episodeId === episodeId)) {
+        this.skillUsageLedger.recordSameEpisodeOutcome({
+          loadFactId: load.factId,
+          episodeId,
+          outcome,
+          evidenceRefs,
+          observedAt,
+        });
+      }
+    }
   }
 
   /**
@@ -954,6 +1032,41 @@ export function defaultDistilledOutputDir(skillsRoot: string): string {
   return path.join(skillsRoot, GENERATED_DISTILLED_DIR_NAME);
 }
 
+/** Build the fixed V3 bundle for a settled episode without a new log unit. */
+export function buildLearningEpisodeEvidenceBundle(
+  episode: LearningEpisode,
+  candidate: DistilledKnowledgeCandidate,
+  skillEvolution: SkillEvolutionRuntime,
+): EvidenceBundle {
+  const completionEvidence = episode.completionEvidence
+    .filter(evidence => evidence.kind !== 'contradiction')
+    .map(evidence => ({
+      ref: evidence.ref,
+      sourceFilePath: evidence.sourceFilePath,
+      turn: evidence.turn,
+    }));
+  const settlementEvidence = [{
+    ref: `${episode.sourceFilePath}#episode-${episode.episodeId}:settled-${episode.settlementDeadline}`,
+    sourceFilePath: episode.sourceFilePath,
+    turn: episode.deliveryTurn,
+  }];
+  return {
+    bundleId: learningEpisodeBundleId(episode),
+    episode: candidate,
+    completionEvidence,
+    settlementEvidence,
+    boundedContinuity: [],
+    referencedSkills: skillEvolution.getReferencedSkillSnapshots(),
+    relatedCurrentSkills: Object.values(skillEvolution.getRegistry().capabilities).map(record => ({
+      handle: record.handle,
+      revision: record.revision,
+      routingName: record.routingName,
+      description: record.description,
+      guidanceHash: record.guidanceHash,
+    })),
+  };
+}
+
 export function buildV3EvidenceBundle(
   unit: DistillationUnit,
   candidate: DistilledKnowledgeCandidate,
@@ -993,6 +1106,24 @@ export function buildV3EvidenceBundle(
     })),
     sourceEvidence,
   };
+}
+
+function learningEpisodeBundleId(episode: LearningEpisode): string {
+  return `v3:learning-episode:${episode.episodeId}`;
+}
+
+function emptyUnitForEpisode(episode: LearningEpisode): DistillationUnit {
+  return {
+    filePath: episode.sourceFilePath,
+    newTurns: [],
+    continuityTurns: [],
+    byteRange: { start: 0, end: 0 },
+    generatedAt: episode.settlementDeadline,
+  };
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values.map(value => value.trim()).filter(Boolean))];
 }
 
 async function mapWithConcurrency<T, R>(

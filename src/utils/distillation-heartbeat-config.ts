@@ -50,8 +50,12 @@ export interface DistillationHeartbeatConfig {
   learningEpisodeStorePath: string;
   /** V3 Settlement Window policy in hours. */
   skillEvolutionSettlementWindowHours: number;
-  /** V3 curator wake policy in hours (reserved for the existing runtime seam). */
+  /** V3 Curator low-frequency batch interval in hours. */
   skillEvolutionCuratorIntervalHours: number;
+  /** Append-only generated Current Skill usage ledger. */
+  skillUsageLedgerPath: string;
+  /** Durable Curator operational state. */
+  skillUsageCuratorStatePath: string;
   /** Bounded Branch Promotion Reviewer worker count. */
   skillEvolutionReviewerConcurrency: number;
   /** Durable review queue state for V3 semantic defers and operational retries. */
@@ -198,7 +202,9 @@ export function getDistillationHeartbeatConfig(
     readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_WORK_LOG_ROOT'),
     'logs/branches/distillation',
   );
-  const skillEvolutionEnabled = readBoolean(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_V3_ENABLED', false);
+  // PRD #35: V3 is the default runtime path. Keep the environment override so
+  // operators and migration tests can explicitly preserve the V1 pipeline.
+  const skillEvolutionEnabled = readBoolean(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_V3_ENABLED', true);
   const skillEvolutionRegistryPath = resolveContainedPath(
     workingDirectory,
     'data',
@@ -234,6 +240,18 @@ export function getDistillationHeartbeatConfig(
     'XIAOBA_SKILL_EVOLUTION_CURATOR_INTERVAL_HOURS',
     24,
     0,
+  );
+  const skillUsageLedgerPath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'XIAOBA_SKILL_USAGE_LEDGER_FILE'),
+    'data/skill-usage-ledger.json',
+  );
+  const skillUsageCuratorStatePath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'XIAOBA_SKILL_USAGE_CURATOR_STATE_FILE'),
+    'data/skill-usage-curator.json',
   );
   const skillEvolutionReviewQueuePath = readEnv(
     runtimeEnv,
@@ -277,6 +295,8 @@ export function getDistillationHeartbeatConfig(
     learningEpisodeStorePath,
     skillEvolutionSettlementWindowHours,
     skillEvolutionCuratorIntervalHours,
+    skillUsageLedgerPath,
+    skillUsageCuratorStatePath,
     skillEvolutionReviewerConcurrency,
     skillEvolutionReviewQueuePath: resolveContainedPath(
       workingDirectory,

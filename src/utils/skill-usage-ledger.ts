@@ -194,8 +194,10 @@ export class SkillUsageLedger implements SkillUsageTurnLogger {
       outcome.loadFactId === load.factId
       && outcome.episodeId === episodeId
       && outcome.outcome === input.outcome
-      && evidenceRefs.length > 0
-      && evidenceRefs.every(ref => outcome.evidenceRefs.includes(ref)),
+      && (
+        (evidenceRefs.length === 0 && outcome.evidenceRefs.length === 0)
+        || (evidenceRefs.length > 0 && evidenceRefs.every(ref => outcome.evidenceRefs.includes(ref)))
+      ),
     );
     if (existing) return existing;
 

@@ -13,6 +13,7 @@ import {
   SessionTurnLogEntry,
   isSessionTurnEntry,
 } from './session-log-schema';
+import { DistilledKnowledgeCandidate } from './capability-distiller';
 import {
   EvidenceBundle,
   ReferencedSkillSnapshot,
@@ -59,6 +60,8 @@ export interface ContradictionSignal {
 export interface LearningEpisode {
   schemaVersion: typeof LEARNING_EPISODE_SCHEMA_VERSION;
   episodeId: string;
+  /** AgentTurnController's canonical episode correlation; absent in legacy logs. */
+  agentTurnEpisodeId?: string;
   runtimeSessionId: string;
   sourceFilePath: string;
   deliveryTurn: number;
@@ -76,8 +79,70 @@ export interface LearningEpisodeExtractionResult {
   contradictions: ContradictionSignal[];
 }
 
+/**
+ * Build the V3 candidate admitted by a settled Learning Episode.
+ *
+ * This is intentionally independent from the V1 explicit-acceptance
+ * distiller. Completion evidence is the source of the candidate's action
+ * pattern; settlement only establishes that the episode survived its
+ * contradiction window. The Author/Verifier branches remain responsible for
+ * deciding whether that pattern deserves a reusable Current Skill.
+ */
+export function buildLearningEpisodeCandidate(
+  episode: LearningEpisode,
+  sourceUnit?: Pick<DistillationUnit, 'byteRange' | 'generatedAt'>,
+): DistilledKnowledgeCandidate {
+  const completionEvidence = episode.completionEvidence.filter(item => item.kind !== 'contradiction');
+  const toolNames = uniqueStrings(completionEvidence.map(item => item.detail?.split(':', 1)[0] || item.kind));
+  const evidenceSummary = completionEvidence
+    .map(item => item.detail || item.kind)
+    .join('; ')
+    .slice(0, 280);
+  const actionPattern = toolNames.length > 0
+    ? `Use the settled artifact workflow with ${toolNames.join(', ')}: ${evidenceSummary}`
+    : `Reuse the settled artifact workflow: ${evidenceSummary}`;
+  const sourceByteRange = sourceUnit?.byteRange ?? { start: 0, end: 0 };
+  const generatedAt = sourceUnit?.generatedAt ?? episode.settlementDeadline;
+
+  return {
+    schemaVersion: 1,
+    kind: 'capability',
+    capabilityId: `episode-capability-${episode.episodeId.slice('episode-'.length)}`,
+    title: 'Capability: Settled artifact delivery workflow',
+    applicability: 'Applies when a similar task requires an artifact to be delivered and verified.',
+    actionPattern,
+    boundaries: [
+      'Only apply when the new task matches the settled artifact workflow.',
+      'Do not reuse a workflow while the user is correcting or iterating on the delivery.',
+    ],
+    risks: [
+      'This candidate is derived from one settled Learning Episode and may not generalize.',
+      'The Author and Verifier must keep the resulting skill bounded by the supplied evidence.',
+    ],
+    solvedLoop: {
+      problem: 'Complete the artifact delivery recorded by the Learning Episode.',
+      action: actionPattern,
+      verification: `The episode settled at ${episode.settlementDeadline} without contradiction.`,
+      noCorrection: 'No contradiction signal was present when the settlement deadline elapsed.',
+    },
+    provenance: completionEvidence.map((item, index) => ({
+      filePath: item.sourceFilePath,
+      turn: item.turn,
+      role: index === 0 ? 'problem-action' as const : 'verification' as const,
+      unitByteRange: sourceByteRange,
+    })),
+    generatedAt,
+    sourceUnit: {
+      filePath: episode.sourceFilePath,
+      byteRange: sourceByteRange,
+      generatedAt,
+    },
+  };
+}
+
 const DELIVERY_TOOL = /(?:send|deliver|write|create|generate|export|upload|publish|attach|artifact|file)/i;
-const VALIDATION_TOOL = /(?:validat|check|inspect|verify|assert|test|opencli)/i;
+const VALIDATION_TOOL = /(?:validat|check|inspect|verify|assert|test)/i;
+const ARTIFACT_WORKFLOW_TOOL = /(?:select|compose|card|image)/i;
 const SUCCESS_RESULT = /(?:success|succeed|ok|passed|valid|created|delivered|sent|uploaded|generated)/i;
 const FAILURE_RESULT = /(?:fail|error|invalid|unable|cannot|denied|timeout)/i;
 const POSITIVE_ACCEPTANCE = /(?:^|\W)(?:thanks?|works?|worked|great|perfect|excellent|correct|verified|confirmed|done|yes|yep|that(?:'|’)s right|that did it)(?:$|\W)/i;
@@ -125,6 +190,7 @@ export function extractLearningEpisodes(
     const episode: LearningEpisode = {
       schemaVersion: LEARNING_EPISODE_SCHEMA_VERSION,
       episodeId,
+      ...(agentTurnEpisodeIdOf(deliveryTurn) && { agentTurnEpisodeId: agentTurnEpisodeIdOf(deliveryTurn) }),
       runtimeSessionId: runtimeSessionIdOf(deliveryTurn),
       sourceFilePath: deliverySourceFilePath,
       deliveryTurn: deliveryTurn.turn,
@@ -161,6 +227,7 @@ export function extractLearningEpisodes(
       episodes.push({
         schemaVersion: LEARNING_EPISODE_SCHEMA_VERSION,
         episodeId: makeEpisodeId(deliverySourceFilePath, delivery),
+        ...(agentTurnEpisodeIdOf(delivery) && { agentTurnEpisodeId: agentTurnEpisodeIdOf(delivery) }),
         runtimeSessionId: runtimeSessionIdOf(delivery),
         sourceFilePath: deliverySourceFilePath,
         deliveryTurn: delivery.turn,
@@ -177,6 +244,10 @@ export function extractLearningEpisodes(
 
 function detectCompletionEvidence(filePath: string, turn: CompletedTurn): EpisodeEvidenceRef[] {
   const evidence: EpisodeEvidenceRef[] = [];
+  const hasArtifactCompletion = turn.assistant.tool_calls.some(tool =>
+    (DELIVERY_TOOL.test(tool.name) || VALIDATION_TOOL.test(tool.name))
+    && !FAILURE_RESULT.test(tool.result || ''),
+  );
   for (const tool of turn.assistant.tool_calls) {
     const detail = `${tool.name}: ${String(tool.result || '')}`.trim();
     if (VALIDATION_TOOL.test(tool.name) && SUCCESS_RESULT.test(tool.result || '')) {
@@ -193,6 +264,18 @@ function detectCompletionEvidence(filePath: string, turn: CompletedTurn): Episod
         sourceFilePath: filePath,
         turn: turn.turn,
         kind: 'artifact-delivery',
+        detail,
+      });
+    } else if (
+      hasArtifactCompletion
+      && ARTIFACT_WORKFLOW_TOOL.test(tool.name)
+      && !FAILURE_RESULT.test(tool.result || '')
+    ) {
+      evidence.push({
+        ref: evidenceRef(filePath, turn.turn, `workflow:${tool.name}`),
+        sourceFilePath: filePath,
+        turn: turn.turn,
+        kind: 'verified-tool-result',
         detail,
       });
     }
@@ -253,6 +336,14 @@ function runtimeSessionIdOf(turn: CompletedTurn): string {
   return String(candidate.runtime_session_id || candidate.runtime_id || candidate.session_id).trim();
 }
 
+/** Read the durable AgentTurnController correlation without guessing for legacy entries. */
+export function agentTurnEpisodeIdOf(turn: CompletedTurn): string | undefined {
+  const candidate = turn as SessionTurnLogEntry;
+  return typeof candidate.episode_id === 'string' && candidate.episode_id.trim()
+    ? candidate.episode_id.trim()
+    : undefined;
+}
+
 function turnSourceFilePath(turn: CompletedTurn, fallback: string): string {
   const origin = (turn as DistillationTurn).origin?.filePath;
   return typeof origin === 'string' && origin.trim() ? origin : fallback;
@@ -281,6 +372,10 @@ function hash(value: string): string {
 
 function uniqueEvidence(evidence: EpisodeEvidenceRef[]): EpisodeEvidenceRef[] {
   return [...new Map(evidence.map(item => [item.ref, item])).values()];
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values.map(value => value.trim()).filter(Boolean))];
 }
 
 export interface SettleLearningEpisodesOptions {
@@ -386,6 +481,9 @@ function mergeEpisode(existing: LearningEpisode | undefined, incoming: LearningE
   const signals = [...existing.contradictionSignals, ...incoming.contradictionSignals];
   const merged: LearningEpisode = {
     ...existing,
+    ...(existing.agentTurnEpisodeId || !incoming.agentTurnEpisodeId
+      ? {}
+      : { agentTurnEpisodeId: incoming.agentTurnEpisodeId }),
     completionEvidence: uniqueEvidence([...existing.completionEvidence, ...incoming.completionEvidence]),
     contradictionSignals: [...new Map(signals.map(signal => [signal.signalId, signal])).values()],
   };

@@ -1,10 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
+import { createHash } from 'crypto';
+import type { DistilledKnowledgeCandidate } from './capability-distiller';
 import type {
   CapabilityTransitionKind,
   EvidenceBundle,
   SkillEvolutionResult,
+  SkillEvolutionRuntime,
 } from './skill-evolution';
 import { PathResolver } from './path-resolver';
 import {
@@ -92,6 +95,75 @@ export interface CuratorRunResult {
   reviewed: number;
   expeditedReviewed: number;
   transitions: Array<CapabilityTransitionKind | undefined>;
+}
+
+/** Build the fixed Evidence Bundle consumed by the existing Author/Verifier seam. */
+export function buildSkillUsageEvidenceBundle(
+  summary: SkillUsageSummary,
+  ledger: SkillUsageLedgerState,
+  skillEvolution: SkillEvolutionRuntime,
+): EvidenceBundle {
+  const outcomes = ledger.outcomes.filter(outcome => summary.outcomeFactIds.includes(outcome.factId));
+  const completionEvidence = uniqueEvidenceRefs(outcomes.flatMap(outcome => outcome.evidenceRefs));
+  const usableCompletionEvidence = completionEvidence.length > 0
+    ? completionEvidence
+    : [{ ref: `skill-load:${summary.skillKey}` }];
+  const settlementEvidence = outcomes.map(outcome => ({
+    ref: `skill-usage-outcome:${outcome.factId}`,
+  }));
+  const usableSettlementEvidence = settlementEvidence.length > 0
+    ? settlementEvidence
+    : [{ ref: `skill-usage-summary:${summary.skillKey}` }];
+  const candidate: DistilledKnowledgeCandidate = {
+    schemaVersion: 1,
+    kind: 'capability',
+    capabilityId: `usage-curator-${createHash('sha256').update(summary.skillKey).digest('hex').slice(0, 20)}`,
+    title: `Curator reassessment: ${summary.skillName}`,
+    applicability: `Reassess generated Current Skill ${summary.skillName} using observed same-episode usage outcomes.`,
+    actionPattern: `Review the existing generated Current Skill at ${summary.skillFilePath}; preserve the distinction between loading it and proving causality.`,
+    boundaries: [
+      'Usage evidence does not prove that the agent followed or was helped by the skill.',
+      'Manual and bundled skills are outside Curator ownership.',
+    ],
+    risks: [
+      'The usage ledger records association, not causality.',
+      'The Author and Verifier must inspect the complete evidence bundle before any transition.',
+    ],
+    solvedLoop: {
+      problem: `Reassess generated Current Skill ${summary.skillName}.`,
+      action: `Review ${summary.outcomeFactIds.length} durable usage outcome fact(s).`,
+      verification: `Observed ${summary.verifiedSuccessCount} verified success, ${summary.deferredCount} deferred, and ${summary.contradictionCount} contradiction outcome(s).`,
+      noCorrection: 'The Curator is handing evidence to the bounded Author/Verifier workflow; it is not deciding causality.',
+    },
+    provenance: outcomes.map((_, index) => ({
+      filePath: summary.skillFilePath,
+      turn: index,
+      role: 'problem-action' as const,
+      unitByteRange: { start: 0, end: 0 },
+    })),
+    generatedAt: summary.latestLoadedAt,
+    sourceUnit: {
+      filePath: summary.skillFilePath,
+      byteRange: { start: 0, end: 0 },
+      generatedAt: summary.latestLoadedAt,
+    },
+  };
+  const registry = skillEvolution.getRegistry();
+  return {
+    bundleId: `v3:skill-usage:${summary.skillKey}:${summary.outcomeFactIds.join(',')}`,
+    episode: candidate,
+    completionEvidence: usableCompletionEvidence,
+    settlementEvidence: usableSettlementEvidence,
+    boundedContinuity: [],
+    referencedSkills: skillEvolution.getReferencedSkillSnapshots(),
+    relatedCurrentSkills: Object.values(registry.capabilities).map(record => ({
+      handle: record.handle,
+      revision: record.revision,
+      routingName: record.routingName,
+      description: record.description,
+      guidanceHash: record.guidanceHash,
+    })),
+  };
 }
 
 export function emptySkillUsageCuratorState(): SkillUsageCuratorState {
@@ -323,6 +395,10 @@ function keyFor(load: GeneratedSkillLoadFact): string {
 
 function countOutcome(outcomes: readonly SkillUsageOutcomeFact[], kind: SkillUsageOutcomeFact['outcome']): number {
   return outcomes.filter(outcome => outcome.outcome === kind).length;
+}
+
+function uniqueEvidenceRefs(refs: readonly string[]): Array<{ ref: string }> {
+  return [...new Set(refs.map(ref => ref.trim()).filter(Boolean))].map(ref => ({ ref }));
 }
 
 function maxIso(left: string, right: string): string {

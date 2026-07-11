@@ -13,6 +13,7 @@ import {
   saveLogCursorState,
 } from './log-cursor-state';
 import { getDistillationHeartbeatConfig } from './distillation-heartbeat-config';
+import { LearningEpisodeStore } from './learning-episode';
 import { Logger } from './logger';
 
 /**
@@ -33,7 +34,7 @@ import { Logger } from './logger';
  * See ADR 0001 → "Runtime Heartbeat Log Distillation".
  */
 
-export type HeartbeatReason = 'startup' | 'scheduled' | 'manual';
+export type HeartbeatReason = 'startup' | 'scheduled' | 'settlement-deadline' | 'manual';
 
 export interface HeartbeatRunResult {
   /** Number of Distillation Units produced this cycle. */
@@ -70,6 +71,16 @@ export type DistillationUnitProcessor = (unit: DistillationUnit) => unknown | Pr
  */
 export type HeartbeatCycleCompleteHook = () => Promise<void> | void;
 
+/**
+ * Hook for the V3 settlement path. It runs even when the session-log scan
+ * produces no Distillation Unit, which is what makes a settlement deadline a
+ * real wake rather than merely a shorter discovery interval.
+ */
+export type SettlementDeadlineWakeHook = () => Promise<void> | void;
+
+/** Runtime V3 Skill Usage Curator pass. Best-effort like the existing hooks. */
+export type CuratorReviewHook = () => Promise<void> | void;
+
 const DEFAULT_PROCESSOR: DistillationUnitProcessor = () => {
   // Issue #2 scope: the heartbeat owns the runtime path that extracts
   // Distillation Units and records the run. The distillation/review/install
@@ -94,6 +105,8 @@ export class DistillationHeartbeatScheduler {
   private readonly workingDirectory: string;
   private readonly processor: DistillationUnitProcessor;
   private readonly cycleCompleteHook: HeartbeatCycleCompleteHook | null;
+  private readonly settlementDeadlineWakeHook: SettlementDeadlineWakeHook | null;
+  private readonly curatorReviewHook: CuratorReviewHook | null;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private started = false;
@@ -103,10 +116,14 @@ export class DistillationHeartbeatScheduler {
     workingDirectory: string = process.cwd(),
     processor: DistillationUnitProcessor = DEFAULT_PROCESSOR,
     cycleCompleteHook: HeartbeatCycleCompleteHook | null = null,
+    settlementDeadlineWakeHook: SettlementDeadlineWakeHook | null = null,
+    curatorReviewHook: CuratorReviewHook | null = null,
   ) {
     this.workingDirectory = workingDirectory;
     this.processor = processor;
     this.cycleCompleteHook = cycleCompleteHook;
+    this.settlementDeadlineWakeHook = settlementDeadlineWakeHook;
+    this.curatorReviewHook = curatorReviewHook;
   }
 
   /**
@@ -141,8 +158,10 @@ export class DistillationHeartbeatScheduler {
     this.stopped = false;
     Logger.info('[DistillationHeartbeat] scheduler started');
 
-    void this.runHeartbeat('startup');
-    this.scheduleNextRun();
+    void (async () => {
+      await this.runHeartbeat('startup');
+      this.scheduleNextRun();
+    })();
   }
 
   async stop(): Promise<void> {
@@ -178,7 +197,9 @@ export class DistillationHeartbeatScheduler {
       const sessionLogsRoot = resolveSessionLogsRoot(config.logsRoot);
       if (!fs.existsSync(sessionLogsRoot) || !fs.statSync(sessionLogsRoot).isDirectory()) {
         this.recordHeartbeat(config.heartbeatRecordPath, reason, 0, 0);
+        await this.runSettlementDeadlineWakeHook();
         await this.runCycleCompleteHook();
+        await this.runCuratorReviewHook();
         return { unitsProcessed: 0, advancedFiles: 0, ran: true };
       }
 
@@ -209,11 +230,14 @@ export class DistillationHeartbeatScheduler {
         Logger.info(`[DistillationHeartbeat] no new session log appends (${reason})`);
       }
 
+      await this.runSettlementDeadlineWakeHook();
+
       // Issue #29: after the new-candidate pass, re-review eligible Needs Review
       // Queue entries so the heartbeat autonomously consumes retry-eligible
       // reviews (reviewer version, registry-state, explicit-command, or
       // matching-evidence changes). The hook is best-effort.
       await this.runCycleCompleteHook();
+      await this.runCuratorReviewHook();
 
       return { unitsProcessed: units.length, advancedFiles, ran: true };
     } catch (error: any) {
@@ -239,18 +263,50 @@ export class DistillationHeartbeatScheduler {
     }
   }
 
+  private async runSettlementDeadlineWakeHook(): Promise<void> {
+    if (!this.settlementDeadlineWakeHook) return;
+    try {
+      await this.settlementDeadlineWakeHook();
+    } catch (error: any) {
+      Logger.warning(
+        `[DistillationHeartbeat] settlement-deadline wake failed: ${error?.message ?? error}`,
+      );
+    }
+  }
+
+  private async runCuratorReviewHook(): Promise<void> {
+    if (!this.curatorReviewHook) return;
+    try {
+      await this.curatorReviewHook();
+    } catch (error: any) {
+      Logger.warning(
+        `[DistillationHeartbeat] curator review failed: ${error?.message ?? error}`,
+      );
+    }
+  }
+
   private scheduleNextRun(): void {
     if (this.stopped) {
       return;
     }
 
     const config = getDistillationHeartbeatConfig(this.workingDirectory);
-    const delay = Math.min(
+    const intervalDelay = Math.min(
       MAX_TIMEOUT_MS,
       Math.max(MIN_TIMEOUT_MS, config.intervalHours * 60 * 60 * 1000),
     );
+    const settlementDelay = this.settlementDeadlineWakeHook
+      ? nextSettlementDeadlineDelay(config.learningEpisodeStorePath, new Date())
+      : null;
+    const delay = settlementDelay === null
+      ? intervalDelay
+      : Math.min(intervalDelay, settlementDelay);
     this.timer = setTimeout(async () => {
-      await this.runHeartbeat('scheduled');
+      const reason = this.settlementDeadlineWakeHook
+        && nextSettlementDeadlineDelay(config.learningEpisodeStorePath, new Date()) === 0
+        ? 'settlement-deadline'
+        : 'scheduled';
+      await this.runHeartbeat(reason);
       this.scheduleNextRun();
     }, delay);
   }
@@ -290,6 +346,16 @@ export class DistillationHeartbeatScheduler {
       Logger.warning(`[DistillationHeartbeat] failed to record heartbeat: ${error.message}`);
     }
   }
+}
+
+function nextSettlementDeadlineDelay(storePath: string, now: Date): number | null {
+  const store = new LearningEpisodeStore(storePath).load();
+  const deadlines = Object.values(store.episodes)
+    .filter(episode => episode.status === 'settling')
+    .map(episode => Date.parse(episode.settlementDeadline))
+    .filter(deadline => Number.isFinite(deadline));
+  if (deadlines.length === 0) return null;
+  return Math.max(0, Math.min(...deadlines) - now.getTime());
 }
 
 async function processSessionLogAsync(

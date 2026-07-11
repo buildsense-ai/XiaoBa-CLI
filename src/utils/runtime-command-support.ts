@@ -6,7 +6,22 @@ import { getDistillationHeartbeatConfig } from './distillation-heartbeat-config'
 import { PathResolver } from './path-resolver';
 import { AIService } from './ai-service';
 import { Logger } from './logger';
-import { SkillEvolutionRuntime } from './skill-evolution';
+import { SkillEvolutionOptions, SkillEvolutionRuntime } from './skill-evolution';
+import {
+  buildSkillUsageEvidenceBundle,
+  SkillUsageCurator,
+} from './skill-usage-curator';
+import { SkillUsageLedger } from './skill-usage-ledger';
+
+export interface RuntimeCommandSupportOptions {
+  /**
+   * Deterministic Author/Verifier seams for runtime wiring tests. Production
+   * startup leaves these unset and uses the real constrained branches.
+   */
+  skillEvolutionOptions?: Pick<SkillEvolutionOptions, 'authorFixture' | 'verifierFixture'>;
+  /** Injectable runtime clock for curator cadence tests. */
+  clock?: () => Date;
+}
 
 interface ActiveRuntimeSupport {
   catscoLogUploadScheduler: CatscoLogUploadScheduler | null;
@@ -26,6 +41,7 @@ let startPromise: Promise<ActiveRuntimeSupport> | null = null;
 
 export async function startRuntimeCommandSupport(
   workingDirectory: string = process.cwd(),
+  options: RuntimeCommandSupportOptions = {},
 ): Promise<ActiveRuntimeSupport> {
   if (activeSupport) {
     return activeSupport;
@@ -40,15 +56,10 @@ export async function startRuntimeCommandSupport(
       let distillationHeartbeatScheduler: DistillationHeartbeatScheduler | null = null;
       let distillationPipeline: DistillationPipeline | null = null;
 
-      // Wire the full first-version DistillationPipeline (distill -> review ->
-      // install) into the runtime heartbeat. The scheduler is constructed with
-      // `pipeline.processUnit` as its processor instead of the default no-op,
-      // so runtime startup drives the real durable state transitions: review
-      // outcomes are appended to the runtime data state file and promoted
-      // candidates are installed under the current runtime skills root in
-      // `generated-distilled/`. Existing runtime guards (enable/disable config,
-      // inspector-cat guard, six-hour default cadence) remain intact because
-      // the scheduler still owns them.
+      // Wire the V3 DistillationPipeline (episode admission -> Author/Verifier
+      // review -> Capability Transition) into the runtime heartbeat. Production
+      // startup uses the real constrained branches; tests may inject only the
+      // branch completion fixtures through the narrow options seam above.
       if (DistillationHeartbeatScheduler.shouldStartForCurrentRuntime(workingDirectory)) {
         const config = getDistillationHeartbeatConfig(workingDirectory);
         const skillEvolution = config.skillEvolutionEnabled
@@ -66,6 +77,7 @@ export async function startRuntimeCommandSupport(
             operationalRetryMaxMs: config.skillEvolutionOperationalRetryMaxHours * 60 * 60 * 1000,
             authorModel: config.skillEvolutionAuthorModel,
             verifierModel: config.skillEvolutionVerifierModel,
+            ...options.skillEvolutionOptions,
           })
           : undefined;
         if (skillEvolution) {
@@ -79,6 +91,28 @@ export async function startRuntimeCommandSupport(
             Logger.warning(`Legacy distilled skill bootstrap failed: ${message}`);
           }
         }
+        const curator = skillEvolution
+          ? new SkillUsageCurator({
+            ledger: new SkillUsageLedger(config.skillUsageLedgerPath, defaultDistilledOutputDir(PathResolver.getSkillsPath())),
+            statePath: config.skillUsageCuratorStatePath,
+            generatedSkillsRoot: defaultDistilledOutputDir(PathResolver.getSkillsPath()),
+            now: options.clock,
+            evidenceBundleBuilder: (summary, ledger) => buildSkillUsageEvidenceBundle(summary, ledger, skillEvolution),
+            review: request => skillEvolution.reviewAndApply(request.evidenceBundle),
+          })
+          : null;
+        const clock = options.clock ?? (() => new Date());
+        let nextCuratorReviewAt = 0;
+        const runCuratorReview = async () => {
+          if (!curator) return;
+          const now = clock();
+          // A contradiction wake bypasses the low-frequency batch interval.
+          const expedited = curator.getPendingExpeditedWakes().length > 0;
+          if (!expedited && now.getTime() < nextCuratorReviewAt) return;
+          await curator.reviewDue();
+          nextCuratorReviewAt = now.getTime()
+            + config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000;
+        };
         const pipeline = new DistillationPipeline({
           outputDir: defaultDistilledOutputDir(PathResolver.getSkillsPath()),
           reviewOutcomesPath: config.reviewOutcomesPath,
@@ -88,6 +122,7 @@ export async function startRuntimeCommandSupport(
           skillEvolution,
           learningEpisodeStorePath: config.learningEpisodeStorePath,
           learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
+          skillUsageLedgerPath: config.skillUsageLedgerPath,
         });
         distillationPipeline = pipeline;
         distillationHeartbeatScheduler = new DistillationHeartbeatScheduler(
@@ -96,6 +131,12 @@ export async function startRuntimeCommandSupport(
           async () => {
             await pipeline.reviewSkillEvolutionQueueEntries();
           },
+          skillEvolution
+            ? async () => {
+              await pipeline.processSettledLearningEpisodes();
+            }
+            : null,
+          runCuratorReview,
         );
       }
 

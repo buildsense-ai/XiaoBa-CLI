@@ -215,6 +215,7 @@ export class AgentTurnController {
     this.options.turnLogRecorder.recordTurn({
       userInput: params.input,
       result,
+      episodeId,
       tokens: { prompt: metrics.totalPromptTokens, completion: metrics.totalCompletionTokens },
       runtimeFeedback: turnContext.runtimeFeedbackForLog,
       runtimeObservationSource: params.runtimeObservationSource,
