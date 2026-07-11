@@ -110,9 +110,13 @@ export class SkillUsageLedger {
 
   /** Persist only observable settlement facts for loads already tied to this episode. */
   recordEpisodeOutcome(episode: LearningEpisode, recordedAt?: Date): SkillUsageOutcomeFact[] {
+    const episodeId = episode.agentTurnEpisodeId;
+    // Legacy logs have no canonical AgentTurn correlation. Never join them by
+    // timestamp, session proximity, or the distillation-owned episode id.
+    if (!episodeId) return [];
     if (episode.status === 'promoted') {
       return this.recordOutcome({
-        episodeId: episode.episodeId,
+        episodeId,
         outcome: 'verified-success',
         evidenceRefs: episode.completionEvidence.map(item => item.ref),
         recordedAt,
@@ -120,7 +124,7 @@ export class SkillUsageLedger {
     }
     if (episode.contradictionSignals.length > 0 || episode.status === 'contradicted') {
       return this.recordOutcome({
-        episodeId: episode.episodeId,
+        episodeId,
         outcome: 'contradicted',
         evidenceRefs: episode.contradictionSignals.map(item => item.source.ref),
         recordedAt,

@@ -9,13 +9,14 @@ import type { RunResult } from './conversation-runner';
 export interface RecordTurnParams {
   userInput: string | ContentBlock[];
   result: RunResult;
+  /** AgentTurnController's canonical episode correlation. */
+  episodeId?: string;
   tokens: {
     prompt: number;
     completion: number;
   };
   runtimeFeedback?: string[];
   runtimeObservationSource?: string;
-  episodeId?: string;
 }
 
 /**
@@ -39,7 +40,7 @@ export class TurnLogRecorder {
       {
         runtimeFeedback: params.runtimeFeedback,
         runtimeObservationSource: params.runtimeObservationSource,
-        episodeId: params.episodeId,
+        episodeId: params.episodeId ?? episodeIdFromMessages(params.result.newMessages),
         prompt: this.prompt,
       },
     );
@@ -70,4 +71,12 @@ export class TurnLogRecorder {
       .map(block => block.type === 'text' ? block.text : '[非文本内容]')
       .join('');
   }
+}
+
+function episodeIdFromMessages(messages: Message[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const value = messages[index]?.__episodeId;
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
 }

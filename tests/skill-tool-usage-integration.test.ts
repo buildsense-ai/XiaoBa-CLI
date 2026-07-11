@@ -79,7 +79,7 @@ describe('SkillTool usage wiring', () => {
     const outcomes = curator.observeEpisode(episode!);
     assert.equal(outcomes.length, 1);
     assert.equal(outcomes[0]!.loadFactId, loads[0]!.factId);
-    assert.equal(outcomes[0]!.episodeId, episode.episodeId);
+    assert.equal(outcomes[0]!.episodeId, episodeId);
     assert.equal(outcomes[0]!.outcome, 'verified-success');
 
     const ledgerText = fs.readFileSync(path.join(testRoot, 'data', 'skill-usage-ledger.jsonl'), 'utf8');
@@ -137,6 +137,7 @@ describe('SkillTool usage wiring', () => {
     } satisfies DistillationUnit;
 
     const [episode] = extractLearningEpisodes(unit).episodes;
+    assert.equal(episode?.agentTurnEpisodeId, episodeId);
     assert.equal(episode?.episodeId, episodeId);
   });
 });

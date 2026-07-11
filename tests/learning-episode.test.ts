@@ -559,4 +559,70 @@ describe('V3 flashcard Composition Capability regression', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('admits an artifact-backed flashcard episode without V1 acceptance or a legacy distiller', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-flashcard-v3-no-acceptance-'));
+    try {
+      const sourceLog = path.join(root, 'logs', 'sessions', 'flashcards.jsonl');
+      const episodeStorePath = path.join(root, 'data', 'learning-episodes.json');
+      let authorCalls = 0;
+      fs.mkdirSync(path.dirname(sourceLog), { recursive: true });
+
+      const episodeUnit = unit([
+        turn(1, 'Make a flashcard image for ephemeral.', [
+          tool('1a', 'word_card_maker', 'base card created'),
+          tool('1b', 'opencli_select_image', 'selected image'),
+          tool('1c', 'validate_artifact', 'valid dimensions and content'),
+          tool('1d', 'send_file', 'delivered flashcard artifact'),
+        ], 'flashcard-no-acceptance'),
+      ], sourceLog);
+      fs.writeFileSync(sourceLog, JSON.stringify(episodeUnit.newTurns[0]) + '\n', 'utf8');
+
+      const skillEvolution = new SkillEvolutionRuntime({
+        workingDirectory: root,
+        outputDir: path.join(root, 'skills', 'generated-distilled'),
+        registryPath: path.join(root, 'data', 'current-skills.json'),
+        auditPath: path.join(root, 'data', 'transition-audit.jsonl'),
+        journalPath: path.join(root, 'data', 'transition-journal.json'),
+        authorFixture: ({ bundle }) => {
+          authorCalls++;
+          const candidate = bundle.episode as { actionPattern: string };
+          assert.match(candidate.actionPattern, /opencli_select_image/);
+          assert.equal(bundle.completionEvidence.length >= 2, true);
+          return {
+            body: 'Compose word-card-maker with opencli image selection, validation, and delivery.',
+            envelope: {
+              decision: 'create_current_skill',
+              routingName: 'flashcard-image-delivery',
+              description: 'Validated flashcard image delivery composition.',
+              evidenceRefs: [...bundle.completionEvidence, ...bundle.settlementEvidence].map(ref => ref.ref),
+            },
+          };
+        },
+        verifierFixture: () => ({
+          decision: 'accept',
+          transition: 'create_current_skill',
+          issues: [],
+          rationale: 'Settled artifact evidence supports the bounded composition.',
+        }),
+      });
+      const pipeline = new DistillationPipeline({
+        outputDir: path.join(root, 'skills', 'generated-distilled'),
+        reviewOutcomesPath: path.join(root, 'data', 'review-outcomes.json'),
+        learningEpisodeStorePath: episodeStorePath,
+        learningEpisodeSettlementWindowMs: 0,
+        skillEvolution,
+      });
+
+      const result = await pipeline.processUnitAsync(episodeUnit);
+      assert.ok('evolutions' in result);
+      assert.equal(result.candidates.length, 1);
+      assert.equal(result.evolutions.length, 1);
+      assert.equal(result.evolutions[0]!.transition, 'create_current_skill');
+      assert.equal(authorCalls, 1);
+      assert.equal(Object.values(new LearningEpisodeStore(episodeStorePath).load().episodes)[0]!.status, 'promoted');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

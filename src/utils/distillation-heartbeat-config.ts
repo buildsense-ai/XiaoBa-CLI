@@ -202,7 +202,9 @@ export function getDistillationHeartbeatConfig(
     readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_WORK_LOG_ROOT'),
     'logs/branches/distillation',
   );
-  const skillEvolutionEnabled = readBoolean(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_V3_ENABLED', false);
+  // V3 is the production path. Operators and compatibility tests can still
+  // opt back into V1 explicitly.
+  const skillEvolutionEnabled = readBoolean(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_V3_ENABLED', true);
   const skillEvolutionRegistryPath = resolveContainedPath(
     workingDirectory,
     'data',

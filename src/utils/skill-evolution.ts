@@ -10,6 +10,7 @@ import { PathResolver } from './path-resolver';
 import { SkillParser } from '../skills/skill-parser';
 import {
   addOrUpdateOperationalFailure,
+  findDeferByBundleId,
   findOperationalByBundleId,
   popDueOperationalEntries,
   getDueDeferredEntries,
@@ -316,6 +317,8 @@ export interface TransitionAuditEntry {
   schemaVersion: typeof SKILL_EVOLUTION_SCHEMA_VERSION;
   transitionId: string;
   transition: CapabilityTransitionKind;
+  /** Stable input identity, used by bootstrap recovery to avoid re-review. */
+  bundleId?: string;
   occurredAt: string;
   reviewerVersion: string;
   promptVersion: string;
@@ -413,17 +416,19 @@ export class SkillEvolutionRuntime {
     return result;
   }
 
-  /**
-   * Reassess an already-current Skill from factual usage evidence.
-   *
-   * Usage reassessment still runs the identical Author → Verifier →
-   * Capability Transition path. Its episode is not a distilled candidate,
-   * however, so a verifier defer must not enter the candidate-only retry
-   * queue (nor be misclassified as an operational failure).
-   */
+  /** Usage reassessment reuses Author/Verifier without candidate retry state. */
   async reviewUsageAndApply(bundle: EvidenceBundle): Promise<SkillEvolutionResult> {
     const { result } = await this.reviewAndApplyWithRetries(bundle, undefined, false);
     return result;
+  }
+
+  getQueuedReviewKind(bundleId: string): 'deferred' | 'operational' | undefined {
+    const queuePath = this.options.reviewQueuePath;
+    if (!queuePath) return undefined;
+    const queue = loadReviewQueueState(queuePath);
+    if (findDeferByBundleId(queue, bundleId)) return 'deferred';
+    if (findOperationalByBundleId(queue, bundleId)) return 'operational';
+    return undefined;
   }
 
   private async reviewAndApplyWithRetries(
@@ -1242,6 +1247,7 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
     schemaVersion: SKILL_EVOLUTION_SCHEMA_VERSION,
     transitionId,
     transition: input.transition,
+    bundleId: input.bundle.bundleId,
     occurredAt: now,
     reviewerVersion: input.reviewerVersion,
     promptVersion: input.promptVersion,

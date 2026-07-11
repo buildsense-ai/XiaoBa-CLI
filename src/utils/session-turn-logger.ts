@@ -42,6 +42,7 @@ function parseOptionalLimit(raw: string | undefined): number | null {
 export interface LogTurnOptions {
   runtimeFeedback?: string[];
   runtimeObservationSource?: string;
+  /** AgentTurnController's canonical episode correlation. */
   episodeId?: string;
   prompt?: SessionPromptTurnLog;
 }
@@ -97,8 +98,8 @@ export class SessionTurnLogger {
       turn: this.turnCounter,
       timestamp: new Date().toISOString(),
       session_id: this.sessionId,
-      ...(options.episodeId && { episode_id: options.episodeId }),
       session_type: this.sessionType,
+      ...(options.episodeId?.trim() && { episode_id: options.episodeId.trim() }),
       user: {
         text: userText,
         ...(userImages.length > 0 && { images: userImages }),

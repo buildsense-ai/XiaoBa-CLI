@@ -31,8 +31,9 @@ export interface SessionTurnLogEntry {
   turn: number;
   timestamp: string;
   session_id: string;
-  episode_id?: string;
   session_type: string;
+  /** AgentTurnController's canonical episode correlation. Optional for legacy logs. */
+  episode_id?: string;
   user: {
     text: string;
     images?: string[];

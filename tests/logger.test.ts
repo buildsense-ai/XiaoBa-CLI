@@ -84,6 +84,24 @@ describe('Logger', () => {
       ],
     );
   });
+
+  test('persists the optional canonical episode_id while remaining compatible with legacy entries', () => {
+    delete require.cache[require.resolve('../src/utils/session-turn-logger')];
+    const { SessionTurnLogger } = require('../src/utils/session-turn-logger');
+    const sessionLogger = new SessionTurnLogger('chat', 'canonical-episode');
+
+    sessionLogger.logTurn(
+      'deliver the artifact',
+      'delivered',
+      [],
+      { prompt: 1, completion: 1 },
+      { episodeId: 'episode:1:canonical' },
+    );
+
+    const entry = JSON.parse(fs.readFileSync(sessionLogger.getLogFilePath(), 'utf8').trim());
+    assert.equal(entry.episode_id, 'episode:1:canonical');
+    assert.equal('episode_id' in entry, true);
+  });
 });
 
 function waitForFlush(): Promise<void> {
