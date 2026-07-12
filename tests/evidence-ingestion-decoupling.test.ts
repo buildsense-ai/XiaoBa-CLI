@@ -10,6 +10,7 @@ import { DistillationUnit } from '../src/utils/distillation-unit';
 import { LearningEpisode, LearningEpisodeStore } from '../src/utils/learning-episode';
 import { SkillUsageCurator } from '../src/utils/skill-usage-curator';
 import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
+import { RuntimeLearningCoordinator } from '../src/utils/runtime-learning-coordinator';
 import { getCursor, loadLogCursorState } from '../src/utils/log-cursor-state';
 import {
   loadCurrentSkillRegistry,
@@ -112,7 +113,7 @@ interface Env {
 
 function setupEnv(
   verifierMode: VerifierMode = 'approve',
-  opts: { episodeStoreDir?: string; withCurator?: boolean } = {},
+  opts: { episodeStoreDir?: string; withCurator?: boolean; settlementWindowMs?: number } = {},
 ): Env {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-evidence-ingestion-'));
   const skillsRoot = path.join(root, 'skills');
@@ -203,24 +204,21 @@ function setupEnv(
     outputDir,
     reviewOutcomesPath: path.join(root, 'data', 'review-outcomes.json'),
     learningEpisodeStorePath: episodeStorePath,
-    learningEpisodeSettlementWindowMs: 0,
+    learningEpisodeSettlementWindowMs: opts.settlementWindowMs ?? 0,
     skillEvolution,
     skillUsageCurator: curator,
   });
+  const runtimeLearningCoordinator = new RuntimeLearningCoordinator(pipeline, curator);
 
   const makeScheduler = () =>
     new DistillationHeartbeatScheduler(
       root,
       // Issue #50: the heartbeat processor is Evidence Ingestion only.
       unit => pipeline.admitEvidence(unit),
-      async () => {
-        await pipeline.reviewSkillEvolutionQueueEntries();
-      },
-      // Branch Promotion Review runs after cursor acknowledgement, so its
-      // failure must never rewind the Log Cursor.
-      async () => {
-        await pipeline.processSettledLearningEpisodes();
-      },
+      null,
+      null,
+      null,
+      context => runtimeLearningCoordinator.runWake(context),
     );
 
   return {
@@ -521,5 +519,80 @@ describe('issue #50: Evidence Ingestion decoupled from Capability Review', () =>
       1,
       'no episode is duplicated on the second replay',
     );
+  });
+
+  test('(d1) a discovery wake admits evidence and processes due work in one coordinated report', async () => {
+    writeLog(env.logFile, [DELIVERY_TURN, ACCEPTANCE_TURN]);
+
+    const scheduler = env.makeScheduler();
+    const result = await scheduler.runHeartbeat('scheduled');
+
+    assert.equal(result.discovery.scanned, true);
+    assert.equal(result.discovery.filesScanned, 1);
+    assert.equal(result.discovery.unitsProcessed, 1);
+    assert.equal(result.ingestion.admittedEpisodes, 1);
+    assert.equal(result.ingestion.contradictionSignals, 0);
+    assert.equal(result.maturation.maturedEpisodes, 1);
+    assert.equal(result.maturation.becameEligible, 1);
+    assert.equal(result.review.reviewedEpisodes, 1);
+    assert.equal(result.review.reviewedQueueEntries, 0);
+    assert.equal(result.review.transitionsByKind.create_current_skill, 1);
+    assert.equal(result.curation.ran, false);
+  });
+
+  test('(d2) a due settlement wake completes with zero session-log scans', async () => {
+    env.restore();
+    env = setupEnv('approve', { settlementWindowMs: 200 });
+    const baseTime = Date.now();
+    const freshDelivery = { ...DELIVERY_TURN, timestamp: new Date(baseTime).toISOString() };
+    const freshAcceptance = { ...ACCEPTANCE_TURN, timestamp: new Date(baseTime + 1).toISOString() };
+    writeLog(env.logFile, [freshDelivery, freshAcceptance]);
+
+    const scheduler = env.makeScheduler();
+    const discovery = await scheduler.runHeartbeat('manual');
+    assert.equal(discovery.discovery.filesScanned, 1);
+    assert.equal(discovery.ingestion.admittedEpisodes, 1);
+    assert.equal(discovery.maturation.maturedEpisodes, 0, 'the first wake admits but does not settle early');
+    assert.equal(discovery.review.reviewedEpisodes, 0);
+    assert.equal(loadTransitionAudit(env.auditPath).length, 0);
+
+    await new Promise(resolve => setTimeout(resolve, 260));
+
+    const settlement = await scheduler.runHeartbeat('settlement-deadline');
+    assert.equal(settlement.discovery.scanned, false, 'settlement wakes skip session-log discovery entirely');
+    assert.equal(settlement.discovery.filesScanned, 0);
+    assert.equal(settlement.unitsProcessed, 0);
+    assert.equal(settlement.ingestion.admittedEpisodes, 0);
+    assert.equal(settlement.maturation.maturedEpisodes, 1);
+    assert.equal(settlement.maturation.becameEligible, 1);
+    assert.equal(settlement.review.reviewedEpisodes, 1);
+    assert.equal(settlement.review.transitionsByKind.create_current_skill, 1);
+    assert.equal(cursorFor(env).byteOffset, fs.statSync(env.logFile).size, 'settlement review preserves the acknowledged cursor');
+  });
+
+  test('(d3) restart recovery retains due settlement work and reports it on startup', async () => {
+    env.restore();
+    env = setupEnv('approve', { settlementWindowMs: 120 });
+    const baseTime = Date.now();
+    const freshDelivery = { ...DELIVERY_TURN, timestamp: new Date(baseTime).toISOString() };
+    const freshAcceptance = { ...ACCEPTANCE_TURN, timestamp: new Date(baseTime + 1).toISOString() };
+    writeLog(env.logFile, [freshDelivery, freshAcceptance]);
+
+    const firstScheduler = env.makeScheduler();
+    const admitted = await firstScheduler.runHeartbeat('manual');
+    assert.equal(admitted.ingestion.admittedEpisodes, 1);
+    assert.equal(admitted.review.reviewedEpisodes, 0, 'the pre-deadline wake only admits evidence');
+    assert.equal(loadTransitionAudit(env.auditPath).length, 0);
+
+    await new Promise(resolve => setTimeout(resolve, 180));
+
+    const restartedScheduler = env.makeScheduler();
+    const recovered = await restartedScheduler.runHeartbeat('startup');
+
+    assert.equal(recovered.maturation.maturedEpisodes, 1);
+    assert.equal(recovered.review.reviewedEpisodes, 1);
+    assert.equal(recovered.review.transitionsByKind.create_current_skill, 1);
+    assert.equal(loadTransitionAudit(env.auditPath).length, 1, 'restart recovery commits the due settlement transition exactly once');
+    assert.equal(Object.keys(loadCurrentSkillRegistry(env.registryPath).capabilities).length, 1);
   });
 });

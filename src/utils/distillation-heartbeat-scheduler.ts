@@ -15,6 +15,14 @@ import {
 import { getDistillationHeartbeatConfig } from './distillation-heartbeat-config';
 import { LearningEpisodeStore } from './learning-episode';
 import { Logger } from './logger';
+import {
+  RuntimeLearningCurationReport,
+  RuntimeLearningDiscoveryReport,
+  RuntimeLearningIngestionReport,
+  RuntimeLearningMaturationReport,
+  RuntimeLearningWakeContext,
+  RuntimeLearningWakeReport,
+} from './runtime-learning-coordinator';
 
 /**
  * Runtime-scoped Distillation Heartbeat scheduler.
@@ -43,6 +51,16 @@ export interface HeartbeatRunResult {
   advancedFiles: number;
   /** Whether this cycle actually executed (vs. being skipped/guarded). */
   ran: boolean;
+  /** Discovery-stage outcome for this wake. */
+  discovery: RuntimeLearningDiscoveryReport;
+  /** Durable admission-stage outcome for this wake. */
+  ingestion: RuntimeLearningIngestionReport;
+  /** Settlement/maturation outcome for this wake. */
+  maturation: RuntimeLearningMaturationReport;
+  /** Capability-learning review outcome for this wake. */
+  review: RuntimeLearningWakeReport['review'];
+  /** Current-skill curation outcome for this wake. */
+  curation: RuntimeLearningCurationReport;
 }
 
 export interface HeartbeatRecord {
@@ -81,6 +99,11 @@ export type SettlementDeadlineWakeHook = () => Promise<void> | void;
 /** Runtime V3 Skill Usage Curator pass. Best-effort like the existing hooks. */
 export type CuratorReviewHook = () => Promise<void> | void;
 
+/** Shared Runtime Learning coordinator for discovery/manual/scheduled wakes. */
+export type RuntimeLearningWakeHook = (
+  context: RuntimeLearningWakeContext,
+) => Promise<RuntimeLearningWakeReport> | RuntimeLearningWakeReport;
+
 const DEFAULT_PROCESSOR: DistillationUnitProcessor = () => {
   // Issue #2 scope: the heartbeat owns the runtime path that extracts
   // Distillation Units and records the run. The distillation/review/install
@@ -101,12 +124,34 @@ function emptyHeartbeatRecord(): HeartbeatRecord {
   };
 }
 
+function emptyWakeReport(ran: boolean): HeartbeatRunResult {
+  return {
+    unitsProcessed: 0,
+    advancedFiles: 0,
+    ran,
+    discovery: { scanned: false, filesScanned: 0, unitsProcessed: 0, advancedFiles: 0 },
+    ingestion: { admittedEpisodes: 0, contradictionSignals: 0 },
+    maturation: { maturedEpisodes: 0, becameEligible: 0, becameContradicted: 0 },
+    review: {
+      reviewedEpisodes: 0,
+      reviewedQueueEntries: 0,
+      deferredQueueReviews: 0,
+      operationalQueueReviews: 0,
+      deferredRetries: 0,
+      operationalRetries: 0,
+      transitionsByKind: {},
+    },
+    curation: { ran: false, expedited: false, transitionsByKind: {} },
+  };
+}
+
 export class DistillationHeartbeatScheduler {
   private readonly workingDirectory: string;
   private readonly processor: DistillationUnitProcessor;
   private readonly cycleCompleteHook: HeartbeatCycleCompleteHook | null;
   private readonly settlementDeadlineWakeHook: SettlementDeadlineWakeHook | null;
   private readonly curatorReviewHook: CuratorReviewHook | null;
+  private readonly runtimeLearningWakeHook: RuntimeLearningWakeHook | null;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private started = false;
@@ -118,12 +163,14 @@ export class DistillationHeartbeatScheduler {
     cycleCompleteHook: HeartbeatCycleCompleteHook | null = null,
     settlementDeadlineWakeHook: SettlementDeadlineWakeHook | null = null,
     curatorReviewHook: CuratorReviewHook | null = null,
+    runtimeLearningWakeHook: RuntimeLearningWakeHook | null = null,
   ) {
     this.workingDirectory = workingDirectory;
     this.processor = processor;
     this.cycleCompleteHook = cycleCompleteHook;
     this.settlementDeadlineWakeHook = settlementDeadlineWakeHook;
     this.curatorReviewHook = curatorReviewHook;
+    this.runtimeLearningWakeHook = runtimeLearningWakeHook;
   }
 
   /**
@@ -175,12 +222,14 @@ export class DistillationHeartbeatScheduler {
   }
 
   /**
-   * Run one heartbeat cycle. Walks the session log tree, extracts Distillation
-   * Units from newly appended content via durable Log Cursor state, invokes the
-   * processor for each unit, and durably records that the heartbeat ran.
+   * Run one heartbeat cycle. Discovery wakes walk the session log tree,
+   * extract Distillation Units from newly appended content via durable Log
+   * Cursor state, invoke the processor for each unit, and durably record that
+   * the heartbeat ran. Settlement-deadline wakes skip session-log discovery
+   * entirely and run only the due Runtime Learning coordination path.
    *
    * Because cursor advancement is durable and keyed by byte offset, a missed
-   * heartbeat catches up from stored cursor state on the next run.
+   * heartbeat catches up from stored cursor state on the next discovery wake.
    */
   async runHeartbeat(reason: HeartbeatReason = 'manual'): Promise<HeartbeatRunResult> {
     if (
@@ -188,63 +237,91 @@ export class DistillationHeartbeatScheduler {
       || this.stopped
       || !DistillationHeartbeatScheduler.shouldStartForCurrentRuntime(this.workingDirectory)
     ) {
-      return { unitsProcessed: 0, advancedFiles: 0, ran: false };
+      return emptyWakeReport(false);
     }
 
     this.running = true;
+    const wake = emptyWakeReport(true);
     try {
       const config = getDistillationHeartbeatConfig(this.workingDirectory);
       const sessionLogsRoot = resolveSessionLogsRoot(config.logsRoot);
-      if (!fs.existsSync(sessionLogsRoot) || !fs.statSync(sessionLogsRoot).isDirectory()) {
-        this.recordHeartbeat(config.heartbeatRecordPath, reason, 0, 0);
+      const shouldScan = reason !== 'settlement-deadline';
+      if (shouldScan && fs.existsSync(sessionLogsRoot) && fs.statSync(sessionLogsRoot).isDirectory()) {
+        const files = collectJsonlFilesForHeartbeat(sessionLogsRoot);
+        wake.discovery.scanned = true;
+        wake.discovery.filesScanned = files.length;
+
+        // Process one file at a time so an async Branch Promotion Reviewer can
+        // finish before that file's cursor is advanced. The existing sync
+        // processors remain valid because `await` also accepts void.
+        for (const filePath of files) {
+          const result = await processSessionLogAsync(
+            filePath,
+            config.stateFilePath,
+            this.processor,
+            files,
+          );
+          if (result.processed && result.distillationUnit) wake.discovery.unitsProcessed++;
+          if (result.advanced) wake.discovery.advancedFiles++;
+          wake.ingestion.admittedEpisodes += result.admittedEpisodes;
+          wake.ingestion.contradictionSignals += result.contradictionSignals;
+        }
+      }
+
+      wake.unitsProcessed = wake.discovery.unitsProcessed;
+      wake.advancedFiles = wake.discovery.advancedFiles;
+      this.recordHeartbeat(config.heartbeatRecordPath, reason, wake.unitsProcessed, wake.advancedFiles);
+
+      if (wake.unitsProcessed > 0) {
+        Logger.info(
+          `[DistillationHeartbeat] extracted ${wake.unitsProcessed} distillation unit(s) across ${wake.advancedFiles} file(s) (${reason})`,
+        );
+      } else if (wake.discovery.scanned) {
+        Logger.info(`[DistillationHeartbeat] no new session log appends (${reason})`);
+      } else {
+        Logger.info(`[DistillationHeartbeat] skipped session log scan (${reason})`);
+      }
+
+      const coordinated = await this.runRuntimeLearningWakeHook({
+        reason,
+        discovery: wake.discovery,
+        ingestion: wake.ingestion,
+      });
+      if (coordinated) {
+        wake.maturation = coordinated.maturation;
+        wake.review = coordinated.review;
+        wake.curation = coordinated.curation;
+      } else {
         await this.runSettlementDeadlineWakeHook();
+
+        // Issue #29: after the new-candidate pass, re-review eligible Needs Review
+        // Queue entries so the heartbeat autonomously consumes retry-eligible
+        // reviews (reviewer version, registry-state, explicit-command, or
+        // matching-evidence changes). The hook is best-effort.
         await this.runCycleCompleteHook();
         await this.runCuratorReviewHook();
-        return { unitsProcessed: 0, advancedFiles: 0, ran: true };
       }
 
-      const units: DistillationUnit[] = [];
-      let advancedFiles = 0;
-      // Process one file at a time so an async Branch Promotion Reviewer can
-      // finish before that file's cursor is advanced. The existing sync
-      // processors remain valid because `await` also accepts void.
-      const files = collectJsonlFilesForHeartbeat(sessionLogsRoot);
-      for (const filePath of files) {
-        const result = await processSessionLogAsync(
-          filePath,
-          config.stateFilePath,
-          this.processor,
-          files,
-        );
-        if (result.processed && result.distillationUnit) units.push(result.distillationUnit);
-        if (result.advanced) advancedFiles++;
-      }
-
-      this.recordHeartbeat(config.heartbeatRecordPath, reason, units.length, advancedFiles);
-
-      if (units.length > 0) {
-        Logger.info(
-          `[DistillationHeartbeat] extracted ${units.length} distillation unit(s) across ${advancedFiles} file(s) (${reason})`,
-        );
-      } else {
-        Logger.info(`[DistillationHeartbeat] no new session log appends (${reason})`);
-      }
-
-      await this.runSettlementDeadlineWakeHook();
-
-      // Issue #29: after the new-candidate pass, re-review eligible Needs Review
-      // Queue entries so the heartbeat autonomously consumes retry-eligible
-      // reviews (reviewer version, registry-state, explicit-command, or
-      // matching-evidence changes). The hook is best-effort.
-      await this.runCycleCompleteHook();
-      await this.runCuratorReviewHook();
-
-      return { unitsProcessed: units.length, advancedFiles, ran: true };
+      return wake;
     } catch (error: any) {
       Logger.warning(`[DistillationHeartbeat] cycle failed (${reason}): ${error.message}`);
-      return { unitsProcessed: 0, advancedFiles: 0, ran: true };
+      return wake;
     } finally {
       this.running = false;
+    }
+  }
+
+  private async runRuntimeLearningWakeHook(
+    context: RuntimeLearningWakeContext,
+  ): Promise<RuntimeLearningWakeReport | null> {
+    if (!this.runtimeLearningWakeHook) return null;
+    try {
+      return await this.runtimeLearningWakeHook(context);
+    } catch (error: any) {
+      Logger.warning(
+        `[DistillationHeartbeat] runtime learning coordination failed: ${error?.message ?? error}`,
+      );
+      return null;
     }
   }
 
@@ -295,14 +372,14 @@ export class DistillationHeartbeatScheduler {
       MAX_TIMEOUT_MS,
       Math.max(MIN_TIMEOUT_MS, config.intervalHours * 60 * 60 * 1000),
     );
-    const settlementDelay = this.settlementDeadlineWakeHook
+    const settlementDelay = this.settlementDeadlineWakeHook || this.runtimeLearningWakeHook
       ? nextSettlementDeadlineDelay(config.learningEpisodeStorePath, new Date())
       : null;
     const delay = settlementDelay === null
       ? intervalDelay
       : Math.min(intervalDelay, settlementDelay);
     this.timer = setTimeout(async () => {
-      const reason = this.settlementDeadlineWakeHook
+      const reason = (this.settlementDeadlineWakeHook || this.runtimeLearningWakeHook)
         && nextSettlementDeadlineDelay(config.learningEpisodeStorePath, new Date()) === 0
         ? 'settlement-deadline'
         : 'scheduled';
@@ -367,6 +444,8 @@ async function processSessionLogAsync(
   distillationUnit: DistillationUnit | null;
   advanced: boolean;
   processed: boolean;
+  admittedEpisodes: number;
+  contradictionSignals: number;
 }> {
   // Keep the extraction/cursor semantics in distillation-unit.ts while
   // allowing the processor to be asynchronous. This mirrors processSessionLog
@@ -384,25 +463,70 @@ async function processSessionLogAsync(
   } catch (error) {
     markCursorFailed(state, filePath, cursor.byteOffset, error);
     saveLogCursorState(stateFilePath, state);
-    return { distillationUnit: null, advanced: false, processed: false };
+    return {
+      distillationUnit: null,
+      advanced: false,
+      processed: false,
+      admittedEpisodes: 0,
+      contradictionSignals: 0,
+    };
   }
   if (extracted.distillationUnit) {
     try {
-      await processor(extracted.distillationUnit);
+      const processorResult = await processor(extracted.distillationUnit);
+      const ingestion = summarizeIngestionResult(processorResult);
       advanceCursor(state, extracted.newCursor);
       saveLogCursorState(stateFilePath, state);
-      return { distillationUnit: extracted.distillationUnit, advanced: true, processed: true };
+      return {
+        distillationUnit: extracted.distillationUnit,
+        advanced: true,
+        processed: true,
+        admittedEpisodes: ingestion.admittedEpisodes,
+        contradictionSignals: ingestion.contradictionSignals,
+      };
     } catch (error) {
       markCursorFailed(state, filePath, cursor.byteOffset, error);
       saveLogCursorState(stateFilePath, state);
-      return { distillationUnit: extracted.distillationUnit, advanced: false, processed: false };
+      return {
+        distillationUnit: extracted.distillationUnit,
+        advanced: false,
+        processed: false,
+        admittedEpisodes: 0,
+        contradictionSignals: 0,
+      };
     }
   }
   if (extracted.advanced) {
     advanceCursor(state, extracted.newCursor);
     saveLogCursorState(stateFilePath, state);
   }
-  return { distillationUnit: null, advanced: extracted.advanced, processed: false };
+  return {
+    distillationUnit: null,
+    advanced: extracted.advanced,
+    processed: false,
+    admittedEpisodes: 0,
+    contradictionSignals: 0,
+  };
+}
+
+function summarizeIngestionResult(result: unknown): RuntimeLearningIngestionReport {
+  if (!isEvidenceIngestionResult(result)) {
+    return { admittedEpisodes: 0, contradictionSignals: 0 };
+  }
+  return {
+    admittedEpisodes: result.admittedEpisodeIds.length,
+    contradictionSignals: result.contradictionSignalIds.length,
+  };
+}
+
+function isEvidenceIngestionResult(result: unknown): result is {
+  admittedEpisodeIds: readonly unknown[];
+  contradictionSignalIds: readonly unknown[];
+} {
+  return !!result
+    && typeof result === 'object'
+    && Array.isArray((result as { admittedEpisodeIds?: unknown }).admittedEpisodeIds)
+    && Array.isArray((result as { contradictionSignalIds?: unknown }).contradictionSignalIds);
 }
 
 function collectJsonlFilesForHeartbeat(dir: string): string[] {

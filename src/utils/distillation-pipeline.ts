@@ -182,10 +182,17 @@ export interface PipelineUnitResult {
   needsReviewEntries: NeedsReviewQueueEntry[];
 }
 
+export interface LearningEpisodeMaturationResult {
+  maturedEpisodeIds: string[];
+  becameEligible: number;
+  becameContradicted: number;
+}
+
 export interface V3PipelineUnitResult {
   candidates: DistilledKnowledgeCandidate[];
   evolutions: SkillEvolutionResult[];
   episodes?: LearningEpisode[];
+  maturation?: LearningEpisodeMaturationResult;
 }
 
 /**
@@ -211,6 +218,7 @@ export interface QueueReviewResultV3 {
   operationalReviewed: number;
   operationalRetried: number;
   deferredRetried: number;
+  transitionsByKind: Partial<Record<string, number>>;
 }
 
 function emptyQueueReviewResult(): QueueReviewResult {
@@ -403,8 +411,22 @@ export class DistillationPipeline {
       return { candidates: [], evolutions: [] };
     }
 
+    const preSettleEpisodes = Object.values(this.learningEpisodeStore.load().episodes);
+    const preSettleStatuses = new Map(preSettleEpisodes.map(episode => [episode.episodeId, episode.status]));
     const settledState = this.learningEpisodeStore.settle({ now });
     const episodes = Object.values(settledState.episodes);
+    const maturedEpisodeIds = episodes
+      .filter(episode => preSettleStatuses.get(episode.episodeId) === 'settling' && episode.status !== 'settling')
+      .map(episode => episode.episodeId);
+    const maturation: LearningEpisodeMaturationResult = {
+      maturedEpisodeIds,
+      becameEligible: episodes.filter(
+        episode => preSettleStatuses.get(episode.episodeId) === 'settling' && episode.status === 'eligible',
+      ).length,
+      becameContradicted: episodes.filter(
+        episode => preSettleStatuses.get(episode.episodeId) === 'settling' && episode.status === 'contradicted',
+      ).length,
+    };
     const pendingObservationIds = new Set(this.pendingCuratorObservationEpisodeIds);
     const observationEpisodes = pendingObservationIds.size > 0
       ? episodes.filter(episode => pendingObservationIds.has(episode.episodeId))
@@ -444,7 +466,7 @@ export class DistillationPipeline {
       reviewerConcurrency,
       input => this.skillEvolution!.reviewAndApply(input.bundle),
     );
-    return { candidates: reviewInputs.map(input => input.candidate), evolutions, episodes };
+    return { candidates: reviewInputs.map(input => input.candidate), evolutions, episodes, maturation };
   }
 
   private queueCuratorObservations(episodeIds: readonly string[]): void {
@@ -814,6 +836,7 @@ export class DistillationPipeline {
         operationalReviewed: 0,
         operationalRetried: 0,
         deferredRetried: 0,
+        transitionsByKind: {},
       };
     }
     return this.skillEvolution.reviewDueQueueEntries();

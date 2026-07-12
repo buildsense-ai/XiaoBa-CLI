@@ -9,6 +9,7 @@ import { Logger } from './logger';
 import { SkillEvolutionOptions, SkillEvolutionRuntime } from './skill-evolution';
 import { SkillUsageCurator } from './skill-usage-curator';
 import { SkillUsageLedger } from './skill-usage-ledger';
+import { RuntimeLearningCoordinator } from './runtime-learning-coordinator';
 
 export interface RuntimeCommandSupportOptions {
   /**
@@ -109,23 +110,22 @@ export async function startRuntimeCommandSupport(
           skillUsageCurator: curator ?? undefined,
         });
         distillationPipeline = pipeline;
+        const runtimeLearningCoordinator = skillEvolution
+          ? new RuntimeLearningCoordinator(pipeline, curator)
+          : null;
         distillationHeartbeatScheduler = new DistillationHeartbeatScheduler(
           workingDirectory,
           // Issue #50: the heartbeat processor is Evidence Ingestion only.
           // It durably admits Learning Episodes and Contradiction Signals; the
-          // scheduler advances the Log Cursor once admission returns. Branch
-          // Promotion Review runs afterwards in the settlement-deadline wake
-          // hook below, so a reviewer failure never rewinds or blocks source
-          // acknowledgement.
+          // scheduler advances the Log Cursor once admission returns. Runtime
+          // Learning coordination then settles/reviews due work afterwards, so
+          // a reviewer failure never rewinds or blocks source acknowledgement.
           unit => (skillEvolution ? pipeline.admitEvidence(unit) : pipeline.processUnit(unit)),
-          async () => {
-            await pipeline.reviewSkillEvolutionQueueEntries();
-            await curator?.runDue();
-          },
-          skillEvolution
-            ? async () => {
-              await pipeline.processSettledLearningEpisodes();
-            }
+          null,
+          null,
+          null,
+          runtimeLearningCoordinator
+            ? context => runtimeLearningCoordinator.runWake(context)
             : null,
         );
       }
