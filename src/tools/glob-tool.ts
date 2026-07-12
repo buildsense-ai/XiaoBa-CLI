@@ -43,16 +43,10 @@ export class GlobTool implements Tool {
   definition: ToolDefinition = {
     name: 'glob',
     description: [
-<<<<<<< HEAD
-      '按 glob 模式查找文件路径，返回匹配文件列表并按修改时间倒序排列。',
-      '适合先定位候选文件；要搜索文件内容请使用 grep。',
-      '当用户问“桌面/下载/文档里有什么/有哪些文件或文件夹”时，先用 resolve_common_directory 解析目录，再用 pattern="*" 且 include_directories=true 列出目录项；不要用 execute_shell 跑 dir/ls。',
-=======
       'Find files or directories by path pattern and metadata.',
       'Use this to discover candidate paths before grep/read_file. Use grep for content search.',
       'Supports multiple filename patterns, file/directory kind, modified time filters, max depth, and result summaries.',
       'For broad recent-file questions, prefer patterns + modified_after + max_depth + summary over repeated one-off glob calls.',
->>>>>>> origin/pr-156
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -75,14 +69,6 @@ export class GlobTool implements Tool {
           description: 'Maximum number of results to return. Defaults to 100.',
           default: 100,
         },
-<<<<<<< HEAD
-        include_directories: {
-          type: 'boolean',
-          description: '是否包含匹配到的目录。默认 false，保持只返回文件；用户要查看目录里有什么、有哪些文件夹或列目录内容时设为 true。',
-          default: false
-        },
-        target: targetParameterDescription()
-=======
         kind: {
           type: 'string',
           description: 'Return files, directories, or all entries. Defaults to files.',
@@ -112,16 +98,12 @@ export class GlobTool implements Tool {
           default: false,
         },
         target: targetParameterDescription(),
->>>>>>> origin/pr-156
       },
       required: [],
     },
   };
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
-<<<<<<< HEAD
-    const { pattern, path: searchPath, limit = 100, include_directories = false } = args;
-=======
     const searchPath = args?.path;
     const patterns = normalizePatterns(args);
     const limit = normalizeLimit(args?.limit);
@@ -131,7 +113,6 @@ export class GlobTool implements Tool {
     const modifiedBefore = parseDateFilter(args?.modified_before);
     const includeHidden = args?.include_hidden === true;
     const includeSummary = args?.summary === true;
->>>>>>> origin/pr-156
     const startTime = Date.now();
 
     if (patterns.length === 0) {
@@ -175,20 +156,6 @@ export class GlobTool implements Tool {
     const shouldReturnAbsolutePaths = !isCatsCoToolGatewayContext(context) && Boolean(searchPath && path.isAbsolute(searchPath));
     const matchedPaths = new Map<string, Set<string>>();
 
-<<<<<<< HEAD
-    const files = await glob(pattern, {
-      cwd,
-      absolute: false,
-      nodir: !include_directories,
-      dot: false,
-      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**']
-    });
-
-    const resultLabel = include_directories ? '目录项' : '文件';
-
-    if (files.length === 0) {
-      return { ok: true, content: `未找到匹配的${resultLabel}。\n模式: ${pattern}\n目录: ${visibleSearchPath}\nPath: ${visibleCwd}` };
-=======
     for (const candidatePattern of patterns) {
       const matches = await glob(candidatePattern, {
         cwd,
@@ -204,7 +171,6 @@ export class GlobTool implements Tool {
         if (!matchedPaths.has(normalized)) matchedPaths.set(normalized, new Set());
         matchedPaths.get(normalized)!.add(candidatePattern);
       }
->>>>>>> origin/pr-156
     }
 
     const entries = await collectEntries(cwd, matchedPaths, {
@@ -236,22 +202,14 @@ export class GlobTool implements Tool {
       summary: includeSummary ? buildSummary(entries) : undefined,
     };
 
-<<<<<<< HEAD
-    return { ok: true, content: this.formatResult(result, pattern, visibleSearchPath, visibleCwd, resultLabel) };
-=======
     return { ok: true, content: this.formatResult(result, visibleSearchPath, visibleCwd, limit) };
->>>>>>> origin/pr-156
   }
 
   private formatResult(
     result: GlobResult,
     visibleSearchPath: string,
     visibleCwd: string,
-<<<<<<< HEAD
-    resultLabel: string,
-=======
     limit: number,
->>>>>>> origin/pr-156
   ): string {
     const { numEntries, totalMatches, entries, truncated, durationMs, patterns, kind, filters, summary } = result;
     const noun = kind === 'files' ? 'files' : kind === 'directories' ? 'directories' : 'entries';
@@ -267,12 +225,6 @@ export class GlobTool implements Tool {
       '',
     ].filter(line => line !== '').join('\n');
 
-<<<<<<< HEAD
-    const header = `找到 ${numFiles} 个${resultLabel} (${durationMs}ms)${truncated ? ' - 结果已截断，考虑使用更精确的模式' : ''}:\n模式: ${pattern}\n目录: ${visibleSearchPath}\nPath: ${visibleCwd}\n\n`;
-    const fileList = filenames.map((file, i) => `${(i + 1).toString().padStart(4, ' ')}. ${file}`).join('\n');
-    
-    return header + fileList + (truncated ? `\n\n提示: 结果被限制在前 100 个${resultLabel}。使用更具体的路径或模式来缩小范围。` : '');
-=======
     const summaryText = summary ? [
       'Summary:',
       formatFacet('top directories', summary.byTopDirectory),
@@ -305,7 +257,6 @@ export class GlobTool implements Tool {
       entryList,
       truncated ? `\nHint: results were limited to ${limit}. Use narrower patterns, modified_after/modified_before, max_depth, or a more specific path to continue.` : '',
     ].filter(Boolean).join('\n');
->>>>>>> origin/pr-156
   }
 }
 
