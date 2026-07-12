@@ -1,5 +1,28 @@
+/**
+ * Distillation Heartbeat Scheduler — thin wake-loop adapter (issue #53).
+ *
+ * Production path: the scheduler is a thin timer that calls
+ * `RuntimeLearning.wake()` on each tick. All intelligence (session log
+ * scanning, evidence ingestion, settlement, review, curation, wake
+ * coordination) lives in the deep `RuntimeLearning` module.
+ *
+ * Legacy path (deprecated): tests may construct the scheduler with a
+ * processor function and optional hooks using the static `legacy()`
+ * factory. Production startup uses the `RuntimeLearning` constructor.
+ *
+ * The heartbeat owns:
+ *   - The setTimeout-based timer
+ *   - Runtime guard (`shouldStartForCurrentRuntime`)
+ *   - Heartbeat record keeping
+ *   - Due-work-based next-wake planning
+ *
+ * See CONTEXT.md → "Distillation Heartbeat".
+ * See ADR 0001 → "Runtime Heartbeat Log Distillation".
+ */
+
 import * as fs from 'fs';
 import * as path from 'path';
+
 import {
   CrossFileContinuityOptions,
   DistillationUnit,
@@ -13,55 +36,27 @@ import {
   saveLogCursorState,
 } from './log-cursor-state';
 import { getDistillationHeartbeatConfig } from './distillation-heartbeat-config';
-
-import { Logger } from './logger';
 import { DueWorkPlanner } from './due-work-planner';
-import {
+import { Logger } from './logger';
+import type { RuntimeLearning } from './runtime-learning';
+import type {
+  RuntimeLearningReason,
+  RuntimeLearningHeartbeatResult,
   RuntimeLearningCurationReport,
   RuntimeLearningDiscoveryReport,
   RuntimeLearningIngestionReport,
   RuntimeLearningMaturationReport,
-  RuntimeLearningWakeContext,
-  RuntimeLearningWakeReport,
-} from './runtime-learning-coordinator';
+  RuntimeLearningReviewReport,
+} from './runtime-learning';
 
-/**
- * Runtime-scoped Distillation Heartbeat scheduler.
- *
- * Mirrors the CatsCo log upload scheduler pattern: a runtime-owned
- * `setTimeout`-based scheduler that wakes on a configurable cadence (first
- * default six hours), finds session logs with unprocessed append ranges
- * through durable Log Cursor state, extracts Distillation Units, and records
- * that the heartbeat ran.
- *
- * The heartbeat is runtime-scoped: it is started by `runtime-command-support`
- * alongside the CatsCo log upload scheduler and does not require a user turn to
- * fire. Missed heartbeats catch up from stored cursor state because cursor
- * advancement is durable and keyed by byte offset (see `log-cursor-state.ts`).
- *
- * See CONTEXT.md → "Distillation Heartbeat".
- * See ADR 0001 → "Runtime Heartbeat Log Distillation".
- */
+// ---------------------------------------------------------------------------
+// Public types (preserved for backward compatibility)
+// ---------------------------------------------------------------------------
 
-export type HeartbeatReason = 'startup' | 'scheduled' | 'settlement-deadline' | 'operational-retry' | 'curator' | 'manual';
+export type HeartbeatReason = RuntimeLearningReason;
 
-export interface HeartbeatRunResult {
-  /** Number of Distillation Units produced this cycle. */
-  unitsProcessed: number;
-  /** Number of session log files whose cursor advanced this cycle. */
-  advancedFiles: number;
-  /** Whether this cycle actually executed (vs. being skipped/guarded). */
-  ran: boolean;
-  /** Discovery-stage outcome for this wake. */
-  discovery: RuntimeLearningDiscoveryReport;
-  /** Durable admission-stage outcome for this wake. */
-  ingestion: RuntimeLearningIngestionReport;
-  /** Settlement/maturation outcome for this wake. */
-  maturation: RuntimeLearningMaturationReport;
-  /** Capability-learning review outcome for this wake. */
-  review: RuntimeLearningWakeReport['review'];
-  /** Current-skill curation outcome for this wake. */
-  curation: RuntimeLearningCurationReport;
+export interface HeartbeatRunResult extends RuntimeLearningHeartbeatResult {
+  // Same shape as RuntimeLearningHeartbeatResult — re-exported for compat.
 }
 
 export interface HeartbeatRecord {
@@ -78,38 +73,46 @@ export interface HeartbeatRecord {
   lastAdvancedFiles: number;
 }
 
+/** @deprecated Legacy processor type for test-only scheduler construction. */
 export type DistillationUnitProcessor = (unit: DistillationUnit) => unknown | Promise<unknown>;
 
-/**
- * Optional hook invoked once after a heartbeat cycle finishes processing all
- * Distillation Units (issue #29). The runtime wires it to
- * `DistillationPipeline.reviewEligibleQueueEntries` so the heartbeat also
- * re-reviews eligible Needs Review Queue entries on every cycle. The hook is
- * best-effort: it must not throw, and a failing hook never blocks the
- * heartbeat or cursor advancement.
- */
+/** @deprecated Legacy hook for test-only scheduler construction. */
 export type HeartbeatCycleCompleteHook = () => Promise<void> | void;
 
-/**
- * Hook for the V3 settlement path. It runs even when the session-log scan
- * produces no Distillation Unit, which is what makes a settlement deadline a
- * real wake rather than merely a shorter discovery interval.
- */
+/** @deprecated Legacy hook for test-only scheduler construction. */
 export type SettlementDeadlineWakeHook = () => Promise<void> | void;
 
-/** Runtime V3 Skill Usage Curator pass. Best-effort like the existing hooks. */
+/** @deprecated Legacy hook for test-only scheduler construction. */
 export type CuratorReviewHook = () => Promise<void> | void;
 
-/** Shared Runtime Learning coordinator for discovery/manual/scheduled wakes. */
+/** @deprecated Legacy hook for test-only scheduler construction. */
 export type RuntimeLearningWakeHook = (
   context: RuntimeLearningWakeContext,
 ) => Promise<RuntimeLearningWakeReport> | RuntimeLearningWakeReport;
 
-const DEFAULT_PROCESSOR: DistillationUnitProcessor = () => {
-  // Issue #2 scope: the heartbeat owns the runtime path that extracts
-  // Distillation Units and records the run. The distillation/review/install
-  // pipeline (issues #3–#6) replaces this no-op sink later.
-};
+/**
+ * @deprecated Legacy Runtime Learning context, kept for test compatibility.
+ * Production wakes go through `RuntimeLearning.wake()` directly.
+ */
+export interface RuntimeLearningWakeContext {
+  reason: RuntimeLearningReason;
+  discovery: RuntimeLearningDiscoveryReport;
+  ingestion: RuntimeLearningIngestionReport;
+  dueWork?: import('./due-work-planner').DueWork;
+}
+
+/**
+ * @deprecated Legacy report type, kept for test compatibility.
+ */
+export interface RuntimeLearningWakeReport {
+  maturation: RuntimeLearningMaturationReport;
+  review: RuntimeLearningReviewReport;
+  curation: RuntimeLearningCurationReport;
+}
+
+// ---------------------------------------------------------------------------
+// Constants and helpers
+// ---------------------------------------------------------------------------
 
 const MIN_TIMEOUT_MS = 60 * 1000;
 const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -125,19 +128,14 @@ function emptyHeartbeatRecord(): HeartbeatRecord {
   };
 }
 
-function emptyWakeReport(ran: boolean): HeartbeatRunResult {
+function emptyWakeResult(): HeartbeatRunResult {
   return {
     unitsProcessed: 0,
     advancedFiles: 0,
-    ran,
+    ran: false,
     discovery: { scanned: false, filesScanned: 0, unitsProcessed: 0, advancedFiles: 0 },
     ingestion: { admittedEpisodes: 0, contradictionSignals: 0 },
-    maturation: {
-      status: 'skipped',
-      maturedEpisodes: 0,
-      becameEligible: 0,
-      becameContradicted: 0,
-    },
+    maturation: { status: 'skipped', maturedEpisodes: 0, becameEligible: 0, becameContradicted: 0 },
     review: {
       status: 'skipped',
       reviewedEpisodes: 0,
@@ -152,37 +150,66 @@ function emptyWakeReport(ran: boolean): HeartbeatRunResult {
   };
 }
 
+/**
+ * Internal legacy state for the test-only scheduler path.
+ * Keeps the session-log scanning logic that tests depend on.
+ */
+interface LegacyState {
+  processor: DistillationUnitProcessor;
+  cycleCompleteHook: HeartbeatCycleCompleteHook | null;
+  settlementDeadlineWakeHook: SettlementDeadlineWakeHook | null;
+  curatorReviewHook: CuratorReviewHook | null;
+  runtimeLearningWakeHook: RuntimeLearningWakeHook | null;
+}
+
+// ---------------------------------------------------------------------------
+// DistillationHeartbeatScheduler
+// ---------------------------------------------------------------------------
+
+/**
+ * Thin wake-loop adapter for Runtime Learning.
+ *
+ * Production path: constructed with a `RuntimeLearning` instance; the
+ * `runHeartbeat()` method delegates directly to `RuntimeLearning.wake()`.
+ *
+ * Legacy path (for tests): use `DistillationHeartbeatScheduler.legacy()`
+ * with a processor function and optional hooks.
+ */
 export class DistillationHeartbeatScheduler {
   private readonly workingDirectory: string;
-  private readonly processor: DistillationUnitProcessor;
-  private readonly cycleCompleteHook: HeartbeatCycleCompleteHook | null;
-  private readonly settlementDeadlineWakeHook: SettlementDeadlineWakeHook | null;
-  private readonly curatorReviewHook: CuratorReviewHook | null;
-  private readonly runtimeLearningWakeHook: RuntimeLearningWakeHook | null;
+  private readonly runtimeLearning: RuntimeLearning | null;
+  private readonly legacy: LegacyState | null;
+  private readonly fallbackPlanner: DueWorkPlanner | null;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private started = false;
   private stopped = false;
-  private readonly overridePlanner: DueWorkPlanner | null;
-  private _planner: DueWorkPlanner | null = null;
 
-  private get planner(): DueWorkPlanner {
-    if (this.overridePlanner) return this.overridePlanner;
-    if (!this._planner) {
-      const config = getDistillationHeartbeatConfig(this.workingDirectory);
-      this._planner = new DueWorkPlanner({
-        learningEpisodeStorePath: config.learningEpisodeStorePath,
-        reviewQueuePath: config.skillEvolutionReviewQueuePath,
-        curatorStatePath: config.skillEvolutionCuratorStatePath,
-        curatorIntervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
-      });
-    }
-    return this._planner;
-  }
+  /**
+   * Production constructor: delegates all wake logic to RuntimeLearning.
+   *
+   * @param workingDirectory - Working directory for config resolution.
+   * @param runtimeLearning - The RuntimeLearning production module.
+   */
+  constructor(workingDirectory: string, runtimeLearning: RuntimeLearning);
+
+  /**
+   * @deprecated Legacy constructor path for tests. Use
+   * `DistillationHeartbeatScheduler.legacy()` instead.
+   */
+  constructor(
+    workingDirectory: string,
+    processor: DistillationUnitProcessor,
+    cycleCompleteHook?: HeartbeatCycleCompleteHook | null,
+    settlementDeadlineWakeHook?: SettlementDeadlineWakeHook | null,
+    curatorReviewHook?: CuratorReviewHook | null,
+    runtimeLearningWakeHook?: RuntimeLearningWakeHook | null,
+    planner?: DueWorkPlanner | null,
+  );
 
   constructor(
     workingDirectory: string = process.cwd(),
-    processor: DistillationUnitProcessor = DEFAULT_PROCESSOR,
+    processorOrRuntime: DistillationUnitProcessor | RuntimeLearning = defaultProcessor(),
     cycleCompleteHook: HeartbeatCycleCompleteHook | null = null,
     settlementDeadlineWakeHook: SettlementDeadlineWakeHook | null = null,
     curatorReviewHook: CuratorReviewHook | null = null,
@@ -190,18 +217,59 @@ export class DistillationHeartbeatScheduler {
     planner?: DueWorkPlanner | null,
   ) {
     this.workingDirectory = workingDirectory;
-    this.processor = processor;
-    this.cycleCompleteHook = cycleCompleteHook;
-    this.settlementDeadlineWakeHook = settlementDeadlineWakeHook;
-    this.curatorReviewHook = curatorReviewHook;
-    this.runtimeLearningWakeHook = runtimeLearningWakeHook;
-    this.overridePlanner = planner ?? null;
+
+    if (isRuntimeLearning(processorOrRuntime)) {
+      // Production path
+      this.runtimeLearning = processorOrRuntime;
+      this.legacy = null;
+      this.fallbackPlanner = null;
+    } else {
+      // Legacy compat path (deprecated)
+      this.runtimeLearning = null;
+      this.legacy = {
+        processor: processorOrRuntime,
+        cycleCompleteHook,
+        settlementDeadlineWakeHook,
+        curatorReviewHook,
+        runtimeLearningWakeHook,
+      };
+      this.fallbackPlanner = planner ?? null;
+    }
   }
 
   /**
-   * Runtime guard mirroring `CatscoLogUploadScheduler.shouldStartForCurrentRuntime`.
-   * The heartbeat is disabled for inspector role runtimes and when the config
-   * master switch is off, so tests and rollout can guard it via env.
+   * Legacy factory: create a scheduler with a processor function and optional
+   * hooks. Used by tests; production should use the RuntimeLearning constructor.
+   *
+   * @deprecated Use `new DistillationHeartbeatScheduler(workingDir, runtimeLearning)`.
+   */
+  static legacy(
+    workingDirectory: string = process.cwd(),
+    processor: DistillationUnitProcessor = defaultProcessor(),
+    cycleCompleteHook: HeartbeatCycleCompleteHook | null = null,
+    settlementDeadlineWakeHook: SettlementDeadlineWakeHook | null = null,
+    curatorReviewHook: CuratorReviewHook | null = null,
+    runtimeLearningWakeHook: RuntimeLearningWakeHook | null = null,
+    planner?: DueWorkPlanner | null,
+  ): DistillationHeartbeatScheduler {
+    return new DistillationHeartbeatScheduler(
+      workingDirectory,
+      processor,
+      cycleCompleteHook,
+      settlementDeadlineWakeHook,
+      curatorReviewHook,
+      runtimeLearningWakeHook,
+      planner,
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Runtime guard
+  // -----------------------------------------------------------------------
+
+  /**
+   * Runtime guard: the heartbeat is disabled for inspector role runtimes and
+   * when the config master switch is off.
    */
   static shouldStartForCurrentRuntime(
     workingDirectory: string = process.cwd(),
@@ -217,6 +285,10 @@ export class DistillationHeartbeatScheduler {
     const config = getDistillationHeartbeatConfig(workingDirectory, env);
     return config.enabled;
   }
+
+  // -----------------------------------------------------------------------
+  // Start / Stop
+  // -----------------------------------------------------------------------
 
   async start(): Promise<void> {
     if (
@@ -246,15 +318,15 @@ export class DistillationHeartbeatScheduler {
     Logger.info('[DistillationHeartbeat] scheduler stopped');
   }
 
+  // -----------------------------------------------------------------------
+  // Run one heartbeat cycle
+  // -----------------------------------------------------------------------
+
   /**
-   * Run one heartbeat cycle. Discovery wakes walk the session log tree,
-   * extract Distillation Units from newly appended content via durable Log
-   * Cursor state, invoke the processor for each unit, and durably record that
-   * the heartbeat ran. Settlement-deadline wakes skip session-log discovery
-   * entirely and run only the due Runtime Learning coordination path.
+   * Run one heartbeat cycle.
    *
-   * Because cursor advancement is durable and keyed by byte offset, a missed
-   * heartbeat catches up from stored cursor state on the next discovery wake.
+   * Production: delegates all work to `RuntimeLearning.wake()`.
+   * Legacy: runs the old session-scanning and hook-based logic.
    */
   async runHeartbeat(reason: HeartbeatReason = 'manual'): Promise<HeartbeatRunResult> {
     if (
@@ -262,17 +334,40 @@ export class DistillationHeartbeatScheduler {
       || this.stopped
       || !DistillationHeartbeatScheduler.shouldStartForCurrentRuntime(this.workingDirectory)
     ) {
-      return emptyWakeReport(false);
+      return emptyWakeResult();
     }
 
     this.running = true;
-    const wake = emptyWakeReport(true);
+    try {
+      if (this.runtimeLearning) {
+        // --- Production path ---
+        const result = await this.runtimeLearning.wake(reason);
+        this.recordHeartbeat(reason, result.unitsProcessed, result.advancedFiles);
+        return result;
+      }
+
+      // --- Legacy path (deprecated, used by tests) ---
+      return await this.legacyRunHeartbeat(reason);
+    } catch (error: any) {
+      Logger.warning(`[DistillationHeartbeat] cycle failed (${reason}): ${error.message}`);
+      return emptyWakeResult();
+    } finally {
+      this.running = false;
+    }
+  }
+
+  /**
+   * @deprecated Legacy heartbeat logic preserved for test compatibility.
+   */
+  private async legacyRunHeartbeat(reason: HeartbeatReason): Promise<HeartbeatRunResult> {
+    const legacy = this.legacy!;
+    const wake = emptyWakeResult();
+    wake.ran = true;
+
     try {
       const config = getDistillationHeartbeatConfig(this.workingDirectory);
       const sessionLogsRoot = resolveSessionLogsRoot(config.logsRoot);
 
-      // Targeted deadline-driven reasons skip session-log scanning.
-      // Generic reasons (startup, scheduled, manual) always scan.
       const isTargetedWake = reason === 'settlement-deadline' || reason === 'operational-retry' || reason === 'curator';
       const shouldScan = !isTargetedWake;
 
@@ -281,14 +376,11 @@ export class DistillationHeartbeatScheduler {
         wake.discovery.scanned = true;
         wake.discovery.filesScanned = files.length;
 
-        // Process one file at a time so an async Branch Promotion Reviewer can
-        // finish before that file's cursor is advanced. The existing sync
-        // processors remain valid because `await` also accepts void.
         for (const filePath of files) {
           const result = await processSessionLogAsync(
             filePath,
             config.stateFilePath,
-            this.processor,
+            legacy.processor,
             files,
           );
           if (result.processed && result.distillationUnit) wake.discovery.unitsProcessed++;
@@ -300,7 +392,7 @@ export class DistillationHeartbeatScheduler {
 
       wake.unitsProcessed = wake.discovery.unitsProcessed;
       wake.advancedFiles = wake.discovery.advancedFiles;
-      this.recordHeartbeat(config.heartbeatRecordPath, reason, wake.unitsProcessed, wake.advancedFiles);
+      this.recordHeartbeat(reason, wake.unitsProcessed, wake.advancedFiles);
 
       if (wake.unitsProcessed > 0) {
         Logger.info(
@@ -312,13 +404,8 @@ export class DistillationHeartbeatScheduler {
         Logger.info(`[DistillationHeartbeat] skipped session log scan (${reason})`);
       }
 
-      // For targeted deadline-driven wakes (settlement-deadline,
-      // operational-retry, curator), use the planner to pass due-work
-      // filtering to the coordinator. For generic wakes (startup,
-      // scheduled, manual), omit dueWork so the coordinator runs all
-      // stages as before (backward compatible).
-      const plan = isTargetedWake ? this.planner.plan() : null;
-      const coordinated = await this.runRuntimeLearningWakeHook({
+      const plan = isTargetedWake ? this.getLegacyPlanner().plan() : null;
+      const coordinated = await this.legacyRunRuntimeLearningWakeHook({
         reason,
         discovery: wake.discovery,
         ingestion: wake.ingestion,
@@ -329,29 +416,24 @@ export class DistillationHeartbeatScheduler {
         wake.review = coordinated.review;
         wake.curation = coordinated.curation;
       } else {
-        // Legacy hooks path (V1/V2). These hooks run unconditionally
-        // for backward compatibility; the runtime learning coordinator
-        // path is the production V3 path.
-        await this.runSettlementDeadlineWakeHook();
-        await this.runCycleCompleteHook();
-        await this.runCuratorReviewHook();
+        await this.legacyRunSettlementDeadlineWakeHook();
+        await this.legacyRunCycleCompleteHook();
+        await this.legacyRunCuratorReviewHook();
       }
 
       return wake;
     } catch (error: any) {
       Logger.warning(`[DistillationHeartbeat] cycle failed (${reason}): ${error.message}`);
       return wake;
-    } finally {
-      this.running = false;
     }
   }
 
-  private async runRuntimeLearningWakeHook(
+  private async legacyRunRuntimeLearningWakeHook(
     context: RuntimeLearningWakeContext,
   ): Promise<RuntimeLearningWakeReport | null> {
-    if (!this.runtimeLearningWakeHook) return null;
+    if (!this.legacy?.runtimeLearningWakeHook) return null;
     try {
-      return await this.runtimeLearningWakeHook(context);
+      return await this.legacy.runtimeLearningWakeHook(context);
     } catch (error: any) {
       Logger.warning(
         `[DistillationHeartbeat] runtime learning coordination failed: ${error?.message ?? error}`,
@@ -360,14 +442,10 @@ export class DistillationHeartbeatScheduler {
     }
   }
 
-  /**
-   * Best-effort invocation of the cycle-complete hook (issue #29). A throwing
-   * hook is logged and never blocks the heartbeat or cursor advancement.
-   */
-  private async runCycleCompleteHook(): Promise<void> {
-    if (!this.cycleCompleteHook) return;
+  private async legacyRunCycleCompleteHook(): Promise<void> {
+    if (!this.legacy?.cycleCompleteHook) return;
     try {
-      await this.cycleCompleteHook();
+      await this.legacy.cycleCompleteHook();
     } catch (error: any) {
       Logger.warning(
         `[DistillationHeartbeat] cycle-complete hook failed: ${error?.message ?? error}`,
@@ -375,10 +453,10 @@ export class DistillationHeartbeatScheduler {
     }
   }
 
-  private async runSettlementDeadlineWakeHook(): Promise<void> {
-    if (!this.settlementDeadlineWakeHook) return;
+  private async legacyRunSettlementDeadlineWakeHook(): Promise<void> {
+    if (!this.legacy?.settlementDeadlineWakeHook) return;
     try {
-      await this.settlementDeadlineWakeHook();
+      await this.legacy.settlementDeadlineWakeHook();
     } catch (error: any) {
       Logger.warning(
         `[DistillationHeartbeat] settlement-deadline wake failed: ${error?.message ?? error}`,
@@ -386,10 +464,10 @@ export class DistillationHeartbeatScheduler {
     }
   }
 
-  private async runCuratorReviewHook(): Promise<void> {
-    if (!this.curatorReviewHook) return;
+  private async legacyRunCuratorReviewHook(): Promise<void> {
+    if (!this.legacy?.curatorReviewHook) return;
     try {
-      await this.curatorReviewHook();
+      await this.legacy.curatorReviewHook();
     } catch (error: any) {
       Logger.warning(
         `[DistillationHeartbeat] curator review failed: ${error?.message ?? error}`,
@@ -397,10 +475,12 @@ export class DistillationHeartbeatScheduler {
     }
   }
 
+  // -----------------------------------------------------------------------
+  // Scheduling
+  // -----------------------------------------------------------------------
+
   private scheduleNextRun(): void {
-    if (this.stopped) {
-      return;
-    }
+    if (this.stopped) return;
 
     const config = getDistillationHeartbeatConfig(this.workingDirectory);
     const intervalDelay = Math.min(
@@ -408,14 +488,10 @@ export class DistillationHeartbeatScheduler {
       Math.max(MIN_TIMEOUT_MS, config.intervalHours * 60 * 60 * 1000),
     );
 
-    // Use the planner to derive the next wake time from durable state.
-    // If any non-discovery deadline fires before the discovery interval,
-    // wake earlier. A corrupt or missing planner source falls back to the
-    // interval delay gracefully (the planner returns null for each source).
     let nextDelay: number;
     let wakeReason: HeartbeatReason;
     try {
-      const plan = this.planner.plan();
+      const plan = this.getActivePlanner().plan();
       if (plan.nextWakeTime !== null) {
         const deadlineDelta = Math.max(0, plan.nextWakeTime - plan.now.getTime());
         if (deadlineDelta < intervalDelay) {
@@ -443,16 +519,38 @@ export class DistillationHeartbeatScheduler {
     }, nextDelay);
   }
 
+  private getActivePlanner(): DueWorkPlanner {
+    if (this.runtimeLearning) {
+      return this.runtimeLearning.getPlanner();
+    }
+    return this.getLegacyPlanner();
+  }
+
+  private getLegacyPlanner(): DueWorkPlanner {
+    if (this.fallbackPlanner) return this.fallbackPlanner;
+    const config = getDistillationHeartbeatConfig(this.workingDirectory);
+    return new DueWorkPlanner({
+      learningEpisodeStorePath: config.learningEpisodeStorePath,
+      reviewQueuePath: config.skillEvolutionReviewQueuePath,
+      curatorStatePath: config.skillEvolutionCuratorStatePath,
+      curatorIntervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
+    });
+  }
+
+  // -----------------------------------------------------------------------
+  // Heartbeat record keeping
+  // -----------------------------------------------------------------------
+
   private recordHeartbeat(
-    recordPath: string,
     reason: HeartbeatReason,
     unitsProcessed: number,
     advancedFiles: number,
   ): void {
+    const config = getDistillationHeartbeatConfig(this.workingDirectory);
     let record: HeartbeatRecord;
     try {
-      if (fs.existsSync(recordPath)) {
-        record = JSON.parse(fs.readFileSync(recordPath, 'utf-8')) as HeartbeatRecord;
+      if (fs.existsSync(config.heartbeatRecordPath)) {
+        record = JSON.parse(fs.readFileSync(config.heartbeatRecordPath, 'utf-8')) as HeartbeatRecord;
       } else {
         record = emptyHeartbeatRecord();
       }
@@ -467,20 +565,44 @@ export class DistillationHeartbeatScheduler {
     record.lastAdvancedFiles = advancedFiles;
 
     try {
-      fs.mkdirSync(path.dirname(recordPath), { recursive: true });
-      const tmpPath = `${recordPath}.${process.pid}.${Date.now()}.tmp`;
+      fs.mkdirSync(path.dirname(config.heartbeatRecordPath), { recursive: true });
+      const tmpPath = `${config.heartbeatRecordPath}.${process.pid}.${Date.now()}.tmp`;
       fs.writeFileSync(tmpPath, JSON.stringify(record, null, 2), {
         encoding: 'utf-8',
         mode: 0o600,
       });
-      fs.renameSync(tmpPath, recordPath);
+      fs.renameSync(tmpPath, config.heartbeatRecordPath);
     } catch (error: any) {
       Logger.warning(`[DistillationHeartbeat] failed to record heartbeat: ${error.message}`);
     }
   }
 }
 
+// ---------------------------------------------------------------------------
+// Type guard
+// ---------------------------------------------------------------------------
 
+function isRuntimeLearning(value: unknown): value is RuntimeLearning {
+  return (
+    !!value
+    && typeof value === 'object'
+    && 'wake' in value
+    && 'getPlanner' in value
+    && 'getConfig' in value
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Default processor
+// ---------------------------------------------------------------------------
+
+function defaultProcessor(): DistillationUnitProcessor {
+  return () => {};
+}
+
+// ---------------------------------------------------------------------------
+// Legacy session-log processing helpers (preserved for test compatibility)
+// ---------------------------------------------------------------------------
 
 async function processSessionLogAsync(
   filePath: string,
@@ -494,17 +616,12 @@ async function processSessionLogAsync(
   admittedEpisodes: number;
   contradictionSignals: number;
 }> {
-  // Keep the extraction/cursor semantics in distillation-unit.ts while
-  // allowing the processor to be asynchronous. This mirrors processSessionLog
-  // and intentionally advances the cursor only after the branch commit.
   const state = loadLogCursorState(stateFilePath);
   const cursor = getCursor(state, filePath);
   let extracted;
   try {
     const crossFileContinuity: CrossFileContinuityOptions = {
       orderedFilePaths,
-      // The extractor derives the current file's identity from its first new
-      // turn, then requires every predecessor/current turn to match it.
     };
     extracted = extractDistillationUnit(filePath, cursor, { crossFileContinuity });
   } catch (error) {
@@ -556,7 +673,7 @@ async function processSessionLogAsync(
   };
 }
 
-function summarizeIngestionResult(result: unknown): RuntimeLearningIngestionReport {
+function summarizeIngestionResult(result: unknown): { admittedEpisodes: number; contradictionSignals: number } {
   if (!isEvidenceIngestionResult(result)) {
     return { admittedEpisodes: 0, contradictionSignals: 0 };
   }
@@ -587,6 +704,17 @@ function collectJsonlFilesForHeartbeat(dir: string): string[] {
   return files.sort();
 }
 
+function resolveSessionLogsRoot(logsRoot: string): string {
+  const normalizedRoot = path.resolve(logsRoot);
+  return path.basename(normalizedRoot) === 'sessions'
+    ? normalizedRoot
+    : path.join(normalizedRoot, 'sessions');
+}
+
+// ---------------------------------------------------------------------------
+// Legacy: loadHeartbeatRecord (preserved for backward compatibility)
+// ---------------------------------------------------------------------------
+
 export function loadHeartbeatRecord(recordPath: string): HeartbeatRecord {
   try {
     if (!fs.existsSync(recordPath)) {
@@ -596,11 +724,4 @@ export function loadHeartbeatRecord(recordPath: string): HeartbeatRecord {
   } catch {
     return emptyHeartbeatRecord();
   }
-}
-
-function resolveSessionLogsRoot(logsRoot: string): string {
-  const normalizedRoot = path.resolve(logsRoot);
-  return path.basename(normalizedRoot) === 'sessions'
-    ? normalizedRoot
-    : path.join(normalizedRoot, 'sessions');
 }

@@ -1,15 +1,27 @@
+/**
+ * Runtime command support — startup wiring (issue #53).
+ *
+ * Simplified to construct one RuntimeLearning module instead of manually
+ * coordinating evidence extraction, episode state, review queue, and curator
+ * hooks. The Distillation Heartbeat Scheduler is a thin wake-loop adapter
+ * that delegates to RuntimeLearning.wake().
+ */
+
 import { CatscoLogUploadScheduler } from './catsco-log-upload-scheduler';
 import { DistillationHeartbeatScheduler } from './distillation-heartbeat-scheduler';
 import { DistillationPipeline, defaultDistilledOutputDir } from './distillation-pipeline';
 import { bootstrapLegacyDistilledSkillsOnce } from './distilled-skill-bootstrap';
 import { getDistillationHeartbeatConfig } from './distillation-heartbeat-config';
+import { LearningEpisodeStore } from './learning-episode';
+import { EvidenceIngestor } from './evidence-ingestor';
 import { PathResolver } from './path-resolver';
 import { AIService } from './ai-service';
 import { Logger } from './logger';
 import { SkillEvolutionOptions, SkillEvolutionRuntime } from './skill-evolution';
 import { SkillUsageCurator } from './skill-usage-curator';
 import { SkillUsageLedger } from './skill-usage-ledger';
-import { RuntimeLearningCoordinator } from './runtime-learning-coordinator';
+import { DueWorkPlanner } from './due-work-planner';
+import { RuntimeLearning } from './runtime-learning';
 
 export interface RuntimeCommandSupportOptions {
   /**
@@ -25,11 +37,12 @@ interface ActiveRuntimeSupport {
   catscoLogUploadScheduler: CatscoLogUploadScheduler | null;
   distillationHeartbeatScheduler: DistillationHeartbeatScheduler | null;
   /**
-   * The DistillationPipeline wired as the heartbeat scheduler processor, or
-   * `null` when the heartbeat did not start for the current runtime. Exposed so
-   * startup-level regression tests can prove the runtime uses the full pipeline
-   * path rather than the scheduler's default no-op processor.
+   * The RuntimeLearning production module — the single background-learning
+   * entry point. Exposed so startup-level regression tests can prove the
+   * runtime uses RuntimeLearning rather than legacy wiring.
    */
+  runtimeLearning: RuntimeLearning | null;
+  /** Legacy DistillationPipeline accessor (compatibility). */
   distillationPipeline: DistillationPipeline | null;
   stop(): Promise<void>;
 }
@@ -52,18 +65,20 @@ export async function startRuntimeCommandSupport(
         : null;
 
       let distillationHeartbeatScheduler: DistillationHeartbeatScheduler | null = null;
+      let runtimeLearning: RuntimeLearning | null = null;
       let distillationPipeline: DistillationPipeline | null = null;
 
-      // Wire the V3 DistillationPipeline (episode admission -> Author/Verifier
-      // review -> Capability Transition) into the runtime heartbeat. Production
-      // startup uses the real constrained branches; tests may inject only the
-      // branch completion fixtures through the narrow options seam above.
+      // Construct the single RuntimeLearning production module.
       if (DistillationHeartbeatScheduler.shouldStartForCurrentRuntime(workingDirectory)) {
         const config = getDistillationHeartbeatConfig(workingDirectory);
+        const skillsRoot = PathResolver.getSkillsPath();
+        const outputDir = defaultDistilledOutputDir(skillsRoot);
+
+        // V3 Skill Evolution Runtime
         const skillEvolution = config.skillEvolutionEnabled
           ? new SkillEvolutionRuntime({
             workingDirectory,
-            outputDir: defaultDistilledOutputDir(PathResolver.getSkillsPath()),
+            outputDir,
             registryPath: config.skillEvolutionRegistryPath,
             auditPath: config.skillEvolutionAuditPath,
             journalPath: config.skillEvolutionJournalPath,
@@ -77,18 +92,35 @@ export async function startRuntimeCommandSupport(
             verifierModel: config.skillEvolutionVerifierModel,
             ...options.skillEvolutionOptions,
           })
-          : undefined;
+          : null;
+
+        // Legacy distilled skill bootstrap (V3 bootstrap reassessment)
         if (skillEvolution) {
           try {
             await bootstrapLegacyDistilledSkillsOnce({
               skillEvolution,
-              generatedDistilledRoot: defaultDistilledOutputDir(PathResolver.getSkillsPath()),
+              generatedDistilledRoot: outputDir,
             });
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             Logger.warning(`Legacy distilled skill bootstrap failed: ${message}`);
           }
         }
+
+        // Durable Learning Episode store
+        const learningEpisodeStore = skillEvolution
+          ? new LearningEpisodeStore(config.learningEpisodeStorePath)
+          : null;
+
+        // Evidence Ingestor (source admission only, no review)
+        const evidenceIngestor = learningEpisodeStore
+          ? new EvidenceIngestor({
+            episodeStore: learningEpisodeStore,
+            settlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
+          })
+          : null;
+
+        // Skill Usage Curator
         const curator = skillEvolution
           ? new SkillUsageCurator({
             ledger: new SkillUsageLedger(config.skillUsageLedgerPath),
@@ -98,35 +130,52 @@ export async function startRuntimeCommandSupport(
             now: options.clock,
           })
           : null;
-        const pipeline = new DistillationPipeline({
-          outputDir: defaultDistilledOutputDir(PathResolver.getSkillsPath()),
+
+        // Legacy DistillationPipeline (compatibility only)
+        distillationPipeline = new DistillationPipeline({
+          outputDir,
           reviewOutcomesPath: config.reviewOutcomesPath,
           needsReviewQueuePath: config.needsReviewQueuePath,
           capabilityRegistryPath: config.capabilityRegistryPath,
           workLogRoot: config.workLogRoot,
-          skillEvolution,
+          skillEvolution: skillEvolution ?? undefined,
           learningEpisodeStorePath: config.learningEpisodeStorePath,
           learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
           skillUsageCurator: curator ?? undefined,
         });
-        distillationPipeline = pipeline;
-        const runtimeLearningCoordinator = skillEvolution
-          ? new RuntimeLearningCoordinator(pipeline, curator)
-          : null;
+
+        // Due Work Planner
+        const planner = new DueWorkPlanner({
+          learningEpisodeStorePath: config.learningEpisodeStorePath,
+          reviewQueuePath: config.skillEvolutionReviewQueuePath,
+          curatorStatePath: config.skillEvolutionCuratorStatePath,
+          curatorIntervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
+        });
+
+        // Construct the single RuntimeLearning module.
+        // evidenceIngestor may be null when V3 is disabled — in that case
+        // fall back to the legacy pipeline's admitEvidence for compatibility.
+        runtimeLearning = new RuntimeLearning({
+          workingDirectory,
+          evidenceIngestor: evidenceIngestor ?? {
+            ingest(unit: any) {
+              return distillationPipeline!.admitEvidence(unit);
+            },
+          } as any,
+          learningEpisodeStore: learningEpisodeStore ?? new LearningEpisodeStore(
+            config.learningEpisodeStorePath,
+          ),
+          skillEvolution: skillEvolution!,
+          curator,
+          planner,
+          legacyPipeline: distillationPipeline,
+          clock: options.clock,
+        });
+
+        // Thin heartbeat scheduler that delegates to RuntimeLearning
         distillationHeartbeatScheduler = new DistillationHeartbeatScheduler(
           workingDirectory,
-          // Issue #50: the heartbeat processor is Evidence Ingestion only.
-          // It durably admits Learning Episodes and Contradiction Signals; the
-          // scheduler advances the Log Cursor once admission returns. Runtime
-          // Learning coordination then settles/reviews due work afterwards, so
-          // a reviewer failure never rewinds or blocks source acknowledgement.
-          unit => (skillEvolution ? pipeline.admitEvidence(unit) : pipeline.processUnit(unit)),
-          null,
-          null,
-          null,
-          runtimeLearningCoordinator
-            ? context => runtimeLearningCoordinator.runWake(context)
-            : null,
+          runtimeLearning,
         );
       }
 
@@ -141,6 +190,7 @@ export async function startRuntimeCommandSupport(
       const support: ActiveRuntimeSupport = {
         catscoLogUploadScheduler,
         distillationHeartbeatScheduler,
+        runtimeLearning,
         distillationPipeline,
         async stop() {
           if (catscoLogUploadScheduler) {
@@ -157,7 +207,7 @@ export async function startRuntimeCommandSupport(
     })()
       .finally(() => {
         startPromise = null;
-      })
+      });
   }
 
   return startPromise;

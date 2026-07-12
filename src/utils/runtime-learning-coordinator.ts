@@ -1,3 +1,14 @@
+/**
+ * LEGACY COMPATIBILITY ADAPTER — issue #53 supersedes this module.
+ *
+ * Production background learning now uses `RuntimeLearning`
+ * (./runtime-learning.ts) as the single entry point. This legacy coordinator
+ * is retained only for test adapters and explicit compatibility configuration;
+ * no new RuntimeLearning behavior depends on it.
+ *
+ * See `RuntimeLearning` for the production entry point.
+ */
+
 import { DistillationPipeline, QueueReviewResultV3, V3PipelineUnitResult } from './distillation-pipeline';
 import { CapabilityTransitionKind } from './skill-evolution';
 import { CuratorRunResult, SkillUsageCurator } from './skill-usage-curator';
