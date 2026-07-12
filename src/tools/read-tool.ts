@@ -54,7 +54,8 @@ export class ReadTool implements Tool {
   definition: ToolDefinition = {
     name: 'read_file',
     description: [
-      '读取一个本地文件或当前用户轮次授权的 CatsCo 附件。',
+      '读取一个已定位的本地文件或当前用户轮次授权的 CatsCo 附件。',
+      '通常先用 glob 定位候选路径，或用 grep 找到包含目标内容的文件，再读取具体文件。',
       '支持文本/代码、PDF、图片和 Jupyter notebook。文本默认只读前若干行，可用 offset/limit 分页。',
       '图片会按当前模型能力处理：视觉模型收到图片块，非视觉模型收到 reader proxy 的文字解析结果。',
     ].join('\n'),

@@ -73,8 +73,116 @@ describe('ShellTool current directory probe', () => {
     assert.strictEqual(result.ok, true);
     assert.ok(fs.existsSync(path.join(testRoot, 'sub', 'marker.txt')));
     assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
-    assert.ok((result.content as string).includes(`Working directory: ${path.resolve(testRoot, 'sub')}`));
-    assert.ok((result.content as string).includes(`Final cwd: ${path.resolve(testRoot, 'sub')}`));
+    assert.ok((result.content as string).includes(`cwd_before: ${path.resolve(testRoot, 'sub')}`));
+    assert.ok((result.content as string).includes(`cwd_after: ${path.resolve(testRoot, 'sub')}`));
+  });
+
+  test('successful commands return both stdout and stderr', async () => {
+    const tool = new ShellTool();
+    const command = process.platform === 'win32'
+      ? `& ${quotePowerShellString(process.execPath)} -e "process.stdout.write('stdout-visible\\n'); process.stderr.write('stderr-visible\\n')"`
+      : `${quotePosixString(process.execPath)} -e "process.stdout.write('stdout-visible\\n'); process.stderr.write('stderr-visible\\n')"`;
+    const result = await tool.execute({ command }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    const content = result.content as string;
+    assert.match(content, /^Command completed/);
+    assert.match(content, /^status: succeeded$/m);
+    assert.match(content, /^exit_code: 0$/m);
+    assert.match(content, /^timed_out: false$/m);
+    assert.match(content, /^stdout_lines: 1$/m);
+    assert.match(content, /^stderr_lines: 1$/m);
+    assert.ok(content.includes('stdout-visible'));
+    assert.ok(content.includes('stderr-visible'));
+  });
+
+  test('large successful output is truncated and persisted as an artifact', async () => {
+    const tool = new ShellTool();
+    const command = process.platform === 'win32'
+      ? `& ${quotePowerShellString(process.execPath)} -e "process.stdout.write('out-' + 'x'.repeat(35000) + '-end')"`
+      : `${quotePosixString(process.execPath)} -e "process.stdout.write('out-' + 'x'.repeat(35000) + '-end')"`;
+    const result = await tool.execute({ command }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    const content = result.content as string;
+    assert.match(content, /^status: succeeded$/m);
+    assert.match(content, /^truncated: true$/m);
+    assert.match(content, /^truncated_reason: output_exceeded_inline_limit$/m);
+    assert.match(content, /^original_output_chars: 35008$/m);
+    assert.ok(content.length < 34000);
+
+    const artifactPath = readContractField(content, 'output_artifact');
+    assert.ok(artifactPath, 'expected output_artifact field');
+    assert.ok(fs.existsSync(artifactPath));
+    const artifact = fs.readFileSync(artifactPath, 'utf8');
+    assert.ok(artifact.includes('out-' + 'x'.repeat(35000) + '-end'));
+  });
+
+  test('stdout larger than the old maxBuffer is persisted without failing', async () => {
+    const tool = new ShellTool();
+    const outputChars = 11 * 1024 * 1024;
+    const command = process.platform === 'win32'
+      ? `& ${quotePowerShellString(process.execPath)} -e "process.stdout.write('z'.repeat(${outputChars}))"`
+      : `${quotePosixString(process.execPath)} -e "process.stdout.write('z'.repeat(${outputChars}))"`;
+    const result = await tool.execute({ command, timeout: 60000 }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    const content = result.content as string;
+    assert.match(content, /^status: succeeded$/m);
+    assert.match(content, /^truncated: true$/m);
+    assert.match(content, new RegExp(`^original_output_chars: ${outputChars}$`, 'm'));
+    assert.doesNotMatch(content, /maxBuffer exceeded/);
+
+    const artifactPath = readContractField(content, 'output_artifact');
+    assert.ok(artifactPath, 'expected output_artifact field');
+    assert.ok(fs.statSync(artifactPath).size > outputChars);
+  });
+
+  test('large failed stderr output is truncated and persisted as an artifact', async () => {
+    const tool = new ShellTool();
+    const command = process.platform === 'win32'
+      ? `& ${quotePowerShellString(process.execPath)} -e "process.stderr.write('err-' + 'y'.repeat(35000) + '-end'); process.exit(7)"`
+      : `${quotePosixString(process.execPath)} -e "process.stderr.write('err-' + 'y'.repeat(35000) + '-end'); process.exit(7)"`;
+    const result = await tool.execute({ command }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'TOOL_EXECUTION_ERROR');
+    assert.match(result.message, /^status: failed$/m);
+    assert.match(result.message, /^exit_code: 7$/m);
+    assert.match(result.message, /^truncated: true$/m);
+    assert.match(result.message, /^original_output_chars: 35008$/m);
+    assert.ok(result.message.length < 34000);
+
+    const artifactPath = readContractField(result.message, 'output_artifact');
+    assert.ok(artifactPath, 'expected output_artifact field');
+    assert.ok(fs.existsSync(artifactPath));
+    const artifact = fs.readFileSync(artifactPath, 'utf8');
+    assert.ok(artifact.includes('err-' + 'y'.repeat(35000) + '-end'));
+  });
+
+  test('POSIX execution uses bash when bash is available', {
+    skip: process.platform === 'win32' || !fs.existsSync('/bin/bash'),
+  }, async () => {
+    const tool = new ShellTool();
+    const result = await tool.execute({ command: 'echo "bash-version:${BASH_VERSION:-missing}"' }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, true);
+    assert.match(result.content as string, /bash-version:[0-9]/);
   });
 
   test('failed cd does not update session current directory', async () => {
@@ -86,10 +194,73 @@ describe('ShellTool current directory probe', () => {
 
     assert.strictEqual(result.ok, false);
     assert.strictEqual(currentDirectory, testRoot);
+    assert.match(result.message, /^Command completed/);
+    assert.match(result.message, /^status: failed$/m);
+    assert.match(result.message, /^timed_out: false$/m);
     assert.ok(!result.message.includes('__XIAOBA_CWD_MARKER__'));
     assert.ok(!result.message.includes('status=$?'));
     assert.ok(!result.message.includes('printf'));
     assert.ok(!result.message.includes('exit "$status"'));
+  });
+
+  test('timed out commands return structured timeout metadata', async () => {
+    const tool = new ShellTool();
+    const command = process.platform === 'win32' ? 'Start-Sleep -Seconds 5' : 'sleep 5';
+    const result = await tool.execute({ command, timeout: 50 }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'EXECUTION_TIMEOUT');
+    assert.match(result.message, /^Command completed/);
+    assert.match(result.message, /^status: timed_out$/m);
+    assert.match(result.message, /^timed_out: true$/m);
+    assert.match(result.message, /^stdout:/m);
+    assert.match(result.message, /^stderr:/m);
+  });
+
+  test('aborted commands return structured abort metadata', async () => {
+    const tool = new ShellTool();
+    const controller = new AbortController();
+    const command = process.platform === 'win32' ? 'Start-Sleep -Seconds 5' : 'sleep 5';
+    const run = tool.execute({ command, timeout: 5000 }, {
+      ...context,
+      workingDirectory: currentDirectory,
+      abortSignal: controller.signal,
+    });
+    const abortTimer = setTimeout(() => controller.abort(), 50);
+
+    try {
+      const result = await run;
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.errorCode, 'EXECUTION_TIMEOUT');
+      assert.match(result.message, /^Command completed/);
+      assert.match(result.message, /^status: aborted$/m);
+      assert.match(result.message, /^timed_out: false$/m);
+      assert.match(result.message, /^stdout:/m);
+      assert.match(result.message, /^stderr:/m);
+    } finally {
+      clearTimeout(abortTimer);
+    }
+  });
+
+  test('POSIX timeout terminates child process group', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const tool = new ShellTool();
+    const markerPath = path.join(testRoot, 'late-output.txt');
+    const script = `sleep 1; printf late > ${quotePosixString(markerPath)}`;
+    const result = await tool.execute({ command: `sh -c ${quotePosixString(script)}`, timeout: 50 }, {
+      ...context,
+      workingDirectory: currentDirectory,
+    });
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorCode, 'EXECUTION_TIMEOUT');
+    assert.match(result.message, /^status: timed_out$/m);
+    await delay(1200);
+    assert.strictEqual(fs.existsSync(markerPath), false);
   });
 
   test('successful cd is persisted even when a later command fails', async () => {
@@ -198,8 +369,55 @@ describe('ShellTool current directory probe', () => {
     assert.ok(!/[A-Z]:\\.*>/.test(result.message));
   });
 
+  test('Windows cmd fallback honors abort signal', {
+    skip: process.platform !== 'win32',
+  }, async () => {
+    const tool = new ShellTool();
+    (tool as any).executeWindowsPowerShellScript = async () => {
+      const error: any = new Error('spawn powershell.exe ENOENT');
+      error.code = 'ENOENT';
+      throw error;
+    };
+
+    const controller = new AbortController();
+    const run = tool.execute({ command: 'ping -n 6 127.0.0.1 > nul', timeout: 5000 }, {
+      ...context,
+      workingDirectory: currentDirectory,
+      abortSignal: controller.signal,
+    });
+    const abortTimer = setTimeout(() => controller.abort(), 50);
+
+    try {
+      const result = await run;
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.errorCode, 'EXECUTION_TIMEOUT');
+      assert.match(result.message, /^status: aborted$/m);
+      assert.match(result.message, /^timed_out: false$/m);
+    } finally {
+      clearTimeout(abortTimer);
+    }
+  });
+
 });
 
 function assertSameDirectory(actual: string, expected: string): void {
   assert.strictEqual(fs.realpathSync(actual), fs.realpathSync(expected));
+}
+
+function quotePowerShellString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function quotePosixString(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function readContractField(content: string, field: string): string | undefined {
+  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = content.match(new RegExp(`^${escaped}:\\s*(.+)$`, 'm'));
+  return match?.[1]?.trim();
 }
