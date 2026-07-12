@@ -68,84 +68,75 @@ export async function startRuntimeCommandSupport(
       let runtimeLearning: RuntimeLearning | null = null;
       let distillationPipeline: DistillationPipeline | null = null;
 
-      // Construct the single RuntimeLearning production module.
-      if (DistillationHeartbeatScheduler.shouldStartForCurrentRuntime(workingDirectory)) {
-        const config = getDistillationHeartbeatConfig(workingDirectory);
-        const skillsRoot = PathResolver.getSkillsPath();
-        const outputDir = defaultDistilledOutputDir(skillsRoot);
+      const config = getDistillationHeartbeatConfig(workingDirectory);
+      const skillsRoot = PathResolver.getSkillsPath();
+      const outputDir = defaultDistilledOutputDir(skillsRoot);
 
+      // V3 components (null when disabled)
+      let skillEvolution: SkillEvolutionRuntime | null = null;
+      let learningEpisodeStore: LearningEpisodeStore | null = null;
+      let evidenceIngestor: EvidenceIngestor | null = null;
+      let curator: SkillUsageCurator | null = null;
+      let planner: DueWorkPlanner | null = null;
+
+      // Only build V3 runtime components (RuntimeLearning + scheduler) when
+      // the heartbeat master switch is on AND skill evolution is enabled.
+      // When V3 is disabled, background learning is fully suppressed — no
+      // RuntimeLearning or heartbeat scheduler is constructed. The legacy
+      // DistillationPipeline is still constructed for API-based compatibility.
+      const v3Enabled = DistillationHeartbeatScheduler.shouldStartForCurrentRuntime(workingDirectory)
+        && config.skillEvolutionEnabled;
+
+      if (v3Enabled) {
         // V3 Skill Evolution Runtime
-        const skillEvolution = config.skillEvolutionEnabled
-          ? new SkillEvolutionRuntime({
-            workingDirectory,
-            outputDir,
-            registryPath: config.skillEvolutionRegistryPath,
-            auditPath: config.skillEvolutionAuditPath,
-            journalPath: config.skillEvolutionJournalPath,
-            reviewQueuePath: config.skillEvolutionReviewQueuePath,
-            aiService: new AIService(),
-            settlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
-            reviewerConcurrency: config.skillEvolutionReviewerConcurrency,
-            operationalRetryMs: config.skillEvolutionOperationalRetryMinutes * 60 * 1000,
-            operationalRetryMaxMs: config.skillEvolutionOperationalRetryMaxHours * 60 * 60 * 1000,
-            authorModel: config.skillEvolutionAuthorModel,
-            verifierModel: config.skillEvolutionVerifierModel,
-            ...options.skillEvolutionOptions,
-          })
-          : null;
+        skillEvolution = new SkillEvolutionRuntime({
+          workingDirectory,
+          outputDir,
+          registryPath: config.skillEvolutionRegistryPath,
+          auditPath: config.skillEvolutionAuditPath,
+          journalPath: config.skillEvolutionJournalPath,
+          reviewQueuePath: config.skillEvolutionReviewQueuePath,
+          aiService: new AIService(),
+          settlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
+          reviewerConcurrency: config.skillEvolutionReviewerConcurrency,
+          operationalRetryMs: config.skillEvolutionOperationalRetryMinutes * 60 * 1000,
+          operationalRetryMaxMs: config.skillEvolutionOperationalRetryMaxHours * 60 * 60 * 1000,
+          authorModel: config.skillEvolutionAuthorModel,
+          verifierModel: config.skillEvolutionVerifierModel,
+          ...options.skillEvolutionOptions,
+        });
 
         // Legacy distilled skill bootstrap (V3 bootstrap reassessment)
-        if (skillEvolution) {
-          try {
-            await bootstrapLegacyDistilledSkillsOnce({
-              skillEvolution,
-              generatedDistilledRoot: outputDir,
-            });
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            Logger.warning(`Legacy distilled skill bootstrap failed: ${message}`);
-          }
+        try {
+          await bootstrapLegacyDistilledSkillsOnce({
+            skillEvolution,
+            generatedDistilledRoot: outputDir,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          Logger.warning(`Legacy distilled skill bootstrap failed: ${message}`);
         }
 
         // Durable Learning Episode store
-        const learningEpisodeStore = skillEvolution
-          ? new LearningEpisodeStore(config.learningEpisodeStorePath)
-          : null;
+        learningEpisodeStore = new LearningEpisodeStore(config.learningEpisodeStorePath);
 
         // Evidence Ingestor (source admission only, no review)
-        const evidenceIngestor = learningEpisodeStore
-          ? new EvidenceIngestor({
-            episodeStore: learningEpisodeStore,
-            settlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
-          })
-          : null;
+        evidenceIngestor = new EvidenceIngestor({
+          episodeStore: learningEpisodeStore,
+          settlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
+        });
 
         // Skill Usage Curator
-        const curator = skillEvolution
-          ? new SkillUsageCurator({
-            ledger: new SkillUsageLedger(config.skillUsageLedgerPath),
-            statePath: config.skillEvolutionCuratorStatePath,
-            intervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
-            runtime: skillEvolution,
-            now: options.clock,
-          })
-          : null;
-
-        // Legacy DistillationPipeline (compatibility only)
-        distillationPipeline = new DistillationPipeline({
-          outputDir,
-          reviewOutcomesPath: config.reviewOutcomesPath,
-          needsReviewQueuePath: config.needsReviewQueuePath,
-          capabilityRegistryPath: config.capabilityRegistryPath,
-          workLogRoot: config.workLogRoot,
-          skillEvolution: skillEvolution ?? undefined,
-          learningEpisodeStorePath: config.learningEpisodeStorePath,
-          learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
-          skillUsageCurator: curator ?? undefined,
+        curator = new SkillUsageCurator({
+          ledger: new SkillUsageLedger(config.skillUsageLedgerPath),
+          statePath: config.skillEvolutionCuratorStatePath,
+          intervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
+          runtime: skillEvolution,
+          now: options.clock,
         });
 
         // Due Work Planner
-        const planner = new DueWorkPlanner({
+        planner = new DueWorkPlanner({
           learningEpisodeStorePath: config.learningEpisodeStorePath,
           reviewQueuePath: config.skillEvolutionReviewQueuePath,
           curatorStatePath: config.skillEvolutionCuratorStatePath,
@@ -153,22 +144,14 @@ export async function startRuntimeCommandSupport(
         });
 
         // Construct the single RuntimeLearning module.
-        // evidenceIngestor may be null when V3 is disabled — in that case
-        // fall back to the legacy pipeline's admitEvidence for compatibility.
         runtimeLearning = new RuntimeLearning({
           workingDirectory,
-          evidenceIngestor: evidenceIngestor ?? {
-            ingest(unit: any) {
-              return distillationPipeline!.admitEvidence(unit);
-            },
-          } as any,
-          learningEpisodeStore: learningEpisodeStore ?? new LearningEpisodeStore(
-            config.learningEpisodeStorePath,
-          ),
-          skillEvolution: skillEvolution!,
+          evidenceIngestor,
+          learningEpisodeStore,
+          skillEvolution,
           curator,
           planner,
-          legacyPipeline: distillationPipeline,
+          legacyPipeline: distillationPipeline ?? undefined,
           clock: options.clock,
         });
 
@@ -178,6 +161,20 @@ export async function startRuntimeCommandSupport(
           runtimeLearning,
         );
       }
+
+      // Legacy DistillationPipeline (always constructed for API-based
+      // compatibility, even when V3 is disabled).
+      distillationPipeline = new DistillationPipeline({
+        outputDir,
+        reviewOutcomesPath: config.reviewOutcomesPath,
+        needsReviewQueuePath: config.needsReviewQueuePath,
+        capabilityRegistryPath: config.capabilityRegistryPath,
+        workLogRoot: config.workLogRoot,
+        skillEvolution: skillEvolution ?? undefined,
+        learningEpisodeStorePath: config.learningEpisodeStorePath,
+        learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
+        skillUsageCurator: curator ?? undefined,
+      });
 
       if (catscoLogUploadScheduler) {
         await catscoLogUploadScheduler.start();
