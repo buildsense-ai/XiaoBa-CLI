@@ -111,7 +111,13 @@ export async function startRuntimeCommandSupport(
         distillationPipeline = pipeline;
         distillationHeartbeatScheduler = new DistillationHeartbeatScheduler(
           workingDirectory,
-          unit => skillEvolution ? pipeline.processUnitAsync(unit) : pipeline.processUnit(unit),
+          // Issue #50: the heartbeat processor is Evidence Ingestion only.
+          // It durably admits Learning Episodes and Contradiction Signals; the
+          // scheduler advances the Log Cursor once admission returns. Branch
+          // Promotion Review runs afterwards in the settlement-deadline wake
+          // hook below, so a reviewer failure never rewinds or blocks source
+          // acknowledgement.
+          unit => (skillEvolution ? pipeline.admitEvidence(unit) : pipeline.processUnit(unit)),
           async () => {
             await pipeline.reviewSkillEvolutionQueueEntries();
             await curator?.runDue();

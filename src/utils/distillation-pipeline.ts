@@ -62,8 +62,8 @@ import {
   LearningEpisode,
   LearningEpisodeStore,
   buildLearningEpisodeCandidate,
-  extractLearningEpisodes,
 } from './learning-episode';
+import { EvidenceIngestor, EvidenceIngestionResult } from './evidence-ingestor';
 import {
   BoundedSourceEvidence,
   EvidenceBundle,
@@ -301,6 +301,7 @@ export class DistillationPipeline {
   private readonly learningEpisodeStore: LearningEpisodeStore | null;
   private readonly learningEpisodeSettlementWindowMs: number | undefined;
   private readonly skillUsageCurator: SkillUsageCurator | null;
+  private readonly evidenceIngestor: EvidenceIngestor | null;
 
   constructor(options: DistillationPipelineOptions) {
     this.distiller = options.distiller ?? DEFAULT_DISTILLER;
@@ -319,6 +320,31 @@ export class DistillationPipeline {
     this.learningEpisodeSettlementWindowMs = options.learningEpisodeSettlementWindowMs;
     this.skillUsageCurator = options.skillUsageCurator ?? null;
     this.outcomes = loadReviewOutcomes(this.reviewOutcomesPath);
+    this.evidenceIngestor = this.learningEpisodeStore
+      ? new EvidenceIngestor({
+        episodeStore: this.learningEpisodeStore,
+        settlementWindowMs: this.learningEpisodeSettlementWindowMs,
+        observeEpisode: episode => this.skillUsageCurator?.observeEpisode(episode),
+      })
+      : null;
+  }
+
+  /**
+   * Evidence Ingestion admission (issues #48, #50). Derives Learning Episodes
+   * and Contradiction Signals from one newly extracted source range and
+   * durably persists them through the Evidence Ingestor. Performs NO Branch
+   * Promotion Review and commits NO Capability Transition.
+   *
+   * The Log Cursor must be acknowledged by the caller only after this method
+   * returns. It throws on evidence-persistence failure so the caller leaves
+   * the cursor at the prior offset for retry. Review runs independently after
+   * cursor acknowledgement (see `processSettledLearningEpisodes`) and its
+   * failure must not rewind the cursor. Returns an empty result when no
+   * durable episode store is configured (legacy/non-episode callers).
+   */
+  admitEvidence(unit: DistillationUnit): EvidenceIngestionResult {
+    if (!this.evidenceIngestor) return { admittedEpisodeIds: [], contradictionSignalIds: [], state: { schemaVersion: 2, episodes: {} } };
+    return this.evidenceIngestor.ingest(unit);
   }
 
   /**
@@ -328,12 +354,12 @@ export class DistillationPipeline {
    */
   async processUnitAsync(unit: DistillationUnit): Promise<PipelineUnitResult | V3PipelineUnitResult> {
     if (!this.skillEvolution) return this.processUnit(unit);
-    if (this.learningEpisodeStore) {
-      const extraction = extractLearningEpisodes(unit, this.learningEpisodeSettlementWindowMs);
-      const extractedState = this.learningEpisodeStore.applyExtraction(extraction);
-      for (const episode of Object.values(extractedState.episodes)) {
-        this.skillUsageCurator?.observeEpisode(episode);
-      }
+    if (this.learningEpisodeStore && this.evidenceIngestor) {
+      // Admission is durable here. Direct callers of this convenience seam get
+      // admission + settlement review in one call. The runtime heartbeat
+      // instead calls `admitEvidence` for the cursor-decoupled path so review
+      // never blocks source acknowledgement (issue #50).
+      this.evidenceIngestor.ingest(unit);
       return this.processSettledLearningEpisodes(new Date(), unit);
     }
 
