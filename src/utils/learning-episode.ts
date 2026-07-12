@@ -72,6 +72,10 @@ export interface LearningEpisode {
   retryOfEpisodeId?: string;
   settlementDeadline: string;
   status: LearningEpisodeStatus;
+  /** Source byte range from the DistillationUnit that admitted this episode. */
+  unitByteRange?: { start: number; end: number };
+  /** Source generatedAt timestamp from the DistillationUnit that admitted this episode. */
+  unitGeneratedAt?: string;
 }
 
 export interface LearningEpisodeExtractionResult {
@@ -101,8 +105,8 @@ export function buildLearningEpisodeCandidate(
   const actionPattern = toolNames.length > 0
     ? `Use the settled artifact workflow with ${toolNames.join(', ')}: ${evidenceSummary}`
     : `Reuse the settled artifact workflow: ${evidenceSummary}`;
-  const sourceByteRange = sourceUnit?.byteRange ?? { start: 0, end: 0 };
-  const generatedAt = sourceUnit?.generatedAt ?? episode.settlementDeadline;
+  const sourceByteRange = sourceUnit?.byteRange ?? episode.unitByteRange ?? { start: 0, end: 0 };
+  const generatedAt = sourceUnit?.generatedAt ?? episode.unitGeneratedAt ?? episode.settlementDeadline;
 
   return {
     schemaVersion: 1,
@@ -199,6 +203,8 @@ export function extractLearningEpisodes(
       ...(predecessor && { predecessorEpisodeId: predecessor.episodeId }),
       settlementDeadline: new Date(Date.parse(deliveryTurn.timestamp) + settlementWindowMs).toISOString(),
       status: signal ? 'contradicted' : 'settling',
+      unitByteRange: unit.byteRange,
+      unitGeneratedAt: unit.generatedAt,
     };
     // A retry points back to the contradicted delivery, never to itself.
     if (predecessor?.status === 'contradicted') {
@@ -235,6 +241,8 @@ export function extractLearningEpisodes(
         contradictionSignals: [],
         settlementDeadline: new Date(Date.parse(delivery.timestamp) + settlementWindowMs).toISOString(),
         status: 'settling',
+        unitByteRange: unit.byteRange,
+        unitGeneratedAt: unit.generatedAt,
       });
     }
   }

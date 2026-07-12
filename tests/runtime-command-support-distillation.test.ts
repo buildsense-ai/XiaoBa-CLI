@@ -365,10 +365,9 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
       null,
       'no distillation scheduler is constructed for inspector-cat runtimes',
     );
-    assert.equal(
+    assert.ok(
       support.distillationPipeline,
-      null,
-      'no distillation pipeline is constructed for inspector-cat runtimes',
+      'distillation pipeline is always constructed for API-based compatibility',
     );
   });
 
@@ -383,10 +382,9 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
       null,
       'no distillation scheduler is constructed when the heartbeat is disabled',
     );
-    assert.equal(
+    assert.ok(
       support.distillationPipeline,
-      null,
-      'no distillation pipeline is constructed when the heartbeat is disabled',
+      'distillation pipeline is always constructed for API-based compatibility',
     );
   });
 

@@ -48,6 +48,7 @@ interface CuratorState {
   schemaVersion: typeof SKILL_USAGE_CURATOR_SCHEMA_VERSION;
   lastRoutineRunAt: string | null;
   reviewedOutcomeFactIds: string[];
+  observedEpisodeIds: string[];
   expedited: Record<string, CuratorWake>;
 }
 
@@ -68,7 +69,15 @@ export class SkillUsageCurator {
   }
 
   observeEpisode(episode: LearningEpisode): SkillUsageOutcomeFact[] {
+    const state = this.loadState();
+    // Skip if already observed (idempotent)
+    if (state.observedEpisodeIds.includes(episode.episodeId)) {
+      return [];
+    }
     const facts = this.options.ledger.recordEpisodeOutcome(episode, this.now());
+    // Track as observed
+    state.observedEpisodeIds.push(episode.episodeId);
+    this.saveState(state);
     for (const fact of facts) if (fact.outcome === 'contradicted') this.requestExpeditedWake(fact);
     return facts;
   }
@@ -231,6 +240,10 @@ export class SkillUsageCurator {
     try {
       const state = JSON.parse(fs.readFileSync(this.options.statePath, 'utf8')) as CuratorState;
       if (state.schemaVersion !== SKILL_USAGE_CURATOR_SCHEMA_VERSION || !Array.isArray(state.reviewedOutcomeFactIds) || !state.expedited) throw new Error('invalid state');
+      // Migrate: add observedEpisodeIds if missing (backward compatibility)
+      if (!Array.isArray(state.observedEpisodeIds)) {
+        state.observedEpisodeIds = [];
+      }
       return state;
     } catch {
       return emptyState();
@@ -259,6 +272,7 @@ function emptyState(): CuratorState {
     schemaVersion: SKILL_USAGE_CURATOR_SCHEMA_VERSION,
     lastRoutineRunAt: null,
     reviewedOutcomeFactIds: [],
+    observedEpisodeIds: [],
     expedited: {},
   };
 }

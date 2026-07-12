@@ -389,6 +389,7 @@ export interface SkillEvolutionQueueReviewResult {
   operationalReviewed: number;
   operationalRetried: number;
   deferredRetried: number;
+  transitionsByKind: Partial<Record<CapabilityTransitionKind, number>>;
 }
 
 export interface TransitionJournal {
@@ -399,6 +400,13 @@ export interface TransitionJournal {
   skillOperations: Array<{ path: string; content?: string; expectedHash?: string; delete?: boolean }>;
   audit: TransitionAuditEntry;
   committedAt?: string;
+}
+
+function incrementTransitionCount(
+  counts: Partial<Record<CapabilityTransitionKind, number>>,
+  transition: CapabilityTransitionKind,
+): void {
+  counts[transition] = (counts[transition] ?? 0) + 1;
 }
 
 export class SkillEvolutionRuntime {
@@ -574,6 +582,7 @@ export class SkillEvolutionRuntime {
         operationalReviewed: 0,
         operationalRetried: 0,
         deferredRetried: 0,
+        transitionsByKind: {},
       };
     }
 
@@ -606,6 +615,7 @@ export class SkillEvolutionRuntime {
         operationalReviewed: 0,
         operationalRetried: 0,
         deferredRetried: 0,
+        transitionsByKind: {},
       };
     }
 
@@ -616,6 +626,7 @@ export class SkillEvolutionRuntime {
       operationalReviewed: 0,
       operationalRetried: 0,
       deferredRetried: 0,
+      transitionsByKind: {},
     };
 
     await mapWithConcurrency(tasks, config.reviewerConcurrency, async item => {
@@ -716,6 +727,7 @@ export class SkillEvolutionRuntime {
         );
         result.deferredRetried++;
       }
+      incrementTransitionCount(result.transitionsByKind, reviewed.transition);
       result.reviewed++;
       result.deferredReviewed++;
     } catch (error) {
@@ -766,6 +778,7 @@ export class SkillEvolutionRuntime {
       } else {
         result.operationalReviewed++;
       }
+      incrementTransitionCount(result.transitionsByKind, reviewed.transition);
       result.reviewed++;
     } catch (error) {
       const operationalError = this.extractOperationalFailure(error);

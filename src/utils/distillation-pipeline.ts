@@ -35,6 +35,7 @@ import {
 } from './capability-registry';
 import { prefilterCapabilities } from './capability-prefilter';
 import { computeDistilledSkillGuidanceFingerprint } from './distilled-skill-content';
+import { Logger } from './logger';
 import {
   addNeedsReviewEntry,
   computeRegistryStateFingerprint,
@@ -62,8 +63,8 @@ import {
   LearningEpisode,
   LearningEpisodeStore,
   buildLearningEpisodeCandidate,
-  extractLearningEpisodes,
 } from './learning-episode';
+import { EvidenceIngestor, EvidenceIngestionResult } from './evidence-ingestor';
 import {
   BoundedSourceEvidence,
   EvidenceBundle,
@@ -181,10 +182,17 @@ export interface PipelineUnitResult {
   needsReviewEntries: NeedsReviewQueueEntry[];
 }
 
+export interface LearningEpisodeMaturationResult {
+  maturedEpisodeIds: string[];
+  becameEligible: number;
+  becameContradicted: number;
+}
+
 export interface V3PipelineUnitResult {
   candidates: DistilledKnowledgeCandidate[];
   evolutions: SkillEvolutionResult[];
   episodes?: LearningEpisode[];
+  maturation?: LearningEpisodeMaturationResult;
 }
 
 /**
@@ -210,6 +218,7 @@ export interface QueueReviewResultV3 {
   operationalReviewed: number;
   operationalRetried: number;
   deferredRetried: number;
+  transitionsByKind: Partial<Record<string, number>>;
 }
 
 function emptyQueueReviewResult(): QueueReviewResult {
@@ -301,6 +310,8 @@ export class DistillationPipeline {
   private readonly learningEpisodeStore: LearningEpisodeStore | null;
   private readonly learningEpisodeSettlementWindowMs: number | undefined;
   private readonly skillUsageCurator: SkillUsageCurator | null;
+  private readonly evidenceIngestor: EvidenceIngestor | null;
+  private readonly pendingCuratorObservationEpisodeIds = new Set<string>();
 
   constructor(options: DistillationPipelineOptions) {
     this.distiller = options.distiller ?? DEFAULT_DISTILLER;
@@ -319,6 +330,32 @@ export class DistillationPipeline {
     this.learningEpisodeSettlementWindowMs = options.learningEpisodeSettlementWindowMs;
     this.skillUsageCurator = options.skillUsageCurator ?? null;
     this.outcomes = loadReviewOutcomes(this.reviewOutcomesPath);
+    this.evidenceIngestor = this.learningEpisodeStore
+      ? new EvidenceIngestor({
+        episodeStore: this.learningEpisodeStore,
+        settlementWindowMs: this.learningEpisodeSettlementWindowMs,
+      })
+      : null;
+  }
+
+  /**
+   * Evidence Ingestion admission (issues #48, #50). Derives Learning Episodes
+   * and Contradiction Signals from one newly extracted source range and
+   * durably persists them through the Evidence Ingestor. Performs NO Branch
+   * Promotion Review and commits NO Capability Transition.
+   *
+   * The Log Cursor must be acknowledged by the caller only after this method
+   * returns. It throws on evidence-persistence failure so the caller leaves
+   * the cursor at the prior offset for retry. Review runs independently after
+   * cursor acknowledgement (see `processSettledLearningEpisodes`) and its
+   * failure must not rewind the cursor. Returns an empty result when no
+   * durable episode store is configured (legacy/non-episode callers).
+   */
+  admitEvidence(unit: DistillationUnit): EvidenceIngestionResult {
+    if (!this.evidenceIngestor) return { admittedEpisodeIds: [], contradictionSignalIds: [], state: { schemaVersion: 2, episodes: {} } };
+    const result = this.evidenceIngestor.ingest(unit);
+    this.queueCuratorObservations(result.admittedEpisodeIds);
+    return result;
   }
 
   /**
@@ -328,12 +365,13 @@ export class DistillationPipeline {
    */
   async processUnitAsync(unit: DistillationUnit): Promise<PipelineUnitResult | V3PipelineUnitResult> {
     if (!this.skillEvolution) return this.processUnit(unit);
-    if (this.learningEpisodeStore) {
-      const extraction = extractLearningEpisodes(unit, this.learningEpisodeSettlementWindowMs);
-      const extractedState = this.learningEpisodeStore.applyExtraction(extraction);
-      for (const episode of Object.values(extractedState.episodes)) {
-        this.skillUsageCurator?.observeEpisode(episode);
-      }
+    if (this.learningEpisodeStore && this.evidenceIngestor) {
+      // Admission is durable here. Direct callers of this convenience seam get
+      // admission + settlement review in one call. The runtime heartbeat
+      // instead calls `admitEvidence` for the cursor-decoupled path so review
+      // never blocks source acknowledgement (issue #50).
+      const result = this.evidenceIngestor.ingest(unit);
+      this.queueCuratorObservations(result.admittedEpisodeIds);
       return this.processSettledLearningEpisodes(new Date(), unit);
     }
 
@@ -373,11 +411,43 @@ export class DistillationPipeline {
       return { candidates: [], evolutions: [] };
     }
 
+    const preSettleEpisodes = Object.values(this.learningEpisodeStore.load().episodes);
+    const preSettleStatuses = new Map(preSettleEpisodes.map(episode => [episode.episodeId, episode.status]));
     const settledState = this.learningEpisodeStore.settle({ now });
-    for (const episode of Object.values(settledState.episodes)) {
-      this.skillUsageCurator?.observeEpisode(episode);
-    }
     const episodes = Object.values(settledState.episodes);
+    const maturedEpisodeIds = episodes
+      .filter(episode => preSettleStatuses.get(episode.episodeId) === 'settling' && episode.status !== 'settling')
+      .map(episode => episode.episodeId);
+    const maturation: LearningEpisodeMaturationResult = {
+      maturedEpisodeIds,
+      becameEligible: episodes.filter(
+        episode => preSettleStatuses.get(episode.episodeId) === 'settling' && episode.status === 'eligible',
+      ).length,
+      becameContradicted: episodes.filter(
+        episode => preSettleStatuses.get(episode.episodeId) === 'settling' && episode.status === 'contradicted',
+      ).length,
+    };
+    const pendingObservationIds = new Set(this.pendingCuratorObservationEpisodeIds);
+    const observationEpisodes = pendingObservationIds.size > 0
+      ? episodes.filter(episode => pendingObservationIds.has(episode.episodeId))
+      : unit
+        ? []
+        : episodes;
+
+    // Curator observation is best-effort (post-ack). If it fails, we keep the
+    // episode queued for a later wake so settlement/review are never blocked by
+    // ledger or curator I/O failures.
+    for (const episode of observationEpisodes) {
+      try {
+        this.skillUsageCurator?.observeEpisode(episode);
+        this.pendingCuratorObservationEpisodeIds.delete(episode.episodeId);
+      } catch (error) {
+        // Observation failure should not block settlement or review.
+        // The episode remains eligible for a later post-ack retry.
+        const message = error instanceof Error ? error.message : String(error);
+        Logger.warning(`[DistillationPipeline] curator observation failed for ${episode.episodeId}: ${message}`);
+      }
+    }
     const reviewInputs: Array<{ candidate: DistilledKnowledgeCandidate; bundle: EvidenceBundle }> = [];
     for (const episode of episodes) {
       if (episode.status !== 'eligible' || this.hasReviewedLearningEpisode(episode)) continue;
@@ -396,7 +466,11 @@ export class DistillationPipeline {
       reviewerConcurrency,
       input => this.skillEvolution!.reviewAndApply(input.bundle),
     );
-    return { candidates: reviewInputs.map(input => input.candidate), evolutions, episodes };
+    return { candidates: reviewInputs.map(input => input.candidate), evolutions, episodes, maturation };
+  }
+
+  private queueCuratorObservations(episodeIds: readonly string[]): void {
+    for (const episodeId of episodeIds) this.pendingCuratorObservationEpisodeIds.add(episodeId);
   }
 
   private hasReviewedLearningEpisode(episode: LearningEpisode): boolean {
@@ -762,6 +836,7 @@ export class DistillationPipeline {
         operationalReviewed: 0,
         operationalRetried: 0,
         deferredRetried: 0,
+        transitionsByKind: {},
       };
     }
     return this.skillEvolution.reviewDueQueueEntries();
