@@ -124,7 +124,24 @@ export class DueWorkPlanner {
       candidates.push({ time: operationalRetryDeadlineMs, reason: 'operational-retry' });
     }
     if (routineCuratorDeadlineMs !== null && routineCuratorDeadlineMs > nowMs) {
-      candidates.push({ time: routineCuratorDeadlineMs, reason: 'curator-routine' });
+      candidates.push({ time: routineCuratorDeadlineMs, reason: 'curator' });
+    }
+
+    // For work that is past its deadline and has no future deadline entry,
+    // add an immediate wake entry so the scheduler does not fall back to
+    // the discovery interval delay. Priority: operational-retry first,
+    // then settlement-deadline, then curator (deterministic ordering).
+    if (due.operationalRetryDue && !candidates.some(c => c.reason === 'operational-retry')) {
+      candidates.push({ time: nowMs, reason: 'operational-retry' });
+    }
+    if (due.settlementDue && !candidates.some(c => c.reason === 'settlement-deadline')) {
+      candidates.push({ time: nowMs, reason: 'settlement-deadline' });
+    }
+    if (due.routineCuratorDue && !candidates.some(c => c.reason === 'curator')) {
+      candidates.push({ time: nowMs, reason: 'curator' });
+    }
+    if (due.expeditedCuratorDue && !candidates.some(c => c.reason === 'curator' && c.time <= nowMs)) {
+      candidates.push({ time: nowMs, reason: 'curator' });
     }
 
     let nextWakeTime: number | null = null;
@@ -159,6 +176,8 @@ export class DueWorkPlanner {
       const parsed = JSON.parse(raw) as {
         episodes?: Record<string, { status?: string; settlementDeadline?: string }>;
       };
+      const settlementSchemaVersion = (parsed as { schemaVersion?: unknown }).schemaVersion;
+      if (settlementSchemaVersion !== undefined && settlementSchemaVersion !== 2) return null;
       if (!parsed.episodes || typeof parsed.episodes !== 'object') return null;
 
       let earliest: number | null = null;
@@ -188,6 +207,8 @@ export class DueWorkPlanner {
       const parsed = JSON.parse(raw) as {
         operational?: Array<{ nextRetryAt?: string }>;
       };
+      const retrySchemaVersion = (parsed as { schemaVersion?: unknown }).schemaVersion;
+      if (retrySchemaVersion !== undefined && retrySchemaVersion !== 1) return null;
       if (!Array.isArray(parsed.operational)) return null;
 
       let earliest: number | null = null;
@@ -215,6 +236,8 @@ export class DueWorkPlanner {
       const parsed = JSON.parse(raw) as {
         lastRoutineRunAt?: string | null;
       };
+      const curatorSchemaVersion = (parsed as { schemaVersion?: unknown }).schemaVersion;
+      if (curatorSchemaVersion !== undefined && curatorSchemaVersion !== 1) return null;
       const lastRun = parsed.lastRoutineRunAt;
       if (!lastRun) {
         // Never run: the first routine run is due immediately.
@@ -239,6 +262,8 @@ export class DueWorkPlanner {
       const parsed = JSON.parse(raw) as {
         expedited?: Record<string, unknown>;
       };
+      const expeditedSchemaVersion = (parsed as { schemaVersion?: unknown }).schemaVersion;
+      if (expeditedSchemaVersion !== undefined && expeditedSchemaVersion !== 1) return 0;
       if (!parsed.expedited || typeof parsed.expedited !== 'object') return 0;
       return Object.keys(parsed.expedited).length;
     } catch {

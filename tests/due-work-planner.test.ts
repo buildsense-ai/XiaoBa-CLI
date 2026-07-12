@@ -159,8 +159,10 @@ describe('DueWorkPlanner — durable source reading', () => {
     assert.equal(plan.due.settlementDue, true);
     assert.equal(plan.due.operationalRetryDue, false);
     assert.equal(plan.due.routineCuratorDue, false);
-    // Next wake: no future deadlines.
-    assert.equal(plan.nextWakeTime, null);
+    // Next wake: overdue settlement should schedule immediate wake.
+    assert.ok(plan.nextWakeTime !== null, 'must have an immediate wake for overdue work');
+    assert.equal(plan.nextWakeTime, new Date('2026-07-01T12:00:00Z').getTime());
+    assert.equal(plan.nextWakeReason, 'settlement-deadline');
   });
 
   test('future settlement deadline provides next wake time', () => {
@@ -289,7 +291,7 @@ describe('DueWorkPlanner — durable source reading', () => {
     assert.equal(plan.due.routineCuratorDue, false);
     // Next curator run at lastRun + 24h = Jul-02 10:00
     assert.equal(plan.nextWakeTime, lastRun.getTime() + 24 * 60 * 60 * 1000);
-    assert.equal(plan.nextWakeReason, 'curator-routine');
+    assert.equal(plan.nextWakeReason, 'curator');
   });
 
   test('expedited curator wakes trigger expeditedCuratorDue', () => {
@@ -370,6 +372,219 @@ describe('DueWorkPlanner — durable source reading', () => {
     const plan = plannerNoCurator.plan(new Date('2026-07-01T12:00:00Z'));
     assert.equal(plan.due.routineCuratorDue, false);
     assert.equal(plan.due.expeditedCuratorDue, false);
+  });
+
+  // -----------------------------------------------------------------------
+  // Issue #52 defect 2: overdue work must produce an immediate next wake
+  //   instead of falling back to the discovery interval.
+  // -----------------------------------------------------------------------
+
+  test('overdue settlement: immediate wake with settlement-deadline reason', () => {
+    writeState(env.episodeStorePath, {
+      schemaVersion: 2,
+      episodes: {
+        'ep-past-settlement': settlingEpisode(
+          'ep-past-settlement',
+          new Date('2026-06-01T00:00:00Z'), // well past
+        ),
+      },
+    });
+
+    const plan = env.planner.plan(new Date('2026-07-01T12:00:00Z'));
+    assert.equal(plan.due.settlementDue, true);
+    assert.equal(plan.due.operationalRetryDue, false);
+    assert.equal(plan.due.routineCuratorDue, false);
+    // nextWakeTime should be near-now (the reference timestamp), not null.
+    assert.ok(plan.nextWakeTime !== null, 'must have a next wake for overdue work');
+    assert.equal(plan.nextWakeTime, new Date('2026-07-01T12:00:00Z').getTime());
+    assert.equal(plan.nextWakeReason, 'settlement-deadline');
+  });
+
+  test('overdue operational retry: immediate wake with operational-retry reason', () => {
+    const queue = emptyReviewQueueState();
+    addOrUpdateOperationalFailure(
+      queue,
+      { capabilityId: 'cap-overdue', title: '', applicability: '', actionPattern: '', boundaries: [], risks: [], solvedLoop: { problem: '', action: '', verification: '', noCorrection: '' }, provenance: [], generatedAt: '', sourceUnit: { filePath: '', byteRange: { start: 0, end: 0 }, generatedAt: '' }, schemaVersion: 1, kind: 'capability' },
+      { bundleId: 'bundle-overdue', episode: {}, completionEvidence: [], settlementEvidence: [], boundedContinuity: [], referencedSkills: [], relatedCurrentSkills: [] },
+      'branch_timeout',
+      'Timed out',
+      undefined,
+      1,
+      60_000,
+      new Date('2026-07-01T10:00:00Z'),
+    );
+    const now = new Date('2026-07-01T12:00:00Z');
+    // Override auto-computed nextRetryAt with a past value.
+    queue.operational[0]!.nextRetryAt = new Date('2026-06-01T00:00:00Z').toISOString();
+    queue.operational[0]!.currentDelayMs = 120_000;
+    saveReviewQueueState(env.reviewQueuePath, queue);
+
+    const plan = env.planner.plan(now);
+    assert.equal(plan.due.operationalRetryDue, true);
+    assert.equal(plan.due.settlementDue, false);
+    assert.ok(plan.nextWakeTime !== null, 'must have a next wake for overdue work');
+    assert.equal(plan.nextWakeTime, now.getTime());
+    assert.equal(plan.nextWakeReason, 'operational-retry');
+  });
+
+  test('overdue routine curator: immediate wake with curator reason', () => {
+    writeState(env.curatorStatePath, {
+      schemaVersion: 1,
+      lastRoutineRunAt: new Date('2026-06-28T12:00:00Z').toISOString(), // 3 days ago
+      reviewedOutcomeFactIds: [],
+      observedEpisodeIds: [],
+      expedited: {},
+    });
+
+    const plan = env.planner.plan(new Date('2026-07-01T12:00:00Z'));
+    assert.equal(plan.due.routineCuratorDue, true);
+    assert.equal(plan.due.expeditedCuratorDue, false);
+    assert.ok(plan.nextWakeTime !== null, 'must have a next wake for overdue work');
+    assert.equal(plan.nextWakeTime, new Date('2026-07-01T12:00:00Z').getTime());
+    assert.equal(plan.nextWakeReason, 'curator');
+  });
+
+  test('expedited curator wakes: immediate wake with curator reason', () => {
+    writeState(env.curatorStatePath, {
+      schemaVersion: 1,
+      lastRoutineRunAt: new Date('2026-07-01T06:00:00Z').toISOString(),
+      reviewedOutcomeFactIds: [],
+      observedEpisodeIds: [],
+      expedited: {
+        'cap-urgent': {
+          capabilityHandle: 'cap-urgent',
+          outcomeFactIds: ['fact-1'],
+          requestedAt: '2026-07-01T11:00:00.000Z',
+        },
+      },
+    });
+
+    const plan = env.planner.plan(new Date('2026-07-01T12:00:00Z'));
+    assert.equal(plan.due.expeditedCuratorDue, true);
+    assert.equal(plan.due.routineCuratorDue, false);
+    assert.ok(plan.nextWakeTime !== null, 'must have a next wake for expedited work');
+    assert.equal(plan.nextWakeTime, new Date('2026-07-01T12:00:00Z').getTime());
+    assert.equal(plan.nextWakeReason, 'curator');
+  });
+
+  test('multiple overdue: operational-retry has highest priority among due work', () => {
+    const now = new Date('2026-07-01T12:00:00Z');
+
+    // Overdue settlement
+    writeState(env.episodeStorePath, {
+      schemaVersion: 2,
+      episodes: {
+        'ep-past': settlingEpisode('ep-past', new Date('2026-06-01T00:00:00Z')),
+      },
+    });
+
+    // Overdue operational retry (higher priority)
+    const queue = emptyReviewQueueState();
+    addOrUpdateOperationalFailure(
+      queue,
+      { capabilityId: 'cap-priority', title: '', applicability: '', actionPattern: '', boundaries: [], risks: [], solvedLoop: { problem: '', action: '', verification: '', noCorrection: '' }, provenance: [], generatedAt: '', sourceUnit: { filePath: '', byteRange: { start: 0, end: 0 }, generatedAt: '' }, schemaVersion: 1, kind: 'capability' },
+      { bundleId: 'bundle-priority', episode: {}, completionEvidence: [], settlementEvidence: [], boundedContinuity: [], referencedSkills: [], relatedCurrentSkills: [] },
+      'branch_timeout',
+      'Timed out',
+      undefined,
+      1,
+      60_000,
+      new Date('2026-07-01T10:00:00Z'),
+    );
+    queue.operational[0]!.nextRetryAt = new Date('2026-06-01T00:00:00Z').toISOString();
+    queue.operational[0]!.currentDelayMs = 120_000;
+    saveReviewQueueState(env.reviewQueuePath, queue);
+
+    // Overdue routine curator (lower priority)
+    writeState(env.curatorStatePath, {
+      schemaVersion: 1,
+      lastRoutineRunAt: new Date('2026-06-28T12:00:00Z').toISOString(),
+      reviewedOutcomeFactIds: [],
+      observedEpisodeIds: [],
+      expedited: {},
+    });
+
+    const plan = env.planner.plan(now);
+    assert.equal(plan.due.operationalRetryDue, true);
+    assert.equal(plan.due.settlementDue, true);
+    assert.equal(plan.due.routineCuratorDue, true);
+    assert.ok(plan.nextWakeTime !== null);
+    assert.equal(plan.nextWakeTime, now.getTime());
+    // operational-retry has highest priority
+    assert.equal(plan.nextWakeReason, 'operational-retry');
+  });
+
+  // -----------------------------------------------------------------------
+  // Issue #52 defect 3: schema version validation
+  // -----------------------------------------------------------------------
+
+  test('episode store with unknown schemaVersion: conservative null deadline', () => {
+    writeState(env.episodeStorePath, {
+      schemaVersion: 99, // unknown future version
+      episodes: {
+        'ep-future': settlingEpisode('ep-future', new Date('2026-06-01T00:00:00Z')),
+      },
+    });
+
+    const plan = env.planner.plan(new Date('2026-07-01T12:00:00Z'));
+    // Unknown schema → no deadline from this source.
+    assert.equal(plan.due.settlementDue, false);
+  });
+
+  test('review queue with unknown schemaVersion: conservative null deadline', () => {
+    const queue = emptyReviewQueueState();
+    addOrUpdateOperationalFailure(
+      queue,
+      { capabilityId: 'cap-unknown', title: '', applicability: '', actionPattern: '', boundaries: [], risks: [], solvedLoop: { problem: '', action: '', verification: '', noCorrection: '' }, provenance: [], generatedAt: '', sourceUnit: { filePath: '', byteRange: { start: 0, end: 0 }, generatedAt: '' }, schemaVersion: 1, kind: 'capability' },
+      { bundleId: 'bundle-unknown', episode: {}, completionEvidence: [], settlementEvidence: [], boundedContinuity: [], referencedSkills: [], relatedCurrentSkills: [] },
+      'branch_timeout',
+      'Timed out',
+      undefined,
+      1,
+      60_000,
+      new Date('2026-07-01T10:00:00Z'),
+    );
+    saveReviewQueueState(env.reviewQueuePath, queue);
+    // Write with mismatched top-level schemaVersion.
+    const data = JSON.parse(fs.readFileSync(env.reviewQueuePath, 'utf8')) as Record<string, unknown>;
+    data.schemaVersion = 99;
+    // Ensure there's an operational entry with a past deadline
+    (data.operational as any[])[0]!.nextRetryAt = new Date('2026-06-01T00:00:00Z').toISOString();
+    fs.writeFileSync(env.reviewQueuePath, JSON.stringify(data, null, 2), 'utf8');
+
+    const plan = env.planner.plan(new Date('2026-07-01T12:00:00Z'));
+    // Unknown schema → no deadline from this source.
+    assert.equal(plan.due.operationalRetryDue, false);
+  });
+
+  test('curator state with unknown schemaVersion: conservative null deadline and zero count', () => {
+    writeState(env.curatorStatePath, {
+      schemaVersion: 99,
+      lastRoutineRunAt: new Date('2026-06-01T00:00:00Z').toISOString(),
+      reviewedOutcomeFactIds: [],
+      observedEpisodeIds: [],
+      expedited: {
+        'cap-ignored': { capabilityHandle: 'cap-ignored', outcomeFactIds: [], requestedAt: '2026-07-01T00:00:00.000Z' },
+      },
+    });
+
+    const plan = env.planner.plan(new Date('2026-07-01T12:00:00Z'));
+    assert.equal(plan.due.routineCuratorDue, false, 'unknown schema → no routine deadline');
+    assert.equal(plan.due.expeditedCuratorDue, false, 'unknown schema → no expedited count');
+  });
+
+  test('episode store without schemaVersion field: backward compatible', () => {
+    // No schemaVersion field at all — older format without explicit versioning.
+    const raw = {
+      episodes: {
+        'ep-legacy': settlingEpisode('ep-legacy', new Date('2026-06-01T00:00:00Z')),
+      },
+    };
+    writeState(env.episodeStorePath, raw);
+
+    const plan = env.planner.plan(new Date('2026-07-01T12:00:00Z'));
+    // Missing schemaVersion is tolerated (backward compat).
+    assert.equal(plan.due.settlementDue, true);
   });
 });
 
