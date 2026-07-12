@@ -393,6 +393,36 @@ describe('ToolManager', () => {
     assert.equal(executed, false);
   });
 
+  test('background Skill Author/Verifier completion tools do not require confirmation', async () => {
+    const manager = new ToolManager('/tmp/xiaoba-tool-manager', {}, { enabledToolNames: [] });
+    manager.registerTool(fakeTool('finish_skill_authoring', async () => ({
+      ok: true,
+      content: 'Skill Draft received.',
+    })));
+    manager.registerTool(fakeTool('finish_skill_verification', async () => ({
+      ok: true,
+      content: 'Skill verification received.',
+    })));
+
+    for (const [name, id] of [
+      ['finish_skill_authoring', 'call-finish-authoring'],
+      ['finish_skill_verification', 'call-finish-verification'],
+    ] as const) {
+      const result = await manager.executeTool({
+        id,
+        type: 'function',
+        function: { name, arguments: JSON.stringify({}) },
+      }, [], {
+        permissionProfile: 'strict',
+        workingDirectory: '/tmp/xiaoba-tool-manager',
+        workspaceRoot: '/tmp/xiaoba-tool-manager',
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(result.errorCode, undefined);
+    }
+  });
+
   test('CatsCo context can create new ordinary home files without confirmation', async () => {
     const manager = new ToolManager('/tmp/xiaoba-tool-manager', {}, { enabledToolNames: [] });
     let confirmed = false;
