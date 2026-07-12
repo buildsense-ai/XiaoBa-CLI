@@ -6,8 +6,10 @@ import * as path from 'node:path';
 
 import { DistillationHeartbeatScheduler } from '../src/utils/distillation-heartbeat-scheduler';
 import { DistillationPipeline } from '../src/utils/distillation-pipeline';
-import { DistillationUnit, extractDistillationUnit } from '../src/utils/distillation-unit';
-import { LearningEpisodeStore } from '../src/utils/learning-episode';
+import { DistillationUnit } from '../src/utils/distillation-unit';
+import { LearningEpisode, LearningEpisodeStore } from '../src/utils/learning-episode';
+import { SkillUsageCurator } from '../src/utils/skill-usage-curator';
+import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
 import { getCursor, loadLogCursorState } from '../src/utils/log-cursor-state';
 import {
   loadCurrentSkillRegistry,
@@ -41,10 +43,12 @@ function makeTurn(
   userText: string,
   assistantText: string,
   toolCalls: { id: string; name: string; arguments: any; result: string }[] = [],
+  episodeId?: string,
 ): SessionTurnLogEntry {
   return {
     entry_type: 'turn',
     turn,
+    ...(episodeId && { episode_id: episodeId }),
     timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, turn)).toISOString(),
     session_id: sessionId,
     session_type: 'chat',
@@ -74,6 +78,15 @@ function writeLog(filePath: string, entries: object[]): void {
 
 type VerifierMode = 'approve' | 'timeout';
 
+class TrackingCurator extends SkillUsageCurator {
+  readonly observedEpisodeIds: string[] = [];
+
+  override observeEpisode(episode: LearningEpisode) {
+    this.observedEpisodeIds.push(episode.episodeId);
+    return super.observeEpisode(episode);
+  }
+}
+
 interface Env {
   root: string;
   logFile: string;
@@ -85,6 +98,10 @@ interface Env {
   auditPath: string;
   journalPath: string;
   outputDir: string;
+  ledgerPath?: string;
+  curatorStatePath?: string;
+  usageLedger?: SkillUsageLedger;
+  curator?: TrackingCurator;
   pipeline: DistillationPipeline;
   skillEvolution: SkillEvolutionRuntime;
   branchCalls: { author: number; verifier: number };
@@ -93,7 +110,10 @@ interface Env {
   teardown: () => void;
 }
 
-function setupEnv(verifierMode: VerifierMode = 'approve', opts: { episodeStoreDir?: string } = {}): Env {
+function setupEnv(
+  verifierMode: VerifierMode = 'approve',
+  opts: { episodeStoreDir?: string; withCurator?: boolean } = {},
+): Env {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-evidence-ingestion-'));
   const skillsRoot = path.join(root, 'skills');
   const logFile = path.join(root, 'logs', 'sessions', 'chat', 'test.jsonl');
@@ -106,6 +126,8 @@ function setupEnv(verifierMode: VerifierMode = 'approve', opts: { episodeStoreDi
   const auditPath = path.join(root, 'data', 'transition-audit.jsonl');
   const journalPath = path.join(root, 'data', 'transition-journal.json');
   const outputDir = path.join(skillsRoot, 'generated-distilled');
+  const ledgerPath = opts.withCurator ? path.join(root, 'data', 'skill-usage-ledger.jsonl') : undefined;
+  const curatorStatePath = opts.withCurator ? path.join(root, 'data', 'curator-state.json') : undefined;
   const branchCalls = { author: 0, verifier: 0 };
 
   const savedEnv: Record<string, string | undefined> = {
@@ -167,12 +189,23 @@ function setupEnv(verifierMode: VerifierMode = 'approve', opts: { episodeStoreDi
     },
   });
 
+  const usageLedger = ledgerPath ? new SkillUsageLedger(ledgerPath) : undefined;
+  const curator = ledgerPath && curatorStatePath
+    ? new TrackingCurator({
+      ledger: usageLedger!,
+      statePath: curatorStatePath,
+      intervalMs: 24 * 60 * 60 * 1000,
+      runtime: skillEvolution,
+    })
+    : undefined;
+
   const pipeline = new DistillationPipeline({
     outputDir,
     reviewOutcomesPath: path.join(root, 'data', 'review-outcomes.json'),
     learningEpisodeStorePath: episodeStorePath,
     learningEpisodeSettlementWindowMs: 0,
     skillEvolution,
+    skillUsageCurator: curator,
   });
 
   const makeScheduler = () =>
@@ -201,6 +234,10 @@ function setupEnv(verifierMode: VerifierMode = 'approve', opts: { episodeStoreDi
     auditPath,
     journalPath,
     outputDir,
+    ledgerPath,
+    curatorStatePath,
+    usageLedger,
+    curator,
     pipeline,
     skillEvolution,
     branchCalls,
@@ -219,6 +256,43 @@ function cursorFor(env: Env) {
   return getCursor(loadLogCursorState(env.stateFile), env.logFile);
 }
 
+function makeDeliveryUnit(filePath: string, episodeId: string, turnStart = 1): DistillationUnit {
+  return {
+    filePath,
+    newTurns: [
+      makeTurn(
+        turnStart,
+        'cli',
+        'Deliver a small report.',
+        'Delivered the report.',
+        [{ id: `send-${turnStart}`, name: 'send_file', arguments: { path: 'report.md' }, result: 'report sent' }],
+        episodeId,
+      ),
+      makeTurn(turnStart + 1, 'cli', 'Thanks, that works perfectly!', 'Glad it helped.', [], episodeId),
+    ],
+    continuityTurns: [],
+    byteRange: { start: 0, end: 200 },
+    generatedAt: '2026-01-01T00:00:00.000Z',
+  };
+}
+
+function seedGeneratedSkillLoad(env: Env, episodeId: string) {
+  assert.ok(env.usageLedger, 'expected usage ledger');
+  const generatedSkillPath = path.join(env.outputDir, 'cap-generated', 'SKILL.md');
+  fs.mkdirSync(path.dirname(generatedSkillPath), { recursive: true });
+  fs.writeFileSync(generatedSkillPath, '---\nname: generated-demo\ndescription: generated demo\n---\n\nGenerated guidance.\n', 'utf8');
+  return env.usageLedger.recordGeneratedSkillLoad({
+    runtimeSessionId: 'cli',
+    episodeId,
+    skill: {
+      capabilityHandle: 'cap-generated',
+      routingName: 'generated-demo',
+      skillFilePath: generatedSkillPath,
+      guidanceHash: 'generated-hash',
+    },
+  });
+}
+
 describe('issue #50: Evidence Ingestion decoupled from Capability Review', () => {
   let env: Env;
 
@@ -232,6 +306,14 @@ describe('issue #50: Evidence Ingestion decoupled from Capability Review', () =>
       fs.chmodSync(path.dirname(env.episodeStorePath), 0o700);
     } catch {
       // best-effort; dir may not exist
+    }
+    if (env.ledgerPath) {
+      try {
+        if (fs.existsSync(env.ledgerPath)) fs.chmodSync(env.ledgerPath, 0o600);
+        fs.chmodSync(path.dirname(env.ledgerPath), 0o700);
+      } catch {
+        // best-effort; dir may not exist
+      }
     }
     env.teardown();
   });
@@ -273,6 +355,42 @@ describe('issue #50: Evidence Ingestion decoupled from Capability Review', () =>
     // No Capability Transition was committed while the reviewer is failing.
     assert.deepEqual(loadCurrentSkillRegistry(env.registryPath).capabilities, {}, 'no Current Skill is created while the reviewer is failing');
     assert.equal(loadTransitionAudit(env.auditPath).length, 0, 'no Transition Audit entry is written for a failing review');
+  });
+
+  test('(a2) curator observation failure after durable admission does not block cursor ack and retries on the next wake', async () => {
+    env.restore();
+    env = setupEnv('approve', { withCurator: true });
+    const episodeId = 'episode:curator-post-ack-retry';
+    seedGeneratedSkillLoad(env, episodeId);
+    writeLog(env.logFile, [
+      makeTurn(1, 'cli', 'Deliver a small report.', 'Delivered the report.', [
+        { id: 'send-1', name: 'send_file', arguments: { path: 'report.md' }, result: 'report sent' },
+      ], episodeId),
+      makeTurn(2, 'cli', 'Thanks, that works perfectly!', 'Glad it helped.', [], episodeId),
+    ]);
+
+    assert.ok(env.ledgerPath, 'expected ledger path');
+    fs.chmodSync(env.ledgerPath, 0o400);
+
+    const scheduler = env.makeScheduler();
+    const first = await scheduler.runHeartbeat('manual');
+
+    assert.equal(first.advancedFiles, 1, 'durable admission still acknowledges the cursor');
+    assert.equal(cursorFor(env).status, 'completed', 'post-ack curator failure must not mark the cursor failed');
+    assert.equal(
+      env.usageLedger!.listFacts().filter(fact => fact.kind === 'episode-outcome').length,
+      0,
+      'the failed curator observation recorded no outcome facts yet',
+    );
+
+    fs.chmodSync(env.ledgerPath, 0o600);
+    const second = await scheduler.runHeartbeat('scheduled');
+
+    assert.equal(second.ran, true);
+    const outcomes = env.usageLedger!.listFacts().filter(fact => fact.kind === 'episode-outcome');
+    assert.equal(outcomes.length, 1, 'the post-ack observation retries on the next wake');
+    assert.equal(outcomes[0]!.episodeId, episodeId);
+    assert.equal(outcomes[0]!.outcome, 'verified-success');
   });
 
   // AC2: Source parsing or evidence-persistence failure leaves the Log Cursor
@@ -319,6 +437,32 @@ describe('issue #50: Evidence Ingestion decoupled from Capability Review', () =>
 
     // Cursor state itself remained writable (the cursor failure was durable).
     assert.ok(fs.existsSync(env.stateFile), 'the cursor state file was still writable while episode persistence failed');
+  });
+
+  test('(b3) admission reports and post-ack observes only the episode touched by the new extraction', async () => {
+    env.restore();
+    env = setupEnv('approve', { withCurator: true });
+    const oldEpisodeId = 'episode:pre-existing';
+    const newEpisodeId = 'episode:new-admission';
+    seedGeneratedSkillLoad(env, oldEpisodeId);
+    seedGeneratedSkillLoad(env, newEpisodeId);
+
+    const oldUnit = makeDeliveryUnit(path.join(env.root, 'logs', 'sessions', 'chat', 'old.jsonl'), oldEpisodeId, 1);
+    const oldAdmission = env.pipeline.admitEvidence(oldUnit);
+    assert.deepEqual(oldAdmission.admittedEpisodeIds, [oldEpisodeId]);
+    await env.pipeline.processSettledLearningEpisodes(new Date('2026-01-01T00:10:00.000Z'), oldUnit);
+    assert.deepEqual(env.curator!.observedEpisodeIds, [oldEpisodeId]);
+
+    const newUnit = makeDeliveryUnit(env.logFile, newEpisodeId, 3);
+    const newAdmission = env.pipeline.admitEvidence(newUnit);
+    assert.deepEqual(newAdmission.admittedEpisodeIds, [newEpisodeId], 'only the new extraction episode is reported');
+    await env.pipeline.processSettledLearningEpisodes(new Date('2026-01-01T00:20:00.000Z'), newUnit);
+
+    assert.deepEqual(
+      env.curator!.observedEpisodeIds,
+      [oldEpisodeId, newEpisodeId],
+      'the unrelated pre-existing episode is not re-observed during the new admission',
+    );
   });
 
   // AC5 + AC4: A crash/replay boundary after episode persistence but before

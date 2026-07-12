@@ -35,6 +35,7 @@ import {
 } from './capability-registry';
 import { prefilterCapabilities } from './capability-prefilter';
 import { computeDistilledSkillGuidanceFingerprint } from './distilled-skill-content';
+import { Logger } from './logger';
 import {
   addNeedsReviewEntry,
   computeRegistryStateFingerprint,
@@ -302,6 +303,7 @@ export class DistillationPipeline {
   private readonly learningEpisodeSettlementWindowMs: number | undefined;
   private readonly skillUsageCurator: SkillUsageCurator | null;
   private readonly evidenceIngestor: EvidenceIngestor | null;
+  private readonly pendingCuratorObservationEpisodeIds = new Set<string>();
 
   constructor(options: DistillationPipelineOptions) {
     this.distiller = options.distiller ?? DEFAULT_DISTILLER;
@@ -324,7 +326,6 @@ export class DistillationPipeline {
       ? new EvidenceIngestor({
         episodeStore: this.learningEpisodeStore,
         settlementWindowMs: this.learningEpisodeSettlementWindowMs,
-        observeEpisode: episode => this.skillUsageCurator?.observeEpisode(episode),
       })
       : null;
   }
@@ -344,7 +345,9 @@ export class DistillationPipeline {
    */
   admitEvidence(unit: DistillationUnit): EvidenceIngestionResult {
     if (!this.evidenceIngestor) return { admittedEpisodeIds: [], contradictionSignalIds: [], state: { schemaVersion: 2, episodes: {} } };
-    return this.evidenceIngestor.ingest(unit);
+    const result = this.evidenceIngestor.ingest(unit);
+    this.queueCuratorObservations(result.admittedEpisodeIds);
+    return result;
   }
 
   /**
@@ -359,7 +362,8 @@ export class DistillationPipeline {
       // admission + settlement review in one call. The runtime heartbeat
       // instead calls `admitEvidence` for the cursor-decoupled path so review
       // never blocks source acknowledgement (issue #50).
-      this.evidenceIngestor.ingest(unit);
+      const result = this.evidenceIngestor.ingest(unit);
+      this.queueCuratorObservations(result.admittedEpisodeIds);
       return this.processSettledLearningEpisodes(new Date(), unit);
     }
 
@@ -400,10 +404,28 @@ export class DistillationPipeline {
     }
 
     const settledState = this.learningEpisodeStore.settle({ now });
-    for (const episode of Object.values(settledState.episodes)) {
-      this.skillUsageCurator?.observeEpisode(episode);
-    }
     const episodes = Object.values(settledState.episodes);
+    const pendingObservationIds = new Set(this.pendingCuratorObservationEpisodeIds);
+    const observationEpisodes = pendingObservationIds.size > 0
+      ? episodes.filter(episode => pendingObservationIds.has(episode.episodeId))
+      : unit
+        ? []
+        : episodes;
+
+    // Curator observation is best-effort (post-ack). If it fails, we keep the
+    // episode queued for a later wake so settlement/review are never blocked by
+    // ledger or curator I/O failures.
+    for (const episode of observationEpisodes) {
+      try {
+        this.skillUsageCurator?.observeEpisode(episode);
+        this.pendingCuratorObservationEpisodeIds.delete(episode.episodeId);
+      } catch (error) {
+        // Observation failure should not block settlement or review.
+        // The episode remains eligible for a later post-ack retry.
+        const message = error instanceof Error ? error.message : String(error);
+        Logger.warning(`[DistillationPipeline] curator observation failed for ${episode.episodeId}: ${message}`);
+      }
+    }
     const reviewInputs: Array<{ candidate: DistilledKnowledgeCandidate; bundle: EvidenceBundle }> = [];
     for (const episode of episodes) {
       if (episode.status !== 'eligible' || this.hasReviewedLearningEpisode(episode)) continue;
@@ -423,6 +445,10 @@ export class DistillationPipeline {
       input => this.skillEvolution!.reviewAndApply(input.bundle),
     );
     return { candidates: reviewInputs.map(input => input.candidate), evolutions, episodes };
+  }
+
+  private queueCuratorObservations(episodeIds: readonly string[]): void {
+    for (const episodeId of episodeIds) this.pendingCuratorObservationEpisodeIds.add(episodeId);
   }
 
   private hasReviewedLearningEpisode(episode: LearningEpisode): boolean {

@@ -28,7 +28,7 @@ import {
  */
 
 export interface EvidenceIngestionResult {
-  /** Episode ids present in the durable store after this admission. */
+  /** Episode ids actually touched by this admission (new or materially updated). */
   readonly admittedEpisodeIds: readonly string[];
   /** Contradiction Signal ids applied by this admission. */
   readonly contradictionSignalIds: readonly string[];
@@ -36,16 +36,11 @@ export interface EvidenceIngestionResult {
   readonly state: LearningEpisodeStoreState;
 }
 
-/** Optional observer notified once per admitted episode (e.g. usage curator). */
-export type AdmittedEpisodeObserver = (episode: LearningEpisode) => void;
-
 export interface EvidenceIngestorOptions {
   /** Durable Learning Episode store. The ingestor never constructs its own. */
   episodeStore: LearningEpisodeStore;
   /** Effective Settlement Window injected by runtime configuration. */
   settlementWindowMs?: number;
-  /** Optional durable observer for admitted episodes. */
-  observeEpisode?: AdmittedEpisodeObserver;
 }
 
 export class EvidenceIngestor {
@@ -59,13 +54,55 @@ export class EvidenceIngestor {
    */
   ingest(unit: DistillationUnit): EvidenceIngestionResult {
     const extraction = extractLearningEpisodes(unit, this.options.settlementWindowMs);
+
+    // Pre-admission snapshot for touched-set detection
+    const preState = this.options.episodeStore.load();
+    const affectedIds = new Set<string>();
+
+    // Episodes from the extraction
+    for (const episode of extraction.episodes) {
+      affectedIds.add(episode.episodeId);
+    }
+
+    // Episodes targeted by contradiction signals (pre-existing predecessors)
+    for (const signal of extraction.contradictions) {
+      const predecessor = Object.values(preState.episodes).find(episode =>
+        episode.sourceFilePath === signal.precedingSourceFilePath
+        && episode.runtimeSessionId === signal.runtimeSessionId
+        && episode.deliveryTurn === signal.precedingDeliveryTurn,
+      );
+      if (predecessor) affectedIds.add(predecessor.episodeId);
+    }
+
+    // Snapshot affected episodes for diff
+    const preSnapshots = new Map<string, string>();
+    for (const id of affectedIds) {
+      const episode = preState.episodes[id];
+      if (episode) {
+        preSnapshots.set(id, JSON.stringify(episode));
+      }
+    }
+
     // Durably persist episodes + contradiction signals. Throws on I/O failure.
     const state = this.options.episodeStore.applyExtraction(extraction);
-    for (const episode of Object.values(state.episodes)) {
-      this.options.observeEpisode?.(episode);
+
+    // Determine touched episodes: new or materially changed
+    const touchedIds: string[] = [];
+    for (const id of affectedIds) {
+      const after = state.episodes[id];
+      if (!after) continue;
+      const before = preSnapshots.get(id);
+      if (!before) {
+        // New episode (didn't exist before)
+        touchedIds.push(id);
+      } else if (JSON.stringify(after) !== before) {
+        // Materially changed
+        touchedIds.push(id);
+      }
     }
+
     return {
-      admittedEpisodeIds: Object.keys(state.episodes),
+      admittedEpisodeIds: touchedIds,
       contradictionSignalIds: extraction.contradictions.map(signal => signal.signalId),
       state,
     };
