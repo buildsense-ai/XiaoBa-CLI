@@ -36,6 +36,7 @@ export type CompletionEvidenceKind =
   | 'artifact-delivery'
   | 'artifact-validation'
   | 'verified-tool-result'
+  | 'assistant-response'
   | 'user-acceptance';
 
 export interface EpisodeEvidenceRef {
@@ -174,18 +175,29 @@ export function extractLearningEpisodes(
     if (!newTurnNumbers.has(deliveryTurn.turn)) continue;
     const deliverySourceFilePath = turnSourceFilePath(deliveryTurn, unit.filePath);
     const evidence = detectCompletionEvidence(deliverySourceFilePath, deliveryTurn);
-    if (!hasDeliveryEvidence(evidence)) continue;
-
     const episodeId = makeEpisodeId(deliverySourceFilePath, deliveryTurn);
     const next = turns[index + 1];
     const signal = next ? detectContradiction(deliverySourceFilePath, deliveryTurn, next, unit.filePath) : undefined;
     const accepted = next ? detectAcceptance(turnSourceFilePath(next, unit.filePath), deliveryTurn, next) : undefined;
+    const hadInitialDeliveryEvidence = hasDeliveryEvidence(evidence);
     if (signal) {
+      // Validation-only activity is not a delivery and must not create a
+      // contradiction signal by itself.
+      if (!hadInitialDeliveryEvidence) continue;
       evidence.push(signal.source);
       contradictions.push(signal);
     } else if (accepted) {
+      // Legacy session logs often contain a completed assistant response but
+      // no tool-call records. A following explicit acceptance is still a
+      // bounded solved-loop signal; keep the response text as evidence and
+      // let the Author/Verifier decide whether it deserves a Capability.
+      if (!hasDeliveryEvidence(evidence)) {
+        const assistantResponse = detectAssistantResponseEvidence(deliverySourceFilePath, deliveryTurn);
+        if (assistantResponse) evidence.push(assistantResponse);
+      }
       evidence.push(accepted);
     }
+    if (!hasDeliveryEvidence(evidence)) continue;
 
     const predecessor = [...episodes].reverse().find(candidate =>
       candidate.runtimeSessionId === runtimeSessionIdOf(deliveryTurn)
@@ -292,7 +304,26 @@ function detectCompletionEvidence(filePath: string, turn: CompletedTurn): Episod
 }
 
 function hasDeliveryEvidence(evidence: readonly EpisodeEvidenceRef[]): boolean {
-  return evidence.some(item => item.kind === 'artifact-delivery' || item.kind === 'verified-tool-result');
+  return evidence.some(item =>
+    item.kind === 'artifact-delivery'
+    || item.kind === 'verified-tool-result'
+    || item.kind === 'assistant-response',
+  );
+}
+
+function detectAssistantResponseEvidence(
+  filePath: string,
+  turn: CompletedTurn,
+): EpisodeEvidenceRef | undefined {
+  const text = turn.assistant.text.trim();
+  if (!text) return undefined;
+  return {
+    ref: evidenceRef(filePath, turn.turn, 'assistant-response'),
+    sourceFilePath: filePath,
+    turn: turn.turn,
+    kind: 'assistant-response',
+    detail: text.slice(0, 1000),
+  };
 }
 
 function detectContradiction(

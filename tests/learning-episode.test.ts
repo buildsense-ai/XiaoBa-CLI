@@ -92,6 +92,18 @@ describe('V3 independent Learning Episodes', () => {
     assert.equal(result.episodes[0].contradictionSignals[0].preventsPromotion, true);
   });
 
+  test('admits a legacy text-only solved loop when the user explicitly accepts the response', () => {
+    const result = extractLearningEpisodes(unit([
+      turn(1, 'How should an append-only JSONL reader handle partial lines?', []),
+      turn(2, 'Yes, that works perfectly.', []),
+    ], '/logs/legacy-text-session.jsonl'));
+
+    assert.equal(result.episodes.length, 1);
+    assert.equal(result.episodes[0].status, 'settling');
+    assert.ok(result.episodes[0].completionEvidence.some(item => item.kind === 'assistant-response'));
+    assert.ok(result.episodes[0].completionEvidence.some(item => item.kind === 'user-acceptance'));
+  });
+
   test('persists and settles episodes independently', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-learning-episodes-'));
     try {
