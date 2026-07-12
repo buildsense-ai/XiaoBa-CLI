@@ -114,7 +114,7 @@ export class SkillUsageLedger {
     // Legacy logs have no canonical AgentTurn correlation. Never join them by
     // timestamp, session proximity, or the distillation-owned episode id.
     if (!episodeId) return [];
-    if (episode.status === 'promoted') {
+    if (episode.status === 'eligible') {
       return this.recordOutcome({
         episodeId,
         outcome: 'verified-success',

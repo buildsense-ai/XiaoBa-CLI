@@ -28,9 +28,9 @@ import { SkillParser } from '../skills/skill-parser';
 import { PathResolver } from './path-resolver';
 
 /** A completed delivery attempt is the unit of learning, not a whole task. */
-export const LEARNING_EPISODE_SCHEMA_VERSION = 1 as const;
+export const LEARNING_EPISODE_SCHEMA_VERSION = 2 as const;
 
-export type LearningEpisodeStatus = 'settling' | 'contradicted' | 'promoted' | 'rejected';
+export type LearningEpisodeStatus = 'settling' | 'contradicted' | 'eligible';
 
 export type CompletionEvidenceKind =
   | 'artifact-delivery'
@@ -399,11 +399,11 @@ export function settleLearningEpisodes(
   const now = (options.now ?? new Date()).getTime();
   return episodes.map(episode => {
     if (episode.status === 'contradicted' || episode.contradictionSignals.length > 0) {
-      return { ...cloneEpisode(episode), status: 'rejected' };
+      return { ...cloneEpisode(episode), status: 'contradicted' };
     }
     if (episode.status !== 'settling') return cloneEpisode(episode);
     if (Date.parse(episode.settlementDeadline) > now) return cloneEpisode(episode);
-    const status = options.promote?.(episode) ?? 'promoted';
+    const status = options.promote?.(episode) ?? 'eligible';
     return { ...cloneEpisode(episode), status };
   });
 }
@@ -417,25 +417,85 @@ export interface LearningEpisodeStoreState {
   episodes: Record<string, LearningEpisode>;
 }
 
+export interface LearningEpisodeStoreOptions {
+  /**
+   * Injectable atomic writer used by both `load()` migration and `save()`.
+   * Defaults to a temp-file + rename atomic write. Tests inject a deterministic
+   * writer to simulate migration I/O failure without leaving partial state.
+   */
+  atomicWrite?: (filePath: string, state: LearningEpisodeStoreState) => void;
+}
+
 export class LearningEpisodeStore {
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly options: LearningEpisodeStoreOptions = {},
+  ) {}
 
   load(): LearningEpisodeStoreState {
     if (!fs.existsSync(this.filePath)) return emptyEpisodeStoreState();
+
+    // Parse and structural validation only. Malformed or unknown-schema stores
+    // fall back to an empty state here. This catch is intentionally narrow so
+    // that a structurally valid legacy store whose migration write later fails
+    // cannot collapse into the same empty fallback and be overwritten.
+    let parsed: LearningEpisodeStoreState & { schemaVersion?: number };
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as LearningEpisodeStoreState;
-      if (parsed.schemaVersion !== LEARNING_EPISODE_SCHEMA_VERSION || !parsed.episodes) throw new Error('invalid episode store');
-      return parsed;
+      const raw = fs.readFileSync(this.filePath, 'utf8');
+      parsed = JSON.parse(raw) as unknown as typeof parsed;
+      if (!parsed.episodes || typeof parsed.episodes !== 'object') throw new Error('invalid episode store');
+      const persistedVersion: number | undefined = parsed.schemaVersion;
+      if (persistedVersion !== undefined && persistedVersion !== 1 && persistedVersion !== 2) {
+        throw new Error('invalid episode store');
+      }
     } catch {
       return emptyEpisodeStoreState();
     }
+
+    const persistedVersion: number | undefined = parsed.schemaVersion;
+    const persistingV1 = persistedVersion === undefined || persistedVersion === 1;
+    if (!persistingV1) {
+      return parsed as LearningEpisodeStoreState;
+    }
+
+    // v1 → v2 migration: the store-level schemaVersion AND each nested episode
+    // schemaVersion must be upgraded together. Legacy status labels
+    // 'promoted' → 'eligible' and 'rejected' → 'contradicted' are migrated in
+    // the same pass. Evidence, settlement deadline, and predecessor/retry
+    // linkage are preserved untouched.
+    for (const episode of Object.values(parsed.episodes)) {
+      const rawStatus = episode.status as string;
+      if (rawStatus === 'promoted') {
+        episode.status = 'eligible' as const;
+      } else if (rawStatus === 'rejected') {
+        episode.status = 'contradicted' as const;
+      }
+      episode.schemaVersion = LEARNING_EPISODE_SCHEMA_VERSION;
+    }
+    parsed.schemaVersion = LEARNING_EPISODE_SCHEMA_VERSION;
+
+    // Durable migration write. A structurally valid legacy store whose atomic
+    // migration write fails must NOT return an empty state that a later caller
+    // could overwrite — report a durable migration I/O failure instead so the
+    // source evidence is retained for diagnosis and retry.
+    try {
+      this.atomicWrite(parsed as LearningEpisodeStoreState);
+    } catch (cause) {
+      throw new Error(
+        `Learning Episode store migration write failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+
+    return parsed as LearningEpisodeStoreState;
   }
 
   save(state: LearningEpisodeStoreState): void {
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    const temp = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify(state, null, 2), { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(temp, this.filePath);
+    this.atomicWrite(state);
+  }
+
+  private atomicWrite(state: LearningEpisodeStoreState): void {
+    const writer = this.options.atomicWrite ?? defaultLearningEpisodeAtomicWrite;
+    writer(this.filePath, state);
   }
 
   upsert(episodes: readonly LearningEpisode[]): LearningEpisodeStoreState {
@@ -464,7 +524,7 @@ export class LearningEpisodeStore {
       predecessor.contradictionSignals = [...new Map(
         [...predecessor.contradictionSignals, signal].map(item => [item.signalId, item]),
       ).values()];
-      predecessor.status = predecessor.status === 'promoted' ? 'rejected' : 'contradicted';
+      predecessor.status = 'contradicted';
       predecessor.completionEvidence = uniqueEvidence([...predecessor.completionEvidence, signal.source]);
     }
     this.save(state);
@@ -484,6 +544,13 @@ function emptyEpisodeStoreState(): LearningEpisodeStoreState {
   return { schemaVersion: LEARNING_EPISODE_SCHEMA_VERSION, episodes: {} };
 }
 
+function defaultLearningEpisodeAtomicWrite(filePath: string, state: LearningEpisodeStoreState): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(state, null, 2), { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(temp, filePath);
+}
+
 function mergeEpisode(existing: LearningEpisode | undefined, incoming: LearningEpisode): LearningEpisode {
   if (!existing) return cloneEpisode(incoming);
   const signals = [...existing.contradictionSignals, ...incoming.contradictionSignals];
@@ -496,7 +563,7 @@ function mergeEpisode(existing: LearningEpisode | undefined, incoming: LearningE
     contradictionSignals: [...new Map(signals.map(signal => [signal.signalId, signal])).values()],
   };
   if (merged.contradictionSignals.length > 0) {
-    merged.status = existing.status === 'promoted' ? 'rejected' : 'contradicted';
+    merged.status = 'contradicted';
   }
   return merged;
 }
@@ -510,7 +577,7 @@ function linkRetryToStoredPredecessor(
       candidate.runtimeSessionId === episode.runtimeSessionId
       && candidate.deliveryTurn < episode.deliveryTurn,
     )
-    .filter(candidate => candidate.status === 'contradicted' || candidate.status === 'rejected')
+    .filter(candidate => candidate.status === 'contradicted')
     .sort((a, b) => b.deliveryTurn - a.deliveryTurn)[0];
   if (!predecessor) return episode;
   return {
@@ -629,8 +696,8 @@ export interface FlashcardCompositionResult {
 export async function promoteFlashcardComposition(
   options: FlashcardCompositionOptions,
 ): Promise<FlashcardCompositionResult> {
-  if (options.episode.status !== 'promoted') {
-    throw new Error('A flashcard Composition Capability requires a settled, promoted retry episode.');
+  if (options.episode.status !== 'eligible') {
+    throw new Error('A flashcard Composition Capability requires a settled, eligible retry episode.');
   }
   if (options.episode.contradictionSignals.length > 0 || !options.episode.retryOfEpisodeId) {
     throw new Error('A flashcard Composition Capability requires an uncontested retry episode.');

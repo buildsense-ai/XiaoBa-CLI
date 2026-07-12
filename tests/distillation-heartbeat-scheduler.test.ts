@@ -327,7 +327,7 @@ describe('DistillationHeartbeatScheduler', () => {
             wakeCalls++;
             if (Date.now() >= deadlineAt) {
               const state = JSON.parse(fs.readFileSync(storePath, 'utf8')) as any;
-              state.episodes['episode-deadline'].status = 'promoted';
+              state.episodes['episode-deadline'].status = 'eligible';
               fs.writeFileSync(storePath, JSON.stringify(state), 'utf8');
             }
           },

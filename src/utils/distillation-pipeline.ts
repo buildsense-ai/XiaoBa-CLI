@@ -380,7 +380,7 @@ export class DistillationPipeline {
     const episodes = Object.values(settledState.episodes);
     const reviewInputs: Array<{ candidate: DistilledKnowledgeCandidate; bundle: EvidenceBundle }> = [];
     for (const episode of episodes) {
-      if (episode.status !== 'promoted' || this.hasReviewedLearningEpisode(episode)) continue;
+      if (episode.status !== 'eligible' || this.hasReviewedLearningEpisode(episode)) continue;
       const candidate = buildLearningEpisodeCandidate(episode, unit);
       const bundle = this.v3EvidenceBundleBuilder?.(unit ?? emptyUnitForEpisode(episode), candidate)
         ?? buildLearningEpisodeEvidenceBundle(episode, candidate, this.skillEvolution);

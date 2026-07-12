@@ -520,7 +520,7 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
       episodes: Record<string, { agentTurnEpisodeId?: string; status: string }>;
     };
     assert.ok(Object.values(episodeState.episodes).some(episode =>
-      episode.agentTurnEpisodeId === successEpisodeId && episode.status === 'promoted',
+      episode.agentTurnEpisodeId === successEpisodeId && episode.status === 'eligible',
     ));
 
     const authorBeforeContradiction = env.branchFixtureCalls.author;

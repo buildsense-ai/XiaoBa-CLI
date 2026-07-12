@@ -70,7 +70,7 @@ describe('SkillTool usage wiring', () => {
     const extracted = extractLearningEpisodes(episodeUnit(episodeId, String(generatedResult.content))).episodes;
     episodeStore.upsert(extracted);
     const episode = episodeStore.settle({ now: new Date('2026-07-10T04:00:00.000Z') }).episodes[episodeId];
-    assert.equal(episode?.status, 'promoted');
+    assert.equal(episode?.status, 'eligible');
     const curator = new SkillUsageCurator({
       ledger,
       statePath: path.join(testRoot, 'data', 'curator-state.json'),
