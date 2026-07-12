@@ -823,3 +823,160 @@ describe('Issue 4 — Heartbeat single-write', () => {
       `expected reason=scheduled, got ${after2.lastReason}`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Provenance — episode candidate preserves original source byte range (#53 AC4)
+// ---------------------------------------------------------------------------
+
+describe('RuntimeLearning — Provenance (AC4 follow-up)', () => {
+  let env: TestEnv;
+
+  beforeEach(() => { env = setupEnv(0); });
+  afterEach(() => { env.restore(); env.teardown(); });
+
+  test('EvidenceBundle candidate preserves non-zero byteRange from source unit', async () => {
+    let capturedCandidate: any = null;
+
+    // Rebuild env with a capturing author fixture that inspects the candidate
+    env.teardown();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-provenance-'));
+    const skillsRoot = path.join(root, 'skills');
+    const logFile = path.join(root, 'logs', 'sessions', 'chat', 'test.jsonl');
+    const stateFile = path.join(root, 'data', 'cursor-state.json');
+    const heartbeatRecordFile = path.join(root, 'data', 'heartbeat-record.json');
+    const episodeStorePath = path.join(root, 'data', 'learning-episodes.json');
+    const reviewQueuePath = path.join(root, 'data', 'review-queue.json');
+    const registryPath = path.join(root, 'data', 'current-skill-registry.json');
+    const auditPath = path.join(root, 'data', 'transition-audit.jsonl');
+    const journalPath = path.join(root, 'data', 'transition-journal.json');
+    const curatorStatePath = path.join(root, 'data', 'curator-state.json');
+    const ledgerPath = path.join(root, 'data', 'skill-usage-ledger.jsonl');
+    const outputDir = defaultDistilledOutputDir(skillsRoot);
+
+    const savedEnv: Record<string, string | undefined> = {
+      DISTILLATION_HEARTBEAT_ENABLED: process.env.DISTILLATION_HEARTBEAT_ENABLED,
+      DISTILLATION_HEARTBEAT_INTERVAL_HOURS: process.env.DISTILLATION_HEARTBEAT_INTERVAL_HOURS,
+      DISTILLATION_HEARTBEAT_LOG_ROOT: process.env.DISTILLATION_HEARTBEAT_LOG_ROOT,
+      DISTILLATION_HEARTBEAT_STATE_FILE: process.env.DISTILLATION_HEARTBEAT_STATE_FILE,
+      DISTILLATION_HEARTBEAT_RECORD_FILE: process.env.DISTILLATION_HEARTBEAT_RECORD_FILE,
+      XIAOBA_ROLE: process.env.XIAOBA_ROLE,
+      XIAOBA_SKILLS_DIR: process.env.XIAOBA_SKILLS_DIR,
+      XIAOBA_RUNTIME_ROOT: process.env.XIAOBA_RUNTIME_ROOT,
+    };
+
+    process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
+    process.env.DISTILLATION_HEARTBEAT_INTERVAL_HOURS = '6';
+    process.env.DISTILLATION_HEARTBEAT_LOG_ROOT = 'logs';
+    process.env.DISTILLATION_HEARTBEAT_STATE_FILE = stateFile;
+    process.env.DISTILLATION_HEARTBEAT_RECORD_FILE = heartbeatRecordFile;
+    delete process.env.XIAOBA_ROLE;
+    process.env.XIAOBA_SKILLS_DIR = skillsRoot;
+    process.env.XIAOBA_RUNTIME_ROOT = root;
+
+    const skillEvolution = new SkillEvolutionRuntime({
+      workingDirectory: root,
+      outputDir,
+      registryPath,
+      auditPath,
+      journalPath,
+      reviewQueuePath,
+      settlementWindowMs: 0,
+      operationalRetryMs: 1,
+      operationalRetryMaxMs: 60_000,
+      logEnabled: false,
+      authorFixture: ({ bundle }) => {
+        capturedCandidate = bundle.episode;
+        return {
+          body: 'Provenance test skill body.',
+          envelope: {
+            decision: 'create_current_skill' as const,
+            routingName: 'provenance-test-skill',
+            description: 'Provenance test.',
+            referencedSkills: [],
+            evidenceRefs: bundle.completionEvidence.map(ref => ref.ref),
+          },
+        };
+      },
+      verifierFixture: () => ({
+        decision: 'accept' as const,
+        transition: 'create_current_skill' as const,
+        issues: [],
+        rationale: 'Provenance test skill accepted.',
+      }),
+    });
+
+    const episodeStore = new LearningEpisodeStore(episodeStorePath);
+    const curator = new SkillUsageCurator({
+      ledger: new SkillUsageLedger(ledgerPath),
+      statePath: curatorStatePath,
+      intervalMs: 24 * 60 * 60 * 1000,
+      runtime: skillEvolution,
+    });
+    const planner = new DueWorkPlanner({
+      learningEpisodeStorePath: episodeStorePath,
+      reviewQueuePath,
+      curatorStatePath,
+      curatorIntervalMs: 24 * 60 * 60 * 1000,
+    });
+    const evidenceIngestor = new EvidenceIngestor({ episodeStore, settlementWindowMs: 0 });
+    const pipeline = new DistillationPipeline({
+      outputDir,
+      reviewOutcomesPath: path.join(root, 'data', 'review-outcomes.json'),
+      learningEpisodeStorePath: episodeStorePath,
+      learningEpisodeSettlementWindowMs: 0,
+      skillEvolution,
+      skillUsageCurator: curator,
+    });
+    const runtimeLearning = new RuntimeLearning({
+      workingDirectory: root,
+      evidenceIngestor,
+      learningEpisodeStore: episodeStore,
+      skillEvolution,
+      curator,
+      planner,
+      legacyPipeline: pipeline,
+    });
+
+    // Write session log with known deliver + acceptance
+    const [delivery, acceptance] = deliveryPair(-2);
+    writeLog(logFile, [delivery, acceptance]);
+
+    const result = await runtimeLearning.wake('startup');
+    assert.equal(result.review.status, 'succeeded',
+      `expected 'succeeded' got '${result.review.status}'`);
+    assert.ok(result.review.reviewedEpisodes >= 1, 'expected reviewed episodes');
+
+    // The captured candidate must have non-zero source byte range
+    assert.ok(capturedCandidate, 'expected captured candidate');
+    assert.ok(capturedCandidate.sourceUnit,
+      'expected sourceUnit on candidate');
+    assert.ok(capturedCandidate.sourceUnit.byteRange,
+      'expected byteRange on sourceUnit');
+    assert.ok(
+      capturedCandidate.sourceUnit.byteRange.start > 0
+      || capturedCandidate.sourceUnit.byteRange.end > 0,
+      `expected non-zero byteRange, got ${JSON.stringify(capturedCandidate.sourceUnit.byteRange)}`,
+    );
+    assert.ok(
+      capturedCandidate.sourceUnit.byteRange.end > capturedCandidate.sourceUnit.byteRange.start,
+      `expected end > start, got ${JSON.stringify(capturedCandidate.sourceUnit.byteRange)}`,
+    );
+
+    // generatedAt must not be the settlement deadline (should be original admission time)
+    const episodeState = episodeStore.load();
+    const episode = Object.values(episodeState.episodes)[0];
+    assert.ok(episode, 'expected episode in store');
+    assert.notEqual(
+      capturedCandidate.sourceUnit.generatedAt,
+      episode.settlementDeadline,
+      'generatedAt should differ from settlementDeadline',
+    );
+
+    // Clean up
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});

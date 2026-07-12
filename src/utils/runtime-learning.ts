@@ -34,7 +34,7 @@ import {
   saveLogCursorState,
 } from './log-cursor-state';
 import { getDistillationHeartbeatConfig, DistillationHeartbeatConfig } from './distillation-heartbeat-config';
-import { LearningEpisodeStore, LearningEpisode } from './learning-episode';
+import { LearningEpisodeStore, LearningEpisode, buildLearningEpisodeCandidate } from './learning-episode';
 import { SkillEvolutionRuntime, CapabilityTransitionKind } from './skill-evolution';
 import { SkillUsageCurator, CuratorRunResult } from './skill-usage-curator';
 import { Logger } from './logger';
@@ -771,62 +771,6 @@ export type {
   RelatedCurrentSkill,
   SkillEvidenceRef,
 };
-
-/**
- * Build the evidence bundle for one settled Learning Episode.
- */
-function buildLearningEpisodeCandidate(episode: LearningEpisode): DistilledKnowledgeCandidate {
-  const completionEvidence = episode.completionEvidence.filter(item => item.kind !== 'contradiction');
-  const toolNames = [
-    ...new Set(
-      completionEvidence
-        .map(item => item.detail?.split(':', 1)[0])
-        .filter(Boolean),
-    ),
-  ];
-  const evidenceSummary = completionEvidence
-    .map(item => item.detail || item.kind)
-    .join('; ')
-    .slice(0, 280);
-  const actionPattern = toolNames.length > 0
-    ? `Use the settled artifact workflow with ${toolNames.join(', ')}: ${evidenceSummary}`
-    : `Reuse the settled artifact workflow: ${evidenceSummary}`;
-
-  return {
-    schemaVersion: 1,
-    kind: 'capability',
-    capabilityId: `episode-capability-${episode.episodeId.slice('episode-'.length)}`,
-    title: 'Capability: Settled artifact delivery workflow',
-    applicability: 'Applies when a similar task requires an artifact to be delivered and verified.',
-    actionPattern,
-    boundaries: [
-      'Only apply when the new task matches the settled artifact workflow.',
-      'Do not reuse a workflow while the user is correcting or iterating on the delivery.',
-    ],
-    risks: [
-      'This candidate is derived from one settled Learning Episode and may not generalize.',
-      'The Author and Verifier must keep the resulting skill bounded by the supplied evidence.',
-    ],
-    solvedLoop: {
-      problem: 'Complete the artifact delivery recorded by the Learning Episode.',
-      action: actionPattern,
-      verification: `The episode settled at ${episode.settlementDeadline} without contradiction.`,
-      noCorrection: 'No contradiction signal was present when the settlement deadline elapsed.',
-    },
-    provenance: completionEvidence.map((item, index) => ({
-      filePath: item.sourceFilePath,
-      turn: item.turn,
-      role: (index === 0 ? 'problem-action' : 'verification') as 'problem-action' | 'verification',
-      unitByteRange: { start: 0, end: 0 },
-    })),
-    generatedAt: episode.settlementDeadline,
-    sourceUnit: {
-      filePath: episode.sourceFilePath,
-      byteRange: { start: 0, end: 0 },
-      generatedAt: episode.settlementDeadline,
-    },
-  };
-}
 
 function buildEpisodeEvidenceBundle(
   episode: LearningEpisode,
