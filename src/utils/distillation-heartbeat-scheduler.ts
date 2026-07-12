@@ -341,8 +341,9 @@ export class DistillationHeartbeatScheduler {
     try {
       if (this.runtimeLearning) {
         // --- Production path ---
+        // RuntimeLearning.wake() owns the heartbeat record; the scheduler
+        // must not write it again (would double-increment runCount).
         const result = await this.runtimeLearning.wake(reason);
-        this.recordHeartbeat(reason, result.unitsProcessed, result.advancedFiles);
         return result;
       }
 
