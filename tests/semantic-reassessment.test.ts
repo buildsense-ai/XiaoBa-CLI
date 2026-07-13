@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import { extractLearningEpisodes, LearningEpisodeStore } from '../src/utils/learning-episode';
-import { SkillEvolutionRuntime, emptyCurrentSkillRegistryState, saveCurrentSkillRegistry } from '../src/utils/skill-evolution';
+import { applyCapabilityTransition, SkillEvolutionRuntime, emptyCurrentSkillRegistryState, saveCurrentSkillRegistry } from '../src/utils/skill-evolution';
 import { bootstrapSemanticReassessmentOnce } from '../src/utils/distilled-skill-bootstrap';
 import {
   SemanticReassessmentManifestStore,
@@ -106,14 +106,14 @@ test('route-only dependent drift refreshes registry metadata without changing gu
     const dependentSkillPath = path.join(outputDir, 'dependent', 'SKILL.md');
     fs.mkdirSync(path.dirname(sourceSkillPath), { recursive: true });
     fs.mkdirSync(path.dirname(dependentSkillPath), { recursive: true });
-    fs.writeFileSync(sourceSkillPath, '---\nname: new-route\ndescription: Source\n---\n\nSource guidance.\n', 'utf8');
+    fs.writeFileSync(sourceSkillPath, '---\nname: old-route\ndescription: Source\n---\n\nSource guidance.\n', 'utf8');
     fs.writeFileSync(dependentSkillPath, '---\nname: dependent-route\ndescription: Dependent\n---\n\nDependent guidance.\n', 'utf8');
     const observations = [{ kind: 'user-intent' as const, value: 'Use the source capability.', sourceRefs: ['source.jsonl#turn-1'] }];
     const sourceHash = cryptoHash(sourceSkillPath);
     const dependentHash = cryptoHash(dependentSkillPath);
     const registry = emptyCurrentSkillRegistryState();
     registry.capabilities.source = {
-      handle: 'source', revision: 2, routingName: 'new-route', description: 'Source', skillFilePath: sourceSkillPath,
+      handle: 'source', revision: 1, routingName: 'old-route', description: 'Source', skillFilePath: sourceSkillPath,
       guidanceHash: sourceHash, evidenceRefs: [], referencedSkills: [], semanticObservations: observations,
       createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
     };
@@ -124,6 +124,31 @@ test('route-only dependent drift refreshes registry metadata without changing gu
     };
     saveCurrentSkillRegistry(registryPath, registry);
     const runtime = new SkillEvolutionRuntime({ workingDirectory: root, outputDir, registryPath, auditPath, journalPath, authorFixture: () => { throw new Error('route-only drift must not invoke review'); }, verifierFixture: () => { throw new Error('route-only drift must not invoke review'); } });
+
+    // Produce the route drift through the real transition seam. The active
+    // file hash changes because frontmatter/transition metadata changes, but
+    // executable guidance remains byte-for-byte identical.
+    applyCapabilityTransition({
+      workingDirectory: root,
+      outputDir,
+      registryPath,
+      auditPath,
+      journalPath,
+      bundle: {
+        bundleId: 'route-only-migration',
+        episode: { kind: 'route-migration' },
+        completionEvidence: [{ ref: 'source#problem' }],
+        settlementEvidence: [{ ref: 'source#verification' }],
+        boundedContinuity: [],
+        semanticObservations: observations,
+        referencedSkills: [],
+        relatedCurrentSkills: [{ handle: 'source', revision: 1, routingName: 'old-route', description: 'Source', guidanceHash: sourceHash }],
+      },
+      draft: { body: 'Source guidance.', envelope: { decision: 'migrate_skill_route', targetCapabilityHandle: 'source', routingName: 'new-route', description: 'Source' } },
+      transition: 'migrate_skill_route',
+      verifier: { decision: 'accept', transition: 'migrate_skill_route', issues: [], rationale: 'Route-only rename.' },
+      branchTranscriptPaths: [], reviewerVersion: 'test', promptVersion: 'test',
+    });
 
     const results = await bootstrapSemanticReassessmentOnce({ skillEvolution: runtime, manifestPath: path.join(root, 'data', 'manifest.json') });
     assert.equal(results.length, 1);

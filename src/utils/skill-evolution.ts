@@ -65,6 +65,8 @@ export interface ReferencedSkillSnapshot {
   contentFingerprint?: string;
   capabilityHandle?: string;
   guidanceHash?: string;
+  /** Hash of executable guidance only, excluding route/frontmatter metadata. */
+  guidanceContentHash?: string;
   /** Bounded read-only observation supplied to Author/Verifier branches. */
   content?: string;
 }
@@ -314,6 +316,8 @@ export interface CurrentSkillRecord {
   description: string;
   skillFilePath: string;
   guidanceHash: string;
+  /** Stable hash of the executable Markdown body, excluding route metadata. */
+  guidanceContentHash?: string;
   evidenceRefs: SkillEvidenceRef[];
   referencedSkills: ReferencedSkillSnapshot[];
   /** Durable bounded observations used for future semantic reassessment. */
@@ -933,6 +937,7 @@ export class SkillEvolutionRuntime {
       name: record.routingName,
       capabilityHandle: record.handle,
       guidanceHash: record.guidanceHash,
+      guidanceContentHash: record.guidanceContentHash ?? guidanceBodyHashFromFile(record.skillFilePath),
       contentFingerprint: record.guidanceHash,
     }));
     return [...manual, ...generated];
@@ -1322,7 +1327,7 @@ function findIdempotentTransition(
     entry.transition === input.transition
     && (!targetHandle || entry.involvedCapabilityHandles.includes(targetHandle))
     && (!sourceHandle || entry.involvedCapabilityHandles.includes(sourceHandle))
-    && (input.transition !== 'create_current_skill'
+    && (input.transition !== 'create_current_skill' && input.transition !== 'migrate_skill_route'
       || entry.resultingRoutingName === input.draft.envelope.routingName?.trim())
   ));
   // A bundle can legitimately move through defer/review or append/revise
@@ -1428,6 +1433,7 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
       description: input.draft.envelope.description!.trim(),
       skillFilePath: skillPath,
       guidanceHash: resultingGuidanceHash,
+      guidanceContentHash: guidanceBodyHash(input.draft.body),
       evidenceRefs: evidenceRefs.map(ref => ({ ref })),
       referencedSkills: referencedSkillSnapshots(input.draft, input.bundle),
       semanticObservations: normalizeSemanticObservations(input.bundle.semanticObservations),
@@ -1452,6 +1458,7 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
       routingName,
       description: input.draft.envelope.description?.trim() || existing!.description,
       guidanceHash: resultingGuidanceHash,
+      guidanceContentHash: guidanceBodyHash(migrationDraft.body),
       evidenceRefs: mergeEvidence(existing!.evidenceRefs, evidenceRefs),
       referencedSkills: referencedSkillSnapshots(migrationDraft, input.bundle),
       semanticObservations: normalizeSemanticObservations([
@@ -1481,6 +1488,7 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
       revision: existing!.revision + 1,
       description: input.draft.envelope.description!.trim(),
       guidanceHash: resultingGuidanceHash,
+      guidanceContentHash: guidanceBodyHash(input.draft.body),
       evidenceRefs: mergeEvidence(existing!.evidenceRefs, evidenceRefs),
       referencedSkills: referencedSkillSnapshots(input.draft, input.bundle),
       semanticObservations: existing!.semanticObservations ?? [],
@@ -1610,6 +1618,7 @@ export function restoreCapabilityRevision(input: RestoreCapabilityRevisionInput)
     ...current,
     revision: current.revision + 1,
     guidanceHash: input.guidanceHash,
+    guidanceContentHash: guidanceBodyHash(content),
     updatedAt: now,
   };
   target.capabilities[current.handle] = restored;
@@ -1860,6 +1869,20 @@ function renderCurrentSkill(draft: SkillDraft, handle: string, transitionId: str
     draft.body.trim(),
     '',
   ].join('\n');
+}
+
+/** Hash only executable Markdown so route/frontmatter changes do not look like
+ * guidance changes to generated dependents. */
+function guidanceBodyHash(body: string): string {
+  return sha256(body.trim());
+}
+
+function guidanceBodyHashFromFile(filePath: string): string | undefined {
+  try {
+    return guidanceBodyHash(SkillParser.parse(filePath).content);
+  } catch {
+    return undefined;
+  }
 }
 
 function referencedSkillSnapshots(draft: SkillDraft, bundle: EvidenceBundle): ReferencedSkillSnapshot[] {
@@ -2290,6 +2313,7 @@ const UNSAFE_GUIDANCE_PATTERNS = [
 const LIFECYCLE_OR_GENERIC_ROUTING_PATTERNS = [
   /(?:^|-)(?:settled|settling|eligible|episode|candidate)(?:-|$)/i,
   /(?:^|-)(?:artifact-workflow|generic-workflow)(?:-|$)/i,
+  /^(?:artifact-delivery|generic-delivery|default-workflow|general-workflow|misc-workflow)$/i,
 ];
 
 export function isLifecycleOrGenericRoutingName(routingName: string): boolean {

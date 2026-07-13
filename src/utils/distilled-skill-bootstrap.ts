@@ -12,6 +12,7 @@ import {
   SkillEvolutionRuntime,
 } from './skill-evolution';
 import type { ReferencedSkillSnapshot } from './skill-evolution';
+import { SkillParser } from '../skills/skill-parser';
 import type { LearningEpisodeStore } from './learning-episode';
 import { DistilledKnowledgeCandidate } from './capability-distiller';
 import {
@@ -123,9 +124,8 @@ export async function bootstrapSemanticReassessmentOnce(
       if (candidate.handle === source.handle) continue;
       const stale = candidate.referencedSkills
         .filter(reference => reference.capabilityHandle === source.handle
-          && (reference.guidanceHash !== source.guidanceHash
-            || reference.name !== source.routingName
-            || reference.contentFingerprint !== source.guidanceHash));
+          && (reference.name !== source.routingName
+            || referenceGuidanceContentHash(source, reference) !== currentGuidanceContentHash(source)));
       if (stale.length === 0) continue;
       const group = dependentGroups.get(candidate.handle) ?? { candidate, references: [] };
       group.references.push(...stale.map(reference => ({ source, reference })));
@@ -136,11 +136,11 @@ export async function bootstrapSemanticReassessmentOnce(
   // Route-only drift is metadata maintenance, but it must be applied once
   // for every affected dependent, not just the first one discovered.
   for (const group of dependentGroups.values()) {
-    if (!group.references.every(item => item.reference.guidanceHash === item.source.guidanceHash)) continue;
+    if (!group.references.every(item => referenceGuidanceContentHash(item.source, item.reference) === currentGuidanceContentHash(item.source))) continue;
     const refreshed = group.candidate.referencedSkills.map(reference => {
       const match = group.references.find(item => item.reference === reference);
       return match
-        ? { ...reference, name: match.source.routingName, guidanceHash: match.source.guidanceHash, contentFingerprint: match.source.guidanceHash }
+        ? { ...reference, name: match.source.routingName, guidanceHash: match.source.guidanceHash, guidanceContentHash: currentGuidanceContentHash(match.source), contentFingerprint: match.source.guidanceHash }
         : reference;
     });
     try {
@@ -164,11 +164,11 @@ export async function bootstrapSemanticReassessmentOnce(
   // Guidance drift requires a bounded Author/Verifier maintenance review for
   // each dependent. Route-only groups above never enter this path.
   for (const group of dependentGroups.values()) {
-    if (group.references.every(item => item.reference.guidanceHash === item.source.guidanceHash)) continue;
+    if (group.references.every(item => referenceGuidanceContentHash(item.source, item.reference) === currentGuidanceContentHash(item.source))) continue;
     const references = group.candidate.referencedSkills.map(reference => {
       const match = group.references.find(item => item.reference === reference);
       return match
-        ? { ...reference, name: match.source.routingName, guidanceHash: match.source.guidanceHash, contentFingerprint: match.source.guidanceHash }
+        ? { ...reference, name: match.source.routingName, guidanceHash: match.source.guidanceHash, guidanceContentHash: currentGuidanceContentHash(match.source), contentFingerprint: match.source.guidanceHash }
         : reference;
     });
     const result = await reassessRecord(group.candidate, {
@@ -196,6 +196,34 @@ interface ReassessRecordOptions extends SemanticReassessmentBootstrapOptions {
   registry: ReturnType<SkillEvolutionRuntime['getRegistry']>;
   references?: ReferencedSkillSnapshot[];
   forceSchedule?: boolean;
+}
+
+function currentGuidanceContentHash(record: { guidanceContentHash?: string; skillFilePath: string }): string | undefined {
+  if (record.guidanceContentHash) return record.guidanceContentHash;
+  try {
+    return crypto.createHash('sha256').update(SkillParser.parse(record.skillFilePath).content.trim()).digest('hex');
+  } catch {
+    return undefined;
+  }
+}
+
+function referenceGuidanceContentHash(
+  source: { guidanceHash: string; guidanceContentHash?: string; skillFilePath: string },
+  reference: { guidanceHash?: string; guidanceContentHash?: string },
+): string | undefined {
+  if (reference.guidanceContentHash) return reference.guidanceContentHash;
+  if (!reference.guidanceHash) return undefined;
+  if (reference.guidanceHash === source.guidanceHash) return currentGuidanceContentHash(source);
+  // Legacy references only carried the full-file hash. A route migration
+  // archives that exact file, allowing us to distinguish metadata drift from
+  // executable guidance drift without weakening active-file integrity checks.
+  const archive = path.join(path.dirname(source.skillFilePath), 'history', reference.guidanceHash, 'SKILL.md');
+  if (!fs.existsSync(archive)) return reference.guidanceHash;
+  try {
+    return crypto.createHash('sha256').update(SkillParser.parse(archive).content.trim()).digest('hex');
+  } catch {
+    return reference.guidanceHash;
+  }
 }
 
 async function reassessRecord(

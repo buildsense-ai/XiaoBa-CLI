@@ -237,6 +237,33 @@ describe('V3 verified semantic Current Skills', () => {
     }
   });
 
+  test('defers generic artifact-delivery fallback names when semantic observations exist', async () => {
+    const env = setup();
+    try {
+      let verifierCalled = false;
+      env.options.authorFixture = () => ({
+        body: 'Use the bounded workflow.',
+        envelope: {
+          decision: 'create_current_skill',
+          routingName: 'artifact-delivery',
+          description: 'Deliver an artifact.',
+          evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+        },
+      });
+      env.options.verifierFixture = () => {
+        verifierCalled = true;
+        return { decision: 'accept', transition: 'create_current_skill', issues: [], rationale: 'not reached' };
+      };
+      const result = await new SkillEvolutionRuntime(env.options).reviewAndApply(fixtureBundle());
+      assert.equal(result.transition, 'defer');
+      assert.equal(result.verified, false);
+      assert.equal(verifierCalled, false);
+      assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
+    } finally {
+      env.cleanup();
+    }
+  });
+
   test('durably defers a semantic proposal when the production bundle has no observations', async () => {
     const env = setup();
     try {
@@ -995,6 +1022,24 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(registry.capabilities[first.handle]!.skillFilePath, first.skillFilePath);
       assert.equal(loadTransitionAudit(env.options.auditPath).at(-1)!.priorRoutingName, first.routingName);
       assert.equal(loadTransitionAudit(env.options.auditPath).at(-1)!.resultingRoutingName, 'flashcard-image-generation');
+      const secondMigration = applyCapabilityTransition({
+        ...env.options,
+        bundle: migrationBundle,
+        draft: { body: 'The same capability with a clearer public route.', envelope: {
+          decision: 'migrate_skill_route',
+          targetCapabilityHandle: first.handle,
+          routingName: 'flashcard-image-generation-v2',
+          description: 'Generate flashcard images from a word list.',
+          evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+        } },
+        transition: 'migrate_skill_route',
+        verifier: accepted('migrate_skill_route'),
+        branchTranscriptPaths: [],
+        reviewerVersion: 'test-reviewer',
+        promptVersion: 'test-prompt',
+      });
+      assert.notEqual(secondMigration.transitionId, migrated.transitionId, 'a different route is not an idempotent replay');
+      assert.equal(loadCurrentSkillRegistry(env.options.registryPath).capabilities[first.handle]!.routingName, 'flashcard-image-generation-v2');
       assert.throws(() => applyCapabilityTransition({
         ...env.options,
         bundle,

@@ -59,13 +59,14 @@ export function semanticSourceEvidenceHash(
 }
 
 export function semanticDependencyFingerprint(
-  references: readonly { name: string; capabilityHandle?: string; guidanceHash?: string; contentFingerprint?: string }[] | undefined,
+  references: readonly { name: string; capabilityHandle?: string; guidanceHash?: string; guidanceContentHash?: string; contentFingerprint?: string }[] | undefined,
 ): string | undefined {
   if (!references || references.length === 0) return undefined;
   const normalized = references.map(reference => ({
     name: reference.name,
     capabilityHandle: reference.capabilityHandle,
     guidanceHash: reference.guidanceHash,
+    guidanceContentHash: reference.guidanceContentHash,
     contentFingerprint: reference.contentFingerprint,
   })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
   return crypto.createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
