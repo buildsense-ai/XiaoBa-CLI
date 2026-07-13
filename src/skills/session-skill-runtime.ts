@@ -10,10 +10,6 @@ export interface SkillCommandResult {
   reply?: string;
 }
 
-export interface BuildSkillsListMessageOptions {
-  skillNames?: string[];
-}
-
 export class SessionSkillRuntime {
   constructor(
     private skillManager: SkillManager,
@@ -29,13 +25,8 @@ export class SessionSkillRuntime {
     await this.reloadHandler();
   }
 
-  buildSkillsListMessage(options: BuildSkillsListMessageOptions = {}): Message | undefined {
-    const allowedNames = options.skillNames && options.skillNames.length > 0
-      ? new Set(options.skillNames)
-      : undefined;
-    const skills = this.skillManager
-      .getUserInvocableSkills()
-      .filter(skill => !allowedNames || allowedNames.has(skill.metadata.name));
+  buildSkillsListMessage(): Message | undefined {
+    const skills = this.skillManager.getUserInvocableSkills();
     if (skills.length === 0) return undefined;
 
     const skillList = skills

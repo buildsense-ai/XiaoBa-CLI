@@ -28,7 +28,7 @@ const defaultTools = [
   tool('spawn_subagent'),
 ];
 
-test('plain chat does not request transient mode, skills, cwd, or runner hint', () => {
+test('plain chat still receives the complete skills list without cwd or runner hints', () => {
   const messages: Message[] = [{ role: 'user', content: '早，今天状态怎么样？' }];
 
   const turnPolicy = resolveTurnContextTransientPolicy(messages);
@@ -42,12 +42,12 @@ test('plain chat does not request transient mode, skills, cwd, or runner hint', 
   });
 
   assert.equal(turnPolicy.intent.kind, 'plain-chat');
-  assert.equal(turnPolicy.injectSkillsList, false);
+  assert.equal(turnPolicy.injectSkillsList, true);
   assert.equal(providerPolicy.injectEnvironment, false);
   assert.equal(providerPolicy.injectRunnerHint, false);
 });
 
-test('coding work requests get workspace context plus a narrow coding skill list', () => {
+test('coding work requests get workspace context plus the complete skills list', () => {
   const messages: Message[] = [
     { role: 'user', content: '这个项目 npm run build 报错，帮我定位原因' },
   ];
@@ -64,8 +64,16 @@ test('coding work requests get workspace context plus a narrow coding skill list
 
   assert.equal(turnPolicy.intent.kind, 'workspace');
   assert.equal(turnPolicy.injectSkillsList, true);
-  assert.deepEqual(turnPolicy.skillNames, ['coding-context']);
+  assert.equal('skillNames' in turnPolicy, false);
   assert.equal(providerPolicy.injectEnvironment, true);
+});
+
+test('does not request a skills list when no real user message exists', () => {
+  const messages: Message[] = [{ role: 'system', content: 'base prompt' }];
+
+  const turnPolicy = resolveTurnContextTransientPolicy(messages);
+
+  assert.equal(turnPolicy.injectSkillsList, false);
 });
 
 test('legacy system mode tags are ignored while keeping coding workspace context', () => {
