@@ -8,7 +8,7 @@ test('visible assistant replies are not automatically treated as meaningful comp
     path.join(process.cwd(), 'src', 'core', 'agent-turn-controller.ts'),
     'utf8',
   );
-  const finalResponseBlock = source.match(/if \(result\.finalResponseVisible\) \{[\s\S]*?\n    \}/)?.[0] || '';
+  const finalResponseBlock = source.match(/if \(finalResponseVisible\) \{[\s\S]*?\n    \}/)?.[0] || '';
 
   assert.match(finalResponseBlock, /recordPetTurnCompletion\('message_completed'\)/);
   assert.doesNotMatch(finalResponseBlock, /recordPetTurnCompletion\('task_completed'\)/);
