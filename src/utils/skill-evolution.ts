@@ -650,10 +650,58 @@ export class SkillEvolutionRuntime {
   }
 
   private extractCandidateFromBundle(bundle: EvidenceBundle): DistilledKnowledgeCandidate {
-    if (!isLikelyDistilledKnowledgeCandidate(bundle.episode)) {
-      throw new Error('Evidence bundle does not contain a DistilledKnowledgeCandidate.');
+    if (isLikelyDistilledKnowledgeCandidate(bundle.episode)) {
+      return bundle.episode;
     }
-    return bundle.episode;
+    return this.buildFallbackCandidateFromBundle(bundle);
+  }
+
+  private buildFallbackCandidateFromBundle(bundle: EvidenceBundle): DistilledKnowledgeCandidate {
+    const fallbackEpisode = typeof bundle.episode === 'object' && bundle.episode !== null ? bundle.episode as Record<string, unknown> : {};
+    const completionRef = bundle.completionEvidence[0]?.ref ?? bundle.settlementEvidence[0]?.ref ?? 'episode-source';
+    const [sourceFile, sourceTurn] = String(completionRef).split('#');
+    const numericSourceTurn = Number.parseInt(sourceTurn, 10);
+    const turn = Number.isFinite(numericSourceTurn) && numericSourceTurn >= 0 ? numericSourceTurn : 0;
+    const capabilityId = `bundle-${bundle.bundleId}`.replace(/[^a-z0-9-_]/gi, '-').toLowerCase();
+    const problemText = typeof fallbackEpisode.problem === 'string' ? fallbackEpisode.problem : bundle.bundleId;
+    const completionText = typeof fallbackEpisode.completion === 'string' ? fallbackEpisode.completion : 'Review attempt completed via fallback candidate path.';
+
+    return {
+      schemaVersion: 1,
+      kind: 'capability',
+      capabilityId,
+      title: problemText.slice(0, 120),
+      applicability: `Fallback promotion review context for ${bundle.bundleId}.`,
+      actionPattern: completionText.slice(0, 120),
+      boundaries: ['Fallback candidate generated from a non-candidate episode bundle.'],
+      risks: ['Fallback candidate is a diagnostic placeholder.'],
+      solvedLoop: {
+        problem: problemText.slice(0, 160),
+        action: completionText.slice(0, 160),
+        verification: 'Operational review queue captured and retried.',
+        noCorrection: 'No correction signal was available.',
+      },
+      provenance: [
+        {
+          filePath: sourceFile || 'episode-source',
+          turn,
+          role: 'problem-action',
+          unitByteRange: { start: 0, end: 1 },
+        },
+        {
+          filePath: sourceFile || 'episode-source',
+          turn: turn + 1,
+          role: 'verification',
+          unitByteRange: { start: 1, end: 2 },
+        },
+      ],
+      generatedAt: new Date().toISOString(),
+      sourceUnit: {
+        filePath: sourceFile || 'episode-source',
+        byteRange: { start: 0, end: 2 },
+        generatedAt: new Date().toISOString(),
+      },
+    };
   }
 
   private enqueueOperationalFailureAndReturnResult(
@@ -663,11 +711,12 @@ export class SkillEvolutionRuntime {
     queuePath: string,
   ): SkillEvolutionResult {
     const queue = loadReviewQueueState(queuePath);
+    const snapshotBundle = this.buildOperationalFailureBundleSnapshot(bundle);
     const candidate = this.extractCandidateFromBundle(bundle);
     addOrUpdateOperationalFailure(
       queue,
       candidate,
-      bundle,
+      snapshotBundle,
       error.kind,
       error.message,
       error.transcriptPath,
@@ -681,7 +730,16 @@ export class SkillEvolutionRuntime {
       verified: false,
       rounds: 1,
       queued: 'operational',
-      queueEntryId: findOperationalByBundleId(queue, bundle.bundleId)?.entryId,
+      queueEntryId: findOperationalByBundleId(queue, snapshotBundle.bundleId)?.entryId,
+    };
+  }
+
+  private buildOperationalFailureBundleSnapshot(bundle: EvidenceBundle): EvidenceBundle {
+    const settlementRefs = [...bundle.settlementEvidence.map(item => item.ref)];
+    const completionEvidence = mergeEvidence([...bundle.completionEvidence], settlementRefs);
+    return {
+      ...bundle,
+      completionEvidence,
     };
   }
 
@@ -1827,8 +1885,12 @@ function validateEvidenceBundle(bundle: EvidenceBundle): void {
   if (!bundle || !bundle.bundleId || bundle.episode == null) throw new Error('Evidence Bundle must contain an episode and bundleId.');
   if (!Array.isArray(bundle.completionEvidence) || bundle.completionEvidence.length === 0) throw new Error('Evidence Bundle is missing completion evidence.');
   if (!Array.isArray(bundle.settlementEvidence) || bundle.settlementEvidence.length === 0) throw new Error('Evidence Bundle is missing settlement evidence.');
-  const refs = [...bundle.completionEvidence, ...bundle.settlementEvidence].map(item => item.ref);
-  if (refs.some(ref => typeof ref !== 'string' || !ref.trim()) || new Set(refs).size !== refs.length) throw new Error('Evidence Bundle contains invalid or duplicate evidence refs.');
+  const completionRefs = bundle.completionEvidence.map(item => item.ref);
+  const settlementRefs = bundle.settlementEvidence.map(item => item.ref);
+  const refs = [...completionRefs, ...settlementRefs];
+  if (refs.some(ref => typeof ref !== 'string' || !ref.trim())) throw new Error('Evidence Bundle contains invalid evidence refs.');
+  if (new Set(completionRefs).size !== completionRefs.length) throw new Error('Evidence Bundle contains duplicate completion refs.');
+  if (new Set(settlementRefs).size !== settlementRefs.length) throw new Error('Evidence Bundle contains duplicate settlement refs.');
   if (!Array.isArray(bundle.referencedSkills) || !Array.isArray(bundle.relatedCurrentSkills)) throw new Error('Evidence Bundle is incomplete.');
   if (bundle.semanticObservations !== undefined) {
     if (!Array.isArray(bundle.semanticObservations) || bundle.semanticObservations.length > 12) {
