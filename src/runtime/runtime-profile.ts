@@ -24,7 +24,7 @@ export interface RuntimeLoggingProfile {
 }
 
 export interface RuntimeModelProfile extends Partial<Pick<ChatConfig,
-  'provider' | 'apiUrl' | 'model' | 'temperature' | 'maxTokens' | 'reasoningEffort'
+  'provider' | 'apiUrl' | 'model' | 'temperature' | 'maxTokens' | 'reasoningEffort' | 'openaiApiMode'
 >> {}
 
 export interface RuntimeProfile {

@@ -8341,6 +8341,10 @@
       {value:'512000',label:'512K',hint:'超长文档'},
       {value:'1000000',label:'1M',hint:'百万上下文'},
     ];
+    const OPENAI_API_MODE_OPTIONS=[
+      {value:'chat_completions',label:'Chat Completions（兼容优先）'},
+      {value:'responses',label:'Responses API（提示词缓存）'},
+    ];
     const REASONING_EFFORT_OPTIONS=[
       {value:'default',label:'default',hint:'兼容旧配置，不在 DeepSeek 卡片中展示'},
       {value:'high',label:'reasoning_effort: high',hint:'thinking.type=enabled'},
@@ -8517,6 +8521,29 @@
       )).join('');
     }
 
+    function customOpenAIApiModeValue(){
+      const custom=customStartupProfile();
+      const value=String(custom.openaiApiMode || settingValue('model.openaiApiMode') || 'chat_completions');
+      return OPENAI_API_MODE_OPTIONS.some(option=>option.value===value)?value:'chat_completions';
+    }
+
+    function openAIApiModeOptionsHtml(selectedValue){
+      return OPENAI_API_MODE_OPTIONS.map(option=>(
+        '<option value="'+escapeHtml(option.value)+'" '+(option.value===selectedValue?'selected':'')+'>'
+        +escapeHtml(option.label)
+        +'</option>'
+      )).join('');
+    }
+
+    function syncCustomOpenAIApiModeVisibility(){
+      const provider=document.getElementById('model-provider-setting')?.value;
+      const row=document.getElementById('model-openai-api-mode-row');
+      const select=document.getElementById('model-openai-api-mode-setting');
+      const visible=provider==='openai';
+      if(row)row.style.display=visible?'':'none';
+      if(select)select.disabled=!visible;
+    }
+
     function normalizeReasoningEffortValue(value){
       const text=String(value||'').trim().toLowerCase();
       return REASONING_EFFORT_OPTIONS.some(option=>option.value===text)?text:'default';
@@ -8676,8 +8703,11 @@
       const model=custom.model || settingValue('model.model') || '未配置';
       const contextLabel=customModelContextWindowLabel();
       const reasoningMeta=modelSupportsReasoningSwitch(model)?' · 推理 '+deepseekReasoningEffortLabel(customReasoningEffortValue()):'';
+      const apiModeMeta=provider==='openai'
+        ? ' · '+(customOpenAIApiModeValue()==='responses'?'Responses API':'Chat Completions')
+        : '';
       const meta=configured
-        ? '自定义配置 · 上下文 '+contextLabel+' · '+(provider==='openai'?'OpenAI SDK':'Anthropic SDK')+reasoningMeta
+        ? '自定义配置 · 上下文 '+contextLabel+' · '+(provider==='openai'?'OpenAI SDK':'Anthropic SDK')+apiModeMeta+reasoningMeta
         : '去设置填写 endpoint / key';
       return '<div class="relay-model-choice '+(active?' active':'')+(configured?'':' needs-config')+'">'
         +'<button class="relay-model-main" type="button" data-custom-startup-action="true" data-custom-startup-context="'+escapeHtml(context)+'" '+(relayActionBusy()?'disabled':'')+' onclick="enableCustomStartupModelFromButton(this)">'
@@ -8744,6 +8774,7 @@
         selectionStart: activeInForm && typeof active.selectionStart==='number' ? active.selectionStart : null,
         selectionEnd: activeInForm && typeof active.selectionEnd==='number' ? active.selectionEnd : null,
         provider: document.getElementById('model-provider-setting')?.value,
+        openaiApiMode: document.getElementById('model-openai-api-mode-setting')?.value,
         apiBase: document.getElementById('model-api-base-setting')?.value,
         model: document.getElementById('model-name-setting')?.value,
         contextWindowTokens: document.getElementById('model-context-window-setting')?.value,
@@ -8764,6 +8795,7 @@
       if(draft && draft.open){
         const pairs=[
           ['model-provider-setting',draft.provider],
+          ['model-openai-api-mode-setting',draft.openaiApiMode],
           ['model-api-base-setting',draft.apiBase],
           ['model-name-setting',draft.model],
           ['model-context-window-setting',draft.contextWindowTokens],
@@ -8777,6 +8809,7 @@
         const clear=document.getElementById('model-secret-clear-setting');
         if(clear && draft.clearSecret!==undefined)clear.checked=Boolean(draft.clearSecret);
       }
+      syncCustomOpenAIApiModeVisibility();
 
       if(draft?.activeId){
         const active=document.getElementById(draft.activeId);
@@ -8806,6 +8839,7 @@
       const apiBaseDisplayValue=hideInternalGateway?'':apiBaseValue;
       const apiBasePlaceholder=hideInternalGateway?'已配置 CatsCo 内部兼容网关（隐藏）':'https://example.com/v1/messages';
       const selectedContextWindow=customModelContextWindowValue();
+      const selectedOpenAIApiMode=customOpenAIApiModeValue();
       const draft=captureCustomModelDraft();
 
       p.innerHTML=`<div class="model-source-layout">
@@ -8821,7 +8855,8 @@
             </div>
           </summary>
           <div class="model-source-form">
-            <div class="config-row"><label class="config-label">兼容类型</label><select class="config-select" id="model-provider-setting"><option value="anthropic"${settingValue('model.provider')==='anthropic'?' selected':''}>Anthropic-compatible</option><option value="openai"${settingValue('model.provider')==='openai'?' selected':''}>OpenAI-compatible</option></select></div>
+            <div class="config-row"><label class="config-label">接口协议</label><select class="config-select" id="model-provider-setting"><option value="anthropic"${settingValue('model.provider')==='anthropic'?' selected':''}>Anthropic Messages</option><option value="openai"${settingValue('model.provider')==='openai'?' selected':''}>OpenAI compatible</option></select></div>
+            <div class="config-row" id="model-openai-api-mode-row"><label class="config-label">OpenAI API</label><select class="config-select" id="model-openai-api-mode-setting">${openAIApiModeOptionsHtml(selectedOpenAIApiMode)}</select></div>
             <div class="config-row"><label class="config-label">模型地址</label><input class="config-input" id="model-api-base-setting" value="${escapeHtml(apiBaseDisplayValue)}" placeholder="${escapeHtml(apiBasePlaceholder)}" data-hidden-internal="${hideInternalGateway?'true':'false'}" /></div>
             <div class="config-row"><label class="config-label">模型名称</label><input class="config-input" id="model-name-setting" value="${escapeHtml(settingValue('model.model'))}" placeholder="model-name" /></div>
             <div class="config-row"><label class="config-label">上下文窗口</label><select class="config-select" id="model-context-window-setting">${customModelContextWindowOptionsHtml(selectedContextWindow)}</select></div>
@@ -9007,6 +9042,7 @@
         payload:{
           settings:{
             'model.provider':document.getElementById('model-provider-setting').value,
+            'model.openaiApiMode':document.getElementById('model-openai-api-mode-setting')?.value || 'chat_completions',
             'model.apiBase':apiBaseValue,
             'model.model':document.getElementById('model-name-setting').value.trim(),
             'model.contextWindowTokens':document.getElementById('model-context-window-setting').value,
@@ -9022,6 +9058,7 @@
       const secret=settings['model.apiKey']||{action:'keep'};
       return JSON.stringify({
         provider:settings['model.provider'],
+        openaiApiMode:settings['model.openaiApiMode'],
         apiBase:settings['model.apiBase'],
         model:settings['model.model'],
         contextWindowTokens:settings['model.contextWindowTokens'],
@@ -9245,6 +9282,7 @@
 
     function bindCustomModelAutoSave(){
       const provider=document.getElementById('model-provider-setting');
+      const openaiApiMode=document.getElementById('model-openai-api-mode-setting');
       const apiBase=document.getElementById('model-api-base-setting');
       const model=document.getElementById('model-name-setting');
       const contextWindow=document.getElementById('model-context-window-setting');
@@ -9256,7 +9294,8 @@
         setModelSourceStatus('改动待自动保存...', 'muted');
         customModelAutoSaveTimer=setTimeout(()=>saveCustomModelSettings({auto:true}),CUSTOM_MODEL_AUTO_SAVE_DELAY);
       };
-      if(provider)provider.addEventListener('change',schedule);
+      if(provider)provider.addEventListener('change',()=>{syncCustomOpenAIApiModeVisibility();schedule();});
+      if(openaiApiMode)openaiApiMode.addEventListener('change',schedule);
       if(apiBase)apiBase.addEventListener('input',schedule);
       if(model)model.addEventListener('input',schedule);
       if(contextWindow)contextWindow.addEventListener('change',schedule);

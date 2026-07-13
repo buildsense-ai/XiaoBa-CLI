@@ -1,8 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
-import type { ReasoningEffort } from '../types';
+import type { OpenAIApiMode, ReasoningEffort } from '../types';
 import { REASONING_EFFORT_OPTIONS, normalizeReasoningEffort, reasoningEffortOrDefault } from '../utils/reasoning-effort';
+import { OPENAI_API_MODE_OPTIONS, openAIApiModeOrDefault } from '../utils/openai-api-mode';
 
 export type DashboardSettingType = 'enum' | 'string' | 'url' | 'secret';
 export type SecretSettingAction = 'keep' | 'replace' | 'clear';
@@ -46,6 +47,7 @@ export interface DashboardModelProfileSnapshot {
   model?: string;
   contextWindowTokens?: number;
   reasoningEffort?: ReasoningEffort;
+  openaiApiMode?: OpenAIApiMode;
   apiKeyPresent: boolean;
   configured: boolean;
 }
@@ -104,6 +106,16 @@ export const DASHBOARD_SETTING_DEFINITIONS: DashboardSettingDefinition[] = [
     type: 'url',
     required: true,
     protocols: ['http:', 'https:'],
+  },
+  {
+    id: 'model.openaiApiMode',
+    group: 'model',
+    label: 'OpenAI 接口模式',
+    description: 'Chat Completions 兼容旧中转；Responses API 支持新版工具事件和稳定提示词缓存。',
+    envKey: 'GAUZ_LLM_OPENAI_API_MODE',
+    type: 'enum',
+    required: false,
+    options: OPENAI_API_MODE_OPTIONS,
   },
   {
     id: 'model.model',
@@ -176,6 +188,7 @@ const CUSTOM_MODEL_ENV_KEYS: Record<string, string> = {
   'model.model': 'CATSCO_CUSTOM_LLM_MODEL',
   'model.contextWindowTokens': 'CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS',
   'model.reasoningEffort': 'CATSCO_CUSTOM_LLM_REASONING_EFFORT',
+  'model.openaiApiMode': 'CATSCO_CUSTOM_LLM_OPENAI_API_MODE',
   'model.apiKey': 'CATSCO_CUSTOM_LLM_API_KEY',
 };
 
@@ -186,6 +199,7 @@ const EFFECTIVE_MODEL_ENV_KEYS = {
   apiKey: 'GAUZ_LLM_API_KEY',
   contextWindowTokens: 'GAUZ_LLM_CONTEXT_WINDOW_TOKENS',
   reasoningEffort: 'GAUZ_LLM_REASONING_EFFORT',
+  openaiApiMode: 'GAUZ_LLM_OPENAI_API_MODE',
 } as const;
 
 const RELAY_MODEL_ENV_KEYS = {
@@ -195,6 +209,7 @@ const RELAY_MODEL_ENV_KEYS = {
   apiKey: 'CATSCO_RELAY_LLM_API_KEY',
   contextWindowTokens: 'CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS',
   reasoningEffort: 'CATSCO_RELAY_LLM_REASONING_EFFORT',
+  openaiApiMode: 'CATSCO_RELAY_LLM_OPENAI_API_MODE',
 } as const;
 
 const MODEL_SOURCE_ENV_KEY = 'CATSCO_MODEL_SOURCE';
@@ -240,12 +255,14 @@ function readModelProfile(
   const apiKey = firstNonEmpty(fileEnv[keys.apiKey], env[keys.apiKey]);
   const contextWindowTokens = parsePositiveInteger(firstNonEmpty(fileEnv[keys.contextWindowTokens], env[keys.contextWindowTokens]));
   const reasoningEffort = normalizeReasoningEffort(firstNonEmpty(fileEnv[keys.reasoningEffort], env[keys.reasoningEffort]));
+  const openaiApiMode = openAIApiModeOrDefault(firstNonEmpty(fileEnv[keys.openaiApiMode], env[keys.openaiApiMode]));
   return {
     provider,
     apiBase: sanitizeUrlSettingValue(apiBase ?? ''),
     model,
     contextWindowTokens,
     reasoningEffort: reasoningEffort ?? 'default',
+    openaiApiMode,
     apiKeyPresent: Boolean(apiKey),
     configured: Boolean(provider && apiBase && model && apiKey),
   };
@@ -267,12 +284,17 @@ function readCustomModelProfile(
     fileEnv.CATSCO_CUSTOM_LLM_REASONING_EFFORT,
     env.CATSCO_CUSTOM_LLM_REASONING_EFFORT,
   ));
+  const openaiApiMode = openAIApiModeOrDefault(firstNonEmpty(
+    fileEnv.CATSCO_CUSTOM_LLM_OPENAI_API_MODE,
+    env.CATSCO_CUSTOM_LLM_OPENAI_API_MODE,
+  ));
   return {
     provider,
     apiBase: sanitizeUrlSettingValue(apiBase ?? ''),
     model,
     contextWindowTokens,
     reasoningEffort: reasoningEffort ?? 'default',
+    openaiApiMode,
     apiKeyPresent: Boolean(apiKey),
     configured: Boolean(provider && apiBase && model && apiKey),
   };
@@ -351,7 +373,11 @@ export function getDashboardSettings(
 
       return {
         ...common,
-        value: definition.type === 'url' ? sanitizeUrlSettingValue(value ?? '') : value ?? '',
+        value: definition.type === 'url'
+          ? sanitizeUrlSettingValue(value ?? '')
+          : definition.id === 'model.openaiApiMode'
+            ? openAIApiModeOrDefault(value)
+            : value ?? '',
       };
     }),
   };

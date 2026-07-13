@@ -22,6 +22,7 @@ describe('dashboard typed settings API', () => {
     'GAUZ_LLM_CONTEXT_WINDOW_TOKENS',
     'GAUZ_LLM_CONTEXT_TOKENS',
     'GAUZ_LLM_REASONING_EFFORT',
+    'GAUZ_LLM_OPENAI_API_MODE',
     'CATSCO_MODEL_SOURCE',
     'CATSCO_CUSTOM_LLM_PROVIDER',
     'CATSCO_CUSTOM_LLM_API_BASE',
@@ -29,12 +30,14 @@ describe('dashboard typed settings API', () => {
     'CATSCO_CUSTOM_LLM_MODEL',
     'CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS',
     'CATSCO_CUSTOM_LLM_REASONING_EFFORT',
+    'CATSCO_CUSTOM_LLM_OPENAI_API_MODE',
     'CATSCO_RELAY_LLM_PROVIDER',
     'CATSCO_RELAY_LLM_API_BASE',
     'CATSCO_RELAY_LLM_API_KEY',
     'CATSCO_RELAY_LLM_MODEL',
     'CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS',
     'CATSCO_RELAY_LLM_REASONING_EFFORT',
+    'CATSCO_RELAY_LLM_OPENAI_API_MODE',
     'CATSCO_RELAY_LLM_VISION_CAPABLE',
     'CATSCO_RELAY_LLM_TOOL_CALLING_CAPABLE',
     'CATSCO_HTTP_BASE_URL',
@@ -181,8 +184,10 @@ describe('dashboard typed settings API', () => {
     fs.writeFileSync(path.join(testRoot, '.env'), [
       'GAUZ_LLM_CONTEXT_WINDOW_TOKENS=256000',
       'GAUZ_LLM_REASONING_EFFORT=max',
+      'GAUZ_LLM_OPENAI_API_MODE=responses',
       'CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS=256000',
       'CATSCO_CUSTOM_LLM_REASONING_EFFORT=high',
+      'CATSCO_CUSTOM_LLM_OPENAI_API_MODE=responses',
       '',
     ].join('\n'));
 
@@ -199,6 +204,11 @@ describe('dashboard typed settings API', () => {
     assert.equal(data.modelStartup.custom.contextWindowTokens, 256000);
     assert.equal(data.modelStartup.effective.reasoningEffort, 'max');
     assert.equal(data.modelStartup.custom.reasoningEffort, 'high');
+    const openaiApiMode = data.fields.find((field: any) => field.id === 'model.openaiApiMode');
+    assert.equal(openaiApiMode.value, 'responses');
+    assert.deepStrictEqual(openaiApiMode.options, ['chat_completions', 'responses']);
+    assert.equal(data.modelStartup.effective.openaiApiMode, 'responses');
+    assert.equal(data.modelStartup.custom.openaiApiMode, 'responses');
   });
 
   test('GET /settings carries legacy relay reasoning effort into startup snapshot', async () => {
@@ -488,6 +498,7 @@ describe('dashboard typed settings API', () => {
       body: JSON.stringify({
         settings: {
           'model.provider': 'openai',
+          'model.openaiApiMode': 'responses',
           'model.apiBase': 'https://api.deepseek.com/v1',
           'model.model': 'deepseek-chat-v2',
           'model.contextWindowTokens': '512000',
@@ -504,6 +515,8 @@ describe('dashboard typed settings API', () => {
     assert.equal(parsed.CATSCO_CUSTOM_LLM_API_KEY, 'sk-custom-secret');
     assert.equal(parsed.CATSCO_RELAY_LLM_API_KEY, 'sk-bf-relay-secret');
     assert.equal(parsed.CATSCO_CUSTOM_LLM_MODEL, 'deepseek-chat-v2');
+    assert.equal(parsed.CATSCO_CUSTOM_LLM_OPENAI_API_MODE, 'responses');
+    assert.equal(parsed.GAUZ_LLM_OPENAI_API_MODE, 'responses');
     assert.equal(parsed.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, '512000');
     assert.equal(parsed.CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS, '512000');
   });

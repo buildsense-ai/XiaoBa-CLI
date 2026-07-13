@@ -28,3 +28,21 @@ export function normalizeOpenAIChatCompletionsUrl(rawUrl: string): string {
   parsed.pathname = `${path || ''}/chat/completions`;
   return parsed.toString();
 }
+
+export function normalizeOpenAIResponsesUrl(rawUrl: string): string {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return trimmed;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return trimmed;
+  }
+
+  const path = parsed.pathname
+    .replace(/\/(?:chat\/completions|responses)\/?$/i, '')
+    .replace(/\/+$/, '');
+  parsed.pathname = `${path || ''}/responses`;
+  return parsed.toString();
+}

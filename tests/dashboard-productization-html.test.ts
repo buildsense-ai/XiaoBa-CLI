@@ -35,6 +35,10 @@ test('Agent Hub keeps connector controls and third-party model config without du
   assert.match(dashboardHtml, /CatsCo 中转模型在 CatsCo 页面选择/);
   assert.match(dashboardHtml, /CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS/);
   assert.match(dashboardHtml, /id="model-context-window-setting"/);
+  assert.match(dashboardHtml, /id="model-openai-api-mode-setting"/);
+  assert.match(dashboardHtml, /Responses API（提示词缓存）/);
+  assert.match(dashboardHtml, /function syncCustomOpenAIApiModeVisibility\(\)/);
+  assert.match(dashboardHtml, /'model\.openaiApiMode':document\.getElementById\('model-openai-api-mode-setting'\)/);
   assert.match(dashboardHtml, /'model\.contextWindowTokens':document\.getElementById\('model-context-window-setting'\)\.value/);
   assert.match(dashboardHtml, /自定义模型可在 128K 到 1M 间选择上下文/);
   assert.match(dashboardHtml, /上下文 '\+escapeHtml\(contextLabel\)\+'/);

@@ -10,6 +10,7 @@ import {
   resolveDefaultRuntimeProfile,
 } from './runtime-profile';
 import { normalizeReasoningEffort } from '../utils/reasoning-effort';
+import { normalizeOpenAIApiMode } from '../utils/openai-api-mode';
 
 export const RUNTIME_PROFILE_SCHEMA_VERSION = 1;
 export const DEFAULT_RUNTIME_PROFILE_FILENAME = 'runtime-profile.json';
@@ -17,7 +18,7 @@ export const DEFAULT_RUNTIME_PROFILE_FILENAME = 'runtime-profile.json';
 const PROFILE_PATH_ENV_KEYS = ['XIAOBA_RUNTIME_PROFILE_PATH', 'XIAOBA_PROFILE_PATH'];
 
 export interface RuntimeProfileFileModelConfig extends Pick<RuntimeModelProfile,
-  'provider' | 'apiUrl' | 'model' | 'temperature' | 'maxTokens' | 'reasoningEffort'
+  'provider' | 'apiUrl' | 'model' | 'temperature' | 'maxTokens' | 'reasoningEffort' | 'openaiApiMode'
 > {}
 
 export interface RuntimeProfileFilePromptConfig {
@@ -334,6 +335,7 @@ function copyModel(
   copyNumber(source.model, model as Record<string, unknown>, 'temperature', 'profile.model.temperature', issues);
   copyNumber(source.model, model as Record<string, unknown>, 'maxTokens', 'profile.model.maxTokens', issues);
   copyReasoningEffort(source.model, model, issues);
+  copyOpenAIApiMode(source.model, model, issues);
 
   if (source.model.apiKey !== undefined) {
     issues.push({
@@ -444,6 +446,24 @@ function copyReasoningEffort(
   target.reasoningEffort = normalized;
 }
 
+function copyOpenAIApiMode(
+  source: Record<string, unknown>,
+  target: RuntimeProfileFileModelConfig,
+  issues: RuntimeProfileConfigIssue[],
+): void {
+  if (source.openaiApiMode === undefined) return;
+  if (typeof source.openaiApiMode !== 'string') {
+    issues.push({ path: 'profile.model.openaiApiMode', message: 'Expected string' });
+    return;
+  }
+  const normalized = normalizeOpenAIApiMode(source.openaiApiMode);
+  if (!normalized) {
+    issues.push({ path: 'profile.model.openaiApiMode', message: 'Expected one of: chat_completions, responses' });
+    return;
+  }
+  target.openaiApiMode = normalized;
+}
+
 function copyNumber(
   source: Record<string, unknown>,
   target: Record<string, unknown>,
@@ -482,6 +502,7 @@ function filterModelConfig(model: RuntimeProfileFileModelConfig): RuntimeProfile
     ...(model.temperature !== undefined ? { temperature: model.temperature } : {}),
     ...(model.maxTokens !== undefined ? { maxTokens: model.maxTokens } : {}),
     ...(model.reasoningEffort !== undefined ? { reasoningEffort: model.reasoningEffort } : {}),
+    ...(model.openaiApiMode !== undefined ? { openaiApiMode: model.openaiApiMode } : {}),
   };
 }
 

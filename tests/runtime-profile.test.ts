@@ -88,6 +88,7 @@ describe('RuntimeProfile', () => {
         provider: 'openai',
         model: 'custom-model',
         apiUrl: 'https://example.com/v1',
+        openaiApiMode: 'responses',
         temperature: 0.2,
         maxTokens: 2048,
       },
@@ -108,6 +109,7 @@ describe('RuntimeProfile', () => {
       provider: 'openai',
       model: 'custom-model',
       apiUrl: 'https://example.com/v1',
+      openaiApiMode: 'responses',
       temperature: 0.2,
       maxTokens: 2048,
     });
@@ -180,6 +182,7 @@ describe('RuntimeProfile', () => {
         model: {
           provider: 'openai',
           model: 'profile-model',
+          openaiApiMode: 'responses',
           temperature: 0.2,
           reasoningEffort: 'high',
         },
@@ -221,6 +224,7 @@ describe('RuntimeProfile', () => {
     assert.deepStrictEqual(resolved.profile.model, {
       provider: 'openai',
       model: 'profile-model',
+      openaiApiMode: 'responses',
       temperature: 0.2,
       reasoningEffort: 'high',
     });
@@ -278,6 +282,22 @@ describe('RuntimeProfile', () => {
     assert.equal(resolved.profile.model.model, 'safe-model');
     assert.equal((resolved.profile.model as any).apiKey, undefined);
     assert.equal(JSON.stringify(resolved.config).includes('secret-key'), false);
+  });
+
+  test('rejects unknown OpenAI API modes in runtime profile files', () => {
+    const profilePath = path.join(testRoot, 'runtime-profile.json');
+    fs.writeFileSync(profilePath, JSON.stringify({
+      schemaVersion: 1,
+      profile: { model: { openaiApiMode: 'legacy-responses' } },
+    }), 'utf-8');
+
+    const resolved = resolveRuntimeProfileFromConfig({ configPath: profilePath, env: {} });
+
+    assert.deepStrictEqual(resolved.config.issues, [{
+      path: 'profile.model.openaiApiMode',
+      message: 'Expected one of: chat_completions, responses',
+    }]);
+    assert.equal(resolved.profile.model.openaiApiMode, undefined);
   });
 
   test('ignores legacy prompt modes in validation', () => {

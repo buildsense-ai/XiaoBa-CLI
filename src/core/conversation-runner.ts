@@ -1034,19 +1034,24 @@ export class ConversationRunner {
 
     const transcriptToolCallIds = new Set(transcriptToolCalls.map(toolCall => toolCall.id));
     const blocks: NonNullable<Message['providerContent']> = [];
-    let hasToolUse = false;
+    let hasMatchingToolCall = false;
 
     for (const block of assistantMsg.providerContent) {
       if (!block || typeof block !== 'object') continue;
       if (block.type === 'tool_use') {
         const id = typeof block.id === 'string' ? block.id : '';
         if (!transcriptToolCallIds.has(id)) continue;
-        hasToolUse = true;
+        hasMatchingToolCall = true;
+      }
+      if (block.type === 'function_call') {
+        const callId = typeof block.call_id === 'string' ? block.call_id : '';
+        if (!transcriptToolCallIds.has(callId)) continue;
+        hasMatchingToolCall = true;
       }
       blocks.push(block);
     }
 
-    return hasToolUse ? blocks : undefined;
+    return hasMatchingToolCall ? blocks : undefined;
   }
 
   private shouldKeepAssistantDraft(

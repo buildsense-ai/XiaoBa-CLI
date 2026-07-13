@@ -10,7 +10,7 @@ import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { PathResolver } from '../../utils/path-resolver';
 import { APP_VERSION } from '../../version';
-import type { ChatConfig, ReasoningEffort } from '../../types';
+import type { ChatConfig, OpenAIApiMode, ReasoningEffort } from '../../types';
 import { createRuntimeConfigSnapshot } from '../../runtime/runtime-config-snapshot';
 import {
   CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS,
@@ -70,6 +70,7 @@ import {
   serializeBranchAgentsEnabled,
 } from '../../core/branch-agent-settings';
 import { normalizeReasoningEffort, reasoningEffortOrDefault } from '../../utils/reasoning-effort';
+import { normalizeOpenAIApiMode, openAIApiModeOrDefault } from '../../utils/openai-api-mode';
 import {
   BindWeixinChannelResult,
   WeixinChannelStatus,
@@ -201,6 +202,7 @@ const CUSTOM_MODEL_ENV_KEYS = {
   apiKey: 'CATSCO_CUSTOM_LLM_API_KEY',
   contextWindowTokens: 'CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS',
   reasoningEffort: 'CATSCO_CUSTOM_LLM_REASONING_EFFORT',
+  openaiApiMode: 'CATSCO_CUSTOM_LLM_OPENAI_API_MODE',
 } as const;
 const RELAY_MODEL_ENV_KEYS = {
   provider: 'CATSCO_RELAY_LLM_PROVIDER',
@@ -209,6 +211,7 @@ const RELAY_MODEL_ENV_KEYS = {
   apiKey: 'CATSCO_RELAY_LLM_API_KEY',
   contextWindowTokens: 'CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS',
   reasoningEffort: 'CATSCO_RELAY_LLM_REASONING_EFFORT',
+  openaiApiMode: 'CATSCO_RELAY_LLM_OPENAI_API_MODE',
 } as const;
 const EFFECTIVE_MODEL_ENV_KEYS = {
   provider: 'GAUZ_LLM_PROVIDER',
@@ -217,6 +220,7 @@ const EFFECTIVE_MODEL_ENV_KEYS = {
   apiKey: 'GAUZ_LLM_API_KEY',
   contextWindowTokens: 'GAUZ_LLM_CONTEXT_WINDOW_TOKENS',
   reasoningEffort: 'GAUZ_LLM_REASONING_EFFORT',
+  openaiApiMode: 'GAUZ_LLM_OPENAI_API_MODE',
 } as const;
 
 interface ModelLaunchProfile {
@@ -226,6 +230,7 @@ interface ModelLaunchProfile {
   apiKey?: string;
   contextWindowTokens?: number;
   reasoningEffort?: ReasoningEffort;
+  openaiApiMode?: OpenAIApiMode;
 }
 
 function normalizeBaseUrl(value: unknown, fallback: string): string {
@@ -465,7 +470,7 @@ export function getCatsAuthState(overrides: Record<string, unknown> = {}): CatsA
   return createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).getAuthState(overrides);
 }
 
-function getModelConfigReadonly(): Pick<ChatConfig, 'apiKey' | 'apiUrl' | 'model' | 'provider' | 'reasoningEffort'> {
+function getModelConfigReadonly(): Pick<ChatConfig, 'apiKey' | 'apiUrl' | 'model' | 'provider' | 'reasoningEffort' | 'openaiApiMode'> {
   const config = ConfigManager.getConfigReadonly();
   const env = readEnvFile();
   const provider = firstNonEmpty(process.env.GAUZ_LLM_PROVIDER, env.GAUZ_LLM_PROVIDER, config.provider);
@@ -477,12 +482,18 @@ function getModelConfigReadonly(): Pick<ChatConfig, 'apiKey' | 'apiUrl' | 'model
     env.GAUZ_LLM_REASONING_EFFORT,
     config.reasoningEffort,
   ));
+  const openaiApiMode = openAIApiModeOrDefault(firstNonEmpty(
+    process.env.GAUZ_LLM_OPENAI_API_MODE,
+    env.GAUZ_LLM_OPENAI_API_MODE,
+    config.openaiApiMode,
+  ));
 
   return {
     apiKey,
     apiUrl,
     model,
     reasoningEffort,
+    openaiApiMode,
     provider: provider === 'anthropic' || provider === 'openai' ? provider : config.provider,
   };
 }
@@ -1110,6 +1121,7 @@ function modelProfileFromCurrentConfig(): ModelLaunchProfile {
     apiKey: config.apiKey,
     contextWindowTokens: parsePositiveInteger(firstNonEmpty(process.env.GAUZ_LLM_CONTEXT_WINDOW_TOKENS, fileEnv.GAUZ_LLM_CONTEXT_WINDOW_TOKENS)),
     reasoningEffort: normalizeReasoningEffort(firstNonEmpty(process.env.GAUZ_LLM_REASONING_EFFORT, fileEnv.GAUZ_LLM_REASONING_EFFORT, config.reasoningEffort)),
+    openaiApiMode: openAIApiModeOrDefault(firstNonEmpty(process.env.GAUZ_LLM_OPENAI_API_MODE, fileEnv.GAUZ_LLM_OPENAI_API_MODE, config.openaiApiMode)),
   };
 }
 
@@ -1125,6 +1137,7 @@ function modelProfileFromStoredEnv(
     apiKey: firstNonEmpty(process.env[keys.apiKey], fileEnv[keys.apiKey]),
     contextWindowTokens: parsePositiveInteger(firstNonEmpty(process.env[keys.contextWindowTokens], fileEnv[keys.contextWindowTokens])),
     reasoningEffort: normalizeReasoningEffort(firstNonEmpty(process.env[keys.reasoningEffort], fileEnv[keys.reasoningEffort])),
+    openaiApiMode: openAIApiModeOrDefault(firstNonEmpty(process.env[keys.openaiApiMode], fileEnv[keys.openaiApiMode])),
   };
 }
 
@@ -1154,6 +1167,7 @@ function modelProfileUpdates(
     [keys.apiKey]: profile.apiKey,
     [keys.contextWindowTokens]: profile.contextWindowTokens ? String(profile.contextWindowTokens) : undefined,
     [keys.reasoningEffort]: profile.reasoningEffort ? profile.reasoningEffort : undefined,
+    [keys.openaiApiMode]: profile.openaiApiMode ?? 'chat_completions',
   };
 }
 
@@ -1187,6 +1201,12 @@ function requestedCustomReasoningEffort(input: any): ReasoningEffort | undefined
   if (!input?.settings || typeof input.settings !== 'object') return undefined;
   if (!Object.prototype.hasOwnProperty.call(input.settings, 'model.reasoningEffort')) return undefined;
   return reasoningEffortOrDefault(input.settings['model.reasoningEffort']);
+}
+
+function requestedCustomOpenAIApiMode(input: any): OpenAIApiMode | undefined {
+  if (!input?.settings || typeof input.settings !== 'object') return undefined;
+  if (!Object.prototype.hasOwnProperty.call(input.settings, 'model.openaiApiMode')) return undefined;
+  return normalizeOpenAIApiMode(input.settings['model.openaiApiMode']) ?? 'chat_completions';
 }
 
 function requestedReasoningEffort(value: unknown): ReasoningEffort | undefined {
@@ -1235,6 +1255,9 @@ function mirrorCurrentModelAsCustomStartup(input: any, previous: ModelLaunchProf
     reasoningEffort: requestedCustomReasoningEffort(input)
       ?? storedCustom.reasoningEffort
       ?? 'default',
+    openaiApiMode: requestedCustomOpenAIApiMode(input)
+      ?? storedCustom.openaiApiMode
+      ?? 'chat_completions',
   };
 
   if (!isCompleteModelProfile(custom) && (previousSource === 'relay' || isCatsRelayApiBase(previous.apiBase))) {
@@ -1265,6 +1288,7 @@ function writeCustomModelStartupConfig(): { profile: ModelLaunchProfile; updated
   }
   profile.contextWindowTokens = profile.contextWindowTokens ?? CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS;
   profile.reasoningEffort = profile.reasoningEffort ?? 'default';
+  profile.openaiApiMode = profile.openaiApiMode ?? 'chat_completions';
   const result = writeDashboardEnvAndProcess({
     ...modelProfileUpdates(CUSTOM_MODEL_ENV_KEYS, profile),
     ...modelProfileUpdates(EFFECTIVE_MODEL_ENV_KEYS, profile),
@@ -1322,6 +1346,7 @@ function writeRelayModelStartupConfig(
     apiKey,
     contextWindowTokens: model.contextWindowTokens ?? resolveKnownModelContextWindowTokens(model.model),
     reasoningEffort: relayReasoningEffortOrHigh(options.reasoningEffort ?? currentRelayReasoningEffort()),
+    openaiApiMode: 'chat_completions',
   };
   const result = writeDashboardEnvAndProcess({
     ...modelProfileUpdates(RELAY_MODEL_ENV_KEYS, profile),
@@ -2113,6 +2138,7 @@ export function createApiRouter(
         contextWindowTokens: result.profile.contextWindowTokens,
         contextLabel: result.profile.contextWindowTokens ? formatContextWindowTokens(result.profile.contextWindowTokens) : undefined,
         reasoningEffort: result.profile.reasoningEffort ?? 'default',
+        openaiApiMode: result.profile.openaiApiMode ?? 'chat_completions',
         updated: result.updated,
         cleared: result.cleared,
         restartRequired: activation.wasRunning && !activation.restartRequested,

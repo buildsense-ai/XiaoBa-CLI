@@ -409,6 +409,56 @@ test('runner keeps normal providerContent tool replay for M3 style tool calls', 
   ]);
 });
 
+test('runner keeps Responses reasoning and matching function calls in the tool transcript', async () => {
+  const toolCall = makeToolCall('call_responses_1', 'execute_shell', { command: 'echo ok' });
+  const providerContent = [
+    { type: 'reasoning', id: 'rs_1', encrypted_content: 'opaque-reasoning', summary: [] },
+    {
+      type: 'function_call',
+      id: 'fc_1',
+      call_id: 'call_responses_1',
+      name: 'execute_shell',
+      arguments: '{"command":"echo ok"}',
+    },
+  ];
+  const mock = createMockAI([
+    {
+      content: null,
+      toolCalls: [toolCall],
+      providerContent,
+      usage: {
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+      },
+    },
+    makeFinalResponse('done'),
+  ]);
+  const runner = new ConversationRunner(mock.aiService, new MockToolExecutor([{
+    name: 'execute_shell',
+    description: 'mock shell',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string' },
+      },
+      required: ['command'],
+    },
+  }], { execute_shell: 'ok' }), {
+    stream: false,
+    enableCompression: false,
+  });
+
+  const result = await runner.run([{ role: 'user', content: 'run shell' }]);
+  const assistantWithTool = result.messages.find(message => message.role === 'assistant' && message.tool_calls?.length);
+  const secondRequestAssistant = mock.getReceivedMessages()[1]
+    .find(message => message.role === 'assistant' && message.tool_calls?.length);
+
+  assert.equal(result.response, 'done');
+  assert.deepEqual(assistantWithTool?.providerContent, providerContent);
+  assert.deepEqual(secondRequestAssistant?.providerContent, providerContent);
+});
+
 test('runner injects tool target context into provider transcript only', async () => {
   const responses = [
     makeToolResponse(makeToolCall('call_1', 'execute_shell', { command: 'echo ok' })),

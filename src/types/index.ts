@@ -4,6 +4,7 @@ export type ContentBlock =
 
 export type ProviderContentBlock = Record<string, unknown> & { type: string };
 export type ReasoningEffort = 'default' | 'high' | 'max' | 'disabled';
+export type OpenAIApiMode = 'chat_completions' | 'responses';
 
 export interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -46,6 +47,7 @@ export interface ChatConfig {
   maxTokens?: number;
   contextWindowTokens?: number;
   reasoningEffort?: ReasoningEffort;
+  openaiApiMode?: OpenAIApiMode;
   provider?: 'openai' | 'anthropic';
   feishu?: {
     appId?: string;
@@ -79,6 +81,8 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cachedReadTokens?: number;
+  cachedWriteTokens?: number;
 }
 
 export interface ChatResponse {
