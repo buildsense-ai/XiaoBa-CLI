@@ -38,6 +38,10 @@ export interface DistillationHeartbeatConfig {
   capabilityRegistryPath: string;
   /** Root directory for branch-style distillation work logs. */
   workLogRoot: string;
+  /** Runtime-owned root directory for all branch transcripts. */
+  branchLogRoot: string;
+  /** Default retention period for uncommitted and observational transcripts. */
+  branchTranscriptRetentionDays: number;
   /** V3 verified Current Skill workflow master switch. */
   skillEvolutionEnabled: boolean;
   /** Active-only V3 Current Skill Registry state file. */
@@ -218,6 +222,26 @@ export function getDistillationHeartbeatConfig(
     readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_WORK_LOG_ROOT'),
     'logs/branches/distillation',
   );
+  const configuredRuntimeDataRoot = readEnv(
+    runtimeEnv,
+    'XIAOBA_USER_DATA_DIR',
+    'CATSCO_USER_DATA_DIR',
+    'XIAOBA_ELECTRON_USER_DATA_DIR',
+    'XIAOBA_RUNTIME_ROOT',
+  );
+  const runtimeDataRoot = path.resolve(configuredRuntimeDataRoot || workingDirectory);
+  const branchLogRoot = resolveContainedPath(
+    runtimeDataRoot,
+    'logs',
+    readEnv(runtimeEnv, 'XIAOBA_BRANCH_LOG_ROOT', 'DISTILLATION_HEARTBEAT_BRANCH_LOG_ROOT'),
+    'logs/branches',
+  );
+  const branchTranscriptRetentionDays = readNumber(
+    runtimeEnv,
+    'XIAOBA_BRANCH_TRANSCRIPT_RETENTION_DAYS',
+    30,
+    1,
+  );
   // V3 is the production path. Operators and compatibility tests can still
   // opt back into V1 explicitly.
   const skillEvolutionEnabled = readBoolean(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_V3_ENABLED', true);
@@ -317,6 +341,8 @@ export function getDistillationHeartbeatConfig(
     needsReviewQueuePath,
     capabilityRegistryPath,
     workLogRoot,
+    branchLogRoot,
+    branchTranscriptRetentionDays,
     skillEvolutionEnabled,
     skillEvolutionRegistryPath,
     skillEvolutionAuditPath,

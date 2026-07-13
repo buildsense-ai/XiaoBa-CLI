@@ -183,7 +183,7 @@ export class SkillAuthorBranchSession extends BranchSession {
   private payload: SkillDraft | null = null;
 
   constructor(private readonly authorOptions: SkillAuthorBranchOptions) {
-    super({ ...authorOptions, type: 'skill-author' });
+    super({ ...authorOptions, type: 'skill-author', logEnabled: true, transcriptContract: 'required' });
   }
 
   async run(): Promise<SkillDraft> {
@@ -191,6 +191,7 @@ export class SkillAuthorBranchSession extends BranchSession {
       this.throwAbortError();
     }
     if (this.authorOptions.fixture) {
+      this.logger.write('start', { message_count: 0, execution: 'fixture' });
       const draft = await this.authorOptions.fixture({
         bundle: this.authorOptions.bundle,
         previousDraft: this.authorOptions.previousDraft,
@@ -199,6 +200,7 @@ export class SkillAuthorBranchSession extends BranchSession {
       });
       this.payload = draft;
       this.logger.write('fixture_result', { round: this.authorOptions.round, draft });
+      this.logger.write('transcript', { messages: this.messages });
       return draft;
     }
 
@@ -263,7 +265,7 @@ export class SkillVerifierBranchSession extends BranchSession {
   private payload: SkillVerifierResult | null = null;
 
   constructor(private readonly verifierOptions: SkillVerifierBranchOptions) {
-    super({ ...verifierOptions, type: 'skill-verifier' });
+    super({ ...verifierOptions, type: 'skill-verifier', logEnabled: true, transcriptContract: 'required' });
   }
 
   async run(): Promise<SkillVerifierResult> {
@@ -271,6 +273,7 @@ export class SkillVerifierBranchSession extends BranchSession {
       this.throwAbortError();
     }
     if (this.verifierOptions.fixture) {
+      this.logger.write('start', { message_count: 0, execution: 'fixture' });
       const result = await this.verifierOptions.fixture({
         bundle: this.verifierOptions.bundle,
         draft: this.verifierOptions.draft,
@@ -278,6 +281,7 @@ export class SkillVerifierBranchSession extends BranchSession {
       });
       this.payload = normalizeVerifierResult(result);
       this.logger.write('fixture_result', { round: this.verifierOptions.round, result: this.payload });
+      this.logger.write('transcript', { messages: this.messages });
       return this.payload;
     }
 
@@ -378,6 +382,7 @@ export interface SkillEvolutionPaths {
   registryPath: string;
   auditPath: string;
   journalPath: string;
+  branchLogRoot?: string;
   reviewQueuePath?: string;
 }
 
@@ -845,6 +850,7 @@ export class SkillEvolutionRuntime {
         throw this.buildOperationalReviewError(error, branchTranscriptPaths);
       }
       if (author.transcriptPath) branchTranscriptPaths.push(author.transcriptPath);
+      assertHealthyBranchTranscript(author.transcriptPath, 'skill-author', this.options.branchLogRoot);
       const draftIssues = validateDraft(draft, frozenBundle, this.getManualSkillNames());
       if (draftIssues.length > 0) {
         // A malformed Author completion is an operational/schema failure, not
@@ -884,6 +890,7 @@ export class SkillEvolutionRuntime {
         throw this.buildOperationalReviewError(error, branchTranscriptPaths);
       }
       if (verifier.transcriptPath) branchTranscriptPaths.push(verifier.transcriptPath);
+      assertHealthyBranchTranscript(verifier.transcriptPath, 'skill-verifier', this.options.branchLogRoot);
       if (verification.decision === 'revise' && round < MAX_AUTHOR_VERIFIER_ROUNDS) {
         previousDraft = draft;
         issues = verification.issues;
@@ -1190,7 +1197,9 @@ export class SkillEvolutionRuntime {
       id: `skill-author-${randomUUID()}`,
       aiService: this.createBranchAIService(this.options.authorModel),
       workingDirectory: this.options.workingDirectory,
-      logEnabled: this.options.logEnabled,
+      branchLogRoot: this.options.branchLogRoot,
+      logEnabled: true,
+      transcriptContract: 'required',
       signal: attemptSignal,
       sharedReviewTurnBudget,
       bundle,
@@ -1213,7 +1222,9 @@ export class SkillEvolutionRuntime {
       id: `skill-verifier-${randomUUID()}`,
       aiService: this.createBranchAIService(this.options.verifierModel),
       workingDirectory: this.options.workingDirectory,
-      logEnabled: this.options.logEnabled,
+      branchLogRoot: this.options.branchLogRoot,
+      logEnabled: true,
+      transcriptContract: 'required',
       signal: attemptSignal,
       sharedReviewTurnBudget,
       bundle,
@@ -1276,6 +1287,7 @@ export class SkillEvolutionRuntime {
         },
       };
     }
+    assertAuditPathWritableAndReadable(this.options.auditPath);
     try {
       applied = applyCapabilityTransition({
         ...this.options,
@@ -1319,6 +1331,7 @@ export class SkillEvolutionRuntime {
         this.releaseCreateRoutingName(routingName);
       }
     }
+    assertTransitionAuditReadable(this.options.auditPath, applied.audit, this.options.branchLogRoot);
     return {
       transition,
       transitionId: applied.transitionId,

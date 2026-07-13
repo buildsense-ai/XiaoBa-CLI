@@ -9,6 +9,7 @@ import { AgentToolExecutor } from '../agents/agent-tool-executor';
 import { ConversationRunner, RunResult, RunnerCallbacks } from './conversation-runner';
 
 export type BranchSessionAbortReason = 'review-timeout' | 'runtime-shutdown' | 'turn_budget_exhausted';
+export type BranchTranscriptContract = 'required' | 'best-effort';
 
 export interface SharedReviewTurnBudget {
   remainingTurns: number;
@@ -19,8 +20,11 @@ export interface BranchSessionOptions {
   type: string;
   aiService: AIService;
   workingDirectory: string;
+  /** Runtime-owned root for all branch transcripts. */
+  branchLogRoot?: string;
   signal?: AbortSignal;
   logEnabled?: boolean;
+  transcriptContract?: BranchTranscriptContract;
   sharedReviewTurnBudget?: SharedReviewTurnBudget;
 }
 
@@ -41,7 +45,9 @@ export abstract class BranchSession {
       branchId: options.id,
       branchType: options.type,
       workingDirectory: options.workingDirectory,
+      branchLogRoot: options.branchLogRoot ?? PathResolver.getLogsPath('branches'),
       enabled: options.logEnabled !== false,
+      contract: options.transcriptContract ?? 'best-effort',
     });
     if (options.signal?.aborted) {
       this.stop(this.extractAbortReason(options.signal.reason) ?? 'runtime-shutdown');
@@ -218,7 +224,9 @@ export interface BranchSessionLoggerOptions {
   branchId: string;
   branchType: string;
   workingDirectory: string;
+  branchLogRoot: string;
   enabled: boolean;
+  contract: BranchTranscriptContract;
 }
 
 export class BranchSessionLogger {
@@ -229,27 +237,45 @@ export class BranchSessionLogger {
       this.filePath = null;
       return;
     }
-    const date = new Date();
-    const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-    const dir = PathResolver.getLogsPath('branches', options.branchType, dateStr);
-    fs.mkdirSync(dir, { recursive: true });
-    this.filePath = path.join(dir, `${sanitizeFilePart(options.branchId)}.jsonl`);
+    try {
+      const date = new Date();
+      const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+      const root = path.resolve(options.branchLogRoot);
+      const typeDir = path.join(root, sanitizeFilePart(options.branchType));
+      const dir = path.join(typeDir, dateStr);
+      fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+      fs.chmodSync(root, 0o700);
+      fs.mkdirSync(typeDir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(typeDir, 0o700);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+      this.filePath = path.join(dir, `${sanitizeFilePart(options.branchId)}.jsonl`);
+    } catch (error: any) {
+      this.filePath = null;
+      Logger.warning(`[branch:${options.branchType}:${options.branchId}] log setup failed: ${error.message}`);
+      if (options.contract === 'required') throw error;
+    }
   }
 
   write(eventType: string, payload: Record<string, unknown> = {}): void {
     if (!this.filePath) return;
-    const entry = {
+    const entry = redactRecord({
       entry_type: 'branch',
       branch_type: this.options.branchType,
       branch_id: this.options.branchId,
       event_type: eventType,
       timestamp: new Date().toISOString(),
       ...payload,
-    };
+    });
     try {
-      fs.appendFileSync(this.filePath, JSON.stringify(entry) + '\n');
+      fs.appendFileSync(this.filePath, JSON.stringify(entry) + '\n', {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
+      fs.chmodSync(this.filePath, 0o600);
     } catch (error: any) {
       Logger.warning(`[branch:${this.options.branchType}:${this.options.branchId}] log write failed: ${error.message}`);
+      if (this.options.contract === 'required') throw error;
     }
   }
 
@@ -260,4 +286,44 @@ export class BranchSessionLogger {
 
 function sanitizeFilePart(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 120) || 'branch';
+}
+
+const CREDENTIAL_FIELD_PATTERN = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization|credential)/i;
+const CREDENTIAL_ASSIGNMENT_PATTERN = /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization|credential)\s*[:=]\s*["']?)[^\s,"'}\]]+/gi;
+const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
+const TOKEN_PATTERN = /\b(?:sk|rk|xox[baprs])-[-_A-Za-z0-9]{8,}\b/g;
+
+function redactRecord(record: Record<string, unknown>): Record<string, unknown> {
+  return redactValue(record) as Record<string, unknown>;
+}
+
+function redactValue(value: unknown, key?: string): unknown {
+  if (key && CREDENTIAL_FIELD_PATTERN.test(key)) return '[REDACTED]';
+  if (typeof value === 'string') return redactString(value);
+  if (Array.isArray(value)) return value.map(item => redactValue(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [
+      childKey,
+      redactValue(childValue, childKey),
+    ]));
+  }
+  return value;
+}
+
+function redactString(value: string): string {
+  let redacted = value;
+  for (const credential of knownCredentialValues()) {
+    redacted = redacted.split(credential).join('[REDACTED]');
+  }
+  return redacted
+    .replace(CREDENTIAL_ASSIGNMENT_PATTERN, '$1[REDACTED]')
+    .replace(BEARER_PATTERN, 'Bearer [REDACTED]')
+    .replace(TOKEN_PATTERN, '[REDACTED]');
+}
+
+function knownCredentialValues(): string[] {
+  return Object.entries(process.env)
+    .filter(([key, value]) => value && CREDENTIAL_FIELD_PATTERN.test(key) && value.length >= 6)
+    .map(([, value]) => value as string)
+    .sort((left, right) => right.length - left.length);
 }

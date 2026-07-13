@@ -99,6 +99,7 @@ export interface AgentTurnControllerOptions {
   turnContextBuilder: TurnContextBuilder;
   turnLogRecorder: TurnLogRecorder;
   workspaceRoot: string;
+  branchLogRoot?: string;
   getCurrentDirectory: () => string;
   updateCurrentDirectory: (directory: string) => void;
 }
@@ -408,6 +409,7 @@ export class AgentTurnController {
       input: options.input,
       recentMessages: options.messages,
       workingDirectory: this.options.getCurrentDirectory(),
+      branchLogRoot: this.options.branchLogRoot,
       aiService: this.options.services.aiService,
       queue: options.queue,
       signal: options.abortSignal,

@@ -91,6 +91,7 @@ export async function startRuntimeCommandSupport(
         // V3 Skill Evolution Runtime
         skillEvolution = new SkillEvolutionRuntime({
           workingDirectory,
+          branchLogRoot: config.branchLogRoot,
           outputDir,
           registryPath: config.skillEvolutionRegistryPath,
           auditPath: config.skillEvolutionAuditPath,

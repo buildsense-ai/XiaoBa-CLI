@@ -40,6 +40,7 @@ import { SkillUsageCurator, CuratorRunResult } from './skill-usage-curator';
 import { Logger } from './logger';
 import { bootstrapSemanticReassessmentOnce } from './distilled-skill-bootstrap';
 import { SemanticReassessmentManifestStore } from './semantic-reassessment';
+import { cleanupBranchTranscripts } from './branch-transcript-retention';
 
 // ---------------------------------------------------------------------------
 // Public API: wake context / reports (shared with the heartbeat scheduler)
@@ -387,7 +388,10 @@ export class RuntimeLearning {
         wake.reassessment = await this.runSemanticReassessment();
       }
 
-      // ---- 6. Record heartbeat ----
+      // ---- 7. Retain only audit-linked active-capability transcripts ----
+      this.cleanupBranchTranscripts();
+
+      // ---- 8. Record heartbeat ----
       this.recordHeartbeat(this.formatReasons(reasons), wake.unitsProcessed, wake.advancedFiles);
 
       return wake;
@@ -444,6 +448,21 @@ export class RuntimeLearning {
 
   private formatReasons(reasons: Set<RuntimeLearningReason>): string {
     return [...reasons].sort().join('+');
+  }
+
+  private cleanupBranchTranscripts(): void {
+    try {
+      const registry = this.skillEvolution.getRegistry();
+      cleanupBranchTranscripts({
+        branchLogRoot: this.config.branchLogRoot,
+        auditEntries: this.skillEvolution.getAudit(),
+        activeCapabilityHandles: new Set(Object.keys(registry.capabilities)),
+        now: this.clock(),
+        retentionDays: this.config.branchTranscriptRetentionDays,
+      });
+    } catch (error) {
+      Logger.warning(`[RuntimeLearning] branch transcript cleanup skipped: ${toErrorMessage(error)}`);
+    }
   }
 
   private shouldRunReassessment(

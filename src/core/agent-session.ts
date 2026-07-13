@@ -47,6 +47,7 @@ import { MODEL_IMAGE_SAFETY_MESSAGE, isModelImageSafetyError } from '../utils/mo
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
 import type { PromptTraceSnapshot } from '../utils/prompt-observability';
 import { toPromptTurnMetadata } from '../utils/prompt-observability';
+import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
 
 export type { RuntimeFeedbackInput, RuntimeFeedbackOptions } from './runtime-feedback-inbox';
 
@@ -213,6 +214,7 @@ export class AgentSession {
       turnContextBuilder: this.turnContextBuilder,
       turnLogRecorder: this.turnLogRecorder,
       workspaceRoot: this.defaultDirectory,
+      branchLogRoot: getDistillationHeartbeatConfig(this.defaultDirectory).branchLogRoot,
       getCurrentDirectory: () => this.currentDirectory,
       updateCurrentDirectory: directory => this.updateCurrentDirectory(directory),
     });
