@@ -957,9 +957,21 @@ describe('V3 verified semantic Current Skills', () => {
       });
       const create = await new SkillEvolutionRuntime(env.options).reviewAndApply(bundle);
       const first = create.record!;
+      const migrationBundle: EvidenceBundle = {
+        ...bundle,
+        bundleId: 'episode-flashcard-route-migration',
+        semanticObservations: [
+          ...(bundle.semanticObservations ?? []),
+          {
+            kind: 'verification',
+            value: 'The renamed route was verified after migration.',
+            sourceRefs: ['session.jsonl#14:verification'],
+          },
+        ],
+      };
       const migrated = applyCapabilityTransition({
         ...env.options,
-        bundle,
+        bundle: migrationBundle,
         draft: { body: 'The same capability with a clearer public route.', envelope: {
           decision: 'migrate_skill_route',
           targetCapabilityHandle: first.handle,
@@ -978,6 +990,8 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(migrated.record!.handle, first.handle);
       assert.equal(registry.capabilities[first.handle]!.routingName, 'flashcard-image-generation');
       assert.equal(registry.routeRedirects[first.routingName], first.handle);
+      assert.ok(registry.capabilities[first.handle]!.semanticObservations?.some(item => item.value === 'Create a validated flashcard artifact.'));
+      assert.ok(registry.capabilities[first.handle]!.semanticObservations?.some(item => item.value.includes('renamed route')));
       assert.equal(registry.capabilities[first.handle]!.skillFilePath, first.skillFilePath);
       assert.equal(loadTransitionAudit(env.options.auditPath).at(-1)!.priorRoutingName, first.routingName);
       assert.equal(loadTransitionAudit(env.options.auditPath).at(-1)!.resultingRoutingName, 'flashcard-image-generation');

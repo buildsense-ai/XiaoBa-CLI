@@ -230,7 +230,7 @@ export function extractLearningEpisodes(
       candidate.runtimeSessionId === runtimeSessionIdOf(deliveryTurn)
       && candidate.deliveryTurn < deliveryTurn.turn,
     );
-    const semanticObservations = extractSemanticObservations(turns, index, evidence, signal);
+    const semanticObservations = extractSemanticObservations(turns, index, evidence, signal, unit.filePath);
     const episode: LearningEpisode = {
       schemaVersion: LEARNING_EPISODE_SCHEMA_VERSION,
       episodeId,
@@ -288,7 +288,7 @@ export function extractLearningEpisodes(
           ...deliveryEvidence,
           ...collectPrecedingWorkflowEvidence(turns, index, unit.filePath),
           accepted,
-        ], undefined),
+        ], undefined, unit.filePath),
         settlementDeadline: new Date(Date.parse(delivery.timestamp) + settlementWindowMs).toISOString(),
         status: 'settling',
         unitByteRange: unit.byteRange,
@@ -310,6 +310,7 @@ function extractSemanticObservations(
   deliveryIndex: number,
   evidence: readonly EpisodeEvidenceRef[],
   contradiction?: ContradictionSignal,
+  fallbackSourceFilePath = '',
 ): SemanticObservation[] {
   const delivery = turns[deliveryIndex];
   if (!delivery) return [];
@@ -318,7 +319,7 @@ function extractSemanticObservations(
   for (let index = deliveryIndex - 1; index >= 0; index--) {
     const preceding = turns[index];
     if (!preceding) continue;
-    if (hasDeliveryEvidence(detectCompletionEvidence(turnSourceFilePath(preceding, ''), preceding))) break;
+    if (hasDeliveryEvidence(detectCompletionEvidence(turnSourceFilePath(preceding, fallbackSourceFilePath), preceding))) break;
     if (preceding.user.text.trim()) intentTurns.unshift(preceding);
     if (intentTurns.length >= 3) break;
   }
@@ -331,7 +332,7 @@ function extractSemanticObservations(
       kind: 'user-intent',
       value: intentText,
       sourceRefs: uniqueStrings(intentTurns.map(turn => evidenceRef(
-        turnSourceFilePath(turn, ''),
+        turnSourceFilePath(turn, fallbackSourceFilePath),
         turn.turn,
         'user-intent',
       ))),

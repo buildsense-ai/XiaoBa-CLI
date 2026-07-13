@@ -29,6 +29,8 @@ export class SkillManager {
   private skillsPath: string;
   private catalogRevision = -1;
   private registry?: CurrentSkillRegistryState;
+  /** Invalid durable Registry state must never widen generated discovery. */
+  private registryLoadFailed = false;
 
   constructor() {
     this.skills = new Map();
@@ -130,8 +132,10 @@ export class SkillManager {
     try {
       this.registry = loadCurrentSkillRegistry(PathResolver.getSkillEvolutionRegistryPath());
       this.catalogRevision = this.registry.catalogRevision;
+      this.registryLoadFailed = false;
     } catch (error: any) {
       this.registry = undefined;
+      this.registryLoadFailed = true;
       Logger.warning(`Failed to load generated skill Registry: ${error.message}`);
     }
   }
@@ -142,6 +146,9 @@ export class SkillManager {
       latest = loadCurrentSkillRegistry(PathResolver.getSkillEvolutionRegistryPath());
     } catch (error: any) {
       Logger.warning(`Failed to refresh generated skill Registry: ${error.message}`);
+      this.registry = undefined;
+      this.registryLoadFailed = true;
+      this.removeGeneratedSkills();
       return;
     }
     if (latest.catalogRevision === this.catalogRevision) {
@@ -151,6 +158,7 @@ export class SkillManager {
     this.skills.clear();
     this.registry = latest;
     this.catalogRevision = latest.catalogRevision;
+    this.registryLoadFailed = false;
     await this.loadSkillsFromPath(this.skillsPath);
   }
 
@@ -162,10 +170,17 @@ export class SkillManager {
    */
   private shouldDiscoverSkill(filePath: string): boolean {
     if (!isGeneratedSkillPath(filePath)) return true;
+    if (this.registryLoadFailed) return false;
     const records = Object.values(this.registry?.capabilities ?? {});
     if (records.length === 0) return true;
     const resolvedPath = path.resolve(filePath);
     return records.some(record => path.resolve(record.skillFilePath) === resolvedPath);
+  }
+
+  private removeGeneratedSkills(): void {
+    for (const [name, skill] of this.skills.entries()) {
+      if (isGeneratedSkillPath(skill.filePath)) this.skills.delete(name);
+    }
   }
 
 }

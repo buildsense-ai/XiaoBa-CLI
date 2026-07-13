@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { SkillManager, StaleSkillRedirectError } from '../src/skills/skill-manager';
+import { SkillManager } from '../src/skills/skill-manager';
 import { emptyCurrentSkillRegistryState, saveCurrentSkillRegistry } from '../src/utils/skill-evolution';
 
 describe('SkillManager canonical route resolution', () => {
@@ -111,7 +111,6 @@ describe('SkillManager canonical route resolution', () => {
     registry.catalogRevision = 1;
     registry.routeRedirects = {
       'retired-route': firstHandle,
-      'intermediate-route': secondHandle,
     };
     registry.capabilities[firstHandle] = {
       handle: firstHandle,
@@ -146,17 +145,14 @@ describe('SkillManager canonical route resolution', () => {
     assert.equal(resolution?.skill.content.includes('current-route'), false);
   });
 
-  test('fails explicitly when a redirect points to a missing Capability Handle', async () => {
+  test('fails closed when a redirect points to a missing Capability Handle', async () => {
     const registry = emptyCurrentSkillRegistryState();
     registry.catalogRevision = 1;
     registry.routeRedirects = { 'old-route': 'cap-missing' };
     saveCurrentSkillRegistry(process.env.XIAOBA_SKILL_EVOLUTION_REGISTRY_FILE!, registry);
     const manager = new SkillManager();
     await manager.loadSkills();
-    await assert.rejects(
-      () => manager.resolveSkill('old-route'),
-      (error: unknown) => error instanceof StaleSkillRedirectError && error.code === 'STALE_SKILL_REDIRECT',
-    );
+    assert.equal(await manager.resolveSkill('old-route'), undefined);
   });
 
   test('excludes retired generated files from discovery when the Registry is authoritative', async () => {
@@ -186,6 +182,84 @@ describe('SkillManager canonical route resolution', () => {
     await manager.loadSkills();
     assert.deepEqual(manager.getAllSkills().map(skill => skill.metadata.name), ['flashcard-image-generation']);
     assert.equal((await manager.resolveSkill('settled-artifact-delivery'))?.resolvedName, 'flashcard-image-generation');
+  });
+
+  test('fails closed for invalid redirect state instead of discovering orphaned generated files', async () => {
+    const orphanPath = path.join(root, 'skills', 'generated-distilled', 'cap-orphan', 'SKILL.md');
+    writeSkill(orphanPath, 'orphan-generated-route');
+    fs.mkdirSync(path.dirname(process.env.XIAOBA_SKILL_EVOLUTION_REGISTRY_FILE!), { recursive: true });
+    fs.writeFileSync(process.env.XIAOBA_SKILL_EVOLUTION_REGISTRY_FILE!, JSON.stringify({
+      schemaVersion: 2,
+      catalogRevision: 1,
+      capabilities: {},
+      routeRedirects: { 'retired-route': 'cap-missing' },
+    }), 'utf8');
+
+    const manager = new SkillManager();
+    await manager.loadSkills();
+    assert.deepEqual(manager.getAllSkills(), []);
+    assert.equal(await manager.resolveSkill('orphan-generated-route'), undefined);
+  });
+
+  test('fails closed for a redirect that reuses an active route', async () => {
+    const activePath = path.join(root, 'skills', 'generated-distilled', 'cap-active', 'SKILL.md');
+    writeSkill(activePath, 'active-route');
+    fs.mkdirSync(path.dirname(process.env.XIAOBA_SKILL_EVOLUTION_REGISTRY_FILE!), { recursive: true });
+    fs.writeFileSync(process.env.XIAOBA_SKILL_EVOLUTION_REGISTRY_FILE!, JSON.stringify({
+      schemaVersion: 2,
+      catalogRevision: 1,
+      capabilities: {
+        'cap-active': {
+          handle: 'cap-active', revision: 1, routingName: 'active-route', description: 'Active',
+          skillFilePath: activePath, guidanceHash: 'hash', evidenceRefs: [], referencedSkills: [],
+          createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
+        },
+      },
+      routeRedirects: { 'active-route': 'cap-active' },
+    }), 'utf8');
+
+    const manager = new SkillManager();
+    await manager.loadSkills();
+    assert.deepEqual(manager.getAllSkills(), []);
+  });
+
+  test('fails closed for malformed Registry JSON without widening discovery on refresh', async () => {
+    const orphanPath = path.join(root, 'skills', 'generated-distilled', 'cap-orphan', 'SKILL.md');
+    writeSkill(orphanPath, 'orphan-generated-route');
+    fs.mkdirSync(path.dirname(process.env.XIAOBA_SKILL_EVOLUTION_REGISTRY_FILE!), { recursive: true });
+    fs.writeFileSync(process.env.XIAOBA_SKILL_EVOLUTION_REGISTRY_FILE!, '{not-json', 'utf8');
+
+    const manager = new SkillManager();
+    await manager.loadSkills();
+    assert.deepEqual(manager.getAllSkills(), []);
+    assert.equal(await manager.resolveSkill('orphan-generated-route'), undefined);
+  });
+
+  test('fails closed for redirect cycles instead of following a multi-hop alias', async () => {
+    const orphanPath = path.join(root, 'skills', 'generated-distilled', 'cap-a', 'SKILL.md');
+    writeSkill(orphanPath, 'orphan-generated-route');
+    fs.mkdirSync(path.dirname(process.env.XIAOBA_SKILL_EVOLUTION_REGISTRY_FILE!), { recursive: true });
+    fs.writeFileSync(process.env.XIAOBA_SKILL_EVOLUTION_REGISTRY_FILE!, JSON.stringify({
+      schemaVersion: 2,
+      catalogRevision: 1,
+      capabilities: {
+        'cap-a': {
+          handle: 'cap-a', revision: 1, routingName: 'route-a', description: 'A',
+          skillFilePath: orphanPath, guidanceHash: 'hash-a', evidenceRefs: [], referencedSkills: [],
+          createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
+        },
+        'cap-b': {
+          handle: 'cap-b', revision: 1, routingName: 'route-b', description: 'B',
+          skillFilePath: path.join(root, 'skills', 'generated-distilled', 'cap-b', 'SKILL.md'), guidanceHash: 'hash-b',
+          evidenceRefs: [], referencedSkills: [], createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
+        },
+      },
+      routeRedirects: { 'old-a': 'cap-b', 'cap-b': 'cap-a' },
+    }), 'utf8');
+
+    const manager = new SkillManager();
+    await manager.loadSkills();
+    assert.deepEqual(manager.getAllSkills(), []);
   });
 });
 

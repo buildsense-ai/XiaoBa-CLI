@@ -77,6 +77,7 @@ describe('V3 independent Learning Episodes', () => {
     assert.ok(intent);
     assert.match(intent!.value, /mirror/i);
     assert.ok(intent!.sourceRefs.some(ref => ref.includes('#turn-7')));
+    assert.ok(intent!.sourceRefs.some(ref => ref.startsWith('/logs/semantic-observations.jsonl#')));
     assert.ok(workflow);
     assert.match(workflow!.value, /opencli google images mirror/);
     assert.ok(workflow!.sourceRefs.some(ref => ref.includes('#turn-6')));

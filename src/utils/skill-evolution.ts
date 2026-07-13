@@ -1242,22 +1242,33 @@ export class CurrentSkillRegistryMigrationError extends Error {
   }
 }
 
+export class CurrentSkillRegistryValidationError extends Error {
+  constructor(message: string) {
+    super(`Invalid generated-skill Registry state: ${message}`);
+    this.name = 'CurrentSkillRegistryValidationError';
+  }
+}
+
 export function loadCurrentSkillRegistry(filePath: string): CurrentSkillRegistryState {
   if (!fs.existsSync(filePath)) return emptyCurrentSkillRegistryState();
   let parsed: (Omit<Partial<CurrentSkillRegistryState>, 'schemaVersion'> & { schemaVersion?: unknown });
   try {
     parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as typeof parsed;
-  } catch {
-    quarantine(filePath, 'corrupt');
-    return emptyCurrentSkillRegistryState();
+  } catch (cause) {
+    // Keep the invalid source in place so callers can fail closed and retry
+    // after repair; quarantining here would make a later load look like an
+    // empty Registry and could re-admit orphaned generated files.
+    throw new CurrentSkillRegistryValidationError(
+      `could not parse Registry JSON: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
   }
   if (parsed.schemaVersion !== 1 && parsed.schemaVersion !== SKILL_EVOLUTION_SCHEMA_VERSION) {
     throw new CurrentSkillRegistrySchemaError(parsed.schemaVersion);
   }
   if (!isRecord(parsed.capabilities)) {
-    quarantine(filePath, 'corrupt');
-    return emptyCurrentSkillRegistryState();
+    throw new CurrentSkillRegistryValidationError('capabilities must be an object');
   }
+  validateRegistryState(parsed);
   const migrated = sanitizeRegistry(parsed as CurrentSkillRegistryState);
   if (parsed.schemaVersion === 1) {
     try {
@@ -1439,9 +1450,10 @@ export function applyCapabilityTransition(input: ApplyTransitionInput): AppliedT
       guidanceHash: resultingGuidanceHash,
       evidenceRefs: mergeEvidence(existing!.evidenceRefs, evidenceRefs),
       referencedSkills: referencedSkillSnapshots(migrationDraft, input.bundle),
-      semanticObservations: input.bundle.semanticObservations?.length
-        ? normalizeSemanticObservations(input.bundle.semanticObservations)
-        : existing!.semanticObservations ?? [],
+      semanticObservations: normalizeSemanticObservations([
+        ...(existing!.semanticObservations ?? []),
+        ...(input.bundle.semanticObservations ?? []),
+      ]),
       updatedAt: now,
     };
     target.capabilities[existing!.handle] = resultingRecord;
@@ -1890,6 +1902,63 @@ function sanitizeRegistry(input: CurrentSkillRegistryState): CurrentSkillRegistr
     routeRedirects,
     capabilities,
   };
+}
+
+/**
+ * Registry redirects are a single-hop compatibility map. Validate the raw
+ * durable state before sanitizing so a malformed map can never be reduced to
+ * an apparently empty Registry and cause filesystem discovery to fall back to
+ * orphaned generated files.
+ */
+function validateRegistryState(input: Record<string, any>): void {
+  const activeRoutes = new Map<string, string>();
+  for (const [handle, record] of Object.entries(input.capabilities ?? {})) {
+    if (!isRecord(record)
+      || record.handle !== handle
+      || typeof record.routingName !== 'string'
+      || !isValidRoutingName(record.routingName)
+      || typeof record.skillFilePath !== 'string'
+      || !record.skillFilePath.trim()
+      || !Number.isInteger(record.revision)
+      || record.revision < 1
+      || typeof record.guidanceHash !== 'string'
+      || !Array.isArray(record.evidenceRefs)
+      || !Array.isArray(record.referencedSkills)) {
+      throw new CurrentSkillRegistryValidationError(`capability "${handle}" is malformed`);
+    }
+    const prior = activeRoutes.get(record.routingName);
+    if (prior && prior !== handle) {
+      throw new CurrentSkillRegistryValidationError(`active route "${record.routingName}" collides with ${prior}`);
+    }
+    activeRoutes.set(record.routingName, handle);
+  }
+
+  if (input.routeRedirects === undefined) return;
+  if (!isRecord(input.routeRedirects)) {
+    throw new CurrentSkillRegistryValidationError('routeRedirects must be an object');
+  }
+  const redirects = input.routeRedirects as Record<string, unknown>;
+  for (const [retiredRoute, targetValue] of Object.entries(redirects)) {
+    if (!retiredRoute.trim() || !isValidRoutingName(retiredRoute)) {
+      throw new CurrentSkillRegistryValidationError(`retired route "${retiredRoute}" is not a valid routing name`);
+    }
+    if (typeof targetValue !== 'string' || !targetValue.trim()) {
+      throw new CurrentSkillRegistryValidationError(`redirect for "${retiredRoute}" has no target handle`);
+    }
+    const targetHandle = targetValue.trim();
+    if (activeRoutes.has(retiredRoute)) {
+      throw new CurrentSkillRegistryValidationError(`retired route "${retiredRoute}" is still active`);
+    }
+    if (!Object.prototype.hasOwnProperty.call(input.capabilities, targetHandle)) {
+      throw new CurrentSkillRegistryValidationError(`redirect for "${retiredRoute}" targets missing handle "${targetHandle}"`);
+    }
+    // A redirect must terminate at a Capability Handle in one hop. A second
+    // redirect keyed by that handle would create a chain/cycle rather than a
+    // durable route -> active capability edge.
+    if (Object.prototype.hasOwnProperty.call(redirects, targetHandle)) {
+      throw new CurrentSkillRegistryValidationError(`redirect for "${retiredRoute}" forms a redirect cycle or chain`);
+    }
+  }
 }
 
 function declaredRegistryReadSet(
