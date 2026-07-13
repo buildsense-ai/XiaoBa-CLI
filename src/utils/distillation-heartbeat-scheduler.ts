@@ -128,11 +128,11 @@ function emptyHeartbeatRecord(): HeartbeatRecord {
   };
 }
 
-function emptyWakeResult(): HeartbeatRunResult {
+function emptyWakeResult(ran = false): HeartbeatRunResult {
   return {
     unitsProcessed: 0,
     advancedFiles: 0,
-    ran: false,
+    ran,
     discovery: { scanned: false, filesScanned: 0, unitsProcessed: 0, advancedFiles: 0 },
     ingestion: { admittedEpisodes: 0, contradictionSignals: 0 },
     maturation: { status: 'skipped', maturedEpisodes: 0, becameEligible: 0, becameContradicted: 0 },
@@ -185,6 +185,8 @@ export class DistillationHeartbeatScheduler {
   private running = false;
   private started = false;
   private stopped = false;
+  private readonly pendingWakeReasons = new Set<HeartbeatReason>();
+  private activeWake: Promise<HeartbeatRunResult> | null = null;
 
   /**
    * Production constructor: delegates all wake logic to RuntimeLearning.
@@ -316,6 +318,18 @@ export class DistillationHeartbeatScheduler {
       clearTimeout(this.timer);
       this.timer = null;
     }
+
+    if (this.activeWake) {
+      const sharedReviewDeadlineMs = this.getSharedReviewDeadlineMs();
+      await Promise.race([
+        this.activeWake,
+        new Promise<void>(resolve => {
+          setTimeout(resolve, sharedReviewDeadlineMs);
+        }),
+      ]);
+      this.activeWake = null;
+    }
+
     Logger.info('[DistillationHeartbeat] scheduler stopped');
   }
 
@@ -331,26 +345,57 @@ export class DistillationHeartbeatScheduler {
    */
   async runHeartbeat(reason: HeartbeatReason = 'manual'): Promise<HeartbeatRunResult> {
     if (
-      this.running
-      || this.stopped
+      this.stopped
       || !DistillationHeartbeatScheduler.shouldStartForCurrentRuntime(this.workingDirectory)
     ) {
       return emptyWakeResult();
     }
 
-    this.running = true;
-    try {
-      if (this.runtimeLearning) {
-        // --- Production path ---
-        // RuntimeLearning.wake() owns the heartbeat record; the scheduler
-        // must not write it again (would double-increment runCount).
-        const result = await this.runtimeLearning.wake(reason);
-        return result;
+    if (this.runtimeLearning) {
+      const runtimeLearning = this.runtimeLearning;
+
+      if (this.activeWake) {
+        this.pendingWakeReasons.add(reason);
+        return emptyWakeResult();
       }
 
-      // --- Legacy path (deprecated, used by tests) ---
-      return await this.legacyRunHeartbeat(reason);
-    } catch (error: any) {
+      this.pendingWakeReasons.add(reason);
+      const wakeCycle = async (): Promise<HeartbeatRunResult> => {
+        this.running = true;
+        try {
+          let lastResult = emptyWakeResult(true);
+          while (!this.stopped && this.pendingWakeReasons.size > 0) {
+            const nextReasons = [...this.pendingWakeReasons];
+            this.pendingWakeReasons.clear();
+            try {
+              lastResult = await runtimeLearning.wake(nextReasons);
+            } catch (error: any) {
+              Logger.warning(`[DistillationHeartbeat] runtime wake failed: ${error.message}`);
+              return emptyWakeResult(false);
+            }
+          }
+          return lastResult;
+        } finally {
+          this.running = false;
+        }
+      };
+
+      this.activeWake = wakeCycle();
+      try {
+        const result = await this.activeWake;
+        return result;
+      } finally {
+        if (this.activeWake) {
+          this.activeWake = null;
+        }
+      }
+    }
+
+      if (this.running) return emptyWakeResult();
+      this.running = true;
+      try {
+        return await this.legacyRunHeartbeat(reason);
+      } catch (error: any) {
       Logger.warning(`[DistillationHeartbeat] cycle failed (${reason}): ${error.message}`);
       return emptyWakeResult();
     } finally {
@@ -526,6 +571,14 @@ export class DistillationHeartbeatScheduler {
       return this.runtimeLearning.getPlanner();
     }
     return this.getLegacyPlanner();
+  }
+
+  private getSharedReviewDeadlineMs(): number {
+    if (this.runtimeLearning) {
+      const config = this.runtimeLearning.getConfig();
+      return Math.max(1, config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000);
+    }
+    return 10 * 60_000;
   }
 
   private getLegacyPlanner(): DueWorkPlanner {

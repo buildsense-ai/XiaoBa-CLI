@@ -139,7 +139,7 @@ export interface RuntimeLearningHeartbeatRecord {
   /** Monotonic count of heartbeat runs since record creation. */
   runCount: number;
   /** Reason of the last run. */
-  lastReason: RuntimeLearningReason;
+  lastReason: string;
   /** Distillation Units produced by the last run. */
   lastUnitsProcessed: number;
   /** Files whose cursor advanced on the last run. */
@@ -321,14 +321,15 @@ export class RuntimeLearning {
    * skip session-log scanning and run only the due stages. This is the
    * production path for deadline-driven wakes.
    */
-  async wake(reason: RuntimeLearningReason): Promise<RuntimeLearningHeartbeatResult> {
+  async wake(reason: RuntimeLearningReason | readonly RuntimeLearningReason[]): Promise<RuntimeLearningHeartbeatResult> {
     const wake = emptyHeartbeatResult(true);
     const now = this.clock();
+    const reasons = this.normalizeReasons(reason);
+    const isDiscoveryWake = this.isDiscoveryWake(reasons);
 
     try {
       // ---- 1. Discovery + Ingestion ----
-      const isTargetedWake = reason === 'settlement-deadline' || reason === 'operational-retry' || reason === 'curator' || reason === 'semantic-reassessment';
-      const shouldScan = !isTargetedWake;
+      const shouldScan = isDiscoveryWake;
 
       if (shouldScan) {
         const sessionLogsRoot = resolveSessionLogsRoot(this.config.logsRoot);
@@ -352,39 +353,23 @@ export class RuntimeLearning {
 
       if (wake.unitsProcessed > 0) {
         Logger.info(
-          `[RuntimeLearning] ingested ${wake.unitsProcessed} distillation unit(s) across ${wake.advancedFiles} file(s) (${reason})`,
+          `[RuntimeLearning] ingested ${wake.unitsProcessed} distillation unit(s) across ${wake.advancedFiles} file(s) (${this.formatReasons(reasons)})`,
         );
       } else if (wake.discovery.scanned) {
-        Logger.info(`[RuntimeLearning] no new session log appends (${reason})`);
+        Logger.info(`[RuntimeLearning] no new session log appends (${this.formatReasons(reasons)})`);
       } else {
-        Logger.info(`[RuntimeLearning] skipped session log scan (${reason})`);
+        Logger.info(`[RuntimeLearning] skipped session log scan (${this.formatReasons(reasons)})`);
       }
 
       // ---- 2. Due work planning ----
       const plan = this.planner.plan(now);
-      // Generic wakes (startup, scheduled, manual): always run all stages so
-      // pre-existing eligible episodes, queue entries, and overdue deadline
-      // work are reconciled even when the planner reports nothing due.
-      // Targeted deadline reasons use the planner's actual due flags.
-      const dueWork = isTargetedWake
-        ? reason === 'semantic-reassessment'
-          ? {
-            settlementDue: false,
-            operationalRetryDue: false,
-            routineCuratorDue: false,
-            expeditedCuratorDue: false,
-            semanticReassessmentDue: true,
-          }
-          : plan.due
-        : {
-          settlementDue: true,
-          operationalRetryDue: true,
-          routineCuratorDue: true,
-          expeditedCuratorDue: true,
-        };
+      // Discovery wakes always run the discovery scan plus due-like review work,
+      // so they are not blocked by planner due status.
+      // Targeted wakes use the planner due union from the requested reason set.
+      const dueWork = this.resolveWakeDueWork(reasons, plan.due);
 
       // ---- 3. Settlement (maturation) ----
-      const maturation = await this.runMaturation(dueWork, reason === 'settlement-deadline');
+      const maturation = await this.runMaturation(dueWork, reasons.has('settlement-deadline'));
       wake.maturation = maturation;
 
       // ---- 4. Curator observation (after settlement so episode status is final) ----
@@ -398,18 +383,79 @@ export class RuntimeLearning {
       const curation = await this.runCuration(dueWork);
       wake.curation = curation;
 
-      if (reason === 'startup' || reason === 'semantic-reassessment' || plan.due.semanticReassessmentDue) {
+      if (this.shouldRunReassessment(reasons, dueWork)) {
         wake.reassessment = await this.runSemanticReassessment();
       }
 
       // ---- 6. Record heartbeat ----
-      this.recordHeartbeat(reason, wake.unitsProcessed, wake.advancedFiles);
+      this.recordHeartbeat(this.formatReasons(reasons), wake.unitsProcessed, wake.advancedFiles);
 
       return wake;
     } catch (error: any) {
-      Logger.warning(`[RuntimeLearning] wake cycle failed (${reason}): ${error.message}`);
+      Logger.warning(`[RuntimeLearning] wake cycle failed (${this.formatReasons(this.normalizeReasons(reason))}): ${error.message}`);
       return wake;
     }
+  }
+
+  private normalizeReasons(
+    reason: RuntimeLearningReason | readonly RuntimeLearningReason[],
+  ): Set<RuntimeLearningReason> {
+    if (typeof reason === 'string') return new Set([reason]);
+    return new Set(reason);
+  }
+
+  private isDiscoveryWake(reasons: Set<RuntimeLearningReason>): boolean {
+    return reasons.has('startup') || reasons.has('scheduled') || reasons.has('manual');
+  }
+
+  private resolveWakeDueWork(
+    reasons: Set<RuntimeLearningReason>,
+    planDue: DueWork,
+  ): DueWork {
+    if (this.isDiscoveryWake(reasons)) {
+      return {
+        settlementDue: true,
+        operationalRetryDue: true,
+        routineCuratorDue: true,
+        expeditedCuratorDue: true,
+        semanticReassessmentDue: Boolean(planDue.semanticReassessmentDue),
+      };
+    }
+
+    const hasAnyTargetedWakeReason = reasons.size > 0;
+    if (!hasAnyTargetedWakeReason) {
+      return {
+        settlementDue: false,
+        operationalRetryDue: false,
+        routineCuratorDue: false,
+        expeditedCuratorDue: false,
+        semanticReassessmentDue: false,
+      };
+    }
+
+    return {
+      settlementDue: planDue.settlementDue,
+      operationalRetryDue: planDue.operationalRetryDue,
+      routineCuratorDue: planDue.routineCuratorDue,
+      expeditedCuratorDue: planDue.expeditedCuratorDue,
+      semanticReassessmentDue: Boolean(planDue.semanticReassessmentDue),
+    };
+  }
+
+  private formatReasons(reasons: Set<RuntimeLearningReason>): string {
+    return [...reasons].sort().join('+');
+  }
+
+  private shouldRunReassessment(
+    reasons: Set<RuntimeLearningReason>,
+    dueWork: DueWork,
+  ): boolean {
+    return (
+      reasons.has('startup')
+      || reasons.has('manual')
+      || reasons.has('scheduled')
+      || Boolean(dueWork.semanticReassessmentDue)
+    );
   }
 
   private async runSemanticReassessment(): Promise<RuntimeLearningReassessmentReport> {
@@ -802,7 +848,7 @@ export class RuntimeLearning {
   }
 
   private recordHeartbeat(
-    reason: RuntimeLearningReason,
+    reason: string,
     unitsProcessed: number,
     advancedFiles: number,
   ): void {

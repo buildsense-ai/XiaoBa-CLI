@@ -538,6 +538,114 @@ describe('RuntimeLearning — AC3: Due Review', () => {
   });
 });
 
+describe('Issue 70 — Wake reason union and mask-free due-work', () => {
+  let env: TestEnv;
+
+  beforeEach(() => { env = setupEnv(0); });
+  afterEach(() => { env.restore(); env.teardown(); });
+
+  test('targeted semantic-reassessment reason uses planner due-work union and does not mask settlement or operational work', async () => {
+    const episodeStore = new LearningEpisodeStore(env.episodeStorePath);
+    episodeStore.save({
+      schemaVersion: 3,
+      episodes: {
+        'issue-70-settling': {
+          schemaVersion: 3,
+          episodeId: 'issue-70-settling',
+          runtimeSessionId: 'issue-70-runtime',
+          sourceFilePath: env.logFile,
+          deliveryTurn: 1,
+          completionEvidence: [{
+            ref: 'issue-70#1',
+            sourceFilePath: env.logFile,
+            turn: 1,
+            kind: 'artifact-delivery',
+            detail: 'send_file: plan.md',
+          }],
+          contradictionSignals: [],
+          semanticObservations: [],
+          settlementDeadline: new Date(Date.now() - 60_000).toISOString(),
+          status: 'settling',
+        },
+      },
+    });
+
+    fs.mkdirSync(path.dirname(env.reviewQueuePath), { recursive: true });
+    fs.writeFileSync(env.reviewQueuePath, JSON.stringify({
+      schemaVersion: 1,
+      deferred: [],
+      operational: [{
+        bundleId: 'issue-70-operational',
+        entryId: 'issue-70-operational-1',
+        capability: {
+          kind: 'capability',
+          schemaVersion: 1,
+          capabilityId: 'issue-70-capability',
+          title: 'Issue 70',
+          applicability: 'test',
+          actionPattern: 'test',
+          boundaries: [],
+          risks: [],
+          solvedLoop: {
+            problem: 'test',
+            action: 'test',
+            verification: 'test',
+            noCorrection: 'test',
+          },
+          generatedAt: new Date(0).toISOString(),
+          sourceUnit: {
+            filePath: 'test.jsonl',
+            byteRange: { start: 0, end: 1 },
+            generatedAt: new Date(0).toISOString(),
+          },
+        },
+        bundle: {
+          bundleId: 'issue-70-operational',
+          episode: {},
+          completionEvidence: [{ ref: 'test#completion', sourceFilePath: 'test.jsonl', turn: 1, kind: 'artifact-delivery', detail: 'send_file: issue-70' }],
+          settlementEvidence: [{ ref: 'test#settlement', sourceFilePath: 'test.jsonl', turn: 1, kind: 'artifact-delivery', detail: 'send_file: issue-70' }],
+          boundedContinuity: [],
+          referencedSkills: [],
+          relatedCurrentSkills: [],
+        },
+        candidateCapabilityId: 'issue-70-capability',
+        kind: 'branch_timeout',
+        failureKind: 'branch_timeout',
+        failureMessage: 'Issue 70 test retry',
+        failureTranscripts: [],
+        attempts: 0,
+        currentDelayMs: 1_000,
+        updatedAt: new Date(0).toISOString(),
+        nextRetryAt: new Date(0).toISOString(),
+        retryCount: 1,
+        createdAt: new Date(0).toISOString(),
+      }],
+    }), 'utf8');
+
+    const result = await env.runtimeLearning.wake(['semantic-reassessment', 'operational-retry']);
+
+    assert.equal(result.discovery.scanned, false);
+    assert.equal(result.maturation.status, 'succeeded');
+    assert.equal(result.maturation.becameEligible, 1);
+    assert.equal(result.review.reviewedEpisodes, 1);
+    assert.ok(result.review.reviewedQueueEntries >= 1, 'expected queue work from operational due');
+  });
+
+  test('discovery reasons in a reason array still scan and run due stages', async () => {
+    const [delivery, acceptance] = deliveryPair(0);
+    writeLog(env.logFile, [delivery, acceptance]);
+
+    const result = await env.runtimeLearning.wake(['startup', 'semantic-reassessment']);
+
+    assert.equal(result.discovery.scanned, true);
+    assert.equal(result.discovery.filesScanned, 1);
+    assert.equal(result.ingestion.admittedEpisodes, 1);
+    assert.equal(result.maturation.status, 'succeeded');
+    assert.equal(result.review.status, 'succeeded');
+    assert.ok(result.review.reviewedEpisodes >= 1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // AC 4: Transition recovery — journal recovery
 // ---------------------------------------------------------------------------
