@@ -8,6 +8,12 @@ import { Tool } from '../types/tool';
 import { AgentToolExecutor } from '../agents/agent-tool-executor';
 import { ConversationRunner, RunResult, RunnerCallbacks } from './conversation-runner';
 
+export type BranchSessionAbortReason = 'review-timeout' | 'runtime-shutdown' | 'turn_budget_exhausted';
+
+export interface SharedReviewTurnBudget {
+  remainingTurns: number;
+}
+
 export interface BranchSessionOptions {
   id: string;
   type: string;
@@ -15,6 +21,7 @@ export interface BranchSessionOptions {
   workingDirectory: string;
   signal?: AbortSignal;
   logEnabled?: boolean;
+  sharedReviewTurnBudget?: SharedReviewTurnBudget;
 }
 
 export interface BranchRunOutcome {
@@ -36,13 +43,49 @@ export abstract class BranchSession {
       workingDirectory: options.workingDirectory,
       enabled: options.logEnabled !== false,
     });
-    options.signal?.addEventListener('abort', () => this.stop(), { once: true });
+    if (options.signal?.aborted) {
+      this.stop(this.extractAbortReason(options.signal.reason) ?? 'runtime-shutdown');
+      return;
+    }
+    options.signal?.addEventListener('abort', () => {
+      this.stop(this.extractAbortReason(options.signal?.reason) ?? 'runtime-shutdown');
+    }, { once: true });
   }
 
-  stop(): void {
+  stop(reason: BranchSessionAbortReason = 'runtime-shutdown'): void {
     if (this.stopped) return;
     this.stopped = true;
-    this.abortController.abort();
+    this.abortController.abort(reason);
+  }
+
+  private extractAbortReason(value: unknown): BranchSessionAbortReason | undefined {
+    if (value === 'review-timeout') return 'review-timeout';
+    if (value === 'runtime-shutdown') return 'runtime-shutdown';
+    if (value === 'turn_budget_exhausted') return 'turn_budget_exhausted';
+    return undefined;
+  }
+
+  private resolveAbortReason(): BranchSessionAbortReason | undefined {
+    if (this.options.signal?.aborted) {
+      return this.extractAbortReason(this.options.signal.reason) ?? 'runtime-shutdown';
+    }
+    if (this.abortController.signal.aborted) {
+      return this.extractAbortReason(this.abortController.signal.reason) ?? 'runtime-shutdown';
+    }
+    return undefined;
+  }
+
+  protected throwAbortError(message = 'Review branch was aborted.'): never {
+    const reason = this.resolveAbortReason() ?? 'runtime-shutdown';
+    throw new BranchSessionAbortError(reason, message);
+  }
+
+  protected deductTurnBudget(turnsUsed: number): void {
+    if (!this.options.sharedReviewTurnBudget) return;
+    this.options.sharedReviewTurnBudget.remainingTurns = Math.max(
+      0,
+      this.options.sharedReviewTurnBudget.remainingTurns - turnsUsed,
+    );
   }
 
   protected shouldContinue(): boolean {
@@ -66,6 +109,12 @@ export abstract class BranchSession {
       this.logger.write('start', {
         message_count: this.messages.length,
       });
+    }
+    if (this.options.sharedReviewTurnBudget && this.options.sharedReviewTurnBudget.remainingTurns <= 0) {
+      throw new BranchSessionAbortError(
+        'turn_budget_exhausted',
+        'The shared review attempt model-turn budget is exhausted.',
+      );
     }
 
     const toolExecutor = new AgentToolExecutor(
@@ -108,13 +157,35 @@ export abstract class BranchSession {
     };
 
     try {
-      const result = await runner.run(this.messages, callbacks);
+      const maxTurns = this.options.sharedReviewTurnBudget?.remainingTurns;
+      const result = await runner.run(this.messages, {
+        ...callbacks,
+        ...(maxTurns && { maxTurns }),
+      });
+      this.deductTurnBudget(result.turnsUsed);
+      if (result.maxTurnsReached) {
+        this.logger.write('run_result', {
+          response: result.response,
+          final_response_visible: result.finalResponseVisible,
+          turns_used: result.turnsUsed,
+          max_turns: result.maxTurns,
+          max_turns_reached: result.maxTurnsReached,
+          remaining_turns: this.options.sharedReviewTurnBudget?.remainingTurns,
+        });
+        throw new BranchSessionAbortError('turn_budget_exhausted', 'The shared review attempt model-turn budget was exhausted.');
+      }
       this.logger.write('run_result', {
         response: result.response,
         final_response_visible: result.finalResponseVisible,
         new_message_count: result.newMessages.length,
       });
       return { messages: this.messages, result };
+    } catch (error) {
+      if (error instanceof BranchSessionAbortError) throw error;
+      if (this.isAbortError(error) || !this.shouldContinue()) {
+        this.throwAbortError();
+      }
+      throw error;
     } finally {
       this.logger.write('transcript', { messages: this.messages });
     }
@@ -133,6 +204,13 @@ export abstract class BranchSession {
     if (!this.isAbortError(error)) {
       Logger.warning(`[branch:${this.options.type}:${this.options.id}] failed: ${error?.message || error}`);
     }
+  }
+}
+
+export class BranchSessionAbortError extends Error {
+  constructor(public readonly reason: BranchSessionAbortReason, message: string) {
+    super(message);
+    this.name = 'BranchSessionAbortError';
   }
 }
 

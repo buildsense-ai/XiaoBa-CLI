@@ -66,6 +66,8 @@ export interface DistillationHeartbeatConfig {
   skillEvolutionOperationalRetryMinutes: number;
   /** Operational review retry cap in hours. */
   skillEvolutionOperationalRetryMaxHours: number;
+  /** Shared bounded review attempt deadline in minutes. */
+  skillEvolutionReviewAttemptDeadlineMinutes: number;
   /** Optional Author model override. */
   skillEvolutionAuthorModel?: string;
   /** Optional independent Verifier model override. */
@@ -101,6 +103,18 @@ function readBoolean(env: NodeJS.ProcessEnv, key: string, defaultValue: boolean)
 function readNumber(env: NodeJS.ProcessEnv, key: string, defaultValue: number, min: number): number {
   const parsed = Number(env[key] || defaultValue);
   if (!Number.isFinite(parsed) || parsed < min) return defaultValue;
+  return parsed;
+}
+
+function readNumberInRange(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  defaultValue: number,
+  min: number,
+  max: number,
+): number {
+  const parsed = Number(env[key] || defaultValue);
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max) return defaultValue;
   return parsed;
 }
 
@@ -283,6 +297,13 @@ export function getDistillationHeartbeatConfig(
     6,
     0,
   );
+  const skillEvolutionReviewAttemptDeadlineMinutes = readNumberInRange(
+    runtimeEnv,
+    'XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES',
+    10,
+    1,
+    60,
+  );
   const skillEvolutionAuthorModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_AUTHOR_MODEL');
   const skillEvolutionVerifierModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_VERIFIER_MODEL');
 
@@ -315,6 +336,7 @@ export function getDistillationHeartbeatConfig(
     ),
     skillEvolutionOperationalRetryMinutes,
     skillEvolutionOperationalRetryMaxHours,
+    skillEvolutionReviewAttemptDeadlineMinutes,
     ...(skillEvolutionAuthorModel && { skillEvolutionAuthorModel }),
     ...(skillEvolutionVerifierModel && { skillEvolutionVerifierModel }),
   };

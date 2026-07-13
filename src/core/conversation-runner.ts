@@ -146,6 +146,12 @@ export interface RunResult {
   response: string;
   /** 最终文本是否代表用户可见输出 */
   finalResponseVisible: boolean;
+  /** 本次 run() 使用的模型轮次。 */
+  turnsUsed: number;
+  /** 是否达到了配置的最大轮次上限。 */
+  maxTurnsReached: boolean;
+  /** 当配置了 maxTurns 时，记录本次运行的上限。 */
+  maxTurns?: number;
   /** session 消息列表 */
   messages: Message[];
   /** 本次 run() 期间新增的消息（不含最终纯文本回复） */
@@ -302,6 +308,7 @@ export class ConversationRunner {
     let nextSubagentNudgeAt = nextSubagentNudgeToolCount(0);
     let emptyMaxTokenRecoveries = 0;
     let notifiedToolBudgetDisabled = false;
+    let maxTurnsReached = false;
 
     while (true) {
       turns++;
@@ -310,9 +317,13 @@ export class ConversationRunner {
       }
       if (this.maxTurns && turns > this.maxTurns) {
         Logger.warning(`[${this.sessionLabel}] 已达到最大推理轮次 ${this.maxTurns}，正在收束`);
+        maxTurnsReached = true;
         return {
           response: `已达到本次后台任务的轮次预算（${this.maxTurns} 轮），我先基于已完成的信息收束。`,
           finalResponseVisible: true,
+          turnsUsed: turns,
+          maxTurnsReached,
+          maxTurns: this.maxTurns,
           messages,
           newMessages,
         };
@@ -509,6 +520,9 @@ export class ConversationRunner {
           return {
             response: MODEL_IMAGE_SAFETY_MESSAGE,
             finalResponseVisible: true,
+            turnsUsed: turns,
+            maxTurnsReached,
+            maxTurns: this.maxTurns,
             messages,
             newMessages,
           };
@@ -518,6 +532,9 @@ export class ConversationRunner {
           return {
             response: '',
             finalResponseVisible: false,
+            turnsUsed: turns,
+            maxTurnsReached,
+            maxTurns: this.maxTurns,
             messages,
             newMessages,
           };
@@ -615,6 +632,9 @@ export class ConversationRunner {
           return {
             response: finalText,
             finalResponseVisible: true,
+            turnsUsed: turns,
+            maxTurnsReached,
+            maxTurns: this.maxTurns,
             messages,
             newMessages,
           };
@@ -627,6 +647,9 @@ export class ConversationRunner {
         return {
           response: cleanedResponse,
           finalResponseVisible: true,
+          turnsUsed: turns,
+          maxTurnsReached,
+          maxTurns: this.maxTurns,
           messages,
           newMessages,
         };
@@ -753,6 +776,9 @@ export class ConversationRunner {
         return {
           response: '',
           finalResponseVisible: false,
+          turnsUsed: turns,
+          maxTurnsReached,
+          maxTurns: this.maxTurns,
           messages,
           newMessages,
         };
@@ -764,6 +790,9 @@ export class ConversationRunner {
     return {
       response: '',
       finalResponseVisible: false,
+      turnsUsed: turns,
+      maxTurnsReached,
+      maxTurns: this.maxTurns,
       messages,
       newMessages,
     };

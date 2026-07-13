@@ -138,6 +138,7 @@ describe('DistillationHeartbeatScheduler', () => {
           config.workLogRoot,
           path.join(root, 'logs', 'branches', 'distillation'),
         );
+        assert.equal(config.skillEvolutionReviewAttemptDeadlineMinutes, 10);
       } finally {
         restoreProcessEnv(saved);
       }
@@ -154,6 +155,7 @@ describe('DistillationHeartbeatScheduler', () => {
         process.env.XIAOBA_SKILL_EVOLUTION_OPERATIONAL_RETRY_MAX_HOURS = '4';
         process.env.XIAOBA_SKILL_EVOLUTION_AUTHOR_MODEL = 'author-fixture-model';
         process.env.XIAOBA_SKILL_EVOLUTION_VERIFIER_MODEL = 'verifier-fixture-model';
+        process.env.XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES = '15';
 
         const config = getDistillationHeartbeatConfig(root, process.env);
         assert.equal(config.skillEvolutionSettlementWindowHours, 1.5);
@@ -161,8 +163,36 @@ describe('DistillationHeartbeatScheduler', () => {
         assert.equal(config.skillEvolutionReviewerConcurrency, 5);
         assert.equal(config.skillEvolutionOperationalRetryMinutes, 2);
         assert.equal(config.skillEvolutionOperationalRetryMaxHours, 4);
+        assert.equal(config.skillEvolutionReviewAttemptDeadlineMinutes, 15);
         assert.equal(config.skillEvolutionAuthorModel, 'author-fixture-model');
         assert.equal(config.skillEvolutionVerifierModel, 'verifier-fixture-model');
+      } finally {
+        restoreProcessEnv(saved);
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    test('clamps review attempt deadline configuration to the 1-60 minute policy window', () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-review-deadline-'));
+      const saved = { ...process.env };
+      try {
+        process.env.XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES = '0';
+        assert.equal(
+          getDistillationHeartbeatConfig(root, process.env).skillEvolutionReviewAttemptDeadlineMinutes,
+          10,
+        );
+
+        process.env.XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES = '61';
+        assert.equal(
+          getDistillationHeartbeatConfig(root, process.env).skillEvolutionReviewAttemptDeadlineMinutes,
+          10,
+        );
+
+        process.env.XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES = '30';
+        assert.equal(
+          getDistillationHeartbeatConfig(root, process.env).skillEvolutionReviewAttemptDeadlineMinutes,
+          30,
+        );
       } finally {
         restoreProcessEnv(saved);
         fs.rmSync(root, { recursive: true, force: true });

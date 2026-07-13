@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { Message, ToolDefinition } from '../src/types';
 import { SkillManager } from '../src/skills/skill-manager';
 import { DistillationPipeline } from '../src/utils/distillation-pipeline';
 import type { DistilledKnowledgeCandidate } from '../src/utils/capability-distiller';
@@ -24,10 +25,97 @@ import {
 } from '../src/utils/skill-evolution';
 import {
   findOperationalByBundleId,
+  addOrUpdateOperationalFailure,
   loadReviewQueueState,
   saveReviewQueueState,
 } from '../src/utils/skill-evolution-review-queue';
 import { buildV3EvidenceBundle as buildPipelineV3EvidenceBundle } from '../src/utils/distillation-pipeline';
+
+interface ReviewAttemptStep {
+  delayMs?: number;
+  content?: string;
+  error?: string;
+  finish?: {
+    tool: string;
+    args: unknown;
+  };
+}
+
+class AbortAwareReviewAttemptAIService {
+  private readonly callCountByTool = new Map<string, number>();
+
+  constructor(private readonly plan: Record<string, ReviewAttemptStep[]>) {}
+
+  async chatStream(
+    _messages: Message[] | undefined,
+    tools: ToolDefinition[] | undefined,
+    _callbacks: unknown = undefined,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<{ content: string; toolCalls?: { id: string; type: 'function'; function: { name: string; arguments: string; } }[] }> {
+    const toolName = tools?.[0]?.name ?? 'default';
+    const planByTool = this.plan[toolName] ?? this.plan.default ?? [];
+    const calls = this.callCountByTool.get(toolName) ?? 0;
+    const step = planByTool[calls] ?? { content: '...' };
+    this.callCountByTool.set(toolName, calls + 1);
+    await this.waitForAbortOrTimeout(step.delayMs ?? 0, options.signal);
+
+    if (step.error) {
+      throw new Error(step.error);
+    }
+
+    if (step.finish) {
+      return {
+        content: '',
+        toolCalls: [{
+          id: `tool-call-${toolName}-${calls}`,
+          type: 'function',
+          function: {
+            name: step.finish.tool,
+            arguments: JSON.stringify(step.finish.args),
+          },
+        }],
+      };
+    }
+
+    return { content: step.content ?? '...' };
+  }
+
+  async chat(...args: any[]): Promise<{ content: string; toolCalls?: { id: string; type: 'function'; function: { name: string; arguments: string; } }[] }> {
+    return this.chatStream(
+      args[0] as Message[] | undefined,
+      args[1] as ToolDefinition[] | undefined,
+      args[2],
+      args[3] as { signal?: AbortSignal } | undefined,
+    );
+  }
+
+  isToolCallingSupported(): boolean {
+    return true;
+  }
+
+  private async waitForAbortOrTimeout(delayMs: number, signal?: AbortSignal): Promise<void> {
+    if (delayMs <= 0) {
+      if (signal?.aborted) {
+        return Promise.reject(Object.assign(new Error('aborted by test'), { name: 'AbortError' }));
+      }
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(Object.assign(new Error('aborted by test'), { name: 'AbortError' }));
+        return;
+      }
+      const timer = setTimeout(resolve, delayMs);
+      const onAbort = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        reject(Object.assign(new Error('aborted by test'), { name: 'AbortError' }));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+}
 
 function fixtureBundle(): EvidenceBundle {
   return {
@@ -621,6 +709,274 @@ describe('V3 verified semantic Current Skills', () => {
     }
   });
 
+  test('shares a four-turn budget across Author and Verifier including finish reminders', async () => {
+    const env = setup();
+    try {
+      const service = new AbortAwareReviewAttemptAIService({
+        finish_skill_authoring: [
+          { content: 'I need to finish with the tool call next.' },
+          {
+            finish: {
+              tool: 'finish_skill_authoring',
+              args: {
+                body: 'Use the bounded workflow and validate the result.',
+                envelope: {
+                  decision: 'create_current_skill',
+                  routingName: 'bounded-turn-workflow',
+                  description: 'Workflow approved with reminder turns.',
+                  evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+                },
+              },
+            },
+          },
+        ],
+        finish_skill_verification: [
+          { content: 'Verifier should finalize now.' },
+          {
+            finish: {
+              tool: 'finish_skill_verification',
+              args: {
+                decision: 'accept',
+                transition: 'create_current_skill',
+                issues: [],
+                rationale: 'Verified within the shared turn budget.',
+                registryReadSet: [],
+              },
+            },
+          },
+        ],
+      });
+      const runtime = new SkillEvolutionRuntime({
+        ...env.options,
+        authorFixture: undefined,
+        verifierFixture: undefined,
+        aiService: service,
+      });
+
+      const result = await runtime.reviewAndApply(fixtureBundle());
+      assert.equal(result.transition, 'create_current_skill');
+      assert.equal(result.rounds, 1);
+      assert.equal(result.verified, true);
+      assert.equal(result.queued, undefined);
+      const registry = loadCurrentSkillRegistry(env.options.registryPath);
+      assert.equal(Object.keys(registry.capabilities).length, 1);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('queues an operational timeout when the shared turn budget is exhausted', async () => {
+    const env = setup();
+    try {
+      const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      env.options.reviewQueuePath = reviewQueuePath;
+      const service = new AbortAwareReviewAttemptAIService({
+        finish_skill_authoring: [
+          { content: 'A reminder is enough.' },
+          { content: 'Another reminder is enough.' },
+          {
+            finish: {
+              tool: 'finish_skill_authoring',
+              args: {
+                body: 'Use the bounded workflow and validate the result.',
+                envelope: {
+                  decision: 'create_current_skill',
+                  routingName: 'bounded-turn-workflow-timeout',
+                  description: 'A workflow authored after reminders.',
+                  evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+                },
+              },
+            },
+          },
+        ],
+        finish_skill_verification: [
+          { content: 'Verifier needs one extra reminder.' },
+        ],
+      });
+
+      const runtime = new SkillEvolutionRuntime({
+        ...env.options,
+        authorFixture: undefined,
+        verifierFixture: undefined,
+        aiService: service,
+      });
+
+      const result = await runtime.reviewAndApply(fixtureBundle());
+      assert.equal(result.queued, 'operational');
+      assert.equal(result.transition, 'reject_candidate');
+      const queue = loadReviewQueueState(reviewQueuePath);
+      const entry = findOperationalByBundleId(queue, 'episode-flashcard-1');
+      assert.ok(entry);
+      assert.equal(entry.failureKind, 'branch_timeout');
+      assert.equal(entry.failureTranscripts.length > 0, true);
+      assert.ok(entry.failureTranscripts.every(transcript => fs.existsSync(transcript)));
+      assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('classifies review-attempt deadline expiry as branch_timeout with fixed bundle context persisted', async () => {
+    const env = setup();
+    try {
+      const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      env.options.reviewQueuePath = reviewQueuePath;
+      env.options.reviewAttemptDeadlineMs = 5;
+      const service = new AbortAwareReviewAttemptAIService({
+        finish_skill_authoring: [
+          {
+            finish: {
+              tool: 'finish_skill_authoring',
+              args: {
+                body: 'Use the deadline-sensitive workflow and validate the result.',
+                envelope: {
+                  decision: 'create_current_skill',
+                  routingName: 'deadline-sensitive-workflow',
+                  description: 'A workflow reviewed under a short attempt deadline.',
+                  evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+                },
+              },
+            },
+          },
+        ],
+        finish_skill_verification: [
+          {
+            delayMs: 20,
+            finish: {
+              tool: 'finish_skill_verification',
+              args: {
+                decision: 'accept',
+                transition: 'create_current_skill',
+                issues: [],
+                rationale: 'Verifier reached after the shared deadline.',
+                registryReadSet: [],
+              },
+            },
+          },
+        ],
+      });
+
+      const runtime = new SkillEvolutionRuntime({
+        ...env.options,
+        authorFixture: undefined,
+        verifierFixture: undefined,
+        aiService: service,
+      });
+
+      const result = await runtime.reviewAndApply(fixtureBundle());
+      assert.equal(result.queued, 'operational');
+      assert.equal(result.transition, 'reject_candidate');
+      const queue = loadReviewQueueState(reviewQueuePath);
+      const entry = findOperationalByBundleId(queue, 'episode-flashcard-1');
+      assert.ok(entry);
+      assert.equal(entry.failureKind, 'branch_timeout');
+      assert.equal(entry.bundle.bundleId, 'episode-flashcard-1');
+      assert.equal(entry.bundle.completionEvidence.length, 2);
+      assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('classifies runtime-shutdown cancellation as non-retryable branch_failure', async () => {
+    const env = setup();
+    try {
+      const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      env.options.reviewQueuePath = reviewQueuePath;
+      const controller = new AbortController();
+      controller.abort('runtime-shutdown');
+      const runtime = new SkillEvolutionRuntime({
+        ...env.options,
+        reviewAttemptSignal: controller.signal,
+      });
+
+      const result = await runtime.reviewAndApply(fixtureBundle());
+      assert.equal(result.queued, 'operational');
+      assert.equal(result.transition, 'reject_candidate');
+      const queue = loadReviewQueueState(reviewQueuePath);
+      const entry = findOperationalByBundleId(queue, 'episode-flashcard-1');
+      assert.ok(entry);
+      assert.equal(entry.failureKind, 'branch_failure');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('isolates one operational failure during replay while peer candidates continue', async () => {
+    const env = setup();
+    try {
+      const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      env.options.reviewQueuePath = reviewQueuePath;
+      const failingBundle = fixtureCandidateBundle({
+        ...fixtureCandidate(),
+        capabilityId: 'op-failure-isolated',
+      }, 'op-failure-isolated');
+      const successBundle = fixtureCandidateBundle({
+        ...fixtureCandidate(),
+        capabilityId: 'op-success-isolated',
+      }, 'op-success-isolated');
+      const queue = loadReviewQueueState(reviewQueuePath);
+      addOrUpdateOperationalFailure(
+        queue,
+        failingBundle.episode,
+        failingBundle,
+        'branch_timeout',
+        'seeded failure candidate',
+        undefined,
+        1,
+        1,
+        new Date(0),
+      );
+      addOrUpdateOperationalFailure(
+        queue,
+        successBundle.episode,
+        successBundle,
+        'branch_timeout',
+        'seeded success candidate',
+        undefined,
+        1,
+        1,
+        new Date(0),
+      );
+      queue.operational = queue.operational.map(item => ({ ...item, nextRetryAt: new Date(0).toISOString() }));
+      saveReviewQueueState(reviewQueuePath, queue);
+
+      env.options.authorFixture = ({ bundle }) => {
+        if (bundle.bundleId === 'op-failure-isolated') {
+          throw new Error('isolated infrastructure failure');
+        }
+        return {
+          body: `Use the isolated workflow for ${bundle.bundleId}.`,
+          envelope: {
+            decision: 'create_current_skill',
+            routingName: `${bundle.bundleId}-workflow`,
+            description: `Workflow for ${bundle.bundleId}.`,
+            evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+          },
+        };
+      };
+      env.options.verifierFixture = () => ({
+        decision: 'accept',
+        transition: 'create_current_skill',
+        issues: [],
+        rationale: 'Continuing peer candidate.',
+      });
+
+      const runtime = new SkillEvolutionRuntime(env.options);
+      const result = await runtime.reviewDueQueueEntries();
+      assert.equal(result.reviewed, 2);
+      assert.equal(result.operationalReviewed, 2);
+      assert.equal(result.operationalRetried, 1);
+      const registry = loadCurrentSkillRegistry(env.options.registryPath);
+      assert.equal(Object.keys(registry.capabilities).length, 1);
+      const remaining = loadReviewQueueState(reviewQueuePath);
+      assert.equal(remaining.operational.length, 1);
+      assert.equal(remaining.operational[0]!.bundleId, 'op-failure-isolated');
+    } finally {
+      env.cleanup();
+    }
+  });
+
   test('persists operational retry state across restart with bounded exponential backoff config', async () => {
     const env = setup();
     try {
@@ -796,6 +1152,7 @@ describe('V3 verified semantic Current Skills', () => {
         reviewerConcurrency: 3,
         operationalRetryMs: 5 * 60 * 1000,
         operationalRetryMaxMs: 6 * 60 * 60 * 1000,
+        reviewAttemptDeadlineMs: 10 * 60 * 1000,
       });
       const bundle = buildPipelineV3EvidenceBundle(
         {

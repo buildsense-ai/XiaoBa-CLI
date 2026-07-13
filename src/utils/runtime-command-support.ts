@@ -101,6 +101,7 @@ export async function startRuntimeCommandSupport(
           reviewerConcurrency: config.skillEvolutionReviewerConcurrency,
           operationalRetryMs: config.skillEvolutionOperationalRetryMinutes * 60 * 1000,
           operationalRetryMaxMs: config.skillEvolutionOperationalRetryMaxHours * 60 * 60 * 1000,
+          reviewAttemptDeadlineMs: config.skillEvolutionReviewAttemptDeadlineMinutes * 60 * 1000,
           authorModel: config.skillEvolutionAuthorModel,
           verifierModel: config.skillEvolutionVerifierModel,
           ...options.skillEvolutionOptions,

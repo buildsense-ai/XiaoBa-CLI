@@ -2,7 +2,12 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import { BranchSession, BranchSessionOptions } from '../core/branch-session';
+import {
+  BranchSession,
+  BranchSessionAbortError,
+  BranchSessionOptions,
+  SharedReviewTurnBudget,
+} from '../core/branch-session';
 import { Message } from '../types';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { AIService } from './ai-service';
@@ -39,6 +44,8 @@ import type { SemanticObservation } from './learning-episode';
 export const SKILL_EVOLUTION_SCHEMA_VERSION = 2 as const;
 export const SKILL_EVOLUTION_REVIEWER_VERSION = 'skill-evolution-v3';
 export const MAX_AUTHOR_VERIFIER_ROUNDS = 2;
+const DEFAULT_REVIEW_ATTEMPT_MAX_TURNS = 4;
+const DEFAULT_REVIEW_ATTEMPT_DEADLINE_MS = 10 * 60 * 1000;
 export const MAX_OPTIMISTIC_COMMIT_RETRIES = 2;
 
 export type CapabilityTransitionKind =
@@ -180,6 +187,9 @@ export class SkillAuthorBranchSession extends BranchSession {
   }
 
   async run(): Promise<SkillDraft> {
+    if (!this.shouldContinue()) {
+      this.throwAbortError();
+    }
     if (this.authorOptions.fixture) {
       const draft = await this.authorOptions.fixture({
         bundle: this.authorOptions.bundle,
@@ -202,7 +212,9 @@ export class SkillAuthorBranchSession extends BranchSession {
         if (!outcome.result) break;
       }
     }
-    if (!this.payload) throw new Error('Skill Author branch ended without a draft.');
+    if (!this.payload) {
+      this.throwAbortError();
+    }
     return this.payload;
   }
 
@@ -255,6 +267,9 @@ export class SkillVerifierBranchSession extends BranchSession {
   }
 
   async run(): Promise<SkillVerifierResult> {
+    if (!this.shouldContinue()) {
+      this.throwAbortError();
+    }
     if (this.verifierOptions.fixture) {
       const result = await this.verifierOptions.fixture({
         bundle: this.verifierOptions.bundle,
@@ -276,7 +291,9 @@ export class SkillVerifierBranchSession extends BranchSession {
         if (!outcome.result) break;
       }
     }
-    if (!this.payload) throw new Error('Skill Verifier branch ended without a result.');
+    if (!this.payload) {
+      this.throwAbortError();
+    }
     return this.payload;
   }
 
@@ -368,6 +385,8 @@ export interface SkillEvolutionOptions extends SkillEvolutionPaths {
   workingDirectory: string;
   aiService?: AIService;
   manualSkillNames?: readonly string[];
+  reviewAttemptSignal?: AbortSignal;
+  reviewAttemptDeadlineMs?: number;
   reviewQueuePath?: string;
   settlementWindowMs?: number;
   reviewerConcurrency?: number;
@@ -389,6 +408,7 @@ export interface SkillEvolutionEffectiveConfig {
   reviewerConcurrency: number;
   operationalRetryMs: number;
   operationalRetryMaxMs: number;
+  reviewAttemptDeadlineMs: number;
   authorModel?: string;
   verifierModel?: string;
 }
@@ -500,69 +520,107 @@ export class SkillEvolutionRuntime {
   ): Promise<{ result: SkillEvolutionResult; branchTranscriptPaths: string[]; bundle: EvidenceBundle }> {
     const branchTranscriptPaths = sharedBranchTranscriptPaths ?? [];
     let reviewBundle = freezeClone(bundle);
-
-    for (let retry = 0; retry <= MAX_OPTIMISTIC_COMMIT_RETRIES; retry++) {
-      try {
-        const result = await this.reviewAndApplyOnce(reviewBundle, branchTranscriptPaths);
-        if (persistQueue && result.transition === 'defer' && this.options.reviewQueuePath) {
-          const queue = loadReviewQueueState(this.options.reviewQueuePath);
-          const candidate = this.extractCandidateFromBundle(reviewBundle);
-          const relevantReadSet = result.verifier
-            ? declaredRegistryReadSet(result.verifier, reviewBundle, result.draft!)
-            : [];
-          const deferredEntry = upsertDeferredEntry(
-            queue,
-            candidate,
-            reviewBundle,
-            this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
-            relevantReadSet,
-            result.verifier?.rationale ?? 'Verifier deferred for later review.',
-            new Date(),
-          );
-          result.queued = 'deferred';
-          result.queueEntryId = deferredEntry.entryId;
-          saveReviewQueueState(this.options.reviewQueuePath, queue);
-        }
-        return { result, branchTranscriptPaths, bundle: reviewBundle };
-      } catch (error) {
-        const operationalFailure = this.extractOperationalFailure(error);
-        if (operationalFailure) {
-          const queuePath = this.options.reviewQueuePath;
-          if (!queuePath) {
-            throw operationalFailure;
-          }
-          if (!persistQueue) {
-            throw operationalFailure;
-          }
-          return {
-            result: this.enqueueOperationalFailureAndReturnResult(
-              reviewBundle,
-              operationalFailure,
-              new Date(),
-              queuePath,
-            ),
-            branchTranscriptPaths,
-            bundle: reviewBundle,
-          };
-        }
-
-        if (error instanceof ReviewCommitConflictError) {
-          if (retry >= MAX_OPTIMISTIC_COMMIT_RETRIES) {
-            throw error;
-          }
-          reviewBundle = freezeClone(this.refreshRegistryContext(reviewBundle));
-          continue;
-        }
-        throw error;
-      }
+    const sharedReviewTurnBudget: SharedReviewTurnBudget = {
+      remainingTurns: this.getReviewAttemptMaxTurns(),
+    };
+    const attemptController = new AbortController();
+    const externalSignal = this.options.reviewAttemptSignal;
+    const attemptDeadlineMs = this.getEffectiveConfig().reviewAttemptDeadlineMs;
+    const attemptDeadlineTimer = setTimeout(
+      () => attemptController.abort('review-timeout'),
+      Math.max(1, attemptDeadlineMs),
+    );
+    let removeExternalAbort: (() => void) | undefined;
+    if (externalSignal?.aborted) {
+      attemptController.abort(this.resolveAbortReason(externalSignal.reason));
+    } else if (externalSignal) {
+      const onAbort = () => {
+        attemptController.abort(this.resolveAbortReason(externalSignal.reason));
+      };
+      externalSignal.addEventListener('abort', onAbort, { once: true });
+      removeExternalAbort = () => externalSignal.removeEventListener('abort', onAbort);
     }
+    try {
+      for (let retry = 0; retry <= MAX_OPTIMISTIC_COMMIT_RETRIES; retry++) {
+        try {
+          const result = await this.reviewAndApplyOnce(
+            reviewBundle,
+            branchTranscriptPaths,
+            sharedReviewTurnBudget,
+            attemptController.signal,
+          );
+          if (persistQueue && result.transition === 'defer' && this.options.reviewQueuePath) {
+            const queue = loadReviewQueueState(this.options.reviewQueuePath);
+            const candidate = this.extractCandidateFromBundle(reviewBundle);
+            const relevantReadSet = result.verifier
+              ? declaredRegistryReadSet(result.verifier, reviewBundle, result.draft!)
+              : [];
+            const deferredEntry = upsertDeferredEntry(
+              queue,
+              candidate,
+              reviewBundle,
+              this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
+              relevantReadSet,
+              result.verifier?.rationale ?? 'Verifier deferred for later review.',
+              new Date(),
+            );
+            result.queued = 'deferred';
+            result.queueEntryId = deferredEntry.entryId;
+            saveReviewQueueState(this.options.reviewQueuePath, queue);
+          }
+          return { result, branchTranscriptPaths, bundle: reviewBundle };
+        } catch (error) {
+          const operationalFailure = this.extractOperationalFailure(error);
+          if (operationalFailure) {
+            const queuePath = this.options.reviewQueuePath;
+            if (!queuePath) {
+              throw operationalFailure;
+            }
+            if (!persistQueue) {
+              throw operationalFailure;
+            }
+            return {
+              result: this.enqueueOperationalFailureAndReturnResult(
+                reviewBundle,
+                operationalFailure,
+                new Date(),
+                queuePath,
+              ),
+              branchTranscriptPaths,
+              bundle: reviewBundle,
+            };
+          }
 
+          if (error instanceof ReviewCommitConflictError) {
+            if (retry >= MAX_OPTIMISTIC_COMMIT_RETRIES) {
+              throw error;
+            }
+            reviewBundle = freezeClone(this.refreshRegistryContext(reviewBundle));
+            continue;
+          }
+          throw error;
+        }
+      }
+    } finally {
+      clearTimeout(attemptDeadlineTimer);
+      removeExternalAbort?.();
+    }
     throw new Error('Skill Evolution exceeded optimistic commit retries.');
   }
 
   private buildOperationalReviewError(error: unknown, branchTranscriptPaths: string[]): OperationalReviewError {
     if (error instanceof OperationalReviewError) {
       return error;
+    }
+    if (error instanceof BranchSessionAbortError) {
+      const kind: OperationalReviewFailureKind = error.reason === 'runtime-shutdown'
+        ? 'branch_failure'
+        : 'branch_timeout';
+      return new OperationalReviewError(
+        kind,
+        error.message,
+        branchTranscriptPaths[branchTranscriptPaths.length - 1],
+      );
     }
 
     const message = String((error as { message?: unknown })?.message ?? error ?? 'Unknown branch failure');
@@ -705,13 +763,22 @@ export class SkillEvolutionRuntime {
   private async reviewAndApplyOnce(
     frozenBundle: EvidenceBundle,
     branchTranscriptPaths: string[],
+    sharedReviewTurnBudget: SharedReviewTurnBudget,
+    attemptSignal?: AbortSignal,
   ): Promise<SkillEvolutionResult> {
     validateEvidenceBundle(frozenBundle);
     let previousDraft: SkillDraft | undefined;
     let issues: readonly SkillVerifierIssue[] = [];
 
     for (let round = 1; round <= MAX_AUTHOR_VERIFIER_ROUNDS; round++) {
-      const author = this.createAuthorBranch(frozenBundle, round, previousDraft, issues);
+      const author = this.createAuthorBranch(
+        frozenBundle,
+        round,
+        previousDraft,
+        issues,
+        sharedReviewTurnBudget,
+        attemptSignal,
+      );
       let draft: SkillDraft;
       try {
         draft = await author.run();
@@ -744,7 +811,13 @@ export class SkillEvolutionRuntime {
         return this.applyReviewedTransition(frozenBundle, draft, result, round, branchTranscriptPaths);
       }
 
-      const verifier = this.createVerifierBranch(frozenBundle, draft, round);
+      const verifier = this.createVerifierBranch(
+        frozenBundle,
+        draft,
+        round,
+        sharedReviewTurnBudget,
+        attemptSignal,
+      );
       let verification: SkillVerifierResult;
       try {
         verification = normalizeVerifierResult(await verifier.run());
@@ -1031,9 +1104,20 @@ export class SkillEvolutionRuntime {
       reviewerConcurrency: this.options.reviewerConcurrency ?? 3,
       operationalRetryMs: this.options.operationalRetryMs ?? 5 * 60 * 1000,
       operationalRetryMaxMs: this.options.operationalRetryMaxMs ?? 6 * 60 * 60 * 1000,
+      reviewAttemptDeadlineMs: this.options.reviewAttemptDeadlineMs ?? DEFAULT_REVIEW_ATTEMPT_DEADLINE_MS,
       ...(this.options.authorModel && { authorModel: this.options.authorModel }),
       ...(this.options.verifierModel && { verifierModel: this.options.verifierModel }),
     };
+  }
+
+  private getReviewAttemptMaxTurns(): number {
+    return DEFAULT_REVIEW_ATTEMPT_MAX_TURNS;
+  }
+
+  private resolveAbortReason(reason: unknown): 'review-timeout' | 'runtime-shutdown' | 'turn_budget_exhausted' {
+    if (reason === 'review-timeout') return 'review-timeout';
+    if (reason === 'turn_budget_exhausted') return 'turn_budget_exhausted';
+    return 'runtime-shutdown';
   }
 
   private createAuthorBranch(
@@ -1041,12 +1125,16 @@ export class SkillEvolutionRuntime {
     round: number,
     previousDraft: SkillDraft | undefined,
     verifierIssues: readonly SkillVerifierIssue[],
+    sharedReviewTurnBudget: SharedReviewTurnBudget,
+    attemptSignal?: AbortSignal,
   ): SkillAuthorBranchSession {
     const options: SkillAuthorBranchOptions = {
       id: `skill-author-${randomUUID()}`,
       aiService: this.createBranchAIService(this.options.authorModel),
       workingDirectory: this.options.workingDirectory,
       logEnabled: this.options.logEnabled,
+      signal: attemptSignal,
+      sharedReviewTurnBudget,
       bundle,
       round,
       previousDraft,
@@ -1060,12 +1148,16 @@ export class SkillEvolutionRuntime {
     bundle: EvidenceBundle,
     draft: SkillDraft,
     round: number,
+    sharedReviewTurnBudget: SharedReviewTurnBudget,
+    attemptSignal?: AbortSignal,
   ): SkillVerifierBranchSession {
     const options: SkillVerifierBranchOptions = {
       id: `skill-verifier-${randomUUID()}`,
       aiService: this.createBranchAIService(this.options.verifierModel),
       workingDirectory: this.options.workingDirectory,
       logEnabled: this.options.logEnabled,
+      signal: attemptSignal,
+      sharedReviewTurnBudget,
       bundle,
       draft,
       round,
