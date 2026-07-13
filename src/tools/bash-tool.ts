@@ -44,6 +44,20 @@ interface ShellRunResult {
   truncated: boolean;
 }
 
+export function isShellCommandTimeoutError(error: any): boolean {
+  const text = [error?.message, error?.code, error?.name]
+    .filter(value => value !== undefined && value !== null)
+    .map(value => String(value).toLowerCase())
+    .join(' ');
+  if (text.includes('timed out') || text.includes('timeout') || text.includes('etimedout')) {
+    return true;
+  }
+
+  // child_process.exec reports POSIX timeouts as a killed child with a signal,
+  // while its message may only say "Command failed" and omit timeout wording.
+  return error?.killed === true && typeof error?.signal === 'string' && error.signal.length > 0;
+}
+
 export class ShellTool implements Tool {
   definition: ToolDefinition = {
     name: 'execute_shell',
@@ -215,7 +229,7 @@ export class ShellTool implements Tool {
         context,
       ) || cwdBefore;
       const aborted = context.abortSignal?.aborted || /aborted|abort/i.test(String(error.message || ''));
-      const timedOut = !aborted && this.isTimeoutError(error);
+      const timedOut = !aborted && isShellCommandTimeoutError(error);
       if (aborted || timedOut) {
         return {
           ok: false,
@@ -743,11 +757,6 @@ export class ShellTool implements Tool {
       };
     }
     return { ok: true, directory };
-  }
-
-  private isTimeoutError(error: any): boolean {
-    const text = String(error?.message || error?.code || '').toLowerCase();
-    return text.includes('timed out') || text.includes('timeout') || text === 'etimedout';
   }
 
   private formatExecutionError(error: any): string {
