@@ -80,6 +80,61 @@ function deliveryPair(offsetHours = 0) {
   ];
 }
 
+function createRestartableRuntimeLearning(root: string, settlementWindowMs = 0): RuntimeLearning {
+  const skillsRoot = path.join(root, 'skills');
+  const outputDir = defaultDistilledOutputDir(skillsRoot);
+  const episodeStorePath = path.join(root, 'data', 'learning-episodes.json');
+  const reviewQueuePath = path.join(root, 'data', 'review-queue.json');
+  const registryPath = path.join(root, 'data', 'current-skill-registry.json');
+  const auditPath = path.join(root, 'data', 'transition-audit.jsonl');
+  const journalPath = path.join(root, 'data', 'transition-journal.json');
+  const reassessmentManifestPath = path.join(root, 'data', 'reassessment-manifest.json');
+  const curatorStatePath = path.join(root, 'data', 'curator-state.json');
+  const ledgerPath = path.join(root, 'data', 'skill-usage-ledger.jsonl');
+
+  const skillEvolution = new SkillEvolutionRuntime({
+    workingDirectory: root,
+    outputDir,
+    registryPath,
+    auditPath,
+    journalPath,
+    reviewQueuePath,
+    settlementWindowMs: 0,
+    operationalRetryMs: 1,
+    operationalRetryMaxMs: 60_000,
+    logEnabled: false,
+  });
+
+  const episodeStore = new LearningEpisodeStore(episodeStorePath);
+  const curator = new SkillUsageCurator({
+    ledger: new SkillUsageLedger(ledgerPath),
+    statePath: curatorStatePath,
+    intervalMs: 24 * 60 * 60 * 1000,
+    runtime: skillEvolution,
+  });
+  const planner = new DueWorkPlanner({
+    learningEpisodeStorePath: episodeStorePath,
+    reviewQueuePath,
+    curatorStatePath,
+    curatorIntervalMs: 24 * 60 * 60 * 1000,
+    semanticReassessmentManifestPath: reassessmentManifestPath,
+  });
+  const evidenceIngestor = new EvidenceIngestor({
+    episodeStore,
+    settlementWindowMs,
+  });
+
+  return new RuntimeLearning({
+    workingDirectory: root,
+    evidenceIngestor,
+    learningEpisodeStore: episodeStore,
+    skillEvolution,
+    curator,
+    planner,
+    legacyPipeline: undefined,
+  });
+}
+
 /** Large enough settlement window that the deadline stays in the future. */
 const FUTURE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -1143,6 +1198,79 @@ describe('Issue 3 — Review failure status', () => {
       env.skillEvolution.reviewDueQueueEntries = originalQueueReview;
     }
   });
+
+  test('timeout during queue review writes timed_out heartbeat state', async () => {
+    const originalQueueReview = env.skillEvolution.reviewDueQueueEntries.bind(env.skillEvolution);
+    env.skillEvolution.reviewDueQueueEntries = async () => ({
+      reviewed: 1,
+      reviewedQueueEntries: 1,
+      deferredQueueReviews: 0,
+      operationalQueueReviews: 1,
+      deferredRetried: 0,
+      operationalRetried: 0,
+      transitionsByKind: {},
+      queueOutcomes: {
+        timeout: {
+          status: 'operational',
+          reason: 'Timeout',
+          failureKind: 'branch_timeout',
+          nextRetryAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      },
+    });
+
+    try {
+      const result = await env.runtimeLearning.wake('startup');
+
+      assert.equal(result.review.reviewTimeoutCount, 1, 'expected one timeout count');
+      assert.equal(result.review.reviewFailureCount, 0, 'expected zero failure count');
+
+      const hb = env.runtimeLearning.loadHeartbeatRecord();
+      assert.equal(hb.lastRunStatus, 'timed_out', `expected timed_out, got ${hb.lastRunStatus}`);
+      assert.equal(hb.lastReviewTimeoutCount, 1);
+      assert.equal(hb.lastReviewFailureCount, 0);
+      assert.deepEqual(hb.lastPendingWakeReasons, ['startup']);
+      assert.ok(hb.lastRunDurationMs >= 0, 'expected lastRunDurationMs');
+    } finally {
+      env.skillEvolution.reviewDueQueueEntries = originalQueueReview;
+    }
+  });
+
+  test('operational queue failure writes queued_operational_retry heartbeat state', async () => {
+    const originalQueueReview = env.skillEvolution.reviewDueQueueEntries.bind(env.skillEvolution);
+    env.skillEvolution.reviewDueQueueEntries = async () => ({
+      reviewed: 1,
+      reviewedQueueEntries: 1,
+      deferredQueueReviews: 0,
+      operationalQueueReviews: 1,
+      deferredRetried: 0,
+      operationalRetried: 0,
+      transitionsByKind: {},
+      queueOutcomes: {
+        failed: {
+          status: 'operational',
+          reason: 'Transient failure',
+          failureKind: 'branch_failure',
+          nextRetryAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      },
+    });
+
+    try {
+      const result = await env.runtimeLearning.wake('startup');
+
+      assert.equal(result.review.reviewTimeoutCount, 0, 'expected zero timeout count');
+      assert.equal(result.review.reviewFailureCount, 1, 'expected one failure count');
+
+      const hb = env.runtimeLearning.loadHeartbeatRecord();
+      assert.equal(hb.lastRunStatus, 'queued_operational_retry', `expected queued_operational_retry, got ${hb.lastRunStatus}`);
+      assert.equal(hb.lastReviewTimeoutCount, 0);
+      assert.equal(hb.lastReviewFailureCount, 1);
+      assert.deepEqual(hb.lastPendingWakeReasons, ['startup']);
+    } finally {
+      env.skillEvolution.reviewDueQueueEntries = originalQueueReview;
+    }
+  });
 });
 
 describe('Issue 4 — Heartbeat single-write', () => {
@@ -1166,6 +1294,11 @@ describe('Issue 4 — Heartbeat single-write', () => {
       `expected runCount=1 (single write), got ${after.runCount}`);
     assert.ok(after.lastRunAt, 'expected lastRunAt to be set');
     assert.ok(after.lastReason, 'expected lastReason to be set');
+    assert.equal(after.lastRunStatus, 'succeeded', 'expected succeeded status');
+    assert.ok(after.lastRunDurationMs >= 0, 'expected lastRunDurationMs');
+    assert.deepEqual(after.lastPendingWakeReasons, ['startup']);
+    assert.equal(after.lastReviewTimeoutCount, 0);
+    assert.equal(after.lastReviewFailureCount, 0);
   });
 
   test('consecutive wakes increment runCount monotonically', async () => {
@@ -1181,6 +1314,42 @@ describe('Issue 4 — Heartbeat single-write', () => {
     assert.equal(after2.runCount, 2, 'expected 2 after second wake');
     assert.equal(after2.lastReason, 'scheduled',
       `expected reason=scheduled, got ${after2.lastReason}`);
+    assert.equal(after2.lastRunStatus, 'quiet', `expected quiet status, got ${after2.lastRunStatus}`);
+    assert.deepEqual(after2.lastPendingWakeReasons, ['scheduled']);
+    assert.equal(after2.lastReviewTimeoutCount, 0);
+    assert.equal(after2.lastReviewFailureCount, 0);
+    assert.ok(after2.lastRunDurationMs >= 0, 'expected lastRunDurationMs');
+  });
+
+  test('restart with persisted state preserves heartbeat and audit references without duplicate transition', async () => {
+    const [delivery, acceptance] = deliveryPair(-2);
+    writeLog(env.logFile, [delivery, acceptance]);
+
+    await env.runtimeLearning.wake('startup');
+    const before = env.runtimeLearning.loadHeartbeatRecord();
+    const firstAudit = env.runtimeLearning.getSkillEvolution().getAudit();
+    const firstCreateCount = firstAudit.filter(entry => entry.transition === 'create_current_skill').length;
+    const firstCreate = firstAudit.find(entry => entry.transition === 'create_current_skill');
+
+    const restarted = createRestartableRuntimeLearning(env.root);
+    await restarted.wake('startup');
+
+    const after = restarted.loadHeartbeatRecord();
+    assert.equal(after.runCount, before.runCount + 1, 'expected runCount to increase after restart');
+    assert.deepEqual(after.lastPendingWakeReasons, ['startup']);
+    const restartedAudit = restarted.getSkillEvolution().getAudit();
+    const secondCreateCount = restartedAudit.filter(entry => entry.transition === 'create_current_skill').length;
+    assert.equal(secondCreateCount, firstCreateCount, 'expected no duplicate transitions on restart');
+
+    if (firstCreate) {
+      const secondCreate = restartedAudit.find(entry => entry.transition === 'create_current_skill');
+      assert.ok(secondCreate, 'expected create_current_skill audit after restart');
+      assert.deepEqual(
+        secondCreate.branchTranscriptPaths,
+        firstCreate.branchTranscriptPaths,
+        'transcript references should be preserved across restart',
+      );
+    }
   });
 });
 

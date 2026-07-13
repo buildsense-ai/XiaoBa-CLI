@@ -318,7 +318,7 @@ describe('DistillationHeartbeatScheduler', () => {
   });
 
   describe('scheduler trigger behavior', () => {
-    test('preserves the discovery cadence when settlement deadline is later', () => {
+    test('preserves the discovery cadence when settlement deadline is later', async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-discovery-cadence-'));
       const saved = { ...process.env };
       const originalSetTimeout = globalThis.setTimeout;
@@ -356,7 +356,7 @@ describe('DistillationHeartbeatScheduler', () => {
         (scheduler as unknown as { scheduleNextRun: () => void }).scheduleNextRun();
 
         assert.deepEqual(scheduledDelays, [30 * 60 * 1000]);
-        void scheduler.stop();
+        await scheduler.stop();
       } finally {
         globalThis.setTimeout = originalSetTimeout;
         restoreProcessEnv(saved);
@@ -580,7 +580,7 @@ describe('DistillationHeartbeatScheduler', () => {
   // -----------------------------------------------------------------------
 
   describe('targeted wake for overdue work', () => {
-    test('overdue operational retry schedules immediate targeted wake without discovery', () => {
+    test('overdue operational retry schedules immediate targeted wake without discovery', async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-overdue-retry-'));
       const saved = { ...process.env };
       const originalSetTimeout = globalThis.setTimeout;
@@ -652,7 +652,7 @@ describe('DistillationHeartbeatScheduler', () => {
         );
         assert.equal(scheduledDelays[0]!, 0, 'overdue retry schedules immediate (0ms) wake');
 
-        void scheduler.stop();
+        await scheduler.stop();
       } finally {
         globalThis.setTimeout = originalSetTimeout;
         restoreProcessEnv(saved);
@@ -660,7 +660,7 @@ describe('DistillationHeartbeatScheduler', () => {
       }
     });
 
-    test('overdue curator work schedules immediate targeted wake without discovery', () => {
+    test('overdue curator work schedules immediate targeted wake without discovery', async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-overdue-curator-'));
       const saved = { ...process.env };
       const originalSetTimeout = globalThis.setTimeout;
@@ -697,7 +697,7 @@ describe('DistillationHeartbeatScheduler', () => {
         );
         assert.equal(scheduledDelays[0]!, 0, 'overdue curator schedules immediate (0ms) wake');
 
-        void scheduler.stop();
+        await scheduler.stop();
       } finally {
         globalThis.setTimeout = originalSetTimeout;
         restoreProcessEnv(saved);
@@ -705,7 +705,7 @@ describe('DistillationHeartbeatScheduler', () => {
       }
     });
 
-    test('overdue settlement schedules immediate targeted wake without discovery', () => {
+    test('overdue settlement schedules immediate targeted wake without discovery', async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-overdue-settlement-'));
       const saved = { ...process.env };
       const originalSetTimeout = globalThis.setTimeout;
@@ -753,7 +753,7 @@ describe('DistillationHeartbeatScheduler', () => {
         );
         assert.equal(scheduledDelays[0]!, 0, 'overdue settlement schedules immediate (0ms) wake');
 
-        void scheduler.stop();
+        await scheduler.stop();
       } finally {
         globalThis.setTimeout = originalSetTimeout;
         restoreProcessEnv(saved);
@@ -902,7 +902,7 @@ describe('DistillationHeartbeatScheduler', () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-runtime-coalesce-'));
       const saved = { ...process.env };
       const firstWakeDone = createDeferred<void>();
-      const calls: HeartbeatReason[][] = [];
+      const calls: Array<{ reasons: HeartbeatReason[]; coalesced: boolean; }> = [];
       let active = 0;
       let maxActive = 0;
 
@@ -910,11 +910,14 @@ describe('DistillationHeartbeatScheduler', () => {
         process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
 
         const runtime = {
-          wake: async (reason: HeartbeatReason[] | HeartbeatReason): Promise<HeartbeatRunResult> => {
+          wake: async (
+            reason: HeartbeatReason[] | HeartbeatReason,
+            options?: { coalesced?: boolean },
+          ): Promise<HeartbeatRunResult> => {
             active += 1;
             maxActive = Math.max(maxActive, active);
             const reasons = Array.isArray(reason) ? [...reason] : [reason];
-            calls.push(reasons);
+            calls.push({ reasons, coalesced: Boolean(options?.coalesced) });
             if (calls.length === 1) await firstWakeDone.promise;
             active -= 1;
             return makeHeartbeatResult(true);
@@ -959,8 +962,10 @@ describe('DistillationHeartbeatScheduler', () => {
         assert.equal(settlementResult.ran, false);
         assert.equal(curatorResult.ran, false);
         assert.equal(blockedResult.ran, false);
-        assert.deepEqual(calls[0]!.sort(), ['startup']);
-        assert.deepEqual(calls[1]!.sort(), ['curator', 'manual', 'operational-retry', 'settlement-deadline']);
+        assert.deepEqual(calls[0]!.reasons.sort(), ['startup']);
+        assert.deepEqual(calls[1]!.reasons.sort(), ['curator', 'manual', 'operational-retry', 'settlement-deadline']);
+        assert.equal(calls[0]!.coalesced, false, 'first wake should not be flagged as coalesced');
+        assert.equal(calls[1]!.coalesced, true, 'second wake should be flagged as coalesced');
         assert.equal(maxActive, 1);
       } finally {
         restoreProcessEnv(saved);
@@ -973,14 +978,17 @@ describe('DistillationHeartbeatScheduler', () => {
       const saved = { ...process.env };
       const startupWakeStarted = createDeferred<void>();
       const secondWakeStarted = createDeferred<void>();
-      const calls: HeartbeatReason[][] = [];
+      const calls: Array<{ reasons: HeartbeatReason[]; coalesced: boolean; }> = [];
 
       try {
         process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
         const runtime = {
-          wake: async (reason: HeartbeatReason[] | HeartbeatReason): Promise<HeartbeatRunResult> => {
+          wake: async (
+            reason: HeartbeatReason[] | HeartbeatReason,
+            options?: { coalesced?: boolean },
+          ): Promise<HeartbeatRunResult> => {
             const reasons = Array.isArray(reason) ? [...reason] : [reason];
-            calls.push(reasons.sort());
+            calls.push({ reasons: reasons.sort(), coalesced: Boolean(options?.coalesced) });
             if (calls.length === 1) await startupWakeStarted.promise;
             if (calls.length === 2) secondWakeStarted.resolve();
             return makeHeartbeatResult(true);
@@ -1014,8 +1022,10 @@ describe('DistillationHeartbeatScheduler', () => {
         await scheduler.stop();
 
         assert.equal(calls.length, 2);
-        assert.deepEqual(calls[0]!.sort(), ['startup']);
-        assert.deepEqual(calls[1]!.sort(), ['manual']);
+        assert.deepEqual(calls[0]!.reasons, ['startup']);
+        assert.deepEqual(calls[1]!.reasons, ['manual']);
+        assert.equal(calls[0]!.coalesced, false);
+        assert.equal(calls[1]!.coalesced, true);
       } finally {
         restoreProcessEnv(saved);
         fs.rmSync(root, { recursive: true, force: true });
@@ -1026,14 +1036,89 @@ describe('DistillationHeartbeatScheduler', () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-runtime-drain-'));
       const saved = { ...process.env };
       const wakeGate = createDeferred<void>();
-      const calls: HeartbeatReason[][] = [];
+      const calls: HeartbeatReason[] = [];
+      const heartbeatStatuses: string[] = [];
 
       try {
         process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
         const runtime = {
           wake: async (reason: HeartbeatReason[] | HeartbeatReason): Promise<HeartbeatRunResult> => {
             const reasons = Array.isArray(reason) ? [...reason] : [reason];
-            calls.push(reasons.sort());
+            calls.push(...reasons.sort());
+            await wakeGate.promise;
+            return makeHeartbeatResult(true);
+          },
+          getPlanner: () => ({
+            plan: () => ({
+              now: new Date(),
+              due: {
+                settlementDue: false,
+                operationalRetryDue: false,
+                routineCuratorDue: false,
+                expeditedCuratorDue: false,
+              semanticReassessmentDue: false,
+              },
+              nextWakeTime: null,
+              nextWakeReason: 'scheduled',
+            }),
+          }),
+          getConfig: () => ({ skillEvolutionReviewAttemptDeadlineMinutes: 5 }),
+          markHeartbeatStatus: (status: string) => {
+            heartbeatStatuses.push(status);
+          },
+        };
+
+        const scheduler = new DistillationHeartbeatScheduler(root, runtime as unknown as any);
+        const inFlight = scheduler.runHeartbeat('startup');
+        await Promise.resolve();
+        wakeGate.resolve();
+
+        const stopped = scheduler.stop();
+        const completed = await Promise.race([
+          stopped.then(() => true),
+          sleep(50).then(() => false),
+        ]);
+        assert.equal(completed, true, 'stop should return within the shared Review Deadline window');
+        assert.equal(calls.length, 1);
+        assert.deepEqual(heartbeatStatuses, ['drained']);
+
+        wakeGate.resolve();
+        const result = await inFlight;
+        assert.equal(result.ran, true);
+      } finally {
+        restoreProcessEnv(saved);
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    test('start-to-stop clears stop-race timers without extending shutdown', async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-runtime-stop-timer-cleanup-'));
+      const saved = { ...process.env };
+      const wakeGate = createDeferred<void>();
+      const handles = new Set<unknown>();
+      let clearCount = 0;
+
+      const originalSetTimeout = globalThis.setTimeout;
+      const originalClearTimeout = globalThis.clearTimeout;
+      try {
+        process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
+
+        globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: unknown[]) => {
+          const handle: { id: number } = { id: Math.random() };
+          handles.add(handle);
+          return handle as unknown as NodeJS.Timeout;
+        }) as typeof globalThis.setTimeout;
+
+        globalThis.clearTimeout = ((handle: unknown) => {
+          clearCount += 1;
+          handles.delete(handle);
+          return originalClearTimeout(handle as any);
+        }) as typeof globalThis.clearTimeout;
+
+        const runtime = {
+          wake: async (reason: HeartbeatReason[] | HeartbeatReason): Promise<HeartbeatRunResult> => {
+            reason = Array.isArray(reason) ? reason : [reason];
+            assert.equal(reason[0], 'startup');
             await wakeGate.promise;
             return makeHeartbeatResult(true);
           },
@@ -1051,25 +1136,22 @@ describe('DistillationHeartbeatScheduler', () => {
               nextWakeReason: 'scheduled',
             }),
           }),
-          getConfig: () => ({ skillEvolutionReviewAttemptDeadlineMinutes: 0 }),
+          getConfig: () => ({ skillEvolutionReviewAttemptDeadlineMinutes: 1 }),
         };
 
         const scheduler = new DistillationHeartbeatScheduler(root, runtime as unknown as any);
-        const inFlight = scheduler.runHeartbeat('startup');
+        await scheduler.start();
         await Promise.resolve();
 
-        const stopped = scheduler.stop();
-        const completed = await Promise.race([
-          stopped.then(() => true),
-          sleep(50).then(() => false),
-        ]);
-        assert.equal(completed, true, 'stop should return within the shared Review Deadline window');
-        assert.equal(calls.length, 1);
-
+        const stopPromise = scheduler.stop();
         wakeGate.resolve();
-        const result = await inFlight;
-        assert.equal(result.ran, true);
+        await stopPromise;
+
+        assert.equal(clearCount >= 2, true, 'active+scheduled stop races should clear both timers');
+        assert.equal(handles.size, 0, 'stop-race timers are cleaned up');
       } finally {
+        globalThis.setTimeout = originalSetTimeout;
+        globalThis.clearTimeout = originalClearTimeout;
         restoreProcessEnv(saved);
         fs.rmSync(root, { recursive: true, force: true });
       }

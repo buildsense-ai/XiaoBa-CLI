@@ -57,6 +57,15 @@ export type RuntimeLearningReason =
 
 export type RuntimeLearningStageStatus = 'succeeded' | 'failed' | 'skipped';
 
+export type RuntimeLearningHeartbeatRunStatus =
+  | 'succeeded'
+  | 'failed'
+  | 'quiet'
+  | 'coalesced'
+  | 'timed_out'
+  | 'queued_operational_retry'
+  | 'drained';
+
 export interface RuntimeLearningDiscoveryReport {
   scanned: boolean;
   filesScanned: number;
@@ -86,6 +95,8 @@ export interface RuntimeLearningReviewReport {
   operationalQueueReviews: number;
   deferredRetries: number;
   operationalRetries: number;
+  reviewTimeoutCount: number;
+  reviewFailureCount: number;
   transitionsByKind: Partial<Record<CapabilityTransitionKind, number>>;
 }
 
@@ -139,12 +150,22 @@ export interface RuntimeLearningHeartbeatRecord {
   lastRunAt: string;
   /** Monotonic count of heartbeat runs since record creation. */
   runCount: number;
+  /** Last heartbeat status from the most recent wake cycle. */
+  lastRunStatus: RuntimeLearningHeartbeatRunStatus;
+  /** Last wake duration in milliseconds. */
+  lastRunDurationMs: number;
   /** Reason of the last run. */
   lastReason: string;
   /** Distillation Units produced by the last run. */
   lastUnitsProcessed: number;
   /** Files whose cursor advanced on the last run. */
   lastAdvancedFiles: number;
+  /** Reasons merged into the latest wake request. */
+  lastPendingWakeReasons: RuntimeLearningReason[];
+  /** Review timeout count from the latest review phase. */
+  lastReviewTimeoutCount: number;
+  /** Review failure count from the latest review phase. */
+  lastReviewFailureCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +217,8 @@ function skippedReviewReport(): RuntimeLearningReviewReport {
     operationalQueueReviews: 0,
     deferredRetries: 0,
     operationalRetries: 0,
+    reviewTimeoutCount: 0,
+    reviewFailureCount: 0,
     transitionsByKind: {},
   };
 }
@@ -232,9 +255,14 @@ function emptyHeartbeatRecord(): RuntimeLearningHeartbeatRecord {
     schemaVersion: 1,
     lastRunAt: '',
     runCount: 0,
+    lastRunStatus: 'quiet',
+    lastRunDurationMs: 0,
     lastReason: 'manual',
     lastUnitsProcessed: 0,
     lastAdvancedFiles: 0,
+    lastPendingWakeReasons: [],
+    lastReviewTimeoutCount: 0,
+    lastReviewFailureCount: 0,
   };
 }
 
@@ -322,10 +350,15 @@ export class RuntimeLearning {
    * skip session-log scanning and run only the due stages. This is the
    * production path for deadline-driven wakes.
    */
-  async wake(reason: RuntimeLearningReason | readonly RuntimeLearningReason[]): Promise<RuntimeLearningHeartbeatResult> {
+  async wake(
+    reason: RuntimeLearningReason | readonly RuntimeLearningReason[],
+    wakeOptions: { coalesced?: boolean } = {},
+  ): Promise<RuntimeLearningHeartbeatResult> {
     const wake = emptyHeartbeatResult(true);
     const now = this.clock();
     const reasons = this.normalizeReasons(reason);
+    const orderedReasons = [...reasons].sort();
+    const wakeStartMs = this.clock().getTime();
     const isDiscoveryWake = this.isDiscoveryWake(reasons);
 
     try {
@@ -392,13 +425,104 @@ export class RuntimeLearning {
       this.cleanupBranchTranscripts();
 
       // ---- 8. Record heartbeat ----
-      this.recordHeartbeat(this.formatReasons(reasons), wake.unitsProcessed, wake.advancedFiles);
+      const runDurationMs = Math.max(0, this.clock().getTime() - wakeStartMs);
+      const hadDurableWork = this.hasDurableWakeWork(wake);
+      this.recordHeartbeat(
+        this.formatReasons(reasons),
+        wake.unitsProcessed,
+        wake.advancedFiles,
+        this.deriveHeartbeatRunStatus(
+          wake.review,
+          orderedReasons,
+          wakeOptions.coalesced,
+          hadDurableWork,
+        ),
+        orderedReasons,
+        runDurationMs,
+        wake.review.reviewTimeoutCount,
+        wake.review.reviewFailureCount,
+      );
 
       return wake;
     } catch (error: any) {
       Logger.warning(`[RuntimeLearning] wake cycle failed (${this.formatReasons(this.normalizeReasons(reason))}): ${error.message}`);
+      const wakeDurationMs = Math.max(0, this.clock().getTime() - wakeStartMs);
+      this.recordHeartbeat(
+        this.formatReasons(reasons),
+        wake.unitsProcessed,
+        wake.advancedFiles,
+        'failed',
+        orderedReasons,
+        wakeDurationMs,
+        0,
+        1,
+      );
       return wake;
     }
+  }
+
+  public markHeartbeatStatus(
+    status: RuntimeLearningHeartbeatRunStatus,
+    options: {
+      reason?: RuntimeLearningReason | string;
+      pendingWakeReasons?: readonly RuntimeLearningReason[];
+      durationMs?: number;
+      reviewTimeoutCount?: number;
+      reviewFailureCount?: number;
+      unitsProcessed?: number;
+      advancedFiles?: number;
+    } = {},
+  ): void {
+    this.recordHeartbeat(
+      options.reason ?? 'manual',
+      options.unitsProcessed ?? 0,
+      options.advancedFiles ?? 0,
+      status,
+      options.pendingWakeReasons ?? [],
+      options.durationMs ?? 0,
+      options.reviewTimeoutCount ?? 0,
+      options.reviewFailureCount ?? 0,
+      false,
+    );
+  }
+
+  private deriveHeartbeatRunStatus(
+    reviewReport: RuntimeLearningReviewReport,
+    reasons: readonly RuntimeLearningReason[],
+    wasCoalesced: boolean | undefined,
+    hadDurableWork: boolean,
+  ): RuntimeLearningHeartbeatRunStatus {
+    if (reviewReport.status === 'failed') return 'failed';
+    if (reviewReport.reviewTimeoutCount > 0) return 'timed_out';
+    if (wasCoalesced) return 'coalesced';
+    if (
+      reviewReport.reviewFailureCount > 0
+      || reviewReport.operationalRetries > 0
+      || reviewReport.deferredRetries > 0
+      || reviewReport.deferredQueueReviews > 0
+      || reviewReport.operationalQueueReviews > 0
+      && reasons.includes('operational-retry')
+    ) return 'queued_operational_retry';
+    if (!hadDurableWork) return 'quiet';
+    return 'succeeded';
+  }
+
+  private hasDurableWakeWork(wake: RuntimeLearningHeartbeatResult): boolean {
+    return (
+      wake.unitsProcessed > 0
+      || wake.advancedFiles > 0
+      || wake.maturation.maturedEpisodes > 0
+      || wake.review.reviewedEpisodes > 0
+      || wake.review.reviewedQueueEntries > 0
+      || wake.review.operationalRetries > 0
+      || wake.review.deferredRetries > 0
+      || wake.curation.ran
+      || wake.curation.expedited
+      || wake.reassessment.completed > 0
+      || wake.reassessment.deferred > 0
+      || wake.reassessment.failed > 0
+      || wake.reassessment.discovered > 0
+    );
   }
 
   private normalizeReasons(
@@ -640,13 +764,21 @@ export class RuntimeLearning {
       reviewed: number; deferredReviewed: number; operationalReviewed: number;
       operationalRetried: number; deferredRetried: number;
       transitionsByKind: Partial<Record<string, number>>;
-      queueOutcomes?: Record<string, { status: 'succeeded' | 'deferred' | 'operational'; nextRetryAt?: string; reason?: string }>;
+      queueOutcomes?: Record<string, {
+        status: 'succeeded' | 'deferred' | 'operational';
+        nextRetryAt?: string;
+        reason?: string;
+        failureKind?: string;
+      }>;
     };
     let queueResult: QueueResult = {
       reviewed: 0, deferredReviewed: 0, operationalReviewed: 0,
       operationalRetried: 0, deferredRetried: 0, transitionsByKind: {},
+      queueOutcomes: {},
     };
     let queueError: unknown;
+    let reviewTimeoutCount = 0;
+    let reviewFailureCount = 0;
     try {
       queueResult = await this.skillEvolution.reviewDueQueueEntries();
       this.reconcileReassessmentQueueOutcomes(queueResult.queueOutcomes);
@@ -666,6 +798,20 @@ export class RuntimeLearning {
     // cursor semantics are unaffected.
     const hasEpisodeFailure = episodeReviewFailures > 0;
     const hasQueueFailure = !!queueError;
+    if (hasEpisodeFailure) reviewFailureCount += episodeReviewFailures;
+    if (hasQueueFailure) reviewFailureCount += 1;
+
+    if (queueResult.queueOutcomes) {
+      for (const outcome of Object.values(queueResult.queueOutcomes)) {
+        if (outcome.status !== 'operational' || !outcome.failureKind) continue;
+        if (outcome.failureKind === 'branch_timeout') {
+          reviewTimeoutCount += 1;
+        } else {
+          reviewFailureCount += 1;
+        }
+      }
+    }
+
     const status: RuntimeLearningStageStatus = (hasEpisodeFailure || hasQueueFailure || !!settlementError)
       ? 'failed'
       : 'succeeded';
@@ -684,6 +830,8 @@ export class RuntimeLearning {
       operationalQueueReviews: queueResult.operationalReviewed,
       deferredRetries: queueResult.deferredRetried,
       operationalRetries: queueResult.operationalRetried,
+      reviewTimeoutCount,
+      reviewFailureCount,
       transitionsByKind,
     };
   }
@@ -870,6 +1018,12 @@ export class RuntimeLearning {
     reason: string,
     unitsProcessed: number,
     advancedFiles: number,
+    runStatus: RuntimeLearningHeartbeatRunStatus,
+    pendingWakeReasons: readonly RuntimeLearningReason[] = [],
+    runDurationMs = 0,
+    reviewTimeoutCount = 0,
+    reviewFailureCount = 0,
+    incrementRunCount = true,
   ): void {
     const recordPath = this.config.heartbeatRecordPath;
     let record: RuntimeLearningHeartbeatRecord;
@@ -884,10 +1038,17 @@ export class RuntimeLearning {
     }
 
     record.lastRunAt = this.clock().toISOString();
-    record.runCount += 1;
+    if (incrementRunCount) {
+      record.runCount += 1;
+    }
+    record.lastRunStatus = runStatus;
+    record.lastRunDurationMs = runDurationMs;
+    record.lastPendingWakeReasons = Array.from(new Set(pendingWakeReasons)).sort();
     record.lastReason = reason;
     record.lastUnitsProcessed = unitsProcessed;
     record.lastAdvancedFiles = advancedFiles;
+    record.lastReviewTimeoutCount = reviewTimeoutCount;
+    record.lastReviewFailureCount = reviewFailureCount;
 
     try {
       fs.mkdirSync(path.dirname(recordPath), { recursive: true });
@@ -907,11 +1068,51 @@ export class RuntimeLearning {
     const recordPath = this.config.heartbeatRecordPath;
     try {
       if (!fs.existsSync(recordPath)) return emptyHeartbeatRecord();
-      return JSON.parse(fs.readFileSync(recordPath, 'utf-8')) as RuntimeLearningHeartbeatRecord;
+      return normalizeHeartbeatRecord(
+        JSON.parse(fs.readFileSync(recordPath, 'utf-8')) as Record<string, unknown>,
+      );
     } catch {
       return emptyHeartbeatRecord();
     }
   }
+}
+
+function normalizeHeartbeatRecord(
+  record: Record<string, unknown>,
+): RuntimeLearningHeartbeatRecord {
+  const defaults = emptyHeartbeatRecord();
+  const status = normalizeHeartbeatRunStatus(record.lastRunStatus);
+  return {
+    ...defaults,
+    schemaVersion: (record.schemaVersion === 1 ? 1 : defaults.schemaVersion),
+    lastRunAt: typeof record.lastRunAt === 'string' ? record.lastRunAt : defaults.lastRunAt,
+    runCount: Number.isInteger(record.runCount) && typeof record.runCount === 'number' ? record.runCount : defaults.runCount,
+    lastRunStatus: status,
+    lastRunDurationMs: typeof record.lastRunDurationMs === 'number' && Number.isFinite(record.lastRunDurationMs)
+      ? Math.max(0, Math.floor(record.lastRunDurationMs))
+      : defaults.lastRunDurationMs,
+    lastReason: typeof record.lastReason === 'string' ? record.lastReason : defaults.lastReason,
+    lastUnitsProcessed: typeof record.lastUnitsProcessed === 'number' && Number.isFinite(record.lastUnitsProcessed)
+      ? Math.max(0, Math.floor(record.lastUnitsProcessed))
+      : defaults.lastUnitsProcessed,
+    lastAdvancedFiles: typeof record.lastAdvancedFiles === 'number' && Number.isFinite(record.lastAdvancedFiles)
+      ? Math.max(0, Math.floor(record.lastAdvancedFiles))
+      : defaults.lastAdvancedFiles,
+    lastPendingWakeReasons: Array.isArray(record.lastPendingWakeReasons)
+      ? Array.from(new Set(record.lastPendingWakeReasons.filter(value => typeof value === 'string'))) as RuntimeLearningReason[]
+      : defaults.lastPendingWakeReasons,
+    lastReviewTimeoutCount: typeof record.lastReviewTimeoutCount === 'number' && Number.isFinite(record.lastReviewTimeoutCount)
+      ? Math.max(0, Math.floor(record.lastReviewTimeoutCount))
+      : defaults.lastReviewTimeoutCount,
+    lastReviewFailureCount: typeof record.lastReviewFailureCount === 'number' && Number.isFinite(record.lastReviewFailureCount)
+      ? Math.max(0, Math.floor(record.lastReviewFailureCount))
+      : defaults.lastReviewFailureCount,
+  };
+}
+
+function normalizeHeartbeatRunStatus(value: unknown): RuntimeLearningHeartbeatRunStatus {
+  const valid: RuntimeLearningHeartbeatRunStatus[] = ['succeeded', 'failed', 'quiet', 'coalesced', 'timed_out', 'queued_operational_retry', 'drained'];
+  return valid.includes(value as RuntimeLearningHeartbeatRunStatus) ? value as RuntimeLearningHeartbeatRunStatus : 'quiet';
 }
 
 // ---------------------------------------------------------------------------

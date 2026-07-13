@@ -136,7 +136,7 @@ function emptyWakeResult(ran = false): HeartbeatRunResult {
     discovery: { scanned: false, filesScanned: 0, unitsProcessed: 0, advancedFiles: 0 },
     ingestion: { admittedEpisodes: 0, contradictionSignals: 0 },
     maturation: { status: 'skipped', maturedEpisodes: 0, becameEligible: 0, becameContradicted: 0 },
-    review: {
+  review: {
       status: 'skipped',
       reviewedEpisodes: 0,
       reviewedQueueEntries: 0,
@@ -145,6 +145,8 @@ function emptyWakeResult(ran = false): HeartbeatRunResult {
       deferredRetries: 0,
       operationalRetries: 0,
       transitionsByKind: {},
+      reviewTimeoutCount: 0,
+      reviewFailureCount: 0,
     },
     curation: { status: 'skipped', ran: false, expedited: false, transitionsByKind: {} },
     reassessment: { status: 'skipped', discovered: 0, completed: 0, deferred: 0, failed: 0, transitionsByKind: {} },
@@ -187,6 +189,7 @@ export class DistillationHeartbeatScheduler {
   private stopped = false;
   private readonly pendingWakeReasons = new Set<HeartbeatReason>();
   private activeWake: Promise<HeartbeatRunResult> | null = null;
+  private scheduledWake: Promise<void> | null = null;
 
   /**
    * Production constructor: delegates all wake logic to RuntimeLearning.
@@ -305,10 +308,15 @@ export class DistillationHeartbeatScheduler {
     this.stopped = false;
     Logger.info('[DistillationHeartbeat] scheduler started');
 
-    void (async () => {
+    this.scheduledWake = (async () => {
       await this.runHeartbeat('startup');
-      this.scheduleNextRun();
+      if (!this.stopped) {
+        this.scheduleNextRun();
+      }
     })();
+
+    // For legacy scheduling, track the startup wake explicitly since the legacy
+    // path does not assign into activeWake.
   }
 
   async stop(): Promise<void> {
@@ -321,13 +329,63 @@ export class DistillationHeartbeatScheduler {
 
     if (this.activeWake) {
       const sharedReviewDeadlineMs = this.getSharedReviewDeadlineMs();
+      const stopStartedAtMs = Date.now();
+      let cleanShutdown = false;
+      const awaitableWake = this.activeWake;
+      let activeWakeTimer: NodeJS.Timeout | null = null;
       await Promise.race([
-        this.activeWake,
+        awaitableWake
+          .then(() => {
+            cleanShutdown = true;
+          })
+          .finally(() => {
+            if (activeWakeTimer) {
+              clearTimeout(activeWakeTimer);
+              activeWakeTimer = null;
+            }
+          }),
         new Promise<void>(resolve => {
-          setTimeout(resolve, sharedReviewDeadlineMs);
+          activeWakeTimer = setTimeout(() => {
+            activeWakeTimer = null;
+            resolve();
+          }, sharedReviewDeadlineMs);
         }),
       ]);
+      if (cleanShutdown) {
+        const drainedReason = Array.from(this.pendingWakeReasons).sort();
+        this.pendingWakeReasons.clear();
+        const markHeartbeatStatus = this.runtimeLearning?.markHeartbeatStatus;
+        if (typeof markHeartbeatStatus === 'function') {
+          markHeartbeatStatus('drained', {
+            reason: 'manual',
+            durationMs: Math.max(0, Date.now() - stopStartedAtMs),
+            pendingWakeReasons: drainedReason,
+            reviewTimeoutCount: 0,
+            reviewFailureCount: 0,
+          });
+        }
+      }
       this.activeWake = null;
+    }
+
+    if (this.scheduledWake) {
+      const sharedReviewDeadlineMs = this.getSharedReviewDeadlineMs();
+      let scheduledWakeTimer: NodeJS.Timeout | null = null;
+      await Promise.race([
+        this.scheduledWake.finally(() => {
+          if (scheduledWakeTimer) {
+            clearTimeout(scheduledWakeTimer);
+            scheduledWakeTimer = null;
+          }
+        }),
+        new Promise<void>(resolve => {
+          scheduledWakeTimer = setTimeout(() => {
+            scheduledWakeTimer = null;
+            resolve();
+          }, sharedReviewDeadlineMs);
+        }),
+      ]);
+      this.scheduledWake = null;
     }
 
     Logger.info('[DistillationHeartbeat] scheduler stopped');
@@ -364,11 +422,13 @@ export class DistillationHeartbeatScheduler {
         this.running = true;
         try {
           let lastResult = emptyWakeResult(true);
+          let isCoalescedWake = false;
           while (!this.stopped && this.pendingWakeReasons.size > 0) {
             const nextReasons = [...this.pendingWakeReasons];
             this.pendingWakeReasons.clear();
             try {
-              lastResult = await runtimeLearning.wake(nextReasons);
+              lastResult = await runtimeLearning.wake(nextReasons, { coalesced: isCoalescedWake });
+              isCoalescedWake = true;
             } catch (error: any) {
               Logger.warning(`[DistillationHeartbeat] runtime wake failed: ${error.message}`);
               return emptyWakeResult(false);
@@ -560,9 +620,19 @@ export class DistillationHeartbeatScheduler {
       wakeReason = 'scheduled';
     }
 
-    this.timer = setTimeout(async () => {
-      await this.runHeartbeat(wakeReason);
-      this.scheduleNextRun();
+    this.timer = setTimeout(() => {
+      const scheduledTask = (async () => {
+        await this.runHeartbeat(wakeReason);
+        if (!this.stopped) {
+          this.scheduleNextRun();
+        }
+      })();
+
+      this.scheduledWake = scheduledTask.finally(() => {
+        if (this.scheduledWake === scheduledTask) {
+          this.scheduledWake = null;
+        }
+      });
     }, nextDelay);
   }
 

@@ -443,6 +443,7 @@ export interface SkillEvolutionQueueReviewResult {
     status: 'succeeded' | 'deferred' | 'operational';
     nextRetryAt?: string;
     reason?: string;
+    failureKind?: OperationalReviewFailureKind;
   }>;
 }
 
@@ -968,6 +969,7 @@ export class SkillEvolutionRuntime {
         status: 'operational',
         nextRetryAt: queued?.nextRetryAt,
         reason: queued?.failureMessage ?? operationalError.message,
+        failureKind: operationalError.kind,
       };
       result.reviewed++;
       result.deferredReviewed++;
@@ -996,13 +998,14 @@ export class SkillEvolutionRuntime {
           config.operationalRetryMaxMs,
           new Date(),
         );
-        result.operationalRetried++;
-        const queued = findOperationalByBundleId(queue, entry.bundle.bundleId);
-        result.queueOutcomes![entry.bundle.bundleId] = {
-          status: 'operational',
-          nextRetryAt: queued?.nextRetryAt,
-          reason: queued?.failureMessage,
-        };
+      result.operationalRetried++;
+      const queued = findOperationalByBundleId(queue, entry.bundle.bundleId);
+      result.queueOutcomes![entry.bundle.bundleId] = {
+        status: 'operational',
+        nextRetryAt: queued?.nextRetryAt,
+        reason: queued?.failureMessage,
+        failureKind: 'branch_failure',
+      };
       } else if (reviewed.transition === 'defer' || reviewed.queued === 'deferred') {
         const relevantReadSet = reviewed.verifier
           ? declaredRegistryReadSet(reviewed.verifier, reviewedBundle, reviewed.draft!)
@@ -1044,6 +1047,7 @@ export class SkillEvolutionRuntime {
         status: 'operational',
         nextRetryAt: queued?.nextRetryAt,
         reason: queued?.failureMessage ?? operationalError.message,
+        failureKind: operationalError.kind,
       };
       result.reviewed++;
       result.operationalReviewed++;
