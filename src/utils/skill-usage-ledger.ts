@@ -22,6 +22,8 @@ export interface GeneratedSkillLoadFact {
   recordedAt: string;
   runtimeSessionId: string;
   episodeId: string;
+  /** The route the caller requested; retained only as resolution context. */
+  requestedRoutingName?: string;
   skill: GeneratedCurrentSkillIdentity;
 }
 
@@ -42,6 +44,7 @@ export interface RecordGeneratedSkillLoadInput {
   runtimeSessionId: string;
   episodeId: string;
   skill: GeneratedCurrentSkillIdentity;
+  requestedRoutingName?: string;
   recordedAt?: Date;
 }
 
@@ -71,6 +74,7 @@ export class SkillUsageLedger {
       recordedAt: (input.recordedAt ?? new Date()).toISOString(),
       runtimeSessionId: input.runtimeSessionId,
       episodeId: input.episodeId,
+      ...(input.requestedRoutingName?.trim() && { requestedRoutingName: input.requestedRoutingName.trim() }),
       skill: { ...input.skill },
     };
     this.append(fact);
@@ -183,6 +187,7 @@ function isLedgerFact(value: unknown): value is SkillUsageLedgerFact {
   if (fact.kind === 'generated-skill-load') {
     return typeof fact.episodeId === 'string'
       && typeof fact.runtimeSessionId === 'string'
+      && (fact.requestedRoutingName === undefined || typeof fact.requestedRoutingName === 'string')
       && !!fact.skill
       && typeof fact.skill.capabilityHandle === 'string'
       && typeof fact.skill.skillFilePath === 'string';

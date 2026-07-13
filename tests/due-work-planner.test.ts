@@ -586,6 +586,69 @@ describe('DueWorkPlanner — durable source reading', () => {
     // Missing schemaVersion is tolerated (backward compat).
     assert.equal(plan.due.settlementDue, true);
   });
+
+  test('pending semantic reassessment schedules a targeted wake', () => {
+    const manifestPath = path.join(env.root, 'reassessment-manifest.json');
+    writeState(manifestPath, {
+      schemaVersion: 1,
+      entries: {
+        task: {
+          taskId: 'task',
+          capabilityHandle: 'cap-1',
+          routingName: 'settled-artifact-delivery',
+          guidanceHash: 'guidance',
+          semanticObservationHash: 'observations',
+          status: 'pending',
+          attemptCount: 0,
+          createdAt: '2026-07-01T00:00:00.000Z',
+          updatedAt: '2026-07-01T00:00:00.000Z',
+        },
+      },
+    });
+    const planner = new DueWorkPlanner({
+      learningEpisodeStorePath: env.episodeStorePath,
+      reviewQueuePath: env.reviewQueuePath,
+      curatorStatePath: env.curatorStatePath,
+      curatorIntervalMs: 24 * 60 * 60 * 1000,
+      semanticReassessmentManifestPath: manifestPath,
+    });
+    const plan = planner.plan(new Date('2026-07-01T12:00:00Z'));
+    assert.equal(plan.due.semanticReassessmentDue, true);
+    assert.equal(plan.nextWakeTime, plan.now.getTime());
+    assert.equal(plan.nextWakeReason, 'semantic-reassessment');
+  });
+
+  test('deferred semantic reassessment without retry deadline does not busy-loop', () => {
+    const manifestPath = path.join(env.root, 'reassessment-manifest.json');
+    writeState(manifestPath, {
+      schemaVersion: 1,
+      entries: {
+        task: {
+          taskId: 'task',
+          capabilityHandle: 'cap-1',
+          routingName: 'settled-artifact-delivery',
+          guidanceHash: 'guidance',
+          semanticObservationHash: 'observations',
+          status: 'deferred',
+          attemptCount: 0,
+          lastError: 'No persisted semantic observations are available for bounded reassessment.',
+          createdAt: '2026-07-01T00:00:00.000Z',
+          updatedAt: '2026-07-01T00:00:00.000Z',
+        },
+      },
+    });
+    const planner = new DueWorkPlanner({
+      learningEpisodeStorePath: env.episodeStorePath,
+      reviewQueuePath: env.reviewQueuePath,
+      curatorStatePath: env.curatorStatePath,
+      curatorIntervalMs: 24 * 60 * 60 * 1000,
+      semanticReassessmentManifestPath: manifestPath,
+    });
+    const plan = planner.plan(new Date('2026-07-01T12:00:00Z'));
+    assert.equal(plan.due.semanticReassessmentDue, false);
+    assert.equal(plan.nextWakeTime, null);
+    assert.equal(plan.nextWakeReason, '');
+  });
 });
 
 // ---------------------------------------------------------------------------

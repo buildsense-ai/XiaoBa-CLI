@@ -147,6 +147,7 @@ function emptyWakeResult(): HeartbeatRunResult {
       transitionsByKind: {},
     },
     curation: { status: 'skipped', ran: false, expedited: false, transitionsByKind: {} },
+    reassessment: { status: 'skipped', discovered: 0, completed: 0, deferred: 0, failed: 0, transitionsByKind: {} },
   };
 }
 
@@ -369,7 +370,7 @@ export class DistillationHeartbeatScheduler {
       const config = getDistillationHeartbeatConfig(this.workingDirectory);
       const sessionLogsRoot = resolveSessionLogsRoot(config.logsRoot);
 
-      const isTargetedWake = reason === 'settlement-deadline' || reason === 'operational-retry' || reason === 'curator';
+      const isTargetedWake = reason === 'settlement-deadline' || reason === 'operational-retry' || reason === 'curator' || reason === 'semantic-reassessment';
       const shouldScan = !isTargetedWake;
 
       if (shouldScan && fs.existsSync(sessionLogsRoot) && fs.statSync(sessionLogsRoot).isDirectory()) {
@@ -535,6 +536,7 @@ export class DistillationHeartbeatScheduler {
       reviewQueuePath: config.skillEvolutionReviewQueuePath,
       curatorStatePath: config.skillEvolutionCuratorStatePath,
       curatorIntervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
+      semanticReassessmentManifestPath: config.skillEvolutionReassessmentManifestPath,
     });
   }
 

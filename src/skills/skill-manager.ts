@@ -1,7 +1,25 @@
 import { Skill } from '../types/skill';
+import * as path from 'node:path';
 import { PathResolver } from '../utils/path-resolver';
 import { SkillParser } from './skill-parser';
 import { Logger } from '../utils/logger';
+import { loadCurrentSkillRegistry, CurrentSkillRegistryState } from '../utils/skill-evolution';
+
+export interface SkillResolution {
+  skill: Skill;
+  requestedName: string;
+  resolvedName: string;
+  redirected: boolean;
+}
+
+export class StaleSkillRedirectError extends Error {
+  readonly code = 'STALE_SKILL_REDIRECT';
+
+  constructor(public readonly requestedName: string, public readonly capabilityHandle: string) {
+    super(`Skill route "${requestedName}" points to stale Capability Handle "${capabilityHandle}".`);
+    this.name = 'StaleSkillRedirectError';
+  }
+}
 
 /**
  * Skills 管理器
@@ -9,6 +27,8 @@ import { Logger } from '../utils/logger';
 export class SkillManager {
   private skills: Map<string, Skill>;
   private skillsPath: string;
+  private catalogRevision = -1;
+  private registry?: CurrentSkillRegistryState;
 
   constructor() {
     this.skills = new Map();
@@ -22,7 +42,10 @@ export class SkillManager {
     this.skills.clear();
 
     const skillsPath = PathResolver.getSkillsPath();
-    
+    // Load the Registry before walking generated output so discovery can
+    // treat it as the source of truth for active generated capabilities.
+    this.refreshRegistrySnapshot();
+
     // 从统一的 skills 目录加载
     await this.loadSkillsFromPath(skillsPath);
   }
@@ -37,6 +60,7 @@ export class SkillManager {
       for (const filePath of skillFiles) {
         try {
           const skill = SkillParser.parse(filePath);
+          if (!this.shouldDiscoverSkill(filePath)) continue;
           this.skills.set(skill.metadata.name, skill);
         } catch (error: any) {
           Logger.warning(`Failed to load skill from ${filePath}: ${error.message}`);
@@ -52,6 +76,33 @@ export class SkillManager {
    */
   getSkill(name: string): Skill | undefined {
     return this.skills.get(name);
+  }
+
+  /** Resolve an active route, following one durable generated-skill redirect when needed. */
+  async resolveSkill(name: string): Promise<SkillResolution | undefined> {
+    const requestedName = name.trim();
+    await this.refreshCatalogIfChanged();
+    const exact = this.skills.get(requestedName);
+    if (exact) return { skill: exact, requestedName, resolvedName: exact.metadata.name, redirected: false };
+
+    const registry = this.registry;
+    const handle = registry?.routeRedirects[requestedName];
+    if (!handle) return undefined;
+    const record = registry.capabilities[handle];
+    if (!record) throw new StaleSkillRedirectError(requestedName, handle);
+
+    const resolved = this.skills.get(record.routingName);
+    if (!resolved) {
+      try {
+        const loaded = SkillParser.parse(record.skillFilePath);
+        this.skills.set(loaded.metadata.name, loaded);
+      } catch {
+        throw new StaleSkillRedirectError(requestedName, handle);
+      }
+    }
+    const skill = this.skills.get(record.routingName);
+    if (!skill) throw new StaleSkillRedirectError(requestedName, handle);
+    return { skill, requestedName, resolvedName: skill.metadata.name, redirected: true };
   }
 
   /**
@@ -75,4 +126,50 @@ export class SkillManager {
     await this.loadSkills();
   }
 
+  private refreshRegistrySnapshot(): void {
+    try {
+      this.registry = loadCurrentSkillRegistry(PathResolver.getSkillEvolutionRegistryPath());
+      this.catalogRevision = this.registry.catalogRevision;
+    } catch (error: any) {
+      this.registry = undefined;
+      Logger.warning(`Failed to load generated skill Registry: ${error.message}`);
+    }
+  }
+
+  private async refreshCatalogIfChanged(): Promise<void> {
+    let latest: CurrentSkillRegistryState;
+    try {
+      latest = loadCurrentSkillRegistry(PathResolver.getSkillEvolutionRegistryPath());
+    } catch (error: any) {
+      Logger.warning(`Failed to refresh generated skill Registry: ${error.message}`);
+      return;
+    }
+    if (latest.catalogRevision === this.catalogRevision) {
+      this.registry = latest;
+      return;
+    }
+    this.skills.clear();
+    this.registry = latest;
+    this.catalogRevision = latest.catalogRevision;
+    await this.loadSkillsFromPath(this.skillsPath);
+  }
+
+  /**
+   * Generated output is registry-owned. Once a non-empty Registry exists,
+   * only the active file referenced by a capability is discoverable; stale
+   * retired/orphaned files must not become a second public Skill route.
+   * Manual skills remain filesystem-discovered and are never filtered here.
+   */
+  private shouldDiscoverSkill(filePath: string): boolean {
+    if (!isGeneratedSkillPath(filePath)) return true;
+    const records = Object.values(this.registry?.capabilities ?? {});
+    if (records.length === 0) return true;
+    const resolvedPath = path.resolve(filePath);
+    return records.some(record => path.resolve(record.skillFilePath) === resolvedPath);
+  }
+
+}
+
+function isGeneratedSkillPath(filePath: string): boolean {
+  return filePath.split(/[\\/]+/).includes('generated-distilled');
 }

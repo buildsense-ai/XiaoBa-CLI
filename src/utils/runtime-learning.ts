@@ -38,6 +38,7 @@ import { LearningEpisodeStore, LearningEpisode, buildLearningEpisodeCandidate } 
 import { SkillEvolutionRuntime, CapabilityTransitionKind } from './skill-evolution';
 import { SkillUsageCurator, CuratorRunResult } from './skill-usage-curator';
 import { Logger } from './logger';
+import { bootstrapSemanticReassessmentOnce } from './distilled-skill-bootstrap';
 
 // ---------------------------------------------------------------------------
 // Public API: wake context / reports (shared with the heartbeat scheduler)
@@ -49,6 +50,7 @@ export type RuntimeLearningReason =
   | 'settlement-deadline'
   | 'operational-retry'
   | 'curator'
+  | 'semantic-reassessment'
   | 'manual';
 
 export type RuntimeLearningStageStatus = 'succeeded' | 'failed' | 'skipped';
@@ -93,6 +95,16 @@ export interface RuntimeLearningCurationReport {
   transitionsByKind: Partial<Record<CapabilityTransitionKind, number>>;
 }
 
+export interface RuntimeLearningReassessmentReport {
+  status: RuntimeLearningStageStatus;
+  errorMessage?: string;
+  discovered: number;
+  completed: number;
+  deferred: number;
+  failed: number;
+  transitionsByKind: Partial<Record<CapabilityTransitionKind, number>>;
+}
+
 export interface RuntimeLearningWakeReport {
   maturation: RuntimeLearningMaturationReport;
   review: RuntimeLearningReviewReport;
@@ -116,6 +128,7 @@ export interface RuntimeLearningHeartbeatResult {
   review: RuntimeLearningReviewReport;
   /** Current-skill curation outcome for this wake. */
   curation: RuntimeLearningCurationReport;
+  reassessment: RuntimeLearningReassessmentReport;
 }
 
 export interface RuntimeLearningHeartbeatRecord {
@@ -194,6 +207,10 @@ function skippedCurationReport(): RuntimeLearningCurationReport {
   };
 }
 
+function skippedReassessmentReport(): RuntimeLearningReassessmentReport {
+  return { status: 'skipped', discovered: 0, completed: 0, deferred: 0, failed: 0, transitionsByKind: {} };
+}
+
 function emptyHeartbeatResult(ran: boolean): RuntimeLearningHeartbeatResult {
   return {
     unitsProcessed: 0,
@@ -204,6 +221,7 @@ function emptyHeartbeatResult(ran: boolean): RuntimeLearningHeartbeatResult {
     maturation: skippedMaturationReport(),
     review: skippedReviewReport(),
     curation: skippedCurationReport(),
+    reassessment: skippedReassessmentReport(),
   };
 }
 
@@ -308,7 +326,7 @@ export class RuntimeLearning {
 
     try {
       // ---- 1. Discovery + Ingestion ----
-      const isTargetedWake = reason === 'settlement-deadline' || reason === 'operational-retry' || reason === 'curator';
+      const isTargetedWake = reason === 'settlement-deadline' || reason === 'operational-retry' || reason === 'curator' || reason === 'semantic-reassessment';
       const shouldScan = !isTargetedWake;
 
       if (shouldScan) {
@@ -348,7 +366,15 @@ export class RuntimeLearning {
       // work are reconciled even when the planner reports nothing due.
       // Targeted deadline reasons use the planner's actual due flags.
       const dueWork = isTargetedWake
-        ? plan.due
+        ? reason === 'semantic-reassessment'
+          ? {
+            settlementDue: false,
+            operationalRetryDue: false,
+            routineCuratorDue: false,
+            expeditedCuratorDue: false,
+            semanticReassessmentDue: true,
+          }
+          : plan.due
         : {
           settlementDue: true,
           operationalRetryDue: true,
@@ -371,6 +397,10 @@ export class RuntimeLearning {
       const curation = await this.runCuration(dueWork);
       wake.curation = curation;
 
+      if (reason === 'startup' || reason === 'semantic-reassessment' || plan.due.semanticReassessmentDue) {
+        wake.reassessment = await this.runSemanticReassessment();
+      }
+
       // ---- 6. Record heartbeat ----
       this.recordHeartbeat(reason, wake.unitsProcessed, wake.advancedFiles);
 
@@ -378,6 +408,44 @@ export class RuntimeLearning {
     } catch (error: any) {
       Logger.warning(`[RuntimeLearning] wake cycle failed (${reason}): ${error.message}`);
       return wake;
+    }
+  }
+
+  private async runSemanticReassessment(): Promise<RuntimeLearningReassessmentReport> {
+    try {
+      const results = await bootstrapSemanticReassessmentOnce({
+        skillEvolution: this.skillEvolution,
+        manifestPath: this.config.skillEvolutionReassessmentManifestPath,
+        learningEpisodeStore: this.episodeStore,
+      });
+      const transitionsByKind: Partial<Record<CapabilityTransitionKind, number>> = {};
+      let completed = 0;
+      let deferred = 0;
+      let failed = 0;
+      for (const result of results) {
+        if (result.status === 'succeeded') completed++;
+        if (result.status === 'deferred') deferred++;
+        if (result.status === 'failed') failed++;
+        if (result.transition) incrementTransition(transitionsByKind, result.transition);
+      }
+      return {
+        status: failed > 0 ? 'failed' : 'succeeded',
+        discovered: results.length,
+        completed,
+        deferred,
+        failed,
+        transitionsByKind,
+      };
+    } catch (error) {
+      return {
+        status: 'failed',
+        errorMessage: toErrorMessage(error),
+        discovered: 0,
+        completed: 0,
+        deferred: 0,
+        failed: 1,
+        transitionsByKind: {},
+      } as RuntimeLearningReassessmentReport & { errorMessage: string };
     }
   }
 
@@ -806,6 +874,7 @@ function buildEpisodeEvidenceBundle(
     completionEvidence,
     settlementEvidence,
     boundedContinuity: [],
+    semanticObservations: episode.semanticObservations,
     referencedSkills: skillEvolution.getReferencedSkillSnapshots(),
     relatedCurrentSkills,
   };

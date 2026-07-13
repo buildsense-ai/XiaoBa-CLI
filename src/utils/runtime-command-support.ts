@@ -10,7 +10,7 @@
 import { CatscoLogUploadScheduler } from './catsco-log-upload-scheduler';
 import { DistillationHeartbeatScheduler } from './distillation-heartbeat-scheduler';
 import { DistillationPipeline, defaultDistilledOutputDir } from './distillation-pipeline';
-import { bootstrapLegacyDistilledSkillsOnce } from './distilled-skill-bootstrap';
+import { bootstrapLegacyDistilledSkillsOnce, bootstrapSemanticReassessmentOnce } from './distilled-skill-bootstrap';
 import { getDistillationHeartbeatConfig } from './distillation-heartbeat-config';
 import { LearningEpisodeStore } from './learning-episode';
 import { EvidenceIngestor } from './evidence-ingestor';
@@ -120,6 +120,17 @@ export async function startRuntimeCommandSupport(
         // Durable Learning Episode store
         learningEpisodeStore = new LearningEpisodeStore(config.learningEpisodeStorePath);
 
+        try {
+          await bootstrapSemanticReassessmentOnce({
+            skillEvolution,
+            manifestPath: config.skillEvolutionReassessmentManifestPath,
+            learningEpisodeStore,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          Logger.warning(`Semantic skill reassessment bootstrap failed: ${message}`);
+        }
+
         // Evidence Ingestor (source admission only, no review)
         evidenceIngestor = new EvidenceIngestor({
           episodeStore: learningEpisodeStore,
@@ -141,6 +152,7 @@ export async function startRuntimeCommandSupport(
           reviewQueuePath: config.skillEvolutionReviewQueuePath,
           curatorStatePath: config.skillEvolutionCuratorStatePath,
           curatorIntervalMs: config.skillEvolutionCuratorIntervalHours * 60 * 60 * 1000,
+          semanticReassessmentManifestPath: config.skillEvolutionReassessmentManifestPath,
         });
 
         // Construct the single RuntimeLearning module.

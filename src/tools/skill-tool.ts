@@ -63,7 +63,8 @@ export class SkillTool implements Tool {
       await this.skillManager.loadSkills();
 
       // 获取指定的 skill
-      const skill = this.skillManager.getSkill(skillName);
+      const resolution = await this.skillManager.resolveSkill(skillName);
+      const skill = resolution?.skill;
 
       if (!skill) {
         const availableSkills = this.skillManager.getAllSkills()
@@ -75,6 +76,10 @@ export class SkillTool implements Tool {
           errorCode: 'TOOL_NOT_FOUND',
         });
         return { ok: false, errorCode: 'TOOL_NOT_FOUND', message: `错误：未找到 skill "${skillName}"。\n\n可用的 skills: ${availableSkills}` };
+      }
+
+      if (resolution?.redirected) {
+        Logger.info(`Skill route 已迁移: ${resolution.requestedName} → ${resolution.resolvedName}`);
       }
 
       // 检查 skill 是否可被用户调用
@@ -108,11 +113,19 @@ export class SkillTool implements Tool {
       // 直接返回渲染后的 SKILL.md 内容，由 tool_result 并入上下文
       const result = SkillExecutor.execute(skill, invocationContext);
 
-      this.recordGeneratedSkillLoad(skill, context);
+      this.recordGeneratedSkillLoad(skill, context, resolution?.requestedName);
 
       this.recordPetEvent('skill_succeeded', skillName, context);
       return { ok: true, content: result };
     } catch (error: any) {
+      if (error?.code === 'STALE_SKILL_REDIRECT') {
+        this.recordPetEvent('skill_failed', skillName, context, {
+          status: 'failed',
+          message: `「${skillName}」skill 路由已失效，点我查看`,
+          errorCode: 'STALE_SKILL_REDIRECT',
+        });
+        return { ok: false, errorCode: 'STALE_SKILL_REDIRECT', message: error.message };
+      }
       this.recordPetEvent('skill_failed', skillName, context, {
         status: 'failed',
         message: `「${skillName}」skill 出错了，点我查看`,
@@ -123,11 +136,12 @@ export class SkillTool implements Tool {
     }
   }
 
-  private recordGeneratedSkillLoad(skill: Skill, context: ToolExecutionContext): void {
+  private recordGeneratedSkillLoad(skill: Skill, context: ToolExecutionContext, requestedRoutingName?: string): void {
     if (!isGeneratedDistilledSkill(skill) || !context.sessionId || !context.episodeId) return;
     this.usageLedger.recordGeneratedSkillLoad({
       runtimeSessionId: context.sessionId,
       episodeId: context.episodeId,
+      requestedRoutingName,
       skill: generatedSkillIdentity(skill),
     });
   }

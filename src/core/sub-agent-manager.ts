@@ -139,7 +139,7 @@ export class SubAgentManager {
     const userMessage = request.userMessage.trim();
 
     // 检查 skill 是否存在
-    const skill = skillName ? skillManager.getSkill(skillName) : null;
+    const skill = skillName ? (await skillManager.resolveSkill(skillName))?.skill : null;
     if (skillName && !skill) {
       return { error: `Skill "${skillName}" 不存在` };
     }

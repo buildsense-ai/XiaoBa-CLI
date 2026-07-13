@@ -19,6 +19,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { LEARNING_EPISODE_SCHEMA_VERSION } from './learning-episode';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -36,6 +37,8 @@ export interface DueWork {
   routineCuratorDue: boolean;
   /** An expedited curator wake has been requested. */
   expeditedCuratorDue: boolean;
+  /** A semantic reassessment task is pending or its retry is due. */
+  semanticReassessmentDue?: boolean;
 }
 
 /**
@@ -71,6 +74,8 @@ export interface PlannerSources {
   curatorStatePath: string | null;
   /** Curator routine interval in milliseconds (e.g. 24h). */
   curatorIntervalMs: number;
+  /** Optional semantic reassessment manifest. */
+  semanticReassessmentManifestPath?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +110,7 @@ export class DueWorkPlanner {
     const operationalRetryDeadlineMs = this.readEarliestOperationalRetryDeadline();
     const routineCuratorDeadlineMs = this.readNextRoutineCuratorDeadline();
     const expeditedCount = this.readExpeditedCuratorCount();
+    const semanticReassessmentDeadlineMs = this.readSemanticReassessmentDeadline();
 
     // Due flags: deadline is in the past (or expedited wakes exist).
     const due: DueWork = {
@@ -112,6 +118,7 @@ export class DueWorkPlanner {
       operationalRetryDue: operationalRetryDeadlineMs !== null && operationalRetryDeadlineMs <= nowMs,
       routineCuratorDue: routineCuratorDeadlineMs !== null && routineCuratorDeadlineMs <= nowMs,
       expeditedCuratorDue: expeditedCount > 0,
+      semanticReassessmentDue: semanticReassessmentDeadlineMs !== null && semanticReassessmentDeadlineMs <= nowMs,
     };
 
     // Collect future deadlines (strictly > now) for the next wake.
@@ -125,6 +132,9 @@ export class DueWorkPlanner {
     }
     if (routineCuratorDeadlineMs !== null && routineCuratorDeadlineMs > nowMs) {
       candidates.push({ time: routineCuratorDeadlineMs, reason: 'curator' });
+    }
+    if (semanticReassessmentDeadlineMs !== null && semanticReassessmentDeadlineMs > nowMs) {
+      candidates.push({ time: semanticReassessmentDeadlineMs, reason: 'semantic-reassessment' });
     }
 
     // For work that is past its deadline and has no future deadline entry,
@@ -142,6 +152,9 @@ export class DueWorkPlanner {
     }
     if (due.expeditedCuratorDue && !candidates.some(c => c.reason === 'curator' && c.time <= nowMs)) {
       candidates.push({ time: nowMs, reason: 'curator' });
+    }
+    if (due.semanticReassessmentDue && !candidates.some(c => c.reason === 'semantic-reassessment')) {
+      candidates.push({ time: nowMs, reason: 'semantic-reassessment' });
     }
 
     let nextWakeTime: number | null = null;
@@ -177,7 +190,9 @@ export class DueWorkPlanner {
         episodes?: Record<string, { status?: string; settlementDeadline?: string }>;
       };
       const settlementSchemaVersion = (parsed as { schemaVersion?: unknown }).schemaVersion;
-      if (settlementSchemaVersion !== undefined && settlementSchemaVersion !== 2) return null;
+      if (settlementSchemaVersion !== undefined
+        && settlementSchemaVersion !== 2
+        && settlementSchemaVersion !== LEARNING_EPISODE_SCHEMA_VERSION) return null;
       if (!parsed.episodes || typeof parsed.episodes !== 'object') return null;
 
       let earliest: number | null = null;
@@ -268,6 +283,38 @@ export class DueWorkPlanner {
       return Object.keys(parsed.expedited).length;
     } catch {
       return 0;
+    }
+  }
+
+  private readSemanticReassessmentDeadline(): number | null {
+    const filePath = this.sources.semanticReassessmentManifestPath;
+    if (!filePath) return null;
+    try {
+      if (!fs.existsSync(filePath)) return null;
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as {
+        schemaVersion?: unknown;
+        entries?: Record<string, { status?: string; nextRetryAt?: string }>;
+      };
+      if (parsed.schemaVersion !== undefined && parsed.schemaVersion !== 1) return null;
+      if (!parsed.entries || typeof parsed.entries !== 'object') return null;
+      let earliest: number | null = null;
+      for (const entry of Object.values(parsed.entries)) {
+        if (entry.status !== 'pending' && entry.status !== 'failed' && entry.status !== 'deferred') continue;
+        // A pending task without a retry deadline is new work and should be
+        // picked up immediately. A deferred task without a retry deadline is
+        // intentionally waiting for new evidence (for example, semantic
+        // observations that were not persisted); treating it as epoch zero
+        // makes the heartbeat schedule an immediate wake forever. Failed
+        // tasks likewise need an explicit retry deadline before they become
+        // due again.
+        if (!entry.nextRetryAt && entry.status !== 'pending') continue;
+        const ms = entry.nextRetryAt ? Date.parse(entry.nextRetryAt) : 0;
+        if (!Number.isFinite(ms)) continue;
+        if (earliest === null || ms < earliest) earliest = ms;
+      }
+      return earliest;
+    } catch {
+      return null;
     }
   }
 }

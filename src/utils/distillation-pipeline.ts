@@ -352,7 +352,7 @@ export class DistillationPipeline {
    * durable episode store is configured (legacy/non-episode callers).
    */
   admitEvidence(unit: DistillationUnit): EvidenceIngestionResult {
-    if (!this.evidenceIngestor) return { admittedEpisodeIds: [], contradictionSignalIds: [], state: { schemaVersion: 2, episodes: {} } };
+    if (!this.evidenceIngestor) return { admittedEpisodeIds: [], contradictionSignalIds: [], state: { schemaVersion: 3, episodes: {} } };
     const result = this.evidenceIngestor.ingest(unit);
     this.queueCuratorObservations(result.admittedEpisodeIds);
     return result;
@@ -1101,6 +1101,7 @@ export function buildLearningEpisodeEvidenceBundle(
     completionEvidence,
     settlementEvidence,
     boundedContinuity: [],
+    semanticObservations: episode.semanticObservations,
     referencedSkills: skillEvolution.getReferencedSkillSnapshots(),
     relatedCurrentSkills: Object.values(skillEvolution.getRegistry().capabilities).map(record => ({
       handle: record.handle,

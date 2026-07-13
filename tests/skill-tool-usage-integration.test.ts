@@ -3,11 +3,13 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as crypto from 'node:crypto';
 import { ToolManager } from '../src/tools/tool-manager';
 import { LearningEpisodeStore, extractLearningEpisodes } from '../src/utils/learning-episode';
 import { SkillUsageCurator } from '../src/utils/skill-usage-curator';
 import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
 import { DistillationUnit } from '../src/utils/distillation-unit';
+import { emptyCurrentSkillRegistryState, saveCurrentSkillRegistry } from '../src/utils/skill-evolution';
 
 describe('SkillTool usage wiring', () => {
   let testRoot: string;
@@ -111,6 +113,37 @@ describe('SkillTool usage wiring', () => {
     assert.equal(outcome?.outcome, 'contradicted');
     assert.equal(curator.pendingExpeditedWakes().length, 1);
     assert.equal(fs.readFileSync(generatedPath, 'utf8'), generatedContentBefore);
+  });
+
+  test('records the requested retired route without duplicating outcome attribution', async () => {
+    const generatedPath = path.join(testRoot, 'skills', 'generated-distilled', 'cap-generated', 'SKILL.md');
+    const registry = emptyCurrentSkillRegistryState();
+    registry.catalogRevision = 1;
+    registry.routeRedirects = { 'settled-artifact-delivery': 'cap-generated' };
+    registry.capabilities['cap-generated'] = {
+      handle: 'cap-generated',
+      revision: 1,
+      routingName: 'generated-demo',
+      description: 'Generated demo description',
+      skillFilePath: generatedPath,
+      guidanceHash: crypto.createHash('sha256').update(fs.readFileSync(generatedPath)).digest('hex'),
+      evidenceRefs: [],
+      referencedSkills: [],
+      semanticObservations: [],
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    };
+    saveCurrentSkillRegistry(path.join(testRoot, 'data', 'current-skill-registry.json'), registry);
+    const manager = new ToolManager(testRoot, {}, { enabledToolNames: ['skill'] });
+    const result = await manager.executeTool(skillCall('settled-artifact-delivery'), [], {
+      sessionId: 'runtime-session-redirect',
+      episodeId: 'episode:redirect',
+    });
+    assert.equal(result.ok, true);
+    const ledger = new SkillUsageLedger(path.join(testRoot, 'data', 'skill-usage-ledger.jsonl'));
+    const load = ledger.listFacts().find(fact => fact.kind === 'generated-skill-load');
+    assert.equal(load?.requestedRoutingName, 'settled-artifact-delivery');
+    assert.equal(load?.skill.routingName, 'generated-demo');
   });
 
   test('keeps the runtime episode identity when Learning Episode extraction settles later', () => {

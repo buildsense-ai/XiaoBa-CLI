@@ -22,15 +22,17 @@ import * as path from 'node:path';
 
 import { RuntimeLearning } from '../src/utils/runtime-learning';
 import { EvidenceIngestor } from '../src/utils/evidence-ingestor';
-import { LearningEpisodeStore } from '../src/utils/learning-episode';
+import { LearningEpisode, LearningEpisodeStore } from '../src/utils/learning-episode';
 import { DueWorkPlanner } from '../src/utils/due-work-planner';
-import { SkillEvolutionRuntime } from '../src/utils/skill-evolution';
+import { SkillEvolutionOptions, SkillEvolutionRuntime } from '../src/utils/skill-evolution';
 import { SkillUsageCurator } from '../src/utils/skill-usage-curator';
 import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
 import { DistillationPipeline, defaultDistilledOutputDir } from '../src/utils/distillation-pipeline';
 import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../src/utils/runtime-command-support';
 import { SessionTurnLogEntry } from '../src/utils/session-log-schema';
 import { SkillParser } from '../src/skills/skill-parser';
+import { SemanticReassessmentManifestStore } from '../src/utils/semantic-reassessment';
+import { emptyCurrentSkillRegistryState, saveCurrentSkillRegistry } from '../src/utils/skill-evolution';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -93,6 +95,7 @@ interface TestEnv {
   registryPath: string;
   auditPath: string;
   journalPath: string;
+  reassessmentManifestPath: string;
   outputDir: string;
   pipeline: DistillationPipeline;
   runtimeLearning: RuntimeLearning;
@@ -102,7 +105,10 @@ interface TestEnv {
   teardown: () => void;
 }
 
-function setupEnv(settlementWindowMs = 0): TestEnv {
+function setupEnv(
+  settlementWindowMs = 0,
+  fixtures: Pick<SkillEvolutionOptions, 'authorFixture' | 'verifierFixture'> = {},
+): TestEnv {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-runtime-learning-'));
   const skillsRoot = path.join(root, 'skills');
   const logFile = path.join(root, 'logs', 'sessions', 'chat', 'test.jsonl');
@@ -113,6 +119,7 @@ function setupEnv(settlementWindowMs = 0): TestEnv {
   const registryPath = path.join(root, 'data', 'current-skill-registry.json');
   const auditPath = path.join(root, 'data', 'transition-audit.jsonl');
   const journalPath = path.join(root, 'data', 'transition-journal.json');
+  const reassessmentManifestPath = path.join(root, 'data', 'reassessment-manifest.json');
   const curatorStatePath = path.join(root, 'data', 'curator-state.json');
   const ledgerPath = path.join(root, 'data', 'skill-usage-ledger.jsonl');
   const outputDir = defaultDistilledOutputDir(skillsRoot);
@@ -127,6 +134,7 @@ function setupEnv(settlementWindowMs = 0): TestEnv {
     XIAOBA_ROLE: process.env.XIAOBA_ROLE,
     XIAOBA_SKILLS_DIR: process.env.XIAOBA_SKILLS_DIR,
     XIAOBA_RUNTIME_ROOT: process.env.XIAOBA_RUNTIME_ROOT,
+    XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE: process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE,
   };
 
   process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
@@ -137,6 +145,7 @@ function setupEnv(settlementWindowMs = 0): TestEnv {
   delete process.env.XIAOBA_ROLE;
   process.env.XIAOBA_SKILLS_DIR = skillsRoot;
   process.env.XIAOBA_RUNTIME_ROOT = root;
+  process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE = reassessmentManifestPath;
 
   const skillEvolution = new SkillEvolutionRuntime({
     workingDirectory: root,
@@ -149,7 +158,7 @@ function setupEnv(settlementWindowMs = 0): TestEnv {
     operationalRetryMs: 1,
     operationalRetryMaxMs: 60_000,
     logEnabled: false,
-    authorFixture: ({ bundle }) => {
+    authorFixture: fixtures.authorFixture ?? (({ bundle }) => {
       branchCalls.author++;
       return {
         body: 'Deliver a report when requested and wait for user verification.',
@@ -161,8 +170,8 @@ function setupEnv(settlementWindowMs = 0): TestEnv {
           evidenceRefs: [...bundle.completionEvidence, ...bundle.settlementEvidence].map(ref => ref.ref),
         },
       };
-    },
-    verifierFixture: ({ draft }) => {
+    }),
+    verifierFixture: fixtures.verifierFixture ?? (({ draft }) => {
       branchCalls.verifier++;
       assert.equal(draft.envelope.routingName, 'test-report-delivery');
       return {
@@ -171,7 +180,7 @@ function setupEnv(settlementWindowMs = 0): TestEnv {
         issues: [],
         rationale: 'The bounded report workflow is supported by the fixed artifact evidence.',
       };
-    },
+    }),
   });
 
   const episodeStore = new LearningEpisodeStore(episodeStorePath);
@@ -187,6 +196,7 @@ function setupEnv(settlementWindowMs = 0): TestEnv {
     reviewQueuePath,
     curatorStatePath,
     curatorIntervalMs: 24 * 60 * 60 * 1000,
+    semanticReassessmentManifestPath: reassessmentManifestPath,
   });
 
   const evidenceIngestor = new EvidenceIngestor({
@@ -222,6 +232,7 @@ function setupEnv(settlementWindowMs = 0): TestEnv {
     registryPath,
     auditPath,
     journalPath,
+    reassessmentManifestPath,
     outputDir,
     pipeline,
     runtimeLearning,
@@ -272,6 +283,48 @@ describe('RuntimeLearning — AC1: Ingestion', () => {
     // Heartbeat was recorded
     const hb = env.runtimeLearning.loadHeartbeatRecord();
     assert.ok(hb.runCount >= 1, 'expected heartbeat record');
+  });
+
+  test('persists OpenCLI shell workflow evidence with the following delivery', async () => {
+    const openCliSelection = futureTurn(
+      6,
+      'catscompany-runtime',
+      'Find a suitable mirror image.',
+      'I found image candidates.',
+      0,
+      [{
+        id: 'opencli-6',
+        name: 'execute_shell',
+        arguments: { command: 'opencli google images mirror --limit 3 --lang en -f yaml' },
+        result: 'Command succeeded\n3 image results returned',
+      }],
+    );
+    const delivery = futureTurn(
+      7,
+      'catscompany-runtime',
+      'Start the mirror word card.',
+      'The preview is ready.',
+      0,
+      [{
+        id: 'send-7',
+        name: 'send_file',
+        arguments: { path: 'mirror-preview.jpg' },
+        result: 'File sent to current chat.',
+      }],
+    );
+    writeLog(env.logFile, [openCliSelection, delivery]);
+
+    const result = await env.runtimeLearning.wake('startup');
+
+    assert.equal(result.ingestion.admittedEpisodes, 1);
+    const state = readOrEmpty(env.episodeStorePath);
+    const episodes = Object.values(state.episodes as Record<string, any>);
+    assert.equal(episodes.length, 1);
+    assert.ok(episodes[0].completionEvidence.some((evidence: any) =>
+      evidence.kind === 'verified-tool-result'
+      && evidence.turn === 6
+      && evidence.detail.includes('opencli google images mirror'),
+    ));
   });
 
   test('non-discovery wake skips log scanning', async () => {
@@ -365,6 +418,73 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     const registry = readOrEmpty(env.registryPath);
     assert.ok(registry, 'registry should exist');
     assert.ok(Object.keys(registry.capabilities || {}).length >= 1, 'expected >=1 capability');
+  });
+
+  test('one wake accepts an observed semantic name and defers an unobserved candidate', async () => {
+    const customEnv = setupEnv(0, {
+      authorFixture: ({ bundle }) => {
+        const hasObservation = (bundle.semanticObservations?.length ?? 0) > 0;
+        return {
+          body: 'Use the bounded report workflow.',
+          envelope: {
+            decision: 'create_current_skill' as const,
+            routingName: hasObservation ? 'validated-report-delivery' : 'artifact-delivery',
+            description: hasObservation ? 'Deliver a validated report.' : 'Deliver an artifact.',
+            evidenceRefs: [...bundle.completionEvidence, ...bundle.settlementEvidence].map(ref => ref.ref),
+          },
+        };
+      },
+      verifierFixture: ({ draft }) => ({
+        decision: 'accept' as const,
+        transition: draft.envelope.decision,
+        issues: [],
+        rationale: 'The bounded proposal is supported by the fixed bundle.',
+      }),
+    });
+    const makeEpisode = (episodeId: string, semanticObservations: LearningEpisode['semanticObservations']): LearningEpisode => ({
+      schemaVersion: 3,
+      episodeId,
+      runtimeSessionId: 'runtime-semantic-naming',
+      sourceFilePath: `${episodeId}.jsonl`,
+      deliveryTurn: 1,
+      completionEvidence: [{
+        ref: `${episodeId}#turn-1:delivery:send_file`,
+        sourceFilePath: `${episodeId}.jsonl`,
+        turn: 1,
+        kind: 'artifact-delivery',
+        detail: 'send_file: report sent',
+      }],
+      contradictionSignals: [],
+      semanticObservations,
+      settlementDeadline: new Date(0).toISOString(),
+      status: 'eligible',
+    });
+    try {
+      const store = new LearningEpisodeStore(customEnv.episodeStorePath);
+      store.save({
+        schemaVersion: 3,
+        episodes: {
+          'episode-observed': makeEpisode('episode-observed', [{
+            kind: 'user-intent',
+            value: 'Deliver a validated report.',
+            sourceRefs: ['episode-observed.jsonl#turn-1:user-intent'],
+          }]),
+          'episode-unobserved': makeEpisode('episode-unobserved', []),
+        },
+      });
+
+      const result = await customEnv.runtimeLearning.wake('startup');
+
+      assert.equal(result.review.transitionsByKind.create_current_skill, 1);
+      assert.equal(result.review.transitionsByKind.defer, 1);
+      assert.equal(Object.values(readOrEmpty(customEnv.registryPath).capabilities).length, 1);
+      const queue = readOrEmpty(customEnv.reviewQueuePath);
+      assert.equal(queue.deferred.length, 1);
+      assert.match(queue.deferred[0].reason, /semantic observation/i);
+    } finally {
+      customEnv.restore();
+      customEnv.teardown();
+    }
   });
 
   test('operational retry due triggers queue review', async () => {
@@ -492,6 +612,56 @@ describe('RuntimeLearning — AC4: Transition Recovery', () => {
     }
     // If journal remains (best-effort recovery), that's also acceptable
     assert.ok(recoveryRuntime instanceof SkillEvolutionRuntime);
+  });
+});
+
+describe('RuntimeLearning — semantic reassessment wake', () => {
+  let env: TestEnv;
+  beforeEach(() => { env = setupEnv(0); });
+  afterEach(() => { env.restore(); env.teardown(); });
+
+  test('scheduled wake resumes a pending manifest item without admitting episodes', async () => {
+    const skillPath = path.join(env.outputDir, 'legacy', 'SKILL.md');
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true });
+    fs.writeFileSync(skillPath, '---\nname: settled-artifact-delivery\ndescription: Legacy\n---\n\nLegacy guidance.\n', 'utf8');
+    const registry = emptyCurrentSkillRegistryState();
+    registry.capabilities.legacy = {
+      handle: 'legacy', revision: 1, routingName: 'settled-artifact-delivery', description: 'Legacy', skillFilePath: skillPath,
+      guidanceHash: require('node:crypto').createHash('sha256').update(fs.readFileSync(skillPath)).digest('hex'),
+      evidenceRefs: [], referencedSkills: [], createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
+    };
+    saveCurrentSkillRegistry(env.registryPath, registry);
+    new SemanticReassessmentManifestStore(env.reassessmentManifestPath).upsertForRecord(registry.capabilities.legacy);
+
+    const result = await env.runtimeLearning.wake('scheduled');
+    assert.equal(result.reassessment.status, 'succeeded');
+    assert.equal(result.reassessment.discovered, 1);
+    assert.equal(result.reassessment.deferred, 1);
+    assert.equal(result.ingestion.admittedEpisodes, 0);
+    assert.equal(result.discovery.filesScanned, 0);
+    assert.equal(Object.keys(readOrEmpty(env.episodeStorePath)?.episodes ?? {}).length, 0);
+  });
+
+  test('targeted semantic reassessment wake skips evidence and due-review stages', async () => {
+    const skillPath = path.join(env.outputDir, 'legacy', 'SKILL.md');
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true });
+    fs.writeFileSync(skillPath, '---\nname: settled-artifact-delivery\ndescription: Legacy\n---\n\nLegacy guidance.\n', 'utf8');
+    const registry = emptyCurrentSkillRegistryState();
+    registry.capabilities.legacy = {
+      handle: 'legacy', revision: 1, routingName: 'settled-artifact-delivery', description: 'Legacy', skillFilePath: skillPath,
+      guidanceHash: require('node:crypto').createHash('sha256').update(fs.readFileSync(skillPath)).digest('hex'),
+      evidenceRefs: [], referencedSkills: [], createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
+    };
+    saveCurrentSkillRegistry(env.registryPath, registry);
+    new SemanticReassessmentManifestStore(env.reassessmentManifestPath).upsertForRecord(registry.capabilities.legacy);
+
+    const result = await env.runtimeLearning.wake('semantic-reassessment');
+    assert.equal(result.discovery.scanned, false);
+    assert.equal(result.ingestion.admittedEpisodes, 0);
+    assert.equal(result.maturation.status, 'skipped');
+    assert.equal(result.review.status, 'skipped');
+    assert.equal(result.curation.status, 'skipped');
+    assert.equal(result.reassessment.deferred, 1);
   });
 });
 
@@ -635,10 +805,10 @@ describe('Issue 2 — Generic wake reconciliation', () => {
     // future settlement deadline (so the planner reports nothing due).
     const episodeId = 'episode-test-reconcile';
     const episodeData = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       episodes: {
         [episodeId]: {
-          schemaVersion: 2,
+          schemaVersion: 3,
           episodeId,
           runtimeSessionId: 'cli',
           sourceFilePath: env.logFile,
@@ -650,6 +820,11 @@ describe('Issue 2 — Generic wake reconciliation', () => {
             { ref: 'ev-2', sourceFilePath: env.logFile, turn: 2, kind: 'user-acceptance' },
           ],
           contradictionSignals: [],
+          semanticObservations: [{
+            kind: 'user-intent',
+            value: 'Deliver the requested report.',
+            sourceRefs: ['ev-1:user-intent'],
+          }],
           createdAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
         },
       },

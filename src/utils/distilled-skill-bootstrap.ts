@@ -11,7 +11,13 @@ import {
   EvidenceBundle,
   SkillEvolutionRuntime,
 } from './skill-evolution';
+import type { LearningEpisodeStore } from './learning-episode';
 import { DistilledKnowledgeCandidate } from './capability-distiller';
+import {
+  SemanticReassessmentManifestStore,
+  semanticReassessmentTaskId,
+  shouldReassessCurrentSkill,
+} from './semantic-reassessment';
 
 export interface LegacyDistilledBootstrapResult {
   filePath: string;
@@ -30,6 +36,22 @@ export interface LegacyDistilledBootstrapOptions {
   now?: () => string;
   /** Test seam for simulating a post-commit cleanup failure. */
   deleteArtifact?: (filePath: string) => void;
+  /** Optional durable manifest for generated-skill semantic reassessment. */
+  reassessmentManifestPath?: string;
+}
+
+export interface SemanticReassessmentBootstrapOptions {
+  skillEvolution: SkillEvolutionRuntime;
+  manifestPath: string;
+  learningEpisodeStore?: LearningEpisodeStore;
+}
+
+export interface SemanticReassessmentBootstrapResult {
+  taskId: string;
+  capabilityHandle: string;
+  status: 'pending' | 'succeeded' | 'deferred' | 'failed' | 'superseded';
+  transition?: CapabilityTransitionKind;
+  errorMessage?: string;
 }
 
 interface LegacyParsedSkill {
@@ -70,6 +92,133 @@ export async function bootstrapLegacyDistilledSkillsOnce(
   return promise.finally(() => {
     inFlightBootstrap.delete(key);
   });
+}
+
+/**
+ * Discover active generated capabilities that predate semantic observations
+ * or still use lifecycle-bound names. Each task is durable and keyed by the
+ * capability handle plus current guidance/observation hashes, so a restart
+ * cannot replay an obsolete revision blindly.
+ */
+export async function bootstrapSemanticReassessmentOnce(
+  options: SemanticReassessmentBootstrapOptions,
+): Promise<SemanticReassessmentBootstrapResult[]> {
+  const manifest = new SemanticReassessmentManifestStore(options.manifestPath);
+  const registry = options.skillEvolution.getRegistry();
+  const results: SemanticReassessmentBootstrapResult[] = [];
+  for (const record of Object.values(registry.capabilities)) {
+    const staleDependents = Object.values(registry.capabilities)
+      .filter(candidate => candidate.handle !== record.handle)
+      .flatMap(candidate => candidate.referencedSkills
+        .filter(reference => reference.capabilityHandle === record.handle
+          && (reference.guidanceHash !== record.guidanceHash || reference.name !== record.routingName
+            || reference.contentFingerprint !== record.guidanceHash))
+        .map(reference => ({ candidate, reference })));
+    const isDependent = staleDependents.length > 0;
+    // A route-only change does not require a new executable guidance revision.
+    // Repair the dependent Registry snapshot through the same journal/audit
+    // seam, then leave the active SKILL.md untouched.
+    if (isDependent && staleDependents.every(item => item.reference.guidanceHash === record.guidanceHash)) {
+      const refreshed = staleDependents.reduce((skills, item) => skills.map(reference =>
+        reference.capabilityHandle === record.handle
+          ? { ...reference, name: record.routingName, guidanceHash: record.guidanceHash, contentFingerprint: record.guidanceHash }
+          : reference), staleDependents[0]!.candidate.referencedSkills);
+      try {
+        const transition = options.skillEvolution.refreshReferencedSkillMetadata(
+          staleDependents[0]!.candidate.handle,
+          refreshed,
+        );
+        results.push({ taskId: transition.audit.bundleId ?? `refresh-references:${staleDependents[0]!.candidate.handle}`, capabilityHandle: staleDependents[0]!.candidate.handle, status: 'succeeded', transition: transition.audit.transition });
+      } catch (error) {
+        results.push({ taskId: `refresh-references:${staleDependents[0]!.candidate.handle}`, capabilityHandle: staleDependents[0]!.candidate.handle, status: 'failed', errorMessage: error instanceof Error ? error.message : String(error) });
+      }
+      continue;
+    }
+    if (!shouldReassessCurrentSkill(record) && !isDependent) continue;
+    let entry = manifest.upsertForRecord(record, new Date(), isDependent);
+    if (!entry || entry.status === 'superseded') continue;
+    const observations = record.semanticObservations?.length
+      ? record.semanticObservations
+      : findEpisodeObservations(options.learningEpisodeStore, record.evidenceRefs.map(item => item.ref));
+    if (observations.length > 0) {
+      entry = manifest.upsertForRecord({ ...record, semanticObservations: observations }, new Date(), true);
+    }
+    if (!entry || entry.status === 'succeeded' || entry.status === 'superseded' || entry.status === 'deferred') continue;
+    if (entry.status === 'failed' && entry.nextRetryAt && Date.parse(entry.nextRetryAt) > Date.now()) continue;
+    if (observations.length === 0) {
+      const state = manifest.load();
+      const current = state.entries[entry.taskId];
+      if (current) {
+        current.status = 'deferred';
+        current.lastError = 'No persisted semantic observations are available for bounded reassessment.';
+        current.updatedAt = new Date().toISOString();
+        manifest.save(state);
+      }
+      results.push({ taskId: entry.taskId, capabilityHandle: record.handle, status: 'deferred', errorMessage: current?.lastError });
+      continue;
+    }
+    const evidenceRefs = record.evidenceRefs.map(item => item.ref);
+    const completionRef = evidenceRefs[0] ?? `registry:${record.handle}:guidance`;
+    const settlementRef = evidenceRefs[1] ?? `registry:${record.handle}:reassessment`;
+    const bundle: EvidenceBundle = {
+      bundleId: semanticReassessmentTaskId(record.handle, record.guidanceHash, observations),
+      episode: { kind: 'semantic-reassessment', capabilityHandle: record.handle, routingName: record.routingName },
+      completionEvidence: [{ ref: completionRef }],
+      settlementEvidence: [{ ref: settlementRef === completionRef ? `${settlementRef}:settlement` : settlementRef }],
+      boundedContinuity: [],
+      semanticObservations: observations,
+      referencedSkills: record.referencedSkills,
+      relatedCurrentSkills: Object.values(registry.capabilities).map(item => ({
+        handle: item.handle,
+        revision: item.revision,
+        routingName: item.routingName,
+        description: item.description,
+        guidanceHash: item.guidanceHash,
+      })),
+    };
+    try {
+      const result = await options.skillEvolution.reviewAndApply(bundle);
+      const state = manifest.load();
+      const current = state.entries[entry.taskId];
+      if (current) {
+        current.status = result.queued === 'deferred' ? 'deferred' : result.queued === 'operational' ? 'failed' : 'succeeded';
+        current.lastError = result.queued ? `Reassessment queued: ${result.queued}` : undefined;
+        if (current.status === 'succeeded' || current.status === 'deferred') delete current.nextRetryAt;
+        current.updatedAt = new Date().toISOString();
+        manifest.save(state);
+      }
+      results.push({ taskId: entry.taskId, capabilityHandle: record.handle, status: current?.status ?? 'succeeded', transition: result.transition });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const state = manifest.load();
+      const current = state.entries[entry.taskId];
+      if (current) {
+        current.status = 'failed';
+        current.attemptCount += 1;
+        current.lastError = message;
+        current.nextRetryAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+        current.updatedAt = new Date().toISOString();
+        manifest.save(state);
+      }
+      results.push({ taskId: entry.taskId, capabilityHandle: record.handle, status: 'failed', errorMessage: message });
+    }
+  }
+  return results;
+}
+
+function findEpisodeObservations(
+  store: LearningEpisodeStore | undefined,
+  evidenceRefs: readonly string[],
+): import('./learning-episode').SemanticObservation[] {
+  if (!store) return [];
+  const refs = new Set(evidenceRefs);
+  try {
+    return Object.values(store.load().episodes)
+      .filter(episode => episode.completionEvidence.some(item => refs.has(item.ref)))
+      .flatMap(episode => episode.semanticObservations);
+  } catch {
+    return [];
+  }
 }
 
 async function bootstrapLegacyDistilledSkills(

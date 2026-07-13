@@ -37,6 +37,11 @@ export class PathResolver {
     return this.getUserDataSkillsPath();
   }
 
+  static getSkillEvolutionRegistryPath(): string {
+    const override = process.env.XIAOBA_SKILL_EVOLUTION_REGISTRY_FILE?.trim();
+    return path.resolve(override || this.getDataPath('current-skill-registry.json'));
+  }
+
   static getUserDataSkillsPath(): string {
     return path.join(this.getRuntimeDataRoot(), 'skills');
   }
@@ -56,6 +61,7 @@ export class PathResolver {
 
     const entries = fs.readdirSync(baseDir, { withFileTypes: true });
     for (const entry of entries) {
+      if (entry.isDirectory() && entry.name === 'history') continue;
       const fullPath = path.join(baseDir, entry.name);
 
       if (entry.isDirectory()) {

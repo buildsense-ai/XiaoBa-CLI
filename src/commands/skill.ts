@@ -136,7 +136,7 @@ async function showSkillInfo(name: string): Promise<void> {
   const manager = new SkillManager();
   await manager.loadSkills();
 
-  const skill = manager.getSkill(name);
+  const skill = (await manager.resolveSkill(name))?.skill;
 
   if (!skill) {
     Logger.error(`未找到 skill: ${name}`);
@@ -285,7 +285,7 @@ async function removeNpmSkill(packageName: string, force?: boolean): Promise<voi
 async function removeLocalSkill(name: string, force?: boolean): Promise<void> {
   const manager = new SkillManager();
   await manager.loadSkills();
-  const skill = manager.getSkill(name);
+  const skill = (await manager.resolveSkill(name))?.skill;
 
   if (!skill) {
     Logger.error(`未找到 skill: ${name}`);

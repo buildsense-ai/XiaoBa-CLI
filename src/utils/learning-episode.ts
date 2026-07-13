@@ -10,6 +10,7 @@ import {
 } from './distillation-unit';
 import {
   ParsedSessionLogEntry,
+  SessionToolCallLog,
   SessionTurnLogEntry,
   isSessionTurnEntry,
 } from './session-log-schema';
@@ -28,7 +29,11 @@ import { SkillParser } from '../skills/skill-parser';
 import { PathResolver } from './path-resolver';
 
 /** A completed delivery attempt is the unit of learning, not a whole task. */
-export const LEARNING_EPISODE_SCHEMA_VERSION = 2 as const;
+export const LEARNING_EPISODE_SCHEMA_VERSION = 3 as const;
+
+export const MAX_SEMANTIC_OBSERVATIONS = 12 as const;
+export const MAX_SEMANTIC_OBSERVATION_VALUE_LENGTH = 512 as const;
+export const MAX_SEMANTIC_OBSERVATION_PAYLOAD_BYTES = 8192 as const;
 
 export type LearningEpisodeStatus = 'settling' | 'contradicted' | 'eligible';
 
@@ -45,6 +50,21 @@ export interface EpisodeEvidenceRef {
   turn: number;
   kind: CompletionEvidenceKind | 'contradiction';
   detail?: string;
+}
+
+export type SemanticObservationKind =
+  | 'user-intent'
+  | 'workflow-tool'
+  | 'artifact-operation'
+  | 'verification'
+  | 'correction-or-contradiction'
+  | 'referenced-skill';
+
+/** A bounded fact supplied to Author/Verifier; it is not a final capability label. */
+export interface SemanticObservation {
+  kind: SemanticObservationKind;
+  value: string;
+  sourceRefs: string[];
 }
 
 export interface ContradictionSignal {
@@ -68,6 +88,8 @@ export interface LearningEpisode {
   deliveryTurn: number;
   completionEvidence: EpisodeEvidenceRef[];
   contradictionSignals: ContradictionSignal[];
+  /** Durable bounded observations extracted at evidence admission. */
+  semanticObservations: SemanticObservation[];
   predecessorEpisodeId?: string;
   /** A retry is related to its predecessor, but never shares its settlement. */
   retryOfEpisodeId?: string;
@@ -145,7 +167,9 @@ export function buildLearningEpisodeCandidate(
   };
 }
 
-const DELIVERY_TOOL = /(?:send|deliver|write|create|generate|export|upload|publish|attach|artifact|file)/i;
+// Match delivery verbs at the tool-name boundary. A bare `file` substring is
+// too broad: inspection tools such as `read_file` must not create episodes.
+const DELIVERY_TOOL = /^(?:send|deliver|write|create|generate|export|upload|publish|attach|artifact)(?:_|$)/i;
 const VALIDATION_TOOL = /(?:validat|check|inspect|verify|assert|test)/i;
 const ARTIFACT_WORKFLOW_TOOL = /(?:select|compose|card|image)/i;
 const SUCCESS_RESULT = /(?:success|succeed|ok|passed|valid|created|delivered|sent|uploaded|generated)/i;
@@ -174,7 +198,10 @@ export function extractLearningEpisodes(
     const deliveryTurn = turns[index];
     if (!newTurnNumbers.has(deliveryTurn.turn)) continue;
     const deliverySourceFilePath = turnSourceFilePath(deliveryTurn, unit.filePath);
-    const evidence = detectCompletionEvidence(deliverySourceFilePath, deliveryTurn);
+    const evidence = uniqueEvidence([
+      ...detectCompletionEvidence(deliverySourceFilePath, deliveryTurn),
+      ...collectPrecedingWorkflowEvidence(turns, index, unit.filePath),
+    ]);
     const episodeId = makeEpisodeId(deliverySourceFilePath, deliveryTurn);
     const next = turns[index + 1];
     const signal = next ? detectContradiction(deliverySourceFilePath, deliveryTurn, next, unit.filePath) : undefined;
@@ -203,6 +230,7 @@ export function extractLearningEpisodes(
       candidate.runtimeSessionId === runtimeSessionIdOf(deliveryTurn)
       && candidate.deliveryTurn < deliveryTurn.turn,
     );
+    const semanticObservations = extractSemanticObservations(turns, index, evidence, signal);
     const episode: LearningEpisode = {
       schemaVersion: LEARNING_EPISODE_SCHEMA_VERSION,
       episodeId,
@@ -212,6 +240,7 @@ export function extractLearningEpisodes(
       deliveryTurn: deliveryTurn.turn,
       completionEvidence: evidence,
       contradictionSignals: signal ? [signal] : [],
+      semanticObservations,
       ...(predecessor && { predecessorEpisodeId: predecessor.episodeId }),
       settlementDeadline: new Date(Date.parse(deliveryTurn.timestamp) + settlementWindowMs).toISOString(),
       status: signal ? 'contradicted' : 'settling',
@@ -249,8 +278,17 @@ export function extractLearningEpisodes(
         runtimeSessionId: runtimeSessionIdOf(delivery),
         sourceFilePath: deliverySourceFilePath,
         deliveryTurn: delivery.turn,
-        completionEvidence: uniqueEvidence([...deliveryEvidence, accepted]),
+        completionEvidence: uniqueEvidence([
+          ...deliveryEvidence,
+          ...collectPrecedingWorkflowEvidence(turns, index, unit.filePath),
+          accepted,
+        ]),
         contradictionSignals: [],
+        semanticObservations: extractSemanticObservations(turns, index, [
+          ...deliveryEvidence,
+          ...collectPrecedingWorkflowEvidence(turns, index, unit.filePath),
+          accepted,
+        ], undefined),
         settlementDeadline: new Date(Date.parse(delivery.timestamp) + settlementWindowMs).toISOString(),
         status: 'settling',
         unitByteRange: unit.byteRange,
@@ -262,14 +300,104 @@ export function extractLearningEpisodes(
   return { episodes, contradictions };
 }
 
+/**
+ * Extract only bounded, factual observations from the fixed unit window.
+ * The output is persisted with the episode and is never re-derived during
+ * settlement or review.
+ */
+function extractSemanticObservations(
+  turns: readonly CompletedTurn[],
+  deliveryIndex: number,
+  evidence: readonly EpisodeEvidenceRef[],
+  contradiction?: ContradictionSignal,
+): SemanticObservation[] {
+  const delivery = turns[deliveryIndex];
+  if (!delivery) return [];
+  const observations: SemanticObservation[] = [];
+  const intentTurns: CompletedTurn[] = [delivery];
+  for (let index = deliveryIndex - 1; index >= 0; index--) {
+    const preceding = turns[index];
+    if (!preceding) continue;
+    if (hasDeliveryEvidence(detectCompletionEvidence(turnSourceFilePath(preceding, ''), preceding))) break;
+    if (preceding.user.text.trim()) intentTurns.unshift(preceding);
+    if (intentTurns.length >= 3) break;
+  }
+  const intentText = intentTurns
+    .map(turn => turn.user.text.trim())
+    .filter(Boolean)
+    .join(' ');
+  if (intentText) {
+    observations.push({
+      kind: 'user-intent',
+      value: intentText,
+      sourceRefs: uniqueStrings(intentTurns.map(turn => evidenceRef(
+        turnSourceFilePath(turn, ''),
+        turn.turn,
+        'user-intent',
+      ))),
+    });
+  }
+
+  const workflowEvidence = evidence.filter(item => item.kind === 'verified-tool-result');
+  for (const item of workflowEvidence) {
+    observations.push({
+      kind: 'workflow-tool',
+      value: item.detail || 'verified workflow tool result',
+      sourceRefs: [item.ref],
+    });
+  }
+  for (const item of evidence.filter(item => item.kind === 'artifact-delivery')) {
+    observations.push({
+      kind: 'artifact-operation',
+      value: item.detail?.split(':', 1)[0] || 'artifact delivery',
+      sourceRefs: [item.ref],
+    });
+  }
+  for (const item of evidence.filter(item => item.kind === 'artifact-validation' || item.kind === 'user-acceptance')) {
+    observations.push({
+      kind: 'verification',
+      value: item.detail || item.kind,
+      sourceRefs: [item.ref],
+    });
+  }
+  if (contradiction) {
+    observations.push({
+      kind: 'correction-or-contradiction',
+      value: contradiction.message,
+      sourceRefs: [contradiction.source.ref],
+    });
+  }
+  return boundSemanticObservations(observations);
+}
+
+function boundSemanticObservations(observations: readonly SemanticObservation[]): SemanticObservation[] {
+  const bounded: SemanticObservation[] = [];
+  const seen = new Set<string>();
+  for (const observation of observations) {
+    const value = observation.value.trim().slice(0, MAX_SEMANTIC_OBSERVATION_VALUE_LENGTH);
+    const sourceRefs = uniqueStrings(observation.sourceRefs).slice(0, MAX_SEMANTIC_OBSERVATIONS);
+    if (!value || sourceRefs.length === 0) continue;
+    const normalized = { kind: observation.kind, value, sourceRefs };
+    const key = JSON.stringify(normalized);
+    if (seen.has(key)) continue;
+    const candidate = [...bounded, normalized];
+    if (Buffer.byteLength(JSON.stringify(candidate), 'utf8') > MAX_SEMANTIC_OBSERVATION_PAYLOAD_BYTES) break;
+    bounded.push(normalized);
+    seen.add(key);
+    if (bounded.length >= MAX_SEMANTIC_OBSERVATIONS) break;
+  }
+  return bounded;
+}
+
 function detectCompletionEvidence(filePath: string, turn: CompletedTurn): EpisodeEvidenceRef[] {
   const evidence: EpisodeEvidenceRef[] = [];
   const hasArtifactCompletion = turn.assistant.tool_calls.some(tool =>
-    (DELIVERY_TOOL.test(tool.name) || VALIDATION_TOOL.test(tool.name))
+    (isDeliveryTool(tool) || VALIDATION_TOOL.test(tool.name))
     && !FAILURE_RESULT.test(tool.result || ''),
   );
+  const workflowEvidence = hasArtifactCompletion ? detectWorkflowEvidence(filePath, turn) : [];
   for (const tool of turn.assistant.tool_calls) {
-    const detail = `${tool.name}: ${String(tool.result || '')}`.trim();
+    const detail = toolDetail(tool);
     if (VALIDATION_TOOL.test(tool.name) && SUCCESS_RESULT.test(tool.result || '')) {
       evidence.push({
         ref: evidenceRef(filePath, turn.turn, `validation:${tool.name}`),
@@ -278,7 +406,7 @@ function detectCompletionEvidence(filePath: string, turn: CompletedTurn): Episod
         kind: 'artifact-validation',
         detail,
       });
-    } else if (DELIVERY_TOOL.test(tool.name) && !FAILURE_RESULT.test(tool.result || '')) {
+    } else if (isDeliveryTool(tool) && !FAILURE_RESULT.test(tool.result || '')) {
       evidence.push({
         ref: evidenceRef(filePath, turn.turn, `delivery:${tool.name}`),
         sourceFilePath: filePath,
@@ -286,21 +414,62 @@ function detectCompletionEvidence(filePath: string, turn: CompletedTurn): Episod
         kind: 'artifact-delivery',
         detail,
       });
-    } else if (
-      hasArtifactCompletion
-      && ARTIFACT_WORKFLOW_TOOL.test(tool.name)
-      && !FAILURE_RESULT.test(tool.result || '')
-    ) {
-      evidence.push({
-        ref: evidenceRef(filePath, turn.turn, `workflow:${tool.name}`),
-        sourceFilePath: filePath,
-        turn: turn.turn,
-        kind: 'verified-tool-result',
-        detail,
-      });
     }
   }
+  return uniqueEvidence([...evidence, ...workflowEvidence]);
+}
+
+function detectWorkflowEvidence(filePath: string, turn: CompletedTurn): EpisodeEvidenceRef[] {
+  return turn.assistant.tool_calls
+    .filter(tool => isArtifactWorkflowTool(tool) && !FAILURE_RESULT.test(tool.result || ''))
+    .map(tool => ({
+      ref: evidenceRef(filePath, turn.turn, `workflow:${tool.name}`),
+      sourceFilePath: filePath,
+      turn: turn.turn,
+      kind: 'verified-tool-result' as const,
+      detail: toolDetail(tool),
+    }));
+}
+
+function collectPrecedingWorkflowEvidence(
+  turns: readonly CompletedTurn[],
+  deliveryIndex: number,
+  unitFilePath: string,
+): EpisodeEvidenceRef[] {
+  const evidence: EpisodeEvidenceRef[] = [];
+  for (let index = deliveryIndex - 1; index >= 0; index--) {
+    const preceding = turns[index];
+    const sourceFilePath = turnSourceFilePath(preceding, unitFilePath);
+    if (hasDeliveryEvidence(detectCompletionEvidence(sourceFilePath, preceding))) break;
+    evidence.unshift(...detectWorkflowEvidence(sourceFilePath, preceding));
+  }
   return uniqueEvidence(evidence);
+}
+
+function isArtifactWorkflowTool(tool: SessionToolCallLog): boolean {
+  return ARTIFACT_WORKFLOW_TOOL.test(tool.name) || isOpenCliWorkflowCommand(tool);
+}
+
+function isOpenCliWorkflowCommand(tool: SessionToolCallLog): boolean {
+  if (!/^execute_shell$/i.test(tool.name)) return false;
+  const argumentsText = typeof tool.arguments === 'string'
+    ? tool.arguments
+    : JSON.stringify(tool.arguments ?? '');
+  return /\bopencli\b[\s\S]*\b(?:google\s+images?|images?)\b/i.test(argumentsText);
+}
+
+function toolDetail(tool: SessionToolCallLog): string {
+  const argumentsText = typeof tool.arguments === 'string'
+    ? tool.arguments.trim()
+    : JSON.stringify(tool.arguments ?? '');
+  const suffix = argumentsText && argumentsText !== '{}'
+    ? ` ${argumentsText}`
+    : '';
+  return `${tool.name}${suffix}: ${String(tool.result || '')}`.trim();
+}
+
+function isDeliveryTool(tool: SessionToolCallLog): boolean {
+  return DELIVERY_TOOL.test(tool.name);
 }
 
 function hasDeliveryEvidence(evidence: readonly EpisodeEvidenceRef[]): boolean {
@@ -484,7 +653,7 @@ export class LearningEpisodeStore {
       parsed = JSON.parse(raw) as unknown as typeof parsed;
       if (!parsed.episodes || typeof parsed.episodes !== 'object') throw new Error('invalid episode store');
       const persistedVersion: number | undefined = parsed.schemaVersion;
-      if (persistedVersion !== undefined && persistedVersion !== 1 && persistedVersion !== 2) {
+      if (persistedVersion !== undefined && persistedVersion !== 1 && persistedVersion !== 2 && persistedVersion !== 3) {
         throw new Error('invalid episode store');
       }
     } catch {
@@ -493,15 +662,25 @@ export class LearningEpisodeStore {
 
     const persistedVersion: number | undefined = parsed.schemaVersion;
     const persistingV1 = persistedVersion === undefined || persistedVersion === 1;
-    if (!persistingV1) {
+    if (persistedVersion === 3) {
+      for (const episode of Object.values(parsed.episodes)) {
+        if (!Array.isArray(episode.semanticObservations)) episode.semanticObservations = [];
+        episode.schemaVersion = LEARNING_EPISODE_SCHEMA_VERSION;
+      }
       return parsed as LearningEpisodeStoreState;
     }
 
-    // v1 → v2 migration: the store-level schemaVersion AND each nested episode
-    // schemaVersion must be upgraded together. Legacy status labels
+    if (!persistingV1 && persistedVersion !== 2) {
+      return parsed as LearningEpisodeStoreState;
+    }
+
+    // v1/v2 → v3 migration: the store-level schemaVersion AND each nested
+    // episode schemaVersion must be upgraded together. Legacy status labels
     // 'promoted' → 'eligible' and 'rejected' → 'contradicted' are migrated in
     // the same pass. Evidence, settlement deadline, and predecessor/retry
-    // linkage are preserved untouched.
+    // linkage are preserved untouched. Missing observations remain an empty
+    // array so legacy input is explicit incomplete semantic input, not a
+    // fabricated observation set.
     for (const episode of Object.values(parsed.episodes)) {
       const rawStatus = episode.status as string;
       if (rawStatus === 'promoted') {
@@ -510,6 +689,7 @@ export class LearningEpisodeStore {
         episode.status = 'contradicted' as const;
       }
       episode.schemaVersion = LEARNING_EPISODE_SCHEMA_VERSION;
+      if (!Array.isArray(episode.semanticObservations)) episode.semanticObservations = [];
     }
     parsed.schemaVersion = LEARNING_EPISODE_SCHEMA_VERSION;
 
@@ -600,11 +780,22 @@ function mergeEpisode(existing: LearningEpisode | undefined, incoming: LearningE
       : { agentTurnEpisodeId: incoming.agentTurnEpisodeId }),
     completionEvidence: uniqueEvidence([...existing.completionEvidence, ...incoming.completionEvidence]),
     contradictionSignals: [...new Map(signals.map(signal => [signal.signalId, signal])).values()],
+    semanticObservations: mergeSemanticObservations(existing.semanticObservations, incoming.semanticObservations),
   };
   if (merged.contradictionSignals.length > 0) {
     merged.status = 'contradicted';
   }
   return merged;
+}
+
+function mergeSemanticObservations(
+  existing: readonly SemanticObservation[] | undefined,
+  incoming: readonly SemanticObservation[] | undefined,
+): SemanticObservation[] {
+  return boundSemanticObservations([
+    ...(existing ?? []),
+    ...(incoming ?? []),
+  ]);
 }
 
 function linkRetryToStoredPredecessor(

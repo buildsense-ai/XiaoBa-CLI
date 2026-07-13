@@ -11,9 +11,11 @@ import {
   computeCurrentSkillRegistryHash,
   EvidenceBundle,
   loadCurrentSkillRegistry,
+  saveCurrentSkillRegistry,
   loadTransitionAudit,
   recoverTransitionJournal,
   applyCapabilityTransition,
+  restoreCapabilityRevision,
   SkillDraft,
   SkillEvolutionRuntime,
   SkillEvolutionOptions,
@@ -33,6 +35,18 @@ function fixtureBundle(): EvidenceBundle {
     episode: { problem: 'Make a flashcard artifact', completion: 'artifact delivered' },
     completionEvidence: [{ ref: 'session.jsonl#12' }],
     settlementEvidence: [{ ref: 'session.jsonl#13' }],
+    semanticObservations: [
+      {
+        kind: 'user-intent',
+        value: 'Create a validated flashcard artifact.',
+        sourceRefs: ['session.jsonl#12:user-intent'],
+      },
+      {
+        kind: 'workflow-tool',
+        value: 'opencli google images mirror',
+        sourceRefs: ['session.jsonl#12:workflow:execute_shell'],
+      },
+    ],
     boundedContinuity: [{ turn: 11, text: 'The first delivery was corrected.' }],
     referencedSkills: [{ name: 'word-card-maker', version: '1.0.0', contentFingerprint: 'word-card-v1' }],
     relatedCurrentSkills: [],
@@ -88,7 +102,7 @@ function setup(): { root: string; options: SkillEvolutionOptions; cleanup: () =>
         : 'Use the referenced card maker, validate the generated artifact, and deliver it.',
       envelope: {
         decision: 'create_current_skill',
-        routingName: 'flashcard-artifact-workflow',
+        routingName: 'flashcard-image-delivery',
         description: 'Create and validate a flashcard artifact when the user needs a repeatable study card workflow.',
         referencedSkills: ['word-card-maker'],
         evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
@@ -98,7 +112,7 @@ function setup(): { root: string; options: SkillEvolutionOptions; cleanup: () =>
       assert.equal(bundle.bundleId, 'episode-flashcard-1');
       assert.equal(Object.isFrozen(bundle), true);
       assert.equal(Object.isFrozen(bundle.completionEvidence), true);
-      assert.equal(draft.envelope.routingName, 'flashcard-artifact-workflow');
+      assert.equal(draft.envelope.routingName, 'flashcard-image-delivery');
       return { approved: true, transition: 'create_current_skill', issues: [], rationale: 'Both evidence refs support a bounded composition workflow.' };
     },
   };
@@ -116,6 +130,151 @@ function setup(): { root: string; options: SkillEvolutionOptions; cleanup: () =>
 }
 
 describe('V3 verified semantic Current Skills', () => {
+  test('migrates a v1 generated-skill Registry to route-aware schema v2 without losing capabilities', () => {
+    const env = setup();
+    try {
+      fs.mkdirSync(path.dirname(env.options.registryPath), { recursive: true });
+      fs.writeFileSync(env.options.registryPath, JSON.stringify({
+        schemaVersion: 1,
+        capabilities: {
+          cap_legacy: {
+            handle: 'cap_legacy',
+            revision: 4,
+            routingName: 'flashcard-image-delivery',
+            description: 'Deliver validated flashcard images.',
+            skillFilePath: path.join(env.options.outputDir, 'cap_legacy', 'SKILL.md'),
+            guidanceHash: 'guidance-legacy',
+            evidenceRefs: [{ ref: 'session.jsonl#12' }],
+            referencedSkills: [],
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      }), 'utf8');
+
+      const migrated = loadCurrentSkillRegistry(env.options.registryPath);
+      assert.equal(migrated.schemaVersion, 2);
+      assert.equal(migrated.catalogRevision, 0);
+      assert.deepEqual(migrated.routeRedirects, {});
+      assert.equal(migrated.capabilities.cap_legacy?.routingName, 'flashcard-image-delivery');
+      const persisted = JSON.parse(fs.readFileSync(env.options.registryPath, 'utf8')) as { schemaVersion: number; catalogRevision: number; routeRedirects: Record<string, string> };
+      assert.equal(persisted.schemaVersion, 2);
+      assert.equal(persisted.catalogRevision, 0);
+      assert.deepEqual(persisted.routeRedirects, {});
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('fails closed on a future Registry schema without quarantining or overwriting it', () => {
+    const env = setup();
+    try {
+      const future = JSON.stringify({ schemaVersion: 99, capabilities: { preserved: { opaque: true } } });
+      fs.mkdirSync(path.dirname(env.options.registryPath), { recursive: true });
+      fs.writeFileSync(env.options.registryPath, future, 'utf8');
+      assert.throws(() => loadCurrentSkillRegistry(env.options.registryPath), /Unsupported generated-skill Registry schema version/);
+      assert.equal(fs.readFileSync(env.options.registryPath, 'utf8'), future);
+      assert.equal(fs.existsSync(`${env.options.registryPath}.corrupt`), false);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('passes fixed semantic observations to Author and Verifier without making Runtime name the capability', async () => {
+    const env = setup();
+    try {
+      const seen: string[] = [];
+      env.options.authorFixture = ({ bundle }) => {
+        seen.push(`author:${bundle.semanticObservations?.map(item => item.kind).join(',')}`);
+        return {
+          body: 'Use the bounded flashcard workflow.',
+          envelope: {
+            decision: 'create_current_skill',
+            routingName: 'flashcard-image-delivery',
+            description: 'Deliver validated flashcard images.',
+            evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+          },
+        };
+      };
+      env.options.verifierFixture = ({ bundle }) => {
+        seen.push(`verifier:${bundle.semanticObservations?.[0]?.value}`);
+        return { decision: 'accept', transition: 'create_current_skill', issues: [], rationale: 'Observations support the bounded capability.' };
+      };
+      const result = await new SkillEvolutionRuntime(env.options).reviewAndApply(fixtureBundle());
+      assert.equal(result.transition, 'create_current_skill');
+      assert.ok(seen.some(item => item.startsWith('author:user-intent,workflow-tool')));
+      assert.ok(seen.some(item => item.includes('Create a validated flashcard artifact.')));
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('defers an obviously lifecycle-bound routing name instead of assigning a generic replacement', async () => {
+    const env = setup();
+    try {
+      let verifierCalled = false;
+      env.options.authorFixture = () => ({
+        body: 'Use the workflow.',
+        envelope: {
+          decision: 'create_current_skill',
+          routingName: 'settled-artifact-delivery',
+          description: 'A settled artifact workflow.',
+          evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+        },
+      });
+      env.options.verifierFixture = () => {
+        verifierCalled = true;
+        return { decision: 'accept', transition: 'create_current_skill', issues: [], rationale: 'not reached' };
+      };
+      const result = await new SkillEvolutionRuntime(env.options).reviewAndApply(fixtureBundle());
+      assert.equal(result.transition, 'defer');
+      assert.equal(result.verified, false);
+      assert.equal(verifierCalled, false);
+      assert.equal(Object.keys(loadCurrentSkillRegistry(env.options.registryPath).capabilities).length, 0);
+      assert.equal(loadTransitionAudit(env.options.auditPath)[0]?.transition, 'defer');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('durably defers a semantic proposal when the production bundle has no observations', async () => {
+    const env = setup();
+    try {
+      env.options.reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      let verifierCalled = false;
+      env.options.authorFixture = () => ({
+        body: 'Use the bounded report workflow.',
+        envelope: {
+          decision: 'create_current_skill',
+          routingName: 'validated-report-delivery',
+          description: 'Deliver a validated report.',
+          evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+        },
+      });
+      env.options.verifierFixture = () => {
+        verifierCalled = true;
+        return { decision: 'accept', transition: 'create_current_skill', issues: [], rationale: 'not reached' };
+      };
+
+      const result = await new SkillEvolutionRuntime(env.options).reviewAndApply({
+        ...fixtureCandidateBundle(fixtureCandidate(), 'episode-no-observations'),
+        semanticObservations: [],
+      });
+
+      assert.equal(result.transition, 'defer');
+      assert.equal(result.verified, false);
+      assert.equal(result.queued, 'deferred');
+      assert.equal(verifierCalled, false);
+      assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
+      const queue = loadReviewQueueState(env.options.reviewQueuePath);
+      assert.equal(queue.deferred.length, 1);
+      assert.match(queue.deferred[0]!.reason, /semantic observation/i);
+      assert.equal(loadTransitionAudit(env.options.auditPath)[0]?.transition, 'defer');
+    } finally {
+      env.cleanup();
+    }
+  });
+
   test('the existing DistillationPipeline async seam can drive V3 end to end', async () => {
     const env = setup();
     try {
@@ -736,12 +895,12 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(result.rounds, 1);
       assert.ok(result.record);
       assert.match(result.record!.handle, /^cap_[0-9a-f]{32}$/);
-      assert.equal(result.record!.routingName, 'flashcard-artifact-workflow');
+      assert.equal(result.record!.routingName, 'flashcard-image-delivery');
       assert.equal(fs.existsSync(result.record!.skillFilePath), true);
 
       const manager = new SkillManager();
       await manager.loadSkills();
-      const visible = manager.getUserInvocableSkills().filter(skill => skill.metadata.name === 'flashcard-artifact-workflow');
+      const visible = manager.getUserInvocableSkills().filter(skill => skill.metadata.name === 'flashcard-image-delivery');
       assert.equal(visible.length, 1, 'Current Skill is visible through normal discovery');
       assert.match(visible[0]!.content, /referenced card maker/);
 
@@ -786,6 +945,153 @@ describe('V3 verified semantic Current Skills', () => {
     }
   });
 
+  test('migrates a generated skill route without changing its Capability Handle', async () => {
+    const env = setup();
+    try {
+      const bundle = fixtureBundle();
+      const accepted = (transition: 'create_current_skill' | 'migrate_skill_route') => ({
+        decision: 'accept' as const,
+        transition,
+        issues: [],
+        rationale: `accepted ${transition}`,
+      });
+      const create = await new SkillEvolutionRuntime(env.options).reviewAndApply(bundle);
+      const first = create.record!;
+      const migrated = applyCapabilityTransition({
+        ...env.options,
+        bundle,
+        draft: { body: 'The same capability with a clearer public route.', envelope: {
+          decision: 'migrate_skill_route',
+          targetCapabilityHandle: first.handle,
+          routingName: 'flashcard-image-generation',
+          description: 'Generate flashcard images from a word list.',
+          evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+        } },
+        transition: 'migrate_skill_route',
+        verifier: accepted('migrate_skill_route'),
+        branchTranscriptPaths: [],
+        reviewerVersion: 'test-reviewer',
+        promptVersion: 'test-prompt',
+      });
+
+      const registry = loadCurrentSkillRegistry(env.options.registryPath);
+      assert.equal(migrated.record!.handle, first.handle);
+      assert.equal(registry.capabilities[first.handle]!.routingName, 'flashcard-image-generation');
+      assert.equal(registry.routeRedirects[first.routingName], first.handle);
+      assert.equal(registry.capabilities[first.handle]!.skillFilePath, first.skillFilePath);
+      assert.equal(loadTransitionAudit(env.options.auditPath).at(-1)!.priorRoutingName, first.routingName);
+      assert.equal(loadTransitionAudit(env.options.auditPath).at(-1)!.resultingRoutingName, 'flashcard-image-generation');
+      assert.throws(() => applyCapabilityTransition({
+        ...env.options,
+        bundle,
+        draft: { body: 'Cannot reuse a retired route.', envelope: {
+          decision: 'create_current_skill',
+          routingName: first.routingName,
+          description: 'This route is retired.',
+          evidenceRefs: ['session.jsonl#12'],
+        } },
+        transition: 'create_current_skill',
+        verifier: accepted('create_current_skill'),
+        branchTranscriptPaths: [],
+        reviewerVersion: 'test-reviewer',
+        promptVersion: 'test-prompt',
+      }));
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('rejects invalid or handwritten route-migration targets before persistence', async () => {
+    const env = setup();
+    try {
+      const bundle = fixtureBundle();
+      const accepted = {
+        decision: 'accept' as const,
+        transition: 'create_current_skill' as const,
+        issues: [],
+        rationale: 'accepted',
+      };
+      const created = await new SkillEvolutionRuntime(env.options).reviewAndApply(bundle);
+      const generated = created.record!;
+
+      assert.throws(() => applyCapabilityTransition({
+        ...env.options,
+        bundle,
+        draft: { body: 'A valid body.', envelope: {
+          decision: 'migrate_skill_route',
+          targetCapabilityHandle: generated.handle,
+          routingName: 'Not a valid route',
+          description: generated.description,
+        } },
+        transition: 'migrate_skill_route',
+        verifier: { ...accepted, transition: 'migrate_skill_route' },
+        branchTranscriptPaths: [],
+        reviewerVersion: 'test-reviewer',
+        promptVersion: 'test-prompt',
+      }), /semantic kebab-case/i);
+
+      const manualPath = path.join(env.root, 'skills', 'manual', 'owned', 'SKILL.md');
+      fs.mkdirSync(path.dirname(manualPath), { recursive: true });
+      fs.writeFileSync(manualPath, '---\nname: manual-owned\ndescription: Manual\n---\n\nManual guidance.\n', 'utf8');
+      const manualHash = crypto.createHash('sha256').update(fs.readFileSync(manualPath)).digest('hex');
+      const registry = loadCurrentSkillRegistry(env.options.registryPath);
+      registry.capabilities.manual = {
+        handle: 'manual',
+        revision: 1,
+        routingName: 'manual-owned',
+        description: 'Manual',
+        skillFilePath: manualPath,
+        guidanceHash: manualHash,
+        evidenceRefs: [],
+        referencedSkills: [],
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
+      };
+      saveCurrentSkillRegistry(env.options.registryPath, registry);
+
+      assert.throws(() => applyCapabilityTransition({
+        ...env.options,
+        bundle,
+        draft: { body: 'Do not rename manual skills.', envelope: {
+          decision: 'migrate_skill_route',
+          targetCapabilityHandle: 'manual',
+          routingName: 'manual-owned-v2',
+          description: 'Manual',
+        } },
+        transition: 'migrate_skill_route',
+        verifier: { ...accepted, transition: 'migrate_skill_route' },
+        branchTranscriptPaths: [],
+        reviewerVersion: 'test-reviewer',
+        promptVersion: 'test-prompt',
+      }), /generated Current Skill/i);
+      assert.equal(loadCurrentSkillRegistry(env.options.registryPath).capabilities.manual?.routingName, 'manual-owned');
+      assert.equal(loadTransitionAudit(env.options.auditPath).filter(entry => entry.transition === 'migrate_skill_route').length, 0);
+
+      // A retired route is permanently reserved, including for a later
+      // same-handle migration attempt.
+      const activeRegistry = loadCurrentSkillRegistry(env.options.registryPath);
+      activeRegistry.routeRedirects['retired-route'] = generated.handle;
+      saveCurrentSkillRegistry(env.options.registryPath, activeRegistry);
+      assert.throws(() => applyCapabilityTransition({
+        ...env.options,
+        bundle,
+        draft: { body: 'Route resurrection is forbidden.', envelope: {
+          decision: 'migrate_skill_route',
+          targetCapabilityHandle: generated.handle,
+          routingName: 'retired-route',
+          description: generated.description,
+        } },
+        transition: 'migrate_skill_route',
+        verifier: { ...accepted, transition: 'migrate_skill_route' },
+        branchTranscriptPaths: [],
+        reviewerVersion: 'test-reviewer',
+        promptVersion: 'test-prompt',
+      }), /collision/i);
+    } finally {
+      env.cleanup();
+    }
+  });
+
   test('applies append, replace, merge, and retire as active-only transitions with audit hashes', async () => {
     const env = setup();
     try {
@@ -819,8 +1125,11 @@ describe('V3 verified semantic Current Skills', () => {
       } }, 'append_evidence');
       assert.equal(append.audit.priorGuidanceHash, first.guidanceHash);
       assert.equal(append.audit.resultingGuidanceHash, first.guidanceHash);
-      assert.equal(loadCurrentSkillRegistry(env.options.registryPath).capabilities[first.handle]!.guidanceHash, first.guidanceHash);
+      const afterAppend = loadCurrentSkillRegistry(env.options.registryPath).capabilities[first.handle]!;
+      assert.equal(afterAppend.guidanceHash, first.guidanceHash);
+      assert.equal(afterAppend.revision, first.revision, 'evidence-only metadata does not create a guidance revision');
 
+      const previousActiveContent = fs.readFileSync(first.skillFilePath, 'utf8');
       const replace = apply({ body: 'Replacement guidance with a validated boundary.', envelope: {
         decision: 'replace_current_skill',
         targetCapabilityHandle: first.handle,
@@ -833,6 +1142,10 @@ describe('V3 verified semantic Current Skills', () => {
       const replaced = loadCurrentSkillRegistry(env.options.registryPath).capabilities[first.handle]!;
       assert.equal(replaced.guidanceHash, replace.audit.resultingGuidanceHash);
       assert.equal(fs.existsSync(replaced.skillFilePath), true);
+      const historyPath = path.join(path.dirname(first.skillFilePath), 'history', first.guidanceHash, 'SKILL.md');
+      assert.equal(fs.existsSync(historyPath), true, 'replacement archives the prior immutable guidance snapshot');
+      assert.equal(fs.readFileSync(historyPath, 'utf8'), previousActiveContent);
+      assert.notEqual(fs.readFileSync(replaced.skillFilePath, 'utf8'), previousActiveContent);
 
       const second = apply({ body: 'Second independent guidance.', envelope: {
         decision: 'create_current_skill',
@@ -903,6 +1216,170 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(loadTransitionAudit(env.options.auditPath).length, 2);
       assert.equal(recoverTransitionJournal(env.options), false);
       assert.equal(loadTransitionAudit(env.options.auditPath).length, 2, 'recovery is idempotent');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('refuses to overwrite an immutable guidance snapshot with a different body', async () => {
+    const env = setup();
+    try {
+      const content = 'original immutable guidance';
+      const archivePath = path.join(env.options.outputDir, 'cap-existing', 'history', 'hash-old', 'SKILL.md');
+      fs.mkdirSync(path.dirname(archivePath), { recursive: true });
+      fs.writeFileSync(archivePath, 'different body', 'utf8');
+      const journal: TransitionJournal = {
+        schemaVersion: 2,
+        transitionId: 'transition-immutable-collision',
+        targetRegistryHash: computeCurrentSkillRegistryHash(loadCurrentSkillRegistry(env.options.registryPath)),
+        targetRegistry: loadCurrentSkillRegistry(env.options.registryPath),
+        skillOperations: [{
+          path: archivePath,
+          content,
+          expectedHash: crypto.createHash('sha256').update(content).digest('hex'),
+          immutable: true,
+        }],
+        audit: {
+          schemaVersion: 2,
+          transitionId: 'transition-immutable-collision',
+          transition: 'replace_current_skill',
+          occurredAt: new Date().toISOString(),
+          reviewerVersion: 'test',
+          promptVersion: 'test',
+          evidenceRefs: [],
+          involvedCapabilityHandles: [],
+          registryReadSet: [],
+          priorGuidanceHash: null,
+          resultingGuidanceHash: null,
+          branchTranscriptPaths: [],
+          rationale: 'collision test',
+        },
+      };
+      fs.mkdirSync(path.dirname(env.options.journalPath), { recursive: true });
+      fs.writeFileSync(env.options.journalPath, JSON.stringify(journal), 'utf8');
+      assert.throws(() => recoverTransitionJournal(env.options), /Immutable guidance snapshot collision/);
+      assert.equal(fs.readFileSync(archivePath, 'utf8'), 'different body');
+      assert.equal(fs.existsSync(env.options.journalPath), true, 'journal remains for operator recovery');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('restores an immutable guidance snapshot only through an explicit audited transition', async () => {
+    const env = setup();
+    try {
+      const bundle = fixtureBundle();
+      const created = await new SkillEvolutionRuntime(env.options).reviewAndApply(bundle);
+      const first = created.record!;
+      const priorContent = fs.readFileSync(first.skillFilePath, 'utf8');
+      const replacement = applyCapabilityTransition({
+        ...env.options,
+        bundle,
+        draft: { body: 'Replacement body.', envelope: {
+          decision: 'replace_current_skill',
+          targetCapabilityHandle: first.handle,
+          routingName: first.routingName,
+          description: first.description,
+          evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+        } },
+        transition: 'replace_current_skill',
+        verifier: { decision: 'accept', transition: 'replace_current_skill', issues: [], rationale: 'replace' },
+        branchTranscriptPaths: [],
+        reviewerVersion: 'test',
+        promptVersion: 'test',
+      });
+      const restored = restoreCapabilityRevision({
+        ...env.options,
+        targetCapabilityHandle: first.handle,
+        guidanceHash: first.guidanceHash,
+        rationale: 'Operator explicitly restored the prior immutable revision.',
+      });
+      assert.equal(restored.audit.transition, 'restore_capability_revision');
+      assert.equal(restored.record!.guidanceHash, first.guidanceHash);
+      assert.equal(fs.readFileSync(first.skillFilePath, 'utf8'), priorContent);
+      assert.equal(loadCurrentSkillRegistry(env.options.registryPath).capabilities[first.handle]!.revision, replacement.record!.revision + 1);
+      assert.equal(loadTransitionAudit(env.options.auditPath).at(-1)!.transition, 'restore_capability_revision');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('retries the same material revision idempotently without duplicate history or audit', async () => {
+    const env = setup();
+    try {
+      const bundle = fixtureBundle();
+      const created = await new SkillEvolutionRuntime(env.options).reviewAndApply(bundle);
+      const first = created.record!;
+      const priorContent = fs.readFileSync(first.skillFilePath, 'utf8');
+      const replacementInput = {
+        ...env.options,
+        bundle: { ...bundle, bundleId: 'material-revision-retry' },
+        draft: { body: 'Replacement guidance with a validated boundary.', envelope: {
+          decision: 'replace_current_skill' as const,
+          targetCapabilityHandle: first.handle,
+          routingName: first.routingName,
+          description: first.description,
+          evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+        } },
+        transition: 'replace_current_skill' as const,
+        verifier: { decision: 'accept' as const, transition: 'replace_current_skill' as const, issues: [], rationale: 'replace' },
+        branchTranscriptPaths: [],
+        reviewerVersion: 'test',
+        promptVersion: 'test',
+      };
+
+      const firstApply = applyCapabilityTransition(replacementInput);
+      const secondApply = applyCapabilityTransition(replacementInput);
+      assert.equal(secondApply.transitionId, firstApply.transitionId, 'same bundle retry returns the committed transition');
+      assert.equal(loadTransitionAudit(env.options.auditPath).filter(entry => entry.bundleId === 'material-revision-retry').length, 1);
+      const current = loadCurrentSkillRegistry(env.options.registryPath).capabilities[first.handle]!;
+      assert.equal(current.guidanceHash, firstApply.audit.resultingGuidanceHash);
+      const historyPath = path.join(path.dirname(first.skillFilePath), 'history', first.guidanceHash, 'SKILL.md');
+      assert.equal(fs.existsSync(historyPath), true);
+      assert.equal(fs.readFileSync(historyPath, 'utf8'), priorContent);
+      assert.notEqual(fs.readFileSync(first.skillFilePath, 'utf8'), priorContent);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('retries an explicit restore idempotently while preserving newer history', async () => {
+    const env = setup();
+    try {
+      const bundle = fixtureBundle();
+      const created = await new SkillEvolutionRuntime(env.options).reviewAndApply(bundle);
+      const first = created.record!;
+      const priorContent = fs.readFileSync(first.skillFilePath, 'utf8');
+      const replacement = applyCapabilityTransition({
+        ...env.options,
+        bundle: { ...bundle, bundleId: 'restore-source-replacement' },
+        draft: { body: 'Replacement body.', envelope: {
+          decision: 'replace_current_skill',
+          targetCapabilityHandle: first.handle,
+          routingName: first.routingName,
+          description: first.description,
+          evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+        } },
+        transition: 'replace_current_skill',
+        verifier: { decision: 'accept', transition: 'replace_current_skill', issues: [], rationale: 'replace' },
+        branchTranscriptPaths: [],
+        reviewerVersion: 'test',
+        promptVersion: 'test',
+      });
+      const replacementContent = fs.readFileSync(first.skillFilePath, 'utf8');
+      const restoreInput = {
+        ...env.options,
+        targetCapabilityHandle: first.handle,
+        guidanceHash: first.guidanceHash,
+        rationale: 'Operator explicitly restored the prior immutable revision.',
+      };
+      const restored = restoreCapabilityRevision(restoreInput);
+      const retried = restoreCapabilityRevision(restoreInput);
+      assert.equal(retried.transitionId, restored.transitionId);
+      assert.equal(fs.readFileSync(first.skillFilePath, 'utf8'), priorContent);
+      assert.equal(loadCurrentSkillRegistry(env.options.registryPath).capabilities[first.handle]!.guidanceHash, first.guidanceHash);
+      assert.equal(fs.readFileSync(path.join(path.dirname(first.skillFilePath), 'history', replacement.audit.resultingGuidanceHash!, 'SKILL.md'), 'utf8'), replacementContent);
+      assert.equal(loadTransitionAudit(env.options.auditPath).filter(entry => entry.transition === 'restore_capability_revision').length, 1);
     } finally {
       env.cleanup();
     }

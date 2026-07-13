@@ -227,7 +227,7 @@ export class SubAgentSession {
 
     // 2. 以 tool_result 形式注入 skill 内容（兼容旧 spawn_subagent(skill_name) 形式）
     const skill = this.options.skillName
-      ? this.skillManager.getSkill(this.options.skillName)
+      ? (await this.skillManager.resolveSkill(this.options.skillName))?.skill
       : null;
     if (this.options.skillName && !skill) {
       throw new Error(`Skill "${this.options.skillName}" 未找到`);

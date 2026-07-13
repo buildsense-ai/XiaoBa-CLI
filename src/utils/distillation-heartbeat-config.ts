@@ -56,6 +56,8 @@ export interface DistillationHeartbeatConfig {
   skillUsageLedgerPath: string;
   /** Durable low-frequency Curator scheduling and coalescing state. */
   skillEvolutionCuratorStatePath: string;
+  /** Durable generated-skill semantic reassessment manifest. */
+  skillEvolutionReassessmentManifestPath: string;
   /** Bounded Branch Promotion Reviewer worker count. */
   skillEvolutionReviewerConcurrency: number;
   /** Durable review queue state for V3 semantic defers and operational retries. */
@@ -253,6 +255,12 @@ export function getDistillationHeartbeatConfig(
     readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_CURATOR_STATE_FILE'),
     'data/skill-evolution-curator-state.json',
   );
+  const skillEvolutionReassessmentManifestPath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE'),
+    'data/skill-evolution-reassessment-manifest.json',
+  );
   const skillEvolutionReviewQueuePath = readEnv(
     runtimeEnv,
     'XIAOBA_SKILL_EVOLUTION_REVIEW_QUEUE_FILE',
@@ -297,6 +305,7 @@ export function getDistillationHeartbeatConfig(
     skillEvolutionCuratorIntervalHours,
     skillUsageLedgerPath,
     skillEvolutionCuratorStatePath,
+    skillEvolutionReassessmentManifestPath,
     skillEvolutionReviewerConcurrency,
     skillEvolutionReviewQueuePath: resolveContainedPath(
       workingDirectory,

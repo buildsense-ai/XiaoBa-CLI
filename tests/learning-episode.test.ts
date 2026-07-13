@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import {
   LearningEpisode,
   LearningEpisodeStore,
+  buildLearningEpisodeCandidate,
   buildFlashcardEvidenceBundle,
   extractLearningEpisodes,
   listDiscoverableGeneratedSkills,
@@ -52,6 +53,85 @@ function unit(turns: SessionTurnLogEntry[], filePath = '/logs/flashcards.jsonl')
 }
 
 describe('V3 independent Learning Episodes', () => {
+  test('extracts bounded semantic observations from user intent, workflow, and delivery', () => {
+    const result = extractLearningEpisodes(unit([
+      turn(6, 'Find a suitable mirror image for the word card.', [{
+        id: 'opencli-6',
+        name: 'execute_shell',
+        arguments: { command: 'opencli google images mirror --limit 3 --lang en -f yaml' },
+        result: 'Command succeeded\n3 image results returned',
+      }]),
+      turn(7, 'Start the mirror word card.', [{
+        id: 'send-7',
+        name: 'send_file',
+        arguments: { path: 'mirror-preview.jpg' },
+        result: 'File sent to current chat.',
+      }]),
+    ], '/logs/semantic-observations.jsonl'));
+
+    const observations = result.episodes[0]!.semanticObservations;
+    assert.ok(observations.length > 0);
+    const intent = observations.find(item => item.kind === 'user-intent');
+    const workflow = observations.find(item => item.kind === 'workflow-tool');
+    const delivery = observations.find(item => item.kind === 'artifact-operation');
+    assert.ok(intent);
+    assert.match(intent!.value, /mirror/i);
+    assert.ok(intent!.sourceRefs.some(ref => ref.includes('#turn-7')));
+    assert.ok(workflow);
+    assert.match(workflow!.value, /opencli google images mirror/);
+    assert.ok(workflow!.sourceRefs.some(ref => ref.includes('#turn-6')));
+    assert.ok(delivery);
+    assert.match(delivery!.value, /send_file/);
+    assert.ok(delivery!.sourceRefs.some(ref => ref.includes('#turn-7')));
+    for (const observation of observations) {
+      assert.ok(observation.value.length <= 512);
+      assert.ok(observation.sourceRefs.length > 0);
+      assert.ok(observation.sourceRefs.length <= 12);
+    }
+  });
+
+  test('persists observations and migrates v2 episodes to schema v3 without fabricating observations', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-learning-observation-migration-'));
+    try {
+      const storePath = path.join(root, 'episodes.json');
+      const episode: LearningEpisode = {
+        schemaVersion: 2 as LearningEpisode['schemaVersion'],
+        episodeId: 'episode-legacy-v2',
+        runtimeSessionId: 'runtime-legacy',
+        sourceFilePath: '/logs/legacy.jsonl',
+        deliveryTurn: 4,
+        completionEvidence: [{
+          ref: '/logs/legacy.jsonl#turn-4:delivery:send_file',
+          sourceFilePath: '/logs/legacy.jsonl',
+          turn: 4,
+          kind: 'artifact-delivery',
+          detail: 'send_file: sent',
+        }],
+        contradictionSignals: [],
+        settlementDeadline: '2026-01-01T04:00:00.000Z',
+        status: 'eligible',
+      };
+      fs.writeFileSync(storePath, JSON.stringify({ schemaVersion: 2, episodes: { [episode.episodeId]: episode } }), 'utf8');
+
+      const migrated = new LearningEpisodeStore(storePath).load();
+      assert.equal(migrated.schemaVersion, 3);
+      const migratedEpisode = migrated.episodes[episode.episodeId]!;
+      assert.equal(migratedEpisode.schemaVersion, 3);
+      assert.deepEqual(migratedEpisode.semanticObservations, []);
+      assert.equal((JSON.parse(fs.readFileSync(storePath, 'utf8')) as { schemaVersion: number }).schemaVersion, 3);
+
+      const observed = extractLearningEpisodes(unit([
+        turn(1, 'Make a mirror card.', [{ id: 'send', name: 'send_file', result: 'sent' }]),
+      ], path.join(root, 'new.jsonl'))).episodes[0]!;
+      const persisted = new LearningEpisodeStore(path.join(root, 'new-episodes.json'));
+      persisted.upsert([observed]);
+      const reloaded = persisted.load().episodes[observed.episodeId]!;
+      assert.deepEqual(reloaded.semanticObservations, observed.semanticObservations);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('turns a direct correction into a Contradiction Signal and keeps a verified retry independent', () => {
     const result = extractLearningEpisodes(unit([
       turn(1, 'Make a flashcard for ephemeral.', [tool('1', 'send_file', 'delivered unsuitable card')]),
@@ -191,6 +271,48 @@ describe('V3 independent Learning Episodes', () => {
     assert.equal(deliveredAndValidated.episodes.length, 1);
     assert.equal(deliveredAndValidated.episodes[0].completionEvidence.some(item => item.kind === 'artifact-validation'), true);
     assert.equal(deliveredAndValidated.episodes[0].completionEvidence.some(item => item.kind === 'artifact-delivery'), true);
+  });
+
+  test('carries a successful OpenCLI shell workflow into the following delivery episode', () => {
+    const result = extractLearningEpisodes(unit([
+      turn(6, 'Find a suitable mirror image.', [{
+        id: 'opencli-6',
+        name: 'execute_shell',
+        arguments: { command: 'opencli google images mirror --limit 3 --lang en -f yaml' },
+        result: 'Command succeeded\n3 image results returned',
+      }]),
+      turn(7, 'Start the mirror word card.', [{
+        id: 'send-7',
+        name: 'send_file',
+        arguments: { path: 'mirror-preview.jpg' },
+        result: 'File sent to current chat.',
+      }]),
+    ], '/logs/catscompany-opencli.jsonl'));
+
+    assert.equal(result.episodes.length, 1);
+    const episode = result.episodes[0]!;
+    assert.equal(episode.deliveryTurn, 7);
+    assert.ok(episode.completionEvidence.some(evidence =>
+      evidence.kind === 'verified-tool-result'
+      && evidence.turn === 6
+      && evidence.detail?.includes('opencli google images mirror'),
+    ));
+    const candidate = buildLearningEpisodeCandidate(episode);
+    assert.match(candidate.actionPattern, /opencli google images mirror/);
+    assert.ok(candidate.provenance.some(provenance => provenance.turn === 6));
+  });
+
+  test('does not classify read_file inspection as artifact delivery', () => {
+    const result = extractLearningEpisodes(unit([
+      turn(1, 'Inspect the generated card before sending it.', [{
+        id: 'read-1',
+        name: 'read_file',
+        arguments: { path: 'mirror-preview.jpg' },
+        result: 'File contents read successfully',
+      }]),
+    ], '/logs/read-file-inspection.jsonl'));
+
+    assert.deepEqual(result.episodes, []);
   });
 
   test('links a later heartbeat retry to an immediate rejected predecessor and keeps its own settlement', () => {
@@ -685,11 +807,12 @@ describe('V3 flashcard Composition Capability regression', () => {
         assert.equal(episode.episodeId, 'episode-legacy-001');
         assert.ok(episode.completionEvidence.length >= 1);
         assert.equal(episode.contradictionSignals.length, 0);
-        // The migration auto-saved the state — the store now has schemaVersion 2
+        // The migration auto-saved the state — the store now has schemaVersion 3
         const reloaded = new LearningEpisodeStore(storePath).load();
-        assert.equal(reloaded.schemaVersion, 2);
+        assert.equal(reloaded.schemaVersion, 3);
         assert.equal(Object.values(reloaded.episodes)[0]!.status, 'eligible');
-        assert.equal(Object.values(reloaded.episodes)[0]!.schemaVersion, 2, 'per-episode schemaVersion must migrate to v2 on a raw v1 fixture');
+        assert.equal(Object.values(reloaded.episodes)[0]!.schemaVersion, 3, 'per-episode schemaVersion must migrate to v3 on a raw v1 fixture');
+        assert.deepEqual(Object.values(reloaded.episodes)[0]!.semanticObservations, []);
         // Evidence, settlement deadline, and linkage are preserved
         assert.equal(Object.values(reloaded.episodes)[0]!.settlementDeadline, '2026-01-01T04:00:00.000Z');
         assert.equal(Object.values(reloaded.episodes)[0]!.completionEvidence.length, 1);
@@ -732,9 +855,10 @@ describe('V3 flashcard Composition Capability regression', () => {
         assert.ok(episode.completionEvidence.length >= 1);
         // Auto-save persisted the migration
         const reloaded = new LearningEpisodeStore(storePath).load();
-        assert.equal(reloaded.schemaVersion, 2);
+        assert.equal(reloaded.schemaVersion, 3);
         assert.equal(Object.values(reloaded.episodes)[0]!.status, 'contradicted');
-        assert.equal(Object.values(reloaded.episodes)[0]!.schemaVersion, 2, 'per-episode schemaVersion must migrate to v2 on a raw v1 fixture');
+        assert.equal(Object.values(reloaded.episodes)[0]!.schemaVersion, 3, 'per-episode schemaVersion must migrate to v3 on a raw v1 fixture');
+        assert.deepEqual(Object.values(reloaded.episodes)[0]!.semanticObservations, []);
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
       }
@@ -785,13 +909,13 @@ describe('V3 flashcard Composition Capability regression', () => {
 
         // Verify migration is durable and retry linkage works across reload
         const reloaded = new LearningEpisodeStore(storePath).load();
-        assert.equal(reloaded.schemaVersion, 2);
+        assert.equal(reloaded.schemaVersion, 3);
         const migratedPredecessor = Object.values(reloaded.episodes).find(e => e.episodeId === predecessorId)!;
         assert.equal(migratedPredecessor.status, 'contradicted');
-        assert.equal(migratedPredecessor.schemaVersion, 2, 'migrated predecessor per-episode schemaVersion must be v2');
+        assert.equal(migratedPredecessor.schemaVersion, 3, 'migrated predecessor per-episode schemaVersion must be v3');
         const reloadedRetry = Object.values(reloaded.episodes).find(e => e.deliveryTurn === 3)!;
         assert.equal(reloadedRetry.retryOfEpisodeId, predecessorId);
-        assert.equal(reloadedRetry.schemaVersion, 2, 'retry episode per-episode schemaVersion must be v2');
+        assert.equal(reloadedRetry.schemaVersion, 3, 'retry episode per-episode schemaVersion must be v3');
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
       }
@@ -850,7 +974,7 @@ describe('V3 flashcard Composition Capability regression', () => {
         // ── The same episode remains eligible in the durable store ────────
         const episodeAfter = Object.values(new LearningEpisodeStore(storePath).load().episodes)[0]!;
         assert.equal(episodeAfter.status, 'eligible');
-        assert.equal(episodeAfter.schemaVersion, 2);
+        assert.equal(episodeAfter.schemaVersion, 3);
         assert.ok(episodeAfter.completionEvidence.some(ev => ev.kind === 'artifact-delivery'));
 
         // ── No Current Skill or Capability Registry entry is created ──────
@@ -913,11 +1037,11 @@ describe('V3 flashcard Composition Capability regression', () => {
         assert.equal(fs.readFileSync(storePath, 'utf8'), originalRaw);
         // A later successful migration (after the I/O issue is resolved) still
         // migrates the retained store cleanly: both store- and episode-level
-        // schemaVersion upgrade to v2.
+        // schemaVersion upgrade to v3.
         const recovered = new LearningEpisodeStore(storePath).load();
-        assert.equal(recovered.schemaVersion, 2);
+        assert.equal(recovered.schemaVersion, 3);
         assert.equal(Object.values(recovered.episodes)[0]!.status, 'eligible');
-        assert.equal(Object.values(recovered.episodes)[0]!.schemaVersion, 2);
+        assert.equal(Object.values(recovered.episodes)[0]!.schemaVersion, 3);
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
       }
@@ -934,7 +1058,7 @@ describe('V3 flashcard Composition Capability regression', () => {
         const malformedStore = new LearningEpisodeStore(malformedPath, {
           atomicWrite: () => { writerCalled = true; },
         });
-        assert.deepEqual(malformedStore.load(), { schemaVersion: 2, episodes: {} });
+        assert.deepEqual(malformedStore.load(), { schemaVersion: 3, episodes: {} });
         assert.equal(writerCalled, false, 'malformed store must not engage the migration writer');
 
         // Unknown schema version also returns an empty state without writing.
@@ -944,7 +1068,7 @@ describe('V3 flashcard Composition Capability regression', () => {
         const unknownStore = new LearningEpisodeStore(unknownPath, {
           atomicWrite: () => { unknownWriterCalled = true; },
         });
-        assert.deepEqual(unknownStore.load(), { schemaVersion: 2, episodes: {} });
+        assert.deepEqual(unknownStore.load(), { schemaVersion: 3, episodes: {} });
         assert.equal(unknownWriterCalled, false, 'unknown-schema store must not engage the migration writer');
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
@@ -1002,7 +1126,7 @@ describe('V3 flashcard Composition Capability regression', () => {
       // An eligible episode is just a store-level state. No review pipeline
       // was invoked, no SkillEvolution audit produced, no registry entry
       // created, no SKILL.md file written.
-      assert.equal(settled[0]!.schemaVersion, 2);
+      assert.equal(settled[0]!.schemaVersion, 3);
       assert.ok(settled[0]!.episodeId.startsWith('episode-'));
       assert.equal(settled[0]!.contradictionSignals.length, 0);
     });
