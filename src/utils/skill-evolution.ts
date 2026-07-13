@@ -1371,6 +1371,74 @@ export class SkillEvolutionRuntime {
   }
 }
 
+function assertHealthyBranchTranscript(
+  filePath: string | null,
+  expectedBranchType: string | undefined,
+  branchLogRoot?: string,
+): void {
+  const label = expectedBranchType ?? 'branch';
+  if (!filePath) throw new Error(`${label} transcript is disabled.`);
+  const resolvedPath = path.resolve(filePath);
+  const resolvedRoot = path.resolve(branchLogRoot ?? PathResolver.getLogsPath('branches'));
+  if (!isPathInside(resolvedPath, resolvedRoot)) {
+    throw new Error(`${label} transcript is outside the runtime branch log root.`);
+  }
+  if (!fs.existsSync(resolvedPath)) {
+    throw new Error(`${label} transcript is missing.`);
+  }
+
+  const entries = fs.readFileSync(resolvedPath, 'utf8')
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map(line => JSON.parse(line) as Record<string, unknown>);
+  const eventTypes = new Set(entries.map(entry => entry.event_type));
+  const actualBranchType = expectedBranchType ?? String(entries[0]?.branch_type ?? '');
+  if (!entries.every(entry => entry.entry_type === 'branch' && entry.branch_type === actualBranchType)) {
+    throw new Error(`${label} transcript contains an invalid branch entry.`);
+  }
+  if (!eventTypes.has('start') || !eventTypes.has('transcript')) {
+    throw new Error(`${label} transcript is missing minimum reconstruction events.`);
+  }
+  if (!eventTypes.has('run_result') && !eventTypes.has('fixture_result')) {
+    throw new Error(`${label} transcript is missing a completion event.`);
+  }
+  const transcript = entries.find(entry => entry.event_type === 'transcript');
+  if (!Array.isArray(transcript?.messages)) {
+    throw new Error(`${label} transcript has no reconstructable messages.`);
+  }
+}
+
+function assertAuditPathWritableAndReadable(auditPath: string): void {
+  fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+  fs.accessSync(path.dirname(auditPath), fs.constants.R_OK | fs.constants.W_OK);
+  if (!fs.existsSync(auditPath)) return;
+  fs.accessSync(auditPath, fs.constants.R_OK | fs.constants.W_OK);
+  loadTransitionAudit(auditPath);
+}
+
+function assertTransitionAuditReadable(
+  auditPath: string,
+  audit: TransitionAuditEntry,
+  branchLogRoot?: string,
+): void {
+  const entries = loadTransitionAudit(auditPath);
+  const persisted = entries.find(entry => entry.transitionId === audit.transitionId);
+  if (!persisted) throw new Error(`Transition Audit entry ${audit.transitionId} is not readable.`);
+  for (const transcriptPath of persisted.branchTranscriptPaths) {
+    assertHealthyBranchTranscript(transcriptPath, undefined, branchLogRoot);
+  }
+}
+
+function isPathInside(childPath: string, parentPath: string): boolean {
+  const relative = path.relative(parentPath, childPath);
+  return relative === '' || (
+    !!relative
+    && relative !== '..'
+    && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative)
+  );
+}
+
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
   concurrency: number,
