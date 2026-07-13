@@ -262,7 +262,39 @@ async function reassessRecord(
   const settlementRef = evidenceRefs[1] ?? `registry:${record.handle}:reassessment`;
   const bundle: EvidenceBundle = {
     bundleId: semanticReassessmentTaskId(record.handle, record.guidanceHash, observations),
-    episode: { kind: 'semantic-reassessment', capabilityHandle: record.handle, routingName: record.routingName },
+    // Reassessment still enters the normal review/queue seam, which expects
+    // a DistilledKnowledgeCandidate. Keep the capability handle alongside
+    // the candidate fields so constrained fixtures and audit consumers can
+    // identify the prior capability without introducing a second queue type.
+    episode: {
+      schemaVersion: 1,
+      kind: 'capability',
+      capabilityId: record.handle,
+      capabilityHandle: record.handle,
+      title: record.routingName,
+      applicability: record.description,
+      actionPattern: record.description,
+      boundaries: [],
+      risks: [],
+      solvedLoop: {
+        problem: `Reassess the generated capability ${record.routingName}.`,
+        action: record.description,
+        verification: 'The bounded reassessment review completed.',
+        noCorrection: 'Prior evidence remains the fixed source for reassessment.',
+      },
+      provenance: evidenceRefs.map((ref, index) => ({
+        filePath: ref,
+        turn: index + 1,
+        role: index === 0 ? 'problem-action' as const : 'verification' as const,
+        unitByteRange: { start: 0, end: 0 },
+      })),
+      generatedAt: new Date().toISOString(),
+      sourceUnit: {
+        filePath: `registry:${record.handle}`,
+        byteRange: { start: 0, end: 0 },
+        generatedAt: new Date().toISOString(),
+      },
+    } as DistilledKnowledgeCandidate & { capabilityHandle: string },
     completionEvidence: [{ ref: completionRef }],
     settlementEvidence: [{ ref: settlementRef === completionRef ? `${settlementRef}:settlement` : settlementRef }],
     boundedContinuity: [],
@@ -278,25 +310,38 @@ async function reassessRecord(
   };
   try {
     const result = await options.skillEvolution.reviewAndApply(bundle);
+    const queuedState = options.skillEvolution.getQueuedReviewState(bundle.bundleId);
     const state = options.manifest.load();
     const current = state.entries[entry.taskId];
     if (current) {
-      current.status = result.queued === 'deferred' ? 'deferred' : result.queued === 'operational' ? 'failed' : 'succeeded';
-      current.lastError = result.queued ? `Reassessment queued: ${result.queued}` : undefined;
-      if (current.status === 'succeeded' || current.status === 'deferred') delete current.nextRetryAt;
+      current.status = queuedState?.kind === 'deferred' || result.queued === 'deferred'
+        ? 'deferred'
+        : queuedState?.kind === 'operational' || result.queued === 'operational'
+          ? 'failed'
+          : 'succeeded';
+      current.lastError = queuedState?.reason
+        ?? (result.queued ? `Reassessment queued: ${result.queued}` : undefined);
+      if (current.status === 'failed' && queuedState?.nextRetryAt) {
+        current.nextRetryAt = queuedState.nextRetryAt;
+      } else if (current.status === 'succeeded' || current.status === 'deferred') {
+        delete current.nextRetryAt;
+      }
       current.updatedAt = new Date().toISOString();
       options.manifest.save(state);
     }
     return { taskId: entry.taskId, capabilityHandle: record.handle, status: current?.status ?? 'succeeded', transition: result.transition };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const queuedState = options.skillEvolution.getQueuedReviewState(bundle.bundleId);
     const state = options.manifest.load();
     const current = state.entries[entry.taskId];
     if (current) {
-      current.status = 'failed';
+      current.status = queuedState?.kind === 'deferred' ? 'deferred' : 'failed';
       current.attemptCount += 1;
-      current.lastError = message;
-      current.nextRetryAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+      current.lastError = queuedState?.reason ?? message;
+      if (queuedState?.nextRetryAt) current.nextRetryAt = queuedState.nextRetryAt;
+      else if (current.status === 'deferred') delete current.nextRetryAt;
+      else current.nextRetryAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
       current.updatedAt = new Date().toISOString();
       options.manifest.save(state);
     }

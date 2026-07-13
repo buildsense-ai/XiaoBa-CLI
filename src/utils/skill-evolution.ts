@@ -413,6 +413,12 @@ export interface SkillEvolutionQueueReviewResult {
   operationalRetried: number;
   deferredRetried: number;
   transitionsByKind: Partial<Record<CapabilityTransitionKind, number>>;
+  /** Durable outcome by bundle id so reassessment manifests can converge with queue recovery. */
+  queueOutcomes?: Record<string, {
+    status: 'succeeded' | 'deferred' | 'operational';
+    nextRetryAt?: string;
+    reason?: string;
+  }>;
 }
 
 export interface TransitionJournal {
@@ -460,11 +466,30 @@ export class SkillEvolutionRuntime {
   }
 
   getQueuedReviewKind(bundleId: string): 'deferred' | 'operational' | undefined {
+    return this.getQueuedReviewState(bundleId)?.kind;
+  }
+
+  /**
+   * Return the durable retry state for a queued review. Reassessment uses the
+   * same queue as ordinary capability review, so the manifest can mirror the
+   * queue's actual deadline instead of inventing a second backoff clock.
+   */
+  getQueuedReviewState(bundleId: string): {
+    kind: 'deferred' | 'operational';
+    nextRetryAt?: string;
+    reason?: string;
+  } | undefined {
     const queuePath = this.options.reviewQueuePath;
     if (!queuePath) return undefined;
     const queue = loadReviewQueueState(queuePath);
-    if (findDeferByBundleId(queue, bundleId)) return 'deferred';
-    if (findOperationalByBundleId(queue, bundleId)) return 'operational';
+    const deferred = findDeferByBundleId(queue, bundleId);
+    if (deferred) return { kind: 'deferred', reason: deferred.reason };
+    const operational = findOperationalByBundleId(queue, bundleId);
+    if (operational) return {
+      kind: 'operational',
+      nextRetryAt: operational.nextRetryAt,
+      reason: operational.failureMessage,
+    };
     return undefined;
   }
 
@@ -612,6 +637,7 @@ export class SkillEvolutionRuntime {
         operationalRetried: 0,
         deferredRetried: 0,
         transitionsByKind: {},
+        queueOutcomes: {},
       };
     }
 
@@ -645,6 +671,7 @@ export class SkillEvolutionRuntime {
         operationalRetried: 0,
         deferredRetried: 0,
         transitionsByKind: {},
+        queueOutcomes: {},
       };
     }
 
@@ -656,6 +683,7 @@ export class SkillEvolutionRuntime {
       operationalRetried: 0,
       deferredRetried: 0,
       transitionsByKind: {},
+      queueOutcomes: {},
     };
 
     await mapWithConcurrency(tasks, config.reviewerConcurrency, async item => {
@@ -769,6 +797,13 @@ export class SkillEvolutionRuntime {
           new Date(),
         );
         result.deferredRetried++;
+        const queued = findDeferByBundleId(queue, entry.bundle.bundleId);
+        result.queueOutcomes![entry.bundle.bundleId] = {
+          status: 'deferred',
+          reason: queued?.reason ?? reviewed.verifier?.rationale ?? entry.reason,
+        };
+      } else {
+        result.queueOutcomes![entry.bundle.bundleId] = { status: 'succeeded' };
       }
       incrementTransitionCount(result.transitionsByKind, reviewed.transition);
       result.reviewed++;
@@ -790,6 +825,12 @@ export class SkillEvolutionRuntime {
         config.operationalRetryMaxMs,
         new Date(),
       );
+      const queued = findOperationalByBundleId(queue, entry.bundle.bundleId);
+      result.queueOutcomes![entry.bundle.bundleId] = {
+        status: 'operational',
+        nextRetryAt: queued?.nextRetryAt,
+        reason: queued?.failureMessage ?? operationalError.message,
+      };
       result.reviewed++;
       result.deferredReviewed++;
       result.deferredRetried++;
@@ -803,7 +844,7 @@ export class SkillEvolutionRuntime {
     config: SkillEvolutionEffectiveConfig,
   ): Promise<void> {
     try {
-      const { result: reviewed } = await this.reviewAndApplyWithRetries(entry.bundle, [], false);
+      const { result: reviewed, bundle: reviewedBundle } = await this.reviewAndApplyWithRetries(entry.bundle, [], false);
       removeOperationalFailureByBundleId(queue, entry.bundle.bundleId);
       if (reviewed.queued === 'operational') {
         addOrUpdateOperationalFailure(
@@ -818,8 +859,29 @@ export class SkillEvolutionRuntime {
           new Date(),
         );
         result.operationalRetried++;
+        const queued = findOperationalByBundleId(queue, entry.bundle.bundleId);
+        result.queueOutcomes![entry.bundle.bundleId] = {
+          status: 'operational',
+          nextRetryAt: queued?.nextRetryAt,
+          reason: queued?.failureMessage,
+        };
+      } else if (reviewed.transition === 'defer' || reviewed.queued === 'deferred') {
+        const relevantReadSet = reviewed.verifier
+          ? declaredRegistryReadSet(reviewed.verifier, reviewedBundle, reviewed.draft!)
+          : entry.bundle.relatedCurrentSkills.map(skill => ({ handle: skill.handle, revision: skill.revision }));
+        const deferred = upsertDeferredEntry(
+          queue,
+          entry.candidate,
+          reviewedBundle,
+          this.options.reviewerVersion ?? SKILL_EVOLUTION_REVIEWER_VERSION,
+          relevantReadSet,
+          reviewed.verifier?.rationale ?? 'Verifier deferred for later review.',
+          new Date(),
+        );
+        result.queueOutcomes![entry.bundle.bundleId] = { status: 'deferred', reason: deferred.reason };
       } else {
         result.operationalReviewed++;
+        result.queueOutcomes![entry.bundle.bundleId] = { status: 'succeeded' };
       }
       incrementTransitionCount(result.transitionsByKind, reviewed.transition);
       result.reviewed++;
@@ -839,6 +901,12 @@ export class SkillEvolutionRuntime {
         config.operationalRetryMaxMs,
         new Date(),
       );
+      const queued = findOperationalByBundleId(queue, entry.bundle.bundleId);
+      result.queueOutcomes![entry.bundle.bundleId] = {
+        status: 'operational',
+        nextRetryAt: queued?.nextRetryAt,
+        reason: queued?.failureMessage ?? operationalError.message,
+      };
       result.reviewed++;
       result.operationalReviewed++;
       result.operationalRetried++;

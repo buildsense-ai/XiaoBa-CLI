@@ -33,6 +33,7 @@ import { SessionTurnLogEntry } from '../src/utils/session-log-schema';
 import { SkillParser } from '../src/skills/skill-parser';
 import { SemanticReassessmentManifestStore } from '../src/utils/semantic-reassessment';
 import { emptyCurrentSkillRegistryState, saveCurrentSkillRegistry } from '../src/utils/skill-evolution';
+import { bootstrapSemanticReassessmentOnce } from '../src/utils/distilled-skill-bootstrap';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -688,6 +689,56 @@ describe('RuntimeLearning — semantic reassessment wake', () => {
     const secondEntry = Object.values(manifest.load().entries)[0];
     assert.equal(secondEntry?.status, 'deferred');
     assert.equal(secondEntry?.attemptCount, firstEntry?.attemptCount);
+  });
+
+  test('operational retry wake reconciles the manifest after queue recovery', async () => {
+    env.restore();
+    env.teardown();
+    let verifierAvailable = false;
+    env = setupEnv(0, {
+      authorFixture: () => ({
+        body: 'Use the report delivery capability.',
+        envelope: { decision: 'migrate_skill_route', targetCapabilityHandle: 'legacy', routingName: 'report-delivery', description: 'Deliver reports.' },
+      }),
+      verifierFixture: () => verifierAvailable
+        ? ({ decision: 'accept', transition: 'migrate_skill_route', issues: [], rationale: 'Bounded route migration.' })
+        : (() => { throw new Error('temporary verifier outage'); })(),
+    });
+    const skillPath = path.join(env.outputDir, 'legacy', 'SKILL.md');
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true });
+    fs.writeFileSync(skillPath, '---\nname: settled-artifact-delivery\ndescription: Legacy\n---\n\nLegacy guidance.\n', 'utf8');
+    const registry = emptyCurrentSkillRegistryState();
+    registry.capabilities.legacy = {
+      handle: 'legacy', revision: 1, routingName: 'settled-artifact-delivery', description: 'Legacy', skillFilePath: skillPath,
+      guidanceHash: require('node:crypto').createHash('sha256').update(fs.readFileSync(skillPath)).digest('hex'),
+      evidenceRefs: [{ ref: 'legacy#evidence' }], referencedSkills: [],
+      semanticObservations: [{ kind: 'user-intent', value: 'Deliver reports.', sourceRefs: ['legacy#user'] }],
+      createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
+    };
+    saveCurrentSkillRegistry(env.registryPath, registry);
+    const first = await bootstrapSemanticReassessmentOnce({
+      skillEvolution: env.skillEvolution,
+      manifestPath: env.reassessmentManifestPath,
+    });
+    assert.equal(first[0]?.status, 'failed');
+    const queue = readOrEmpty(env.reviewQueuePath);
+    assert.ok(queue?.operational?.length === 1);
+    queue.operational[0].nextRetryAt = new Date(0).toISOString();
+    fs.writeFileSync(env.reviewQueuePath, JSON.stringify(queue, null, 2), 'utf8');
+    const manifest = new SemanticReassessmentManifestStore(env.reassessmentManifestPath);
+    const state = manifest.load();
+    const entry = Object.values(state.entries)[0]!;
+    entry.nextRetryAt = new Date(0).toISOString();
+    manifest.save(state);
+
+    verifierAvailable = true;
+    const result = await env.runtimeLearning.wake('operational-retry');
+    assert.equal(result.review.operationalRetries, 0);
+    assert.equal(result.review.operationalQueueReviews, 1);
+    const reconciled = Object.values(manifest.load().entries)[0]!;
+    assert.equal(reconciled.status, 'succeeded');
+    assert.equal(reconciled.nextRetryAt, undefined);
+    assert.equal(readOrEmpty(env.reviewQueuePath)?.operational?.length, 0);
   });
 });
 

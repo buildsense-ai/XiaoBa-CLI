@@ -92,6 +92,49 @@ test('deferred reassessment remains durable across repeated wakes until input ch
   }
 });
 
+test('operational reassessment retry persists the queue deadline in the manifest', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-reassessment-operational-'));
+  try {
+    const outputDir = path.join(root, 'skills', 'generated-distilled');
+    const skillPath = path.join(outputDir, 'legacy', 'SKILL.md');
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true });
+    fs.writeFileSync(skillPath, '---\nname: settled-artifact-delivery\ndescription: Legacy\n---\n\nLegacy guidance.\n', 'utf8');
+    const registryPath = path.join(root, 'data', 'registry.json');
+    const record = {
+      handle: 'legacy', revision: 1, routingName: 'settled-artifact-delivery', description: 'Legacy',
+      skillFilePath: skillPath, guidanceHash: cryptoHash(skillPath), evidenceRefs: [{ ref: 'episode#evidence' }],
+      referencedSkills: [], semanticObservations: [{ kind: 'user-intent' as const, value: 'Deliver a report.', sourceRefs: ['episode#user'] }],
+      createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
+    };
+    const registry = emptyCurrentSkillRegistryState();
+    registry.capabilities.legacy = record;
+    saveCurrentSkillRegistry(registryPath, registry);
+    const queuePath = path.join(root, 'data', 'queue.json');
+    const runtime = new SkillEvolutionRuntime({
+      workingDirectory: root, outputDir, registryPath,
+      auditPath: path.join(root, 'data', 'audit.jsonl'), journalPath: path.join(root, 'data', 'journal.json'),
+      reviewQueuePath: queuePath, operationalRetryMs: 60_000, operationalRetryMaxMs: 60_000,
+      authorFixture: () => ({
+        body: 'Deliver the report.',
+        envelope: { decision: 'migrate_skill_route', targetCapabilityHandle: 'legacy', routingName: 'report-delivery', description: 'Deliver a report.' },
+      }),
+      verifierFixture: () => { throw new Error('review service unavailable'); },
+    });
+
+    const manifestPath = path.join(root, 'data', 'manifest.json');
+    const [result] = await bootstrapSemanticReassessmentOnce({ skillEvolution: runtime, manifestPath });
+    assert.equal(result?.status, 'failed');
+    const queued = JSON.parse(fs.readFileSync(queuePath, 'utf8')) as { operational: Array<{ bundleId: string; nextRetryAt: string }> };
+    const queuedEntry = queued.operational.find(entry => entry.bundleId === result!.taskId);
+    assert.ok(queuedEntry, 'the reassessment should be present in the operational queue');
+    const manifestEntry = Object.values(new SemanticReassessmentManifestStore(manifestPath).load().entries)[0]!;
+    assert.equal(manifestEntry.status, 'failed');
+    assert.equal(manifestEntry.nextRetryAt, queuedEntry!.nextRetryAt, 'manifest and queue must share one retry deadline');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('route-only dependent drift refreshes registry metadata without changing guidance content', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-reassessment-dependent-'));
   try {

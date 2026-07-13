@@ -39,6 +39,7 @@ import { SkillEvolutionRuntime, CapabilityTransitionKind } from './skill-evoluti
 import { SkillUsageCurator, CuratorRunResult } from './skill-usage-curator';
 import { Logger } from './logger';
 import { bootstrapSemanticReassessmentOnce } from './distilled-skill-bootstrap';
+import { SemanticReassessmentManifestStore } from './semantic-reassessment';
 
 // ---------------------------------------------------------------------------
 // Public API: wake context / reports (shared with the heartbeat scheduler)
@@ -574,6 +575,7 @@ export class RuntimeLearning {
       reviewed: number; deferredReviewed: number; operationalReviewed: number;
       operationalRetried: number; deferredRetried: number;
       transitionsByKind: Partial<Record<string, number>>;
+      queueOutcomes?: Record<string, { status: 'succeeded' | 'deferred' | 'operational'; nextRetryAt?: string; reason?: string }>;
     };
     let queueResult: QueueResult = {
       reviewed: 0, deferredReviewed: 0, operationalReviewed: 0,
@@ -582,6 +584,7 @@ export class RuntimeLearning {
     let queueError: unknown;
     try {
       queueResult = await this.skillEvolution.reviewDueQueueEntries();
+      this.reconcileReassessmentQueueOutcomes(queueResult.queueOutcomes);
     } catch (error) {
       queueError = error;
       Logger.warning(`[RuntimeLearning] queue review failed: ${toErrorMessage(error)}`);
@@ -618,6 +621,38 @@ export class RuntimeLearning {
       operationalRetries: queueResult.operationalRetried,
       transitionsByKind,
     };
+  }
+
+  /**
+   * Reconcile reassessment task state after the shared review queue has
+   * recovered a due entry. The queue is the single retry authority; this
+   * manifest mirror is updated from the queue outcome, including the actual
+   * backoff deadline, so restart planning cannot strand a failed task.
+   */
+  private reconcileReassessmentQueueOutcomes(
+    outcomes: Record<string, { status: 'succeeded' | 'deferred' | 'operational'; nextRetryAt?: string; reason?: string }> | undefined,
+  ): void {
+    if (!outcomes || Object.keys(outcomes).length === 0) return;
+    const manifestPath = this.config.skillEvolutionReassessmentManifestPath;
+    if (!manifestPath) return;
+    const manifest = new SemanticReassessmentManifestStore(manifestPath);
+    const state = manifest.load();
+    let changed = false;
+    const now = this.clock().toISOString();
+    for (const [taskId, outcome] of Object.entries(outcomes)) {
+      const entry = state.entries[taskId];
+      if (!entry) continue;
+      const status = outcome.status === 'operational' ? 'failed' : outcome.status;
+      if (entry.status !== status
+        || entry.nextRetryAt !== outcome.nextRetryAt
+        || entry.lastError !== outcome.reason) changed = true;
+      entry.status = status;
+      entry.lastError = outcome.reason;
+      if (status === 'failed' && outcome.nextRetryAt) entry.nextRetryAt = outcome.nextRetryAt;
+      else delete entry.nextRetryAt;
+      entry.updatedAt = now;
+    }
+    if (changed) manifest.save(state);
   }
 
   // -----------------------------------------------------------------------
