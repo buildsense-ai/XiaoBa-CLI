@@ -305,6 +305,74 @@ describe('OpenAIProvider Responses API mode', () => {
     }
   });
 
+  test('preserves streamed text when the terminal response omits its message', async () => {
+    const originalPost = axios.post;
+    (axios as any).post = async () => ({
+      data: Readable.from([
+        sse({ type: 'response.output_text.delta', delta: 'answer from ' }),
+        sse({ type: 'response.output_text.delta', delta: 'stream' }),
+        sse({
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            output: [{ type: 'reasoning', id: 'reasoning_1', summary: [] }],
+            usage: {
+              input_tokens: 50,
+              output_tokens: 10,
+              total_tokens: 60,
+            },
+          },
+        }),
+      ]),
+    });
+
+    try {
+      const chunks: string[] = [];
+      const result = await createProvider().chatStream(
+        [{ role: 'user', content: 'hello' }],
+        undefined,
+        { onText: value => chunks.push(value) },
+      );
+
+      assert.deepEqual(chunks, ['answer from ', 'stream']);
+      assert.equal(result.content, 'answer from stream');
+      assert.equal(result.stopReason, 'completed');
+      assert.equal(result.usage?.totalTokens, 60);
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
+  test('prefers terminal response text over the streamed fallback', async () => {
+    const originalPost = axios.post;
+    (axios as any).post = async () => ({
+      data: Readable.from([
+        sse({ type: 'response.output_text.delta', delta: 'streamed draft' }),
+        sse({
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            output: [{
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'terminal answer' }],
+            }],
+          },
+        }),
+      ]),
+    });
+
+    try {
+      const result = await createProvider().chatStream(
+        [{ role: 'user', content: 'hello' }],
+      );
+
+      assert.equal(result.content, 'terminal answer');
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
   test('streams a Responses refusal and preserves it in the final result', async () => {
     const originalPost = axios.post;
     const terminalResponse = {
