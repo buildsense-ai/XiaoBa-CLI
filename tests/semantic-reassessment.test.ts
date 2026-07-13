@@ -48,6 +48,50 @@ test('semantic reassessment identity is stable and supersedes stale revisions', 
   }
 });
 
+test('deferred reassessment remains durable across repeated wakes until input changes', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-reassessment-deferred-'));
+  try {
+    const store = new SemanticReassessmentManifestStore(path.join(root, 'manifest.json'));
+    const record = {
+      handle: 'cap-deferred',
+      routingName: 'settled-artifact-delivery',
+      guidanceHash: 'guidance-a',
+      semanticObservations: [],
+      revision: 1,
+      evidenceRefs: [{ ref: 'episode-a#evidence' }],
+    };
+    const first = store.upsertForRecord(record);
+    assert.ok(first);
+    const deferred = store.load();
+    deferred.entries[first!.taskId]!.status = 'deferred';
+    deferred.entries[first!.taskId]!.lastError = 'bounded evidence unavailable';
+    store.save(deferred);
+
+    const repeated = store.upsertForRecord(record);
+    assert.equal(repeated?.status, 'deferred');
+    assert.equal(store.load().entries[first!.taskId]!.status, 'deferred');
+
+    const newEvidence = store.upsertForRecord({ ...record, evidenceRefs: [{ ref: 'episode-b#evidence' }] });
+    assert.equal(newEvidence?.status, 'pending');
+    const newEvidenceState = store.load();
+    newEvidenceState.entries[newEvidence!.taskId]!.status = 'deferred';
+    store.save(newEvidenceState);
+    const newReviewerState = store.upsertForRecord({ ...record, evidenceRefs: [{ ref: 'episode-b#evidence' }], revision: 2 });
+    assert.equal(newReviewerState?.status, 'pending');
+
+    const changedGuidance = store.upsertForRecord({ ...record, guidanceHash: 'guidance-b' });
+    assert.ok(changedGuidance);
+    assert.equal(changedGuidance!.status, 'pending');
+    assert.equal(store.load().entries[first!.taskId]!.status, 'superseded');
+
+    const explicit = store.upsertForRecord(record, new Date(), true);
+    assert.ok(explicit);
+    assert.equal(explicit!.status, 'pending');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('route-only dependent drift refreshes registry metadata without changing guidance revision', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-reassessment-dependent-'));
   try {
@@ -87,6 +131,74 @@ test('route-only dependent drift refreshes registry metadata without changing gu
     assert.equal(runtime.getRegistry().capabilities.dependent!.guidanceHash, dependentHash);
     assert.equal(runtime.getRegistry().capabilities.dependent!.referencedSkills[0]!.name, 'new-route');
     assert.ok(runtime.getAudit().some(entry => entry.transition === 'append_evidence' && entry.involvedCapabilityHandles.includes('dependent')));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('changed referenced guidance reviews every stale dependent skill', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-reassessment-multi-dependent-'));
+  try {
+    const outputDir = path.join(root, 'skills', 'generated-distilled');
+    const registryPath = path.join(root, 'data', 'registry.json');
+    const auditPath = path.join(root, 'data', 'audit.jsonl');
+    const journalPath = path.join(root, 'data', 'journal.json');
+    const sourcePath = path.join(outputDir, 'source', 'SKILL.md');
+    const dependentPaths = ['dependent-a', 'dependent-b'].map(name => path.join(outputDir, name, 'SKILL.md'));
+    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+    fs.writeFileSync(sourcePath, '---\nname: source-route\ndescription: Source\n---\n\nNew source guidance.\n', 'utf8');
+    for (const dependentPath of dependentPaths) {
+      fs.mkdirSync(path.dirname(dependentPath), { recursive: true });
+      fs.writeFileSync(dependentPath, `---\nname: ${path.basename(path.dirname(dependentPath))}\ndescription: Dependent\n---\n\nDependent guidance.\n`, 'utf8');
+    }
+    const sourceHash = cryptoHash(sourcePath);
+    const oldSourceHash = 'old-source-guidance';
+    const observations = [{ kind: 'user-intent' as const, value: 'Use the source capability.', sourceRefs: ['source.jsonl#turn-1'] }];
+    const registry = emptyCurrentSkillRegistryState();
+    registry.capabilities.source = {
+      handle: 'source', revision: 2, routingName: 'source-route', description: 'Source', skillFilePath: sourcePath,
+      guidanceHash: sourceHash, evidenceRefs: [], referencedSkills: [], semanticObservations: observations,
+      createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
+    };
+    for (const [index, dependentPath] of dependentPaths.entries()) {
+      const handle = `dependent-${index === 0 ? 'a' : 'b'}`;
+      registry.capabilities[handle] = {
+        handle, revision: 1, routingName: handle, description: 'Dependent', skillFilePath: dependentPath,
+        guidanceHash: cryptoHash(dependentPath), evidenceRefs: [{ ref: `${handle}.jsonl#evidence` }],
+        referencedSkills: [{ name: 'source-route', capabilityHandle: 'source', guidanceHash: oldSourceHash, contentFingerprint: oldSourceHash }],
+        semanticObservations: observations, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
+      };
+    }
+    saveCurrentSkillRegistry(registryPath, registry);
+    const reviewedHandles: string[] = [];
+    const runtime = new SkillEvolutionRuntime({
+      workingDirectory: root, outputDir, registryPath, auditPath, journalPath,
+      authorFixture: ({ bundle }) => {
+        const handle = (bundle.episode as { capabilityHandle: string }).capabilityHandle;
+        reviewedHandles.push(handle);
+        return {
+          body: 'Maintain the dependent workflow with the updated source guidance.',
+          envelope: {
+            decision: 'append_evidence', targetCapabilityHandle: handle,
+            referencedSkills: bundle.referencedSkills.map(skill => skill.name),
+            evidenceRefs: bundle.completionEvidence.map(item => item.ref),
+          },
+        };
+      },
+      verifierFixture: () => ({ decision: 'accept', transition: 'append_evidence', issues: [], rationale: 'Updated source guidance is bounded.' }),
+    });
+
+    const results = await bootstrapSemanticReassessmentOnce({
+      skillEvolution: runtime,
+      manifestPath: path.join(root, 'data', 'manifest.json'),
+    });
+    assert.deepEqual(reviewedHandles.sort(), ['dependent-a', 'dependent-b']);
+    assert.equal(results.filter(result => result.status === 'succeeded').length, 2);
+    const updated = runtime.getRegistry();
+    for (const handle of ['dependent-a', 'dependent-b']) {
+      assert.equal(updated.capabilities[handle]!.referencedSkills[0]!.guidanceHash, sourceHash);
+      assert.equal(updated.capabilities[handle]!.revision, 1);
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -15,6 +15,12 @@ export interface SemanticReassessmentManifestEntry {
   routingName: string;
   guidanceHash: string;
   semanticObservationHash: string;
+  /** Fingerprint of the bounded source evidence refs used for reassessment. */
+  sourceEvidenceHash?: string;
+  /** Registry revision observed when this reassessment was scheduled. */
+  capabilityRevision?: number;
+  /** Fingerprint of referenced generated-Skill guidance supplied to review. */
+  dependencyFingerprint?: string;
   /** Source refs retained with the task so reassessment remains auditable. */
   sourceRefs?: string[];
   status: SemanticReassessmentStatus;
@@ -39,6 +45,28 @@ export function semanticObservationHash(observations: readonly SemanticObservati
     kind: observation.kind,
     value: observation.value,
     sourceRefs: [...observation.sourceRefs].sort(),
+  })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  return crypto.createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
+}
+
+export function semanticSourceEvidenceHash(
+  evidenceRefs: readonly { ref: string }[] | undefined,
+): string | undefined {
+  if (!evidenceRefs || evidenceRefs.length === 0) return undefined;
+  const refs = [...new Set(evidenceRefs.map(item => item.ref).filter(ref => typeof ref === 'string'))].sort();
+  if (refs.length === 0) return undefined;
+  return crypto.createHash('sha256').update(JSON.stringify(refs)).digest('hex');
+}
+
+export function semanticDependencyFingerprint(
+  references: readonly { name: string; capabilityHandle?: string; guidanceHash?: string; contentFingerprint?: string }[] | undefined,
+): string | undefined {
+  if (!references || references.length === 0) return undefined;
+  const normalized = references.map(reference => ({
+    name: reference.name,
+    capabilityHandle: reference.capabilityHandle,
+    guidanceHash: reference.guidanceHash,
+    contentFingerprint: reference.contentFingerprint,
   })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
   return crypto.createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
 }
@@ -84,20 +112,58 @@ export class SemanticReassessmentManifestStore {
   }
 
   upsertForRecord(
-    record: Pick<CurrentSkillRecord, 'handle' | 'routingName' | 'guidanceHash' | 'semanticObservations'>,
+    record: Pick<CurrentSkillRecord, 'handle' | 'routingName' | 'guidanceHash' | 'semanticObservations'>
+      & Partial<Pick<CurrentSkillRecord, 'evidenceRefs' | 'revision'>>
+      & { dependencyFingerprint?: string },
     now = new Date(),
     force = false,
   ): SemanticReassessmentManifestEntry | undefined {
-    if (!force && !shouldReassessCurrentSkill(record)) return undefined;
+    return this.upsertInternal(record, now, force, false);
+  }
+
+  /**
+   * Schedule reassessment for a generated dependent without treating the
+   * dependency relationship itself as an explicit retry request. In
+   * particular, this preserves a deferred entry across routine wakes.
+   */
+  ensureForRecord(
+    record: Pick<CurrentSkillRecord, 'handle' | 'routingName' | 'guidanceHash' | 'semanticObservations'>
+      & Partial<Pick<CurrentSkillRecord, 'evidenceRefs' | 'revision'>>
+      & { dependencyFingerprint?: string },
+    now = new Date(),
+  ): SemanticReassessmentManifestEntry {
+    return this.upsertInternal(record, now, false, true)!;
+  }
+
+  private upsertInternal(
+    record: Pick<CurrentSkillRecord, 'handle' | 'routingName' | 'guidanceHash' | 'semanticObservations'>
+      & Partial<Pick<CurrentSkillRecord, 'evidenceRefs' | 'revision'>>
+      & { dependencyFingerprint?: string },
+    now: Date,
+    force: boolean,
+    allowUnflagged: boolean,
+  ): SemanticReassessmentManifestEntry | undefined {
+    if (!force && !allowUnflagged && !shouldReassessCurrentSkill(record)) return undefined;
     const state = this.load();
     const observationHash = semanticObservationHash(record.semanticObservations);
+    const sourceEvidenceHash = semanticSourceEvidenceHash(record.evidenceRefs);
     const taskId = semanticReassessmentTaskId(record.handle, record.guidanceHash, record.semanticObservations);
     const existing = state.entries[taskId];
+    const inputChanged = !!existing && (
+      existing.routingName !== record.routingName
+      || existing.guidanceHash !== record.guidanceHash
+      || existing.semanticObservationHash !== observationHash
+      || existing.sourceEvidenceHash !== sourceEvidenceHash
+      || existing.capabilityRevision !== record.revision
+      || existing.dependencyFingerprint !== record.dependencyFingerprint
+    );
     for (const prior of Object.values(state.entries)) {
       if (prior.capabilityHandle === record.handle
         && prior.taskId !== taskId
         && prior.status !== 'superseded'
-        && (prior.guidanceHash !== record.guidanceHash || prior.semanticObservationHash !== observationHash)) {
+        && (prior.routingName !== record.routingName || prior.guidanceHash !== record.guidanceHash || prior.semanticObservationHash !== observationHash
+          || prior.sourceEvidenceHash !== sourceEvidenceHash || prior.capabilityRevision !== record.revision
+          || prior.dependencyFingerprint !== record.dependencyFingerprint)) {
         prior.status = 'superseded';
         prior.updatedAt = now.toISOString();
       }
@@ -108,8 +174,19 @@ export class SemanticReassessmentManifestStore {
       routingName: record.routingName,
       guidanceHash: record.guidanceHash,
       semanticObservationHash: observationHash,
+      ...(sourceEvidenceHash ? { sourceEvidenceHash } : {}),
+      ...(record.revision !== undefined ? { capabilityRevision: record.revision } : {}),
+      ...(record.dependencyFingerprint ? { dependencyFingerprint: record.dependencyFingerprint } : {}),
       sourceRefs: [...new Set((record.semanticObservations ?? []).flatMap(observation => observation.sourceRefs))],
-      status: existing?.status === 'succeeded' ? existing.status : 'pending',
+      status: force
+        ? 'pending'
+        : existing?.status === 'succeeded' && !inputChanged
+          ? 'succeeded'
+          : existing?.status === 'deferred' && !inputChanged
+            ? 'deferred'
+            : existing?.status === 'failed' && !inputChanged
+              ? 'failed'
+              : 'pending',
       attemptCount: existing?.attemptCount ?? 0,
       ...(existing?.nextRetryAt ? { nextRetryAt: existing.nextRetryAt } : {}),
       ...(existing?.lastError ? { lastError: existing.lastError } : {}),
@@ -130,6 +207,9 @@ function isManifestEntry(value: unknown): value is SemanticReassessmentManifestE
     && typeof entry.routingName === 'string'
     && typeof entry.guidanceHash === 'string'
     && typeof entry.semanticObservationHash === 'string'
+    && (entry.sourceEvidenceHash === undefined || typeof entry.sourceEvidenceHash === 'string')
+    && (entry.capabilityRevision === undefined || Number.isInteger(entry.capabilityRevision))
+    && (entry.dependencyFingerprint === undefined || typeof entry.dependencyFingerprint === 'string')
     && (entry.sourceRefs === undefined || (Array.isArray(entry.sourceRefs)
       && entry.sourceRefs.every(ref => typeof ref === 'string')))
     && ['pending', 'succeeded', 'deferred', 'failed', 'superseded'].includes(entry.status ?? '')

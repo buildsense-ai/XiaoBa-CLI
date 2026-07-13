@@ -11,10 +11,13 @@ import {
   EvidenceBundle,
   SkillEvolutionRuntime,
 } from './skill-evolution';
+import type { ReferencedSkillSnapshot } from './skill-evolution';
 import type { LearningEpisodeStore } from './learning-episode';
 import { DistilledKnowledgeCandidate } from './capability-distiller';
 import {
   SemanticReassessmentManifestStore,
+  semanticDependencyFingerprint,
+  semanticObservationHash,
   semanticReassessmentTaskId,
   shouldReassessCurrentSkill,
 } from './semantic-reassessment';
@@ -106,104 +109,171 @@ export async function bootstrapSemanticReassessmentOnce(
   const manifest = new SemanticReassessmentManifestStore(options.manifestPath);
   const registry = options.skillEvolution.getRegistry();
   const results: SemanticReassessmentBootstrapResult[] = [];
-  for (const record of Object.values(registry.capabilities)) {
-    const staleDependents = Object.values(registry.capabilities)
-      .filter(candidate => candidate.handle !== record.handle)
-      .flatMap(candidate => candidate.referencedSkills
-        .filter(reference => reference.capabilityHandle === record.handle
-          && (reference.guidanceHash !== record.guidanceHash || reference.name !== record.routingName
-            || reference.contentFingerprint !== record.guidanceHash))
-        .map(reference => ({ candidate, reference })));
-    const isDependent = staleDependents.length > 0;
-    // A route-only change does not require a new executable guidance revision.
-    // Repair the dependent Registry snapshot through the same journal/audit
-    // seam, then leave the active SKILL.md untouched.
-    if (isDependent && staleDependents.every(item => item.reference.guidanceHash === record.guidanceHash)) {
-      const refreshed = staleDependents.reduce((skills, item) => skills.map(reference =>
-        reference.capabilityHandle === record.handle
-          ? { ...reference, name: record.routingName, guidanceHash: record.guidanceHash, contentFingerprint: record.guidanceHash }
-          : reference), staleDependents[0]!.candidate.referencedSkills);
-      try {
-        const transition = options.skillEvolution.refreshReferencedSkillMetadata(
-          staleDependents[0]!.candidate.handle,
-          refreshed,
-        );
-        results.push({ taskId: transition.audit.bundleId ?? `refresh-references:${staleDependents[0]!.candidate.handle}`, capabilityHandle: staleDependents[0]!.candidate.handle, status: 'succeeded', transition: transition.audit.transition });
-      } catch (error) {
-        results.push({ taskId: `refresh-references:${staleDependents[0]!.candidate.handle}`, capabilityHandle: staleDependents[0]!.candidate.handle, status: 'failed', errorMessage: error instanceof Error ? error.message : String(error) });
-      }
-      continue;
-    }
-    if (!shouldReassessCurrentSkill(record) && !isDependent) continue;
-    let entry = manifest.upsertForRecord(record, new Date(), isDependent);
-    if (!entry || entry.status === 'superseded') continue;
-    const observations = record.semanticObservations?.length
-      ? record.semanticObservations
-      : findEpisodeObservations(options.learningEpisodeStore, record.evidenceRefs.map(item => item.ref));
-    if (observations.length > 0) {
-      entry = manifest.upsertForRecord({ ...record, semanticObservations: observations }, new Date(), true);
-    }
-    if (!entry || entry.status === 'succeeded' || entry.status === 'superseded' || entry.status === 'deferred') continue;
-    if (entry.status === 'failed' && entry.nextRetryAt && Date.parse(entry.nextRetryAt) > Date.now()) continue;
-    if (observations.length === 0) {
-      const state = manifest.load();
-      const current = state.entries[entry.taskId];
-      if (current) {
-        current.status = 'deferred';
-        current.lastError = 'No persisted semantic observations are available for bounded reassessment.';
-        current.updatedAt = new Date().toISOString();
-        manifest.save(state);
-      }
-      results.push({ taskId: entry.taskId, capabilityHandle: record.handle, status: 'deferred', errorMessage: current?.lastError });
-      continue;
-    }
-    const evidenceRefs = record.evidenceRefs.map(item => item.ref);
-    const completionRef = evidenceRefs[0] ?? `registry:${record.handle}:guidance`;
-    const settlementRef = evidenceRefs[1] ?? `registry:${record.handle}:reassessment`;
-    const bundle: EvidenceBundle = {
-      bundleId: semanticReassessmentTaskId(record.handle, record.guidanceHash, observations),
-      episode: { kind: 'semantic-reassessment', capabilityHandle: record.handle, routingName: record.routingName },
-      completionEvidence: [{ ref: completionRef }],
-      settlementEvidence: [{ ref: settlementRef === completionRef ? `${settlementRef}:settlement` : settlementRef }],
-      boundedContinuity: [],
-      semanticObservations: observations,
-      referencedSkills: record.referencedSkills,
-      relatedCurrentSkills: Object.values(registry.capabilities).map(item => ({
-        handle: item.handle,
-        revision: item.revision,
-        routingName: item.routingName,
-        description: item.description,
-        guidanceHash: item.guidanceHash,
-      })),
-    };
-    try {
-      const result = await options.skillEvolution.reviewAndApply(bundle);
-      const state = manifest.load();
-      const current = state.entries[entry.taskId];
-      if (current) {
-        current.status = result.queued === 'deferred' ? 'deferred' : result.queued === 'operational' ? 'failed' : 'succeeded';
-        current.lastError = result.queued ? `Reassessment queued: ${result.queued}` : undefined;
-        if (current.status === 'succeeded' || current.status === 'deferred') delete current.nextRetryAt;
-        current.updatedAt = new Date().toISOString();
-        manifest.save(state);
-      }
-      results.push({ taskId: entry.taskId, capabilityHandle: record.handle, status: current?.status ?? 'succeeded', transition: result.transition });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const state = manifest.load();
-      const current = state.entries[entry.taskId];
-      if (current) {
-        current.status = 'failed';
-        current.attemptCount += 1;
-        current.lastError = message;
-        current.nextRetryAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-        current.updatedAt = new Date().toISOString();
-        manifest.save(state);
-      }
-      results.push({ taskId: entry.taskId, capabilityHandle: record.handle, status: 'failed', errorMessage: message });
+  const records = Object.values(registry.capabilities);
+
+  // First group stale references by dependent. The former implementation
+  // accidentally used only staleDependents[0], silently leaving other
+  // generated Skills with stale guidance snapshots.
+  const dependentGroups = new Map<string, {
+    candidate: typeof records[number];
+    references: Array<{ source: typeof records[number]; reference: typeof records[number]['referencedSkills'][number] }>;
+  }>();
+  for (const source of records) {
+    for (const candidate of records) {
+      if (candidate.handle === source.handle) continue;
+      const stale = candidate.referencedSkills
+        .filter(reference => reference.capabilityHandle === source.handle
+          && (reference.guidanceHash !== source.guidanceHash
+            || reference.name !== source.routingName
+            || reference.contentFingerprint !== source.guidanceHash));
+      if (stale.length === 0) continue;
+      const group = dependentGroups.get(candidate.handle) ?? { candidate, references: [] };
+      group.references.push(...stale.map(reference => ({ source, reference })));
+      dependentGroups.set(candidate.handle, group);
     }
   }
+
+  // Route-only drift is metadata maintenance, but it must be applied once
+  // for every affected dependent, not just the first one discovered.
+  for (const group of dependentGroups.values()) {
+    if (!group.references.every(item => item.reference.guidanceHash === item.source.guidanceHash)) continue;
+    const refreshed = group.candidate.referencedSkills.map(reference => {
+      const match = group.references.find(item => item.reference === reference);
+      return match
+        ? { ...reference, name: match.source.routingName, guidanceHash: match.source.guidanceHash, contentFingerprint: match.source.guidanceHash }
+        : reference;
+    });
+    try {
+      const transition = options.skillEvolution.refreshReferencedSkillMetadata(group.candidate.handle, refreshed);
+      results.push({
+        taskId: transition.audit.bundleId ?? `refresh-references:${group.candidate.handle}`,
+        capabilityHandle: group.candidate.handle,
+        status: 'succeeded',
+        transition: transition.audit.transition,
+      });
+    } catch (error) {
+      results.push({
+        taskId: `refresh-references:${group.candidate.handle}`,
+        capabilityHandle: group.candidate.handle,
+        status: 'failed',
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  // Guidance drift requires a bounded Author/Verifier maintenance review for
+  // each dependent. Route-only groups above never enter this path.
+  for (const group of dependentGroups.values()) {
+    if (group.references.every(item => item.reference.guidanceHash === item.source.guidanceHash)) continue;
+    const references = group.candidate.referencedSkills.map(reference => {
+      const match = group.references.find(item => item.reference === reference);
+      return match
+        ? { ...reference, name: match.source.routingName, guidanceHash: match.source.guidanceHash, contentFingerprint: match.source.guidanceHash }
+        : reference;
+    });
+    const result = await reassessRecord(group.candidate, {
+      ...options,
+      manifest,
+      registry,
+      references,
+      forceSchedule: true,
+    });
+    if (result) results.push(result);
+  }
+
+  // Finally process capabilities whose own route still needs semantic
+  // reassessment. This is independent of dependent maintenance above.
+  for (const record of records) {
+    if (!shouldReassessCurrentSkill(record)) continue;
+    const result = await reassessRecord(record, { ...options, manifest, registry });
+    if (result) results.push(result);
+  }
   return results;
+}
+
+interface ReassessRecordOptions extends SemanticReassessmentBootstrapOptions {
+  manifest: SemanticReassessmentManifestStore;
+  registry: ReturnType<SkillEvolutionRuntime['getRegistry']>;
+  references?: ReferencedSkillSnapshot[];
+  forceSchedule?: boolean;
+}
+
+async function reassessRecord(
+  record: ReturnType<SkillEvolutionRuntime['getRegistry']>['capabilities'][string],
+  options: ReassessRecordOptions,
+): Promise<SemanticReassessmentBootstrapResult | undefined> {
+  const observations = record.semanticObservations?.length
+    ? record.semanticObservations
+    : findEpisodeObservations(options.learningEpisodeStore, record.evidenceRefs.map(item => item.ref));
+  const dependencyFingerprint = semanticDependencyFingerprint(options.references ?? record.referencedSkills);
+  const input = { ...record, semanticObservations: observations, dependencyFingerprint };
+  let entry = options.forceSchedule
+    ? options.manifest.ensureForRecord(input)
+    : options.manifest.upsertForRecord(input);
+  if (!entry || entry.status === 'superseded') return undefined;
+  if (observations.length > 0 && entry.semanticObservationHash !== semanticObservationHash(observations)) {
+    const refreshed = options.manifest.upsertForRecord(input, new Date(), true);
+    if (!refreshed) return undefined;
+    entry = refreshed;
+  }
+  if (entry.status === 'succeeded' || entry.status === 'superseded' || entry.status === 'deferred') return undefined;
+  if (entry.status === 'failed' && entry.nextRetryAt && Date.parse(entry.nextRetryAt) > Date.now()) return undefined;
+  if (observations.length === 0) {
+    const state = options.manifest.load();
+    const current = state.entries[entry.taskId];
+    if (current) {
+      current.status = 'deferred';
+      current.lastError = 'No persisted semantic observations are available for bounded reassessment.';
+      current.updatedAt = new Date().toISOString();
+      options.manifest.save(state);
+    }
+    return { taskId: entry.taskId, capabilityHandle: record.handle, status: 'deferred', errorMessage: current?.lastError };
+  }
+  const evidenceRefs = record.evidenceRefs.map(item => item.ref);
+  const completionRef = evidenceRefs[0] ?? `registry:${record.handle}:guidance`;
+  const settlementRef = evidenceRefs[1] ?? `registry:${record.handle}:reassessment`;
+  const bundle: EvidenceBundle = {
+    bundleId: semanticReassessmentTaskId(record.handle, record.guidanceHash, observations),
+    episode: { kind: 'semantic-reassessment', capabilityHandle: record.handle, routingName: record.routingName },
+    completionEvidence: [{ ref: completionRef }],
+    settlementEvidence: [{ ref: settlementRef === completionRef ? `${settlementRef}:settlement` : settlementRef }],
+    boundedContinuity: [],
+    semanticObservations: observations,
+    referencedSkills: options.references ?? record.referencedSkills,
+    relatedCurrentSkills: Object.values(options.registry.capabilities).map(item => ({
+      handle: item.handle,
+      revision: item.revision,
+      routingName: item.routingName,
+      description: item.description,
+      guidanceHash: item.guidanceHash,
+    })),
+  };
+  try {
+    const result = await options.skillEvolution.reviewAndApply(bundle);
+    const state = options.manifest.load();
+    const current = state.entries[entry.taskId];
+    if (current) {
+      current.status = result.queued === 'deferred' ? 'deferred' : result.queued === 'operational' ? 'failed' : 'succeeded';
+      current.lastError = result.queued ? `Reassessment queued: ${result.queued}` : undefined;
+      if (current.status === 'succeeded' || current.status === 'deferred') delete current.nextRetryAt;
+      current.updatedAt = new Date().toISOString();
+      options.manifest.save(state);
+    }
+    return { taskId: entry.taskId, capabilityHandle: record.handle, status: current?.status ?? 'succeeded', transition: result.transition };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const state = options.manifest.load();
+    const current = state.entries[entry.taskId];
+    if (current) {
+      current.status = 'failed';
+      current.attemptCount += 1;
+      current.lastError = message;
+      current.nextRetryAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+      current.updatedAt = new Date().toISOString();
+      options.manifest.save(state);
+    }
+    return { taskId: entry.taskId, capabilityHandle: record.handle, status: 'failed', errorMessage: message };
+  }
 }
 
 function findEpisodeObservations(

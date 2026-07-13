@@ -663,6 +663,32 @@ describe('RuntimeLearning — semantic reassessment wake', () => {
     assert.equal(result.curation.status, 'skipped');
     assert.equal(result.reassessment.deferred, 1);
   });
+
+  test('deferred reassessment is not retried on repeated startup and scheduled wakes', async () => {
+    const skillPath = path.join(env.outputDir, 'legacy', 'SKILL.md');
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true });
+    fs.writeFileSync(skillPath, '---\nname: settled-artifact-delivery\ndescription: Legacy\n---\n\nLegacy guidance.\n', 'utf8');
+    const registry = emptyCurrentSkillRegistryState();
+    registry.capabilities.legacy = {
+      handle: 'legacy', revision: 1, routingName: 'settled-artifact-delivery', description: 'Legacy', skillFilePath: skillPath,
+      guidanceHash: require('node:crypto').createHash('sha256').update(fs.readFileSync(skillPath)).digest('hex'),
+      evidenceRefs: [], referencedSkills: [], createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
+    };
+    saveCurrentSkillRegistry(env.registryPath, registry);
+
+    const first = await env.runtimeLearning.wake('startup');
+    assert.equal(first.reassessment.deferred, 1);
+    const manifest = new SemanticReassessmentManifestStore(env.reassessmentManifestPath);
+    const firstEntry = Object.values(manifest.load().entries)[0];
+    assert.equal(firstEntry?.status, 'deferred');
+
+    const second = await env.runtimeLearning.wake('scheduled');
+    assert.equal(second.reassessment.discovered, 0);
+    assert.equal(second.reassessment.completed, 0);
+    const secondEntry = Object.values(manifest.load().entries)[0];
+    assert.equal(secondEntry?.status, 'deferred');
+    assert.equal(secondEntry?.attemptCount, firstEntry?.attemptCount);
+  });
 });
 
 // ---------------------------------------------------------------------------
