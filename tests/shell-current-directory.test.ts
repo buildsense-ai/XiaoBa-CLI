@@ -3,7 +3,7 @@ import * as assert from 'node:assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { ShellTool } from '../src/tools/bash-tool';
+import { isShellCommandTimeoutError, ShellTool } from '../src/tools/bash-tool';
 import { ToolExecutionContext } from '../src/types/tool';
 
 describe('ShellTool current directory probe', () => {
@@ -73,8 +73,8 @@ describe('ShellTool current directory probe', () => {
     assert.strictEqual(result.ok, true);
     assert.ok(fs.existsSync(path.join(testRoot, 'sub', 'marker.txt')));
     assertSameDirectory(currentDirectory, path.join(testRoot, 'sub'));
-    assert.ok((result.content as string).includes(`Working directory: ${path.resolve(testRoot, 'sub')}`));
-    assert.ok((result.content as string).includes(`Final cwd: ${path.resolve(testRoot, 'sub')}`));
+    assert.ok((result.content as string).includes(`cwd_before: ${path.resolve(testRoot, 'sub')}`));
+    assert.ok((result.content as string).includes(`cwd_after: ${path.resolve(testRoot, 'sub')}`));
   });
 
   test('successful commands return both stdout and stderr', async () => {
@@ -147,6 +147,21 @@ describe('ShellTool current directory probe', () => {
     assert.match(result.message, /^timed_out: true$/m);
     assert.match(result.message, /^stdout:/m);
     assert.match(result.message, /^stderr:/m);
+  });
+
+  test('recognizes the POSIX child_process timeout error shape', () => {
+    assert.strictEqual(isShellCommandTimeoutError({
+      message: 'Command failed: sleep 5',
+      code: null,
+      killed: true,
+      signal: 'SIGTERM',
+    }), true);
+    assert.strictEqual(isShellCommandTimeoutError({
+      message: 'Command terminated by signal SIGTERM',
+      killed: false,
+      signal: 'SIGTERM',
+    }), false);
+    assert.strictEqual(isShellCommandTimeoutError({ code: 'ETIMEDOUT' }), true);
   });
 
   test('successful cd is persisted even when a later command fails', async () => {
