@@ -627,9 +627,16 @@ export class OpenAIProvider implements AIProvider {
       const stream = response.data;
       const contentStripper = new OpenAIThinkingStripper();
       const outputItems: any[] = [];
+      let streamedVisibleText = '';
       let buffer = '';
       let finalResponse: any;
       let settled = false;
+
+      const emitVisibleText = (text: string) => {
+        if (!text) return;
+        streamedVisibleText += text;
+        callbacks?.onText?.(text);
+      };
 
       const finishError = (error: Error) => {
         if (settled) return;
@@ -647,7 +654,7 @@ export class OpenAIProvider implements AIProvider {
           && typeof event.delta === 'string'
         ) {
           const visible = contentStripper.push(event.delta);
-          if (visible) callbacks?.onText?.(visible);
+          emitVisibleText(visible);
           return;
         }
         if (event?.type === 'response.output_item.done' && event.item) {
@@ -688,7 +695,7 @@ export class OpenAIProvider implements AIProvider {
         options?.signal?.removeEventListener('abort', onAbort);
         if (settled) return;
         const tail = contentStripper.flush();
-        if (tail) callbacks?.onText?.(tail);
+        emitVisibleText(tail);
         if (!finalResponse) {
           finishError(new Error('Responses API stream ended without a terminal response'));
           return;
@@ -702,6 +709,9 @@ export class OpenAIProvider implements AIProvider {
           finalResponse.output = outputItems.filter(Boolean);
         }
         const result = this.parseResponsesResponse(finalResponse);
+        if (!result.content && streamedVisibleText) {
+          result.content = this.visibleMessageContent({ content: streamedVisibleText });
+        }
         ContextDebugLogger.dumpSdkBoundary('after', undefined, { response: finalResponse });
         settled = true;
         callbacks?.onComplete?.(result);
