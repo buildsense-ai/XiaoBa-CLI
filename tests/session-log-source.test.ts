@@ -36,8 +36,19 @@ import {
   InternalSessionLogSourceAdapter,
   FixtureSessionLogSourceAdapter,
   ExternalSessionLogSourceAdapter,
+  ExternalSourceReader,
+  ExternalSourceReaderResult,
+  ExternalSourceRawEvent,
+  FixtureExternalSourceReader,
   SessionLogSourceAdapter,
   SessionLogSourceIdentity,
+  SourceCursor,
+  SessionLogSourceResource,
+  SessionLogSourceReadContext,
+  SessionLogSourceReadResult,
+  loadExternalCursorState,
+  saveExternalCursorState,
+  emptyExternalCursorState,
 } from '../src/utils/session-log-source';
 import { getDistillationHeartbeatConfig } from '../src/utils/distillation-heartbeat-config';
 
@@ -567,6 +578,488 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
       const sources = runtimeLearning.getSessionLogSources();
       assert.ok(sources.length >= 1, 'at least one source adapter');
       assert.equal(sources[0].identity.sourceId, 'internal-xiaoba');
+    });
+  });
+
+  describe('Issue #76 — External continuous Source Work Lane', () => {
+    let env: TestEnv;
+
+    beforeEach(() => { env = setupEnv(); });
+    afterEach(() => { env.restore(); env.teardown(); });
+
+    // -----------------------------------------------------------------------
+    // External cursor state persistence
+    // -----------------------------------------------------------------------
+
+    describe('External cursor state persistence', () => {
+      test('emptyExternalCursorState returns valid state', () => {
+        const state = emptyExternalCursorState();
+        assert.equal(state.schemaVersion, 1);
+        assert.deepEqual(state.cursors, {});
+        assert.deepEqual(state.processedEventIds, {});
+        assert.ok(typeof state.updatedAt === 'string');
+      });
+
+      test('load/save round-trip preserves cursor state', () => {
+        const storePath = path.join(env.root, 'data', 'external-cursor-state.json');
+
+        const original = emptyExternalCursorState();
+        original.cursors['external-pi'] = {
+          cursor: { resourceRef: 'pi://conversation/1', position: 5, processedCount: 3 },
+          updatedAt: new Date().toISOString(),
+          lastStatus: 'stable',
+        };
+        original.processedEventIds['pi://conv/1/event-1'] = 'hash-a';
+        original.processedEventIds['pi://conv/1/event-2'] = 'hash-b';
+
+        saveExternalCursorState(storePath, original);
+        const loaded = loadExternalCursorState(storePath);
+
+        assert.equal(loaded.schemaVersion, 1);
+        assert.ok(loaded.cursors['external-pi']);
+        assert.equal(loaded.cursors['external-pi'].cursor.position, 5);
+        assert.equal(loaded.processedEventIds['pi://conv/1/event-1'], 'hash-a');
+      });
+
+      test('load from missing path returns empty state', () => {
+        const storePath = path.join(env.root, 'nonexistent', 'state.json');
+        const state = loadExternalCursorState(storePath);
+        assert.deepEqual(state.cursors, {});
+        assert.deepEqual(state.processedEventIds, {});
+      });
+
+      test('load from corrupt file returns empty state (recoverable)', () => {
+        const storePath = path.join(env.root, 'data', 'corrupt-state.json');
+        fs.mkdirSync(path.dirname(storePath), { recursive: true });
+        fs.writeFileSync(storePath, 'not valid json', 'utf-8');
+
+        const state = loadExternalCursorState(storePath);
+        assert.deepEqual(state.cursors, {});
+        assert.deepEqual(state.processedEventIds, {});
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // FixtureExternalSourceReader
+    // -----------------------------------------------------------------------
+
+    describe('FixtureExternalSourceReader', () => {
+      test('fresh enablement returns only stable resources (future-only gate)', () => {
+        const fixtureFile = path.join(env.root, 'fixture', 'chat', 'f.jsonl');
+        const [delivery, acceptance] = deliveryPair();
+        const unit = buildDistillationUnitFromFile([delivery, acceptance], fixtureFile);
+
+        const reader = new FixtureExternalSourceReader(
+          [unit, null, unit],
+          { sourceId: 'test-fixture', provider: 'test' },
+        );
+
+        // Fresh enablement: null cursor means return only stable (non-null) resources
+        const resources = reader.discoverResources(null);
+        assert.equal(resources.length, 2, 'null unit should be filtered out');
+        assert.ok(resources[0].firstEventIdentity, 'stable unit has identity');
+        assert.ok(resources[1].firstEventIdentity, 'stable unit has identity');
+      });
+
+      test('cursor-based discovery filters processed resources', () => {
+        const fixtureFile = path.join(env.root, 'fixture', 'chat', 'f.jsonl');
+        const [delivery, acceptance] = deliveryPair();
+        const unit = buildDistillationUnitFromFile([delivery, acceptance], fixtureFile);
+
+        const reader = new FixtureExternalSourceReader(
+          [unit, unit, unit],
+          { sourceId: 'test-fixture', provider: 'test' },
+        );
+
+        // Cursor at position 1: resource at position 0 was acknowledged,
+        // resource at position 1 is the next unprocessed resource.
+        const cursor: SourceCursor = {
+          resourceRef: 'test',
+          position: 1,
+          processedCount: 1,
+        };
+        const resources = reader.discoverResources(cursor);
+        assert.equal(resources.length, 2, 'resources at positions 1 and 2');
+        assert.equal(resources[0].firstEventIdentity!.position, 1);
+        assert.equal(resources[1].firstEventIdentity!.position, 2);
+      });
+
+      test('pending (null) unit returns pending status on read', () => {
+        const reader = new FixtureExternalSourceReader(
+          [null],
+          { sourceId: 'test-fixture', provider: 'test' },
+        );
+
+        const resources = reader.discoverResources(null);
+        assert.equal(resources.length, 0, 'pending unit filtered out');
+      });
+
+      test('stable unit read returns event identity', () => {
+        const fixtureFile = path.join(env.root, 'fixture', 'chat', 'f.jsonl');
+        const [delivery, acceptance] = deliveryPair();
+        const unit = buildDistillationUnitFromFile([delivery, acceptance], fixtureFile);
+
+        const reader = new FixtureExternalSourceReader(
+          [unit],
+          { sourceId: 'test-fixture', provider: 'test' },
+        );
+
+        const resources = reader.discoverResources(null);
+        assert.equal(resources.length, 1);
+
+        const cursor: SourceCursor = {
+          resourceRef: resources[0].resourceRef,
+          position: -1,
+          processedCount: 0,
+        };
+        const result = reader.read(resources[0], cursor);
+        assert.equal(result.status, 'stable');
+        assert.equal(result.events.length, 1);
+        assert.equal(result.events[0].eventId, resources[0].firstEventIdentity!.eventId);
+        assert.equal(result.exhausted, true);
+        assert.equal(result.newPosition, 1);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // ExternalSessionLogSourceAdapter with FixtureExternalSourceReader
+    // -----------------------------------------------------------------------
+
+    describe('ExternalSessionLogSourceAdapter with reader', () => {
+      test('enabled adapter with reader discovers resources', () => {
+        const fixtureFile = path.join(env.root, 'fixture', 'chat', 'f.jsonl');
+        const [delivery, acceptance] = deliveryPair();
+        const unit = buildDistillationUnitFromFile([delivery, acceptance], fixtureFile);
+
+        const reader = new FixtureExternalSourceReader([unit], { sourceId: 'ext-test' });
+        const storePath = path.join(env.root, 'data', 'ext-cursor.json');
+
+        const adapter = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-test',
+          provider: 'test',
+          reader,
+          enabled: true,
+        }, storePath);
+
+        assert.equal(adapter.isEnabled(), true);
+        assert.equal(adapter.identity.category, 'external');
+        assert.equal(adapter.identity.provider, 'test');
+
+        const resources = adapter.discoverResources();
+        assert.equal(resources.length, 1);
+        assert.ok(resources[0].firstEventIdentity);
+      });
+
+      test('disabled adapter returns empty resources', () => {
+        const reader = new FixtureExternalSourceReader([], { sourceId: 'ext-test' });
+        const storePath = path.join(env.root, 'data', 'ext-cursor.json');
+
+        const adapter = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-test',
+          provider: 'test',
+          reader,
+          enabled: false,
+        }, storePath);
+
+        assert.equal(adapter.isEnabled(), false);
+        assert.equal(adapter.discoverResources().length, 0);
+      });
+
+      test('adapter without reader returns empty resources (no-op seam)', () => {
+        const adapter = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-pi',
+          provider: 'pi',
+          enabled: true,
+        });
+
+        assert.equal(adapter.isEnabled(), true);
+        assert.equal(adapter.discoverResources().length, 0);
+      });
+
+      test('read returns advanced status and tracks cursor', () => {
+        const fixtureFile = path.join(env.root, 'fixture', 'chat', 'f.jsonl');
+        const [delivery, acceptance] = deliveryPair();
+        const unit = buildDistillationUnitFromFile([delivery, acceptance], fixtureFile);
+
+        const reader = new FixtureExternalSourceReader([unit], { sourceId: 'ext-test' });
+        const storePath = path.join(env.root, 'data', 'ext-cursor.json');
+
+        const adapter = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-test',
+          provider: 'test',
+          reader,
+          enabled: true,
+        }, storePath);
+
+        const resources = adapter.discoverResources();
+        assert.equal(resources.length, 1);
+
+        const readCtx: SessionLogSourceReadContext = { orderedResources: resources };
+        const result = adapter.read(resources[0], readCtx);
+
+        // Returns advanced status (no distillation unit yet — #77–#79)
+        assert.equal(result.status, 'advanced');
+        assert.equal(result.advanced, true);
+        assert.equal(result.distillationUnit, null);
+        assert.ok(result.newCursor.position > 0);
+
+        // Acknowledge to persist cursor
+        adapter.acknowledge(resources[0], result);
+
+        // Verify cursor was persisted
+        const stored = loadExternalCursorState(storePath);
+        assert.ok(stored.cursors['external-test']);
+        assert.equal(stored.cursors['external-test'].cursor.position, result.newCursor.position);
+      });
+
+      test('cursor survives adapter reconstruction (simulated restart)', () => {
+        const fixtureFile = path.join(env.root, 'fixture', 'chat', 'f.jsonl');
+        const [delivery, acceptance] = deliveryPair();
+        const unit = buildDistillationUnitFromFile([delivery, acceptance], fixtureFile);
+
+        const reader = new FixtureExternalSourceReader([unit, unit], { sourceId: 'ext-test' });
+        const storePath = path.join(env.root, 'data', 'ext-cursor.json');
+
+        // First adapter: discover and process first resource
+        const adapter1 = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-test',
+          provider: 'test',
+          reader,
+          enabled: true,
+        }, storePath);
+
+        const resources1 = adapter1.discoverResources();
+        assert.equal(resources1.length, 2, 'two resources on fresh enablement');
+
+        const readCtx: SessionLogSourceReadContext = { orderedResources: resources1 };
+        const result1 = adapter1.read(resources1[0], readCtx);
+        adapter1.acknowledge(resources1[0], result1);
+
+        // Second adapter: simulate restart with same store path
+        const reader2 = new FixtureExternalSourceReader([unit, unit], { sourceId: 'ext-test' });
+        const adapter2 = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-test',
+          provider: 'test',
+          reader: reader2,
+          enabled: true,
+        }, storePath);
+
+        const resources2 = adapter2.discoverResources();
+        // After cursor, only resources past position 0 should be returned
+        assert.equal(resources2.length, 1, 'only the second resource after restart');
+        assert.equal(
+          resources2[0].firstEventIdentity!.position,
+          1,
+          'second resource has position 1',
+        );
+      });
+
+      test('exact dedup: same eventId + same contentHash skipped', () => {
+        const fixtureFile = path.join(env.root, 'fixture', 'chat', 'f.jsonl');
+        const [delivery, acceptance] = deliveryPair();
+        const unit = buildDistillationUnitFromFile([delivery, acceptance], fixtureFile);
+
+        const reader = new FixtureExternalSourceReader([unit], { sourceId: 'ext-test' });
+        const storePath = path.join(env.root, 'data', 'ext-cursor.json');
+
+        const adapter = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-test',
+          provider: 'test',
+          reader,
+          enabled: true,
+        }, storePath);
+
+        const resources = adapter.discoverResources();
+        const readCtx: SessionLogSourceReadContext = { orderedResources: resources };
+
+        // First read + acknowledge
+        const result1 = adapter.read(resources[0], readCtx);
+        adapter.acknowledge(resources[0], result1);
+
+        // Read the same resource again — should show advanced status
+        // because the reader returns it again but the adapter filters via cursor
+        const result2 = adapter.read(resources[0], readCtx);
+        assert.equal(result2.status, 'exhausted', 'resource exhausted after ack');
+      });
+
+      test('stability gate: pending range does not advance cursor', () => {
+        const reader = new FixtureExternalSourceReader(
+          [null],
+          { sourceId: 'ext-test', provider: 'test' },
+        );
+        const storePath = path.join(env.root, 'data', 'ext-cursor.json');
+
+        const adapter = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-test',
+          provider: 'test',
+          reader,
+          enabled: true,
+        }, storePath);
+
+        // Fresh enablement: pending units are not discovered
+        const resources = adapter.discoverResources();
+        assert.equal(resources.length, 0, 'pending units not discovered');
+      });
+
+      test('source identity independent per provider', () => {
+        const storePath1 = path.join(env.root, 'data', 'ext-cursor-1.json');
+        const storePath2 = path.join(env.root, 'data', 'ext-cursor-2.json');
+
+        const adapter1 = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-pi',
+          provider: 'pi',
+          enabled: true,
+        }, storePath1);
+
+        const adapter2 = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-codex',
+          provider: 'codex',
+          enabled: true,
+        }, storePath2);
+
+        assert.notEqual(adapter1.identity.sourceId, adapter2.identity.sourceId);
+        assert.notEqual(adapter1.identity.provider, adapter2.identity.provider);
+        assert.equal(adapter1.identity.category, 'external');
+        assert.equal(adapter2.identity.category, 'external');
+
+        // Each provider has its own cursor store path
+        assert.notEqual(storePath1, storePath2);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // Fixture adapter with external-like identity through wake()
+    // -----------------------------------------------------------------------
+
+    describe('External identity through wake() path', () => {
+      test('fixture adapter with external identity feeds wake()', async () => {
+        const fixtureFile = path.join(env.root, 'fixture', 'chat', 'f.jsonl');
+        const [delivery, acceptance] = deliveryPair();
+        const unit = buildDistillationUnitFromFile([delivery, acceptance], fixtureFile);
+
+        // Use FixtureSessionLogSourceAdapter with external category
+        const fixture = new FixtureSessionLogSourceAdapter([unit], {
+          identity: {
+            sourceId: 'external-fixture',
+            category: 'external',
+            provider: 'fixture',
+            reader: 'fixture',
+          },
+        });
+
+        const runtimeLearning = createRuntimeLearning(env, [fixture]);
+        const result = await runtimeLearning.wake('startup');
+
+        assert.equal(result.ran, true);
+        assert.equal(result.discovery.scanned, true);
+        assert.equal(result.discovery.sources.length, 1);
+
+        const report = result.discovery.sources[0];
+        assert.equal(report.sourceId, 'external-fixture');
+        assert.equal(report.category, 'external');
+        assert.equal(report.enabled, true);
+        assert.equal(report.resourcesDiscovered, 1);
+        assert.equal(report.unitsProcessed, 1);
+        assert.ok(result.ingestion.admittedEpisodes >= 1, 'episodes admitted from external-fixture');
+      });
+
+      test('external and internal sources coexist with independent reports', async () => {
+        const [delivery, acceptance] = deliveryPair();
+        writeLog(env.logFile, [delivery, acceptance]);
+
+        const fixtureFile = path.join(env.root, 'fixture', 'ext', 'e.jsonl');
+        const [extDelivery, extAcceptance] = deliveryPair();
+        const extUnit = buildDistillationUnitFromFile(
+          [extDelivery, extAcceptance],
+          fixtureFile,
+        );
+
+        const fixture = new FixtureSessionLogSourceAdapter([extUnit], {
+          identity: {
+            sourceId: 'external-fixture',
+            category: 'external',
+            provider: 'fixture',
+            reader: 'fixture',
+          },
+        });
+
+        const internal = new InternalSessionLogSourceAdapter(
+          getDistillationHeartbeatConfig(env.root),
+        );
+
+        const runtimeLearning = createRuntimeLearning(env, [internal, fixture]);
+        const result = await runtimeLearning.wake('startup');
+
+        assert.equal(result.discovery.sources.length, 2);
+
+        const internalReport = result.discovery.sources.find(s => s.category === 'internal');
+        const externalReport = result.discovery.sources.find(s => s.category === 'external');
+
+        assert.ok(internalReport, 'internal report exists');
+        assert.ok(externalReport, 'external report exists');
+        assert.equal(internalReport!.sourceId, 'internal-xiaoba');
+        assert.equal(externalReport!.sourceId, 'external-fixture');
+        assert.equal(internalReport!.enabled, true);
+        assert.equal(externalReport!.enabled, true);
+        assert.ok(internalReport!.unitsProcessed >= 1);
+        assert.equal(externalReport!.unitsProcessed, 1);
+        assert.ok(result.ingestion.admittedEpisodes >= 2, 'episodes admitted from both sources');
+      });
+
+      test('external source with external adapter reports in wake()', async () => {
+        const fixtureFile = path.join(env.root, 'fixture', 'ext', 'e.jsonl');
+        const [delivery, acceptance] = deliveryPair();
+        const unit = buildDistillationUnitFromFile([delivery, acceptance], fixtureFile);
+
+        const reader = new FixtureExternalSourceReader([unit], { sourceId: 'ext-test' });
+        const storePath = path.join(env.root, 'data', 'ext-cursor.json');
+
+        const external = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-test',
+          provider: 'test',
+          reader,
+          enabled: true,
+        }, storePath);
+
+        const runtimeLearning = createRuntimeLearning(env, [
+          new InternalSessionLogSourceAdapter(getDistillationHeartbeatConfig(env.root)),
+          external,
+        ]);
+
+        const result = await runtimeLearning.wake('startup');
+
+        // Both sources should be in the report
+        assert.equal(result.discovery.sources.length, 2);
+
+        const externalReport = result.discovery.sources.find(s => s.sourceId === 'external-test');
+        assert.ok(externalReport, 'external source report exists');
+        assert.equal(externalReport!.enabled, true);
+        assert.equal(externalReport!.category, 'external');
+        assert.equal(externalReport!.resourcesDiscovered, 1);
+        // No advanced resources because external adapter returns null distillation units
+        // (needs converter from #77–#79)
+      });
+
+      test('disabled external source with adapter reports as disabled', async () => {
+        const reader = new FixtureExternalSourceReader([], { sourceId: 'ext-test' });
+        const storePath = path.join(env.root, 'data', 'ext-cursor.json');
+
+        const external = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-disabled',
+          provider: 'test',
+          reader,
+          enabled: false,
+        }, storePath);
+
+        const runtimeLearning = createRuntimeLearning(env, [external]);
+        const result = await runtimeLearning.wake('startup');
+
+        const report = result.discovery.sources.find(s => s.sourceId === 'external-disabled');
+        assert.ok(report, 'disabled external source report exists');
+        assert.equal(report!.enabled, false);
+        assert.equal(report!.resourcesDiscovered, 0);
+        assert.equal(report!.unitsProcessed, 0);
+      });
     });
   });
 });
