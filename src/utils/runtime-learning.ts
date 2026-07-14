@@ -600,7 +600,6 @@ export class RuntimeLearning {
       || Boolean(dueWork.semanticReassessmentDue)
     );
   }
-
   private async runSemanticReassessment(): Promise<RuntimeLearningReassessmentReport> {
     try {
       const results = await bootstrapSemanticReassessmentOnce({
