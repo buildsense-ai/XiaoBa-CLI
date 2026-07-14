@@ -184,6 +184,19 @@ export interface RuntimeLearningHeartbeatRecord {
   lastReviewFailureCount: number;
 }
 
+export interface RuntimeLearningBackfillOperationPaths {
+  stateFilePath: string;
+  auditFilePath: string;
+}
+
+export interface RuntimeLearningBackfillResult {
+  paths: RuntimeLearningBackfillOperationPaths;
+  backfill: ExternalSessionLogBackfillRunResult;
+  ingestion: RuntimeLearningIngestionReport;
+  maturation: RuntimeLearningMaturationReport;
+  review: RuntimeLearningReviewReport;
+}
+
 // ---------------------------------------------------------------------------
 // Construction options
 // ---------------------------------------------------------------------------
@@ -447,6 +460,85 @@ export class RuntimeLearning {
   /** Evidence Capsule store for external evidence inspection/testing (issue #78). */
   getEvidenceCapsuleStore(): EvidenceCapsuleStore {
     return this.evidenceCapsuleStore;
+  }
+
+  /** Deterministic state/audit paths for one explicit external backfill operation. */
+  getExternalBackfillOperationPaths(
+    request: Pick<ExternalSessionLogBackfillRequest, 'provider' | 'sourceId' | 'operationId'>,
+  ): RuntimeLearningBackfillOperationPaths {
+    const backfillRoot = path.join(
+      path.dirname(this.config.learningEpisodeStorePath),
+      'external-session-log-backfills',
+      toStablePathComponent(request.provider),
+      toStablePathComponent(request.sourceId),
+    );
+    const operationStem = toStablePathComponent(request.operationId);
+    return {
+      stateFilePath: path.join(backfillRoot, `${operationStem}.state.json`),
+      auditFilePath: path.join(backfillRoot, `${operationStem}.audit.jsonl`),
+    };
+  }
+
+  /**
+   * Explicit operator-triggered backfill for a bounded external source range.
+   * This is intentionally separate from normal wake/provider enablement.
+   */
+  async runExternalBackfill(
+    request: ExternalSessionLogBackfillRequest,
+    source: ExternalSessionLogBackfillSource,
+  ): Promise<RuntimeLearningBackfillResult> {
+    const paths = this.getExternalBackfillOperationPaths(request);
+    const service = new ExternalSessionLogBackfillService({
+      stateFilePath: paths.stateFilePath,
+      auditFilePath: paths.auditFilePath,
+      now: this.clock,
+    });
+
+    let admittedEpisodes = 0;
+    let contradictionSignals = 0;
+
+    const backfill = service.run(request, source, (unit, context) => {
+      const ingestion = this.evidenceIngestor.ingest(unit);
+      this.queueCuratorObservation(ingestion.admittedEpisodeIds);
+      this.createCapsulesForExternalSource(
+        source.identity,
+        context.eventIdentity,
+        ingestion,
+      );
+      admittedEpisodes += ingestion.admittedEpisodeIds.length;
+      contradictionSignals += ingestion.contradictionSignalIds.length;
+      return { admittedEpisodeIds: ingestion.admittedEpisodeIds };
+    });
+
+    const maturationDueWork: DueWork = {
+      settlementDue: true,
+      operationalRetryDue: false,
+      routineCuratorDue: false,
+      expeditedCuratorDue: false,
+      semanticReassessmentDue: false,
+    };
+    const reviewDueWork: DueWork = {
+      settlementDue: true,
+      operationalRetryDue: true,
+      routineCuratorDue: false,
+      expeditedCuratorDue: false,
+      semanticReassessmentDue: false,
+    };
+
+    const maturation = await this.runMaturation(maturationDueWork, false);
+    await this.flushCuratorObservations();
+    const review = await this.runReview(reviewDueWork);
+
+    return {
+      paths,
+      backfill,
+      ingestion: {
+        admittedEpisodes,
+        contradictionSignals,
+      },
+      maturation,
+      review,
+    };
   }
 
   // -----------------------------------------------------------------------
@@ -1213,7 +1305,10 @@ export class RuntimeLearning {
             // degrading into unredacted review input.
             this.createCapsulesForExternalSource(
               identity,
-              resource,
+              resource.firstEventIdentity ?? {
+                eventId: resource.resourceRef,
+                position: 0,
+              },
               ingestionResult,
             );
           }
@@ -1496,14 +1591,10 @@ export class RuntimeLearning {
    */
   private createCapsulesForExternalSource(
     identity: SessionLogSourceIdentity,
-    resource: SessionLogSourceResource,
+    eventIdentity: SourceEventIdentity,
     ingestionResult: EvidenceIngestionResult,
   ): void {
     if (ingestionResult.admittedEpisodeIds.length === 0) return;
-    const eventIdentity: SourceEventIdentity = resource.firstEventIdentity ?? {
-      eventId: resource.resourceRef,
-      position: 0,
-    };
 
     for (const episodeId of ingestionResult.admittedEpisodeIds) {
       const episode = ingestionResult.state.episodes[episodeId];
@@ -1709,6 +1800,12 @@ import {
   buildEvidenceCapsule,
   reconstructBundleFromCapsule,
 } from './evidence-capsule';
+import {
+  ExternalSessionLogBackfillRequest,
+  ExternalSessionLogBackfillRunResult,
+  ExternalSessionLogBackfillService,
+  ExternalSessionLogBackfillSource,
+} from './session-log-backfill';
 import { DistilledKnowledgeCandidate } from './capability-distiller';
 
 // Re-export types used by callers
@@ -1802,6 +1899,12 @@ function toErrorMessage(error: unknown): string {
 
 function isExternalLikeSourcePath(sourceFilePath: string): boolean {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(sourceFilePath) && !sourceFilePath.startsWith('file://');
+}
+
+function toStablePathComponent(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) return 'backfill';
+  return encodeURIComponent(normalized).replace(/%/g, '_');
 }
 
 function resolveSessionLogsRoot(logsRoot: string): string {
