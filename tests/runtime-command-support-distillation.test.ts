@@ -400,6 +400,11 @@ describe('startRuntimeCommandSupport() distillation wiring (issue #13)', () => {
 
     const config = getDistillationHeartbeatConfig(env.root);
     assert.equal(config.intervalHours, 6, 'default cadence remains six hours');
+
+    await assert.doesNotReject(
+      () => stopRuntimeCommandSupport(),
+      'stopping runtime command support should not lose RuntimeLearning this-binding',
+    );
   });
 
   // AC: An end-to-end runtime support test proves a session log append can

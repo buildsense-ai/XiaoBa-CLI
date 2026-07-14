@@ -356,7 +356,7 @@ export class DistillationHeartbeatScheduler {
         this.pendingWakeReasons.clear();
         const markHeartbeatStatus = this.runtimeLearning?.markHeartbeatStatus;
         if (typeof markHeartbeatStatus === 'function') {
-          markHeartbeatStatus('drained', {
+          markHeartbeatStatus.call(this.runtimeLearning, 'drained', {
             reason: 'manual',
             durationMs: Math.max(0, Date.now() - stopStartedAtMs),
             pendingWakeReasons: drainedReason,
