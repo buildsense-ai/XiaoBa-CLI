@@ -1,6 +1,6 @@
 {
   "name": "xiaoba-cli",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "CatsCo - local agent runtime and dashboard",
   "main": "electron/main.js",
   "bin": {
