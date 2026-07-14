@@ -10,9 +10,14 @@ export type PetState =
   | 'idle'
   | 'thinking'
   | 'working'
+  | 'skill'
+  | 'notify'
+  | 'sleepy'
   | 'success'
+  | 'happy'
   | 'error'
-  | 'level_up';
+  | 'level_up'
+  | 'peek';
 
 export interface PetEventInput {
   user_id?: string;

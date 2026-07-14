@@ -1,6 +1,14 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog, shell, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { spawnSync } = require('child_process');
+const { createDesktopCompanionManager } = require('./desktop-companion-manager');
+const { createApplicationMenu } = require('./application-menu');
+const { createRuntimeDataActions } = require('./runtime-data');
+const { registerPetIpcHandlers } = require('./pet-ipc');
+const { createPetMenu } = require('./pet-menu');
+const { createPetWindowController } = require('./pet-window');
+const { createCompanionTray, createLegacyTray: createLegacyTrayWindow } = require('./tray');
 
 const DASHBOARD_PORT = resolveDashboardPort(process.env.XIAOBA_DASHBOARD_PORT);
 const DEEP_LINK_PROTOCOL = 'catsco';
@@ -11,6 +19,10 @@ let autoUpdater = null;
 let dashboardServerHandle = null;
 let hideNoticeShown = false;
 let dashboardServerReady = false;
+let desktopCompanionManager = null;
+let runtimeDataActions = null;
+let petMenuController = null;
+let petWindowController = null;
 const pendingDeepLinks = [];
 let deepLinkDrainPromise = null;
 
@@ -49,30 +61,20 @@ function applyConfiguredUserDataPath() {
   app.setPath('userData', resolvedUserDataDir);
 }
 
-function readCloseToTrayPreference() {
+function readDesktopConfig() {
   try {
     const configPath = path.join(process.cwd(), '.xiaoba', 'catsco.json');
-    if (!fs.existsSync(configPath)) return true;
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    const value = config?.preferences?.closeToTray;
-    return value !== false;
+    if (!fs.existsSync(configPath)) return {};
+    return JSON.parse(fs.readFileSync(configPath, 'utf8'));
   } catch (_error) {
-    return true;
+    return {};
   }
 }
 
-function writeCloseToTrayPreference(closeToTray) {
+function writePreferencePatch(patch) {
   const configPath = path.join(process.cwd(), '.xiaoba', 'catsco.json');
   const configDir = path.dirname(configPath);
-  let config = {};
-
-  try {
-    if (fs.existsSync(configPath)) {
-      config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    }
-  } catch (_error) {
-    config = {};
-  }
+  const config = readDesktopConfig();
 
   const next = {
     ...config,
@@ -81,7 +83,7 @@ function writeCloseToTrayPreference(closeToTray) {
       ...config.preferences,
       autoConnect: config.preferences?.autoConnect ?? true,
       switchConfirmEnabled: config.preferences?.switchConfirmEnabled ?? true,
-      closeToTray: Boolean(closeToTray),
+      ...patch,
     },
     updatedAt: new Date().toISOString(),
   };
@@ -90,13 +92,143 @@ function writeCloseToTrayPreference(closeToTray) {
   fs.writeFileSync(configPath, JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 });
 }
 
-function showMainWindow() {
+function getDesktopCompanionManager() {
+  if (!desktopCompanionManager) {
+    desktopCompanionManager = createDesktopCompanionManager({
+      app,
+      screen,
+      spawnSync,
+      process,
+      readDesktopConfig,
+      writePreferencePatch,
+    });
+  }
+  return desktopCompanionManager;
+}
+
+function readCloseToTrayPreference() {
+  const value = readDesktopConfig()?.preferences?.closeToTray;
+  return value !== false;
+}
+
+function writeCloseToTrayPreference(closeToTray) {
+  writePreferencePatch({ closeToTray: Boolean(closeToTray) });
+}
+
+function ensureStartAtLoginRegistration() {
+  getDesktopCompanionManager().syncLoginItemSettings();
+}
+
+function getRuntimeDataActions() {
+  if (!runtimeDataActions) {
+    runtimeDataActions = createRuntimeDataActions({ app, shell });
+  }
+  return runtimeDataActions;
+}
+
+function ensureDesktopCompanionShell() {
+  if (petWindowController && petMenuController) return;
+
+  petWindowController = createPetWindowController({
+    app,
+    BrowserWindow,
+    shell,
+    dashboardPort: DASHBOARD_PORT,
+    getDesktopCompanionManager,
+    showMainWindow,
+    isTrustedDashboardUrl,
+    resolveCatsCoWebUrl,
+    showPetContextMenu,
+    preloadPath: path.join(__dirname, 'preload.js'),
+  });
+
+  petMenuController = createPetMenu({
+    Menu,
+    app,
+    getDesktopCompanionManager,
+    showPetWindow,
+    openDashboardFromPet,
+    openCatsCoWebFromPet,
+    getPopupWindow: () => getPetWindow() || mainWindow || undefined,
+  });
+
+  registerPetIpcHandlers({
+    ipcMain,
+    openDashboardFromPet,
+    openCatsCoWebFromPet,
+    showPetContextMenu,
+    getDashboardUrl,
+    resolveCatsCoWebUrl,
+    getDesktopCompanionManager,
+  });
+}
+
+function getPetWindowController() {
+  ensureDesktopCompanionShell();
+  return petWindowController;
+}
+
+function getPetMenuController() {
+  ensureDesktopCompanionShell();
+  return petMenuController;
+}
+
+function getPetWindow() {
+  return petWindowController?.getPetWindow() || null;
+}
+
+function createPetWindow() {
+  return getPetWindowController().createPetWindow();
+}
+
+function buildPetContextMenuTemplate() {
+  return getPetMenuController().buildPetContextMenuTemplate();
+}
+
+function showPetContextMenu() {
+  getPetMenuController().showPetContextMenu();
+}
+
+function showMainWindow(targetPath) {
+  const targetUrl = buildDashboardUrl(targetPath);
   if (mainWindow) {
+    if (targetPath) mainWindow.loadURL(targetUrl);
     mainWindow.show();
     mainWindow.focus();
   } else {
-    createWindow();
+    createWindow(targetPath);
   }
+}
+
+function showPetWindow() {
+  getPetWindowController().showPetWindow();
+}
+
+function getDashboardUrl() {
+  return `http://127.0.0.1:${DASHBOARD_PORT}`;
+}
+
+function buildDashboardUrl(targetPath) {
+  const base = getDashboardUrl();
+  const text = String(targetPath || '').trim();
+  if (!text) return base;
+  if (text.startsWith('#')) return `${base}/${text}`;
+  if (text.startsWith('/')) return `${base}${text}`;
+  return base;
+}
+
+function resolveCatsCoWebUrl() {
+  return normalizeHttpUrl(process.env.CATSCO_WEB_URL)
+    || normalizeHttpUrl(process.env.CATSCO_HTTP_BASE_URL)
+    || 'https://app.catsco.cc';
+}
+
+function openDashboardFromPet(targetPath) {
+  getPetWindowController().openDashboardFromPet(targetPath);
+}
+
+function openCatsCoWebFromPet() {
+  getPetWindowController().openCatsCoWebFromPet();
 }
 
 function isCatsCoDeepLink(value) {
@@ -256,6 +388,17 @@ try {
 function normalizeUrl(value) {
   if (!value) return null;
   return String(value).trim().replace(/\/+$/, '');
+}
+
+function normalizeHttpUrl(value) {
+  const normalized = normalizeUrl(value);
+  if (!normalized) return null;
+  try {
+    const url = new URL(normalized);
+    return (url.protocol === 'http:' || url.protocol === 'https:') ? normalized : null;
+  } catch (_error) {
+    return null;
+  }
 }
 
 function resolveReleasePageUrl() {
@@ -561,7 +704,7 @@ function stopDashboardServer() {
   });
 }
 
-function createWindow() {
+function createWindow(targetPath) {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -577,13 +720,20 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadURL(`http://127.0.0.1:${DASHBOARD_PORT}`);
+  if (targetPath) mainWindow.loadURL(buildDashboardUrl(targetPath));
+  else mainWindow.loadURL(`http://127.0.0.1:${DASHBOARD_PORT}`);
 
   mainWindow.on('close', (event) => {
     if (app.isQuitting || !readCloseToTrayPreference()) return;
     event.preventDefault();
     mainWindow.hide();
     notifyWindowHidden();
+  });
+
+  mainWindow.on('minimize', (event) => {
+    event.preventDefault();
+    mainWindow.hide();
+    showPetWindow();
   });
 
   mainWindow.on('closed', () => {
@@ -638,145 +788,23 @@ ipcMain.handle('catsco:select-files', async (event) => {
     .filter(Boolean);
 });
 
-function getRuntimeDataRootForMenu() {
-  return process.env.XIAOBA_USER_DATA_DIR
-    || process.env.CATSCO_USER_DATA_DIR
-    || process.env.XIAOBA_ELECTRON_USER_DATA_DIR
-    || app.getPath('userData');
-}
-
-function openAttachmentCacheDirectory() {
-  const dir = path.join(getRuntimeDataRootForMenu(), 'data', 'attachments');
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-  } catch (error) {
-    console.error('Failed to create attachment cache directory:', error);
-  }
-  shell.openPath(dir).then((error) => {
-    if (error) {
-      console.error('Failed to open attachment cache directory:', error);
-    }
+function createTray() {
+  tray = createCompanionTray({
+    Tray,
+    Menu,
+    createTrayIcon,
+    buildPetContextMenuTemplate,
+    showPetWindow,
   });
 }
 
-function createApplicationMenu() {
-  const closeToTray = readCloseToTrayPreference();
-  const quit = () => {
-    app.isQuitting = true;
-    app.quit();
-  };
-
-  const editMenu = [
-    { label: '撤销', role: 'undo' },
-    { label: '重做', role: 'redo' },
-    { type: 'separator' },
-    { label: '剪切', role: 'cut' },
-    { label: '复制', role: 'copy' },
-    { label: '粘贴', role: 'paste' },
-    { label: '全选', role: 'selectAll' },
-  ];
-
-  const template = [
-    ...(process.platform === 'darwin' ? [{
-      label: 'CatsCo',
-      submenu: [
-        { label: '关于 CatsCo', role: 'about' },
-        { type: 'separator' },
-        { label: '隐藏 CatsCo', role: 'hide' },
-        { label: '隐藏其他应用', role: 'hideOthers' },
-        { label: '显示全部', role: 'unhide' },
-        { type: 'separator' },
-        { label: '退出 CatsCo', accelerator: 'Command+Q', click: quit },
-      ],
-    }] : []),
-    {
-      label: '文件',
-      submenu: [
-        { label: '打开 Dashboard', click: showMainWindow },
-        { type: 'separator' },
-        { label: '退出 CatsCo', accelerator: process.platform === 'darwin' ? 'Command+Q' : 'Ctrl+Q', click: quit },
-      ],
-    },
-    {
-      label: '编辑',
-      submenu: editMenu,
-    },
-    {
-      label: '设置',
-      submenu: [
-        { label: '打开本地缓存文件位置', click: openAttachmentCacheDirectory },
-      ],
-    },
-    {
-      label: '视图',
-      submenu: [
-        { label: '重新加载', role: 'reload' },
-        { label: '强制重新加载', role: 'forceReload' },
-        { label: '开发者工具', role: 'toggleDevTools' },
-        { type: 'separator' },
-        { label: '实际大小', role: 'resetZoom' },
-        { label: '放大', role: 'zoomIn' },
-        { label: '缩小', role: 'zoomOut' },
-        { type: 'separator' },
-        { label: '全屏', role: 'togglefullscreen' },
-      ],
-    },
-    {
-      label: '窗口',
-      submenu: [
-        { label: '显示主窗口', click: showMainWindow },
-        {
-          label: '点 × 后隐藏到后台',
-          type: 'checkbox',
-          checked: closeToTray,
-          click: (menuItem) => {
-            writeCloseToTrayPreference(menuItem.checked);
-          },
-        },
-        { type: 'separator' },
-        { label: '最小化', role: 'minimize' },
-        { label: '关闭窗口', role: 'close' },
-      ],
-    },
-    {
-      label: '帮助',
-      submenu: [
-        {
-          label: '检查更新',
-          enabled: Boolean(autoUpdater),
-          click: () => {
-            updateController.checkForUpdates(true).catch((error) => {
-              console.error('Manual update check failed:', error);
-            });
-          },
-        },
-        {
-          label: '打开发布页',
-          click: () => {
-            const url = updateState.releasePageUrl;
-            if (url) shell.openExternal(url);
-          },
-        },
-      ],
-    },
-  ];
-
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-}
-
-function createTray() {
-  tray = new Tray(createTrayIcon());
-
-  const contextMenu = Menu.buildFromTemplate([
-    { label: '打开 CatsCo Dashboard', click: showMainWindow },
-    { type: 'separator' },
-    { label: '退出 CatsCo', click: () => { app.isQuitting = true; app.quit(); }} ,
-  ]);
-
-  tray.setToolTip('CatsCo Dashboard');
-  tray.setContextMenu(contextMenu);
-  tray.on('click', () => {
-    showMainWindow();
+function createLegacyTray() {
+  tray = createLegacyTrayWindow({
+    Tray,
+    Menu,
+    app,
+    createTrayIcon,
+    showMainWindow,
   });
 }
 
@@ -853,8 +881,21 @@ app.whenReady().then(async () => {
     registerDeepLinkProtocol();
     await startServer();
     dashboardServerReady = true;
-    createApplicationMenu();
-    createWindow();
+    ensureStartAtLoginRegistration();
+    ensureDesktopCompanionShell();
+    createApplicationMenu({
+      Menu,
+      app,
+      shell,
+      autoUpdater,
+      updateController,
+      updateState,
+      showMainWindow,
+      readCloseToTrayPreference,
+      writeCloseToTrayPreference,
+      openAttachmentCacheDirectory: getRuntimeDataActions().openAttachmentCacheDirectory,
+    });
+    createPetWindow();
     createTray();
     enqueueDeepLinkFromArgv(process.argv);
     scheduleDeepLinkDrain();
@@ -871,8 +912,7 @@ app.whenReady().then(async () => {
   }
 
   app.on('activate', () => {
-    if (mainWindow) mainWindow.show();
-    else createWindow();
+    showPetWindow();
   });
 });
 
