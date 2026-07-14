@@ -47,7 +47,13 @@ import {
   SessionLogSourceReadContext,
   SessionLogSourceReport,
   SessionLogSourceResource,
+  SessionLogSourceIdentity,
   SessionLogSourceReadResult,
+  SourceEventIdentity,
+  SourceWorkBudget,
+  SourceFailureState,
+  SessionLogSourceStatus,
+  DEFAULT_EXTERNAL_SOURCE_BUDGET,
 } from './session-log-source';
 
 // ---------------------------------------------------------------------------
@@ -241,6 +247,16 @@ export interface RuntimeLearningOptions {
    * deferred to the next wake without falsely acknowledging their cursors.
    */
   discoveryQuotas?: Partial<DiscoveryWakeQuotas>;
+  /**
+   * Per-source work budget for external source lanes (issue #77). When set,
+   * this budget is applied to every external source adapter. Each external
+   * source enforces configurable resource, byte, and elapsed-time quotas per
+   * wake so a single chatty or failing external source cannot starve internal
+   * discovery or due settlement/review/retry work.
+   *
+   * Defaults to {@link DEFAULT_EXTERNAL_SOURCE_BUDGET} when omitted.
+   */
+  externalSourceBudget?: SourceWorkBudget;
   /** Injectable clock for tests. */
   clock?: () => Date;
 }
@@ -339,6 +355,21 @@ export class RuntimeLearning {
   private readonly config: DistillationHeartbeatConfig;
   private readonly sessionLogSources: readonly SessionLogSourceAdapter[];
   private readonly discoveryQuotas: DiscoveryWakeQuotas;
+  /** Per-source work budget applied to each external source lane (issue #77). */
+  private readonly externalSourceBudget: SourceWorkBudget;
+  /**
+   * Per-source failure tracking for external source lanes. Keyed by sourceId.
+   * State is persisted to disk after each wake so restart recovery restores
+   * lane due time, cursor, quota continuation, and backoff state.
+   */
+  private readonly externalSourceFailureState = new Map<string, SourceFailureState>();
+  /**
+   * Path to the durable external source scheduling state file. Used for
+   * restart recovery of per-source backoff/suspension state.
+   */
+  private readonly schedulingStatePath: string;
+  /** Durable Evidence Capsule store for external evidence (issue #78). */
+  private readonly evidenceCapsuleStore: EvidenceCapsuleStore;
 
   private readonly pendingCuratorObservationEpisodeIds = new Set<string>();
 
@@ -398,6 +429,24 @@ export class RuntimeLearning {
   /** Session Log Source adapters for source-neutral discovery (issue #75). */
   getSessionLogSources(): readonly SessionLogSourceAdapter[] {
     return this.sessionLogSources;
+  }
+
+  /**
+   * External source failure state (issue #77). Returns a snapshot of the
+   * current per-source failure tracking for inspection/testing.
+   */
+  getExternalSourceFailureState(): ReadonlyMap<string, SourceFailureState> {
+    return new Map(this.externalSourceFailureState);
+  }
+
+  /** External source work budget (issue #77). */
+  getExternalSourceBudget(): SourceWorkBudget {
+    return { ...this.externalSourceBudget };
+  }
+
+  /** Evidence Capsule store for external evidence inspection/testing (issue #78). */
+  getEvidenceCapsuleStore(): EvidenceCapsuleStore {
+    return this.evidenceCapsuleStore;
   }
 
   // -----------------------------------------------------------------------
@@ -795,10 +844,11 @@ export class RuntimeLearning {
         if (this.hasReviewedEpisode(episode)) continue;
 
         const candidate = buildLearningEpisodeCandidate(episode);
-        const bundle = buildEpisodeEvidenceBundle(episode, candidate, this.skillEvolution);
+        const bundle = buildEpisodeEvidenceBundle(episode, candidate, this.skillEvolution, this.evidenceCapsuleStore);
 
         try {
           const result = await this.skillEvolution.reviewAndApply(bundle);
+          this.linkEvidenceCapsuleToAudit(bundle.bundleId, result.audit?.transitionId ?? result.transitionId);
           incrementTransition(transitionsByKind, result.transition);
           reviewedEpisodes++;
         } catch (error: any) {
@@ -974,12 +1024,33 @@ export class RuntimeLearning {
 
   /**
    * Run source-neutral discovery across all configured Session Log Source
-   * adapters. For each enabled adapter, discover resources, read from each,
-   * ingest evidence through the shared EvidenceIngestor, and acknowledge or
-   * mark failed. Returns per-source reports and aggregate ingestion counts.
+   * adapters (issue #75, #77).
    *
-   * Internal sources are always enabled; external sources are disabled by
-   * default (see config `externalSessionLogSourcesEnabled`).
+   * === Ordering ===
+   * Internal sources are always processed BEFORE external sources so due
+   * settlement/review/retry work and internal discovery are protected from
+   * optional external scanning (AC2).
+   *
+   * === Per-source budgets (external only) ===
+   * Each external source enforces configurable resource, byte, and elapsed-time
+   * quotas per wake (AC1). When a quota is reached the source's remaining
+   * resources are deferred to the next wake and the cursor is left resumable
+   * (resources examined but not acknowledged are NOT advanced).
+   *
+   * === Failure isolation ===
+   * Provider failures (missing reader, malformed data, transient unavailability)
+   * record source-specific status, error context, and retry/backoff state WITHOUT
+   * blocking internal or other enabled external source lanes (AC3). Failures are
+   * also isolated from candidate review failure accounting — they never increment
+   * the Operational Retry counter (AC4).
+   *
+   * === Backoff ===
+   * A source that experiences consecutive failures enters backoff:
+   *   1 failure  → 30s suspension
+   *   2 failures → 5m suspension
+   *   3+ failures → 30m suspension
+   * On success the consecutive count resets to zero. Suspended sources are
+   * skipped on subsequent wakes until the suspension deadline passes (AC3).
    */
   private runDiscovery(): {
     sourceReports: readonly SessionLogSourceReport[];
@@ -1000,10 +1071,14 @@ export class RuntimeLearning {
     let wakeAdmittedEpisodes = 0;
     let discoveryCapped = false;
 
-    for (const adapter of this.sessionLogSources) {
+    // ---- AC2: Internal-first ordering ----
+    const orderedSources = this.orderSourcesForDiscovery();
+
+    for (const adapter of orderedSources) {
       if (discoveryCapped) break;
       const enabled = adapter.isEnabled();
       const identity = adapter.identity;
+      const isExternal = identity.category === 'external';
 
       if (!enabled) {
         sourceReports.push({
@@ -1013,9 +1088,39 @@ export class RuntimeLearning {
           resourcesDiscovered: 0,
           unitsProcessed: 0,
           advancedResources: 0,
+          status: 'active',
         });
         continue;
       }
+
+      // ---- AC3: Skip suspended external sources ----
+      if (isExternal) {
+        const failureState = this.externalSourceFailureState.get(identity.sourceId);
+        if (failureState && failureState.suspendedUntil) {
+          const suspendedUntilMs = Date.parse(failureState.suspendedUntil);
+          if (Number.isFinite(suspendedUntilMs) && suspendedUntilMs > this.clock().getTime()) {
+            sourceReports.push({
+              sourceId: identity.sourceId,
+              category: identity.category,
+              enabled: true,
+              resourcesDiscovered: 0,
+              unitsProcessed: 0,
+              advancedResources: 0,
+              status: 'backoff',
+              failureState,
+            });
+            continue;
+          }
+        }
+      }
+
+      // Per-source budget (applied to external sources only).
+      const budget = isExternal ? this.externalSourceBudget : undefined;
+      const sourceStartMs = this.clock().getTime();
+      let sourceResourcesExamined = 0;
+      let sourceBytesRead = 0;
+      let sourceHadFailure = false;
+      let sourceBudgetHit = false;
 
       const resources = adapter.discoverResources();
       let unitsProcessed = 0;
@@ -1025,6 +1130,26 @@ export class RuntimeLearning {
 
       for (const resource of resources) {
         if (discoveryCapped) break;
+
+        // ---- AC1: Per-source quota checks ----
+        if (budget) {
+          if (sourceResourcesExamined >= budget.maxResourcesPerWake) {
+            sourceBudgetHit = true;
+            break;
+          }
+          if (budget.maxBytesPerWake > 0 && sourceBytesRead >= budget.maxBytesPerWake) {
+            sourceBudgetHit = true;
+            break;
+          }
+          const sourceElapsedMs = this.clock().getTime() - sourceStartMs;
+          if (sourceElapsedMs >= budget.maxElapsedMsPerWake) {
+            sourceBudgetHit = true;
+            break;
+          }
+        }
+        sourceResourcesExamined++;
+
+        // ---- Wake-level cap checks ----
         if (wakeResourcesExamined >= this.discoveryQuotas.maxResourcesPerWake) {
           discoveryCapped = true;
           break;
@@ -1039,13 +1164,22 @@ export class RuntimeLearning {
         }
         wakeResourcesExamined++;
 
+        // ---- Read resource ----
         let readResult: SessionLogSourceReadResult;
         try {
           readResult = adapter.read(resource, readContext);
         } catch (error) {
+          // AC3: Per-source failure recording, NOT OPR
           adapter.markFailed(resource, error);
+          sourceHadFailure = true;
+          this.recordExternalSourceFailure(identity.sourceId, error);
           continue;
         }
+
+        const unitBytes = readResult.distillationUnit
+          ? (readResult.distillationUnit.byteRange.end - readResult.distillationUnit.byteRange.start)
+          : 0;
+        sourceBytesRead += unitBytes;
 
         if (!readResult.distillationUnit) {
           // No distillation unit — advance cursor if the adapter reports progress
@@ -1053,8 +1187,16 @@ export class RuntimeLearning {
             try {
               adapter.acknowledge(resource, readResult);
               advancedResources++;
+              // Success resets failure count for external sources
+              if (isExternal) {
+                this.resetExternalSourceFailure(identity.sourceId);
+              }
             } catch (error) {
               adapter.markFailed(resource, error);
+              sourceHadFailure = true;
+              if (isExternal) {
+                this.recordExternalSourceFailure(identity.sourceId, error);
+              }
             }
           }
           continue;
@@ -1064,16 +1206,45 @@ export class RuntimeLearning {
         try {
           const ingestionResult = this.evidenceIngestor.ingest(readResult.distillationUnit);
           this.queueCuratorObservation(ingestionResult.admittedEpisodeIds);
+          if (isExternal) {
+            // Persist the redacted Evidence Capsule BEFORE acknowledging the
+            // external cursor. If capsule persistence fails, leave the source
+            // unacknowledged so the fixed event can retry without silently
+            // degrading into unredacted review input.
+            this.createCapsulesForExternalSource(
+              identity,
+              resource,
+              ingestionResult,
+            );
+          }
           adapter.acknowledge(resource, readResult);
           unitsProcessed++;
           advancedResources++;
           totalAdmittedEpisodes += ingestionResult.admittedEpisodeIds.length;
           wakeAdmittedEpisodes += ingestionResult.admittedEpisodeIds.length;
           totalContradictionSignals += ingestionResult.contradictionSignalIds.length;
+          // Success resets failure count for external sources
+          if (isExternal) {
+            this.resetExternalSourceFailure(identity.sourceId);
+          }
         } catch (error) {
+          // AC3: Per-source failure on ingestion, NOT OPR
           adapter.markFailed(resource, error);
+          sourceHadFailure = true;
+          if (isExternal) {
+            this.recordExternalSourceFailure(identity.sourceId, error);
+          }
         }
       }
+
+      // ---- Determine status ----
+      let status: SessionLogSourceStatus = 'active';
+      if (sourceHadFailure) status = 'failed';
+      if (sourceBudgetHit) status = 'quota_reached';
+
+      const failureState = isExternal
+        ? this.externalSourceFailureState.get(identity.sourceId) ?? undefined
+        : undefined;
 
       sourceReports.push({
         sourceId: identity.sourceId,
@@ -1082,14 +1253,161 @@ export class RuntimeLearning {
         resourcesDiscovered: resources.length,
         unitsProcessed,
         advancedResources,
+        status,
+        failureState,
+        budget,
       });
     }
+
+    // Persist external source scheduling state (backoff deadlines) for restart
+    // recovery (AC6).
+    this.saveExternalSourceSchedulingState();
 
     return {
       sourceReports,
       admittedEpisodes: totalAdmittedEpisodes,
       contradictionSignals: totalContradictionSignals,
     };
+  }
+
+  // -----------------------------------------------------------------------
+  // Source ordering and external failure management (issue #77)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Order session log sources for discovery: internal sources are processed
+   * BEFORE external sources. This protects due settlement/review/retry work
+   * and internal discovery from optional external scanning (AC2).
+   */
+  private orderSourcesForDiscovery(): readonly SessionLogSourceAdapter[] {
+    const internal: SessionLogSourceAdapter[] = [];
+    const external: SessionLogSourceAdapter[] = [];
+    for (const adapter of this.sessionLogSources) {
+      if (adapter.identity.category === 'external') {
+        external.push(adapter);
+      } else {
+        internal.push(adapter);
+      }
+    }
+    return [...internal, ...external];
+  }
+
+  /**
+   * Record a per-source failure with exponential backoff (AC3).
+   *
+   * Backoff schedule:
+   *   1 failure  → 30s suspension
+   *   2 failures → 5m suspension
+   *   3+ failures → 30m suspension (capped)
+   */
+  private recordExternalSourceFailure(sourceId: string, error: unknown): void {
+    const current = this.externalSourceFailureState.get(sourceId);
+    const consecutiveFailures = (current?.consecutiveFailures ?? 0) + 1;
+
+    // Exponential backoff: 30s, 5m, 30m (capped)
+    const backoffMs = Math.min(
+      30 * 60 * 1000, // 30 minute cap
+      30_000 * Math.min(consecutiveFailures, 2), // 30s, 60s(→5m floor), 90s(→30m cap)
+    );
+    // Use cleaner stages: 1→30s, 2→5m, 3+→30m
+    const suspensionMs =
+      consecutiveFailures >= 3
+        ? 30 * 60 * 1000
+        : consecutiveFailures >= 2
+          ? 5 * 60 * 1000
+          : 30_000;
+
+    const now = this.clock().toISOString();
+    this.externalSourceFailureState.set(sourceId, {
+      consecutiveFailures,
+      lastFailedAt: now,
+      lastError: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+      suspendedUntil: new Date(this.clock().getTime() + suspensionMs).toISOString(),
+    });
+
+    Logger.info(
+      `[RuntimeLearning] external source ${sourceId} failure #${consecutiveFailures}; ` +
+      `suspended for ${Math.round(suspensionMs / 1000)}s`,
+    );
+  }
+
+  /**
+   * Reset per-source failure count on successful processing (AC3).
+   */
+  private resetExternalSourceFailure(sourceId: string): void {
+    const current = this.externalSourceFailureState.get(sourceId);
+    // Only reset if the source had prior failures (avoids unnecessary writes
+    // for external sources that have never failed).
+    if (!current || current.consecutiveFailures === 0) return;
+    this.externalSourceFailureState.set(sourceId, {
+      consecutiveFailures: 0,
+      lastFailedAt: null,
+      lastError: null,
+      suspendedUntil: null,
+    });
+  }
+
+  /**
+   * Load durable external source scheduling state for restart recovery (AC6).
+   * Restores per-source backoff/suspension deadlines so a restarted Runtime
+   * does not immediately retry a failing source.
+   */
+  private loadExternalSourceSchedulingState(): void {
+    try {
+      if (!fs.existsSync(this.schedulingStatePath)) return;
+      const raw = fs.readFileSync(this.schedulingStatePath, 'utf-8');
+      const parsed = JSON.parse(raw) as {
+        schemaVersion?: number;
+        sources?: Record<string, SourceFailureState>;
+      };
+      if (parsed.schemaVersion !== 1) return;
+      if (!parsed.sources || typeof parsed.sources !== 'object') return;
+      for (const [sourceId, state] of Object.entries(parsed.sources)) {
+        if (
+          typeof state.consecutiveFailures === 'number' &&
+          typeof state.suspendedUntil === 'string'
+        ) {
+          this.externalSourceFailureState.set(sourceId, state);
+        }
+      }
+    } catch {
+      // Corrupt state file — start fresh; the source will be retried.
+    }
+  }
+
+  /**
+   * Persist durable external source scheduling state (AC6). Writes per-source
+   * backoff/suspension deadlines so a restart restores lane scheduling without
+   * duplicate writes.
+   */
+  private saveExternalSourceSchedulingState(): void {
+    try {
+      const sources: Record<string, SourceFailureState> = {};
+      for (const [sourceId, state] of this.externalSourceFailureState) {
+        if (state.consecutiveFailures > 0 || state.suspendedUntil) {
+          sources[sourceId] = state;
+        }
+      }
+      if (Object.keys(sources).length === 0) {
+        // No failure state to persist — clean up stale file if it exists.
+        if (fs.existsSync(this.schedulingStatePath)) {
+          fs.unlinkSync(this.schedulingStatePath);
+        }
+        return;
+      }
+      const payload = { schemaVersion: 1, sources };
+      fs.mkdirSync(path.dirname(this.schedulingStatePath), { recursive: true });
+      const tmpPath = `${this.schedulingStatePath}.${process.pid}.${Date.now()}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), {
+        encoding: 'utf-8',
+        mode: 0o600,
+      });
+      fs.renameSync(tmpPath, this.schedulingStatePath);
+    } catch (error) {
+      Logger.warning(
+        `[RuntimeLearning] failed to persist external source scheduling state: ${(error as Error).message}`,
+      );
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -1168,6 +1486,83 @@ export class RuntimeLearning {
   // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------
+
+  /**
+   * Create Evidence Capsules for each admitted episode from an external source.
+   *
+   * The capsule preserves redacted evidence content and provenance so that
+   * mutating, deleting, or disabling the upstream source does not affect
+   * bounded review retry (issue #78).
+   */
+  private createCapsulesForExternalSource(
+    identity: SessionLogSourceIdentity,
+    resource: SessionLogSourceResource,
+    ingestionResult: EvidenceIngestionResult,
+  ): void {
+    if (ingestionResult.admittedEpisodeIds.length === 0) return;
+    const eventIdentity: SourceEventIdentity = resource.firstEventIdentity ?? {
+      eventId: resource.resourceRef,
+      position: 0,
+    };
+
+    for (const episodeId of ingestionResult.admittedEpisodeIds) {
+      const episode = ingestionResult.state.episodes[episodeId];
+      if (!episode) continue;
+
+      const bundleId = `v3:learning-episode:${episodeId}`;
+
+      // Extract evidence content from the episode's completion evidence detail.
+      const completionEvidence: {
+        ref: string;
+        content: string;
+        role: 'problem-action' | 'verification';
+        sourceFilePath?: string;
+        turn?: number;
+      }[] = episode.completionEvidence
+        .filter(e => e.kind !== 'contradiction')
+        .map(e => ({
+          ref: e.ref,
+          content: e.detail ?? `${e.kind} at turn ${e.turn}`,
+          role: 'problem-action' as const,
+          sourceFilePath: e.sourceFilePath,
+          turn: e.turn,
+        }));
+
+      // Generate settlement evidence content from episode metadata.
+      const settlementEvidence: {
+        ref: string;
+        content: string;
+        role: 'problem-action' | 'verification';
+        sourceFilePath?: string;
+        turn?: number;
+      }[] = [{
+        ref: `${episode.sourceFilePath}#episode-${episodeId}:settled-${episode.settlementDeadline}`,
+        content: `Episode ${episodeId} settled at ${episode.settlementDeadline} (status: ${episode.status})`,
+        role: 'verification' as const,
+        sourceFilePath: episode.sourceFilePath,
+        turn: episode.deliveryTurn,
+      }];
+
+      const capsule = buildEvidenceCapsule({
+        sourceIdentity: identity,
+        eventIdentity,
+        episodeId,
+        bundleId,
+        completionEvidence,
+        settlementEvidence,
+        semanticObservations: episode.semanticObservations,
+        now: this.clock(),
+      });
+      this.evidenceCapsuleStore.upsert(capsule);
+    }
+  }
+
+  private linkEvidenceCapsuleToAudit(bundleId: string, auditTransitionId: string | undefined): void {
+    if (!auditTransitionId) return;
+    const capsule = this.evidenceCapsuleStore.findByBundleId(bundleId);
+    if (!capsule) return;
+    this.evidenceCapsuleStore.addPromotionAuditRef(capsule.capsuleId, auditTransitionId);
+  }
 
   private queueCuratorObservation(episodeIds: readonly string[]): void {
     for (const id of episodeIds) this.pendingCuratorObservationEpisodeIds.add(id);
@@ -1309,6 +1704,11 @@ import {
   RelatedCurrentSkill,
   SkillEvidenceRef,
 } from './skill-evolution';
+import {
+  EvidenceCapsuleStore,
+  buildEvidenceCapsule,
+  reconstructBundleFromCapsule,
+} from './evidence-capsule';
 import { DistilledKnowledgeCandidate } from './capability-distiller';
 
 // Re-export types used by callers
@@ -1326,6 +1726,7 @@ function buildEpisodeEvidenceBundle(
   episode: LearningEpisode,
   candidate: DistilledKnowledgeCandidate,
   skillEvolution: SkillEvolutionRuntime,
+  capsuleStore?: EvidenceCapsuleStore,
 ): EvidenceBundle {
   const completionEvidence: readonly SkillEvidenceRef[] = episode.completionEvidence
     .filter(evidence => evidence.kind !== 'contradiction')
@@ -1350,8 +1751,29 @@ function buildEpisodeEvidenceBundle(
     }),
   );
 
+  const bundleId = `v3:learning-episode:${episode.episodeId}`;
+
+  if (capsuleStore) {
+    const capsule = capsuleStore.findByBundleId(bundleId);
+    if (capsule) {
+      // For external-origin evidence, reconstruct the entire bundle from the
+      // pinned capsule so Author/Verifier never see raw external detail leaked
+      // through the fallback candidate's actionPattern or solvedLoop fields.
+      return reconstructBundleFromCapsule(
+        capsule,
+        skillEvolution.getReferencedSkillSnapshots(),
+        registry,
+      );
+    }
+    if (isExternalLikeSourcePath(episode.sourceFilePath)) {
+      throw new Error(
+        `External-origin Learning Episode ${episode.episodeId} requires a persisted Evidence Capsule before review.`,
+      );
+    }
+  }
+
   return {
-    bundleId: `v3:learning-episode:${episode.episodeId}`,
+    bundleId,
     episode: candidate,
     completionEvidence,
     settlementEvidence,
@@ -1376,6 +1798,10 @@ function incrementTransition(
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function isExternalLikeSourcePath(sourceFilePath: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(sourceFilePath) && !sourceFilePath.startsWith('file://');
 }
 
 function resolveSessionLogsRoot(logsRoot: string): string {

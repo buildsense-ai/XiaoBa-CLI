@@ -81,6 +81,8 @@ export interface DistillationHeartbeatConfig {
    * default wake performs no external provider reads. See CONTEXT.md →
    * "External Session Log Source".
    */
+  /** Path to the durable Evidence Capsule store (issue #78). */
+  evidenceCapsulePath: string;
   externalSessionLogSourcesEnabled: boolean;
 }
 
@@ -336,6 +338,12 @@ export function getDistillationHeartbeatConfig(
   );
   const skillEvolutionAuthorModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_AUTHOR_MODEL');
   const skillEvolutionVerifierModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_VERIFIER_MODEL');
+  const evidenceCapsulePath = resolveContainedPath(
+    workingDirectory,
+    'data',
+    readEnv(runtimeEnv, 'XIAOBA_EVIDENCE_CAPSULE_STORE_FILE'),
+    'data/evidence-capsules.json',
+  );
   const externalSessionLogSourcesEnabled = readBoolean(
     runtimeEnv,
     'XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED',
@@ -376,6 +384,7 @@ export function getDistillationHeartbeatConfig(
     skillEvolutionReviewAttemptDeadlineMinutes,
     ...(skillEvolutionAuthorModel && { skillEvolutionAuthorModel }),
     ...(skillEvolutionVerifierModel && { skillEvolutionVerifierModel }),
+    evidenceCapsulePath,
     externalSessionLogSourcesEnabled,
   };
 }
