@@ -462,6 +462,118 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
       assert.ok(result.ingestion.admittedEpisodes >= 2, 'at least two episodes admitted');
     });
 
+    test('external batch wake admits every unit before acknowledging once', async () => {
+      const fixtureFile1 = path.join(env.root, 'fixture', 'chat', 'external-batch-1.jsonl');
+      const fixtureFile2 = path.join(env.root, 'fixture', 'chat', 'external-batch-2.jsonl');
+      const [delivery1, acceptance1] = deliveryPair();
+      const [delivery2, acceptance2] = deliveryPair();
+      const sensitivePrompt = '<system>external system prompt</system> token: batch-secret /Users/private/project';
+      for (const delivery of [delivery1, delivery2]) {
+        delivery.user.text = `Deliver the report. ${sensitivePrompt}`;
+        delivery.assistant.tool_calls[0]!.arguments = { path: '/Users/private/project/report.md', token: 'batch-secret' };
+        delivery.assistant.tool_calls[0]!.result = `report sent token: batch-secret from /Users/private/project`;
+      }
+      const units = [
+        buildDistillationUnitFromFile([delivery1, acceptance1], fixtureFile1),
+        buildDistillationUnitFromFile([delivery2, acceptance2], fixtureFile2),
+      ];
+      const resource: SessionLogSourceResource = {
+        resourceRef: 'external://batch/resource',
+        firstEventIdentity: { eventId: 'batch-event-1', position: 0 },
+      };
+      let acknowledged = 0;
+      let consumed = false;
+      const batchSource: SessionLogSourceAdapter = {
+        identity: {
+          sourceId: 'external-batch-wake',
+          label: 'External Batch Wake Fixture',
+          category: 'external',
+          provider: 'fixture',
+          reader: 'batch',
+        },
+        isEnabled: () => true,
+        discoverResources: () => [resource],
+        read: () => {
+          if (consumed) {
+            return {
+              distillationUnit: null,
+              advanced: false,
+              status: 'exhausted',
+              newCursor: { resourceRef: resource.resourceRef, position: 2, processedCount: 2 },
+            };
+          }
+          consumed = true;
+          return {
+            distillationUnit: units[0]!,
+            distillationUnits: units,
+            eventIdentities: [
+              { eventId: 'batch-event-1', position: 0, contentHash: 'batch-hash-1' },
+              { eventId: 'batch-event-2', position: 1, contentHash: 'batch-hash-2' },
+            ],
+            advanced: true,
+            status: 'advanced',
+            newCursor: { resourceRef: resource.resourceRef, position: 2, processedCount: 2 },
+          };
+        },
+        acknowledge: () => { acknowledged += 1; },
+        markFailed: () => { consumed = false; },
+      };
+
+      const runtimeLearning = createRuntimeLearning(env, [batchSource]);
+      const result = await runtimeLearning.wake('startup');
+
+      assert.equal(result.discovery.unitsProcessed, 2);
+      assert.equal(result.discovery.advancedFiles, 1);
+      assert.equal(acknowledged, 1, 'the batch advances only after both units are admitted');
+      const episodes = Object.values(env.episodeStore.load().episodes);
+      assert.ok(episodes.length >= 2, 'both external units admit episodes');
+      const capsules = Object.values(runtimeLearning.getEvidenceCapsuleStore().load().capsules);
+      assert.ok(capsules.length >= 2, 'both external units persist capsules');
+      const durableText = JSON.stringify({ episodes, capsules });
+      assert.ok(!durableText.includes('batch-secret'));
+      assert.ok(!durableText.includes('/Users/private/project'));
+      assert.ok(!durableText.includes('external system prompt'));
+    });
+
+    test('oversized external evidence fails closed before episode persistence', async () => {
+      const fixtureFile = path.join(env.root, 'fixture', 'chat', 'external-oversized.jsonl');
+      const [delivery, acceptance] = deliveryPair();
+      delivery.assistant.tool_calls[0]!.arguments = { payload: 'x'.repeat(4 * 1024) };
+      const unit = buildDistillationUnitFromFile([delivery, acceptance], fixtureFile);
+      const resource: SessionLogSourceResource = {
+        resourceRef: 'external://oversized/resource',
+        firstEventIdentity: { eventId: 'oversized-event', position: 0 },
+      };
+      let acknowledged = 0;
+      const source: SessionLogSourceAdapter = {
+        identity: {
+          sourceId: 'external-oversized',
+          label: 'External Oversized Fixture',
+          category: 'external',
+          provider: 'fixture',
+          reader: 'oversized',
+        },
+        isEnabled: () => true,
+        discoverResources: () => [resource],
+        read: () => ({
+          distillationUnit: unit,
+          advanced: true,
+          status: 'advanced',
+          newCursor: { resourceRef: resource.resourceRef, position: 1, processedCount: 2 },
+        }),
+        acknowledge: () => { acknowledged += 1; },
+        markFailed: () => {},
+      };
+
+      const runtimeLearning = createRuntimeLearning(env, [source]);
+      const result = await runtimeLearning.wake('startup');
+
+      assert.equal(result.discovery.sources[0]!.status, 'failed');
+      assert.equal(acknowledged, 0);
+      assert.equal(Object.keys(env.episodeStore.load().episodes).length, 0);
+      assert.equal(runtimeLearning.getEvidenceCapsuleStore().count(), 0);
+    });
+
     test('fixture adapter source identity is distinct from external agent executor', () => {
       const fixture = new FixtureSessionLogSourceAdapter([]);
       const identity = fixture.identity;
@@ -628,14 +740,12 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
         assert.deepEqual(state.processedEventIds, {});
       });
 
-      test('load from corrupt file returns empty state (recoverable)', () => {
+      test('load from corrupt file fails closed', () => {
         const storePath = path.join(env.root, 'data', 'corrupt-state.json');
         fs.mkdirSync(path.dirname(storePath), { recursive: true });
         fs.writeFileSync(storePath, 'not valid json', 'utf-8');
 
-        const state = loadExternalCursorState(storePath);
-        assert.deepEqual(state.cursors, {});
-        assert.deepEqual(state.processedEventIds, {});
+        assert.throws(() => loadExternalCursorState(storePath), /corrupt/);
       });
     });
 
@@ -644,7 +754,7 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
     // -----------------------------------------------------------------------
 
     describe('FixtureExternalSourceReader', () => {
-      test('fresh enablement returns only stable resources (future-only gate)', () => {
+      test('fresh enablement emits no resources under future-only policy', () => {
         const fixtureFile = path.join(env.root, 'fixture', 'chat', 'f.jsonl');
         const [delivery, acceptance] = deliveryPair();
         const unit = buildDistillationUnitFromFile([delivery, acceptance], fixtureFile);
@@ -654,11 +764,8 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
           { sourceId: 'test-fixture', provider: 'test' },
         );
 
-        // Fresh enablement: null cursor means return only stable (non-null) resources
         const resources = reader.discoverResources(null);
-        assert.equal(resources.length, 2, 'null unit should be filtered out');
-        assert.ok(resources[0].firstEventIdentity, 'stable unit has identity');
-        assert.ok(resources[1].firstEventIdentity, 'stable unit has identity');
+        assert.equal(resources.length, 0);
       });
 
       test('cursor-based discovery filters processed resources', () => {
@@ -704,7 +811,7 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
           { sourceId: 'test-fixture', provider: 'test' },
         );
 
-        const resources = reader.discoverResources(null);
+        const resources = reader.discoverResources({ resourceRef: 'test', position: -1, processedCount: 0 });
         assert.equal(resources.length, 1);
 
         const cursor: SourceCursor = {
@@ -726,6 +833,181 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
     // -----------------------------------------------------------------------
 
     describe('ExternalSessionLogSourceAdapter with reader', () => {
+      test('multi-event stable batches expose every unit and acknowledge every identity', () => {
+        const fixtureFile1 = path.join(env.root, 'fixture', 'chat', 'batch-1.jsonl');
+        const fixtureFile2 = path.join(env.root, 'fixture', 'chat', 'batch-2.jsonl');
+        const [delivery1, acceptance1] = deliveryPair();
+        const [delivery2, acceptance2] = deliveryPair();
+        const unit1 = buildDistillationUnitFromFile([delivery1, acceptance1], fixtureFile1);
+        const unit2 = buildDistillationUnitFromFile([delivery2, acceptance2], fixtureFile2);
+        const resource: SessionLogSourceResource = {
+          resourceRef: 'fixture://batch/resource-0',
+          firstEventIdentity: { eventId: 'event-1', position: 0 },
+        };
+        const reader: ExternalSourceReader = {
+          provider: 'fixture',
+          reader: 'batch-reader',
+          discoverResources: () => [resource],
+          read: () => ({
+            events: [
+              { eventId: 'event-1', position: 0, contentHash: 'hash-1', distillationUnit: unit1 },
+              { eventId: 'event-2', position: 1, contentHash: 'hash-2', distillationUnit: unit2 },
+            ],
+            status: 'stable',
+            exhausted: true,
+            newPosition: 2,
+          }),
+        };
+        const storePath = path.join(env.root, 'data', 'batch-cursor.json');
+        const adapter = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-batch',
+          provider: 'fixture',
+          reader,
+          enabled: true,
+        }, storePath);
+        const initial = emptyExternalCursorState();
+        initial.cursors['external-batch'] = {
+          cursor: { resourceRef: resource.resourceRef, position: -1, processedCount: 0 },
+          sourceIdentity: adapter.identity,
+          updatedAt: new Date().toISOString(),
+        };
+        saveExternalCursorState(storePath, initial);
+
+        const result = adapter.read(resource, { orderedResources: [resource] });
+
+        assert.equal(result.status, 'advanced');
+        assert.equal(result.distillationUnits?.length, 2);
+        assert.deepEqual(result.eventIdentities?.map(identity => identity.eventId), ['event-1', 'event-2']);
+        adapter.acknowledge(resource, result);
+        const persisted = loadExternalCursorState(storePath);
+        assert.equal(persisted.cursors['external-batch']?.cursor.position, 2);
+        assert.equal(Object.keys(persisted.processedEventIds).length, 2);
+      });
+
+      test('mixed stable batches fail closed without cursor advancement', () => {
+        const fixtureFile = path.join(env.root, 'fixture', 'chat', 'batch-missing-unit.jsonl');
+        const [delivery, acceptance] = deliveryPair();
+        const unit = buildDistillationUnitFromFile([delivery, acceptance], fixtureFile);
+        const resource: SessionLogSourceResource = {
+          resourceRef: 'fixture://batch/missing-unit',
+          firstEventIdentity: { eventId: 'event-stable', position: 0 },
+        };
+        const reader: ExternalSourceReader = {
+          provider: 'fixture',
+          reader: 'batch-reader',
+          discoverResources: () => [resource],
+          read: () => ({
+            events: [
+              { eventId: 'event-stable', position: 0, distillationUnit: unit },
+              { eventId: 'event-unconvertible', position: 1 },
+            ],
+            status: 'stable',
+            exhausted: true,
+            newPosition: 2,
+          }),
+        };
+        const storePath = path.join(env.root, 'data', 'batch-missing-unit-cursor.json');
+        const adapter = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-batch-missing-unit',
+          provider: 'fixture',
+          reader,
+          enabled: true,
+        }, storePath);
+        const initial = emptyExternalCursorState();
+        initial.cursors['external-batch-missing-unit'] = {
+          cursor: { resourceRef: resource.resourceRef, position: -1, processedCount: 0 },
+          sourceIdentity: adapter.identity,
+          updatedAt: new Date().toISOString(),
+        };
+        saveExternalCursorState(storePath, initial);
+
+        const result = adapter.read(resource, { orderedResources: [resource] });
+
+        assert.equal(result.status, 'failed');
+        assert.equal(result.advanced, false);
+        assert.equal(result.distillationUnit, null);
+        assert.equal(loadExternalCursorState(storePath).cursors['external-batch-missing-unit']?.cursor.position, -1);
+      });
+
+      test('default cursor durability prefers the configured runtime data root', () => {
+        const saved = {
+          XIAOBA_USER_DATA_DIR: process.env.XIAOBA_USER_DATA_DIR,
+          CATSCO_USER_DATA_DIR: process.env.CATSCO_USER_DATA_DIR,
+          XIAOBA_ELECTRON_USER_DATA_DIR: process.env.XIAOBA_ELECTRON_USER_DATA_DIR,
+          XIAOBA_RUNTIME_ROOT: process.env.XIAOBA_RUNTIME_ROOT,
+        };
+        try {
+          delete process.env.XIAOBA_USER_DATA_DIR;
+          delete process.env.CATSCO_USER_DATA_DIR;
+          delete process.env.XIAOBA_ELECTRON_USER_DATA_DIR;
+          process.env.XIAOBA_RUNTIME_ROOT = env.root;
+          const adapter = new ExternalSessionLogSourceAdapter({
+            sourceId: 'cursor-root-source',
+            provider: 'cursor-root-provider',
+          });
+          const cursorPath = (adapter as unknown as { cursorStorePath: string }).cursorStorePath;
+          assert.equal(
+            cursorPath,
+            path.join(env.root, 'data', 'cursor-root-provider', 'cursor-root-source.json'),
+          );
+          const explicitPath = path.join(env.root, 'explicit-cursor.json');
+          const explicit = new ExternalSessionLogSourceAdapter({
+            sourceId: 'cursor-root-source',
+            provider: 'cursor-root-provider',
+            cursorStorePath: explicitPath,
+          });
+          assert.equal((explicit as unknown as { cursorStorePath: string }).cursorStorePath, explicitPath);
+        } finally {
+          for (const [key, value] of Object.entries(saved)) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+          }
+        }
+      });
+
+      test('stable result without distillation unit is treated as hard failure', () => {
+        class UnitlessReader implements ExternalSourceReader {
+          readonly provider = 'fixture';
+          readonly reader = 'missing-unit';
+          discoverResources(): readonly SessionLogSourceResource[] {
+            return [
+              {
+                resourceRef: 'fixture://missing-unit',
+                firstEventIdentity: { eventId: 'fixture://missing-unit', position: 0 },
+              },
+            ];
+          }
+          read(): ExternalSourceReaderResult {
+            return {
+              events: [{
+                eventId: 'fixture://missing-unit',
+                position: 0,
+              }],
+              status: 'stable',
+              exhausted: true,
+              newPosition: 1,
+            };
+          }
+        }
+
+        const reader = new UnitlessReader();
+        const adapter = new ExternalSessionLogSourceAdapter({
+          sourceId: 'external-missing',
+          provider: 'fixture',
+          reader,
+          enabled: true,
+        }, path.join(env.root, 'data', 'ext-cursor-missing-unit.json'));
+
+        const resources = adapter.discoverResources();
+        assert.equal(resources.length, 1);
+        const result = adapter.read(resources[0], {
+          orderedResources: resources,
+        });
+        assert.equal(result.status, 'failed');
+        assert.equal(result.advanced, false);
+        assert.equal(result.distillationUnit, null);
+      });
+
       test('enabled adapter with reader discovers resources', () => {
         const fixtureFile = path.join(env.root, 'fixture', 'chat', 'f.jsonl');
         const [delivery, acceptance] = deliveryPair();
@@ -744,6 +1026,23 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
         assert.equal(adapter.isEnabled(), true);
         assert.equal(adapter.identity.category, 'external');
         assert.equal(adapter.identity.provider, 'test');
+
+        const initialState = emptyExternalCursorState();
+        initialState.cursors['external-test'] = {
+          cursor: {
+            resourceRef: 'chat',
+            position: -1,
+            processedCount: 0,
+          },
+          sourceIdentity: {
+            sourceId: 'external-test',
+            category: 'external',
+            provider: 'test',
+            reader: 'fixture',
+          },
+          updatedAt: new Date().toISOString(),
+        };
+        saveExternalCursorState(storePath, initialState);
 
         const resources = adapter.discoverResources();
         assert.equal(resources.length, 1);
@@ -791,16 +1090,33 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
           enabled: true,
         }, storePath);
 
+        const initialState = emptyExternalCursorState();
+        initialState.cursors['external-test'] = {
+          cursor: {
+            resourceRef: 'chat',
+            position: -1,
+            processedCount: 0,
+          },
+          sourceIdentity: {
+            sourceId: 'external-test',
+            category: 'external',
+            provider: 'test',
+            reader: 'fixture',
+          },
+          updatedAt: new Date().toISOString(),
+        };
+        saveExternalCursorState(storePath, initialState);
+
         const resources = adapter.discoverResources();
         assert.equal(resources.length, 1);
 
         const readCtx: SessionLogSourceReadContext = { orderedResources: resources };
         const result = adapter.read(resources[0], readCtx);
 
-        // Returns advanced status (no distillation unit yet — #77–#79)
+        // Returns advanced status with a materialized distillation unit from fixture reader.
         assert.equal(result.status, 'advanced');
         assert.equal(result.advanced, true);
-        assert.equal(result.distillationUnit, null);
+        assert.ok(result.distillationUnit);
         assert.ok(result.newCursor.position > 0);
 
         // Acknowledge to persist cursor
@@ -828,8 +1144,25 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
           enabled: true,
         }, storePath);
 
+        const initialState = emptyExternalCursorState();
+        initialState.cursors['external-test'] = {
+          cursor: {
+            resourceRef: 'chat',
+            position: -1,
+            processedCount: 0,
+          },
+          sourceIdentity: {
+            sourceId: 'external-test',
+            category: 'external',
+            provider: 'test',
+            reader: 'fixture',
+          },
+          updatedAt: new Date().toISOString(),
+        };
+        saveExternalCursorState(storePath, initialState);
+
         const resources1 = adapter1.discoverResources();
-        assert.equal(resources1.length, 2, 'two resources on fresh enablement');
+        assert.equal(resources1.length, 2);
 
         const readCtx: SessionLogSourceReadContext = { orderedResources: resources1 };
         const result1 = adapter1.read(resources1[0], readCtx);
@@ -869,16 +1202,33 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
           enabled: true,
         }, storePath);
 
-        const resources = adapter.discoverResources();
-        const readCtx: SessionLogSourceReadContext = { orderedResources: resources };
+        const initialState = emptyExternalCursorState();
+        initialState.cursors['external-test'] = {
+          cursor: {
+            resourceRef: 'chat',
+            position: -1,
+            processedCount: 0,
+          },
+          sourceIdentity: {
+            sourceId: 'external-test',
+            category: 'external',
+            provider: 'test',
+            reader: 'fixture',
+          },
+          updatedAt: new Date().toISOString(),
+        };
+        saveExternalCursorState(storePath, initialState);
+
+        const seededResources = adapter.discoverResources();
+        const readCtx: SessionLogSourceReadContext = { orderedResources: seededResources };
 
         // First read + acknowledge
-        const result1 = adapter.read(resources[0], readCtx);
-        adapter.acknowledge(resources[0], result1);
+        const result1 = adapter.read(seededResources[0], readCtx);
+        adapter.acknowledge(seededResources[0], result1);
 
         // Read the same resource again — should show advanced status
         // because the reader returns it again but the adapter filters via cursor
-        const result2 = adapter.read(resources[0], readCtx);
+        const result2 = adapter.read(seededResources[0], readCtx);
         assert.equal(result2.status, 'exhausted', 'resource exhausted after ack');
       });
 
@@ -1035,9 +1385,8 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
         assert.ok(externalReport, 'external source report exists');
         assert.equal(externalReport!.enabled, true);
         assert.equal(externalReport!.category, 'external');
-        assert.equal(externalReport!.resourcesDiscovered, 1);
-        // No advanced resources because external adapter returns null distillation units
-        // (needs converter from #77–#79)
+        assert.equal(externalReport!.resourcesDiscovered, 0);
+        assert.equal(externalReport!.unitsProcessed, 0);
       });
 
       test('disabled external source with adapter reports as disabled', async () => {

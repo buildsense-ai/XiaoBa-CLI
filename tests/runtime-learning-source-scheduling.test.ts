@@ -51,12 +51,17 @@ interface FakeSourceOptions {
   sourceId: string;
   category?: 'internal' | 'external';
   resourceCount: number;
+  discoverFailureMessage?: string;
   /** When true, read() throws for every `readFailureEvery`-th resource. */
   readFailureEvery?: number;
   /** When true, acknowledge() throws for every error-prone resource. */
   ackFailureEvery?: number;
   /** When set, fail on this specific resource index (for targeted testing). */
   failAtIndex?: number;
+  /** When set, returns SessionLogSourceReadStatus.failed for every `failedReadStatusEvery`-th resource. */
+  failedReadStatusEvery?: number;
+  /** When set, returns SessionLogSourceReadStatus.failed for this specific resource index. */
+  failedReadStatusAtIndex?: number;
 }
 
 class FakeSessionLogSourceAdapter implements SessionLogSourceAdapter {
@@ -85,6 +90,9 @@ class FakeSessionLogSourceAdapter implements SessionLogSourceAdapter {
   }
 
   discoverResources(): readonly SessionLogSourceResource[] {
+    if (this.opts.discoverFailureMessage) {
+      throw new Error(this.opts.discoverFailureMessage);
+    }
     return this.resources;
   }
 
@@ -97,6 +105,30 @@ class FakeSessionLogSourceAdapter implements SessionLogSourceAdapter {
     }
     if (this.opts.failAtIndex !== undefined && index === this.opts.failAtIndex) {
       throw new Error(`fake targeted failure for ${resource.resourceRef}`);
+    }
+    if (this.opts.failedReadStatusEvery && index >= 0 && (index + 1) % this.opts.failedReadStatusEvery === 0) {
+      return {
+        distillationUnit: null,
+        advanced: false,
+        status: 'failed',
+        newCursor: {
+          resourceRef: resource.resourceRef,
+          position: index,
+          processedCount: 0,
+        },
+      };
+    }
+    if (this.opts.failedReadStatusAtIndex !== undefined && index === this.opts.failedReadStatusAtIndex) {
+      return {
+        distillationUnit: null,
+        advanced: false,
+        status: 'failed',
+        newCursor: {
+          resourceRef: resource.resourceRef,
+          position: index,
+          processedCount: 0,
+        },
+      };
     }
 
     const unit: DistillationUnit = {
@@ -538,6 +570,47 @@ describe('Issue #77 — Source Work Lane scheduling and failure isolation', () =
 
     });
 
+    test('discoverResources failure is isolated to the failing source', async () => {
+      const externalDiscovering = new FakeSessionLogSourceAdapter({
+        sourceId: 'ext-discover-failing',
+        category: 'external',
+        resourceCount: 3,
+        discoverFailureMessage: 'simulated discover failure',
+      });
+      const externalWorking = new FakeSessionLogSourceAdapter({
+        sourceId: 'ext-discover-working',
+        category: 'external',
+        resourceCount: 2,
+      });
+      const ingestor = new StubEvidenceIngestor() as unknown as EvidenceIngestor;
+
+      const runtimeLearning = new RuntimeLearning({
+        workingDirectory: env.root,
+        evidenceIngestor: ingestor,
+        learningEpisodeStore: env.episodeStore,
+        skillEvolution: env.skillEvolution,
+        curator: env.curator,
+        planner: env.planner,
+        sessionLogSources: [externalDiscovering, externalWorking],
+        externalSourceBudget: {
+          maxResourcesPerWake: 10,
+          maxBytesPerWake: 1_000_000,
+          maxElapsedMsPerWake: 60_000,
+        },
+      });
+
+      const result = await runtimeLearning.wake('startup');
+
+      const failingReport = result.discovery.sources.find(s => s.sourceId === 'ext-discover-failing');
+      const workingReport = result.discovery.sources.find(s => s.sourceId === 'ext-discover-working');
+      assert.ok(failingReport, 'failing source report exists');
+      assert.ok(workingReport, 'working source report exists');
+      assert.equal(failingReport!.status, 'failed', 'discover failure marks source as failed');
+      assert.equal(workingReport!.status, 'active', 'working source remains active');
+      assert.equal(externalDiscovering.acknowledged.length, 0, 'discover exception source cannot acknowledge resources');
+      assert.equal(externalWorking.acknowledged.length, 2, 'other source still processes resources');
+    });
+
     test('external source with consecutive failures enters backoff and is skipped', async () => {
       const external = new FakeSessionLogSourceAdapter({
         sourceId: 'ext-always-fails',
@@ -656,6 +729,43 @@ describe('Issue #77 — Source Work Lane scheduling and failure isolation', () =
         'external failures did not increment review failure count');
       assert.equal(result.review.operationalRetries, 0,
         'external failures did not cause operational retries');
+    });
+
+    test('read status=failed is treated as a source failure without affecting OPR', async () => {
+      const external = new FakeSessionLogSourceAdapter({
+        sourceId: 'ext-failed-result',
+        category: 'external',
+        resourceCount: 4,
+        failedReadStatusEvery: 1,
+      });
+      const externalWorking = new FakeSessionLogSourceAdapter({
+        sourceId: 'ext-still-works',
+        category: 'external',
+        resourceCount: 2,
+      });
+      const ingestor = new StubEvidenceIngestor() as unknown as EvidenceIngestor;
+
+      const runtimeLearning = new RuntimeLearning({
+        workingDirectory: env.root,
+        evidenceIngestor: ingestor,
+        learningEpisodeStore: env.episodeStore,
+        skillEvolution: env.skillEvolution,
+        curator: env.curator,
+        planner: env.planner,
+        sessionLogSources: [external, externalWorking],
+      });
+
+      const result = await runtimeLearning.wake('startup');
+
+      const failedReport = result.discovery.sources.find(s => s.sourceId === 'ext-failed-result');
+      const workingReport = result.discovery.sources.find(s => s.sourceId === 'ext-still-works');
+      assert.ok(failedReport, 'failed-status source report exists');
+      assert.ok(workingReport, 'working source report exists');
+      assert.equal(failedReport!.status, 'failed', 'failed read result marks source failed');
+      assert.equal(workingReport!.status, 'active', 'other source remains active');
+      assert.equal(external.acknowledged.length, 0, 'failed status leaves current resource unacknowledged');
+      assert.equal(externalWorking.acknowledged.length, 2, 'other source processes all resources');
+      assert.equal(result.review.reviewFailureCount, 0, 'OPR not incremented from read status failures');
     });
   });
 

@@ -174,6 +174,31 @@ describe('Log Cursor based Distillation Unit extraction', () => {
         env.teardown();
       }
     });
+
+    test('keeps cursor offsets in bytes when a turn contains UTF-8 text', () => {
+      const env = setup();
+      try {
+        const first = makeTurn(1, 'cli', 'chat');
+        first.user.text = '你好 🌏';
+        writeLog(env.logFile, [first]);
+
+        const state = loadLogCursorState(env.stateFile);
+        const cursor = getCursor(state, env.logFile);
+        const result = extractDistillationUnit(env.logFile, cursor);
+
+        assert.ok(result.distillationUnit);
+        assert.equal(result.distillationUnit!.newTurns[0].user.text, '你好 🌏');
+        assert.equal(result.newCursor.byteOffset, fs.statSync(env.logFile).size);
+
+        // A second extraction must see no remainder and must not duplicate the
+        // turn because the persisted offset is measured in bytes.
+        const rerun = extractDistillationUnit(env.logFile, result.newCursor);
+        assert.equal(rerun.distillationUnit, null);
+        assert.equal(rerun.advanced, false);
+      } finally {
+        env.teardown();
+      }
+    });
   });
 
   describe('idempotent re-run', () => {
@@ -540,5 +565,161 @@ describe('Log Cursor based Distillation Unit extraction', () => {
         env.teardown();
       }
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Extraction quotas, truncation/offset semantics, and bounded range reads
+// (issue #51 bounded heartbeat work)
+// ---------------------------------------------------------------------------
+
+describe('extraction quotas and bounded reads', () => {
+  function bigSetup(): { root: string; logFile: string; stateFile: string; teardown: () => void } {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-quota-'));
+    const logFile = path.join(root, 'logs', 'sessions', 'chat', 'test.jsonl');
+    const stateFile = path.join(root, 'data', 'cursor-state.json');
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    return { root, logFile, stateFile, teardown: () => fs.rmSync(root, { recursive: true, force: true }) };
+  }
+
+  test('turn quota truncates new turns and leaves the remainder for the next wake', () => {
+    const env = bigSetup();
+    try {
+      // 5 new turns in one append.
+      const turns = Array.from({ length: 5 }, (_, i) => makeTurn(i + 1, 'cli', 'chat'));
+      writeLog(env.logFile, turns);
+
+      const state = loadLogCursorState(env.stateFile);
+      const cursor = getCursor(state, env.logFile);
+      const result = extractDistillationUnit(env.logFile, cursor, {
+        quotas: { maxNewTurnsPerUnit: 2 },
+      });
+
+      assert.ok(result.distillationUnit, 'a unit is produced from the capped batch');
+      assert.equal(result.distillationUnit!.newTurns.length, 2, 'only 2 turns in this unit');
+      assert.equal(result.distillationUnit!.newTurns[0].turn, 1);
+      assert.equal(result.distillationUnit!.newTurns[1].turn, 2);
+      // Cursor advances only past the 2 processed turns; 3 remain.
+      assert.ok(result.newCursor.byteOffset < fs.statSync(env.logFile).size);
+      assert.equal(result.newCursor.processedTurnCount, 2);
+
+      // Second wake processes the remaining 3 (capped at 2 again).
+      state.cursors[env.logFile] = result.newCursor;
+      saveLogCursorState(env.stateFile, state);
+      const cursor2 = getCursor(loadLogCursorState(env.stateFile), env.logFile);
+      const result2 = extractDistillationUnit(env.logFile, cursor2, {
+        quotas: { maxNewTurnsPerUnit: 2 },
+      });
+      assert.ok(result2.distillationUnit);
+      assert.equal(result2.distillationUnit!.newTurns.length, 2);
+      assert.equal(result2.distillationUnit!.newTurns[0].turn, 3);
+      assert.equal(result2.distillationUnit!.newTurns[1].turn, 4);
+      assert.equal(result2.newCursor.processedTurnCount, 4);
+    } finally {
+      env.teardown();
+    }
+  });
+
+  test('byte quota truncates at a complete-line boundary and preserves offsets', () => {
+    const env = bigSetup();
+    try {
+      // Each line is ~100+ bytes; cap at 250 bytes so ~2 lines fit.
+      const turns = Array.from({ length: 10 }, (_, i) => makeTurn(i + 1, 'cli', 'chat'));
+      writeLog(env.logFile, turns);
+      const fullSize = fs.statSync(env.logFile).size;
+
+      const state = loadLogCursorState(env.stateFile);
+      const cursor = getCursor(state, env.logFile);
+      const result = extractDistillationUnit(env.logFile, cursor, {
+        quotas: { maxNewBytesPerUnit: 250 },
+      });
+
+      assert.ok(result.distillationUnit);
+      assert.ok(result.distillationUnit!.newTurns.length < 10, 'byte cap truncated the batch');
+      // Cursor advances only past processed complete lines, never mid-line.
+      const advanced = result.newCursor.byteOffset;
+      const content = fs.readFileSync(env.logFile, 'utf-8');
+      assert.equal(content[advanced - 1], '\n', 'cursor ends at a line boundary');
+      assert.ok(advanced < fullSize, 'remainder left for the next wake');
+    } finally {
+      env.teardown();
+    }
+  });
+
+  test('oversized valid JSONL line advances despite a smaller byte quota', () => {
+    const env = bigSetup();
+    try {
+      const oversized = makeTurn(1, 'cli', 'x'.repeat(8 * 1024));
+      writeLog(env.logFile, [oversized]);
+      const result = extractDistillationUnit(env.logFile, getCursor(loadLogCursorState(env.stateFile), env.logFile), {
+        quotas: { maxNewBytesPerUnit: 128 },
+      });
+      assert.ok(result.distillationUnit);
+      assert.equal(result.distillationUnit!.newTurns.length, 1);
+      assert.equal(result.newCursor.byteOffset, fs.statSync(env.logFile).size);
+      assert.ok(result.advanced);
+    } finally {
+      env.teardown();
+    }
+  });
+
+  test('bounded continuity read: large history does not require loading all bytes', () => {
+    const env = bigSetup();
+    try {
+      // 500 prior turns (a large processed history), then 1 new turn.
+      const prior = Array.from({ length: 500 }, (_, i) => makeTurn(i + 1, 'cli', 'chat'));
+      writeLog(env.logFile, prior);
+      const state = loadLogCursorState(env.stateFile);
+      let cursor = getCursor(state, env.logFile);
+      const first = extractDistillationUnit(env.logFile, cursor);
+      assert.ok(first.distillationUnit);
+      state.cursors[env.logFile] = first.newCursor;
+      saveLogCursorState(env.stateFile, state);
+
+      appendLog(env.logFile, [makeTurn(501, 'cli', 'chat')]);
+      cursor = getCursor(loadLogCursorState(env.stateFile), env.logFile);
+
+      // Tight continuity budget (4 KiB) — far smaller than the 500-turn history.
+      const result = extractDistillationUnit(env.logFile, cursor, {
+        quotas: { maxContinuityReadBytes: 4096 },
+      });
+      assert.ok(result.distillationUnit, 'new turn is processed despite huge history');
+      assert.equal(result.distillationUnit!.newTurns.length, 1);
+      assert.equal(result.distillationUnit!.newTurns[0].turn, 501);
+      // Continuity is bounded to MAX_CONTINUITY_TURNS regardless of history size.
+      assert.ok(
+        result.distillationUnit!.continuityTurns.length <= MAX_CONTINUITY_TURNS,
+        'continuity never exceeds the policy cap',
+      );
+      // Continuity turns come from the tail of the history (turns near 500).
+      for (const t of result.distillationUnit!.continuityTurns) {
+        assert.ok(t.turn > 490, `continuity turn ${t.turn} is from the bounded tail`);
+      }
+    } finally {
+      env.teardown();
+    }
+  });
+
+  test('oversized single line exceeding the byte quota advances once complete', () => {
+    const env = bigSetup();
+    try {
+      // One complete line larger than the byte quota.
+      const big = makeTurn(1, 'cli', 'x'.repeat(3000));
+      fs.mkdirSync(path.dirname(env.logFile), { recursive: true });
+      fs.writeFileSync(env.logFile, JSON.stringify(big) + '\n', 'utf-8');
+
+      const state = loadLogCursorState(env.stateFile);
+      const cursor = getCursor(state, env.logFile);
+      const result = extractDistillationUnit(env.logFile, cursor, {
+        quotas: { maxNewBytesPerUnit: 1024 },
+      });
+
+      assert.ok(result.distillationUnit, 'a valid oversized line is admitted');
+      assert.equal(result.advanced, true, 'cursor advances past the complete line');
+      assert.equal(result.newCursor.byteOffset, fs.statSync(env.logFile).size);
+    } finally {
+      env.teardown();
+    }
   });
 });

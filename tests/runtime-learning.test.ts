@@ -393,6 +393,20 @@ describe('RuntimeLearning — AC1: Ingestion', () => {
     assert.equal(result.discovery.filesScanned, 0);
     assert.equal(result.ingestion.admittedEpisodes, 0);
   });
+
+  test('session-log append wake discovers turns appended after the previous scan', async () => {
+    await env.runtimeLearning.wake('startup');
+
+    const [delivery, acceptance] = deliveryPair(0);
+    writeLog(env.logFile, [delivery, acceptance]);
+
+    const result = await env.runtimeLearning.wake('session-log-append');
+
+    assert.equal(result.discovery.scanned, true);
+    assert.equal(result.discovery.filesScanned, 1);
+    assert.ok(result.ingestion.admittedEpisodes >= 1);
+    assert.equal(result.reassessment.status, 'skipped');
+  });
 });
 
 // ---------------------------------------------------------------------------

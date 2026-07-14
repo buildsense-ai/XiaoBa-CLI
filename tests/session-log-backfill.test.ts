@@ -199,7 +199,10 @@ test('backfill requires explicit source selection plus bounded range and caps', 
   const state = loadExternalSessionLogBackfillState(env.stateFilePath)!;
   assert.deepEqual(
     Object.keys(state.processedEventIds).sort(),
-    ['fixture-external-source:conversation-1:1', 'fixture-external-source:conversation-2:2'],
+    [
+      'fixture-provider::fixture-external-source::fixture-external-source:conversation-1:1::1::hash-1::::',
+      'fixture-provider::fixture-external-source::fixture-external-source:conversation-2:2::2::hash-2::::',
+    ],
   );
 });
 
@@ -359,6 +362,67 @@ test('backfill isolates failures and leaves failed resource cursor unadvanced', 
 
   const auditEntries = loadAuditEntries(env.auditFilePath);
   assert.ok(auditEntries.some(entry => entry.kind === 'resource_failed' && entry.resourceRef === 'conversation-fail'));
+});
+
+test('backfill rejects resources with events outside requested range and marks source_failed', () => {
+  const env = makeEnv();
+  const outOfRange = buildUnit(env.root, 'oor', 'session-oor');
+  const resources: readonly SessionLogSourceResource[] = [
+    {
+      resourceRef: 'conversation-0',
+      firstEventIdentity: {
+        eventId: 'fixture-external-source:conversation-0:0',
+        position: 5,
+        contentHash: 'oor-hash',
+      },
+    },
+  ];
+  const source: ExternalSessionLogBackfillSource = {
+    identity: {
+      sourceId: 'fixture-external-source',
+      label: 'Fixture External Backfill Source',
+      category: 'external',
+      provider: 'fixture-provider',
+      reader: 'fixture-backfill',
+    },
+    discoverResources: () => resources,
+    read: () => ({
+      events: [{
+        identity: {
+          eventId: 'fixture-external-source:conversation-0:0',
+          position: 0,
+          contentHash: 'oor-hash',
+        },
+        distillationUnit: outOfRange,
+        byteLength: 1024,
+      }],
+      status: 'stable',
+      exhausted: true,
+      newCursor: { resourceRef: 'conversation-0', position: 1, processedCount: 1 },
+    }),
+  };
+  const service = new ExternalSessionLogBackfillService({
+    stateFilePath: env.stateFilePath,
+    auditFilePath: env.auditFilePath,
+    now: sequentialClock(),
+  });
+
+  const result = service.run(
+    makeRequest({
+      resourceRefs: ['conversation-0'],
+      startPosition: 5,
+      endPosition: 5,
+    }),
+    source,
+    unitToEpisodeIngestor(env.evidenceIngestor),
+  );
+
+  assert.equal(result.status, 'source_failed');
+  const state = loadExternalSessionLogBackfillState(env.stateFilePath)!;
+  assert.equal(state.resourceCursors['conversation-0'], undefined);
+  assert.equal(state.failures.length, 1);
+  const audits = loadAuditEntries(env.auditFilePath);
+  assert.ok(audits.some(entry => entry.kind === 'source_failed'));
 });
 
 function makeEnv(): TestEnv {

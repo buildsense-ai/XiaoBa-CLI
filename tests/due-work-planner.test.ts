@@ -18,7 +18,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { DueWorkPlanner } from '../src/utils/due-work-planner';
+import { DueWorkPlanner, DEFAULT_MIN_DUE_WORK_WAKE_DELAY_MS } from '../src/utils/due-work-planner';
 import { DistillationHeartbeatScheduler } from '../src/utils/distillation-heartbeat-scheduler';
 import { DistillationPipeline } from '../src/utils/distillation-pipeline';
 import { LearningEpisodeStore } from '../src/utils/learning-episode';
@@ -512,6 +512,88 @@ describe('DueWorkPlanner — durable source reading', () => {
     assert.equal(plan.nextWakeTime, now.getTime());
     // operational-retry has highest priority
     assert.equal(plan.nextWakeReason, 'operational-retry');
+    // duePriority is reported highest-first; operational-retry outranks
+    // settlement-deadline, which outranks curator.
+    assert.deepEqual(plan.duePriority, ['operational-retry', 'settlement-deadline', 'curator']);
+  });
+
+  test('duePriority ranks overdue review/settlement above curator and discovery', () => {
+    // Overdue operational retry + overdue settlement + overdue routine curator.
+    const now = new Date('2026-07-01T12:00:00Z');
+    writeState(env.episodeStorePath, {
+      schemaVersion: 2,
+      episodes: {
+        'ep-past': settlingEpisode('ep-past', new Date('2026-06-01T00:00:00Z')),
+      },
+    });
+    const queue = emptyReviewQueueState();
+    addOrUpdateOperationalFailure(
+      queue,
+      { capabilityId: 'cap-p', title: '', applicability: '', actionPattern: '', boundaries: [], risks: [], solvedLoop: { problem: '', action: '', verification: '', noCorrection: '' }, provenance: [], generatedAt: '', sourceUnit: { filePath: '', byteRange: { start: 0, end: 0 }, generatedAt: '' }, schemaVersion: 1, kind: 'capability' },
+      { bundleId: 'bundle-p', episode: {}, completionEvidence: [], settlementEvidence: [], boundedContinuity: [], referencedSkills: [], relatedCurrentSkills: [] },
+      'branch_timeout', 'Timed out', undefined, 1, 60_000, new Date('2026-07-01T10:00:00Z'),
+    );
+    queue.operational[0]!.nextRetryAt = new Date('2026-06-01T00:00:00Z').toISOString();
+    queue.operational[0]!.currentDelayMs = 120_000;
+    saveReviewQueueState(env.reviewQueuePath, queue);
+    writeState(env.curatorStatePath, {
+      schemaVersion: 1,
+      lastRoutineRunAt: new Date('2026-06-28T12:00:00Z').toISOString(),
+      reviewedOutcomeFactIds: [], observedEpisodeIds: [], expedited: {},
+    });
+
+    const plan = env.planner.plan(now);
+    assert.deepEqual(plan.duePriority, ['operational-retry', 'settlement-deadline', 'curator']);
+    // The earliest wake is the floored overdue-operational-retry wake, not the
+    // 6h discovery interval — overdue review/settlement is not starved.
+    assert.equal(plan.nextWakeReason, 'operational-retry');
+    assert.ok(plan.nextWakeTime! < now.getTime() + 6 * 60 * 60 * 1000);
+  });
+
+  test('future deadlines are not shifted by the min-due-work wake delay floor', () => {
+    // A settlement deadline 10s in the future is a genuine future deadline;
+    // nextWakeTime must equal that deadline, not now + the 30s floor.
+    const now = new Date('2026-07-01T12:00:00Z');
+    const nearFuture = new Date(now.getTime() + 10_000); // 10s ahead
+    writeState(env.episodeStorePath, {
+      schemaVersion: 2,
+      episodes: { 'ep-fut': settlingEpisode('ep-fut', nearFuture) },
+    });
+    const plan = env.planner.plan(now);
+    assert.equal(plan.due.settlementDue, false);
+    assert.equal(plan.nextWakeTime, nearFuture.getTime());
+    assert.equal(plan.nextWakeReason, 'settlement-deadline');
+    assert.deepEqual(plan.duePriority, []);
+  });
+
+  test('opt-in minDueWorkWakeDelayMs floors overdue wakes without shifting future deadlines', () => {
+    const now = new Date('2026-07-01T12:00:00Z');
+    writeState(env.episodeStorePath, {
+      schemaVersion: 2,
+      episodes: { 'ep-past': settlingEpisode('ep-past', new Date('2026-06-01T00:00:00Z')) },
+    });
+    const floored = new DueWorkPlanner({
+      learningEpisodeStorePath: env.episodeStorePath,
+      reviewQueuePath: env.reviewQueuePath,
+      curatorStatePath: env.curatorStatePath,
+      curatorIntervalMs: 24 * 60 * 60 * 1000,
+      minDueWorkWakeDelayMs: 30_000,
+    });
+    const plan = floored.plan(now);
+    // Overdue wake is floored at now + 30s (opt-in), not 0ms and not 6h.
+    assert.equal(plan.due.settlementDue, true);
+    assert.equal(plan.nextWakeTime, now.getTime() + 30_000);
+    assert.equal(plan.nextWakeReason, 'settlement-deadline');
+
+    // A genuine future deadline is still reported at its actual time, not shifted.
+    const future = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+    writeState(env.episodeStorePath, {
+      schemaVersion: 2,
+      episodes: { 'ep-fut': settlingEpisode('ep-fut', future) },
+    });
+    const planFuture = floored.plan(now);
+    assert.equal(planFuture.due.settlementDue, false);
+    assert.equal(planFuture.nextWakeTime, future.getTime());
   });
 
   // -----------------------------------------------------------------------

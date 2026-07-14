@@ -303,6 +303,149 @@ test('explicit backfill persists redacted capsules and promotes through the shar
   }
 });
 
+test('explicit backfill replay can create a missing capsule before cursor acknowledgement after initial capsule write failure', async () => {
+  const env = setupEnv();
+  try {
+    const request = makeRequest({
+      operationId: 'retryable-capsule-write',
+      provider: 'codex',
+      sourceId: 'codex-replay-backfill',
+      resourceRefs: ['conversation-1'],
+      endPosition: 0,
+    });
+
+    const source = new FixtureBackfillSource([
+      {
+        resourceRef: 'conversation-1',
+        position: 0,
+        unit: buildExternalUnit(env.root, 'external://codex/conversation/retry-capsule.jsonl'),
+        contentHash: 'retry-capsule-hash-0',
+        ignoreCursor: true,
+      },
+    ], {
+      provider: 'codex',
+      sourceId: 'codex-replay-backfill',
+    });
+
+    const runtime = env.createRuntime({
+      authorFixture: ({ bundle }) => ({
+        body: 'Promote retryable external backfill episode.',
+        envelope: {
+          decision: 'create_current_skill' as const,
+          routingName: 'replay-capsule-write-report-delivery',
+          description: 'Recover replay for a missing external capsule.',
+          evidenceRefs: [...bundle.completionEvidence, ...bundle.settlementEvidence].map(ref => ref.ref),
+          rationale: 'explicit backfill replay should fail closed before replaying',
+        },
+      }),
+      verifierFixture: () => ({
+        decision: 'accept' as const,
+        transition: 'create_current_skill' as const,
+        issues: [],
+        rationale: 'replay accepted after capsule recovery',
+        registryReadSet: [],
+      }),
+    });
+
+    const store = runtime.runtime.getEvidenceCapsuleStore();
+    const originalUpsert = (store as unknown as { upsert: (value: Parameters<typeof store.upsert>[0]) => void }).upsert;
+    let upsertAttempts = 0;
+    (store as unknown as { upsert: (value: Parameters<typeof store.upsert>[0]) => void }).upsert = (capsule) => {
+      upsertAttempts += 1;
+      if (upsertAttempts === 1) {
+        throw new Error('simulated capsule store write failure');
+      }
+      originalUpsert.call(store, capsule);
+    };
+
+    const first = await runtime.runtime.runExternalBackfill(request, source);
+    assert.equal(first.backfill.status, 'source_failed', 'first run fails only because capsule write failed');
+    assert.equal(first.review.status, 'failed', 'first run fails review due missing external capsule');
+
+    const episodeId = Object.keys(runtime.episodeStore.load().episodes)[0];
+    assert.ok(episodeId, 'episode should exist despite capsule failure');
+    assert.equal(store.findByEpisodeId(episodeId), undefined, 'capsule absent on first failure');
+
+    // Restore durable capsule writes and replay the same explicit backfill operation.
+    (store as unknown as { upsert: (value: Parameters<typeof store.upsert>[0]) => void }).upsert = originalUpsert;
+
+    const second = await runtime.runtime.runExternalBackfill(request, source);
+    assert.equal(second.backfill.status, 'completed', 'second run completes with replayed capsule');
+    assert.equal(second.review.status, 'succeeded', 'second run succeeds after capsule recovery');
+    const restoredCapsule = runtime.runtime.getEvidenceCapsuleStore().findByEpisodeId(episodeId);
+    assert.ok(restoredCapsule, 'capsule is recreated on replay');
+  } finally {
+    env.restore();
+  }
+});
+
+test('external backfill remains fail-closed when source file path is non-URI', async () => {
+  const env = setupEnv();
+  try {
+    const request = makeRequest({
+      operationId: 'non-uri-path-backfill',
+      provider: 'codex',
+      sourceId: 'codex-non-uri',
+      resourceRefs: ['conversation-non-uri'],
+      endPosition: 0,
+    });
+
+    const nonUriSourceFile = 'sessions/conversation/non-uri.jsonl';
+    const source = new FixtureBackfillSource([
+      {
+        resourceRef: 'conversation-non-uri',
+        position: 0,
+        unit: buildExternalUnit(env.root, nonUriSourceFile),
+        contentHash: 'non-uri-hash-0',
+        ignoreCursor: true,
+      },
+    ], {
+      provider: 'codex',
+      sourceId: 'codex-non-uri',
+    });
+
+    const runtime = env.createRuntime({
+      authorFixture: ({ bundle }) => ({
+        body: 'Promote non-uri backfill report.',
+        envelope: {
+          decision: 'create_current_skill' as const,
+          routingName: 'non-uri-backfill-report-delivery',
+          description: 'Fail-closed for non-URI external evidence.',
+          evidenceRefs: [...bundle.completionEvidence, ...bundle.settlementEvidence].map(ref => ref.ref),
+          rationale: 'non-uri path still must use provenance for fail-closed',
+        },
+      }),
+      verifierFixture: () => ({
+        decision: 'accept' as const,
+        transition: 'create_current_skill' as const,
+        issues: [],
+        rationale: 'non-uri path accepted when capsule exists',
+        registryReadSet: [],
+      }),
+    });
+
+    const store = runtime.runtime.getEvidenceCapsuleStore();
+    const originalUpsert = store.upsert.bind(store);
+    let upsertAttempts = 0;
+    store.upsert = (capsule) => {
+      upsertAttempts += 1;
+      if (upsertAttempts === 1) {
+        throw new Error('simulated capsule store write failure');
+      }
+      originalUpsert(capsule);
+    };
+
+    const first = await runtime.runtime.runExternalBackfill(request, source);
+    assert.equal(first.review.status, 'failed', 'non-URI external evidence still requires capsule for review');
+
+    store.upsert = originalUpsert;
+    const second = await runtime.runtime.runExternalBackfill(request, source);
+    assert.equal(second.review.status, 'succeeded', 'non-URI evidence succeeds once capsule is recoverable');
+  } finally {
+    env.restore();
+  }
+});
+
 test('ordinary wake reasons never invoke explicit backfill automatically', async () => {
   const env = setupEnv();
   try {
@@ -347,6 +490,48 @@ test('ordinary wake reasons never invoke explicit backfill automatically', async
     assert.ok(Object.keys(fixture.episodeStore.load().episodes).length >= 1, 'continuous wake still ingests external evidence');
     assert.equal(fs.existsSync(paths.stateFilePath), false);
     assert.equal(fs.existsSync(paths.auditFilePath), false);
+  } finally {
+    env.restore();
+  }
+});
+
+test('explicit backfill drains after one bounded slice and resumes durably', async () => {
+  const env = setupEnv();
+  try {
+    const fixture = env.createRuntime();
+    const unit = buildExternalUnit(env.root, 'external://codex/conversation/drain.jsonl');
+    const items = Array.from({ length: 25 }, (_, position) => ({
+      resourceRef: `conversation-drain-${position}`,
+      position,
+      unit,
+      contentHash: `drain-hash-${position}`,
+    }));
+    const source = new FixtureBackfillSource(items, {
+      provider: 'codex',
+      sourceId: 'codex-drain-source',
+    });
+    const request = makeRequest({
+      operationId: 'bounded-drain-backfill',
+      provider: 'codex',
+      sourceId: 'codex-drain-source',
+      endPosition: 24,
+      maxResources: 100,
+    });
+
+    const operation = fixture.runtime.runExternalBackfill(request, source);
+    await fixture.runtime.drain(1_000);
+    const first = await operation;
+
+    assert.equal(first.drained, true);
+    assert.equal(first.backfill.status, 'quota_reached');
+    assert.equal(first.backfill.state.metrics.resourcesProcessed, 10);
+    assert.equal(first.backfill.state.metrics.ingestedEvents, 10);
+    assert.equal(first.review.status, 'skipped');
+
+    const resumed = await fixture.runtime.runExternalBackfill(request, source);
+    assert.equal(resumed.drained, false);
+    assert.equal(resumed.backfill.status, 'completed');
+    assert.equal(resumed.backfill.state.metrics.ingestedEvents, 25);
   } finally {
     env.restore();
   }

@@ -26,10 +26,31 @@ interface ManagedService {
   process?: ChildProcess;
   logs: string[];  // 最近的日志
   expectedExit?: 'stop' | 'restart';
+  forceKillTimer?: NodeJS.Timeout;
 }
 
 const MAX_LOG_LINES = 500;
 const MAX_LAST_ERROR_LENGTH = 500;
+
+/**
+ * Default graceful-drain deadline (ms) before force-killing a connector
+ * process. Reads `XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES`
+ * (same configured deadline the heartbeat scheduler uses) so an active
+ * wake can drain within the agreed Review Deadline instead of being
+ * SIGKILLed immediately. See ADR 0041.
+ */
+const DEFAULT_GRACEFUL_DRAIN_MS = 10 * 60 * 1000;
+
+function resolveGracefulDrainMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES;
+  if (raw !== undefined && raw !== '') {
+    const minutes = Number(raw);
+    if (Number.isFinite(minutes) && minutes > 0) {
+      return Math.round(minutes * 60 * 1000);
+    }
+  }
+  return DEFAULT_GRACEFUL_DRAIN_MS;
+}
 
 function stripAnsi(value: string): string {
   // eslint-disable-next-line no-control-regex
@@ -328,6 +349,7 @@ export class ServiceManager extends EventEmitter {
           : `Process exited with ${exitReason}`;
       }
       svc.process = undefined;
+      if (svc.forceKillTimer) { clearTimeout(svc.forceKillTimer); svc.forceKillTimer = undefined; }
       this.emit('service-stopped', name, code);
     });
 
@@ -335,6 +357,7 @@ export class ServiceManager extends EventEmitter {
       svc.info.status = 'error';
       svc.info.lastError = this.formatSpawnError(svc.info, err);
       svc.process = undefined;
+      if (svc.forceKillTimer) { clearTimeout(svc.forceKillTimer); svc.forceKillTimer = undefined; }
       this.emit('service-error', name, err);
     });
 
@@ -367,20 +390,32 @@ export class ServiceManager extends EventEmitter {
     }
 
     if (isWindows) {
-      // Windows: 直接用 taskkill 强制终止进程树
+      // Cooperate with the child supervisor first; tree-kill only at deadline.
       svc.expectedExit = 'stop';
-      this.killProcess(svc.process, true);
+      try { svc.process.kill('SIGTERM'); } catch { /* already exited */ }
+      const drainMs = resolveGracefulDrainMs();
+      svc.forceKillTimer = setTimeout(() => {
+        svc.forceKillTimer = undefined;
+        if (svc.process) this.killProcess(svc.process, true);
+      }, drainMs);
+      svc.forceKillTimer.unref?.();
     } else {
       svc.expectedExit = 'stop';
-      svc.process.kill('SIGTERM');
+      this.killProcess(svc.process);
 
-      // 5秒后强制kill
-      const forceKillTimer = setTimeout(() => {
-        if (svc.process && !svc.process.killed) {
-          svc.process.kill('SIGKILL');
-        }
-      }, 5000);
-      forceKillTimer.unref?.();
+      // Let an active wake drain within the configured Review Deadline
+      // before force-killing, instead of a hardcoded 5s SIGKILL. The
+      // connector's own shutdown handler drains its scheduler up to the
+      // same deadline; force-kill only after that deadline expires.
+      // Note: ChildProcess.killed means "signal was sent", not "process
+      // exited" — so we check svc.process truthiness instead (the exit
+      // handler sets it to undefined). See ADR 0041.
+      const drainMs = resolveGracefulDrainMs();
+      svc.forceKillTimer = setTimeout(() => {
+        svc.forceKillTimer = undefined;
+        if (svc.process) this.killProcess(svc.process, true);
+      }, drainMs);
+      svc.forceKillTimer.unref?.();
     }
 
     return this.getService(name)!;
@@ -415,12 +450,113 @@ export class ServiceManager extends EventEmitter {
     return this.start(name);
   }
 
+  /**
+   * Stop all running services. On non-Windows, sends SIGTERM first so an
+   * active heartbeat wake can drain within the configured Review Deadline,
+   * then force-kills after the deadline. Windows requests cooperative shutdown
+   * first and uses taskkill /F only at the deadline.
+   *
+   * This is a fire-and-forget sync method for API compatibility. For
+   * graceful shutdown that awaits child exit, use {@link drainAll}.
+   */
   stopAll() {
+    const drainMs = resolveGracefulDrainMs();
     for (const [name, svc] of this.services) {
       if (svc.info.status === 'running' && svc.process) {
         svc.expectedExit = 'stop';
-        this.killProcess(svc.process, true);
+        if (isWindows) {
+          try { svc.process.kill('SIGTERM'); } catch { /* already exited */ }
+          svc.forceKillTimer = setTimeout(() => {
+            svc.forceKillTimer = undefined;
+            if (svc.process) this.killProcess(svc.process, true);
+          }, drainMs);
+          svc.forceKillTimer.unref?.();
+        } else {
+          this.killProcess(svc.process);
+          svc.forceKillTimer = setTimeout(() => {
+            // Check svc.process truthiness, not ChildProcess.killed.
+            svc.forceKillTimer = undefined;
+            if (svc.process) this.killProcess(svc.process, true);
+          }, drainMs);
+          svc.forceKillTimer.unref?.();
+        }
       }
+    }
+  }
+
+  /**
+   * Gracefully stop all running services and await their exit within the
+   * configured Review Deadline. Sends SIGTERM first, then force-kills any
+   * process that has not exited after the deadline. Resolves when every
+   * running child has exited (or been killed). See ADR 0041.
+   */
+  async drainAll(): Promise<void> {
+    const drainMs = resolveGracefulDrainMs();
+    const running = Array.from(this.services.entries())
+      .filter(([, svc]) => svc.info.status === 'running' && svc.process)
+      .map(([name, svc]) => ({ name, svc }));
+
+    if (running.length === 0) return;
+
+    const runningNames = running.map(({ name }) => name);
+    const stoppedSet = new Set<string>();
+    let resolveAllStopped!: () => void;
+    const allStopped = new Promise<void>(resolve => {
+      resolveAllStopped = resolve;
+    });
+    const markStopped = (name: string) => {
+      if (!runningNames.includes(name)) return;
+      stoppedSet.add(name);
+      if (runningNames.every(n => stoppedSet.has(n))) resolveAllStopped();
+    };
+    const onStopped = (name: string) => markStopped(name);
+    const onError = (name: string) => markStopped(name);
+
+    // Register terminal-event listeners before sending signals. A child can
+    // emit `error` without a later `exit`; treating both events as terminal
+    // prevents shutdown from waiting forever on a failed spawn.
+    this.on('service-stopped', onStopped);
+    this.on('service-error', onError);
+
+    const forceKillTimer = setTimeout(() => {
+      for (const { name, svc } of running) {
+        if (!svc.process) {
+          markStopped(name);
+          continue;
+        }
+        try {
+          this.killProcess(svc.process, true);
+        } catch {
+          // The child may have exited between the check and the signal.
+        }
+        // SIGKILL should produce an exit event, but resolve defensively if a
+        // platform/runtime does not deliver one after the deadline.
+        markStopped(name);
+      }
+    }, drainMs);
+
+    try {
+      // Re-check for children that exited between collection and listener
+      // registration, then request graceful shutdown for the remainder.
+      for (const { name, svc } of running) {
+        if (!svc.process) {
+          markStopped(name);
+          continue;
+        }
+        svc.expectedExit = 'stop';
+        try {
+          if (isWindows) this.killProcess(svc.process, true);
+          else this.killProcess(svc.process);
+        } catch {
+          // The exit/error event (or the deadline fallback) completes drain.
+        }
+      }
+
+      await allStopped;
+    } finally {
+      clearTimeout(forceKillTimer);
+      this.off('service-stopped', onStopped);
+      this.off('service-error', onError);
     }
   }
 }

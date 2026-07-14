@@ -21,6 +21,43 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { LEARNING_EPISODE_SCHEMA_VERSION } from './learning-episode';
 
+/**
+ * Suggested minimum delay applied to a due-work wake so an overdue deadline
+ * does not produce a zero-millisecond hot loop. The planner defaults to 0
+ * (no floor) so the scheduler's ADR 0038 retry/backoff guard — which keys on a
+ * zero-delta overdue wake and applies exponential backoff itself — remains the
+ * default hot-loop protection. Operators who want a planner-level floor
+ * independent of the scheduler guard may set `minDueWorkWakeDelayMs` to this
+ * (or any non-negative) value; it is applied ONLY to overdue (past-deadline)
+ * wake scheduling and never shifts a genuine future deadline.
+ */
+export const DEFAULT_MIN_DUE_WORK_WAKE_DELAY_MS = 0;
+
+/**
+ * Categories of due work the planner can report, ordered by priority (highest
+ * first). Overdue operational retry and settlement outrank routine curator and
+ * discovery-scheduled work so a coalesced or targeted wake never starves the
+ * time-critical review path.
+ */
+export type DueWorkCategory =
+  | 'operational-retry'
+  | 'settlement-deadline'
+  | 'semantic-reassessment'
+  | 'curator';
+
+/**
+ * Deterministic priority order for due-work categories (highest first).
+ * Operational retry (a failed review that must not be dropped) and
+ * settlement deadlines (a candidate whose refutation window has closed)
+ * outrank semantic reassessment and curator work.
+ */
+export const DUE_WORK_PRIORITY: readonly DueWorkCategory[] = [
+  'operational-retry',
+  'settlement-deadline',
+  'semantic-reassessment',
+  'curator',
+];
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -60,6 +97,13 @@ export interface DueWorkPlan {
    * Not set when `nextWakeTime` is null.
    */
   nextWakeReason: string;
+  /**
+   * Due-work categories that are past their deadline, ordered by priority
+   * (highest first). A coalesced or targeted wake runs these before routine
+   * discovery so overdue review/settlement cannot be starved. Empty when no
+   * work is due. See {@link DUE_WORK_PRIORITY}.
+   */
+  duePriority: DueWorkCategory[];
 }
 
 /**
@@ -76,6 +120,12 @@ export interface PlannerSources {
   curatorIntervalMs: number;
   /** Optional semantic reassessment manifest. */
   semanticReassessmentManifestPath?: string;
+  /**
+   * Minimum delay (ms) applied to a due-work wake to prevent a zero-ms
+   * hot loop. Defaults to {@link DEFAULT_MIN_DUE_WORK_WAKE_DELAY_MS}; the
+   * scheduler's retry/backoff guard remains the primary protection by default.
+   */
+  minDueWorkWakeDelayMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +152,11 @@ export class DueWorkPlanner {
    */
   plan(now: Date = new Date()): DueWorkPlan {
     const nowMs = now.getTime();
+    const configuredMinDelayMs = this.sources.minDueWorkWakeDelayMs;
+    const minDelayMs = configuredMinDelayMs === undefined || !Number.isFinite(configuredMinDelayMs)
+      ? DEFAULT_MIN_DUE_WORK_WAKE_DELAY_MS
+      : Math.max(0, Math.floor(configuredMinDelayMs));
+    const dueWakeMs = nowMs + minDelayMs;
 
     // Read each durable source independently. A corrupt or missing source
     // returns null (no deadline), never throws, so a single corrupt file
@@ -121,6 +176,14 @@ export class DueWorkPlanner {
       semanticReassessmentDue: semanticReassessmentDeadlineMs !== null && semanticReassessmentDeadlineMs <= nowMs,
     };
 
+    // Priority-ordered due categories (highest first). Overdue operational
+    // retry and settlement outrank semantic reassessment and curator work.
+    const duePriority: DueWorkCategory[] = [];
+    if (due.operationalRetryDue) duePriority.push('operational-retry');
+    if (due.settlementDue) duePriority.push('settlement-deadline');
+    if (due.semanticReassessmentDue) duePriority.push('semantic-reassessment');
+    if (due.expeditedCuratorDue || due.routineCuratorDue) duePriority.push('curator');
+
     // Collect future deadlines (strictly > now) for the next wake.
     const candidates: Array<{ time: number; reason: string }> = [];
 
@@ -138,23 +201,24 @@ export class DueWorkPlanner {
     }
 
     // For work that is past its deadline and has no future deadline entry,
-    // add an immediate wake entry so the scheduler does not fall back to
-    // the discovery interval delay. Priority: operational-retry first,
-    // then settlement-deadline, then curator (deterministic ordering).
+    // add a prompt wake entry floored at `now + minDelayMs` so the scheduler
+    // fires a targeted wake without entering a zero-millisecond hot loop.
+    // Priority: operational-retry first, then settlement-deadline, then
+    // curator (deterministic ordering).
     if (due.operationalRetryDue && !candidates.some(c => c.reason === 'operational-retry')) {
-      candidates.push({ time: nowMs, reason: 'operational-retry' });
+      candidates.push({ time: dueWakeMs, reason: 'operational-retry' });
     }
     if (due.settlementDue && !candidates.some(c => c.reason === 'settlement-deadline')) {
-      candidates.push({ time: nowMs, reason: 'settlement-deadline' });
+      candidates.push({ time: dueWakeMs, reason: 'settlement-deadline' });
     }
     if (due.routineCuratorDue && !candidates.some(c => c.reason === 'curator')) {
-      candidates.push({ time: nowMs, reason: 'curator' });
+      candidates.push({ time: dueWakeMs, reason: 'curator' });
     }
-    if (due.expeditedCuratorDue && !candidates.some(c => c.reason === 'curator' && c.time <= nowMs)) {
-      candidates.push({ time: nowMs, reason: 'curator' });
+    if (due.expeditedCuratorDue && !candidates.some(c => c.reason === 'curator' && c.time <= dueWakeMs)) {
+      candidates.push({ time: dueWakeMs, reason: 'curator' });
     }
     if (due.semanticReassessmentDue && !candidates.some(c => c.reason === 'semantic-reassessment')) {
-      candidates.push({ time: nowMs, reason: 'semantic-reassessment' });
+      candidates.push({ time: dueWakeMs, reason: 'semantic-reassessment' });
     }
 
     let nextWakeTime: number | null = null;
@@ -166,7 +230,7 @@ export class DueWorkPlanner {
       nextWakeReason = candidates[0]!.reason;
     }
 
-    return { now, due, nextWakeTime, nextWakeReason };
+    return { now, due, nextWakeTime, nextWakeReason, duePriority };
   }
 
   // -----------------------------------------------------------------------

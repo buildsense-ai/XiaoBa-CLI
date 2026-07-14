@@ -36,12 +36,27 @@ import {
 import { DistilledKnowledgeCandidate } from './capability-distiller';
 import { type SemanticObservation } from './learning-episode';
 import { type SessionLogSourceIdentity, type SourceEventIdentity } from './session-log-source';
+import { type DistillationTurn, type DistillationUnit } from './distillation-unit';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 export const EVIDENCE_CAPSULE_SCHEMA_VERSION = 1 as const;
+
+/** Hard bounds for external evidence before it becomes durable or model-facing. */
+export const MAX_EVIDENCE_CAPSULE_ENTRIES = 64;
+export const MAX_EVIDENCE_CAPSULE_ENTRY_CONTENT_BYTES = 8 * 1024;
+export const MAX_EVIDENCE_CAPSULE_PAYLOAD_BYTES = 128 * 1024;
+export const MAX_EVIDENCE_CAPSULE_OBSERVATIONS = 32;
+export const MAX_EVIDENCE_CAPSULE_OBSERVATION_PAYLOAD_BYTES = 16 * 1024;
+
+const MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES = 2 * 1024;
+const MAX_EXTERNAL_TURN_TEXT_BYTES = 4 * 1024;
+const MAX_EXTERNAL_TOOL_ARGUMENT_BYTES = 3 * 1024;
+const MAX_EXTERNAL_TOOL_RESULT_BYTES = 4 * 1024;
+const MAX_EXTERNAL_TOOL_COUNT = 64;
+const MAX_EXTERNAL_VALUE_DEPTH = 4;
 
 // ---------------------------------------------------------------------------
 // Provenance
@@ -88,6 +103,7 @@ export interface EvidenceCapsule {
   readonly capsuleId: string;
   readonly provenance: EvidenceCapsuleProvenance;
   readonly identity: EvidenceCapsuleIdentity;
+  readonly evidenceFingerprint: string;
   readonly episodeId: string;
   readonly bundleId: string;
   readonly completionEvidence: readonly EvidenceCapsuleEvidence[];
@@ -118,19 +134,19 @@ const emptyCapsuleStoreState = (): EvidenceCapsuleStoreState => ({
 export class EvidenceCapsuleStore {
   constructor(private readonly filePath: string) {}
 
-  /** Load the durable capsule store. Returns empty state on first load or corruption. */
+  /** Load the durable capsule store. Corruption fails closed; it never becomes an empty store. */
   load(): EvidenceCapsuleStoreState {
     if (!fs.existsSync(this.filePath)) return emptyCapsuleStoreState();
     try {
       const raw = fs.readFileSync(this.filePath, 'utf8');
       const parsed = JSON.parse(raw) as EvidenceCapsuleStoreState & { schemaVersion?: number };
-      if (!parsed.capsules || typeof parsed.capsules !== 'object') return emptyCapsuleStoreState();
-      if (parsed.schemaVersion !== EVIDENCE_CAPSULE_SCHEMA_VERSION) return emptyCapsuleStoreState();
+      if (parsed.schemaVersion !== EVIDENCE_CAPSULE_SCHEMA_VERSION
+        || !parsed.capsules || typeof parsed.capsules !== 'object') {
+        throw new Error(`unsupported or malformed evidence capsule state: ${this.filePath}`);
+      }
       return parsed as EvidenceCapsuleStoreState;
-    } catch {
-      // Corrupted file: quarantine and return empty
-      this.quarantineFile();
-      return emptyCapsuleStoreState();
+    } catch (error) {
+      throw new Error(`evidence capsule state is corrupt: ${this.filePath}: ${String(error)}`);
     }
   }
 
@@ -139,11 +155,14 @@ export class EvidenceCapsuleStore {
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     const tmp = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(state, null, 2), { encoding: 'utf8', mode: 0o600 });
+    fs.chmodSync(tmp, 0o600);
     fs.renameSync(tmp, this.filePath);
+    fs.chmodSync(this.filePath, 0o600);
   }
 
   /** Upsert a capsule and persist. */
   upsert(capsule: EvidenceCapsule): void {
+    assertEvidenceCapsuleWithinBounds(capsule);
     const state = this.load();
     state.capsules[capsule.capsuleId] = {
       ...capsule,
@@ -177,18 +196,41 @@ export class EvidenceCapsuleStore {
     this.save(state);
   }
 
+  /**
+   * Delete only with an audit reference. Retention/deletion is deliberately
+   * explicit so an operator cannot erase evidence without a traceable link.
+   */
+  delete(capsuleId: string, auditRef: string): boolean {
+    if (!auditRef.trim()) throw new Error('capsule deletion requires an audit reference');
+    const state = this.load();
+    const capsule = state.capsules[capsuleId];
+    if (!capsule) return false;
+    if (!capsule.promotionAuditRefs.includes(auditRef)) {
+      throw new Error(`capsule deletion audit reference is not linked: ${auditRef}`);
+    }
+    delete state.capsules[capsuleId];
+    this.save(state);
+    return true;
+  }
+
+  /** Add an audit-linked retention/deletion decision without changing evidence. */
+  retain(capsuleId: string, auditRef: string): void {
+    if (!auditRef.trim()) throw new Error('capsule retention requires an audit reference');
+    const state = this.load();
+    const capsule = state.capsules[capsuleId];
+    if (!capsule) throw new Error(`capsule not found: ${capsuleId}`);
+    if (!capsule.promotionAuditRefs.includes(auditRef)) {
+      state.capsules[capsuleId] = {
+        ...capsule,
+        promotionAuditRefs: [...capsule.promotionAuditRefs, auditRef],
+      };
+      this.save(state);
+    }
+  }
+
   /** Count of stored capsules for diagnostics. */
   count(): number {
     return Object.keys(this.load().capsules).length;
-  }
-
-  private quarantineFile(): void {
-    try {
-      const quarantinePath = `${this.filePath}.quarantine.${Date.now()}.${process.pid}`;
-      fs.renameSync(this.filePath, quarantinePath);
-    } catch {
-      // Best-effort quarantine; fail silently to avoid cascading errors.
-    }
   }
 }
 
@@ -289,6 +331,190 @@ export function redactExternalEvidenceContent(content: string): string {
   return redacted.trim();
 }
 
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  return Buffer.from(value, 'utf8').subarray(0, maxBytes).toString('utf8').trimEnd();
+}
+
+function redactAndBoundExternalText(value: string, maxBytes = MAX_EXTERNAL_TURN_TEXT_BYTES): string {
+  return truncateUtf8(redactExternalEvidenceContent(String(value ?? '')), maxBytes);
+}
+
+function opaqueExternalIdentity(value: string, prefix: string): string {
+  return `${prefix}-${hash(String(value)).slice(0, 24)}`;
+}
+
+function sanitizeExternalValue(value: unknown, depth = 0): unknown {
+  if (depth > MAX_EXTERNAL_VALUE_DEPTH) return '[REDACTED_NESTED_VALUE]';
+  if (typeof value === 'string') {
+    return redactAndBoundExternalText(value, MAX_EXTERNAL_TOOL_ARGUMENT_BYTES);
+  }
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) {
+    return value.slice(0, MAX_EXTERNAL_TOOL_COUNT).map(item => sanitizeExternalValue(item, depth + 1));
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).slice(0, MAX_EXTERNAL_TOOL_COUNT);
+    return Object.fromEntries(entries.map(([key, item]) => [
+      truncateUtf8(redactExternalEvidenceContent(key), 128),
+      /(?:api[_-]?key|secret|token|password|credential|auth|private[_-]?key)/i.test(key)
+        ? '[REDACTED]'
+        : sanitizeExternalValue(item, depth + 1),
+    ]));
+  }
+  return '[REDACTED_VALUE]';
+}
+
+function sanitizeExternalToolCall(tool: Record<string, unknown>): Record<string, unknown> {
+  const rawArguments = JSON.stringify(tool.arguments ?? {});
+  assertByteLimit('external tool arguments', rawArguments, MAX_EXTERNAL_TOOL_ARGUMENT_BYTES);
+  assertByteLimit('external tool result', String(tool.result ?? ''), MAX_EXTERNAL_TOOL_RESULT_BYTES);
+  const argumentsValue = sanitizeExternalValue(tool.arguments);
+  const boundedArguments = truncateUtf8(
+    JSON.stringify(argumentsValue ?? {}),
+    MAX_EXTERNAL_TOOL_ARGUMENT_BYTES,
+  );
+  const result = redactAndBoundExternalText(String(tool.result ?? ''), MAX_EXTERNAL_TOOL_RESULT_BYTES);
+  return {
+    id: typeof tool.id === 'string' ? opaqueExternalIdentity(tool.id, 'tool') : 'tool',
+    name: redactAndBoundExternalText(String(tool.name ?? 'external-tool'), 128),
+    arguments: boundedArguments,
+    result,
+    ...(typeof tool.duration_ms === 'number' && Number.isFinite(tool.duration_ms)
+      ? { duration_ms: Math.max(0, Math.floor(tool.duration_ms)) }
+      : {}),
+  };
+}
+
+function sanitizeExternalTurn(turn: DistillationTurn, safeFilePath: string): DistillationTurn {
+  const raw = turn as unknown as Record<string, unknown>;
+  const user = (raw.user ?? {}) as Record<string, unknown>;
+  const assistant = (raw.assistant ?? {}) as Record<string, unknown>;
+  const toolCalls = Array.isArray(assistant.tool_calls) ? assistant.tool_calls : [];
+  assertByteLimit('external user text', String(user.text ?? ''), MAX_EXTERNAL_TURN_TEXT_BYTES);
+  assertByteLimit('external assistant text', String(assistant.text ?? ''), MAX_EXTERNAL_TURN_TEXT_BYTES);
+  if (Array.isArray(user.runtime_feedback)) {
+    for (const feedback of user.runtime_feedback) {
+      assertByteLimit('external runtime feedback', String(feedback), 1024);
+    }
+  }
+  const sanitized: Record<string, unknown> = {
+    turn: typeof raw.turn === 'number' ? raw.turn : 0,
+    timestamp: typeof raw.timestamp === 'string' ? raw.timestamp : new Date(0).toISOString(),
+    session_id: opaqueExternalIdentity(String(raw.session_id ?? ''), 'external-session'),
+    session_type: redactAndBoundExternalText(String(raw.session_type ?? 'external'), 128),
+    user: {
+      text: redactAndBoundExternalText(String(user.text ?? '')),
+      ...(Array.isArray(user.runtime_feedback)
+        ? { runtime_feedback: user.runtime_feedback.slice(0, 16).map(item => redactAndBoundExternalText(String(item), 1024)) }
+        : {}),
+      ...(typeof user.runtime_observation_source === 'string'
+        ? { runtime_observation_source: redactAndBoundExternalText(user.runtime_observation_source, 256) }
+        : {}),
+      // External image ids/paths are not needed for learning admission.
+    },
+    assistant: {
+      text: redactAndBoundExternalText(String(assistant.text ?? '')),
+      tool_calls: toolCalls
+        .slice(0, MAX_EXTERNAL_TOOL_COUNT)
+        .map(tool => sanitizeExternalToolCall((tool ?? {}) as Record<string, unknown>)),
+    },
+    // Token counts are not learning evidence and must not carry token material
+    // across the external privacy boundary.
+    tokens: { prompt: 0, completion: 0 },
+    origin: { filePath: safeFilePath },
+  };
+
+  if (typeof raw.entry_type === 'string') sanitized.entry_type = raw.entry_type;
+  if (typeof raw.episode_id === 'string' && raw.episode_id.trim()) {
+    sanitized.episode_id = opaqueExternalIdentity(raw.episode_id, 'external-episode');
+  }
+  return sanitized as unknown as DistillationTurn;
+}
+
+/**
+ * Sanitize an external Distillation Unit before EvidenceIngestor admission.
+ * The returned unit has opaque source/session identities, no prompt metadata,
+ * bounded redacted text, and no externally supplied filesystem path.
+ */
+export function sanitizeExternalDistillationUnit(
+  unit: DistillationUnit,
+  options: { sourceId: string; eventIdentity?: Pick<SourceEventIdentity, 'eventId' | 'position'> },
+): DistillationUnit {
+  const eventPart = options.eventIdentity
+    ? `${options.eventIdentity.eventId}|${options.eventIdentity.position}`
+    : unit.filePath;
+  const safeFilePath = `external://event/${hash(`${options.sourceId}|${eventPart}|${unit.byteRange.start}|${unit.byteRange.end}`).slice(0, 24)}.jsonl`;
+  const sanitizedUnit: DistillationUnit = {
+    filePath: safeFilePath,
+    newTurns: unit.newTurns.map(turn => sanitizeExternalTurn(turn, safeFilePath)),
+    continuityTurns: unit.continuityTurns.map(turn => sanitizeExternalTurn(turn, safeFilePath)),
+    byteRange: unit.byteRange,
+    generatedAt: unit.generatedAt,
+  };
+  assertSanitizedExternalUnitBounds(sanitizedUnit);
+  return sanitizedUnit;
+}
+
+/** Redact and bound external identity metadata used in durable capsules. */
+export function sanitizeExternalSourceIdentity(identity: SessionLogSourceIdentity): SessionLogSourceIdentity {
+  return {
+    ...identity,
+    sourceId: redactAndBoundExternalText(identity.sourceId, MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES),
+    label: redactAndBoundExternalText(identity.label, MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES),
+    provider: redactAndBoundExternalText(identity.provider, MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES),
+    reader: redactAndBoundExternalText(identity.reader, MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES),
+  };
+}
+
+export function sanitizeExternalEventIdentity(identity: SourceEventIdentity): SourceEventIdentity {
+  return {
+    eventId: redactAndBoundExternalText(identity.eventId, MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES),
+    position: identity.position,
+    ...(identity.contentHash
+      ? { contentHash: redactAndBoundExternalText(identity.contentHash, MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES) }
+      : {}),
+    ...(identity.conversationId
+      ? { conversationId: redactAndBoundExternalText(identity.conversationId, MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES) }
+      : {}),
+    ...(identity.revision
+      ? { revision: redactAndBoundExternalText(identity.revision, MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES) }
+      : {}),
+  };
+}
+
+function assertSanitizedExternalUnitBounds(unit: DistillationUnit): void {
+  const turns = [...unit.continuityTurns, ...unit.newTurns];
+  const toolDetails = turns.flatMap(turn => turn.assistant.tool_calls.map(tool => {
+    const argumentsText = typeof tool.arguments === 'string'
+      ? tool.arguments
+      : JSON.stringify(tool.arguments ?? '');
+    const suffix = argumentsText && argumentsText !== '{}' ? ` ${argumentsText}` : '';
+    return `${tool.name}${suffix}: ${String(tool.result || '')}`.trim();
+  }));
+  const candidateContents = [
+    ...toolDetails,
+    ...turns.map(turn => turn.user.text),
+    ...turns.map(turn => turn.assistant.text),
+  ];
+  const estimatedEntryCount = toolDetails.length + turns.length + 1;
+  if (estimatedEntryCount > MAX_EVIDENCE_CAPSULE_ENTRIES) {
+    throw new Error(`external Distillation Unit entry count exceeds ${MAX_EVIDENCE_CAPSULE_ENTRIES}`);
+  }
+  for (const [index, content] of candidateContents.entries()) {
+    assertByteLimit(
+      `external Distillation Unit evidence ${index}`,
+      content,
+      MAX_EVIDENCE_CAPSULE_ENTRY_CONTENT_BYTES,
+    );
+  }
+  assertByteLimit(
+    'external Distillation Unit payload',
+    JSON.stringify({ source: unit.filePath, contents: candidateContents }),
+    MAX_EVIDENCE_CAPSULE_PAYLOAD_BYTES,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Capsule builder
 // ---------------------------------------------------------------------------
@@ -318,6 +544,69 @@ export interface BuildEvidenceCapsuleOptions {
   now?: Date;
 }
 
+function assertByteLimit(label: string, value: string, maxBytes: number): void {
+  const actualBytes = Buffer.byteLength(value, 'utf8');
+  if (actualBytes > maxBytes) {
+    throw new Error(`${label} exceeds the ${maxBytes}-byte external evidence limit`);
+  }
+}
+
+function assertRawEvidenceBounds(options: BuildEvidenceCapsuleOptions): void {
+  const entries = [...options.completionEvidence, ...options.settlementEvidence];
+  if (entries.length > MAX_EVIDENCE_CAPSULE_ENTRIES) {
+    throw new Error(`external evidence entry count exceeds ${MAX_EVIDENCE_CAPSULE_ENTRIES}`);
+  }
+  for (const [index, entry] of entries.entries()) {
+    assertByteLimit(`external evidence entry ${index}`, entry.content, MAX_EVIDENCE_CAPSULE_ENTRY_CONTENT_BYTES);
+  }
+  const observations = options.semanticObservations ?? [];
+  if (observations.length > MAX_EVIDENCE_CAPSULE_OBSERVATIONS) {
+    throw new Error(`external observation count exceeds ${MAX_EVIDENCE_CAPSULE_OBSERVATIONS}`);
+  }
+  const observationPayload = JSON.stringify(observations);
+  assertByteLimit(
+    'external observation payload',
+    observationPayload,
+    MAX_EVIDENCE_CAPSULE_OBSERVATION_PAYLOAD_BYTES,
+  );
+  const rawPayload = JSON.stringify({
+    completion: options.completionEvidence,
+    settlement: options.settlementEvidence,
+    observations,
+  });
+  assertByteLimit('external capsule input payload', rawPayload, MAX_EVIDENCE_CAPSULE_PAYLOAD_BYTES);
+}
+
+/** Validate a capsule immediately before durable persistence. */
+export function assertEvidenceCapsuleWithinBounds(capsule: EvidenceCapsule): void {
+  const entries = [...capsule.completionEvidence, ...capsule.settlementEvidence];
+  if (entries.length > MAX_EVIDENCE_CAPSULE_ENTRIES) {
+    throw new Error(`evidence capsule entry count exceeds ${MAX_EVIDENCE_CAPSULE_ENTRIES}`);
+  }
+  for (const [index, entry] of entries.entries()) {
+    assertByteLimit(`evidence capsule entry ${index}`, entry.content, MAX_EVIDENCE_CAPSULE_ENTRY_CONTENT_BYTES);
+    if (entry.ref) assertByteLimit(`evidence capsule entry ${index} ref`, entry.ref, MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES);
+    if (entry.sourceFilePath) {
+      assertByteLimit(
+        `evidence capsule entry ${index} source reference`,
+        entry.sourceFilePath,
+        MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES,
+      );
+    }
+  }
+  if (capsule.semanticObservations.length > MAX_EVIDENCE_CAPSULE_OBSERVATIONS) {
+    throw new Error(`evidence capsule observation count exceeds ${MAX_EVIDENCE_CAPSULE_OBSERVATIONS}`);
+  }
+  const observationPayload = JSON.stringify(capsule.semanticObservations);
+  assertByteLimit(
+    'evidence capsule observation payload',
+    observationPayload,
+    MAX_EVIDENCE_CAPSULE_OBSERVATION_PAYLOAD_BYTES,
+  );
+  const payload = JSON.stringify(capsule);
+  assertByteLimit('evidence capsule payload', payload, MAX_EVIDENCE_CAPSULE_PAYLOAD_BYTES);
+}
+
 /**
  * Build a bounded, redacted Evidence Capsule from an admitted external event.
  *
@@ -326,24 +615,25 @@ export interface BuildEvidenceCapsuleOptions {
  * and a stable content hash derived from the redacted evidence.
  */
 export function buildEvidenceCapsule(options: BuildEvidenceCapsuleOptions): EvidenceCapsule {
+  assertRawEvidenceBounds(options);
   const now = options.now ?? new Date();
   const capsuleId = `capsule-${hash([options.bundleId, now.toISOString()].join('|')).slice(0, 20)}`;
 
   // Redact each evidence entry's content before durable persistence
   const redactedCompletion = options.completionEvidence.map(e => ({
-    ref: e.ref,
+    ref: redactSourceReference(e.ref),
     content: redactExternalEvidenceContent(e.content),
     role: e.role as 'problem-action' | 'verification',
-    sourceFilePath: e.sourceFilePath,
+    sourceFilePath: e.sourceFilePath ? redactSourceReference(e.sourceFilePath) : undefined,
     turn: e.turn,
     byteRange: e.byteRange,
   })) satisfies EvidenceCapsuleEvidence[];
 
   const redactedSettlement = options.settlementEvidence.map(e => ({
-    ref: e.ref,
+    ref: redactSourceReference(e.ref),
     content: redactExternalEvidenceContent(e.content),
     role: e.role as 'problem-action' | 'verification',
-    sourceFilePath: e.sourceFilePath,
+    sourceFilePath: e.sourceFilePath ? redactSourceReference(e.sourceFilePath) : undefined,
     turn: e.turn,
     byteRange: e.byteRange,
   })) satisfies EvidenceCapsuleEvidence[];
@@ -356,28 +646,33 @@ export function buildEvidenceCapsule(options: BuildEvidenceCapsuleOptions): Evid
     }),
   );
 
-  return {
+  const safeSourceIdentity = sanitizeExternalSourceIdentity(options.sourceIdentity);
+  const safeEventIdentity = sanitizeExternalEventIdentity(options.eventIdentity);
+  const capsule: EvidenceCapsule = {
     schemaVersion: EVIDENCE_CAPSULE_SCHEMA_VERSION,
     capsuleId,
     provenance: {
-      sourceId: options.sourceIdentity.sourceId,
-      provider: options.sourceIdentity.provider,
-      reader: options.sourceIdentity.reader,
-      category: options.sourceIdentity.category,
+      sourceId: safeSourceIdentity.sourceId,
+      provider: safeSourceIdentity.provider,
+      reader: safeSourceIdentity.reader,
+      category: safeSourceIdentity.category,
     },
     identity: {
-      eventId: options.eventIdentity.eventId,
-      position: options.eventIdentity.position,
-      contentHash: evidenceFingerprint,
+      eventId: safeEventIdentity.eventId,
+      position: safeEventIdentity.position,
+      contentHash: safeEventIdentity.contentHash ?? 'no-event-hash',
     },
+    evidenceFingerprint,
     episodeId: options.episodeId,
     bundleId: options.bundleId,
     completionEvidence: redactedCompletion,
     settlementEvidence: redactedSettlement,
-    semanticObservations: [...(options.semanticObservations ?? [])],
+    semanticObservations: [...(options.semanticObservations ?? [])].map(redactSemanticObservation),
     redactedAt: now.toISOString(),
     promotionAuditRefs: [],
   };
+  assertEvidenceCapsuleWithinBounds(capsule);
+  return capsule;
 }
 
 // ---------------------------------------------------------------------------
@@ -520,6 +815,18 @@ function hash(value: string): string {
 
 function sha256(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function redactSourceReference(value: string): string {
+  return truncateUtf8(redactExternalEvidenceContent(value), MAX_EVIDENCE_CAPSULE_REFERENCE_BYTES);
+}
+
+function redactSemanticObservation(observation: SemanticObservation): SemanticObservation {
+  return {
+    kind: observation.kind,
+    value: redactExternalEvidenceContent(observation.value),
+    sourceRefs: observation.sourceRefs?.map(ref => redactExternalEvidenceContent(ref)),
+  };
 }
 
 /** Export store helpers for constructor injection. */

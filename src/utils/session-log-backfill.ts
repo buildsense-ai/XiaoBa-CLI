@@ -130,6 +130,8 @@ export type ExternalSessionLogBackfillAuditKind =
   | 'resource_duplicate'
   | 'resource_failed'
   | 'quota_reached'
+  | 'pending'
+  | 'source_failed'
   | 'completed';
 
 export interface ExternalSessionLogBackfillAuditEntry {
@@ -187,15 +189,16 @@ export class ExternalSessionLogBackfillService {
     state = assertCompatibleState(state, request);
 
     const matchedResources = selectBackfillResources(source.discoverResources(), request.range);
+    let metrics = {
+      ...state.metrics,
+      runsStarted: state.metrics.runsStarted + 1,
+      resourcesDiscovered: matchedResources.length,
+    };
     state = {
       ...state,
       status: 'running',
       updatedAt: startedAt.toISOString(),
-      metrics: {
-        ...state.metrics,
-        runsStarted: state.metrics.runsStarted + 1,
-        resourcesDiscovered: matchedResources.length,
-      },
+      metrics,
     };
     saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
     appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
@@ -207,7 +210,7 @@ export class ExternalSessionLogBackfillService {
       triggeredBy: state.triggeredBy,
       range: state.range,
       status: state.status,
-      metrics: state.metrics,
+      metrics,
     });
 
     let processedResources = 0;
@@ -222,11 +225,12 @@ export class ExternalSessionLogBackfillService {
     let quotaReached = false;
 
     for (const resource of matchedResources) {
+      const now = this.now();
       if (processedResources >= request.limits.maxResources) {
         quotaReached = true;
         break;
       }
-      if (this.now().getTime() - startedAt.getTime() >= request.limits.maxElapsedMs) {
+      if (now.getTime() - startedAt.getTime() >= request.limits.maxElapsedMs) {
         quotaReached = true;
         break;
       }
@@ -243,10 +247,19 @@ export class ExternalSessionLogBackfillService {
       } catch (error) {
         sawFailure = true;
         failedResources += 1;
-        state = recordBackfillFailure(state, resource.resourceRef, undefined, error, this.now());
+        state = recordBackfillFailure(state, resource.resourceRef, undefined, error, now);
+        state = {
+          ...state,
+          updatedAt: now.toISOString(),
+          metrics: {
+            ...state.metrics,
+            failedResources: state.metrics.failedResources + 1,
+          },
+        };
+        metrics = state.metrics;
         saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
         appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
-          timestamp: this.now().toISOString(),
+          timestamp: now.toISOString(),
           kind: 'resource_failed',
           operationId: state.operationId,
           provider: state.provider,
@@ -261,26 +274,22 @@ export class ExternalSessionLogBackfillService {
         continue;
       }
 
-      const resourceBytes = readResult.events.reduce((sum, event) => sum + event.byteLength, 0);
-      if (bytesProcessed + resourceBytes > request.limits.maxBytes) {
-        quotaReached = true;
-        break;
-      }
-
       if (readResult.status === 'pending') {
         sawPending = true;
         pendingResources += 1;
+        const updatedMetrics = {
+          ...state.metrics,
+          pendingResources: state.metrics.pendingResources + 1,
+        };
         state = {
           ...state,
-          updatedAt: this.now().toISOString(),
-          metrics: {
-            ...state.metrics,
-            pendingResources: state.metrics.pendingResources + 1,
-          },
+          updatedAt: now.toISOString(),
+          metrics: updatedMetrics,
         };
+        metrics = updatedMetrics;
         saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
         appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
-          timestamp: this.now().toISOString(),
+          timestamp: now.toISOString(),
           kind: 'resource_pending',
           operationId: state.operationId,
           provider: state.provider,
@@ -298,13 +307,63 @@ export class ExternalSessionLogBackfillService {
         continue;
       }
 
+      if (!allEventsInRange(readResult.events, request.range)) {
+        sawFailure = true;
+        failedResources += 1;
+        state = recordBackfillFailure(
+          state,
+          resource.resourceRef,
+          readResult.events[0]?.identity.eventId,
+          new Error('resource returned events outside requested backfill range'),
+          now,
+        );
+        state = {
+          ...state,
+          updatedAt: now.toISOString(),
+          metrics: {
+            ...state.metrics,
+            failedResources: state.metrics.failedResources + 1,
+          },
+        };
+        metrics = state.metrics;
+        saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+        appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+          timestamp: now.toISOString(),
+          kind: 'resource_failed',
+          operationId: state.operationId,
+          provider: state.provider,
+          sourceId: state.sourceId,
+          triggeredBy: state.triggeredBy,
+          range: state.range,
+          status: state.status,
+          resourceRef: resource.resourceRef,
+          message: 'resource returned events outside requested backfill range',
+          metrics: state.metrics,
+        });
+        continue;
+      }
+
       let resourceFailed = false;
       let resourceDuplicates = 0;
       let resourceIngested = 0;
       let resourceAdmittedEpisodes = 0;
+      let resourceBytes = 0;
 
       for (const event of readResult.events) {
-        if (isExactBackfillDuplicate(state, event.identity)) {
+        if (bytesProcessed + resourceBytes + event.byteLength > request.limits.maxBytes) {
+          quotaReached = true;
+          break;
+        }
+
+        const nowInLoop = this.now();
+        if (nowInLoop.getTime() - startedAt.getTime() >= request.limits.maxElapsedMs) {
+          quotaReached = true;
+          break;
+        }
+
+        resourceBytes += event.byteLength;
+
+        if (isExactBackfillDuplicate(state, request.provider, request.sourceId, event.identity)) {
           resourceDuplicates += 1;
           continue;
         }
@@ -318,11 +377,20 @@ export class ExternalSessionLogBackfillService {
             resource.resourceRef,
             event.identity.eventId,
             new Error('stable backfill event is missing a verified DistillationUnit'),
-            this.now(),
+            nowInLoop,
           );
+          state = {
+            ...state,
+            updatedAt: nowInLoop.toISOString(),
+            metrics: {
+              ...state.metrics,
+              failedResources: state.metrics.failedResources + 1,
+            },
+          };
+          metrics = state.metrics;
           saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
           appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
-            timestamp: this.now().toISOString(),
+            timestamp: nowInLoop.toISOString(),
             kind: 'resource_failed',
             operationId: state.operationId,
             provider: state.provider,
@@ -349,15 +417,24 @@ export class ExternalSessionLogBackfillService {
           });
           resourceIngested += 1;
           resourceAdmittedEpisodes += ingestion.admittedEpisodeIds.length;
-          state = markBackfillEventProcessed(state, event.identity);
+          state = markBackfillEventProcessed(state, request.provider, request.sourceId, event.identity);
         } catch (error) {
           resourceFailed = true;
           sawFailure = true;
           failedResources += 1;
-          state = recordBackfillFailure(state, resource.resourceRef, event.identity.eventId, error, this.now());
+          state = recordBackfillFailure(state, resource.resourceRef, event.identity.eventId, error, nowInLoop);
+          state = {
+            ...state,
+            updatedAt: nowInLoop.toISOString(),
+            metrics: {
+              ...state.metrics,
+              failedResources: state.metrics.failedResources + 1,
+            },
+          };
+          metrics = state.metrics;
           saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
           appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
-            timestamp: this.now().toISOString(),
+            timestamp: nowInLoop.toISOString(),
             kind: 'resource_failed',
             operationId: state.operationId,
             provider: state.provider,
@@ -374,8 +451,8 @@ export class ExternalSessionLogBackfillService {
         }
       }
 
-      if (resourceFailed) {
-        continue;
+      if (quotaReached || resourceFailed) {
+        break;
       }
 
       processedResources += 1;
@@ -384,6 +461,16 @@ export class ExternalSessionLogBackfillService {
       admittedEpisodes += resourceAdmittedEpisodes;
       bytesProcessed += resourceBytes;
 
+      const updatedMetrics = {
+        ...state.metrics,
+        resourcesProcessed: state.metrics.resourcesProcessed + 1,
+        ingestedEvents: state.metrics.ingestedEvents + resourceIngested,
+        duplicateEventsSkipped: state.metrics.duplicateEventsSkipped + resourceDuplicates,
+        admittedEpisodes: state.metrics.admittedEpisodes + resourceAdmittedEpisodes,
+        bytesProcessed: state.metrics.bytesProcessed + resourceBytes,
+      };
+      metrics = updatedMetrics;
+
       state = {
         ...state,
         updatedAt: this.now().toISOString(),
@@ -391,14 +478,7 @@ export class ExternalSessionLogBackfillService {
           ...state.resourceCursors,
           [resource.resourceRef]: readResult.newCursor,
         },
-        metrics: {
-          ...state.metrics,
-          resourcesProcessed: state.metrics.resourcesProcessed + 1,
-          ingestedEvents: state.metrics.ingestedEvents + resourceIngested,
-          duplicateEventsSkipped: state.metrics.duplicateEventsSkipped + resourceDuplicates,
-          admittedEpisodes: state.metrics.admittedEpisodes + resourceAdmittedEpisodes,
-          bytesProcessed: state.metrics.bytesProcessed + resourceBytes,
-        },
+        metrics: updatedMetrics,
       };
       saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
 
@@ -430,17 +510,19 @@ export class ExternalSessionLogBackfillService {
       status: finalStatus,
       updatedAt: finishedAt.toISOString(),
       completedAt: finalStatus === 'completed' ? finishedAt.toISOString() : state.completedAt,
-      metrics: {
-        ...state.metrics,
-        pendingResources: state.metrics.pendingResources + pendingResources,
-        failedResources: state.metrics.failedResources + failedResources,
-      },
+      metrics,
     };
     saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
 
     appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
       timestamp: finishedAt.toISOString(),
-      kind: finalStatus === 'quota_reached' ? 'quota_reached' : 'completed',
+      kind: finalStatus === 'quota_reached'
+        ? 'quota_reached'
+        : finalStatus === 'pending'
+          ? 'pending'
+          : finalStatus === 'source_failed'
+            ? 'source_failed'
+            : 'completed',
       operationId: state.operationId,
       provider: state.provider,
       sourceId: state.sourceId,
@@ -450,7 +532,7 @@ export class ExternalSessionLogBackfillService {
       message: finalStatus === 'source_failed'
         ? 'one or more resources failed; see state.failures'
         : undefined,
-      metrics: state.metrics,
+      metrics,
     });
 
     return {
@@ -473,7 +555,15 @@ export function loadExternalSessionLogBackfillState(
 ): ExternalSessionLogBackfillState | null {
   if (!fs.existsSync(stateFilePath)) return null;
   const raw = fs.readFileSync(stateFilePath, 'utf8');
-  const parsed = JSON.parse(raw) as ExternalSessionLogBackfillState;
+  let parsed: ExternalSessionLogBackfillState;
+  try {
+    parsed = JSON.parse(raw) as ExternalSessionLogBackfillState;
+  } catch (error) {
+    throw new Error(`backfill state is corrupt: ${stateFilePath}: ${String(error)}`);
+  }
+  if (parsed.schemaVersion !== 1 || !parsed.resourceCursors || !parsed.processedEventIds) {
+    throw new Error(`backfill state schema is unsupported or malformed: ${stateFilePath}`);
+  }
   return {
     ...parsed,
     schemaVersion: parsed.schemaVersion ?? 1,
@@ -506,7 +596,9 @@ export function saveExternalSessionLogBackfillState(
       encoding: 'utf8',
       mode: 0o600,
     });
+    fs.chmodSync(tmpPath, 0o600);
     fs.renameSync(tmpPath, stateFilePath);
+    fs.chmodSync(stateFilePath, 0o600);
   } catch (error) {
     try {
       if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
@@ -523,6 +615,7 @@ export function appendExternalSessionLogBackfillAudit(
 ): void {
   fs.mkdirSync(path.dirname(auditFilePath), { recursive: true });
   fs.appendFileSync(auditFilePath, `${JSON.stringify(entry)}\n`, { encoding: 'utf8', mode: 0o600 });
+  fs.chmodSync(auditFilePath, 0o600);
 }
 
 function createExternalSessionLogBackfillState(
@@ -628,25 +721,60 @@ function selectBackfillResources(
 
 function markBackfillEventProcessed(
   state: ExternalSessionLogBackfillState,
+  provider: string,
+  sourceId: string,
   identity: SourceEventIdentity,
 ): ExternalSessionLogBackfillState {
   return {
     ...state,
     processedEventIds: {
       ...state.processedEventIds,
-      [identity.eventId]: normalizeContentHash(identity.contentHash),
+      [backfillEventKey(provider, sourceId, identity)]: normalizeContentHash(identity.contentHash),
     },
   };
 }
 
 function isExactBackfillDuplicate(
   state: ExternalSessionLogBackfillState,
+  provider: string,
+  sourceId: string,
   identity: SourceEventIdentity,
 ): boolean {
+  const key = backfillEventKey(provider, sourceId, identity);
+  const legacyRecord = state.processedEventIds[identity.eventId];
+  if (Object.prototype.hasOwnProperty.call(state.processedEventIds, key)) {
+    return state.processedEventIds[key] === normalizeContentHash(identity.contentHash);
+  }
+
+  // Backward compatibility for older persisted states.
   if (!Object.prototype.hasOwnProperty.call(state.processedEventIds, identity.eventId)) {
     return false;
   }
-  return state.processedEventIds[identity.eventId] === normalizeContentHash(identity.contentHash);
+
+  return legacyRecord === normalizeContentHash(identity.contentHash);
+}
+
+function allEventsInRange(
+  events: readonly ExternalSessionLogBackfillEvent[],
+  range: ExternalSessionLogBackfillRange,
+): boolean {
+  return events.every(({ identity }) => isBackfillEventInRange(identity, range));
+}
+
+function isBackfillEventInRange(identity: SourceEventIdentity, range: ExternalSessionLogBackfillRange): boolean {
+  return identity.position >= range.startPosition && identity.position <= range.endPosition;
+}
+
+function backfillEventKey(provider: string, sourceId: string, identity: SourceEventIdentity): string {
+  return [
+    provider,
+    sourceId,
+    identity.eventId,
+    identity.position,
+    identity.contentHash ?? '',
+    identity.conversationId ?? '',
+    identity.revision ?? '',
+  ].join('::');
 }
 
 function recordBackfillFailure(

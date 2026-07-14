@@ -62,15 +62,21 @@ export async function startDashboard(
     res.sendFile(path.join(frontendPath, 'index.html'));
   });
 
-  // 优雅退出
-  process.on('SIGINT', () => {
-    serviceManager.stopAll();
+  // 优雅退出 — await service drain before process exit so an active
+  // heartbeat wake can finish within the configured Review Deadline.
+  let shuttingDown = false;
+  const gracefulShutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      await serviceManager.drainAll();
+    } catch (error) {
+      Logger.warning(`Service drain failed during shutdown: ${error instanceof Error ? error.message : String(error)}`);
+    }
     process.exit(0);
-  });
-  process.on('SIGTERM', () => {
-    serviceManager.stopAll();
-    process.exit(0);
-  });
+  };
+  process.on('SIGINT', gracefulShutdown);
+  process.on('SIGTERM', gracefulShutdown);
 
   const server = app.listen(port, '127.0.0.1', () => {
     Logger.success(`\nCatsCo Dashboard started`);
@@ -89,7 +95,9 @@ export async function startDashboard(
 
   return {
     async stop(): Promise<void> {
-      serviceManager.stopAll();
+      // Await service drain before closing HTTP servers so an active
+      // heartbeat wake can finish within the configured Review Deadline.
+      await serviceManager.drainAll();
       await Promise.all(activeServers.splice(0).map(closeServer));
     },
   };

@@ -41,6 +41,7 @@ import { Logger } from './logger';
 import { bootstrapSemanticReassessmentOnce } from './distilled-skill-bootstrap';
 import { SemanticReassessmentManifestStore } from './semantic-reassessment';
 import { cleanupBranchTranscripts } from './branch-transcript-retention';
+import { createReviewBudget } from './review-budget';
 import {
   InternalSessionLogSourceAdapter,
   SessionLogSourceAdapter,
@@ -63,6 +64,7 @@ import {
 export type RuntimeLearningReason =
   | 'startup'
   | 'scheduled'
+  | 'session-log-append'
   | 'settlement-deadline'
   | 'operational-retry'
   | 'curator'
@@ -195,6 +197,8 @@ export interface RuntimeLearningBackfillResult {
   ingestion: RuntimeLearningIngestionReport;
   maturation: RuntimeLearningMaturationReport;
   review: RuntimeLearningReviewReport;
+  /** True when shutdown requested a resumable stop between bounded slices. */
+  drained: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +225,22 @@ export const DEFAULT_DISCOVERY_WAKE_QUOTAS: DiscoveryWakeQuotas = {
   maxAdmittedEpisodesPerWake: 200,
   maxDiscoveryMs: 60_000, // 60 s
 };
+
+function normalizeDiscoveryQuota(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.floor(value));
+}
+
+const EXTERNAL_EPISODE_PROVENANCE_SCHEMA_VERSION = 1;
+const EXTERNAL_BACKFILL_SLICE_RESOURCES = 10;
+const EXTERNAL_BACKFILL_SLICE_BYTES = 2 * 1024 * 1024;
+const EXTERNAL_BACKFILL_SLICE_MS = 250;
+
+interface ExternalEpisodeProvenanceState {
+  schemaVersion: number;
+  episodeToEvent: Record<string, string>;
+  eventToEpisodes: Record<string, string[]>;
+}
 
 export interface RuntimeLearningOptions {
   /** Working directory for config resolution. */
@@ -315,6 +335,50 @@ function skippedReassessmentReport(): RuntimeLearningReassessmentReport {
   return { status: 'skipped', discovered: 0, completed: 0, deferred: 0, failed: 0, transitionsByKind: {} };
 }
 
+function mergeMaturationReports(
+  first: RuntimeLearningMaturationReport,
+  second: RuntimeLearningMaturationReport,
+): RuntimeLearningMaturationReport {
+  return {
+    status: first.status === 'failed' || second.status === 'failed'
+      ? 'failed'
+      : (first.status === 'succeeded' || second.status === 'succeeded' ? 'succeeded' : 'skipped'),
+    ...(first.errorMessage || second.errorMessage
+      ? { errorMessage: [first.errorMessage, second.errorMessage].filter(Boolean).join('; ') }
+      : {}),
+    maturedEpisodes: first.maturedEpisodes + second.maturedEpisodes,
+    becameEligible: first.becameEligible + second.becameEligible,
+    becameContradicted: first.becameContradicted + second.becameContradicted,
+  };
+}
+
+function mergeReviewReports(
+  first: RuntimeLearningReviewReport,
+  second: RuntimeLearningReviewReport,
+): RuntimeLearningReviewReport {
+  const transitionsByKind: Partial<Record<CapabilityTransitionKind, number>> = { ...first.transitionsByKind };
+  for (const [kind, count] of Object.entries(second.transitionsByKind) as [CapabilityTransitionKind, number][]) {
+    transitionsByKind[kind] = (transitionsByKind[kind] ?? 0) + count;
+  }
+  return {
+    status: first.status === 'failed' || second.status === 'failed'
+      ? 'failed'
+      : (first.status === 'succeeded' || second.status === 'succeeded' ? 'succeeded' : 'skipped'),
+    ...(first.errorMessage || second.errorMessage
+      ? { errorMessage: [first.errorMessage, second.errorMessage].filter(Boolean).join('; ') }
+      : {}),
+    reviewedEpisodes: first.reviewedEpisodes + second.reviewedEpisodes,
+    reviewedQueueEntries: first.reviewedQueueEntries + second.reviewedQueueEntries,
+    deferredQueueReviews: first.deferredQueueReviews + second.deferredQueueReviews,
+    operationalQueueReviews: first.operationalQueueReviews + second.operationalQueueReviews,
+    deferredRetries: first.deferredRetries + second.deferredRetries,
+    operationalRetries: first.operationalRetries + second.operationalRetries,
+    reviewTimeoutCount: first.reviewTimeoutCount + second.reviewTimeoutCount,
+    reviewFailureCount: first.reviewFailureCount + second.reviewFailureCount,
+    transitionsByKind,
+  };
+}
+
 function emptyHeartbeatResult(ran: boolean): RuntimeLearningHeartbeatResult {
   return {
     unitsProcessed: 0,
@@ -383,8 +447,17 @@ export class RuntimeLearning {
   private readonly schedulingStatePath: string;
   /** Durable Evidence Capsule store for external evidence (issue #78). */
   private readonly evidenceCapsuleStore: EvidenceCapsuleStore;
+  /** Durable provenance index tying external events to episode ids (issue #78). */
+  private readonly externalEpisodeProvenancePath: string;
+  /** Episode id -> event key for external provenance lookup. */
+  private readonly externalEpisodeProvenance = new Map<string, string>();
+  /** Event key -> external episode ids. */
+  private readonly externalEpisodeProvenanceByEvent = new Map<string, string[]>();
 
   private readonly pendingCuratorObservationEpisodeIds = new Set<string>();
+  /** Cooperative explicit-backfill operation tracked for scheduler drain. */
+  private activeBackfill: Promise<RuntimeLearningBackfillResult> | null = null;
+  private backfillDrainRequested = false;
 
   constructor(options: RuntimeLearningOptions) {
     this.workingDirectory = options.workingDirectory;
@@ -402,7 +475,32 @@ export class RuntimeLearning {
     this.sessionLogSources = options.sessionLogSources ?? [
       new InternalSessionLogSourceAdapter(this.config),
     ];
-    this.discoveryQuotas = { ...DEFAULT_DISCOVERY_WAKE_QUOTAS, ...options.discoveryQuotas };
+    this.discoveryQuotas = {
+      maxResourcesPerWake: normalizeDiscoveryQuota(
+        options.discoveryQuotas?.maxResourcesPerWake,
+        DEFAULT_DISCOVERY_WAKE_QUOTAS.maxResourcesPerWake,
+      ),
+      maxAdmittedEpisodesPerWake: normalizeDiscoveryQuota(
+        options.discoveryQuotas?.maxAdmittedEpisodesPerWake,
+        DEFAULT_DISCOVERY_WAKE_QUOTAS.maxAdmittedEpisodesPerWake,
+      ),
+      maxDiscoveryMs: normalizeDiscoveryQuota(
+        options.discoveryQuotas?.maxDiscoveryMs,
+        DEFAULT_DISCOVERY_WAKE_QUOTAS.maxDiscoveryMs,
+      ),
+    };
+    this.externalSourceBudget = options.externalSourceBudget ?? DEFAULT_EXTERNAL_SOURCE_BUDGET;
+    this.schedulingStatePath = path.join(
+      path.dirname(this.config.learningEpisodeStorePath),
+      'external-source-scheduling-state.json',
+    );
+    this.externalEpisodeProvenancePath = path.join(
+      path.dirname(this.config.learningEpisodeStorePath),
+      'external-source-provenance.json',
+    );
+    this.loadExternalSourceSchedulingState();
+    this.evidenceCapsuleStore = new EvidenceCapsuleStore(this.config.evidenceCapsulePath);
+    this.loadExternalEpisodeProvenanceState();
   }
 
   // -----------------------------------------------------------------------
@@ -487,6 +585,46 @@ export class RuntimeLearning {
     request: ExternalSessionLogBackfillRequest,
     source: ExternalSessionLogBackfillSource,
   ): Promise<RuntimeLearningBackfillResult> {
+    if (this.activeBackfill) {
+      throw new Error('another external backfill operation is already active');
+    }
+    const operation = Promise.resolve().then(() => this.executeExternalBackfill(request, source));
+    this.activeBackfill = operation;
+    try {
+      return await operation;
+    } finally {
+      if (this.activeBackfill === operation) this.activeBackfill = null;
+      this.backfillDrainRequested = false;
+    }
+  }
+
+  /**
+   * Ask an active backfill to stop after its current bounded slice. The
+   * persisted operation remains resumable on the next explicit invocation.
+   */
+  async drain(timeoutMs = this.config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000): Promise<void> {
+    this.backfillDrainRequested = true;
+    const active = this.activeBackfill;
+    if (!active) {
+      this.backfillDrainRequested = false;
+      return;
+    }
+    let timer: NodeJS.Timeout | null = null;
+    await Promise.race([
+      active.then(() => undefined, () => undefined).finally(() => {
+        if (timer) clearTimeout(timer);
+        timer = null;
+      }),
+      new Promise<void>(resolve => {
+        timer = setTimeout(resolve, Math.max(1, timeoutMs));
+      }),
+    ]);
+  }
+
+  private async executeExternalBackfill(
+    request: ExternalSessionLogBackfillRequest,
+    source: ExternalSessionLogBackfillSource,
+  ): Promise<RuntimeLearningBackfillResult> {
     const paths = this.getExternalBackfillOperationPaths(request);
     const service = new ExternalSessionLogBackfillService({
       stateFilePath: paths.stateFilePath,
@@ -496,19 +634,91 @@ export class RuntimeLearning {
 
     let admittedEpisodes = 0;
     let contradictionSignals = 0;
+    let externalProvenanceUpdated = false;
 
-    const backfill = service.run(request, source, (unit, context) => {
-      const ingestion = this.evidenceIngestor.ingest(unit);
+    const ingest = (unit: DistillationUnit, context: ExternalSessionLogBackfillIngestContext) => {
+      const ingestion = this.evidenceIngestor.ingest(
+        sanitizeExternalDistillationUnit(unit, {
+          sourceId: source.identity.sourceId,
+          eventIdentity: context.eventIdentity,
+        }),
+      );
+      const admissionEpisodeIds = ingestion.admittedEpisodeIds.length > 0
+        ? ingestion.admittedEpisodeIds
+        : this.getExternalEpisodeIdsForEvent(source.identity, context.eventIdentity);
+
+      if (admissionEpisodeIds.length > 0) {
+        externalProvenanceUpdated ||= this.recordExternalEpisodeProvenance(
+          source.identity,
+          context.eventIdentity,
+          admissionEpisodeIds,
+        );
+      }
+
       this.queueCuratorObservation(ingestion.admittedEpisodeIds);
       this.createCapsulesForExternalSource(
         source.identity,
         context.eventIdentity,
         ingestion,
+        admissionEpisodeIds,
       );
       admittedEpisodes += ingestion.admittedEpisodeIds.length;
       contradictionSignals += ingestion.contradictionSignalIds.length;
       return { admittedEpisodeIds: ingestion.admittedEpisodeIds };
-    });
+    };
+
+    let backfill: ExternalSessionLogBackfillRunResult | null = null;
+    let drained = false;
+    let priorityMaturation = skippedMaturationReport();
+    let priorityReview = skippedReviewReport();
+    do {
+      // Deadline/retry work has priority between every bounded backfill slice.
+      const due = this.planner.plan(this.clock()).due;
+      const priorityReasons: RuntimeLearningReason[] = [];
+      if (due.operationalRetryDue) priorityReasons.push('operational-retry');
+      if (due.settlementDue) priorityReasons.push('settlement-deadline');
+      if (priorityReasons.length > 0) {
+        const priorityWake = await this.wake(priorityReasons);
+        priorityMaturation = mergeMaturationReports(priorityMaturation, priorityWake.maturation);
+        priorityReview = mergeReviewReports(priorityReview, priorityWake.review);
+      }
+
+      backfill = service.run({
+        ...request,
+        limits: {
+          maxResources: Math.min(request.limits.maxResources, EXTERNAL_BACKFILL_SLICE_RESOURCES),
+          maxBytes: Math.min(request.limits.maxBytes, EXTERNAL_BACKFILL_SLICE_BYTES),
+          maxElapsedMs: Math.min(request.limits.maxElapsedMs, EXTERNAL_BACKFILL_SLICE_MS),
+        },
+      }, source, ingest);
+
+      if (backfill.status !== 'quota_reached') break;
+      const priorMetrics = backfill.state.metrics;
+      if (this.backfillDrainRequested) {
+        drained = true;
+        break;
+      }
+      // A single event larger than the cooperative byte slice must remain
+      // resumable, but retrying the same zero-progress slice would spin.
+      // Leave it quota-limited for the next explicit invocation.
+      if (
+        backfill.ingestedEvents === 0
+        && backfill.duplicateEventsSkipped === 0
+        && backfill.processedResources === 0
+        && priorMetrics.resourcesProcessed === 0
+      ) {
+        break;
+      }
+      await new Promise<void>(resolve => setImmediate(resolve));
+    } while (backfill.status === 'quota_reached');
+
+    if (!backfill) {
+      throw new Error('external backfill did not produce a result');
+    }
+
+    if (externalProvenanceUpdated) {
+      this.saveExternalEpisodeProvenanceState();
+    }
 
     const maturationDueWork: DueWork = {
       settlementDue: true,
@@ -525,19 +735,36 @@ export class RuntimeLearning {
       semanticReassessmentDue: false,
     };
 
-    const maturation = await this.runMaturation(maturationDueWork, false);
-    await this.flushCuratorObservations();
-    const review = await this.runReview(reviewDueWork);
+    const maturation = drained
+      ? priorityMaturation
+      : mergeMaturationReports(priorityMaturation, await this.runMaturation(maturationDueWork, false));
+    if (!drained) await this.flushCuratorObservations();
+    const review = drained
+      ? priorityReview
+      : mergeReviewReports(priorityReview, await this.runReview(reviewDueWork));
+
+    const metrics = backfill.state.metrics;
+    const aggregateBackfill: ExternalSessionLogBackfillRunResult = {
+      ...backfill,
+      processedResources: metrics.resourcesProcessed,
+      pendingResources: metrics.pendingResources,
+      failedResources: metrics.failedResources,
+      ingestedEvents: metrics.ingestedEvents,
+      duplicateEventsSkipped: metrics.duplicateEventsSkipped,
+      admittedEpisodes: metrics.admittedEpisodes,
+      bytesProcessed: metrics.bytesProcessed,
+    };
 
     return {
       paths,
-      backfill,
+      backfill: aggregateBackfill,
       ingestion: {
         admittedEpisodes,
         contradictionSignals,
       },
       maturation,
       review,
+      drained,
     };
   }
 
@@ -548,7 +775,7 @@ export class RuntimeLearning {
   /**
    * Run one wake cycle of the Runtime Learning module.
    *
-   * For discovery reasons (startup, scheduled, manual): scan session logs,
+   * For discovery reasons (startup, scheduled, session-log-append, manual): scan session logs,
    * ingest evidence, then run settlement/review/curation based on what's due.
    *
    * For targeted reasons (settlement-deadline, operational-retry, curator):
@@ -732,7 +959,12 @@ export class RuntimeLearning {
   }
 
   private isDiscoveryWake(reasons: Set<RuntimeLearningReason>): boolean {
-    return reasons.has('startup') || reasons.has('scheduled') || reasons.has('manual');
+    return (
+      reasons.has('startup')
+      || reasons.has('scheduled')
+      || reasons.has('session-log-append')
+      || reasons.has('manual')
+    );
   }
 
   private resolveWakeDueWork(
@@ -923,6 +1155,14 @@ export class RuntimeLearning {
     if (!reviewAttempted) return skippedReviewReport();
 
     const transitionsByKind: Partial<Record<CapabilityTransitionKind, number>> = {};
+    // One wake owns one shared wall-clock and conservative input budget. Any
+    // unadmitted eligible episode remains durable and is resumed next wake.
+    const reviewBudget = createReviewBudget({
+      maxCandidates: this.config.skillEvolutionReviewMaxCandidates,
+      maxPromptTokens: this.config.skillEvolutionReviewMaxPromptTokens,
+      deadlineMs: this.config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000,
+      now: () => this.clock().getTime(),
+    });
 
     // Review eligible learning episodes
     let reviewedEpisodes = 0;
@@ -931,29 +1171,39 @@ export class RuntimeLearning {
 
     try {
       const episodes = Object.values(this.episodeStore.load().episodes);
+      const reviewTasks: Array<{ episode: LearningEpisode; bundle: ReturnType<typeof buildEpisodeEvidenceBundle> }> = [];
       for (const episode of episodes) {
-        if (episode.status !== 'eligible') continue;
-        if (this.hasReviewedEpisode(episode)) continue;
-
+        if (episode.status !== 'eligible' || this.hasReviewedEpisode(episode)) continue;
         const candidate = buildLearningEpisodeCandidate(episode);
-        const bundle = buildEpisodeEvidenceBundle(episode, candidate, this.skillEvolution, this.evidenceCapsuleStore);
-
-        try {
-          const result = await this.skillEvolution.reviewAndApply(bundle);
-          this.linkEvidenceCapsuleToAudit(bundle.bundleId, result.audit?.transitionId ?? result.transitionId);
-          incrementTransition(transitionsByKind, result.transition);
-          reviewedEpisodes++;
-        } catch (error: any) {
-          // reviewAndApply already retried internally (max optimistic retries
-          // then operational enqueue). If it still throws, the episode will be
-          // re-examined on a future wake — safe because the cursor was already
-          // advanced and the episode remains durable.
-          episodeReviewFailures++;
-          Logger.warning(
-            `[RuntimeLearning] review failed for ${episode.episodeId}: ${error.message}`,
-          );
+        const bundle = buildEpisodeEvidenceBundle(
+          episode,
+          candidate,
+          this.skillEvolution,
+          this.evidenceCapsuleStore,
+          this.isEpisodeFromExternalSource.bind(this),
+        );
+        if (!reviewBudget.admit(bundle)) {
+          Logger.info(`[RuntimeLearning] review budget exhausted; episode ${episode.episodeId} remains resumable`);
+          continue;
         }
+        reviewTasks.push({ episode, bundle });
       }
+      await mapWithConcurrency(
+        reviewTasks,
+        Math.max(1, Math.floor(this.config.skillEvolutionReviewerConcurrency)),
+        async ({ episode, bundle }) => {
+          try {
+            const result = await this.skillEvolution.reviewAndApply(bundle);
+            this.linkEvidenceCapsuleToAudit(bundle.bundleId, result.audit?.transitionId ?? result.transitionId);
+            incrementTransition(transitionsByKind, result.transition);
+            reviewedEpisodes++;
+          } catch (error: any) {
+            // The candidate remains durable and is retried independently.
+            episodeReviewFailures++;
+            Logger.warning(`[RuntimeLearning] review failed for ${episode.episodeId}: ${error.message}`);
+          }
+        },
+      );
     } catch (error) {
       settlementError = error;
     }
@@ -979,8 +1229,14 @@ export class RuntimeLearning {
     let reviewTimeoutCount = 0;
     let reviewFailureCount = 0;
     try {
-      queueResult = await this.skillEvolution.reviewDueQueueEntries();
-      this.reconcileReassessmentQueueOutcomes(queueResult.queueOutcomes);
+      // Queue entries are already durable and independently concurrency-bounded
+      // by SkillEvolutionRuntime. Do not dequeue them when this wake's shared
+      // budget is exhausted; the planner will reschedule the remaining work.
+      if (reviewBudget.canStart({ queue: 'due-review-queue' })) {
+        reviewBudget.admit({ queue: 'due-review-queue' });
+        queueResult = await this.skillEvolution.reviewDueQueueEntries();
+        this.reconcileReassessmentQueueOutcomes(queueResult.queueOutcomes);
+      }
     } catch (error) {
       queueError = error;
       Logger.warning(`[RuntimeLearning] queue review failed: ${toErrorMessage(error)}`);
@@ -1165,6 +1421,7 @@ export class RuntimeLearning {
 
     // ---- AC2: Internal-first ordering ----
     const orderedSources = this.orderSourcesForDiscovery();
+    let externalProvenanceUpdated = false;
 
     for (const adapter of orderedSources) {
       if (discoveryCapped) break;
@@ -1214,7 +1471,28 @@ export class RuntimeLearning {
       let sourceHadFailure = false;
       let sourceBudgetHit = false;
 
-      const resources = adapter.discoverResources();
+      let resources: readonly SessionLogSourceResource[];
+      try {
+        resources = adapter.discoverResources();
+      } catch (error) {
+        // AC3: Discovering resources is source-local failure; keep discovery
+        // for other sources and keep OPR independent of this failure.
+        sourceHadFailure = true;
+        if (isExternal) this.recordExternalSourceFailure(identity.sourceId, error);
+        sourceReports.push({
+          sourceId: identity.sourceId,
+          category: identity.category,
+          enabled: true,
+          resourcesDiscovered: 0,
+          unitsProcessed: 0,
+          advancedResources: 0,
+          status: 'failed',
+          failureState: isExternal ? (this.externalSourceFailureState.get(identity.sourceId) ?? undefined) : undefined,
+          budget,
+        });
+        continue;
+      }
+
       let unitsProcessed = 0;
       let advancedResources = 0;
 
@@ -1264,16 +1542,30 @@ export class RuntimeLearning {
           // AC3: Per-source failure recording, NOT OPR
           adapter.markFailed(resource, error);
           sourceHadFailure = true;
-          this.recordExternalSourceFailure(identity.sourceId, error);
+          if (isExternal) {
+            this.recordExternalSourceFailure(identity.sourceId, error);
+          }
           continue;
         }
 
-        const unitBytes = readResult.distillationUnit
-          ? (readResult.distillationUnit.byteRange.end - readResult.distillationUnit.byteRange.start)
-          : 0;
+        if (readResult.status === 'failed') {
+          adapter.markFailed(resource, new Error('source read reported failed status'));
+          sourceHadFailure = true;
+          if (isExternal) {
+            this.recordExternalSourceFailure(identity.sourceId, new Error('source read reported failed status'));
+          }
+          continue;
+        }
+
+        const distillationUnits = readResult.distillationUnits
+          ?? (readResult.distillationUnit ? [readResult.distillationUnit] : []);
+        const unitBytes = distillationUnits.reduce(
+          (total, unit) => total + Math.max(0, unit.byteRange.end - unit.byteRange.start),
+          0,
+        );
         sourceBytesRead += unitBytes;
 
-        if (!readResult.distillationUnit) {
+        if (distillationUnits.length === 0) {
           // No distillation unit — advance cursor if the adapter reports progress
           if (readResult.advanced) {
             try {
@@ -1294,30 +1586,75 @@ export class RuntimeLearning {
           continue;
         }
 
-        // Admit evidence through the shared source-neutral EvidenceIngestor
+        // A multi-event external read is one acknowledgement unit: every
+        // stable event must be admitted before the cursor can advance. A
+        // missing identity would make provenance/capsule ownership ambiguous,
+        // so fail closed and leave the whole batch resumable.
         try {
-          const ingestionResult = this.evidenceIngestor.ingest(readResult.distillationUnit);
-          this.queueCuratorObservation(ingestionResult.admittedEpisodeIds);
-          if (isExternal) {
-            // Persist the redacted Evidence Capsule BEFORE acknowledging the
-            // external cursor. If capsule persistence fails, leave the source
-            // unacknowledged so the fixed event can retry without silently
-            // degrading into unredacted review input.
-            this.createCapsulesForExternalSource(
-              identity,
-              resource.firstEventIdentity ?? {
-                eventId: resource.resourceRef,
-                position: 0,
-              },
-              ingestionResult,
-            );
+          const eventIdentities = readResult.eventIdentities ?? [];
+          if (isExternal && eventIdentities.length > 0 && eventIdentities.length !== distillationUnits.length) {
+            throw new Error('stable external batch is missing one or more event identities');
           }
+
+          let batchAdmittedEpisodes = 0;
+          let batchContradictionSignals = 0;
+          for (let index = 0; index < distillationUnits.length; index++) {
+            const eventIdentity = eventIdentities[index]
+              ?? (distillationUnits.length === 1
+                ? (resource.firstEventIdentity ?? { eventId: resource.resourceRef, position: 0 })
+                : undefined);
+            if (isExternal && !eventIdentity) {
+              throw new Error('stable external batch event has no canonical identity');
+            }
+
+            // External evidence crosses the privacy boundary before it reaches
+            // EvidenceIngestor. Internal source behavior remains unchanged.
+            const ingestUnit = isExternal
+              ? sanitizeExternalDistillationUnit(distillationUnits[index]!, {
+                sourceId: identity.sourceId,
+                eventIdentity,
+              })
+              : distillationUnits[index]!;
+            const ingestionResult = this.evidenceIngestor.ingest(ingestUnit);
+            const resolvedEventIdentity = eventIdentity ?? {
+              eventId: resource.resourceRef,
+              position: index,
+            };
+            const episodeIdsFromDiscoveredEvent = this.getExternalEpisodeIdsForEvent(identity, resolvedEventIdentity);
+            const admissionEpisodeIds = ingestionResult.admittedEpisodeIds.length > 0
+              ? ingestionResult.admittedEpisodeIds
+              : episodeIdsFromDiscoveredEvent;
+
+            if (isExternal && admissionEpisodeIds.length > 0) {
+              externalProvenanceUpdated ||= this.recordExternalEpisodeProvenance(
+                identity,
+                resolvedEventIdentity,
+                admissionEpisodeIds,
+              );
+            }
+
+            this.queueCuratorObservation(ingestionResult.admittedEpisodeIds);
+            if (isExternal) {
+              // Persist the redacted Evidence Capsule BEFORE acknowledging the
+              // external cursor. If any event fails, the fixed batch remains
+              // unacknowledged and can be replayed idempotently.
+              this.createCapsulesForExternalSource(
+                identity,
+                resolvedEventIdentity,
+                ingestionResult,
+                admissionEpisodeIds,
+              );
+            }
+            batchAdmittedEpisodes += ingestionResult.admittedEpisodeIds.length;
+            batchContradictionSignals += ingestionResult.contradictionSignalIds.length;
+          }
+
           adapter.acknowledge(resource, readResult);
-          unitsProcessed++;
+          unitsProcessed += distillationUnits.length;
           advancedResources++;
-          totalAdmittedEpisodes += ingestionResult.admittedEpisodeIds.length;
-          wakeAdmittedEpisodes += ingestionResult.admittedEpisodeIds.length;
-          totalContradictionSignals += ingestionResult.contradictionSignalIds.length;
+          totalAdmittedEpisodes += batchAdmittedEpisodes;
+          wakeAdmittedEpisodes += batchAdmittedEpisodes;
+          totalContradictionSignals += batchContradictionSignals;
           // Success resets failure count for external sources
           if (isExternal) {
             this.resetExternalSourceFailure(identity.sourceId);
@@ -1357,6 +1694,9 @@ export class RuntimeLearning {
     // Persist external source scheduling state (backoff deadlines) for restart
     // recovery (AC6).
     this.saveExternalSourceSchedulingState();
+    if (externalProvenanceUpdated) {
+      this.saveExternalEpisodeProvenanceState();
+    }
 
     return {
       sourceReports,
@@ -1505,6 +1845,142 @@ export class RuntimeLearning {
     }
   }
 
+  /**
+   * Track that a specific external event maps to the listed episode ids.
+   * Returns true if this run changed durable provenance state.
+   */
+  private recordExternalEpisodeProvenance(
+    identity: SessionLogSourceIdentity,
+    eventIdentity: SourceEventIdentity,
+    episodeIds: readonly string[],
+  ): boolean {
+    if (episodeIds.length === 0) return false;
+
+    const eventKey = this.getExternalEpisodeProvenanceEventKey(identity, eventIdentity);
+    const existingEventEpisodeIds = new Set(this.externalEpisodeProvenanceByEvent.get(eventKey) ?? []);
+    const nextEventEpisodeIds = new Set(existingEventEpisodeIds);
+
+    let changed = false;
+    for (const episodeId of episodeIds) {
+      nextEventEpisodeIds.add(episodeId);
+
+      const previousEventKey = this.externalEpisodeProvenance.get(episodeId);
+      if (previousEventKey === eventKey) {
+        continue;
+      }
+      if (previousEventKey !== undefined) {
+        const removedFromPrevious = this.externalEpisodeProvenanceByEvent.get(previousEventKey);
+        if (removedFromPrevious) {
+          const nextRemovedSet = new Set(removedFromPrevious);
+          nextRemovedSet.delete(episodeId);
+          const nextRemoved = [...nextRemovedSet];
+          if (nextRemoved.length === 0) {
+            this.externalEpisodeProvenanceByEvent.delete(previousEventKey);
+          } else {
+            this.externalEpisodeProvenanceByEvent.set(previousEventKey, nextRemoved);
+          }
+        }
+      }
+      this.externalEpisodeProvenance.set(episodeId, eventKey);
+      changed = true;
+    }
+
+    const nextEventEpisodeIdsList = [...nextEventEpisodeIds].sort();
+    const currentEventEpisodeIds = this.externalEpisodeProvenanceByEvent.get(eventKey);
+    if (!currentEventEpisodeIds || currentEventEpisodeIds.join('|') !== nextEventEpisodeIdsList.join('|')) {
+      this.externalEpisodeProvenanceByEvent.set(eventKey, nextEventEpisodeIdsList);
+      changed = true;
+    }
+    return changed;
+  }
+
+  private getExternalEpisodeIdsForEvent(
+    identity: SessionLogSourceIdentity,
+    eventIdentity: SourceEventIdentity,
+  ): string[] {
+    const eventKey = this.getExternalEpisodeProvenanceEventKey(identity, eventIdentity);
+    return [...(this.externalEpisodeProvenanceByEvent.get(eventKey) ?? [])];
+  }
+
+  private isEpisodeFromExternalSource(episodeId: string): boolean {
+    return this.externalEpisodeProvenance.has(episodeId);
+  }
+
+  private getExternalEpisodeProvenanceEventKey(
+    identity: SessionLogSourceIdentity,
+    eventIdentity: SourceEventIdentity,
+  ): string {
+    const sourceHash = normalizeSourceHash(identity);
+    const contentHash = normalizeSourceEventHash(eventIdentity.contentHash);
+    return `${identity.sourceId}::${identity.provider}::${identity.reader}::${sourceHash}::${eventIdentity.eventId}#${eventIdentity.position}`
+      + (contentHash ? `::${contentHash}` : '');
+  }
+
+  private loadExternalEpisodeProvenanceState(): void {
+    try {
+      if (!fs.existsSync(this.externalEpisodeProvenancePath)) return;
+      const raw = fs.readFileSync(this.externalEpisodeProvenancePath, 'utf-8');
+      const parsed = JSON.parse(raw) as Partial<ExternalEpisodeProvenanceState>;
+      if (parsed.schemaVersion !== EXTERNAL_EPISODE_PROVENANCE_SCHEMA_VERSION) return;
+      const episodeToEvent = parsed.episodeToEvent;
+      const eventToEpisodes = parsed.eventToEpisodes;
+      if (!episodeToEvent || typeof episodeToEvent !== 'object') return;
+      for (const [episodeId, eventKey] of Object.entries(episodeToEvent)) {
+        if (typeof episodeId !== 'string' || typeof eventKey !== 'string') continue;
+        this.externalEpisodeProvenance.set(episodeId, eventKey);
+      }
+      if (eventToEpisodes && typeof eventToEpisodes === 'object') {
+        for (const [eventKey, episodeIds] of Object.entries(eventToEpisodes)) {
+          if (typeof eventKey !== 'string' || !Array.isArray(episodeIds)) continue;
+          const normalized = Array.from(new Set(episodeIds.filter(id => typeof id === 'string').sort()));
+          this.externalEpisodeProvenanceByEvent.set(eventKey, normalized);
+        }
+      }
+    } catch {
+      // Corrupt provenance file — start fresh for runtime safety.
+    }
+  }
+
+  private saveExternalEpisodeProvenanceState(): void {
+    try {
+      const episodeToEvent: Record<string, string> = {};
+      for (const [episodeId, eventKey] of this.externalEpisodeProvenance) {
+        episodeToEvent[episodeId] = eventKey;
+      }
+
+      if (Object.keys(episodeToEvent).length === 0) {
+        if (fs.existsSync(this.externalEpisodeProvenancePath)) {
+          fs.unlinkSync(this.externalEpisodeProvenancePath);
+        }
+        return;
+      }
+
+      const eventToEpisodes: Record<string, string[]> = {};
+      for (const [eventKey, episodeIds] of this.externalEpisodeProvenanceByEvent) {
+        if (episodeIds.length > 0) {
+          eventToEpisodes[eventKey] = [...episodeIds].sort();
+        }
+      }
+
+      const payload: ExternalEpisodeProvenanceState = {
+        schemaVersion: EXTERNAL_EPISODE_PROVENANCE_SCHEMA_VERSION,
+        episodeToEvent,
+        eventToEpisodes,
+      };
+      fs.mkdirSync(path.dirname(this.externalEpisodeProvenancePath), { recursive: true });
+      const tmpPath = `${this.externalEpisodeProvenancePath}.${process.pid}.${Date.now()}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), {
+        encoding: 'utf-8',
+        mode: 0o600,
+      });
+      fs.renameSync(tmpPath, this.externalEpisodeProvenancePath);
+    } catch (error) {
+      Logger.warning(
+        `[RuntimeLearning] failed to persist external episode provenance state: ${(error as Error).message}`,
+      );
+    }
+  }
+
   // -----------------------------------------------------------------------
   // Session log processing (legacy — preserved for compatibility)
   // -----------------------------------------------------------------------
@@ -1593,11 +2069,14 @@ export class RuntimeLearning {
     identity: SessionLogSourceIdentity,
     eventIdentity: SourceEventIdentity,
     ingestionResult: EvidenceIngestionResult,
+    admissionEpisodeIds: readonly string[] = ingestionResult.admittedEpisodeIds,
   ): void {
-    if (ingestionResult.admittedEpisodeIds.length === 0) return;
+    const uniqueEpisodeIds = Array.from(new Set(admissionEpisodeIds));
+    if (uniqueEpisodeIds.length === 0) return;
 
-    for (const episodeId of ingestionResult.admittedEpisodeIds) {
-      const episode = ingestionResult.state.episodes[episodeId];
+    const episodeStates = ingestionResult.state.episodes;
+    for (const episodeId of uniqueEpisodeIds) {
+      const episode = episodeStates[episodeId] ?? this.episodeStore.load().episodes[episodeId];
       if (!episode) continue;
 
       const bundleId = `v3:learning-episode:${episodeId}`;
@@ -1798,10 +2277,12 @@ import {
 import {
   EvidenceCapsuleStore,
   buildEvidenceCapsule,
+  sanitizeExternalDistillationUnit,
   reconstructBundleFromCapsule,
 } from './evidence-capsule';
 import {
   ExternalSessionLogBackfillRequest,
+  ExternalSessionLogBackfillIngestContext,
   ExternalSessionLogBackfillRunResult,
   ExternalSessionLogBackfillService,
   ExternalSessionLogBackfillSource,
@@ -1824,6 +2305,7 @@ function buildEpisodeEvidenceBundle(
   candidate: DistilledKnowledgeCandidate,
   skillEvolution: SkillEvolutionRuntime,
   capsuleStore?: EvidenceCapsuleStore,
+  isExternalEpisode?: (episodeId: string) => boolean,
 ): EvidenceBundle {
   const completionEvidence: readonly SkillEvidenceRef[] = episode.completionEvidence
     .filter(evidence => evidence.kind !== 'contradiction')
@@ -1862,7 +2344,7 @@ function buildEpisodeEvidenceBundle(
         registry,
       );
     }
-    if (isExternalLikeSourcePath(episode.sourceFilePath)) {
+    if (!capsule && isExternalEpisode?.(episode.episodeId)) {
       throw new Error(
         `External-origin Learning Episode ${episode.episodeId} requires a persisted Evidence Capsule before review.`,
       );
@@ -1892,13 +2374,32 @@ function incrementTransition(
   counts[transition] = (counts[transition] ?? 0) + 1;
 }
 
+async function mapWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  let nextIndex = 0;
+  const run = async (): Promise<void> => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      await worker(items[index]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, run));
+}
+
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
 }
 
-function isExternalLikeSourcePath(sourceFilePath: string): boolean {
-  return /^[a-z][a-z0-9+.-]*:\/\//i.test(sourceFilePath) && !sourceFilePath.startsWith('file://');
+function normalizeSourceHash(identity: SessionLogSourceIdentity): string {
+  return `${identity.sourceId}::${identity.provider}::${identity.reader}`;
+}
+
+function normalizeSourceEventHash(contentHash: string | undefined): string {
+  return (contentHash ?? '').trim();
 }
 
 function toStablePathComponent(value: string): string {

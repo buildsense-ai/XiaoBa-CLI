@@ -72,6 +72,10 @@ export interface DistillationHeartbeatConfig {
   skillEvolutionOperationalRetryMaxHours: number;
   /** Shared bounded review attempt deadline in minutes. */
   skillEvolutionReviewAttemptDeadlineMinutes: number;
+  /** Maximum review candidates admitted by one wake (eligible + due queue). */
+  skillEvolutionReviewMaxCandidates: number;
+  /** Conservative serialized-prompt token budget for one review wake. */
+  skillEvolutionReviewMaxPromptTokens: number;
   /** Optional Author model override. */
   skillEvolutionAuthorModel?: string;
   /** Optional independent Verifier model override. */
@@ -287,7 +291,7 @@ export function getDistillationHeartbeatConfig(
     runtimeEnv,
     'XIAOBA_SKILL_EVOLUTION_CURATOR_INTERVAL_HOURS',
     24,
-    0,
+    1 / 60,
   );
   const skillUsageLedgerPath = resolveContainedPath(
     workingDirectory,
@@ -321,7 +325,7 @@ export function getDistillationHeartbeatConfig(
     runtimeEnv,
     'XIAOBA_SKILL_EVOLUTION_OPERATIONAL_RETRY_MINUTES',
     5,
-    0,
+    1 / 60,
   );
   const skillEvolutionOperationalRetryMaxHours = readNumber(
     runtimeEnv,
@@ -335,6 +339,20 @@ export function getDistillationHeartbeatConfig(
     10,
     1,
     60,
+  );
+  const skillEvolutionReviewMaxCandidates = readNumberInRange(
+    runtimeEnv,
+    'XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_CANDIDATES',
+    100,
+    1,
+    10_000,
+  );
+  const skillEvolutionReviewMaxPromptTokens = readNumberInRange(
+    runtimeEnv,
+    'XIAOBA_SKILL_EVOLUTION_REVIEW_MAX_PROMPT_TOKENS',
+    200_000,
+    1_000,
+    10_000_000,
   );
   const skillEvolutionAuthorModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_AUTHOR_MODEL');
   const skillEvolutionVerifierModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_VERIFIER_MODEL');
@@ -382,6 +400,8 @@ export function getDistillationHeartbeatConfig(
     skillEvolutionOperationalRetryMinutes,
     skillEvolutionOperationalRetryMaxHours,
     skillEvolutionReviewAttemptDeadlineMinutes,
+    skillEvolutionReviewMaxCandidates,
+    skillEvolutionReviewMaxPromptTokens,
     ...(skillEvolutionAuthorModel && { skillEvolutionAuthorModel }),
     ...(skillEvolutionVerifierModel && { skillEvolutionVerifierModel }),
     evidenceCapsulePath,

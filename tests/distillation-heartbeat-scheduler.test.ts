@@ -161,6 +161,28 @@ function restoreProcessEnv(saved: NodeJS.ProcessEnv): void {
 // ---------------------------------------------------------------------------
 
 describe('DistillationHeartbeatScheduler', () => {
+  test('fences ownership when graceful drain reaches its deadline', async () => {
+    let releaseWake!: () => void;
+    let released = false;
+    const runtime = {
+      wake: () => new Promise<any>(resolve => { releaseWake = () => resolve({}); }),
+      getPlanner: () => ({ plan: () => ({ nextWakeTime: null, now: new Date(), due: {} }) }),
+      getConfig: () => ({ skillEvolutionReviewAttemptDeadlineMinutes: 1 }),
+    } as any;
+    const ownerLock = {
+      generation: 'generation-a',
+      assertOwnership() {},
+      renew: () => true,
+      release() { released = true; },
+    } as any;
+    const scheduler = new DistillationHeartbeatScheduler(os.tmpdir(), runtime, ownerLock);
+    (scheduler as any).getSharedReviewDeadlineMs = () => 10;
+    const wake = scheduler.runHeartbeat('manual');
+    await scheduler.stop();
+    assert.equal(released, true, 'deadline must fence the owner before shutdown returns');
+    releaseWake();
+    await wake;
+  });
   describe('configuration', () => {
     test('defaults to a six-hour cadence and enabled', () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-cfg-'));
@@ -1159,6 +1181,102 @@ describe('DistillationHeartbeatScheduler', () => {
   });
 
   describe('catch-up behavior', () => {
+    test('debounces session-log append notifications into one discovery wake', async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-session-append-wake-'));
+      const saved = { ...process.env };
+      const calls: HeartbeatReason[][] = [];
+
+      try {
+        process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
+        const runtime = {
+          wake: async (
+            reason: HeartbeatReason[] | HeartbeatReason,
+          ): Promise<HeartbeatRunResult> => {
+            calls.push(Array.isArray(reason) ? [...reason] : [reason]);
+            return makeHeartbeatResult(true);
+          },
+          getPlanner: () => ({
+            plan: () => ({
+              now: new Date(),
+              due: {
+                settlementDue: false,
+                operationalRetryDue: false,
+                routineCuratorDue: false,
+                expeditedCuratorDue: false,
+                semanticReassessmentDue: false,
+              },
+              nextWakeTime: null,
+              nextWakeReason: 'scheduled',
+            }),
+          }),
+          getConfig: () => ({ skillEvolutionReviewAttemptDeadlineMinutes: 1 }),
+        };
+
+        const scheduler = new DistillationHeartbeatScheduler(root, runtime as unknown as any);
+        scheduler.requestDiscoveryWake();
+        scheduler.requestDiscoveryWake();
+        await sleep(150);
+
+        assert.deepEqual(calls, [['session-log-append']]);
+        await scheduler.stop();
+      } finally {
+        restoreProcessEnv(saved);
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    test('polls the runtime signal so a different connector process can wake the owner', async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-cross-process-wake-'));
+      const saved = { ...process.env };
+      const calls: HeartbeatReason[][] = [];
+
+      try {
+        process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
+        process.env.XIAOBA_RUNTIME_ROOT = root;
+        const runtime = {
+          wake: async (
+            reason: HeartbeatReason[] | HeartbeatReason,
+          ): Promise<HeartbeatRunResult> => {
+            calls.push(Array.isArray(reason) ? [...reason] : [reason]);
+            return makeHeartbeatResult(true);
+          },
+          getPlanner: () => ({
+            plan: () => ({
+              now: new Date(),
+              due: {
+                settlementDue: false,
+                operationalRetryDue: false,
+                routineCuratorDue: false,
+                expeditedCuratorDue: false,
+                semanticReassessmentDue: false,
+              },
+              nextWakeTime: null,
+              nextWakeReason: 'scheduled',
+            }),
+          }),
+          getConfig: () => ({ skillEvolutionReviewAttemptDeadlineMinutes: 1 }),
+        };
+
+        const scheduler = new DistillationHeartbeatScheduler(root, runtime as unknown as any);
+        await scheduler.start();
+        await sleep(20);
+        const signalPath = path.join(root, 'data', 'session-log-append.signal');
+        const callsBeforeAppend = calls.length;
+
+        fs.appendFileSync(signalPath, 'append\n', 'utf8');
+        await sleep(400);
+
+        assert.ok(
+          calls.slice(callsBeforeAppend).some(reasons => reasons.includes('session-log-append')),
+          'runtime signal should schedule a discovery wake in the owner process',
+        );
+        await scheduler.stop();
+      } finally {
+        restoreProcessEnv(saved);
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
     test('a missed heartbeat catches up from stored Log Cursor state', async () => {
       const env = setupEnv();
       try {

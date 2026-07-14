@@ -38,6 +38,8 @@ import {
 import { getDistillationHeartbeatConfig } from './distillation-heartbeat-config';
 import { DueWorkPlanner } from './due-work-planner';
 import { Logger } from './logger';
+import type { HeartbeatSchedulerOwnerLock } from './heartbeat-scheduler-owner-lock';
+import { PathResolver } from './path-resolver';
 import type { RuntimeLearning } from './runtime-learning';
 import type {
   RuntimeLearningReason,
@@ -116,6 +118,19 @@ export interface RuntimeLearningWakeReport {
 
 const MIN_TIMEOUT_MS = 60 * 1000;
 const MAX_TIMEOUT_MS = 2_147_483_647;
+const SESSION_LOG_APPEND_DEBOUNCE_MS = 100;
+const SESSION_LOG_APPEND_POLL_INTERVAL_MS = 250;
+
+/**
+ * Minimum delay before a deadline-driven reschedule when the planner
+ * returns a due item already in the past. Without this floor, a
+ * persistent failure (e.g. a review that always times out and re-queues
+ * with `nextRetryAt` in the past) makes `scheduleNextRun` compute
+ * `deadlineDelta = 0` and `setTimeout(…, 0)`, producing a 0ms busy loop.
+ * See ADR 0038 (coalesced wakes) and the scheduler retry/backoff guard.
+ */
+const MIN_NEXT_WAKE_BACKOFF_MS = 30 * 1000;
+const MAX_NEXT_WAKE_BACKOFF_MS = 10 * 60 * 1000;
 
 function emptyHeartbeatRecord(): HeartbeatRecord {
   return {
@@ -183,13 +198,25 @@ export class DistillationHeartbeatScheduler {
   private readonly runtimeLearning: RuntimeLearning | null;
   private readonly legacy: LegacyState | null;
   private readonly fallbackPlanner: DueWorkPlanner | null;
+  private readonly ownerLock: HeartbeatSchedulerOwnerLock | null;
   private timer: NodeJS.Timeout | null = null;
+  private sessionLogAppendTimer: NodeJS.Timeout | null = null;
+  private sessionLogAppendPollTimer: NodeJS.Timeout | null = null;
+  private sessionLogAppendSignalPath: string | null = null;
+  private sessionLogAppendSignalMtimeMs: number | null = null;
   private running = false;
   private started = false;
   private stopped = false;
   private readonly pendingWakeReasons = new Set<HeartbeatReason>();
   private activeWake: Promise<HeartbeatRunResult> | null = null;
   private scheduledWake: Promise<void> | null = null;
+  /**
+   * Consecutive count of reschedules where the planner returned a due
+   * deadline in the past (deadlineDelta === 0). Each consecutive immediate
+   * reschedule doubles the backoff floor, capped at MAX_NEXT_WAKE_BACKOFF_MS.
+   * A normal scheduled interval resets the counter to zero.
+   */
+  private consecutiveImmediateReschedules = 0;
 
   /**
    * Production constructor: delegates all wake logic to RuntimeLearning.
@@ -197,7 +224,7 @@ export class DistillationHeartbeatScheduler {
    * @param workingDirectory - Working directory for config resolution.
    * @param runtimeLearning - The RuntimeLearning production module.
    */
-  constructor(workingDirectory: string, runtimeLearning: RuntimeLearning);
+  constructor(workingDirectory: string, runtimeLearning: RuntimeLearning, ownerLock?: HeartbeatSchedulerOwnerLock | null);
 
   /**
    * @deprecated Legacy constructor path for tests. Use
@@ -216,13 +243,15 @@ export class DistillationHeartbeatScheduler {
   constructor(
     workingDirectory: string = process.cwd(),
     processorOrRuntime: DistillationUnitProcessor | RuntimeLearning = defaultProcessor(),
-    cycleCompleteHook: HeartbeatCycleCompleteHook | null = null,
+    cycleCompleteHook: HeartbeatCycleCompleteHook | HeartbeatSchedulerOwnerLock | null = null,
     settlementDeadlineWakeHook: SettlementDeadlineWakeHook | null = null,
     curatorReviewHook: CuratorReviewHook | null = null,
     runtimeLearningWakeHook: RuntimeLearningWakeHook | null = null,
     planner?: DueWorkPlanner | null,
+    ownerLock?: HeartbeatSchedulerOwnerLock | null,
   ) {
     this.workingDirectory = workingDirectory;
+    this.ownerLock = ownerLock ?? (isHeartbeatOwnerLock(cycleCompleteHook) ? cycleCompleteHook : null);
 
     if (isRuntimeLearning(processorOrRuntime)) {
       // Production path
@@ -234,7 +263,7 @@ export class DistillationHeartbeatScheduler {
       this.runtimeLearning = null;
       this.legacy = {
         processor: processorOrRuntime,
-        cycleCompleteHook,
+        cycleCompleteHook: isHeartbeatOwnerLock(cycleCompleteHook) ? null : cycleCompleteHook,
         settlementDeadlineWakeHook,
         curatorReviewHook,
         runtimeLearningWakeHook,
@@ -306,6 +335,7 @@ export class DistillationHeartbeatScheduler {
 
     this.started = true;
     this.stopped = false;
+    this.startSessionLogAppendSignalPolling();
     Logger.info('[DistillationHeartbeat] scheduler started');
 
     this.scheduledWake = (async () => {
@@ -322,14 +352,29 @@ export class DistillationHeartbeatScheduler {
   async stop(): Promise<void> {
     this.stopped = true;
     this.started = false;
+    this.consecutiveImmediateReschedules = 0;
+    const stopStartedAtMs = Date.now();
+    const sharedReviewDeadlineMs = this.getSharedReviewDeadlineMs();
+    // Explicit backfills are cooperative RuntimeLearning operations. Request
+    // their bounded drain here so shutdown observes them instead of allowing a
+    // historical scan to continue outside scheduler ownership.
+    const runtimeDrain = this.runtimeLearning?.drain?.(sharedReviewDeadlineMs) ?? null;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    if (this.sessionLogAppendTimer) {
+      clearTimeout(this.sessionLogAppendTimer);
+      this.sessionLogAppendTimer = null;
+    }
+    if (this.sessionLogAppendPollTimer) {
+      clearInterval(this.sessionLogAppendPollTimer);
+      this.sessionLogAppendPollTimer = null;
+    }
+    this.sessionLogAppendSignalPath = null;
+    this.sessionLogAppendSignalMtimeMs = null;
 
     if (this.activeWake) {
-      const sharedReviewDeadlineMs = this.getSharedReviewDeadlineMs();
-      const stopStartedAtMs = Date.now();
       let cleanShutdown = false;
       const awaitableWake = this.activeWake;
       let activeWakeTimer: NodeJS.Timeout | null = null;
@@ -351,6 +396,11 @@ export class DistillationHeartbeatScheduler {
           }, sharedReviewDeadlineMs);
         }),
       ]);
+      if (!cleanShutdown && this.ownerLock) {
+        // A deadline is a fence boundary: never release ownership while the
+        // bounded wake is still inside its writer path as if it completed.
+        this.ownerLock.release();
+      }
       if (cleanShutdown) {
         const drainedReason = Array.from(this.pendingWakeReasons).sort();
         this.pendingWakeReasons.clear();
@@ -388,12 +438,83 @@ export class DistillationHeartbeatScheduler {
       this.scheduledWake = null;
     }
 
+    if (runtimeDrain) {
+      const remainingMs = Math.max(1, sharedReviewDeadlineMs - (Date.now() - stopStartedAtMs));
+      let runtimeDrainTimer: NodeJS.Timeout | null = null;
+      await Promise.race([
+        runtimeDrain.finally(() => {
+          if (runtimeDrainTimer) {
+            clearTimeout(runtimeDrainTimer);
+            runtimeDrainTimer = null;
+          }
+        }),
+        new Promise<void>(resolve => {
+          runtimeDrainTimer = setTimeout(resolve, remainingMs);
+        }),
+      ]);
+    }
+
     Logger.info('[DistillationHeartbeat] scheduler stopped');
   }
 
   // -----------------------------------------------------------------------
   // Run one heartbeat cycle
   // -----------------------------------------------------------------------
+
+  /**
+   * Request a debounced discovery wake after a completed session turn is
+   * appended. Multiple turns arriving in one short burst share one wake, while
+   * the normal heartbeat still provides durable catch-up after a restart.
+   */
+  requestDiscoveryWake(): void {
+    if (this.stopped || !this.runtimeLearning || this.sessionLogAppendTimer) return;
+
+    this.sessionLogAppendTimer = setTimeout(() => {
+      this.sessionLogAppendTimer = null;
+      if (this.stopped) return;
+      void this.runHeartbeat('session-log-append');
+    }, SESSION_LOG_APPEND_DEBOUNCE_MS);
+  }
+
+  private startSessionLogAppendSignalPolling(): void {
+    if (!this.runtimeLearning || this.sessionLogAppendPollTimer) return;
+
+    const signalPath = PathResolver.getSessionLogAppendSignalPath(this.workingDirectory);
+    try {
+      fs.mkdirSync(path.dirname(signalPath), { recursive: true });
+      if (!fs.existsSync(signalPath)) {
+        const handle = fs.openSync(signalPath, 'a');
+        fs.closeSync(handle);
+      }
+      this.sessionLogAppendSignalPath = signalPath;
+      this.sessionLogAppendSignalMtimeMs = fs.statSync(signalPath).mtimeMs;
+      this.sessionLogAppendPollTimer = setInterval(() => {
+        this.pollSessionLogAppendSignal();
+      }, SESSION_LOG_APPEND_POLL_INTERVAL_MS);
+      this.sessionLogAppendPollTimer.unref();
+    } catch (error: any) {
+      Logger.warning(
+        `[DistillationHeartbeat] session-log append signal unavailable: ${error?.message ?? error}`,
+      );
+    }
+  }
+
+  private pollSessionLogAppendSignal(): void {
+    if (this.stopped || !this.sessionLogAppendSignalPath) return;
+    try {
+      const mtimeMs = fs.statSync(this.sessionLogAppendSignalPath).mtimeMs;
+      if (
+        this.sessionLogAppendSignalMtimeMs !== null
+        && mtimeMs !== this.sessionLogAppendSignalMtimeMs
+      ) {
+        this.requestDiscoveryWake();
+      }
+      this.sessionLogAppendSignalMtimeMs = mtimeMs;
+    } catch {
+      // A missing or temporarily inaccessible signal is harmless; the durable
+      // heartbeat still catches up, and the next poll retries the stat.
+    }
+  }
 
   /**
    * Run one heartbeat cycle.
@@ -411,6 +532,15 @@ export class DistillationHeartbeatScheduler {
 
     if (this.runtimeLearning) {
       const runtimeLearning = this.runtimeLearning;
+      if (this.ownerLock) {
+        try {
+          this.ownerLock.assertOwnership();
+        } catch (error: any) {
+          this.stopped = true;
+          Logger.warning(`[DistillationHeartbeat] scheduler fenced: ${error?.message ?? error}`);
+          return emptyWakeResult(false);
+        }
+      }
 
       if (this.activeWake) {
         this.pendingWakeReasons.add(reason);
@@ -597,6 +727,7 @@ export class DistillationHeartbeatScheduler {
 
     let nextDelay: number;
     let wakeReason: HeartbeatReason;
+    let isImmediateReschedule = false;
     try {
       const plan = this.getActivePlanner().plan();
       if (plan.nextWakeTime !== null) {
@@ -604,6 +735,9 @@ export class DistillationHeartbeatScheduler {
         if (deadlineDelta < intervalDelay) {
           nextDelay = deadlineDelta;
           wakeReason = plan.nextWakeReason as HeartbeatReason;
+          if (deadlineDelta === 0) {
+            isImmediateReschedule = true;
+          }
         } else {
           nextDelay = intervalDelay;
           wakeReason = 'scheduled';
@@ -618,6 +752,32 @@ export class DistillationHeartbeatScheduler {
       );
       nextDelay = intervalDelay;
       wakeReason = 'scheduled';
+    }
+
+    // Retry/backoff guard: when the planner returns a due item already in
+    // the past, the first immediate wake is allowed at 0ms (overdue work
+    // SHOULD be processed immediately). Only repeated consecutive
+    // immediate reschedules — indicating a persistent failure that keeps
+    // re-queuing due work in the past — trigger an exponential backoff
+    // floor so the scheduler cannot settle into a 0ms busy loop. The floor
+    // grows from MIN_NEXT_WAKE_BACKOFF_MS up to MAX_NEXT_WAKE_BACKOFF_MS and
+    // resets on the next normally-scheduled (non-immediate) wake.
+    if (isImmediateReschedule) {
+      this.consecutiveImmediateReschedules += 1;
+      if (this.consecutiveImmediateReschedules > 1) {
+        const backoffMs = Math.min(
+          MAX_NEXT_WAKE_BACKOFF_MS,
+          MIN_NEXT_WAKE_BACKOFF_MS * 2 ** (this.consecutiveImmediateReschedules - 2),
+        );
+        if (nextDelay < backoffMs) {
+          Logger.info(
+            `[DistillationHeartbeat] due work still in the past after ${this.consecutiveImmediateReschedules} consecutive immediate wakes; applying ${Math.round(backoffMs / 1000)}s backoff floor to avoid a busy loop`,
+          );
+          nextDelay = backoffMs;
+        }
+      }
+    } else {
+      this.consecutiveImmediateReschedules = 0;
     }
 
     this.timer = setTimeout(() => {
@@ -707,6 +867,10 @@ export class DistillationHeartbeatScheduler {
 // ---------------------------------------------------------------------------
 // Type guard
 // ---------------------------------------------------------------------------
+
+function isHeartbeatOwnerLock(value: unknown): value is HeartbeatSchedulerOwnerLock {
+  return !!value && typeof value === 'object' && 'assertOwnership' in value && 'generation' in value;
+}
 
 function isRuntimeLearning(value: unknown): value is RuntimeLearning {
   return (

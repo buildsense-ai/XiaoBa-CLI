@@ -29,6 +29,11 @@ import {
   redactExternalEvidenceContent,
   reconstructBundleFromCapsule,
   EVIDENCE_CAPSULE_SCHEMA_VERSION,
+  MAX_EVIDENCE_CAPSULE_ENTRIES,
+  MAX_EVIDENCE_CAPSULE_ENTRY_CONTENT_BYTES,
+  MAX_EVIDENCE_CAPSULE_OBSERVATIONS,
+  MAX_EVIDENCE_CAPSULE_OBSERVATION_PAYLOAD_BYTES,
+  MAX_EVIDENCE_CAPSULE_PAYLOAD_BYTES,
 } from '../src/utils/evidence-capsule';
 import {
   BoundedSourceEvidence,
@@ -609,6 +614,143 @@ describe('Evidence Capsule', () => {
       // Same input produces same content hash (capsuleId differs due to timestamp)
       assert.equal(capsule1.identity.contentHash, capsule2.identity.contentHash);
     });
+
+    test('stores redaction fingerprint separately from event identity', () => {
+      const capsule = buildEvidenceCapsule({
+        sourceIdentity: SAMPLE_EXTERNAL_IDENTITY,
+        eventIdentity: {
+          ...SAMPLE_EVENT_IDENTITY,
+          contentHash: 'event-hash-123',
+        },
+        episodeId: 'episode-fingerprint',
+        bundleId: 'v3:learning-episode:episode-fingerprint',
+        completionEvidence: [
+          {
+            ref: 'ext://turn-2:delivery:send_file',
+            content: 'generated report at /Users/me/project/private/report.md; token: my-secret',
+            role: 'problem-action',
+            sourceFilePath: 'external://conv/abc',
+          },
+        ],
+        settlementEvidence: makeSettlementEvidence(),
+      });
+
+      assert.equal(capsule.identity.contentHash, 'event-hash-123');
+      assert.ok(capsule.evidenceFingerprint);
+      assert.notEqual(capsule.identity.contentHash, capsule.evidenceFingerprint);
+      assert.equal(capsule.completionEvidence[0].sourceFilePath, 'external://conv/abc');
+      assert.ok(!capsule.completionEvidence[0].content.includes('/Users/me/project/private'));
+      assert.ok(!capsule.completionEvidence[0].content.includes('my-secret'));
+    });
+
+    test('redacts semantic observation values and sourceRefs', () => {
+      const capsule = buildEvidenceCapsule({
+        sourceIdentity: SAMPLE_EXTERNAL_IDENTITY,
+        eventIdentity: SAMPLE_EVENT_IDENTITY,
+        episodeId: 'episode-obs-redact',
+        bundleId: 'v3:learning-episode:episode-obs-redact',
+        completionEvidence: makeCompletionEvidence(),
+        settlementEvidence: makeSettlementEvidence(),
+        semanticObservations: [
+          {
+            kind: 'workflow-tool',
+            value: 'execute /Users/me/project/notes/secret.md for reporting',
+            sourceRefs: ['ext://turn-1:workspace:/Users/me/project/private/ref'],
+          },
+        ],
+      });
+
+      assert.ok(!capsule.semanticObservations[0].value.includes('/Users/me/project/notes'));
+      assert.ok(capsule.semanticObservations[0].sourceRefs);
+      assert.ok(!capsule.semanticObservations[0].sourceRefs![0].includes('/Users/me/project'));
+    });
+
+    test('rejects oversized evidence entries before capsule persistence', () => {
+      assert.throws(() => buildEvidenceCapsule({
+        sourceIdentity: SAMPLE_EXTERNAL_IDENTITY,
+        eventIdentity: SAMPLE_EVENT_IDENTITY,
+        episodeId: 'episode-entry-bound',
+        bundleId: 'v3:learning-episode:episode-entry-bound',
+        completionEvidence: [{
+          ref: 'ext://oversized',
+          content: 'x'.repeat(MAX_EVIDENCE_CAPSULE_ENTRY_CONTENT_BYTES + 1),
+          role: 'problem-action',
+        }],
+        settlementEvidence: [],
+      }), /external evidence entry/);
+
+      assert.throws(() => buildEvidenceCapsule({
+        sourceIdentity: SAMPLE_EXTERNAL_IDENTITY,
+        eventIdentity: SAMPLE_EVENT_IDENTITY,
+        episodeId: 'episode-entry-count-bound',
+        bundleId: 'v3:learning-episode:episode-entry-count-bound',
+        completionEvidence: Array.from({ length: MAX_EVIDENCE_CAPSULE_ENTRIES + 1 }, (_, index) => ({
+          ref: `ext://oversized/${index}`,
+          content: 'bounded',
+          role: 'problem-action' as const,
+        })),
+        settlementEvidence: [],
+      }), /entry count/);
+    });
+
+    test('rejects oversized capsule payload and observations', () => {
+      const manyEntries = Array.from({ length: 32 }, (_, index) => ({
+        ref: `ext://payload/${index}`,
+        content: 'payload '.repeat(700),
+        role: 'problem-action' as const,
+      }));
+      assert.ok(Buffer.byteLength(JSON.stringify(manyEntries), 'utf8') > MAX_EVIDENCE_CAPSULE_PAYLOAD_BYTES);
+      assert.throws(() => buildEvidenceCapsule({
+        sourceIdentity: SAMPLE_EXTERNAL_IDENTITY,
+        eventIdentity: SAMPLE_EVENT_IDENTITY,
+        episodeId: 'episode-payload-bound',
+        bundleId: 'v3:learning-episode:episode-payload-bound',
+        completionEvidence: manyEntries,
+        settlementEvidence: [],
+      }), /payload/);
+
+      assert.throws(() => buildEvidenceCapsule({
+        sourceIdentity: SAMPLE_EXTERNAL_IDENTITY,
+        eventIdentity: SAMPLE_EVENT_IDENTITY,
+        episodeId: 'episode-observation-count-bound',
+        bundleId: 'v3:learning-episode:episode-observation-count-bound',
+        completionEvidence: [],
+        settlementEvidence: [],
+        semanticObservations: Array.from({ length: MAX_EVIDENCE_CAPSULE_OBSERVATIONS + 1 }, () => ({
+          kind: 'workflow-tool' as const,
+          value: 'bounded observation',
+          sourceRefs: ['ext://observation'],
+        })),
+      }), /observation count/);
+
+      assert.throws(() => buildEvidenceCapsule({
+        sourceIdentity: SAMPLE_EXTERNAL_IDENTITY,
+        eventIdentity: SAMPLE_EVENT_IDENTITY,
+        episodeId: 'episode-observation-payload-bound',
+        bundleId: 'v3:learning-episode:episode-observation-payload-bound',
+        completionEvidence: [],
+        settlementEvidence: [],
+        semanticObservations: [{
+          kind: 'user-intent',
+          value: 'x'.repeat(MAX_EVIDENCE_CAPSULE_OBSERVATION_PAYLOAD_BYTES),
+          sourceRefs: ['ext://observation'],
+        }],
+      }), /observation payload/);
+    });
+
+    test('store rejects a manually oversized capsule without writing it', () => {
+      const filePath = path.join(testRoot, 'bounded-capsules.json');
+      const store = new EvidenceCapsuleStore(filePath);
+      const capsule = makeCapsule({
+        completionEvidence: [{
+          ref: 'ext://oversized-store',
+          content: 'x'.repeat(MAX_EVIDENCE_CAPSULE_ENTRY_CONTENT_BYTES + 1),
+          role: 'problem-action',
+        }],
+      });
+      assert.throws(() => store.upsert(capsule), /evidence capsule entry/);
+      assert.equal(fs.existsSync(filePath), false);
+    });
   });
 
   // ---- Capsule store ----
@@ -706,13 +848,12 @@ describe('Evidence Capsule', () => {
       assert.equal(freshStore.count(), 1);
     });
 
-    test('handles corrupted file by returning empty state', () => {
+    test('fails closed on corrupted file', () => {
       const filePath = path.join(testRoot, 'capsules.json');
       fs.writeFileSync(filePath, '{invalid json}', 'utf8');
 
       const store = new EvidenceCapsuleStore(filePath);
-      const state = store.load();
-      assert.deepEqual(state.capsules, {});
+      assert.throws(() => store.load(), /corrupt/);
     });
   });
 
@@ -958,6 +1099,11 @@ describe('Evidence Capsule', () => {
       });
       try {
         const unit = buildExternalUnit(env.root, 'external://codex/conversation/abc.jsonl');
+        unit.newTurns[0]!.user.text = '<system>external-system-secret</system> token: my-secret /Users/me/project/private';
+        unit.newTurns[0]!.assistant.tool_calls[0]!.arguments = {
+          path: '/Users/me/project/private/report.md',
+          token: 'my-secret',
+        };
         const runtime = createRuntimeLearning(env, [new ExternalUnitFixtureAdapter(unit)]);
 
         const result = await runtime.wake('startup');
@@ -970,6 +1116,10 @@ describe('Evidence Capsule', () => {
         const storedEpisodes = runtime.getEpisodeStore().load().episodes;
         const episodeId = Object.keys(storedEpisodes)[0];
         assert.ok(episodeId, 'one admitted episode exists');
+        const episodeText = JSON.stringify(storedEpisodes);
+        assert.ok(!episodeText.includes('external-system-secret'));
+        assert.ok(!episodeText.includes('my-secret'));
+        assert.ok(!episodeText.includes('/Users/me/project/private'));
 
         const capsuleStore = runtime.getEvidenceCapsuleStore();
         const capsule = capsuleStore.findByEpisodeId(episodeId);
@@ -982,6 +1132,7 @@ describe('Evidence Capsule', () => {
         assert.ok(fs.existsSync(path.join(env.root, 'data', 'evidence-capsules.json')));
 
         const bundleText = JSON.stringify(seenBundle);
+        assert.ok(!bundleText.includes('external-system-secret'));
         assert.ok(!bundleText.includes('my-secret'));
         assert.ok(!bundleText.includes('/Users/me/project/private'));
 

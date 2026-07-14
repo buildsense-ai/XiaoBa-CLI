@@ -19,6 +19,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 
 import { DistillationUnit, CrossFileContinuityOptions, extractDistillationUnit } from './distillation-unit';
 import {
@@ -67,6 +68,8 @@ export interface SourceEventIdentity {
   readonly eventId: string;
   readonly position: number;
   readonly contentHash?: string;
+  readonly conversationId?: string;
+  readonly revision?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,11 +97,23 @@ export interface SessionLogSourceResource {
 
 export type SessionLogSourceReadStatus = 'idle' | 'advanced' | 'exhausted' | 'disabled' | 'failed';
 
+export interface SourceWorkAccounting {
+  /** Stable source events admitted or examined during this read. */
+  readonly events: number;
+  /** Raw source bytes consumed, including oversized complete records. */
+  readonly bytes: number;
+  /** Monotonic elapsed time spent in the reader. */
+  readonly elapsedMs: number;
+}
+
 export interface SessionLogSourceReadResult {
   readonly distillationUnit: DistillationUnit | null;
+  readonly distillationUnits?: readonly DistillationUnit[];
   readonly advanced: boolean;
   readonly status: SessionLogSourceReadStatus;
   readonly newCursor: SourceCursor;
+  readonly eventIdentities?: readonly SourceEventIdentity[];
+  readonly accounting?: SourceWorkAccounting;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +131,9 @@ export interface SessionLogSourceReadContext {
 export interface SessionLogSourceAdapter {
   readonly identity: SessionLogSourceIdentity;
   isEnabled(): boolean;
+  /** Explicitly reports whether this adapter has a documented stable reader. */
+  getSupportStatus?(): ExternalSourceFormatStatus;
+  getUnsupportedReason?(): string | undefined;
   discoverResources(): readonly SessionLogSourceResource[];
   read(
     resource: SessionLogSourceResource,
@@ -163,6 +181,7 @@ export class InternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     context: SessionLogSourceReadContext,
   ): SessionLogSourceReadResult {
     const filePath = resource.resourceRef;
+    const startedAt = Date.now();
     const state = loadLogCursorState(this.config.stateFilePath);
     const cursor = getCursor(state, filePath);
 
@@ -182,6 +201,7 @@ export class InternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
           position: cursor.byteOffset,
           processedCount: cursor.processedTurnCount,
         },
+        accounting: { events: 0, bytes: 0, elapsedMs: Date.now() - startedAt },
       };
     }
 
@@ -193,6 +213,11 @@ export class InternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         resourceRef: filePath,
         position: extracted.newCursor.byteOffset,
         processedCount: extracted.newCursor.processedTurnCount,
+      },
+      accounting: {
+        events: extracted.newCursor.processedTurnCount - cursor.processedTurnCount,
+        bytes: Math.max(0, extracted.newCursor.byteOffset - cursor.byteOffset),
+        elapsedMs: Date.now() - startedAt,
       },
     };
   }
@@ -356,6 +381,8 @@ export class FixtureSessionLogSourceAdapter implements SessionLogSourceAdapter {
  * discovers resources and reads externally stable events without coupling
  * the Runtime to any specific external API.
  */
+export type ExternalSourceFormatStatus = 'supported' | 'unsupported' | 'disabled';
+
 export interface ExternalSourceReader {
   readonly provider: string;
   readonly reader: string;
@@ -397,6 +424,8 @@ export interface ExternalSourceReaderResult {
   readonly exhausted: boolean;
   /** New monotonic position after reading these events. */
   readonly newPosition: number;
+  /** Optional raw byte accounting supplied by a stable provider reader. */
+  readonly byteLength?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +441,7 @@ export interface ExternalSourceRawEvent {
   readonly eventId: string;
   readonly position: number;
   readonly contentHash?: string;
+  readonly distillationUnit?: DistillationUnit;
 }
 
 // ---------------------------------------------------------------------------
@@ -429,13 +459,15 @@ export interface ExternalCursorState {
    * Set of processed event IDs (eventId → contentHash). Used for exact
    * deduplication when the same stable event is re-discovered.
    */
-  readonly processedEventIds: Record<string, string | undefined>;
+  readonly processedEventIds: Record<string, string | null>;
+  readonly sourceIdentities: Record<string, SessionLogSourceIdentity>;
   /** ISO timestamp of the last state save. */
   readonly updatedAt: string;
 }
 
 export interface ExternalCursorEntry {
   readonly cursor: SourceCursor;
+  readonly sourceIdentity: SessionLogSourceIdentity;
   readonly updatedAt: string;
   /** Status of the last read from this resource. */
   readonly lastStatus?: 'stable' | 'pending' | 'exhausted';
@@ -446,27 +478,40 @@ export function emptyExternalCursorState(): ExternalCursorState {
     schemaVersion: 1,
     cursors: {},
     processedEventIds: {},
+    sourceIdentities: {},
     updatedAt: new Date().toISOString(),
   };
 }
 
 export function loadExternalCursorState(storePath: string): ExternalCursorState {
-  if (!fs.existsSync(storePath)) {
-    return emptyExternalCursorState();
-  }
+  if (!fs.existsSync(storePath)) return emptyExternalCursorState();
+  const raw = fs.readFileSync(storePath, 'utf-8');
+  let parsed: Partial<ExternalCursorState>;
   try {
-    const raw = fs.readFileSync(storePath, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<ExternalCursorState>;
-    return {
-      schemaVersion: parsed.schemaVersion ?? 1,
-      cursors: parsed.cursors ?? {},
-      processedEventIds: parsed.processedEventIds ?? {},
-      updatedAt: parsed.updatedAt ?? new Date().toISOString(),
-    };
-  } catch {
-    // Corrupt state file — start fresh; the source will re-discover.
-    return emptyExternalCursorState();
+    parsed = JSON.parse(raw) as Partial<ExternalCursorState>;
+  } catch (error) {
+    throw new Error(`external cursor state is corrupt: ${storePath}: ${String(error)}`);
   }
+  if (parsed.schemaVersion === undefined || parsed.schemaVersion > 1 || parsed.schemaVersion < 1) {
+    throw new Error(`external cursor state schema is unsupported: ${String(parsed.schemaVersion)}`);
+  }
+  if (!parsed.cursors || typeof parsed.cursors !== 'object'
+    || !parsed.processedEventIds || typeof parsed.processedEventIds !== 'object'
+    || !parsed.sourceIdentities || typeof parsed.sourceIdentities !== 'object') {
+    throw new Error(`external cursor state is structurally invalid: ${storePath}`);
+  }
+  for (const [key, value] of Object.entries(parsed.processedEventIds)) {
+    if (value !== null && typeof value !== 'string') {
+      throw new Error(`external cursor state has invalid dedup value for ${key}`);
+    }
+  }
+  return {
+    schemaVersion: 1,
+    cursors: parsed.cursors as Record<string, ExternalCursorEntry>,
+    processedEventIds: parsed.processedEventIds as Record<string, string | null>,
+    sourceIdentities: parsed.sourceIdentities as Record<string, SessionLogSourceIdentity>,
+    updatedAt: parsed.updatedAt ?? new Date().toISOString(),
+  };
 }
 
 export function saveExternalCursorState(
@@ -478,6 +523,7 @@ export function saveExternalCursorState(
     schemaVersion: 1,
     cursors: state.cursors,
     processedEventIds: state.processedEventIds,
+    sourceIdentities: state.sourceIdentities,
     updatedAt: new Date().toISOString(),
   };
   const tmpPath = `${storePath}.${process.pid}.${Date.now()}.tmp`;
@@ -546,9 +592,9 @@ export class FixtureExternalSourceReader implements ExternalSourceReader {
 
   discoverResources(cursor: SourceCursor | null): readonly SessionLogSourceResource[] {
     if (cursor === null) {
-      // Fresh enablement — return only stable (non-null) resources,
-      // no historical backfill. This is the future-only gate.
-      return this.resources.filter((_, i) => this.units[i] !== null);
+      // Fresh enablement — explicit backfill only. No historical emit on first
+      // enablement when no durable cursor exists.
+      return [];
     }
 
     // Return resources whose position is at or beyond the cursor.
@@ -596,6 +642,7 @@ export class FixtureExternalSourceReader implements ExternalSourceReader {
           eventId,
           position: resourcePosition,
           contentHash: resource.firstEventIdentity?.contentHash,
+          distillationUnit: unit ?? undefined,
         },
       ],
       status: 'stable',
@@ -629,7 +676,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
   readonly identity: SessionLogSourceIdentity;
   private readonly enabled: boolean;
   private readonly reader: ExternalSourceReader | null;
-  private readonly cursorStorePath: string;
+  private cursorStorePath: string;
 
   constructor(
     options: {
@@ -637,6 +684,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       label?: string;
       provider: string;
       reader?: ExternalSourceReader | string;
+      cursorStorePath?: string;
       enabled?: boolean;
     },
     cursorStorePath?: string,
@@ -651,18 +699,33 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     };
     this.enabled = options.enabled ?? false;
     this.reader = readerObj ?? null;
-    this.cursorStorePath = cursorStorePath ?? '';
+    this.cursorStorePath = (cursorStorePath
+      ?? options.cursorStorePath
+      ?? defaultExternalCursorStorePath({
+        provider: options.provider,
+        sourceId: options.sourceId,
+      }))
+      ?? '';
   }
 
   isEnabled(): boolean {
     return this.enabled;
   }
 
+  getSupportStatus(): ExternalSourceFormatStatus {
+    if (!this.enabled) return 'disabled';
+    return this.reader ? 'supported' : 'unsupported';
+  }
+
+  getUnsupportedReason(): string | undefined {
+    return this.reader ? undefined
+      : `provider ${this.identity.provider} has no documented stable reader format; explicit backfill is required`;
+  }
+
   /** Set the cursor store path (called during RuntimeLearning construction). */
   setCursorStorePath(storePath: string): void {
-    // Only allow setting once if empty; otherwise the path is immutable.
     if (!this.cursorStorePath) {
-      (this as any).cursorStorePath = storePath;
+      this.cursorStorePath = storePath;
     }
   }
 
@@ -675,13 +738,12 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     const state = this.cursorStorePath
       ? loadExternalCursorState(this.cursorStorePath)
       : emptyExternalCursorState();
-    const cursorEntry = state.cursors[this.identity.sourceId];
-    const currentCursor = cursorEntry?.cursor ?? null;
+    const currentCursor = readCursorWithSourceIdentityValidation(state, this.identity)
+      ?? maxPersistedSourceCursor(state, this.identity);
 
     // Delegate to the reader, which applies future-only filtering
     // based on the cursor. A null cursor means fresh enablement —
-    // only stable resources are returned (no backfill), enforced by
-    // the reader contract.
+    // only historical backfill skipped, enforced by the reader contract.
     return this.reader.discoverResources(currentCursor);
   }
 
@@ -706,23 +768,14 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     const state = this.cursorStorePath
       ? loadExternalCursorState(this.cursorStorePath)
       : emptyExternalCursorState();
-    const cursorEntry = state.cursors[this.identity.sourceId];
-    const currentCursor: SourceCursor = cursorEntry?.cursor ?? {
-      resourceRef: resource.resourceRef,
-      position: -1,
-      processedCount: 0,
-    };
-
-    // Create a resource-scoped cursor for the reader.
-    const resourceCursor: SourceCursor = {
-      resourceRef: resource.resourceRef,
-      position: currentCursor.resourceRef === resource.resourceRef
-        ? currentCursor.position
-        : -1,
-      processedCount: currentCursor.resourceRef === resource.resourceRef
-        ? currentCursor.processedCount
-        : 0,
-    };
+    const sourceCursor = readCursorWithSourceIdentityValidation(state, this.identity, resource.resourceRef);
+    const resourceCursor: SourceCursor = sourceCursor
+      ? { ...sourceCursor, resourceRef: resource.resourceRef }
+      : {
+          resourceRef: resource.resourceRef,
+          position: -1,
+          processedCount: 0,
+        };
 
     let readerResult: ExternalSourceReaderResult;
     try {
@@ -748,16 +801,19 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     }
 
     // Check for exact duplicates against the processed event ID set.
-    const newEvents = readerResult.events.filter(event => {
-      const existingHash = state.processedEventIds[event.eventId];
-      if (existingHash === undefined) return true; // not seen before
-      // If contentHash matches, it's an exact duplicate — skip.
-      if (event.contentHash !== undefined && existingHash === event.contentHash) return false;
-      // Different contentHash (or no contentHash) — treat as new event.
-      return true;
-    });
+    const nonDuplicateEvents = readerResult.events.filter(
+      event => !isDuplicateExternalEvent(state, this.identity, event),
+    );
+    const accounting: SourceWorkAccounting = {
+      events: readerResult.events.length,
+      bytes: readerResult.byteLength ?? readerResult.events.reduce(
+        (sum, event) => sum + Buffer.byteLength(JSON.stringify(event.distillationUnit ?? event), 'utf8'),
+        0,
+      ),
+      elapsedMs: 0,
+    };
 
-    if (newEvents.length === 0) {
+    if (nonDuplicateEvents.length === 0) {
       // All events were duplicates — acknowledge advancement but produce
       // no distillation unit.
       const newCursor: SourceCursor = {
@@ -769,67 +825,80 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         distillationUnit: null,
         advanced: true,
         status: 'advanced',
+        eventIdentities: readerResult.events.map(toEventIdentity),
         newCursor,
+        accounting,
       };
     }
 
-    // Associate identity metadata with the resource for the caller.
-    // The caller (RuntimeLearning) will use this to construct the
-    // DistillationUnit. For now, we return the raw event identity so
-    // the adapter can embed it.
-    //
-    // Actual DistillationUnit construction from external raw events
-    // requires a provider-specific converter (#77–#79). For the fixture
-    // path, the FixtureExternalSourceReader provides pre-constructed
-    // units through the FixtureSessionLogSourceAdapter.
+    const missingUnit = nonDuplicateEvents.find(event => !event.distillationUnit);
+    if (missingUnit) {
+      return {
+        distillationUnit: null,
+        advanced: false,
+        status: 'failed',
+        newCursor: resourceCursor,
+        eventIdentities: nonDuplicateEvents.map(toEventIdentity),
+      };
+    }
 
     // Build a new cursor reflecting the advanced position.
     const newCursor: SourceCursor = {
       resourceRef: resource.resourceRef,
       position: readerResult.newPosition,
-      processedCount: resourceCursor.processedCount + newEvents.length,
+      processedCount: resourceCursor.processedCount + nonDuplicateEvents.length,
     };
+    const distillationUnits = nonDuplicateEvents.map(
+      event => (event as ExternalSourceRawEvent & { distillationUnit: DistillationUnit }).distillationUnit,
+    );
 
     return {
-      distillationUnit: null, // No converter yet — see #77–#79
+      // Keep the singular field for source adapters/callers that only know the
+      // original seam. RuntimeLearning consumes distillationUnits when present.
+      distillationUnit: distillationUnits[0] ?? null,
+      distillationUnits,
       advanced: true,
       status: 'advanced',
+      eventIdentities: nonDuplicateEvents.map(toEventIdentity),
       newCursor,
+      accounting,
     };
   }
 
   acknowledge(resource: SessionLogSourceResource, result: SessionLogSourceReadResult): void {
     if (!this.cursorStorePath) return;
-    try {
-      const state = loadExternalCursorState(this.cursorStorePath);
+    const state = loadExternalCursorState(this.cursorStorePath);
 
-      // Update cursor for this source.
-      const updatedCursors = { ...state.cursors };
-      updatedCursors[this.identity.sourceId] = {
-        cursor: result.newCursor,
-        updatedAt: new Date().toISOString(),
-        lastStatus: result.status === 'advanced' ? 'stable' : undefined,
-      };
+    // Update cursor for this source.
+    const updatedCursors = { ...state.cursors };
+    const resourceEntry: ExternalCursorEntry = {
+      cursor: result.newCursor,
+      sourceIdentity: this.identity,
+      updatedAt: new Date().toISOString(),
+      lastStatus: result.status === 'advanced' ? 'stable' : undefined,
+    };
+    updatedCursors[resource.resourceRef] = resourceEntry;
+    // Compatibility summary only; resourceRef entries are authoritative.
+    updatedCursors[this.identity.sourceId] = resourceEntry;
 
-      // Register processed event IDs from the resource's firstEventIdentity.
-      // In #77–#79, the reader will supply per-event IDs; for now we
-      // record the resource-level identity.
-      const updatedEventIds = { ...state.processedEventIds };
-      if (resource.firstEventIdentity) {
-        updatedEventIds[resource.firstEventIdentity.eventId] =
-          resource.firstEventIdentity.contentHash ?? '';
-      }
-
-      saveExternalCursorState(this.cursorStorePath, {
-        ...emptyExternalCursorState(),
-        cursors: updatedCursors,
-        processedEventIds: updatedEventIds,
-      });
-    } catch (error) {
-      Logger.warning(
-        `[ExternalSessionLogSourceAdapter] failed to persist cursor for ${this.identity.sourceId}: ${toErrorMessage(error)}`,
-      );
+    // Register processed event IDs from the source-aware read result.
+    const updatedEventIds = { ...state.processedEventIds };
+    const identities = result.eventIdentities ?? (resource.firstEventIdentity ? [resource.firstEventIdentity] : []);
+    for (const identity of identities) {
+      updatedEventIds[dedupEventKey(this.identity, identity)] = normalizeContentHash(identity.contentHash);
     }
+
+    const sourceIdentities = {
+      ...state.sourceIdentities,
+      [this.identity.sourceId]: this.identity,
+    };
+
+    saveExternalCursorState(this.cursorStorePath, {
+      ...state,
+      cursors: updatedCursors,
+      sourceIdentities,
+      processedEventIds: updatedEventIds,
+    });
   }
 
   markFailed(resource: SessionLogSourceResource, error: unknown): void {
@@ -926,6 +995,7 @@ export interface SessionLogSourceReport {
   readonly failureState?: SourceFailureState;
   /** @internal Per-source work budget applied (issue #77). */
   readonly budget?: SourceWorkBudget;
+  readonly accounting?: SourceWorkAccounting;
 }
 
 // ---------------------------------------------------------------------------
@@ -953,4 +1023,134 @@ function collectJsonlFiles(dir: string): string[] {
     else if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(fullPath);
   }
   return files.sort();
+}
+
+/**
+ * Make source identity values deterministic and safe for filename fragments.
+ */
+function sanitizeSourceToken(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/gi, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'source';
+}
+
+/**
+ * Default durable cursor store path for adapters that do not explicitly configure
+ * a cursor state path.
+ */
+function defaultExternalCursorStorePath(args: {
+  provider: string;
+  sourceId: string;
+}): string {
+  const configuredRuntimeRoot = [
+    process.env.XIAOBA_USER_DATA_DIR,
+    process.env.CATSCO_USER_DATA_DIR,
+    process.env.XIAOBA_ELECTRON_USER_DATA_DIR,
+    process.env.XIAOBA_RUNTIME_ROOT,
+  ].map(value => String(value || '').trim()).find(Boolean);
+  const cursorRoot = configuredRuntimeRoot
+    ? path.join(path.resolve(configuredRuntimeRoot), 'data')
+    : path.join(os.tmpdir(), 'xiaoba-external-cursors');
+  return path.join(
+    cursorRoot,
+    sanitizeSourceToken(args.provider),
+    `${sanitizeSourceToken(args.sourceId)}.json`,
+  );
+}
+
+/**
+ * Read a persisted source cursor only when the persisted identity matches the
+ * adapter identity. If identity drift is detected, we restart from future-only.
+ */
+function maxPersistedSourceCursor(
+  state: ExternalCursorState,
+  identity: SessionLogSourceIdentity,
+): SourceCursor | null {
+  const entries = Object.values(state.cursors).filter(entry =>
+    entry.sourceIdentity?.sourceId === identity.sourceId
+    && entry.sourceIdentity.provider === identity.provider
+    && entry.sourceIdentity.reader === identity.reader,
+  );
+  if (entries.length === 0) return null;
+  return entries.reduce((best, entry) => entry.cursor.position > best.position ? entry.cursor : best, entries[0].cursor);
+}
+
+function readCursorWithSourceIdentityValidation(
+  state: ExternalCursorState,
+  identity: SessionLogSourceIdentity,
+  resourceRef?: string,
+): SourceCursor | null {
+  const entry = (resourceRef ? state.cursors[resourceRef] : undefined)
+    ?? state.cursors[identity.sourceId];
+  if (!entry) return null;
+
+  if (!entry.sourceIdentity) return null;
+  const persisted = entry.sourceIdentity;
+  if (
+    persisted.sourceId !== identity.sourceId
+    || persisted.provider !== identity.provider
+    || persisted.category !== identity.category
+    || persisted.reader !== identity.reader
+  ) {
+    return null;
+  }
+
+  return entry.cursor;
+}
+
+/**
+ * Canonical event identity used for stable external dedup state.
+ */
+function toEventIdentity(event: ExternalSourceRawEvent): SourceEventIdentity {
+  return {
+    eventId: event.eventId,
+    position: event.position,
+    contentHash: event.contentHash,
+  };
+}
+
+/**
+ * Stable, strict dedup key includes source identity + event identity fields.
+ */
+function dedupEventKey(
+  sourceIdentity: SessionLogSourceIdentity,
+  identity: SourceEventIdentity,
+): string {
+  const conversationPart = identity.conversationId ? `|conversation=${identity.conversationId}` : '';
+  const revisionPart = identity.revision ? `|revision=${identity.revision}` : '';
+  return [
+    sourceIdentity.sourceId,
+    sourceIdentity.provider,
+    identity.eventId,
+    identity.position,
+    conversationPart,
+    revisionPart,
+    normalizeContentHash(identity.contentHash) ?? '',
+  ].join('::');
+}
+
+function normalizeContentHash(contentHash: string | undefined): string | null {
+  return contentHash ? String(contentHash) : null;
+}
+
+function isDuplicateExternalEvent(
+  state: ExternalCursorState,
+  sourceIdentity: SessionLogSourceIdentity,
+  event: ExternalSourceRawEvent,
+): boolean {
+  const identity = toEventIdentity(event);
+  const normalizedHash = normalizeContentHash(identity.contentHash);
+
+  const key = dedupEventKey(sourceIdentity, identity);
+  if (Object.prototype.hasOwnProperty.call(state.processedEventIds, key)) {
+    return state.processedEventIds[key] === normalizedHash;
+  }
+
+  // Backward compatibility: allow older states that only keyed by raw event id.
+  if (!Object.prototype.hasOwnProperty.call(state.processedEventIds, identity.eventId)) return false;
+  return state.processedEventIds[identity.eventId] === normalizedHash;
 }
