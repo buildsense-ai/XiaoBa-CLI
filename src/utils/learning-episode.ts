@@ -767,11 +767,12 @@ export class LearningEpisodeStore {
   private quarantineFile(error: unknown): void {
     const quarantineFn = this.options.quarantine ?? defaultLearningEpisodeQuarantine;
     try {
-      quarantineFn(this.filePath);
-      // The marker is the durable fail-closed latch. It must be created only
-      // after quarantine succeeds; otherwise a later save could overwrite the
-      // still-present evidence.
+      // Publish the durable fail-closed latch before moving the evidence. If
+      // the process crashes or the quarantine rename fails, the next process
+      // still refuses fresh writes instead of treating a missing canonical
+      // store as an empty store.
       fs.writeFileSync(this.corruptionMarkerPath, `${new Date().toISOString()}\n`, { encoding: 'utf8', mode: 0o600 });
+      quarantineFn(this.filePath);
     } catch {
       throw error instanceof Error ? error : new Error(String(error));
     }

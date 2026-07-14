@@ -9,6 +9,7 @@ import { ServiceInfo, ServiceManager } from './service-manager';
 import { readDashboardEnvFile } from './settings';
 import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { getWeixinChannelStatus } from './weixin-channel-binding';
+import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
 
 export type DashboardReadinessStatus = 'ready' | 'warning' | 'blocked';
 export type DashboardReadinessCheckStatus = 'pass' | 'warning' | 'fail';
@@ -56,6 +57,39 @@ export interface DashboardReadinessSnapshot {
     service: string;
     message: string;
   }>;
+  runtimeLearning: DashboardRuntimeLearningStatus;
+}
+
+export interface DashboardRuntimeLearningStatus {
+  enabled: boolean;
+  liveness: 'disabled' | 'healthy' | 'owner_missing' | 'owner_stale' | 'wake_stuck';
+  owner?: {
+    pid: number;
+    generation: string;
+    startedAt: string;
+    lastHeartbeatAt?: string;
+    heartbeatAgeMs: number;
+  };
+  inProgress?: { startedAt: string; reasons: string[] };
+  nextWakeAt?: string;
+  nextWakeReason?: string;
+  backlog?: {
+    eligibleEpisodes: number;
+    reviewContinuationEpisodes: number;
+    operationalReviews: number;
+    lagMs: number;
+  };
+  cumulativeReviewTimeoutCount: number;
+  cumulativeReviewFailureCount: number;
+  sources: Array<{
+    sourceId: string;
+    category: string;
+    status?: string;
+    supportStatus?: string;
+    resourcesDiscovered: number;
+    unitsProcessed: number;
+    accounting?: { events: number; bytes: number; elapsedMs: number };
+  }>;
 }
 
 export interface DashboardReadinessOptions {
@@ -102,7 +136,114 @@ export async function getDashboardReadiness(
         service: service.name,
         message: sanitizeRuntimeMessage(service.lastError || '', runtimeRoot),
       })),
+    runtimeLearning: readRuntimeLearningStatus(runtimeRoot, env, options.now ?? new Date()),
   };
+}
+
+function readRuntimeLearningStatus(
+  runtimeRoot: string,
+  env: NodeJS.ProcessEnv,
+  now: Date,
+): DashboardRuntimeLearningStatus {
+  const config = getDistillationHeartbeatConfig(runtimeRoot, env);
+  const base: DashboardRuntimeLearningStatus = {
+    enabled: config.enabled && config.skillEvolutionEnabled,
+    liveness: config.enabled && config.skillEvolutionEnabled ? 'owner_missing' : 'disabled',
+    cumulativeReviewTimeoutCount: 0,
+    cumulativeReviewFailureCount: 0,
+    sources: [],
+  };
+  if (!base.enabled) return base;
+
+  const configuredRoot = [
+    env.XIAOBA_USER_DATA_DIR,
+    env.CATSCO_USER_DATA_DIR,
+    env.XIAOBA_ELECTRON_USER_DATA_DIR,
+    env.XIAOBA_RUNTIME_ROOT,
+  ].map(value => String(value || '').trim()).find(Boolean);
+  const dataRoot = path.resolve(configuredRoot || runtimeRoot);
+  const ownerPath = path.join(dataRoot, '.xiaoba', 'heartbeat-scheduler-owner', 'owner.json');
+  const owner = readJsonRecord(ownerPath);
+  const heartbeat = readJsonRecord(config.heartbeatRecordPath);
+
+  if (owner && Number.isInteger(owner.pid) && typeof owner.generation === 'string' && typeof owner.startedAt === 'string') {
+    const heartbeatAt = typeof owner.lastHeartbeatAt === 'string' ? owner.lastHeartbeatAt : owner.startedAt;
+    const heartbeatMs = Date.parse(heartbeatAt);
+    const heartbeatAgeMs = Number.isFinite(heartbeatMs) ? Math.max(0, now.getTime() - heartbeatMs) : Number.MAX_SAFE_INTEGER;
+    base.owner = {
+      pid: owner.pid as number,
+      generation: owner.generation,
+      startedAt: owner.startedAt,
+      ...(typeof owner.lastHeartbeatAt === 'string' ? { lastHeartbeatAt: owner.lastHeartbeatAt } : {}),
+      heartbeatAgeMs,
+    };
+    base.liveness = heartbeatAgeMs > 90_000 ? 'owner_stale' : 'healthy';
+  }
+
+  const inProgress = heartbeat && isRecord(heartbeat.inProgress) ? heartbeat.inProgress : undefined;
+  if (inProgress && typeof inProgress.startedAt === 'string' && Array.isArray(inProgress.reasons)) {
+    base.inProgress = {
+      startedAt: inProgress.startedAt,
+      reasons: inProgress.reasons.filter((value): value is string => typeof value === 'string'),
+    };
+    const startedMs = Date.parse(inProgress.startedAt);
+    const stuckAfterMs = config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000 + 30_000;
+    if (Number.isFinite(startedMs) && now.getTime() - startedMs > stuckAfterMs) {
+      base.liveness = 'wake_stuck';
+    }
+  }
+  if (heartbeat) {
+    if (typeof heartbeat.nextWakeAt === 'string') base.nextWakeAt = heartbeat.nextWakeAt;
+    if (typeof heartbeat.nextWakeReason === 'string') base.nextWakeReason = heartbeat.nextWakeReason;
+    if (isBacklogRecord(heartbeat.backlog)) base.backlog = heartbeat.backlog;
+    base.cumulativeReviewTimeoutCount = toNonNegativeInteger(heartbeat.cumulativeReviewTimeoutCount);
+    base.cumulativeReviewFailureCount = toNonNegativeInteger(heartbeat.cumulativeReviewFailureCount);
+    if (Array.isArray(heartbeat.lastSourceReports)) {
+      base.sources = heartbeat.lastSourceReports
+        .filter(isRecord)
+        .map(report => ({
+          sourceId: typeof report.sourceId === 'string' ? report.sourceId : 'unknown',
+          category: typeof report.category === 'string' ? report.category : 'unknown',
+          ...(typeof report.status === 'string' ? { status: report.status } : {}),
+          ...(typeof report.supportStatus === 'string' ? { supportStatus: report.supportStatus } : {}),
+          resourcesDiscovered: toNonNegativeInteger(report.resourcesDiscovered),
+          unitsProcessed: toNonNegativeInteger(report.unitsProcessed),
+          ...(isAccountingRecord(report.accounting) ? { accounting: report.accounting } : {}),
+        }));
+    }
+  }
+  return base;
+}
+
+function readJsonRecord(filePath: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function toNonNegativeInteger(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+function isBacklogRecord(value: unknown): value is NonNullable<DashboardRuntimeLearningStatus['backlog']> {
+  return isRecord(value) && [
+    value.eligibleEpisodes,
+    value.reviewContinuationEpisodes,
+    value.operationalReviews,
+    value.lagMs,
+  ].every(item => typeof item === 'number' && Number.isFinite(item) && item >= 0);
+}
+
+function isAccountingRecord(value: unknown): value is { events: number; bytes: number; elapsedMs: number } {
+  return isRecord(value) && [value.events, value.bytes, value.elapsedMs]
+    .every(item => typeof item === 'number' && Number.isFinite(item) && item >= 0);
 }
 
 export function getServicePreflight(

@@ -32,6 +32,11 @@ import { LEARNING_EPISODE_SCHEMA_VERSION } from './learning-episode';
  * wake scheduling and never shifts a genuine future deadline.
  */
 export const DEFAULT_MIN_DUE_WORK_WAKE_DELAY_MS = 0;
+export const REVIEW_CONTINUATION_DELAY_MS = 30_000;
+
+export function reviewContinuationPathForEpisodeStore(episodeStorePath: string): string {
+  return path.join(path.dirname(episodeStorePath), 'review-continuation.json');
+}
 
 /**
  * Categories of due work the planner can report, ordered by priority (highest
@@ -161,7 +166,12 @@ export class DueWorkPlanner {
     // Read each durable source independently. A corrupt or missing source
     // returns null (no deadline), never throws, so a single corrupt file
     // cannot prevent the scheduler from running other work.
-    const settlementDeadlineMs = this.readEarliestSettlementDeadline();
+    const episodeSettlementDeadlineMs = this.readEarliestSettlementDeadline();
+    const reviewContinuationDeadlineMs = this.readReviewContinuationDeadline();
+    const settlementDeadlineMs = earliestDeadline(
+      episodeSettlementDeadlineMs,
+      reviewContinuationDeadlineMs,
+    );
     const operationalRetryDeadlineMs = this.readEarliestOperationalRetryDeadline();
     const routineCuratorDeadlineMs = this.readNextRoutineCuratorDeadline();
     const expeditedCount = this.readExpeditedCuratorCount();
@@ -275,6 +285,29 @@ export class DueWorkPlanner {
     }
   }
 
+  /** Budget-exhausted eligible episodes persist a short targeted continuation. */
+  private readReviewContinuationDeadline(): number | null {
+    try {
+      const continuationPath = reviewContinuationPathForEpisodeStore(
+        this.sources.learningEpisodeStorePath,
+      );
+      if (!fs.existsSync(continuationPath)) return null;
+      const parsed = JSON.parse(fs.readFileSync(continuationPath, 'utf8')) as {
+        schemaVersion?: number;
+        episodeIds?: unknown;
+        nextAttemptAt?: unknown;
+      };
+      if (parsed.schemaVersion !== 1
+        || !Array.isArray(parsed.episodeIds)
+        || parsed.episodeIds.length === 0
+        || typeof parsed.nextAttemptAt !== 'string') return null;
+      const deadline = Date.parse(parsed.nextAttemptAt);
+      return Number.isFinite(deadline) ? deadline : null;
+    } catch {
+      return null;
+    }
+  }
+
   private readEarliestOperationalRetryDeadline(): number | null {
     // SkillEvolutionReviewQueueState:
     //   { schemaVersion: 1, operational: SkillEvolutionOperationalReviewFailureEntry[], ... }
@@ -381,4 +414,10 @@ export class DueWorkPlanner {
       return null;
     }
   }
+}
+
+function earliestDeadline(left: number | null, right: number | null): number | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Math.min(left, right);
 }

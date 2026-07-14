@@ -178,25 +178,20 @@ export function extractDistillationUnit(
     };
   }
 
-  // Bounded range read: only the newly appended bytes (capped at the byte
-  // quota) are read from disk, never the whole file. This is the production
-  // fix for unbounded internal reads — a multi-gigabyte history is not loaded
-  // to process a small append. Byte offsets and partial-line behavior are
-  // preserved exactly (only complete lines ending with \n advance the cursor).
+  // Hard-bounded range read: at most maxNewBytesPerUnit bytes enter memory in
+  // one extraction. Oversized records are discarded in durable cursor slices
+  // instead of forcing Buffer.concat to grow until an arbitrarily distant
+  // newline. Normal partial appends remain unacknowledged until complete.
   const fd = fs.openSync(filePath, 'r');
   try {
-    // Read complete JSONL records in byte chunks. A quota is a per-wake
-    // accounting boundary, not a line-size boundary: a valid record larger
-    // than the quota must still be consumed once, otherwise the cursor would
-    // remain permanently stuck at the same offset. The helper yields between
-    // chunk reads and never decodes byte offsets as UTF-16 offsets.
-    const readResult = readCompleteLinesInChunks(
+    const readResult = readBoundedCompleteLines(
       fd,
       cursor.byteOffset,
       fileSize,
       quotas.maxNewBytesPerUnit,
+      cursor.discardingOversizedLine === true,
     );
-    if (!readResult.completeBytes) {
+    if (!readResult.consumedBytes) {
       return {
         distillationUnit: null,
         newCursor: cursor,
@@ -204,8 +199,23 @@ export function extractDistillationUnit(
       };
     }
 
+    if (readResult.content.length === 0) {
+      return {
+        distillationUnit: null,
+        newCursor: {
+          filePath,
+          byteOffset: cursor.byteOffset + readResult.consumedBytes,
+          processedTurnCount: cursor.processedTurnCount,
+          updatedAt: new Date().toISOString(),
+          status: 'completed',
+          ...(readResult.discardingOversizedLine ? { discardingOversizedLine: true } : {}),
+        },
+        advanced: true,
+      };
+    }
+
     const newContentBytes = readResult.content;
-    const completeBytes = readResult.completeBytes;
+    const completeBytes = readResult.content.length;
 
     // Parse complete new lines up to the byte/turn/time quotas. At least one
     // complete line is always processed so the cursor can advance past an
@@ -254,6 +264,7 @@ export function extractDistillationUnit(
           processedTurnCount: cursor.processedTurnCount,
           updatedAt: new Date().toISOString(),
           status: 'completed',
+          ...(readResult.discardingOversizedLine ? { discardingOversizedLine: true } : {}),
         },
         advanced: processedBytes > 0,
       };
@@ -293,6 +304,7 @@ export function extractDistillationUnit(
         processedTurnCount: cursor.processedTurnCount + newTurns.length,
         updatedAt: new Date().toISOString(),
         status: 'completed',
+        ...(readResult.discardingOversizedLine ? { discardingOversizedLine: true } : {}),
       },
       advanced: true,
     };
@@ -311,47 +323,61 @@ export function extractDistillationUnit(
  */
 interface CompleteLineReadResult {
   readonly content: Buffer;
-  readonly completeBytes: number;
+  readonly consumedBytes: number;
+  readonly discardingOversizedLine: boolean;
 }
 
-function readCompleteLinesInChunks(
+function readBoundedCompleteLines(
   fd: number,
   startOffset: number,
   fileSize: number,
   byteQuota: number,
+  discardingOversizedLine: boolean,
 ): CompleteLineReadResult {
-  const chunkSize = 64 * 1024;
-  const chunks: Buffer[] = [];
-  let offset = startOffset;
-  let total = 0;
-
-  while (offset < fileSize) {
-    const length = Math.min(chunkSize, fileSize - offset);
-    const chunk = Buffer.alloc(length);
-    const bytesRead = fs.readSync(fd, chunk, 0, length, offset);
-    if (bytesRead <= 0) break;
-    const actual = chunk.subarray(0, bytesRead);
-    chunks.push(actual);
-    const newline = actual.lastIndexOf(0x0a);
-    if (newline >= 0) {
-      const candidateTotal = total + newline + 1;
-      const joined = Buffer.concat(chunks, candidateTotal);
-      let accepted = 0;
-      let lineOffset = 0;
-      while (lineOffset < joined.length) {
-        const end = joined.indexOf(0x0a, lineOffset) + 1;
-        if (end <= 0 || (accepted > 0 && end > byteQuota)) break;
-        accepted = end;
-        lineOffset = end;
-      }
-      if (accepted > 0 && (candidateTotal >= byteQuota || offset + bytesRead >= fileSize)) {
-        return { content: joined.subarray(0, accepted), completeBytes: accepted };
-      }
-    }
-    total += bytesRead;
-    offset += bytesRead;
+  const readLength = Math.min(Math.max(1, byteQuota), fileSize - startOffset);
+  if (readLength <= 0) {
+    return { content: Buffer.alloc(0), consumedBytes: 0, discardingOversizedLine };
   }
-  return { content: Buffer.alloc(0), completeBytes: 0 };
+  const buffer = Buffer.alloc(readLength);
+  const bytesRead = fs.readSync(fd, buffer, 0, readLength, startOffset);
+  if (bytesRead <= 0) {
+    return { content: Buffer.alloc(0), consumedBytes: 0, discardingOversizedLine };
+  }
+  const actual = buffer.subarray(0, bytesRead);
+
+  if (discardingOversizedLine) {
+    const newline = actual.indexOf(0x0a);
+    const consumedBytes = newline >= 0 ? newline + 1 : bytesRead;
+    return {
+      content: Buffer.alloc(0),
+      consumedBytes,
+      discardingOversizedLine: newline < 0,
+    };
+  }
+
+  const lastNewline = actual.lastIndexOf(0x0a);
+  if (lastNewline >= 0) {
+    const consumedBytes = lastNewline + 1;
+    return {
+      content: actual.subarray(0, consumedBytes),
+      consumedBytes,
+      discardingOversizedLine: false,
+    };
+  }
+
+  // A record that fills the hard byte window without a newline is too large
+  // to admit safely. Advance this bounded slice and remember that subsequent
+  // slices must be discarded until the record boundary is found.
+  if (bytesRead >= byteQuota) {
+    return {
+      content: Buffer.alloc(0),
+      consumedBytes: bytesRead,
+      discardingOversizedLine: true,
+    };
+  }
+
+  // The writer has not completed this line yet. Preserve the cursor exactly.
+  return { content: Buffer.alloc(0), consumedBytes: 0, discardingOversizedLine: false };
 }
 
 function readContinuityTailFromFile(

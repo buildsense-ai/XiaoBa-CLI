@@ -73,13 +73,12 @@ describe('heartbeat scheduler owner lock (runtime-wide singleton, directory-base
     if (first.acquired) first.release();
   });
 
-  test('renews liveness and safely takes over after the lease expires', () => {
+  test('renews liveness but never takes over from a still-live writer', () => {
     let currentMs = Date.now();
     const now = () => new Date(currentMs);
     const first = acquireHeartbeatSchedulerOwnerLock({ runtimeRoot: tempDir, leaseMs: 1_000, now });
     assert.equal(first.acquired, true);
     if (!first.acquired) return;
-    const firstGeneration = first.generation;
     currentMs += 500;
     assert.equal(first.renew(), true);
     currentMs += 200;
@@ -87,12 +86,8 @@ describe('heartbeat scheduler owner lock (runtime-wide singleton, directory-base
     assert.equal(blocked.acquired, false, 'renewed owner remains live');
     currentMs += 1_100;
     const takeover = acquireHeartbeatSchedulerOwnerLock({ runtimeRoot: tempDir, leaseMs: 1_000, now });
-    assert.equal(takeover.acquired, true, 'expired lease can be reclaimed even if PID is still alive');
-    if (takeover.acquired) {
-      assert.notEqual(takeover.generation, firstGeneration);
-      assert.throws(() => first.assertOwnership(), /fenced/);
-      takeover.release();
-    }
+    assert.equal(takeover.acquired, false, 'a live old writer must fail closed until its process exits');
+    assert.equal(first.assertOwnership(), undefined);
     first.release();
   });
 

@@ -178,9 +178,15 @@ function readClaimerRecord(claimerFile: string): ClaimerRecord | null {
 }
 
 function isOwnerLive(record: HeartbeatSchedulerOwnerRecord, now: Date, leaseMs: number): boolean {
-  if (!isProcessAlive(record.pid)) return false;
-  const heartbeat = Date.parse(record.lastHeartbeatAt ?? record.startedAt);
-  return Number.isFinite(heartbeat) && now.getTime() - heartbeat <= leaseMs;
+  void now;
+  void leaseMs;
+  // Generation fencing currently exists at scheduler/review boundaries, not
+  // inside every synchronous durable writer. Therefore a live-but-stalled PID
+  // must remain the owner even after its observability lease ages out; taking
+  // over solely on elapsed time could create two writers when it resumes.
+  // Supervisors already kill an unresponsive child at the shared drain
+  // deadline, after which the dead-PID reclaim path is safe.
+  return isProcessAlive(record.pid);
 }
 
 function isProcessAlive(pid: number): boolean {

@@ -12,6 +12,7 @@ import {
 } from '../src/utils/distillation-unit';
 import {
   loadLogCursorState,
+  recoverLogCursorState,
   saveLogCursorState,
   getCursor,
 } from '../src/utils/log-cursor-state';
@@ -495,7 +496,7 @@ describe('Log Cursor based Distillation Unit extraction', () => {
   });
 
   describe('corrupt state recovery', () => {
-    test('quarantines corrupt state file and starts fresh', () => {
+    test('quarantines corrupt state file and latches writes until explicit recovery', () => {
       const env = setup();
       try {
         fs.writeFileSync(env.stateFile, '{not json', 'utf-8');
@@ -510,6 +511,12 @@ describe('Log Cursor based Distillation Unit extraction', () => {
             name.includes('.corrupt.'),
           ),
         );
+        assert.equal(fs.existsSync(`${env.stateFile}.state-corrupt`), true);
+        assert.throws(() => saveLogCursorState(env.stateFile, state), /explicit recovery/);
+
+        recoverLogCursorState(env.stateFile, { schemaVersion: 1, cursors: {} });
+        assert.equal(fs.existsSync(`${env.stateFile}.state-corrupt`), false);
+        assert.deepEqual(loadLogCursorState(env.stateFile), { schemaVersion: 1, cursors: {} });
       } finally {
         env.teardown();
       }
@@ -647,18 +654,28 @@ describe('extraction quotas and bounded reads', () => {
     }
   });
 
-  test('oversized valid JSONL line advances despite a smaller byte quota', () => {
+  test('oversized JSONL line is discarded across hard-bounded cursor slices', () => {
     const env = bigSetup();
     try {
       const oversized = makeTurn(1, 'cli', 'x'.repeat(8 * 1024));
       writeLog(env.logFile, [oversized]);
-      const result = extractDistillationUnit(env.logFile, getCursor(loadLogCursorState(env.stateFile), env.logFile), {
+      const first = extractDistillationUnit(env.logFile, getCursor(loadLogCursorState(env.stateFile), env.logFile), {
         quotas: { maxNewBytesPerUnit: 128 },
       });
-      assert.ok(result.distillationUnit);
-      assert.equal(result.distillationUnit!.newTurns.length, 1);
-      assert.equal(result.newCursor.byteOffset, fs.statSync(env.logFile).size);
-      assert.ok(result.advanced);
+      assert.equal(first.distillationUnit, null);
+      assert.equal(first.newCursor.byteOffset, 128);
+      assert.equal(first.newCursor.discardingOversizedLine, true);
+      assert.ok(first.advanced);
+
+      let cursor = first.newCursor;
+      while (cursor.byteOffset < fs.statSync(env.logFile).size) {
+        const next = extractDistillationUnit(env.logFile, cursor, {
+          quotas: { maxNewBytesPerUnit: 128 },
+        });
+        assert.ok(next.newCursor.byteOffset - cursor.byteOffset <= 128);
+        cursor = next.newCursor;
+      }
+      assert.equal(cursor.discardingOversizedLine, undefined);
     } finally {
       env.teardown();
     }
@@ -701,7 +718,7 @@ describe('extraction quotas and bounded reads', () => {
     }
   });
 
-  test('oversized single line exceeding the byte quota advances once complete', () => {
+  test('oversized single line never allocates or advances more than the byte quota', () => {
     const env = bigSetup();
     try {
       // One complete line larger than the byte quota.
@@ -715,9 +732,10 @@ describe('extraction quotas and bounded reads', () => {
         quotas: { maxNewBytesPerUnit: 1024 },
       });
 
-      assert.ok(result.distillationUnit, 'a valid oversized line is admitted');
+      assert.equal(result.distillationUnit, null, 'oversized records are not admitted');
       assert.equal(result.advanced, true, 'cursor advances past the complete line');
-      assert.equal(result.newCursor.byteOffset, fs.statSync(env.logFile).size);
+      assert.equal(result.newCursor.byteOffset, 1024);
+      assert.equal(result.newCursor.discardingOversizedLine, true);
     } finally {
       env.teardown();
     }

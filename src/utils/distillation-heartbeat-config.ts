@@ -189,51 +189,6 @@ export function getDistillationHeartbeatConfig(
     ...loadDotenvValues(workingDirectory, env),
     ...env,
   };
-
-  const enabled = readBoolean(runtimeEnv, 'DISTILLATION_HEARTBEAT_ENABLED', true);
-  const intervalHours = readIntervalHours(runtimeEnv);
-  const logsRoot = resolveContainedPath(
-    workingDirectory,
-    'logs',
-    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_LOG_ROOT', 'CATSCO_LOG_ROOT', 'CATSLOG_LOG_ROOT'),
-    'logs',
-  );
-  const stateFilePath = resolveContainedPath(
-    workingDirectory,
-    'data',
-    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_STATE_FILE'),
-    'data/distillation-cursor-state.json',
-  );
-  const heartbeatRecordPath = resolveContainedPath(
-    workingDirectory,
-    'data',
-    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_RECORD_FILE'),
-    'data/distillation-heartbeat-record.json',
-  );
-  const reviewOutcomesPath = resolveContainedPath(
-    workingDirectory,
-    'data',
-    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_REVIEW_OUTCOMES_FILE'),
-    'data/distillation-review-outcomes.json',
-  );
-  const needsReviewQueuePath = resolveContainedPath(
-    workingDirectory,
-    'data',
-    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_NEEDS_REVIEW_QUEUE_FILE'),
-    'data/needs-review-queue-state.json',
-  );
-  const capabilityRegistryPath = resolveContainedPath(
-    workingDirectory,
-    'data',
-    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_CAPABILITY_REGISTRY_FILE'),
-    'data/capability-registry-state.json',
-  );
-  const workLogRoot = resolveContainedPath(
-    workingDirectory,
-    'logs',
-    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_WORK_LOG_ROOT'),
-    'logs/branches/distillation',
-  );
   const configuredRuntimeDataRoot = readEnv(
     runtimeEnv,
     'XIAOBA_USER_DATA_DIR',
@@ -241,7 +196,55 @@ export function getDistillationHeartbeatConfig(
     'XIAOBA_ELECTRON_USER_DATA_DIR',
     'XIAOBA_RUNTIME_ROOT',
   );
+  // Every durable heartbeat path must share the same Runtime root as the
+  // cross-process owner lock. In packaged Electron, workingDirectory can be
+  // the immutable app bundle while XIAOBA_RUNTIME_ROOT points at userData.
   const runtimeDataRoot = path.resolve(configuredRuntimeDataRoot || workingDirectory);
+
+  const enabled = readBoolean(runtimeEnv, 'DISTILLATION_HEARTBEAT_ENABLED', true);
+  const intervalHours = readIntervalHours(runtimeEnv);
+  const logsRoot = resolveContainedPath(
+    runtimeDataRoot,
+    'logs',
+    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_LOG_ROOT', 'CATSCO_LOG_ROOT', 'CATSLOG_LOG_ROOT'),
+    'logs',
+  );
+  const stateFilePath = resolveContainedPath(
+    runtimeDataRoot,
+    'data',
+    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_STATE_FILE'),
+    'data/distillation-cursor-state.json',
+  );
+  const heartbeatRecordPath = resolveContainedPath(
+    runtimeDataRoot,
+    'data',
+    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_RECORD_FILE'),
+    'data/distillation-heartbeat-record.json',
+  );
+  const reviewOutcomesPath = resolveContainedPath(
+    runtimeDataRoot,
+    'data',
+    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_REVIEW_OUTCOMES_FILE'),
+    'data/distillation-review-outcomes.json',
+  );
+  const needsReviewQueuePath = resolveContainedPath(
+    runtimeDataRoot,
+    'data',
+    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_NEEDS_REVIEW_QUEUE_FILE'),
+    'data/needs-review-queue-state.json',
+  );
+  const capabilityRegistryPath = resolveContainedPath(
+    runtimeDataRoot,
+    'data',
+    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_CAPABILITY_REGISTRY_FILE'),
+    'data/capability-registry-state.json',
+  );
+  const workLogRoot = resolveContainedPath(
+    runtimeDataRoot,
+    'logs',
+    readEnv(runtimeEnv, 'DISTILLATION_HEARTBEAT_WORK_LOG_ROOT'),
+    'logs/branches/distillation',
+  );
   const branchLogRoot = resolveContainedPath(
     runtimeDataRoot,
     'logs',
@@ -258,25 +261,25 @@ export function getDistillationHeartbeatConfig(
   // opt back into V1 explicitly.
   const skillEvolutionEnabled = readBoolean(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_V3_ENABLED', true);
   const skillEvolutionRegistryPath = resolveContainedPath(
-    workingDirectory,
+    runtimeDataRoot,
     'data',
     readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_REGISTRY_FILE'),
     'data/current-skill-registry.json',
   );
   const skillEvolutionAuditPath = resolveContainedPath(
-    workingDirectory,
+    runtimeDataRoot,
     'data',
     readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_AUDIT_FILE'),
     'data/transition-audit.jsonl',
   );
   const skillEvolutionJournalPath = resolveContainedPath(
-    workingDirectory,
+    runtimeDataRoot,
     'data',
     readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_JOURNAL_FILE'),
     'data/transition-journal.json',
   );
   const learningEpisodeStorePath = resolveContainedPath(
-    workingDirectory,
+    runtimeDataRoot,
     'data',
     readEnv(runtimeEnv, 'XIAOBA_LEARNING_EPISODE_STORE_FILE'),
     'data/learning-episodes.json',
@@ -294,19 +297,19 @@ export function getDistillationHeartbeatConfig(
     1 / 60,
   );
   const skillUsageLedgerPath = resolveContainedPath(
-    workingDirectory,
+    runtimeDataRoot,
     'data',
     readEnv(runtimeEnv, 'XIAOBA_SKILL_USAGE_LEDGER_FILE'),
     'data/skill-usage-ledger.jsonl',
   );
   const skillEvolutionCuratorStatePath = resolveContainedPath(
-    workingDirectory,
+    runtimeDataRoot,
     'data',
     readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_CURATOR_STATE_FILE'),
     'data/skill-evolution-curator-state.json',
   );
   const skillEvolutionReassessmentManifestPath = resolveContainedPath(
-    workingDirectory,
+    runtimeDataRoot,
     'data',
     readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE'),
     'data/skill-evolution-reassessment-manifest.json',
@@ -327,11 +330,15 @@ export function getDistillationHeartbeatConfig(
     5,
     1 / 60,
   );
-  const skillEvolutionOperationalRetryMaxHours = readNumber(
+  const configuredOperationalRetryMaxHours = readNumber(
     runtimeEnv,
     'XIAOBA_SKILL_EVOLUTION_OPERATIONAL_RETRY_MAX_HOURS',
     6,
-    0,
+    1 / 60,
+  );
+  const skillEvolutionOperationalRetryMaxHours = Math.max(
+    configuredOperationalRetryMaxHours,
+    skillEvolutionOperationalRetryMinutes / 60,
   );
   const skillEvolutionReviewAttemptDeadlineMinutes = readNumberInRange(
     runtimeEnv,
@@ -357,7 +364,7 @@ export function getDistillationHeartbeatConfig(
   const skillEvolutionAuthorModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_AUTHOR_MODEL');
   const skillEvolutionVerifierModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_VERIFIER_MODEL');
   const evidenceCapsulePath = resolveContainedPath(
-    workingDirectory,
+    runtimeDataRoot,
     'data',
     readEnv(runtimeEnv, 'XIAOBA_EVIDENCE_CAPSULE_STORE_FILE'),
     'data/evidence-capsules.json',
@@ -392,7 +399,7 @@ export function getDistillationHeartbeatConfig(
     skillEvolutionReassessmentManifestPath,
     skillEvolutionReviewerConcurrency,
     skillEvolutionReviewQueuePath: resolveContainedPath(
-      workingDirectory,
+      runtimeDataRoot,
       'data',
       skillEvolutionReviewQueuePath,
       'data/skill-evolution-review-queue.json',

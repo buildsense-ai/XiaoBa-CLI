@@ -19,7 +19,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { EvidenceIngestor, EvidenceIngestionResult } from './evidence-ingestor';
-import { DueWorkPlanner, DueWork } from './due-work-planner';
+import {
+  DueWorkPlanner,
+  DueWork,
+  REVIEW_CONTINUATION_DELAY_MS,
+  reviewContinuationPathForEpisodeStore,
+} from './due-work-planner';
 import { DistillationPipeline } from './distillation-pipeline';
 import {
   CrossFileContinuityOptions,
@@ -41,9 +46,10 @@ import { Logger } from './logger';
 import { bootstrapSemanticReassessmentOnce } from './distilled-skill-bootstrap';
 import { SemanticReassessmentManifestStore } from './semantic-reassessment';
 import { cleanupBranchTranscripts } from './branch-transcript-retention';
-import { createReviewBudget } from './review-budget';
+import { createReviewBudget, type ReviewBudget } from './review-budget';
 import {
   InternalSessionLogSourceAdapter,
+  ExternalSessionLogSourceAdapter,
   SessionLogSourceAdapter,
   SessionLogSourceReadContext,
   SessionLogSourceReport,
@@ -55,6 +61,7 @@ import {
   SourceFailureState,
   SessionLogSourceStatus,
   DEFAULT_EXTERNAL_SOURCE_BUDGET,
+  DEFAULT_INTERNAL_SOURCE_BUDGET,
 } from './session-log-source';
 
 // ---------------------------------------------------------------------------
@@ -81,6 +88,20 @@ export type RuntimeLearningHeartbeatRunStatus =
   | 'timed_out'
   | 'queued_operational_retry'
   | 'drained';
+
+export interface RuntimeLearningHeartbeatOwner {
+  pid: number;
+  generation: string;
+  startedAt: string;
+  lastHeartbeatAt?: string;
+}
+
+export interface RuntimeLearningBacklogSnapshot {
+  eligibleEpisodes: number;
+  reviewContinuationEpisodes: number;
+  operationalReviews: number;
+  lagMs: number;
+}
 
 export interface RuntimeLearningDiscoveryReport {
   scanned: boolean;
@@ -184,6 +205,17 @@ export interface RuntimeLearningHeartbeatRecord {
   lastReviewTimeoutCount: number;
   /** Review failure count from the latest review phase. */
   lastReviewFailureCount: number;
+  cumulativeReviewTimeoutCount: number;
+  cumulativeReviewFailureCount: number;
+  inProgress?: {
+    startedAt: string;
+    reasons: RuntimeLearningReason[];
+  };
+  owner?: RuntimeLearningHeartbeatOwner;
+  nextWakeAt?: string;
+  nextWakeReason?: string;
+  backlog: RuntimeLearningBacklogSnapshot;
+  lastSourceReports: readonly SessionLogSourceReport[];
 }
 
 export interface RuntimeLearningBackfillOperationPaths {
@@ -226,6 +258,13 @@ export const DEFAULT_DISCOVERY_WAKE_QUOTAS: DiscoveryWakeQuotas = {
   maxDiscoveryMs: 60_000, // 60 s
 };
 
+class DiscoveryAdmissionQuotaReachedError extends Error {
+  constructor() {
+    super('wake episode admission quota reached before source acknowledgement');
+    this.name = 'DiscoveryAdmissionQuotaReachedError';
+  }
+}
+
 function normalizeDiscoveryQuota(value: number | undefined, fallback: number): number {
   if (value === undefined || !Number.isFinite(value)) return fallback;
   return Math.max(0, Math.floor(value));
@@ -235,11 +274,78 @@ const EXTERNAL_EPISODE_PROVENANCE_SCHEMA_VERSION = 1;
 const EXTERNAL_BACKFILL_SLICE_RESOURCES = 10;
 const EXTERNAL_BACKFILL_SLICE_BYTES = 2 * 1024 * 1024;
 const EXTERNAL_BACKFILL_SLICE_MS = 250;
+const REVIEW_CONTINUATION_SCHEMA_VERSION = 1;
 
-interface ExternalEpisodeProvenanceState {
-  schemaVersion: number;
+interface ReviewContinuationState {
+  schemaVersion: typeof REVIEW_CONTINUATION_SCHEMA_VERSION;
+  episodeIds: string[];
+  nextAttemptAt: string;
+  updatedAt: string;
+}
+
+export interface ExternalEpisodeProvenanceState {
+  schemaVersion: typeof EXTERNAL_EPISODE_PROVENANCE_SCHEMA_VERSION;
   episodeToEvent: Record<string, string>;
   eventToEpisodes: Record<string, string[]>;
+}
+
+function validateExternalEpisodeProvenanceState(value: unknown): ExternalEpisodeProvenanceState {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('external provenance state must be an object');
+  }
+  const candidate = value as Partial<ExternalEpisodeProvenanceState>;
+  if (candidate.schemaVersion !== EXTERNAL_EPISODE_PROVENANCE_SCHEMA_VERSION) {
+    throw new Error(`unsupported external provenance schema: ${String(candidate.schemaVersion)}`);
+  }
+  if (!candidate.episodeToEvent || typeof candidate.episodeToEvent !== 'object'
+    || Array.isArray(candidate.episodeToEvent)) {
+    throw new Error('external provenance episodeToEvent must be an object');
+  }
+  if (!candidate.eventToEpisodes || typeof candidate.eventToEpisodes !== 'object'
+    || Array.isArray(candidate.eventToEpisodes)) {
+    throw new Error('external provenance eventToEpisodes must be an object');
+  }
+
+  const episodeToEvent: Record<string, string> = {};
+  const expectedByEvent = new Map<string, string[]>();
+  for (const [episodeId, eventKey] of Object.entries(candidate.episodeToEvent)) {
+    if (!episodeId || typeof eventKey !== 'string' || !eventKey) {
+      throw new Error('external provenance contains an invalid episode/event mapping');
+    }
+    episodeToEvent[episodeId] = eventKey;
+    expectedByEvent.set(eventKey, [...(expectedByEvent.get(eventKey) ?? []), episodeId]);
+  }
+
+  const eventToEpisodes: Record<string, string[]> = {};
+  for (const [eventKey, episodeIds] of Object.entries(candidate.eventToEpisodes)) {
+    if (!eventKey || !Array.isArray(episodeIds)
+      || episodeIds.some(episodeId => typeof episodeId !== 'string' || !episodeId)) {
+      throw new Error('external provenance contains an invalid event/episodes mapping');
+    }
+    const normalized = [...new Set(episodeIds)].sort();
+    if (normalized.length !== episodeIds.length) {
+      throw new Error(`external provenance contains duplicate episode ids for event: ${eventKey}`);
+    }
+    eventToEpisodes[eventKey] = normalized;
+  }
+
+  const expectedKeys = [...expectedByEvent.keys()].sort();
+  const actualKeys = Object.keys(eventToEpisodes).sort();
+  if (expectedKeys.join('\n') !== actualKeys.join('\n')) {
+    throw new Error('external provenance indexes disagree on event keys');
+  }
+  for (const eventKey of expectedKeys) {
+    const expected = [...(expectedByEvent.get(eventKey) ?? [])].sort();
+    if (expected.join('\n') !== eventToEpisodes[eventKey].join('\n')) {
+      throw new Error(`external provenance indexes disagree for event: ${eventKey}`);
+    }
+  }
+
+  return {
+    schemaVersion: EXTERNAL_EPISODE_PROVENANCE_SCHEMA_VERSION,
+    episodeToEvent,
+    eventToEpisodes,
+  };
 }
 
 export interface RuntimeLearningOptions {
@@ -290,6 +396,8 @@ export interface RuntimeLearningOptions {
    * Defaults to {@link DEFAULT_EXTERNAL_SOURCE_BUDGET} when omitted.
    */
   externalSourceBudget?: SourceWorkBudget;
+  /** Per-source budget for the internal JSONL lane. */
+  internalSourceBudget?: SourceWorkBudget;
   /** Injectable clock for tests. */
   clock?: () => Date;
 }
@@ -406,6 +514,15 @@ function emptyHeartbeatRecord(): RuntimeLearningHeartbeatRecord {
     lastPendingWakeReasons: [],
     lastReviewTimeoutCount: 0,
     lastReviewFailureCount: 0,
+    cumulativeReviewTimeoutCount: 0,
+    cumulativeReviewFailureCount: 0,
+    backlog: {
+      eligibleEpisodes: 0,
+      reviewContinuationEpisodes: 0,
+      operationalReviews: 0,
+      lagMs: 0,
+    },
+    lastSourceReports: [],
   };
 }
 
@@ -432,8 +549,9 @@ export class RuntimeLearning {
   private readonly config: DistillationHeartbeatConfig;
   private readonly sessionLogSources: readonly SessionLogSourceAdapter[];
   private readonly discoveryQuotas: DiscoveryWakeQuotas;
-  /** Per-source work budget applied to each external source lane (issue #77). */
+  /** Per-source work budgets; internal logs are never exempt from quotas. */
   private readonly externalSourceBudget: SourceWorkBudget;
+  private readonly internalSourceBudget: SourceWorkBudget;
   /**
    * Per-source failure tracking for external source lanes. Keyed by sourceId.
    * State is persisted to disk after each wake so restart recovery restores
@@ -449,15 +567,27 @@ export class RuntimeLearning {
   private readonly evidenceCapsuleStore: EvidenceCapsuleStore;
   /** Durable provenance index tying external events to episode ids (issue #78). */
   private readonly externalEpisodeProvenancePath: string;
+  /** Fail-closed marker written before a corrupt provenance file is quarantined. */
+  private readonly externalEpisodeProvenanceCorruptMarkerPath: string;
+  private externalEpisodeProvenanceStateCorrupt = false;
   /** Episode id -> event key for external provenance lookup. */
   private readonly externalEpisodeProvenance = new Map<string, string>();
   /** Event key -> external episode ids. */
   private readonly externalEpisodeProvenanceByEvent = new Map<string, string[]>();
+  /** Remains true until the latest in-memory provenance mutation is durable. */
+  private externalEpisodeProvenanceDirty = false;
 
   private readonly pendingCuratorObservationEpisodeIds = new Set<string>();
+  private readonly activeWakeAbortControllers = new Set<AbortController>();
+  private readonly reviewContinuationPath: string;
+  private stateWriterOwner: symbol | null = null;
+  private stateWriterDepth = 0;
+  private readonly stateWriterWaiters: Array<() => void> = [];
   /** Cooperative explicit-backfill operation tracked for scheduler drain. */
   private activeBackfill: Promise<RuntimeLearningBackfillResult> | null = null;
   private backfillDrainRequested = false;
+  /** Shutdown drain stops new review admission without aborting already active review work. */
+  private shutdownDrainRequested = false;
 
   constructor(options: RuntimeLearningOptions) {
     this.workingDirectory = options.workingDirectory;
@@ -469,11 +599,20 @@ export class RuntimeLearning {
     this.legacyPipeline = options.legacyPipeline;
     this.clock = options.clock ?? (() => new Date());
     this.config = getDistillationHeartbeatConfig(this.workingDirectory);
-    // Default to a single Internal Session Log Source adapter when no sources
-    // are injected. This preserves the existing production behavior with no
-    // observable regression (issue #75).
+    // External formats are never implied. Enabling the master switch exposes
+    // explicit unsupported lanes until a documented stable provider reader is
+    // installed, so production readiness cannot mistake an inert flag for
+    // working Codex/Pi/Claude ingestion.
     this.sessionLogSources = options.sessionLogSources ?? [
       new InternalSessionLogSourceAdapter(this.config),
+      ...(this.config.externalSessionLogSourcesEnabled
+        ? ['codex', 'pi', 'claude-code'].map(provider => new ExternalSessionLogSourceAdapter({
+          sourceId: `external-${provider}`,
+          label: `${provider} Session Logs`,
+          provider,
+          enabled: true,
+        }))
+        : []),
     ];
     this.discoveryQuotas = {
       maxResourcesPerWake: normalizeDiscoveryQuota(
@@ -490,6 +629,10 @@ export class RuntimeLearning {
       ),
     };
     this.externalSourceBudget = options.externalSourceBudget ?? DEFAULT_EXTERNAL_SOURCE_BUDGET;
+    this.internalSourceBudget = options.internalSourceBudget ?? DEFAULT_INTERNAL_SOURCE_BUDGET;
+    this.reviewContinuationPath = reviewContinuationPathForEpisodeStore(
+      this.config.learningEpisodeStorePath,
+    );
     this.schedulingStatePath = path.join(
       path.dirname(this.config.learningEpisodeStorePath),
       'external-source-scheduling-state.json',
@@ -498,6 +641,7 @@ export class RuntimeLearning {
       path.dirname(this.config.learningEpisodeStorePath),
       'external-source-provenance.json',
     );
+    this.externalEpisodeProvenanceCorruptMarkerPath = `${this.externalEpisodeProvenancePath}.state-corrupt`;
     this.loadExternalSourceSchedulingState();
     this.evidenceCapsuleStore = new EvidenceCapsuleStore(this.config.evidenceCapsulePath);
     this.loadExternalEpisodeProvenanceState();
@@ -560,6 +704,81 @@ export class RuntimeLearning {
     return this.evidenceCapsuleStore;
   }
 
+  /**
+   * Explicitly restore a quarantined provenance index from a verified backup.
+   * Recovery is never implicit because an empty replacement could misclassify
+   * already-admitted external episodes as internal evidence.
+   */
+  recoverExternalEpisodeProvenanceState(state: ExternalEpisodeProvenanceState): void {
+    const validated = validateExternalEpisodeProvenanceState(state);
+    this.externalEpisodeProvenance.clear();
+    this.externalEpisodeProvenanceByEvent.clear();
+    for (const [episodeId, eventKey] of Object.entries(validated.episodeToEvent)) {
+      this.externalEpisodeProvenance.set(episodeId, eventKey);
+    }
+    for (const [eventKey, episodeIds] of Object.entries(validated.eventToEpisodes)) {
+      this.externalEpisodeProvenanceByEvent.set(eventKey, [...episodeIds]);
+    }
+
+    const marker = fs.existsSync(this.externalEpisodeProvenanceCorruptMarkerPath)
+      ? fs.readFileSync(this.externalEpisodeProvenanceCorruptMarkerPath)
+      : undefined;
+    try {
+      if (marker) fs.unlinkSync(this.externalEpisodeProvenanceCorruptMarkerPath);
+      this.externalEpisodeProvenanceStateCorrupt = false;
+      this.externalEpisodeProvenanceDirty = true;
+      this.saveExternalEpisodeProvenanceState();
+    } catch (error) {
+      this.externalEpisodeProvenanceStateCorrupt = true;
+      if (marker && !fs.existsSync(this.externalEpisodeProvenanceCorruptMarkerPath)) {
+        fs.writeFileSync(this.externalEpisodeProvenanceCorruptMarkerPath, marker, { mode: 0o600 });
+      }
+      throw error;
+    }
+  }
+
+  private async withStateWriter<T>(owner: symbol, work: () => Promise<T>): Promise<T> {
+    await this.acquireStateWriter(owner);
+    try {
+      return await work();
+    } finally {
+      this.releaseStateWriter(owner);
+    }
+  }
+
+  private async acquireStateWriter(owner: symbol): Promise<void> {
+    if (this.stateWriterOwner === owner) {
+      this.stateWriterDepth += 1;
+      return;
+    }
+    if (!this.stateWriterOwner) {
+      this.stateWriterOwner = owner;
+      this.stateWriterDepth = 1;
+      return;
+    }
+    await new Promise<void>(resolve => {
+      this.stateWriterWaiters.push(() => {
+        this.stateWriterOwner = owner;
+        this.stateWriterDepth = 1;
+        resolve();
+      });
+    });
+  }
+
+  private releaseStateWriter(owner: symbol): void {
+    if (this.stateWriterOwner !== owner) {
+      throw new Error('runtime learning state writer released by a non-owner');
+    }
+    this.stateWriterDepth -= 1;
+    if (this.stateWriterDepth > 0) return;
+    const next = this.stateWriterWaiters.shift();
+    if (next) {
+      next();
+      return;
+    }
+    this.stateWriterOwner = null;
+  }
+
   /** Deterministic state/audit paths for one explicit external backfill operation. */
   getExternalBackfillOperationPaths(
     request: Pick<ExternalSessionLogBackfillRequest, 'provider' | 'sourceId' | 'operationId'>,
@@ -588,13 +807,19 @@ export class RuntimeLearning {
     if (this.activeBackfill) {
       throw new Error('another external backfill operation is already active');
     }
-    const operation = Promise.resolve().then(() => this.executeExternalBackfill(request, source));
+    const writerOwner = Symbol('runtime-learning-external-backfill');
+    const operation = Promise.resolve().then(
+      () => this.withStateWriter(writerOwner, () => this.executeExternalBackfill(request, source, writerOwner)),
+    );
     this.activeBackfill = operation;
     try {
       return await operation;
     } finally {
       if (this.activeBackfill === operation) this.activeBackfill = null;
       this.backfillDrainRequested = false;
+      if (this.activeWakeAbortControllers.size === 0) {
+        this.shutdownDrainRequested = false;
+      }
     }
   }
 
@@ -603,10 +828,15 @@ export class RuntimeLearning {
    * persisted operation remains resumable on the next explicit invocation.
    */
   async drain(timeoutMs = this.config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000): Promise<void> {
+    this.shutdownDrainRequested = true;
     this.backfillDrainRequested = true;
+    for (const source of this.sessionLogSources) source.close?.();
     const active = this.activeBackfill;
     if (!active) {
       this.backfillDrainRequested = false;
+      if (this.activeWakeAbortControllers.size === 0) {
+        this.shutdownDrainRequested = false;
+      }
       return;
     }
     let timer: NodeJS.Timeout | null = null;
@@ -619,11 +849,15 @@ export class RuntimeLearning {
         timer = setTimeout(resolve, Math.max(1, timeoutMs));
       }),
     ]);
+    if (!this.activeBackfill && this.activeWakeAbortControllers.size === 0) {
+      this.shutdownDrainRequested = false;
+    }
   }
 
   private async executeExternalBackfill(
     request: ExternalSessionLogBackfillRequest,
     source: ExternalSessionLogBackfillSource,
+    writerOwner: symbol,
   ): Promise<RuntimeLearningBackfillResult> {
     const paths = this.getExternalBackfillOperationPaths(request);
     const service = new ExternalSessionLogBackfillService({
@@ -637,15 +871,17 @@ export class RuntimeLearning {
     let externalProvenanceUpdated = false;
 
     const ingest = (unit: DistillationUnit, context: ExternalSessionLogBackfillIngestContext) => {
-      const ingestion = this.evidenceIngestor.ingest(
-        sanitizeExternalDistillationUnit(unit, {
-          sourceId: source.identity.sourceId,
-          eventIdentity: context.eventIdentity,
-        }),
+      const sanitizedUnit = sanitizeExternalDistillationUnit(unit, {
+        sourceId: source.identity.sourceId,
+        eventIdentity: context.eventIdentity,
+      });
+      const ingestion = this.evidenceIngestor.ingest(sanitizedUnit);
+      const admissionEpisodeIds = this.resolveExternalEpisodeIds(
+        source.identity,
+        context.eventIdentity,
+        sanitizedUnit,
+        ingestion,
       );
-      const admissionEpisodeIds = ingestion.admittedEpisodeIds.length > 0
-        ? ingestion.admittedEpisodeIds
-        : this.getExternalEpisodeIdsForEvent(source.identity, context.eventIdentity);
 
       if (admissionEpisodeIds.length > 0) {
         externalProvenanceUpdated ||= this.recordExternalEpisodeProvenance(
@@ -662,6 +898,12 @@ export class RuntimeLearning {
         ingestion,
         admissionEpisodeIds,
       );
+      if (externalProvenanceUpdated || this.externalEpisodeProvenanceDirty) {
+        // The backfill service persists its resource cursor after this ingest
+        // callback returns, so provenance must cross the durable boundary now.
+        this.saveExternalEpisodeProvenanceState();
+        externalProvenanceUpdated = false;
+      }
       admittedEpisodes += ingestion.admittedEpisodeIds.length;
       contradictionSignals += ingestion.contradictionSignalIds.length;
       return { admittedEpisodeIds: ingestion.admittedEpisodeIds };
@@ -678,7 +920,7 @@ export class RuntimeLearning {
       if (due.operationalRetryDue) priorityReasons.push('operational-retry');
       if (due.settlementDue) priorityReasons.push('settlement-deadline');
       if (priorityReasons.length > 0) {
-        const priorityWake = await this.wake(priorityReasons);
+        const priorityWake = await this.wakeWithStateWriter(priorityReasons, {}, writerOwner);
         priorityMaturation = mergeMaturationReports(priorityMaturation, priorityWake.maturation);
         priorityReview = mergeReviewReports(priorityReview, priorityWake.review);
       }
@@ -716,7 +958,7 @@ export class RuntimeLearning {
       throw new Error('external backfill did not produce a result');
     }
 
-    if (externalProvenanceUpdated) {
+    if (externalProvenanceUpdated || this.externalEpisodeProvenanceDirty) {
       this.saveExternalEpisodeProvenanceState();
     }
 
@@ -786,12 +1028,29 @@ export class RuntimeLearning {
     reason: RuntimeLearningReason | readonly RuntimeLearningReason[],
     wakeOptions: { coalesced?: boolean } = {},
   ): Promise<RuntimeLearningHeartbeatResult> {
+    return this.wakeWithStateWriter(reason, wakeOptions);
+  }
+
+  private async wakeWithStateWriter(
+    reason: RuntimeLearningReason | readonly RuntimeLearningReason[],
+    wakeOptions: { coalesced?: boolean } = {},
+    owner: symbol = Symbol('runtime-learning-wake'),
+  ): Promise<RuntimeLearningHeartbeatResult> {
+    return this.withStateWriter(owner, () => this.executeWake(reason, wakeOptions));
+  }
+
+  private async executeWake(
+    reason: RuntimeLearningReason | readonly RuntimeLearningReason[],
+    wakeOptions: { coalesced?: boolean } = {},
+  ): Promise<RuntimeLearningHeartbeatResult> {
     const wake = emptyHeartbeatResult(true);
     const now = this.clock();
     const reasons = this.normalizeReasons(reason);
     const orderedReasons = [...reasons].sort();
     const wakeStartMs = this.clock().getTime();
     const isDiscoveryWake = this.isDiscoveryWake(reasons);
+    const wakeAbortController = new AbortController();
+    this.activeWakeAbortControllers.add(wakeAbortController);
 
     try {
       // ---- 1. Discovery + Ingestion (source-neutral) ----
@@ -836,7 +1095,7 @@ export class RuntimeLearning {
       await this.flushCuratorObservations();
 
       // ---- 5. Review ----
-      const review = await this.runReview(dueWork);
+      const review = await this.runReview(dueWork, wakeAbortController.signal);
       wake.review = review;
 
       // ---- 6. Curation ----
@@ -853,6 +1112,7 @@ export class RuntimeLearning {
       // ---- 8. Record heartbeat ----
       const runDurationMs = Math.max(0, this.clock().getTime() - wakeStartMs);
       const hadDurableWork = this.hasDurableWakeWork(wake);
+      const nextPlan = this.planner.plan(this.clock());
       this.recordHeartbeat(
         this.formatReasons(reasons),
         wake.unitsProcessed,
@@ -867,6 +1127,12 @@ export class RuntimeLearning {
         runDurationMs,
         wake.review.reviewTimeoutCount,
         wake.review.reviewFailureCount,
+        true,
+        {
+          sources: wake.discovery.sources,
+          nextWakeTime: nextPlan.nextWakeTime,
+          nextWakeReason: nextPlan.nextWakeReason,
+        },
       );
 
       return wake;
@@ -884,6 +1150,11 @@ export class RuntimeLearning {
         1,
       );
       return wake;
+    } finally {
+      this.activeWakeAbortControllers.delete(wakeAbortController);
+      if (this.activeWakeAbortControllers.size === 0 && !this.activeBackfill) {
+        this.shutdownDrainRequested = false;
+      }
     }
   }
 
@@ -910,6 +1181,31 @@ export class RuntimeLearning {
       options.reviewFailureCount ?? 0,
       false,
     );
+  }
+
+  public markHeartbeatInProgress(
+    reasons: readonly RuntimeLearningReason[],
+    owner?: RuntimeLearningHeartbeatOwner,
+  ): void {
+    const record = this.loadHeartbeatRecord();
+    record.inProgress = {
+      startedAt: this.clock().toISOString(),
+      reasons: Array.from(new Set(reasons)).sort(),
+    };
+    if (owner) record.owner = owner;
+    this.writeHeartbeatRecord(record);
+  }
+
+  public markHeartbeatScheduled(
+    nextWakeAt: Date,
+    reason: RuntimeLearningReason | string,
+    owner?: RuntimeLearningHeartbeatOwner,
+  ): void {
+    const record = this.loadHeartbeatRecord();
+    record.nextWakeAt = nextWakeAt.toISOString();
+    record.nextWakeReason = reason;
+    if (owner) record.owner = owner;
+    this.writeHeartbeatRecord(record);
   }
 
   private deriveHeartbeatRunStatus(
@@ -1150,7 +1446,10 @@ export class RuntimeLearning {
   // Stage: review (eligible episodes + queue entries)
   // -----------------------------------------------------------------------
 
-  private async runReview(dueWork: DueWork): Promise<RuntimeLearningReviewReport> {
+  private async runReview(
+    dueWork: DueWork,
+    wakeSignal?: AbortSignal,
+  ): Promise<RuntimeLearningReviewReport> {
     const reviewAttempted = dueWork.settlementDue || dueWork.operationalRetryDue;
     if (!reviewAttempted) return skippedReviewReport();
 
@@ -1163,17 +1462,23 @@ export class RuntimeLearning {
       deadlineMs: this.config.skillEvolutionReviewAttemptDeadlineMinutes * 60_000,
       now: () => this.clock().getTime(),
     });
+    const pendingEpisodeIds = new Set<string>();
 
     // Review eligible learning episodes
     let reviewedEpisodes = 0;
     let episodeReviewFailures = 0;
+    let episodeReviewTimeouts = 0;
+    let episodeOperationalFailures = 0;
     let settlementError: unknown;
 
     try {
       const episodes = Object.values(this.episodeStore.load().episodes);
+      const reviewedOrQueuedBundleIds = this.skillEvolution.getReviewedOrQueuedBundleIds();
       const reviewTasks: Array<{ episode: LearningEpisode; bundle: ReturnType<typeof buildEpisodeEvidenceBundle> }> = [];
       for (const episode of episodes) {
-        if (episode.status !== 'eligible' || this.hasReviewedEpisode(episode)) continue;
+        if (episode.status !== 'eligible' || this.hasReviewedEpisode(episode, reviewedOrQueuedBundleIds)) continue;
+        pendingEpisodeIds.add(episode.episodeId);
+        if (reviewTasks.length >= this.config.skillEvolutionReviewMaxCandidates) continue;
         const candidate = buildLearningEpisodeCandidate(episode);
         const bundle = buildEpisodeEvidenceBundle(
           episode,
@@ -1182,21 +1487,32 @@ export class RuntimeLearning {
           this.evidenceCapsuleStore,
           this.isEpisodeFromExternalSource.bind(this),
         );
-        if (!reviewBudget.admit(bundle)) {
-          Logger.info(`[RuntimeLearning] review budget exhausted; episode ${episode.episodeId} remains resumable`);
-          continue;
-        }
         reviewTasks.push({ episode, bundle });
       }
       await mapWithConcurrency(
         reviewTasks,
         Math.max(1, Math.floor(this.config.skillEvolutionReviewerConcurrency)),
         async ({ episode, bundle }) => {
+          // Charge at dispatch time, not collection time. This prevents queued
+          // concurrency work from starting after the shared wall-clock limit.
+          if (!this.canAdmitReviewWork(reviewBudget, bundle)) {
+            Logger.info(`[RuntimeLearning] review budget exhausted or shutdown drain requested; episode ${episode.episodeId} remains resumable`);
+            return;
+          }
           try {
-            const result = await this.skillEvolution.reviewAndApply(bundle);
+            const result = await this.skillEvolution.reviewAndApply(
+              bundle,
+              wakeSignal,
+            );
+            if (result.queued === 'operational') {
+              const queued = this.skillEvolution.getQueuedReviewState(bundle.bundleId);
+              if (queued?.failureKind === 'branch_timeout') episodeReviewTimeouts++;
+              else episodeOperationalFailures++;
+            }
             this.linkEvidenceCapsuleToAudit(bundle.bundleId, result.audit?.transitionId ?? result.transitionId);
             incrementTransition(transitionsByKind, result.transition);
             reviewedEpisodes++;
+            pendingEpisodeIds.delete(episode.episodeId);
           } catch (error: any) {
             // The candidate remains durable and is retried independently.
             episodeReviewFailures++;
@@ -1226,15 +1542,16 @@ export class RuntimeLearning {
       queueOutcomes: {},
     };
     let queueError: unknown;
-    let reviewTimeoutCount = 0;
-    let reviewFailureCount = 0;
+    let reviewTimeoutCount = episodeReviewTimeouts;
+    let reviewFailureCount = episodeOperationalFailures;
     try {
-      // Queue entries are already durable and independently concurrency-bounded
-      // by SkillEvolutionRuntime. Do not dequeue them when this wake's shared
-      // budget is exhausted; the planner will reschedule the remaining work.
-      if (reviewBudget.canStart({ queue: 'due-review-queue' })) {
-        reviewBudget.admit({ queue: 'due-review-queue' });
-        queueResult = await this.skillEvolution.reviewDueQueueEntries();
+      // Queue entries share the exact same candidate/token/time budget as
+      // eligible episodes. Admission is charged on each frozen queue bundle.
+      if (!this.shutdownDrainRequested && !wakeSignal?.aborted) {
+        queueResult = await this.skillEvolution.reviewDueQueueEntries({
+          signal: wakeSignal,
+          admit: bundle => this.canAdmitReviewWork(reviewBudget, bundle),
+        });
         this.reconcileReassessmentQueueOutcomes(queueResult.queueOutcomes);
       }
     } catch (error) {
@@ -1276,6 +1593,8 @@ export class RuntimeLearning {
     if (hasQueueFailure) errorParts.push(`queue review failed: ${toErrorMessage(queueError)}`);
     if (settlementError) errorParts.push(`settlement error: ${toErrorMessage(settlementError)}`);
 
+    this.persistReviewContinuation(pendingEpisodeIds);
+
     return {
       status,
       ...(errorParts.length > 0 ? { errorMessage: errorParts.join('; ') } : {}),
@@ -1289,6 +1608,11 @@ export class RuntimeLearning {
       reviewFailureCount,
       transitionsByKind,
     };
+  }
+
+  private canAdmitReviewWork(reviewBudget: ReviewBudget, bundle: EvidenceBundle): boolean {
+    if (this.shutdownDrainRequested) return false;
+    return reviewBudget.admit(bundle);
   }
 
   /**
@@ -1463,17 +1787,29 @@ export class RuntimeLearning {
         }
       }
 
-      // Per-source budget (applied to external sources only).
-      const budget = isExternal ? this.externalSourceBudget : undefined;
+      // Every lane, including the internal JSONL lane, has resource/byte/time
+      // limits. Optional external sources use a separately configurable cap.
+      const budget = isExternal ? this.externalSourceBudget : this.internalSourceBudget;
       const sourceStartMs = this.clock().getTime();
       let sourceResourcesExamined = 0;
       let sourceBytesRead = 0;
+      let sourceEventsRead = 0;
+      let sourceReaderElapsedMs = 0;
       let sourceHadFailure = false;
       let sourceBudgetHit = false;
 
       let resources: readonly SessionLogSourceResource[];
       try {
-        resources = adapter.discoverResources();
+        resources = adapter.discoverResources({
+          maxResources: Math.min(
+            budget.maxResourcesPerWake,
+            Math.max(1, this.discoveryQuotas.maxResourcesPerWake - wakeResourcesExamined),
+          ),
+          maxElapsedMs: Math.min(
+            budget.maxElapsedMsPerWake,
+            Math.max(1, this.discoveryQuotas.maxDiscoveryMs - (this.clock().getTime() - discoveryStartMs)),
+          ),
+        });
       } catch (error) {
         // AC3: Discovering resources is source-local failure; keep discovery
         // for other sources and keep OPR independent of this failure.
@@ -1496,13 +1832,13 @@ export class RuntimeLearning {
       let unitsProcessed = 0;
       let advancedResources = 0;
 
-      const readContext: SessionLogSourceReadContext = { orderedResources: resources };
+      const readContextBase: SessionLogSourceReadContext = { orderedResources: resources };
 
       for (const resource of resources) {
         if (discoveryCapped) break;
 
         // ---- AC1: Per-source quota checks ----
-        if (budget) {
+        {
           if (sourceResourcesExamined >= budget.maxResourcesPerWake) {
             sourceBudgetHit = true;
             break;
@@ -1512,7 +1848,7 @@ export class RuntimeLearning {
             break;
           }
           const sourceElapsedMs = this.clock().getTime() - sourceStartMs;
-          if (sourceElapsedMs >= budget.maxElapsedMsPerWake) {
+          if (sourceResourcesExamined > 0 && sourceElapsedMs >= budget.maxElapsedMsPerWake) {
             sourceBudgetHit = true;
             break;
           }
@@ -1528,7 +1864,8 @@ export class RuntimeLearning {
           discoveryCapped = true;
           break;
         }
-        if (this.clock().getTime() - discoveryStartMs > this.discoveryQuotas.maxDiscoveryMs) {
+        if (wakeResourcesExamined > 0
+          && this.clock().getTime() - discoveryStartMs > this.discoveryQuotas.maxDiscoveryMs) {
           discoveryCapped = true;
           break;
         }
@@ -1537,7 +1874,15 @@ export class RuntimeLearning {
         // ---- Read resource ----
         let readResult: SessionLogSourceReadResult;
         try {
-          readResult = adapter.read(resource, readContext);
+          const elapsedMs = Math.max(0, this.clock().getTime() - sourceStartMs);
+          readResult = adapter.read(resource, {
+            ...readContextBase,
+            remainingBudget: {
+              maxResourcesPerWake: Math.max(0, budget.maxResourcesPerWake - sourceResourcesExamined + 1),
+              maxBytesPerWake: Math.max(0, budget.maxBytesPerWake - sourceBytesRead),
+              maxElapsedMsPerWake: Math.max(0, budget.maxElapsedMsPerWake - elapsedMs),
+            },
+          });
         } catch (error) {
           // AC3: Per-source failure recording, NOT OPR
           adapter.markFailed(resource, error);
@@ -1563,14 +1908,16 @@ export class RuntimeLearning {
           (total, unit) => total + Math.max(0, unit.byteRange.end - unit.byteRange.start),
           0,
         );
-        sourceBytesRead += unitBytes;
+        sourceBytesRead += readResult.accounting?.bytes ?? unitBytes;
+        sourceEventsRead += readResult.accounting?.events ?? distillationUnits.length;
+        sourceReaderElapsedMs += readResult.accounting?.elapsedMs ?? 0;
 
         if (distillationUnits.length === 0) {
           // No distillation unit — advance cursor if the adapter reports progress
-          if (readResult.advanced) {
+          if (readResult.advanced || readResult.releaseResource) {
             try {
               adapter.acknowledge(resource, readResult);
-              advancedResources++;
+              if (readResult.advanced) advancedResources++;
               // Success resets failure count for external sources
               if (isExternal) {
                 this.resetExternalSourceFailure(identity.sourceId);
@@ -1599,6 +1946,13 @@ export class RuntimeLearning {
           let batchAdmittedEpisodes = 0;
           let batchContradictionSignals = 0;
           for (let index = 0; index < distillationUnits.length; index++) {
+            if (
+              wakeAdmittedEpisodes + batchAdmittedEpisodes
+              >= this.discoveryQuotas.maxAdmittedEpisodesPerWake
+            ) {
+              discoveryCapped = true;
+              throw new DiscoveryAdmissionQuotaReachedError();
+            }
             const eventIdentity = eventIdentities[index]
               ?? (distillationUnits.length === 1
                 ? (resource.firstEventIdentity ?? { eventId: resource.resourceRef, position: 0 })
@@ -1620,10 +1974,14 @@ export class RuntimeLearning {
               eventId: resource.resourceRef,
               position: index,
             };
-            const episodeIdsFromDiscoveredEvent = this.getExternalEpisodeIdsForEvent(identity, resolvedEventIdentity);
-            const admissionEpisodeIds = ingestionResult.admittedEpisodeIds.length > 0
-              ? ingestionResult.admittedEpisodeIds
-              : episodeIdsFromDiscoveredEvent;
+            const admissionEpisodeIds = isExternal
+              ? this.resolveExternalEpisodeIds(
+                identity,
+                resolvedEventIdentity,
+                ingestUnit,
+                ingestionResult,
+              )
+              : ingestionResult.admittedEpisodeIds;
 
             if (isExternal && admissionEpisodeIds.length > 0) {
               externalProvenanceUpdated ||= this.recordExternalEpisodeProvenance(
@@ -1649,6 +2007,14 @@ export class RuntimeLearning {
             batchContradictionSignals += ingestionResult.contradictionSignalIds.length;
           }
 
+          // Provenance is part of the crash-safe external commit boundary.
+          // Persist it after episodes/capsules but before cursor acknowledgement;
+          // replay is idempotent if the process stops anywhere before this point.
+          if (isExternal && (externalProvenanceUpdated || this.externalEpisodeProvenanceDirty)) {
+            this.saveExternalEpisodeProvenanceState();
+            externalProvenanceUpdated = false;
+          }
+
           adapter.acknowledge(resource, readResult);
           unitsProcessed += distillationUnits.length;
           advancedResources++;
@@ -1660,6 +2026,10 @@ export class RuntimeLearning {
             this.resetExternalSourceFailure(identity.sourceId);
           }
         } catch (error) {
+          if (error instanceof DiscoveryAdmissionQuotaReachedError) {
+            sourceBudgetHit = true;
+            break;
+          }
           // AC3: Per-source failure on ingestion, NOT OPR
           adapter.markFailed(resource, error);
           sourceHadFailure = true;
@@ -1688,13 +2058,22 @@ export class RuntimeLearning {
         status,
         failureState,
         budget,
+        accounting: {
+          events: sourceEventsRead,
+          bytes: sourceBytesRead,
+          elapsedMs: Math.max(sourceReaderElapsedMs, this.clock().getTime() - sourceStartMs),
+        },
+        ...(adapter.getSupportStatus ? { supportStatus: adapter.getSupportStatus() } : {}),
+        ...(adapter.getUnsupportedReason?.()
+          ? { unsupportedReason: adapter.getUnsupportedReason() }
+          : {}),
       });
     }
 
     // Persist external source scheduling state (backoff deadlines) for restart
     // recovery (AC6).
     this.saveExternalSourceSchedulingState();
-    if (externalProvenanceUpdated) {
+    if (externalProvenanceUpdated || this.externalEpisodeProvenanceDirty) {
       this.saveExternalEpisodeProvenanceState();
     }
 
@@ -1854,6 +2233,7 @@ export class RuntimeLearning {
     eventIdentity: SourceEventIdentity,
     episodeIds: readonly string[],
   ): boolean {
+    this.assertExternalEpisodeProvenanceHealthy();
     if (episodeIds.length === 0) return false;
 
     const eventKey = this.getExternalEpisodeProvenanceEventKey(identity, eventIdentity);
@@ -1891,18 +2271,44 @@ export class RuntimeLearning {
       this.externalEpisodeProvenanceByEvent.set(eventKey, nextEventEpisodeIdsList);
       changed = true;
     }
+    if (changed) this.externalEpisodeProvenanceDirty = true;
     return changed;
+  }
+
+  /**
+   * Resolve a replayed event even when the process previously stopped after
+   * episode persistence but before provenance/cursor persistence. External
+   * sanitization makes sourceFilePath deterministic for the fixed event range.
+   */
+  private resolveExternalEpisodeIds(
+    identity: SessionLogSourceIdentity,
+    eventIdentity: SourceEventIdentity,
+    sanitizedUnit: DistillationUnit,
+    ingestion: EvidenceIngestionResult,
+  ): string[] {
+    this.assertExternalEpisodeProvenanceHealthy();
+    if (ingestion.admittedEpisodeIds.length > 0) {
+      return [...ingestion.admittedEpisodeIds];
+    }
+    const indexed = this.getExternalEpisodeIdsForEvent(identity, eventIdentity);
+    if (indexed.length > 0) return indexed;
+    return Object.values(ingestion.state.episodes)
+      .filter(episode => episode.sourceFilePath === sanitizedUnit.filePath)
+      .map(episode => episode.episodeId)
+      .sort();
   }
 
   private getExternalEpisodeIdsForEvent(
     identity: SessionLogSourceIdentity,
     eventIdentity: SourceEventIdentity,
   ): string[] {
+    this.assertExternalEpisodeProvenanceHealthy();
     const eventKey = this.getExternalEpisodeProvenanceEventKey(identity, eventIdentity);
     return [...(this.externalEpisodeProvenanceByEvent.get(eventKey) ?? [])];
   }
 
   private isEpisodeFromExternalSource(episodeId: string): boolean {
+    this.assertExternalEpisodeProvenanceHealthy();
     return this.externalEpisodeProvenance.has(episodeId);
   }
 
@@ -1917,66 +2323,103 @@ export class RuntimeLearning {
   }
 
   private loadExternalEpisodeProvenanceState(): void {
+    if (fs.existsSync(this.externalEpisodeProvenanceCorruptMarkerPath)) {
+      this.externalEpisodeProvenanceStateCorrupt = true;
+      Logger.warning(
+        `[RuntimeLearning] external episode provenance is quarantined: ${this.externalEpisodeProvenanceCorruptMarkerPath}`,
+      );
+      return;
+    }
+
     try {
       if (!fs.existsSync(this.externalEpisodeProvenancePath)) return;
       const raw = fs.readFileSync(this.externalEpisodeProvenancePath, 'utf-8');
-      const parsed = JSON.parse(raw) as Partial<ExternalEpisodeProvenanceState>;
-      if (parsed.schemaVersion !== EXTERNAL_EPISODE_PROVENANCE_SCHEMA_VERSION) return;
-      const episodeToEvent = parsed.episodeToEvent;
-      const eventToEpisodes = parsed.eventToEpisodes;
-      if (!episodeToEvent || typeof episodeToEvent !== 'object') return;
-      for (const [episodeId, eventKey] of Object.entries(episodeToEvent)) {
-        if (typeof episodeId !== 'string' || typeof eventKey !== 'string') continue;
+      const parsed = validateExternalEpisodeProvenanceState(JSON.parse(raw));
+      for (const [episodeId, eventKey] of Object.entries(parsed.episodeToEvent)) {
         this.externalEpisodeProvenance.set(episodeId, eventKey);
       }
-      if (eventToEpisodes && typeof eventToEpisodes === 'object') {
-        for (const [eventKey, episodeIds] of Object.entries(eventToEpisodes)) {
-          if (typeof eventKey !== 'string' || !Array.isArray(episodeIds)) continue;
-          const normalized = Array.from(new Set(episodeIds.filter(id => typeof id === 'string').sort()));
-          this.externalEpisodeProvenanceByEvent.set(eventKey, normalized);
-        }
+      for (const [eventKey, episodeIds] of Object.entries(parsed.eventToEpisodes)) {
+        this.externalEpisodeProvenanceByEvent.set(eventKey, [...episodeIds]);
       }
-    } catch {
-      // Corrupt provenance file — start fresh for runtime safety.
+    } catch (error) {
+      this.externalEpisodeProvenanceStateCorrupt = true;
+      fs.mkdirSync(path.dirname(this.externalEpisodeProvenancePath), { recursive: true });
+      fs.writeFileSync(
+        this.externalEpisodeProvenanceCorruptMarkerPath,
+        JSON.stringify({
+          detectedAt: this.clock().toISOString(),
+          sourcePath: this.externalEpisodeProvenancePath,
+          reason: error instanceof Error ? error.message : String(error),
+        }, null, 2),
+        { encoding: 'utf-8', mode: 0o600 },
+      );
+      const quarantinePath = `${this.externalEpisodeProvenancePath}.corrupt-${Date.now()}`;
+      try {
+        if (fs.existsSync(this.externalEpisodeProvenancePath)) {
+          fs.renameSync(this.externalEpisodeProvenancePath, quarantinePath);
+        }
+      } catch (quarantineError) {
+        Logger.warning(
+          `[RuntimeLearning] failed to quarantine corrupt external provenance: ${(quarantineError as Error).message}`,
+        );
+      }
+      Logger.warning(
+        `[RuntimeLearning] external episode provenance failed closed: ${(error as Error).message}`,
+      );
     }
   }
 
   private saveExternalEpisodeProvenanceState(): void {
+    this.assertExternalEpisodeProvenanceHealthy();
+    const episodeToEvent: Record<string, string> = {};
+    for (const [episodeId, eventKey] of this.externalEpisodeProvenance) {
+      episodeToEvent[episodeId] = eventKey;
+    }
+
+    if (Object.keys(episodeToEvent).length === 0) {
+      if (fs.existsSync(this.externalEpisodeProvenancePath)) {
+        fs.unlinkSync(this.externalEpisodeProvenancePath);
+      }
+      this.externalEpisodeProvenanceDirty = false;
+      return;
+    }
+
+    const eventToEpisodes: Record<string, string[]> = {};
+    for (const [eventKey, episodeIds] of this.externalEpisodeProvenanceByEvent) {
+      if (episodeIds.length > 0) {
+        eventToEpisodes[eventKey] = [...episodeIds].sort();
+      }
+    }
+
+    const payload: ExternalEpisodeProvenanceState = {
+      schemaVersion: EXTERNAL_EPISODE_PROVENANCE_SCHEMA_VERSION,
+      episodeToEvent,
+      eventToEpisodes,
+    };
+    fs.mkdirSync(path.dirname(this.externalEpisodeProvenancePath), { recursive: true });
+    const tmpPath = `${this.externalEpisodeProvenancePath}.${process.pid}.${Date.now()}.tmp`;
     try {
-      const episodeToEvent: Record<string, string> = {};
-      for (const [episodeId, eventKey] of this.externalEpisodeProvenance) {
-        episodeToEvent[episodeId] = eventKey;
-      }
-
-      if (Object.keys(episodeToEvent).length === 0) {
-        if (fs.existsSync(this.externalEpisodeProvenancePath)) {
-          fs.unlinkSync(this.externalEpisodeProvenancePath);
-        }
-        return;
-      }
-
-      const eventToEpisodes: Record<string, string[]> = {};
-      for (const [eventKey, episodeIds] of this.externalEpisodeProvenanceByEvent) {
-        if (episodeIds.length > 0) {
-          eventToEpisodes[eventKey] = [...episodeIds].sort();
-        }
-      }
-
-      const payload: ExternalEpisodeProvenanceState = {
-        schemaVersion: EXTERNAL_EPISODE_PROVENANCE_SCHEMA_VERSION,
-        episodeToEvent,
-        eventToEpisodes,
-      };
-      fs.mkdirSync(path.dirname(this.externalEpisodeProvenancePath), { recursive: true });
-      const tmpPath = `${this.externalEpisodeProvenancePath}.${process.pid}.${Date.now()}.tmp`;
       fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), {
         encoding: 'utf-8',
         mode: 0o600,
       });
       fs.renameSync(tmpPath, this.externalEpisodeProvenancePath);
-    } catch (error) {
-      Logger.warning(
-        `[RuntimeLearning] failed to persist external episode provenance state: ${(error as Error).message}`,
+      this.externalEpisodeProvenanceDirty = false;
+    } finally {
+      try {
+        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+      } catch {
+        // Preserve the original persistence failure; stale temp files are safe.
+      }
+    }
+  }
+
+  private assertExternalEpisodeProvenanceHealthy(): void {
+    if (this.externalEpisodeProvenanceStateCorrupt
+      || fs.existsSync(this.externalEpisodeProvenanceCorruptMarkerPath)) {
+      this.externalEpisodeProvenanceStateCorrupt = true;
+      throw new Error(
+        `external episode provenance is corrupt; restore a verified state and call recoverExternalEpisodeProvenanceState(): ${this.externalEpisodeProvenanceCorruptMarkerPath}`,
       );
     }
   }
@@ -2138,12 +2581,45 @@ export class RuntimeLearning {
     for (const id of episodeIds) this.pendingCuratorObservationEpisodeIds.add(id);
   }
 
-  private hasReviewedEpisode(episode: LearningEpisode): boolean {
+  private hasReviewedEpisode(
+    episode: LearningEpisode,
+    reviewedOrQueuedBundleIds?: ReadonlySet<string>,
+  ): boolean {
     const bundleId = `v3:learning-episode:${episode.episodeId}`;
+    if (reviewedOrQueuedBundleIds) return reviewedOrQueuedBundleIds.has(bundleId);
     return (
       this.skillEvolution.getAudit().some(entry => entry.bundleId === bundleId)
       || this.skillEvolution.getQueuedReviewKind(bundleId) !== undefined
     );
+  }
+
+  /** Persist only derivable continuation metadata; source episodes stay authoritative. */
+  private persistReviewContinuation(episodeIds: ReadonlySet<string>): void {
+    if (episodeIds.size === 0) {
+      try {
+        fs.rmSync(this.reviewContinuationPath, { force: true });
+      } catch (error) {
+        Logger.warning(`[RuntimeLearning] failed to clear review continuation: ${toErrorMessage(error)}`);
+      }
+      return;
+    }
+
+    const now = this.clock();
+    const state: ReviewContinuationState = {
+      schemaVersion: REVIEW_CONTINUATION_SCHEMA_VERSION,
+      episodeIds: [...episodeIds].sort(),
+      nextAttemptAt: new Date(now.getTime() + REVIEW_CONTINUATION_DELAY_MS).toISOString(),
+      updatedAt: now.toISOString(),
+    };
+    const tmp = `${this.reviewContinuationPath}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      fs.mkdirSync(path.dirname(this.reviewContinuationPath), { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify(state, null, 2), { encoding: 'utf8', mode: 0o600 });
+      fs.renameSync(tmp, this.reviewContinuationPath);
+    } catch (error) {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+      Logger.warning(`[RuntimeLearning] failed to persist review continuation: ${toErrorMessage(error)}`);
+    }
   }
 
   /** Read the number of pending expedited curator wakes directly from state. */
@@ -2170,6 +2646,11 @@ export class RuntimeLearning {
     reviewTimeoutCount = 0,
     reviewFailureCount = 0,
     incrementRunCount = true,
+    diagnostics?: {
+      sources: readonly SessionLogSourceReport[];
+      nextWakeTime: number | null;
+      nextWakeReason: string;
+    },
   ): void {
     const recordPath = this.config.heartbeatRecordPath;
     let record: RuntimeLearningHeartbeatRecord;
@@ -2195,7 +2676,26 @@ export class RuntimeLearning {
     record.lastAdvancedFiles = advancedFiles;
     record.lastReviewTimeoutCount = reviewTimeoutCount;
     record.lastReviewFailureCount = reviewFailureCount;
+    record.cumulativeReviewTimeoutCount += reviewTimeoutCount;
+    record.cumulativeReviewFailureCount += reviewFailureCount;
+    delete record.inProgress;
+    if (diagnostics) {
+      record.lastSourceReports = diagnostics.sources;
+      if (diagnostics.nextWakeTime !== null) {
+        record.nextWakeAt = new Date(diagnostics.nextWakeTime).toISOString();
+        record.nextWakeReason = diagnostics.nextWakeReason;
+      } else {
+        delete record.nextWakeAt;
+        delete record.nextWakeReason;
+      }
+    }
+    record.backlog = this.snapshotBacklog(record.nextWakeAt);
 
+    this.writeHeartbeatRecord(record);
+  }
+
+  private writeHeartbeatRecord(record: RuntimeLearningHeartbeatRecord): void {
+    const recordPath = this.config.heartbeatRecordPath;
     try {
       fs.mkdirSync(path.dirname(recordPath), { recursive: true });
       const tmpPath = `${recordPath}.${process.pid}.${Date.now()}.tmp`;
@@ -2207,6 +2707,39 @@ export class RuntimeLearning {
     } catch (error: any) {
       Logger.warning(`[RuntimeLearning] failed to record heartbeat: ${error.message}`);
     }
+  }
+
+  private snapshotBacklog(nextWakeAt?: string): RuntimeLearningBacklogSnapshot {
+    let eligibleEpisodes = 0;
+    let reviewContinuationEpisodes = 0;
+    let operationalReviews = 0;
+    try {
+      const reviewedOrQueuedBundleIds = this.skillEvolution.getReviewedOrQueuedBundleIds();
+      eligibleEpisodes = Object.values(this.episodeStore.load().episodes)
+        .filter(episode => episode.status === 'eligible' && !this.hasReviewedEpisode(episode, reviewedOrQueuedBundleIds))
+        .length;
+    } catch { /* fail-closed store status is reported by the wake */ }
+    try {
+      const continuation = JSON.parse(fs.readFileSync(this.reviewContinuationPath, 'utf8')) as {
+        episodeIds?: unknown;
+      };
+      reviewContinuationEpisodes = Array.isArray(continuation.episodeIds)
+        ? continuation.episodeIds.length
+        : 0;
+    } catch { /* missing continuation means zero */ }
+    try {
+      const queue = JSON.parse(fs.readFileSync(this.config.skillEvolutionReviewQueuePath, 'utf8')) as {
+        operational?: unknown;
+      };
+      operationalReviews = Array.isArray(queue.operational) ? queue.operational.length : 0;
+    } catch { /* missing queue means zero */ }
+    const nextWakeMs = nextWakeAt ? Date.parse(nextWakeAt) : Number.NaN;
+    return {
+      eligibleEpisodes,
+      reviewContinuationEpisodes,
+      operationalReviews,
+      lagMs: Number.isFinite(nextWakeMs) ? Math.max(0, this.clock().getTime() - nextWakeMs) : 0,
+    };
   }
 
   /** Load the heartbeat record for inspection. */
@@ -2253,7 +2786,50 @@ function normalizeHeartbeatRecord(
     lastReviewFailureCount: typeof record.lastReviewFailureCount === 'number' && Number.isFinite(record.lastReviewFailureCount)
       ? Math.max(0, Math.floor(record.lastReviewFailureCount))
       : defaults.lastReviewFailureCount,
+    cumulativeReviewTimeoutCount: typeof record.cumulativeReviewTimeoutCount === 'number'
+      && Number.isFinite(record.cumulativeReviewTimeoutCount)
+      ? Math.max(0, Math.floor(record.cumulativeReviewTimeoutCount))
+      : defaults.cumulativeReviewTimeoutCount,
+    cumulativeReviewFailureCount: typeof record.cumulativeReviewFailureCount === 'number'
+      && Number.isFinite(record.cumulativeReviewFailureCount)
+      ? Math.max(0, Math.floor(record.cumulativeReviewFailureCount))
+      : defaults.cumulativeReviewFailureCount,
+    ...(isHeartbeatInProgress(record.inProgress)
+      ? { inProgress: record.inProgress }
+      : {}),
+    ...(isHeartbeatOwner(record.owner) ? { owner: record.owner } : {}),
+    ...(typeof record.nextWakeAt === 'string' ? { nextWakeAt: record.nextWakeAt } : {}),
+    ...(typeof record.nextWakeReason === 'string' ? { nextWakeReason: record.nextWakeReason } : {}),
+    backlog: isBacklogSnapshot(record.backlog) ? record.backlog : defaults.backlog,
+    lastSourceReports: Array.isArray(record.lastSourceReports)
+      ? record.lastSourceReports as SessionLogSourceReport[]
+      : defaults.lastSourceReports,
   };
+}
+
+function isHeartbeatInProgress(value: unknown): value is NonNullable<RuntimeLearningHeartbeatRecord['inProgress']> {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as { startedAt?: unknown; reasons?: unknown };
+  return typeof candidate.startedAt === 'string' && Array.isArray(candidate.reasons);
+}
+
+function isHeartbeatOwner(value: unknown): value is RuntimeLearningHeartbeatOwner {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<RuntimeLearningHeartbeatOwner>;
+  return Number.isInteger(candidate.pid)
+    && typeof candidate.generation === 'string'
+    && typeof candidate.startedAt === 'string';
+}
+
+function isBacklogSnapshot(value: unknown): value is RuntimeLearningBacklogSnapshot {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<RuntimeLearningBacklogSnapshot>;
+  return [
+    candidate.eligibleEpisodes,
+    candidate.reviewContinuationEpisodes,
+    candidate.operationalReviews,
+    candidate.lagMs,
+  ].every(item => typeof item === 'number' && Number.isFinite(item) && item >= 0);
 }
 
 function normalizeHeartbeatRunStatus(value: unknown): RuntimeLearningHeartbeatRunStatus {

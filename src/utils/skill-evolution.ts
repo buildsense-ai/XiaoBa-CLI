@@ -28,6 +28,7 @@ import {
   SkillEvolutionDeferredReviewEntry,
   SkillEvolutionOperationalReviewFailureEntry,
   upsertDeferredEntry,
+  upsertOperationalFailureTranscript,
 } from './skill-evolution-review-queue';
 import { DistilledKnowledgeCandidate } from './capability-distiller';
 import type { SemanticObservation } from './learning-episode';
@@ -449,6 +450,13 @@ export interface SkillEvolutionQueueReviewResult {
   }>;
 }
 
+export interface SkillEvolutionQueueReviewOptions {
+  /** Shared wake cancellation/deadline signal. */
+  signal?: AbortSignal;
+  /** Charge the actual frozen bundle before dispatching this queue entry. */
+  admit?: (bundle: EvidenceBundle) => boolean;
+}
+
 export interface TransitionJournal {
   schemaVersion: typeof SKILL_EVOLUTION_SCHEMA_VERSION;
   transitionId: string;
@@ -482,8 +490,8 @@ export class SkillEvolutionRuntime {
     recoverTransitionJournal(options);
   }
 
-  async reviewAndApply(bundle: EvidenceBundle): Promise<SkillEvolutionResult> {
-    const { result } = await this.reviewAndApplyWithRetries(bundle);
+  async reviewAndApply(bundle: EvidenceBundle, signal?: AbortSignal): Promise<SkillEvolutionResult> {
+    const { result } = await this.reviewAndApplyWithRetries(bundle, undefined, true, signal);
     return result;
   }
 
@@ -497,6 +505,21 @@ export class SkillEvolutionRuntime {
     return this.getQueuedReviewState(bundleId)?.kind;
   }
 
+  /** One-pass durable disposition snapshot for bounded batch admission. */
+  getReviewedOrQueuedBundleIds(): Set<string> {
+    const bundleIds = new Set(
+      this.getAudit()
+        .map(entry => entry.bundleId)
+        .filter((bundleId): bundleId is string => typeof bundleId === 'string'),
+    );
+    const queuePath = this.options.reviewQueuePath;
+    if (!queuePath) return bundleIds;
+    const queue = loadReviewQueueState(queuePath);
+    for (const entry of queue.deferred) bundleIds.add(entry.bundleId);
+    for (const entry of queue.operational) bundleIds.add(entry.bundleId);
+    return bundleIds;
+  }
+
   /**
    * Return the durable retry state for a queued review. Reassessment uses the
    * same queue as ordinary capability review, so the manifest can mirror the
@@ -506,6 +529,7 @@ export class SkillEvolutionRuntime {
     kind: 'deferred' | 'operational';
     nextRetryAt?: string;
     reason?: string;
+    failureKind?: OperationalReviewFailureKind;
   } | undefined {
     const queuePath = this.options.reviewQueuePath;
     if (!queuePath) return undefined;
@@ -517,6 +541,7 @@ export class SkillEvolutionRuntime {
       kind: 'operational',
       nextRetryAt: operational.nextRetryAt,
       reason: operational.failureMessage,
+      failureKind: operational.failureKind,
     };
     return undefined;
   }
@@ -525,28 +550,41 @@ export class SkillEvolutionRuntime {
     bundle: EvidenceBundle,
     sharedBranchTranscriptPaths?: string[],
     persistQueue = true,
+    reviewSignal?: AbortSignal,
   ): Promise<{ result: SkillEvolutionResult; branchTranscriptPaths: string[]; bundle: EvidenceBundle }> {
     const branchTranscriptPaths = sharedBranchTranscriptPaths ?? [];
     let reviewBundle = freezeClone(bundle);
-    const sharedReviewTurnBudget: SharedReviewTurnBudget = {
-      remainingTurns: this.getReviewAttemptMaxTurns(),
-    };
     const attemptController = new AbortController();
-    const externalSignal = this.options.reviewAttemptSignal;
+    const externalSignals = [...new Set(
+      [this.options.reviewAttemptSignal, reviewSignal].filter(
+        (signal): signal is AbortSignal => signal !== undefined,
+      ),
+    )];
+    let cancelledByRuntimeShutdown = false;
     const attemptDeadlineMs = this.getEffectiveConfig().reviewAttemptDeadlineMs;
     const attemptDeadlineTimer = setTimeout(
       () => attemptController.abort('review-timeout'),
       Math.max(1, attemptDeadlineMs),
     );
-    let removeExternalAbort: (() => void) | undefined;
-    if (externalSignal?.aborted) {
-      attemptController.abort(this.resolveAbortReason(externalSignal.reason));
-    } else if (externalSignal) {
+    // A review deadline must bound an in-flight review, but it must not keep a
+    // connector process alive after the review has completed or shutdown has
+    // begun.
+    attemptDeadlineTimer.unref?.();
+    const removeExternalAbortListeners: Array<() => void> = [];
+    for (const externalSignal of externalSignals) {
+      if (externalSignal.aborted) {
+        const reason = this.resolveAbortReason(externalSignal.reason);
+        cancelledByRuntimeShutdown = reason === 'runtime-shutdown';
+        attemptController.abort(reason);
+        break;
+      }
       const onAbort = () => {
-        attemptController.abort(this.resolveAbortReason(externalSignal.reason));
+        const reason = this.resolveAbortReason(externalSignal.reason);
+        cancelledByRuntimeShutdown = reason === 'runtime-shutdown';
+        attemptController.abort(reason);
       };
       externalSignal.addEventListener('abort', onAbort, { once: true });
-      removeExternalAbort = () => externalSignal.removeEventListener('abort', onAbort);
+      removeExternalAbortListeners.push(() => externalSignal.removeEventListener('abort', onAbort));
     }
     try {
       for (let retry = 0; retry <= MAX_OPTIMISTIC_COMMIT_RETRIES; retry++) {
@@ -554,7 +592,6 @@ export class SkillEvolutionRuntime {
           const result = await this.reviewAndApplyOnce(
             reviewBundle,
             branchTranscriptPaths,
-            sharedReviewTurnBudget,
             attemptController.signal,
           );
           if (persistQueue && result.transition === 'defer' && this.options.reviewQueuePath) {
@@ -578,6 +615,10 @@ export class SkillEvolutionRuntime {
           }
           return { result, branchTranscriptPaths, bundle: reviewBundle };
         } catch (error) {
+          // A wake/shutdown cancellation leaves the original eligible episode
+          // or queue entry untouched. It must not manufacture a new OPR write
+          // after the owning scheduler has begun draining.
+          if (cancelledByRuntimeShutdown) throw error;
           const operationalFailure = this.extractOperationalFailure(error);
           if (operationalFailure) {
             const queuePath = this.options.reviewQueuePath;
@@ -611,14 +652,19 @@ export class SkillEvolutionRuntime {
       }
     } finally {
       clearTimeout(attemptDeadlineTimer);
-      removeExternalAbort?.();
+      for (const remove of removeExternalAbortListeners) remove();
     }
     throw new Error('Skill Evolution exceeded optimistic commit retries.');
   }
 
   private buildOperationalReviewError(error: unknown, branchTranscriptPaths: string[]): OperationalReviewError {
+    const transcriptPaths = uniqueStrings(branchTranscriptPaths);
     if (error instanceof OperationalReviewError) {
-      return error;
+      return new OperationalReviewError(
+        error.kind,
+        error.message,
+        uniqueStrings([...transcriptPaths, ...error.transcriptPaths]),
+      );
     }
     if (error instanceof BranchSessionAbortError) {
       const kind: OperationalReviewFailureKind = error.reason === 'runtime-shutdown'
@@ -627,7 +673,7 @@ export class SkillEvolutionRuntime {
       return new OperationalReviewError(
         kind,
         error.message,
-        branchTranscriptPaths[branchTranscriptPaths.length - 1],
+        transcriptPaths,
       );
     }
 
@@ -643,7 +689,7 @@ export class SkillEvolutionRuntime {
     return new OperationalReviewError(
       kind,
       message,
-      branchTranscriptPaths[branchTranscriptPaths.length - 1],
+      transcriptPaths,
     );
   }
 
@@ -732,6 +778,7 @@ export class SkillEvolutionRuntime {
       this.getEffectiveConfig().operationalRetryMaxMs,
       now,
     );
+    this.appendOperationalFailureTranscripts(queue, snapshotBundle.bundleId, error.transcriptPaths);
     saveReviewQueueState(queuePath, queue);
     return {
       transition: 'reject_candidate',
@@ -755,7 +802,19 @@ export class SkillEvolutionRuntime {
     return freezeClone(bundle);
   }
 
-  private async reviewDueQueueEntriesInternal(): Promise<SkillEvolutionQueueReviewResult> {
+  private appendOperationalFailureTranscripts(
+    queue: SkillEvolutionReviewQueueState,
+    bundleId: string,
+    transcriptPaths: readonly string[],
+  ): void {
+    for (const transcriptPath of transcriptPaths) {
+      upsertOperationalFailureTranscript(queue, bundleId, transcriptPath);
+    }
+  }
+
+  private async reviewDueQueueEntriesInternal(
+    options: SkillEvolutionQueueReviewOptions = {},
+  ): Promise<SkillEvolutionQueueReviewResult> {
     const queuePath = this.options.reviewQueuePath;
     if (!queuePath) {
       return {
@@ -815,25 +874,40 @@ export class SkillEvolutionRuntime {
     };
 
     await mapWithConcurrency(tasks, config.reviewerConcurrency, async item => {
+      if (options.signal?.aborted) return;
+      if (options.admit && !options.admit(item.entry.bundle)) return;
       if (item.type === 'deferred') {
-        await this.reviewDueDeferredEntry(queue, item.entry as SkillEvolutionDeferredReviewEntry, result, config);
+        await this.reviewDueDeferredEntry(
+          queue,
+          item.entry as SkillEvolutionDeferredReviewEntry,
+          result,
+          config,
+          options.signal,
+        );
         return;
       }
-      await this.reviewDueOperationalEntry(queue, item.entry as SkillEvolutionOperationalReviewFailureEntry, result, config);
+      await this.reviewDueOperationalEntry(
+        queue,
+        item.entry as SkillEvolutionOperationalReviewFailureEntry,
+        result,
+        config,
+        options.signal,
+      );
     });
 
     saveReviewQueueState(queuePath, queue);
     return result;
   }
 
-  async reviewDueQueueEntries(): Promise<SkillEvolutionQueueReviewResult> {
-    return this.reviewDueQueueEntriesInternal();
+  async reviewDueQueueEntries(
+    options: SkillEvolutionQueueReviewOptions = {},
+  ): Promise<SkillEvolutionQueueReviewResult> {
+    return this.reviewDueQueueEntriesInternal(options);
   }
 
   private async reviewAndApplyOnce(
     frozenBundle: EvidenceBundle,
     branchTranscriptPaths: string[],
-    sharedReviewTurnBudget: SharedReviewTurnBudget,
     attemptSignal?: AbortSignal,
   ): Promise<SkillEvolutionResult> {
     validateEvidenceBundle(frozenBundle);
@@ -846,12 +920,13 @@ export class SkillEvolutionRuntime {
         round,
         previousDraft,
         issues,
-        sharedReviewTurnBudget,
+        { remainingTurns: this.getReviewAttemptMaxTurns() },
         attemptSignal,
       );
       let draft: SkillDraft;
       try {
         draft = await author.run();
+        this.throwIfReviewAborted(attemptSignal);
       } catch (error) {
         if (author.transcriptPath) branchTranscriptPaths.push(author.transcriptPath);
         throw this.buildOperationalReviewError(error, branchTranscriptPaths);
@@ -871,7 +946,7 @@ export class SkillEvolutionRuntime {
           throw new OperationalReviewError(
             'invalid_completion_schema',
             `Skill Author returned an invalid completion schema: ${draftIssues.map(issue => issue.message).join(' ')}`,
-            author.transcriptPath ?? undefined,
+            author.transcriptPath ? [author.transcriptPath] : [],
           );
         }
         const result: SkillVerifierResult = {
@@ -886,12 +961,13 @@ export class SkillEvolutionRuntime {
         frozenBundle,
         draft,
         round,
-        sharedReviewTurnBudget,
+        { remainingTurns: this.getReviewAttemptMaxTurns() },
         attemptSignal,
       );
       let verification: SkillVerifierResult;
       try {
         verification = normalizeVerifierResult(await verifier.run());
+        this.throwIfReviewAborted(attemptSignal);
       } catch (error) {
         if (verifier.transcriptPath) branchTranscriptPaths.push(verifier.transcriptPath);
         throw this.buildOperationalReviewError(error, branchTranscriptPaths);
@@ -924,9 +1000,15 @@ export class SkillEvolutionRuntime {
     entry: SkillEvolutionDeferredReviewEntry,
     result: SkillEvolutionQueueReviewResult,
     config: SkillEvolutionEffectiveConfig,
+    signal?: AbortSignal,
   ): Promise<void> {
     try {
-      const { result: reviewed, bundle: reviewedBundle } = await this.reviewAndApplyWithRetries(entry.bundle, [], false);
+      const { result: reviewed, bundle: reviewedBundle } = await this.reviewAndApplyWithRetries(
+        entry.bundle,
+        [],
+        false,
+        signal,
+      );
       removeDeferredByBundleId(queue, entry.bundle.bundleId);
       if (reviewed.transition === 'defer' || reviewed.queued === 'deferred') {
         const relevantReadSet = reviewed.verifier
@@ -954,6 +1036,7 @@ export class SkillEvolutionRuntime {
       result.reviewed++;
       result.deferredReviewed++;
     } catch (error) {
+      if (signal?.aborted && this.resolveAbortReason(signal.reason) === 'runtime-shutdown') return;
       const operationalError = this.extractOperationalFailure(error);
       if (!operationalError) {
         throw error;
@@ -969,6 +1052,11 @@ export class SkillEvolutionRuntime {
         config.operationalRetryMs,
         config.operationalRetryMaxMs,
         new Date(),
+      );
+      this.appendOperationalFailureTranscripts(
+        queue,
+        entry.bundle.bundleId,
+        operationalError.transcriptPaths,
       );
       const queued = findOperationalByBundleId(queue, entry.bundle.bundleId);
       result.queueOutcomes![entry.bundle.bundleId] = {
@@ -988,9 +1076,15 @@ export class SkillEvolutionRuntime {
     entry: SkillEvolutionOperationalReviewFailureEntry,
     result: SkillEvolutionQueueReviewResult,
     config: SkillEvolutionEffectiveConfig,
+    signal?: AbortSignal,
   ): Promise<void> {
     try {
-      const { result: reviewed, bundle: reviewedBundle } = await this.reviewAndApplyWithRetries(entry.bundle, [], false);
+      const { result: reviewed, bundle: reviewedBundle } = await this.reviewAndApplyWithRetries(
+        entry.bundle,
+        [],
+        false,
+        signal,
+      );
       removeOperationalFailureByBundleId(queue, entry.bundle.bundleId);
       if (reviewed.queued === 'operational') {
         addOrUpdateOperationalFailure(
@@ -1033,6 +1127,7 @@ export class SkillEvolutionRuntime {
       incrementTransitionCount(result.transitionsByKind, reviewed.transition);
       result.reviewed++;
     } catch (error) {
+      if (signal?.aborted && this.resolveAbortReason(signal.reason) === 'runtime-shutdown') return;
       const operationalError = this.extractOperationalFailure(error);
       if (!operationalError) {
         throw error;
@@ -1047,6 +1142,11 @@ export class SkillEvolutionRuntime {
         config.operationalRetryMs,
         config.operationalRetryMaxMs,
         new Date(),
+      );
+      this.appendOperationalFailureTranscripts(
+        queue,
+        entry.bundle.bundleId,
+        operationalError.transcriptPaths,
       );
       const queued = findOperationalByBundleId(queue, entry.bundle.bundleId);
       result.queueOutcomes![entry.bundle.bundleId] = {
@@ -1193,6 +1293,14 @@ export class SkillEvolutionRuntime {
     if (reason === 'review-timeout') return 'review-timeout';
     if (reason === 'turn_budget_exhausted') return 'turn_budget_exhausted';
     return 'runtime-shutdown';
+  }
+
+  private throwIfReviewAborted(signal?: AbortSignal): void {
+    if (!signal?.aborted) return;
+    throw new BranchSessionAbortError(
+      this.resolveAbortReason(signal.reason),
+      'Review branch was aborted before persistence.',
+    );
   }
 
   private createAuthorBranch(
@@ -1527,13 +1635,20 @@ class ReviewCommitConflictError extends Error {
 }
 
 class OperationalReviewError extends Error {
+  public readonly transcriptPaths: string[];
+
   constructor(
     public readonly kind: OperationalReviewFailureKind,
     message: string,
-    public readonly transcriptPath?: string,
+    transcriptPaths: readonly string[] = [],
   ) {
     super(message);
     this.name = 'OperationalReviewError';
+    this.transcriptPaths = uniqueStrings(transcriptPaths);
+  }
+
+  get transcriptPath(): string | undefined {
+    return this.transcriptPaths[this.transcriptPaths.length - 1];
   }
 }
 

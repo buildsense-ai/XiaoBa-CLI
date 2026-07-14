@@ -161,7 +161,7 @@ function restoreProcessEnv(saved: NodeJS.ProcessEnv): void {
 // ---------------------------------------------------------------------------
 
 describe('DistillationHeartbeatScheduler', () => {
-  test('fences ownership when graceful drain reaches its deadline', async () => {
+  test('keeps ownership fenced until an uncooperative wake actually exits', async () => {
     let releaseWake!: () => void;
     let released = false;
     const runtime = {
@@ -178,12 +178,42 @@ describe('DistillationHeartbeatScheduler', () => {
     const scheduler = new DistillationHeartbeatScheduler(os.tmpdir(), runtime, ownerLock);
     (scheduler as any).getSharedReviewDeadlineMs = () => 10;
     const wake = scheduler.runHeartbeat('manual');
-    await scheduler.stop();
-    assert.equal(released, true, 'deadline must fence the owner before shutdown returns');
+    const clean = await scheduler.stop();
+    assert.equal(clean, false);
+    assert.equal(released, false, 'deadline must not expose a live old writer to takeover');
     releaseWake();
     await wake;
+    await Promise.resolve();
+    assert.equal(released, true, 'ownership releases after the old wake is no longer writing');
   });
   describe('configuration', () => {
+    test('anchors every durable heartbeat path to the explicit Runtime root', () => {
+      const appRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-app-root-'));
+      const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-runtime-root-'));
+      try {
+        const config = getDistillationHeartbeatConfig(appRoot, {
+          DISTILLATION_HEARTBEAT_ENABLED: 'true',
+          XIAOBA_RUNTIME_ROOT: runtimeRoot,
+        });
+        for (const durablePath of [
+          config.logsRoot,
+          config.stateFilePath,
+          config.heartbeatRecordPath,
+          config.learningEpisodeStorePath,
+          config.skillEvolutionRegistryPath,
+          config.skillEvolutionAuditPath,
+          config.skillEvolutionReviewQueuePath,
+          config.evidenceCapsulePath,
+        ]) {
+          assert.equal(durablePath.startsWith(`${runtimeRoot}${path.sep}`), true, durablePath);
+          assert.equal(durablePath.startsWith(`${appRoot}${path.sep}`), false, durablePath);
+        }
+      } finally {
+        fs.rmSync(appRoot, { recursive: true, force: true });
+        fs.rmSync(runtimeRoot, { recursive: true, force: true });
+      }
+    });
+
     test('defaults to a six-hour cadence and enabled', () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-cfg-'));
       const saved = { ...process.env };
@@ -980,10 +1010,10 @@ describe('DistillationHeartbeatScheduler', () => {
         ] = await Promise.all([manual, settlementWake, curatorWake, blocked]);
 
         assert.equal(startupResult.ran, true);
-        assert.equal(manualResult.ran, false);
-        assert.equal(settlementResult.ran, false);
-        assert.equal(curatorResult.ran, false);
-        assert.equal(blockedResult.ran, false);
+        assert.equal(manualResult.ran, true);
+        assert.equal(settlementResult.ran, true);
+        assert.equal(curatorResult.ran, true);
+        assert.equal(blockedResult.ran, true);
         assert.deepEqual(calls[0]!.reasons.sort(), ['startup']);
         assert.deepEqual(calls[1]!.reasons.sort(), ['curator', 'manual', 'operational-retry', 'settlement-deadline']);
         assert.equal(calls[0]!.coalesced, false, 'first wake should not be flagged as coalesced');
@@ -1036,11 +1066,11 @@ describe('DistillationHeartbeatScheduler', () => {
         await scheduler.start();
         await Promise.resolve();
 
-        const manualResult = await scheduler.runHeartbeat('manual');
-        assert.equal(manualResult.ran, false);
-
+        const manual = scheduler.runHeartbeat('manual');
         startupWakeStarted.resolve();
         await secondWakeStarted.promise;
+        const manualResult = await manual;
+        assert.equal(manualResult.ran, true);
         await scheduler.stop();
 
         assert.equal(calls.length, 2);
@@ -1181,7 +1211,7 @@ describe('DistillationHeartbeatScheduler', () => {
   });
 
   describe('catch-up behavior', () => {
-    test('debounces session-log append notifications into one discovery wake', async () => {
+    test('requestDiscoveryWake is a compatibility no-op so ordinary turns do not bypass the heartbeat boundary', async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-session-append-wake-'));
       const saved = { ...process.env };
       const calls: HeartbeatReason[][] = [];
@@ -1217,7 +1247,7 @@ describe('DistillationHeartbeatScheduler', () => {
         scheduler.requestDiscoveryWake();
         await sleep(150);
 
-        assert.deepEqual(calls, [['session-log-append']]);
+        assert.deepEqual(calls, []);
         await scheduler.stop();
       } finally {
         restoreProcessEnv(saved);
@@ -1225,7 +1255,7 @@ describe('DistillationHeartbeatScheduler', () => {
       }
     });
 
-    test('polls the runtime signal so a different connector process can wake the owner', async () => {
+    test('touching the append-signal file does not wake the owner outside startup/scheduled/manual boundaries', async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-dh-cross-process-wake-'));
       const saved = { ...process.env };
       const calls: HeartbeatReason[][] = [];
@@ -1261,15 +1291,12 @@ describe('DistillationHeartbeatScheduler', () => {
         await scheduler.start();
         await sleep(20);
         const signalPath = path.join(root, 'data', 'session-log-append.signal');
-        const callsBeforeAppend = calls.length;
+        fs.mkdirSync(path.dirname(signalPath), { recursive: true });
 
         fs.appendFileSync(signalPath, 'append\n', 'utf8');
         await sleep(400);
 
-        assert.ok(
-          calls.slice(callsBeforeAppend).some(reasons => reasons.includes('session-log-append')),
-          'runtime signal should schedule a discovery wake in the owner process',
-        );
+        assert.deepEqual(calls, [['startup']]);
         await scheduler.stop();
       } finally {
         restoreProcessEnv(saved);

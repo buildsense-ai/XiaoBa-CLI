@@ -3,6 +3,7 @@ import { ConfigManager } from '../utils/config';
 import { FeishuBot } from '../feishu';
 import { FeishuConfig } from '../feishu/types';
 import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/runtime-command-support';
+import { isRuntimeShutdownMessage } from '../utils/runtime-shutdown-message';
 
 /**
  * CLI 命令：catsco feishu / xiaoba feishu
@@ -55,15 +56,22 @@ export async function feishuCommand(): Promise<void> {
   }
 
   const bot = new FeishuBot(feishuConfig);
+  let shuttingDown = false;
 
   // 优雅退出
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     await stopRuntimeCommandSupport();
     await bot.destroy();
     process.exit(0);
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+  process.on('message', message => {
+    if (isRuntimeShutdownMessage(message)) void shutdown();
+  });
+  process.on('disconnect', () => { void shutdown(); });
 
   await bot.start();
   await startRuntimeCommandSupport();

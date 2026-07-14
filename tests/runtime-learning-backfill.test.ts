@@ -537,6 +537,77 @@ test('explicit backfill drains after one bounded slice and resumes durably', asy
   }
 });
 
+test('explicit backfill and ordinary wakes share one state writer', async () => {
+  const env = setupEnv();
+  try {
+    let releaseAuthor!: () => void;
+    const authorBlocked = new Promise<void>(resolve => { releaseAuthor = resolve; });
+    let authorStarted!: () => void;
+    const authorStartedPromise = new Promise<void>(resolve => { authorStarted = resolve; });
+    const fixture = env.createRuntime({
+      authorFixture: async ({ bundle }) => {
+        authorStarted();
+        await authorBlocked;
+        return {
+          body: 'Serialize explicit backfill with ordinary wakes.',
+          envelope: {
+            decision: 'create_current_skill' as const,
+            routingName: 'serialized-backfill-review',
+            description: 'Backfill review holds the sole state writer until it finishes.',
+            evidenceRefs: [...bundle.completionEvidence, ...bundle.settlementEvidence].map(ref => ref.ref),
+            rationale: 'ordinary wakes must wait behind the active explicit backfill writer',
+          },
+        };
+      },
+      verifierFixture: () => ({
+        decision: 'accept' as const,
+        transition: 'create_current_skill' as const,
+        issues: [],
+        rationale: 'serialized writer path accepted',
+        registryReadSet: [],
+      }),
+    });
+    const request = makeRequest({
+      operationId: 'serialized-backfill-writer',
+      provider: 'codex',
+      sourceId: 'codex-serialized-writer',
+      resourceRefs: ['conversation-serialized'],
+      endPosition: 0,
+    });
+    const source = new FixtureBackfillSource([
+      {
+        resourceRef: 'conversation-serialized',
+        position: 0,
+        unit: buildExternalUnit(env.root, 'external://codex/conversation/serialized.jsonl'),
+        contentHash: 'serialized-hash-0',
+      },
+    ], {
+      provider: 'codex',
+      sourceId: 'codex-serialized-writer',
+    });
+
+    const backfill = fixture.runtime.runExternalBackfill(request, source);
+    await authorStartedPromise;
+
+    let wakeResolved = false;
+    const wake = fixture.runtime.wake('manual').then(result => {
+      wakeResolved = true;
+      return result;
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(wakeResolved, false, 'ordinary wake must wait until explicit backfill releases the writer');
+
+    releaseAuthor();
+    const [backfillResult, wakeResult] = await Promise.all([backfill, wake]);
+    assert.equal(backfillResult.backfill.status, 'completed');
+    assert.equal(backfillResult.review.status, 'succeeded');
+    assert.equal(wakeResult.ran, true);
+  } finally {
+    env.restore();
+  }
+});
+
 test('explicit backfill retries through the shared queue and remains idempotent on rerun', async () => {
   const env = setupEnv();
   try {

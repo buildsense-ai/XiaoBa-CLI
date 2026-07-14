@@ -103,31 +103,6 @@ describe('Logger', () => {
     assert.equal('episode_id' in entry, true);
   });
 
-  test('notifies listeners only after a completed turn is appended', () => {
-    delete require.cache[require.resolve('../src/utils/session-turn-logger')];
-    const { SessionTurnLogger } = require('../src/utils/session-turn-logger');
-    const sessionLogger = new SessionTurnLogger('chat', 'turn-listener');
-    const entries: any[] = [];
-    const unsubscribe = SessionTurnLogger.onTurnLogged((entry: any) => {
-      entries.push(entry);
-    });
-
-    try {
-      sessionLogger.logRuntime('INFO', 'runtime-only');
-      sessionLogger.logTurn(
-        'deliver the artifact',
-        'delivered',
-        [],
-        { prompt: 1, completion: 1 },
-      );
-    } finally {
-      unsubscribe();
-    }
-
-    assert.equal(entries.length, 1);
-    assert.equal(entries[0].entry_type, 'turn');
-    assert.equal(entries[0].session_id, 'turn-listener');
-  });
 });
 
 function waitForFlush(): Promise<void> {

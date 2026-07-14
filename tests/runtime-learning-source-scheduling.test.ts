@@ -28,7 +28,10 @@ import * as path from 'node:path';
 
 import { RuntimeLearning } from '../src/utils/runtime-learning';
 import { EvidenceIngestor } from '../src/utils/evidence-ingestor';
-import { LearningEpisodeStore } from '../src/utils/learning-episode';
+import {
+  LEARNING_EPISODE_SCHEMA_VERSION,
+  LearningEpisodeStore,
+} from '../src/utils/learning-episode';
 import { DueWorkPlanner } from '../src/utils/due-work-planner';
 import { SkillEvolutionRuntime } from '../src/utils/skill-evolution';
 import { SkillUsageCurator } from '../src/utils/skill-usage-curator';
@@ -171,10 +174,14 @@ class FakeSessionLogSourceAdapter implements SessionLogSourceAdapter {
 // ---------------------------------------------------------------------------
 
 class StubEvidenceIngestor {
-  ingest(_unit: DistillationUnit): { admittedEpisodeIds: string[]; contradictionSignalIds: string[] } {
+  ingest(_unit: DistillationUnit) {
     return {
       admittedEpisodeIds: [],
       contradictionSignalIds: [],
+      state: {
+        schemaVersion: LEARNING_EPISODE_SCHEMA_VERSION,
+        episodes: {},
+      },
     };
   }
 }
@@ -330,6 +337,39 @@ describe('Issue #77 — Source Work Lane scheduling and failure isolation', () =
       // property (cursor resumability depends on adapter cursor tracking).
       const result2 = await runtimeLearning.wake('scheduled');
       assert.equal(result2.discovery.advancedFiles, 3, 'budget still enforced on 2nd wake');
+    });
+
+    test('internal lane uses the same quota and reports byte/event accounting', async () => {
+      const internal = new FakeSessionLogSourceAdapter({
+        sourceId: 'internal-bounded',
+        category: 'internal',
+        resourceCount: 10,
+      });
+      const runtimeLearning = new RuntimeLearning({
+        workingDirectory: env.root,
+        evidenceIngestor: new StubEvidenceIngestor() as unknown as EvidenceIngestor,
+        learningEpisodeStore: env.episodeStore,
+        skillEvolution: env.skillEvolution,
+        curator: env.curator,
+        planner: env.planner,
+        sessionLogSources: [internal],
+        internalSourceBudget: {
+          maxResourcesPerWake: 2,
+          maxBytesPerWake: 1_000,
+          maxElapsedMsPerWake: 60_000,
+        },
+      });
+
+      const result = await runtimeLearning.wake('startup');
+      const report = result.discovery.sources[0]!;
+      assert.equal(report.status, 'quota_reached');
+      assert.equal(report.advancedResources, 2);
+      assert.deepEqual(report.accounting, {
+        events: 2,
+        bytes: 200,
+        elapsedMs: report.accounting!.elapsedMs,
+      });
+      assert.ok(report.accounting!.elapsedMs >= 0);
     });
 
     test('elapsed time quota stops an external source once the time budget is consumed', async () => {

@@ -64,6 +64,55 @@ describe('dashboard service manager graceful drain (ADR 0041)', () => {
     }
   });
 
+  test('stop() keeps a small post-deadline grace so the runtime can persist timeout state before force-kill', async () => {
+    const envKeys = [
+      'XIAOBA_APP_ROOT',
+      'XIAOBA_IS_PACKAGED',
+      'XIAOBA_NODE_EXECUTABLE',
+      'XIAOBA_RUNTIME_ROOT',
+      'XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES',
+      'npm_node_execpath',
+    ];
+    const previousEnv = new Map(envKeys.map(key => [key, process.env[key]]));
+    const marker = path.join(os.tmpdir(), `xiaoba-drain-grace-${process.pid}-${Date.now()}.txt`);
+
+    process.env.XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES = '0.05';
+    process.env.XIAOBA_APP_ROOT = process.cwd();
+    process.env.XIAOBA_IS_PACKAGED = '0';
+    delete process.env.XIAOBA_RUNTIME_ROOT;
+    process.env.npm_node_execpath = process.execPath;
+
+    try {
+      const manager = new ServiceManager(process.cwd());
+      (manager as any).forceKillMs = 250;
+      const serviceRecord = (manager as any).services.get('feishu');
+      serviceRecord.info.command = process.execPath;
+      serviceRecord.info.args = [
+        '-e',
+        `const fs=require('fs'); process.on('SIGTERM', () => setTimeout(() => { fs.writeFileSync(${JSON.stringify(marker)}, 'persisted'); process.exit(0); }, 150)); setInterval(() => {}, 1000);`,
+      ];
+
+      const stopped = new Promise<void>(resolve => {
+        manager.once('service-stopped', () => resolve());
+      });
+
+      manager.start('feishu');
+      await new Promise(resolve => setTimeout(resolve, 300));
+      manager.stop('feishu');
+      await stopped;
+
+      assert.equal(fs.existsSync(marker), true);
+      assert.equal(manager.getService('feishu')?.status, 'stopped');
+    } finally {
+      try { fs.rmSync(marker, { force: true }); } catch {}
+      for (const key of envKeys) {
+        const value = previousEnv.get(key);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   test('stop() lets a graceful process exit on SIGTERM without force-kill', async () => {
     const envKeys = [
       'XIAOBA_APP_ROOT',
@@ -113,7 +162,9 @@ describe('dashboard service manager graceful drain (ADR 0041)', () => {
 
   test('stopAll() sends SIGTERM before force-kill on non-Windows', async () => {
     if (process.platform === 'win32') {
-      // Windows uses taskkill /F exclusively; skip the SIGTERM drain test.
+      // Windows ChildProcess signal delivery cannot prove that the child
+      // handled SIGTERM; source-level behavior is covered by the shared stop
+      // primitive and taskkill /F remains deadline-only.
       return;
     }
 

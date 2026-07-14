@@ -14,14 +14,21 @@ export interface ReviewBudget {
   admit(serializedInput: unknown): boolean;
 }
 
+const MAX_REVIEW_BRANCHES = 4;
+const MAX_MODEL_TURNS_PER_BRANCH = 4;
+
 /**
- * Estimate input tokens without claiming provider accounting. JSON bytes are
- * rounded up at four bytes/token and charged before a review starts. This is
- * deliberately conservative and works for both eligible and queued bundles.
+ * Reserve bundle-derived input tokens without claiming provider accounting.
+ * A BPE token cannot encode less than one byte of the UTF-8 payload, so raw
+ * bytes are a safe upper bound for one serialization. The bounded review
+ * protocol permits two Author/Verifier rounds, with at most four model turns
+ * in each branch. Charging sixteen copies covers the fixed bundle appearing
+ * in every possible model request.
+ * Provider-reported completion usage remains observable separately.
  */
 export function estimateReviewPromptTokens(input: unknown): number {
   const bytes = Buffer.byteLength(JSON.stringify(input ?? null), 'utf8');
-  return Math.max(1, Math.ceil(bytes / 4));
+  return Math.max(1, bytes) * MAX_REVIEW_BRANCHES * MAX_MODEL_TURNS_PER_BRANCH;
 }
 
 export function createReviewBudget(config: ReviewBudgetConfig): ReviewBudget {

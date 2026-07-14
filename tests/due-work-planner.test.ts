@@ -18,7 +18,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { DueWorkPlanner, DEFAULT_MIN_DUE_WORK_WAKE_DELAY_MS } from '../src/utils/due-work-planner';
+import {
+  DueWorkPlanner,
+  DEFAULT_MIN_DUE_WORK_WAKE_DELAY_MS,
+  reviewContinuationPathForEpisodeStore,
+} from '../src/utils/due-work-planner';
 import { DistillationHeartbeatScheduler } from '../src/utils/distillation-heartbeat-scheduler';
 import { DistillationPipeline } from '../src/utils/distillation-pipeline';
 import { LearningEpisodeStore } from '../src/utils/learning-episode';
@@ -398,6 +402,28 @@ describe('DueWorkPlanner — durable source reading', () => {
     assert.ok(plan.nextWakeTime !== null, 'must have a next wake for overdue work');
     assert.equal(plan.nextWakeTime, new Date('2026-07-01T12:00:00Z').getTime());
     assert.equal(plan.nextWakeReason, 'settlement-deadline');
+  });
+
+  test('budget-exhausted episode continuation survives restart and schedules targeted review', () => {
+    const nextAttemptAt = '2026-07-01T11:59:30.000Z';
+    writeState(reviewContinuationPathForEpisodeStore(env.episodeStorePath), {
+      schemaVersion: 1,
+      episodeIds: ['episode-budget-remainder'],
+      nextAttemptAt,
+      updatedAt: '2026-07-01T11:59:00.000Z',
+    });
+
+    const restarted = new DueWorkPlanner({
+      learningEpisodeStorePath: env.episodeStorePath,
+      reviewQueuePath: env.reviewQueuePath,
+      curatorStatePath: env.curatorStatePath,
+      curatorIntervalMs: 24 * 60 * 60 * 1000,
+    });
+    const now = new Date('2026-07-01T12:00:00.000Z');
+    const plan = restarted.plan(now);
+    assert.equal(plan.due.settlementDue, true);
+    assert.equal(plan.nextWakeReason, 'settlement-deadline');
+    assert.equal(plan.nextWakeTime, now.getTime());
   });
 
   test('overdue operational retry: immediate wake with operational-retry reason', () => {

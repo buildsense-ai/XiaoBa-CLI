@@ -23,7 +23,7 @@ import * as path from 'node:path';
 import { RuntimeLearning } from '../src/utils/runtime-learning';
 import { EvidenceIngestor } from '../src/utils/evidence-ingestor';
 import { LearningEpisode, LearningEpisodeStore } from '../src/utils/learning-episode';
-import { DueWorkPlanner } from '../src/utils/due-work-planner';
+import { DueWorkPlanner, reviewContinuationPathForEpisodeStore } from '../src/utils/due-work-planner';
 import { SkillEvolutionOptions, SkillEvolutionRuntime } from '../src/utils/skill-evolution';
 import { SkillUsageCurator } from '../src/utils/skill-usage-curator';
 import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
@@ -34,6 +34,12 @@ import { SkillParser } from '../src/skills/skill-parser';
 import { SemanticReassessmentManifestStore } from '../src/utils/semantic-reassessment';
 import { emptyCurrentSkillRegistryState, saveCurrentSkillRegistry } from '../src/utils/skill-evolution';
 import { bootstrapSemanticReassessmentOnce } from '../src/utils/distilled-skill-bootstrap';
+import {
+  addOrUpdateOperationalFailure,
+  findOperationalByBundleId,
+  loadReviewQueueState,
+  saveReviewQueueState,
+} from '../src/utils/skill-evolution-review-queue';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -604,6 +610,254 @@ describe('RuntimeLearning — AC3: Due Review', () => {
     assert.equal(result.review.status, 'succeeded');
     // The operational retry was due; it may be retried or fail
     assert.ok(result.review.operationalRetries >= 0, 'operational retry should be >= 0');
+  });
+
+  test('candidate cap persists a restart-safe continuation and schedules it', async () => {
+    const makeEpisode = (episodeId: string): LearningEpisode => ({
+      schemaVersion: 3,
+      episodeId,
+      runtimeSessionId: 'runtime-budget-continuation',
+      sourceFilePath: `${episodeId}.jsonl`,
+      deliveryTurn: 1,
+      completionEvidence: [{
+        ref: `${episodeId}#1`,
+        sourceFilePath: `${episodeId}.jsonl`,
+        turn: 1,
+        kind: 'artifact-delivery',
+        detail: 'send_file: delivered',
+      }],
+      contradictionSignals: [],
+      semanticObservations: [{
+        kind: 'user-intent',
+        value: `Deliver ${episodeId}.`,
+        sourceRefs: [`${episodeId}#intent`],
+      }],
+      settlementDeadline: new Date(0).toISOString(),
+      status: 'eligible',
+    });
+    env.runtimeLearning.getEpisodeStore().save({
+      schemaVersion: 3,
+      episodes: {
+        'episode-budget-a': makeEpisode('episode-budget-a'),
+        'episode-budget-b': makeEpisode('episode-budget-b'),
+      },
+    });
+    (env.runtimeLearning.getConfig() as any).skillEvolutionReviewMaxCandidates = 1;
+
+    const result = await env.runtimeLearning.wake('startup');
+    assert.equal(result.review.reviewedEpisodes, 1);
+    const continuationPath = reviewContinuationPathForEpisodeStore(env.episodeStorePath);
+    const continuation = JSON.parse(fs.readFileSync(continuationPath, 'utf8')) as {
+      episodeIds: string[];
+      nextAttemptAt: string;
+    };
+    assert.equal(continuation.episodeIds.length, 1);
+
+    const resumedPlan = env.runtimeLearning.getPlanner().plan(
+      new Date(Date.parse(continuation.nextAttemptAt) + 1),
+    );
+    assert.equal(resumedPlan.due.settlementDue, true);
+    assert.equal(resumedPlan.nextWakeReason, 'settlement-deadline');
+  });
+
+  test('drain leaves an in-flight review to the scheduler shared deadline', async () => {
+    const episodeId = 'episode-drain-cancel';
+    env.runtimeLearning.getEpisodeStore().save({
+      schemaVersion: 3,
+      episodes: {
+        [episodeId]: {
+          schemaVersion: 3,
+          episodeId,
+          runtimeSessionId: 'runtime-drain',
+          sourceFilePath: `${episodeId}.jsonl`,
+          deliveryTurn: 1,
+          completionEvidence: [{
+            ref: `${episodeId}#1`,
+            sourceFilePath: `${episodeId}.jsonl`,
+            turn: 1,
+            kind: 'artifact-delivery',
+            detail: 'send_file: delivered',
+          }],
+          contradictionSignals: [],
+          semanticObservations: [{
+            kind: 'user-intent',
+            value: 'Deliver the drain-safe report.',
+            sourceRefs: [`${episodeId}#intent`],
+          }],
+          settlementDeadline: new Date(0).toISOString(),
+          status: 'eligible',
+        },
+      },
+    });
+    let started!: () => void;
+    const startedPromise = new Promise<void>(resolve => { started = resolve; });
+    const originalReview = env.skillEvolution.reviewAndApply.bind(env.skillEvolution);
+    let observedAbort = false;
+    let completeReview!: (result: any) => void;
+    env.skillEvolution.reviewAndApply = async (_bundle: any, signal?: AbortSignal) => {
+      started();
+      return await new Promise<any>((resolve, reject) => {
+        completeReview = resolve;
+        const abort = () => {
+          observedAbort = true;
+          reject(new Error('runtime shutdown aborted review'));
+        };
+        if (signal?.aborted) abort();
+        else signal?.addEventListener('abort', abort, { once: true });
+      });
+    };
+
+    try {
+      const wake = env.runtimeLearning.wake('startup');
+      await startedPromise;
+      await env.runtimeLearning.drain(100);
+      assert.equal(observedAbort, false);
+      completeReview({ transition: 'defer', verified: false, rounds: 1 });
+      const result = await wake;
+      assert.equal(observedAbort, false);
+      assert.equal(result.review.status, 'succeeded');
+      assert.equal(env.skillEvolution.getAudit().length, 0);
+      assert.equal(readOrEmpty(env.reviewQueuePath)?.operational?.length ?? 0, 0);
+    } finally {
+      env.skillEvolution.reviewAndApply = originalReview;
+    }
+  });
+
+  test('drain during pre-review work stops new review admission and leaves the episode durable', async () => {
+    const episodeId = 'episode-drain-pre-review';
+    env.runtimeLearning.getEpisodeStore().save({
+      schemaVersion: 3,
+      episodes: {
+        [episodeId]: {
+          schemaVersion: 3,
+          episodeId,
+          runtimeSessionId: 'runtime-drain-pre-review',
+          sourceFilePath: `${episodeId}.jsonl`,
+          deliveryTurn: 1,
+          completionEvidence: [{
+            ref: `${episodeId}#1`,
+            sourceFilePath: `${episodeId}.jsonl`,
+            turn: 1,
+            kind: 'artifact-delivery',
+            detail: 'send_file: delivered',
+          }],
+          contradictionSignals: [],
+          semanticObservations: [{
+            kind: 'user-intent',
+            value: 'Do not admit new review work after drain starts.',
+            sourceRefs: [`${episodeId}#intent`],
+          }],
+          settlementDeadline: new Date(0).toISOString(),
+          status: 'eligible',
+        },
+      },
+    });
+
+    const originalRunMaturation = (env.runtimeLearning as any).runMaturation.bind(env.runtimeLearning);
+    const originalReview = env.skillEvolution.reviewAndApply.bind(env.skillEvolution);
+    let releaseMaturation!: () => void;
+    const maturationBlocked = new Promise<void>(resolve => { releaseMaturation = resolve; });
+    let maturationStarted!: () => void;
+    const maturationStartedPromise = new Promise<void>(resolve => { maturationStarted = resolve; });
+    let reviewCalls = 0;
+
+    (env.runtimeLearning as any).runMaturation = async (...args: any[]) => {
+      maturationStarted();
+      await maturationBlocked;
+      return originalRunMaturation(...args);
+    };
+    env.skillEvolution.reviewAndApply = async (...args: any[]) => {
+      reviewCalls += 1;
+      return originalReview(...args);
+    };
+
+    try {
+      const wake = env.runtimeLearning.wake('startup');
+      await maturationStartedPromise;
+      await env.runtimeLearning.drain(100);
+      releaseMaturation();
+      const result = await wake;
+      assert.equal(reviewCalls, 0);
+      assert.equal(result.review.reviewedEpisodes, 0);
+      assert.equal(env.runtimeLearning.getEpisodeStore().load().episodes[episodeId]?.status, 'eligible');
+      assert.equal(readOrEmpty(env.reviewQueuePath)?.operational?.length ?? 0, 0);
+    } finally {
+      (env.runtimeLearning as any).runMaturation = originalRunMaturation;
+      env.skillEvolution.reviewAndApply = originalReview;
+    }
+  });
+
+  test('drain waits for a timing-out active review to durably queue operational retry before wake exit', async () => {
+    const episodeId = 'episode-drain-review-timeout';
+    env.runtimeLearning.getEpisodeStore().save({
+      schemaVersion: 3,
+      episodes: {
+        [episodeId]: {
+          schemaVersion: 3,
+          episodeId,
+          runtimeSessionId: 'runtime-drain-timeout',
+          sourceFilePath: `${episodeId}.jsonl`,
+          deliveryTurn: 1,
+          completionEvidence: [{
+            ref: `${episodeId}#1`,
+            sourceFilePath: `${episodeId}.jsonl`,
+            turn: 1,
+            kind: 'artifact-delivery',
+            detail: 'send_file: delivered',
+          }],
+          contradictionSignals: [],
+          semanticObservations: [{
+            kind: 'user-intent',
+            value: 'Persist the retry before shutdown completes.',
+            sourceRefs: [`${episodeId}#intent`],
+          }],
+          settlementDeadline: new Date(0).toISOString(),
+          status: 'eligible',
+        },
+      },
+    });
+
+    const originalReview = env.skillEvolution.reviewAndApply.bind(env.skillEvolution);
+    let started!: () => void;
+    const startedPromise = new Promise<void>(resolve => { started = resolve; });
+    env.skillEvolution.reviewAndApply = async (bundle: any) => {
+      started();
+      await new Promise(resolve => setTimeout(resolve, 50));
+      const queue = loadReviewQueueState(env.reviewQueuePath);
+      addOrUpdateOperationalFailure(
+        queue,
+        bundle.episode,
+        bundle,
+        'branch_timeout',
+        'simulated active review deadline expiry during drain',
+        path.join(env.root, 'logs', 'branches', 'skill-author', 'timeout.jsonl'),
+        1,
+        60_000,
+        new Date(),
+      );
+      saveReviewQueueState(env.reviewQueuePath, queue);
+      return {
+        transition: 'reject_candidate' as const,
+        verified: false,
+        rounds: 1,
+        queued: 'operational' as const,
+        queueEntryId: findOperationalByBundleId(queue, bundle.bundleId)?.entryId,
+      };
+    };
+
+    try {
+      const wake = env.runtimeLearning.wake('startup');
+      await startedPromise;
+      await env.runtimeLearning.drain(200);
+      const result = await wake;
+      const entry = findOperationalByBundleId(loadReviewQueueState(env.reviewQueuePath), `v3:learning-episode:${episodeId}`);
+      assert.ok(entry);
+      assert.equal(result.review.reviewedEpisodes, 1);
+      assert.equal(result.review.operationalQueueReviews, 0);
+      assert.equal(result.review.reviewTimeoutCount, 1);
+    } finally {
+      env.skillEvolution.reviewAndApply = originalReview;
+    }
   });
 });
 
@@ -1313,6 +1567,34 @@ describe('Issue 4 — Heartbeat single-write', () => {
     assert.deepEqual(after.lastPendingWakeReasons, ['startup']);
     assert.equal(after.lastReviewTimeoutCount, 0);
     assert.equal(after.lastReviewFailureCount, 0);
+  });
+
+  test('persists owner, in-progress, next wake, backlog, cumulative failures, and lane state', async () => {
+    env.runtimeLearning.markHeartbeatInProgress(['manual'], {
+      pid: 123,
+      generation: 'owner-generation-test',
+      startedAt: '2026-07-14T00:00:00.000Z',
+      lastHeartbeatAt: '2026-07-14T00:00:01.000Z',
+    });
+    let record = env.runtimeLearning.loadHeartbeatRecord();
+    assert.deepEqual(record.inProgress?.reasons, ['manual']);
+    assert.equal(record.owner?.generation, 'owner-generation-test');
+
+    env.runtimeLearning.markHeartbeatScheduled(
+      new Date('2026-07-14T00:01:00.000Z'),
+      'scheduled',
+    );
+    record = env.runtimeLearning.loadHeartbeatRecord();
+    assert.equal(record.nextWakeReason, 'scheduled');
+    assert.equal(record.nextWakeAt, '2026-07-14T00:01:00.000Z');
+
+    await env.runtimeLearning.wake('startup');
+    record = env.runtimeLearning.loadHeartbeatRecord();
+    assert.equal(record.inProgress, undefined);
+    assert.ok(Array.isArray(record.lastSourceReports));
+    assert.ok(record.backlog.eligibleEpisodes >= 0);
+    assert.ok(record.cumulativeReviewFailureCount >= record.lastReviewFailureCount);
+    assert.ok(record.cumulativeReviewTimeoutCount >= record.lastReviewTimeoutCount);
   });
 
   test('consecutive wakes increment runCount monotonically', async () => {

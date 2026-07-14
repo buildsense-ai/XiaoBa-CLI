@@ -301,6 +301,44 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
       assert.equal(result2.discovery.advancedFiles, 0);
     });
 
+    test('bounded discovery releases stable EOF files so later pages are reachable', () => {
+      const logsDir = path.dirname(env.logFile);
+      const files = ['page-a.jsonl', 'page-b.jsonl', 'page-c.jsonl']
+        .map(name => path.join(logsDir, name));
+      fs.mkdirSync(logsDir, { recursive: true });
+      for (const file of files) fs.writeFileSync(file, '', 'utf8');
+
+      const adapter = new InternalSessionLogSourceAdapter(getDistillationHeartbeatConfig(env.root));
+      const firstPage = adapter.discoverResources({ maxResources: 2, maxElapsedMs: 1_000 });
+      assert.equal(firstPage.length, 2);
+      for (const resource of firstPage) {
+        const read = adapter.read(resource, { orderedResources: firstPage });
+        assert.equal(read.status, 'exhausted');
+        assert.equal(read.releaseResource, true);
+        adapter.acknowledge(resource, read);
+      }
+
+      const secondPage = adapter.discoverResources({ maxResources: 2, maxElapsedMs: 1_000 });
+      assert.ok(secondPage.some(resource => !firstPage.some(first => first.resourceRef === resource.resourceRef)));
+      adapter.close();
+    });
+
+    test('an incomplete trailing line rotates without advancing its durable cursor', () => {
+      fs.mkdirSync(path.dirname(env.logFile), { recursive: true });
+      fs.writeFileSync(env.logFile, '{"entry_type":"turn"', 'utf8');
+      const adapter = new InternalSessionLogSourceAdapter(getDistillationHeartbeatConfig(env.root));
+      const [resource] = adapter.discoverResources({ maxResources: 1, maxElapsedMs: 1_000 });
+      assert.ok(resource);
+
+      const read = adapter.read(resource, { orderedResources: [resource] });
+      assert.equal(read.status, 'idle');
+      assert.equal(read.releaseResource, true);
+      assert.equal(read.newCursor.position, 0);
+      adapter.acknowledge(resource, read);
+      assert.equal(read.newCursor.position, 0);
+      adapter.close();
+    });
+
     test('non-discovery wake skips log scanning', async () => {
       const [delivery, acceptance] = deliveryPair();
       writeLog(env.logFile, [delivery, acceptance]);
@@ -360,6 +398,15 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
       process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
       const config = getDistillationHeartbeatConfig(env.root);
       assert.equal(config.externalSessionLogSourcesEnabled, true);
+    });
+
+    test('opt-in exposes unsupported provider lanes instead of silently doing nothing', () => {
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
+      const runtimeLearning = createRuntimeLearning(env);
+      const external = runtimeLearning.getSessionLogSources()
+        .filter(source => source.identity.category === 'external');
+      assert.deepEqual(external.map(source => source.identity.provider), ['codex', 'pi', 'claude-code']);
+      assert.ok(external.every(source => source.getSupportStatus?.() === 'unsupported'));
     });
 
     test('default wake with external adapter performs no external reads', async () => {
@@ -533,6 +580,72 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
       assert.ok(!durableText.includes('batch-secret'));
       assert.ok(!durableText.includes('/Users/private/project'));
       assert.ok(!durableText.includes('external system prompt'));
+    });
+
+    test('replay repairs provenance before cursor advancement after a persistence interruption', async () => {
+      const fixtureFile = path.join(env.root, 'fixture', 'chat', 'external-replay.jsonl');
+      const [delivery, acceptance] = deliveryPair();
+      const unit = buildDistillationUnitFromFile([delivery, acceptance], fixtureFile);
+      const identity = {
+        sourceId: 'external-replay',
+        category: 'external' as const,
+        provider: 'fixture',
+        reader: 'fixture',
+      };
+      const provenancePath = path.join(
+        path.dirname(getDistillationHeartbeatConfig(env.root).learningEpisodeStorePath),
+        'external-source-provenance.json',
+      );
+
+      const interruptedSource = new FixtureSessionLogSourceAdapter([unit], { identity });
+      const interruptedRuntime = createRuntimeLearning(env, [interruptedSource]);
+      fs.mkdirSync(provenancePath, { recursive: true });
+
+      const interrupted = await interruptedRuntime.wake('startup');
+      assert.equal(interrupted.discovery.unitsProcessed, 0);
+      assert.equal(fs.statSync(provenancePath).isDirectory(), true);
+      const persistedEpisodeIds = Object.keys(env.episodeStore.load().episodes);
+      assert.ok(persistedEpisodeIds.length >= 1, 'episode persistence may precede provenance');
+
+      fs.rmSync(provenancePath, { recursive: true, force: true });
+      // Simulate the source-specific retry backoff having elapsed.
+      fs.rmSync(path.join(path.dirname(provenancePath), 'external-source-scheduling-state.json'), {
+        force: true,
+      });
+      const replaySource = new FixtureSessionLogSourceAdapter([unit], { identity });
+      const replayRuntime = createRuntimeLearning(env, [replaySource]);
+      const replay = await replayRuntime.wake('startup');
+
+      assert.equal(replay.discovery.unitsProcessed, 1);
+      assert.equal(replay.discovery.advancedFiles, 1);
+      const provenance = JSON.parse(fs.readFileSync(provenancePath, 'utf8')) as {
+        episodeToEvent: Record<string, string>;
+      };
+      assert.deepEqual(Object.keys(provenance.episodeToEvent).sort(), persistedEpisodeIds.sort());
+      assert.ok(replayRuntime.getEvidenceCapsuleStore().count() >= 1);
+    });
+
+    test('corrupt external provenance is quarantined until explicit verified recovery', () => {
+      const provenancePath = path.join(
+        path.dirname(getDistillationHeartbeatConfig(env.root).learningEpisodeStorePath),
+        'external-source-provenance.json',
+      );
+      fs.mkdirSync(path.dirname(provenancePath), { recursive: true });
+      fs.writeFileSync(provenancePath, '{not-json', 'utf8');
+
+      const runtimeLearning = createRuntimeLearning(env, []);
+      const markerPath = `${provenancePath}.state-corrupt`;
+      assert.equal(fs.existsSync(markerPath), true);
+      assert.equal(fs.existsSync(provenancePath), false);
+      assert.ok(fs.readdirSync(path.dirname(provenancePath))
+        .some(name => name.startsWith('external-source-provenance.json.corrupt-')));
+
+      runtimeLearning.recoverExternalEpisodeProvenanceState({
+        schemaVersion: 1,
+        episodeToEvent: {},
+        eventToEpisodes: {},
+      });
+      assert.equal(fs.existsSync(markerPath), false);
     });
 
     test('oversized external evidence fails closed before episode persistence', async () => {

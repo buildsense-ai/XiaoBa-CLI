@@ -80,6 +80,7 @@ export interface SourceCursor {
   readonly resourceRef: string;
   readonly position: number;
   readonly processedCount: number;
+  readonly discardingOversizedLine?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +111,12 @@ export interface SessionLogSourceReadResult {
   readonly distillationUnit: DistillationUnit | null;
   readonly distillationUnits?: readonly DistillationUnit[];
   readonly advanced: boolean;
+  /**
+   * Release this resource from a bounded discovery page even when its cursor
+   * did not advance. The durable cursor remains authoritative, so a partial
+   * append is retried when the directory iterator reaches the file again.
+   */
+  readonly releaseResource?: boolean;
   readonly status: SessionLogSourceReadStatus;
   readonly newCursor: SourceCursor;
   readonly eventIdentities?: readonly SourceEventIdentity[];
@@ -122,6 +129,13 @@ export interface SessionLogSourceReadResult {
 
 export interface SessionLogSourceReadContext {
   readonly orderedResources: readonly SessionLogSourceResource[];
+  /** Remaining per-source allowance for this specific read. */
+  readonly remainingBudget?: SourceWorkBudget;
+}
+
+export interface SessionLogSourceDiscoveryContext {
+  readonly maxResources?: number;
+  readonly maxElapsedMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -134,13 +148,14 @@ export interface SessionLogSourceAdapter {
   /** Explicitly reports whether this adapter has a documented stable reader. */
   getSupportStatus?(): ExternalSourceFormatStatus;
   getUnsupportedReason?(): string | undefined;
-  discoverResources(): readonly SessionLogSourceResource[];
+  discoverResources(context?: SessionLogSourceDiscoveryContext): readonly SessionLogSourceResource[];
   read(
     resource: SessionLogSourceResource,
     context: SessionLogSourceReadContext,
   ): SessionLogSourceReadResult;
   acknowledge(resource: SessionLogSourceResource, result: SessionLogSourceReadResult): void;
   markFailed(resource: SessionLogSourceResource, error: unknown): void;
+  close?(): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -156,24 +171,67 @@ export class InternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     reader: 'filesystem-jsonl',
   };
 
+  private discoveryIterator: Generator<string | undefined, void, unknown> | null = null;
+  private readonly pendingDiscoveredResources = new Map<string, SessionLogSourceResource>();
+  private readonly predecessorByResource = new Map<string, string>();
+  private previousDiscoveredResource: string | undefined;
+
   constructor(private readonly config: DistillationHeartbeatConfig) {}
 
   isEnabled(): boolean {
     return true;
   }
 
-  discoverResources(): readonly SessionLogSourceResource[] {
+  discoverResources(context: SessionLogSourceDiscoveryContext = {}): readonly SessionLogSourceResource[] {
     const sessionLogsRoot = resolveSessionLogsRoot(this.config.logsRoot);
     if (!fs.existsSync(sessionLogsRoot) || !fs.statSync(sessionLogsRoot).isDirectory()) {
       return [];
     }
-    return collectJsonlFiles(sessionLogsRoot).map(filePath => ({
-      resourceRef: filePath,
-      firstEventIdentity: {
-        eventId: filePath,
-        position: 0,
-      },
-    }));
+    const maxResources = Math.max(
+      1,
+      Math.floor(context.maxResources ?? DEFAULT_INTERNAL_SOURCE_BUDGET.maxResourcesPerWake),
+    );
+    const maxElapsedMs = Math.max(
+      1,
+      Math.floor(context.maxElapsedMs ?? DEFAULT_INTERNAL_SOURCE_BUDGET.maxElapsedMsPerWake),
+    );
+    const maxEntriesExamined = Math.max(maxResources, maxResources * 20);
+    const startedAt = Date.now();
+    let entriesExamined = 0;
+
+    if (!this.discoveryIterator) {
+      this.discoveryIterator = iterateJsonlDiscoveryEntries(sessionLogsRoot);
+      this.previousDiscoveredResource = undefined;
+    }
+
+    while (
+      this.pendingDiscoveredResources.size < maxResources
+      && entriesExamined < maxEntriesExamined
+      && (entriesExamined === 0 || Date.now() - startedAt < maxElapsedMs)
+    ) {
+      const next = this.discoveryIterator.next();
+      entriesExamined++;
+      if (next.done) {
+        this.discoveryIterator = null;
+        this.previousDiscoveredResource = undefined;
+        break;
+      }
+      if (!next.value) continue;
+      const filePath = next.value;
+      if (this.previousDiscoveredResource) {
+        this.predecessorByResource.set(filePath, this.previousDiscoveredResource);
+      }
+      this.previousDiscoveredResource = filePath;
+      this.pendingDiscoveredResources.set(filePath, {
+        resourceRef: filePath,
+        firstEventIdentity: {
+          eventId: filePath,
+          position: 0,
+        },
+      });
+    }
+
+    return [...this.pendingDiscoveredResources.values()].slice(0, maxResources);
   }
 
   read(
@@ -188,8 +246,21 @@ export class InternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     let extracted;
     try {
       const orderedFilePaths = context.orderedResources.map(r => r.resourceRef);
+      const predecessor = this.predecessorByResource.get(filePath);
+      if (predecessor && !orderedFilePaths.includes(predecessor)) {
+        orderedFilePaths.unshift(predecessor);
+      }
       const crossFileContinuity: CrossFileContinuityOptions = { orderedFilePaths };
-      extracted = extractDistillationUnit(filePath, cursor, { crossFileContinuity });
+      const remaining = context.remainingBudget;
+      extracted = extractDistillationUnit(filePath, cursor, {
+        crossFileContinuity,
+        ...(remaining ? {
+          quotas: {
+            maxNewBytesPerUnit: Math.max(1, remaining.maxBytesPerWake),
+            maxExtractionMs: Math.max(1, remaining.maxElapsedMsPerWake),
+          },
+        } : {}),
+      });
     } catch (error) {
       this.markFailed(resource, error);
       return {
@@ -200,19 +271,30 @@ export class InternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
           resourceRef: filePath,
           position: cursor.byteOffset,
           processedCount: cursor.processedTurnCount,
+          ...(cursor.discardingOversizedLine ? { discardingOversizedLine: true } : {}),
         },
         accounting: { events: 0, bytes: 0, elapsedMs: Date.now() - startedAt },
       };
     }
 
+    const fileSizeAfterRead = fs.statSync(filePath).size;
+    const waitingForPartialLine = !extracted.advanced
+      && extracted.newCursor.byteOffset < fileSizeAfterRead;
     return {
       distillationUnit: extracted.distillationUnit,
       advanced: extracted.advanced,
-      status: extracted.distillationUnit ? 'advanced' : (extracted.advanced ? 'advanced' : 'idle'),
+      // Stable EOF can leave the current discovery page immediately. A
+      // partial line is reported as idle, but is also rotated out of the page;
+      // its unchanged cursor makes the incomplete tail retryable later.
+      ...(!extracted.distillationUnit && !extracted.advanced ? { releaseResource: true } : {}),
+      status: extracted.distillationUnit
+        ? 'advanced'
+        : (extracted.advanced ? 'advanced' : (waitingForPartialLine ? 'idle' : 'exhausted')),
       newCursor: {
         resourceRef: filePath,
         position: extracted.newCursor.byteOffset,
         processedCount: extracted.newCursor.processedTurnCount,
+        ...(extracted.newCursor.discardingOversizedLine ? { discardingOversizedLine: true } : {}),
       },
       accounting: {
         events: extracted.newCursor.processedTurnCount - cursor.processedTurnCount,
@@ -230,9 +312,12 @@ export class InternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       processedTurnCount: result.newCursor.processedCount,
       updatedAt: new Date().toISOString(),
       status: 'completed',
+      ...(result.newCursor.discardingOversizedLine ? { discardingOversizedLine: true } : {}),
     };
     advanceCursor(state, cursor);
     saveLogCursorState(this.config.stateFilePath, state);
+    this.pendingDiscoveredResources.delete(resource.resourceRef);
+    this.predecessorByResource.delete(resource.resourceRef);
   }
 
   markFailed(resource: SessionLogSourceResource, error: unknown): void {
@@ -240,6 +325,18 @@ export class InternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     const existing = getCursor(state, resource.resourceRef);
     markCursorFailed(state, resource.resourceRef, existing.byteOffset, error);
     saveLogCursorState(this.config.stateFilePath, state);
+    // Rotate a failing resource behind the rest of the bounded discovery
+    // cycle while preserving its cursor for retry on the next traversal.
+    this.pendingDiscoveredResources.delete(resource.resourceRef);
+    this.predecessorByResource.delete(resource.resourceRef);
+  }
+
+  close(): void {
+    try { this.discoveryIterator?.return(); } catch { /* already closed */ }
+    this.discoveryIterator = null;
+    this.pendingDiscoveredResources.clear();
+    this.predecessorByResource.clear();
+    this.previousDiscoveredResource = undefined;
   }
 }
 
@@ -940,6 +1037,13 @@ export const DEFAULT_EXTERNAL_SOURCE_BUDGET: SourceWorkBudget = {
   maxElapsedMsPerWake: 30_000, // 30 s
 };
 
+/** Internal logs receive the same hard lane guarantees as optional sources. */
+export const DEFAULT_INTERNAL_SOURCE_BUDGET: SourceWorkBudget = {
+  maxResourcesPerWake: 50,
+  maxBytesPerWake: 2 * 1024 * 1024,
+  maxElapsedMsPerWake: 5_000,
+};
+
 // ---------------------------------------------------------------------------
 // Source failure state (per-source backoff, issue #77)
 // ---------------------------------------------------------------------------
@@ -996,6 +1100,9 @@ export interface SessionLogSourceReport {
   /** @internal Per-source work budget applied (issue #77). */
   readonly budget?: SourceWorkBudget;
   readonly accounting?: SourceWorkAccounting;
+  /** Stable-reader support is explicit; unsupported enabled lanes are visible. */
+  readonly supportStatus?: ExternalSourceFormatStatus;
+  readonly unsupportedReason?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1014,15 +1121,36 @@ function resolveSessionLogsRoot(logsRoot: string): string {
     : path.join(normalizedRoot, 'sessions');
 }
 
-function collectJsonlFiles(dir: string): string[] {
-  if (!fs.existsSync(dir)) return [];
-  const files: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) files.push(...collectJsonlFiles(fullPath));
-    else if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(fullPath);
+function* iterateJsonlDiscoveryEntries(root: string): Generator<string | undefined, void, unknown> {
+  const openDirectories: fs.Dir[] = [];
+  try {
+    openDirectories.push(fs.opendirSync(root));
+    while (openDirectories.length > 0) {
+      const current = openDirectories[openDirectories.length - 1]!;
+      const entry = current.readSync();
+      if (!entry) {
+        current.closeSync();
+        openDirectories.pop();
+        continue;
+      }
+      const fullPath = path.join(current.path, entry.name);
+      if (entry.isDirectory()) {
+        try {
+          openDirectories.push(fs.opendirSync(fullPath));
+        } catch {
+          // A disappearing/inaccessible directory is source-local noise. The
+          // next complete traversal can retry it.
+        }
+        yield undefined;
+        continue;
+      }
+      yield entry.isFile() && entry.name.endsWith('.jsonl') ? fullPath : undefined;
+    }
+  } finally {
+    for (const directory of openDirectories.reverse()) {
+      try { directory.closeSync(); } catch { /* already closed */ }
+    }
   }
-  return files.sort();
 }
 
 /**

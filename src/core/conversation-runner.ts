@@ -314,11 +314,10 @@ export class ConversationRunner {
     let maxTurnsReached = false;
 
     while (true) {
-      turns++;
       if (this.shouldContinue && !this.shouldContinue()) {
         break;
       }
-      if (this.maxTurns && turns > this.maxTurns) {
+      if (this.maxTurns && turns >= this.maxTurns) {
         Logger.warning(`[${this.sessionLabel}] 已达到最大推理轮次 ${this.maxTurns}，正在收束`);
         maxTurnsReached = true;
         return {
@@ -331,6 +330,7 @@ export class ConversationRunner {
           newMessages,
         };
       }
+      turns++;
       this.injectSyntheticObservations(messages, turns);
       const runtimeTransientHints = this.drainRuntimeTransientMessages(turns);
       const requestTools = this.fitToolsToPromptBudget(activeTools);

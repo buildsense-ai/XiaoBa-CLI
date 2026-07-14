@@ -1,8 +1,15 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createReviewBudget } from '../src/utils/review-budget';
+import { createReviewBudget, estimateReviewPromptTokens } from '../src/utils/review-budget';
 
 describe('review budget', () => {
+  test('reserves the maximum two-round Author/Verifier model-turn envelope', () => {
+    const input = { evidence: 'bounded evidence' };
+    const serializedBytes = Buffer.byteLength(JSON.stringify(input), 'utf8');
+
+    assert.equal(estimateReviewPromptTokens(input), serializedBytes * 16);
+  });
+
   test('bounds hundreds of candidates and conservatively accounts serialized input', () => {
     let now = 0;
     const budget = createReviewBudget({

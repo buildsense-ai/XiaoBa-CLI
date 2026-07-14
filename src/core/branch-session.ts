@@ -133,7 +133,9 @@ export abstract class BranchSession {
         abortSignal: this.abortController.signal,
       },
     );
+    const maxTurns = this.options.sharedReviewTurnBudget?.remainingTurns;
     const runner = new ConversationRunner(this.options.aiService, toolExecutor, {
+      ...(maxTurns !== undefined ? { maxTurns } : {}),
       stream: false,
       enableCompression: true,
       shouldContinue: () => this.shouldContinue(),
@@ -163,11 +165,7 @@ export abstract class BranchSession {
     };
 
     try {
-      const maxTurns = this.options.sharedReviewTurnBudget?.remainingTurns;
-      const result = await runner.run(this.messages, {
-        ...callbacks,
-        ...(maxTurns && { maxTurns }),
-      });
+      const result = await runner.run(this.messages, callbacks);
       this.deductTurnBudget(result.turnsUsed);
       if (result.maxTurnsReached) {
         this.logger.write('run_result', {

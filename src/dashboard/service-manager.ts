@@ -6,6 +6,7 @@ import { EventEmitter } from 'events';
 import { resolveRuntimeEnvironment } from '../utils/runtime-environment';
 import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { weixinBindingEnvOverlay } from './weixin-channel-binding';
+import { RUNTIME_SHUTDOWN_MESSAGE_TYPE } from '../utils/runtime-shutdown-message';
 
 const isWindows = process.platform === 'win32';
 
@@ -40,6 +41,7 @@ const MAX_LAST_ERROR_LENGTH = 500;
  * SIGKILLed immediately. See ADR 0041.
  */
 const DEFAULT_GRACEFUL_DRAIN_MS = 10 * 60 * 1000;
+const FORCE_KILL_PERSIST_GRACE_MS = 250;
 
 function resolveGracefulDrainMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.XIAOBA_SKILL_EVOLUTION_REVIEW_ATTEMPT_DEADLINE_MINUTES;
@@ -50,6 +52,10 @@ function resolveGracefulDrainMs(env: NodeJS.ProcessEnv = process.env): number {
     }
   }
   return DEFAULT_GRACEFUL_DRAIN_MS;
+}
+
+function resolveForceKillMs(env: NodeJS.ProcessEnv = process.env): number {
+  return resolveGracefulDrainMs(env) + FORCE_KILL_PERSIST_GRACE_MS;
 }
 
 function stripAnsi(value: string): string {
@@ -88,10 +94,14 @@ function readEnvFile(root: string): Record<string, string> {
 export class ServiceManager extends EventEmitter {
   private services: Map<string, ManagedService> = new Map();
   private projectRoot: string;
+  private readonly gracefulDrainMs: number;
+  private readonly forceKillMs: number;
 
   constructor(projectRoot: string) {
     super();
     this.projectRoot = projectRoot;
+    this.gracefulDrainMs = resolveGracefulDrainMs();
+    this.forceKillMs = resolveForceKillMs();
     this.registerBuiltinServices();
   }
 
@@ -301,7 +311,10 @@ export class ServiceManager extends EventEmitter {
       child = spawn(svc.info.command, svc.info.args, {
         cwd: spawnCwd,
         env: envVars,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        // Windows has no catchable POSIX SIGTERM for Node children. The IPC
+        // channel carries a cooperative shutdown request; taskkill /F remains
+        // the deadline-only fallback.
+        stdio: isWindows ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
       });
     } catch (err) {
@@ -371,11 +384,28 @@ export class ServiceManager extends EventEmitter {
     if (!proc.pid) return;
 
     if (isWindows) {
-      try {
-        // /T = 终止子进程树, /F = 强制终止
-        execSync(`taskkill /PID ${proc.pid} /T /F`, { stdio: 'ignore' });
-      } catch {
-        // 进程可能已退出，忽略错误
+      if (force) {
+        try {
+          // /T = terminate the process tree; /F is deadline-only fallback.
+          execSync(`taskkill /PID ${proc.pid} /T /F`, { stdio: 'ignore' });
+        } catch {
+          // The process may already have exited.
+        }
+      } else {
+        // Give the connector a real cooperative channel on Windows. A Node
+        // SIGTERM there terminates rather than invoking a trappable handler.
+        if (proc.connected && typeof proc.send === 'function') {
+          try {
+            proc.send({ type: RUNTIME_SHUTDOWN_MESSAGE_TYPE }, error => {
+              if (!error) return;
+              try { proc.kill('SIGTERM'); } catch { /* already exited */ }
+            });
+            return;
+          } catch {
+            // Fall through to the best available non-force termination.
+          }
+        }
+        try { proc.kill('SIGTERM'); } catch { /* already exited */ }
       }
     } else {
       proc.kill(force ? 'SIGKILL' : 'SIGTERM');
@@ -389,34 +419,19 @@ export class ServiceManager extends EventEmitter {
       throw new Error(`Service "${name}" is not running`);
     }
 
-    if (isWindows) {
-      // Cooperate with the child supervisor first; tree-kill only at deadline.
-      svc.expectedExit = 'stop';
-      try { svc.process.kill('SIGTERM'); } catch { /* already exited */ }
-      const drainMs = resolveGracefulDrainMs();
-      svc.forceKillTimer = setTimeout(() => {
-        svc.forceKillTimer = undefined;
-        if (svc.process) this.killProcess(svc.process, true);
-      }, drainMs);
-      svc.forceKillTimer.unref?.();
-    } else {
-      svc.expectedExit = 'stop';
-      this.killProcess(svc.process);
+    svc.expectedExit = 'stop';
+    this.killProcess(svc.process);
 
-      // Let an active wake drain within the configured Review Deadline
-      // before force-killing, instead of a hardcoded 5s SIGKILL. The
-      // connector's own shutdown handler drains its scheduler up to the
-      // same deadline; force-kill only after that deadline expires.
-      // Note: ChildProcess.killed means "signal was sent", not "process
-      // exited" — so we check svc.process truthiness instead (the exit
-      // handler sets it to undefined). See ADR 0041.
-      const drainMs = resolveGracefulDrainMs();
-      svc.forceKillTimer = setTimeout(() => {
-        svc.forceKillTimer = undefined;
-        if (svc.process) this.killProcess(svc.process, true);
-      }, drainMs);
-      svc.forceKillTimer.unref?.();
-    }
+    // Let an active wake drain within the configured Review Deadline before
+    // force-killing. ChildProcess.killed means "signal was sent", not
+    // "process exited", so the exit handler clears svc.process and is the
+    // authoritative completion signal. See ADR 0041.
+    const forceKillMs = this.forceKillMs;
+    svc.forceKillTimer = setTimeout(() => {
+      svc.forceKillTimer = undefined;
+      if (svc.process) this.killProcess(svc.process, true);
+    }, forceKillMs);
+    svc.forceKillTimer.unref?.();
 
     return this.getService(name)!;
   }
@@ -460,26 +475,17 @@ export class ServiceManager extends EventEmitter {
    * graceful shutdown that awaits child exit, use {@link drainAll}.
    */
   stopAll() {
-    const drainMs = resolveGracefulDrainMs();
+    const forceKillMs = this.forceKillMs;
     for (const [name, svc] of this.services) {
       if (svc.info.status === 'running' && svc.process) {
         svc.expectedExit = 'stop';
-        if (isWindows) {
-          try { svc.process.kill('SIGTERM'); } catch { /* already exited */ }
-          svc.forceKillTimer = setTimeout(() => {
-            svc.forceKillTimer = undefined;
-            if (svc.process) this.killProcess(svc.process, true);
-          }, drainMs);
-          svc.forceKillTimer.unref?.();
-        } else {
-          this.killProcess(svc.process);
-          svc.forceKillTimer = setTimeout(() => {
-            // Check svc.process truthiness, not ChildProcess.killed.
-            svc.forceKillTimer = undefined;
-            if (svc.process) this.killProcess(svc.process, true);
-          }, drainMs);
-          svc.forceKillTimer.unref?.();
-        }
+        this.killProcess(svc.process);
+        svc.forceKillTimer = setTimeout(() => {
+          // Check svc.process truthiness, not ChildProcess.killed.
+          svc.forceKillTimer = undefined;
+          if (svc.process) this.killProcess(svc.process, true);
+        }, forceKillMs);
+        svc.forceKillTimer.unref?.();
       }
     }
   }
@@ -491,7 +497,7 @@ export class ServiceManager extends EventEmitter {
    * running child has exited (or been killed). See ADR 0041.
    */
   async drainAll(): Promise<void> {
-    const drainMs = resolveGracefulDrainMs();
+    const forceKillMs = this.forceKillMs;
     const running = Array.from(this.services.entries())
       .filter(([, svc]) => svc.info.status === 'running' && svc.process)
       .map(([name, svc]) => ({ name, svc }));
@@ -533,7 +539,7 @@ export class ServiceManager extends EventEmitter {
         // platform/runtime does not deliver one after the deadline.
         markStopped(name);
       }
-    }, drainMs);
+    }, forceKillMs);
 
     try {
       // Re-check for children that exited between collection and listener
@@ -545,8 +551,7 @@ export class ServiceManager extends EventEmitter {
         }
         svc.expectedExit = 'stop';
         try {
-          if (isWindows) this.killProcess(svc.process, true);
-          else this.killProcess(svc.process);
+          this.killProcess(svc.process);
         } catch {
           // The exit/error event (or the deadline fallback) completes drain.
         }

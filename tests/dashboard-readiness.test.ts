@@ -141,6 +141,8 @@ describe('dashboard readiness and service preflight API', () => {
 
     assert.equal(response.status, 200);
     assert.equal(data.status, 'blocked');
+    assert.equal(data.runtimeLearning.enabled, true);
+    assert.equal(data.runtimeLearning.liveness, 'owner_missing');
     assert.equal(model.status, 'blocked');
     assert.equal(model.label, '模型来源');
     assert.equal(model.checks.some((check: any) => check.id === 'model.managed.account' && check.status === 'warning'), true);

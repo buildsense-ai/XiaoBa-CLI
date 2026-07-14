@@ -6,6 +6,7 @@ import { createApiRouter } from './routes/api';
 import { ServiceManager } from './service-manager';
 import { bootstrapDefaultSkillHubSkillsOnce } from '../skillhub/default-skill-bootstrap';
 import { createDashboardAuth } from './auth';
+import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/runtime-command-support';
 
 const DEFAULT_PORT = 3800;
 const activeServers: Server[] = [];
@@ -33,6 +34,10 @@ export async function startDashboard(
   const envPackaged = /^(1|true|yes)$/i.test(process.env.XIAOBA_IS_PACKAGED || '');
   const projectRoot = controllers.projectRoot || (envPackaged ? process.env.XIAOBA_APP_ROOT : undefined) || process.cwd();
   const serviceManager = new ServiceManager(projectRoot);
+  // The dashboard is the stable Runtime owner. Connectors may still win the
+  // cross-process election when launched independently, but a dashboard-only
+  // deployment must never have zero heartbeat owners.
+  await startRuntimeCommandSupport(projectRoot);
 
   app.use(express.json({ limit: '25mb' }));
 
@@ -73,6 +78,7 @@ export async function startDashboard(
     } catch (error) {
       Logger.warning(`Service drain failed during shutdown: ${error instanceof Error ? error.message : String(error)}`);
     }
+    await stopRuntimeCommandSupport();
     process.exit(0);
   };
   process.on('SIGINT', gracefulShutdown);
@@ -98,6 +104,7 @@ export async function startDashboard(
       // Await service drain before closing HTTP servers so an active
       // heartbeat wake can finish within the configured Review Deadline.
       await serviceManager.drainAll();
+      await stopRuntimeCommandSupport();
       await Promise.all(activeServers.splice(0).map(closeServer));
     },
   };
