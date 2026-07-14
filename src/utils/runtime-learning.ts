@@ -41,6 +41,14 @@ import { Logger } from './logger';
 import { bootstrapSemanticReassessmentOnce } from './distilled-skill-bootstrap';
 import { SemanticReassessmentManifestStore } from './semantic-reassessment';
 import { cleanupBranchTranscripts } from './branch-transcript-retention';
+import {
+  InternalSessionLogSourceAdapter,
+  SessionLogSourceAdapter,
+  SessionLogSourceReadContext,
+  SessionLogSourceReport,
+  SessionLogSourceResource,
+  SessionLogSourceReadResult,
+} from './session-log-source';
 
 // ---------------------------------------------------------------------------
 // Public API: wake context / reports (shared with the heartbeat scheduler)
@@ -71,6 +79,8 @@ export interface RuntimeLearningDiscoveryReport {
   filesScanned: number;
   unitsProcessed: number;
   advancedFiles: number;
+  /** Per-source reports for observable source progress and status (issue #75). */
+  sources: readonly SessionLogSourceReport[];
 }
 
 export interface RuntimeLearningIngestionReport {
@@ -172,6 +182,27 @@ export interface RuntimeLearningHeartbeatRecord {
 // Construction options
 // ---------------------------------------------------------------------------
 
+/**
+ * Wake-level discovery quotas. Bounds one discovery wake so it cannot
+ * monopolize the heartbeat and starve overdue settlement/review. Defaults
+ * are production-safe; tests inject smaller values.
+ */
+export interface DiscoveryWakeQuotas {
+  /** Max resources (e.g. log files) examined across all sources in one wake. */
+  maxResourcesPerWake: number;
+  /** Max admitted Learning Episode candidates across all sources in one wake. */
+  maxAdmittedEpisodesPerWake: number;
+  /** Max wall-clock milliseconds spent in discovery in one wake. */
+  maxDiscoveryMs: number;
+}
+
+/** Production defaults for wake-level discovery quotas. */
+export const DEFAULT_DISCOVERY_WAKE_QUOTAS: DiscoveryWakeQuotas = {
+  maxResourcesPerWake: 1000,
+  maxAdmittedEpisodesPerWake: 200,
+  maxDiscoveryMs: 60_000, // 60 s
+};
+
 export interface RuntimeLearningOptions {
   /** Working directory for config resolution. */
   workingDirectory: string;
@@ -191,6 +222,25 @@ export interface RuntimeLearningOptions {
    * RuntimeLearning accessor. No RuntimeLearning wake depends on it.
    */
   legacyPipeline?: DistillationPipeline;
+  /**
+   * Session Log Source adapters for source-neutral discovery. When omitted,
+   * the RuntimeLearning module constructs a single Internal Session Log Source
+   * adapter (the default production path). Tests may inject a fixture adapter
+   * to feed canonical source events through the public wake() path.
+   *
+   * External sources are disabled by default (see config
+   * `externalSessionLogSourcesEnabled`); an adapter that reports
+   * `isEnabled() === false` is skipped during discovery.
+   */
+  sessionLogSources?: readonly SessionLogSourceAdapter[];
+  /**
+   * Production-safe wake-level caps for discovery (issue #51). Bounds the
+   * number of resources examined, candidates (episodes) admitted, and wall-clock
+   * time spent in one discovery wake so a large multi-source scan cannot starve
+   * the subsequent overdue settlement/review stages. Remaining resources are
+   * deferred to the next wake without falsely acknowledging their cursors.
+   */
+  discoveryQuotas?: Partial<DiscoveryWakeQuotas>;
   /** Injectable clock for tests. */
   clock?: () => Date;
 }
@@ -241,7 +291,7 @@ function emptyHeartbeatResult(ran: boolean): RuntimeLearningHeartbeatResult {
     unitsProcessed: 0,
     advancedFiles: 0,
     ran,
-    discovery: { scanned: false, filesScanned: 0, unitsProcessed: 0, advancedFiles: 0 },
+    discovery: { scanned: false, filesScanned: 0, unitsProcessed: 0, advancedFiles: 0, sources: [] },
     ingestion: { admittedEpisodes: 0, contradictionSignals: 0 },
     maturation: skippedMaturationReport(),
     review: skippedReviewReport(),
@@ -287,6 +337,8 @@ export class RuntimeLearning {
   private readonly legacyPipeline: DistillationPipeline | undefined;
   private readonly clock: () => Date;
   private readonly config: DistillationHeartbeatConfig;
+  private readonly sessionLogSources: readonly SessionLogSourceAdapter[];
+  private readonly discoveryQuotas: DiscoveryWakeQuotas;
 
   private readonly pendingCuratorObservationEpisodeIds = new Set<string>();
 
@@ -300,6 +352,13 @@ export class RuntimeLearning {
     this.legacyPipeline = options.legacyPipeline;
     this.clock = options.clock ?? (() => new Date());
     this.config = getDistillationHeartbeatConfig(this.workingDirectory);
+    // Default to a single Internal Session Log Source adapter when no sources
+    // are injected. This preserves the existing production behavior with no
+    // observable regression (issue #75).
+    this.sessionLogSources = options.sessionLogSources ?? [
+      new InternalSessionLogSourceAdapter(this.config),
+    ];
+    this.discoveryQuotas = { ...DEFAULT_DISCOVERY_WAKE_QUOTAS, ...options.discoveryQuotas };
   }
 
   // -----------------------------------------------------------------------
@@ -336,6 +395,11 @@ export class RuntimeLearning {
     return this.curator;
   }
 
+  /** Session Log Source adapters for source-neutral discovery (issue #75). */
+  getSessionLogSources(): readonly SessionLogSourceAdapter[] {
+    return this.sessionLogSources;
+  }
+
   // -----------------------------------------------------------------------
   // Single wake entry point
   // -----------------------------------------------------------------------
@@ -362,24 +426,18 @@ export class RuntimeLearning {
     const isDiscoveryWake = this.isDiscoveryWake(reasons);
 
     try {
-      // ---- 1. Discovery + Ingestion ----
+      // ---- 1. Discovery + Ingestion (source-neutral) ----
       const shouldScan = isDiscoveryWake;
 
       if (shouldScan) {
-        const sessionLogsRoot = resolveSessionLogsRoot(this.config.logsRoot);
-        if (fs.existsSync(sessionLogsRoot) && fs.statSync(sessionLogsRoot).isDirectory()) {
-          const files = collectJsonlFiles(sessionLogsRoot);
-          wake.discovery.scanned = true;
-          wake.discovery.filesScanned = files.length;
-
-          for (const filePath of files) {
-            const result = await this.processSessionLogFile(filePath, files);
-            if (result.processed && result.distillationUnit) wake.discovery.unitsProcessed++;
-            if (result.advanced) wake.discovery.advancedFiles++;
-            wake.ingestion.admittedEpisodes += result.admittedEpisodes;
-            wake.ingestion.contradictionSignals += result.contradictionSignals;
-          }
-        }
+        const discoveryResult = this.runDiscovery();
+        wake.discovery.scanned = discoveryResult.sourceReports.some(r => r.enabled);
+        wake.discovery.filesScanned = discoveryResult.sourceReports.reduce((sum, r) => sum + r.resourcesDiscovered, 0);
+        wake.discovery.unitsProcessed = discoveryResult.sourceReports.reduce((sum, r) => sum + r.unitsProcessed, 0);
+        wake.discovery.advancedFiles = discoveryResult.sourceReports.reduce((sum, r) => sum + r.advancedResources, 0);
+        wake.discovery.sources = discoveryResult.sourceReports;
+        wake.ingestion.admittedEpisodes += discoveryResult.admittedEpisodes;
+        wake.ingestion.contradictionSignals += discoveryResult.contradictionSignals;
       }
 
       wake.unitsProcessed = wake.discovery.unitsProcessed;
@@ -911,7 +969,131 @@ export class RuntimeLearning {
   }
 
   // -----------------------------------------------------------------------
-  // Session log processing (moved from DistillationHeartbeatScheduler)
+  // Source-neutral discovery + ingestion (issue #75)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Run source-neutral discovery across all configured Session Log Source
+   * adapters. For each enabled adapter, discover resources, read from each,
+   * ingest evidence through the shared EvidenceIngestor, and acknowledge or
+   * mark failed. Returns per-source reports and aggregate ingestion counts.
+   *
+   * Internal sources are always enabled; external sources are disabled by
+   * default (see config `externalSessionLogSourcesEnabled`).
+   */
+  private runDiscovery(): {
+    sourceReports: readonly SessionLogSourceReport[];
+    admittedEpisodes: number;
+    contradictionSignals: number;
+  } {
+    const sourceReports: SessionLogSourceReport[] = [];
+    let totalAdmittedEpisodes = 0;
+    let totalContradictionSignals = 0;
+
+    // Wake-level caps: bound resources examined, candidates admitted, and
+    // wall-clock time so discovery cannot starve the overdue settlement/review
+    // stages that run after it. Remaining resources are deferred to the next
+    // wake; their cursors are NOT advanced here (only successfully processed
+    // resources are acknowledged below), so no cursor is falsely acknowledged.
+    const discoveryStartMs = this.clock().getTime();
+    let wakeResourcesExamined = 0;
+    let wakeAdmittedEpisodes = 0;
+    let discoveryCapped = false;
+
+    for (const adapter of this.sessionLogSources) {
+      if (discoveryCapped) break;
+      const enabled = adapter.isEnabled();
+      const identity = adapter.identity;
+
+      if (!enabled) {
+        sourceReports.push({
+          sourceId: identity.sourceId,
+          category: identity.category,
+          enabled: false,
+          resourcesDiscovered: 0,
+          unitsProcessed: 0,
+          advancedResources: 0,
+        });
+        continue;
+      }
+
+      const resources = adapter.discoverResources();
+      let unitsProcessed = 0;
+      let advancedResources = 0;
+
+      const readContext: SessionLogSourceReadContext = { orderedResources: resources };
+
+      for (const resource of resources) {
+        if (discoveryCapped) break;
+        if (wakeResourcesExamined >= this.discoveryQuotas.maxResourcesPerWake) {
+          discoveryCapped = true;
+          break;
+        }
+        if (wakeAdmittedEpisodes >= this.discoveryQuotas.maxAdmittedEpisodesPerWake) {
+          discoveryCapped = true;
+          break;
+        }
+        if (this.clock().getTime() - discoveryStartMs > this.discoveryQuotas.maxDiscoveryMs) {
+          discoveryCapped = true;
+          break;
+        }
+        wakeResourcesExamined++;
+
+        let readResult: SessionLogSourceReadResult;
+        try {
+          readResult = adapter.read(resource, readContext);
+        } catch (error) {
+          adapter.markFailed(resource, error);
+          continue;
+        }
+
+        if (!readResult.distillationUnit) {
+          // No distillation unit — advance cursor if the adapter reports progress
+          if (readResult.advanced) {
+            try {
+              adapter.acknowledge(resource, readResult);
+              advancedResources++;
+            } catch (error) {
+              adapter.markFailed(resource, error);
+            }
+          }
+          continue;
+        }
+
+        // Admit evidence through the shared source-neutral EvidenceIngestor
+        try {
+          const ingestionResult = this.evidenceIngestor.ingest(readResult.distillationUnit);
+          this.queueCuratorObservation(ingestionResult.admittedEpisodeIds);
+          adapter.acknowledge(resource, readResult);
+          unitsProcessed++;
+          advancedResources++;
+          totalAdmittedEpisodes += ingestionResult.admittedEpisodeIds.length;
+          wakeAdmittedEpisodes += ingestionResult.admittedEpisodeIds.length;
+          totalContradictionSignals += ingestionResult.contradictionSignalIds.length;
+        } catch (error) {
+          adapter.markFailed(resource, error);
+        }
+      }
+
+      sourceReports.push({
+        sourceId: identity.sourceId,
+        category: identity.category,
+        enabled: true,
+        resourcesDiscovered: resources.length,
+        unitsProcessed,
+        advancedResources,
+      });
+    }
+
+    return {
+      sourceReports,
+      admittedEpisodes: totalAdmittedEpisodes,
+      contradictionSignals: totalContradictionSignals,
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // Session log processing (legacy — preserved for compatibility)
   // -----------------------------------------------------------------------
 
   private async processSessionLogFile(

@@ -133,7 +133,7 @@ function emptyWakeResult(ran = false): HeartbeatRunResult {
     unitsProcessed: 0,
     advancedFiles: 0,
     ran,
-    discovery: { scanned: false, filesScanned: 0, unitsProcessed: 0, advancedFiles: 0 },
+    discovery: { scanned: false, filesScanned: 0, unitsProcessed: 0, advancedFiles: 0, sources: [] },
     ingestion: { admittedEpisodes: 0, contradictionSignals: 0 },
     maturation: { status: 'skipped', maturedEpisodes: 0, becameEligible: 0, becameContradicted: 0 },
   review: {

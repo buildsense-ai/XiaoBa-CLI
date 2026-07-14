@@ -76,6 +76,12 @@ export interface DistillationHeartbeatConfig {
   skillEvolutionAuthorModel?: string;
   /** Optional independent Verifier model override. */
   skillEvolutionVerifierModel?: string;
+  /**
+   * External Session Log Sources master switch. Disabled by default — a
+   * default wake performs no external provider reads. See CONTEXT.md →
+   * "External Session Log Source".
+   */
+  externalSessionLogSourcesEnabled: boolean;
 }
 
 function readEnv(env: NodeJS.ProcessEnv, ...keys: string[]): string | undefined {
@@ -330,6 +336,11 @@ export function getDistillationHeartbeatConfig(
   );
   const skillEvolutionAuthorModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_AUTHOR_MODEL');
   const skillEvolutionVerifierModel = readEnv(runtimeEnv, 'XIAOBA_SKILL_EVOLUTION_VERIFIER_MODEL');
+  const externalSessionLogSourcesEnabled = readBoolean(
+    runtimeEnv,
+    'XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED',
+    false,
+  );
 
   return {
     enabled,
@@ -365,5 +376,6 @@ export function getDistillationHeartbeatConfig(
     skillEvolutionReviewAttemptDeadlineMinutes,
     ...(skillEvolutionAuthorModel && { skillEvolutionAuthorModel }),
     ...(skillEvolutionVerifierModel && { skillEvolutionVerifierModel }),
+    externalSessionLogSourcesEnabled,
   };
 }
