@@ -3,6 +3,8 @@ export type ContentBlock =
   | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'; data: string } };
 
 export type ProviderContentBlock = Record<string, unknown> & { type: string };
+export type ReasoningEffort = 'default' | 'high' | 'max' | 'disabled';
+export type OpenAIApiMode = 'chat_completions' | 'responses';
 
 export interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -44,6 +46,8 @@ export interface ChatConfig {
   temperature?: number;
   maxTokens?: number;
   contextWindowTokens?: number;
+  reasoningEffort?: ReasoningEffort;
+  openaiApiMode?: OpenAIApiMode;
   provider?: 'openai' | 'anthropic';
   feishu?: {
     appId?: string;
@@ -77,6 +81,8 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cachedReadTokens?: number;
+  cachedWriteTokens?: number;
 }
 
 export interface ChatResponse {

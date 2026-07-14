@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import axios from 'axios';
-import { normalizeOpenAIChatCompletionsUrl } from '../src/providers/openai-url';
+import { normalizeOpenAIChatCompletionsUrl, normalizeOpenAIResponsesUrl } from '../src/providers/openai-url';
 import { OpenAIProvider } from '../src/providers/openai-provider';
 
 test('normalizeOpenAIChatCompletionsUrl accepts SDK-style base URLs', () => {
@@ -27,6 +27,21 @@ test('normalizeOpenAIChatCompletionsUrl keeps complete chat completions endpoint
   assert.equal(
     normalizeOpenAIChatCompletionsUrl('https://example.test/openai/deployments/test/chat/completions?api-version=2024-06-01'),
     'https://example.test/openai/deployments/test/chat/completions?api-version=2024-06-01',
+  );
+});
+
+test('normalizeOpenAIResponsesUrl accepts bases and replaces concrete OpenAI endpoints', () => {
+  assert.equal(
+    normalizeOpenAIResponsesUrl('https://api.openai.com/v1'),
+    'https://api.openai.com/v1/responses',
+  );
+  assert.equal(
+    normalizeOpenAIResponsesUrl('https://example.test/v1/chat/completions'),
+    'https://example.test/v1/responses',
+  );
+  assert.equal(
+    normalizeOpenAIResponsesUrl('https://example.test/v1/responses'),
+    'https://example.test/v1/responses',
   );
 });
 

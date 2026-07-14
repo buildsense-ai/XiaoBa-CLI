@@ -434,12 +434,52 @@ describe('ContextCompressor.compact', () => {
     assert.equal(heavyResult, true);
   });
 
+  test('needsCompaction 在历史工具结果数量过多时触发', async () => {
+    const compressor = new ContextCompressor(aiService, {
+      maxContextTokens: 1_000_000,
+      compactionThreshold: 0.7,
+      toolResultCompactionCountThreshold: 3,
+      toolResultCompactionTokenThreshold: 1_000_000,
+    });
+    const messages: Message[] = [
+      system('base'),
+      user('之前的任务'),
+      tool('execute_shell', 'ok', 'tc1'),
+      tool('read_file', 'ok', 'tc2'),
+      tool('grep', 'ok', 'tc3'),
+    ];
+
+    assert.equal(compressor.needsCompaction(messages), true);
+  });
+
+  test('needsCompaction 在历史工具结果体积过大时触发', async () => {
+    const compressor = new ContextCompressor(aiService, {
+      maxContextTokens: 1_000_000,
+      compactionThreshold: 0.7,
+      toolResultCompactionCountThreshold: 1000,
+      toolResultCompactionTokenThreshold: 100,
+    });
+    const messages: Message[] = [
+      system('base'),
+      user('之前的任务'),
+      tool('read_file', '中'.repeat(300), 'tc1'),
+    ];
+
+    const usage = compressor.getUsageInfo(messages);
+    assert.equal(compressor.needsCompaction(messages), true);
+    assert.equal(usage.toolResultCount, 1);
+    assert.ok(usage.toolResultTokens >= 100);
+  });
+
   test('getUsageInfo 返回正确结构', async () => {
     const compressor = new ContextCompressor(aiService, { maxContextTokens: 1000 });
     const info = compressor.getUsageInfo([system('a'), user('b')]);
     assert.equal(info.maxTokens, 1000);
     assert.equal(typeof info.usedTokens, 'number');
     assert.equal(typeof info.usagePercent, 'number');
+    assert.equal(typeof info.toolResultCount, 'number');
+    assert.equal(typeof info.toolResultTokens, 'number');
+    assert.equal(typeof info.toolResultChars, 'number');
   });
 });
 

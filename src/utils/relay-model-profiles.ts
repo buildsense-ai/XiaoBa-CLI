@@ -1,4 +1,4 @@
-export type RelayModelFamily = 'minimax' | 'deepseek' | 'glm';
+export type RelayModelFamily = 'minimax' | 'deepseek';
 export type RelayModelProvider = 'anthropic' | 'openai';
 
 export const RELAY_MODEL_BASE_URLS: Record<RelayModelProvider, string> = {
@@ -70,20 +70,6 @@ export const RELAY_MODEL_PROFILES: RelayModelProfile[] = [
     quotaClass: 'flash-low',
     preferredProvider: 'anthropic',
     contextWindowTokens: 1_000_000,
-    capabilities: {
-      toolCalling: true,
-      vision: false,
-      streaming: true,
-    },
-  },
-  {
-    id: 'glm-5.1',
-    label: 'GLM 5.1',
-    model: 'glm-5.1',
-    family: 'glm',
-    quotaClass: 'standard',
-    preferredProvider: 'anthropic',
-    contextWindowTokens: 200_000,
     capabilities: {
       toolCalling: true,
       vision: false,

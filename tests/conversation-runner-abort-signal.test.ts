@@ -3,6 +3,7 @@ import test from 'node:test';
 import { ConversationRunner } from '../src/core/conversation-runner';
 import { Message } from '../src/types';
 import { ToolDefinition, ToolExecutor, ToolCall, ToolResult } from '../src/types/tool';
+import { AIService } from '../src/utils/ai-service';
 
 class EmptyToolExecutor implements ToolExecutor {
   getToolDefinitions(): ToolDefinition[] {
@@ -114,6 +115,86 @@ test('ConversationRunner omits tool definitions when the model config disables t
 
   assert.equal(result.response, 'done');
   assert.deepEqual(observedTools, []);
+});
+
+test('ConversationRunner executes a tool only once after a transient model retry returns tool calls', async () => {
+  const service = new AIService({
+    provider: 'openai',
+    apiUrl: 'https://primary.example.test/v1',
+    apiKey: 'primary-key',
+    model: 'primary-model',
+  });
+  let modelCalls = 0;
+  (service as any).provider = {
+    chat: async () => {
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        throw Object.assign(new Error('temporary upstream failure'), {
+          response: {
+            status: 503,
+            headers: { 'retry-after': '0' },
+            data: { message: 'temporary upstream failure' },
+          },
+        });
+      }
+      if (modelCalls === 2) {
+        return {
+          content: '',
+          toolCalls: [{
+            id: 'call_once',
+            type: 'function',
+            function: {
+              name: 'read_file',
+              arguments: JSON.stringify({ file_path: 'a.txt' }),
+            },
+          }],
+        };
+      }
+      return {
+        content: 'done',
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      };
+    },
+  };
+
+  let toolExecutions = 0;
+  const toolExecutor: ToolExecutor = {
+    getToolDefinitions() {
+      return [{
+        name: 'read_file',
+        description: 'Read a file',
+        parameters: {
+          type: 'object',
+          properties: {
+            file_path: { type: 'string' },
+          },
+          required: ['file_path'],
+        },
+      }];
+    },
+    async executeTool(toolCall: ToolCall): Promise<ToolResult> {
+      toolExecutions += 1;
+      return {
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        name: toolCall.function.name,
+        content: 'file content',
+        ok: true,
+      };
+    },
+  };
+
+  const runner = new ConversationRunner(service, toolExecutor, {
+    stream: false,
+    enableCompression: false,
+  });
+
+  const result = await runner.run([{ role: 'user', content: 'read it' }]);
+
+  assert.equal(result.response, 'done');
+  assert.equal(modelCalls, 3);
+  assert.equal(toolExecutions, 1);
 });
 
 async function waitFor(predicate: () => boolean, maxAttempts = 50): Promise<void> {

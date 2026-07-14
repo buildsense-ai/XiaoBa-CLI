@@ -211,11 +211,6 @@ export interface ToolExecutionContext {
   runId?: string;
   abortSignal?: AbortSignal;
   planRuntime?: PlanRuntime;
-  /** Runtime state for transient async prompt modes, when prompt mode routing is enabled. */
-  promptModeRuntime?: {
-    clear: (reason?: string) => void;
-    getActiveMode?: () => unknown;
-  };
   getCurrentDirectory?: () => string;
   updateCurrentDirectory?: (directory: string) => void;
   /** 子智能体需要主 agent 补充信息时使用；仅 subagent runtime 注入 */

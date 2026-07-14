@@ -58,6 +58,75 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     assert.equal(JSON.stringify(body.messages).includes('must not leak'), false);
   });
 
+  test('adds explicit DeepSeek reasoning effort only when configured', () => {
+    const maxProvider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/v1',
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'max',
+    });
+    const defaultProvider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/v1',
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'default',
+    });
+    const minimaxProvider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/v1',
+      model: 'MiniMax-M3',
+      reasoningEffort: 'max',
+    });
+
+    const maxBody = (maxProvider as any).buildRequestBody([{ role: 'user', content: 'hello' }]);
+    const defaultBody = (defaultProvider as any).buildRequestBody([{ role: 'user', content: 'hello' }]);
+    const minimaxBody = (minimaxProvider as any).buildRequestBody([{ role: 'user', content: 'hello' }]);
+
+    assert.deepStrictEqual(maxBody.thinking, { type: 'enabled' });
+    assert.equal(maxBody.reasoning_effort, 'max');
+    assert.equal(defaultBody.thinking, undefined);
+    assert.equal(defaultBody.reasoning_effort, undefined);
+    assert.equal(minimaxBody.thinking, undefined);
+    assert.equal(minimaxBody.reasoning_effort, undefined);
+  });
+
+  test('sends explicit OpenAI-compatible reasoning disable', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/v1',
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'disabled',
+    });
+
+    const body = (provider as any).buildRequestBody([{ role: 'user', content: 'hello' }]);
+
+    assert.deepStrictEqual(body.thinking, { type: 'disabled' });
+    assert.equal(body.reasoning_effort, undefined);
+  });
+
+  test('maps OpenAI-compatible GLM reasoning to thinking switch without effort field', () => {
+    const highProvider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/v1',
+      model: 'glm-5.1',
+      reasoningEffort: 'high',
+    });
+    const disabledProvider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/v1',
+      model: 'glm-5.1',
+      reasoningEffort: 'disabled',
+    });
+
+    const highBody = (highProvider as any).buildRequestBody([{ role: 'user', content: 'hello' }]);
+    const disabledBody = (disabledProvider as any).buildRequestBody([{ role: 'user', content: 'hello' }]);
+
+    assert.deepStrictEqual(highBody.thinking, { type: 'enabled' });
+    assert.equal(highBody.reasoning_effort, undefined);
+    assert.deepStrictEqual(disabledBody.thinking, { type: 'disabled' });
+    assert.equal(disabledBody.reasoning_effort, undefined);
+  });
+
   test('preserves finish reason for non-stream responses', async () => {
     const originalPost = axios.post;
     (axios as any).post = async () => ({
@@ -158,6 +227,103 @@ describe('OpenAIProvider runtime feedback boundary', () => {
     }
   });
 
+  test('preserves OpenAI reasoning content only for tool-call replay', async () => {
+    const originalPost = axios.post;
+    (axios as any).post = async () => ({
+      data: {
+        choices: [{
+          finish_reason: 'tool_calls',
+          message: {
+            content: null,
+            reasoning_content: 'private chain for replay',
+            tool_calls: [{
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'lookup', arguments: '{"query":"cats"}' },
+            }],
+          },
+        }],
+      },
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        apiKey: 'test-key',
+        apiUrl: 'https://example.test/v1/chat/completions',
+        model: 'deepseek-v4-flash',
+      });
+
+      const result = await provider.chat([{ role: 'user', content: 'hello' }]);
+
+      assert.equal(result.content, null);
+      assert.equal(result.toolCalls?.[0].id, 'call_1');
+      assert.deepStrictEqual(result.providerContent, [
+        { type: 'openai_reasoning', reasoning_content: 'private chain for replay' },
+        { type: 'tool_use', id: 'call_1', name: 'lookup', input: { query: 'cats' } },
+      ]);
+
+      const replayBody = (provider as any).buildRequestBody([{
+        role: 'assistant',
+        content: null,
+        tool_calls: result.toolCalls,
+        providerContent: result.providerContent,
+      }]);
+
+      assert.equal(replayBody.messages[0].reasoning_content, 'private chain for replay');
+      assert.equal(JSON.stringify({ content: result.content, toolCalls: result.toolCalls }).includes('private chain'), false);
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
+
+  test('does not replay DeepSeek reasoning content after switching to non-DeepSeek OpenAI model', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/v1',
+      model: 'MiniMax-M3',
+    });
+
+    const body = (provider as any).buildRequestBody([{
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        id: 'call_1',
+        type: 'function',
+        function: { name: 'lookup', arguments: '{"query":"cats"}' },
+      }],
+      providerContent: [
+        { type: 'openai_reasoning', reasoning_content: 'private deepseek chain' },
+        { type: 'tool_use', id: 'call_1', name: 'lookup', input: { query: 'cats' } },
+      ],
+    }]);
+
+    assert.equal(body.messages[0].reasoning_content, undefined);
+  });
+
+  test('replays OpenAI reasoning content for DeepSeek-compatible custom aliases', () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://api.deepseek.com/v1',
+      model: 'custom-chat-alias',
+    });
+
+    const body = (provider as any).buildRequestBody([{
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        id: 'call_1',
+        type: 'function',
+        function: { name: 'lookup', arguments: '{"query":"cats"}' },
+      }],
+      providerContent: [
+        { type: 'openai_reasoning', reasoning_content: 'private deepseek chain' },
+        { type: 'tool_use', id: 'call_1', name: 'lookup', input: { query: 'cats' } },
+      ],
+    }]);
+
+    assert.equal(body.messages[0].reasoning_content, 'private deepseek chain');
+  });
+
   test('preserves finish reason for stream responses', async () => {
     const originalPost = axios.post;
     (axios as any).post = async () => ({
@@ -226,4 +392,60 @@ describe('OpenAIProvider runtime feedback boundary', () => {
       (axios as any).post = originalPost;
     }
   });
+
+  test('preserves streamed OpenAI reasoning content only for tool-call replay', async () => {
+    const originalPost = axios.post;
+    (axios as any).post = async () => ({
+      data: Readable.from([
+        sse({ choices: [{ delta: { reasoning_content: 'private ' } }] }),
+        sse({ choices: [{ delta: { reasoning_content: 'stream chain' } }] }),
+        sse({
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: 'call_stream',
+                type: 'function',
+                function: { name: 'lookup', arguments: '{"query":"cats"}' },
+              }],
+            },
+            finish_reason: 'tool_calls',
+          }],
+        }),
+        'data: [DONE]\n\n',
+      ]),
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        apiKey: 'test-key',
+        apiUrl: 'https://example.test/v1/chat/completions',
+        model: 'deepseek-v4-flash',
+      });
+
+      const result = await provider.chatStream([{ role: 'user', content: 'hello' }]);
+
+      assert.equal(result.content, null);
+      assert.equal(result.toolCalls?.[0].id, 'call_stream');
+      assert.deepStrictEqual(result.providerContent, [
+        { type: 'openai_reasoning', reasoning_content: 'private stream chain' },
+        { type: 'tool_use', id: 'call_stream', name: 'lookup', input: { query: 'cats' } },
+      ]);
+
+      const replayBody = (provider as any).buildRequestBody([{
+        role: 'assistant',
+        content: null,
+        tool_calls: result.toolCalls,
+        providerContent: result.providerContent,
+      }]);
+
+      assert.equal(replayBody.messages[0].reasoning_content, 'private stream chain');
+    } finally {
+      (axios as any).post = originalPost;
+    }
+  });
 });
+
+function sse(payload: unknown): string {
+  return `data: ${JSON.stringify(payload)}\n\n`;
+}

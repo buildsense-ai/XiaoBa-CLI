@@ -24,7 +24,7 @@ describe('PromptComposer', () => {
   });
 
   test('composes base prompt, optional identity, date, and runtime context template', () => {
-    writePrompt('system-prompt.md', 'Base prompt\n');
+    writePrompt('system-prompt.md', '{{#displayName}}I am {{displayName}}. {{/displayName}}Base prompt\n');
 
     const prompt = PromptComposer.composeSystemPrompt({
       promptsDir: testRoot,
@@ -35,7 +35,8 @@ describe('PromptComposer', () => {
       now: new Date('2026-05-01T12:00:00.000Z'),
     });
 
-    assert.match(prompt, /^Base prompt/);
+    assert.match(prompt, /^I am Desk Bot\. Base prompt/);
+    assert.doesNotMatch(prompt, /\{\{[#/]?displayName\}\}/);
     assert.match(prompt, /你的名字是：Desk Bot/);
     assert.match(prompt, /当前平台：feishu/);
     assert.match(prompt, /当前日期：2026-05-01/);
@@ -69,14 +70,13 @@ describe('PromptComposer', () => {
     );
   });
 
-  test('composes stable prompt mode packages when configured', () => {
+  test('ignores legacy prompt mode packages when configured', () => {
     writePrompt('system-prompt.md', 'Base prompt');
     writePrompt('modes/coding-agent.md', [
       '---',
       'title: Coding',
       '---',
-      '你处于工程协作模式。',
-      '优先用 `edit_file` 做精确替换。',
+      'Legacy mode content with edit_file guidance.',
     ].join('\n'));
 
     const prompt = PromptComposer.composeSystemPrompt({
@@ -87,9 +87,10 @@ describe('PromptComposer', () => {
       now: new Date('2026-05-01T12:00:00.000Z'),
     });
 
-    assert.match(prompt, /\[mode:coding-agent\]/);
-    assert.match(prompt, /你处于工程协作模式/);
-    assert.match(prompt, /优先用 `edit_file` 做精确替换/);
+    assert.match(prompt, /^Base prompt/);
+    assert.doesNotMatch(prompt, /\[mode:coding-agent\]/);
+    assert.doesNotMatch(prompt, /Legacy mode content/);
+    assert.doesNotMatch(prompt, /edit_file guidance/);
   });
 
   test('PromptManager delegates to PromptComposer without changing output', async () => {

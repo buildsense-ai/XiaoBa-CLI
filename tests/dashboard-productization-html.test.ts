@@ -35,9 +35,17 @@ test('Agent Hub keeps connector controls and third-party model config without du
   assert.match(dashboardHtml, /CatsCo 中转模型在 CatsCo 页面选择/);
   assert.match(dashboardHtml, /CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS/);
   assert.match(dashboardHtml, /id="model-context-window-setting"/);
+  assert.match(dashboardHtml, /id="model-openai-api-mode-setting"/);
+  assert.match(dashboardHtml, /Responses API（提示词缓存）/);
+  assert.match(dashboardHtml, /function syncCustomOpenAIApiModeVisibility\(\)/);
+  assert.match(dashboardHtml, /'model\.openaiApiMode':document\.getElementById\('model-openai-api-mode-setting'\)/);
   assert.match(dashboardHtml, /'model\.contextWindowTokens':document\.getElementById\('model-context-window-setting'\)\.value/);
   assert.match(dashboardHtml, /自定义模型可在 128K 到 1M 间选择上下文/);
   assert.match(dashboardHtml, /上下文 '\+escapeHtml\(contextLabel\)\+'/);
+  assert.match(dashboardHtml, /首页的一键启动区域负责选择 CatsCo 中转模型和推理强度/);
+  assert.doesNotMatch(dashboardHtml, /当前启动模型的推理强度/);
+  assert.doesNotMatch(dashboardHtml, /id="startup-reasoning-effort-setting"/);
+  assert.doesNotMatch(dashboardHtml, /id="model-reasoning-effort-setting"/);
   assert.doesNotMatch(servicesPageHtml, /模型来源与 Runtime Profile/);
   assert.doesNotMatch(servicesPageHtml, /id="settings-setup-panel"/);
   assert.doesNotMatch(servicesPageHtml, /先完成关键配置/);
@@ -128,7 +136,9 @@ test('CatsCo Chat page is driven by readiness state instead of loose controls', 
   assert.match(dashboardHtml, /id="cats-relay-model-panel"/);
   assert.match(dashboardHtml, /\.chat-shell\.connect-collapsed #cats-relay-model-panel/);
   assert.match(dashboardHtml, /let pendingStartupSource = ''/);
+  assert.match(dashboardHtml, /let pendingRelayReasoningEffort = ''/);
   assert.match(dashboardHtml, /function relayModelIdForSetup\(\)/);
+  assert.match(dashboardHtml, /function relayReasoningEffortForSetup\(\)/);
   assert.match(dashboardHtml, /登录后会自动接入/);
   assert.match(dashboardHtml, /function buildCatsChatStage\(\)/);
   assert.match(dashboardHtml, /function renderCatsChecklist\(stage\)/);
@@ -187,6 +197,22 @@ test('relay model cards render SDK labels from model payloads', () => {
   assert.match(dashboardHtml, /const sdkLabel=model\.sdk_label \|\|/);
   assert.match(dashboardHtml, /escapeHtml\(contextLabel\)\+' · '\+escapeHtml\(sdkLabel\)/);
   assert.doesNotMatch(dashboardHtml, /escapeHtml\(contextLabel\)\+' · Anthropic SDK'/);
+  assert.doesNotMatch(dashboardHtml, /label:'GLM 5\.1'/);
+  assert.match(dashboardHtml, /DeepSeek 官方参数/);
+  assert.match(dashboardHtml, /reasoning_effort: high/);
+  assert.match(dashboardHtml, /reasoning_effort: max/);
+  assert.match(dashboardHtml, /thinking: disabled/);
+  assert.match(dashboardHtml, /DeepSeek 默认 high/);
+  assert.doesNotMatch(dashboardHtml, /官方默认/);
+  assert.doesNotMatch(dashboardHtml, /glm/i);
+  assert.match(dashboardHtml, /DEEPSEEK_REASONING_EFFORT_OPTIONS=REASONING_EFFORT_OPTIONS\.filter\(option=>option\.value!=='default'\)/);
+  assert.match(dashboardHtml, /let relayModelSelectInteractionUntil=0/);
+  assert.match(dashboardHtml, /function holdRelayModelPanelRender\(\)/);
+  assert.match(dashboardHtml, /function shouldDeferRelayModelPanelRender\(\)/);
+  assert.match(dashboardHtml, /if\(shouldDeferRelayModelPanelRender\(\)\)return/);
+  assert.match(dashboardHtml, /onfocus="holdRelayModelPanelRender\(\)"/);
+  assert.doesNotMatch(dashboardHtml, /function isInternalRelayModel\(model\)/);
+  assert.doesNotMatch(dashboardHtml, /text\.includes\('glm'\)/);
 
   const functionSource = dashboardHtml.match(
     /function relayModelChoiceHtml\(model, activeId, catsConnected, context='settings'\)\{[\s\S]*?\n    \}/,
@@ -252,6 +278,7 @@ test('CatsCo Chat setup refreshes readiness before unlocking the composer', () =
   assert.match(setupBlock, /const setupRelayModel=shouldSetupRelayOnCatsSetup\(\)/);
   assert.match(setupBlock, /setupRelayModel,/);
   assert.match(setupBlock, /relayModelId:setupRelayModel \? \(relayModelIdForSetup\(\)\|\|undefined\) : undefined/);
+  assert.match(setupBlock, /reasoningEffort:setupRelayModel \? relayReasoningEffortForSetup\(\) : undefined/);
   assert.match(setupBlock, /rotateRelayKey:Boolean\(options\.rotateRelayKey\)/);
   assert.match(setupBlock, /const automatic=options\.automatic===true/);
   assert.match(setupBlock, /setCatsSetupBusy\(true\)/);
@@ -272,9 +299,11 @@ test('CatsCo bot binding carries selected relay model setup', () => {
   assert.match(bindBlock, /const setupRelayModel=shouldSetupRelayOnCatsSetup\(\)/);
   assert.match(bindBlock, /setupRelayModel,/);
   assert.match(bindBlock, /relayModelId:setupRelayModel \? \(relayModelIdForSetup\(\)\|\|undefined\) : undefined/);
+  assert.match(bindBlock, /reasoningEffort:setupRelayModel \? relayReasoningEffortForSetup\(\) : undefined/);
   assert.match(bindBlock, /rotateRelayKey:Boolean\(options\?\.rotateRelayKey\)/);
   assert.match(bindBlock, /pendingStartupSource=''/);
   assert.match(bindBlock, /pendingRelayModelId=''/);
+  assert.match(bindBlock, /pendingRelayReasoningEffort=''/);
   assert.match(bindBlock, /setCatsStatusMutationBusy\(true\)/);
   assert.match(bindBlock, /invalidateCatsStatusRequests\(\)/);
   assert.match(bindBlock, /const stage=await refreshCatsChatAfterMutation\(\{focusInput:true\}\)/);

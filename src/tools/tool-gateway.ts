@@ -82,16 +82,10 @@ export function formatCatsCoVisiblePath(
   value: string | undefined,
   options: CatsCoVisiblePathOptions = {},
 ): string {
-  const fallback = options.fallback ?? '[current CatsCo device]';
+  void context;
+  const fallback = options.fallback ?? '';
   const text = String(value || '').trim();
-  if (!isCatsCoToolGatewayContext(context)) {
-    return text || fallback;
-  }
-  if (!text) return fallback;
-  if (/^catsco_attachment:[A-Za-z0-9._:-]+$/.test(text)) return text;
-  if (/^\[CatsCo [^\]]+\]$/.test(text)) return text;
-  if (options.preserveRelative && !looksLikeAbsoluteLocalPath(text)) return text;
-  return text;
+  return text || fallback;
 }
 
 export function redactCatsCoVisiblePath(
@@ -411,18 +405,7 @@ function denied(lines: string[], targetLabel?: string): ToolGatewayDecision {
 }
 
 function sanitizeTargetLabel(value: string): string {
-  const text = String(value || '').trim();
-  if (!text) return '[current CatsCo device]';
-  if (/^catsco_attachment:[A-Za-z0-9._:-]+$/.test(text)) return text;
-  if (/^\[CatsCo [^\]]+\]$/.test(text)) return text;
-  return '[current CatsCo device]';
-}
-
-function looksLikeAbsoluteLocalPath(value: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(value)
-    || /^\\\\/.test(value)
-    || /^\//.test(value)
-    || /^~[\\/]/.test(value);
+  return String(value || '').trim();
 }
 
 function isCatsCoDeviceRpcForwardLocalContext(

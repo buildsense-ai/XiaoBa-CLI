@@ -9,7 +9,8 @@ import {
   RuntimeSurface,
   resolveDefaultRuntimeProfile,
 } from './runtime-profile';
-import { normalizePromptModeId } from './prompt-modes';
+import { normalizeReasoningEffort } from '../utils/reasoning-effort';
+import { normalizeOpenAIApiMode } from '../utils/openai-api-mode';
 
 export const RUNTIME_PROFILE_SCHEMA_VERSION = 1;
 export const DEFAULT_RUNTIME_PROFILE_FILENAME = 'runtime-profile.json';
@@ -17,13 +18,12 @@ export const DEFAULT_RUNTIME_PROFILE_FILENAME = 'runtime-profile.json';
 const PROFILE_PATH_ENV_KEYS = ['XIAOBA_RUNTIME_PROFILE_PATH', 'XIAOBA_PROFILE_PATH'];
 
 export interface RuntimeProfileFileModelConfig extends Pick<RuntimeModelProfile,
-  'provider' | 'apiUrl' | 'model' | 'temperature' | 'maxTokens'
+  'provider' | 'apiUrl' | 'model' | 'temperature' | 'maxTokens' | 'reasoningEffort' | 'openaiApiMode'
 > {}
 
 export interface RuntimeProfileFilePromptConfig {
   displayName?: string;
   platform?: string;
-  mode?: string;
 }
 
 export interface RuntimeProfileFileToolConfig {
@@ -203,14 +203,6 @@ export function applyRuntimeProfileFileConfig(
     if (isNonEmptyString(config.prompt.platform)) {
       profile.prompt.platform = config.prompt.platform.trim();
     }
-    if (isNonEmptyString(config.prompt.mode)) {
-      const mode = normalizePromptModeId(config.prompt.mode);
-      if (mode) {
-        profile.prompt.mode = mode;
-      } else {
-        (profile.prompt as any).mode = config.prompt.mode.trim();
-      }
-    }
   }
   if (config.tools?.enabled) {
     profile.tools.enabled = [...config.tools.enabled];
@@ -342,6 +334,8 @@ function copyModel(
   copyString(source.model, model as Record<string, unknown>, 'model', 'profile.model.model', issues);
   copyNumber(source.model, model as Record<string, unknown>, 'temperature', 'profile.model.temperature', issues);
   copyNumber(source.model, model as Record<string, unknown>, 'maxTokens', 'profile.model.maxTokens', issues);
+  copyReasoningEffort(source.model, model, issues);
+  copyOpenAIApiMode(source.model, model, issues);
 
   if (source.model.apiKey !== undefined) {
     issues.push({
@@ -367,7 +361,6 @@ function copyPrompt(
   const prompt: RuntimeProfileFilePromptConfig = {};
   copyString(source.prompt, prompt as Record<string, unknown>, 'displayName', 'profile.prompt.displayName', issues);
   copyString(source.prompt, prompt as Record<string, unknown>, 'platform', 'profile.prompt.platform', issues);
-  copyString(source.prompt, prompt as Record<string, unknown>, 'mode', 'profile.prompt.mode', issues);
   target.prompt = prompt;
 }
 
@@ -435,6 +428,42 @@ function copyLogging(
   target.logging = logging;
 }
 
+function copyReasoningEffort(
+  source: Record<string, unknown>,
+  target: RuntimeProfileFileModelConfig,
+  issues: RuntimeProfileConfigIssue[],
+): void {
+  if (source.reasoningEffort === undefined) return;
+  if (typeof source.reasoningEffort !== 'string') {
+    issues.push({ path: 'profile.model.reasoningEffort', message: 'Expected string' });
+    return;
+  }
+  const normalized = normalizeReasoningEffort(source.reasoningEffort);
+  if (!normalized) {
+    issues.push({ path: 'profile.model.reasoningEffort', message: 'Expected one of: default, high, max, disabled' });
+    return;
+  }
+  target.reasoningEffort = normalized;
+}
+
+function copyOpenAIApiMode(
+  source: Record<string, unknown>,
+  target: RuntimeProfileFileModelConfig,
+  issues: RuntimeProfileConfigIssue[],
+): void {
+  if (source.openaiApiMode === undefined) return;
+  if (typeof source.openaiApiMode !== 'string') {
+    issues.push({ path: 'profile.model.openaiApiMode', message: 'Expected string' });
+    return;
+  }
+  const normalized = normalizeOpenAIApiMode(source.openaiApiMode);
+  if (!normalized) {
+    issues.push({ path: 'profile.model.openaiApiMode', message: 'Expected one of: chat_completions, responses' });
+    return;
+  }
+  target.openaiApiMode = normalized;
+}
+
 function copyNumber(
   source: Record<string, unknown>,
   target: Record<string, unknown>,
@@ -472,6 +501,8 @@ function filterModelConfig(model: RuntimeProfileFileModelConfig): RuntimeProfile
     ...(model.model !== undefined ? { model: model.model } : {}),
     ...(model.temperature !== undefined ? { temperature: model.temperature } : {}),
     ...(model.maxTokens !== undefined ? { maxTokens: model.maxTokens } : {}),
+    ...(model.reasoningEffort !== undefined ? { reasoningEffort: model.reasoningEffort } : {}),
+    ...(model.openaiApiMode !== undefined ? { openaiApiMode: model.openaiApiMode } : {}),
   };
 }
 

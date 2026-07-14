@@ -1,7 +1,7 @@
 import { Message, ChatConfig, ChatResponse } from '../types';
 import { ConfigManager } from './config';
 import { ToolDefinition } from '../types/tool';
-import { AIProvider, AIRequestOptions, StreamCallbacks } from '../providers/provider';
+import { AIProvider, AIRequestOptions, StreamCallbacks, StreamRetryInfo } from '../providers/provider';
 import { AnthropicProvider } from '../providers/anthropic-provider';
 import { OpenAIProvider } from '../providers/openai-provider';
 import { Logger } from './logger';
@@ -14,10 +14,25 @@ import { resolveModelContextWindow } from './model-context-window';
  */
 /** 可重试的 HTTP 状态码 */
 const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504, 520, 524, 529]);
-const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
+const MAX_DELAY_MS = 30000;
+const DEFAULT_MAX_RETRY_DURATION_MS = 5 * 60 * 1000;
+const DEFAULT_MAX_RETRIES = 14;
+const MAX_CONFIGURABLE_RETRY_DURATION_MS = 10 * 60 * 1000;
+const MAX_CONFIGURABLE_RETRIES = 30;
+const SHORT_NETWORK_RETRY_CODES = new Set(['ENOTFOUND', 'ECONNREFUSED']);
+const SHORT_NETWORK_MAX_RETRIES = 3;
+const SHORT_NETWORK_MAX_ELAPSED_MS = 30 * 1000;
+const SHORT_NETWORK_MAX_DELAY_MS = 5000;
 
 type ProviderKind = 'openai' | 'anthropic';
+
+interface RetryPolicy {
+  maxRetries: number;
+  maxElapsedMs: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+}
 
 export class AIService {
   private config: ChatConfig;
@@ -164,11 +179,7 @@ export class AIService {
     );
 
     const status = this.extractStatus(error);
-    const errorMessage = error?.response?.data?.error?.message
-      || error?.response?.data?.message
-      || error?.error?.message
-      || error?.message
-      || String(error);
+    const errorMessage = this.extractErrorMessage(error);
 
     if (status) {
       return new Error(`API错误 (${status}): ${errorMessage}`);
@@ -185,6 +196,10 @@ export class AIService {
       return false;
     }
 
+    if (this.isKnownNonRetryableProviderError(error)) {
+      return false;
+    }
+
     // HTTP 状态码可重试
     const status = this.extractStatus(error);
     if (status && RETRYABLE_STATUS_CODES.has(status)) {
@@ -192,15 +207,25 @@ export class AIService {
     }
 
     // 网络错误可重试
-    const code = String(error?.code || '').toUpperCase();
-    if (['ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN'].includes(code)) {
+    const code = this.extractErrorCode(error);
+    if ([
+      'ECONNRESET',
+      'ETIMEDOUT',
+      'ECONNABORTED',
+      'ECONNREFUSED',
+      'ENOTFOUND',
+      'EAI_AGAIN',
+      'UND_ERR_CONNECT_TIMEOUT',
+      'UND_ERR_HEADERS_TIMEOUT',
+      'UND_ERR_SOCKET',
+    ].includes(code)) {
       return true;
     }
 
     const message = String(error?.message || '');
     const hasRetryableStatusText =
-      /(?:API错误|HTTP|status(?:\s*code)?|response status)\s*[\(:= ]\s*(?:500|502|503|504|520|524|529)\b/i.test(message)
-      || /^\s*(?:500|502|503|504|520|524|529)\b/.test(message);
+      /(?:API错误|HTTP|status(?:\s*code)?|response status)\s*[\(:= ]\s*(?:408|429|500|502|503|504|520|524|529)\b/i.test(message)
+      || /^\s*(?:408|429|500|502|503|504|520|524|529)\b/.test(message);
     if (
       hasRetryableStatusText
       || /timeout|timed out|socket hang up|network error|fetch failed|premature close|ECONNREFUSED|bad gateway|gateway timeout|service unavailable|unknown error,\s*520/i.test(message)
@@ -214,6 +239,27 @@ export class AIService {
     }
 
     return false;
+  }
+
+  private isKnownNonRetryableProviderError(error: any): boolean {
+    const status = this.extractStatus(error);
+    if (status && [400, 401, 403, 404, 413, 422].includes(status)) {
+      return true;
+    }
+
+    const message = [
+      error?.response?.data?.error?.code,
+      error?.response?.data?.error?.type,
+      error?.response?.data?.error?.message,
+      error?.response?.data?.message,
+      error?.error?.code,
+      error?.error?.type,
+      error?.error?.message,
+      error?.message,
+    ].filter(Boolean).join(' ');
+
+    return /insufficient[_\s-]?quota|quota[_\s-]?exceeded|billing|(?:insufficient|low|exhausted)[_\s-]?(?:credit|balance)|(?:credit|balance)[_\s-]?(?:exhausted|insufficient|too low)|账户余额|余额不足|额度不足|额度已用尽|context length|maximum context|max(?:imum)? tokens?|prompt too long|invalid[_\s-]?request|invalid[_\s-]?api[_\s-]?key|unauthorized|forbidden|permission denied|model .*not found|model_not_found|tool schema|schema is invalid|content policy|safety/i
+      .test(message);
   }
 
   /**
@@ -241,6 +287,11 @@ export class AIService {
     if (retryAfter) {
       const seconds = parseInt(retryAfter, 10);
       if (!isNaN(seconds)) return seconds;
+
+      const dateMs = Date.parse(String(retryAfter));
+      if (Number.isFinite(dateMs)) {
+        return Math.max(0, Math.ceil((dateMs - Date.now()) / 1000));
+      }
     }
     return null;
   }
@@ -255,8 +306,10 @@ export class AIService {
     shouldRetry?: (error: any, attempt: number) => boolean,
   ): Promise<T> {
     let lastError: any;
+    const policy = this.resolveRetryPolicy();
+    const startedAt = Date.now();
 
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    for (let attempt = 0; ; attempt++) {
       try {
         this.throwIfAborted(signal);
         return await fn();
@@ -267,24 +320,38 @@ export class AIService {
           throw this.createAbortError();
         }
 
-        if (attempt >= MAX_RETRIES || !this.isRetryable(error) || shouldRetry?.(error, attempt) === false) {
+        const policy = this.resolveRetryPolicy(error);
+        const retryAttempt = attempt + 1;
+        if (
+          retryAttempt > policy.maxRetries
+          || !this.isRetryable(error)
+          || shouldRetry?.(error, retryAttempt) === false
+        ) {
           throw error;
         }
 
-        // 通知用户正在重试
-        if (attempt === 0 && callbacks?.onRetry) {
-          callbacks.onRetry(attempt + 1, MAX_RETRIES);
+        const elapsedMs = Date.now() - startedAt;
+        if (elapsedMs >= policy.maxElapsedMs) {
+          throw error;
         }
 
         // 计算等待时间：优先用 Retry-After，否则指数退避
-        const retryAfter = this.getRetryAfter(error);
-        const delay = retryAfter
-          ? retryAfter * 1000
-          : BASE_DELAY_MS * Math.pow(2, attempt) + Math.random() * 500;
+        const delay = this.resolveRetryDelayMs(error, retryAttempt, policy, elapsedMs);
 
-        const status = this.extractStatus(error) || error?.code || 'unknown';
+        const status = this.extractStatus(error) || this.extractErrorCode(error) || 'unknown';
+        const retryInfo: StreamRetryInfo = {
+          attempt: retryAttempt,
+          maxRetries: policy.maxRetries,
+          delayMs: delay,
+          elapsedMs,
+          maxElapsedMs: policy.maxElapsedMs,
+          status,
+          message: this.extractErrorMessage(error),
+        };
+        await this.notifyRetry(callbacks, retryAttempt, policy.maxRetries, retryInfo);
+
         Logger.warning(
-          `API 调用失败 (${status})，${delay.toFixed(0)}ms 后重试 (${attempt + 1}/${MAX_RETRIES})... `
+          `API 调用失败 (${status})，${delay.toFixed(0)}ms 后重试 (${retryAttempt}/${policy.maxRetries})... `
           + `[${this.config.provider}/${this.config.model || 'default'}]`
         );
 
@@ -293,6 +360,91 @@ export class AIService {
     }
 
     throw lastError;
+  }
+
+  private resolveRetryPolicy(error?: any): RetryPolicy {
+    const policy: RetryPolicy = {
+      maxElapsedMs: this.readNumberEnv(
+        ['CATSCO_MODEL_RETRY_MAX_MS', 'GAUZ_MODEL_RETRY_MAX_MS'],
+        DEFAULT_MAX_RETRY_DURATION_MS,
+        0,
+        MAX_CONFIGURABLE_RETRY_DURATION_MS,
+      ),
+      maxRetries: this.readNumberEnv(
+        ['CATSCO_MODEL_RETRY_MAX_RETRIES', 'GAUZ_MODEL_RETRY_MAX_RETRIES'],
+        DEFAULT_MAX_RETRIES,
+        0,
+        MAX_CONFIGURABLE_RETRIES,
+      ),
+      maxDelayMs: this.readNumberEnv(
+        ['CATSCO_MODEL_RETRY_MAX_DELAY_MS', 'GAUZ_MODEL_RETRY_MAX_DELAY_MS'],
+        MAX_DELAY_MS,
+        BASE_DELAY_MS,
+        MAX_CONFIGURABLE_RETRY_DURATION_MS,
+      ),
+      baseDelayMs: BASE_DELAY_MS,
+    };
+
+    if (!this.isShortNetworkRetryError(error)) {
+      return policy;
+    }
+
+    return {
+      ...policy,
+      maxRetries: Math.min(policy.maxRetries, SHORT_NETWORK_MAX_RETRIES),
+      maxElapsedMs: Math.min(policy.maxElapsedMs, SHORT_NETWORK_MAX_ELAPSED_MS),
+      maxDelayMs: Math.min(policy.maxDelayMs, SHORT_NETWORK_MAX_DELAY_MS),
+    };
+  }
+
+  private resolveRetryDelayMs(error: any, retryAttempt: number, policy: RetryPolicy, elapsedMs: number): number {
+    const retryAfter = this.getRetryAfter(error);
+    const rawDelay = retryAfter !== null
+      ? retryAfter * 1000
+      : Math.min(policy.maxDelayMs, policy.baseDelayMs * Math.pow(2, retryAttempt - 1)) + Math.random() * 500;
+    const remainingMs = Math.max(0, policy.maxElapsedMs - elapsedMs);
+    return Math.max(0, Math.min(rawDelay, remainingMs));
+  }
+
+  private readNumberEnv(names: string[], fallback: number, min: number, max: number): number {
+    for (const name of names) {
+      const raw = process.env[name];
+      if (raw === undefined || raw.trim() === '') continue;
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) {
+        return Math.min(max, Math.max(min, Math.floor(parsed)));
+      }
+    }
+    return fallback;
+  }
+
+  private extractErrorMessage(error: any): string {
+    return error?.response?.data?.error?.message
+      || error?.response?.data?.message
+      || error?.error?.message
+      || error?.message
+      || String(error);
+  }
+
+  private extractErrorCode(error: any): string {
+    return String(error?.code || error?.cause?.code || '').toUpperCase();
+  }
+
+  private isShortNetworkRetryError(error: any): boolean {
+    return SHORT_NETWORK_RETRY_CODES.has(this.extractErrorCode(error));
+  }
+
+  private async notifyRetry(
+    callbacks: StreamCallbacks | undefined,
+    attempt: number,
+    maxRetries: number,
+    info: StreamRetryInfo,
+  ): Promise<void> {
+    try {
+      await callbacks?.onRetry?.(attempt, maxRetries, info);
+    } catch (error: any) {
+      Logger.warning(`重试提示回调失败: ${error?.message || error}`);
+    }
   }
 
   private throwIfAborted(signal?: AbortSignal): void {

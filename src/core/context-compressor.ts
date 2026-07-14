@@ -14,6 +14,8 @@ const DEFAULT_PRESERVE_RECENT_EPISODES = 2;
 const DEFAULT_PRESERVE_RECENT_EPISODE_TOKEN_BUDGET = 20000;
 const DEFAULT_PRESERVE_RECENT_EPISODE_MAX_SHARE = 0.35;
 const DEFAULT_RECENT_EPISODE_CAPSULE_MAX_CHARS = 6000;
+const DEFAULT_TOOL_RESULT_COMPACTION_COUNT_THRESHOLD = 250;
+const DEFAULT_TOOL_RESULT_COMPACTION_TOKEN_THRESHOLD = 60000;
 
 export interface ContextCompressorOptions {
   maxContextTokens?: number;
@@ -23,6 +25,14 @@ export interface ContextCompressorOptions {
   preserveRecentEpisodeTokenBudget?: number;
   preserveRecentEpisodeMaxShare?: number;
   recentEpisodeCapsuleMaxChars?: number;
+  toolResultCompactionCountThreshold?: number;
+  toolResultCompactionTokenThreshold?: number;
+}
+
+interface ToolResultLoad {
+  count: number;
+  tokens: number;
+  chars: number;
 }
 
 interface EpisodeGroup {
@@ -292,6 +302,8 @@ export class ContextCompressor {
   private preserveRecentEpisodeTokenBudget: number;
   private preserveRecentEpisodeMaxShare: number;
   private recentEpisodeCapsuleMaxChars: number;
+  private toolResultCompactionCountThreshold: number;
+  private toolResultCompactionTokenThreshold: number;
   private aiService: AIService;
 
   constructor(aiService: AIService, options?: ContextCompressorOptions) {
@@ -315,6 +327,14 @@ export class ContextCompressor {
       options?.recentEpisodeCapsuleMaxChars,
       DEFAULT_RECENT_EPISODE_CAPSULE_MAX_CHARS,
     );
+    this.toolResultCompactionCountThreshold = readPositiveInteger(
+      options?.toolResultCompactionCountThreshold,
+      DEFAULT_TOOL_RESULT_COMPACTION_COUNT_THRESHOLD,
+    );
+    this.toolResultCompactionTokenThreshold = readPositiveInteger(
+      options?.toolResultCompactionTokenThreshold,
+      DEFAULT_TOOL_RESULT_COMPACTION_TOKEN_THRESHOLD,
+    );
   }
 
   /**
@@ -323,7 +343,11 @@ export class ContextCompressor {
   needsCompaction(messages: Message[]): boolean {
     const used = estimateMessagesTokens(messages);
     const threshold = this.maxContextTokens * this.compactionThreshold;
-    return used > threshold;
+    if (used > threshold) return true;
+
+    const toolResultLoad = summarizeToolResultLoad(messages);
+    return toolResultLoad.count >= this.toolResultCompactionCountThreshold
+      || toolResultLoad.tokens >= this.toolResultCompactionTokenThreshold;
   }
 
   /**
@@ -333,12 +357,19 @@ export class ContextCompressor {
     usedTokens: number;
     maxTokens: number;
     usagePercent: number;
+    toolResultCount: number;
+    toolResultTokens: number;
+    toolResultChars: number;
   } {
     const used = estimateMessagesTokens(messages);
+    const toolResultLoad = summarizeToolResultLoad(messages);
     return {
       usedTokens: used,
       maxTokens: this.maxContextTokens,
       usagePercent: Math.round((used / this.maxContextTokens) * 100),
+      toolResultCount: toolResultLoad.count,
+      toolResultTokens: toolResultLoad.tokens,
+      toolResultChars: toolResultLoad.chars,
     };
   }
 
@@ -569,6 +600,22 @@ function buildEpisodeGroups(session: Message[]): EpisodeGroup[] {
   });
 
   return groups;
+}
+
+function summarizeToolResultLoad(messages: Message[]): ToolResultLoad {
+  let count = 0;
+  let tokens = 0;
+  let chars = 0;
+
+  for (const message of messages) {
+    if (message.role !== 'tool') continue;
+    count++;
+    const text = contentToString(message.content);
+    chars += text.length;
+    tokens += estimateTokens(text);
+  }
+
+  return { count, tokens, chars };
 }
 
 function isPreservableEpisode(group: EpisodeGroup): boolean {

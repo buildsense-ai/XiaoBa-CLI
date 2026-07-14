@@ -12,6 +12,8 @@ test('transient environment hint carries cwd and local execution details outside
     provider: 'openai',
     model: 'MiniMax-M3',
     env: { ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
+    platform: 'win32',
+    now: new Date('2026-06-14T12:00:00.000Z'),
     gitInfo: {
       root: 'C:\\work\\project',
       branch: 'main',
@@ -28,7 +30,8 @@ test('transient environment hint carries cwd and local execution details outside
   assert.match(message.content, /cwd: C:\\work\\project/);
   assert.doesNotMatch(message.content, /^surface:/m);
   assert.match(message.content, /model: openai\/MiniMax-M3/);
-  assert.match(message.content, /shell: cmd/);
+  assert.match(message.content, /os: win32/);
+  assert.match(message.content, /shell: powershell/);
   assert.match(message.content, /git: root=\., branch=main, tracked_changes=2/);
   assert.match(message.content, /Use cwd for relative file and shell paths\./);
 });
@@ -38,13 +41,7 @@ test('transient environment hint is omitted without a current directory', () => 
 });
 
 test('shell name resolver accepts common Windows and POSIX env fields', () => {
-  assert.equal(resolveShellName({ ComSpec: 'C:\\Windows\\System32\\cmd.exe' }), 'cmd');
-  assert.equal(resolveShellName({ SHELL: '/bin/zsh' }), 'zsh');
-  assert.equal(resolveShellName({ PSModulePath: 'C:\\Users\\test\\Documents\\PowerShell\\Modules' }), 'powershell');
-  if (process.platform === 'win32') {
-    assert.equal(resolveShellName({
-      ComSpec: 'C:\\Windows\\System32\\cmd.exe',
-      PSModulePath: 'C:\\Users\\test\\Documents\\PowerShell\\Modules',
-    }), 'powershell');
-  }
+  assert.equal(resolveShellName({ ComSpec: 'C:\\Windows\\System32\\cmd.exe' }, 'win32'), 'powershell');
+  assert.equal(resolveShellName({ SHELL: '/bin/zsh' }, 'linux'), 'zsh');
+  assert.equal(resolveShellName({ PSModulePath: 'C:\\Users\\test\\Documents\\PowerShell\\Modules' }, 'win32'), 'powershell');
 });

@@ -9,6 +9,7 @@ import { SubAgentManager } from '../src/core/sub-agent-manager';
 import { SubAgentSession } from '../src/core/sub-agent-session';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { SpawnSubagentTool } from '../src/tools/spawn-subagent-tool';
+import { WaitSubagentsTool } from '../src/tools/wait-subagents-tool';
 
 describe('subagent runtime events', () => {
   test('event store keeps bounded per-parent event streams with per-agent sequence numbers', () => {
@@ -378,6 +379,102 @@ describe('subagent runtime events', () => {
     }
   });
 
+  test('ask_parent can be used again after a resume', async () => {
+    const originalRun = ConversationRunner.prototype.run;
+    const workingDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-subagent-ask-parent-twice-'));
+    const notifications: Array<{ id: string; task: string; question: string }> = [];
+    let session: SubAgentSession;
+
+    (ConversationRunner.prototype as any).run = async function runMock(messages: any[]) {
+      const requestParentInput = (this as any).toolExecutionContext?.requestParentInput;
+      assert.equal(typeof requestParentInput, 'function');
+      const first = await requestParentInput('第一次确认源码路径');
+      const second = await requestParentInput('第二次确认测试命令');
+      return {
+        response: `收到两次回复：${first} / ${second}`,
+        finalResponseVisible: true,
+        messages,
+        newMessages: [],
+      };
+    };
+
+    try {
+      session = new SubAgentSession('sub-ask-parent-twice', {} as any, { getSkill: () => undefined } as any, {
+        agentType: 'explorer',
+        taskDescription: 'ask parent twice',
+        userMessage: 'ask parent twice',
+        workingDirectory,
+        notifyParent: async (id, task, question) => {
+          notifications.push({ id, task, question });
+        },
+      });
+
+      const runPromise = session.run();
+      await waitFor(() => session.getInfo().status === 'waiting_for_input' && notifications.length === 1);
+      assert.equal(session.resume('E:\\work\\cats\\cats-company'), true);
+
+      await waitFor(() => session.getInfo().status === 'waiting_for_input' && notifications.length === 2);
+      assert.match(notifications[1].question, /测试命令/);
+      assert.equal(session.resume('npx tsx --test tests/subagent-runtime-events.test.ts'), true);
+
+      await runPromise;
+
+      assert.equal(session.getInfo().status, 'completed');
+      assert.match(session.getInfo().resultSummary || '', /收到两次回复/);
+    } finally {
+      ConversationRunner.prototype.run = originalRun;
+      fs.rmSync(workingDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test('subagent tool confirmation does not ask parent unless ask_parent is allowed', async () => {
+    const originalRun = ConversationRunner.prototype.run;
+    const workingDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-subagent-confirm-no-ask-'));
+    const notifications: Array<{ id: string; task: string; question: string }> = [];
+    let confirmationResult: any;
+
+    (ConversationRunner.prototype as any).run = async function runMock(messages: any[]) {
+      const confirmToolExecution = (this as any).toolExecutionContext?.confirmToolExecution;
+      assert.equal(typeof confirmToolExecution, 'function');
+      confirmationResult = await confirmToolExecution({
+        toolName: 'execute_shell',
+        args: { command: 'npm test' },
+        risk: 'medium',
+        reason: '命令会在本机执行，需要用户确认。',
+      });
+      return {
+        response: 'confirmation checked',
+        finalResponseVisible: true,
+        messages,
+        newMessages: [],
+      };
+    };
+
+    try {
+      const session = new SubAgentSession('sub-confirm-no-ask', {} as any, { getSkill: () => undefined } as any, {
+        taskDescription: 'confirm without ask_parent',
+        userMessage: 'confirm without ask_parent',
+        allowedTools: ['execute_shell'],
+        workingDirectory,
+        notifyParent: async (id, task, question) => {
+          notifications.push({ id, task, question });
+        },
+      });
+
+      await session.run();
+
+      assert.deepEqual(confirmationResult, {
+        approved: false,
+        reason: '当前子智能体未获得 ask_parent 权限，需要主会话确认的工具调用已取消。主 agent 如需允许此类确认，应显式把 ask_parent 加入 allowed_tools。',
+      });
+      assert.equal(notifications.length, 0);
+      assert.equal(session.getInfo().status, 'completed');
+    } finally {
+      ConversationRunner.prototype.run = originalRun;
+      fs.rmSync(workingDirectory, { recursive: true, force: true });
+    }
+  });
+
   test('spawn_subagent reuses runtime services and does not load skills for built-in agents', async () => {
     const originalGetInstance = SubAgentManager.getInstance;
     let loadSkillsCalled = false;
@@ -446,9 +543,62 @@ describe('subagent runtime events', () => {
     }
   });
 
-  test('CatsCo device-scoped spawn_subagent defaults to ask_parent only', async () => {
+  test('spawn_subagent accepts a unified prompt without agent_type', async () => {
+    const originalGetInstance = SubAgentManager.getInstance;
+    let capturedRequest: any;
+
+    (SubAgentManager as any).getInstance = () => ({
+      spawn(
+        _parentSessionKey: string,
+        request: any,
+      ) {
+        capturedRequest = request;
+        return {
+          id: 'sub-unified',
+          agentType: 'worker',
+          skillName: 'worker',
+          toolScope: 'test_only',
+          allowedTools: request.allowedTools,
+          taskDescription: request.taskDescription,
+          status: 'running',
+          createdAt: Date.now(),
+          progressLog: [],
+          outputFiles: [],
+        };
+      },
+    });
+
+    try {
+      const result = await new SpawnSubagentTool().execute({
+        allowed_tools: ['grep', 'execute_shell'],
+        max_turns: 4,
+        subagent_prompt: '只检查测试失败原因，不修改文件。',
+        task: '检查测试失败',
+        context: '运行指定测试并总结失败原因。',
+      }, {
+        workingDirectory: process.cwd(),
+        conversationHistory: [],
+        sessionId: 'cc_user:test',
+        runtimeServices: {
+          aiService: {} as any,
+          skillManager: {} as any,
+        },
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(capturedRequest.agentType, undefined);
+      assert.equal(capturedRequest.allowParentQuestions, false);
+      assert.deepEqual(capturedRequest.allowedTools, ['grep', 'execute_shell']);
+      assert.equal(capturedRequest.subAgentPrompt, '只检查测试失败原因，不修改文件。');
+    } finally {
+      (SubAgentManager as any).getInstance = originalGetInstance;
+    }
+  });
+
+  test('CatsCo device-scoped spawn_subagent does not add a channel-specific tool whitelist', async () => {
     const originalGetInstance = SubAgentManager.getInstance;
     let capturedAllowedTools: unknown;
+    let capturedDelegatedContext: any;
 
     (SubAgentManager as any).getInstance = () => ({
       spawn(
@@ -456,6 +606,7 @@ describe('subagent runtime events', () => {
         request: any,
       ) {
         capturedAllowedTools = request.allowedTools;
+        capturedDelegatedContext = request.delegatedToolContext;
         return {
           id: 'sub-catsco-isolated',
           agentType: request.agentType,
@@ -505,51 +656,151 @@ describe('subagent runtime events', () => {
       });
 
       assert.equal(result.ok, true);
-      assert.deepEqual(capturedAllowedTools, ['ask_parent']);
+      assert.equal(capturedAllowedTools, undefined);
+      assert.equal(capturedDelegatedContext.surface, 'catscompany');
+      assert.equal(capturedDelegatedContext.executionScope?.sessionKey, 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43');
+      assert.equal(capturedDelegatedContext.localDeviceGrant?.bodyId, 'body-main');
     } finally {
       (SubAgentManager as any).getInstance = originalGetInstance;
     }
   });
 
-  test('CatsCo device-scoped spawn_subagent rejects local file tool delegation', async () => {
-    const result = await new SpawnSubagentTool().execute({
-      agent_type: 'explorer',
-      allowed_tools: ['read_file', 'ask_parent'],
-      task: '读取本机文件',
-      context: '请读取用户设备文件',
-    }, {
-      workingDirectory: process.cwd(),
-      conversationHistory: [],
-      sessionId: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
-      surface: 'catscompany',
-      executionScope: {
-        source: 'catscompany',
-        sessionKey: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
-        topicId: 'p2p_7_43',
-        topicType: 'p2p',
-        actorUserId: 'usr7',
-        agentId: 'usr43',
-        agentBodyId: 'body-main',
-        identityTrust: 'server_canonical',
-        isTrusted: true,
-      },
-      localDeviceGrant: {
-        kind: 'catscompany_body',
-        source: 'catscompany',
-        bodyId: 'body-main',
-        createdAt: Date.now(),
-      },
-      runtimeServices: {
-        aiService: {} as any,
-        skillManager: {} as any,
+  test('CatsCo device-scoped spawn_subagent can explicitly allow ask_parent', async () => {
+    const originalGetInstance = SubAgentManager.getInstance;
+    let capturedAllowedTools: unknown;
+    let capturedAllowParentQuestions: unknown;
+
+    (SubAgentManager as any).getInstance = () => ({
+      spawn(
+        _parentSessionKey: string,
+        request: any,
+      ) {
+        capturedAllowedTools = request.allowedTools;
+        capturedAllowParentQuestions = request.allowParentQuestions;
+        return {
+          id: 'sub-catsco-ask-parent',
+          agentType: request.agentType,
+          skillName: request.agentType,
+          toolScope: 'read_only',
+          allowedTools: request.allowedTools,
+          taskDescription: request.taskDescription,
+          status: 'running',
+          createdAt: Date.now(),
+          progressLog: [],
+          outputFiles: [],
+        };
       },
     });
 
-    assert.equal(result.ok, false);
-    if (!result.ok) {
-      assert.equal(result.errorCode, 'PERMISSION_DENIED');
-      assert.match(result.message, /不会传递给子智能体/);
-      assert.match(result.message, /read_file/);
+    try {
+      const result = await new SpawnSubagentTool().execute({
+        agent_type: 'explorer',
+        allow_parent_questions: true,
+        task: '审查当前问题',
+        context: '只看主会话提供的信息，不操作本机文件',
+      }, {
+        workingDirectory: process.cwd(),
+        conversationHistory: [],
+        sessionId: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
+        surface: 'catscompany',
+        executionScope: {
+          source: 'catscompany',
+          sessionKey: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
+          topicId: 'p2p_7_43',
+          topicType: 'p2p',
+          actorUserId: 'usr7',
+          agentId: 'usr43',
+          agentBodyId: 'body-main',
+          identityTrust: 'server_canonical',
+          isTrusted: true,
+        },
+        localDeviceGrant: {
+          kind: 'catscompany_body',
+          source: 'catscompany',
+          bodyId: 'body-main',
+          createdAt: Date.now(),
+        },
+        runtimeServices: {
+          aiService: {} as any,
+          skillManager: {} as any,
+        },
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(capturedAllowParentQuestions, true);
+      assert.equal(capturedAllowedTools, undefined);
+    } finally {
+      (SubAgentManager as any).getInstance = originalGetInstance;
+    }
+  });
+
+  test('CatsCo device-scoped spawn_subagent accepts the requested safe tool subset', async () => {
+    const originalGetInstance = SubAgentManager.getInstance;
+    let capturedAllowedTools: unknown;
+    let capturedDelegatedContext: any;
+
+    (SubAgentManager as any).getInstance = () => ({
+      spawn(
+        _parentSessionKey: string,
+        request: any,
+      ) {
+        capturedAllowedTools = request.allowedTools;
+        capturedDelegatedContext = request.delegatedToolContext;
+        return {
+          id: 'sub-catsco-tools',
+          agentType: request.agentType,
+          skillName: request.agentType,
+          toolScope: 'read_only',
+          allowedTools: request.allowedTools,
+          taskDescription: request.taskDescription,
+          status: 'running',
+          createdAt: Date.now(),
+          progressLog: [],
+          outputFiles: [],
+        };
+      },
+    });
+
+    try {
+      const result = await new SpawnSubagentTool().execute({
+        agent_type: 'explorer',
+        allowed_tools: ['read_file', 'grep', 'ask_parent'],
+        task: '读取本机文件',
+        context: '请读取用户设备文件',
+      }, {
+        workingDirectory: process.cwd(),
+        conversationHistory: [],
+        sessionId: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
+        surface: 'catscompany',
+        executionScope: {
+          source: 'catscompany',
+          sessionKey: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
+          topicId: 'p2p_7_43',
+          topicType: 'p2p',
+          actorUserId: 'usr7',
+          agentId: 'usr43',
+          agentBodyId: 'body-main',
+          identityTrust: 'server_canonical',
+          isTrusted: true,
+        },
+        localDeviceGrant: {
+          kind: 'catscompany_body',
+          source: 'catscompany',
+          bodyId: 'body-main',
+          createdAt: Date.now(),
+        },
+        runtimeServices: {
+          aiService: {} as any,
+          skillManager: {} as any,
+        },
+      });
+
+      assert.equal(result.ok, true);
+      assert.deepEqual(capturedAllowedTools, ['read_file', 'grep', 'ask_parent']);
+      assert.equal(capturedDelegatedContext.executionScope?.source, 'catscompany');
+      assert.equal(capturedDelegatedContext.localDeviceGrant?.bodyId, 'body-main');
+    } finally {
+      (SubAgentManager as any).getInstance = originalGetInstance;
     }
   });
 
@@ -576,6 +827,33 @@ describe('subagent runtime events', () => {
   });
 
   test('explicit allowed tools cannot exceed the selected tool scope', () => {
+    const defaultSession = new SubAgentSession(
+      'sub-scope-default',
+      {} as any,
+      { getSkill: () => undefined } as any,
+      {
+        taskDescription: 'scope check',
+        userMessage: 'scope check',
+        workingDirectory: process.cwd(),
+      },
+    );
+
+    assert.deepStrictEqual(defaultSession.allowedTools, ['read_file', 'glob', 'grep']);
+
+    const parentQuestionSession = new SubAgentSession(
+      'sub-scope-parent-question',
+      {} as any,
+      { getSkill: () => undefined } as any,
+      {
+        allowParentQuestions: true,
+        taskDescription: 'scope check',
+        userMessage: 'scope check',
+        workingDirectory: process.cwd(),
+      },
+    );
+
+    assert.deepStrictEqual(parentQuestionSession.allowedTools, ['read_file', 'glob', 'grep', 'ask_parent']);
+
     const readOnlySession = new SubAgentSession(
       'sub-scope-readonly',
       {} as any,
@@ -895,6 +1173,347 @@ describe('subagent runtime events', () => {
     }
   });
 
+  test('manager reuses an active subagent only for identical task context', async () => {
+    const manager = SubAgentManager.getInstance();
+    const parentSessionKey = `test-parent:${Date.now()}:dedupe-active`;
+    const finishRuns: Array<() => void> = [];
+
+    manager.registerPlatformCallbacks(parentSessionKey, {
+      injectMessage: async () => undefined,
+      onSubAgentEvent: async () => undefined,
+    });
+
+    const originalRun = SubAgentSession.prototype.run;
+    (SubAgentSession.prototype as any).run = async function runMock() {
+      await new Promise<void>(resolve => {
+        finishRuns.push(resolve);
+      });
+      this.status = 'stopped';
+      this.completedAt = Date.now();
+    };
+
+    try {
+      const first = await manager.spawn(
+        parentSessionKey,
+        {
+          agentType: 'worker',
+          taskDescription: '制作待办清单HTML页面',
+          userMessage: 'write todo page',
+        },
+        process.cwd(),
+        {} as any,
+        { getSkill: () => undefined } as any,
+      );
+      assert.ok(!('error' in first));
+
+      const second = await manager.spawn(
+        parentSessionKey,
+        {
+          agentType: 'worker',
+          taskDescription: '制作待办清单HTML页面',
+          userMessage: 'write todo page',
+        },
+        process.cwd(),
+        {} as any,
+        { getSkill: () => undefined } as any,
+      );
+      assert.ok(!('error' in second));
+      assert.equal(second.id, first.id);
+      assert.equal(second.reusedExisting, true);
+      assert.equal(manager.listByParent(parentSessionKey).filter(info => info.status === 'running').length, 1);
+
+      const differentDirectory = await manager.spawn(
+        parentSessionKey,
+        {
+          agentType: 'worker',
+          taskDescription: '制作待办清单HTML页面',
+          userMessage: 'write todo page',
+        },
+        path.join(process.cwd(), 'other-current-directory'),
+        {} as any,
+        { getSkill: () => undefined } as any,
+      );
+      assert.ok(!('error' in differentDirectory));
+      assert.notEqual(differentDirectory.id, first.id);
+      assert.equal(manager.listByParent(parentSessionKey).filter(info => info.status === 'running').length, 2);
+
+      const differentGrant = await manager.spawn(
+        parentSessionKey,
+        {
+          agentType: 'worker',
+          taskDescription: '制作待办清单HTML页面',
+          userMessage: 'write todo page',
+          delegatedToolContext: {
+            localFileGrants: [{ filePath: 'C:\\tmp\\different.txt' } as any],
+          },
+        },
+        process.cwd(),
+        {} as any,
+        { getSkill: () => undefined } as any,
+      );
+      assert.ok(!('error' in differentGrant));
+      assert.notEqual(differentGrant.id, first.id);
+      assert.equal(manager.listByParent(parentSessionKey).filter(info => info.status === 'running').length, 3);
+
+      const third = await manager.spawn(
+        parentSessionKey,
+        {
+          agentType: 'worker',
+          taskDescription: '待办清单工具页',
+          userMessage: 'write another todo page',
+        },
+        process.cwd(),
+        {} as any,
+        { getSkill: () => undefined } as any,
+      );
+      assert.ok(!('error' in third));
+      assert.notEqual(third.id, first.id);
+      assert.equal(manager.listByParent(parentSessionKey).filter(info => info.status === 'running').length, 4);
+    } finally {
+      for (const finishRun of finishRuns) finishRun();
+      SubAgentSession.prototype.run = originalRun;
+      for (const info of manager.listByParent(parentSessionKey)) {
+        (manager as any).subAgents.delete(info.id);
+        (manager as any).completedSubAgents.delete(info.id);
+        (manager as any).parentMap.delete(info.id);
+        (manager as any).displayNameByAgent.delete(info.id);
+        (manager as any).dedupeKeyByAgent.delete(info.id);
+      }
+      manager.unregisterPlatformCallbacks(parentSessionKey);
+    }
+  });
+
+  test('wait_subagents waits for active subagent completion and returns summaries', async () => {
+    const manager = SubAgentManager.getInstance();
+    const parentSessionKey = `test-parent:${Date.now()}:wait-tool`;
+    let finishRun: (() => void) | undefined;
+    let closed = false;
+    const injectedMessages: string[] = [];
+
+    manager.registerPlatformCallbacks(parentSessionKey, {
+      injectMessage: async (text: string) => {
+        injectedMessages.push(text);
+      },
+      onSubAgentEvent: async () => undefined,
+    });
+
+    const originalRun = SubAgentSession.prototype.run;
+    const originalClose = SubAgentSession.prototype.close;
+    (SubAgentSession.prototype as any).run = async function runMock() {
+      await new Promise<void>(resolve => {
+        finishRun = resolve;
+      });
+      this.status = 'completed';
+      this.completedAt = Date.now();
+      this.resultSummary = 'waited result';
+    };
+    (SubAgentSession.prototype as any).close = async function closeMock() {
+      closed = true;
+    };
+
+    try {
+      const spawned = await manager.spawn(
+        parentSessionKey,
+        {
+          agentType: 'worker',
+          taskDescription: 'waitable task',
+          userMessage: 'waitable task',
+        },
+        process.cwd(),
+        {} as any,
+        { getSkill: () => undefined } as any,
+      );
+      assert.ok(!('error' in spawned));
+      setTimeout(() => finishRun?.(), 20);
+
+      const result = await new WaitSubagentsTool().execute({
+        subagent_ids: [spawned.displayName],
+        timeout_ms: 1000,
+      }, {
+        workingDirectory: process.cwd(),
+        conversationHistory: [],
+        sessionId: parentSessionKey,
+      });
+
+      assert.equal(result.ok, true);
+      const content = result.ok ? result.content : result.message;
+      assert.match(content, /等待完成/);
+      assert.match(content, /waited result/);
+      assert.match(content, /waitable task/);
+      await waitFor(() => closed);
+      assert.deepStrictEqual(injectedMessages, []);
+    } finally {
+      if (finishRun) finishRun();
+      SubAgentSession.prototype.run = originalRun;
+      SubAgentSession.prototype.close = originalClose;
+      for (const info of manager.listByParent(parentSessionKey)) {
+        (manager as any).subAgents.delete(info.id);
+        (manager as any).completedSubAgents.delete(info.id);
+        (manager as any).parentMap.delete(info.id);
+        (manager as any).displayNameByAgent.delete(info.id);
+        (manager as any).resultConsumedByWait.delete(info.id);
+        (manager as any).resultWaitClaimCount.delete(info.id);
+        (manager as any).pendingResultObservations.delete(info.id);
+      }
+      manager.unregisterPlatformCallbacks(parentSessionKey);
+    }
+  });
+
+  test('wait_subagents returns when a subagent is waiting for parent input', async () => {
+    const manager = SubAgentManager.getInstance();
+    const parentSessionKey = `test-parent:${Date.now()}:wait-ask-parent`;
+    const finishRuns: Array<() => void> = [];
+
+    manager.registerPlatformCallbacks(parentSessionKey, {
+      injectMessage: async () => undefined,
+      onSubAgentEvent: async () => undefined,
+    });
+
+    const originalRun = SubAgentSession.prototype.run;
+    (SubAgentSession.prototype as any).run = async function runMock() {
+      this.status = 'waiting_for_input';
+      this.pendingQuestion = '确认目标文件夹';
+      this.pendingQuestionSince = Date.now();
+      await new Promise<void>(resolve => {
+        finishRuns.push(resolve);
+      });
+      this.status = 'stopped';
+      this.completedAt = Date.now();
+    };
+
+    try {
+      const spawned = await manager.spawn(
+        parentSessionKey,
+        {
+          agentType: 'worker',
+          taskDescription: 'needs parent input',
+          userMessage: 'needs parent input',
+          allowedTools: ['ask_parent'],
+        },
+        process.cwd(),
+        {} as any,
+        { getSkill: () => undefined } as any,
+      );
+      assert.ok(!('error' in spawned));
+      await waitFor(() => manager.getInfoForParent(parentSessionKey, spawned.id)?.status === 'waiting_for_input');
+
+      const startedAt = Date.now();
+      const result = await new WaitSubagentsTool().execute({
+        subagent_ids: [spawned.displayName],
+        timeout_ms: 5000,
+      }, {
+        workingDirectory: process.cwd(),
+        conversationHistory: [],
+        sessionId: parentSessionKey,
+      });
+
+      assert.equal(result.ok, true);
+      assert.ok(Date.now() - startedAt < 1000);
+      const content = result.ok ? result.content : result.message;
+      assert.match(content, /正在等待主 agent 回复/);
+      assert.match(content, /确认目标文件夹/);
+    } finally {
+      for (const finishRun of finishRuns) finishRun();
+      SubAgentSession.prototype.run = originalRun;
+      for (const info of manager.listByParent(parentSessionKey)) {
+        (manager as any).subAgents.delete(info.id);
+        (manager as any).completedSubAgents.delete(info.id);
+        (manager as any).parentMap.delete(info.id);
+        (manager as any).displayNameByAgent.delete(info.id);
+        (manager as any).dedupeKeyByAgent.delete(info.id);
+      }
+      manager.unregisterPlatformCallbacks(parentSessionKey);
+    }
+  });
+
+  test('wait_subagents timeout does not consume completed subagent results', async () => {
+    const manager = SubAgentManager.getInstance();
+    const parentSessionKey = `test-parent:${Date.now()}:wait-timeout`;
+    let finishSlow: (() => void) | undefined;
+    const injectedMessages: string[] = [];
+
+    manager.registerPlatformCallbacks(parentSessionKey, {
+      injectMessage: async (text: string) => {
+        injectedMessages.push(text);
+      },
+      onSubAgentEvent: async () => undefined,
+    });
+
+    const originalRun = SubAgentSession.prototype.run;
+    const originalClose = SubAgentSession.prototype.close;
+    (SubAgentSession.prototype as any).run = async function runMock() {
+      if (this.taskDescription === 'fast task') {
+        await new Promise(resolve => setTimeout(resolve, 10));
+        this.status = 'completed';
+        this.completedAt = Date.now();
+        this.resultSummary = 'fast result';
+        return;
+      }
+
+      await new Promise<void>(resolve => {
+        finishSlow = resolve;
+      });
+      this.status = 'completed';
+      this.completedAt = Date.now();
+      this.resultSummary = 'slow result';
+    };
+    (SubAgentSession.prototype as any).close = async function closeMock() {};
+
+    try {
+      const fast = await manager.spawn(
+        parentSessionKey,
+        {
+          agentType: 'worker',
+          taskDescription: 'fast task',
+          userMessage: 'fast task',
+        },
+        process.cwd(),
+        {} as any,
+        { getSkill: () => undefined } as any,
+      );
+      const slow = await manager.spawn(
+        parentSessionKey,
+        {
+          agentType: 'worker',
+          taskDescription: 'slow task',
+          userMessage: 'slow task',
+        },
+        process.cwd(),
+        {} as any,
+        { getSkill: () => undefined } as any,
+      );
+      assert.ok(!('error' in fast));
+      assert.ok(!('error' in slow));
+
+      const result = await new WaitSubagentsTool().execute({
+        timeout_ms: 60,
+      }, {
+        workingDirectory: process.cwd(),
+        conversationHistory: [],
+        sessionId: parentSessionKey,
+      });
+
+      assert.equal(result.ok, true);
+      const content = result.ok ? result.content : result.message;
+      assert.match(content, /等待超时/);
+      await waitFor(() => injectedMessages.some(text => /fast result/.test(text)));
+    } finally {
+      finishSlow?.();
+      SubAgentSession.prototype.run = originalRun;
+      SubAgentSession.prototype.close = originalClose;
+      for (const info of manager.listByParent(parentSessionKey)) {
+        (manager as any).subAgents.delete(info.id);
+        (manager as any).completedSubAgents.delete(info.id);
+        (manager as any).parentMap.delete(info.id);
+        (manager as any).displayNameByAgent.delete(info.id);
+        (manager as any).resultConsumedByWait.delete(info.id);
+        (manager as any).resultWaitClaimCount.delete(info.id);
+        (manager as any).pendingResultObservations.delete(info.id);
+      }
+      manager.unregisterPlatformCallbacks(parentSessionKey);
+    }
+  });
+
   test('manager resolves display names when stopping active subagents', () => {
     const manager = SubAgentManager.getInstance();
     const parentSessionKey = `test-parent:${Date.now()}:stop-all`;
@@ -1113,6 +1732,65 @@ describe('subagent runtime events', () => {
       await unbounded.run();
 
       assert.deepEqual(observedMaxTurns, [7, undefined]);
+    } finally {
+      ConversationRunner.prototype.run = originalRun;
+    }
+  });
+
+  test('subagent runner inherits delegated tool authorization context', async () => {
+    let observedContext: any;
+    const originalRun = ConversationRunner.prototype.run;
+    (ConversationRunner.prototype as any).run = async function runMock() {
+      observedContext = (this as any).toolExecutionContext;
+      return {
+        response: 'done',
+        finalResponseVisible: true,
+        messages: [],
+        newMessages: [],
+      };
+    };
+
+    const executionScope = {
+      source: 'catscompany',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
+      topicId: 'p2p_7_43',
+      topicType: 'p2p',
+      actorUserId: 'usr7',
+      agentId: 'usr43',
+      agentBodyId: 'body-main',
+      identityTrust: 'server_canonical',
+      isTrusted: true,
+    };
+    const localDeviceGrant = {
+      kind: 'catscompany_body',
+      source: 'catscompany',
+      bodyId: 'body-main',
+      createdAt: Date.now(),
+    };
+
+    try {
+      const session = new SubAgentSession('sub-delegated-context', {} as any, {} as any, {
+        taskDescription: 'delegated context',
+        userMessage: 'delegated context',
+        workingDirectory: process.cwd(),
+        delegatedToolContext: {
+          surface: 'catscompany',
+          executionScope: executionScope as any,
+          localDeviceGrant: localDeviceGrant as any,
+          deviceGrants: [{ operations: ['read_file'] } as any],
+          localFileGrants: [{ filePath: 'C:\\tmp\\a.txt' } as any],
+        },
+      });
+      await session.run();
+
+      assert.equal(observedContext.sessionId, 'subagent:sub-delegated-context');
+      assert.equal(observedContext.surface, 'catscompany');
+      assert.equal(observedContext.permissionProfile, 'strict');
+      assert.strictEqual(observedContext.executionScope, executionScope);
+      assert.strictEqual(observedContext.localDeviceGrant, localDeviceGrant);
+      assert.equal(observedContext.deviceGrants.length, 1);
+      assert.equal(observedContext.localFileGrants.length, 1);
+      assert.equal(typeof observedContext.requestParentInput, 'function');
     } finally {
       ConversationRunner.prototype.run = originalRun;
     }

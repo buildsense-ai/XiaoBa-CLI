@@ -62,27 +62,18 @@ describe('model capabilities', () => {
         { model: 'MiniMax-M2.7', provider: 'anthropic', vision: false, context: 204_800 },
         { model: 'MiniMax-M3', provider: 'anthropic', vision: true, context: 1_000_000 },
         { model: 'deepseek-v4-flash', provider: 'anthropic', vision: false, context: 1_000_000 },
-        { model: 'glm-5.1', provider: 'anthropic', vision: false, context: 200_000 },
       ],
     );
     assert.strictEqual(findRelayModelProfile('minimax-m3')?.capabilities.vision, true);
     assert.strictEqual(findRelayModelProfile('MiniMax-M2.7')?.capabilities.vision, false);
   });
 
-  test('keeps relay tool calling enabled for MiniMax, DeepSeek, and GLM', () => {
+  test('keeps relay tool calling enabled for public MiniMax and DeepSeek models', () => {
     assert.strictEqual(
       isPrimaryModelToolCallingCapable({
         provider: 'anthropic',
         apiUrl: 'https://relay.catsco.cc/anthropic',
         model: 'deepseek-v4-flash',
-      }),
-      true,
-    );
-    assert.strictEqual(
-      isPrimaryModelToolCallingCapable({
-        provider: 'anthropic',
-        apiUrl: 'https://relay.catsco.cc/anthropic',
-        model: 'glm-5.1',
       }),
       true,
     );

@@ -409,6 +409,56 @@ test('runner keeps normal providerContent tool replay for M3 style tool calls', 
   ]);
 });
 
+test('runner keeps Responses reasoning and matching function calls in the tool transcript', async () => {
+  const toolCall = makeToolCall('call_responses_1', 'execute_shell', { command: 'echo ok' });
+  const providerContent = [
+    { type: 'reasoning', id: 'rs_1', encrypted_content: 'opaque-reasoning', summary: [] },
+    {
+      type: 'function_call',
+      id: 'fc_1',
+      call_id: 'call_responses_1',
+      name: 'execute_shell',
+      arguments: '{"command":"echo ok"}',
+    },
+  ];
+  const mock = createMockAI([
+    {
+      content: null,
+      toolCalls: [toolCall],
+      providerContent,
+      usage: {
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+      },
+    },
+    makeFinalResponse('done'),
+  ]);
+  const runner = new ConversationRunner(mock.aiService, new MockToolExecutor([{
+    name: 'execute_shell',
+    description: 'mock shell',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string' },
+      },
+      required: ['command'],
+    },
+  }], { execute_shell: 'ok' }), {
+    stream: false,
+    enableCompression: false,
+  });
+
+  const result = await runner.run([{ role: 'user', content: 'run shell' }]);
+  const assistantWithTool = result.messages.find(message => message.role === 'assistant' && message.tool_calls?.length);
+  const secondRequestAssistant = mock.getReceivedMessages()[1]
+    .find(message => message.role === 'assistant' && message.tool_calls?.length);
+
+  assert.equal(result.response, 'done');
+  assert.deepEqual(assistantWithTool?.providerContent, providerContent);
+  assert.deepEqual(secondRequestAssistant?.providerContent, providerContent);
+});
+
 test('runner injects tool target context into provider transcript only', async () => {
   const responses = [
     makeToolResponse(makeToolCall('call_1', 'execute_shell', { command: 'echo ok' })),
@@ -564,6 +614,46 @@ test('runner still surfaces concise progress before tool calls', async () => {
   assert.deepEqual(assistantText, ['正在跑测试。']);
   assert.deepEqual(thinking, []);
   assert.equal(result.response, '测试已通过。');
+  assert.equal(toolExecutor.getExecutionCount('execute_shell'), 1);
+});
+
+test('runner surfaces medium-length progress before tool calls', async () => {
+  const responses = [
+    {
+      content: '我先把现有页面结构和数据来源梳理一下，然后检查相关文件，再继续生成两个页面，完成后会统一告诉你结果，过程中如果发现缺口会顺手补上。',
+      toolCalls: [makeToolCall('call_1', 'execute_shell', { command: 'node build-page.js' })],
+      usage: {
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+      },
+    },
+    makeFinalResponse('页面已生成并检查完。'),
+  ];
+  const mock = createMockAI(responses);
+  const toolExecutor = new MockToolExecutor(
+    [{
+      name: 'execute_shell',
+      description: 'run command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }],
+    { execute_shell: 'ok' },
+  );
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const assistantText: string[] = [];
+
+  const result = await runner.run([{ role: 'user', content: '做两个页面' }], {
+    onAssistantText: text => assistantText.push(text),
+  });
+
+  assert.deepEqual(assistantText, ['我先把现有页面结构和数据来源梳理一下，然后检查相关文件，再继续生成两个页面，完成后会统一告诉你结果，过程中如果发现缺口会顺手补上。']);
+  assert.equal(result.response, '页面已生成并检查完。');
   assert.equal(toolExecutor.getExecutionCount('execute_shell'), 1);
 });
 

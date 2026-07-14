@@ -270,10 +270,16 @@ function extractShellMetadata(
     command: firstNonEmpty(stringArg(args, 'command'), readCommand(rawText)),
     description: stringArg(args, 'description'),
     timeout: numberArg(args, 'timeout'),
-    cwd: firstNonEmpty(stringArg(args, 'cwd'), stringArg(args, 'workingDirectory')),
+    cwd: firstNonEmpty(
+      stringArg(args, 'cwd'),
+      stringArg(args, 'workingDirectory'),
+      readField(rawText, 'cwd'),
+      readField(rawText, 'cwd_after'),
+      readField(rawText, 'cwd_before'),
+    ),
     status: readStatus(rawText),
-    elapsed: readHeader(rawText, 'Elapsed'),
-    outputLines: readHeader(rawText, 'Output lines'),
+    elapsed: firstNonEmpty(readHeader(rawText, 'Elapsed'), readDuration(rawText)),
+    outputLines: firstNonEmpty(readHeader(rawText, 'Output lines'), readOutputLines(rawText)),
   };
 }
 
@@ -342,6 +348,8 @@ function selectKeyLines(lines: string[], maxKeyLines: number): string[] {
 }
 
 function readCommand(rawText: string): string | undefined {
+  const command = readField(rawText, 'command');
+  if (command) return command;
   const lines = rawText.split(/\r?\n/);
   for (const line of lines) {
     if (line.startsWith('$ ')) return line.slice(2).trim() || undefined;
@@ -350,15 +358,35 @@ function readCommand(rawText: string): string | undefined {
 }
 
 function readStatus(rawText: string): ShellMetadata['status'] {
+  const status = readField(rawText, 'status');
+  if (status === 'succeeded' || status === 'failed') return status;
+  if (status === 'timed_out' || status === 'aborted') return 'failed';
   if (/^Command succeeded:/m.test(rawText)) return 'succeeded';
   if (/^Command failed:/m.test(rawText)) return 'failed';
   return 'unknown';
 }
 
-function readHeader(rawText: string, label: string): string | undefined {
-  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = rawText.match(new RegExp(`^${escapedLabel}:\\s*(.+)$`, 'm'));
+function readField(rawText: string, key: string): string | undefined {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = rawText.match(new RegExp(`^${escapedKey}:\\s*(.*)$`, 'm'));
   return match?.[1]?.trim() || undefined;
+}
+
+function readHeader(rawText: string, label: string): string | undefined {
+  return readField(rawText, label);
+}
+
+function readDuration(rawText: string): string | undefined {
+  const durationMs = readField(rawText, 'duration_ms');
+  return durationMs ? `${durationMs}ms` : undefined;
+}
+
+function readOutputLines(rawText: string): string | undefined {
+  const stdoutLines = Number(readField(rawText, 'stdout_lines'));
+  const stderrLines = Number(readField(rawText, 'stderr_lines'));
+  if (!Number.isFinite(stdoutLines) && !Number.isFinite(stderrLines)) return undefined;
+  return String((Number.isFinite(stdoutLines) ? stdoutLines : 0)
+    + (Number.isFinite(stderrLines) ? stderrLines : 0));
 }
 
 function parseToolArguments(toolCall?: NonNullable<Message['tool_calls']>[number]): Record<string, unknown> {

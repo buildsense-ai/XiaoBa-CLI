@@ -2,7 +2,7 @@
 
 这个目录是 CatsCo 可编辑提示词的统一入口。目标是让提示词迭代、对比测试和后续工具接入尽量只改 `prompts/`，让 `src/` 保持负责拼装、结构化数据和运行时逻辑。
 
-整体分层格式见 [prompt-stack-format.md](../docs/prompt-stack-format.md)。简要原则是：稳定 system prompt 只放长期行为规则，模式包承载垂直场景，动态状态通过 transient 注入进入单轮请求。
+整体分层格式见 [prompt-stack-format.md](../docs/prompt-stack-format.md)。简要原则是：稳定 system prompt 只放长期行为规则，垂直场景由工具、技能和用户请求语义承载，动态状态通过 transient 注入进入单轮请求。
 
 ## 核心原则
 
@@ -30,8 +30,6 @@
 | `runtime-context.md` | 普通主会话运行时模板：displayName、platform、date、当前目录说明。 | `PromptComposer.getRuntimeContextPrompt()` |
 | `compact-system.md` | 上下文压缩专用 system prompt。要求只输出文本、禁止工具、输出 `<analysis>` 和 `<summary>`。 | `ContextCompressor.buildCompactSystemPrompt()` |
 | `subagents/system.md` | 子 agent 通用运行规则。 | `SubAgentSession.buildSubAgentSystemPrompt()` |
-| `subagents/roles/*.md` | 子 agent 角色一句话定义。 | `agentRoleLine()` |
-| `subagents/ask-parent-*.md` | 子 agent 是否可向主 agent 提问的提示模板。 | `SubAgentSession.buildSubAgentSystemPrompt()` |
 | `transient/*.md` | 每轮可丢弃的稳定注入模板，例如当前目录说明、计划状态说明、子 agent 状态说明、runner 恢复提示、编排 soft nudge。 | `TurnContextBuilder`、`ConversationRunner`、`runner-orchestration-policy` |
 | `sidecars/*.md` | 非主会话的侧路模型调用 system prompt，例如群聊插嘴判断、日报生成。 | `ChimeInJudge`、`DailyReportGenerator` |
 

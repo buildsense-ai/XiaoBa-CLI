@@ -1,6 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
+import type { OpenAIApiMode, ReasoningEffort } from '../types';
+import { REASONING_EFFORT_OPTIONS, normalizeReasoningEffort, reasoningEffortOrDefault } from '../utils/reasoning-effort';
+import { OPENAI_API_MODE_OPTIONS, openAIApiModeOrDefault } from '../utils/openai-api-mode';
 
 export type DashboardSettingType = 'enum' | 'string' | 'url' | 'secret';
 export type SecretSettingAction = 'keep' | 'replace' | 'clear';
@@ -43,6 +46,8 @@ export interface DashboardModelProfileSnapshot {
   apiBase?: string;
   model?: string;
   contextWindowTokens?: number;
+  reasoningEffort?: ReasoningEffort;
+  openaiApiMode?: OpenAIApiMode;
   apiKeyPresent: boolean;
   configured: boolean;
 }
@@ -103,6 +108,16 @@ export const DASHBOARD_SETTING_DEFINITIONS: DashboardSettingDefinition[] = [
     protocols: ['http:', 'https:'],
   },
   {
+    id: 'model.openaiApiMode',
+    group: 'model',
+    label: 'OpenAI 接口模式',
+    description: 'Chat Completions 兼容旧中转；Responses API 支持新版工具事件和稳定提示词缓存。',
+    envKey: 'GAUZ_LLM_OPENAI_API_MODE',
+    type: 'enum',
+    required: false,
+    options: OPENAI_API_MODE_OPTIONS,
+  },
+  {
     id: 'model.model',
     group: 'model',
     label: '模型',
@@ -120,6 +135,16 @@ export const DASHBOARD_SETTING_DEFINITIONS: DashboardSettingDefinition[] = [
     type: 'enum',
     required: true,
     options: CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS,
+  },
+  {
+    id: 'model.reasoningEffort',
+    group: 'model',
+    label: '推理强度',
+    description: 'DeepSeek 官方参数：high/max 写入 reasoning_effort，disabled 写入 thinking.disabled；旧 default 仅作为兼容值读取。',
+    envKey: 'GAUZ_LLM_REASONING_EFFORT',
+    type: 'enum',
+    required: false,
+    options: REASONING_EFFORT_OPTIONS,
   },
   {
     id: 'model.apiKey',
@@ -162,6 +187,8 @@ const CUSTOM_MODEL_ENV_KEYS: Record<string, string> = {
   'model.apiBase': 'CATSCO_CUSTOM_LLM_API_BASE',
   'model.model': 'CATSCO_CUSTOM_LLM_MODEL',
   'model.contextWindowTokens': 'CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS',
+  'model.reasoningEffort': 'CATSCO_CUSTOM_LLM_REASONING_EFFORT',
+  'model.openaiApiMode': 'CATSCO_CUSTOM_LLM_OPENAI_API_MODE',
   'model.apiKey': 'CATSCO_CUSTOM_LLM_API_KEY',
 };
 
@@ -171,6 +198,8 @@ const EFFECTIVE_MODEL_ENV_KEYS = {
   model: 'GAUZ_LLM_MODEL',
   apiKey: 'GAUZ_LLM_API_KEY',
   contextWindowTokens: 'GAUZ_LLM_CONTEXT_WINDOW_TOKENS',
+  reasoningEffort: 'GAUZ_LLM_REASONING_EFFORT',
+  openaiApiMode: 'GAUZ_LLM_OPENAI_API_MODE',
 } as const;
 
 const RELAY_MODEL_ENV_KEYS = {
@@ -179,6 +208,8 @@ const RELAY_MODEL_ENV_KEYS = {
   model: 'CATSCO_RELAY_LLM_MODEL',
   apiKey: 'CATSCO_RELAY_LLM_API_KEY',
   contextWindowTokens: 'CATSCO_RELAY_LLM_CONTEXT_WINDOW_TOKENS',
+  reasoningEffort: 'CATSCO_RELAY_LLM_REASONING_EFFORT',
+  openaiApiMode: 'CATSCO_RELAY_LLM_OPENAI_API_MODE',
 } as const;
 
 const MODEL_SOURCE_ENV_KEY = 'CATSCO_MODEL_SOURCE';
@@ -223,11 +254,15 @@ function readModelProfile(
   const model = firstNonEmpty(fileEnv[keys.model], env[keys.model]);
   const apiKey = firstNonEmpty(fileEnv[keys.apiKey], env[keys.apiKey]);
   const contextWindowTokens = parsePositiveInteger(firstNonEmpty(fileEnv[keys.contextWindowTokens], env[keys.contextWindowTokens]));
+  const reasoningEffort = normalizeReasoningEffort(firstNonEmpty(fileEnv[keys.reasoningEffort], env[keys.reasoningEffort]));
+  const openaiApiMode = openAIApiModeOrDefault(firstNonEmpty(fileEnv[keys.openaiApiMode], env[keys.openaiApiMode]));
   return {
     provider,
     apiBase: sanitizeUrlSettingValue(apiBase ?? ''),
     model,
     contextWindowTokens,
+    reasoningEffort: reasoningEffort ?? 'default',
+    openaiApiMode,
     apiKeyPresent: Boolean(apiKey),
     configured: Boolean(provider && apiBase && model && apiKey),
   };
@@ -245,11 +280,21 @@ function readCustomModelProfile(
     fileEnv.CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS,
     env.CATSCO_CUSTOM_LLM_CONTEXT_WINDOW_TOKENS,
   ));
+  const reasoningEffort = normalizeReasoningEffort(firstNonEmpty(
+    fileEnv.CATSCO_CUSTOM_LLM_REASONING_EFFORT,
+    env.CATSCO_CUSTOM_LLM_REASONING_EFFORT,
+  ));
+  const openaiApiMode = openAIApiModeOrDefault(firstNonEmpty(
+    fileEnv.CATSCO_CUSTOM_LLM_OPENAI_API_MODE,
+    env.CATSCO_CUSTOM_LLM_OPENAI_API_MODE,
+  ));
   return {
     provider,
     apiBase: sanitizeUrlSettingValue(apiBase ?? ''),
     model,
     contextWindowTokens,
+    reasoningEffort: reasoningEffort ?? 'default',
+    openaiApiMode,
     apiKeyPresent: Boolean(apiKey),
     configured: Boolean(provider && apiBase && model && apiKey),
   };
@@ -263,17 +308,26 @@ function buildModelStartupSnapshot(
   const custom = readCustomModelProfile(fileEnv, env);
   const storedRelay = readModelProfile(RELAY_MODEL_ENV_KEYS, fileEnv, env);
   const requestedSource = firstNonEmpty(fileEnv[MODEL_SOURCE_ENV_KEY], env[MODEL_SOURCE_ENV_KEY]);
-  const relay = storedRelay.configured
+  const effectiveIsRelay = isCatsRelayApiBase(effective.apiBase);
+  const relayBase = storedRelay.configured
     ? storedRelay
     : {
       ...storedRelay,
-      provider: storedRelay.provider || (isCatsRelayApiBase(effective.apiBase) ? effective.provider : storedRelay.provider),
-      apiBase: storedRelay.apiBase || (isCatsRelayApiBase(effective.apiBase) ? effective.apiBase : storedRelay.apiBase),
-      model: storedRelay.model || (isCatsRelayApiBase(effective.apiBase) ? effective.model : storedRelay.model),
-      apiKeyPresent: storedRelay.apiKeyPresent || (isCatsRelayApiBase(effective.apiBase) && effective.apiKeyPresent),
-      configured: isCatsRelayApiBase(effective.apiBase) && effective.configured,
+      provider: storedRelay.provider || (effectiveIsRelay ? effective.provider : storedRelay.provider),
+      apiBase: storedRelay.apiBase || (effectiveIsRelay ? effective.apiBase : storedRelay.apiBase),
+      model: storedRelay.model || (effectiveIsRelay ? effective.model : storedRelay.model),
+      reasoningEffort: storedRelay.reasoningEffort && storedRelay.reasoningEffort !== 'default'
+        ? storedRelay.reasoningEffort
+        : effectiveIsRelay ? effective.reasoningEffort : storedRelay.reasoningEffort,
+      apiKeyPresent: storedRelay.apiKeyPresent || (effectiveIsRelay && effective.apiKeyPresent),
+      configured: effectiveIsRelay && effective.configured,
     };
-  const effectiveIsRelay = isCatsRelayApiBase(effective.apiBase);
+  const relay = {
+    ...relayBase,
+    reasoningEffort: relayBase.reasoningEffort && relayBase.reasoningEffort !== 'default'
+      ? relayBase.reasoningEffort
+      : 'high' as const,
+  };
   const source = requestedSource === 'custom' && custom.configured
     ? 'custom'
     : requestedSource === 'relay' && relay.configured && effectiveIsRelay
@@ -319,7 +373,11 @@ export function getDashboardSettings(
 
       return {
         ...common,
-        value: definition.type === 'url' ? sanitizeUrlSettingValue(value ?? '') : value ?? '',
+        value: definition.type === 'url'
+          ? sanitizeUrlSettingValue(value ?? '')
+          : definition.id === 'model.openaiApiMode'
+            ? openAIApiModeOrDefault(value)
+            : value ?? '',
       };
     }),
   };
@@ -493,6 +551,16 @@ function normalizeSettingUpdate(
   const value = normalizeEnvValue(definition.id, rawValue.trim());
   if (definition.required && value.length === 0) {
     throw new Error(`${definition.id} is required`);
+  }
+  if (definition.id === 'model.reasoningEffort') {
+    const normalized = normalizeReasoningEffort(value);
+    if (!normalized) {
+      throw new Error(`${definition.id} must be one of: ${REASONING_EFFORT_OPTIONS.join(', ')}`);
+    }
+    return {
+      envKey: definition.envKey,
+      value: reasoningEffortOrDefault(normalized),
+    };
   }
   if (definition.options && !definition.options.includes(value)) {
     throw new Error(`${definition.id} must be one of: ${definition.options.join(', ')}`);

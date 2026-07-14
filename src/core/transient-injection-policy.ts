@@ -1,15 +1,8 @@
 import { ContentBlock, Message } from '../types';
 import { ToolDefinition, ToolSurface } from '../types/tool';
-import {
-  PromptModeId,
-  normalizePromptModeId,
-} from '../runtime/prompt-modes';
 
 export type TransientIntentKind =
-  | 'coding'
   | 'office'
-  | 'classroom'
-  | 'team'
   | 'skill'
   | 'workspace'
   | 'plain-chat';
@@ -17,7 +10,6 @@ export type TransientIntentKind =
 export interface TransientTurnIntent {
   kind: TransientIntentKind;
   latestUserText: string;
-  fixedMode?: PromptModeId;
   actionable: boolean;
   workspaceRelevant: boolean;
   skillRelevant: boolean;
@@ -150,7 +142,6 @@ export function resolveProviderTransientPolicy(
 
 export function analyzeTransientIntent(messages: Message[]): TransientTurnIntent {
   const latestUserText = findLatestRealUserText(messages);
-  const fixedMode = detectFixedPromptMode(messages);
   const recentToolContext = hasRecentToolExchange(messages);
   const hasActionSignal = ACTION_SIGNAL.test(latestUserText);
   const hasToolActionSignal = TOOL_ACTION_SIGNAL.test(latestUserText);
@@ -219,7 +210,6 @@ export function analyzeTransientIntent(messages: Message[]): TransientTurnIntent
   return {
     kind,
     latestUserText,
-    ...(fixedMode ? { fixedMode } : {}),
     actionable,
     workspaceRelevant,
     skillRelevant,
@@ -227,16 +217,6 @@ export function analyzeTransientIntent(messages: Message[]): TransientTurnIntent
     plainChat: kind === 'plain-chat',
     ...(skillNames.length > 0 ? { skillNames } : {}),
   };
-}
-
-export function detectFixedPromptMode(messages: Message[]): PromptModeId | undefined {
-  for (const message of messages) {
-    if (message.role !== 'system' || typeof message.content !== 'string') continue;
-    const match = message.content.match(/\[mode:([a-z0-9-]+)\]/i);
-    const mode = normalizePromptModeId(match?.[1]);
-    if (mode) return mode;
-  }
-  return undefined;
 }
 
 function resolveIntentKind(options: {

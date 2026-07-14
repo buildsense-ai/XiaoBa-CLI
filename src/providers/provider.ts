@@ -12,7 +12,17 @@ export interface StreamCallbacks {
   /** 发生错误 */
   onError?: (error: Error) => void;
   /** 重试通知 */
-  onRetry?: (attempt: number, maxRetries: number) => void;
+  onRetry?: (attempt: number, maxRetries: number, info?: StreamRetryInfo) => void | Promise<void>;
+}
+
+export interface StreamRetryInfo {
+  attempt: number;
+  maxRetries: number;
+  delayMs: number;
+  elapsedMs: number;
+  maxElapsedMs: number;
+  status?: string | number;
+  message?: string;
 }
 
 export interface AIRequestOptions {

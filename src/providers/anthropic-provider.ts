@@ -4,6 +4,7 @@ import { ToolDefinition } from '../types/tool';
 import { AIProvider, AIRequestOptions, StreamCallbacks } from './provider';
 import { ContextDebugLogger } from '../utils/context-debug-logger';
 import { resolveMaxTokens } from './output-limits';
+import { applyAnthropicReasoningOptions } from '../utils/reasoning-effort';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -15,14 +16,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export class AnthropicProvider implements AIProvider {
   private client: Anthropic;
+  private apiUrl: string;
   private model: string;
   private temperature: number;
   private maxTokens: number;
+  private reasoningEffort: ChatConfig['reasoningEffort'];
 
   constructor(config: ChatConfig) {
+    this.apiUrl = config.apiUrl!;
     this.client = new Anthropic({
       apiKey: config.apiKey!,
-      baseURL: this.normalizeBaseURL(config.apiUrl!),
+      baseURL: this.normalizeBaseURL(this.apiUrl),
       timeout: 10 * 60 * 1000, // 10 分钟，Opus 长输出需要足够时间
       defaultHeaders: {
         'User-Agent': 'CatsCo',
@@ -37,6 +41,7 @@ export class AnthropicProvider implements AIProvider {
     this.model = config.model || 'claude-sonnet-4-20250514';
     this.temperature = config.temperature ?? 0.7;
     this.maxTokens = resolveMaxTokens(config);
+    this.reasoningEffort = config.reasoningEffort;
   }
 
   /**
@@ -410,6 +415,11 @@ export class AnthropicProvider implements AIProvider {
 
     if (system) params.system = system;
     if (tools && tools.length > 0) params.tools = this.transformTools(tools);
+    applyAnthropicReasoningOptions(params as any, {
+      apiUrl: this.apiUrl,
+      model: this.model,
+      reasoningEffort: this.reasoningEffort,
+    });
 
     // [CONTEXT_DEBUG] SDK 调用前：记录完整的请求参数
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
@@ -446,6 +456,11 @@ export class AnthropicProvider implements AIProvider {
 
     if (system) params.system = system;
     if (tools && tools.length > 0) params.tools = this.transformTools(tools);
+    applyAnthropicReasoningOptions(params as any, {
+      apiUrl: this.apiUrl,
+      model: this.model,
+      reasoningEffort: this.reasoningEffort,
+    });
 
     try {
       // [CONTEXT_DEBUG] SDK 调用前：记录完整的请求参数

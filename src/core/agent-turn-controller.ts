@@ -16,6 +16,7 @@ import {
   ToolExecutionConfirmationRequest,
   ToolExecutionConfirmationResult,
 } from '../types/tool';
+import type { StreamRetryInfo } from '../providers/provider';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
@@ -53,7 +54,7 @@ export interface AgentTurnCallbacks {
   onToolStart?: (name: string, toolUseId: string, input: any) => void;
   onToolEnd?: (name: string, toolUseId: string, result: string) => void;
   onToolDisplay?: (name: string, content: string) => void;
-  onRetry?: (attempt: number, maxRetries: number) => void;
+  onRetry?: (attempt: number, maxRetries: number, info?: StreamRetryInfo) => void | Promise<void>;
   confirmToolExecution?: (request: ToolExecutionConfirmationRequest) => Promise<ToolExecutionConfirmationResult>;
 }
 
@@ -62,6 +63,7 @@ export interface RunAgentTurnParams {
   messages: Message[];
   runtimeFeedback: string[];
   runtimeObservationSource?: string;
+  suppressFinalResponse?: boolean;
   callbacks?: AgentTurnCallbacks;
   channel?: ChannelCallbacks;
   sessionRoute?: SessionRoute;
@@ -184,6 +186,7 @@ export class AgentTurnController {
         currentMemoryBranch,
       ),
       abortSignal: params.abortSignal,
+      suppressFinalResponse: params.suppressFinalResponse,
       shouldContinue: params.shouldContinue,
     });
 
@@ -222,14 +225,19 @@ export class AgentTurnController {
       runtimeObservationSource: params.runtimeObservationSource,
     });
 
-    if (result.finalResponseVisible) {
+    const finalResponseVisible = result.finalResponseVisible && params.suppressFinalResponse !== true;
+    if (result.finalResponseVisible && params.suppressFinalResponse === true) {
+      Logger.info(`[${this.options.sessionKey}] runtime observation final response suppressed: ${params.runtimeObservationSource || 'unknown'}`);
+    }
+
+    if (finalResponseVisible) {
       this.recordPetTurnCompletion('message_completed');
       this.recordPetTurnCompletion('task_completed');
     }
 
     return {
-      text: result.finalResponseVisible ? (result.response || '[无回复]') : '',
-      visibleToUser: result.finalResponseVisible,
+      text: finalResponseVisible ? (result.response || '[无回复]') : '',
+      visibleToUser: finalResponseVisible,
       newMessages: result.newMessages,
       messages: nextMessages,
     };
@@ -262,6 +270,7 @@ export class AgentTurnController {
     episodeId?: string;
     syntheticObservationProvider?: () => SyntheticObservation[];
     abortSignal?: AbortSignal;
+    suppressFinalResponse?: boolean;
     shouldContinue: () => boolean;
   }): ConversationRunner {
     const surface = resolveSessionSurface(this.options.sessionKey, this.options.sessionType);
@@ -276,6 +285,7 @@ export class AgentTurnController {
         // AgentSession/ContextWindowManager compacts durable history before the turn.
         // Runner-level compaction can fold transient runtime feedback into summary.
         enableCompression: false,
+        suppressFinalResponse: options.suppressFinalResponse,
         toolExecutionContext: {
           sessionId: this.options.sessionKey,
           episodeId: options.episodeId,

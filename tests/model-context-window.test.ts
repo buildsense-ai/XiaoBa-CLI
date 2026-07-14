@@ -34,12 +34,6 @@ test('relay catalog models resolve to their official context windows', () => {
     model: 'deepseek-v4-flash',
     provider: 'anthropic',
   }, { CATSCO_MODEL_SOURCE: 'relay' } as NodeJS.ProcessEnv).contextWindowTokens, 1_000_000);
-
-  assert.equal(resolveModelContextWindow({
-    apiUrl: 'https://relay.catsco.cc/anthropic',
-    model: 'glm-5.1',
-    provider: 'anthropic',
-  }, { CATSCO_MODEL_SOURCE: 'relay' } as NodeJS.ProcessEnv).contextWindowTokens, 200_000);
 });
 
 test('custom models keep the safe default even if the model name resembles a known relay model', () => {

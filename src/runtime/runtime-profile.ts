@@ -1,8 +1,6 @@
 import * as path from 'path';
 import { ChatConfig } from '../types';
 import { DEFAULT_TOOL_NAMES } from '../tools/default-tool-names';
-import { PromptModeId, normalizePromptModeId } from './prompt-modes';
-import { getPromptBaseDir } from '../utils/prompt-template';
 
 export type RuntimeSurface = 'cli' | 'feishu' | 'catscompany' | 'weixin' | 'agent' | 'unknown';
 
@@ -10,7 +8,6 @@ export interface RuntimePromptProfile {
   source: 'prompt-manager';
   displayName?: string;
   platform?: string;
-  mode?: PromptModeId;
 }
 
 export interface RuntimeToolProfile {
@@ -27,7 +24,7 @@ export interface RuntimeLoggingProfile {
 }
 
 export interface RuntimeModelProfile extends Partial<Pick<ChatConfig,
-  'provider' | 'apiUrl' | 'model' | 'temperature' | 'maxTokens'
+  'provider' | 'apiUrl' | 'model' | 'temperature' | 'maxTokens' | 'reasoningEffort' | 'openaiApiMode'
 >> {}
 
 export interface RuntimeProfile {
@@ -44,6 +41,7 @@ export interface RuntimeProfile {
 
 export const DEFAULT_RUNTIME_TOOL_NAMES = [...DEFAULT_TOOL_NAMES];
 const DEFAULT_RUNTIME_TOOL_NAME_SET = new Set<string>(DEFAULT_RUNTIME_TOOL_NAMES);
+const LEGACY_DISABLED_RUNTIME_TOOL_NAME_SET = new Set<string>(['prompt_mode']);
 
 export interface RuntimeProfileValidationIssue {
   path: string;
@@ -71,7 +69,6 @@ export function resolveDefaultRuntimeProfile(
   const displayName = (options.displayName || envDisplayName || 'CatsCo').trim();
   const surface = options.surface ?? resolveSurfaceFromEnv(env);
   const platform = env.CURRENT_PLATFORM || undefined;
-  const promptMode = normalizePromptModeId(env.XIAOBA_PROMPT_MODE, getPromptBaseDir(env));
 
   return {
     id: options.id ?? `xiaoba-${surface}`,
@@ -83,7 +80,6 @@ export function resolveDefaultRuntimeProfile(
       source: 'prompt-manager',
       displayName: envDisplayName || undefined,
       platform,
-      ...(promptMode ? { mode: promptMode } : {}),
     },
     tools: {
       enabled: [...(options.tools ?? DEFAULT_RUNTIME_TOOL_NAMES)],
@@ -126,6 +122,9 @@ export function validateRuntimeProfile(profile: RuntimeProfile): RuntimeProfileV
   profile.tools.enabled.forEach((toolName, index) => {
     const path = `tools.enabled[${index}]`;
     if (!DEFAULT_RUNTIME_TOOL_NAME_SET.has(toolName)) {
+      if (LEGACY_DISABLED_RUNTIME_TOOL_NAME_SET.has(toolName)) {
+        return;
+      }
       issues.push({
         path,
         message: `Unknown runtime tool: ${toolName}`,
@@ -145,14 +144,6 @@ export function validateRuntimeProfile(profile: RuntimeProfile): RuntimeProfileV
 
     seenToolNames.add(toolName);
   });
-
-  if (profile.prompt.mode && !normalizePromptModeId(profile.prompt.mode)) {
-    issues.push({
-      path: 'prompt.mode',
-      message: `Unknown prompt mode: ${profile.prompt.mode}`,
-      value: profile.prompt.mode,
-    });
-  }
 
   return issues;
 }

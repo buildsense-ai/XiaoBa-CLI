@@ -191,6 +191,11 @@ export class ContextDebugLogger {
         continue;
       }
 
+      if (key === 'reasoning_content' && typeof item === 'string') {
+        output[key] = `[redacted hidden reasoning: ${item.length} chars]`;
+        continue;
+      }
+
       if (key === 'signature' && typeof item === 'string') {
         output[key] = '[redacted thinking signature]';
         continue;

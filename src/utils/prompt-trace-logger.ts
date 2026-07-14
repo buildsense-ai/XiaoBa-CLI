@@ -165,7 +165,6 @@ function summarizePrompt(messages: Message[]): Record<string, unknown> {
     message_count: messages.length,
     system_message_count: systemMessages.length,
     system_chars: systemText.length,
-    system_modes: [...systemText.matchAll(/\[mode:([^\]]+)\]/g)].map(match => match[1]),
     transient_count: transientMessages.length,
     transient_chars: transientMessages.reduce((sum, message) => sum + contentToString(message.content).length, 0),
     transient_prefixes: prefixCounts,

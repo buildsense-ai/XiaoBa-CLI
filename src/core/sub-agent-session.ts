@@ -9,7 +9,7 @@ import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { SubAgentEventType, SubAgentRuntimeEvent } from './sub-agent-events';
 import { readRequiredPromptFile, renderPromptTemplate } from '../utils/prompt-template';
-import type { ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult } from '../types/tool';
+import type { ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext } from '../types/tool';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -55,6 +55,9 @@ export interface SubAgentInfo {
   recentEvents?: SubAgentRuntimeEvent[];
   eventCount?: number;
   lastEventAt?: number;
+  /** 本次 spawn 是否复用了同父会话下仍在运行的同类子任务 */
+  reusedExisting?: boolean;
+  dedupeReason?: string;
 }
 
 export interface SubAgentSpawnOptions {
@@ -68,6 +71,10 @@ export interface SubAgentSpawnOptions {
   subAgentPrompt?: string;
   /** 主 agent 显式指定的工具白名单；runtime 仍会过滤危险工具 */
   allowedTools?: readonly string[];
+  /** 是否允许子智能体通过 ask_parent 挂起等待主 agent 回复 */
+  allowParentQuestions?: boolean;
+  /** 主 agent 当前 turn 已获得的工具执行授权上下文；子智能体只继承工具授权，不继承聊天输出通道 */
+  delegatedToolContext?: Partial<ToolExecutionContext>;
   /** 主 agent 显式指定的子 agent 工具推理轮次预算；不指定则不使用 runner 轮次上限 */
   maxTurns?: number;
   workingDirectory: string;
@@ -88,7 +95,8 @@ export interface SubAgentSpawnOptions {
  * 不直接和用户通信：
  * - 运行过程通过 event 通道给 UI/日志/状态 observation；
  * - ask_parent 通过 notifyParent 向主 agent 提问；
- * - 最终 result observation 由 SubAgentManager.finalizeSession() 回流父会话。
+ * - 最终 result observation 由 SubAgentManager.finalizeSession() 回流父会话，
+ *   平台层可选择作为内部 observation 处理而不直接外发给用户。
  * 主会话不 await 它，fire-and-forget。
  */
 export class SubAgentSession {
@@ -142,10 +150,11 @@ export class SubAgentSession {
     this.displayName = normalizeOptionalString(options.displayName);
     this.agentType = resolveAgentType(options);
     this.skillName = options.skillName || this.agentType;
-    this.toolScope = resolveToolScope(this.agentType, options.toolScope);
+    this.toolScope = resolveToolScope(options, this.agentType);
     this.taskDescription = options.taskDescription;
     this.temporaryDirectory = resolveTemporaryDirectory(options.workingDirectory, id, options.temporaryDirectory);
-    this.allowedTools = resolveAllowedTools(this.toolScope, options.allowedTools);
+    const allowParentQuestions = options.allowParentQuestions ?? toolsIncludeAskParent(options.allowedTools);
+    this.allowedTools = resolveAllowedTools(this.toolScope, options.allowedTools, allowParentQuestions);
   }
 
   /**
@@ -220,7 +229,7 @@ export class SubAgentSession {
       role: 'system',
       content: [
         systemPrompt,
-        buildSubAgentSystemPrompt(this.agentType, this.toolScope, this.temporaryDirectory, this.allowedTools, this.options.subAgentPrompt, this.options.maxTurns),
+        buildSubAgentSystemPrompt(this.toolScope, this.temporaryDirectory, this.allowedTools, this.options.subAgentPrompt, this.options.maxTurns),
       ].filter(Boolean).join('\n\n'),
     });
     await fs.promises.mkdir(this.temporaryDirectory, { recursive: true });
@@ -265,9 +274,11 @@ export class SubAgentSession {
     this.messages.push({ role: 'user', content: this.options.userMessage });
 
     // 4. 创建独立的 ToolManager
+    const delegatedToolContext = this.options.delegatedToolContext || {};
     const toolManager = new ToolManager(this.options.workingDirectory, {
+      ...delegatedToolContext,
       sessionId: `subagent:${this.id}`,
-      surface: 'agent',
+      surface: delegatedToolContext.surface || 'agent',
       permissionProfile: 'strict',
     }, {
       enabledToolNames: this.allowedTools,
@@ -279,8 +290,9 @@ export class SubAgentSession {
       enableCompression: true,
       shouldContinue: () => !this.stopped,
       toolExecutionContext: {
+        ...delegatedToolContext,
         sessionId: `subagent:${this.id}`,
-        surface: 'agent',
+        surface: delegatedToolContext.surface || 'agent',
         permissionProfile: 'strict',
         abortSignal: this.abortController.signal,
         requestParentInput: (question: string) => this.waitForParentInput(question),
@@ -401,18 +413,21 @@ export class SubAgentSession {
     });
     this.startParentInputReminder(normalizedQuestion);
 
-    this.pendingWaitPromise = new Promise<string>((resolve) => {
+    const waitPromise = new Promise<string>((resolve) => {
       this.pendingResolve = resolve;
     });
+    this.pendingWaitPromise = waitPromise;
 
     try {
       await this.options.notifyParent(this.id, this.taskDescription, normalizedQuestion);
-      const answer = await this.pendingWaitPromise;
+      const answer = await waitPromise;
       if (this.stopped) {
         throw new Error('任务已停止');
       }
       this.status = 'running';
+      this.pendingResolve = null;
       this.pendingQuestionSince = null;
+      this.pendingWaitPromise = null;
       this.clearParentInputReminder();
       return answer;
     } catch (error) {
@@ -431,6 +446,12 @@ export class SubAgentSession {
   private async confirmSubAgentToolExecution(
     request: ToolExecutionConfirmationRequest,
   ): Promise<ToolExecutionConfirmationResult> {
+    if (!this.allowedTools.includes('ask_parent')) {
+      return {
+        approved: false,
+        reason: '当前子智能体未获得 ask_parent 权限，需要主会话确认的工具调用已取消。主 agent 如需允许此类确认，应显式把 ask_parent 加入 allowed_tools。',
+      };
+    }
     if (!this.options.notifyParent) {
       return { approved: false, reason: '当前子智能体没有主会话确认通道，已取消该工具调用。' };
     }
@@ -606,24 +627,29 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return text || undefined;
 }
 
-function resolveToolScope(agentType: SubAgentType, explicit?: SubAgentToolScope): SubAgentToolScope {
-  if (explicit) return explicit;
+function resolveToolScope(options: SubAgentSpawnOptions, agentType: SubAgentType): SubAgentToolScope {
+  if (options.toolScope) return options.toolScope;
+  const requestedTools = options.allowedTools ?? [];
+  if (requestedTools.some(tool => tool === 'write_file' || tool === 'edit_file')) return 'workspace_write';
+  if (requestedTools.some(tool => tool === 'execute_shell')) return 'test_only';
+  if (!options.agentType && !options.skillName) return 'read_only';
   if (agentType === 'worker' || agentType === 'skill') return 'workspace_write';
   if (agentType === 'tester') return 'test_only';
   return 'read_only';
 }
 
-function defaultToolsForScope(scope: SubAgentToolScope): string[] {
-  const readOnly = ['read_file', 'glob', 'grep', 'ask_parent'];
-  if (scope === 'read_only') return readOnly;
-  if (scope === 'test_only') return [...readOnly, 'execute_shell'];
-  return [...readOnly, 'write_file', 'edit_file', 'execute_shell'];
+function defaultToolsForScope(scope: SubAgentToolScope, allowParentQuestions = false): string[] {
+  const readOnly = ['read_file', 'glob', 'grep'];
+  const maybeAskParent = allowParentQuestions ? ['ask_parent'] : [];
+  if (scope === 'read_only') return [...readOnly, ...maybeAskParent];
+  if (scope === 'test_only') return [...readOnly, 'execute_shell', ...maybeAskParent];
+  return [...readOnly, 'write_file', 'edit_file', 'execute_shell', ...maybeAskParent];
 }
 
-function resolveAllowedTools(scope: SubAgentToolScope, requestedTools?: readonly string[]): string[] {
-  const tools = requestedTools ?? defaultToolsForScope(scope);
+function resolveAllowedTools(scope: SubAgentToolScope, requestedTools?: readonly string[], allowParentQuestions = false): string[] {
+  const tools = requestedTools ?? defaultToolsForScope(scope, allowParentQuestions);
   const safeTools = new Set<string>(SAFE_SUB_AGENT_TOOL_NAMES);
-  const scopedTools = new Set(defaultToolsForScope(scope));
+  const scopedTools = new Set(defaultToolsForScope(scope, allowParentQuestions));
   return Array.from(new Set(
     tools
       .map(tool => String(tool).trim())
@@ -632,28 +658,21 @@ function resolveAllowedTools(scope: SubAgentToolScope, requestedTools?: readonly
 }
 
 function buildSubAgentSystemPrompt(
-  agentType: SubAgentType,
   toolScope: SubAgentToolScope,
   temporaryDirectory: string,
   allowedTools: readonly string[],
   subAgentPrompt?: string,
   maxTurns?: number,
 ): string {
-  const roleLine = agentRoleLine(agentType);
   const promptsDir = PromptManager.getPromptsDir();
   const template = readRequiredPromptFile(
     promptsDir,
     'subagents/system.md',
   );
   return renderPromptTemplate(template, {
-    roleLine,
     temporaryDirectory,
-    askParentInstruction: readRequiredPromptFile(
-      promptsDir,
-      allowedTools.includes('ask_parent')
-        ? 'subagents/ask-parent-enabled.md'
-        : 'subagents/ask-parent-disabled.md',
-    ),
+    askParentEnabled: allowedTools.includes('ask_parent'),
+    askParentDisabled: !allowedTools.includes('ask_parent'),
     toolScope,
     allowedTools: allowedTools.length > 0 ? allowedTools.join(', ') : '无',
     maxTurnsInstruction: maxTurns
@@ -663,11 +682,8 @@ function buildSubAgentSystemPrompt(
   });
 }
 
-function agentRoleLine(agentType: SubAgentType): string {
-  return readRequiredPromptFile(
-    PromptManager.getPromptsDir(),
-    `subagents/roles/${agentType}.md`,
-  );
+function toolsIncludeAskParent(tools?: readonly string[]): boolean {
+  return Boolean(tools?.some(tool => String(tool || '').trim() === 'ask_parent'));
 }
 
 function truncateForEvent(text: string, maxLength: number): string {

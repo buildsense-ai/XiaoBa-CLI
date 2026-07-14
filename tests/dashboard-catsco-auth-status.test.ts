@@ -32,15 +32,18 @@ describe('dashboard CatsCo account status', () => {
     'GAUZ_LLM_API_BASE',
     'GAUZ_LLM_API_KEY',
     'GAUZ_LLM_MODEL',
+    'GAUZ_LLM_REASONING_EFFORT',
     'CATSCO_MODEL_SOURCE',
     'CATSCO_CUSTOM_LLM_PROVIDER',
     'CATSCO_CUSTOM_LLM_API_BASE',
     'CATSCO_CUSTOM_LLM_API_KEY',
     'CATSCO_CUSTOM_LLM_MODEL',
+    'CATSCO_CUSTOM_LLM_REASONING_EFFORT',
     'CATSCO_RELAY_LLM_PROVIDER',
     'CATSCO_RELAY_LLM_API_BASE',
     'CATSCO_RELAY_LLM_API_KEY',
     'CATSCO_RELAY_LLM_MODEL',
+    'CATSCO_RELAY_LLM_REASONING_EFFORT',
     'CATSCOMPANY_HTTP_BASE_URL',
     'CATSCOMPANY_SERVER_URL',
     'CATSCOMPANY_USER_TOKEN',
@@ -403,9 +406,9 @@ describe('dashboard CatsCo account status', () => {
               default: true,
             },
             {
-              id: 'glm-5.1',
-              label: 'GLM 5.1',
-              model: 'glm-5.1',
+              id: 'minimax-m3',
+              label: 'MiniMax M3',
+              model: 'MiniMax-M3',
               provider: 'anthropic',
               protocol: 'Anthropic-compatible',
               base_url: 'https://relay.catsco.cc/anthropic',
@@ -446,7 +449,7 @@ describe('dashboard CatsCo account status', () => {
       body: JSON.stringify({
         httpBaseUrl: catsBaseUrl,
         serverUrl: 'wss://app.catsco.cc/v0/channels',
-        relayModelId: 'glm-5.1',
+        relayModelId: 'minimax-m3',
       }),
     });
     const text = await response.text();
@@ -457,18 +460,21 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.ok, true);
     assert.equal(data.botSelectionSource, 'created-default');
     assert.equal(data.relayModelSetup.ok, true);
-    assert.equal(data.relayModelSetup.model, 'glm-5.1');
+    assert.equal(data.relayModelSetup.model, 'MiniMax-M3');
+    assert.equal(data.relayModelSetup.reasoningEffort, 'high');
     assert.equal(data.relayModelSetup.createdKey, true);
     assert.equal(text.includes('sk-bf-fresh-secret'), false);
     assert.equal(env.GAUZ_LLM_PROVIDER, 'anthropic');
     assert.equal(env.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
-    assert.equal(env.GAUZ_LLM_MODEL, 'glm-5.1');
+    assert.equal(env.GAUZ_LLM_MODEL, 'MiniMax-M3');
     assert.equal(env.GAUZ_LLM_API_KEY, 'sk-bf-fresh-secret');
+    assert.equal(env.GAUZ_LLM_REASONING_EFFORT, 'high');
     assert.equal(env.CATSCO_MODEL_SOURCE, 'relay');
     assert.equal(env.CATSCO_RELAY_LLM_PROVIDER, 'anthropic');
     assert.equal(env.CATSCO_RELAY_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
-    assert.equal(env.CATSCO_RELAY_LLM_MODEL, 'glm-5.1');
+    assert.equal(env.CATSCO_RELAY_LLM_MODEL, 'MiniMax-M3');
     assert.equal(env.CATSCO_RELAY_LLM_API_KEY, 'sk-bf-fresh-secret');
+    assert.equal(env.CATSCO_RELAY_LLM_REASONING_EFFORT, 'high');
     assert.equal(env.CATSCO_BOT_UID, '188');
     assert.equal(env.CATSCO_API_KEY, 'cats-agent-key');
     assert.equal(startCalled, 1);
@@ -714,9 +720,9 @@ describe('dashboard CatsCo account status', () => {
               default: true,
             },
             {
-              id: 'glm-5.1',
-              label: 'GLM 5.1',
-              model: 'glm-5.1',
+              id: 'minimax-m3',
+              label: 'MiniMax M3',
+              model: 'MiniMax-M3',
               provider: 'anthropic',
               protocol: 'Anthropic-compatible',
               base_url: 'https://relay.catsco.cc/anthropic',
@@ -759,7 +765,7 @@ describe('dashboard CatsCo account status', () => {
         httpBaseUrl: catsBaseUrl,
         serverUrl: 'wss://app.catsco.cc/v0/channels',
         botUid: '188',
-        relayModelId: 'glm-5.1',
+        relayModelId: 'minimax-m3',
       }),
     });
     const text = await response.text();
@@ -769,15 +775,18 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(response.status, 200, text);
     assert.equal(data.ok, true);
     assert.equal(data.relayModelSetup.ok, true);
-    assert.equal(data.relayModelSetup.model, 'glm-5.1');
+    assert.equal(data.relayModelSetup.model, 'MiniMax-M3');
+    assert.equal(data.relayModelSetup.reasoningEffort, 'high');
     assert.equal(data.relayModelSetup.createdKey, true);
     assert.equal(text.includes('sk-bf-existing-bot-secret'), false);
     assert.equal(relayKeyCreated, 1);
     assert.equal(env.GAUZ_LLM_PROVIDER, 'anthropic');
     assert.equal(env.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
-    assert.equal(env.GAUZ_LLM_MODEL, 'glm-5.1');
+    assert.equal(env.GAUZ_LLM_MODEL, 'MiniMax-M3');
     assert.equal(env.GAUZ_LLM_API_KEY, 'sk-bf-existing-bot-secret');
+    assert.equal(env.GAUZ_LLM_REASONING_EFFORT, 'high');
     assert.equal(env.CATSCO_MODEL_SOURCE, 'relay');
+    assert.equal(env.CATSCO_RELAY_LLM_REASONING_EFFORT, 'high');
     assert.equal(env.CATSCO_BOT_UID, '188');
     assert.equal(env.CATSCO_API_KEY, 'cats-agent-key');
     assert.equal(startCalled, 1);

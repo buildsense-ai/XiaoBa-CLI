@@ -3,6 +3,8 @@ import * as path from 'path';
 import * as os from 'os';
 import * as dotenv from 'dotenv';
 import { ChatConfig } from '../types';
+import { normalizeReasoningEffort } from './reasoning-effort';
+import { normalizeOpenAIApiMode } from './openai-api-mode';
 
 // 加载环境变量（静默模式）
 dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || '.env', quiet: true });
@@ -99,6 +101,7 @@ export class ConfigManager {
       model,
       temperature: 0.7,
       provider,
+      openaiApiMode: normalizeOpenAIApiMode(process.env.GAUZ_LLM_OPENAI_API_MODE) ?? 'chat_completions',
       feishu: {
         appId: process.env.FEISHU_APP_ID,
         appSecret: process.env.FEISHU_APP_SECRET,
@@ -130,6 +133,8 @@ export class ConfigManager {
       process.env.GAUZ_LLM_CONTEXT_WINDOW_TOKENS,
       process.env.GAUZ_LLM_CONTEXT_TOKENS,
     );
+    const reasoningEffort = normalizeReasoningEffort(process.env.GAUZ_LLM_REASONING_EFFORT);
+    const openaiApiMode = normalizeOpenAIApiMode(process.env.GAUZ_LLM_OPENAI_API_MODE);
 
     if (provider === 'openai' || provider === 'anthropic') {
       override.provider = provider;
@@ -148,6 +153,12 @@ export class ConfigManager {
     }
     if (contextWindowTokens !== undefined) {
       override.contextWindowTokens = contextWindowTokens;
+    }
+    if (reasoningEffort !== undefined) {
+      override.reasoningEffort = reasoningEffort;
+    }
+    if (openaiApiMode !== undefined) {
+      override.openaiApiMode = openaiApiMode;
     }
 
     return override;

@@ -12,13 +12,13 @@ import { SendFileTool } from './send-file-tool';
 import { SendTextTool } from './send-text-tool';
 import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
+import { WaitSubagentsTool } from './wait-subagents-tool';
 import { StopSubagentTool } from './stop-subagent-tool';
 import { ResumeSubagentTool } from './resume-subagent-tool';
 import { UpdatePlanTool } from './update-plan-tool';
 import { RecordDecisionTool } from './record-decision-tool';
 import { ShareSkillHubSkillTool } from './share-skillhub-skill-tool';
 import { AskParentTool } from './ask-parent-tool';
-import { PromptModeTool } from './prompt-mode-tool';
 import { DEFAULT_TOOL_NAMES } from './default-tool-names';
 import { mergeToolExecutionContext } from '../utils/tool-context';
 import { confirmLocalToolExecution } from './local-tool-risk';
@@ -27,6 +27,7 @@ import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-
 import { SkillUsageLedger } from '../utils/skill-usage-ledger';
 
 const INTERNAL_TOOL_NAMES = ['ask_parent'] as const;
+const LEGACY_DISABLED_TOOL_NAMES = ['prompt_mode'] as const;
 
 /**
  * 工具名别名映射（Claude Code 工具名 → CatsCo 内部注册名）
@@ -92,12 +93,12 @@ export class ToolManager implements ToolExecutor {
       new SendFileTool(),
       new SpawnSubagentTool(),
       new CheckSubagentTool(),
+      new WaitSubagentsTool(),
       new StopSubagentTool(),
       new ResumeSubagentTool(),
       new UpdatePlanTool(),
       new RecordDecisionTool(),
       new ShareSkillHubSkillTool(),
-      new PromptModeTool(),
       new SkillTool(new SkillUsageLedger(getDistillationHeartbeatConfig(this.workingDirectory).skillUsageLedgerPath)),
     ];
 
@@ -113,6 +114,7 @@ export class ToolManager implements ToolExecutor {
       const knownTools = new Set<string>([
         ...(DEFAULT_TOOL_NAMES as readonly string[]),
         ...(INTERNAL_TOOL_NAMES as readonly string[]),
+        ...(LEGACY_DISABLED_TOOL_NAMES as readonly string[]),
       ]);
       for (const toolName of enabled) {
         if (!knownTools.has(toolName)) {

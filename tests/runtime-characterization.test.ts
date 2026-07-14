@@ -53,7 +53,8 @@ describe('runtime characterization', () => {
     const prompt = await PromptManager.buildSystemPrompt();
     const today = new Date().toISOString().slice(0, 10);
 
-    assert.match(prompt, /你是用户的私人助理，认真、可靠、能持续协作/);
+    assert.match(prompt, /我是 RuntimeTestAgent。在任何判断之前，先认识自己现在在哪里、能做什么/);
+    assert.doesNotMatch(prompt, /\{\{[#/]?displayName\}\}/);
     assert.match(prompt, /你在这个平台上的名字是：RuntimeTestAgent/);
     assert.doesNotMatch(prompt, /你是小八/);
     assert.match(prompt, /当前平台：characterization/);
@@ -64,9 +65,9 @@ describe('runtime characterization', () => {
     assert.doesNotMatch(prompt, /150字以上/);
     assert.doesNotMatch(prompt, /500字以上/);
     assert.doesNotMatch(prompt, /send_file 工具写成文件发送/);
-    assert.match(prompt, /已生成、已发送、见附件、可预览、可下载/);
-    assert.match(prompt, /send_text` 只能发送普通文本/);
-    assert.match(prompt, /微信、飞书等轻量聊天通道优先短消息和普通文件/);
+    assert.match(prompt, /已发送、见附件、可下载/);
+    assert.match(prompt, /send_text 只能代表普通文本/);
+    assert.match(prompt, /任何通道（CatsCompany 网页、微信、飞书、控制台、邮件 IMAP 回执）/);
   });
 
   test('ToolManager registers the current default tool set', () => {
@@ -81,7 +82,6 @@ describe('runtime characterization', () => {
         'execute_shell',
         'glob',
         'grep',
-        'prompt_mode',
         'read_file',
         'record_decision',
         'resolve_common_directory',
@@ -93,6 +93,7 @@ describe('runtime characterization', () => {
         'spawn_subagent',
         'stop_subagent',
         'update_plan',
+        'wait_subagents',
         'write_file',
       ],
     );

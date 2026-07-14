@@ -1,5 +1,4 @@
 import { RuntimeProfile } from './runtime-profile';
-import { loadPromptModePrompt } from './prompt-modes';
 import { readRequiredPromptFile, renderPromptTemplate } from '../utils/prompt-template';
 
 export interface ComposeSystemPromptOptions {
@@ -23,13 +22,11 @@ export class PromptComposer {
       || ''
     ).trim();
     const platform = (env.CURRENT_PLATFORM || '').trim();
-    const promptMode = (env.XIAOBA_PROMPT_MODE || '').trim();
 
     return this.composeSystemPromptParts({
       promptsDir: options.promptsDir,
       displayName,
       platform,
-      promptMode,
       now: options.now,
     });
   }
@@ -39,7 +36,6 @@ export class PromptComposer {
       promptsDir: options.promptsDir,
       displayName: (options.profile.prompt.displayName || '').trim(),
       platform: (options.profile.prompt.platform || '').trim(),
-      promptMode: options.profile.prompt.mode,
       workspacePath: options.profile.workingDirectory,
       now: options.now,
     });
@@ -49,20 +45,24 @@ export class PromptComposer {
     promptsDir: string;
     displayName: string;
     platform: string;
-    promptMode?: string;
     workspacePath?: string;
     now?: Date;
   }): string {
-    const basePrompt = this.getBaseSystemPrompt(options.promptsDir);
-    const modePrompt = loadPromptModePrompt(options.promptsDir, options.promptMode);
     const today = (options.now ?? new Date()).toISOString().slice(0, 10);
-    const runtimeInfo = this.getRuntimeContextPrompt(options.promptsDir, {
+    const templateValues = {
       displayName: options.displayName,
       platform: options.platform,
       date: today,
+    };
+    const basePrompt = renderPromptTemplate(
+      this.getBaseSystemPrompt(options.promptsDir),
+      templateValues,
+    );
+    const runtimeInfo = this.getRuntimeContextPrompt(options.promptsDir, {
+      ...templateValues,
     });
 
-    return [basePrompt, modePrompt, runtimeInfo].filter(Boolean).join('\n\n');
+    return [basePrompt, runtimeInfo].filter(Boolean).join('\n\n');
   }
 
   static getBaseSystemPrompt(promptsDir: string): string {

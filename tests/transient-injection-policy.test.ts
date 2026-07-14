@@ -68,7 +68,7 @@ test('coding work requests get workspace context plus a narrow coding skill list
   assert.equal(providerPolicy.injectEnvironment, true);
 });
 
-test('fixed system mode suppresses duplicate auto mode hints but keeps coding workspace context', () => {
+test('legacy system mode tags are ignored while keeping coding workspace context', () => {
   const messages: Message[] = [
     { role: 'system', content: '[mode:coding-agent]\nbase coding prompt' },
     { role: 'user', content: '修一下 src/api/user.ts 的测试失败' },
@@ -84,7 +84,7 @@ test('fixed system mode suppresses duplicate auto mode hints but keeps coding wo
     surface: 'cli',
   });
 
-  assert.equal(turnPolicy.intent.fixedMode, 'coding-agent');
+  assert.equal((turnPolicy.intent as any).fixedMode, undefined);
   assert.equal(turnPolicy.injectSkillsList, true);
   assert.equal(providerPolicy.injectEnvironment, true);
 });

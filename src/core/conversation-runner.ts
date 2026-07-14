@@ -3,7 +3,7 @@ import type { ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalFileGrant } f
 import type { TargetRoutes } from '../types/tool';
 import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
-import { StreamCallbacks } from '../providers/provider';
+import { StreamCallbacks, StreamRetryInfo } from '../providers/provider';
 import { Logger } from '../utils/logger';
 import { Metrics } from '../utils/metrics';
 import { ContextCompressor } from './context-compressor';
@@ -67,7 +67,6 @@ import {
   describeSyntheticObservationForLog,
   SyntheticObservation,
 } from './synthetic-observation';
-import { TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX } from './prompt-mode-runtime';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -97,8 +96,8 @@ const EMPTY_MAX_TOKENS_MESSAGE = '模型这轮输出达到了 max_tokens 上限�
 const REPLAY_ARTIFACT_ONLY_MESSAGE = '模型工具调用回放异常，这轮没有生成可见回复。上下文已保留；你可以直接说“继续”，我会从这里接上。';
 export const PROMPT_BUDGET_TRIM_MESSAGE = '当前上下文超过模型窗口，已裁剪较早的历史内容以继续处理。';
 export const PROMPT_TOOLS_DISABLED_MESSAGE = '当前模型上下文不足以加载全部工具，本轮已先按纯文本继续处理。';
-const MAX_VISIBLE_TOOL_PRELUDE_CHARS = 64;
-const MAX_VISIBLE_TOOL_PRELUDE_LINES = 2;
+const MAX_VISIBLE_TOOL_PRELUDE_CHARS = 180;
+const MAX_VISIBLE_TOOL_PRELUDE_LINES = 3;
 
 const TOOL_PRELUDE_INTERNAL_PATTERNS = [
   /\bmemory\b/i,
@@ -116,7 +115,7 @@ const TOOL_PRELUDE_INTERNAL_PATTERNS = [
 ];
 
 const TOOL_PRELUDE_PROGRESS_PATTERN =
-  /^(?:先|我先|开始|准备|正在|继续|建|创建|写|生成|跑|执行|检查|验证|清理|上传|发送|重试|修复|已|完成|稍等|马上|接着)[^：:\n`]{0,48}(?:[。！？.!?]|$)/;
+  /^(?:先|我先|开始|准备|正在|继续|建|创建|写|生成|跑|执行|检查|验证|清理|上传|发送|重试|修复|已|完成|稍等|马上|接着)[^：:\n`]{0,160}(?:[。！？.!?]|$)/;
 
 /**
  * 对话运行回调
@@ -135,7 +134,7 @@ export interface RunnerCallbacks {
   /** 需要显示工具输出（如 task_planner） */
   onToolDisplay?: (name: string, content: string) => void;
   /** 重试通知 */
-  onRetry?: (attempt: number, maxRetries: number) => void;
+  onRetry?: (attempt: number, maxRetries: number, info?: StreamRetryInfo) => void | Promise<void>;
 }
 
 /**
@@ -203,6 +202,8 @@ export interface RunnerOptions {
   shouldContinue?: () => boolean;
   /** 是否启用上下文压缩（默认 true，agent 用 false） */
   enableCompression?: boolean;
+  /** True when the caller wants the model turn to update state/history but never auto-send a final message. */
+  suppressFinalResponse?: boolean;
   /** 透传给 ToolExecutor 的执行上下文（session/run/surface 等） */
   toolExecutionContext?: Partial<ToolExecutionContext>;
   /** Pulls user messages that arrived while the current run was busy. */
@@ -235,6 +236,7 @@ export class ConversationRunner {
   private syntheticObservationProvider?: SyntheticObservationProvider;
   private runtimeTransientProvider?: RuntimeTransientProvider;
   private episodeId?: string;
+  private suppressFinalResponse: boolean;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -261,6 +263,7 @@ export class ConversationRunner {
     this.runtimeTransientProvider = options?.runtimeTransientProvider;
     this.episodeId = options?.episodeId;
     this.maxTurns = options?.maxTurns;
+    this.suppressFinalResponse = options?.suppressFinalResponse === true;
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.sessionLabel = this.toolExecutionContext?.sessionId
@@ -500,7 +503,7 @@ export class ConversationRunner {
       } catch (error: any) {
         this.promptTraceLogger.recordError(turns, error);
         if (this.isMessageSurface() && isModelImageSafetyError(error)) {
-          if (this.toolExecutionContext?.channel && this.toolExecutionContext?.surface !== 'catscompany') {
+          if (!this.suppressFinalResponse && this.toolExecutionContext?.channel && this.toolExecutionContext?.surface !== 'catscompany') {
             try {
               await this.toolExecutionContext.channel.reply(
                 this.toolExecutionContext.channel.chatId,
@@ -616,7 +619,7 @@ export class ConversationRunner {
 
           // CatsCo 使用 Code Mode API，不自动转发，由上层统一处理
           const surface = this.toolExecutionContext?.surface;
-          if (finalText && this.toolExecutionContext?.channel && surface !== 'catscompany') {
+          if (finalText && !this.suppressFinalResponse && this.toolExecutionContext?.channel && surface !== 'catscompany') {
             try {
               await this.toolExecutionContext.channel.reply(
                 this.toolExecutionContext.channel.chatId,
@@ -1063,19 +1066,24 @@ export class ConversationRunner {
 
     const transcriptToolCallIds = new Set(transcriptToolCalls.map(toolCall => toolCall.id));
     const blocks: NonNullable<Message['providerContent']> = [];
-    let hasToolUse = false;
+    let hasMatchingToolCall = false;
 
     for (const block of assistantMsg.providerContent) {
       if (!block || typeof block !== 'object') continue;
       if (block.type === 'tool_use') {
         const id = typeof block.id === 'string' ? block.id : '';
         if (!transcriptToolCallIds.has(id)) continue;
-        hasToolUse = true;
+        hasMatchingToolCall = true;
+      }
+      if (block.type === 'function_call') {
+        const callId = typeof block.call_id === 'string' ? block.call_id : '';
+        if (!transcriptToolCallIds.has(callId)) continue;
+        hasMatchingToolCall = true;
       }
       blocks.push(block);
     }
 
-    return hasToolUse ? blocks : undefined;
+    return hasMatchingToolCall ? blocks : undefined;
   }
 
   private shouldKeepAssistantDraft(
@@ -1107,7 +1115,6 @@ export class ConversationRunner {
         return true;
       }
       return !message.content.startsWith(TRANSIENT_RUNNER_HINT_PREFIX)
-        && !message.content.startsWith(TRANSIENT_ACTIVE_PROMPT_MODE_PREFIX)
         && !message.content.startsWith(TRANSIENT_CURRENT_DIRECTORY_PREFIX);
     });
 
@@ -1498,7 +1505,7 @@ export class ConversationRunner {
       if (this.stream) {
         const streamCallbacks: StreamCallbacks = {
           onText: (text) => callbacks?.onText?.(text),
-          onRetry: (attempt, maxRetries) => callbacks?.onRetry?.(attempt, maxRetries),
+          onRetry: (attempt, maxRetries, info) => callbacks?.onRetry?.(attempt, maxRetries, info),
         };
         return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
       }
@@ -1518,6 +1525,7 @@ export class ConversationRunner {
       if (this.stream) {
         const streamCallbacks: StreamCallbacks = {
           onText: (text) => callbacks?.onText?.(text),
+          onRetry: (attempt, maxRetries, info) => callbacks?.onRetry?.(attempt, maxRetries, info),
         };
         return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
       }

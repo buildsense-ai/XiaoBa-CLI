@@ -15,7 +15,6 @@ const GENERIC_INTERNAL_FAILURE_LINE = /^\[处理失败: .+\]$/;
 const MODEL_TIMEOUT_INTERNAL_LINE = /^\[处理中断: 模型中转请求超时。.+\]$/;
 const KNOWN_RUNTIME_ERROR_MARKERS =
   /API错误\s*\(\d+\).*[{"]|MaxRetriesExceededError|HTTPSConnectionPool|ConnectTimeoutError|request[_ ]timed[_ ]out|default_request_timeout_in_seconds|upstream request timeout|gateway timeout|ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED|fetch failed|bifrost request failed|API密钥未配置|当前模型不支持图片识别/i;
-
 export function contentToText(content: Message['content']): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';

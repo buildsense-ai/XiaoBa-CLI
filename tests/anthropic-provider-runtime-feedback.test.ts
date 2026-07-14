@@ -169,6 +169,107 @@ describe('AnthropicProvider runtime feedback boundary', () => {
     });
   });
 
+  test('adds explicit DeepSeek reasoning effort for Anthropic-compatible requests', async () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/anthropic',
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'max',
+    });
+    let seenParams: any;
+    (provider as any).client.messages.create = async (params: any) => {
+      seenParams = params;
+      return {
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'stop',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    };
+
+    await provider.chat([{ role: 'user', content: 'hello' }]);
+
+    assert.deepStrictEqual(seenParams.thinking, { type: 'enabled' });
+    assert.deepStrictEqual(seenParams.output_config, { effort: 'max' });
+  });
+
+  test('does not inject Anthropic-compatible reasoning fields for default or unsupported models', async () => {
+    const deepseekDefault = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/anthropic',
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'default',
+    });
+    const minimax = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/anthropic',
+      model: 'MiniMax-M3',
+      reasoningEffort: 'max',
+    });
+    const seen: any[] = [];
+    for (const provider of [deepseekDefault, minimax]) {
+      (provider as any).client.messages.create = async (params: any) => {
+        seen.push(params);
+        return {
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'stop',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      };
+      await provider.chat([{ role: 'user', content: 'hello' }]);
+    }
+
+    assert.equal(seen[0].thinking, undefined);
+    assert.equal(seen[0].output_config, undefined);
+    assert.equal(seen[1].thinking, undefined);
+    assert.equal(seen[1].output_config, undefined);
+  });
+
+  test('maps GLM reasoning effort to thinking switch without unsupported effort field', async () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/anthropic',
+      model: 'glm-5.1',
+      reasoningEffort: 'high',
+    });
+    let seenParams: any;
+    (provider as any).client.messages.create = async (params: any) => {
+      seenParams = params;
+      return {
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'stop',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    };
+
+    await provider.chat([{ role: 'user', content: 'hello' }]);
+
+    assert.deepStrictEqual(seenParams.thinking, { type: 'enabled' });
+    assert.equal(seenParams.output_config, undefined);
+  });
+
+  test('sends explicit Anthropic-compatible reasoning disable', async () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      apiUrl: 'https://relay.catsco.cc/anthropic',
+      model: 'deepseek-v4-flash',
+      reasoningEffort: 'disabled',
+    });
+    let seenParams: any;
+    (provider as any).client.messages.create = async (params: any) => {
+      seenParams = params;
+      return {
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'stop',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    };
+
+    await provider.chat([{ role: 'user', content: 'hello' }]);
+
+    assert.deepStrictEqual(seenParams.thinking, { type: 'disabled' });
+    assert.equal(seenParams.output_config, undefined);
+  });
+
   test('preserves stop reason and joins multiple text blocks', () => {
     const provider = new AnthropicProvider({
       apiKey: 'test-key',

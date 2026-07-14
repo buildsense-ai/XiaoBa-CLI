@@ -1068,14 +1068,28 @@
 
     .relay-model-choice {
       display: grid;
-      gap: 4px;
+      gap: 8px;
       min-width: 0;
       min-height: 88px;
-      padding: 10px;
       border: 1px solid var(--border);
       border-radius: 8px;
       background: rgba(255, 255, 255, 0.6);
       color: var(--text);
+      text-align: left;
+    }
+
+    .relay-model-main {
+      display: grid;
+      gap: 4px;
+      width: 100%;
+      min-width: 0;
+      min-height: 86px;
+      padding: 10px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: inherit;
+      font: inherit;
       text-align: left;
       cursor: pointer;
     }
@@ -1089,7 +1103,7 @@
       border-style: dashed;
     }
 
-    .relay-model-choice:disabled {
+    .relay-model-main:disabled {
       cursor: not-allowed;
       opacity: 0.58;
     }
@@ -1112,6 +1126,45 @@
       color: var(--text2);
       font-size: 11px;
       font-weight: 700;
+    }
+
+    .relay-model-controls {
+      display: grid;
+      gap: 6px;
+      padding: 0 10px 10px;
+    }
+
+    .relay-model-controls label {
+      color: var(--text2);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .relay-model-effort-hint {
+      color: var(--text2);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+
+    .relay-model-effort-select {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.72);
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 700;
+      padding: 6px 9px;
+    }
+
+    .model-startup-panel {
+      display: grid;
+      gap: 10px;
+    }
+
+    .model-startup-panel .model-source-head {
+      margin-bottom: 0;
     }
 
     .chat-relay-model-panel {
@@ -1142,6 +1195,10 @@
 
     .chat-relay-model-panel .relay-model-choice {
       min-height: 64px;
+    }
+
+    .chat-relay-model-panel .relay-model-main {
+      min-height: 62px;
       padding: 9px 10px;
     }
 
@@ -5165,7 +5222,7 @@
       <div class="sidebar-brand-icon"><img src="cat-icon.png" style="width:100%;height:100%;object-fit:contain;border-radius:inherit" alt="CatsCo"></div>
       <div>
         <div class="sidebar-brand-text">CatsCo</div>
-        <div class="sidebar-brand-ver">v1.4.1</div>
+        <div class="sidebar-brand-ver">v1.4.2</div>
       </div>
     </div>
     <nav class="sidebar-nav">
@@ -5629,6 +5686,106 @@
         return '';
       }
     })();
+    const DASHBOARD_API_KEY_STORAGE_KEY = 'catsco.dashboardApiKey';
+    let dashboardApiKeyPromptInFlight = null;
+    function getFetchUrl(input){
+      if(typeof input === 'string')return input;
+      if(typeof URL !== 'undefined' && input instanceof URL)return input.href;
+      if(typeof Request !== 'undefined' && input instanceof Request)return input.url;
+      return (input && input.url) || '';
+    }
+    function getFetchMethod(input, init){
+      return String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+    }
+    function isDashboardApiUrl(input){
+      try{
+        const raw = getFetchUrl(input);
+        if(!raw)return false;
+        const url = new URL(raw, window.location.href);
+        const apiBase = new URL(API || '/', window.location.href);
+        return url.origin === apiBase.origin && url.pathname.startsWith('/api/');
+      }catch(_e){
+        return false;
+      }
+    }
+    function getDashboardStoredApiKey(){
+      try{return window.sessionStorage.getItem(DASHBOARD_API_KEY_STORAGE_KEY) || '';}catch(_e){return '';}
+    }
+    function setDashboardStoredApiKey(key){
+      try{
+        if(key)window.sessionStorage.setItem(DASHBOARD_API_KEY_STORAGE_KEY, key);
+        else window.sessionStorage.removeItem(DASHBOARD_API_KEY_STORAGE_KEY);
+      }catch(_e){}
+    }
+    function promptForDashboardApiKey(message){
+      if(!dashboardApiKeyPromptInFlight){
+        dashboardApiKeyPromptInFlight = Promise.resolve().then(() => {
+          const key = window.prompt(message || '请输入 Dashboard API Key');
+          const trimmed = key && key.trim() ? key.trim() : '';
+          if(trimmed)setDashboardStoredApiKey(trimmed);
+          return trimmed;
+        }).finally(() => {
+          dashboardApiKeyPromptInFlight = null;
+        });
+      }
+      return dashboardApiKeyPromptInFlight;
+    }
+    async function ensureDashboardApiKey(message){
+      const existing = getDashboardStoredApiKey();
+      if(existing)return existing;
+      return promptForDashboardApiKey(message);
+    }
+    function withDashboardApiKey(input, init){
+      if(!isDashboardApiUrl(input))return { input, init };
+      const key = getDashboardStoredApiKey();
+      if(!key)return { input, init };
+      const nextInit = Object.assign({}, init || {});
+      const sourceHeaders = nextInit.headers || (typeof Request !== 'undefined' && input instanceof Request ? input.headers : {});
+      const headers = new Headers(sourceHeaders || {});
+      if(!headers.has('Authorization') && !headers.has('X-API-Key')){
+        headers.set('X-API-Key', key);
+      }
+      nextInit.headers = headers;
+      return { input, init: nextInit };
+    }
+    async function isDashboardAuthFailure(response){
+      if(response.status !== 401 && response.status !== 403 && response.status !== 429)return false;
+      try{
+        const data = await response.clone().json();
+        return data && (
+          data.code === 'dashboard_auth_required' ||
+          data.code === 'dashboard_auth_invalid' ||
+          data.code === 'dashboard_auth_rate_limited'
+        );
+      }catch(_e){
+        return false;
+      }
+    }
+    function cloneFetchInput(input){
+      if(typeof Request !== 'undefined' && input instanceof Request){
+        return input.clone();
+      }
+      return input;
+    }
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async function(input, init){
+      const firstInput = cloneFetchInput(input);
+      const retryInput = cloneFetchInput(input);
+      let request = withDashboardApiKey(firstInput, init);
+      let response = await nativeFetch(request.input, request.init);
+      if(isDashboardApiUrl(input) && await isDashboardAuthFailure(response)){
+        if(response.status === 429){
+          return response;
+        }
+        setDashboardStoredApiKey('');
+        const key = await promptForDashboardApiKey('Dashboard API Key 无效或缺失，请重新输入');
+        if(key){
+          request = withDashboardApiKey(retryInput, init);
+          response = await nativeFetch(request.input, request.init);
+        }
+      }
+      return response;
+    };
     function formatDashboardApiError(error, path){
       const message=error&&error.message?String(error.message):String(error||'请求失败');
       if(/failed to fetch|networkerror|load failed|fetch/i.test(message)){
@@ -5663,6 +5820,8 @@
     let catsConnectManualOverride = false;
     let pendingStartupSource = '';
     let pendingRelayModelId = '';
+    let pendingRelayReasoningEffort = '';
+    let pendingRelayReasoningModelId = '';
     const CATS_MESSAGES_PAGE_SIZE = 50;
     const CATS_SCROLL_BOTTOM_THRESHOLD = 80;
     const CATS_SCROLL_TOP_THRESHOLD = 96;
@@ -6872,12 +7031,24 @@
 
     async function fetchStatus() {
       try {
-        const res = await fetch(API+'/api/status');
-        const data = await res.json();
+        const publicRes = await fetch(API+'/api/status');
+        const publicStatus = await publicRes.json();
+        let data = publicStatus || {};
+        const shouldLoadDetails = !data.authRequired || await ensureDashboardApiKey('请输入 Dashboard API Key 以加载详细状态');
+        if(shouldLoadDetails){
+          const detailRes = await fetch(API+'/api/status/details');
+          if(detailRes.ok){
+            data = await detailRes.json();
+          }
+        }
         appStatusSnapshot = data || {};
         document.querySelector('.sidebar-brand-ver').textContent = 'v' + (data.version || '-');
-        renderStatus(data);
-        if(!shouldDeferServiceRender())renderServices(data.services || []);
+        if(data.authRequired && !shouldLoadDetails){
+          renderDashboardLockedState(data);
+        }else{
+          renderStatus(data);
+          if(!shouldDeferServiceRender())renderServices(data.services || []);
+        }
         await fetchReadiness();
         applyPetBaseline();
       } catch (e) {
@@ -6887,17 +7058,29 @@
 
     async function fetchReadiness() {
       try {
-        const res = await fetch(API+'/api/readiness');
-        if (!res.ok) throw new Error('HTTP '+res.status);
-        const contentType = res.headers.get('content-type') || '';
-        if (!contentType.includes('application/json')) {
+        const publicRes = await fetch(API+'/api/readiness');
+        if (!publicRes.ok) throw new Error('HTTP '+publicRes.status);
+        const publicContentType = publicRes.headers.get('content-type') || '';
+        if (!publicContentType.includes('application/json')) {
           throw new Error('Readiness API 尚未加载，请重启 Dashboard。');
         }
-        const data = await res.json();
+        const publicData = await publicRes.json();
+        let data = publicData || {};
+        const shouldLoadDetails = !data.authRequired || await ensureDashboardApiKey('请输入 Dashboard API Key 以加载详细就绪状态');
+        if(shouldLoadDetails){
+          const detailRes = await fetch(API+'/api/readiness/details');
+          if(detailRes.ok){
+            data = await detailRes.json();
+          }
+        }
         appReadinessSnapshot = data || {};
         appReadinessLoaded = true;
         appReadinessError = '';
-        renderReadiness(appReadinessSnapshot);
+        if(data.authRequired && !shouldLoadDetails){
+          renderDashboardLockedState(data);
+        }else{
+          renderReadiness(appReadinessSnapshot);
+        }
         if (document.getElementById('page-chat')?.classList.contains('active')) renderCatsStatus();
       } catch (e) {
         appReadinessSnapshot = {};
@@ -6919,6 +7102,22 @@
         const grid = document.getElementById('store-grid') || document.getElementById('skills-grid');
         if (grid) grid.innerHTML = '<div class="loading">无法加载</div>';
       }
+    }
+
+    function renderDashboardLockedState(d){
+      const statusGrid = document.getElementById('status-grid');
+      if(statusGrid){
+        statusGrid.innerHTML = '<div class="status-card"><div class="label">Dashboard</div><div class="value">已锁定</div><div class="readiness-summary">请输入 Dashboard API Key 以加载详细状态。</div></div>'+
+          '<div class="status-card"><div class="label">Version</div><div class="value">'+escapeHtml(d.version||'-')+'</div></div>';
+      }
+      const servicesGrid = document.getElementById('services-grid');
+      if(servicesGrid)servicesGrid.innerHTML = '<div class="loading">Dashboard API 已启用认证，请输入 API Key 后刷新。</div>';
+      const summaryTitle = document.querySelector('#run-summary .run-summary-title');
+      const summaryMeta = document.querySelector('#run-summary .run-summary-meta');
+      const actions = document.getElementById('readiness-alert-actions');
+      if(summaryTitle)summaryTitle.textContent = 'Dashboard 已锁定';
+      if(summaryMeta)summaryMeta.textContent = '需要 Dashboard API Key 才能查看服务、设置和就绪诊断。';
+      if(actions)actions.innerHTML = "<button class='btn btn-primary' onclick='setDashboardStoredApiKey(\"\");fetchStatus();fetchReadiness()'>输入 API Key</button>";
     }
 
     function renderStatus(d) {
@@ -8124,6 +8323,7 @@
     let relayModelConfigLoading=false;
     let relayModelConfigRequestSeq=0;
     let relayModelApplyInFlight=false;
+    let relayModelSelectInteractionUntil=0;
     let catsSetupInFlight=false;
     let catsAutoStartInFlight=false;
     let catsAutoStartAttemptKey='';
@@ -8133,7 +8333,6 @@
       {id:'minimax-m2.7',label:'MiniMax M2.7',model:'MiniMax-M2.7',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'standard',context_window_tokens:204800,context_label:'204.8K',default:true},
       {id:'minimax-m3',label:'MiniMax M3',model:'MiniMax-M3',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'multimodal',context_window_tokens:1000000,context_label:'1M'},
       {id:'deepseek-v4-flash',label:'DeepSeek V4 Flash',model:'deepseek-v4-flash',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'flash-low',context_window_tokens:1000000,context_label:'1M'},
-      {id:'glm-5.1',label:'GLM 5.1',model:'glm-5.1',provider:'anthropic',protocol:'Anthropic-compatible',base_url:'https://relay.catsco.cc/anthropic',sdk_label:'Anthropic SDK',quota_class:'standard',context_window_tokens:200000,context_label:'200K'},
     ];
     const CUSTOM_MODEL_CONTEXT_WINDOW_OPTIONS=[
       {value:'128000',label:'128K',hint:'安全默认'},
@@ -8142,6 +8341,17 @@
       {value:'512000',label:'512K',hint:'超长文档'},
       {value:'1000000',label:'1M',hint:'百万上下文'},
     ];
+    const OPENAI_API_MODE_OPTIONS=[
+      {value:'chat_completions',label:'Chat Completions（兼容优先）'},
+      {value:'responses',label:'Responses API（提示词缓存）'},
+    ];
+    const REASONING_EFFORT_OPTIONS=[
+      {value:'default',label:'default',hint:'兼容旧配置，不在 DeepSeek 卡片中展示'},
+      {value:'high',label:'reasoning_effort: high',hint:'thinking.type=enabled'},
+      {value:'max',label:'reasoning_effort: max',hint:'thinking.type=enabled'},
+      {value:'disabled',label:'thinking: disabled',hint:'关闭 thinking，不传 reasoning_effort'},
+    ];
+    const DEEPSEEK_REASONING_EFFORT_OPTIONS=REASONING_EFFORT_OPTIONS.filter(option=>option.value!=='default');
     const serviceConfigGroups={
       catscompany:{
         title:'CatsCo 连接配置',
@@ -8271,10 +8481,11 @@
     }
 
     function relayModelCatalog(){
+      const publicModel=model=>model && model.enabled!==false && model.model;
       if(Array.isArray(relayModelConfigSnapshot?.models)){
-        return relayModelConfigSnapshot.models.filter(model=>model && model.enabled!==false && model.model);
+        return relayModelConfigSnapshot.models.filter(publicModel);
       }
-      return RELAY_FALLBACK_MODELS;
+      return RELAY_FALLBACK_MODELS.filter(publicModel);
     }
 
     function formatModelContextLabel(tokens, fallback){
@@ -8308,6 +8519,97 @@
         +escapeHtml(option.label+' · '+option.hint)
         +'</option>'
       )).join('');
+    }
+
+    function customOpenAIApiModeValue(){
+      const custom=customStartupProfile();
+      const value=String(custom.openaiApiMode || settingValue('model.openaiApiMode') || 'chat_completions');
+      return OPENAI_API_MODE_OPTIONS.some(option=>option.value===value)?value:'chat_completions';
+    }
+
+    function openAIApiModeOptionsHtml(selectedValue){
+      return OPENAI_API_MODE_OPTIONS.map(option=>(
+        '<option value="'+escapeHtml(option.value)+'" '+(option.value===selectedValue?'selected':'')+'>'
+        +escapeHtml(option.label)
+        +'</option>'
+      )).join('');
+    }
+
+    function syncCustomOpenAIApiModeVisibility(){
+      const provider=document.getElementById('model-provider-setting')?.value;
+      const row=document.getElementById('model-openai-api-mode-row');
+      const select=document.getElementById('model-openai-api-mode-setting');
+      const visible=provider==='openai';
+      if(row)row.style.display=visible?'':'none';
+      if(select)select.disabled=!visible;
+    }
+
+    function normalizeReasoningEffortValue(value){
+      const text=String(value||'').trim().toLowerCase();
+      return REASONING_EFFORT_OPTIONS.some(option=>option.value===text)?text:'default';
+    }
+
+    function reasoningEffortLabel(value){
+      const normalized=normalizeReasoningEffortValue(value);
+      const option=REASONING_EFFORT_OPTIONS.find(item=>item.value===normalized)||REASONING_EFFORT_OPTIONS[0];
+      return option.label;
+    }
+
+    function reasoningEffortOptionsHtml(selectedValue){
+      const selected=normalizeReasoningEffortValue(selectedValue);
+      return REASONING_EFFORT_OPTIONS.map(option=>(
+        '<option value="'+escapeHtml(option.value)+'" '+(option.value===selected?'selected':'')+'>'
+        +escapeHtml(option.label)
+        +'</option>'
+      )).join('');
+    }
+
+    function deepseekReasoningEffortValue(value){
+      const normalized=normalizeReasoningEffortValue(value);
+      return normalized==='default'?'high':normalized;
+    }
+
+    function deepseekReasoningEffortLabel(value){
+      const normalized=deepseekReasoningEffortValue(value);
+      const option=DEEPSEEK_REASONING_EFFORT_OPTIONS.find(item=>item.value===normalized)||DEEPSEEK_REASONING_EFFORT_OPTIONS[0];
+      return option.label;
+    }
+
+    function deepseekReasoningEffortOptionsHtml(selectedValue){
+      const selected=deepseekReasoningEffortValue(selectedValue);
+      return DEEPSEEK_REASONING_EFFORT_OPTIONS.map(option=>(
+        '<option value="'+escapeHtml(option.value)+'" '+(option.value===selected?'selected':'')+'>'
+        +escapeHtml(option.label)
+        +'</option>'
+      )).join('');
+    }
+
+    function modelSupportsReasoningSwitch(model){
+      const text=String(model?.model || model?.id || model || '').toLowerCase();
+      return text.includes('deepseek');
+    }
+
+    function relayReasoningEffortValue(){
+      if(pendingStartupSource==='relay' && pendingRelayReasoningEffort){
+        return deepseekReasoningEffortValue(pendingRelayReasoningEffort);
+      }
+      const relay=relayStartupProfile();
+      const effective=modelStartupSnapshot().effective||{};
+      return deepseekReasoningEffortValue(
+        relayModelConfigSnapshot?.reasoningEffort
+        || relay.reasoningEffort
+        || (isCatsRelayModelGateway(settingValue('model.apiBase'))?effective.reasoningEffort:'')
+        || 'default'
+      );
+    }
+
+    function customReasoningEffortValue(){
+      const custom=customStartupProfile();
+      return normalizeReasoningEffortValue(custom.reasoningEffort || settingValue('model.reasoningEffort') || 'default');
+    }
+
+    function startupReasoningEffortValue(){
+      return activeStartupSource()==='relay' ? relayReasoningEffortValue() : customReasoningEffortValue();
     }
 
     function modelStartupSnapshot(){
@@ -8350,18 +8652,48 @@
       return (matched||models.find(model=>model.default)||models[0]||{}).id||'';
     }
 
+    function relayReasoningEffortValueForModel(modelId){
+      const id=String(modelId||'');
+      const select=Array.from(document.querySelectorAll('[data-relay-reasoning-model-id]')).find(item=>item.dataset.relayReasoningModelId===id);
+      const pending=pendingRelayReasoningModelId===id?pendingRelayReasoningEffort:'';
+      return deepseekReasoningEffortValue(select?.value || pending || relayReasoningEffortValue());
+    }
+
+    function relayModelReasoningControlHtml(model, context='settings'){
+      if(typeof modelSupportsReasoningSwitch!=='function' || !modelSupportsReasoningSwitch(model))return '';
+      if(typeof deepseekReasoningEffortOptionsHtml!=='function')return '';
+      const id=String(model.id||model.model||'');
+      const selected=typeof relayReasoningEffortValue==='function'?deepseekReasoningEffortValue(relayReasoningEffortValue()):'high';
+      const disabled=typeof relayActionBusy==='function' && relayActionBusy();
+      return '<div class="relay-model-controls">'
+        +'<label>DeepSeek 官方参数</label>'
+        +'<select class="relay-model-effort-select" data-reasoning-effort-control="relay" data-relay-reasoning-model-id="'+escapeHtml(id)+'" data-relay-model-context="'+escapeHtml(context)+'" '+(disabled?'disabled':'')+' onfocus="holdRelayModelPanelRender()" onpointerdown="holdRelayModelPanelRender()" onmousedown="holdRelayModelPanelRender()" onchange="saveRelayReasoningEffortFromSelect(this)">'
+        +deepseekReasoningEffortOptionsHtml(selected)
+        +'</select>'
+        +'<div class="relay-model-effort-hint">DeepSeek 默认 high；这里会显式写入所选官方参数。</div>'
+        +'</div>';
+    }
+
     function relayModelChoiceHtml(model, activeId, catsConnected, context='settings'){
       const id=String(model.id||model.model||'');
       const active=id===activeId;
       const quota=model.quota_class==='flash-low'?'低额度 Flash':model.quota_class==='multimodal'?'多模态':'标准额度';
       const contextLabel=formatModelContextLabel(model.context_window_tokens, model.context_label);
       const sdkLabel=model.sdk_label || (String(model.provider||model.protocol||'').toLowerCase().includes('openai')?'OpenAI SDK':'Anthropic SDK');
+      const canShowReasoningMeta=typeof modelSupportsReasoningSwitch==='function'
+        && typeof deepseekReasoningEffortLabel==='function'
+        && typeof relayReasoningEffortValue==='function';
+      const reasoningMeta=canShowReasoningMeta && modelSupportsReasoningSwitch(model)?' · 推理 '+deepseekReasoningEffortLabel(relayReasoningEffortValue()):'';
       const disabled=relayActionBusy() || (context!=='chat' && !catsConnected);
-      return '<button class="relay-model-choice'+(active?' active':'')+'" type="button" data-relay-model-id="'+escapeHtml(id)+'" data-relay-model-context="'+escapeHtml(context)+'" '+(disabled?'disabled':'')+' onclick="enableCatsRelayModelFromButton(this)">'
+      const reasoningControl=typeof relayModelReasoningControlHtml==='function'?relayModelReasoningControlHtml(model, context):'';
+      return '<div class="relay-model-choice'+(active?' active':'')+'">'
+        +'<button class="relay-model-main" type="button" data-relay-model-id="'+escapeHtml(id)+'" data-relay-model-context="'+escapeHtml(context)+'" '+(disabled?'disabled':'')+' onclick="enableCatsRelayModelFromButton(this)">'
         +'<span class="relay-model-label">'+escapeHtml(model.label||model.model||id)+'</span>'
         +'<span class="relay-model-name">'+escapeHtml(model.model||id)+'</span>'
-        +'<span class="relay-model-meta">'+escapeHtml(quota)+' · 上下文 '+escapeHtml(contextLabel)+' · '+escapeHtml(sdkLabel)+'</span>'
-        +'</button>';
+        +'<span class="relay-model-meta">'+escapeHtml(quota)+' · 上下文 '+escapeHtml(contextLabel)+' · '+escapeHtml(sdkLabel)+escapeHtml(reasoningMeta)+'</span>'
+        +'</button>'
+        +reasoningControl
+        +'</div>';
     }
 
     function customModelChoiceHtml(active, context='chat'){
@@ -8370,19 +8702,38 @@
       const provider=custom.provider || settingValue('model.provider') || 'anthropic';
       const model=custom.model || settingValue('model.model') || '未配置';
       const contextLabel=customModelContextWindowLabel();
+      const reasoningMeta=modelSupportsReasoningSwitch(model)?' · 推理 '+deepseekReasoningEffortLabel(customReasoningEffortValue()):'';
+      const apiModeMeta=provider==='openai'
+        ? ' · '+(customOpenAIApiModeValue()==='responses'?'Responses API':'Chat Completions')
+        : '';
       const meta=configured
-        ? '自定义配置 · 上下文 '+contextLabel+' · '+(provider==='openai'?'OpenAI SDK':'Anthropic SDK')
+        ? '自定义配置 · 上下文 '+contextLabel+' · '+(provider==='openai'?'OpenAI SDK':'Anthropic SDK')+apiModeMeta+reasoningMeta
         : '去设置填写 endpoint / key';
-      return '<button class="relay-model-choice '+(active?' active':'')+(configured?'':' needs-config')+'" type="button" data-custom-startup-action="true" data-custom-startup-context="'+escapeHtml(context)+'" '+(relayActionBusy()?'disabled':'')+' onclick="enableCustomStartupModelFromButton(this)">'
+      return '<div class="relay-model-choice '+(active?' active':'')+(configured?'':' needs-config')+'">'
+        +'<button class="relay-model-main" type="button" data-custom-startup-action="true" data-custom-startup-context="'+escapeHtml(context)+'" '+(relayActionBusy()?'disabled':'')+' onclick="enableCustomStartupModelFromButton(this)">'
         +'<span class="relay-model-label">自定义模型</span>'
         +'<span class="relay-model-name">'+escapeHtml(model)+'</span>'
         +'<span class="relay-model-meta">'+escapeHtml(meta)+'</span>'
-        +'</button>';
+        +'</button>'
+        +'</div>';
+    }
+
+    function holdRelayModelPanelRender(){
+      relayModelSelectInteractionUntil=Date.now()+6000;
+    }
+
+    function shouldDeferRelayModelPanelRender(){
+      const panel=document.getElementById('cats-relay-model-panel');
+      if(!panel)return false;
+      const active=document.activeElement;
+      if(active && panel.contains(active) && active.matches?.('[data-reasoning-effort-control]'))return true;
+      return Date.now()<relayModelSelectInteractionUntil;
     }
 
     function renderCatsRelayModelPanel(){
       const panel=document.getElementById('cats-relay-model-panel');
       if(!panel)return;
+      if(shouldDeferRelayModelPanelRender())return;
       const catsConnected=isCatsLoggedIn();
       const models=relayModelCatalog();
       const source=activeStartupSource();
@@ -8423,9 +8774,11 @@
         selectionStart: activeInForm && typeof active.selectionStart==='number' ? active.selectionStart : null,
         selectionEnd: activeInForm && typeof active.selectionEnd==='number' ? active.selectionEnd : null,
         provider: document.getElementById('model-provider-setting')?.value,
+        openaiApiMode: document.getElementById('model-openai-api-mode-setting')?.value,
         apiBase: document.getElementById('model-api-base-setting')?.value,
         model: document.getElementById('model-name-setting')?.value,
         contextWindowTokens: document.getElementById('model-context-window-setting')?.value,
+        reasoningEffort: document.getElementById('model-reasoning-effort-setting')?.value,
         secret: document.getElementById('model-secret-setting')?.value,
         clearSecret: document.getElementById('model-secret-clear-setting')?.checked,
       };
@@ -8442,9 +8795,11 @@
       if(draft && draft.open){
         const pairs=[
           ['model-provider-setting',draft.provider],
+          ['model-openai-api-mode-setting',draft.openaiApiMode],
           ['model-api-base-setting',draft.apiBase],
           ['model-name-setting',draft.model],
           ['model-context-window-setting',draft.contextWindowTokens],
+          ['model-reasoning-effort-setting',draft.reasoningEffort],
           ['model-secret-setting',draft.secret],
         ];
         pairs.forEach(([id,value])=>{
@@ -8454,6 +8809,7 @@
         const clear=document.getElementById('model-secret-clear-setting');
         if(clear && draft.clearSecret!==undefined)clear.checked=Boolean(draft.clearSecret);
       }
+      syncCustomOpenAIApiModeVisibility();
 
       if(draft?.activeId){
         const active=document.getElementById(draft.activeId);
@@ -8483,22 +8839,24 @@
       const apiBaseDisplayValue=hideInternalGateway?'':apiBaseValue;
       const apiBasePlaceholder=hideInternalGateway?'已配置 CatsCo 内部兼容网关（隐藏）':'https://example.com/v1/messages';
       const selectedContextWindow=customModelContextWindowValue();
+      const selectedOpenAIApiMode=customOpenAIApiModeValue();
       const draft=captureCustomModelDraft();
 
       p.innerHTML=`<div class="model-source-layout">
-        <div class="runtime-note">中转模型和自定义模型会分别保存。CatsCo 中转会按所选模型自动调整上下文；自定义模型按下方选择的上下文窗口运行。若模型真实窗口更小，请选择更小档位避免超限。</div>
+        <div class="runtime-note">这里只配置第三方自定义模型。首页的一键启动区域负责选择 CatsCo 中转模型和推理强度。</div>
         <details class="model-source-card warning" id="custom-model-settings"${customModelSettingsOpen?' open':''}>
           <summary>
             <div class="model-source-head">
               <div>
                 <div class="model-source-title">自定义模型（第三方）</div>
-                <div class="model-source-copy">只有手动接入第三方模型时需要填写。CatsCo 中转模型请在 CatsCo 页面选择；自定义模型可在 128K 到 1M 间选择上下文。</div>
+                <div class="model-source-copy">只有手动接入第三方模型时需要填写。CatsCo 中转模型请回到首页选择；自定义模型可在 128K 到 1M 间选择上下文。</div>
               </div>
               ${runtimeTag(credentialMeta, keyField.present?'green':'gray')}
             </div>
           </summary>
           <div class="model-source-form">
-            <div class="config-row"><label class="config-label">兼容类型</label><select class="config-select" id="model-provider-setting"><option value="anthropic"${settingValue('model.provider')==='anthropic'?' selected':''}>Anthropic-compatible</option><option value="openai"${settingValue('model.provider')==='openai'?' selected':''}>OpenAI-compatible</option></select></div>
+            <div class="config-row"><label class="config-label">接口协议</label><select class="config-select" id="model-provider-setting"><option value="anthropic"${settingValue('model.provider')==='anthropic'?' selected':''}>Anthropic Messages</option><option value="openai"${settingValue('model.provider')==='openai'?' selected':''}>OpenAI compatible</option></select></div>
+            <div class="config-row" id="model-openai-api-mode-row"><label class="config-label">OpenAI API</label><select class="config-select" id="model-openai-api-mode-setting">${openAIApiModeOptionsHtml(selectedOpenAIApiMode)}</select></div>
             <div class="config-row"><label class="config-label">模型地址</label><input class="config-input" id="model-api-base-setting" value="${escapeHtml(apiBaseDisplayValue)}" placeholder="${escapeHtml(apiBasePlaceholder)}" data-hidden-internal="${hideInternalGateway?'true':'false'}" /></div>
             <div class="config-row"><label class="config-label">模型名称</label><input class="config-input" id="model-name-setting" value="${escapeHtml(settingValue('model.model'))}" placeholder="model-name" /></div>
             <div class="config-row"><label class="config-label">上下文窗口</label><select class="config-select" id="model-context-window-setting">${customModelContextWindowOptionsHtml(selectedContextWindow)}</select></div>
@@ -8556,6 +8914,14 @@
       return selectedRelayModelId();
     }
 
+    function relayReasoningEffortForSetup(){
+      const modelId=relayModelIdForSetup();
+      if(pendingStartupSource==='relay' && pendingRelayReasoningEffort && (!pendingRelayReasoningModelId || pendingRelayReasoningModelId===modelId)){
+        return deepseekReasoningEffortValue(pendingRelayReasoningEffort);
+      }
+      return relayReasoningEffortValueForModel(modelId);
+    }
+
     function setModelSourceStatus(message, tone){
       const status=document.getElementById('model-source-status');
       if(!status)return;
@@ -8570,9 +8936,84 @@
       status.textContent=message;
     }
 
+    function setReasoningEffortStatus(message, tone){
+      const status=document.getElementById('reasoning-effort-status');
+      if(!status){
+        setRelayModelStatus(message, tone);
+        if(document.getElementById('page-chat')?.classList.contains('active'))setCatsAction(message, tone==='error');
+        return;
+      }
+      status.style.color=tone==='error'?'var(--red)':tone==='success'?'var(--green)':'var(--text2)';
+      status.textContent=message;
+    }
+
     function setRelayModelApplyStatus(message, tone, source='settings'){
       setRelayModelStatus(message, tone);
       if(source==='chat')setCatsAction(message, tone==='error');
+    }
+
+    function updateReasoningEffortSnapshots(value, source){
+      const normalized=source==='relay'?deepseekReasoningEffortValue(value):normalizeReasoningEffortValue(value);
+      const startup=dashboardSettingsSnapshot.modelStartup||{};
+      if(startup.effective)startup.effective.reasoningEffort=normalized;
+      if(source==='relay'){
+        if(startup.relay)startup.relay.reasoningEffort=normalized;
+        if(relayModelConfigSnapshot)relayModelConfigSnapshot.reasoningEffort=normalized;
+      }else if(startup.custom){
+        startup.custom.reasoningEffort=normalized;
+        const field=settingField('model.reasoningEffort');
+        if(field)field.value=normalized;
+      }
+    }
+
+    function syncReasoningEffortControls(value, source){
+      const normalized=source==='relay'?deepseekReasoningEffortValue(value):normalizeReasoningEffortValue(value);
+      document.querySelectorAll('[data-reasoning-effort-control]').forEach(select=>{
+        if(source && select.dataset.reasoningEffortControl!==source)return;
+        select.value=normalized;
+      });
+    }
+
+    async function saveStartupReasoningEffort(value, source='relay'){
+      const normalized=source==='relay'
+        ? deepseekReasoningEffortValue(value || startupReasoningEffortValue())
+        : normalizeReasoningEffortValue(value || startupReasoningEffortValue());
+      try{
+        setReasoningEffortStatus('正在保存推理强度...','muted');
+        const r=await fetch(API+'/api/model/reasoning-effort',{
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({reasoningEffort:normalized,restartConnector:true})
+        });
+        const data=await r.json().catch(()=>({}));
+        if(!r.ok||data.error)throw new Error(data.error||'保存推理强度失败');
+        updateReasoningEffortSnapshots(data.reasoningEffort||normalized, data.source||source||activeStartupSource());
+        syncReasoningEffortControls(data.reasoningEffort||normalized, data.source||source);
+        if(document.getElementById('page-chat')?.classList.contains('active'))renderCatsStatus();
+        setReasoningEffortStatus(
+          data.connectorRestarted
+            ? '已保存，并已请求重启 CatsCo agent 使用新推理档位。'
+            : '已保存。新 session 或下一次启动 connector 后生效。',
+          'success'
+        );
+      }catch(e){
+        setReasoningEffortStatus('保存失败：'+formatDashboardApiError(e,'/api/model/reasoning-effort'),'error');
+      }
+    }
+
+    function saveRelayReasoningEffortFromSelect(select){
+      const value=deepseekReasoningEffortValue(select?.value);
+      if(select)select.value=value;
+      relayModelSelectInteractionUntil=0;
+      const modelId=select?.dataset?.relayReasoningModelId || '';
+      const context=select?.dataset?.relayModelContext || 'settings';
+      pendingRelayReasoningEffort=value;
+      pendingRelayReasoningModelId=modelId;
+      const active=activeStartupSource()==='relay' && modelId && modelId===selectedRelayModelId();
+      if(active){
+        return saveStartupReasoningEffort(value, 'relay');
+      }
+      setRelayModelApplyStatus('已选择推理强度；启用该模型时会一起生效。','muted',context);
     }
 
     function catsSetupWarningText(data){
@@ -8601,9 +9042,11 @@
         payload:{
           settings:{
             'model.provider':document.getElementById('model-provider-setting').value,
+            'model.openaiApiMode':document.getElementById('model-openai-api-mode-setting')?.value || 'chat_completions',
             'model.apiBase':apiBaseValue,
             'model.model':document.getElementById('model-name-setting').value.trim(),
             'model.contextWindowTokens':document.getElementById('model-context-window-setting').value,
+            'model.reasoningEffort':document.getElementById('model-reasoning-effort-setting')?.value || customReasoningEffortValue(),
             'model.apiKey':secretUpdate,
           }
         }
@@ -8615,9 +9058,11 @@
       const secret=settings['model.apiKey']||{action:'keep'};
       return JSON.stringify({
         provider:settings['model.provider'],
+        openaiApiMode:settings['model.openaiApiMode'],
         apiBase:settings['model.apiBase'],
         model:settings['model.model'],
         contextWindowTokens:settings['model.contextWindowTokens'],
+        reasoningEffort:settings['model.reasoningEffort'],
         secretAction:secret.action,
       });
     }
@@ -8627,6 +9072,8 @@
       if(!isCatsLoggedIn() && context==='chat'){
         pendingStartupSource='relay';
         pendingRelayModelId=button?.dataset?.relayModelId || selectedRelayModelId();
+        pendingRelayReasoningEffort=relayReasoningEffortValueForModel(pendingRelayModelId);
+        pendingRelayReasoningModelId=pendingRelayModelId;
         renderCatsStatus();
         setCatsAction('已选择 CatsCo 中转模型，登录后会自动接入。');
         return;
@@ -8643,6 +9090,8 @@
       if(!isCatsLoggedIn() && isCustomStartupConfigured()){
         pendingStartupSource='custom';
         pendingRelayModelId='';
+        pendingRelayReasoningEffort='';
+        pendingRelayReasoningModelId='';
         renderCatsStatus();
         setCatsAction('已选择自定义模型，登录后会按当前自定义配置启动。');
         return;
@@ -8667,6 +9116,9 @@
       document.querySelectorAll('[data-relay-model-id]').forEach(button=>{
         const context=button.dataset.relayModelContext||'settings';
         button.disabled=relayActionBusy() || (context!=='chat' && !isCatsLoggedIn());
+      });
+      document.querySelectorAll('[data-reasoning-effort-control]').forEach(select=>{
+        select.disabled=relayActionBusy();
       });
       document.querySelectorAll('[data-custom-startup-action]').forEach(button=>{
         button.disabled=relayActionBusy();
@@ -8710,6 +9162,7 @@
         return;
       }
       const label=selectedModel.label||selectedModel.model||selectedModelId;
+      const reasoningEffort=normalizeReasoningEffortValue(options.reasoningEffort || relayReasoningEffortValueForModel(selectedModelId));
       let retrying=false;
       try{
         pendingStartupSource='relay';
@@ -8724,6 +9177,7 @@
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({
             modelId:selectedModelId,
+            reasoningEffort,
             rotateExisting:Boolean(options.rotateExisting),
             activateConnector:options.activateConnector!==false,
           })
@@ -8748,10 +9202,14 @@
             configured:true,
             selectedModel:data.selectedModel || relayModelConfigSnapshot?.selectedModel,
             models:Array.isArray(data.models)?data.models:relayModelConfigSnapshot?.models,
+            reasoningEffort:data.reasoningEffort || reasoningEffort,
           };
         }
+        updateReasoningEffortSnapshots(data.reasoningEffort||reasoningEffort, 'relay');
         pendingStartupSource='';
         pendingRelayModelId='';
+        pendingRelayReasoningEffort='';
+        pendingRelayReasoningModelId='';
         await refreshCatsChatAfterMutation({focusInput:source==='chat'});
         const successMessage=data.message||('已启用 CatsCo 中转模型：'+(data.selectedModel?.label||label));
         setRelayModelApplyStatus(successMessage,'success',source);
@@ -8776,6 +9234,8 @@
       if(!isCatsLoggedIn()){
         pendingStartupSource='custom';
         pendingRelayModelId='';
+        pendingRelayReasoningEffort='';
+        pendingRelayReasoningModelId='';
         renderCatsStatus();
         setCatsAction('已选择自定义模型，登录后会按当前自定义配置启动。');
         return;
@@ -8787,6 +9247,8 @@
       try{
         pendingStartupSource='custom';
         pendingRelayModelId='';
+        pendingRelayReasoningEffort='';
+        pendingRelayReasoningModelId='';
         renderCatsStatus();
         setRelayModelApplyBusy(true);
         setCatsStatusMutationBusy(true);
@@ -8803,7 +9265,10 @@
         if(!r.ok||data.error)throw new Error(data.error||'切换自定义模型失败');
         pendingStartupSource='';
         pendingRelayModelId='';
+        pendingRelayReasoningEffort='';
+        pendingRelayReasoningModelId='';
         await refreshCatsChatAfterMutation({focusInput:source==='chat'});
+        if(data.reasoningEffort)updateReasoningEffortSnapshots(data.reasoningEffort,'custom');
         const message=data.message||('已切换为自定义模型：'+(data.model||''));
         setRelayModelApplyStatus(message,'success',source);
         setModelSourceStatus(data.connectorRestarted||data.connectorStarted?'已请求 connector 使用自定义模型。':'已切换为自定义模型启动。','success');
@@ -8817,9 +9282,11 @@
 
     function bindCustomModelAutoSave(){
       const provider=document.getElementById('model-provider-setting');
+      const openaiApiMode=document.getElementById('model-openai-api-mode-setting');
       const apiBase=document.getElementById('model-api-base-setting');
       const model=document.getElementById('model-name-setting');
       const contextWindow=document.getElementById('model-context-window-setting');
+      const reasoningEffort=document.getElementById('model-reasoning-effort-setting');
       const secret=document.getElementById('model-secret-setting');
       const clear=document.getElementById('model-secret-clear-setting');
       const schedule=()=>{
@@ -8827,10 +9294,12 @@
         setModelSourceStatus('改动待自动保存...', 'muted');
         customModelAutoSaveTimer=setTimeout(()=>saveCustomModelSettings({auto:true}),CUSTOM_MODEL_AUTO_SAVE_DELAY);
       };
-      if(provider)provider.addEventListener('change',schedule);
+      if(provider)provider.addEventListener('change',()=>{syncCustomOpenAIApiModeVisibility();schedule();});
+      if(openaiApiMode)openaiApiMode.addEventListener('change',schedule);
       if(apiBase)apiBase.addEventListener('input',schedule);
       if(model)model.addEventListener('input',schedule);
       if(contextWindow)contextWindow.addEventListener('change',schedule);
+      if(reasoningEffort)reasoningEffort.addEventListener('change',schedule);
       if(secret)secret.addEventListener('change',schedule);
       if(clear)clear.addEventListener('change',schedule);
     }
@@ -8874,6 +9343,7 @@
         const d=await r.json();
         if(!r.ok||d.error)throw new Error(d.error||'保存失败');
         customModelAutoSaveLastSignature=signature;
+        updateReasoningEffortSnapshots(payload.settings['model.reasoningEffort']||'default','custom');
         const appliedMessage=!auto&&d.connectorRestarted
           ? '已保存，并已请求重启 CatsCo agent 使用新配置。'
           : (auto?'已自动保存自定义配置。':'已保存自定义配置。')+'配置完整时会切换为自定义启动。';
@@ -9653,11 +10123,14 @@
             botUid,
             setupRelayModel,
             relayModelId:setupRelayModel ? (relayModelIdForSetup()||undefined) : undefined,
+            reasoningEffort:setupRelayModel ? relayReasoningEffortForSetup() : undefined,
             rotateRelayKey:Boolean(options?.rotateRelayKey),
           }),
         }));
         pendingStartupSource='';
         pendingRelayModelId='';
+        pendingRelayReasoningEffort='';
+        pendingRelayReasoningModelId='';
         catsState = {
           ...catsState,
           ...data,
@@ -9827,10 +10300,13 @@
           ...getCatsEndpointFields(),
           setupRelayModel,
           relayModelId:setupRelayModel ? (relayModelIdForSetup()||undefined) : undefined,
+          reasoningEffort:setupRelayModel ? relayReasoningEffortForSetup() : undefined,
           rotateRelayKey:Boolean(options.rotateRelayKey),
         })}));
         pendingStartupSource='';
         pendingRelayModelId='';
+        pendingRelayReasoningEffort='';
+        pendingRelayReasoningModelId='';
         catsState={...catsState,...data, connected:true, configured:true, botUid:data.bot?.uid||data.botUid, topicId:data.topicId, user:data.user, service:data.service};
         const stage=await refreshCatsChatAfterMutation({focusInput:true});
         const warningText=catsSetupWarningText(data);

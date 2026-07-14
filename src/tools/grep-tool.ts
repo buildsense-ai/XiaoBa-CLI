@@ -78,7 +78,7 @@ export class GrepTool implements Tool {
     name: 'grep',
     description: [
       '在文件内容中搜索文本或正则表达式。',
-      '适合查找符号、函数名、配置项、错误文本；要按文件名/路径找文件请使用 glob。',
+      '适合查找符号、函数名、配置项、错误文本；路径候选通常先由 glob 缩小范围。',
       '默认返回匹配文件列表；需要具体匹配行时设置 output_mode="content"。',
     ].join('\n'),
     parameters: {

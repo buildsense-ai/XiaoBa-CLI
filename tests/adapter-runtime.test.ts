@@ -116,7 +116,7 @@ describe('adapter runtime', () => {
     );
   });
 
-  test('fixed prompt mode snapshots identity and workingDirectory immediately', async () => {
+  test('fixed prompt snapshot captures identity and workingDirectory immediately', async () => {
     const runtime = createAdapterRuntime({
       surface: 'feishu',
       promptSnapshotMode: 'fixed',
