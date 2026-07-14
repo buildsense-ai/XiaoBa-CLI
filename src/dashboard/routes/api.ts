@@ -48,6 +48,9 @@ import {
 } from '../../runtime/runtime-profile-editor';
 import { inferCatsUploadType, uploadCatsLocalFile } from '../../catscompany/upload';
 import { createCatsCoLocalConfigService } from '../../catscompany/local-config';
+import { createBotDefinitionSyncService } from '../../bot-definition/service';
+import { resolveActiveBotLLMConfig } from '../../bot-definition/llm-config-resolver';
+import type { BotDefinitionSyncResult } from '../../bot-definition/types';
 import { resolveCatsCoRuntimeConfig } from '../../catscompany/runtime-config';
 import { consumeLocalFileGrant, validateLocalFileGrant } from '../local-file-grants';
 import { registerSkillHubRoutes } from './skillhub';
@@ -87,6 +90,10 @@ const TRUSTED_CATSCO_WS_URL = new URL(DEFAULT_CATSCO_WS_URL);
 const BUNDLED_SKILL_MARKER = '.xiaoba-bundled-skill.json';
 const SYSTEM_SKILL_DIRS = new Set<string>();
 const PROMPT_EDITOR_SKILL_NAME = 'catsco-prompt-editor';
+
+function runtimeDataRoot(): string {
+  return PathResolver.getRuntimeDataRoot();
+}
 
 type SkillSource = 'system' | 'bundled' | 'user';
 
@@ -405,7 +412,7 @@ function createCatsNetworkError(error: any, httpBaseUrl: string): Error {
 }
 
 function readEnvFile(): Record<string, string> {
-  const envPath = path.join(process.cwd(), '.env');
+  const envPath = path.join(runtimeDataRoot(), '.env');
   if (!fs.existsSync(envPath)) return {};
   return dotenv.parse(fs.readFileSync(envPath, 'utf-8'));
 }
@@ -419,7 +426,7 @@ function firstNonEmpty(...values: unknown[]): string | undefined {
 }
 
 function writeEnvUpdates(updates: Record<string, string | undefined>): string[] {
-  const envPath = path.join(process.cwd(), '.env');
+  const envPath = path.join(runtimeDataRoot(), '.env');
   let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
   const updatedKeys: string[] = [];
 
@@ -443,7 +450,7 @@ function writeEnvUpdates(updates: Record<string, string | undefined>): string[] 
 }
 
 function removeEnvKeys(keys: string[]): string[] {
-  const envPath = path.join(process.cwd(), '.env');
+  const envPath = path.join(runtimeDataRoot(), '.env');
   let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
   const removed: string[] = [];
 
@@ -467,10 +474,12 @@ function removeEnvKeys(keys: string[]): string[] {
 }
 
 export function getCatsAuthState(overrides: Record<string, unknown> = {}): CatsAuthState {
-  return createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).getAuthState(overrides);
+  return createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).getAuthState(overrides);
 }
 
 function getModelConfigReadonly(): Pick<ChatConfig, 'apiKey' | 'apiUrl' | 'model' | 'provider' | 'reasoningEffort' | 'openaiApiMode'> {
+  const botConfig = resolveActiveBotLLMConfig({ runtimeRoot: runtimeDataRoot() });
+  if (botConfig) return botConfig.config;
   const config = ConfigManager.getConfigReadonly();
   const env = readEnvFile();
   const provider = firstNonEmpty(process.env.GAUZ_LLM_PROVIDER, env.GAUZ_LLM_PROVIDER, config.provider);
@@ -635,7 +644,7 @@ function sanitizeCatsUsernamePart(value: string): string {
 }
 
 function ensureCatsDeviceId(): string {
-  return createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).ensureDeviceId();
+  return createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).ensureDeviceId();
 }
 
 function chmodOwnerOnly(filePath: string): void {
@@ -664,7 +673,7 @@ function restoreFile(filePath: string, snapshot: { exists: boolean; content?: st
 }
 
 function createCatsCoLocalConfigRollback(): () => void {
-  const runtimeRoot = process.cwd();
+  const runtimeRoot = runtimeDataRoot();
   const service = createCatsCoLocalConfigService({ runtimeRoot });
   const configPath = service.getConfigPath();
   const envPath = path.join(runtimeRoot, '.env');
@@ -794,7 +803,7 @@ function getCatsCompanyBindingPreflight(
   const service = serviceManager.getService('catscompany');
   if (!service) return undefined;
   return getServicePreflight(serviceManager, 'catscompany', {
-    runtimeRoot: process.cwd(),
+    runtimeRoot: runtimeDataRoot(),
     config: ConfigManager.getConfigReadonly(),
     catsCoOverrides: {
       token: state.token,
@@ -824,7 +833,7 @@ async function startCatsCompanyConnectorIfReady(
   let preflight = options.preflight;
   if (service) {
     preflight = preflight || getServicePreflight(serviceManager, 'catscompany', {
-      runtimeRoot: process.cwd(),
+      runtimeRoot: runtimeDataRoot(),
       config: ConfigManager.getConfigReadonly(),
     });
     if (preflight.status === 'blocked') {
@@ -843,14 +852,23 @@ async function startCatsCompanyConnectorIfReady(
 }
 
 function writeCatsBotBinding(state: CatsAuthState, input: CatsBotBindingInput): string[] {
-  return createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).writeBotBinding(state, input);
+  return createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).writeBotBinding(state, input);
 }
 
 async function commitCatsBotBindingAndStartConnector(
   serviceManager: ServiceManager,
   state: CatsAuthState,
   input: CatsBotBindingInput,
-): Promise<{ updated: string[]; warnings: string[]; service: any; preflight: any; connectorStarted: boolean; connectorRestarted: boolean }> {
+  options: { catalogModelId?: string } = {},
+): Promise<{
+  updated: string[];
+  warnings: string[];
+  service: any;
+  preflight: any;
+  connectorStarted: boolean;
+  connectorRestarted: boolean;
+  botDefinitionSync?: Record<string, unknown>;
+}> {
   ensureCatsDeviceId();
   const preflight = getCatsCompanyBindingPreflight(serviceManager, state, input);
   assertCatsCompanyPreflightCanStart(preflight);
@@ -858,6 +876,23 @@ async function commitCatsBotBindingAndStartConnector(
   try {
     const warnings = await ensureCatsFriendBinding(state, input.userUid, input.botUid, input.apiKey);
     const updated = writeCatsBotBinding(state, input);
+    const definitionService = createBotDefinitionSyncService({ runtimeRoot: runtimeDataRoot() });
+    let definitionResult = definitionService.pullOrBootstrap(input.botUid);
+    if (
+      options.catalogModelId
+      && definitionResult?.direction === 'bootstrap_to_simulated_cloud'
+      && definitionResult.definition.model.kind === 'catalog'
+    ) {
+      const runtime = definitionService.readCatalogRuntime(input.botUid);
+      if (runtime) {
+        definitionService.storeCatalogRuntime({ ...runtime, modelId: options.catalogModelId });
+      }
+      definitionResult = definitionService.publish(input.botUid, {
+        kind: 'catalog',
+        modelId: options.catalogModelId,
+      });
+    }
+    const botDefinitionSync = toBotDefinitionSyncPayload(definitionResult);
     const {
       service,
       preflight: startPreflight,
@@ -865,7 +900,6 @@ async function commitCatsBotBindingAndStartConnector(
       connectorRestarted,
     } = await startCatsCompanyConnectorIfReady(serviceManager, {
       restartIfRunning: true,
-      preflight,
     });
     return {
       updated,
@@ -874,6 +908,7 @@ async function commitCatsBotBindingAndStartConnector(
       preflight: startPreflight,
       connectorStarted,
       connectorRestarted,
+      botDefinitionSync,
     };
   } catch (error) {
     rollback();
@@ -1100,7 +1135,7 @@ function isCatsRelayApiBase(value: unknown): boolean {
 }
 
 function writeDashboardEnvAndProcess(updates: Record<string, string | undefined>): { updated: string[]; cleared: string[] } {
-  const result = writeDashboardEnvUpdates(process.cwd(), updates);
+  const result = writeDashboardEnvUpdates(runtimeDataRoot(), updates);
   for (const [key, value] of Object.entries(updates)) {
     if (value === undefined) {
       delete process.env[key];
@@ -1123,6 +1158,42 @@ function modelProfileFromCurrentConfig(): ModelLaunchProfile {
     reasoningEffort: normalizeReasoningEffort(firstNonEmpty(process.env.GAUZ_LLM_REASONING_EFFORT, fileEnv.GAUZ_LLM_REASONING_EFFORT, config.reasoningEffort)),
     openaiApiMode: openAIApiModeOrDefault(firstNonEmpty(process.env.GAUZ_LLM_OPENAI_API_MODE, fileEnv.GAUZ_LLM_OPENAI_API_MODE, config.openaiApiMode)),
   };
+}
+
+function publishCurrentBotDefinition(): BotDefinitionSyncResult | undefined {
+  return createBotDefinitionSyncService({ runtimeRoot: runtimeDataRoot() }).publishCurrentBoundBot();
+}
+
+function toBotDefinitionSyncPayload(result: BotDefinitionSyncResult | undefined): Record<string, unknown> | undefined {
+  if (!result) return undefined;
+  const model = result.definition.model.kind === 'custom'
+    ? (() => {
+      const { apiKey: _apiKey, ...safeModel } = result.definition.model;
+      return safeModel;
+    })()
+    : result.definition.model;
+  return {
+    botId: result.botId,
+    direction: result.direction,
+    model,
+  };
+}
+
+function publishCurrentBotDefinitionPayload(): Record<string, unknown> | undefined {
+  return toBotDefinitionSyncPayload(publishCurrentBotDefinition());
+}
+
+function updateCurrentCustomDefinitionReasoningEffort(
+  reasoningEffort: ReasoningEffort,
+): Record<string, unknown> | undefined {
+  const service = createBotDefinitionSyncService({ runtimeRoot: runtimeDataRoot() });
+  const definition = service.pullOrBootstrapCurrentBoundBot()?.definition;
+  if (!definition || definition.model.kind !== 'custom') return undefined;
+  const result = service.publish(definition.botId, {
+    ...definition.model,
+    reasoningEffort,
+  });
+  return toBotDefinitionSyncPayload(result);
 }
 
 function modelProfileFromStoredEnv(
@@ -1238,7 +1309,7 @@ function sanitizePublicUrl(value: unknown): string | undefined {
 }
 
 function mirrorCurrentModelAsCustomStartup(input: any, previous: ModelLaunchProfile, previousSource: 'relay' | 'custom'): void {
-  const current = modelProfileFromCurrentConfig();
+  const current = modelProfileFromStoredEnv(EFFECTIVE_MODEL_ENV_KEYS);
   const secretAction = requestedSecretAction(input);
   const storedCustom = modelProfileFromStoredEnv(CUSTOM_MODEL_ENV_KEYS);
   const apiKey = secretAction === 'clear'
@@ -1549,6 +1620,7 @@ async function setupCatsRelayModelForDesktop(
     provider: selectedModel.provider,
     apiBase: selectedModel.baseUrl,
     model: selectedModel.model,
+    modelId: selectedModel.id,
     reasoningEffort,
     selectedModel: relayModelPayload(selectedModel),
     updated: settingsResult.updated,
@@ -1664,7 +1736,7 @@ function activateCatsCompanyConnector(
 
   try {
     const preflight = getServicePreflight(serviceManager, 'catscompany', {
-      runtimeRoot: process.cwd(),
+      runtimeRoot: runtimeDataRoot(),
       config: ConfigManager.getConfigReadonly(),
     });
     if (preflight.status === 'blocked') {
@@ -1684,7 +1756,7 @@ function activateCatsCompanyConnector(
 }
 
 function persistCatsUserSession(state: CatsAuthState, login: any): void {
-  createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).persistAccountSession(state, login);
+  createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).persistAccountSession(state, login);
 }
 
 async function getCatsCoAuthForSkillHub(): Promise<{
@@ -1790,7 +1862,7 @@ export function createApiRouter(
         return res.status(400).json({ error: 'enabled must be a boolean' });
       }
       const value = serializeBranchAgentsEnabled(req.body.enabled);
-      const result = writeDashboardEnvUpdates(process.cwd(), {
+      const result = writeDashboardEnvUpdates(runtimeDataRoot(), {
         [BRANCH_AGENTS_ENABLED_ENV]: value,
       });
       process.env[BRANCH_AGENTS_ENABLED_ENV] = value;
@@ -1845,7 +1917,7 @@ export function createApiRouter(
   router.get('/readiness', async (_req, res) => {
     try {
       const readiness = await getDashboardReadiness(serviceManager, {
-        runtimeRoot: process.cwd(),
+        runtimeRoot: runtimeDataRoot(),
         config: ConfigManager.getConfigReadonly(),
       });
       // Public readiness exposes only a redacted aggregate status so the UI
@@ -1864,7 +1936,7 @@ export function createApiRouter(
   router.get('/readiness/details', async (_req, res) => {
     try {
       res.json(await getDashboardReadiness(serviceManager, {
-        runtimeRoot: process.cwd(),
+        runtimeRoot: runtimeDataRoot(),
         config: ConfigManager.getConfigReadonly(),
       }));
     } catch (e: any) {
@@ -1874,10 +1946,10 @@ export function createApiRouter(
 
   router.get('/runtime/profile/edit', (_req, res) => {
     try {
-      const preview = previewRuntimeProfileEdit({}, { runtimeRoot: process.cwd() });
+      const preview = previewRuntimeProfileEdit({}, { runtimeRoot: runtimeDataRoot() });
       res.json(sanitizeRuntimeProfileEditResponse({
         ...preview,
-        rollbackAvailable: hasRuntimeProfileRollback({ runtimeRoot: process.cwd() }),
+        rollbackAvailable: hasRuntimeProfileRollback({ runtimeRoot: runtimeDataRoot() }),
       }));
     } catch (e: any) {
       res.status(500).json({ error: e?.message || String(e) });
@@ -1887,11 +1959,11 @@ export function createApiRouter(
   router.post('/runtime/profile/preview', (req, res) => {
     try {
       const preview = previewRuntimeProfileEdit(req.body as RuntimeProfileEditInput, {
-        runtimeRoot: process.cwd(),
+        runtimeRoot: runtimeDataRoot(),
       });
       res.json(sanitizeRuntimeProfileEditResponse({
         ...preview,
-        rollbackAvailable: hasRuntimeProfileRollback({ runtimeRoot: process.cwd() }),
+        rollbackAvailable: hasRuntimeProfileRollback({ runtimeRoot: runtimeDataRoot() }),
       }));
     } catch (e: any) {
       res.status(400).json({ error: e?.message || String(e) });
@@ -1901,7 +1973,7 @@ export function createApiRouter(
   router.put('/runtime/profile', (req, res) => {
     try {
       const result = saveRuntimeProfileEdit(req.body as RuntimeProfileEditInput, {
-        runtimeRoot: process.cwd(),
+        runtimeRoot: runtimeDataRoot(),
       });
       res.json(sanitizeRuntimeProfileEditResponse(result));
     } catch (e: any) {
@@ -1911,7 +1983,7 @@ export function createApiRouter(
 
   router.post('/runtime/profile/rollback', (_req, res) => {
     try {
-      res.json(rollbackRuntimeProfileEdit({ runtimeRoot: process.cwd() }));
+      res.json(rollbackRuntimeProfileEdit({ runtimeRoot: runtimeDataRoot() }));
     } catch (e: any) {
       res.status(400).json({ error: e?.message || String(e) });
     }
@@ -1998,7 +2070,7 @@ export function createApiRouter(
   router.post('/services/:name/preflight', (req, res) => {
     try {
       res.json(getServicePreflight(serviceManager, req.params.name, {
-        runtimeRoot: process.cwd(),
+        runtimeRoot: runtimeDataRoot(),
         config: ConfigManager.getConfigReadonly(),
       }));
     } catch (e: any) {
@@ -2009,7 +2081,7 @@ export function createApiRouter(
   router.post('/services/:name/start', (req, res) => {
     try {
       const preflight = getServicePreflight(serviceManager, req.params.name, {
-        runtimeRoot: process.cwd(),
+        runtimeRoot: runtimeDataRoot(),
         config: ConfigManager.getConfigReadonly(),
       });
       if (preflight.status === 'blocked' && req.body?.force !== true) {
@@ -2035,7 +2107,7 @@ export function createApiRouter(
   router.post('/services/:name/restart', (req, res) => {
     try {
       const preflight = getServicePreflight(serviceManager, req.params.name, {
-        runtimeRoot: process.cwd(),
+        runtimeRoot: runtimeDataRoot(),
         config: ConfigManager.getConfigReadonly(),
       });
       if (preflight.status === 'blocked' && req.body?.force !== true) {
@@ -2059,7 +2131,7 @@ export function createApiRouter(
 
   router.get('/settings', (_req, res) => {
     try {
-      res.json(getDashboardSettings({ runtimeRoot: process.cwd() }));
+      res.json(getDashboardSettings({ runtimeRoot: runtimeDataRoot() }));
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -2069,17 +2141,21 @@ export function createApiRouter(
     try {
       const previousModel = modelProfileFromCurrentConfig();
       const previousSource = storedModelSource();
-      const result = updateDashboardSettings(req.body, { runtimeRoot: process.cwd() });
+      const result = updateDashboardSettings(req.body, { runtimeRoot: runtimeDataRoot() });
       const changedModelSettings = result.updated.some(key => key.startsWith('GAUZ_LLM_'))
         || result.cleared.some(key => key.startsWith('GAUZ_LLM_'));
       if (changedModelSettings) {
         mirrorCurrentModelAsCustomStartup(req.body, previousModel, previousSource);
       }
+      const botDefinitionSync = changedModelSettings
+        ? publishCurrentBotDefinitionPayload()
+        : undefined;
       const restartInfo = req.body?.restartConnector === true && changedModelSettings
         ? activateCatsCompanyConnector(serviceManager)
         : { wasRunning: false, restartRequested: false, startRequested: false, startBlocked: false };
       res.json({
         ...result,
+        botDefinitionSync,
         connectorRestarted: restartInfo.restartRequested,
         restartError: restartInfo.restartError ? sanitizeCatsErrorMessage(restartInfo.restartError) : undefined,
       });
@@ -2091,6 +2167,32 @@ export function createApiRouter(
   router.put('/model/reasoning-effort', (req, res) => {
     try {
       const requested = requestedReasoningEffort(req.body?.reasoningEffort);
+      const activeBotConfig = resolveActiveBotLLMConfig({ runtimeRoot: runtimeDataRoot() });
+      if (activeBotConfig?.source === 'custom_definition') {
+        const previousReasoningEffort = activeBotConfig.config.reasoningEffort ?? 'default';
+        const reasoningEffort = requested ?? previousReasoningEffort;
+        const botDefinitionSync = updateCurrentCustomDefinitionReasoningEffort(reasoningEffort);
+        const restartInfo = req.body?.restartConnector === true || req.body?.activateConnector === true
+          ? activateCatsCompanyConnector(serviceManager, {
+            startIfStopped: req.body?.activateConnector === true || req.body?.startConnector === true,
+          })
+          : { wasRunning: false, restartRequested: false, startRequested: false, startBlocked: false };
+        return res.json({
+          ok: true,
+          source: 'custom',
+          reasoningEffort,
+          previousReasoningEffort,
+          updated: [],
+          cleared: [],
+          botDefinitionSync,
+          restartRequired: restartInfo.wasRunning && !restartInfo.restartRequested,
+          connectorRestarted: restartInfo.restartRequested,
+          connectorStarted: restartInfo.startRequested,
+          connectorStartBlocked: restartInfo.startBlocked,
+          restartError: restartInfo.restartError ? sanitizeCatsErrorMessage(restartInfo.restartError) : undefined,
+          startError: restartInfo.startError ? sanitizeCatsErrorMessage(restartInfo.startError) : undefined,
+        });
+      }
       const previousReasoningEffort = currentStartupReasoningEffort();
       const explicitSource = storedModelSourceRaw();
       const current = modelProfileFromCurrentConfig();
@@ -2099,6 +2201,9 @@ export function createApiRouter(
         ? relayReasoningEffortOrHigh(requested ?? previousReasoningEffort)
         : requested ?? previousReasoningEffort;
       const result = writeStartupReasoningEffort(reasoningEffort);
+      const botDefinitionSync = result.source === 'custom'
+        ? updateCurrentCustomDefinitionReasoningEffort(reasoningEffort)
+        : undefined;
       const restartInfo = req.body?.restartConnector === true || req.body?.activateConnector === true
         ? activateCatsCompanyConnector(serviceManager, {
           startIfStopped: req.body?.activateConnector === true || req.body?.startConnector === true,
@@ -2111,6 +2216,7 @@ export function createApiRouter(
         previousReasoningEffort,
         updated: result.updated,
         cleared: result.cleared,
+        botDefinitionSync,
         restartRequired: restartInfo.wasRunning && !restartInfo.restartRequested,
         connectorRestarted: restartInfo.restartRequested,
         connectorStarted: restartInfo.startRequested,
@@ -2126,6 +2232,7 @@ export function createApiRouter(
   router.post('/model-source/custom/apply', (req, res) => {
     try {
       const result = writeCustomModelStartupConfig();
+      const botDefinitionSync = publishCurrentBotDefinitionPayload();
       const activation = activateCatsCompanyConnector(serviceManager, {
         startIfStopped: req.body?.activateConnector === true || req.body?.startConnector === true,
       });
@@ -2141,6 +2248,7 @@ export function createApiRouter(
         openaiApiMode: result.profile.openaiApiMode ?? 'chat_completions',
         updated: result.updated,
         cleared: result.cleared,
+        botDefinitionSync,
         restartRequired: activation.wasRunning && !activation.restartRequested,
         connectorRestarted: activation.restartRequested,
         connectorStarted: activation.startRequested,
@@ -2169,7 +2277,7 @@ export function createApiRouter(
 
   router.get('/config', (_req, res) => {
     try {
-      const envPath = path.join(process.cwd(), '.env');
+      const envPath = path.join(runtimeDataRoot(), '.env');
       if (!fs.existsSync(envPath)) return res.json({});
       const content = fs.readFileSync(envPath, 'utf-8');
       const parsed = dotenv.parse(content);
@@ -2228,7 +2336,7 @@ export function createApiRouter(
         safeUpdates[key] = value;
       }
 
-      const result = writeDashboardEnvUpdates(process.cwd(), safeUpdates);
+      const result = writeDashboardEnvUpdates(runtimeDataRoot(), safeUpdates);
       for (const [key, value] of Object.entries(safeUpdates)) {
         process.env[key] = value;
       }
@@ -2386,7 +2494,7 @@ export function createApiRouter(
   router.get('/weixin/channel-binding', (_req, res) => {
     try {
       res.json(sanitizeWeixinChannelStatus(getWeixinChannelStatus({
-        runtimeRoot: process.cwd(),
+        runtimeRoot: runtimeDataRoot(),
         env: process.env,
       })));
     } catch (e: any) {
@@ -2397,7 +2505,7 @@ export function createApiRouter(
   router.get('/weixin/qrcode', async (_req, res) => {
     try {
       const status = getWeixinChannelStatus({
-        runtimeRoot: process.cwd(),
+        runtimeRoot: runtimeDataRoot(),
         env: process.env,
       });
       if (!status.currentAgent) {
@@ -2429,7 +2537,7 @@ export function createApiRouter(
       const expectedAgentUid = String(req.query.agent_uid || '').trim();
       if (!qrcode) return res.status(400).json({ error: 'qrcode required' });
       const status = getWeixinChannelStatus({
-        runtimeRoot: process.cwd(),
+        runtimeRoot: runtimeDataRoot(),
         env: process.env,
       });
       if (!status.currentAgent) {
@@ -2457,7 +2565,7 @@ export function createApiRouter(
       if (data?.status === 'confirmed' && botToken) {
         const result = bindWeixinChannelToCurrentAgent({
           token: botToken,
-          runtimeRoot: process.cwd(),
+          runtimeRoot: runtimeDataRoot(),
           env: process.env,
           expectedAgentUid: expectedAgentUid || status.currentAgent.uid,
         });
@@ -2477,7 +2585,7 @@ export function createApiRouter(
 
   router.get('/cats/status', async (_req, res) => {
     const runtime = resolveCatsCoRuntimeConfig({
-      runtimeRoot: process.cwd(),
+      runtimeRoot: runtimeDataRoot(),
       config: ConfigManager.getConfigReadonly(),
     });
     const state = runtime.auth;
@@ -2625,7 +2733,7 @@ export function createApiRouter(
   });
 
   router.post('/cats/auth/logout', (_req, res) => {
-    const removed = createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).clearAccount();
+    const removed = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).clearAccount();
     res.json({ ok: true, removed });
   });
 
@@ -2769,6 +2877,8 @@ export function createApiRouter(
         botUsername: bot.username || preferredUsername,
         apiKey,
         bindingSource: 'legacy-setup',
+      }, {
+        catalogModelId: String(relayModelSetup?.modelId || '').trim() || undefined,
       });
 
       res.json({
@@ -2789,6 +2899,7 @@ export function createApiRouter(
         preflight: result.preflight,
         connectorStarted: result.connectorStarted,
         connectorRestarted: result.connectorRestarted,
+        botDefinitionSync: result.botDefinitionSync,
         relayModelSetup,
         botSelectionSource,
         warnings: result.warnings.length > 0 ? result.warnings : undefined,
@@ -2930,6 +3041,8 @@ export function createApiRouter(
         botUsername: targetBot.username || '',
         apiKey,
         bindingSource: 'explicit-bind',
+      }, {
+        catalogModelId: String(relayModelSetup?.modelId || '').trim() || undefined,
       });
       const botName = String(targetBot.display_name || targetBot.username || 'Bot');
 
@@ -2947,6 +3060,7 @@ export function createApiRouter(
         preflight: result.preflight,
         connectorStarted: result.connectorStarted,
         connectorRestarted: result.connectorRestarted,
+        botDefinitionSync: result.botDefinitionSync,
         relayModelSetup,
         warnings: result.warnings.length > 0 ? result.warnings : undefined,
         message: `已绑定机器人 "${botName}"`,
@@ -3012,7 +3126,7 @@ export function createApiRouter(
 
   router.get('/cats/config', async (_req, res) => {
     try {
-      res.json(createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).toDashboardConfigPayload());
+      res.json(createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).toDashboardConfigPayload());
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -3020,7 +3134,7 @@ export function createApiRouter(
 
   router.put('/cats/config/preferences', async (req, res) => {
     try {
-      const preferences = createCatsCoLocalConfigService({ runtimeRoot: process.cwd() }).updatePreferences(req.body || {});
+      const preferences = createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).updatePreferences(req.body || {});
       res.json({ ok: true, preferences });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -3114,6 +3228,26 @@ export function createApiRouter(
       const provider = selectedModel.provider;
       const model = selectedModel.model;
       const settingsResult = writeRelayModelStartupConfig(selectedModel, ensured.plainKey, { reasoningEffort });
+      const definitionService = createBotDefinitionSyncService({ runtimeRoot: runtimeDataRoot() });
+      const botId = String(createCatsCoLocalConfigService({ runtimeRoot: runtimeDataRoot() }).load().currentBot?.uid || '').trim();
+      let botDefinitionSync: Record<string, unknown> | undefined;
+      if (botId) {
+        definitionService.storeCatalogRuntime({
+          schema: 'xiaoba.bot-catalog-model-runtime.v1',
+          botId,
+          modelId: selectedModel.id,
+          provider: selectedModel.provider,
+          apiBase: selectedModel.baseUrl,
+          apiKey: ensured.plainKey,
+          model: selectedModel.model,
+          contextWindowTokens: selectedModel.contextWindowTokens ?? 200_000,
+          reasoningEffort,
+          openaiApiMode: 'chat_completions',
+        });
+        botDefinitionSync = toBotDefinitionSyncPayload(
+          definitionService.publish(botId, { kind: 'catalog', modelId: selectedModel.id }),
+        );
+      }
       const restartInfo = activateCatsCompanyConnector(serviceManager, {
         startIfStopped: req.body?.activateConnector === true || req.body?.startConnector === true,
       });
@@ -3128,6 +3262,7 @@ export function createApiRouter(
         selectedModel: relayModelPayload(selectedModel),
         models: relayModelCatalog(config).map(relayModelPayload),
         updated: settingsResult.updated,
+        botDefinitionSync,
         key: sanitizeRelayKeyInfo(ensured.response?.key),
         createdKey: ensured.created,
         rotatedKey: ensured.rotated,

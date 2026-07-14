@@ -6,6 +6,8 @@ import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/
 import { ChatConfig } from '../types';
 import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { CatsCoConnectorLock, acquireCatsCoConnectorLock, isProcessAlive } from '../catscompany/connector-lock';
+import { createBotDefinitionSyncService } from '../bot-definition/service';
+import { PathResolver } from '../utils/path-resolver';
 
 const CONNECTOR_OWNER_POLL_MS = 2000;
 
@@ -18,7 +20,7 @@ export function resolveCatsCoCommandConfig(
   config: ChatConfig,
   env: NodeJS.ProcessEnv = process.env,
 ): CatsCoCommandConfigResolution {
-  const resolved = resolveCatsCoRuntimeConfig({ runtimeRoot: process.cwd(), env, config });
+  const resolved = resolveCatsCoRuntimeConfig({ runtimeRoot: PathResolver.getRuntimeDataRoot(), env, config });
   return {
     missing: resolved.missing,
     config: resolved.connector,
@@ -30,6 +32,12 @@ export function resolveCatsCoCommandConfig(
  * 启动 CatsCompany WebSocket connector
  */
 export async function catscompanyCommand(): Promise<void> {
+  const runtimeRoot = PathResolver.getRuntimeDataRoot();
+  // Normal connector startup also performs the cloud-to-local definition pull.
+  // The current file repository will be replaced by a CatsCompany API adapter
+  // later without changing this startup boundary.
+  createBotDefinitionSyncService({ runtimeRoot })
+    .pullOrBootstrapCurrentBoundBot();
   const config = ConfigManager.getConfig();
   const resolved = resolveCatsCoCommandConfig(config);
 
@@ -51,7 +59,7 @@ export async function catscompanyCommand(): Promise<void> {
     ? configuredOwnerPid
     : undefined;
   const connectorLock = acquireCatsCoConnectorLock({
-    runtimeRoot: process.cwd(),
+    runtimeRoot,
     bodyId,
     command: process.argv.join(' '),
     ownerPid,

@@ -8,6 +8,8 @@ import express from 'express';
 import type { Server } from 'http';
 import { createApiRouter } from '../src/dashboard/routes/api';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
+import { FileBotCatalogModelRuntimeRepository } from '../src/bot-definition/repository';
+import { createBotDefinitionSyncService } from '../src/bot-definition/service';
 
 describe('dashboard typed settings API', () => {
   let testRoot: string;
@@ -62,6 +64,7 @@ describe('dashboard typed settings API', () => {
     'CATSCOMPANY_DEVICE_ID',
     'CATSCOMPANY_BODY_ID',
     'CATSCOMPANY_INSTALLATION_ID',
+    'XIAOBA_USER_DATA_DIR',
   ];
   const originalEnv: Record<string, string | undefined> = {};
 
@@ -278,6 +281,158 @@ describe('dashboard typed settings API', () => {
     const status = await statusResponse.json() as any;
     assert.equal(status.provider, 'anthropic');
     assert.equal(status.model, 'MiniMax-M2.7-highspeed');
+  });
+
+  test('PUT /settings publishes the bound bot model definition without exposing its API key', async () => {
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      currentBot: {
+        uid: 'bot-definition-test',
+        apiKey: 'catsco-bot-api-key',
+        boundByUserUid: 'user-definition-test',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'device-definition-test',
+        bodyId: 'body-definition-test',
+        installationId: 'install-definition-test',
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        settings: {
+          'model.provider': 'openai',
+          'model.apiBase': 'https://model.example.test/v1',
+          'model.model': 'gpt-portable',
+          'model.contextWindowTokens': '256000',
+          'model.apiKey': { action: 'replace', value: 'sk-portable-secret' },
+        },
+      }),
+    });
+    const text = await response.text();
+    const data = JSON.parse(text) as any;
+    const definitionPath = path.join(
+      testRoot,
+      'data',
+      'bot-definition-simulated-cloud',
+      'bots',
+      'bot-definition-test.json',
+    );
+
+    assert.equal(response.status, 200, text);
+    assert.ok(data.botDefinitionSync, text);
+    const definition = JSON.parse(fs.readFileSync(definitionPath, 'utf-8')) as any;
+    assert.equal(data.botDefinitionSync.botId, 'bot-definition-test');
+    assert.equal(data.botDefinitionSync.direction, 'local_to_simulated_cloud');
+    assert.equal(data.botDefinitionSync.model.kind, 'custom');
+    assert.equal(data.botDefinitionSync.model.model, 'gpt-portable');
+    assert.equal(text.includes('sk-portable-secret'), false);
+    assert.equal(definition.model.apiKey, 'sk-portable-secret');
+  });
+
+  test('PUT /settings uses the explicit runtime data root for bound bot state and Definition storage', async () => {
+    const runtimeRoot = path.join(testRoot, 'electron-user-data');
+    process.env.XIAOBA_USER_DATA_DIR = runtimeRoot;
+    createCatsCoLocalConfigService({ runtimeRoot }).save({
+      version: 1,
+      currentBot: {
+        uid: 'runtime-root-bot',
+        apiKey: 'catsco-bot-api-key',
+        boundByUserUid: 'user-definition-test',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'device-definition-test',
+        bodyId: 'body-definition-test',
+        installationId: 'install-definition-test',
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        settings: {
+          'model.provider': 'openai',
+          'model.apiBase': 'https://model.example.test/v1',
+          'model.model': 'gpt-runtime-root',
+          'model.contextWindowTokens': '256000',
+          'model.apiKey': { action: 'replace', value: 'sk-runtime-root-secret' },
+        },
+      }),
+    });
+    const text = await response.text();
+    const data = JSON.parse(text) as any;
+    const definitionPath = path.join(
+      runtimeRoot,
+      'data',
+      'bot-definition-cache',
+      'bots',
+      'runtime-root-bot.json',
+    );
+    const runtimeEnv = dotenv.parse(fs.readFileSync(path.join(runtimeRoot, '.env'), 'utf-8'));
+
+    assert.equal(response.status, 200, text);
+    assert.equal(data.botDefinitionSync?.botId, 'runtime-root-bot');
+    assert.equal(JSON.parse(fs.readFileSync(definitionPath, 'utf-8')).model.model, 'gpt-runtime-root');
+    assert.equal(runtimeEnv.CATSCO_CUSTOM_LLM_MODEL, 'gpt-runtime-root');
+    assert.equal(fs.existsSync(path.join(testRoot, '.env')), false);
+    assert.equal(text.includes('sk-runtime-root-secret'), false);
+  });
+
+  test('PUT /model/reasoning-effort updates a bound custom Definition without changing legacy env', async () => {
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      currentBot: {
+        uid: 'bound-reasoning-test',
+        apiKey: 'catsco-bot-api-key',
+        boundByUserUid: 'user-definition-test',
+        bindingSource: 'test',
+      },
+      device: {
+        deviceId: 'device-definition-test',
+        bodyId: 'body-definition-test',
+        installationId: 'install-definition-test',
+      },
+    });
+    createBotDefinitionSyncService({ runtimeRoot: testRoot }).publish('bound-reasoning-test', {
+      kind: 'custom',
+      protocol: 'openai-chat-completions',
+      apiBase: 'https://model.example.test/v1',
+      model: 'gpt-portable',
+      apiKey: 'sk-portable-secret',
+      contextWindowTokens: 256_000,
+      reasoningEffort: 'default',
+    });
+    fs.writeFileSync(path.join(testRoot, '.env'), 'GAUZ_LLM_REASONING_EFFORT=max\n');
+
+    const response = await fetch(`${baseUrl}/api/model/reasoning-effort`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reasoningEffort: 'high' }),
+    });
+    const text = await response.text();
+    const data = JSON.parse(text) as any;
+    const definitionPath = path.join(
+      testRoot,
+      'data',
+      'bot-definition-cache',
+      'bots',
+      'bound-reasoning-test.json',
+    );
+    const definition = JSON.parse(fs.readFileSync(definitionPath, 'utf-8')) as any;
+    const env = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+
+    assert.equal(response.status, 200, text);
+    assert.equal(data.source, 'custom');
+    assert.equal(data.previousReasoningEffort, 'default');
+    assert.equal(data.reasoningEffort, 'high');
+    assert.equal(definition.model.reasoningEffort, 'high');
+    assert.equal(env.GAUZ_LLM_REASONING_EFFORT, 'max');
+    assert.equal(data.botDefinitionSync.direction, 'local_to_simulated_cloud');
   });
 
   test('PUT /model/reasoning-effort updates the active relay source without touching custom startup', async () => {
@@ -1314,7 +1469,7 @@ describe('dashboard typed settings API', () => {
       });
       const text = await response.text();
       const data = JSON.parse(text) as any;
-      const parsed = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+      const runtime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot }).read('110');
 
       assert.equal(response.status, 200, text);
       assert.equal(data.model, 'MiniMax-M3');
@@ -1324,7 +1479,8 @@ describe('dashboard typed settings API', () => {
       assert.match(data.message, /已启动 CatsCompany connector/);
       assert.equal(startCalled, 1);
       assert.equal(restartCalled, 0);
-      assert.equal(parsed.GAUZ_LLM_MODEL, 'MiniMax-M3');
+      assert.equal(runtime?.modelId, 'minimax-m3');
+      assert.equal(runtime?.model, 'MiniMax-M3');
       assert.equal(text.includes('sk-bf-minimax-secret'), false);
     } finally {
       await new Promise<void>(resolve => dashboardServer.close(() => resolve()));

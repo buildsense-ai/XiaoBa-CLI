@@ -8,6 +8,7 @@ import express from 'express';
 import type { Server } from 'http';
 import { createApiRouter } from '../src/dashboard/routes/api';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
+import { FileBotCatalogModelRuntimeRepository } from '../src/bot-definition/repository';
 
 describe('dashboard CatsCo account status', () => {
   let testRoot: string;
@@ -455,6 +456,7 @@ describe('dashboard CatsCo account status', () => {
     const text = await response.text();
     const data = JSON.parse(text) as any;
     const env = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+    const runtime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot }).read('188');
 
     assert.equal(response.status, 200, text);
     assert.equal(data.ok, true);
@@ -464,17 +466,12 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.relayModelSetup.reasoningEffort, 'high');
     assert.equal(data.relayModelSetup.createdKey, true);
     assert.equal(text.includes('sk-bf-fresh-secret'), false);
-    assert.equal(env.GAUZ_LLM_PROVIDER, 'anthropic');
-    assert.equal(env.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
-    assert.equal(env.GAUZ_LLM_MODEL, 'MiniMax-M3');
-    assert.equal(env.GAUZ_LLM_API_KEY, 'sk-bf-fresh-secret');
-    assert.equal(env.GAUZ_LLM_REASONING_EFFORT, 'high');
-    assert.equal(env.CATSCO_MODEL_SOURCE, 'relay');
-    assert.equal(env.CATSCO_RELAY_LLM_PROVIDER, 'anthropic');
-    assert.equal(env.CATSCO_RELAY_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
-    assert.equal(env.CATSCO_RELAY_LLM_MODEL, 'MiniMax-M3');
-    assert.equal(env.CATSCO_RELAY_LLM_API_KEY, 'sk-bf-fresh-secret');
-    assert.equal(env.CATSCO_RELAY_LLM_REASONING_EFFORT, 'high');
+    assert.equal(runtime?.modelId, 'minimax-m3');
+    assert.equal(runtime?.provider, 'anthropic');
+    assert.equal(runtime?.apiBase, 'https://relay.catsco.cc/anthropic');
+    assert.equal(runtime?.model, 'MiniMax-M3');
+    assert.equal(runtime?.apiKey, 'sk-bf-fresh-secret');
+    assert.equal(runtime?.reasoningEffort, 'high');
     assert.equal(env.CATSCO_BOT_UID, '188');
     assert.equal(env.CATSCO_API_KEY, 'cats-agent-key');
     assert.equal(startCalled, 1);
@@ -771,6 +768,7 @@ describe('dashboard CatsCo account status', () => {
     const text = await response.text();
     const data = JSON.parse(text) as any;
     const env = dotenv.parse(fs.readFileSync(path.join(testRoot, '.env'), 'utf-8'));
+    const runtime = new FileBotCatalogModelRuntimeRepository({ runtimeRoot: testRoot }).read('188');
 
     assert.equal(response.status, 200, text);
     assert.equal(data.ok, true);
@@ -780,13 +778,12 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.relayModelSetup.createdKey, true);
     assert.equal(text.includes('sk-bf-existing-bot-secret'), false);
     assert.equal(relayKeyCreated, 1);
-    assert.equal(env.GAUZ_LLM_PROVIDER, 'anthropic');
-    assert.equal(env.GAUZ_LLM_API_BASE, 'https://relay.catsco.cc/anthropic');
-    assert.equal(env.GAUZ_LLM_MODEL, 'MiniMax-M3');
-    assert.equal(env.GAUZ_LLM_API_KEY, 'sk-bf-existing-bot-secret');
-    assert.equal(env.GAUZ_LLM_REASONING_EFFORT, 'high');
-    assert.equal(env.CATSCO_MODEL_SOURCE, 'relay');
-    assert.equal(env.CATSCO_RELAY_LLM_REASONING_EFFORT, 'high');
+    assert.equal(runtime?.modelId, 'minimax-m3');
+    assert.equal(runtime?.provider, 'anthropic');
+    assert.equal(runtime?.apiBase, 'https://relay.catsco.cc/anthropic');
+    assert.equal(runtime?.model, 'MiniMax-M3');
+    assert.equal(runtime?.apiKey, 'sk-bf-existing-bot-secret');
+    assert.equal(runtime?.reasoningEffort, 'high');
     assert.equal(env.CATSCO_BOT_UID, '188');
     assert.equal(env.CATSCO_API_KEY, 'cats-agent-key');
     assert.equal(startCalled, 1);
