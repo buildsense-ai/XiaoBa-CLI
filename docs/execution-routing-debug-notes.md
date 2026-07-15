@@ -122,7 +122,7 @@ Implemented in this branch:
 - Remote returned `[tool_target]...[/tool_target]` blocks are stripped before the caller adds its authoritative marker.
 - `ToolManager` uses `output.targetContext` before falling back to context-based target inference.
 - `execute_shell` resolves and forwards remote routes before running local shell safety checks.
-- `send_file` resolves remote targets before local path checks. The target runtime uploads the original file and returns attachment metadata; the caller sends the attachment to the conversation.
+- `send_file` resolves remote targets before local path checks. The target runtime uploads the original file and returns attachment metadata; the caller materializes the upload in its managed workspace and returns the new path.
 
 Verified:
 

@@ -775,8 +775,8 @@ export class CatsCompanyBot {
     const uploadContext: ToolExecutionContext = {
       ...context,
       // The remote transport already selected this runtime. Use the ordinary
-      // local send_file checks, but upload only; the requesting runtime sends
-      // the returned attachment into its trusted conversation.
+      // local send_file checks, but upload only; the requesting runtime
+      // materializes the returned upload in its own managed workspace.
       surface: 'agent',
       channel: {
         chatId: context.executionScope?.topicId || 'remote_send_file_upload',
@@ -1031,6 +1031,18 @@ export class CatsCompanyBot {
           Logger.warning(`远程文件发送失败 (sendUploadedFile): ${err.message}`);
           throw err;
         }
+      },
+      receiveUploadedFile: async (file) => {
+        if (!file.url.startsWith('/uploads/')) {
+          throw new Error(`远程文件上传结果不是受信任的 CatsCo 上传地址: ${file.name}`);
+        }
+        const targetPath = buildCatsCoAttachmentCachePath(opts?.sessionKey, file.name);
+        const localPath = await this.sender.downloadFile(file.url, file.name, { targetPath });
+        if (!localPath) {
+          throw new Error(`无法把上传文件保存到当前运行体: ${file.name}`);
+        }
+        scheduleCatsCoAttachmentCacheCleanup();
+        return localPath;
       },
       sendRuntimePlan: async (_targetTopic, snapshot) => {
         if (suppressStructuredProgress) {

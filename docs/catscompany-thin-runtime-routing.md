@@ -9,7 +9,7 @@ This document records the lightweight remote execution design for CatsCompany-ba
 - Tool calls without `target` execute on `agent_self`, the host computer running the current agent process.
 - Tool calls with `target` use a chat participant's displayed name, label, or user id. XiaoBa runtime maps that string to a ready user device.
 - Only tools whose schema includes `target` can execute on user computers.
-- Remote `send_file` runs on the selected computer, uploads the original bytes there, returns only attachment metadata through `thin_tool_rpc`, and lets the requesting runtime send that uploaded attachment to the current chat.
+- Remote `send_file` runs on the selected computer, uploads the original bytes there, returns only attachment metadata through `thin_tool_rpc`, and lets the requesting runtime materialize that upload in its managed workspace.
 - The agent does not need to see `ownerUserId` or `deviceId`; those are runtime routing facts.
 - Normal local CLI sessions do not inject remote device rules.
 - History/replay messages do not carry executable `xiaoba_runtime` facts.
@@ -47,9 +47,9 @@ Optional. Omit target to run on the host computer running this agent. Set target
 
 The transient runtime context remains short Chinese text and does not expose internal owner/device ids.
 
-## Remote File Send
+## Remote File Transfer
 
-`send_file` accepts the same optional `target` parameter as the other target-aware file tools. The RPC payload carries `file_path` and `file_name`, never the file body. The target runtime validates and opens the local path, streams it through the existing CatsCompany upload endpoint, and returns `{ url, name, size, type }`. The requesting runtime then publishes that attachment in its trusted conversation. File content does not pass through the model transcript or the RPC JSON payload.
+`send_file` accepts the same optional `target` parameter as the other target-aware file tools. The RPC payload carries `file_path` and `file_name`, never the file body. The target runtime validates and opens the local path, streams it through the existing CatsCompany upload endpoint, and returns `{ url, name, size, type }`. The requesting runtime downloads that trusted upload into its managed workspace, verifies the stored size, and returns the new local path to the model. It does not publish an attachment to the chat. File content does not pass through the model transcript or the RPC JSON payload.
 
 ## Observed Issues To Track
 

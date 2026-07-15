@@ -1,5 +1,8 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { SendFileTool } from '../src/tools/send-file-tool';
 import type { TargetRoute, ToolExecutionContext, UploadedFileResult } from '../src/types/tool';
 
@@ -14,7 +17,7 @@ describe('send_file remote routing', () => {
     assert.match(String(target?.description), /省略时只会在当前 agent 主机上查找文件/);
   });
 
-  test('uploads on the selected computer and sends the returned attachment metadata', async () => {
+  test('uploads on the selected computer and saves the original file in the agent workspace', async (t) => {
     const route: TargetRoute = {
       userId: 'usr7',
       userName: 'Lin',
@@ -25,7 +28,11 @@ describe('send_file remote routing', () => {
       status: 'ready',
     };
     let rpcRequest: any;
-    let sent: UploadedFileResult | undefined;
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'send-file-remote-'));
+    t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+    const cloudPath = path.join(workspace, '报价单.xlsx');
+    fs.writeFileSync(cloudPath, Buffer.alloc(456, 7));
+    let received: UploadedFileResult | undefined;
     const context: ToolExecutionContext = {
       workingDirectory: process.cwd(),
       conversationHistory: [],
@@ -64,7 +71,11 @@ describe('send_file remote routing', () => {
         chatId: 'p2p_7_43',
         reply: async () => {},
         sendFile: async () => { throw new Error('local sendFile should not be used'); },
-        sendUploadedFile: async (_chatId, file) => { sent = file; },
+        sendUploadedFile: async () => { throw new Error('remote transfer must not send a chat attachment'); },
+        receiveUploadedFile: async (file) => {
+          received = file;
+          return cloudPath;
+        },
       },
     };
 
@@ -83,13 +94,19 @@ describe('send_file remote routing', () => {
       file_path: 'C:\\Users\\Lin\\Desktop\\报价单.xlsx',
       file_name: '报价单.xlsx',
     });
-    assert.deepEqual(sent, {
+    assert.deepEqual(received, {
       url: '/uploads/original.xlsx',
       name: '报价单.xlsx',
       size: 456,
       type: 'file',
     });
-    assert.match(result.ok ? String(result.content) : '', /File sent to current chat from remote computer/);
-    assert.match(String(result.targetContext), /target: Lin/);
+    assert.match(result.ok ? String(result.content) : '', /File transferred from remote computer to this agent workspace/);
+    assert.match(result.ok ? String(result.content) : '', new RegExp(escapeRegExp(cloudPath)));
+    assert.match(String(result.targetContext), /target: agent_self/);
+    assert.match(String(result.targetContext), new RegExp(`cwd: ${escapeRegExp(workspace)}`));
   });
 });
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
