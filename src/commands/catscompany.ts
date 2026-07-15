@@ -6,6 +6,7 @@ import { startRuntimeCommandSupport, stopRuntimeCommandSupport } from '../utils/
 import { ChatConfig } from '../types';
 import { resolveCatsCoRuntimeConfig } from '../catscompany/runtime-config';
 import { CatsCoConnectorLock, acquireCatsCoConnectorLock } from '../catscompany/connector-lock';
+import { isRuntimeShutdownMessage } from '../utils/runtime-shutdown-message';
 
 export interface CatsCoCommandConfigResolution {
   config?: CatsCompanyConfig;
@@ -59,9 +60,12 @@ export async function catscompanyCommand(): Promise<void> {
 
   const bot = new CatsCompanyBot(connectorConfig);
   let lock: CatsCoConnectorLock | null = connectorLock;
+  let shuttingDown = false;
 
   // 优雅退出
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     await stopRuntimeCommandSupport();
     await bot.destroy();
     lock?.release();
@@ -70,6 +74,10 @@ export async function catscompanyCommand(): Promise<void> {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+  process.on('message', message => {
+    if (isRuntimeShutdownMessage(message)) void shutdown();
+  });
+  process.on('disconnect', () => { void shutdown(); });
   process.on('exit', () => {
     lock?.release();
     lock = null;

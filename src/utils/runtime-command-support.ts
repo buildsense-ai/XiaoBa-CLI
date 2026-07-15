@@ -8,6 +8,10 @@
  */
 
 import { CatscoLogUploadScheduler } from './catsco-log-upload-scheduler';
+import {
+  acquireHeartbeatSchedulerOwnerLock,
+  HeartbeatSchedulerOwnerLock,
+} from './heartbeat-scheduler-owner-lock';
 import { DistillationHeartbeatScheduler } from './distillation-heartbeat-scheduler';
 import { DistillationPipeline, defaultDistilledOutputDir } from './distillation-pipeline';
 import { bootstrapLegacyDistilledSkillsOnce, bootstrapSemanticReassessmentOnce } from './distilled-skill-bootstrap';
@@ -67,6 +71,13 @@ export async function startRuntimeCommandSupport(
       let distillationHeartbeatScheduler: DistillationHeartbeatScheduler | null = null;
       let runtimeLearning: RuntimeLearning | null = null;
       let distillationPipeline: DistillationPipeline | null = null;
+      let heartbeatOwnerLock: HeartbeatSchedulerOwnerLock | null = null;
+      let heartbeatOwnerElectionTimer: NodeJS.Timeout | null = null;
+      let heartbeatOwnerElectionInFlight: Promise<boolean> | null = null;
+      let stopping = false;
+      let attemptHeartbeatOwnership: ((startImmediately: boolean) => Promise<boolean>) | null = null;
+      const currentHeartbeatOwnerLock = (): HeartbeatSchedulerOwnerLock | null => heartbeatOwnerLock;
+      const currentHeartbeatScheduler = (): DistillationHeartbeatScheduler | null => distillationHeartbeatScheduler;
 
       const config = getDistillationHeartbeatConfig(workingDirectory);
       const skillsRoot = PathResolver.getSkillsPath();
@@ -157,7 +168,26 @@ export async function startRuntimeCommandSupport(
           semanticReassessmentManifestPath: config.skillEvolutionReassessmentManifestPath,
         });
 
-        // Construct the single RuntimeLearning module.
+        // Construct the legacy pipeline before acquiring the runtime-wide
+        // scheduler lock. If this constructor fails, no owner has been
+        // published and another connector can start cleanly.
+        distillationPipeline = new DistillationPipeline({
+          outputDir,
+          reviewOutcomesPath: config.reviewOutcomesPath,
+          needsReviewQueuePath: config.needsReviewQueuePath,
+          capabilityRegistryPath: config.capabilityRegistryPath,
+          workLogRoot: config.workLogRoot,
+          skillEvolution,
+          learningEpisodeStorePath: config.learningEpisodeStorePath,
+          learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
+          skillUsageCurator: curator ?? undefined,
+        });
+
+        // Construct the single RuntimeLearning module. RuntimeLearning is
+        // always constructed when V3 is enabled so API-based compatibility
+        // paths have access to it; only the scheduler requires runtime-wide
+        // ownership so one Runtime has exactly one heartbeat driver across
+        // all connector processes (catscompany/feishu/weixin/chat).
         runtimeLearning = new RuntimeLearning({
           workingDirectory,
           evidenceIngestor,
@@ -165,50 +195,157 @@ export async function startRuntimeCommandSupport(
           skillEvolution,
           curator,
           planner,
-          legacyPipeline: distillationPipeline ?? undefined,
+          legacyPipeline: distillationPipeline,
           clock: options.clock,
         });
 
-        // Thin heartbeat scheduler that delegates to RuntimeLearning
-        distillationHeartbeatScheduler = new DistillationHeartbeatScheduler(
-          workingDirectory,
-          runtimeLearning,
-        );
+        attemptHeartbeatOwnership = async (startImmediately: boolean): Promise<boolean> => {
+          if (stopping || distillationHeartbeatScheduler || !runtimeLearning) return false;
+          const ownerLock = acquireHeartbeatSchedulerOwnerLock({
+            runtimeRoot: workingDirectory,
+            command: process.argv.join(' '),
+            env: process.env,
+          });
+          if (ownerLock.acquired) {
+            if (stopping) {
+              ownerLock.release();
+              return false;
+            }
+            heartbeatOwnerLock = ownerLock;
+            distillationHeartbeatScheduler = new DistillationHeartbeatScheduler(
+              workingDirectory,
+              runtimeLearning,
+              heartbeatOwnerLock,
+            );
+            if (startImmediately) {
+              try {
+                await distillationHeartbeatScheduler.start();
+              } catch (error) {
+                distillationHeartbeatScheduler = null;
+                heartbeatOwnerLock.release();
+                heartbeatOwnerLock = null;
+                throw error;
+              }
+            }
+            return true;
+          } else {
+            Logger.info(
+              `[RuntimeCommandSupport] heartbeat scheduler already owned by pid=${ownerLock.existing.pid}; waiting for safe owner failover`,
+            );
+            return false;
+          }
+        };
+
+        // Acquire runtime-wide ownership before creating the scheduler. A
+        // follower keeps a low-frequency election poll so the Runtime cannot
+        // remain ownerless after the prior owner process exits.
+        try {
+          await attemptHeartbeatOwnership(false);
+        } catch (error) {
+          // Scheduler construction or lock acquisition failed after a lock
+          // was published. Release it before surfacing the startup failure.
+          const publishedOwnerLock = currentHeartbeatOwnerLock();
+          if (publishedOwnerLock) {
+            publishedOwnerLock.release();
+            heartbeatOwnerLock = null;
+          }
+          throw error;
+        }
       }
 
       // Legacy DistillationPipeline (always constructed for API-based
-      // compatibility, even when V3 is disabled).
-      distillationPipeline = new DistillationPipeline({
-        outputDir,
-        reviewOutcomesPath: config.reviewOutcomesPath,
-        needsReviewQueuePath: config.needsReviewQueuePath,
-        capabilityRegistryPath: config.capabilityRegistryPath,
-        workLogRoot: config.workLogRoot,
-        skillEvolution: skillEvolution ?? undefined,
-        learningEpisodeStorePath: config.learningEpisodeStorePath,
-        learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
-        skillUsageCurator: curator ?? undefined,
-      });
-
-      if (catscoLogUploadScheduler) {
-        await catscoLogUploadScheduler.start();
+      // compatibility, even when V3 is disabled). The V3 branch constructs
+      // it above so it can be passed into RuntimeLearning before ownership is
+      // acquired; when V3 is disabled, construct it here as before.
+      if (!distillationPipeline) {
+        distillationPipeline = new DistillationPipeline({
+          outputDir,
+          reviewOutcomesPath: config.reviewOutcomesPath,
+          needsReviewQueuePath: config.needsReviewQueuePath,
+          capabilityRegistryPath: config.capabilityRegistryPath,
+          workLogRoot: config.workLogRoot,
+          skillEvolution: skillEvolution ?? undefined,
+          learningEpisodeStorePath: config.learningEpisodeStorePath,
+          learningEpisodeSettlementWindowMs: config.skillEvolutionSettlementWindowHours * 60 * 60 * 1000,
+          skillUsageCurator: curator ?? undefined,
+        });
       }
 
-      if (distillationHeartbeatScheduler) {
-        await distillationHeartbeatScheduler.start();
+      try {
+        if (catscoLogUploadScheduler) {
+          await catscoLogUploadScheduler.start();
+        }
+
+        const initialHeartbeatScheduler = currentHeartbeatScheduler();
+        if (initialHeartbeatScheduler) {
+          await initialHeartbeatScheduler.start();
+        }
+      } catch (error) {
+        // Startup failed after acquiring ownership — release the lock so a
+        // retry or another connector can acquire it. The scheduler, if
+        // partially started, is best-effort stopped before releasing.
+        const partiallyStartedScheduler = currentHeartbeatScheduler();
+        if (partiallyStartedScheduler) {
+          try {
+            const drained = await partiallyStartedScheduler.stop();
+            if (!drained) heartbeatOwnerLock = null;
+          } catch {
+            // Best-effort; the startup error is the primary concern.
+          }
+        }
+        const publishedOwnerLock = currentHeartbeatOwnerLock();
+        if (publishedOwnerLock) {
+          publishedOwnerLock.release();
+          heartbeatOwnerLock = null;
+        }
+        throw error;
+      }
+
+      if (!distillationHeartbeatScheduler && attemptHeartbeatOwnership) {
+        heartbeatOwnerElectionTimer = setInterval(() => {
+          if (stopping || heartbeatOwnerElectionInFlight || !attemptHeartbeatOwnership) return;
+          heartbeatOwnerElectionInFlight = attemptHeartbeatOwnership(true)
+            .then(acquired => {
+              if (acquired && heartbeatOwnerElectionTimer) {
+                clearInterval(heartbeatOwnerElectionTimer);
+                heartbeatOwnerElectionTimer = null;
+              }
+              return acquired;
+            })
+            .catch(error => {
+              Logger.warning(`[RuntimeCommandSupport] owner election retry failed: ${error instanceof Error ? error.message : String(error)}`);
+              return false;
+            })
+            .finally(() => {
+              heartbeatOwnerElectionInFlight = null;
+            });
+        }, 5_000);
+        heartbeatOwnerElectionTimer.unref?.();
       }
 
       const support: ActiveRuntimeSupport = {
         catscoLogUploadScheduler,
-        distillationHeartbeatScheduler,
+        get distillationHeartbeatScheduler() { return distillationHeartbeatScheduler; },
         runtimeLearning,
         distillationPipeline,
         async stop() {
+          stopping = true;
+          if (heartbeatOwnerElectionTimer) {
+            clearInterval(heartbeatOwnerElectionTimer);
+            heartbeatOwnerElectionTimer = null;
+          }
+          await heartbeatOwnerElectionInFlight;
           if (catscoLogUploadScheduler) {
             await catscoLogUploadScheduler.stop();
           }
-          if (distillationHeartbeatScheduler) {
-            await distillationHeartbeatScheduler.stop();
+          const heartbeatDrained = distillationHeartbeatScheduler
+            ? await distillationHeartbeatScheduler.stop()
+            : true;
+          // Release runtime-wide scheduler ownership only after the
+          // scheduler has drained, so stop cannot race with in-flight writes.
+          if (heartbeatOwnerLock && heartbeatDrained) {
+            heartbeatOwnerLock.release();
+            heartbeatOwnerLock = null;
           }
         },
       };

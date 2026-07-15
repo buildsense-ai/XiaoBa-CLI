@@ -1,4 +1,5 @@
 import * as assert from 'node:assert/strict';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -8,6 +9,7 @@ import { getDistillationHeartbeatConfig } from '../src/utils/distillation-heartb
 import { cleanupBranchTranscripts } from '../src/utils/branch-transcript-retention';
 import {
   EvidenceBundle,
+  applyCapabilityTransition,
   SkillEvolutionOptions,
   SkillEvolutionRuntime,
   loadCurrentSkillRegistry,
@@ -159,6 +161,7 @@ describe('runtime-owned branch transcripts', () => {
       auditEntries: [{
         involvedCapabilityHandles: ['cap-active'],
         branchTranscriptPaths: [activePath],
+        branchTranscriptHashes: [crypto.createHash('sha256').update('{}\n').digest('hex')],
       }],
       activeCapabilityHandles: new Set(['cap-active']),
       now: new Date('2026-07-13T00:00:00.000Z'),
@@ -179,9 +182,55 @@ describe('runtime-owned branch transcripts', () => {
     assert.equal(result.verified, true);
     const audit = loadTransitionAudit(path.join(root, 'data', 'transition-audit.jsonl'))[0]!;
     assert.equal(audit.branchTranscriptPaths.length, 2);
-    for (const transcriptPath of audit.branchTranscriptPaths) {
+    assert.equal(audit.branchTranscriptHashes?.length, 2);
+    const deadlineAt = new Set<string>();
+    audit.branchTranscriptPaths.forEach((transcriptPath, index) => {
       assert.equal(path.resolve(transcriptPath).startsWith(path.resolve(branchRoot)), true);
-      assert.match(fs.readFileSync(transcriptPath, 'utf8'), /"event_type":"transcript"/);
-    }
+      const content = fs.readFileSync(transcriptPath, 'utf8');
+      assert.match(content, /"event_type":"transcript"/);
+      const entries = content.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
+      const start = entries.find(entry => entry.event_type === 'start');
+      const completed = entries.find(entry => entry.event_type === 'completed');
+      assert.equal(start?.review_deadline_ms, 10 * 60 * 1000);
+      assert.equal(typeof start?.review_deadline_at, 'string');
+      deadlineAt.add(String(start?.review_deadline_at));
+      assert.equal(completed?.outcome, 'succeeded');
+      assert.equal(completed?.terminal_abort_reason, null);
+      assert.equal(completed?.failure_outcome, null);
+      assert.equal(
+        audit.branchTranscriptHashes?.[index],
+        crypto.createHash('sha256').update(content).digest('hex'),
+      );
+    });
+    assert.equal(deadlineAt.size, 1, 'Author and Verifier must expose one shared attempt deadline');
+
+    fs.appendFileSync(
+      audit.branchTranscriptPaths[0]!,
+      '{"entry_type":"branch","branch_type":"skill-author","event_type":"drift"}\n',
+      'utf8',
+    );
+    assert.throws(() => applyCapabilityTransition({
+      ...makeEvolutionOptions(root, branchRoot),
+      bundle: makeBundle(),
+      draft: {
+        body: 'Use the bounded workflow and verify the delivered artifact.',
+        envelope: {
+          decision: 'create_current_skill',
+          routingName: 'flashcard-image-delivery',
+          description: 'Deliver and verify a bounded artifact workflow.',
+          evidenceRefs: ['session.jsonl#1', 'session.jsonl#2'],
+        },
+      },
+      transition: 'create_current_skill',
+      verifier: {
+        decision: 'accept',
+        transition: 'create_current_skill',
+        issues: [],
+        rationale: 'The bounded workflow is supported by the fixed evidence.',
+      },
+      branchTranscriptPaths: audit.branchTranscriptPaths,
+      reviewerVersion: 'test-reviewer',
+      promptVersion: 'test-prompt',
+    }), /transcript hash mismatch/);
   });
 });

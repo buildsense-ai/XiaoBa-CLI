@@ -46,6 +46,10 @@ class AbortAwareReviewAttemptAIService {
 
   constructor(private readonly plan: Record<string, ReviewAttemptStep[]>) {}
 
+  getCallCount(toolName: string): number {
+    return this.callCountByTool.get(toolName) ?? 0;
+  }
+
   async chatStream(
     _messages: Message[] | undefined,
     tools: ToolDefinition[] | undefined,
@@ -834,7 +838,7 @@ describe('V3 verified semantic Current Skills', () => {
     }
   });
 
-  test('shares a four-turn budget across Author and Verifier including finish reminders', async () => {
+  test('gives each concrete Author and Verifier branch its own four-turn budget including finish reminders', async () => {
     const env = setup();
     try {
       const service = new AbortAwareReviewAttemptAIService({
@@ -864,7 +868,7 @@ describe('V3 verified semantic Current Skills', () => {
                 decision: 'accept',
                 transition: 'create_current_skill',
                 issues: [],
-                rationale: 'Verified within the shared turn budget.',
+                rationale: 'Verified within the verifier branch turn budget.',
                 registryReadSet: [],
               },
             },
@@ -885,12 +889,14 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(result.queued, undefined);
       const registry = loadCurrentSkillRegistry(env.options.registryPath);
       assert.equal(Object.keys(registry.capabilities).length, 1);
+      assert.equal(service.getCallCount('finish_skill_authoring'), 2);
+      assert.equal(service.getCallCount('finish_skill_verification'), 2);
     } finally {
       env.cleanup();
     }
   });
 
-  test('queues an operational timeout when the shared turn budget is exhausted', async () => {
+  test('queues an operational timeout when one branch exhausts its own turn budget', async () => {
     const env = setup();
     try {
       const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
@@ -936,6 +942,80 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(entry.failureTranscripts.length > 0, true);
       assert.ok(entry.failureTranscripts.every(transcript => fs.existsSync(transcript)));
       assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('does not make a fifth provider call when one ConversationRunner run loops without a valid finish', async () => {
+    const env = setup();
+    try {
+      const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      env.options.reviewQueuePath = reviewQueuePath;
+      const service = new AbortAwareReviewAttemptAIService({
+        finish_skill_authoring: [
+          { content: 'Still thinking.' },
+          { content: 'Still thinking.' },
+          { content: 'Still thinking.' },
+          { content: 'Still thinking.' },
+          { content: 'A fifth provider call must never happen.' },
+        ],
+      });
+
+      const runtime = new SkillEvolutionRuntime({
+        ...env.options,
+        authorFixture: undefined,
+        verifierFixture: undefined,
+        aiService: service,
+      });
+
+      const result = await runtime.reviewAndApply(fixtureBundle());
+      assert.equal(result.queued, 'operational');
+      assert.equal(result.transition, 'reject_candidate');
+      assert.equal(service.getCallCount('finish_skill_authoring'), 4);
+      assert.equal(service.getCallCount('finish_skill_verification'), 0);
+      const entry = findOperationalByBundleId(loadReviewQueueState(reviewQueuePath), 'episode-flashcard-1');
+      assert.ok(entry);
+      assert.equal(entry.failureKind, 'branch_timeout');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('preserves both Author and Verifier transcript references on verifier operational failure', async () => {
+    const env = setup();
+    try {
+      const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      env.options.reviewQueuePath = reviewQueuePath;
+      const runtime = new SkillEvolutionRuntime({
+        ...env.options,
+        authorFixture: undefined,
+        verifierFixture: undefined,
+        aiService: new AbortAwareReviewAttemptAIService({
+          finish_skill_authoring: [{
+            finish: {
+              tool: 'finish_skill_authoring',
+              args: {
+                body: 'Use the transcript-preserving workflow.',
+                envelope: {
+                  decision: 'create_current_skill',
+                  routingName: 'transcript-preserving-workflow',
+                  description: 'Preserve every available branch transcript on retry.',
+                  evidenceRefs: ['session.jsonl#12', 'session.jsonl#13'],
+                },
+              },
+            },
+          }],
+          finish_skill_verification: [{ error: 'simulated verifier provider failure' }],
+        }),
+      });
+
+      const result = await runtime.reviewAndApply(fixtureBundle());
+      assert.equal(result.queued, 'operational');
+      const entry = findOperationalByBundleId(loadReviewQueueState(reviewQueuePath), 'episode-flashcard-1');
+      assert.ok(entry);
+      assert.equal(entry.failureTranscripts.length, 2);
+      assert.ok(entry.failureTranscripts.every(transcript => fs.existsSync(transcript)));
     } finally {
       env.cleanup();
     }
@@ -1001,13 +1081,36 @@ describe('V3 verified semantic Current Skills', () => {
       // so revalidation keeps completion/settlement consistent with sourceEvidence roles.
       assert.equal(entry.bundle.completionEvidence.length, 1);
       assert.equal(entry.bundle.settlementEvidence.length, 1);
+      const transcriptEntries = entry.failureTranscripts.flatMap(transcriptPath => (
+        fs.readFileSync(transcriptPath, 'utf8')
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map(line => JSON.parse(line) as Record<string, unknown>)
+      ));
+      assert.ok(transcriptEntries.some(event => (
+        event.event_type === 'start'
+        && event.review_deadline_ms === 5
+        && typeof event.review_deadline_at === 'string'
+      )));
+      assert.ok(transcriptEntries.some(event => (
+        event.event_type === 'run_result'
+        && event.outcome === 'failed'
+        && event.terminal_abort_reason === 'review-timeout'
+        && event.failure_outcome === 'branch_timeout'
+      )));
+      assert.ok(transcriptEntries.some(event => (
+        event.event_type === 'failed'
+        && event.terminal_abort_reason === 'review-timeout'
+        && event.failure_outcome === 'branch_timeout'
+      )));
       assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
     } finally {
       env.cleanup();
     }
   });
 
-  test('classifies runtime-shutdown cancellation as non-retryable branch_failure', async () => {
+  test('runtime-shutdown cancellation leaves the durable source untouched', async () => {
     const env = setup();
     try {
       const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
@@ -1019,13 +1122,37 @@ describe('V3 verified semantic Current Skills', () => {
         reviewAttemptSignal: controller.signal,
       });
 
+      await assert.rejects(
+        runtime.reviewAndApply(fixtureBundle()),
+        /abort|shutdown/i,
+      );
+      const queue = loadReviewQueueState(reviewQueuePath);
+      const entry = findOperationalByBundleId(queue, 'episode-flashcard-1');
+      assert.equal(entry, undefined);
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('an externally supplied review deadline is persisted as operational retry', async () => {
+    const env = setup();
+    try {
+      const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      env.options.reviewQueuePath = reviewQueuePath;
+      const controller = new AbortController();
+      controller.abort('review-timeout');
+      const runtime = new SkillEvolutionRuntime({
+        ...env.options,
+        reviewAttemptSignal: controller.signal,
+      });
+
       const result = await runtime.reviewAndApply(fixtureBundle());
       assert.equal(result.queued, 'operational');
       assert.equal(result.transition, 'reject_candidate');
-      const queue = loadReviewQueueState(reviewQueuePath);
-      const entry = findOperationalByBundleId(queue, 'episode-flashcard-1');
+      const entry = findOperationalByBundleId(loadReviewQueueState(reviewQueuePath), 'episode-flashcard-1');
       assert.ok(entry);
-      assert.equal(entry.failureKind, 'branch_failure');
+      assert.equal(entry.failureKind, 'branch_timeout');
+      assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
     } finally {
       env.cleanup();
     }
@@ -1101,6 +1228,42 @@ describe('V3 verified semantic Current Skills', () => {
       const remaining = loadReviewQueueState(reviewQueuePath);
       assert.equal(remaining.operational.length, 1);
       assert.equal(remaining.operational[0]!.bundleId, 'op-failure-isolated');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  test('queue replay leaves due entries durable when the shared wake budget rejects dispatch', async () => {
+    const env = setup();
+    try {
+      const reviewQueuePath = path.join(env.root, 'data', 'review-queue.json');
+      env.options.reviewQueuePath = reviewQueuePath;
+      const bundle = fixtureCandidateBundle({
+        ...fixtureCandidate(),
+        capabilityId: 'queue-budget-remainder',
+      }, 'queue-budget-remainder');
+      const queue = loadReviewQueueState(reviewQueuePath);
+      addOrUpdateOperationalFailure(
+        queue,
+        bundle.episode,
+        bundle,
+        'branch_timeout',
+        'seeded due retry',
+        undefined,
+        1,
+        1,
+        new Date(0),
+      );
+      queue.operational[0]!.nextRetryAt = new Date(0).toISOString();
+      saveReviewQueueState(reviewQueuePath, queue);
+
+      const runtime = new SkillEvolutionRuntime(env.options);
+      const result = await runtime.reviewDueQueueEntries({ admit: () => false });
+      assert.equal(result.reviewed, 0);
+      const remaining = loadReviewQueueState(reviewQueuePath);
+      assert.equal(remaining.operational.length, 1);
+      assert.equal(remaining.operational[0]!.bundleId, bundle.bundleId);
+      assert.deepEqual(loadCurrentSkillRegistry(env.options.registryPath).capabilities, {});
     } finally {
       env.cleanup();
     }
@@ -1191,6 +1354,9 @@ describe('V3 verified semantic Current Skills', () => {
       assert.equal(retried!.attempts, 2);
       assert.equal(retried!.failureKind, 'branch_timeout');
       assert.match(retried!.failureMessage, /retry attempt/);
+      assert.equal(retried!.failureTranscripts.length, 4);
+      assert.equal(new Set(retried!.failureTranscripts).size, 4);
+      assert.ok(retried!.failureTranscripts.every(transcript => fs.existsSync(transcript)));
     } finally {
       env.cleanup();
     }

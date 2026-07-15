@@ -102,6 +102,7 @@ describe('Logger', () => {
     assert.equal(entry.episode_id, 'episode:1:canonical');
     assert.equal('episode_id' in entry, true);
   });
+
 });
 
 function waitForFlush(): Promise<void> {

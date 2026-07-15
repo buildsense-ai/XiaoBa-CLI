@@ -1048,29 +1048,141 @@ describe('V3 flashcard Composition Capability regression', () => {
       }
     });
 
-    test('malformed and unknown-schema stores remain safely separated from migration failures', () => {
+    test('malformed and unknown-schema stores are quarantined, not silently emptied', () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-malformed-store-'));
       try {
-        // Malformed JSON returns an empty state without throwing and
-        // crucially never engages the migration writer.
+        // Malformed JSON is quarantined (moved aside) and returns an empty
+        // state. Crucially, the migration writer is never engaged and the
+        // original corrupted content is preserved for recovery.
         const malformedPath = path.join(root, 'malformed.json');
-        fs.writeFileSync(malformedPath, '{ not valid json', 'utf8');
+        const malformedContent = '{ not valid json';
+        fs.writeFileSync(malformedPath, malformedContent, 'utf8');
         let writerCalled = false;
         const malformedStore = new LearningEpisodeStore(malformedPath, {
           atomicWrite: () => { writerCalled = true; },
         });
-        assert.deepEqual(malformedStore.load(), { schemaVersion: 3, episodes: {} });
+        assert.deepEqual(malformedStore.load(), { schemaVersion: 3, episodes: {}, stateCorrupt: true });
         assert.equal(writerCalled, false, 'malformed store must not engage the migration writer');
+        // The original file was quarantined, not deleted or overwritten.
+        assert.equal(fs.existsSync(malformedPath), false, 'malformed file must be moved aside');
+        const quarantined = fs.readdirSync(root).find(f => f.startsWith('malformed.json.quarantine.'));
+        assert.ok(quarantined, 'malformed file must be quarantined to a sidecar path');
+        assert.equal(fs.readFileSync(path.join(root, quarantined!), 'utf8'), malformedContent);
 
-        // Unknown schema version also returns an empty state without writing.
+        // Unknown schema version is also quarantined and returns an empty
+        // state without engaging the migration writer.
         const unknownPath = path.join(root, 'unknown.json');
-        fs.writeFileSync(unknownPath, JSON.stringify({ schemaVersion: 99, episodes: {} }), 'utf8');
+        const unknownContent = JSON.stringify({ schemaVersion: 99, episodes: {} });
+        fs.writeFileSync(unknownPath, unknownContent, 'utf8');
         let unknownWriterCalled = false;
         const unknownStore = new LearningEpisodeStore(unknownPath, {
           atomicWrite: () => { unknownWriterCalled = true; },
         });
-        assert.deepEqual(unknownStore.load(), { schemaVersion: 3, episodes: {} });
+        assert.deepEqual(unknownStore.load(), { schemaVersion: 3, episodes: {}, stateCorrupt: true });
         assert.equal(unknownWriterCalled, false, 'unknown-schema store must not engage the migration writer');
+        assert.equal(fs.existsSync(unknownPath), false, 'unknown-schema file must be moved aside');
+        const unknownQuarantined = fs.readdirSync(root).find(f => f.startsWith('unknown.json.quarantine.'));
+        assert.ok(unknownQuarantined, 'unknown-schema file must be quarantined to a sidecar path');
+        assert.equal(fs.readFileSync(path.join(root, unknownQuarantined!), 'utf8'), unknownContent);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    test('quarantined corrupted store is not overwritten by a subsequent upsert', () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-quarantine-overwrite-'));
+      try {
+        const storePath = path.join(root, 'episodes.json');
+        const corruptedContent = '{"schemaVersion":3,"episodes":{'; // truncated JSON
+        fs.writeFileSync(storePath, corruptedContent, 'utf8');
+
+        // load() quarantines the corrupted file and returns a fail-closed state.
+        const store = new LearningEpisodeStore(storePath);
+        assert.deepEqual(store.load(), { schemaVersion: 3, episodes: {}, stateCorrupt: true });
+
+        // The corrupted content was preserved in a quarantine sidecar.
+        const quarantined = fs.readdirSync(root).find(f => f.startsWith('episodes.json.quarantine.'));
+        assert.ok(quarantined, 'corrupted file must be quarantined');
+        assert.equal(fs.readFileSync(path.join(root, quarantined!), 'utf8'), corruptedContent);
+
+        // Every write is blocked until an operator explicitly recovers the
+        // quarantined state; no fresh evidence may overwrite the latch.
+        const observed = extractLearningEpisodes(unit([
+          turn(1, 'Make a card.', [{ id: 'send', name: 'send_file', result: 'sent' }]),
+        ], path.join(root, 'new.jsonl'))).episodes[0]!;
+        assert.throws(() => store.upsert([observed]), /state-corrupt/);
+        assert.equal(fs.readFileSync(path.join(root, quarantined!), 'utf8'), corruptedContent);
+
+        store.recover({ schemaVersion: 3, episodes: {} });
+        store.upsert([observed]);
+        const reloaded = new LearningEpisodeStore(storePath).load();
+        assert.ok(reloaded.episodes[observed.episodeId], 'fresh episode must be persisted after explicit recovery');
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    test('quarantines an interrupted-write (truncated JSON) store and preserves it', () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-interrupted-write-'));
+      try {
+        const storePath = path.join(root, 'episodes.json');
+        // Simulate a write interrupted mid-flush: the file is truncated JSON.
+        const validJson = JSON.stringify({
+          schemaVersion: 3,
+          episodes: {
+            'episode-1': {
+              schemaVersion: 3,
+              episodeId: 'episode-1',
+              runtimeSessionId: 'rt-1',
+              sourceFilePath: '/logs/s.jsonl',
+              deliveryTurn: 1,
+              completionEvidence: [],
+              contradictionSignals: [],
+              semanticObservations: [],
+              settlementDeadline: '2026-01-01T04:00:00.000Z',
+              status: 'settling',
+            },
+          },
+        }, null, 2);
+        const truncated = validJson.slice(0, Math.floor(validJson.length / 2));
+        fs.writeFileSync(storePath, truncated, 'utf8');
+
+        const store = new LearningEpisodeStore(storePath);
+        assert.deepEqual(store.load(), { schemaVersion: 3, episodes: {}, stateCorrupt: true });
+
+        // The truncated content was preserved in quarantine.
+        const quarantined = fs.readdirSync(root).find(f => f.startsWith('episodes.json.quarantine.'));
+        assert.ok(quarantined, 'interrupted-write file must be quarantined');
+        assert.equal(fs.readFileSync(path.join(root, quarantined!), 'utf8'), truncated);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    test('fails closed when quarantine itself fails, preventing overwrite', () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-quarantine-fail-'));
+      try {
+        const storePath = path.join(root, 'episodes.json');
+        // Valid JSON with an unknown schema version triggers our custom
+        // 'invalid episode store' error, not a SyntaxError.
+        const corruptedContent = JSON.stringify({ schemaVersion: 99, episodes: {} });
+        fs.writeFileSync(storePath, corruptedContent, 'utf8');
+
+        // Inject a quarantine that always fails, simulating a read-only or
+        // cross-device filesystem where the rename cannot succeed.
+        const store = new LearningEpisodeStore(storePath, {
+          quarantine: () => { throw new Error('quarantine rename failed'); },
+        });
+
+        // load() must throw the original parse error rather than return an
+        // empty state — the caller cannot save over the un-quarantined file.
+        assert.throws(
+          () => store.load(),
+          /invalid episode store/,
+        );
+
+        // The corrupted file is still at the original path, not overwritten.
+        assert.equal(fs.readFileSync(storePath, 'utf8'), corruptedContent);
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
       }

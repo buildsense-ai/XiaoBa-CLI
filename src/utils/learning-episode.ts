@@ -624,6 +624,8 @@ function cloneEpisode(episode: LearningEpisode): LearningEpisode {
 export interface LearningEpisodeStoreState {
   schemaVersion: typeof LEARNING_EPISODE_SCHEMA_VERSION;
   episodes: Record<string, LearningEpisode>;
+  /** Set when the last durable state was quarantined; all writes fail closed. */
+  stateCorrupt?: boolean;
 }
 
 export interface LearningEpisodeStoreOptions {
@@ -633,32 +635,62 @@ export interface LearningEpisodeStoreOptions {
    * writer to simulate migration I/O failure without leaving partial state.
    */
   atomicWrite?: (filePath: string, state: LearningEpisodeStoreState) => void;
+  /**
+   * Injectable quarantine used when the store file is corrupted, malformed,
+   * or has an unknown schema version. Defaults to renaming the file to a
+   * sidecar `.quarantine.*` path so the original evidence is preserved for
+   * diagnosis and recovery. Tests inject a failing quarantine to verify
+   * fail-closed behavior.
+   */
+  quarantine?: (filePath: string) => void;
 }
 
 export class LearningEpisodeStore {
+  private readonly corruptionMarkerPath: string;
+
   constructor(
     private readonly filePath: string,
     private readonly options: LearningEpisodeStoreOptions = {},
-  ) {}
+  ) {
+    this.corruptionMarkerPath = `${filePath}.state-corrupt`;
+  }
 
   load(): LearningEpisodeStoreState {
+    if (fs.existsSync(this.corruptionMarkerPath)) {
+      return { ...emptyEpisodeStoreState(), stateCorrupt: true };
+    }
     if (!fs.existsSync(this.filePath)) return emptyEpisodeStoreState();
 
-    // Parse and structural validation only. Malformed or unknown-schema stores
-    // fall back to an empty state here. This catch is intentionally narrow so
-    // that a structurally valid legacy store whose migration write later fails
-    // cannot collapse into the same empty fallback and be overwritten.
+    // Read and parse in two stages. A read failure (permission, I/O) fails
+    // closed so the caller cannot overwrite a possibly-valid store. A parse
+    // or validation failure (corrupted JSON, invalid structure, unknown schema
+    // version) quarantines the file before returning an empty state so a
+    // subsequent save() cannot silently overwrite recoverable evidence.
+    let raw: string;
+    try {
+      raw = fs.readFileSync(this.filePath, 'utf8');
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return emptyEpisodeStoreState();
+      throw new Error(
+        `Learning Episode store read failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+
     let parsed: LearningEpisodeStoreState & { schemaVersion?: number };
     try {
-      const raw = fs.readFileSync(this.filePath, 'utf8');
       parsed = JSON.parse(raw) as unknown as typeof parsed;
       if (!parsed.episodes || typeof parsed.episodes !== 'object') throw new Error('invalid episode store');
       const persistedVersion: number | undefined = parsed.schemaVersion;
       if (persistedVersion !== undefined && persistedVersion !== 1 && persistedVersion !== 2 && persistedVersion !== 3) {
         throw new Error('invalid episode store');
       }
-    } catch {
-      return emptyEpisodeStoreState();
+    } catch (error) {
+      // Corrupted JSON, invalid structure, or unknown schema version:
+      // quarantine the file so a later save() cannot overwrite recoverable
+      // evidence, then return an empty state. If quarantine itself fails,
+      // fail closed to protect the data.
+      this.quarantineFile(error);
+      return { ...emptyEpisodeStoreState(), stateCorrupt: true };
     }
 
     const persistedVersion: number | undefined = parsed.schemaVersion;
@@ -710,7 +742,40 @@ export class LearningEpisodeStore {
   }
 
   save(state: LearningEpisodeStoreState): void {
+    if (fs.existsSync(this.corruptionMarkerPath) || state.stateCorrupt) {
+      throw new Error('Learning Episode store is state-corrupt; explicit recovery is required before writing.');
+    }
     this.atomicWrite(state);
+  }
+
+  /** Explicit operator recovery after the quarantined state has been inspected/restored. */
+  recover(state: LearningEpisodeStoreState): void {
+    this.atomicWrite({ ...state, stateCorrupt: undefined });
+    try {
+      fs.unlinkSync(this.corruptionMarkerPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+
+  /**
+   * Move a corrupted/unknown-schema store file aside so the original evidence
+   * is preserved for diagnosis and recovery. If the quarantine rename fails,
+   * fail closed with the original parse error so the caller cannot overwrite
+   * the un-quarantined file.
+   */
+  private quarantineFile(error: unknown): void {
+    const quarantineFn = this.options.quarantine ?? defaultLearningEpisodeQuarantine;
+    try {
+      // Publish the durable fail-closed latch before moving the evidence. If
+      // the process crashes or the quarantine rename fails, the next process
+      // still refuses fresh writes instead of treating a missing canonical
+      // store as an empty store.
+      fs.writeFileSync(this.corruptionMarkerPath, `${new Date().toISOString()}\n`, { encoding: 'utf8', mode: 0o600 });
+      quarantineFn(this.filePath);
+    } catch {
+      throw error instanceof Error ? error : new Error(String(error));
+    }
   }
 
   private atomicWrite(state: LearningEpisodeStoreState): void {
@@ -769,6 +834,11 @@ function defaultLearningEpisodeAtomicWrite(filePath: string, state: LearningEpis
   const temp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(temp, JSON.stringify(state, null, 2), { encoding: 'utf8', mode: 0o600 });
   fs.renameSync(temp, filePath);
+}
+
+function defaultLearningEpisodeQuarantine(filePath: string): void {
+  const quarantinePath = `${filePath}.quarantine.${Date.now()}.${process.pid}`;
+  fs.renameSync(filePath, quarantinePath);
 }
 
 function mergeEpisode(existing: LearningEpisode | undefined, incoming: LearningEpisode): LearningEpisode {

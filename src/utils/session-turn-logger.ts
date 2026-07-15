@@ -187,12 +187,15 @@ export class SessionTurnLogger {
     return text.slice(0, maxLength) + '... [truncated]';
   }
 
-  private appendLog(entry: SessionLogEntry): void {
+  private appendLog(entry: SessionLogEntry): boolean {
     try {
       fs.appendFileSync(this.logFilePath, JSON.stringify(entry) + '\n');
+      return true;
     } catch (error) {
       // 日志写入失败不影响主流程
       console.error('[SessionTurnLogger] Failed to write log:', error);
+      return false;
     }
   }
+
 }

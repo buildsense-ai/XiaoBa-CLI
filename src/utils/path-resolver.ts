@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 export class PathResolver {
-  static getRuntimeDataRoot(): string {
+  static getRuntimeDataRoot(fallbackRoot: string = process.cwd()): string {
     const explicit = [
       process.env.XIAOBA_USER_DATA_DIR,
       process.env.CATSCO_USER_DATA_DIR,
@@ -12,11 +12,15 @@ export class PathResolver {
       .map(value => String(value || '').trim())
       .find(Boolean);
 
-    return path.resolve(explicit || process.cwd());
+    return path.resolve(explicit || fallbackRoot);
   }
 
   static getDataPath(...segments: string[]): string {
     return path.join(this.getRuntimeDataRoot(), 'data', ...segments);
+  }
+
+  static getSessionLogAppendSignalPath(runtimeRoot: string = process.cwd()): string {
+    return path.join(this.getRuntimeDataRoot(runtimeRoot), 'data', 'session-log-append.signal');
   }
 
   static getLogsPath(...segments: string[]): string {

@@ -17,14 +17,17 @@ Expose the minimum durable operational state needed to inspect bounded review an
 
 ## Canary checklist (runtime release gate)
 
-- [x] **Timeout rate**: focused reliability tests confirm `lastRunStatus = timed_out` is recorded when a review aborts on deadline and no new transitions are emitted.
-- [x] **Operational retry rate**: focused reliability tests confirm `lastRunStatus = queued_operational_retry` increments when branch timeout/failure is enqueued and that queued entries preserve `nextRetryAt`.
-- [x] **Pending wake handling**: focused reliability tests confirm `pendingWakeReasons` records coalesced/wake reason sets without dropping settlement/operational/curator/reassessment work.
-- [x] **Transcript health**: branch transition audit entries retain existing transcript references after timeout/retry; transcript-write failure keeps `branch_failure` without silent success.
-- [x] **Transition audit links**: transition audit entries expose stable `transitionAudit` IDs and runtime wake records (`runStatus`, `durationMs`) for replayable diagnostics.
+- [x] **Heartbeat health**: inspect `$XIAOBA_RUNTIME_ROOT/data/distillation-heartbeat-record.json`. Confirm mode `0600`, no sibling `*.tmp` files, a recent `lastRunAt`, bounded `lastRunDurationMs`, and one of the documented `lastRunStatus` values.
+- [x] **Timeout and retry**: force one canary reviewer past its configured deadline. Confirm `lastReviewTimeoutCount` and `cumulativeReviewTimeoutCount` increase, no transition is emitted for that bundle, and `$XIAOBA_RUNTIME_ROOT/data/skill-evolution-review-queue.json` contains one `operational` entry with `failureKind = branch_timeout`, its fixed bundle, transcript paths, and an unchanged `nextRetryAt` after read-only inspection.
+- [x] **Pending wake handling**: request a targeted wake while another wake is active. Confirm `pendingWakeReasons` becomes non-empty before the active wake completes, clears only when the follow-up wake consumes it, and retains any reason that arrives during that follow-up for the next cycle.
+- [x] **Transcript health**: inspect files referenced by queue entries and `$XIAOBA_RUNTIME_ROOT/data/transition-audit.jsonl`. Confirm they are under `$XIAOBA_RUNTIME_ROOT/logs/branches`, mode `0600`, include start/deadline and terminal outcome events, and contain no unredacted credentials.
+- [x] **Transition audit links**: for one healthy canary candidate, recompute SHA-256 for both Author and Verifier transcript paths and compare them with the aligned `branchTranscriptHashes` in its Transition Audit entry.
+- [x] **Restart inspection**: stop and restart the canary without making new session-log input. Confirm heartbeat inspection does not change Registry, Review Queue, Learning Episodes, or Transition Audit content, and persisted pending reasons are replayed once without duplicate transition IDs.
+- [x] **Graceful drain**: stop the runtime during an admitted review. Confirm no new review is admitted, the active attempt completes or reaches its own deadline, any timeout retry is durable before exit, and the next owner resumes without parallel heartbeat execution.
+- [x] **Release gate**: run `pnpm test:runtime` and `pnpm exec tsc --noEmit --pretty false`. Do not mark production-ready unless the full runtime suite is green or unrelated failures have an explicit, separately approved release isolation decision.
 
 ## Blocked by
 
-- [#69](https://github.com/pi-dal/XiaoBa-CLI/issues/69) - bound Promotion Review Attempts with deadlines and operational retry.
-- [#70](https://github.com/pi-dal/XiaoBa-CLI/issues/70) - coalesce Runtime Learning wakes and drain active work on shutdown.
-- [#71](https://github.com/pi-dal/XiaoBa-CLI/issues/71) - make Branch transcripts runtime-owned and audit-safe.
+- [#80](https://github.com/pi-dal/XiaoBa-CLI/issues/80) - bound Promotion Review Attempts with deadlines and operational retry.
+- [#81](https://github.com/pi-dal/XiaoBa-CLI/issues/81) - enforce runtime-owned, audit-safe Branch transcripts and retention.
+- [#82](https://github.com/pi-dal/XiaoBa-CLI/issues/82) - coalesce Runtime Learning wakes and drain active work on shutdown.

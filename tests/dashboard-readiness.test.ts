@@ -8,6 +8,7 @@ import type { Server } from 'http';
 import { createApiRouter } from '../src/dashboard/routes/api';
 import { ServiceInfo } from '../src/dashboard/service-manager';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
+import { getDistillationHeartbeatConfig } from '../src/utils/distillation-heartbeat-config';
 
 describe('dashboard readiness and service preflight API', () => {
   let testRoot: string;
@@ -141,12 +142,29 @@ describe('dashboard readiness and service preflight API', () => {
 
     assert.equal(response.status, 200);
     assert.equal(data.status, 'blocked');
+    assert.equal(data.runtimeLearning.enabled, true);
+    assert.equal(data.runtimeLearning.liveness, 'owner_missing');
     assert.equal(model.status, 'blocked');
     assert.equal(model.label, '模型来源');
     assert.equal(model.checks.some((check: any) => check.id === 'model.managed.account' && check.status === 'warning'), true);
     assert.equal(model.checks.some((check: any) => check.id === 'model.custom.credential' && check.status === 'fail'), true);
     assert.equal(text.includes('GAUZ_LLM_API_KEY'), false);
     assert.equal(text.includes('buildsense.asia'), false);
+  });
+
+  test('GET /readiness exposes durable pending Runtime Learning reasons', async () => {
+    const config = getDistillationHeartbeatConfig(testRoot, process.env);
+    fs.mkdirSync(path.dirname(config.heartbeatRecordPath), { recursive: true });
+    fs.writeFileSync(config.heartbeatRecordPath, JSON.stringify({
+      schemaVersion: 1,
+      pendingWakeReasons: ['operational-retry', 'curator'],
+    }), { mode: 0o600 });
+
+    const response = await fetch(`${baseUrl}/api/readiness/details`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(data.runtimeLearning.pendingWakeReasons, ['operational-retry', 'curator']);
   });
 
   test('CatsCo readiness warns when account and binding are ready but connector is stopped', async () => {
