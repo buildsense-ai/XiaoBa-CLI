@@ -139,11 +139,14 @@ describe('dashboard readiness and service preflight API', () => {
     const text = await response.text();
     const data = JSON.parse(text) as any;
     const model = data.sections.find((section: any) => section.id === 'model');
+    const runtimeLearning = data.sections.find((section: any) => section.id === 'runtimeLearning');
 
     assert.equal(response.status, 200);
     assert.equal(data.status, 'blocked');
     assert.equal(data.runtimeLearning.enabled, true);
     assert.equal(data.runtimeLearning.liveness, 'owner_missing');
+    assert.equal(runtimeLearning.status, 'warning');
+    assert.equal(runtimeLearning.checks[0]?.id, 'runtimeLearning.owner');
     assert.equal(model.status, 'blocked');
     assert.equal(model.label, '模型来源');
     assert.equal(model.checks.some((check: any) => check.id === 'model.managed.account' && check.status === 'warning'), true);
@@ -165,6 +168,36 @@ describe('dashboard readiness and service preflight API', () => {
 
     assert.equal(response.status, 200);
     assert.deepEqual(data.runtimeLearning.pendingWakeReasons, ['operational-retry', 'curator']);
+  });
+
+  test('GET /readiness gates a stuck Runtime Learning wake', async () => {
+    const config = getDistillationHeartbeatConfig(testRoot, process.env);
+    const ownerPath = path.join(testRoot, '.xiaoba', 'heartbeat-scheduler-owner', 'owner.json');
+    fs.mkdirSync(path.dirname(ownerPath), { recursive: true });
+    fs.writeFileSync(ownerPath, JSON.stringify({
+      pid: process.pid,
+      generation: 'readiness-test-generation',
+      token: 'readiness-test-token',
+      startedAt: new Date().toISOString(),
+      lastHeartbeatAt: new Date().toISOString(),
+    }));
+    fs.mkdirSync(path.dirname(config.heartbeatRecordPath), { recursive: true });
+    fs.writeFileSync(config.heartbeatRecordPath, JSON.stringify({
+      schemaVersion: 1,
+      inProgress: {
+        startedAt: new Date(0).toISOString(),
+        reasons: ['operational-retry'],
+      },
+    }));
+
+    const response = await fetch(`${baseUrl}/api/readiness/details`);
+    const data = await response.json() as any;
+    const runtimeLearning = data.sections.find((section: any) => section.id === 'runtimeLearning');
+
+    assert.equal(data.runtimeLearning.liveness, 'wake_stuck');
+    assert.equal(runtimeLearning.status, 'blocked');
+    assert.equal(runtimeLearning.checks[0]?.severity, 'blocker');
+    assert.equal(data.status, 'blocked');
   });
 
   test('GET /readiness exposes external source recovery diagnostics', async () => {

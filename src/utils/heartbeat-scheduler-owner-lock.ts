@@ -39,9 +39,9 @@
  *
  * === Release ===
  *
- * Release reads `owner.json`, verifies the pid+token match the original
- * acquirer, then removes the entire lock directory via `rmSync`. If the
- * lock was already overwritten (token mismatch), the release is a no-op.
+ * Release first detaches the complete lock generation with an atomic rename,
+ * then verifies pid+token before deleting it. A replacement generation at the
+ * canonical path is never touched.
  *
  * See CONTEXT.md → "Distillation Heartbeat" / "Graceful Runtime Drain".
  * See ADR 0038, 0041.
@@ -50,6 +50,10 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import {
+  reclaimStaleClaimDirectory,
+  tryInstallRecordDirectory,
+} from './process-lock-claim';
 
 export interface HeartbeatSchedulerOwnerRecord {
   pid: number;
@@ -209,39 +213,6 @@ function isProcessAlive(pid: number): boolean {
  * concurrent installer loses without ever exposing an empty lock/claim
  * directory to another process.
  */
-function tryInstallRecordDirectory(
-  targetDir: string,
-  fileName: string,
-  serialized: string,
-): boolean {
-  const candidateDir = `${targetDir}.candidate-${process.pid}-${crypto.randomUUID()}`;
-  fs.mkdirSync(candidateDir);
-  try {
-    fs.writeFileSync(path.join(candidateDir, fileName), serialized, 'utf8');
-    try {
-      fs.renameSync(candidateDir, targetDir);
-      return true;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      // A concurrent owner/claimer already installed the canonical
-      // directory. POSIX and Windows report different codes for this case.
-      if (code === 'EEXIST' || code === 'ENOTEMPTY' || code === 'EPERM') {
-        return false;
-      }
-      throw error;
-    }
-  } finally {
-    // If rename succeeded this is a no-op. If the process fails before the
-    // rename, clean up the candidate on the normal error path; a hard crash
-    // leaves only an unreferenced candidate and never a false owner.
-    try {
-      fs.rmSync(candidateDir, { recursive: true, force: true });
-    } catch {
-      // Best effort.
-    }
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -319,7 +290,7 @@ export function acquireHeartbeatSchedulerOwnerLock(
       },
       release: () => {
         if (renewalTimer) { clearInterval(renewalTimer); renewalTimer = null; }
-        releaseHeartbeatSchedulerOwnerLock(lockDir, lockFile, record);
+        releaseHeartbeatSchedulerOwnerLock(lockDir, record);
       },
     };
   };
@@ -378,11 +349,20 @@ export function acquireHeartbeatSchedulerOwnerLock(
             existing: existingOwner ?? { pid: -1, startedAt: '', generation: '', token: '' },
           };
         }
-        // Stale claim (claimer died mid-reclaim). Clean up and retry.
-        try {
-          fs.rmSync(claimDir, { recursive: true, force: true });
-        } catch {
-          // Best-effort; next iteration of the loop tries again.
+        const reclaimed = reclaimStaleClaimDirectory({
+          claimDir,
+          claimFileName: CLAIMER_FILE_NAME,
+          observed: claimer,
+          reclaimer: claimerRecord,
+          readClaim: readClaimerRecord,
+          isProcessAlive,
+        });
+        if (!reclaimed) {
+          return {
+            acquired: false,
+            lockPath: lockFile,
+            existing: existingOwner ?? { pid: -1, startedAt: '', generation: '', token: '' },
+          };
         }
         continue;
       }
@@ -457,25 +437,26 @@ export function acquireHeartbeatSchedulerOwnerLock(
  */
 function releaseHeartbeatSchedulerOwnerLock(
   lockDir: string,
-  lockFile: string,
   record: HeartbeatSchedulerOwnerRecord,
 ): void {
-  const current = readOwnerRecord(lockFile);
-  if (
-    !current ||
-    current.pid !== record.pid ||
-    current.token !== record.token ||
-    current.generation !== record.generation
-  ) {
-    // The lock was overwritten by another process. Do not delete it.
-    return;
-  }
-
-  // Our lock. Remove the entire directory to release.
+  // Detach the whole generation atomically before deleting it. A replacement
+  // owner can publish a fresh canonical directory while this old generation
+  // is being removed, without being touched by recursive cleanup.
+  const detachedPath = `${lockDir}.released-${process.pid}-${crypto.randomUUID()}`;
   try {
-    fs.rmSync(lockDir, { recursive: true, force: true });
+    fs.renameSync(lockDir, detachedPath);
+    const current = readOwnerRecord(path.join(detachedPath, LOCK_FILE_NAME));
+    if (
+      current
+      && current.pid === record.pid
+      && current.token === record.token
+      && current.generation === record.generation
+    ) {
+      fs.rmSync(detachedPath, { recursive: true, force: true });
+    } else {
+      try { fs.renameSync(detachedPath, lockDir); } catch { /* replacement already published */ }
+    }
   } catch {
-    // Best-effort; the lock directory is stale and a future acquirer
-    // will reclaim it via the in-place .claim/ protocol.
+    // Best-effort; a future acquirer can reclaim stale generations.
   }
 }

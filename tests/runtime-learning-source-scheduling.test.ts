@@ -52,6 +52,7 @@ import type { DistillationUnit } from '../src/utils/distillation-unit';
 
 interface FakeSourceOptions {
   sourceId: string;
+  provider?: string;
   category?: 'internal' | 'external';
   resourceCount: number;
   discoverFailureMessage?: string;
@@ -80,7 +81,7 @@ class FakeSessionLogSourceAdapter implements SessionLogSourceAdapter {
       sourceId: opts.sourceId,
       label: `Fake Source ${opts.sourceId}`,
       category: opts.category ?? 'internal',
-      provider: 'fake',
+      provider: opts.provider ?? 'fake',
       reader: 'fake',
     };
     for (let i = 0; i < opts.resourceCount; i++) {
@@ -610,6 +611,37 @@ describe('Issue #77 — Source Work Lane scheduling and failure isolation', () =
 
     });
 
+    test('providers with the same sourceId keep independent failure gates', async () => {
+      const failingProvider = new FakeSessionLogSourceAdapter({
+        sourceId: 'shared-source',
+        provider: 'provider-a',
+        category: 'external',
+        resourceCount: 1,
+        failAtIndex: 0,
+      });
+      const healthyProvider = new FakeSessionLogSourceAdapter({
+        sourceId: 'shared-source',
+        provider: 'provider-b',
+        category: 'external',
+        resourceCount: 1,
+      });
+      const runtimeLearning = new RuntimeLearning({
+        workingDirectory: env.root,
+        evidenceIngestor: new StubEvidenceIngestor() as unknown as EvidenceIngestor,
+        learningEpisodeStore: env.episodeStore,
+        skillEvolution: env.skillEvolution,
+        curator: env.curator,
+        planner: env.planner,
+        sessionLogSources: [failingProvider, healthyProvider],
+      });
+
+      const result = await runtimeLearning.wake('startup');
+
+      assert.equal(result.discovery.sources[0]?.status, 'failed');
+      assert.equal(result.discovery.sources[1]?.status, 'active');
+      assert.equal(healthyProvider.acknowledged.length, 1);
+    });
+
     test('discoverResources failure is isolated to the failing source', async () => {
       const externalDiscovering = new FakeSessionLogSourceAdapter({
         sourceId: 'ext-discover-failing',
@@ -1044,7 +1076,7 @@ describe('Issue #77 — Source Work Lane scheduling and failure isolation', () =
       assert.equal(external.acknowledged.length, 0, 'no resources acknowledged');
     });
 
-    test('normal process exit does not leave in-flight state handles', async () => {
+    test('completed discovery leaves no in-memory failure state', async () => {
       const external = new FakeSessionLogSourceAdapter({
         sourceId: 'ext-normal-exit',
         category: 'external',

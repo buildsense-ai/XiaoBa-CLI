@@ -364,4 +364,48 @@ describe('heartbeat scheduler owner lock (runtime-wide singleton, directory-base
       acquired.release();
     }
   });
+
+  test('a live nested reclaimer fences stale-claim cleanup', () => {
+    writeStaleLock(tempDir, {
+      pid: -1,
+      startedAt: new Date().toISOString(),
+      token: 'stale-token',
+    });
+    const claimDir = path.join(tempDir, '.xiaoba', 'heartbeat-scheduler-owner', '.claim');
+    const reclaimDir = path.join(claimDir, '.reclaim');
+    fs.mkdirSync(reclaimDir, { recursive: true });
+    fs.writeFileSync(path.join(claimDir, 'claimer.json'), JSON.stringify({
+      pid: -2, startedAt: new Date().toISOString(), token: 'dead-claimer',
+    }) + '\n', 'utf8');
+    fs.writeFileSync(path.join(reclaimDir, 'claimer.json'), JSON.stringify({
+      pid: process.pid, startedAt: new Date().toISOString(), token: 'live-reclaimer',
+    }) + '\n', 'utf8');
+
+    const blocked = acquireHeartbeatSchedulerOwnerLock({ runtimeRoot: tempDir });
+
+    assert.equal(blocked.acquired, false);
+    assert.ok(fs.existsSync(path.join(reclaimDir, 'claimer.json')));
+  });
+
+  test('a dead nested reclaimer is recovered by nesting a new guard', () => {
+    writeStaleLock(tempDir, {
+      pid: -1,
+      startedAt: new Date().toISOString(),
+      token: 'stale-token',
+    });
+    const claimDir = path.join(tempDir, '.xiaoba', 'heartbeat-scheduler-owner', '.claim');
+    const reclaimDir = path.join(claimDir, '.reclaim');
+    fs.mkdirSync(reclaimDir, { recursive: true });
+    fs.writeFileSync(path.join(claimDir, 'claimer.json'), JSON.stringify({
+      pid: -2, startedAt: new Date().toISOString(), token: 'dead-claimer',
+    }) + '\n', 'utf8');
+    fs.writeFileSync(path.join(reclaimDir, 'claimer.json'), JSON.stringify({
+      pid: -3, startedAt: new Date().toISOString(), token: 'dead-reclaimer',
+    }) + '\n', 'utf8');
+
+    const acquired = acquireHeartbeatSchedulerOwnerLock({ runtimeRoot: tempDir });
+
+    assert.equal(acquired.acquired, true);
+    if (acquired.acquired) acquired.release();
+  });
 });

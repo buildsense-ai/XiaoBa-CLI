@@ -30,7 +30,7 @@ export interface DashboardReadinessCheck {
 }
 
 export interface DashboardReadinessSection {
-  id: 'model' | 'catsco' | 'runtimeProfile' | 'skills';
+  id: 'model' | 'catsco' | 'runtimeProfile' | 'skills' | 'runtimeLearning';
   label: string;
   status: DashboardReadinessStatus;
   summary: string;
@@ -136,11 +136,13 @@ export async function getDashboardReadiness(
     service.name,
     { runtimeRoot, env, config, catsCoOverrides: options.catsCoOverrides, now: options.now },
   ));
+  const runtimeLearning = readRuntimeLearningStatus(runtimeRoot, env, options.now ?? new Date());
   const sections = [
     buildModelSection(env, config),
     buildCatsCoSection(serviceManager, env, config),
     buildRuntimeProfileSection(runtimeRoot, env, config),
     await buildSkillsSection(runtimeRoot),
+    buildRuntimeLearningSection(runtimeLearning),
   ];
 
   return {
@@ -154,7 +156,56 @@ export async function getDashboardReadiness(
         service: service.name,
         message: sanitizeRuntimeMessage(service.lastError || '', runtimeRoot),
       })),
-    runtimeLearning: readRuntimeLearningStatus(runtimeRoot, env, options.now ?? new Date()),
+    runtimeLearning,
+  };
+}
+
+function buildRuntimeLearningSection(
+  runtime: DashboardRuntimeLearningStatus,
+): DashboardReadinessSection {
+  let check: DashboardReadinessCheck;
+  switch (runtime.liveness) {
+    case 'disabled':
+      check = passCheck('runtimeLearning.owner', 'Runtime Learning', 'Runtime Learning 未启用');
+      break;
+    case 'healthy':
+      check = passCheck('runtimeLearning.owner', 'Runtime Learning owner', 'Runtime Learning owner 正常');
+      break;
+    case 'owner_missing':
+      check = failCheck(
+        'runtimeLearning.owner',
+        'Runtime Learning owner',
+        'Runtime Learning 暂无 owner，启动或接管期间将自动重试',
+        'warning',
+        { label: '查看诊断', target: 'diagnostics' },
+      );
+      break;
+    case 'owner_stale':
+      check = failCheck(
+        'runtimeLearning.owner',
+        'Runtime Learning owner',
+        'Runtime Learning owner 心跳已过期，需要检查进程或等待接管',
+        'warning',
+        { label: '查看诊断', target: 'diagnostics' },
+      );
+      break;
+    case 'wake_stuck':
+      check = failCheck(
+        'runtimeLearning.owner',
+        'Runtime Learning wake',
+        'Runtime Learning wake 已超过 Review Deadline',
+        'blocker',
+        { label: '查看诊断', target: 'diagnostics' },
+      );
+      break;
+  }
+  return {
+    id: 'runtimeLearning',
+    label: 'Runtime Learning',
+    status: statusFromChecks([check]),
+    summary: check.message,
+    checks: [check],
+    ...(check.action ? { action: check.action } : {}),
   };
 }
 

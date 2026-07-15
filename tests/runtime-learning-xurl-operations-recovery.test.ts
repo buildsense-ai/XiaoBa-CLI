@@ -33,8 +33,8 @@ import { SkillUsageCurator } from '../src/utils/skill-usage-curator';
 import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
 import {
   loadExternalCursorState,
+  saveExternalCursorState,
   closeExternalResource,
-  finalizeExternalDiscoveryCycleForStore,
 } from '../src/utils/session-log-source';
 import { acquireExternalSourceProviderLock } from '../src/utils/external-source-provider-lock';
 import { SessionTurnLogEntry } from '../src/utils/session-log-schema';
@@ -349,7 +349,7 @@ function readInvocationLog(filePath: string): Array<{ action: string; args: stri
 // Tests
 // ---------------------------------------------------------------------------
 
-test('lock contention: provider-scoped lock serializes heartbeat reads across processes', async () => {
+test('lock contention: a continuous wake reports a provider lock held by another operation', async () => {
   const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
   try {
     writeScenario(env.scenarioPath, {
@@ -683,11 +683,90 @@ test('failure classification: protocol failure requires operator action (no auto
   }
 });
 
-test('quarantine recovery: retry reprocesses the same event without a tombstone', async () => {
+test('lock contention never overwrites a durable operator-action failure gate', async () => {
   const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
   try {
-    const storePath = cursorStorePath(env.root, 'codex', 'external-codex');
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: {
+            protocolVersion: 1,
+            provider: 'codex',
+            resources: [
+              resource('conversation-main', 'event://codex/main-0', 0, 'conv-1', 'branch-main', { activationPosition: 0 }),
+            ],
+          },
+        },
+      },
+      read: {
+        'conversation-main': { byCursor: { '0': emptyStableRead('codex', 'conversation-main', 0) } },
+      },
+    });
 
+    const owner = env.createRuntime();
+    await owner.runtime.wake('startup');
+    // Construct the follower before the owner records its durable failure so
+    // its in-memory scheduling snapshot is intentionally stale.
+    const follower = env.createRuntime();
+
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: {
+            protocolVersion: 1,
+            provider: 'codex',
+            resources: [
+              resource('conversation-main', 'event://codex/main-0', 0, 'conv-1', 'branch-main', { activationPosition: 0 }),
+            ],
+          },
+        },
+      },
+      read: {
+        'conversation-main': {
+          byCursor: {
+            '0': {
+              exitCode: 1,
+              stderr: 'Error: protocol version mismatch unsupported schema',
+            },
+          },
+        },
+      },
+    });
+    await owner.runtime.wake('scheduled');
+    assert.equal(
+      owner.runtime.getExternalSourceFailureState().get('external-codex')?.requiresOperatorAction,
+      true,
+    );
+
+    const lock = acquireExternalSourceProviderLock({
+      runtimeRoot: path.join(env.root, 'data'),
+      provider: 'codex',
+      operation: 'owner-in-progress',
+      sourceId: 'external-codex',
+    });
+    assert.ok(lock.acquired);
+    try {
+      const result = await follower.runtime.wake('scheduled');
+      assert.equal(
+        result.discovery.sources.find(source => source.sourceId === 'external-codex')?.status,
+        'locked',
+      );
+    } finally {
+      lock.release();
+    }
+
+    const restarted = env.createRuntime();
+    const recovered = restarted.runtime.getExternalSourceFailureState().get('external-codex');
+    assert.equal(recovered?.failureClass, 'protocol');
+    assert.equal(recovered?.requiresOperatorAction, true);
+  } finally {
+    env.restore();
+  }
+});
+
+test('source failure without a stable event identity never creates an event quarantine', async () => {
+  const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
+  try {
     // First wake: discover the resource (establishes activation baseline).
     writeScenario(env.scenarioPath, {
       discover: {
@@ -709,10 +788,8 @@ test('quarantine recovery: retry reprocesses the same event without a tombstone'
     const fixture = env.createRuntime();
     await fixture.runtime.wake('startup');
 
-    const quarantinesBefore = fixture.runtime.listExternalSourceQuarantines('codex', 'external-codex');
-    assert.equal(quarantinesBefore.length, 0, 'no quarantines initially');
-
-    // Second wake: read fails with a quarantine-classified error (oversized).
+    // Second wake: the xurl command fails before it can identify a rejected
+    // event. The Runtime must not guess from the resource activation baseline.
     writeScenario(env.scenarioPath, {
       discover: {
         pages: {
@@ -738,35 +815,20 @@ test('quarantine recovery: retry reprocesses the same event without a tombstone'
     });
     await fixture.runtime.wake('scheduled');
 
-    const quarantinesAfter = fixture.runtime.listExternalSourceQuarantines('codex', 'external-codex');
-    assert.ok(quarantinesAfter.length >= 1, 'quarantine entry created');
-
-    const quarantineId = quarantinesAfter[0]!.quarantineId;
-
-    const lock = acquireExternalSourceProviderLock({
-      runtimeRoot: path.join(env.root, 'data'),
-      provider: 'codex',
-      operation: 'competing-operator',
-    });
-    assert.ok(lock.acquired);
-    assert.equal(
-      fixture.runtime.retryExternalSourceQuarantine('codex', 'external-codex', quarantineId),
-      false,
-      'operator recovery respects the provider single-writer lock',
+    assert.deepEqual(
+      fixture.runtime.listExternalSourceQuarantines('codex', 'external-codex'),
+      [],
+      'command-level failure cannot name an event quarantine',
     );
-    const stateWhileLocked = fixture.runtime.getExternalSourceFailureState().get('external-codex');
-    assert.equal(stateWhileLocked?.failureClass, 'quarantine', 'lock contention preserves the recovery diagnosis');
-    assert.equal(stateWhileLocked?.requiresOperatorAction, true);
-    lock.release();
+    const sourceFailure = fixture.runtime.getExternalSourceFailureState().get('external-codex');
+    assert.equal(sourceFailure?.requiresOperatorAction, true);
+    assert.equal(sourceFailure?.eventId, undefined);
 
-    // Retry: removes the quarantine so the event can be reprocessed.
-    const retryResult = fixture.runtime.retryExternalSourceQuarantine('codex', 'external-codex', quarantineId);
-    assert.equal(retryResult, true, 'retry removes quarantine');
-
-    const stateAfterRetry = loadExternalCursorState(storePath);
-    assert.ok(!stateAfterRetry.quarantinedEvents[quarantineId], 'quarantine entry removed');
-    // No tombstone written for retry — the event will be reprocessed.
-    assert.equal(Object.keys(stateAfterRetry.tombstones).length, 0, 'no tombstone written on retry');
+    assert.equal(
+      fixture.runtime.retryExternalSourceFailure('codex', 'external-codex'),
+      true,
+      'operator can retry the source after repairing the command/provider',
+    );
 
     writeScenario(env.scenarioPath, {
       discover: {
@@ -796,8 +858,8 @@ test('quarantine recovery: retry reprocesses the same event without a tombstone'
     const retryWake = await fixture.runtime.wake('scheduled');
     const retryReport = retryWake.discovery.sources.find(s => s.sourceId === 'external-codex');
     assert.ok(retryReport);
-    assert.notEqual(retryReport!.status, 'backoff', 'retry clears the durable operator-action gate');
-    assert.equal(retryReport!.unitsProcessed, 1, 'the same blocked resource is reprocessed');
+    assert.notEqual(retryReport!.status, 'backoff', 'source retry clears the durable operator-action gate');
+    assert.equal(retryReport!.unitsProcessed, 1, 'the repaired source event is processed');
   } finally {
     env.restore();
   }
@@ -829,35 +891,43 @@ test('quarantine recovery: skip writes a durable tombstone before allowing the c
     const fixture = env.createRuntime();
     await fixture.runtime.wake('startup');
 
-    // Second wake: read fails with an integrity-conflict error.
-    writeScenario(env.scenarioPath, {
-      discover: {
-        pages: {
-          start: {
-            protocolVersion: 1,
-            provider: 'codex',
-            resources: [
-              resource('conversation-main', 'event://codex/main-0', 0, 'conv-1', 'branch-main', { activationPosition: 0 }),
-            ],
-          },
+    const identity = {
+      sourceId: 'external-codex',
+      label: 'codex Session Logs',
+      category: 'external' as const,
+      provider: 'codex',
+      reader: 'xurl',
+    };
+    const rejectedIdentity = {
+      eventId: 'event://codex/main-1',
+      position: 1,
+      conversationId: 'conv-1',
+      branchId: 'branch-main',
+      revision: 'rejected-revision',
+      contentHash: 'rejected-hash',
+    };
+    const quarantineId = 'verified-quarantine-main-1';
+    const activated = loadExternalCursorState(storePath);
+    saveExternalCursorState(storePath, {
+      ...activated,
+      quarantinedEvents: {
+        ...activated.quarantinedEvents,
+        [quarantineId]: {
+          quarantineId,
+          resourceRef: 'conversation-main',
+          sourceIdentity: identity,
+          identity: rejectedIdentity,
+          failureClass: 'integrity_conflict',
+          message: 'verified external event mutation',
+          detectedAt: new Date().toISOString(),
+          cursorPosition: 0,
         },
       },
-      read: {
-        'conversation-main': {
-          byCursor: {
-            '0': {
-              exitCode: 1,
-              stderr: 'Error: integrity conflict — event changed under the same identity',
-            },
-          },
-        },
-      },
+      updatedAt: new Date().toISOString(),
     });
-    await fixture.runtime.wake('scheduled');
 
     const quarantines = fixture.runtime.listExternalSourceQuarantines('codex', 'external-codex');
-    assert.ok(quarantines.length >= 1, 'quarantine entry created for integrity conflict');
-    const quarantineId = quarantines[0]!.quarantineId;
+    assert.equal(quarantines[0]?.quarantineId, quarantineId);
 
     // Skip: writes a tombstone, removes the quarantine.
     const skipResult = fixture.runtime.skipExternalSourceQuarantine(
@@ -872,6 +942,7 @@ test('quarantine recovery: skip writes a durable tombstone before allowing the c
     assert.ok(!state.quarantinedEvents[quarantineId], 'quarantine removed after skip');
     const tombstone = Object.values(state.tombstones).find(entry => entry.tombstoneId === quarantineId);
     assert.ok(tombstone, 'durable tombstone written');
+    assert.equal(tombstone!.identity.eventId, 'event://codex/main-1');
     assert.ok(tombstone!.reason.includes('operator skip'), 'tombstone carries redacted reason');
 
     // The provider may replay the skipped stable identity with a different
@@ -893,11 +964,11 @@ test('quarantine recovery: skip writes a durable tombstone before allowing the c
         'conversation-main': {
           byCursor: {
             '0': stableRead('codex', 'conversation-main', [
-              protocolEvent('event://codex/main-0', 0, 'conv-1', 'branch-main', 'Skipped task', 'Skipped result.', {
+              protocolEvent('event://codex/main-1', 1, 'conv-1', 'branch-main', 'Skipped task', 'Skipped result.', {
                 revision: 'mutated-after-skip',
                 contentHash: 'mutated-after-skip',
               }),
-            ], 0),
+            ], 1),
           },
         },
       },
@@ -907,7 +978,7 @@ test('quarantine recovery: skip writes a durable tombstone before allowing the c
     assert.ok(skipReport);
     assert.notEqual(skipReport!.status, 'backoff', 'skip clears the durable operator-action gate');
     assert.equal(skipReport!.unitsProcessed, 0, 'skipped identity never becomes learning evidence');
-    assert.equal(loadExternalCursorState(storePath).cursors['conversation-main']?.cursor.position, 0);
+    assert.equal(loadExternalCursorState(storePath).cursors['conversation-main']?.cursor.position, 1);
   } finally {
     env.restore();
   }
@@ -1255,7 +1326,7 @@ test('internal independence: missing xurl does not degrade internal heartbeat re
   }
 });
 
-test('discovery cycle finalization: closes resources missing for two cycles', async () => {
+test('discovery cycle finalization: missing resources remain resumable until explicitly closed', async () => {
   const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
   try {
     const storePath = cursorStorePath(env.root, 'codex', 'external-codex');
@@ -1289,14 +1360,12 @@ test('discovery cycle finalization: closes resources missing for two cycles', as
       'resource active after first discovery',
     );
 
-    // Second wake: resource disappears. Run finalization for cycle 1 —
-    // resource has been missing for 1 cycle (not yet closed).
+    // Second wake: one complete discovery cycle misses the resource.
     writeScenario(env.scenarioPath, {
       discover: { pages: { start: { protocolVersion: 1, provider: 'codex', resources: [] } } },
       read: {},
     });
     await fixture.runtime.wake('scheduled');
-    finalizeExternalDiscoveryCycleForStore(storePath, 1);
 
     const stateAfterSecond = loadExternalCursorState(storePath);
     assert.notEqual(
@@ -1305,16 +1374,19 @@ test('discovery cycle finalization: closes resources missing for two cycles', as
       'resource still active after 1 missing cycle',
     );
 
-    // Third cycle: missing for 2 cycles → closed.
-    finalizeExternalDiscoveryCycleForStore(storePath, 2);
+    // Third wake: repeated absence is still not proof of deletion or archival.
+    await fixture.runtime.wake('scheduled');
     const stateAfterThird = loadExternalCursorState(storePath);
-    assert.equal(
+    assert.notEqual(
       stateAfterThird.resources['conversation-gone']?.lifecycleStatus,
       'closed',
-      'resource closed after 2 missing discovery cycles',
+      'resource remains resumable after repeated discovery absence',
     );
+    assert.ok((stateAfterThird.resources['conversation-gone']?.missingDiscoveryCycles ?? 0) >= 1);
+    assert.ok(stateAfterThird.resources['conversation-gone']?.missingSince);
     // Cursor preserved.
-    assert.ok(stateAfterThird.cursors['conversation-gone'], 'cursor preserved for auto-closed resource');
+    assert.ok(stateAfterThird.cursors['conversation-gone'], 'cursor preserved for missing resource');
+
   } finally {
     env.restore();
   }
@@ -1385,7 +1457,7 @@ test('external failures never increment Operational Review Retry counters', asyn
   }
 });
 
-test('normal process exit does not leave in-flight state handles after operations', async () => {
+test('completed operations leave no in-memory source failure state', async () => {
   const env = setupEnv({ provider: 'codex', sourceId: 'external-codex' });
   try {
     writeScenario(env.scenarioPath, {

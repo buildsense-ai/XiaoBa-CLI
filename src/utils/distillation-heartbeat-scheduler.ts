@@ -332,12 +332,13 @@ export class DistillationHeartbeatScheduler {
     }
     Logger.info('[DistillationHeartbeat] scheduler started');
 
-    this.scheduledWake = (async () => {
+    const startupWake = (async () => {
       await this.runHeartbeat('startup');
       if (!this.stopped) {
         this.scheduleNextRun();
       }
     })();
+    this.trackScheduledWake(startupWake);
 
     // For legacy scheduling, track the startup wake explicitly since the legacy
     // path does not assign into activeWake.
@@ -769,12 +770,15 @@ export class DistillationHeartbeatScheduler {
         }
       })();
 
-      this.scheduledWake = scheduledTask.finally(() => {
-        if (this.scheduledWake === scheduledTask) {
-          this.scheduledWake = null;
-        }
-      });
+      this.trackScheduledWake(scheduledTask);
     }, nextDelay);
+  }
+
+  private trackScheduledWake(task: Promise<void>): void {
+    const tracked = task.finally(() => {
+      if (this.scheduledWake === tracked) this.scheduledWake = null;
+    });
+    this.scheduledWake = tracked;
   }
 
   private getActivePlanner(): DueWorkPlanner {

@@ -1,6 +1,10 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import {
+  reclaimStaleClaimDirectory,
+  tryInstallRecordDirectory,
+} from './process-lock-claim';
 
 export interface ExternalSourceProviderLockRecord {
   provider: string;
@@ -104,13 +108,20 @@ export function acquireExternalSourceProviderLock(options: {
           existing: existing ?? unknownLockRecord(options.provider, now),
         };
       }
-      quarantineStaleClaim(claimDir);
+      reclaimStaleClaimDirectory({
+        claimDir,
+        claimFileName: CLAIM_FILE_NAME,
+        observed: existingClaimer,
+        reclaimer: claimer,
+        readClaim: readClaimer,
+        isProcessAlive,
+      });
       continue;
     }
 
     const rechecked = readLock(lockPath);
     if (rechecked && isProcessAlive(rechecked.pid)) {
-      releaseClaim(claimDir, claimPath, claimer);
+      releaseClaim(claimDir, claimer);
       return { acquired: false, lockPath, existing: rechecked };
     }
 
@@ -120,10 +131,10 @@ export function acquireExternalSourceProviderLock(options: {
       // A crash can leave an incomplete owner record, but the dead claim then
       // makes both records stale and recoverable on the next attempt.
       fs.writeFileSync(lockPath, serializedRecord, { encoding: 'utf8', mode: 0o600 });
-      releaseClaim(claimDir, claimPath, claimer);
+      releaseClaim(claimDir, claimer);
       return makeAcquiredProviderLock(lockDir, lockPath, record);
     } catch (error) {
-      releaseClaim(claimDir, claimPath, claimer);
+      releaseClaim(claimDir, claimer);
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
   }
@@ -145,7 +156,7 @@ function makeAcquiredProviderLock(
     acquired: true,
     lockPath,
     record,
-    release: () => releaseExternalSourceProviderLock(lockDir, lockPath, record),
+    release: () => releaseExternalSourceProviderLock(lockDir, record),
   };
 }
 
@@ -157,26 +168,6 @@ function unknownLockRecord(provider: string, now: () => Date): ExternalSourcePro
     operation: 'unknown',
     token: 'unknown',
   };
-}
-
-function tryInstallRecordDirectory(targetDir: string, fileName: string, serialized: string): boolean {
-  const candidateDir = `${targetDir}.candidate-${process.pid}-${crypto.randomUUID()}`;
-  fs.mkdirSync(candidateDir, { recursive: false });
-  try {
-    fs.writeFileSync(path.join(candidateDir, fileName), serialized, { encoding: 'utf8', mode: 0o600 });
-    try {
-      fs.renameSync(candidateDir, targetDir);
-      return true;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'EEXIST' || code === 'ENOTEMPTY' || code === 'EPERM' || code === 'EACCES' || code === 'ENOENT') {
-        return false;
-      }
-      throw error;
-    }
-  } finally {
-    try { fs.rmSync(candidateDir, { recursive: true, force: true }); } catch { /* best effort */ }
-  }
 }
 
 function readClaimer(claimPath: string): ExternalSourceProviderLockClaimer | null {
@@ -196,35 +187,37 @@ function readClaimer(claimPath: string): ExternalSourceProviderLockClaimer | nul
   return null;
 }
 
-function quarantineStaleClaim(claimDir: string): void {
-  const quarantinePath = `${claimDir}.stale-${process.pid}-${crypto.randomUUID()}`;
-  try {
-    fs.renameSync(claimDir, quarantinePath);
-    fs.rmSync(quarantinePath, { recursive: true, force: true });
-  } catch {
-    // Another contender reclaimed it first; retry from the canonical path.
-  }
-}
-
 function releaseClaim(
   claimDir: string,
-  claimPath: string,
   claimer: ExternalSourceProviderLockClaimer,
 ): void {
-  const current = readClaimer(claimPath);
-  if (!current || current.pid !== claimer.pid || current.token !== claimer.token) return;
-  try { fs.rmSync(claimDir, { recursive: true, force: true }); } catch { /* best effort */ }
+  const detachedPath = `${claimDir}.released-${process.pid}-${crypto.randomUUID()}`;
+  try {
+    fs.renameSync(claimDir, detachedPath);
+    const current = readClaimer(path.join(detachedPath, CLAIM_FILE_NAME));
+    if (current && current.pid === claimer.pid && current.token === claimer.token) {
+      fs.rmSync(detachedPath, { recursive: true, force: true });
+    } else {
+      try { fs.renameSync(detachedPath, claimDir); } catch { /* replacement already published */ }
+    }
+  } catch { /* claim was already detached or replaced */ }
 }
 
 function releaseExternalSourceProviderLock(
   lockDir: string,
-  lockPath: string,
   record: ExternalSourceProviderLockRecord,
 ): void {
-  const current = readLock(lockPath);
-  if (!current || current.pid !== record.pid || current.token !== record.token) return;
+  const detachedPath = `${lockDir}.released-${process.pid}-${crypto.randomUUID()}`;
   try {
-    fs.rmSync(lockDir, { recursive: true, force: true });
+    // Detach the whole generation atomically. A new owner can publish a fresh
+    // canonical lock directory while this old generation is being removed.
+    fs.renameSync(lockDir, detachedPath);
+    const current = readLock(path.join(detachedPath, 'owner.json'));
+    if (current && current.pid === record.pid && current.token === record.token) {
+      fs.rmSync(detachedPath, { recursive: true, force: true });
+    } else {
+      try { fs.renameSync(detachedPath, lockDir); } catch { /* replacement already published */ }
+    }
   } catch {
     // Best effort only.
   }
