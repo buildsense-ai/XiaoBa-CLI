@@ -20,8 +20,15 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { sanitizeProviderErrorMessageForLog } from './provider-error-log-sanitizer';
 
-import { DistillationUnit, CrossFileContinuityOptions, extractDistillationUnit } from './distillation-unit';
+import {
+  DistillationUnit,
+  DistillationTurn,
+  CrossFileContinuityOptions,
+  extractDistillationUnit,
+  MAX_CONTINUITY_TURNS,
+} from './distillation-unit';
 import {
   LogCursorEntry,
   advanceCursor,
@@ -69,6 +76,7 @@ export interface SourceEventIdentity {
   readonly position: number;
   readonly contentHash?: string;
   readonly conversationId?: string;
+  readonly branchId?: string;
   readonly revision?: string;
 }
 
@@ -98,6 +106,21 @@ export interface SessionLogSourceResource {
 
 export type SessionLogSourceReadStatus = 'idle' | 'advanced' | 'exhausted' | 'disabled' | 'failed';
 
+export type ExternalSourceFailureClass =
+  | 'transient'
+  | 'pending'
+  | 'protocol'
+  | 'permission'
+  | 'integrity_conflict'
+  | 'quarantine';
+
+export interface ExternalSourceReadFailure {
+  readonly failureClass: ExternalSourceFailureClass;
+  readonly message: string;
+  readonly resourceRef?: string;
+  readonly eventIdentities?: readonly SourceEventIdentity[];
+}
+
 export interface SourceWorkAccounting {
   /** Stable source events admitted or examined during this read. */
   readonly events: number;
@@ -120,6 +143,11 @@ export interface SessionLogSourceReadResult {
   readonly status: SessionLogSourceReadStatus;
   readonly newCursor: SourceCursor;
   readonly eventIdentities?: readonly SourceEventIdentity[];
+  readonly failure?: ExternalSourceReadFailure;
+  /** Persisted only for external lanes to preserve bounded same-branch continuity. */
+  readonly continuityTail?: readonly DistillationTurn[];
+  /** Whether the next admitted event still has a known continuity gap behind it. */
+  readonly continuityIncomplete?: boolean;
   readonly accounting?: SourceWorkAccounting;
 }
 
@@ -145,6 +173,10 @@ export interface SessionLogSourceDiscoveryContext {
 export interface SessionLogSourceAdapter {
   readonly identity: SessionLogSourceIdentity;
   isEnabled(): boolean;
+  /** Reversibly enable/disable without deleting durable source state (issue #87). */
+  setEnabled?(nextEnabled: boolean): void;
+  /** Durable cursor-state location owned by an external adapter. */
+  getCursorStorePath?(): string | undefined;
   /** Explicitly reports whether this adapter has a documented stable reader. */
   getSupportStatus?(): ExternalSourceFormatStatus;
   getUnsupportedReason?(): string | undefined;
@@ -480,6 +512,28 @@ export class FixtureSessionLogSourceAdapter implements SessionLogSourceAdapter {
  */
 export type ExternalSourceFormatStatus = 'supported' | 'unsupported' | 'disabled';
 
+export interface ExternalSourceIncrementalDiscoveryRequest {
+  readonly cursor: SourceCursor | null;
+  readonly pageToken?: string | null;
+  readonly maxResources?: number;
+}
+
+export interface ExternalSourceActivationResource {
+  readonly resource: SessionLogSourceResource;
+  /**
+   * Future-only activation boundary for this resource, expressed in the same
+   * monotonic position space consumed by read().
+   */
+  readonly activationPosition: number;
+}
+
+export interface ExternalSourceIncrementalDiscoveryResult {
+  readonly resources: readonly SessionLogSourceResource[];
+  readonly activationResources?: readonly ExternalSourceActivationResource[];
+  readonly nextPageToken?: string | null;
+  readonly activationWatermarkPosition?: number;
+}
+
 export interface ExternalSourceReader {
   readonly provider: string;
   readonly reader: string;
@@ -493,6 +547,14 @@ export interface ExternalSourceReader {
    * returned (no historical backfill).
    */
   discoverResources(cursor: SourceCursor | null): readonly SessionLogSourceResource[];
+
+  /**
+   * Optional pagination-aware discovery used by continuous future-only lanes.
+   * Readers that do not implement this hook keep the older one-shot behavior.
+   */
+  discoverIncremental?(
+    request: ExternalSourceIncrementalDiscoveryRequest,
+  ): ExternalSourceIncrementalDiscoveryResult;
 
   /**
    * Read events from a resource starting at the given cursor position.
@@ -538,12 +600,65 @@ export interface ExternalSourceRawEvent {
   readonly eventId: string;
   readonly position: number;
   readonly contentHash?: string;
+  readonly conversationId?: string;
+  readonly branchId?: string;
+  readonly revision?: string;
   readonly distillationUnit?: DistillationUnit;
 }
 
 // ---------------------------------------------------------------------------
 // External Cursor State (durable persistence per external source)
 // ---------------------------------------------------------------------------
+
+export interface ExternalSourceActivationState {
+  readonly initializedAt: string;
+  readonly mode: 'future-only-resource-baseline';
+  readonly watermarkPosition?: number;
+  readonly initialDiscoveryCompleted: boolean;
+}
+
+export interface ExternalSourceDiscoveryState {
+  readonly nextPageToken: string | null;
+  readonly nextResourceIndex: number;
+  readonly updatedAt: string;
+  readonly cycle: number;
+}
+
+export type ExternalResourceLifecycleStatus = 'active' | 'closed';
+
+export interface ExternalDiscoveredResourceState {
+  readonly resource: SessionLogSourceResource;
+  readonly continuityTail: readonly DistillationTurn[];
+  readonly continuityIncomplete: boolean;
+  readonly updatedAt: string;
+  readonly lifecycleStatus?: ExternalResourceLifecycleStatus;
+  readonly lastSeenAt?: string;
+  readonly lastSuccessfulReadAt?: string;
+  readonly lastSeenDiscoveryCycle?: number;
+  readonly missingDiscoveryCycles?: number;
+  readonly missingSince?: string | null;
+  readonly closedAt?: string;
+  readonly closedReason?: 'archived_or_deleted';
+}
+
+export interface ExternalSourceQuarantineEntry {
+  readonly quarantineId: string;
+  readonly resourceRef: string;
+  readonly sourceIdentity?: SessionLogSourceIdentity;
+  readonly identity: SourceEventIdentity;
+  readonly failureClass: Extract<ExternalSourceFailureClass, 'quarantine' | 'integrity_conflict'>;
+  readonly message: string;
+  readonly detectedAt: string;
+  readonly cursorPosition: number;
+}
+
+export interface ExternalSourceTombstoneEntry {
+  readonly tombstoneId: string;
+  readonly resourceRef: string;
+  readonly identity: SourceEventIdentity;
+  readonly createdAt: string;
+  readonly reason: string;
+}
 
 export interface ExternalCursorState {
   readonly schemaVersion: number;
@@ -557,7 +672,17 @@ export interface ExternalCursorState {
    * deduplication when the same stable event is re-discovered.
    */
   readonly processedEventIds: Record<string, string | null>;
+  /**
+   * Stable mutation fingerprints keyed without content hash so rereads can
+   * fail closed when an event changes under the same provider identity.
+   */
+  readonly processedEventFingerprints: Record<string, string>;
   readonly sourceIdentities: Record<string, SessionLogSourceIdentity>;
+  readonly resources: Record<string, ExternalDiscoveredResourceState>;
+  readonly quarantinedEvents: Record<string, ExternalSourceQuarantineEntry>;
+  readonly tombstones: Record<string, ExternalSourceTombstoneEntry>;
+  readonly activation: ExternalSourceActivationState | null;
+  readonly discovery: ExternalSourceDiscoveryState | null;
   /** ISO timestamp of the last state save. */
   readonly updatedAt: string;
 }
@@ -567,15 +692,21 @@ export interface ExternalCursorEntry {
   readonly sourceIdentity: SessionLogSourceIdentity;
   readonly updatedAt: string;
   /** Status of the last read from this resource. */
-  readonly lastStatus?: 'stable' | 'pending' | 'exhausted';
+  readonly lastStatus?: 'stable' | 'pending' | 'exhausted' | 'activated';
 }
 
 export function emptyExternalCursorState(): ExternalCursorState {
   return {
-    schemaVersion: 1,
+    schemaVersion: 3,
     cursors: {},
     processedEventIds: {},
+    processedEventFingerprints: {},
     sourceIdentities: {},
+    resources: {},
+    quarantinedEvents: {},
+    tombstones: {},
+    activation: null,
+    discovery: null,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -583,13 +714,14 @@ export function emptyExternalCursorState(): ExternalCursorState {
 export function loadExternalCursorState(storePath: string): ExternalCursorState {
   if (!fs.existsSync(storePath)) return emptyExternalCursorState();
   const raw = fs.readFileSync(storePath, 'utf-8');
-  let parsed: Partial<ExternalCursorState>;
+  let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(raw) as Partial<ExternalCursorState>;
+    parsed = JSON.parse(raw) as Record<string, unknown>;
   } catch (error) {
     throw new Error(`external cursor state is corrupt: ${storePath}: ${String(error)}`);
   }
-  if (parsed.schemaVersion === undefined || parsed.schemaVersion > 1 || parsed.schemaVersion < 1) {
+  const schemaVersion = Number(parsed.schemaVersion ?? 1);
+  if (!Number.isFinite(schemaVersion) || schemaVersion < 1 || schemaVersion > 3) {
     throw new Error(`external cursor state schema is unsupported: ${String(parsed.schemaVersion)}`);
   }
   if (!parsed.cursors || typeof parsed.cursors !== 'object'
@@ -597,17 +729,121 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
     || !parsed.sourceIdentities || typeof parsed.sourceIdentities !== 'object') {
     throw new Error(`external cursor state is structurally invalid: ${storePath}`);
   }
-  for (const [key, value] of Object.entries(parsed.processedEventIds)) {
+  for (const [key, value] of Object.entries(parsed.processedEventIds as Record<string, unknown>)) {
     if (value !== null && typeof value !== 'string') {
       throw new Error(`external cursor state has invalid dedup value for ${key}`);
     }
   }
+  const processedEventFingerprints = parsed.processedEventFingerprints
+    && typeof parsed.processedEventFingerprints === 'object'
+    ? parsed.processedEventFingerprints as Record<string, unknown>
+    : {};
+  for (const [key, value] of Object.entries(processedEventFingerprints)) {
+    if (typeof value !== 'string') {
+      throw new Error(`external cursor state has invalid event fingerprint for ${key}`);
+    }
+  }
+  const resources = parsed.resources && typeof parsed.resources === 'object'
+    ? parsed.resources as Record<string, unknown>
+    : {};
+  const normalizedResources: Record<string, ExternalDiscoveredResourceState> = {};
+  for (const [resourceRef, value] of Object.entries(resources)) {
+    const record = value as Partial<ExternalDiscoveredResourceState> | null;
+    if (!record || typeof record !== 'object' || !record.resource || typeof record.resource !== 'object') {
+      throw new Error(`external cursor state has invalid resource metadata for ${resourceRef}`);
+    }
+    normalizedResources[resourceRef] = {
+      resource: record.resource as SessionLogSourceResource,
+      continuityTail: Array.isArray(record.continuityTail) ? record.continuityTail as DistillationTurn[] : [],
+      continuityIncomplete: record.continuityIncomplete === true,
+      updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : new Date().toISOString(),
+      lifecycleStatus: record.lifecycleStatus === 'closed' ? 'closed' : 'active',
+      ...(typeof record.lastSeenAt === 'string' ? { lastSeenAt: record.lastSeenAt } : {}),
+      ...(typeof record.lastSuccessfulReadAt === 'string' ? { lastSuccessfulReadAt: record.lastSuccessfulReadAt } : {}),
+      ...(typeof record.lastSeenDiscoveryCycle === 'number' && Number.isFinite(record.lastSeenDiscoveryCycle)
+        ? { lastSeenDiscoveryCycle: Math.max(0, Math.floor(record.lastSeenDiscoveryCycle)) }
+        : {}),
+      ...(typeof record.missingDiscoveryCycles === 'number' && Number.isFinite(record.missingDiscoveryCycles)
+        ? { missingDiscoveryCycles: Math.max(0, Math.floor(record.missingDiscoveryCycles)) }
+        : {}),
+      ...(typeof record.missingSince === 'string' || record.missingSince === null ? { missingSince: record.missingSince } : {}),
+      ...(typeof record.closedAt === 'string' ? { closedAt: record.closedAt } : {}),
+      ...(record.closedReason === 'archived_or_deleted' ? { closedReason: 'archived_or_deleted' as const } : {}),
+    };
+  }
+  const quarantine = parsed.quarantinedEvents && typeof parsed.quarantinedEvents === 'object'
+    ? parsed.quarantinedEvents as Record<string, unknown>
+    : {};
+  const tombstones = parsed.tombstones && typeof parsed.tombstones === 'object'
+    ? parsed.tombstones as Record<string, unknown>
+    : {};
+  const normalizedQuarantine: Record<string, ExternalSourceQuarantineEntry> = {};
+  for (const [quarantineId, value] of Object.entries(quarantine)) {
+    const record = value as Partial<ExternalSourceQuarantineEntry> | null;
+    if (!record || typeof record !== 'object' || !record.identity || typeof record.identity !== 'object') continue;
+    normalizedQuarantine[quarantineId] = {
+      quarantineId,
+      resourceRef: typeof record.resourceRef === 'string' ? record.resourceRef : 'unknown-resource',
+      ...(record.sourceIdentity && typeof record.sourceIdentity === 'object'
+        ? { sourceIdentity: record.sourceIdentity as SessionLogSourceIdentity }
+        : {}),
+      identity: record.identity as SourceEventIdentity,
+      failureClass: record.failureClass === 'integrity_conflict' ? 'integrity_conflict' : 'quarantine',
+      message: typeof record.message === 'string' ? record.message : 'quarantined external event',
+      detectedAt: typeof record.detectedAt === 'string' ? record.detectedAt : new Date().toISOString(),
+      cursorPosition: typeof record.cursorPosition === 'number' && Number.isFinite(record.cursorPosition)
+        ? Math.floor(record.cursorPosition)
+        : -1,
+    };
+  }
+  const normalizedTombstones: Record<string, ExternalSourceTombstoneEntry> = {};
+  for (const [tombstoneId, value] of Object.entries(tombstones)) {
+    const record = value as Partial<ExternalSourceTombstoneEntry> | null;
+    if (!record || typeof record !== 'object' || !record.identity || typeof record.identity !== 'object') continue;
+    normalizedTombstones[tombstoneId] = {
+      tombstoneId: typeof record.tombstoneId === 'string' ? record.tombstoneId : tombstoneId,
+      resourceRef: typeof record.resourceRef === 'string' ? record.resourceRef : 'unknown-resource',
+      identity: record.identity as SourceEventIdentity,
+      createdAt: typeof record.createdAt === 'string' ? record.createdAt : new Date().toISOString(),
+      reason: typeof record.reason === 'string' ? record.reason : 'operator skip',
+    };
+  }
+  const activation = parsed.activation && typeof parsed.activation === 'object'
+    ? parsed.activation as Partial<ExternalSourceActivationState>
+    : null;
+  const discovery = parsed.discovery && typeof parsed.discovery === 'object'
+    ? parsed.discovery as Partial<ExternalSourceDiscoveryState>
+    : null;
   return {
-    schemaVersion: 1,
+    schemaVersion: 3,
     cursors: parsed.cursors as Record<string, ExternalCursorEntry>,
     processedEventIds: parsed.processedEventIds as Record<string, string | null>,
+    processedEventFingerprints: processedEventFingerprints as Record<string, string>,
     sourceIdentities: parsed.sourceIdentities as Record<string, SessionLogSourceIdentity>,
-    updatedAt: parsed.updatedAt ?? new Date().toISOString(),
+    resources: normalizedResources,
+    quarantinedEvents: normalizedQuarantine,
+    tombstones: normalizedTombstones,
+    activation: activation
+      ? {
+        initializedAt: typeof activation.initializedAt === 'string' ? activation.initializedAt : new Date().toISOString(),
+        mode: 'future-only-resource-baseline',
+        ...(typeof activation.watermarkPosition === 'number' ? { watermarkPosition: Math.floor(activation.watermarkPosition) } : {}),
+        initialDiscoveryCompleted: activation.initialDiscoveryCompleted === true,
+      }
+      : null,
+    discovery: discovery
+      ? {
+        nextPageToken: typeof discovery.nextPageToken === 'string' ? discovery.nextPageToken : null,
+        nextResourceIndex: typeof discovery.nextResourceIndex === 'number' && Number.isFinite(discovery.nextResourceIndex)
+          ? Math.max(0, Math.floor(discovery.nextResourceIndex))
+          : 0,
+        updatedAt: typeof discovery.updatedAt === 'string' ? discovery.updatedAt : new Date().toISOString(),
+        cycle: typeof discovery.cycle === 'number' && Number.isFinite(discovery.cycle)
+          ? Math.max(0, Math.floor(discovery.cycle))
+          : 0,
+      }
+      : null,
+    updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
   };
 }
 
@@ -617,10 +853,16 @@ export function saveExternalCursorState(
 ): void {
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
   const payload = {
-    schemaVersion: 1,
+    schemaVersion: 3,
     cursors: state.cursors,
     processedEventIds: state.processedEventIds,
+    processedEventFingerprints: state.processedEventFingerprints,
     sourceIdentities: state.sourceIdentities,
+    resources: state.resources,
+    quarantinedEvents: state.quarantinedEvents,
+    tombstones: state.tombstones,
+    activation: state.activation,
+    discovery: state.discovery,
     updatedAt: new Date().toISOString(),
   };
   const tmpPath = `${storePath}.${process.pid}.${Date.now()}.tmp`;
@@ -771,7 +1013,7 @@ export class FixtureExternalSourceReader implements ExternalSourceReader {
  */
 export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter {
   readonly identity: SessionLogSourceIdentity;
-  private readonly enabled: boolean;
+  private enabled: boolean;
   private readonly reader: ExternalSourceReader | null;
   private cursorStorePath: string;
 
@@ -798,7 +1040,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     this.reader = readerObj ?? null;
     this.cursorStorePath = (cursorStorePath
       ?? options.cursorStorePath
-      ?? defaultExternalCursorStorePath({
+      ?? resolveExternalCursorStorePath({
         provider: options.provider,
         sourceId: options.sourceId,
       }))
@@ -807,6 +1049,15 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
 
   isEnabled(): boolean {
     return this.enabled;
+  }
+
+  /**
+   * Reversibly enable/disable the adapter without deleting durable source
+     * state (issue #87). Disabling preserves cursor/quarantine/tombstone/
+   * capsule state for later re-enablement.
+   */
+  setEnabled(nextEnabled: boolean): void {
+    this.enabled = nextEnabled;
   }
 
   getSupportStatus(): ExternalSourceFormatStatus {
@@ -826,22 +1077,49 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     }
   }
 
-  discoverResources(): readonly SessionLogSourceResource[] {
+  getCursorStorePath(): string | undefined {
+    return this.cursorStorePath || undefined;
+  }
+
+  discoverResources(context: SessionLogSourceDiscoveryContext = {}): readonly SessionLogSourceResource[] {
     if (!this.enabled) return [];
     if (!this.reader) return [];
 
-    // Load the durable external cursor for this source.
-    // The cursor determines what's "future" for discovery.
+    const maxResources = Math.max(1, Math.floor(context.maxResources ?? DEFAULT_EXTERNAL_SOURCE_BUDGET.maxResourcesPerWake));
     const state = this.cursorStorePath
       ? loadExternalCursorState(this.cursorStorePath)
       : emptyExternalCursorState();
-    const currentCursor = readCursorWithSourceIdentityValidation(state, this.identity)
-      ?? maxPersistedSourceCursor(state, this.identity);
+    const withIdentity = registerExternalSourceIdentity(state, this.identity);
 
-    // Delegate to the reader, which applies future-only filtering
-    // based on the cursor. A null cursor means fresh enablement —
-    // only historical backfill skipped, enforced by the reader contract.
-    return this.reader.discoverResources(currentCursor);
+    if (!withIdentity.activation) {
+      if (!hasAnyPersistedExternalProgress(withIdentity, this.identity)) {
+        const initialized = this.initializeFutureOnlyActivation(withIdentity, maxResources);
+        this.persistExternalState(initialized);
+        return [];
+      }
+      const migrated = {
+        ...withIdentity,
+        activation: {
+          initializedAt: new Date().toISOString(),
+          mode: 'future-only-resource-baseline' as const,
+          initialDiscoveryCompleted: true,
+        },
+        discovery: {
+          nextPageToken: null,
+          nextResourceIndex: 0,
+          updatedAt: new Date().toISOString(),
+          cycle: 0,
+        },
+      };
+      const selection = selectExternalResourcesForWake(this.refreshDiscoveryPage(migrated, maxResources), maxResources);
+      this.persistExternalState(selection.state);
+      return selection.resources;
+    }
+
+    const discovered = this.refreshDiscoveryPage(withIdentity, maxResources);
+    const selection = selectExternalResourcesForWake(discovered, maxResources);
+    this.persistExternalState(selection.state);
+    return selection.resources;
   }
 
   read(
@@ -861,10 +1139,10 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       };
     }
 
-    // Load cursor state for this source.
     const state = this.cursorStorePath
       ? loadExternalCursorState(this.cursorStorePath)
       : emptyExternalCursorState();
+    const resourceState = state.resources[resource.resourceRef];
     const sourceCursor = readCursorWithSourceIdentityValidation(state, this.identity, resource.resourceRef);
     const resourceCursor: SourceCursor = sourceCursor
       ? { ...sourceCursor, resourceRef: resource.resourceRef }
@@ -878,16 +1156,21 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     try {
       readerResult = this.reader.read(resource, resourceCursor);
     } catch (error) {
+      const message = redactExternalSourceDiagnostic(error);
       this.markFailed(resource, error);
       return {
         distillationUnit: null,
         advanced: false,
         status: 'failed',
         newCursor: resourceCursor,
+        failure: {
+          failureClass: classifyExternalSourceFailureMessage(message),
+          message,
+          resourceRef: resource.resourceRef,
+        },
       };
     }
 
-    // Pending or empty ranges must not advance the cursor (stability gate).
     if (readerResult.status === 'pending' || readerResult.events.length === 0) {
       return {
         distillationUnit: null,
@@ -897,8 +1180,49 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       };
     }
 
-    // Check for exact duplicates against the processed event ID set.
-    const nonDuplicateEvents = readerResult.events.filter(
+    // A durable operator tombstone authorizes crossing this stable event
+    // identity even if the provider later changes its revision/hash. Apply it
+    // before mutation checks; otherwise a skipped event can never unblock the
+    // cursor after an integrity-conflict quarantine.
+    const unskippedEvents = readerResult.events.filter(
+      event => !isSkippedExternalEvent(state, this.identity, event),
+    );
+    const conflict = unskippedEvents.find(event => hasExternalEventConflict(state, this.identity, event));
+    if (conflict) {
+      return {
+        distillationUnit: null,
+        advanced: false,
+        status: 'failed',
+        eventIdentities: readerResult.events.map(toEventIdentity),
+        newCursor: resourceCursor,
+        failure: {
+          failureClass: 'integrity_conflict',
+          message: redactExternalSourceDiagnostic(`external event changed under the same identity: ${conflict.eventId}`),
+          resourceRef: resource.resourceRef,
+          eventIdentities: [toEventIdentity(conflict)],
+        },
+      };
+    }
+
+    if (resourceState?.resource.firstEventIdentity?.branchId && unskippedEvents.some(event =>
+      event.branchId
+      && event.branchId !== resourceState.resource.firstEventIdentity?.branchId)) {
+      return {
+        distillationUnit: null,
+        advanced: false,
+        status: 'failed',
+        eventIdentities: readerResult.events.map(toEventIdentity),
+        newCursor: resourceCursor,
+        failure: {
+          failureClass: 'integrity_conflict',
+          message: redactExternalSourceDiagnostic(`external branch identity changed for ${resource.resourceRef}`),
+          resourceRef: resource.resourceRef,
+          eventIdentities: readerResult.events.map(toEventIdentity),
+        },
+      };
+    }
+
+    const nonDuplicateEvents = unskippedEvents.filter(
       event => !isDuplicateExternalEvent(state, this.identity, event),
     );
     const accounting: SourceWorkAccounting = {
@@ -911,8 +1235,6 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     };
 
     if (nonDuplicateEvents.length === 0) {
-      // All events were duplicates — acknowledge advancement but produce
-      // no distillation unit.
       const newCursor: SourceCursor = {
         resourceRef: resource.resourceRef,
         position: readerResult.newPosition,
@@ -924,6 +1246,8 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         status: 'advanced',
         eventIdentities: readerResult.events.map(toEventIdentity),
         newCursor,
+        continuityTail: resourceState?.continuityTail,
+        continuityIncomplete: resourceState?.continuityIncomplete,
         accounting,
       };
     }
@@ -936,54 +1260,86 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
         status: 'failed',
         newCursor: resourceCursor,
         eventIdentities: nonDuplicateEvents.map(toEventIdentity),
+        failure: {
+          failureClass: 'quarantine',
+          message: redactExternalSourceDiagnostic(`stable external event is missing a verified DistillationUnit: ${missingUnit.eventId}`),
+          resourceRef: resource.resourceRef,
+          eventIdentities: [toEventIdentity(missingUnit)],
+        },
       };
     }
 
-    // Build a new cursor reflecting the advanced position.
     const newCursor: SourceCursor = {
       resourceRef: resource.resourceRef,
       position: readerResult.newPosition,
       processedCount: resourceCursor.processedCount + nonDuplicateEvents.length,
     };
-    const distillationUnits = nonDuplicateEvents.map(
-      event => (event as ExternalSourceRawEvent & { distillationUnit: DistillationUnit }).distillationUnit,
-    );
+
+    let continuityTail = [...(resourceState?.continuityTail ?? [])];
+    const distillationUnits = nonDuplicateEvents.map(event => {
+      const unit = (event as ExternalSourceRawEvent & { distillationUnit: DistillationUnit }).distillationUnit;
+      const withContinuity: DistillationUnit = {
+        ...unit,
+        continuityTurns: continuityTail.slice(-MAX_CONTINUITY_TURNS),
+      };
+      continuityTail = buildExternalContinuityTail(continuityTail, withContinuity.newTurns);
+      return withContinuity;
+    });
 
     return {
-      // Keep the singular field for source adapters/callers that only know the
-      // original seam. RuntimeLearning consumes distillationUnits when present.
       distillationUnit: distillationUnits[0] ?? null,
       distillationUnits,
       advanced: true,
       status: 'advanced',
       eventIdentities: nonDuplicateEvents.map(toEventIdentity),
       newCursor,
+      continuityTail,
+      continuityIncomplete: false,
       accounting,
     };
   }
 
   acknowledge(resource: SessionLogSourceResource, result: SessionLogSourceReadResult): void {
     if (!this.cursorStorePath) return;
-    const state = loadExternalCursorState(this.cursorStorePath);
+    const state = registerExternalSourceIdentity(loadExternalCursorState(this.cursorStorePath), this.identity);
+    const now = new Date().toISOString();
 
-    // Update cursor for this source.
     const updatedCursors = { ...state.cursors };
     const resourceEntry: ExternalCursorEntry = {
       cursor: result.newCursor,
       sourceIdentity: this.identity,
-      updatedAt: new Date().toISOString(),
-      lastStatus: result.status === 'advanced' ? 'stable' : undefined,
+      updatedAt: now,
+      lastStatus: result.status === 'advanced'
+        ? 'stable'
+        : (state.cursors[resource.resourceRef]?.lastStatus ?? 'exhausted'),
     };
     updatedCursors[resource.resourceRef] = resourceEntry;
-    // Compatibility summary only; resourceRef entries are authoritative.
     updatedCursors[this.identity.sourceId] = resourceEntry;
 
-    // Register processed event IDs from the source-aware read result.
     const updatedEventIds = { ...state.processedEventIds };
+    const updatedFingerprints = { ...state.processedEventFingerprints };
     const identities = result.eventIdentities ?? (resource.firstEventIdentity ? [resource.firstEventIdentity] : []);
     for (const identity of identities) {
-      updatedEventIds[dedupEventKey(this.identity, identity)] = normalizeContentHash(identity.contentHash);
+      updatedEventIds[buildExternalEventDedupKey(this.identity, identity)] = normalizeContentHash(identity.contentHash);
+      updatedFingerprints[buildExternalStableEventKey(this.identity, identity)] = fingerprintEventIdentity(identity);
     }
+
+    const existingResource = state.resources[resource.resourceRef];
+    const updatedResources = {
+      ...state.resources,
+      [resource.resourceRef]: {
+        resource,
+        continuityTail: result.continuityTail ?? existingResource?.continuityTail ?? [],
+        continuityIncomplete: result.continuityIncomplete ?? existingResource?.continuityIncomplete ?? false,
+        updatedAt: now,
+        lifecycleStatus: existingResource?.lifecycleStatus ?? 'active',
+        lastSeenAt: existingResource?.lastSeenAt ?? now,
+        lastSeenDiscoveryCycle: existingResource?.lastSeenDiscoveryCycle,
+        missingDiscoveryCycles: 0,
+        missingSince: null,
+        lastSuccessfulReadAt: now,
+      },
+    };
 
     const sourceIdentities = {
       ...state.sourceIdentities,
@@ -994,16 +1350,117 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       ...state,
       cursors: updatedCursors,
       sourceIdentities,
+      resources: updatedResources,
       processedEventIds: updatedEventIds,
+      processedEventFingerprints: updatedFingerprints,
+      updatedAt: now,
     });
   }
 
   markFailed(resource: SessionLogSourceResource, error: unknown): void {
     void resource;
-    void error;
     Logger.warning(
-      `[ExternalSessionLogSourceAdapter] ${this.identity.sourceId} resource failed: ${toErrorMessage(error)}`,
+      `[ExternalSessionLogSourceAdapter] ${this.identity.sourceId} resource failed: ${redactExternalSourceDiagnostic(error)}`,
     );
+  }
+
+  private initializeFutureOnlyActivation(
+    state: ExternalCursorState,
+    maxResources: number,
+  ): ExternalCursorState {
+    const cycle = 1;
+    const discovery = this.discoverIncrementalPage(state, null, null, maxResources);
+    let withResources = applyExternalDiscoveryPage(state, this.identity, discovery, cycle);
+    if (discovery.nextPageToken == null) {
+      withResources = finalizeExternalDiscoveryCycle(withResources, cycle);
+    }
+    return {
+      ...withResources,
+      activation: {
+        initializedAt: new Date().toISOString(),
+        mode: 'future-only-resource-baseline',
+        ...(typeof discovery.activationWatermarkPosition === 'number'
+          ? { watermarkPosition: Math.floor(discovery.activationWatermarkPosition) }
+          : {}),
+        initialDiscoveryCompleted: discovery.nextPageToken == null,
+      },
+      discovery: {
+        nextPageToken: discovery.nextPageToken ?? null,
+        nextResourceIndex: 0,
+        updatedAt: new Date().toISOString(),
+        cycle,
+      },
+    };
+  }
+
+  private refreshDiscoveryPage(
+    state: ExternalCursorState,
+    maxResources: number,
+  ): ExternalCursorState {
+    const discoveryState = state.discovery;
+    const startingNewCycle = (discoveryState?.nextPageToken ?? null) == null;
+    const cycle = startingNewCycle
+      ? Math.max(1, (discoveryState?.cycle ?? 0) + 1)
+      : Math.max(1, discoveryState?.cycle ?? 1);
+    const discovery = this.discoverIncrementalPage(
+      state,
+      maxPersistedSourceCursor(state, this.identity),
+      discoveryState?.nextPageToken ?? null,
+      maxResources,
+    );
+    let refreshed = applyExternalDiscoveryPage(state, this.identity, discovery, cycle);
+    if (discovery.nextPageToken == null) {
+      refreshed = finalizeExternalDiscoveryCycle(refreshed, cycle);
+    }
+    const initialDiscoveryCompleted = state.activation?.initialDiscoveryCompleted === true
+      || discovery.nextPageToken == null;
+    return {
+      ...refreshed,
+      activation: state.activation
+        ? {
+          ...state.activation,
+          initialDiscoveryCompleted,
+          ...(typeof discovery.activationWatermarkPosition === 'number'
+            ? { watermarkPosition: Math.floor(discovery.activationWatermarkPosition) }
+            : {}),
+        }
+        : state.activation,
+      discovery: {
+        nextPageToken: discovery.nextPageToken ?? null,
+        nextResourceIndex: discoveryState?.nextResourceIndex ?? 0,
+        updatedAt: new Date().toISOString(),
+        cycle,
+      },
+    };
+  }
+
+  private discoverIncrementalPage(
+    state: ExternalCursorState,
+    cursor: SourceCursor | null,
+    pageToken: string | null,
+    maxResources: number,
+  ): ExternalSourceIncrementalDiscoveryResult {
+    if (this.reader?.discoverIncremental) {
+      return this.reader.discoverIncremental({
+        cursor,
+        pageToken,
+        maxResources,
+      });
+    }
+    const resources = this.reader?.discoverResources(cursor) ?? [];
+    return {
+      resources,
+      activationResources: resources.map(resource => ({
+        resource,
+        activationPosition: normalizeActivationPosition(resource.firstEventIdentity?.position),
+      })),
+      nextPageToken: null,
+    };
+  }
+
+  private persistExternalState(state: ExternalCursorState): void {
+    if (!this.cursorStorePath) return;
+    saveExternalCursorState(this.cursorStorePath, state);
   }
 }
 
@@ -1070,6 +1527,13 @@ export interface SourceFailureState {
    * discovery). After the deadline, the source is retried on the next wake.
    */
   readonly suspendedUntil: string | null;
+  readonly failureClass?: ExternalSourceFailureClass;
+  readonly nextRetryAt?: string | null;
+  readonly requiresOperatorAction?: boolean;
+  readonly resourceRef?: string;
+  readonly eventId?: string;
+  readonly lastAttemptedAt?: string | null;
+  readonly lastSuccessfulReadAt?: string | null;
 }
 
 /**
@@ -1080,6 +1544,7 @@ export type SessionLogSourceStatus =
   | 'quota_reached' // Per-source budget exhausted; remaining resources deferred
   | 'backoff'       // Source is in failure backoff (suspendedUntil not reached)
   | 'failed'        // Adapter threw on one or more resources this pass
+  | 'locked'        // Another process owns the provider-scoped single-writer lock
   | 'drained';      // Source skipped due to graceful runtime drain
 
 // ---------------------------------------------------------------------------
@@ -1103,15 +1568,46 @@ export interface SessionLogSourceReport {
   /** Stable-reader support is explicit; unsupported enabled lanes are visible. */
   readonly supportStatus?: ExternalSourceFormatStatus;
   readonly unsupportedReason?: string;
+  readonly provider?: string;
+  readonly reader?: string;
+  readonly selectedProvider?: string;
+  readonly cursorProgress?: {
+    readonly maxPosition: number;
+    readonly activeResources: number;
+    readonly closedResources: number;
+    readonly quarantinedEvents: number;
+    readonly tombstones: number;
+  };
+  readonly lastSuccessfulReadAt?: string;
+  readonly nextRetryAt?: string | null;
+  readonly lastError?: string;
+  readonly failureClass?: ExternalSourceFailureClass;
+  readonly requiresOperatorAction?: boolean;
+  readonly nextAction?: 'wait_for_retry' | 'retry_next_wake' | 'repair_source_then_retry' | 'retry_or_skip_quarantine';
+  readonly drainState?: 'idle' | 'draining';
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+export function redactExternalSourceDiagnostic(error: unknown, maxLength = 240): string {
+  const normalized = sanitizeProviderErrorMessageForLog(error)
+    .replace(/\b[A-Za-z]:\\(?:[^\\\s]+\\)*[^\s]*/g, '<path>')
+    .replace(/\/(?:Users|home|tmp|private|var\/log)\/[^\s)]+/g, '<path>')
+    .trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+export function classifyExternalSourceFailureMessage(message: string): ExternalSourceFailureClass {
+  const normalized = message.toLowerCase();
+  if (/quarantine|external evidence limit|oversized|unsafe/.test(normalized)) return 'quarantine';
+  if (/integrity|changed under the same identity|branch identity changed/.test(normalized)) return 'integrity_conflict';
+  if (/protocol|json|schema|provider mismatch|unsupported/.test(normalized)) return 'protocol';
+  if (/auth|unauthori|forbidden|permission denied|access denied/.test(normalized)) return 'permission';
+  if (/pending/.test(normalized)) return 'pending';
+  return 'transient';
 }
 
 function resolveSessionLogsRoot(logsRoot: string): string {
@@ -1170,7 +1666,7 @@ function sanitizeSourceToken(value: string): string {
  * Default durable cursor store path for adapters that do not explicitly configure
  * a cursor state path.
  */
-function defaultExternalCursorStorePath(args: {
+export function resolveExternalCursorStorePath(args: {
   provider: string;
   sourceId: string;
 }): string {
@@ -1230,6 +1726,164 @@ function readCursorWithSourceIdentityValidation(
   return entry.cursor;
 }
 
+function registerExternalSourceIdentity(
+  state: ExternalCursorState,
+  identity: SessionLogSourceIdentity,
+): ExternalCursorState {
+  if (state.sourceIdentities[identity.sourceId]?.provider === identity.provider
+    && state.sourceIdentities[identity.sourceId]?.reader === identity.reader) {
+    return state;
+  }
+  return {
+    ...state,
+    sourceIdentities: {
+      ...state.sourceIdentities,
+      [identity.sourceId]: identity,
+    },
+  };
+}
+
+function hasAnyPersistedExternalProgress(
+  state: ExternalCursorState,
+  identity: SessionLogSourceIdentity,
+): boolean {
+  return Object.values(state.cursors).some(entry =>
+    entry.sourceIdentity?.sourceId === identity.sourceId
+    && entry.sourceIdentity.provider === identity.provider
+    && entry.sourceIdentity.reader === identity.reader,
+  ) || Object.keys(state.processedEventIds).length > 0 || Object.keys(state.resources).length > 0;
+}
+
+function applyExternalDiscoveryPage(
+  state: ExternalCursorState,
+  identity: SessionLogSourceIdentity,
+  discovery: ExternalSourceIncrementalDiscoveryResult,
+  cycle: number,
+): ExternalCursorState {
+  let nextState = registerExternalSourceIdentity(state, identity);
+  const activationResources = discovery.activationResources
+    ?? discovery.resources.map(resource => ({
+      resource,
+      activationPosition: normalizeActivationPosition(resource.firstEventIdentity?.position),
+    }));
+  const now = new Date().toISOString();
+  const nextResources = { ...nextState.resources };
+  const nextCursors = { ...nextState.cursors };
+
+  for (const item of activationResources) {
+    const existing = nextResources[item.resource.resourceRef];
+    nextResources[item.resource.resourceRef] = {
+      resource: item.resource,
+      continuityTail: existing?.continuityTail ?? [],
+      continuityIncomplete: existing?.continuityIncomplete ?? (item.activationPosition > -1),
+      updatedAt: now,
+      lifecycleStatus: existing?.lifecycleStatus ?? 'active',
+      lastSeenAt: now,
+      lastSeenDiscoveryCycle: cycle,
+      missingDiscoveryCycles: 0,
+      missingSince: null,
+      ...(existing?.lastSuccessfulReadAt ? { lastSuccessfulReadAt: existing.lastSuccessfulReadAt } : {}),
+      ...(existing?.closedAt ? { closedAt: existing.closedAt } : {}),
+      ...(existing?.closedReason ? { closedReason: existing.closedReason } : {}),
+    };
+    const existingCursor = readCursorWithSourceIdentityValidation(nextState, identity, item.resource.resourceRef);
+    if (!existingCursor) {
+      nextCursors[item.resource.resourceRef] = {
+        cursor: {
+          resourceRef: item.resource.resourceRef,
+          position: item.activationPosition,
+          processedCount: 0,
+        },
+        sourceIdentity: identity,
+        updatedAt: now,
+        lastStatus: 'activated',
+      };
+    }
+  }
+
+  return {
+    ...nextState,
+    resources: nextResources,
+    cursors: nextCursors,
+    updatedAt: now,
+  };
+}
+
+function finalizeExternalDiscoveryCycle(
+  state: ExternalCursorState,
+  cycle: number,
+): ExternalCursorState {
+  const now = new Date().toISOString();
+  let changed = false;
+  const nextResources: Record<string, ExternalDiscoveredResourceState> = {};
+  for (const [resourceRef, resourceState] of Object.entries(state.resources)) {
+    if (resourceState.lastSeenDiscoveryCycle === cycle) {
+      nextResources[resourceRef] = resourceState;
+      continue;
+    }
+    const missingDiscoveryCycles = (resourceState.missingDiscoveryCycles ?? 0) + 1;
+    const shouldClose = missingDiscoveryCycles >= 2;
+    nextResources[resourceRef] = {
+      ...resourceState,
+      lifecycleStatus: shouldClose ? 'closed' : (resourceState.lifecycleStatus ?? 'active'),
+      missingDiscoveryCycles,
+      missingSince: resourceState.missingSince ?? now,
+      ...(shouldClose ? { closedAt: resourceState.closedAt ?? now, closedReason: 'archived_or_deleted' as const } : {}),
+      updatedAt: now,
+    };
+    changed = true;
+  }
+  if (!changed) return state;
+  return {
+    ...state,
+    resources: nextResources,
+    updatedAt: now,
+  };
+}
+
+function selectExternalResourcesForWake(
+  state: ExternalCursorState,
+  maxResources: number,
+): { state: ExternalCursorState; resources: readonly SessionLogSourceResource[] } {
+  const resourceRefs = Object.keys(state.resources)
+    .sort()
+    .filter(resourceRef => state.resources[resourceRef]?.lifecycleStatus !== 'closed')
+    .filter(resourceRef => !hasBlockingQuarantineForResource(state, resourceRef));
+  if (resourceRefs.length === 0) return { state, resources: [] };
+  const start = state.discovery?.nextResourceIndex ?? 0;
+  const count = Math.min(Math.max(0, maxResources), resourceRefs.length);
+  const selected: SessionLogSourceResource[] = [];
+  for (let offset = 0; offset < count; offset++) {
+    const ref = resourceRefs[(start + offset) % resourceRefs.length]!;
+    selected.push(state.resources[ref]!.resource);
+  }
+  const nextIndex = resourceRefs.length === 0 ? 0 : (start + selected.length) % resourceRefs.length;
+  return {
+    resources: selected,
+    state: {
+      ...state,
+      discovery: {
+        nextPageToken: state.discovery?.nextPageToken ?? null,
+        nextResourceIndex: nextIndex,
+        updatedAt: new Date().toISOString(),
+        cycle: state.discovery?.cycle ?? 0,
+      },
+    },
+  };
+}
+
+function normalizeActivationPosition(position: number | undefined): number {
+  if (!Number.isFinite(position)) return -1;
+  return Math.max(-1, Math.floor(position!));
+}
+
+function buildExternalContinuityTail(
+  priorTail: readonly DistillationTurn[],
+  newTurns: readonly DistillationTurn[],
+): DistillationTurn[] {
+  return [...priorTail, ...newTurns].slice(-MAX_CONTINUITY_TURNS);
+}
+
 /**
  * Canonical event identity used for stable external dedup state.
  */
@@ -1238,17 +1892,39 @@ function toEventIdentity(event: ExternalSourceRawEvent): SourceEventIdentity {
     eventId: event.eventId,
     position: event.position,
     contentHash: event.contentHash,
+    conversationId: event.conversationId,
+    branchId: event.branchId,
+    revision: event.revision,
   };
+}
+
+export function buildExternalStableEventKey(
+  sourceIdentity: SessionLogSourceIdentity,
+  identity: SourceEventIdentity,
+): string {
+  return [
+    sourceIdentity.sourceId,
+    sourceIdentity.provider,
+    identity.eventId,
+    identity.position,
+    identity.conversationId ?? '',
+    identity.branchId ?? '',
+  ].join('::');
+}
+
+function fingerprintEventIdentity(identity: SourceEventIdentity): string {
+  return [identity.revision ?? '', normalizeContentHash(identity.contentHash) ?? ''].join('::');
 }
 
 /**
  * Stable, strict dedup key includes source identity + event identity fields.
  */
-function dedupEventKey(
+export function buildExternalEventDedupKey(
   sourceIdentity: SessionLogSourceIdentity,
   identity: SourceEventIdentity,
 ): string {
   const conversationPart = identity.conversationId ? `|conversation=${identity.conversationId}` : '';
+  const branchPart = identity.branchId ? `|branch=${identity.branchId}` : '';
   const revisionPart = identity.revision ? `|revision=${identity.revision}` : '';
   return [
     sourceIdentity.sourceId,
@@ -1256,6 +1932,7 @@ function dedupEventKey(
     identity.eventId,
     identity.position,
     conversationPart,
+    branchPart,
     revisionPart,
     normalizeContentHash(identity.contentHash) ?? '',
   ].join('::');
@@ -1263,6 +1940,17 @@ function dedupEventKey(
 
 function normalizeContentHash(contentHash: string | undefined): string | null {
   return contentHash ? String(contentHash) : null;
+}
+
+function hasExternalEventConflict(
+  state: ExternalCursorState,
+  sourceIdentity: SessionLogSourceIdentity,
+  event: ExternalSourceRawEvent,
+): boolean {
+  const identity = toEventIdentity(event);
+  const storedFingerprint = state.processedEventFingerprints[buildExternalStableEventKey(sourceIdentity, identity)];
+  if (!storedFingerprint) return false;
+  return storedFingerprint !== fingerprintEventIdentity(identity);
 }
 
 function isDuplicateExternalEvent(
@@ -1273,7 +1961,7 @@ function isDuplicateExternalEvent(
   const identity = toEventIdentity(event);
   const normalizedHash = normalizeContentHash(identity.contentHash);
 
-  const key = dedupEventKey(sourceIdentity, identity);
+  const key = buildExternalEventDedupKey(sourceIdentity, identity);
   if (Object.prototype.hasOwnProperty.call(state.processedEventIds, key)) {
     return state.processedEventIds[key] === normalizedHash;
   }
@@ -1281,4 +1969,131 @@ function isDuplicateExternalEvent(
   // Backward compatibility: allow older states that only keyed by raw event id.
   if (!Object.prototype.hasOwnProperty.call(state.processedEventIds, identity.eventId)) return false;
   return state.processedEventIds[identity.eventId] === normalizedHash;
+}
+
+function isSkippedExternalEvent(
+  state: ExternalCursorState,
+  sourceIdentity: SessionLogSourceIdentity,
+  event: ExternalSourceRawEvent,
+): boolean {
+  const identity = toEventIdentity(event);
+  return Object.prototype.hasOwnProperty.call(
+    state.tombstones,
+    buildExternalStableEventKey(sourceIdentity, identity),
+  ) || Object.prototype.hasOwnProperty.call(
+    state.tombstones,
+    buildExternalEventDedupKey(sourceIdentity, identity),
+  );
+}
+
+function hasBlockingQuarantineForResource(
+  state: ExternalCursorState,
+  resourceRef: string,
+): boolean {
+  return Object.values(state.quarantinedEvents).some(entry => entry.resourceRef === resourceRef);
+}
+
+export function listExternalSourceQuarantines(
+  storePath: string,
+): readonly ExternalSourceQuarantineEntry[] {
+  return Object.values(loadExternalCursorState(storePath).quarantinedEvents)
+    .sort((left, right) => left.detectedAt.localeCompare(right.detectedAt));
+}
+
+export function retryExternalSourceQuarantine(
+  storePath: string,
+  quarantineId: string,
+): boolean {
+  const state = loadExternalCursorState(storePath);
+  if (!state.quarantinedEvents[quarantineId]) return false;
+  const nextQuarantine = { ...state.quarantinedEvents };
+  delete nextQuarantine[quarantineId];
+  saveExternalCursorState(storePath, {
+    ...state,
+    quarantinedEvents: nextQuarantine,
+    updatedAt: new Date().toISOString(),
+  });
+  return true;
+}
+
+export function skipExternalSourceQuarantine(
+  storePath: string,
+  quarantineId: string,
+  reason: string,
+): boolean {
+  const state = loadExternalCursorState(storePath);
+  const entry = state.quarantinedEvents[quarantineId];
+  if (!entry) return false;
+  const sourceIdentity = entry.sourceIdentity ?? Object.values(state.sourceIdentities).find(identity => (
+    quarantineId.startsWith(`${identity.sourceId}::${identity.provider}::`)
+  ));
+  if (!sourceIdentity) return false;
+  const nextQuarantine = { ...state.quarantinedEvents };
+  delete nextQuarantine[quarantineId];
+  const tombstoneKey = buildExternalStableEventKey(sourceIdentity, entry.identity);
+  saveExternalCursorState(storePath, {
+    ...state,
+    quarantinedEvents: nextQuarantine,
+    tombstones: {
+      ...state.tombstones,
+      [tombstoneKey]: {
+        tombstoneId: quarantineId,
+        resourceRef: entry.resourceRef,
+        identity: entry.identity,
+        createdAt: new Date().toISOString(),
+        reason: redactExternalSourceDiagnostic(reason || 'operator skip'),
+      },
+    },
+    updatedAt: new Date().toISOString(),
+  });
+  return true;
+}
+
+/**
+ * Close an external resource locally after the operator confirms the upstream
+ * resource has been deleted or archived. Closing preserves the resource's
+ * cursor, Capsules, Episodes, Capabilities, and Transition Audits — it only
+ * marks the resource so it is no longer selected for future reads (issue #87).
+ */
+export function closeExternalResource(
+  storePath: string,
+  resourceRef: string,
+  reason: 'deleted' | 'archived' | 'operator',
+): boolean {
+  const state = loadExternalCursorState(storePath);
+  const resource = state.resources[resourceRef];
+  if (!resource) return false;
+  if (resource.lifecycleStatus === 'closed') return false;
+  const now = new Date().toISOString();
+  const nextResources = {
+    ...state.resources,
+    [resourceRef]: {
+      ...resource,
+      lifecycleStatus: 'closed' as const,
+      closedAt: resource.closedAt ?? now,
+      closedReason: 'archived_or_deleted' as const,
+      updatedAt: now,
+    },
+  };
+  saveExternalCursorState(storePath, {
+    ...state,
+    resources: nextResources,
+    updatedAt: now,
+  });
+  return true;
+}
+
+/**
+ * Operator-triggered discovery-cycle finalization. Closes any resource that
+ * has been missing for at least two discovery cycles (issue #87). Exposed so
+ * a runtime can advance the lifecycle without waiting for the next wake.
+ */
+export function finalizeExternalDiscoveryCycleForStore(
+  storePath: string,
+  cycle: number,
+): ExternalCursorState {
+  const state = loadExternalCursorState(storePath);
+  const next = finalizeExternalDiscoveryCycle(state, cycle);
+  if (next !== state) saveExternalCursorState(storePath, next);
+  return next;
 }

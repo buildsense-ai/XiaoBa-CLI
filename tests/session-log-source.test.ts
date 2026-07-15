@@ -158,6 +158,9 @@ function setupEnv(settlementWindowMs = 0): TestEnv {
     XIAOBA_RUNTIME_ROOT: process.env.XIAOBA_RUNTIME_ROOT,
     XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE: process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE,
     XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED,
+    XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER,
+    XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID: process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID,
+    XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND: process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND,
   };
 
   process.env.DISTILLATION_HEARTBEAT_ENABLED = 'true';
@@ -170,6 +173,9 @@ function setupEnv(settlementWindowMs = 0): TestEnv {
   process.env.XIAOBA_RUNTIME_ROOT = root;
   process.env.XIAOBA_SKILL_EVOLUTION_REASSESSMENT_MANIFEST_FILE = reassessmentManifestPath;
   delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED;
+  delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER;
+  delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID;
+  delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND;
 
   const skillEvolution = new SkillEvolutionRuntime({
     workingDirectory: root,
@@ -400,13 +406,24 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
       assert.equal(config.externalSessionLogSourcesEnabled, true);
     });
 
-    test('opt-in exposes unsupported provider lanes instead of silently doing nothing', () => {
+    test('opt-in without a selected provider keeps the default wake internal-only', () => {
       process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
+      delete process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER;
       const runtimeLearning = createRuntimeLearning(env);
       const external = runtimeLearning.getSessionLogSources()
         .filter(source => source.identity.category === 'external');
-      assert.deepEqual(external.map(source => source.identity.provider), ['codex', 'pi', 'claude-code']);
-      assert.ok(external.every(source => source.getSupportStatus?.() === 'unsupported'));
+      assert.deepEqual(external.map(source => source.identity.provider), []);
+    });
+
+    test('selected provider config is exposed through heartbeat config', async () => {
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_SOURCES_ENABLED = 'true';
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER = 'codex';
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_SOURCE_ID = 'external-codex';
+      process.env.XIAOBA_EXTERNAL_SESSION_LOG_XURL_COMMAND = '/tmp/fake-xurl';
+      const config = getDistillationHeartbeatConfig(env.root);
+      assert.equal(config.externalSessionLogSelectedProvider, 'codex');
+      assert.equal(config.externalSessionLogSelectedSourceId, 'external-codex');
+      assert.equal(config.externalSessionLogXurlCommand, '/tmp/fake-xurl');
     });
 
     test('default wake with external adapter performs no external reads', async () => {
@@ -580,6 +597,55 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
       assert.ok(!durableText.includes('batch-secret'));
       assert.ok(!durableText.includes('/Users/private/project'));
       assert.ok(!durableText.includes('external system prompt'));
+    });
+
+    test('external batch quarantine identifies the event that actually failed', async () => {
+      const fixtureFile1 = path.join(env.root, 'fixture', 'chat', 'external-batch-good.jsonl');
+      const fixtureFile2 = path.join(env.root, 'fixture', 'chat', 'external-batch-oversized.jsonl');
+      const [delivery1, acceptance1] = deliveryPair();
+      const [delivery2, acceptance2] = deliveryPair();
+      delivery2.assistant.tool_calls[0]!.arguments = { payload: 'x'.repeat(4 * 1024) };
+      const units = [
+        buildDistillationUnitFromFile([delivery1, acceptance1], fixtureFile1),
+        buildDistillationUnitFromFile([delivery2, acceptance2], fixtureFile2),
+      ];
+      const resource: SessionLogSourceResource = {
+        resourceRef: 'external://batch-failure/resource',
+        firstEventIdentity: { eventId: 'batch-good', position: 0 },
+      };
+      const source: SessionLogSourceAdapter = {
+        identity: {
+          sourceId: 'external-batch-failure',
+          label: 'External Batch Failure Fixture',
+          category: 'external',
+          provider: 'fixture',
+          reader: 'batch',
+        },
+        isEnabled: () => true,
+        discoverResources: () => [resource],
+        read: () => ({
+          distillationUnit: units[0]!,
+          distillationUnits: units,
+          eventIdentities: [
+            { eventId: 'batch-good', position: 0, contentHash: 'batch-good-hash' },
+            { eventId: 'batch-oversized', position: 1, contentHash: 'batch-oversized-hash' },
+          ],
+          advanced: true,
+          status: 'advanced',
+          newCursor: { resourceRef: resource.resourceRef, position: 2, processedCount: 2 },
+        }),
+        acknowledge: () => assert.fail('failed batch must remain unacknowledged'),
+        markFailed: () => {},
+      };
+
+      const runtimeLearning = createRuntimeLearning(env, [source]);
+      const result = await runtimeLearning.wake('startup');
+      const quarantines = runtimeLearning.listExternalSourceQuarantines('fixture', 'external-batch-failure');
+
+      assert.equal(result.discovery.sources[0]!.status, 'failed');
+      assert.equal(quarantines.length, 1);
+      assert.equal(quarantines[0]!.identity.eventId, 'batch-oversized');
+      assert.equal(quarantines[0]!.identity.position, 1);
     });
 
     test('replay repairs provenance before cursor advancement after a persistence interruption', async () => {
@@ -819,9 +885,12 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
     describe('External cursor state persistence', () => {
       test('emptyExternalCursorState returns valid state', () => {
         const state = emptyExternalCursorState();
-        assert.equal(state.schemaVersion, 1);
+        assert.equal(state.schemaVersion, 3);
         assert.deepEqual(state.cursors, {});
         assert.deepEqual(state.processedEventIds, {});
+        assert.deepEqual(state.processedEventFingerprints, {});
+        assert.equal(state.activation, null);
+        assert.equal(state.discovery, null);
         assert.ok(typeof state.updatedAt === 'string');
       });
 
@@ -831,19 +900,41 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
         const original = emptyExternalCursorState();
         original.cursors['external-pi'] = {
           cursor: { resourceRef: 'pi://conversation/1', position: 5, processedCount: 3 },
+          sourceIdentity: {
+            sourceId: 'external-pi',
+            label: 'External Source (pi)',
+            category: 'external',
+            provider: 'pi',
+            reader: 'xurl',
+          },
           updatedAt: new Date().toISOString(),
           lastStatus: 'stable',
         };
         original.processedEventIds['pi://conv/1/event-1'] = 'hash-a';
+        original.processedEventFingerprints['pi::event-1'] = 'rev-a::hash-a';
         original.processedEventIds['pi://conv/1/event-2'] = 'hash-b';
+        original.activation = {
+          initializedAt: new Date().toISOString(),
+          mode: 'future-only-resource-baseline',
+          watermarkPosition: 5,
+          initialDiscoveryCompleted: true,
+        };
+        original.discovery = {
+          nextPageToken: 'page-2',
+          nextResourceIndex: 1,
+          updatedAt: new Date().toISOString(),
+        };
 
         saveExternalCursorState(storePath, original);
         const loaded = loadExternalCursorState(storePath);
 
-        assert.equal(loaded.schemaVersion, 1);
+        assert.equal(loaded.schemaVersion, 3);
         assert.ok(loaded.cursors['external-pi']);
         assert.equal(loaded.cursors['external-pi'].cursor.position, 5);
         assert.equal(loaded.processedEventIds['pi://conv/1/event-1'], 'hash-a');
+        assert.equal(loaded.processedEventFingerprints['pi::event-1'], 'rev-a::hash-a');
+        assert.equal(loaded.activation?.watermarkPosition, 5);
+        assert.equal(loaded.discovery?.nextPageToken, 'page-2');
       });
 
       test('load from missing path returns empty state', () => {
@@ -1111,6 +1202,7 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
           enabled: true,
         }, path.join(env.root, 'data', 'ext-cursor-missing-unit.json'));
 
+        assert.equal(adapter.discoverResources().length, 0, 'first enablement is metadata-only');
         const resources = adapter.discoverResources();
         assert.equal(resources.length, 1);
         const result = adapter.read(resources[0], {
@@ -1291,13 +1383,10 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
         }, storePath);
 
         const resources2 = adapter2.discoverResources();
-        // After cursor, only resources past position 0 should be returned
-        assert.equal(resources2.length, 1, 'only the second resource after restart');
-        assert.equal(
-          resources2[0].firstEventIdentity!.position,
-          1,
-          'second resource has position 1',
-        );
+        assert.ok(resources2.length >= 1, 'restart still exposes known resources for bounded continuation');
+        assert.ok(resources2.some(resource => resource.firstEventIdentity!.position === 1));
+        const persisted = loadExternalCursorState(storePath);
+        assert.equal(persisted.cursors[resources1[0].resourceRef]?.cursor.position, result1.newCursor.position);
       });
 
       test('exact dedup: same eventId + same contentHash skipped', () => {

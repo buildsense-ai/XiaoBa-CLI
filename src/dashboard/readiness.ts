@@ -87,9 +87,26 @@ export interface DashboardRuntimeLearningStatus {
     category: string;
     status?: string;
     supportStatus?: string;
+    provider?: string;
+    reader?: string;
+    selectedProvider?: string;
     resourcesDiscovered: number;
     unitsProcessed: number;
     accounting?: { events: number; bytes: number; elapsedMs: number };
+    cursorProgress?: {
+      maxPosition: number;
+      activeResources: number;
+      closedResources: number;
+      quarantinedEvents: number;
+      tombstones: number;
+    };
+    lastSuccessfulReadAt?: string;
+    nextRetryAt?: string;
+    lastError?: string;
+    failureClass?: string;
+    requiresOperatorAction?: boolean;
+    nextAction?: string;
+    drainState?: string;
   }>;
 }
 
@@ -212,9 +229,22 @@ function readRuntimeLearningStatus(
           category: typeof report.category === 'string' ? report.category : 'unknown',
           ...(typeof report.status === 'string' ? { status: report.status } : {}),
           ...(typeof report.supportStatus === 'string' ? { supportStatus: report.supportStatus } : {}),
+          ...(typeof report.provider === 'string' ? { provider: report.provider } : {}),
+          ...(typeof report.reader === 'string' ? { reader: report.reader } : {}),
+          ...(typeof report.selectedProvider === 'string' ? { selectedProvider: report.selectedProvider } : {}),
           resourcesDiscovered: toNonNegativeInteger(report.resourcesDiscovered),
           unitsProcessed: toNonNegativeInteger(report.unitsProcessed),
           ...(isAccountingRecord(report.accounting) ? { accounting: report.accounting } : {}),
+          ...(isCursorProgressRecord(report.cursorProgress) ? { cursorProgress: report.cursorProgress } : {}),
+          ...(typeof report.lastSuccessfulReadAt === 'string' ? { lastSuccessfulReadAt: report.lastSuccessfulReadAt } : {}),
+          ...(typeof report.nextRetryAt === 'string' ? { nextRetryAt: report.nextRetryAt } : {}),
+          ...(typeof report.lastError === 'string' ? { lastError: report.lastError } : {}),
+          ...(typeof report.failureClass === 'string' ? { failureClass: report.failureClass } : {}),
+          ...(typeof report.requiresOperatorAction === 'boolean'
+            ? { requiresOperatorAction: report.requiresOperatorAction }
+            : {}),
+          ...(typeof report.nextAction === 'string' ? { nextAction: report.nextAction } : {}),
+          ...(typeof report.drainState === 'string' ? { drainState: report.drainState } : {}),
         }));
     }
   }
@@ -250,6 +280,22 @@ function isBacklogRecord(value: unknown): value is NonNullable<DashboardRuntimeL
 function isAccountingRecord(value: unknown): value is { events: number; bytes: number; elapsedMs: number } {
   return isRecord(value) && [value.events, value.bytes, value.elapsedMs]
     .every(item => typeof item === 'number' && Number.isFinite(item) && item >= 0);
+}
+
+function isCursorProgressRecord(value: unknown): value is {
+  maxPosition: number;
+  activeResources: number;
+  closedResources: number;
+  quarantinedEvents: number;
+  tombstones: number;
+} {
+  return isRecord(value) && [
+    value.maxPosition,
+    value.activeResources,
+    value.closedResources,
+    value.quarantinedEvents,
+    value.tombstones,
+  ].every(item => typeof item === 'number' && Number.isFinite(item));
 }
 
 export function getServicePreflight(

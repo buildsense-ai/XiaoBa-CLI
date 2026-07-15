@@ -167,6 +167,46 @@ describe('dashboard readiness and service preflight API', () => {
     assert.deepEqual(data.runtimeLearning.pendingWakeReasons, ['operational-retry', 'curator']);
   });
 
+  test('GET /readiness exposes external source recovery diagnostics', async () => {
+    const config = getDistillationHeartbeatConfig(testRoot, process.env);
+    fs.mkdirSync(path.dirname(config.heartbeatRecordPath), { recursive: true });
+    fs.writeFileSync(config.heartbeatRecordPath, JSON.stringify({
+      schemaVersion: 1,
+      lastSourceReports: [{
+        sourceId: 'external-codex',
+        category: 'external',
+        provider: 'codex',
+        reader: 'xurl',
+        status: 'quarantined',
+        resourcesDiscovered: 1,
+        unitsProcessed: 0,
+        failureClass: 'integrity_conflict',
+        requiresOperatorAction: true,
+        nextAction: 'retry or skip quarantined event',
+        drainState: 'active',
+      }],
+    }), { mode: 0o600 });
+
+    const response = await fetch(`${baseUrl}/api/readiness/details`);
+    const data = await response.json() as any;
+    const source = data.runtimeLearning.sources.find((entry: any) => entry.sourceId === 'external-codex');
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(source, {
+      sourceId: 'external-codex',
+      category: 'external',
+      status: 'quarantined',
+      provider: 'codex',
+      reader: 'xurl',
+      resourcesDiscovered: 1,
+      unitsProcessed: 0,
+      failureClass: 'integrity_conflict',
+      requiresOperatorAction: true,
+      nextAction: 'retry or skip quarantined event',
+      drainState: 'active',
+    });
+  });
+
   test('CatsCo readiness warns when account and binding are ready but connector is stopped', async () => {
     writeEnv([
       'GAUZ_LLM_PROVIDER=anthropic',

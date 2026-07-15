@@ -200,8 +200,8 @@ test('backfill requires explicit source selection plus bounded range and caps', 
   assert.deepEqual(
     Object.keys(state.processedEventIds).sort(),
     [
-      'fixture-provider::fixture-external-source::fixture-external-source:conversation-1:1::1::hash-1::::',
-      'fixture-provider::fixture-external-source::fixture-external-source:conversation-2:2::2::hash-2::::',
+      'fixture-provider::fixture-external-source::fixture-external-source:conversation-1:1::1::hash-1::::::',
+      'fixture-provider::fixture-external-source::fixture-external-source:conversation-2:2::2::hash-2::::::',
     ],
   );
 });

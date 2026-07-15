@@ -188,11 +188,10 @@ export class ExternalSessionLogBackfillService {
       ?? createExternalSessionLogBackfillState(request, startedAt);
     state = assertCompatibleState(state, request);
 
-    const matchedResources = selectBackfillResources(source.discoverResources(), request.range);
     let metrics = {
       ...state.metrics,
       runsStarted: state.metrics.runsStarted + 1,
-      resourcesDiscovered: matchedResources.length,
+      resourcesDiscovered: 0,
     };
     state = {
       ...state,
@@ -212,6 +211,58 @@ export class ExternalSessionLogBackfillService {
       status: state.status,
       metrics,
     });
+
+    let matchedResources: SessionLogSourceResource[];
+    try {
+      matchedResources = selectBackfillResources(source.discoverResources(), request.range);
+      metrics = {
+        ...state.metrics,
+        resourcesDiscovered: matchedResources.length,
+      };
+      state = {
+        ...state,
+        updatedAt: this.now().toISOString(),
+        metrics,
+      };
+      saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+    } catch (error) {
+      const failedAt = this.now();
+      state = recordBackfillFailure(state, '__discover__', undefined, error, failedAt);
+      state = {
+        ...state,
+        status: 'source_failed',
+        updatedAt: failedAt.toISOString(),
+        metrics: {
+          ...state.metrics,
+          failedResources: state.metrics.failedResources + 1,
+        },
+      };
+      saveExternalSessionLogBackfillState(this.options.stateFilePath, state);
+      appendExternalSessionLogBackfillAudit(this.options.auditFilePath, {
+        timestamp: failedAt.toISOString(),
+        kind: 'source_failed',
+        operationId: state.operationId,
+        provider: state.provider,
+        sourceId: state.sourceId,
+        triggeredBy: state.triggeredBy,
+        range: state.range,
+        status: state.status,
+        message: toErrorMessage(error),
+        metrics: state.metrics,
+      });
+      return {
+        status: 'source_failed',
+        discoveredResources: 0,
+        processedResources: 0,
+        pendingResources: 0,
+        failedResources: 1,
+        ingestedEvents: 0,
+        duplicateEventsSkipped: 0,
+        admittedEpisodes: 0,
+        bytesProcessed: 0,
+        state,
+      };
+    }
 
     let processedResources = 0;
     let pendingResources = 0;
@@ -773,6 +824,7 @@ function backfillEventKey(provider: string, sourceId: string, identity: SourceEv
     identity.position,
     identity.contentHash ?? '',
     identity.conversationId ?? '',
+    identity.branchId ?? '',
     identity.revision ?? '',
   ].join('::');
 }
