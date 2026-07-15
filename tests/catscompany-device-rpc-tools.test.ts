@@ -86,13 +86,16 @@ function serverGrant(overrides: Partial<ScopedDeviceGrant> = {}): ScopedDeviceGr
 }
 
 describe('CatsCompany Device RPC file tools', () => {
-  test('publishes remote upload metadata without reading a caller-local file', async () => {
-    let sent: any;
+  test('materializes trusted remote upload metadata without publishing a chat attachment', async () => {
+    let downloaded: any;
     const bot = Object.create(CatsCompanyBot.prototype) as any;
     bot.sender = {
-      sendUploadedFile: async (topic: string, file: any) => { sent = { topic, file }; },
+      downloadFile: async (url: string, fileName: string, options: any) => {
+        downloaded = { url, fileName, targetPath: options.targetPath };
+        return options.targetPath;
+      },
     };
-    const channel = bot.buildChannel('p2p_7_43');
+    const channel = bot.buildChannel('p2p_7_43', { sessionKey: 'session:test' });
     const file = {
       url: '/uploads/files/exact.bin',
       name: 'exact.bin',
@@ -100,10 +103,35 @@ describe('CatsCompany Device RPC file tools', () => {
       type: 'file' as const,
     };
 
-    await channel.sendUploadedFile('p2p_7_43', file);
+    const localPath = await channel.receiveUploadedFile(file);
 
-    assert.deepEqual(sent, { topic: 'p2p_7_43', file });
-    assert.equal(channel.hasOutbound, true);
+    assert.deepEqual(downloaded, {
+      url: '/uploads/files/exact.bin',
+      fileName: 'exact.bin',
+      targetPath: localPath,
+    });
+    assert.match(localPath, /session_test[\\/].*_exact\.bin$/);
+    assert.equal(channel.hasOutbound, false);
+  });
+
+  test('rejects non-CatsCo upload URLs before the agent downloads them', async () => {
+    let downloads = 0;
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.sender = {
+      downloadFile: async () => {
+        downloads += 1;
+        return 'should-not-exist';
+      },
+    };
+    const channel = bot.buildChannel('p2p_7_43', { sessionKey: 'session:test' });
+
+    await assert.rejects(() => channel.receiveUploadedFile({
+      url: 'http://127.0.0.1/private',
+      name: 'forged.bin',
+      size: 1,
+      type: 'file',
+    }), /不是受信任的 CatsCo 上传地址/);
+    assert.equal(downloads, 0);
   });
 
   test('maps CatsCo server grant fields into outbound device_rpc requests', async () => {

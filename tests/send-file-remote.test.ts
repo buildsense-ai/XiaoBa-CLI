@@ -71,7 +71,6 @@ describe('send_file remote routing', () => {
         chatId: 'p2p_7_43',
         reply: async () => {},
         sendFile: async () => { throw new Error('local sendFile should not be used'); },
-        sendUploadedFile: async () => { throw new Error('remote transfer must not send a chat attachment'); },
         receiveUploadedFile: async (file) => {
           received = file;
           return cloudPath;

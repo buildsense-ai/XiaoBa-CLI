@@ -1023,15 +1023,6 @@ export class CatsCompanyBot {
           throw err;
         }
       },
-      sendUploadedFile: async (_targetTopic, file) => {
-        try {
-          await this.sender.sendUploadedFile(topic, file);
-          _hasOutbound = true;
-        } catch (err: any) {
-          Logger.warning(`远程文件发送失败 (sendUploadedFile): ${err.message}`);
-          throw err;
-        }
-      },
       receiveUploadedFile: async (file) => {
         if (!file.url.startsWith('/uploads/')) {
           throw new Error(`远程文件上传结果不是受信任的 CatsCo 上传地址: ${file.name}`);

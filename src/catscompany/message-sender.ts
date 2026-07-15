@@ -487,21 +487,6 @@ export class MessageSender {
     }
   }
 
-  async sendUploadedFile(
-    topic: string,
-    file: { url: string; name: string; size: number; type: 'file' | 'image' },
-  ): Promise<void> {
-    await this.send(topic, file.type, {
-      type: file.type,
-      payload: {
-        url: file.url,
-        name: file.name,
-        size: file.size,
-      },
-    });
-    Logger.info(`CatsCo 已上传文件已发送: ${file.name}`);
-  }
-
   async downloadFile(url: string, fileName: string, options: { targetPath?: string } = {}): Promise<string | null> {
     let partPath: string | undefined;
     try {

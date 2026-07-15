@@ -175,8 +175,6 @@ export interface ChannelCallbacks {
   reply: (chatId: string, text: string) => Promise<void>;
   /** 发送文件 */
   sendFile: (chatId: string, filePath: string, fileName: string) => Promise<void>;
-  /** 发送已经上传到平台的附件。 */
-  sendUploadedFile?: (chatId: string, file: UploadedFileResult) => Promise<void>;
   /** 把已上传文件下载到当前运行体的托管工作区，并返回本地绝对路径。 */
   receiveUploadedFile?: (file: UploadedFileResult) => Promise<string>;
   /** 发送临时运行时计划。支持实时 UI 的 surface 可实现为卡片展示。 */
