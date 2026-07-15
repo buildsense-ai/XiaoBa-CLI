@@ -13,6 +13,7 @@ import { describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
 
 import {
+  buildProviderDiagnosticRecord,
   type ExternalSourceProviderDiagnostic,
   type ExternalSourceDiagnosticSummary,
   formatProviderDiagnosticHuman,
@@ -50,6 +51,29 @@ function makeDiagnostic(overrides: Partial<ExternalSourceProviderDiagnostic> = {
 // ---------------------------------------------------------------------------
 
 describe('external source diagnostics — record fields', () => {
+  test('domain builder derives an activating provider from status plus activation state', () => {
+    const diag = buildProviderDiagnosticRecord({
+      status: {
+        provider: 'codex',
+        scope: 'global',
+        enabled: true,
+        admissionGate: 'open',
+      },
+      activation: {
+        initialDiscoveryCompleted: false,
+      },
+      resourcesTotal: 4,
+      baselined: 2,
+      sourceReport: {
+        readerVersion: 'xurl 1.2.3',
+        cursorProgress: { maxPosition: 9, activeResources: 2, closedResources: 2 },
+      },
+    });
+    assert.equal(diag.admissionState, 'activating');
+    assert.equal(diag.activationProgress?.baselined, 2);
+    assert.equal(diag.activationProgress?.total, 4);
+  });
+
   test('a healthy active provider has no failure class or next action', () => {
     const diag = makeDiagnostic();
     assert.equal(diag.admissionState, 'active');
@@ -84,6 +108,31 @@ describe('external source diagnostics — record fields', () => {
     });
     assert.equal(diag.admissionState, 'paused');
     assert.equal(diag.failureClass, undefined);
+  });
+
+  test('domain builder maps source failure and next action codes', () => {
+    const diag = buildProviderDiagnosticRecord({
+      status: {
+        provider: 'claude',
+        scope: 'path',
+        enabled: true,
+        admissionGate: 'open',
+      },
+      activation: {
+        initialDiscoveryCompleted: true,
+      },
+      resourcesTotal: 1,
+      baselined: 1,
+      sourceReport: {
+        failureClass: 'protocol',
+        status: 'locked',
+        nextAction: 'repair_source_then_retry',
+        cursorProgress: { maxPosition: 3, activeResources: 1, closedResources: 0 },
+      },
+    });
+    assert.equal(diag.failureClass, 'protocol_failure');
+    assert.equal(diag.locked, true);
+    assert.equal(diag.nextAction, 'Repair the source or reader, then retry.');
   });
 
   test('a protocol_failure provider has failure class and next action', () => {

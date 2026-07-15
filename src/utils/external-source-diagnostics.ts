@@ -53,6 +53,29 @@ export interface ExternalSourceProviderDiagnostic {
   readonly nextAction?: string;
 }
 
+export interface ExternalSourceProviderStatusInput {
+  readonly provider: string;
+  readonly scope: string;
+  readonly enabled: boolean;
+  readonly admissionGate: 'open' | 'closed';
+}
+
+export interface ExternalSourceProviderActivationInput {
+  readonly initialDiscoveryCompleted: boolean;
+  readonly activationBlocked?: boolean;
+  readonly activationBlockedReason?: string;
+}
+
+export interface ExternalSourceProviderSourceReportInput {
+  readonly readerVersion?: string;
+  readonly cursorProgress?: CursorProgress & { readonly quarantinedEvents?: number };
+  readonly lastSuccessfulReadAt?: string;
+  readonly nextRetryAt?: string | null;
+  readonly failureClass?: string;
+  readonly status?: string;
+  readonly nextAction?: string;
+}
+
 export type DiagnosticOverallStatus = 'healthy' | 'degraded' | 'unhealthy';
 
 export interface ExternalSourceDiagnosticSummary {
@@ -63,6 +86,83 @@ export interface ExternalSourceDiagnosticSummary {
   readonly pausedCount: number;
   readonly activationBlockedCount: number;
   readonly failureCount: number;
+}
+
+export function buildProviderDiagnosticRecord(args: {
+  readonly status: ExternalSourceProviderStatusInput;
+  readonly activation?: ExternalSourceProviderActivationInput | null;
+  readonly resourcesTotal: number;
+  readonly baselined: number;
+  readonly sourceReport?: ExternalSourceProviderSourceReportInput;
+}): ExternalSourceProviderDiagnostic {
+  const failureClass = mapFailureClass(args.sourceReport?.failureClass);
+  return {
+    provider: args.status.provider,
+    scope: args.status.scope,
+    admissionState: args.activation?.activationBlocked
+      ? 'activation_blocked'
+      : !args.status.enabled || args.status.admissionGate === 'closed'
+        ? 'paused'
+        : args.activation && !args.activation.initialDiscoveryCompleted
+          ? 'activating'
+          : 'active',
+    ...(args.sourceReport?.readerVersion ? { readerVersion: args.sourceReport.readerVersion } : {}),
+    ...(args.resourcesTotal > 0 || args.baselined > 0
+      ? { activationProgress: { baselined: args.baselined, total: args.resourcesTotal } }
+      : {}),
+    ...(args.sourceReport?.cursorProgress
+      ? {
+        cursorProgress: {
+          maxPosition: args.sourceReport.cursorProgress.maxPosition,
+          activeResources: args.sourceReport.cursorProgress.activeResources,
+          closedResources: args.sourceReport.cursorProgress.closedResources,
+        },
+      }
+      : {}),
+    ...(args.sourceReport?.lastSuccessfulReadAt ? { lastSuccessfulReadAt: args.sourceReport.lastSuccessfulReadAt } : {}),
+    ...(args.sourceReport?.nextRetryAt ? { nextRetryAt: args.sourceReport.nextRetryAt } : {}),
+    ...(failureClass ? { failureClass } : {}),
+    quarantined: failureClass === 'quarantine' || (args.sourceReport?.cursorProgress?.quarantinedEvents ?? 0) > 0,
+    locked: args.sourceReport?.status === 'locked',
+    drainState: args.sourceReport?.status === 'drained'
+      ? 'drained'
+      : args.sourceReport?.status === 'draining'
+        ? 'draining'
+        : 'idle',
+    ...(resolveNextAction(args.activation?.activationBlockedReason, args.sourceReport?.nextAction)
+      ? { nextAction: resolveNextAction(args.activation?.activationBlockedReason, args.sourceReport?.nextAction) }
+      : {}),
+  };
+}
+
+export function mapFailureClass(value: unknown): FailureClass | undefined {
+  if (value === 'protocol') return 'protocol_failure';
+  if (value === 'integrity_conflict') return 'integrity_conflict';
+  if (value === 'quarantine') return 'quarantine';
+  if (value === 'permission') return 'permission';
+  if (value === 'transient') return 'transient';
+  return undefined;
+}
+
+export function resolveNextAction(
+  activationBlockedReason: string | undefined,
+  actionCode: unknown,
+): string | undefined {
+  if (activationBlockedReason) {
+    return 'Narrow scope or raise the baseline cap, then resume activation.';
+  }
+  switch (actionCode) {
+    case 'retry_or_skip_quarantine':
+      return 'Retry or skip the quarantined event.';
+    case 'repair_source_then_retry':
+      return 'Repair the source or reader, then retry.';
+    case 'wait_for_retry':
+      return 'Wait for the next scheduled retry.';
+    case 'retry_next_wake':
+      return 'Retry on the next wake.';
+    default:
+      return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------

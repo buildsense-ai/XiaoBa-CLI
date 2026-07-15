@@ -189,15 +189,34 @@ if (logPath) {
 function actionOf(argv) {
   if (argv[0] === '--version') return 'version';
   if (argv[0] === '-I') return 'head';
-  if (argv[0] && argv[0].includes('?limit=')) return 'query';
+  if (argv[0] && argv[0].startsWith('agents://') && argv[0].includes('?')) return 'query';
   return 'read';
 }
 
 function parseUri(uri) {
-  // agents://<provider>/<thread> or agents://<provider>?limit=...[&cursor=...]
-  const m = /^agents:\\/\\/([^?\\/]+)(?:\\?limit=\\d+(?:&cursor=([^&]+))?|\\/(.+))?$/.exec(uri);
-  if (!m) throw new Error('fake-xurl: unrecognized uri ' + uri);
-  return { provider: m[1], cursor: m[2] || null, threadId: m[3] || null };
+  // agents://<provider>/<thread>
+  // agents://<provider>?limit=...[&cursor=...]
+  // agents:///abs/path?providers=<provider>&limit=...[&cursor=...]
+  const threadMatch = /^agents:\\/\\/([^?\\/]+)\\/(.+)$/.exec(uri);
+  if (threadMatch) {
+    return { provider: threadMatch[1], cursor: null, threadId: threadMatch[2], scopePath: null };
+  }
+
+  const queryMatch = /^agents:\\/\\/(.+)\\?(.+)$/.exec(uri);
+  if (!queryMatch) throw new Error('fake-xurl: unrecognized uri ' + uri);
+
+  const target = queryMatch[1] || '';
+  const params = new URLSearchParams(queryMatch[2]);
+  const cursor = params.get('cursor');
+
+  if (target.startsWith('/') || target.startsWith('.') || target.startsWith('~')) {
+    const providers = (params.get('providers') || '').split(',').map(v => v.trim()).filter(Boolean);
+    const provider = providers[0] || null;
+    if (!provider) throw new Error('fake-xurl: missing providers=... in scoped query ' + uri);
+    return { provider, cursor, threadId: null, scopePath: target };
+  }
+
+  return { provider: target, cursor, threadId: null, scopePath: null };
 }
 
 function renderCatalog(spec, requestedUri) {

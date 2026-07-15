@@ -1072,11 +1072,14 @@ export class RuntimeLearning {
         && legacySelectedSourceId
         ? legacySelectedSourceId
         : `external-${provider}`;
+      const scope = this.providerOverrideStore.getProviderScope(provider);
       const reader = this.config.externalSessionLogXurlCommand
         ? new XurlExternalSourceReader({
           command: this.config.externalSessionLogXurlCommand,
           provider,
           sourceId,
+          scope: scope.scope,
+          scopePath: scope.scopePath,
         })
         : undefined;
       adapters.push(new ExternalSessionLogSourceAdapter({
@@ -1085,6 +1088,7 @@ export class RuntimeLearning {
         provider,
         reader,
         enabled: true,
+        scope,
       }));
     }
     return adapters;

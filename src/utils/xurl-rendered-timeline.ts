@@ -85,6 +85,16 @@ interface ParsedFrontmatter {
   readonly queriedAt?: string;
 }
 
+export interface ParsedRenderedFrontmatter {
+  readonly fields: ReadonlyMap<string, string>;
+  readonly raw: string;
+}
+
+export interface ParsedRenderedDocument {
+  readonly frontmatter: ParsedRenderedFrontmatter;
+  readonly body: string;
+}
+
 // ---------------------------------------------------------------------------
 // Parser
 // ---------------------------------------------------------------------------
@@ -108,8 +118,9 @@ export function parseRenderedTimeline(
     );
   }
 
-  const frontmatter = parseFrontmatter(markdown, expectedProvider, expectedThread);
-  const body = extractBodyAfterFrontmatter(markdown);
+  const document = parseRenderedDocument(markdown, 'rendered Timeline document');
+  const frontmatter = parseFrontmatter(document.frontmatter, expectedProvider, expectedThread);
+  const body = document.body;
   const timelineSection = extractSection(body, 'Timeline');
   if (!timelineSection) {
     throw new Error('rendered Timeline document must contain a ## Timeline section');
@@ -136,14 +147,15 @@ export function parseRenderedTimeline(
 // Frontmatter parsing
 // ---------------------------------------------------------------------------
 
-function parseFrontmatter(
-  markdown: string,
-  expectedProvider: string,
-  expectedThread: string,
-): ParsedFrontmatter {
-  const lines = markdown.split('\n');
+export function parseRenderedDocument(markdown: string, label: string): ParsedRenderedDocument {
+  const text = markdown.replace(/^\uFEFF/, '');
+  if (!text.trim()) {
+    throw new Error(`${label} produced an empty response`);
+  }
+
+  const lines = text.split('\n');
   if (lines[0]?.trim() !== FRONTMATTER_DELIMITER) {
-    throw new Error('rendered Timeline document must begin with frontmatter (---)');
+    throw new Error(`${label} is missing a valid frontmatter block`);
   }
 
   let endLine = -1;
@@ -154,18 +166,43 @@ function parseFrontmatter(
     }
   }
   if (endLine === -1) {
-    throw new Error('rendered Timeline frontmatter is not closed (missing closing ---)');
+    throw new Error(`${label} is missing a closing frontmatter delimiter`);
   }
 
-  const fmLines = lines.slice(1, endLine);
-  const fm: Record<string, string> = {};
-  for (const line of fmLines) {
-    const colonIdx = line.indexOf(':');
-    if (colonIdx === -1) continue;
-    const key = line.slice(0, colonIdx).trim();
-    const value = line.slice(colonIdx + 1).trim();
-    if (key) fm[key] = value;
+  return {
+    frontmatter: parseRenderedFrontmatter(lines.slice(1, endLine).join('\n'), label),
+    body: lines.slice(endLine + 1).join('\n'),
+  };
+}
+
+export function parseRenderedFrontmatterOnly(markdown: string, label: string): ParsedRenderedFrontmatter {
+  return parseRenderedDocument(markdown, label).frontmatter;
+}
+
+export function parseRenderedFrontmatter(raw: string, label: string): ParsedRenderedFrontmatter {
+  const fields = new Map<string, string>();
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    const match = /^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/.exec(line);
+    if (!match) {
+      throw new Error(`${label} frontmatter has an invalid line: ${line.trim()}`);
+    }
+    const key = match[1]!;
+    const value = match[2]!.trim();
+    if (fields.has(key)) {
+      throw new Error(`${label} frontmatter has a duplicate field: ${key}`);
+    }
+    fields.set(key, value);
   }
+  return { fields, raw };
+}
+
+function parseFrontmatter(
+  frontmatter: ParsedRenderedFrontmatter,
+  expectedProvider: string,
+  expectedThread: string,
+): ParsedFrontmatter {
+  const fm = Object.fromEntries(frontmatter.fields.entries());
 
   const uri = fm['uri'];
   if (!uri) {
@@ -219,19 +256,6 @@ function extractUriProvider(uri: string): string | undefined {
 function extractUriThread(uri: string): string | undefined {
   const match = uri.match(/^agents:\/\/[^/]+\/(.+)$/);
   return match?.[1];
-}
-
-function extractBodyAfterFrontmatter(markdown: string): string {
-  const lines = markdown.split('\n');
-  let endLine = -1;
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i]!.trim() === FRONTMATTER_DELIMITER) {
-      endLine = i;
-      break;
-    }
-  }
-  if (endLine === -1) return markdown;
-  return lines.slice(endLine + 1).join('\n');
 }
 
 // ---------------------------------------------------------------------------

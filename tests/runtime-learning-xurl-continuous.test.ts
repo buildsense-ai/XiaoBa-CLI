@@ -12,6 +12,11 @@ import { RuntimeLearning } from '../src/utils/runtime-learning';
 import { SkillEvolutionRuntime } from '../src/utils/skill-evolution';
 import { SkillUsageCurator } from '../src/utils/skill-usage-curator';
 import { SkillUsageLedger } from '../src/utils/skill-usage-ledger';
+import {
+  ExternalProviderOverrideStore,
+  resolveExternalProviderOverridePath,
+} from '../src/utils/external-provider-controls';
+import { getDistillationHeartbeatConfig } from '../src/utils/distillation-heartbeat-config';
 import { loadExternalCursorState } from '../src/utils/session-log-source';
 import { SessionTurnLogEntry } from '../src/utils/session-log-schema';
 import {
@@ -87,6 +92,179 @@ test('future-only enablement is metadata-only and internal lane remains independ
     assert.deepEqual(invocations.map(item => item.action), ['version', 'query']);
     assert.equal(invocations[0]!.args[0], '--version');
     assert.equal(invocations[1]!.args[0], `agents://${PROVIDER}?limit=50`);
+  } finally {
+    env.restore();
+  }
+});
+
+test('path-scoped providers query the documented agents:///... URI with the provider filter', async () => {
+  const env = setupEnv();
+  try {
+    createOverrideStore(env.root).enableProvider(PROVIDER, {
+      scope: 'path',
+      scopePath: '/workspace/smoke-project',
+    });
+    writeScenario(env.scenarioPath, {
+      version: 'xurl-test 1.0.0',
+      discover: {
+        pages: {
+          start: catalogPage([thread('conversation-main', 'branch-main', 1, FP('main-1'))]),
+        },
+      },
+    });
+
+    const fixture = env.createRuntime();
+    await fixture.runtime.wake('startup');
+
+    const invocations = readInvocationLog(env.logPath);
+    assert.deepEqual(invocations.map(item => item.action), ['version', 'query']);
+    assert.equal(invocations[1]!.args[0], 'agents:///workspace/smoke-project?providers=codex&limit=50');
+  } finally {
+    env.restore();
+  }
+});
+
+test('scope narrowing preserves out-of-scope resource state across restart', async () => {
+  const env = setupEnv();
+  try {
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([
+            thread('conversation-in', 'branch-in', 2, FP('in-2')),
+            thread('conversation-out', 'branch-out', 4, FP('out-4')),
+          ]),
+        },
+      },
+    });
+
+    await env.createRuntime().runtime.wake('startup');
+    const baselineState = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(baselineState.resources['conversation-out']?.resource.resourceRef, 'conversation-out');
+    assert.equal(baselineState.cursors['conversation-out']?.cursor.position, 4);
+
+    createOverrideStore(env.root).enableProvider(PROVIDER, {
+      scope: 'path',
+      scopePath: '/workspace/narrowed-project',
+    });
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([thread('conversation-in', 'branch-in', 2, FP('in-2'))]),
+        },
+      },
+    });
+
+    await env.createRuntime().runtime.wake('scheduled');
+    await env.createRuntime().runtime.wake('scheduled');
+
+    const afterNarrow = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(afterNarrow.resources['conversation-out']?.resource.resourceRef, 'conversation-out');
+    assert.equal(afterNarrow.resources['conversation-out']?.lifecycleStatus, 'active');
+    assert.equal(afterNarrow.cursors['conversation-out']?.cursor.position, 4);
+
+    const afterRestart = env.createRuntime();
+    await afterRestart.runtime.wake('scheduled');
+    const persisted = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(persisted.resources['conversation-out']?.resource.resourceRef, 'conversation-out');
+    assert.equal(persisted.resources['conversation-out']?.lifecycleStatus, 'active');
+    assert.equal(persisted.cursors['conversation-out']?.cursor.position, 4);
+  } finally {
+    env.restore();
+  }
+});
+
+test('scope expansion baselines newly included history without historical admission', async () => {
+  const env = setupEnv();
+  try {
+    createOverrideStore(env.root).enableProvider(PROVIDER, {
+      scope: 'path',
+      scopePath: '/workspace/narrow-path',
+    });
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([thread('conversation-in', 'branch-in', 2, FP('in-2'))]),
+        },
+      },
+    });
+
+    await env.createRuntime().runtime.wake('startup');
+
+    createOverrideStore(env.root).enableProvider(PROVIDER, { scope: 'global' });
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([
+            thread('conversation-in', 'branch-in', 2, FP('in-2')),
+            thread('conversation-new', 'branch-new', 4, FP('new-4')),
+          ]),
+        },
+      },
+      read: {
+        'conversation-in': readSpec(
+          timeline('conversation-in', 'branch-in', 2, FP('in-2'), [
+            entry(1, 'User', 'Existing request'),
+            entry(2, 'Assistant', 'Existing response.'),
+          ]),
+        ),
+        'conversation-new': readSpec(
+          timeline('conversation-new', 'branch-new', 4, FP('new-4'), [
+            entry(1, 'User', 'Historical request 1'),
+            entry(2, 'Assistant', 'Historical response 1.'),
+            entry(3, 'User', 'Historical request 2'),
+            entry(4, 'Assistant', 'Historical response 2.'),
+          ]),
+        ),
+      },
+    });
+
+    const expanded = env.createRuntime();
+    await expanded.runtime.wake('scheduled');
+    const afterExpand = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(afterExpand.cursors['conversation-new']?.cursor.position, 4);
+    assert.equal(Object.keys(afterExpand.processedEventIds).length, 0, 'scope expansion must not admit historical events');
+    assert.equal(Object.keys(expanded.episodeStore.load().episodes).length, 0);
+
+    writeScenario(env.scenarioPath, {
+      discover: {
+        pages: {
+          start: catalogPage([
+            thread('conversation-in', 'branch-in', 2, FP('in-2')),
+            thread('conversation-new', 'branch-new', 6, FP('new-6')),
+          ]),
+        },
+      },
+      read: {
+        'conversation-in': readSpec(
+          timeline('conversation-in', 'branch-in', 2, FP('in-2'), [
+            entry(1, 'User', 'Existing request'),
+            entry(2, 'Assistant', 'Existing response.'),
+          ]),
+        ),
+        'conversation-new': readSpec(
+          timeline('conversation-new', 'branch-new', 6, FP('new-6'), [
+            entry(1, 'User', 'Historical request 1'),
+            entry(2, 'Assistant', 'Historical response 1.'),
+            entry(3, 'User', 'Historical request 2'),
+            entry(4, 'Assistant', 'Historical response 2.'),
+            entry(5, 'User', 'Please deliver the new report.'),
+            entry(6, 'Assistant', 'Done step 3.'),
+          ]),
+        ),
+      },
+    });
+
+    const admitting = env.createRuntime();
+    await admitting.runtime.wake('scheduled');
+    const afterAdmit = loadExternalCursorState(cursorStorePath(env.root));
+    assert.equal(afterAdmit.cursors['conversation-new']?.cursor.position, 6);
+    assert.equal(Object.keys(afterAdmit.processedEventIds).length, 1, 'only the newly appended range should be admitted');
+    assert.equal(
+      Object.keys(afterAdmit.processedEventFingerprints).length,
+      1,
+      'scope expansion should preserve only the newly admitted stable fingerprint',
+    );
   } finally {
     env.restore();
   }
@@ -514,6 +692,13 @@ function setupEnv(options: { maxActivationCatalog?: number } = {}): TestEnv {
 
 function cursorStorePath(root: string): string {
   return path.join(root, 'data', PROVIDER, `${SOURCE_ID}.json`);
+}
+
+function createOverrideStore(root: string): ExternalProviderOverrideStore {
+  const config = getDistillationHeartbeatConfig(root);
+  return new ExternalProviderOverrideStore({
+    stateFilePath: resolveExternalProviderOverridePath(config),
+  });
 }
 
 function writeInternalLog(filePath: string, entries: SessionTurnLogEntry[]): void {

@@ -173,6 +173,22 @@ describe('rendered Timeline parser — frontmatter spoofing', () => {
       /uri/i,
     );
   });
+
+  test('rejects malformed frontmatter lines without a colon', () => {
+    const md = `---\nuri: agents://codex/thread-001\nprovider codex\nthread: thread-001\n---\n\n## Thread\n\nthread-001\n\n## Timeline\n\n### 1. User\n\nHello\n\n### 2. Assistant\n\nHi\n`;
+    assert.throws(
+      () => parseRenderedTimeline(md, 'codex', 'thread-001'),
+      /frontmatter|invalid line|colon/i,
+    );
+  });
+
+  test('rejects duplicate frontmatter keys', () => {
+    const md = `---\nuri: agents://codex/thread-001\nprovider: codex\nprovider: pi\nthread: thread-001\n---\n\n## Thread\n\nthread-001\n\n## Timeline\n\n### 1. User\n\nHello\n\n### 2. Assistant\n\nHi\n`;
+    assert.throws(
+      () => parseRenderedTimeline(md, 'codex', 'thread-001'),
+      /frontmatter|duplicate/i,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

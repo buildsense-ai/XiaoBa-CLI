@@ -369,19 +369,7 @@ export class ExternalAdmissionCoordinator {
       const result = this.commitFn(page);
 
       if (result.acknowledged) {
-        // Update round-robin marker and per-provider alternation state
-        this.updateProviderTurn(page.providerId, turn => ({
-          lastLaneServed: page.lane,
-          backfillPending: page.lane === 'backfill' ? false : turn.backfillPending,
-        }));
-
-        // Advance the round-robin marker within the known provider set
-        this.advanceNextProvider(
-          knownProviders ?? [page.providerId],
-          page.providerId,
-        );
-
-        this.saveState();
+        this.finalizeAcknowledgedPage(page, knownProviders);
       }
 
       return result;
@@ -489,12 +477,7 @@ export class ExternalAdmissionCoordinator {
     try {
       const result = this.commitFn(page);
       if (result.acknowledged) {
-        this.updateProviderTurn(page.providerId, turn => ({
-          lastLaneServed: page.lane,
-          backfillPending: page.lane === 'backfill' ? false : turn.backfillPending,
-        }));
-        this.advanceNextProvider(knownProviders ?? [page.providerId], page.providerId);
-        this.saveState();
+        this.finalizeAcknowledgedPage(page, knownProviders);
       }
       return result;
     } finally {
@@ -567,6 +550,18 @@ export class ExternalAdmissionCoordinator {
   // -------------------------------------------------------------------------
   // Internal helpers
   // -------------------------------------------------------------------------
+
+  private finalizeAcknowledgedPage(
+    page: ExternalEvidencePage,
+    knownProviders?: readonly string[],
+  ): void {
+    this.updateProviderTurn(page.providerId, turn => ({
+      lastLaneServed: page.lane,
+      backfillPending: page.lane === 'backfill' ? false : turn.backfillPending,
+    }));
+    this.advanceNextProvider(knownProviders ?? [page.providerId], page.providerId);
+    this.saveState();
+  }
 
   private updateProviderTurn(
     providerId: string,

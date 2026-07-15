@@ -22,7 +22,10 @@ import {
 import { SessionTurnLogEntry } from './session-log-schema';
 import { getXurlVersion } from './xurl-compatibility';
 import {
+  parseRenderedDocument as parseRenderedMarkdownDocument,
+  parseRenderedFrontmatterOnly,
   parseRenderedTimeline as parseRenderedTimelineContract,
+  type ParsedRenderedFrontmatter,
   type RenderedTimelineEvent,
 } from './xurl-rendered-timeline';
 
@@ -50,10 +53,7 @@ export const XURL_ACTIVATION_BLOCKED_MARKER = 'xurlActivationBlocked';
 
 type XurlCommandKind = 'version' | 'query' | 'read' | 'head';
 
-interface RenderedFrontmatter {
-  readonly fields: ReadonlyMap<string, string>;
-  readonly raw: string;
-}
+type RenderedFrontmatter = ParsedRenderedFrontmatter;
 
 interface RenderedThreadSummary {
   readonly threadId: string;
@@ -96,6 +96,8 @@ export interface XurlProcessRunnerOptions {
   readonly provider: string;
   readonly sourceId: string;
   readonly sourceLabel?: string;
+  readonly scope?: 'global' | 'path';
+  readonly scopePath?: string;
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly timeoutMs?: number;
@@ -338,6 +340,8 @@ export class XurlExternalBackfillSource implements ExternalSessionLogBackfillSou
 class XurlOfficialRunner {
   private readonly command: string;
   private readonly provider: string;
+  private readonly scope: 'global' | 'path';
+  private readonly scopePath?: string;
   private readonly cwd?: string;
   private readonly env?: NodeJS.ProcessEnv;
   private readonly timeoutMs: number;
@@ -355,6 +359,10 @@ class XurlOfficialRunner {
     this.command = requireNonEmptyText('xurl command', options.command);
     this.provider = requireNonEmptyText('xurl provider', options.provider);
     requireNonEmptyText('xurl sourceId', options.sourceId);
+    this.scope = options.scope === 'path' ? 'path' : 'global';
+    this.scopePath = this.scope === 'path'
+      ? requireNonEmptyText('xurl scopePath', options.scopePath)
+      : undefined;
     this.cwd = options.cwd;
     this.env = options.env;
     this.timeoutMs = normalizePositiveInteger(options.timeoutMs, DEFAULT_XURL_TIMEOUT_MS, 'xurl timeoutMs');
@@ -407,12 +415,25 @@ class XurlOfficialRunner {
     }
   }
 
+  private buildCatalogUri(limit: number, pageToken: string | null): string {
+    if (this.scope === 'path') {
+      const params = new URLSearchParams({
+        providers: this.provider,
+        limit: String(limit),
+      });
+      if (pageToken) params.set('cursor', pageToken);
+      return `agents://${this.scopePath}?${params.toString()}`;
+    }
+
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (pageToken) params.set('cursor', pageToken);
+    return `agents://${this.provider}?${params.toString()}`;
+  }
+
   queryCatalog(limit: number, pageToken: string | null): RenderedCatalog {
     this.ensureVersion();
     if (this.activationStartedAt === 0) this.activationStartedAt = Date.now();
-    const uri = pageToken
-      ? `agents://${this.provider}?limit=${limit}&cursor=${pageToken}`
-      : `agents://${this.provider}?limit=${limit}`;
+    const uri = this.buildCatalogUri(limit, pageToken);
     const stdout = this.invoke('query', [uri]);
     this.activationBytesAccum += Buffer.byteLength(stdout, 'utf8');
     return parseRenderedCatalog(stdout, this.provider, uri);
@@ -518,7 +539,7 @@ class XurlOfficialRunner {
   } {
     const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
     const stdout = this.invoke('head', ['-I', uri]);
-    const frontmatter = parseFrontmatterOnly(stdout, 'xurl head response');
+    const frontmatter = parseRenderedFrontmatterOnly(stdout, 'xurl head response');
     const uriField = requireFrontmatterField(frontmatter, 'uri');
     if (uriField !== uri) {
       throw new Error(`xurl head uri mismatch: expected ${uri}`);
@@ -538,7 +559,7 @@ class XurlOfficialRunner {
   ): Promise<{ readonly ordinal: number; readonly fingerprint: string }> {
     const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
     const stdout = await this.invokeAsync('head', ['-I', uri], signal);
-    const frontmatter = parseFrontmatterOnly(stdout, 'xurl head response');
+    const frontmatter = parseRenderedFrontmatterOnly(stdout, 'xurl head response');
     const uriField = requireFrontmatterField(frontmatter, 'uri');
     if (uriField !== uri) {
       throw new Error(`xurl head uri mismatch: expected ${uri}`);
@@ -784,68 +805,8 @@ function buildDistillationUnit(
 // fails closed within the source lane.
 // ---------------------------------------------------------------------------
 
-interface ParsedDocument {
-  readonly frontmatter: RenderedFrontmatter;
-  readonly body: string;
-}
-
-function parseDocument(stdout: string, label: string): ParsedDocument {
-  const text = stdout.replace(/^\uFEFF/, '');
-  if (!text.trim()) {
-    throw new Error(`${label} produced an empty response`);
-  }
-  const openIndex = text.indexOf('\n---\n');
-  if (!text.startsWith('---\n') || openIndex < 0) {
-    throw new Error(`${label} is missing a valid frontmatter block`);
-  }
-  const frontmatterRaw = text.slice(4, openIndex);
-  const body = text.slice(openIndex + 5);
-  return {
-    frontmatter: parseFrontmatter(frontmatterRaw, label),
-    body,
-  };
-}
-
-function parseFrontmatter(raw: string, label: string): RenderedFrontmatter {
-  const fields = new Map<string, string>();
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
-    const match = /^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/.exec(line);
-    if (!match) {
-      throw new Error(`${label} frontmatter has an invalid line: ${truncateLine(line, 120)}`);
-    }
-    const key = match[1]!;
-    const value = match[2]!.trim();
-    if (fields.has(key)) {
-      throw new Error(`${label} frontmatter has a duplicate field: ${key}`);
-    }
-    fields.set(key, value);
-  }
-  return { fields, raw };
-}
-
-function parseFrontmatterOnly(stdout: string, label: string): RenderedFrontmatter {
-  const text = stdout.replace(/^\uFEFF/, '');
-  if (!text.trim()) {
-    throw new Error(`${label} produced an empty response`);
-  }
-  if (!text.startsWith('---\n')) {
-    throw new Error(`${label} is missing a valid frontmatter block`);
-  }
-  const end = text.indexOf('\n---\n');
-  if (end < 0) {
-    // A head response may end immediately after the closing `---` with no body.
-    const closeLine = text.indexOf('\n---');
-    if (closeLine < 0) {
-      throw new Error(`${label} is missing a closing frontmatter delimiter`);
-    }
-    return parseFrontmatter(text.slice(4, closeLine), label);
-  }
-  return parseFrontmatter(text.slice(4, end), label);
-}
-
 function parseRenderedCatalog(stdout: string, provider: string, requestedUri: string): RenderedCatalog {
-  const doc = parseDocument(stdout, 'xurl catalog');
+  const doc = parseRenderedMarkdownDocument(stdout, 'xurl catalog');
   const uri = requireFrontmatterField(doc.frontmatter, 'uri');
   if (uri !== requestedUri) {
     throw new Error(`xurl catalog uri mismatch: expected ${requestedUri}`);
@@ -1134,5 +1095,5 @@ export const XURL_TEST_HELPERS = {
   isXurlActivationBlockedError,
   parseRenderedCatalog,
   parseRenderedTimeline: parseRenderedTimelineContract,
-  parseFrontmatterOnly,
+  parseFrontmatterOnly: parseRenderedFrontmatterOnly,
 };

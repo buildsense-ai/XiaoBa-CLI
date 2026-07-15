@@ -39,6 +39,16 @@ describe('xurl release-gate fixtures — rendered Timeline', () => {
     assert.throws(() => parseRenderedTimeline(markdown, 'codex', 'thread-001'), /provider.*mismatch/i);
   });
 
+  test('frontmatter line without colon fixture fails closed', () => {
+    const markdown = readFixture(TIMELINE_ROOT, 'adversarial-frontmatter-no-colon.md');
+    assert.throws(() => parseRenderedTimeline(markdown, 'codex', 'thread-001'), /frontmatter|invalid line|colon/i);
+  });
+
+  test('frontmatter duplicate key fixture fails closed', () => {
+    const markdown = readFixture(TIMELINE_ROOT, 'adversarial-frontmatter-duplicate-key.md');
+    assert.throws(() => parseRenderedTimeline(markdown, 'codex', 'thread-001'), /frontmatter|duplicate/i);
+  });
+
   test('duplicate ordinal fixture fails closed', () => {
     const markdown = readFixture(TIMELINE_ROOT, 'adversarial-duplicate-ordinal.md');
     assert.throws(() => parseRenderedTimeline(markdown, 'codex', 'thread-001'), /duplicate/i);

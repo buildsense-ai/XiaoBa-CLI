@@ -1052,6 +1052,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
   readonly identity: SessionLogSourceIdentity;
   private enabled: boolean;
   private readonly reader: ExternalSourceReader | null;
+  private readonly scope: { scope: 'global' | 'path'; scopePath?: string };
   private cursorStorePath: string;
 
   constructor(
@@ -1062,6 +1063,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       reader?: ExternalSourceReader | string;
       cursorStorePath?: string;
       enabled?: boolean;
+      scope?: { scope: 'global' | 'path'; scopePath?: string };
     },
     cursorStorePath?: string,
   ) {
@@ -1075,6 +1077,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     };
     this.enabled = options.enabled ?? false;
     this.reader = readerObj ?? null;
+    this.scope = options.scope ?? { scope: 'global' };
     this.cursorStorePath = (cursorStorePath
       ?? options.cursorStorePath
       ?? resolveExternalCursorStorePath({
@@ -1510,7 +1513,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     }
     let withResources = applyExternalDiscoveryPage(state, this.identity, discovery, cycle);
     if (discovery.nextPageToken == null) {
-      withResources = finalizeExternalDiscoveryCycle(withResources, cycle);
+      withResources = finalizeExternalDiscoveryCycle(withResources, cycle, this.scope.scope === 'path');
     }
     return {
       ...withResources,
@@ -1548,7 +1551,7 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     );
     let refreshed = applyExternalDiscoveryPage(state, this.identity, discovery, cycle);
     if (discovery.nextPageToken == null) {
-      refreshed = finalizeExternalDiscoveryCycle(refreshed, cycle);
+      refreshed = finalizeExternalDiscoveryCycle(refreshed, cycle, this.scope.scope === 'path');
     }
     const initialDiscoveryCompleted = state.activation?.initialDiscoveryCompleted === true
       || discovery.nextPageToken == null;
@@ -1960,12 +1963,17 @@ function applyExternalDiscoveryPage(
 function finalizeExternalDiscoveryCycle(
   state: ExternalCursorState,
   cycle: number,
+  preserveMissingResources = false,
 ): ExternalCursorState {
   const now = new Date().toISOString();
   let changed = false;
   const nextResources: Record<string, ExternalDiscoveredResourceState> = {};
   for (const [resourceRef, resourceState] of Object.entries(state.resources)) {
     if (resourceState.lastSeenDiscoveryCycle === cycle) {
+      nextResources[resourceRef] = resourceState;
+      continue;
+    }
+    if (preserveMissingResources) {
       nextResources[resourceRef] = resourceState;
       continue;
     }

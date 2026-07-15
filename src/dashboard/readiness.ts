@@ -12,9 +12,9 @@ import { getWeixinChannelStatus } from './weixin-channel-binding';
 import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
 import {
   buildDiagnosticSummary,
+  buildProviderDiagnosticRecord,
   type ExternalSourceDiagnosticSummary,
   type ExternalSourceProviderDiagnostic,
-  type FailureClass,
 } from '../utils/external-source-diagnostics';
 import {
   ExternalProviderOverrideStore,
@@ -317,44 +317,28 @@ function buildProviderDiagnostic(
   const sourceCursors = Object.values(cursorState.cursors)
     .filter(entry => entry.sourceIdentity?.sourceId === sourceId);
   const baselined = sourceCursors.filter(entry => entry.lastStatus === 'activated').length;
-  const failureClass = mapFailureClass(sourceReport?.failureClass);
-  const nextAction = resolveProviderNextAction(activation?.activationBlockedReason, sourceReport?.nextAction);
-
-  return {
-    provider: status.provider,
-    scope: status.scope,
-    admissionState: activation?.activationBlocked
-      ? 'activation_blocked'
-      : !status.enabled || status.admissionGate === 'closed'
-        ? 'paused'
-        : activation && !activation.initialDiscoveryCompleted
-          ? 'activating'
-          : 'active',
-    ...(sourceReport?.readerVersion ? { readerVersion: sourceReport.readerVersion } : {}),
-    ...(resources.length > 0 || baselined > 0
-      ? { activationProgress: { baselined, total: resources.length } }
-      : {}),
-    ...(sourceReport?.cursorProgress
+  return buildProviderDiagnosticRecord({
+    status: {
+      provider: status.provider,
+      scope: status.scope,
+      enabled: status.enabled,
+      admissionGate: status.admissionGate === 'closed' ? 'closed' : 'open',
+    },
+    activation,
+    resourcesTotal: resources.length,
+    baselined,
+    sourceReport: sourceReport
       ? {
-        cursorProgress: {
-          maxPosition: sourceReport.cursorProgress.maxPosition,
-          activeResources: sourceReport.cursorProgress.activeResources,
-          closedResources: sourceReport.cursorProgress.closedResources,
-        },
+        readerVersion: sourceReport.readerVersion,
+        cursorProgress: sourceReport.cursorProgress,
+        lastSuccessfulReadAt: sourceReport.lastSuccessfulReadAt,
+        nextRetryAt: sourceReport.nextRetryAt,
+        failureClass: sourceReport.failureClass,
+        status: sourceReport.drainState === 'draining' ? 'draining' : sourceReport.status,
+        nextAction: sourceReport.nextAction,
       }
-      : {}),
-    ...(sourceReport?.lastSuccessfulReadAt ? { lastSuccessfulReadAt: sourceReport.lastSuccessfulReadAt } : {}),
-    ...(sourceReport?.nextRetryAt ? { nextRetryAt: sourceReport.nextRetryAt } : {}),
-    ...(failureClass ? { failureClass } : {}),
-    quarantined: failureClass === 'quarantine' || (sourceReport?.cursorProgress?.quarantinedEvents ?? 0) > 0,
-    locked: sourceReport?.status === 'locked',
-    drainState: sourceReport?.drainState === 'draining'
-      ? 'draining'
-      : sourceReport?.status === 'drained'
-        ? 'drained'
-        : 'idle',
-    ...(nextAction ? { nextAction } : {}),
-  };
+      : undefined,
+  });
 }
 
 function resolveProviderSourceId(
@@ -371,35 +355,6 @@ function resolveProviderSourceId(
     : `external-${normalizedProvider}`;
 }
 
-function mapFailureClass(value: unknown): FailureClass | undefined {
-  if (value === 'protocol') return 'protocol_failure';
-  if (value === 'integrity_conflict') return 'integrity_conflict';
-  if (value === 'quarantine') return 'quarantine';
-  if (value === 'permission') return 'permission';
-  if (value === 'transient') return 'transient';
-  return undefined;
-}
-
-function resolveProviderNextAction(
-  activationBlockedReason: string | undefined,
-  actionCode: unknown,
-): string | undefined {
-  if (activationBlockedReason) {
-    return 'Narrow scope or raise the baseline cap, then resume activation.';
-  }
-  switch (actionCode) {
-    case 'retry_or_skip_quarantine':
-      return 'Retry or skip the quarantined event.';
-    case 'repair_source_then_retry':
-      return 'Repair the source or reader, then retry.';
-    case 'wait_for_retry':
-      return 'Wait for the next scheduled retry.';
-    case 'retry_next_wake':
-      return 'Retry on the next wake.';
-    default:
-      return undefined;
-  }
-}
 
 function readJsonRecord(filePath: string): Record<string, unknown> | undefined {
   try {

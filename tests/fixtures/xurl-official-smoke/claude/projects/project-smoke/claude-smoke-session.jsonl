@@ -1,0 +1,3 @@
+{"timestamp":"2026-02-23T00:00:00Z","type":"system","sessionId":"claude-smoke-session","cwd":"/redacted/workspace/project","message":{"role":"system","content":"meta"}}
+{"timestamp":"2026-02-23T00:00:01Z","type":"user","sessionId":"claude-smoke-session","cwd":"/redacted/workspace/project","message":{"role":"user","content":"Baseline claude request."}}
+{"timestamp":"2026-02-23T00:00:02Z","type":"assistant","sessionId":"claude-smoke-session","cwd":"/redacted/workspace/project","message":{"role":"assistant","content":"Baseline claude response."}}

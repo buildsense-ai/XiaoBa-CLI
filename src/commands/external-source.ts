@@ -19,9 +19,9 @@ import { Logger } from '../utils/logger';
 import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
 import {
   buildDiagnosticSummary,
+  buildProviderDiagnosticRecord,
   formatProviderDiagnosticHuman,
   type ExternalSourceProviderDiagnostic,
-  type FailureClass,
 } from '../utils/external-source-diagnostics';
 import {
   ExternalProviderOverrideStore,
@@ -198,44 +198,28 @@ function buildProviderDiagnostic(
   const sourceCursors = Object.values(cursorState.cursors)
     .filter(entry => entry.sourceIdentity?.sourceId === sourceId);
   const baselined = sourceCursors.filter(entry => entry.lastStatus === 'activated').length;
-  const failureClass = mapFailureClass(lastSourceReport?.failureClass);
-  const nextAction = resolveNextAction(activation?.activationBlockedReason, lastSourceReport?.nextAction);
-
-  return {
-    provider: status.provider,
-    scope: status.scope,
-    admissionState: activation?.activationBlocked
-      ? 'activation_blocked'
-      : !status.enabled || status.admissionGate === 'closed'
-        ? 'paused'
-        : activation && !activation.initialDiscoveryCompleted
-          ? 'activating'
-          : 'active',
-    ...(lastSourceReport?.readerVersion ? { readerVersion: lastSourceReport.readerVersion } : {}),
-    ...(resources.length > 0 || baselined > 0
-      ? { activationProgress: { baselined, total: resources.length } }
-      : {}),
-    ...(lastSourceReport?.cursorProgress
+  return buildProviderDiagnosticRecord({
+    status: {
+      provider: status.provider,
+      scope: status.scope,
+      enabled: status.enabled,
+      admissionGate: status.admissionGate,
+    },
+    activation,
+    resourcesTotal: resources.length,
+    baselined,
+    sourceReport: lastSourceReport
       ? {
-        cursorProgress: {
-          maxPosition: lastSourceReport.cursorProgress.maxPosition,
-          activeResources: lastSourceReport.cursorProgress.activeResources,
-          closedResources: lastSourceReport.cursorProgress.closedResources,
-        },
+        readerVersion: lastSourceReport.readerVersion,
+        cursorProgress: lastSourceReport.cursorProgress,
+        lastSuccessfulReadAt: lastSourceReport.lastSuccessfulReadAt,
+        nextRetryAt: lastSourceReport.nextRetryAt,
+        failureClass: lastSourceReport.failureClass,
+        status: lastSourceReport.drainState === 'draining' ? 'draining' : lastSourceReport.status,
+        nextAction: lastSourceReport.nextAction,
       }
-      : {}),
-    ...(lastSourceReport?.lastSuccessfulReadAt ? { lastSuccessfulReadAt: lastSourceReport.lastSuccessfulReadAt } : {}),
-    ...(lastSourceReport?.nextRetryAt ? { nextRetryAt: lastSourceReport.nextRetryAt } : {}),
-    ...(failureClass ? { failureClass } : {}),
-    quarantined: failureClass === 'quarantine' || (lastSourceReport?.cursorProgress?.quarantinedEvents ?? 0) > 0,
-    locked: lastSourceReport?.status === 'locked',
-    drainState: lastSourceReport?.drainState === 'draining'
-      ? 'draining'
-      : lastSourceReport?.status === 'drained'
-        ? 'drained'
-        : 'idle',
-    ...(nextAction ? { nextAction } : {}),
-  };
+      : undefined,
+  });
 }
 
 function resolveProviderSourceId(
@@ -262,35 +246,5 @@ function readLastSourceReport(
     return record.lastSourceReports?.find(report => report?.sourceId === sourceId);
   } catch {
     return undefined;
-  }
-}
-
-function mapFailureClass(value: unknown): FailureClass | undefined {
-  if (value === 'protocol') return 'protocol_failure';
-  if (value === 'integrity_conflict') return 'integrity_conflict';
-  if (value === 'quarantine') return 'quarantine';
-  if (value === 'permission') return 'permission';
-  if (value === 'transient') return 'transient';
-  return undefined;
-}
-
-function resolveNextAction(
-  activationBlockedReason: string | undefined,
-  actionCode: unknown,
-): string | undefined {
-  if (activationBlockedReason) {
-    return 'Narrow scope or raise the baseline cap, then resume activation.';
-  }
-  switch (actionCode) {
-    case 'retry_or_skip_quarantine':
-      return 'Retry or skip the quarantined event.';
-    case 'repair_source_then_retry':
-      return 'Repair the source or reader, then retry.';
-    case 'wait_for_retry':
-      return 'Wait for the next scheduled retry.';
-    case 'retry_next_wake':
-      return 'Retry on the next wake.';
-    default:
-      return undefined;
   }
 }
