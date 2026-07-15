@@ -20,6 +20,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { createHash } from 'crypto';
 import { sanitizeProviderErrorMessageForLog } from './provider-error-log-sanitizer';
 
 import {
@@ -37,7 +38,10 @@ import {
   markCursorFailed,
   saveLogCursorState,
 } from './log-cursor-state';
-import { DistillationHeartbeatConfig } from './distillation-heartbeat-config';
+import {
+  DistillationHeartbeatConfig,
+  type ExternalHistoryMode,
+} from './distillation-heartbeat-config';
 import { Logger } from './logger';
 
 // ---------------------------------------------------------------------------
@@ -182,6 +186,10 @@ export interface SessionLogSourceAdapter {
   getUnsupportedReason?(): string | undefined;
   /** Best-effort external reader version diagnostic. */
   getReaderVersion?(): string | undefined;
+  /** Admission lane for the next page from this resource. */
+  getAdmissionLane?(resource: SessionLogSourceResource): 'continuous' | 'catch-up';
+  /** Immutable catch-up target linked to a historical page, when present. */
+  getCatchUpTarget?(resource: SessionLogSourceResource): ExternalCatchUpTarget | undefined;
   discoverResources(context?: SessionLogSourceDiscoveryContext): readonly SessionLogSourceResource[];
   read(
     resource: SessionLogSourceResource,
@@ -632,6 +640,16 @@ export interface ExternalSourceReader {
    *          position after reading.
    */
   read(resource: SessionLogSourceResource, cursor: SourceCursor): ExternalSourceReaderResult;
+  /**
+   * Observe the complete canonical prefix twice and return it only when both
+   * bounded observations agree. Catch-up uses this seam to establish a fixed
+   * target without introducing a provider-specific parser in Runtime.
+   */
+  sampleHistory?(resource: SessionLogSourceResource): ExternalSourceHistorySampleResult;
+  sampleHistoryAsync?(
+    resource: SessionLogSourceResource,
+    signal: AbortSignal,
+  ): Promise<ExternalSourceHistorySampleResult>;
   /** Optional async/cancellable read seam for bounded concurrent reads (issue #92). */
   readAsync?(
     resource: SessionLogSourceResource,
@@ -657,6 +675,11 @@ export interface ExternalSourceReaderResult {
   readonly newPosition: number;
   /** Optional raw byte accounting supplied by a stable provider reader. */
   readonly byteLength?: number;
+}
+
+export interface ExternalSourceHistorySampleResult extends ExternalSourceReaderResult {
+  /** Highest rendered ordinal observed, including an incomplete tail. */
+  readonly observedPosition: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -723,6 +746,35 @@ export interface ExternalDiscoveredResourceState {
   readonly closedReason?: 'archived_or_deleted';
 }
 
+export interface ExternalCatchUpTarget {
+  readonly targetId: string;
+  readonly provider: string;
+  readonly sourceId: string;
+  readonly resourceRef: string;
+  readonly conversationId?: string;
+  readonly branchId?: string;
+  /** Highest complete canonical event position; null is an explicit empty target. */
+  readonly position: number | null;
+  readonly empty: boolean;
+  readonly prefixDigest: string;
+  readonly creationGeneration: number;
+  readonly scopeFingerprint: string;
+  readonly observedAt: string;
+}
+
+export type ExternalCatchUpResourceStatus =
+  | 'target-pending'
+  | 'historical-pending'
+  | 'complete';
+
+/** Mutable catch-up progress kept separate from the immutable target. */
+export interface ExternalCatchUpResourceState {
+  readonly status: ExternalCatchUpResourceStatus;
+  readonly historicalCursor: SourceCursor;
+  readonly observedPosition: number;
+  readonly updatedAt: string;
+}
+
 export interface ExternalSourceQuarantineEntry {
   readonly quarantineId: string;
   readonly resourceRef: string;
@@ -765,6 +817,10 @@ export interface ExternalCursorState {
   readonly tombstones: Record<string, ExternalSourceTombstoneEntry>;
   readonly activation: ExternalSourceActivationState | null;
   readonly discovery: ExternalSourceDiscoveryState | null;
+  /** Immutable per-thread boundaries. Existing entries are never replaced. */
+  readonly catchUpTargets: Record<string, ExternalCatchUpTarget>;
+  /** Mutable historical cursor/lifecycle state, separate from targets. */
+  readonly catchUpResources: Record<string, ExternalCatchUpResourceState>;
   /** ISO timestamp of the last state save. */
   readonly updatedAt: string;
 }
@@ -779,7 +835,7 @@ export interface ExternalCursorEntry {
 
 export function emptyExternalCursorState(): ExternalCursorState {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     cursors: {},
     processedEventIds: {},
     processedEventFingerprints: {},
@@ -789,8 +845,108 @@ export function emptyExternalCursorState(): ExternalCursorState {
     tombstones: {},
     activation: null,
     discovery: null,
+    catchUpTargets: {},
+    catchUpResources: {},
     updatedAt: new Date().toISOString(),
   };
+}
+
+function normalizeCatchUpTargets(value: unknown): Record<string, ExternalCatchUpTarget> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('external cursor state has invalid catch-up targets');
+  }
+  const targets: Record<string, ExternalCatchUpTarget> = {};
+  for (const [resourceRef, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error(`external cursor state has invalid catch-up target for ${resourceRef}`);
+    }
+    const candidate = raw as Partial<ExternalCatchUpTarget>;
+    if (
+      typeof candidate.targetId !== 'string' || candidate.targetId.length === 0
+      || typeof candidate.provider !== 'string' || candidate.provider.length === 0
+      || typeof candidate.sourceId !== 'string' || candidate.sourceId.length === 0
+      || candidate.resourceRef !== resourceRef
+      || (candidate.position !== null
+        && (typeof candidate.position !== 'number'
+          || !Number.isInteger(candidate.position)
+          || candidate.position < 0))
+      || candidate.empty !== (candidate.position === null)
+      || typeof candidate.prefixDigest !== 'string'
+      || !/^[a-f0-9]{64}$/.test(candidate.prefixDigest)
+      || !Number.isInteger(candidate.creationGeneration)
+      || candidate.creationGeneration! < 1
+      || typeof candidate.scopeFingerprint !== 'string'
+      || !/^[a-f0-9]{64}$/.test(candidate.scopeFingerprint)
+      || typeof candidate.observedAt !== 'string'
+    ) {
+      throw new Error(`external cursor state has invalid catch-up target for ${resourceRef}`);
+    }
+    const position = candidate.position === null ? null : candidate.position!;
+    targets[resourceRef] = {
+      targetId: candidate.targetId,
+      provider: candidate.provider,
+      sourceId: candidate.sourceId,
+      resourceRef,
+      ...(typeof candidate.conversationId === 'string'
+        ? { conversationId: candidate.conversationId }
+        : {}),
+      ...(typeof candidate.branchId === 'string' ? { branchId: candidate.branchId } : {}),
+      position,
+      empty: position === null,
+      prefixDigest: candidate.prefixDigest,
+      creationGeneration: candidate.creationGeneration!,
+      scopeFingerprint: candidate.scopeFingerprint,
+      observedAt: candidate.observedAt,
+    };
+  }
+  return targets;
+}
+
+function normalizeCatchUpResources(value: unknown): Record<string, ExternalCatchUpResourceState> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('external cursor state has invalid catch-up resources');
+  }
+  const resources: Record<string, ExternalCatchUpResourceState> = {};
+  for (const [resourceRef, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error(`external cursor state has invalid catch-up resource for ${resourceRef}`);
+    }
+    const candidate = raw as Partial<ExternalCatchUpResourceState>;
+    const cursor = candidate.historicalCursor;
+    if (
+      candidate.status !== 'target-pending'
+      && candidate.status !== 'historical-pending'
+      && candidate.status !== 'complete'
+    ) {
+      throw new Error(`external cursor state has invalid catch-up resource for ${resourceRef}`);
+    }
+    if (
+      !cursor
+      || cursor.resourceRef !== resourceRef
+      || !Number.isInteger(cursor.position)
+      || cursor.position < -1
+      || !Number.isInteger(cursor.processedCount)
+      || cursor.processedCount < 0
+      || !Number.isInteger(candidate.observedPosition)
+      || candidate.observedPosition! < 0
+      || typeof candidate.updatedAt !== 'string'
+    ) {
+      throw new Error(`external cursor state has invalid catch-up resource for ${resourceRef}`);
+    }
+    resources[resourceRef] = {
+      status: candidate.status,
+      historicalCursor: {
+        resourceRef,
+        position: cursor.position,
+        processedCount: cursor.processedCount,
+      },
+      observedPosition: candidate.observedPosition!,
+      updatedAt: candidate.updatedAt,
+    };
+  }
+  return resources;
 }
 
 export function loadExternalCursorState(storePath: string): ExternalCursorState {
@@ -803,7 +959,7 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
     throw new Error(`external cursor state is corrupt: ${storePath}: ${String(error)}`);
   }
   const schemaVersion = Number(parsed.schemaVersion ?? 1);
-  if (!Number.isFinite(schemaVersion) || schemaVersion < 1 || schemaVersion > 3) {
+  if (!Number.isFinite(schemaVersion) || schemaVersion < 1 || schemaVersion > 4) {
     throw new Error(`external cursor state schema is unsupported: ${String(parsed.schemaVersion)}`);
   }
   if (!parsed.cursors || typeof parsed.cursors !== 'object'
@@ -896,8 +1052,10 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
   const discovery = parsed.discovery && typeof parsed.discovery === 'object'
     ? parsed.discovery as Partial<ExternalSourceDiscoveryState>
     : null;
+  const catchUpTargets = normalizeCatchUpTargets(parsed.catchUpTargets);
+  const catchUpResources = normalizeCatchUpResources(parsed.catchUpResources);
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     cursors: parsed.cursors as Record<string, ExternalCursorEntry>,
     processedEventIds: parsed.processedEventIds as Record<string, string | null>,
     processedEventFingerprints: processedEventFingerprints as Record<string, string>,
@@ -932,6 +1090,8 @@ export function loadExternalCursorState(storePath: string): ExternalCursorState 
           : 0,
       }
       : null,
+    catchUpTargets,
+    catchUpResources,
     updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
   };
 }
@@ -942,7 +1102,7 @@ export function saveExternalCursorState(
 ): void {
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
   const payload = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     cursors: state.cursors,
     processedEventIds: state.processedEventIds,
     processedEventFingerprints: state.processedEventFingerprints,
@@ -952,6 +1112,8 @@ export function saveExternalCursorState(
     tombstones: state.tombstones,
     activation: state.activation,
     discovery: state.discovery,
+    catchUpTargets: state.catchUpTargets,
+    catchUpResources: state.catchUpResources,
     updatedAt: new Date().toISOString(),
   };
   const tmpPath = `${storePath}.${process.pid}.${Date.now()}.tmp`;
@@ -1105,6 +1267,8 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
   private enabled: boolean;
   private readonly reader: ExternalSourceReader | null;
   private readonly scope: { scope: 'global' | 'path'; scopePath?: string };
+  private readonly historyMode: ExternalHistoryMode;
+  private readonly now: () => Date;
   private cursorStorePath: string;
 
   constructor(
@@ -1116,6 +1280,8 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       cursorStorePath?: string;
       enabled?: boolean;
       scope?: { scope: 'global' | 'path'; scopePath?: string };
+      historyMode?: ExternalHistoryMode;
+      now?: () => Date;
     },
     cursorStorePath?: string,
   ) {
@@ -1130,6 +1296,8 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     this.enabled = options.enabled ?? false;
     this.reader = readerObj ?? null;
     this.scope = options.scope ?? { scope: 'global' };
+    this.historyMode = options.historyMode ?? 'future-only';
+    this.now = options.now ?? (() => new Date());
     this.cursorStorePath = (cursorStorePath
       ?? options.cursorStorePath
       ?? resolveExternalCursorStorePath({
@@ -1169,6 +1337,19 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       : undefined;
   }
 
+  getAdmissionLane(resource: SessionLogSourceResource): 'continuous' | 'catch-up' {
+    if (!this.cursorStorePath || this.historyMode !== 'catch-up') return 'continuous';
+    const state = loadExternalCursorState(this.cursorStorePath);
+    return state.catchUpResources[resource.resourceRef]?.status === 'historical-pending'
+      ? 'catch-up'
+      : 'continuous';
+  }
+
+  getCatchUpTarget(resource: SessionLogSourceResource): ExternalCatchUpTarget | undefined {
+    if (!this.cursorStorePath) return undefined;
+    return loadExternalCursorState(this.cursorStorePath).catchUpTargets[resource.resourceRef];
+  }
+
   /** Set the cursor store path (called during RuntimeLearning construction). */
   setCursorStorePath(storePath: string): void {
     if (!this.cursorStorePath) {
@@ -1196,6 +1377,10 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     if (withIdentity.activation?.activationBlocked === true) {
       this.persistExternalState(withIdentity);
       return [];
+    }
+
+    if (this.historyMode === 'catch-up') {
+      return this.discoverCatchUpResources(withIdentity, maxResources);
     }
 
     if (!withIdentity.activation) {
@@ -1250,7 +1435,12 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       ? loadExternalCursorState(this.cursorStorePath)
       : emptyExternalCursorState();
     const resourceState = state.resources[resource.resourceRef];
-    const sourceCursor = readCursorWithSourceIdentityValidation(state, this.identity, resource.resourceRef);
+    const catchUpResource = state.catchUpResources[resource.resourceRef];
+    const historicalRead = this.historyMode === 'catch-up'
+      && catchUpResource?.status === 'historical-pending';
+    const sourceCursor = historicalRead
+      ? catchUpResource.historicalCursor
+      : readCursorWithSourceIdentityValidation(state, this.identity, resource.resourceRef);
     const resourceCursor: SourceCursor = sourceCursor
       ? { ...sourceCursor, resourceRef: resource.resourceRef }
       : {
@@ -1261,7 +1451,12 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
 
     let readerResult: ExternalSourceReaderResult;
     try {
-      readerResult = this.reader.read(resource, resourceCursor);
+      readerResult = historicalRead && this.reader.sampleHistory
+        ? this.reader.sampleHistory(resource)
+        : this.reader.read(resource, resourceCursor);
+      if (historicalRead) {
+        readerResult = this.limitHistoricalReadToTarget(resource, state, resourceCursor, readerResult);
+      }
     } catch (error) {
       const message = redactExternalSourceDiagnostic(error);
       this.markFailed(resource, error);
@@ -1303,7 +1498,12 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
       ? loadExternalCursorState(this.cursorStorePath)
       : emptyExternalCursorState();
     const resourceState = state.resources[resource.resourceRef];
-    const sourceCursor = readCursorWithSourceIdentityValidation(state, this.identity, resource.resourceRef);
+    const catchUpResource = state.catchUpResources[resource.resourceRef];
+    const historicalRead = this.historyMode === 'catch-up'
+      && catchUpResource?.status === 'historical-pending';
+    const sourceCursor = historicalRead
+      ? catchUpResource.historicalCursor
+      : readCursorWithSourceIdentityValidation(state, this.identity, resource.resourceRef);
     const resourceCursor: SourceCursor = sourceCursor
       ? { ...sourceCursor, resourceRef: resource.resourceRef }
       : {
@@ -1314,9 +1514,18 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
 
     let readerResult: ExternalSourceReaderResult;
     try {
-      readerResult = this.reader.readAsync
-        ? await this.reader.readAsync(resource, resourceCursor, signal)
-        : await Promise.resolve().then(() => this.reader!.read(resource, resourceCursor));
+      if (historicalRead && this.reader.sampleHistoryAsync) {
+        readerResult = await this.reader.sampleHistoryAsync(resource, signal);
+      } else if (historicalRead && this.reader.sampleHistory) {
+        readerResult = await Promise.resolve().then(() => this.reader!.sampleHistory!(resource));
+      } else {
+        readerResult = this.reader.readAsync
+          ? await this.reader.readAsync(resource, resourceCursor, signal)
+          : await Promise.resolve().then(() => this.reader!.read(resource, resourceCursor));
+      }
+      if (historicalRead) {
+        readerResult = this.limitHistoricalReadToTarget(resource, state, resourceCursor, readerResult);
+      }
     } catch (error) {
       const message = redactExternalSourceDiagnostic(error);
       this.markFailed(resource, error);
@@ -1334,6 +1543,39 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     }
 
     return this.materializeExternalReadResult(resource, state, resourceState, resourceCursor, readerResult);
+  }
+
+  private limitHistoricalReadToTarget(
+    resource: SessionLogSourceResource,
+    state: ExternalCursorState,
+    resourceCursor: SourceCursor,
+    readerResult: ExternalSourceReaderResult,
+  ): ExternalSourceReaderResult {
+    const target = state.catchUpTargets[resource.resourceRef];
+    if (!target || target.position === null) {
+      throw new Error(`catch-up target is missing for ${resource.resourceRef}`);
+    }
+    if (readerResult.status !== 'stable') return readerResult;
+    const prefix = readerResult.events
+      .filter(event => event.position <= target.position!)
+      .sort((a, b) => a.position - b.position);
+    if (buildExternalCatchUpPrefixDigest(prefix) !== target.prefixDigest) {
+      throw new Error(`external catch-up prefix changed for ${resource.resourceRef}`);
+    }
+    const unread = prefix.filter(event => event.position > resourceCursor.position);
+    const newPosition = unread.length > 0
+      ? unread[unread.length - 1]!.position
+      : Math.max(resourceCursor.position, target.position);
+    return {
+      ...readerResult,
+      events: unread,
+      newPosition: Math.min(newPosition, target.position),
+      exhausted: newPosition >= target.position,
+      byteLength: unread.reduce(
+        (sum, event) => sum + Buffer.byteLength(JSON.stringify(event.distillationUnit ?? event), 'utf8'),
+        0,
+      ),
+    };
   }
 
   private materializeExternalReadResult(
@@ -1470,6 +1712,13 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
   acknowledge(resource: SessionLogSourceResource, result: SessionLogSourceReadResult): void {
     if (!this.cursorStorePath) return;
     const state = registerExternalSourceIdentity(loadExternalCursorState(this.cursorStorePath), this.identity);
+    if (
+      this.historyMode === 'catch-up'
+      && state.catchUpResources[resource.resourceRef]?.status === 'historical-pending'
+    ) {
+      this.acknowledgeHistoricalPage(resource, result, state);
+      return;
+    }
     const now = new Date().toISOString();
 
     const updatedCursors = { ...state.cursors };
@@ -1525,11 +1774,254 @@ export class ExternalSessionLogSourceAdapter implements SessionLogSourceAdapter 
     });
   }
 
+  private acknowledgeHistoricalPage(
+    resource: SessionLogSourceResource,
+    result: SessionLogSourceReadResult,
+    state: ExternalCursorState,
+  ): void {
+    if (!this.cursorStorePath) return;
+    const target = state.catchUpTargets[resource.resourceRef];
+    const progress = state.catchUpResources[resource.resourceRef];
+    if (!target || target.position === null || !progress) {
+      throw new Error(`catch-up target state is missing for ${resource.resourceRef}`);
+    }
+    const now = this.now().toISOString();
+    const complete = result.newCursor.position >= target.position;
+    const updatedEventIds = { ...state.processedEventIds };
+    const updatedFingerprints = { ...state.processedEventFingerprints };
+    const identities = result.eventIdentities ?? [];
+    for (const identity of identities) {
+      updatedEventIds[buildExternalEventDedupKey(this.identity, identity)] = normalizeContentHash(identity.contentHash);
+      updatedFingerprints[buildExternalStableEventKey(this.identity, identity)] = fingerprintEventIdentity(identity);
+    }
+
+    const updatedCursors = { ...state.cursors };
+    if (complete) {
+      const existing = readCursorWithSourceIdentityValidation(state, this.identity, resource.resourceRef);
+      const continuousCursor: SourceCursor = existing && existing.position > target.position
+        ? existing
+        : {
+          resourceRef: resource.resourceRef,
+          position: target.position,
+          processedCount: Math.max(existing?.processedCount ?? 0, result.newCursor.processedCount),
+        };
+      const entry: ExternalCursorEntry = {
+        cursor: continuousCursor,
+        sourceIdentity: this.identity,
+        updatedAt: now,
+        lastStatus: 'stable',
+      };
+      updatedCursors[resource.resourceRef] = entry;
+      updatedCursors[this.identity.sourceId] = entry;
+    }
+
+    const existingResource = state.resources[resource.resourceRef];
+    saveExternalCursorState(this.cursorStorePath, {
+      ...state,
+      cursors: updatedCursors,
+      processedEventIds: updatedEventIds,
+      processedEventFingerprints: updatedFingerprints,
+      resources: {
+        ...state.resources,
+        [resource.resourceRef]: {
+          resource,
+          continuityTail: result.continuityTail ?? existingResource?.continuityTail ?? [],
+          continuityIncomplete: result.continuityIncomplete ?? false,
+          updatedAt: now,
+          lifecycleStatus: existingResource?.lifecycleStatus ?? 'active',
+          lastSeenAt: existingResource?.lastSeenAt ?? now,
+          lastSeenDiscoveryCycle: existingResource?.lastSeenDiscoveryCycle,
+          missingDiscoveryCycles: 0,
+          missingSince: null,
+          lastSuccessfulReadAt: now,
+        },
+      },
+      catchUpResources: {
+        ...state.catchUpResources,
+        [resource.resourceRef]: {
+          ...progress,
+          status: complete ? 'complete' : 'historical-pending',
+          historicalCursor: result.newCursor,
+          updatedAt: now,
+        },
+      },
+      updatedAt: now,
+    });
+  }
+
   markFailed(resource: SessionLogSourceResource, error: unknown): void {
     void resource;
     Logger.warning(
       `[ExternalSessionLogSourceAdapter] ${this.identity.sourceId} resource failed: ${redactExternalSourceDiagnostic(error)}`,
     );
+  }
+
+  private discoverCatchUpResources(
+    state: ExternalCursorState,
+    maxResources: number,
+  ): readonly SessionLogSourceResource[] {
+    const priorGeneration = state.discovery?.cycle ?? 0;
+    const generation = Math.max(1, priorGeneration || 1);
+    const discovery = this.discoverIncrementalPage(state, null, null, Math.min(1, maxResources));
+    let nextState = applyExternalDiscoveryPage(state, this.identity, discovery, generation, false);
+    nextState = {
+      ...nextState,
+      discovery: {
+        nextPageToken: discovery.nextPageToken ?? null,
+        nextResourceIndex: 0,
+        updatedAt: this.now().toISOString(),
+        cycle: generation,
+      },
+    };
+    const resource = discovery.resources[0];
+    if (!resource) {
+      this.persistExternalState(nextState);
+      return [];
+    }
+
+    const existingTarget = nextState.catchUpTargets[resource.resourceRef];
+    if (existingTarget) {
+      if (!nextState.catchUpResources[resource.resourceRef]) {
+        nextState = {
+          ...nextState,
+          catchUpResources: {
+            ...nextState.catchUpResources,
+            [resource.resourceRef]: {
+              status: existingTarget.empty ? 'complete' : 'historical-pending',
+              historicalCursor: {
+                resourceRef: resource.resourceRef,
+                position: -1,
+                processedCount: 0,
+              },
+              observedPosition: existingTarget.position
+                ?? normalizeActivationPosition(resource.firstEventIdentity?.position),
+              updatedAt: this.now().toISOString(),
+            },
+          },
+        };
+      }
+      this.persistExternalState(nextState);
+      return [resource];
+    }
+
+    if (!this.reader?.sampleHistory) {
+      this.persistExternalState(this.withPendingCatchUpSample(nextState, resource));
+      return [];
+    }
+    const sample = this.reader.sampleHistory(resource);
+    if (sample.status !== 'stable') {
+      this.persistExternalState(this.withPendingCatchUpSample(nextState, resource, sample.observedPosition));
+      return [];
+    }
+
+    const events = [...sample.events].sort((a, b) => a.position - b.position);
+    const targetPosition = events.length > 0 ? events[events.length - 1]!.position : null;
+    const observedPosition = Math.max(
+      0,
+      sample.observedPosition,
+      normalizeActivationPosition(resource.firstEventIdentity?.position),
+      targetPosition ?? 0,
+    );
+    const prefixDigest = buildExternalCatchUpPrefixDigest(events);
+    const scopeFingerprint = buildExternalCatchUpScopeFingerprint(
+      this.identity.provider,
+      this.identity.sourceId,
+      this.scope,
+    );
+    const targetId = createHash('sha256').update(JSON.stringify([
+      this.identity.provider,
+      this.identity.sourceId,
+      resource.resourceRef,
+      generation,
+      scopeFingerprint,
+      targetPosition,
+      prefixDigest,
+    ])).digest('hex');
+    const lastIdentity = events[events.length - 1];
+    const target: ExternalCatchUpTarget = {
+      targetId,
+      provider: this.identity.provider,
+      sourceId: this.identity.sourceId,
+      resourceRef: resource.resourceRef,
+      ...(lastIdentity?.conversationId ?? resource.firstEventIdentity?.conversationId
+        ? { conversationId: lastIdentity?.conversationId ?? resource.firstEventIdentity?.conversationId }
+        : {}),
+      ...(lastIdentity?.branchId ?? resource.firstEventIdentity?.branchId
+        ? { branchId: lastIdentity?.branchId ?? resource.firstEventIdentity?.branchId }
+        : {}),
+      position: targetPosition,
+      empty: targetPosition === null,
+      prefixDigest,
+      creationGeneration: generation,
+      scopeFingerprint,
+      observedAt: this.now().toISOString(),
+    };
+    const now = this.now().toISOString();
+    const catchUpResource: ExternalCatchUpResourceState = {
+      status: target.empty ? 'complete' : 'historical-pending',
+      historicalCursor: {
+        resourceRef: resource.resourceRef,
+        position: -1,
+        processedCount: 0,
+      },
+      observedPosition,
+      updatedAt: now,
+    };
+    const cursors = { ...nextState.cursors };
+    const entry: ExternalCursorEntry = {
+      cursor: {
+        resourceRef: resource.resourceRef,
+        // The continuous lane starts above the immutable target immediately;
+        // historical progress uses its separate cursor and can be paused.
+        position: target.position ?? observedPosition,
+        processedCount: 0,
+      },
+      sourceIdentity: this.identity,
+      updatedAt: now,
+      lastStatus: 'activated',
+    };
+    cursors[resource.resourceRef] = entry;
+    cursors[this.identity.sourceId] = entry;
+    nextState = {
+      ...nextState,
+      cursors,
+      catchUpTargets: {
+        ...nextState.catchUpTargets,
+        [resource.resourceRef]: target,
+      },
+      catchUpResources: {
+        ...nextState.catchUpResources,
+        [resource.resourceRef]: catchUpResource,
+      },
+      updatedAt: now,
+    };
+    this.persistExternalState(nextState);
+    return target.empty ? [] : [resource];
+  }
+
+  private withPendingCatchUpSample(
+    state: ExternalCursorState,
+    resource: SessionLogSourceResource,
+    observedPosition = normalizeActivationPosition(resource.firstEventIdentity?.position),
+  ): ExternalCursorState {
+    const now = this.now().toISOString();
+    return {
+      ...state,
+      catchUpResources: {
+        ...state.catchUpResources,
+        [resource.resourceRef]: {
+          status: 'target-pending',
+          historicalCursor: {
+            resourceRef: resource.resourceRef,
+            position: -1,
+            processedCount: 0,
+          },
+          observedPosition: Math.max(0, observedPosition),
+          updatedAt: now,
+        },
+      },
+      updatedAt: now,
+    };
   }
 
   private initializeFutureOnlyActivation(
@@ -1963,6 +2455,7 @@ function applyExternalDiscoveryPage(
   identity: SessionLogSourceIdentity,
   discovery: ExternalSourceIncrementalDiscoveryResult,
   cycle: number,
+  baselineNewResources = true,
 ): ExternalCursorState {
   let nextState = registerExternalSourceIdentity(state, identity);
   const activationResources = discovery.activationResources
@@ -1991,7 +2484,7 @@ function applyExternalDiscoveryPage(
       ...(existing?.closedReason ? { closedReason: existing.closedReason } : {}),
     };
     const existingCursor = readCursorWithSourceIdentityValidation(nextState, identity, item.resource.resourceRef);
-    if (!existingCursor) {
+    if (baselineNewResources && !existingCursor) {
       nextCursors[item.resource.resourceRef] = {
         cursor: {
           resourceRef: item.resource.resourceRef,
@@ -2150,6 +2643,36 @@ export function buildExternalEventDedupKey(
 
 function normalizeContentHash(contentHash: string | undefined): string | null {
   return contentHash ? String(contentHash) : null;
+}
+
+export function buildExternalCatchUpPrefixDigest(
+  events: readonly Pick<ExternalSourceRawEvent, 'eventId' | 'position' | 'conversationId' | 'branchId' | 'contentHash'>[],
+): string {
+  const digest = createHash('sha256');
+  for (const event of [...events].sort((a, b) => a.position - b.position)) {
+    digest.update(JSON.stringify([
+      event.eventId,
+      event.position,
+      event.conversationId ?? null,
+      event.branchId ?? null,
+      normalizeContentHash(event.contentHash),
+    ]));
+    digest.update('\n');
+  }
+  return digest.digest('hex');
+}
+
+export function buildExternalCatchUpScopeFingerprint(
+  provider: string,
+  sourceId: string,
+  scope: { scope: 'global' | 'path'; scopePath?: string },
+): string {
+  return createHash('sha256').update(JSON.stringify([
+    provider,
+    sourceId,
+    scope.scope,
+    scope.scopePath ?? null,
+  ])).digest('hex');
 }
 
 function hasExternalEventConflict(

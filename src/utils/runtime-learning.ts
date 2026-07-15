@@ -39,6 +39,7 @@ import {
   saveLogCursorState,
 } from './log-cursor-state';
 import { getDistillationHeartbeatConfig, DistillationHeartbeatConfig } from './distillation-heartbeat-config';
+import type { ExternalHistoryMode } from './distillation-heartbeat-config';
 import { LearningEpisodeStore, LearningEpisode, buildLearningEpisodeCandidate } from './learning-episode';
 import { SkillEvolutionRuntime, CapabilityTransitionKind } from './skill-evolution';
 import { SkillUsageCurator, CuratorRunResult } from './skill-usage-curator';
@@ -978,8 +979,18 @@ export class RuntimeLearning {
   enableExternalProvider(
     provider: string,
     scope?: { scope: 'global' | 'path'; scopePath?: string },
+    historyMode?: ExternalHistoryMode,
   ): void {
-    this.providerOverrideStore.enableProvider(provider, scope);
+    this.providerOverrideStore.enableProvider(provider, scope, historyMode);
+    this.reconcileProviderLanes();
+  }
+
+  /** Switch an enabled provider's durable history policy at a wake boundary. */
+  setExternalProviderHistoryMode(provider: string, historyMode: ExternalHistoryMode): void {
+    if (!this.providerOverrideStore.isProviderEnabled(provider, this.config)) {
+      throw new Error(`external provider is not enabled: ${provider}`);
+    }
+    this.providerOverrideStore.setProviderHistoryMode(provider, historyMode);
     this.reconcileProviderLanes();
   }
 
@@ -1136,6 +1147,7 @@ export class RuntimeLearning {
         ? legacySelectedSourceId
         : `external-${provider}`;
       const scope = this.providerOverrideStore.getProviderScope(provider);
+      const history = this.providerOverrideStore.getProviderHistoryMode(provider, this.config);
       const reader = this.config.externalSessionLogXurlCommand
         ? new XurlExternalSourceReader({
           command: this.config.externalSessionLogXurlCommand,
@@ -1152,6 +1164,8 @@ export class RuntimeLearning {
         reader,
         enabled: true,
         scope,
+        historyMode: history.mode,
+        now: this.clock,
       }));
     }
     return adapters;
@@ -2307,6 +2321,7 @@ export class RuntimeLearning {
     if (externalProvenanceUpdated || this.externalEpisodeProvenanceDirty) {
       this.saveExternalEpisodeProvenanceState();
     }
+    this.reconcileCompletedHistoricalTargets();
 
     return {
       sourceReports,
@@ -2334,6 +2349,24 @@ export class RuntimeLearning {
     const cancelTimer = setTimeout(() => controller.abort(), remainingMs);
     cancelTimer.unref?.();
     return { controller, cancelTimer };
+  }
+
+  private reconcileCompletedHistoricalTargets(): void {
+    const completedTargetIds = new Set<string>();
+    for (const adapter of this.sessionLogSources) {
+      if (adapter.identity.category !== 'external') continue;
+      const storePath = adapter.getCursorStorePath?.();
+      if (!storePath) continue;
+      const state = loadExternalCursorState(storePath);
+      for (const [resourceRef, progress] of Object.entries(state.catchUpResources)) {
+        if (progress.status !== 'complete') continue;
+        const target = state.catchUpTargets[resourceRef];
+        if (target && !target.empty) completedTargetIds.add(target.targetId);
+      }
+    }
+    for (const targetId of completedTargetIds) {
+      this.episodeStore.reconcileHistoricalTarget(targetId);
+    }
   }
 
   private async processDiscoverySource(
@@ -2676,7 +2709,7 @@ export class RuntimeLearning {
               distillationUnits,
               eventIdentities,
               readResult,
-              lane: 'continuous',
+              lane: adapter.getAdmissionLane?.(resource) ?? 'continuous',
             };
             const commitResult = this.externalAdmissionCoordinator.admitPage(
               page,
@@ -3470,7 +3503,7 @@ export class RuntimeLearning {
    */
   private commitExternalEvidencePage(page: ExternalEvidencePage): ExternalAdmissionCommitResult {
     const adapter = this.findExternalSourceAdapter(page.identity.provider, page.sourceId);
-    if (page.lane === 'continuous' && !adapter) {
+    if (page.lane !== 'backfill' && !adapter) {
       return {
         admittedEpisodes: 0,
         contradictionSignals: 0,
@@ -3508,7 +3541,27 @@ export class RuntimeLearning {
           sourceId: identity.sourceId,
           eventIdentity,
         });
-        const ingestionResult = this.evidenceIngestor.ingest(ingestUnit);
+        const catchUpTarget = page.lane === 'catch-up'
+          ? adapter?.getCatchUpTarget?.(resource)
+          : undefined;
+        if (page.lane === 'catch-up' && (!catchUpTarget || catchUpTarget.position === null)) {
+          throw new Error(`external catch-up target is missing for ${resource.resourceRef}`);
+        }
+        const ingestionResult = this.evidenceIngestor.ingest(
+          ingestUnit,
+          catchUpTarget && catchUpTarget.position !== null
+            ? {
+              historicalTarget: {
+                targetId: catchUpTarget.targetId,
+                provider: catchUpTarget.provider,
+                sourceId: catchUpTarget.sourceId,
+                resourceRef: catchUpTarget.resourceRef,
+                position: catchUpTarget.position,
+                prefixDigest: catchUpTarget.prefixDigest,
+              },
+            }
+            : {},
+        );
         const admissionEpisodeIds = this.resolveExternalEpisodeIds(
           identity,
           eventIdentity,
@@ -3550,9 +3603,9 @@ export class RuntimeLearning {
 
       // Cursor acknowledgement is lane-specific and remains the final durable
       // step owned by that lane.
-      if (page.lane === 'continuous') {
+      if (page.lane !== 'backfill') {
         adapter!.acknowledge(resource, readResult);
-        // Success resets failure count for continuous external sources.
+        // Success resets failure count for continuous and catch-up pages.
         this.resetExternalSourceFailure(identity);
       }
 
@@ -3613,6 +3666,7 @@ export class RuntimeLearning {
       if (!episode) continue;
 
       const bundleId = `v3:learning-episode:${episodeId}`;
+      if (this.evidenceCapsuleStore.findByBundleId(bundleId)) continue;
 
       // Extract evidence content from the episode's completion evidence detail.
       const completionEvidence: {

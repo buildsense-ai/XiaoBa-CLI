@@ -94,7 +94,7 @@ export interface ExternalEvidencePage {
   /** The raw read result, used for cursor acknowledgement. */
   readonly readResult: SessionLogSourceReadResult;
   /** Which lane produced this page. */
-  readonly lane: 'continuous' | 'backfill';
+  readonly lane: 'continuous' | 'catch-up' | 'backfill';
 }
 
 /**
@@ -556,7 +556,9 @@ export class ExternalAdmissionCoordinator {
     knownProviders?: readonly string[],
   ): void {
     this.updateProviderTurn(page.providerId, turn => ({
-      lastLaneServed: page.lane,
+      // #98 routes catch-up through the existing continuous/backfill turn
+      // class. Dedicated historical fairness is intentionally deferred.
+      lastLaneServed: page.lane === 'catch-up' ? 'continuous' : page.lane,
       backfillPending: page.lane === 'backfill' ? false : turn.backfillPending,
     }));
     this.advanceNextProvider(knownProviders ?? [page.providerId], page.providerId);

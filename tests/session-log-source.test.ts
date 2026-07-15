@@ -991,12 +991,14 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
     describe('External cursor state persistence', () => {
       test('emptyExternalCursorState returns valid state', () => {
         const state = emptyExternalCursorState();
-        assert.equal(state.schemaVersion, 3);
+        assert.equal(state.schemaVersion, 4);
         assert.deepEqual(state.cursors, {});
         assert.deepEqual(state.processedEventIds, {});
         assert.deepEqual(state.processedEventFingerprints, {});
         assert.equal(state.activation, null);
         assert.equal(state.discovery, null);
+        assert.deepEqual(state.catchUpTargets, {});
+        assert.deepEqual(state.catchUpResources, {});
         assert.ok(typeof state.updatedAt === 'string');
       });
 
@@ -1034,7 +1036,7 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
         saveExternalCursorState(storePath, original);
         const loaded = loadExternalCursorState(storePath);
 
-        assert.equal(loaded.schemaVersion, 3);
+        assert.equal(loaded.schemaVersion, 4);
         assert.ok(loaded.cursors['external-pi']);
         assert.equal(loaded.cursors['external-pi'].cursor.position, 5);
         assert.equal(loaded.processedEventIds['pi://conv/1/event-1'], 'hash-a');
@@ -1056,6 +1058,30 @@ describe('Issue #75 — Source-neutral Heartbeat input seam', () => {
         fs.writeFileSync(storePath, 'not valid json', 'utf-8');
 
         assert.throws(() => loadExternalCursorState(storePath), /corrupt/);
+      });
+
+      test('malformed schema-v4 catch-up targets fail closed instead of being redefined', () => {
+        const storePath = path.join(env.root, 'data', 'malformed-catch-up-target.json');
+        const state = emptyExternalCursorState();
+        state.catchUpTargets['thread-1'] = {
+          targetId: 'target-thread-1',
+          provider: 'fixture',
+          sourceId: 'fixture-source',
+          resourceRef: 'thread-1',
+          position: 4,
+          empty: false,
+          prefixDigest: 'not-a-digest',
+          creationGeneration: 1,
+          scopeFingerprint: 'b'.repeat(64),
+          observedAt: '2026-01-01T00:00:00.000Z',
+        };
+        fs.mkdirSync(path.dirname(storePath), { recursive: true });
+        fs.writeFileSync(storePath, JSON.stringify(state), 'utf-8');
+
+        assert.throws(
+          () => loadExternalCursorState(storePath),
+          /invalid catch-up target for thread-1/,
+        );
       });
     });
 

@@ -4,7 +4,8 @@
  * Operator commands for durable multi-provider admission controls:
  *
  *   xiaoba external-source status [--json]
- *   xiaoba external-source enable <provider> [--scope <path|global>] [--scope-path <path>]
+ *   xiaoba external-source enable <provider> [--scope <path|global>] [--history <mode>]
+ *   xiaoba external-source history <provider> <mode>
  *   xiaoba external-source disable <provider>
  *   xiaoba external-source reset <provider>
  *   xiaoba external-source rebaseline <provider> --skip-to-now
@@ -17,6 +18,7 @@ import * as fs from 'node:fs';
 
 import { Logger } from '../utils/logger';
 import { getDistillationHeartbeatConfig } from '../utils/distillation-heartbeat-config';
+import type { ExternalHistoryMode } from '../utils/distillation-heartbeat-config';
 import {
   buildDiagnosticSummary,
   buildProviderDiagnosticRecord,
@@ -31,11 +33,12 @@ import {
 import { loadExternalCursorState, resolveExternalCursorStorePath } from '../utils/session-log-source';
 
 export interface ExternalSourceCommandOptions {
-  subcommand: 'status' | 'enable' | 'disable' | 'reset' | 'rebaseline';
+  subcommand: 'status' | 'enable' | 'history' | 'disable' | 'reset' | 'rebaseline';
   provider?: string;
   json?: boolean;
   scope?: string;
   scopePath?: string;
+  history?: string;
   skipToNow?: boolean;
   workingDirectory?: string;
 }
@@ -57,7 +60,20 @@ export async function externalSourceCommand(options: ExternalSourceCommandOption
         process.exitCode = 1;
         return;
       }
-      handleEnable(store, options.provider, options.scope, options.scopePath);
+      handleEnable(store, options.provider, options.scope, options.scopePath, options.history);
+      break;
+    case 'history':
+      if (!options.provider) {
+        Logger.error('history requires a provider argument');
+        process.exitCode = 1;
+        return;
+      }
+      if (!store.isProviderEnabled(options.provider, config)) {
+        Logger.error(`history requires an enabled provider: ${options.provider}`);
+        process.exitCode = 1;
+        return;
+      }
+      handleHistory(store, options.provider, options.history);
       break;
     case 'disable':
       if (!options.provider) {
@@ -143,13 +159,40 @@ function handleEnable(
   provider: string,
   scope?: string,
   scopePath?: string,
+  history?: string,
 ): void {
+  const historyMode = parseHistoryMode(history);
+  if (history && !historyMode) {
+    Logger.error('history mode must be "future-only" or "catch-up"');
+    process.exitCode = 1;
+    return;
+  }
   const scopeOption =
     scope === 'path'
       ? { scope: 'path' as const, scopePath: scopePath ?? process.cwd() }
       : undefined;
-  store.enableProvider(provider, scopeOption);
-  Logger.info(`Provider "${provider}" enabled${scopeOption ? ` (scope: ${scopeOption.scope}${scopeOption.scopePath ? ` ${scopeOption.scopePath}` : ''})` : ''}.`);
+  store.enableProvider(provider, scopeOption, historyMode);
+  Logger.info(`Provider "${provider}" enabled${scopeOption ? ` (scope: ${scopeOption.scope}${scopeOption.scopePath ? ` ${scopeOption.scopePath}` : ''})` : ''}${historyMode ? ` (history: ${historyMode})` : ''}.`);
+}
+
+function handleHistory(
+  store: ExternalProviderOverrideStore,
+  provider: string,
+  history?: string,
+): void {
+  const historyMode = parseHistoryMode(history);
+  if (!historyMode) {
+    Logger.error('history mode must be "future-only" or "catch-up"');
+    process.exitCode = 1;
+    return;
+  }
+  store.setProviderHistoryMode(provider, historyMode);
+  Logger.info(`Provider "${provider}" history mode set to ${historyMode}.`);
+}
+
+function parseHistoryMode(value: string | undefined): ExternalHistoryMode | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === 'catch-up' || normalized === 'future-only' ? normalized : undefined;
 }
 
 function handleDisable(store: ExternalProviderOverrideStore, provider: string): void {
@@ -179,6 +222,9 @@ function formatStatusJson(status: ProviderStatus) {
     scope: status.scope,
     ...(status.scopePath ? { scopePath: status.scopePath } : {}),
     admissionGate: status.admissionGate,
+    historyMode: status.historyMode,
+    historyModeSource: status.historyModeSource,
+    ...(status.historyModeDiagnostic ? { historyModeDiagnostic: status.historyModeDiagnostic } : {}),
     ...(status.rebaselineRequestedAt ? { rebaselineRequestedAt: status.rebaselineRequestedAt } : {}),
   };
 }
@@ -204,6 +250,7 @@ function buildProviderDiagnostic(
       scope: status.scope,
       enabled: status.enabled,
       admissionGate: status.admissionGate,
+      historyMode: status.historyMode,
     },
     activation,
     resourcesTotal: resources.length,

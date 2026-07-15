@@ -6,6 +6,7 @@ import {
   ExternalSourceActivationResource,
   ExternalSourceIncrementalDiscoveryRequest,
   ExternalSourceIncrementalDiscoveryResult,
+  ExternalSourceHistorySampleResult,
   ExternalSourceRawEvent,
   ExternalSourceReader,
   ExternalSourceReaderResult,
@@ -148,6 +149,13 @@ interface XurlNormalizedEvent {
   readonly byteLength: number;
 }
 
+interface XurlHistorySamplePage {
+  readonly status: 'stable' | 'pending';
+  readonly events: readonly XurlNormalizedEvent[];
+  readonly newPosition: number;
+  readonly observedPosition: number;
+}
+
 /**
  * Thrown when the activation baseline exceeds the configured catalog, output,
  * or duration limits. Carries a marker property so the adapter can persist a
@@ -248,6 +256,17 @@ export class XurlExternalSourceReader implements ExternalSourceReader {
       newPosition: page.newPosition,
       byteLength: page.events.reduce((sum, event) => sum + event.byteLength, 0),
     };
+  }
+
+  sampleHistory(resource: SessionLogSourceResource): ExternalSourceHistorySampleResult {
+    return toExternalHistorySample(this.runner.sampleHistoryTimeline(resource));
+  }
+
+  async sampleHistoryAsync(
+    resource: SessionLogSourceResource,
+    signal: AbortSignal,
+  ): Promise<ExternalSourceHistorySampleResult> {
+    return toExternalHistorySample(await this.runner.sampleHistoryTimelineAsync(resource, signal));
   }
 
   async readAsync(
@@ -564,6 +583,33 @@ class XurlOfficialRunner {
     };
   }
 
+  sampleHistoryTimeline(resource: SessionLogSourceResource): XurlHistorySamplePage {
+    const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
+    const first = parseTimelinePage(this.invoke('read', [uri]), this.provider, resource.resourceRef, uri);
+    const second = parseTimelinePage(this.invoke('read', [uri]), this.provider, resource.resourceRef, uri);
+    return buildXurlHistorySample(this.provider, resource, first, second);
+  }
+
+  async sampleHistoryTimelineAsync(
+    resource: SessionLogSourceResource,
+    signal: AbortSignal,
+  ): Promise<XurlHistorySamplePage> {
+    const uri = `agents://${this.provider}/${requireNonEmptyText('xurl thread', resource.resourceRef)}`;
+    const first = parseTimelinePage(
+      await this.invokeAsync('read', [uri], signal),
+      this.provider,
+      resource.resourceRef,
+      uri,
+    );
+    const second = parseTimelinePage(
+      await this.invokeAsync('read', [uri], signal),
+      this.provider,
+      resource.resourceRef,
+      uri,
+    );
+    return buildXurlHistorySample(this.provider, resource, first, second);
+  }
+
   private headFrontmatter(resource: SessionLogSourceResource): {
     readonly ordinal: number;
     readonly fingerprint: string;
@@ -790,6 +836,53 @@ class XurlOfficialRunner {
 // ---------------------------------------------------------------------------
 // Rendered-Timeline canonicalization and identity derivation.
 // ---------------------------------------------------------------------------
+
+function buildXurlHistorySample(
+  provider: string,
+  resource: SessionLogSourceResource,
+  first: ParsedTimelinePage,
+  second: ParsedTimelinePage,
+): XurlHistorySamplePage {
+  const firstPrefix = JSON.stringify([
+    first.timeline.threadId,
+    first.timeline.branch,
+    first.events.map(event => [event.startOrdinal, event.endOrdinal, event.contentHash]),
+  ]);
+  const secondPrefix = JSON.stringify([
+    second.timeline.threadId,
+    second.timeline.branch,
+    second.events.map(event => [event.startOrdinal, event.endOrdinal, event.contentHash]),
+  ]);
+  const stable = firstPrefix === secondPrefix;
+  const events = stable
+    ? second.events.map(event => normalizeCanonicalEvent(provider, resource, second.timeline, event))
+    : [];
+  return {
+    status: stable ? 'stable' : 'pending',
+    events,
+    newPosition: events.length > 0 ? events[events.length - 1]!.identity.position : -1,
+    observedPosition: Math.max(first.timeline.ordinal, second.timeline.ordinal),
+  };
+}
+
+function toExternalHistorySample(page: XurlHistorySamplePage): ExternalSourceHistorySampleResult {
+  return {
+    events: page.events.map(({ identity, distillationUnit }) => ({
+      eventId: identity.eventId,
+      position: identity.position,
+      contentHash: identity.contentHash,
+      conversationId: identity.conversationId,
+      branchId: identity.branchId,
+      revision: identity.revision,
+      distillationUnit,
+    } satisfies ExternalSourceRawEvent)),
+    status: page.status,
+    exhausted: page.status === 'stable',
+    newPosition: page.newPosition,
+    observedPosition: page.observedPosition,
+    byteLength: page.events.reduce((sum, event) => sum + event.byteLength, 0),
+  };
+}
 
 function normalizeCanonicalEvent(
   provider: string,

@@ -1,6 +1,7 @@
 import { DistillationUnit } from './distillation-unit';
 import {
   extractLearningEpisodes,
+  HistoricalEpisodeTargetRef,
   LearningEpisode,
   LearningEpisodeStore,
   LearningEpisodeStoreState,
@@ -52,7 +53,10 @@ export class EvidenceIngestor {
    * evidence-persistence failure so the caller leaves the Log Cursor unchanged
    * for retry. Never performs review.
    */
-  ingest(unit: DistillationUnit): EvidenceIngestionResult {
+  ingest(
+    unit: DistillationUnit,
+    options: { historicalTarget?: HistoricalEpisodeTargetRef } = {},
+  ): EvidenceIngestionResult {
     const extraction = extractLearningEpisodes(unit, this.options.settlementWindowMs);
 
     // Pre-admission snapshot for touched-set detection
@@ -84,7 +88,7 @@ export class EvidenceIngestor {
     }
 
     // Durably persist episodes + contradiction signals. Throws on I/O failure.
-    const state = this.options.episodeStore.applyExtraction(extraction);
+    const state = this.options.episodeStore.applyExtraction(extraction, options);
 
     // Determine touched episodes: new or materially changed
     const touchedIds: string[] = [];

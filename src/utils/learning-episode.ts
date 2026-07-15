@@ -35,7 +35,20 @@ export const MAX_SEMANTIC_OBSERVATIONS = 12 as const;
 export const MAX_SEMANTIC_OBSERVATION_VALUE_LENGTH = 512 as const;
 export const MAX_SEMANTIC_OBSERVATION_PAYLOAD_BYTES = 8192 as const;
 
-export type LearningEpisodeStatus = 'settling' | 'contradicted' | 'eligible';
+export type LearningEpisodeStatus =
+  | 'settling'
+  | 'historical-pending'
+  | 'contradicted'
+  | 'eligible';
+
+export interface HistoricalEpisodeTargetRef {
+  readonly targetId: string;
+  readonly provider: string;
+  readonly sourceId: string;
+  readonly resourceRef: string;
+  readonly position: number;
+  readonly prefixDigest: string;
+}
 
 export type CompletionEvidenceKind =
   | 'artifact-delivery'
@@ -95,6 +108,8 @@ export interface LearningEpisode {
   retryOfEpisodeId?: string;
   settlementDeadline: string;
   status: LearningEpisodeStatus;
+  /** Fixed source target that must complete before ordinary review. */
+  historicalTarget?: HistoricalEpisodeTargetRef;
   /** Source byte range from the DistillationUnit that admitted this episode. */
   unitByteRange?: { start: number; end: number };
   /** Source generatedAt timestamp from the DistillationUnit that admitted this episode. */
@@ -612,6 +627,9 @@ export function settleLearningEpisodes(
 ): LearningEpisode[] {
   const now = (options.now ?? new Date()).getTime();
   return episodes.map(episode => {
+    if (episode.status === 'historical-pending') {
+      return cloneEpisode(episode);
+    }
     if (episode.status === 'contradicted' || episode.contradictionSignals.length > 0) {
       return { ...cloneEpisode(episode), status: 'contradicted' };
     }
@@ -802,8 +820,18 @@ export class LearningEpisodeStore {
   }
 
   /** Upsert new episodes and apply correction signals discovered at a later cursor. */
-  applyExtraction(result: LearningEpisodeExtractionResult): LearningEpisodeStoreState {
-    const state = this.upsert(result.episodes);
+  applyExtraction(
+    result: LearningEpisodeExtractionResult,
+    options: { historicalTarget?: HistoricalEpisodeTargetRef } = {},
+  ): LearningEpisodeStoreState {
+    const episodes = options.historicalTarget
+      ? result.episodes.map(episode => ({
+        ...episode,
+        status: 'historical-pending' as const,
+        historicalTarget: options.historicalTarget,
+      }))
+      : result.episodes;
+    const state = this.upsert(episodes);
     for (const signal of result.contradictions) {
       const predecessor = Object.values(state.episodes).find(episode =>
         episode.sourceFilePath === signal.precedingSourceFilePath
@@ -814,10 +842,36 @@ export class LearningEpisodeStore {
       predecessor.contradictionSignals = [...new Map(
         [...predecessor.contradictionSignals, signal].map(item => [item.signalId, item]),
       ).values()];
-      predecessor.status = 'contradicted';
+      // Historical evidence may link a contradiction before its immutable
+      // target is complete. Keep the episode behind that target's review gate;
+      // reconciliation applies the already-durable signal idempotently.
+      if (predecessor.status !== 'historical-pending') {
+        predecessor.status = 'contradicted';
+      }
       predecessor.completionEvidence = uniqueEvidence([...predecessor.completionEvidence, signal.source]);
     }
     this.save(state);
+    return state;
+  }
+
+  /**
+   * Idempotently release episodes linked to one completed immutable target.
+   * Existing contradictions win; no additional wall-clock settlement starts.
+   */
+  reconcileHistoricalTarget(targetId: string): LearningEpisodeStoreState {
+    const state = this.load();
+    let changed = false;
+    for (const episode of Object.values(state.episodes)) {
+      if (
+        episode.status !== 'historical-pending'
+        || episode.historicalTarget?.targetId !== targetId
+      ) continue;
+      episode.status = episode.contradictionSignals.length > 0
+        ? 'contradicted'
+        : 'eligible';
+      changed = true;
+    }
+    if (changed) this.save(state);
     return state;
   }
 

@@ -40,6 +40,7 @@ export interface CursorProgress {
 export interface ExternalSourceProviderDiagnostic {
   readonly provider: string;
   readonly scope: string;
+  readonly historyMode: 'future-only' | 'catch-up';
   readonly admissionState: AdmissionState;
   readonly readerVersion?: string;
   readonly activationProgress?: ActivationProgress;
@@ -58,6 +59,7 @@ export interface ExternalSourceProviderStatusInput {
   readonly scope: string;
   readonly enabled: boolean;
   readonly admissionGate: 'open' | 'closed';
+  readonly historyMode?: 'future-only' | 'catch-up';
 }
 
 export interface ExternalSourceProviderActivationInput {
@@ -99,6 +101,7 @@ export function buildProviderDiagnosticRecord(args: {
   return {
     provider: args.status.provider,
     scope: args.status.scope,
+    historyMode: args.status.historyMode ?? 'future-only',
     admissionState: args.activation?.activationBlocked
       ? 'activation_blocked'
       : !args.status.enabled || args.status.admissionGate === 'closed'
@@ -173,6 +176,7 @@ export function formatProviderDiagnosticHuman(diag: ExternalSourceProviderDiagno
   const lines: string[] = [];
   lines.push(`Provider: ${diag.provider}`);
   lines.push(`  Scope: ${diag.scope}`);
+  lines.push(`  History mode: ${diag.historyMode}`);
   lines.push(`  State: ${diag.admissionState}`);
   if (diag.readerVersion) {
     lines.push(`  Reader version: ${diag.readerVersion}`);

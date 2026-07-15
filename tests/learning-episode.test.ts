@@ -228,6 +228,47 @@ describe('V3 independent Learning Episodes', () => {
     }
   });
 
+  test('keeps linked historical contradictions pending until target reconciliation', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-learning-historical-contradiction-'));
+    try {
+      const source = path.join(root, 'session.jsonl');
+      const store = new LearningEpisodeStore(path.join(root, 'episodes.json'));
+      const historicalTarget = {
+        targetId: 'target-thread-1',
+        provider: 'fixture',
+        sourceId: 'fixture-source',
+        resourceRef: 'thread-1',
+        position: 4,
+        prefixDigest: 'a'.repeat(64),
+      };
+      const first = extractLearningEpisodes(unit([
+        turn(1, 'Deliver a card.', [tool('1', 'send_file', 'sent')]),
+      ], source));
+      store.applyExtraction(first, { historicalTarget });
+
+      const correction = extractLearningEpisodes({
+        ...unit([turn(2, 'Redo it, this is unsuitable.', [])], source),
+        continuityTurns: [turn(1, 'Deliver a card.', [tool('1', 'send_file', 'sent')])],
+      });
+      const pending = Object.values(
+        store.applyExtraction(correction, { historicalTarget }).episodes,
+      )[0]!;
+
+      assert.equal(pending.status, 'historical-pending');
+      assert.equal(pending.contradictionSignals.length, 1);
+      assert.equal(
+        store.settle({ now: new Date('2030-01-01T00:00:00.000Z') }).episodes[pending.episodeId]!.status,
+        'historical-pending',
+      );
+      assert.equal(
+        store.reconcileHistoricalTarget(historicalTarget.targetId).episodes[pending.episodeId]!.status,
+        'contradicted',
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('a late contradiction revokes a previously eligible episode', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-learning-late-contradiction-'));
     try {

@@ -104,10 +104,20 @@ function main() {
     .description('Enable an external session log provider')
     .option('--scope <scope>', 'Scope: global or path', 'global')
     .option('--scope-path <path>', 'Project path when scope is path')
+    .option('--history <mode>', 'History mode: future-only or catch-up')
     .option('--working-directory <path>', 'Resolve provider state from this working directory')
     .action(async (provider: string, options) => {
       const { externalSourceCommand } = await import('./commands/external-source');
-      await externalSourceCommand({ subcommand: 'enable', provider, scope: options.scope, scopePath: options.scopePath, workingDirectory: options.workingDirectory });
+      await externalSourceCommand({ subcommand: 'enable', provider, scope: options.scope, scopePath: options.scopePath, history: options.history, workingDirectory: options.workingDirectory });
+    });
+
+  externalSource
+    .command('history <provider> <mode>')
+    .description('Set an enabled provider history mode')
+    .option('--working-directory <path>', 'Resolve provider state from this working directory')
+    .action(async (provider: string, mode: string, options) => {
+      const { externalSourceCommand } = await import('./commands/external-source');
+      await externalSourceCommand({ subcommand: 'history', provider, history: mode, workingDirectory: options.workingDirectory });
     });
 
   externalSource

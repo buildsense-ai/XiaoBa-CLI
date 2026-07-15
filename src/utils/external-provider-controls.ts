@@ -22,7 +22,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import type { DistillationHeartbeatConfig } from './distillation-heartbeat-config';
+import type {
+  DistillationHeartbeatConfig,
+  ExternalHistoryMode,
+} from './distillation-heartbeat-config';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,12 +40,15 @@ export type ProviderScope = 'global' | 'path';
 /** The source of truth for a provider's enabled state. */
 export type ProviderEnabledSource = 'environment' | 'override' | 'master-off';
 
+export type ProviderHistoryModeSource = 'environment' | 'override';
+
 /** Durable per-provider override entry. */
 export interface ProviderOverrideEntry {
   readonly enabled: boolean;
   readonly scope: ProviderScope;
   readonly scopePath?: string;
   readonly admissionGate: ProviderAdmissionGateState;
+  readonly historyMode?: ExternalHistoryMode;
   readonly rebaselineRequestedAt?: string;
   readonly updatedAt: string;
 }
@@ -70,6 +76,9 @@ export interface ProviderStatus {
   readonly scope: ProviderScope;
   readonly scopePath?: string;
   readonly admissionGate: ProviderAdmissionGateState;
+  readonly historyMode: ExternalHistoryMode;
+  readonly historyModeSource: ProviderHistoryModeSource;
+  readonly historyModeDiagnostic?: string;
   readonly rebaselineRequestedAt?: string;
 }
 
@@ -186,6 +195,24 @@ export class ExternalProviderOverrideStore {
     return { scope: 'global' };
   }
 
+  getProviderHistoryMode(
+    provider: string,
+    config: DistillationHeartbeatConfig,
+  ): { mode: ExternalHistoryMode; source: ProviderHistoryModeSource; diagnostic?: string } {
+    const normalized = normalizeProvider(provider);
+    const override = this.load().providers[normalized]?.historyMode;
+    if (override === 'catch-up' || override === 'future-only') {
+      return { mode: override, source: 'override' };
+    }
+    return {
+      mode: config.externalSessionLogHistoryMode,
+      source: 'environment',
+      ...(config.externalSessionLogHistoryModeDiagnostic
+        ? { diagnostic: config.externalSessionLogHistoryModeDiagnostic }
+        : {}),
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Mutations
   // -------------------------------------------------------------------------
@@ -197,6 +224,7 @@ export class ExternalProviderOverrideStore {
   enableProvider(
     provider: string,
     scope?: { scope: ProviderScope; scopePath?: string },
+    historyMode?: ExternalHistoryMode,
   ): void {
     const normalized = normalizeProvider(provider);
     const state = this.load();
@@ -207,6 +235,7 @@ export class ExternalProviderOverrideStore {
       scope: scope?.scope ?? existing?.scope ?? 'global',
       scopePath: scope?.scopePath ?? existing?.scopePath,
       admissionGate: 'open',
+      historyMode: historyMode ?? existing?.historyMode,
       rebaselineRequestedAt: existing?.rebaselineRequestedAt,
       updatedAt: now,
     };
@@ -227,6 +256,7 @@ export class ExternalProviderOverrideStore {
       scope: existing?.scope ?? 'global',
       scopePath: existing?.scopePath,
       admissionGate: 'closed',
+      historyMode: existing?.historyMode,
       rebaselineRequestedAt: existing?.rebaselineRequestedAt,
       updatedAt: now,
     };
@@ -241,6 +271,24 @@ export class ExternalProviderOverrideStore {
     const normalized = normalizeProvider(provider);
     const state = this.load();
     delete state.providers[normalized];
+    this.save(state);
+  }
+
+  /** Persist a provider-specific history policy without changing its identity. */
+  setProviderHistoryMode(provider: string, historyMode: ExternalHistoryMode): void {
+    const normalized = normalizeProvider(provider);
+    const state = this.load();
+    const existing = state.providers[normalized];
+    const now = this.now().toISOString();
+    state.providers[normalized] = {
+      enabled: existing?.enabled ?? true,
+      scope: existing?.scope ?? 'global',
+      scopePath: existing?.scopePath,
+      admissionGate: existing?.admissionGate ?? 'open',
+      historyMode,
+      rebaselineRequestedAt: existing?.rebaselineRequestedAt,
+      updatedAt: now,
+    };
     this.save(state);
   }
 
@@ -261,6 +309,7 @@ export class ExternalProviderOverrideStore {
       scope: existing?.scope ?? 'global',
       scopePath: existing?.scopePath,
       admissionGate: existing?.admissionGate ?? 'open',
+      historyMode: existing?.historyMode,
       rebaselineRequestedAt: now,
       updatedAt: now,
     };
@@ -283,6 +332,7 @@ export class ExternalProviderOverrideStore {
    */
   getProviderStatus(provider: string, config: DistillationHeartbeatConfig): ProviderStatus {
     const normalized = normalizeProvider(provider);
+    const history = this.getProviderHistoryMode(normalized, config);
 
     if (!config.externalSessionLogSourcesEnabled) {
       return {
@@ -291,6 +341,9 @@ export class ExternalProviderOverrideStore {
         source: 'master-off',
         scope: 'global',
         admissionGate: 'closed',
+        historyMode: history.mode,
+        historyModeSource: history.source,
+        ...(history.diagnostic ? { historyModeDiagnostic: history.diagnostic } : {}),
       };
     }
 
@@ -305,6 +358,9 @@ export class ExternalProviderOverrideStore {
         scope: entry.scope,
         scopePath: entry.scopePath,
         admissionGate: entry.admissionGate,
+        historyMode: history.mode,
+        historyModeSource: history.source,
+        ...(history.diagnostic ? { historyModeDiagnostic: history.diagnostic } : {}),
         rebaselineRequestedAt: entry.rebaselineRequestedAt,
       };
     }
@@ -316,6 +372,9 @@ export class ExternalProviderOverrideStore {
       source: 'environment',
       scope: 'global',
       admissionGate: enabledFromEnv ? 'open' : 'closed',
+      historyMode: history.mode,
+      historyModeSource: history.source,
+      ...(history.diagnostic ? { historyModeDiagnostic: history.diagnostic } : {}),
     };
   }
 

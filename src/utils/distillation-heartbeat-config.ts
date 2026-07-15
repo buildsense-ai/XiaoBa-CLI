@@ -19,6 +19,8 @@ import * as dotenv from 'dotenv';
 const DEFAULT_INTERVAL_HOURS = 6;
 const MIN_INTERVAL_MINUTES = 30;
 
+export type ExternalHistoryMode = 'future-only' | 'catch-up';
+
 export interface DistillationHeartbeatConfig {
   /** Master switch for the heartbeat scheduler. */
   enabled: boolean;
@@ -100,6 +102,10 @@ export interface DistillationHeartbeatConfig {
    * is delivered separately in #92.
    */
   externalSessionLogMaxConcurrency: number;
+  /** Environment default for per-provider external history policy. */
+  externalSessionLogHistoryMode: ExternalHistoryMode;
+  /** Bounded fallback diagnostic; never includes the raw environment value. */
+  externalSessionLogHistoryModeDiagnostic?: string;
   /**
    * Legacy selected provider for the continuous external xurl lane.
    * Accepted as a one-item enabled-provider fallback only when
@@ -173,6 +179,24 @@ function parseEnabledProviders(env: NodeJS.ProcessEnv, key: string): string[] {
     result.push(normalized);
   }
   return result;
+}
+
+function readExternalHistoryMode(env: NodeJS.ProcessEnv): {
+  mode: ExternalHistoryMode;
+  diagnostic?: string;
+} {
+  const raw = env.XIAOBA_EXTERNAL_SESSION_LOG_HISTORY_MODE?.trim().toLowerCase();
+  if (raw === 'catch-up' || raw === 'future-only') return { mode: raw };
+  if (!raw) {
+    return {
+      mode: 'future-only',
+      diagnostic: 'External history mode is not configured; using future-only.',
+    };
+  }
+  return {
+    mode: 'future-only',
+    diagnostic: 'External history mode is invalid; using future-only.',
+  };
 }
 
 function readIntervalHours(env: NodeJS.ProcessEnv): number {
@@ -427,6 +451,7 @@ export function getDistillationHeartbeatConfig(
     || configuredExternalSessionLogMaxConcurrency < 1
     ? 3
     : Math.min(8, Math.floor(configuredExternalSessionLogMaxConcurrency));
+  const externalHistoryMode = readExternalHistoryMode(runtimeEnv);
   const externalSessionLogSelectedProvider = readEnv(
     runtimeEnv,
     'XIAOBA_EXTERNAL_SESSION_LOG_SELECTED_PROVIDER',
@@ -488,6 +513,10 @@ export function getDistillationHeartbeatConfig(
     externalSessionLogSourcesEnabled,
     externalSessionLogEnabledProviders,
     externalSessionLogMaxConcurrency,
+    externalSessionLogHistoryMode: externalHistoryMode.mode,
+    ...(externalHistoryMode.diagnostic
+      ? { externalSessionLogHistoryModeDiagnostic: externalHistoryMode.diagnostic }
+      : {}),
     ...(externalSessionLogSelectedProvider ? { externalSessionLogSelectedProvider } : {}),
     ...(externalSessionLogSelectedSourceId ? { externalSessionLogSelectedSourceId } : {}),
     ...(externalSessionLogXurlCommand ? { externalSessionLogXurlCommand } : {}),
