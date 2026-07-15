@@ -732,18 +732,24 @@ export class RuntimeLearning {
    * current per-source failure tracking for inspection/testing.
    */
   getExternalSourceFailureState(): ReadonlyMap<string, SourceFailureState> {
+    const entries = [...this.externalSourceFailureState.entries()]
+      .map(([key, state]) => ({ key, state, identity: parseExternalSourceLaneKey(key) }))
+      .filter((entry): entry is { key: string; state: SourceFailureState; identity: ExternalSourceLaneIdentity } => (
+        entry.identity !== null
+      ));
+    const sourceIdCounts = new Map<string, number>();
+    for (const entry of entries) {
+      sourceIdCounts.set(
+        entry.identity.sourceId,
+        (sourceIdCounts.get(entry.identity.sourceId) ?? 0) + 1,
+      );
+    }
     const snapshot = new Map<string, SourceFailureState>();
-    for (const [key, state] of this.externalSourceFailureState) {
-      const identity = parseExternalSourceLaneKey(key);
-      if (!identity) continue;
-      const existing = snapshot.get(identity.sourceId);
-      if (!existing) {
-        snapshot.set(identity.sourceId, state);
-      } else {
-        // Preserve both colliding lanes without changing the historical
-        // sourceId key for the common single-provider case.
-        snapshot.set(key, state);
-      }
+    for (const entry of entries) {
+      const key = sourceIdCounts.get(entry.identity.sourceId) === 1
+        ? entry.identity.sourceId
+        : entry.key;
+      snapshot.set(key, entry.state);
     }
     return snapshot;
   }
