@@ -57,7 +57,6 @@ for (const requiredTarget of ['dmg', 'zip']) {
     fail(`build.mac.target should include ${JSON.stringify(requiredTarget)} for macOS auto-update`);
   }
 }
-assertEqual('build.mac.notarize', packageJson.build?.mac?.notarize, true);
 
 function assertLine(name, text, expected) {
   const lines = text.split(/\r?\n/).map((line) => line.trim());
@@ -74,14 +73,6 @@ assertIncludes('GitHub release title', releaseWorkflow, 'name: CatsCo ${{ github
 assertLine('macOS build ZIP artifact upload', releaseWorkflow, 'release/*.zip');
 assertLine('macOS x64 ZIP release upload', releaseWorkflow, 'release-mac/x64/*.zip');
 assertLine('macOS arm64 ZIP release upload', releaseWorkflow, 'release-mac/arm64/*.zip');
-assertLine('macOS signing certificate secret', releaseWorkflow, 'CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}');
-assertLine('macOS signing password secret', releaseWorkflow, 'CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}');
-assertLine('macOS notarization key secret', releaseWorkflow, 'APPLE_API_KEY_BASE64: ${{ secrets.MACOS_APPLE_API_KEY_BASE64 }}');
-assertLine('macOS expected team secret', releaseWorkflow, 'MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}');
-assertIncludes('macOS Developer ID verification', releaseWorkflow, "grep -q '^Authority=Developer ID Application:'");
-assertIncludes('macOS signing team verification', releaseWorkflow, 'grep -q "^TeamIdentifier=${MACOS_TEAM_ID}$"');
-assertIncludes('macOS notarization ticket verification', releaseWorkflow, 'xcrun stapler validate');
-assertIncludes('macOS Gatekeeper verification', releaseWorkflow, 'spctl --assess --type execute');
 assertIncludes('CDN credential fail-fast check', releaseWorkflow, 'VOLC_TOS_ACCESS_KEY_ID is required');
 assertIncludes('draft GitHub release', releaseWorkflow, 'draft: true');
 assertIncludes('GitHub release publication after verification', releaseWorkflow, 'gh release edit "$GITHUB_REF_NAME" --draft=false');

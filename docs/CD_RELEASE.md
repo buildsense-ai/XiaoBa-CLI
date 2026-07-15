@@ -47,8 +47,8 @@ git push origin v0.1.2
 
 - 构建阶段的 `electron-builder` 已固定为 `--publish never`，不会在单个平台构建时提前发布
 - 真正的 GitHub Release 只会在最后一个 `release` job 中统一创建
-- `release-prod` 必须配置 Developer ID 证书、预期 Team ID、App Store Connect API key 和两项 TOS 凭据；缺失时发布会硬失败
-- macOS 构建后必须通过 Developer ID、notarization 票据和 Gatekeeper 校验，并验证清单、DMG、ZIP 的大小和 SHA-512
+- `release-prod` 必须配置两项 TOS 凭据；缺失时发布会硬失败
+- macOS 构建后必须验证清单、DMG、ZIP 的大小和 SHA-512；当前沿用未签名分发和用户手动确认安装的方式
 - 发布完成后会逐字节比对 CDN 元数据，并流式核对远端 DMG、ZIP 的 SHA-512；HTTP 200 本身不算发布成功
 - GitHub Release 在远端验证完成前保持 draft，避免留下“Release 已公开但自动更新未完成”的半发布状态
 - 如果 tag 打错了，先删除远端 tag，再重新打正确的 tag

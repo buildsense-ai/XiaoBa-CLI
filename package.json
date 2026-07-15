@@ -151,7 +151,6 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "notarize": true,
       "target": [
         "dmg",
         "zip"
