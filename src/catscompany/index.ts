@@ -14,7 +14,7 @@ import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { shouldSuppressSubAgentObservationReply } from '../core/sub-agent-observation';
 import type { SubAgentInfo } from '../core/sub-agent-session';
-import { ChannelCallbacks, DeviceRpcTransport, TargetRoutes, ThinToolRpcTransport, ToolErrorCode, ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
+import { ChannelCallbacks, DeviceRpcTransport, TargetRoutes, ThinToolRpcTransport, ToolErrorCode, ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext, ToolExecutionResult, UploadedFileResult } from '../types/tool';
 import { ContentBlock } from '../types';
 import type { PendingUserInput } from '../core/conversation-runner';
 import type { StreamRetryInfo } from '../providers/provider';
@@ -31,7 +31,9 @@ import { GrepTool } from '../tools/grep-tool';
 import { WriteTool } from '../tools/write-tool';
 import { EditTool } from '../tools/edit-tool';
 import { ShellTool } from '../tools/bash-tool';
+import { SendFileTool } from '../tools/send-file-tool';
 import { resolveCommonDirectoryToolArgs } from '../tools/common-directory-tool';
+import { inferCatsUploadType } from './upload';
 import {
   isRemoteDeviceRpcTool,
   normalizeDeviceRpcToolResultForTransport,
@@ -612,6 +614,9 @@ export class CatsCompanyBot {
       case 'edit_file':
         result = await new EditTool().execute(args, context);
         break;
+      case 'send_file':
+        result = await this.executeRemoteSendFileUpload(args, context);
+        break;
       case 'execute_shell':
         result = await new ShellTool().execute(args, context);
         break;
@@ -741,6 +746,9 @@ export class CatsCompanyBot {
       case 'edit_file':
         result = await new EditTool().execute(args, context);
         break;
+      case 'send_file':
+        result = await this.executeRemoteSendFileUpload(args, context);
+        break;
       case 'execute_shell':
         result = await new ShellTool().execute(args, context);
         break;
@@ -757,6 +765,44 @@ export class CatsCompanyBot {
       operation,
       cwd: this.resolveDeviceRpcTargetContextCwd(operation, args, context.workingDirectory),
     });
+  }
+
+  private async executeRemoteSendFileUpload(
+    args: Record<string, unknown>,
+    context: ToolExecutionContext,
+  ): Promise<ToolExecutionResult> {
+    let uploadedFile: UploadedFileResult | undefined;
+    const uploadContext: ToolExecutionContext = {
+      ...context,
+      // The remote transport already selected this runtime. Use the ordinary
+      // local send_file checks, but upload only; the requesting runtime sends
+      // the returned attachment into its trusted conversation.
+      surface: 'agent',
+      channel: {
+        chatId: context.executionScope?.topicId || 'remote_send_file_upload',
+        reply: async () => {},
+        sendFile: async (_chatId, filePath, fileName) => {
+          const type = inferCatsUploadType(fileName);
+          const upload = await this.bot.uploadFile(filePath, type);
+          uploadedFile = {
+            url: upload.url,
+            name: fileName,
+            size: upload.size,
+            type,
+          };
+        },
+      },
+    };
+    const result = await new SendFileTool().execute(args, uploadContext);
+    if (!result.ok) return result;
+    if (!uploadedFile) {
+      return {
+        ok: false,
+        errorCode: 'TOOL_EXECUTION_ERROR',
+        message: 'Remote send_file completed without uploaded file metadata.',
+      };
+    }
+    return { ...result, uploadedFile };
   }
 
   private resolveDeviceRpcTargetContextCwd(
@@ -852,7 +898,7 @@ export class CatsCompanyBot {
     const operation = this.normalizeDeviceRpcOperation(request.operation);
     const toolName = String(request.tool_name || operation || '').trim();
     if (!operation || !isRemoteDeviceRpcTool(toolName, operation)) {
-      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, resolve_common_directory, glob, grep, write_file, edit_file, and execute_shell.' };
+      return { code: 'unsupported_operation', message: 'Device RPC only allows read_file, resolve_common_directory, glob, grep, write_file, edit_file, send_file, and execute_shell.' };
     }
 
     const requiredFields: Array<[keyof CatsDeviceRpcMessage, string]> = [
@@ -878,6 +924,7 @@ export class CatsCompanyBot {
       || operation === 'grep'
       || operation === 'write_file'
       || operation === 'edit_file'
+      || operation === 'send_file'
       || operation === 'execute_shell'
     ) {
       return operation;
@@ -973,6 +1020,15 @@ export class CatsCompanyBot {
           _hasOutbound = true;
         } catch (err: any) {
           Logger.warning(`文件发送失败 (sendFile): ${err.message}`);
+          throw err;
+        }
+      },
+      sendUploadedFile: async (_targetTopic, file) => {
+        try {
+          await this.sender.sendUploadedFile(topic, file);
+          _hasOutbound = true;
+        } catch (err: any) {
+          Logger.warning(`远程文件发送失败 (sendUploadedFile): ${err.message}`);
           throw err;
         }
       },

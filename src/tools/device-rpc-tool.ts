@@ -1,13 +1,13 @@
 import type { DeviceGrantOperation } from '../types/session-identity';
-import type { ToolErrorCode, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
+import type { ToolErrorCode, ToolExecutionContext, ToolExecutionResult, UploadedFileResult } from '../types/tool';
 import type { ToolGatewayDecision } from './tool-gateway';
 
 const REMOTE_TOOL_DEFAULT_TIMEOUT_MS = 60_000;
 const REMOTE_TOOL_MIN_TIMEOUT_MS = 5_000;
-const REMOTE_TOOL_MAX_TIMEOUT_MS = 180_000;
+const REMOTE_TOOL_MAX_TIMEOUT_MS = 300_000;
 export const MAX_DEVICE_RPC_TOOL_CONTENT_CHARS = 48_000;
 
-type RemoteDeviceRpcToolName = 'read_file' | 'resolve_common_directory' | 'glob' | 'grep' | 'write_file' | 'edit_file' | 'execute_shell';
+type RemoteDeviceRpcToolName = 'read_file' | 'resolve_common_directory' | 'glob' | 'grep' | 'write_file' | 'edit_file' | 'send_file' | 'execute_shell';
 
 interface DeviceRpcNormalizeOptions {
   toolName?: string;
@@ -24,6 +24,7 @@ export function isRemoteDeviceRpcTool(toolName: string, operation: DeviceGrantOp
   return isRemoteReadonlyTool(toolName, operation)
     || (toolName === 'write_file' && operation === 'write_file')
     || (toolName === 'edit_file' && operation === 'edit_file')
+    || (toolName === 'send_file' && operation === 'send_file')
     || (toolName === 'execute_shell' && operation === 'execute_shell');
 }
 
@@ -40,7 +41,7 @@ export async function executeRemoteDeviceRpcTool(
     return {
       ok: false,
       errorCode: 'PERMISSION_DENIED',
-      message: `远程设备 RPC 当前只允许 read_file / resolve_common_directory / glob / grep / write_file / edit_file / execute_shell，已阻止 ${toolName}。普通文件任务请优先用 resolve_common_directory / glob / write_file，只有服务端授权后才使用 execute_shell。`,
+      message: `远程设备 RPC 当前只允许 read_file / resolve_common_directory / glob / grep / write_file / edit_file / send_file / execute_shell，已阻止 ${toolName}。普通文件任务请优先用 resolve_common_directory / glob / write_file，只有服务端授权后才使用 execute_shell。`,
     };
   }
 
@@ -105,6 +106,7 @@ export function normalizeDeviceRpcToolResultPayload(
     return {
       ok: true,
       content: normalizeDeviceRpcContent(record.content, options),
+      uploadedFile: normalizeUploadedFileResult(record.uploadedFile),
     };
   }
   if (record.ok === false) {
@@ -137,6 +139,7 @@ export function normalizeDeviceRpcToolResultForTransport(
   return {
     ok: true,
     content: normalizeDeviceRpcContent(result.content, options),
+    uploadedFile: normalizeUploadedFileResult(result.uploadedFile),
   };
 }
 
@@ -158,9 +161,21 @@ export function resolveRemoteToolTimeoutMs(
 }
 
 function requestedToolTimeoutMs(toolName: string, args: Record<string, unknown>): number | undefined {
+  if (toolName === 'send_file') return REMOTE_TOOL_MAX_TIMEOUT_MS;
   if (toolName !== 'execute_shell') return undefined;
   const timeout = Number(args?.timeout);
   return Number.isFinite(timeout) && timeout > 0 ? timeout : undefined;
+}
+
+function normalizeUploadedFileResult(value: unknown): UploadedFileResult | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const url = String(record.url || '').trim();
+  const name = String(record.name || '').trim();
+  const size = Number(record.size);
+  const type = record.type === 'image' ? 'image' : record.type === 'file' ? 'file' : undefined;
+  if (!url || !name || !Number.isFinite(size) || size < 0 || !type) return undefined;
+  return { url, name, size, type };
 }
 
 function normalizeDeviceRpcContent(content: unknown, options: DeviceRpcNormalizeOptions): string {

@@ -5,6 +5,7 @@ import { resolveToolPath } from '../utils/tool-path-resolver';
 import { resolveLocalFileAccess, resolveLocalFileReference } from './local-file-gateway';
 import { resolveOutboundTarget } from './outbound-gateway';
 import { formatCatsCoVisiblePath, isCatsCoToolGatewayContext } from './tool-gateway';
+import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 
 export class SendFileTool implements Tool {
   definition: ToolDefinition = {
@@ -27,6 +28,7 @@ export class SendFileTool implements Tool {
           type: 'string',
           description: '发送给用户时显示的文件名，应包含扩展名，例如 "report.md"。',
         },
+        target: targetParameterDescription(),
       },
       required: ['file_path', 'file_name'],
     },
@@ -41,6 +43,18 @@ export class SendFileTool implements Tool {
 
     if (!file_name || typeof file_name !== 'string') {
       return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: '文件名不能为空' };
+    }
+
+    const route = resolveExecutionRoute(context, {
+      toolName: 'send_file',
+      operation: 'send_file',
+      target: args.target,
+    });
+    if (!route.ok) {
+      return { ok: false, errorCode: route.errorCode, message: route.message };
+    }
+    if (route.mode === 'remote') {
+      return this.executeRemote(args, context, route);
     }
 
     let absolutePath: string;
@@ -202,6 +216,67 @@ export class SendFileTool implements Tool {
           `Path: ${displayPath}`,
           `Name: ${file_name}`,
         ].join('\n'),
+      };
+    }
+  }
+
+  private async executeRemote(
+    args: Record<string, unknown>,
+    context: ToolExecutionContext,
+    route: Extract<ReturnType<typeof resolveExecutionRoute>, { ok: true; mode: 'remote' }>,
+  ): Promise<ToolExecutionResult> {
+    const target = resolveOutboundTarget(context, {
+      operation: 'send_file',
+      missingChannelMessage: '当前不在聊天会话中，无法发送文件',
+    });
+    if (!target.ok) {
+      return { ok: false, errorCode: target.errorCode, message: target.message };
+    }
+    if (!context.channel?.sendUploadedFile) {
+      return {
+        ok: false,
+        errorCode: 'TOOL_EXECUTION_ERROR',
+        message: '当前聊天通道不支持发送远程设备上传的文件。',
+      };
+    }
+
+    const result = await executeRouteIfRemote(context, route, 'send_file', 'send_file', args);
+    if (!result) {
+      return {
+        ok: false,
+        errorCode: 'TOOL_EXECUTION_ERROR',
+        message: '远程设备文件上传未返回结果。',
+      };
+    }
+    if (!result.ok) return result;
+    if (!result.uploadedFile) {
+      return {
+        ok: false,
+        errorCode: 'TOOL_EXECUTION_ERROR',
+        message: '远程设备没有返回已上传文件的元数据。',
+        targetContext: result.targetContext,
+      };
+    }
+
+    try {
+      await context.channel.sendUploadedFile(target.chatId, result.uploadedFile);
+      Logger.info(`[send_file] 已发送远程文件: ${result.uploadedFile.name} (${route.label})`);
+      return {
+        ...result,
+        content: [
+          'File sent to current chat from remote computer.',
+          `Target: ${route.label}`,
+          `Path: ${String(args.file_path || '')}`,
+          `Name: ${result.uploadedFile.name}`,
+        ].join('\n'),
+      };
+    } catch (error: any) {
+      Logger.error(`远程文件发送失败 (sendUploadedFile): ${error.message}`);
+      return {
+        ok: false,
+        errorCode: 'TOOL_EXECUTION_ERROR',
+        message: `Remote file send failed: ${error.message || error}`,
+        targetContext: result.targetContext,
       };
     }
   }

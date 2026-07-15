@@ -3,10 +3,10 @@ import * as assert from 'node:assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { CatsCompanyBot } from '../src/catscompany';
-import type { CatsDeviceRpcMessage } from '../src/catscompany/client';
+import type { CatsDeviceRpcMessage, CatsThinToolRpcMessage } from '../src/catscompany/client';
 import type { ScopedDeviceGrant } from '../src/types/session-identity';
 
-function botWithDevice(captured: { result?: any }): any {
+function botWithDevice(captured: { result?: any; uploaded?: { path: string; type: string; bytes: Buffer } }): any {
   const bot = Object.create(CatsCompanyBot.prototype) as any;
   bot.localDeviceGrant = {
     kind: 'catscompany_body',
@@ -20,6 +20,15 @@ function botWithDevice(captured: { result?: any }): any {
   bot.bot = {
     sendDeviceRpcResult: async (result: any) => {
       captured.result = result;
+    },
+    uploadFile: async (filePath: string, type: string) => {
+      const bytes = fs.readFileSync(filePath);
+      captured.uploaded = { path: filePath, type, bytes };
+      return {
+        url: '/uploads/device-file.bin',
+        name: path.basename(filePath),
+        size: bytes.length,
+      };
     },
   };
   return bot;
@@ -77,6 +86,26 @@ function serverGrant(overrides: Partial<ScopedDeviceGrant> = {}): ScopedDeviceGr
 }
 
 describe('CatsCompany Device RPC file tools', () => {
+  test('publishes remote upload metadata without reading a caller-local file', async () => {
+    let sent: any;
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.sender = {
+      sendUploadedFile: async (topic: string, file: any) => { sent = { topic, file }; },
+    };
+    const channel = bot.buildChannel('p2p_7_43');
+    const file = {
+      url: '/uploads/files/exact.bin',
+      name: 'exact.bin',
+      size: 6,
+      type: 'file' as const,
+    };
+
+    await channel.sendUploadedFile('p2p_7_43', file);
+
+    assert.deepEqual(sent, { topic: 'p2p_7_43', file });
+    assert.equal(channel.hasOutbound, true);
+  });
+
   test('maps CatsCo server grant fields into outbound device_rpc requests', async () => {
     const captured: Array<{ request: any; timeoutMs?: number }> = [];
     const bot = Object.create(CatsCompanyBot.prototype) as any;
@@ -215,6 +244,67 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.equal(captured.result.result.ok, true);
     assert.match(String(captured.result.result.content), /hello from target device/);
     assert.equal(captured.result.device_id, 'install-device');
+  });
+
+  test('uploads the original file bytes for a thin send_file request', async () => {
+    const captured: { uploaded?: { path: string; type: string; bytes: Buffer } } = {};
+    const bot = botWithDevice(captured);
+    const tmpRoot = path.join(process.cwd(), 'tmp');
+    fs.mkdirSync(tmpRoot, { recursive: true });
+    const dir = fs.mkdtempSync(path.join(tmpRoot, 'thin-rpc-send-file-'));
+    const filePath = path.join(dir, 'original.bin');
+    const original = Buffer.from([0, 255, 1, 2, 3, 128]);
+    fs.writeFileSync(filePath, original);
+    const request: CatsThinToolRpcMessage = {
+      type: 'request',
+      request_id: 'thin-send-file-1',
+      target_owner_user_id: 'usr7',
+      target_device_id: 'install-device',
+      device_id: 'install-device',
+      tool_name: 'send_file',
+      payload: { args: { file_path: filePath, file_name: 'download.bin' } },
+    };
+
+    const result = await bot.executeLocalThinToolRpcTool(request);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(captured.uploaded?.bytes, original);
+    assert.equal(captured.uploaded?.path, filePath);
+    assert.equal(captured.uploaded?.type, 'file');
+    assert.deepEqual(result.uploadedFile, {
+      url: '/uploads/device-file.bin',
+      name: 'download.bin',
+      size: original.length,
+      type: 'file',
+    });
+  });
+
+  test('accepts send_file through authorized Device RPC and returns upload metadata', async () => {
+    const captured: { result?: any; uploaded?: { path: string; type: string; bytes: Buffer } } = {};
+    const bot = botWithDevice(captured);
+    const tmpRoot = path.join(process.cwd(), 'tmp');
+    fs.mkdirSync(tmpRoot, { recursive: true });
+    const dir = fs.mkdtempSync(path.join(tmpRoot, 'device-rpc-send-file-'));
+    const filePath = path.join(dir, 'report.txt');
+    fs.writeFileSync(filePath, 'exact file content');
+
+    await bot.handleDeviceRpcRequest(request({
+      request_id: 'rpc-send-file-1',
+      operation: 'send_file',
+      tool_name: 'send_file',
+      payload: { args: { file_path: filePath, file_name: 'report.txt' } },
+      expires_at: Date.now() + 5 * 60_000,
+    }));
+
+    assert.ok(captured.result);
+    assert.equal(captured.result.error, undefined);
+    assert.deepEqual(captured.uploaded?.bytes, Buffer.from('exact file content'));
+    assert.deepEqual(captured.result.result.uploadedFile, {
+      url: '/uploads/device-file.bin',
+      name: 'report.txt',
+      size: Buffer.byteLength('exact file content'),
+      type: 'file',
+    });
   });
 
   test('executes write_file on the target local device when RPC scope is valid', async () => {

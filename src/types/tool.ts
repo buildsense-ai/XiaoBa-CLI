@@ -88,12 +88,21 @@ export interface ToolResult {
  * 工具内部执行结果的统一类型
  * 工具 execute() 必须返回此类型，由 BaseTool 统一处理失败兜底
  */
+export interface UploadedFileResult {
+  url: string;
+  name: string;
+  size: number;
+  type: 'file' | 'image';
+}
+
 export type ToolExecutionResult = (
   | { ok: true; content: string | import('./index').ContentBlock[] }
   | { ok: false; errorCode: string; message: string; retryable?: boolean }
 ) & {
   /** Route-aware context for the model-visible tool result. */
   targetContext?: string;
+  /** Uploaded attachment metadata returned by a remote send_file execution. */
+  uploadedFile?: UploadedFileResult;
 };
 
 export interface DeviceRpcToolRequest {
@@ -166,6 +175,8 @@ export interface ChannelCallbacks {
   reply: (chatId: string, text: string) => Promise<void>;
   /** 发送文件 */
   sendFile: (chatId: string, filePath: string, fileName: string) => Promise<void>;
+  /** 发送已经上传到平台的附件；远程 send_file 用它避免重复下载和上传。 */
+  sendUploadedFile?: (chatId: string, file: UploadedFileResult) => Promise<void>;
   /** 发送临时运行时计划。支持实时 UI 的 surface 可实现为卡片展示。 */
   sendRuntimePlan?: (chatId: string, snapshot: RuntimePlanSnapshot) => Promise<void>;
 }

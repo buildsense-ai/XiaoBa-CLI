@@ -12,6 +12,7 @@ const DEVICE_TOOL_OPERATIONS: Partial<Record<string, DeviceGrantOperation>> = {
   grep: 'grep',
   write_file: 'write_file',
   edit_file: 'edit_file',
+  send_file: 'send_file',
   execute_shell: 'execute_shell',
 };
 

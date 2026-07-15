@@ -70,6 +70,7 @@ Target-aware tools:
 - `read_file`
 - `write_file`
 - `edit_file`
+- `send_file`
 - `execute_shell`
 
 Legacy intended route captured during this debug pass:
@@ -82,7 +83,7 @@ Legacy intended route captured during this debug pass:
 
 Confirmed tool-side issues to debug/fix next:
 
-- `src/tools/tool-gateway.ts` still exists and is still called by `src/tools/local-tool-risk.ts` and `send_file`.
+- `src/tools/tool-gateway.ts` still exists and is still called by `src/tools/local-tool-risk.ts` and the local branch of `send_file`.
 - Old permission-blocking messages can still appear from `tool-gateway.ts`, even though the newer target routing path lives in `src/tools/execution-router.ts`.
 - `execute_shell` still runs local safety checks before route resolution, so a command can be blocked before the code knows whether it was meant for `agent_self` or `speaker_default`.
 - Remote tool results can already contain a `[tool_target]` marker from the receiving device. The caller-side result can then preserve a stale marker such as `target: agent_self` even when the caller requested `speaker_default`.
@@ -121,6 +122,7 @@ Implemented in this branch:
 - Remote returned `[tool_target]...[/tool_target]` blocks are stripped before the caller adds its authoritative marker.
 - `ToolManager` uses `output.targetContext` before falling back to context-based target inference.
 - `execute_shell` resolves and forwards remote routes before running local shell safety checks.
+- `send_file` resolves remote targets before local path checks. The target runtime uploads the original file and returns attachment metadata; the caller sends the attachment to the conversation.
 
 Verified:
 
@@ -131,7 +133,7 @@ Still open:
 
 - CatsCompany still does not carry `platform/os`, so it can still select a Linux device for `speaker_default`.
 - If the model omits `target` for “我的桌面”, current default remains `agent_self`; this is prompt/model behavior unless we add automatic target inference outside the model.
-- Old `tool-gateway.ts` still exists for non-base paths such as `send_file` and risk classification helpers. The main target-aware base tools now use `execution-router.ts`, but this file is not fully deleted.
+- Old `tool-gateway.ts` still exists for local `send_file` checks and risk classification helpers. Remote `send_file` now uses `execution-router.ts`, but the old gateway is not fully deleted.
 
 ## CatsCompany Device Context Diagnostics
 

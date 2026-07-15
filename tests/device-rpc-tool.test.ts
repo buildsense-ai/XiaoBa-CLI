@@ -15,7 +15,7 @@ describe('Device RPC tool helpers', () => {
     assert.equal(resolveRemoteToolTimeoutMs(longGrant, undefined, now), 60_000);
     assert.equal(resolveRemoteToolTimeoutMs(longGrant, 120_000, now), 120_000);
     assert.equal(resolveRemoteToolTimeoutMs(longGrant, 999, now), 5_000);
-    assert.equal(resolveRemoteToolTimeoutMs(longGrant, 999_999, now), 180_000);
+    assert.equal(resolveRemoteToolTimeoutMs(longGrant, 999_999, now), 300_000);
     assert.equal(resolveRemoteToolTimeoutMs(now + 30_000, 120_000, now), 30_000);
   });
 
@@ -53,6 +53,32 @@ describe('Device RPC tool helpers', () => {
 
     assert.equal(result.ok, true);
     assert.equal(result.ok ? result.content : '', content);
+  });
+
+  test('preserves valid uploaded file metadata and rejects malformed metadata', () => {
+    const valid = normalizeDeviceRpcToolResultPayload({
+      ok: true,
+      content: 'uploaded',
+      uploadedFile: {
+        url: '/uploads/report.xlsx',
+        name: 'report.xlsx',
+        size: 123,
+        type: 'file',
+      },
+    }, { toolName: 'send_file' });
+    const invalid = normalizeDeviceRpcToolResultPayload({
+      ok: true,
+      content: 'uploaded',
+      uploadedFile: { url: '', name: 'report.xlsx', size: -1, type: 'file' },
+    }, { toolName: 'send_file' });
+
+    assert.deepEqual(valid.uploadedFile, {
+      url: '/uploads/report.xlsx',
+      name: 'report.xlsx',
+      size: 123,
+      type: 'file',
+    });
+    assert.equal(invalid.uploadedFile, undefined);
   });
 
   test('still truncates remote tool content above the general RPC limit', () => {
